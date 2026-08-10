@@ -28,8 +28,6 @@ pub(super) const GENERATION_HOLD_NANO: i64 =
     PUBLIC_PROMPT_CEILING_NANO + LOW_QUALITY_OUTPUT_CEILING_NANO;
 #[cfg(test)]
 pub(super) const REFERENCE_ENVELOPE_NANO: i64 = 64_000_000_000;
-#[cfg(test)]
-pub(super) const EDIT_HOLD_NANO: i64 = REFERENCE_ENVELOPE_NANO + GENERATION_HOLD_NANO;
 pub(super) const MAX_EDIT_REFERENCES: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,10 +94,6 @@ pub(super) struct OpenAiImageQuote {
 }
 
 impl OpenAiImageQuote {
-    pub(super) fn snapshot(&self) -> &LegacyScalarAdmissionSnapshot {
-        &self.snapshot
-    }
-
     pub(super) fn pinned_tariff(&self) -> Option<PinnedTariff> {
         self.pin.clone()
     }
@@ -124,22 +118,16 @@ pub(super) fn openai_image_quote(
         input.available_nano > 0,
         "OpenAI image quote requires positive available balance"
     );
+    // A zero multiplier is a free-but-metered account: it holds nothing. Any paying account
+    // holds at least one nanoUSD so the reservation is a real claim on the balance.
+    let minimum_hold = i128::from(input.payable_multiplier_bp.min(1));
     let charged_hold_nano =
         metering::apply_multiplier(i128::from(input_official_hold(&input)?), input.payable_multiplier_bp)
-            .clamp(1, i128::from(i64::MAX)) as i64;
+            .clamp(minimum_hold, i128::from(i64::MAX)) as i64;
     if charged_hold_nano > input.available_nano {
         return Ok(None);
     }
     build_openai_image_quote(input, charged_hold_nano).map(Some)
-}
-
-/// The service meter-only strict lane: the same official identity with an exactly zero charged
-/// hold and no balance precondition. Only a service-class payable-0 resolution may call it; the
-/// customer-class clamp-to-one minimum above is deliberate and is not reused here.
-pub(super) fn openai_image_service_meter_only_quote(
-    input: OpenAiImageQuoteInput,
-) -> Result<OpenAiImageQuote> {
-    build_openai_image_quote(input, 0)
 }
 
 fn input_official_hold(input: &OpenAiImageQuoteInput) -> Result<i64> {
@@ -218,48 +206,6 @@ mod tests {
         EnginePricingRequestId::from_engine_uuid_v4("123e4567-e89b-42d3-a456-426614174000").unwrap()
     }
 
-    #[test]
-    fn generation_and_edit_quotes_pin_distinct_bounded_operations() {
-        for (operation, expected_hold, expected_references) in [
-            (OpenAiImageOperation::Generation, GENERATION_HOLD_NANO, 0),
-            (OpenAiImageOperation::edit(1).unwrap(), EDIT_HOLD_NANO, 1),
-            (
-                OpenAiImageOperation::edit(3).unwrap(),
-                3 * REFERENCE_ENVELOPE_NANO + GENERATION_HOLD_NANO,
-                3,
-            ),
-            (
-                OpenAiImageOperation::edit(5).unwrap(),
-                5 * REFERENCE_ENVELOPE_NANO + GENERATION_HOLD_NANO,
-                5,
-            ),
-        ] {
-            let quote = openai_image_quote(OpenAiImageQuoteInput {
-                request_id: request_id(),
-                account_id: "acct".to_owned(),
-                requested_model_id: metering::GPT_IMAGE_2_ALIAS.to_owned(),
-                quote_ts: 1_800_000_000,
-                payable_multiplier_bp: 2_000,
-                operation,
-                available_nano: i64::MAX,
-            })
-            .unwrap()
-            .unwrap();
-            let snapshot = quote.snapshot();
-            assert_eq!(snapshot.canonical_model_id(), metering::GPT_IMAGE_2_SNAPSHOT);
-            assert_eq!(snapshot.official_hold_nano(), expected_hold);
-            assert_eq!(
-                snapshot.charged_hold_nano(),
-                metering::apply_multiplier(i128::from(expected_hold), 2_000) as i64
-            );
-            assert!(matches!(
-                snapshot.premium_modifiers(),
-                LegacyPremiumModifiers::OpenAiImageV1 { reference_count, .. }
-                    if *reference_count == expected_references
-            ));
-            snapshot.validate().unwrap();
-        }
-    }
 
     /// The price-parameterized hold formula must reproduce the pinned hold constants under the
     /// compiled rate card, or an empty override book would change admission money.

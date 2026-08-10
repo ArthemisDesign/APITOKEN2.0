@@ -17,15 +17,6 @@ use std::task::{Context, Poll};
 type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
 
 /// Какой pricing-authority выдал admission-hold — выбирает контракт округления при settlement.
-/// Release-v2 settle'ит точным контрактным floor (как свой reserve); legacy scalar/strict
-/// сохраняют immutable half-up, который registry повторно навязывает для legacy strict.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AnthropicSettlementPricing {
-    LegacyScalar,
-    LegacyStrict,
-    ReleaseV2,
-}
-
 /// Опциональное списание с АККАУНТА клиента (только для метерных ключей). Баланс общий на аккаунт;
 /// `key` — для атрибуции расхода по ключу; `request_id` — в ledger как ссылка на запрос.
 pub struct BillCtx {
@@ -41,7 +32,6 @@ pub struct BillCtx {
     /// Settlement replays exactly this version through the tariff book; `None` is the compiled
     /// constants, byte-identical to the pre-override behaviour.
     pub tariff_pin: Option<crate::pricing::tariff_book::PinnedTariff>,
-    pub settlement_pricing: AnthropicSettlementPricing,
     pub policy_fast: Option<bool>,
     pub policy_us_inference: Option<bool>,
     /// Internal, generated before reservation; the exactly-once money identity.
@@ -570,15 +560,7 @@ impl TeeMeter {
                 elog::warn("meter", "incomplete non-SSE response without authoritative usage; charge=0");
                 0
             } else if real > 0 {
-                match b.settlement_pricing {
-                    AnthropicSettlementPricing::ReleaseV2 => {
-                        metering::apply_multiplier_floor(real, b.mult_bp)
-                    }
-                    AnthropicSettlementPricing::LegacyScalar
-                    | AnthropicSettlementPricing::LegacyStrict => {
-                        metering::apply_multiplier(real, b.mult_bp)
-                    }
-                }
+                metering::apply_multiplier(real, b.mult_bp)
             } else {
                 0
             };
@@ -608,15 +590,10 @@ impl TeeMeter {
             let charge_i64 = computed_charge.clamp(0, charge_ceiling) as i64;
             // Разбивка токенов/модели для клиентского дашборда — пишется рядом с charge (аналитика).
             // Только при авторитетном usage; C8-preserved hold не изображаем как токеновое событие.
-            // The service meter-only strict lane charges exactly zero but must still meter the
-            // turn: without the usage event the registry strict settlement would reject the
-            // outbox row (a usage-less settle is only a cancel/full-hold recovery).
-            let meter_only_strict = b.mult_bp == 0
-                && matches!(
-                    b.settlement_pricing,
-                    AnthropicSettlementPricing::LegacyStrict
-                );
-            let usage_event = if (charge_i64 > 0 || meter_only_strict) && real > 0 {
+            // A zero multiplier is the free-but-metered account: it charges exactly zero and must
+            // still record the turn, otherwise the usage of an internal service would be invisible.
+            let meter_only = b.mult_bp == 0;
+            let usage_event = if (charge_i64 > 0 || meter_only) && real > 0 {
                 Some(registry::UsageEventInput {
                     model: price_model.to_string(),
                     provider: registry::PROVIDER_ANTHROPIC.to_string(),
@@ -785,7 +762,6 @@ mod tests {
                     hold: HOLD_NANO,
                     tariff_priced_ts: None,
                     tariff_pin,
-                    settlement_pricing: AnthropicSettlementPricing::LegacyScalar,
                     policy_fast: None,
                     policy_us_inference: None,
                     request_id: "request".into(),
@@ -1086,7 +1062,6 @@ mod tests {
                         version: 9,
                         schedule_id: "anthropic/standard/sonnet-current/v9".to_owned(),
                     }),
-                    settlement_pricing: AnthropicSettlementPricing::LegacyScalar,
                     policy_fast: None,
                     policy_us_inference: None,
                     request_id: "missing-pin-request".into(),

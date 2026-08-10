@@ -70,7 +70,6 @@ pub use gemini::{
 pub use kimi::{KimiGateway, KimiOperationalStatus, KimiProfileStatus, KimiQuotaWindowStatus};
 pub use metrics::Metrics;
 pub use pricing::tariff_book;
-pub use pricing::PricingBridgeFallbackReason;
 pub use proxy::{
     authed, client_keys, control_authed, forward, is_exact_not_started_response, readonly_authed,
     resolve_client_key, resolve_client_keys, TerminalErrorReason,

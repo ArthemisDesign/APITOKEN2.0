@@ -23,26 +23,13 @@ pub(crate) enum AdmissionError {
     LowBalance,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CodexSettlementPricing {
-    LegacyScalar,
-    LegacyStrict,
-    ReleaseV2,
-}
-
 type CodexReserveResult = (
     String,
     i64,
     i64,
     Option<i64>,
-    CodexSettlementPricing,
     Option<tariff_book::PinnedTariff>,
 );
-
-enum LegacyCodexReserveResult {
-    Reserved(CodexReserveResult),
-    ReleaseActivated,
-}
 
 struct Reservation {
     billing: std::sync::Arc<crate::billing::AsyncBilling>,
@@ -55,7 +42,6 @@ struct Reservation {
     /// this version. `None` is the compiled constants, byte-identical to before.
     pinned_tariff: Option<tariff_book::PinnedTariff>,
     policy_fast: Option<bool>,
-    settlement_pricing: CodexSettlementPricing,
     request_id: String,
     guard: HoldGuard,
 }
@@ -106,7 +92,6 @@ impl PendingCodexAdmission {
                     hold,
                     reservation_mult_bp,
                     tariff_priced_ts,
-                    settlement_pricing,
                     pinned_tariff,
                 ) = reserve_codex_metered(
                     billing,
@@ -131,7 +116,6 @@ impl PendingCodexAdmission {
                     tariff_priced_ts,
                     pinned_tariff,
                     policy_fast: tariff_priced_ts.map(|_| fast),
-                    settlement_pricing,
                     request_id: request_id.clone(),
                     guard: HoldGuard::new(
                         Some(billing.clone()),
@@ -228,7 +212,6 @@ async fn reserve_openai_image_metered(
             hold,
             payable_multiplier_bp,
             None,
-            CodexSettlementPricing::LegacyScalar,
             pinned_tariff,
         )),
         Ok(None) => Err(AdmissionError::LowBalance),
@@ -252,7 +235,6 @@ fn image_reservation(
     hold: i64,
     mult_bp: i64,
     tariff_priced_ts: Option<i64>,
-    settlement_pricing: CodexSettlementPricing,
     pinned_tariff: Option<tariff_book::PinnedTariff>,
 ) -> Reservation {
     Reservation {
@@ -264,7 +246,6 @@ fn image_reservation(
         tariff_priced_ts,
         pinned_tariff,
         policy_fast: None,
-        settlement_pricing,
         guard: HoldGuard::new(
             Some(billing.clone()),
             account_id.to_owned(),
@@ -365,7 +346,6 @@ async fn reserve_codex_legacy(
             hold,
             mult_bp,
             None,
-            CodexSettlementPricing::LegacyScalar,
             resolved.pin,
         )),
         Ok(None) => Err(AdmissionError::LowBalance),
@@ -410,7 +390,6 @@ impl OpenAiImageAdmission {
             return;
         };
         let priced_ts = reservation.tariff_priced_ts.unwrap_or_else(pool::now);
-        let strict = reservation.settlement_pricing == CodexSettlementPricing::LegacyStrict;
         let (charge, usage_event) = match metering::openai_image_tariff(model_id) {
             // No tariff means the turn was never measured, and an unmeasured turn is not billed
             // at the admission ceiling.
@@ -455,19 +434,10 @@ impl OpenAiImageAdmission {
                     reservation.hold,
                     reservation.mult_bp,
                     priced_ts,
-                    reservation.settlement_pricing,
                     prices,
                 )
             }
         };
-        if strict && charge > reservation.hold {
-            elog::error(
-                "codex-billing",
-                "strict OpenAI image usage exceeded its admission hold; leaving reservation for full-hold recovery",
-            );
-            reservation.guard.disarm();
-            return;
-        }
         reservation.billing.settle_detached(
             &reservation.request_id,
             &reservation.account_id,
@@ -507,7 +477,6 @@ fn settled_openai_image_charge(
     hold: i64,
     mult_bp: i64,
     priced_ts: i64,
-    settlement_pricing: CodexSettlementPricing,
 ) -> (i64, Option<registry::UsageEventInput>) {
     // No tariff and no computable cost both mean the turn was never measured, and an unmeasured
     // turn is not billed at the admission ceiling.
@@ -520,7 +489,6 @@ fn settled_openai_image_charge(
         hold,
         mult_bp,
         priced_ts,
-        settlement_pricing,
         tariff.prices,
     )
 }
@@ -534,18 +502,12 @@ fn settled_openai_image_charge_with_prices(
     hold: i64,
     mult_bp: i64,
     priced_ts: i64,
-    settlement_pricing: CodexSettlementPricing,
     prices: metering::OpenAiImagePrices,
 ) -> (i64, Option<registry::UsageEventInput>) {
     let Ok(real_nano) = metering::openai_image_cost_nanodollars(usage, &prices) else {
         return (crate::settlement_policy::unknown_usage_charge(hold), None);
     };
-    let computed_charge = match settlement_pricing {
-        CodexSettlementPricing::ReleaseV2 => metering::apply_multiplier_floor(real_nano, mult_bp),
-        CodexSettlementPricing::LegacyScalar | CodexSettlementPricing::LegacyStrict => {
-            metering::apply_multiplier(real_nano, mult_bp)
-        }
-    };
+    let computed_charge = metering::apply_multiplier(real_nano, mult_bp);
     let ceiling = i128::from(hold.max(0)) + metering::OVERDRAFT_NANO;
     let charge = computed_charge.clamp(0, ceiling).min(i64::MAX as i128) as i64;
     let fresh_text = usage
@@ -617,7 +579,6 @@ impl CodexAdmission {
         };
         let priced_ts = reservation.tariff_priced_ts.unwrap_or_else(pool::now);
         let effective_fast = reservation.policy_fast.unwrap_or(fast);
-        let strict = reservation.settlement_pricing == CodexSettlementPricing::LegacyStrict;
         // Hot tariff override: replay the exact version pinned at admission; a cross-family serve
         // reprices by the served model's family at the pinned priced timestamp; an empty book is
         // byte-identical to the compiled constants. A pinned version missing from the book is an
@@ -659,24 +620,11 @@ impl CodexAdmission {
             usage,
             reservation.hold,
             reservation.mult_bp,
-            if strict {
-                None
-            } else {
-                requested_output_tokens
-            },
+            requested_output_tokens,
             priced_ts,
             effective_fast,
-            reservation.settlement_pricing,
             prices,
         );
-        if strict && charge > reservation.hold {
-            elog::error(
-                "codex-billing",
-                "strict OpenAI usage exceeded its admission hold; leaving reservation for full-hold recovery",
-            );
-            reservation.guard.disarm();
-            return;
-        }
         reservation.billing.settle_detached(
             &reservation.request_id,
             &reservation.account_id,
@@ -712,7 +660,6 @@ fn settled_charge(
     requested_output_tokens: Option<u64>,
     now: i64,
     fast: bool,
-    settlement_pricing: CodexSettlementPricing,
 ) -> (i64, Option<registry::UsageEventInput>) {
     settled_charge_with_prices(
         model,
@@ -722,7 +669,6 @@ fn settled_charge(
         requested_output_tokens,
         now,
         fast,
-        settlement_pricing,
         effective_prices(model, now),
     )
 }
@@ -738,7 +684,6 @@ fn settled_charge_with_prices(
     requested_output_tokens: Option<u64>,
     now: i64,
     fast: bool,
-    settlement_pricing: CodexSettlementPricing,
     prices: metering::CodexPrices,
 ) -> (i64, Option<registry::UsageEventInput>) {
     let priced = price_usage_with_prices(usage, prices, fast);
@@ -755,14 +700,7 @@ fn settled_charge_with_prices(
         }
         _ => priced.real_nano,
     };
-    let computed_charge = match settlement_pricing {
-        CodexSettlementPricing::ReleaseV2 => {
-            metering::apply_multiplier_floor(charge_basis_nano, mult_bp)
-        }
-        CodexSettlementPricing::LegacyScalar | CodexSettlementPricing::LegacyStrict => {
-            metering::apply_multiplier(charge_basis_nano, mult_bp)
-        }
-    };
+    let computed_charge = metering::apply_multiplier(charge_basis_nano, mult_bp);
     let ceiling = hold.max(0) as i128 + metering::OVERDRAFT_NANO;
     let charge = computed_charge.clamp(0, ceiling).min(i64::MAX as i128) as i64;
     let usage_event = (priced.real_nano > 0).then(|| registry::UsageEventInput {
@@ -1100,7 +1038,6 @@ mod tests {
     use crate::codex::CodexPrices;
     use crate::config::ProxyConfig;
     use crate::upstream::Clients;
-    use crate::{PricingBridgeFallbackReason, ProviderMode};
     use pool::{Pool, Reserve};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1147,12 +1084,6 @@ mod tests {
 
 
 
-    fn terra_model() -> CodexModel {
-        let mut terra = model();
-        terra.id = "gpt-5.6-terra".to_string();
-        terra.upstream = terra.id.clone();
-        terra
-    }
 
 
 
@@ -1208,7 +1139,6 @@ mod tests {
                 tariff_priced_ts: None,
                 pinned_tariff: None,
                 policy_fast: None,
-                settlement_pricing: CodexSettlementPricing::LegacyScalar,
                 request_id: request_id.to_string(),
                 guard: HoldGuard::new(
                     Some(Arc::clone(&billing)),
@@ -1318,7 +1248,6 @@ mod tests {
             None,
             0,
             true,
-            CodexSettlementPricing::LegacyScalar,
         );
         assert_eq!(charge, fast_usage);
         let event = event.expect("fast usage must produce a usage event");
@@ -1387,7 +1316,6 @@ mod tests {
             None,
             0,
             false,
-            CodexSettlementPricing::LegacyScalar,
         );
         assert_eq!(uncapped, 100 * 5_000 + 1_000 * 30_000);
         // Honest billing: charge only up to the requested 100 output tokens.
@@ -1399,7 +1327,6 @@ mod tests {
             Some(100),
             0,
             false,
-            CodexSettlementPricing::LegacyScalar,
         );
         assert_eq!(capped, 100 * 5_000 + 100 * 30_000);
         assert!(capped < uncapped);
@@ -1576,7 +1503,6 @@ mod tests {
             None,
             123,
             false,
-            CodexSettlementPricing::LegacyScalar,
         );
 
         // Official cost: 500*5000 + 400*500 + 100*6250 + 20*30000 = 3,925,000.
@@ -1620,7 +1546,6 @@ mod tests {
             None,
             456,
             false,
-            CodexSettlementPricing::LegacyScalar,
         );
         assert_eq!(charge as i128, hold as i128 + metering::OVERDRAFT_NANO);
         assert!(event.is_some());
@@ -1645,7 +1570,6 @@ mod tests {
             Some(4_000),
             0,
             false,
-            CodexSettlementPricing::LegacyScalar,
         );
         let event = event.expect("a priced turn emits a usage event");
 
@@ -1668,7 +1592,6 @@ mod tests {
             None,
             0,
             false,
-            CodexSettlementPricing::LegacyScalar,
         );
         let uncapped = uncapped.expect("a priced turn emits a usage event");
         assert_eq!(uncapped.real_nano, uncapped.charge_basis_nano);
@@ -1684,7 +1607,6 @@ mod tests {
             None,
             789,
             false,
-            CodexSettlementPricing::LegacyScalar,
         );
         assert_eq!(charge, 0);
         assert!(event.is_none());
@@ -1707,7 +1629,6 @@ mod tests {
             None,
             999,
             false,
-            CodexSettlementPricing::LegacyScalar,
         );
         assert_eq!(charge, i64::MAX);
         let event = event.unwrap();
@@ -1796,7 +1717,6 @@ mod tests {
             10_000_000,
             5_000,
             1_800_000_000,
-            CodexSettlementPricing::LegacyScalar,
         );
         assert_eq!(charge, 975_000);
         let event = event.unwrap();

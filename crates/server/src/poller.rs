@@ -133,9 +133,6 @@ pub async fn ledger_prune_loop(
                     usg += usage_batch;
                     lifecycle.outbox += life.outbox;
                     lifecycle.reservations += life.reservations;
-                    lifecycle.pricing_snapshots_cascaded += life.pricing_snapshots_cascaded;
-                    lifecycle.pricing_shadow_evaluations_cascaded +=
-                        life.pricing_shadow_evaluations_cascaded;
                     lifecycle.capacity_leases += life.capacity_leases;
                     lifecycle.engine_instances += life.engine_instances;
                     let full = ledger_batch >= 5_000
@@ -155,18 +152,14 @@ pub async fn ledger_prune_loop(
         match res {
             Ok(Ok((led, usg, life))) if led > 0 || usg > 0 || life.outbox > 0
                 || life.reservations > 0
-                || life.pricing_snapshots_cascaded > 0
-                || life.pricing_shadow_evaluations_cascaded > 0
                 || life.capacity_leases > 0
                 || life.engine_instances > 0 =>
                 elog::info(
                     "server",
                     format!(
-                        "retention: ledger={led}, usage={usg}, outbox={}, reservations={}, pricing_snapshots={}, shadow_evaluations={}, capacity={}, instances={} (history>{ledger_retention_days}d, request_lifecycle>{request_lifecycle_retention_days}d)",
+                        "retention: ledger={led}, usage={usg}, outbox={}, reservations={}, capacity={}, instances={} (history>{ledger_retention_days}d, request_lifecycle>{request_lifecycle_retention_days}d)",
                         life.outbox,
                         life.reservations,
-                        life.pricing_snapshots_cascaded,
-                        life.pricing_shadow_evaluations_cascaded,
                         life.capacity_leases,
                         life.engine_instances,
                     ),

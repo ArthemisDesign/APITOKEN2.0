@@ -9,10 +9,9 @@
 //!   4) при 429/5xx/протухшем токене — cooling и ротация на следующую подписку;
 //!   5) ответ (включая SSE-стрим) отдаём клиенту байт-в-байт.
 
-mod anthropic_snapshot;
 
 use crate::meter::{
-    AnthropicSettlementPricing, BillCtx, CalibrationCtx, MeterCtx, SubscriptionMeterCtx, TeeMeter,
+    BillCtx, CalibrationCtx, MeterCtx, SubscriptionMeterCtx, TeeMeter,
 };
 use crate::metrics::Metrics;
 use crate::pricing::tariff_book;
@@ -23,7 +22,6 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::Response;
 use futures_util::{Stream, StreamExt};
-use registry::pricing::SnapshotProvider;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -1282,7 +1280,6 @@ pub async fn forward(
         i64,
         i64,
         Option<i64>,
-        AnthropicSettlementPricing,
         Option<tariff_book::PinnedTariff>,
     )> = None;
     // Резервируем ТОЛЬКО под POST /v1/messages — единственный биллинговый эндпоинт. `count_tokens` и
@@ -1311,19 +1308,6 @@ pub async fn forward(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs() as i64)
             .unwrap_or(0);
-        let bridge_provider = SnapshotProvider::Anthropic;
-        let admission_modifiers = metering::AnthropicAdmissionModifiers {
-            speed: if requested_fast {
-                metering::AnthropicSpeed::Fast
-            } else {
-                metering::AnthropicSpeed::Standard
-            },
-            inference_geo: if requested_us_inference {
-                metering::AnthropicInferenceGeo::Us
-            } else {
-                metering::AnthropicInferenceGeo::Global
-            },
-        };
         let matched_tariff = metering::anthropic_matched_tariff_at(&model, price_ts, requested_fast);
         let compiled_base = matched_tariff.map(|(_, prices)| prices).unwrap_or_else(|| {
             metering::model_prices_reserve_for_speed_at(&model, price_ts, requested_fast)
@@ -1364,7 +1348,6 @@ pub async fn forward(
         let mut reserved_pair: Option<(u64, i64)> = None;
         let settlement_mult_bp = *mult_bp;
         let settlement_priced_ts: Option<i64> = None;
-        let settlement_pricing = AnthropicSettlementPricing::LegacyScalar;
         if bal <= 0 {
             return local_err(LocalErr::LowBalance, None);
         }
@@ -1439,7 +1422,6 @@ pub async fn forward(
             hold,
             settlement_mult_bp,
             settlement_priced_ts,
-            settlement_pricing,
             tariff_pin,
         ));
     }
@@ -1448,7 +1430,7 @@ pub async fn forward(
     // Разоружим на успехе — там hold закрывает tee-метеринг. Снимает утечку денег при disconnect.
     let mut hold_guard = reserved
         .as_ref()
-        .map(|(request_id, acct, k, h, _, _, _, _)| HoldGuard {
+        .map(|(request_id, acct, k, h, _, _, _)| HoldGuard {
             billing: app.billing.clone(),
             account_id: acct.clone(),
             key: k.clone(),
@@ -1911,7 +1893,7 @@ pub async fn forward(
                     }
                     app.affinity.mark_cache_warm(input, &home);
                 }
-                if let (Some((request_id, account_id, key, hold, _, priced_ts, _, _)), Some(billing)) =
+                if let (Some((request_id, account_id, key, hold, _, priced_ts, _)), Some(billing)) =
                     (reserved.as_ref(), app.billing.as_ref())
                 {
                     if !matches!(billing.mark_delivering(request_id, 3600).await, Ok(true)) {
@@ -1964,7 +1946,6 @@ pub async fn forward(
                             hold,
                             payable_multiplier_bp,
                             priced_ts,
-                            settlement_pricing,
                             tariff_pin,
                         )),
                     ) => app.billing.clone().map(|billing| BillCtx {
@@ -1975,7 +1956,6 @@ pub async fn forward(
                         hold,
                         tariff_priced_ts: priced_ts,
                         tariff_pin,
-                        settlement_pricing,
                         policy_fast: priced_ts.map(|_| requested_fast),
                         policy_us_inference: priced_ts.map(|_| requested_us_inference),
                         request_id,
@@ -2097,7 +2077,6 @@ pub async fn forward(
                         hold,
                         payable_multiplier_bp,
                         priced_ts,
-                        settlement_pricing,
                         tariff_pin,
                     )) => app.billing.clone().map(|billing| BillCtx {
                         billing,
@@ -2107,7 +2086,6 @@ pub async fn forward(
                         hold,
                         tariff_priced_ts: priced_ts,
                         tariff_pin,
-                        settlement_pricing,
                         policy_fast: priced_ts.map(|_| requested_fast),
                         policy_us_inference: priced_ts.map(|_| requested_us_inference),
                         request_id,

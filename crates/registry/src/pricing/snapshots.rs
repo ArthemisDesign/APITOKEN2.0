@@ -66,14 +66,6 @@ impl SnapshotProvider {
         }
     }
 
-    pub(crate) fn from_db(value: &str) -> Result<Self> {
-        match value {
-            "anthropic" => Ok(Self::Anthropic),
-            "openai" => Ok(Self::OpenAi),
-            "google" => Ok(Self::Google),
-            _ => bail!("stored pricing snapshot has an unsupported provider"),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -336,16 +328,6 @@ impl LegacyPremiumModifiers {
         Ok(encoded)
     }
 
-    pub(crate) fn from_json(value: &str) -> Result<Self> {
-        if value.len() > PREMIUM_MODIFIERS_MAX_BYTES {
-            bail!("stored pricing premium modifiers exceed the encoded size limit");
-        }
-        let decoded: Self =
-            serde_json::from_str(value).context("decode stored pricing premium modifiers")?;
-        // Serialization is also a boundedness check independent of backend JSON formatting.
-        decoded.to_canonical_json()?;
-        Ok(decoded)
-    }
 
     pub(crate) fn feed_digest(&self, encoder: &mut CanonicalDigestEncoder) {
         match self {
@@ -577,23 +559,7 @@ impl LegacyScalarAdmissionSnapshot {
         Ok(())
     }
 
-    pub(crate) fn from_stored(
-        schema_version: i64,
-        input: LegacyScalarAdmissionSnapshotInput,
-        snapshot_digest: String,
-    ) -> Result<Self> {
-        let expected = Self::new(input)?;
-        if schema_version != LEGACY_SCALAR_SNAPSHOT_SCHEMA_VERSION
-            || snapshot_digest != expected.snapshot_digest.0
-        {
-            bail!("stored legacy scalar snapshot failed canonical digest verification");
-        }
-        Ok(expected)
-    }
 
-    pub(crate) fn premium_modifiers_json(&self) -> Result<String> {
-        self.premium_modifiers.to_canonical_json()
-    }
 
     fn as_input(&self) -> LegacyScalarAdmissionSnapshotInput {
         LegacyScalarAdmissionSnapshotInput {
@@ -665,12 +631,6 @@ pub enum LegacyScalarReserveOutcome {
     Conflict(LegacyScalarReserveConflict),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum LegacyScalarSnapshotLookup {
-    Missing,
-    NonLegacy,
-    Legacy(Box<LegacyScalarAdmissionSnapshot>),
-}
 
 fn validate_input(input: &LegacyScalarAdmissionSnapshotInput) -> Result<()> {
     validate_legacy_snapshot_request_id(&input.request_id)?;
@@ -816,29 +776,6 @@ mod tests {
         }
     }
 
-    fn openai_image_input() -> LegacyScalarAdmissionSnapshotInput {
-        LegacyScalarAdmissionSnapshotInput {
-            request_id: "request-openai-image-1".into(),
-            account_id: "account-openai-image-1".into(),
-            provider: SnapshotProvider::OpenAi,
-            requested_model_id: "gpt-image-2".into(),
-            canonical_model_id: "gpt-image-2-2026-04-21".into(),
-            alias_generation: 1,
-            tariff_schedule_id: "openai/gpt-image-2/2026-04-21/v1".into(),
-            tariff_priced_ts: 1_788_220_799,
-            admission_ts: 1_788_220_800,
-            payable_multiplier_bp: 10_000,
-            official_hold_nano: 675_130_000,
-            charged_hold_nano: 675_130_000,
-            premium_modifiers: LegacyPremiumModifiers::OpenAiImageV1 {
-                operation: SnapshotOpenAiImageOperation::Generation,
-                background: "opaque".into(),
-                quality: "low".into(),
-                size: "auto".into(),
-                reference_count: 0,
-            },
-        }
-    }
 
     fn google_input() -> LegacyScalarAdmissionSnapshotInput {
         LegacyScalarAdmissionSnapshotInput {
@@ -883,67 +820,6 @@ mod tests {
         snapshot.validate().unwrap();
     }
 
-    #[test]
-    fn openai_image_snapshot_is_typed_provider_bound_and_digest_stable() {
-        let snapshot = LegacyScalarAdmissionSnapshot::new(openai_image_input()).unwrap();
-        assert_eq!(
-            snapshot.snapshot_digest().as_str(),
-            "sha256:v1:fa60db1752d28fdd9577004ccc453e91dcb6d5c974166ee3f96052a1a725e9fb"
-        );
-        snapshot.validate().unwrap();
-
-        let encoded = snapshot.premium_modifiers_json().unwrap();
-        assert_eq!(
-            LegacyPremiumModifiers::from_json(&encoded).unwrap(),
-            snapshot.premium_modifiers().clone()
-        );
-        assert!(encoded.contains(r#""kind":"openai_image_v1""#));
-        assert!(snapshot
-            .premium_modifiers()
-            .validate_for_provider(SnapshotProvider::Anthropic)
-            .is_err());
-
-        let mut invalid_reference_count = openai_image_input();
-        invalid_reference_count.premium_modifiers = LegacyPremiumModifiers::OpenAiImageV1 {
-            operation: SnapshotOpenAiImageOperation::Edit,
-            background: "opaque".into(),
-            quality: "low".into(),
-            size: "auto".into(),
-            reference_count: 0,
-        };
-        assert!(LegacyScalarAdmissionSnapshot::new(invalid_reference_count).is_err());
-
-        let mut changed = openai_image_input();
-        changed.premium_modifiers = LegacyPremiumModifiers::OpenAiImageV1 {
-            operation: SnapshotOpenAiImageOperation::Edit,
-            background: "opaque".into(),
-            quality: "low".into(),
-            size: "auto".into(),
-            reference_count: 1,
-        };
-        let changed = LegacyScalarAdmissionSnapshot::new(changed).unwrap();
-        assert_ne!(snapshot.snapshot_digest(), changed.snapshot_digest());
-
-        let mut multi_reference = openai_image_input();
-        multi_reference.premium_modifiers = LegacyPremiumModifiers::OpenAiImageV1 {
-            operation: SnapshotOpenAiImageOperation::Edit,
-            background: "opaque".into(),
-            quality: "low".into(),
-            size: "auto".into(),
-            reference_count: 5,
-        };
-        LegacyScalarAdmissionSnapshot::new(multi_reference).unwrap();
-
-        let mut too_many_references = openai_image_input();
-        too_many_references.premium_modifiers = LegacyPremiumModifiers::OpenAiImageV1 {
-            operation: SnapshotOpenAiImageOperation::Edit,
-            background: "opaque".into(),
-            quality: "low".into(),
-            size: "auto".into(),
-            reference_count: 6,
-        };
-        assert!(LegacyScalarAdmissionSnapshot::new(too_many_references).is_err());
-    }
 
     #[test]
     fn google_legacy_snapshot_digest_has_a_stable_golden_vector() {
@@ -1008,99 +884,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn premium_modifiers_are_strictly_typed_and_provider_bound() {
-        let anthropic = LegacyPremiumModifiers::AnthropicV1 {
-            speed: SnapshotAnthropicSpeed::Fast,
-            inference_geo: SnapshotAnthropicInferenceGeo::Us,
-            inference_geo_basis_points: 11_000,
-        };
-        let encoded = anthropic.to_canonical_json().unwrap();
-        assert_eq!(
-            LegacyPremiumModifiers::from_json(&encoded).unwrap(),
-            anthropic
-        );
-        assert!(LegacyPremiumModifiers::from_json(
-            r#"{"kind":"anthropic_v1","speed":"fast","inference_geo":"us","inference_geo_basis_points":11000,"extra":true}"#
-        )
-        .is_err());
-        assert!(anthropic
-            .validate_for_provider(SnapshotProvider::OpenAi)
-            .is_err());
 
-        let openai = LegacyPremiumModifiers::OpenAiV1 {
-            service_tier: SnapshotOpenAiServiceTier::Fast,
-            service_tier_multiplier_basis_points: 25_000,
-            context_tier: SnapshotOpenAiContextTier::Long,
-            input_multiplier_basis_points: 20_000,
-            output_multiplier_basis_points: 15_000,
-        };
-        let encoded = openai.to_canonical_json().unwrap();
-        assert!(encoded.contains(r#""kind":"openai_v1""#));
-        assert_eq!(LegacyPremiumModifiers::from_json(&encoded).unwrap(), openai);
-        openai
-            .validate_for_provider(SnapshotProvider::OpenAi)
-            .unwrap();
-
-        let invalid_long = LegacyPremiumModifiers::OpenAiV1 {
-            service_tier: SnapshotOpenAiServiceTier::Standard,
-            service_tier_multiplier_basis_points: 10_000,
-            context_tier: SnapshotOpenAiContextTier::Long,
-            input_multiplier_basis_points: 10_000,
-            output_multiplier_basis_points: 10_000,
-        };
-        assert!(invalid_long
-            .validate_for_provider(SnapshotProvider::OpenAi)
-            .is_err());
-
-        let google = LegacyPremiumModifiers::GeminiV1 {
-            context_rate: SnapshotGeminiContextRate::ConservativeMaximum,
-            search_billing: SnapshotGeminiSearchBilling::PerGroundedPrompt,
-            grounding_enabled: true,
-            search_reserve_units: 1,
-        };
-        let encoded = google.to_canonical_json().unwrap();
-        assert!(encoded.contains(r#""kind":"gemini_v1""#));
-        assert_eq!(LegacyPremiumModifiers::from_json(&encoded).unwrap(), google);
-        google
-            .validate_for_provider(SnapshotProvider::Google)
-            .unwrap();
-        assert!(google
-            .validate_for_provider(SnapshotProvider::Anthropic)
-            .is_err());
-
-        let invalid_google = LegacyPremiumModifiers::GeminiV1 {
-            context_rate: SnapshotGeminiContextRate::ConservativeMaximum,
-            search_billing: SnapshotGeminiSearchBilling::PerQuery,
-            grounding_enabled: false,
-            search_reserve_units: 32,
-        };
-        assert!(invalid_google
-            .validate_for_provider(SnapshotProvider::Google)
-            .is_err());
-    }
-
-    #[test]
-    fn stored_snapshot_digest_is_recomputed_instead_of_trusted() {
-        let input = anthropic_input();
-        let digest = LegacyScalarAdmissionSnapshot::new(input.clone())
-            .unwrap()
-            .snapshot_digest()
-            .as_str()
-            .to_owned();
-        assert!(LegacyScalarAdmissionSnapshot::from_stored(
-            LEGACY_SCALAR_SNAPSHOT_SCHEMA_VERSION,
-            input.clone(),
-            digest
-        )
-        .is_ok());
-        assert!(LegacyScalarAdmissionSnapshot::from_stored(
-            LEGACY_SCALAR_SNAPSHOT_SCHEMA_VERSION,
-            input,
-            "sha256:v1:wrong".into()
-        )
-        .is_err());
-    }
 
     #[test]
     fn snapshot_identifiers_reject_cross_backend_incompatible_nul_bytes() {

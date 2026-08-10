@@ -16,24 +16,13 @@
 //! рантайма). Гарантия денег: durable reservation/outbox переживает краш, а периодический recovery
 //! закрывает осиротевшую операцию после истечения lease. Ничего не застревает только в памяти.
 
-use registry::pricing::{
-    AccountPolicyActivationSpec, AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation,
-    LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome, LockedOpenKeysPolicyTransitionSpec,
-    PolicyActiveExpectation, PolicyAdmissionSnapshot, PolicyReserveOutcome, PricingCatalogSpec,
-    PricingMutation, PricingReadBundle, PricingReleaseAssignmentExtensionV2, PricingReleaseHeadV2,
-    PricingReleaseInventoryPageV2, PricingReleaseOptOutOutcomeV2, PricingReleaseOptOutV2,
-    PricingReleasePolicyV2, PricingReleaseProvisioningContextV2,
-    PricingReleaseQuoteV2, PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2,
-    PricingShadowAdmissionEvaluationInput,
-    TariffOverride, TariffOverrideInsert,
-    TariffOverrideInsertOutcome, VersionTarget,
-};
+use registry::pricing::{TariffOverride, TariffOverrideInsert, TariffOverrideInsertOutcome};
 use registry::{
-    AccountFundingSnapshot, AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation,
+    AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation,
     BillingTotals, CodexCalibrationRow, CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate,
     CodexTurnCalibrationEvent, CodexWindowObservation, GeminiExactCalibrationRow,
     GeminiExactWindowObservation, GlmCalibrationRow, GlmSubjectSpend, GlmTurnCalibrationEvent,
-    GlmWindowObservation, KeyActivationPolicyAck, KeyAuth, KeyPolicyUpdate, KeyRow,
+    GlmWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow,
     KimiCalibrationRow, KimiTurnCalibrationEvent, KimiWindowObservation,
     ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
     ProviderTurnCalibrationEvent,
@@ -434,13 +423,6 @@ const RESERVE_HANDOFF_FAILED: u8 = 6;
 // Snapshot reserve is intentionally a separate protocol from the live legacy reserve above. Once
 // its commit decision wins the race with caller cancellation, the durable reservation must remain
 // active for exact replay or lease recovery; compensating a lost reply would destroy idempotency.
-const SNAPSHOT_RESERVE_HANDOFF_PENDING: u8 = 0;
-const SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED: u8 = 1;
-const SNAPSHOT_RESERVE_HANDOFF_COMMITTED: u8 = 2;
-const SNAPSHOT_RESERVE_HANDOFF_CLAIMED: u8 = 3;
-const SNAPSHOT_RESERVE_HANDOFF_CANCELED: u8 = 4;
-const SNAPSHOT_RESERVE_HANDOFF_FAILED: u8 = 5;
-const SNAPSHOT_RESERVE_HANDOFF_COMMIT_UNKNOWN: u8 = 6;
 
 // Закрывает окно отмены, пока `reserve().await` ещё не передал владение резервом вызывающему коду.
 // Компенсация адресует durable request_id, поэтому повторный cancel/settle идемпотентен и не может
@@ -522,205 +504,13 @@ impl Drop for ReserveHandoffGuard<'_> {
     }
 }
 
-struct SnapshotReserveHandoffGuard {
-    handoff: Arc<AtomicU8>,
-}
 
-impl SnapshotReserveHandoffGuard {
-    fn claim(&self) -> bool {
-        self.handoff
-            .compare_exchange(
-                SNAPSHOT_RESERVE_HANDOFF_COMMITTED,
-                SNAPSHOT_RESERVE_HANDOFF_CLAIMED,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-    }
-}
 
-impl Drop for SnapshotReserveHandoffGuard {
-    fn drop(&mut self) {
-        // Cancellation has exactly one safe linearization point: before the writer authorizes the
-        // database commit. COMMIT_DECIDED and later states deliberately remain untouched.
-        let _ = self.handoff.compare_exchange(
-            SNAPSHOT_RESERVE_HANDOFF_PENDING,
-            SNAPSHOT_RESERVE_HANDOFF_CANCELED,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
-    }
-}
 
-fn authorize_snapshot_reserve_commit(handoff: &AtomicU8) -> bool {
-    loop {
-        match handoff.load(Ordering::Acquire) {
-            SNAPSHOT_RESERVE_HANDOFF_PENDING => {
-                if handoff
-                    .compare_exchange(
-                        SNAPSHOT_RESERVE_HANDOFF_PENDING,
-                        SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    )
-                    .is_ok()
-                {
-                    return true;
-                }
-            }
-            // The callback is idempotent inside one already-authorized database attempt. A commit
-            // error moves the handoff to COMMIT_UNKNOWN before any later exact replay is allowed.
-            SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED => return true,
-            SNAPSHOT_RESERVE_HANDOFF_CANCELED => return false,
-            state => {
-                elog::error(
-                    "billing",
-                    format!("billing snapshot reserve commit gate entered unexpected state {state}"),
-                );
-                return false;
-            }
-        }
-    }
-}
 
-fn mark_snapshot_reserve_failed(handoff: &AtomicU8) {
-    loop {
-        match handoff.load(Ordering::Acquire) {
-            SNAPSHOT_RESERVE_HANDOFF_PENDING => {
-                if handoff
-                    .compare_exchange(
-                        SNAPSHOT_RESERVE_HANDOFF_PENDING,
-                        SNAPSHOT_RESERVE_HANDOFF_FAILED,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    )
-                    .is_ok()
-                {
-                    return;
-                }
-            }
-            // The physical commit result is ambiguous. Preserve it as a non-cancelable state so a
-            // later exact replay or lease recovery can resolve the durable truth.
-            SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED => {
-                let _ = handoff.compare_exchange(
-                    SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED,
-                    SNAPSHOT_RESERVE_HANDOFF_COMMIT_UNKNOWN,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                );
-                return;
-            }
-            _ => return,
-        }
-    }
-}
 
-fn finish_snapshot_reserve(
-    handoff: &AtomicU8,
-    reply: oneshot::Sender<anyhow::Result<LegacyScalarReserveOutcome>>,
-    result: anyhow::Result<LegacyScalarReserveOutcome>,
-) {
-    match result {
-        Ok(outcome @ LegacyScalarReserveOutcome::Inserted(_))
-        | Ok(outcome @ LegacyScalarReserveOutcome::Unchanged(_)) => {
-            if let Err(state) = handoff.compare_exchange(
-                SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED,
-                SNAPSHOT_RESERVE_HANDOFF_COMMITTED,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                let _ = reply.send(Err(anyhow::anyhow!(
-                    "snapshot reservation committed with unexpected handoff state {state}"
-                )));
-                return;
-            }
-            // A dropped receiver intentionally leaves COMMITTED untouched. Exact replay or the
-            // durable reservation lease resolves ownership; no synthetic zero-cost settlement.
-            let _ = reply.send(Ok(outcome));
-        }
-        Ok(outcome) => {
-            if !matches!(&outcome, LegacyScalarReserveOutcome::AbortedBeforeCommit) {
-                mark_snapshot_reserve_failed(handoff);
-            }
-            let _ = reply.send(Ok(outcome));
-        }
-        Err(error) => {
-            mark_snapshot_reserve_failed(handoff);
-            let _ = reply.send(Err(error));
-        }
-    }
-}
 
-fn finish_policy_snapshot_reserve(
-    handoff: &AtomicU8,
-    reply: oneshot::Sender<anyhow::Result<PolicyReserveOutcome>>,
-    result: anyhow::Result<PolicyReserveOutcome>,
-) {
-    match result {
-        Ok(outcome @ PolicyReserveOutcome::Inserted(_))
-        | Ok(outcome @ PolicyReserveOutcome::Unchanged(_)) => {
-            if let Err(state) = handoff.compare_exchange(
-                SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED,
-                SNAPSHOT_RESERVE_HANDOFF_COMMITTED,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                let _ = reply.send(Err(anyhow::anyhow!(
-                    "policy snapshot reservation committed with unexpected handoff state {state}"
-                )));
-                return;
-            }
-            let _ = reply.send(Ok(outcome));
-        }
-        Ok(outcome) => {
-            if !matches!(&outcome, PolicyReserveOutcome::AbortedBeforeCommit) {
-                mark_snapshot_reserve_failed(handoff);
-            }
-            let _ = reply.send(Ok(outcome));
-        }
-        Err(error) => {
-            mark_snapshot_reserve_failed(handoff);
-            let _ = reply.send(Err(error));
-        }
-    }
-}
 
-fn finish_pricing_release_reserve(
-    handoff: &AtomicU8,
-    reply: oneshot::Sender<anyhow::Result<PricingReleaseReserveOutcomeV2>>,
-    result: anyhow::Result<PricingReleaseReserveOutcomeV2>,
-) {
-    match result {
-        Ok(outcome @ PricingReleaseReserveOutcomeV2::Inserted(_))
-        | Ok(outcome @ PricingReleaseReserveOutcomeV2::Unchanged(_)) => {
-            if let Err(state) = handoff.compare_exchange(
-                SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED,
-                SNAPSHOT_RESERVE_HANDOFF_COMMITTED,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                let _ = reply.send(Err(anyhow::anyhow!(
-                    "pricing release reservation committed with unexpected handoff state {state}"
-                )));
-                return;
-            }
-            let _ = reply.send(Ok(outcome));
-        }
-        Ok(outcome) => {
-            if !matches!(
-                &outcome,
-                PricingReleaseReserveOutcomeV2::AbortedBeforeCommit
-            ) {
-                mark_snapshot_reserve_failed(handoff);
-            }
-            let _ = reply.send(Ok(outcome));
-        }
-        Err(error) => {
-            mark_snapshot_reserve_failed(handoff);
-            let _ = reply.send(Err(error));
-        }
-    }
-}
 
 #[derive(Default)]
 struct DetachedDispatchTracker {
@@ -1368,7 +1158,6 @@ enum WriteCmd {
         label: Option<String>,
         spend_limit_nano: Option<i64>,
         expires_ts: Option<i64>,
-        activation_policy_ack: Option<KeyActivationPolicyAck>,
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
     AccountStatus {
@@ -1392,13 +1181,11 @@ enum WriteCmd {
     KeyStatus {
         key: String,
         status: String,
-        activation_policy_ack: Option<KeyActivationPolicyAck>,
         reply: oneshot::Sender<anyhow::Result<usize>>,
     },
     KeyStatusById {
         key_id: String,
         status: String,
-        activation_policy_ack: Option<KeyActivationPolicyAck>,
         reply: oneshot::Sender<anyhow::Result<usize>>,
     },
     KeyLabelById {
@@ -1484,10 +1271,6 @@ enum ReadCmd {
     Account(String, oneshot::Sender<anyhow::Result<Option<AccountRow>>>),
     /// Per-provider discount rows of one account, for the control-plane listing.
     AccountProviderDiscounts(String, oneshot::Sender<anyhow::Result<Vec<(String, i64)>>>),
-    AccountFunding(
-        String,
-        oneshot::Sender<anyhow::Result<Option<AccountFundingSnapshot>>>,
-    ),
     AccountByHandle(String, oneshot::Sender<anyhow::Result<Option<AccountRow>>>),
     Totals(oneshot::Sender<anyhow::Result<BillingTotals>>),
     AccountsList(oneshot::Sender<anyhow::Result<Vec<AccountRow>>>),
@@ -2775,10 +2558,9 @@ impl AsyncBilling {
                         let _ = reply.send(registry::account_topup(&conn, &account_id, amount, reference.as_deref()));
                     }
                     WriteCmd::CreateAccount { id, handle, mult_bp, reply } => { let _ = reply.send(registry::account_create(&conn, &id, handle.as_deref(), mult_bp)); }
-                    WriteCmd::IssueKey { key, account_id, label, spend_limit_nano, expires_ts, activation_policy_ack, reply } => {
-                        let _ = reply.send(registry::key_issue_with_policy_ack(
+                    WriteCmd::IssueKey { key, account_id, label, spend_limit_nano, expires_ts, reply } => {
+                        let _ = reply.send(registry::key_issue_with_policy(
                             &conn,&key,&account_id,label.as_deref(),spend_limit_nano,expires_ts,
-                            activation_policy_ack.as_ref(),
                         ));
                     }
                     WriteCmd::AccountStatus { id, status, reply } => { let _ = reply.send(registry::account_set_status(&conn, &id, &status)); }
@@ -2792,8 +2574,8 @@ impl AsyncBilling {
                         };
                         let _ = reply.send(result);
                     }
-                    WriteCmd::KeyStatus { key, status, activation_policy_ack, reply } => { let _ = reply.send(registry::key_set_status_with_policy_ack(&conn, &key, &status, activation_policy_ack.as_ref())); }
-                    WriteCmd::KeyStatusById { key_id, status, activation_policy_ack, reply } => { let _ = reply.send(registry::key_set_status_by_id_with_policy_ack(&conn, &key_id, &status, activation_policy_ack.as_ref())); }
+                    WriteCmd::KeyStatus { key, status, reply } => { let _ = reply.send(registry::key_set_status(&conn, &key, &status)); }
+                    WriteCmd::KeyStatusById { key_id, status, reply } => { let _ = reply.send(registry::key_set_status_by_id(&conn, &key_id, &status)); }
                     WriteCmd::KeyLabelById { key_id, label, reply } => { let _ = reply.send(registry::key_set_label_by_id(&conn, &key_id, &label)); }
                     WriteCmd::KeyPolicyById { account_id, key_id, spend_limit_nano, expires_ts, reply } => {
                         let _ = reply.send(registry::key_set_policy_by_id(
@@ -2927,9 +2709,6 @@ impl AsyncBilling {
                             }
                             ReadCmd::AccountProviderDiscounts(id, r) => {
                                 let _ = r.send(registry::account_provider_discounts(&conn, &id));
-                            }
-                            ReadCmd::AccountFunding(id, r) => {
-                                let _ = r.send(registry::account_funding_snapshot(&conn, &id));
                             }
                             ReadCmd::AccountByHandle(handle, r) => {
                                 let _ = r.send(registry::account_by_handle(&conn, &handle));
@@ -3608,12 +3387,11 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
-                        WriteCmd::IssueKey { key, account_id, label, spend_limit_nano, expires_ts, activation_policy_ack, reply } => {
+                        WriteCmd::IssueKey { key, account_id, label, spend_limit_nano, expires_ts, reply } => {
                             let result = run_pg_with_retry(
                                 &mut pg, &writer_url, &writer_owner, "key issuance",
-                                |pg| pg.key_issue_with_policy_ack(
+                                |pg| pg.key_issue_with_policy(
                                     &key,&account_id,label.as_deref(),spend_limit_nano,expires_ts,
-                                    activation_policy_ack.as_ref(),
                                 ),
                             );
                             let _ = reply.send(result);
@@ -3644,21 +3422,17 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
-                        WriteCmd::KeyStatus { key, status, activation_policy_ack, reply } => {
+                        WriteCmd::KeyStatus { key, status, reply } => {
                             let result = run_pg_with_retry(
                                 &mut pg, &writer_url, &writer_owner, "key status update",
-                                |pg| pg.key_set_status_with_policy_ack(
-                                    &key,&status,activation_policy_ack.as_ref(),
-                                ),
+                                |pg| pg.key_set_status(&key,&status),
                             );
                             let _ = reply.send(result);
                         }
-                        WriteCmd::KeyStatusById { key_id, status, activation_policy_ack, reply } => {
+                        WriteCmd::KeyStatusById { key_id, status, reply } => {
                             let result = run_pg_with_retry(
                                 &mut pg, &writer_url, &writer_owner, "key status update",
-                                |pg| pg.key_set_status_by_id_with_policy_ack(
-                                    &key_id,&status,activation_policy_ack.as_ref(),
-                                ),
+                                |pg| pg.key_set_status_by_id(&key_id,&status),
                             );
                             let _ = reply.send(result);
                         }
@@ -3754,13 +3528,7 @@ impl AsyncBilling {
                                         let _ = $reply.send(Ok(value));
                                     }
                                     Err(err) => {
-                                        // An unpriced model is an exact answer from a healthy
-                                        // authority, not a read fault: reconnecting on it churned
-                                        // one PostgreSQL session per refused request and made a
-                                        // product gap look like a database outage in the log.
-                                        if registry::pricing::is_model_unpriced(&err) {
-                                            let _ = $reply.send(Err(err));
-                                        } else {
+                                        {
                                             elog::error(
                                                 "billing",
                                                 format!("billing PostgreSQL read failed closed: {err:#}"),
@@ -3824,9 +3592,6 @@ impl AsyncBilling {
                             ReadCmd::Account(id, r) => answer!(r, pg.account_get(&id)),
                             ReadCmd::AccountProviderDiscounts(id, r) => {
                                 answer!(r, pg.account_provider_discounts(&id))
-                            }
-                            ReadCmd::AccountFunding(id, r) => {
-                                answer!(r, pg.account_funding_snapshot(&id))
                             }
                             ReadCmd::AccountByHandle(handle, r) => {
                                 answer!(r, pg.account_by_handle(&handle))
@@ -3993,18 +3758,6 @@ impl AsyncBilling {
         let (r, rx) = oneshot::channel();
         self.reader()
             .send(ReadCmd::AccountProviderDiscounts(id.into(), r))
-            .await
-            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
-        rx.await
-            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
-    }
-    pub async fn account_funding(
-        &self,
-        id: &str,
-    ) -> anyhow::Result<Option<AccountFundingSnapshot>> {
-        let (r, rx) = oneshot::channel();
-        self.reader()
-            .send(ReadCmd::AccountFunding(id.into(), r))
             .await
             .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
         rx.await
@@ -4479,18 +4232,6 @@ impl AsyncBilling {
         spend_limit_nano: Option<i64>,
         expires_ts: Option<i64>,
     ) -> anyhow::Result<()> {
-        self.issue_key_with_policy_ack(key, account_id, label, spend_limit_nano, expires_ts, None)
-            .await
-    }
-    pub async fn issue_key_with_policy_ack(
-        &self,
-        key: &str,
-        account_id: &str,
-        label: Option<&str>,
-        spend_limit_nano: Option<i64>,
-        expires_ts: Option<i64>,
-        activation_policy_ack: Option<&KeyActivationPolicyAck>,
-    ) -> anyhow::Result<()> {
         let (r, rx) = oneshot::channel();
         self.writer
             .send(WriteCmd::IssueKey {
@@ -4499,7 +4240,6 @@ impl AsyncBilling {
                 label: label.map(|s| s.into()),
                 spend_limit_nano,
                 expires_ts,
-                activation_policy_ack: activation_policy_ack.cloned(),
                 reply: r,
             })
             .await
@@ -4555,20 +4295,11 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
     pub async fn key_status(&self, key: &str, status: &str) -> anyhow::Result<usize> {
-        self.key_status_with_policy_ack(key, status, None).await
-    }
-    pub async fn key_status_with_policy_ack(
-        &self,
-        key: &str,
-        status: &str,
-        activation_policy_ack: Option<&KeyActivationPolicyAck>,
-    ) -> anyhow::Result<usize> {
         let (r, rx) = oneshot::channel();
         self.writer
             .send(WriteCmd::KeyStatus {
                 key: key.into(),
                 status: status.into(),
-                activation_policy_ack: activation_policy_ack.cloned(),
                 reply: r,
             })
             .await
@@ -4577,21 +4308,11 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
     pub async fn key_status_by_id(&self, key_id: &str, status: &str) -> anyhow::Result<usize> {
-        self.key_status_by_id_with_policy_ack(key_id, status, None)
-            .await
-    }
-    pub async fn key_status_by_id_with_policy_ack(
-        &self,
-        key_id: &str,
-        status: &str,
-        activation_policy_ack: Option<&KeyActivationPolicyAck>,
-    ) -> anyhow::Result<usize> {
         let (r, rx) = oneshot::channel();
         self.writer
             .send(WriteCmd::KeyStatusById {
                 key_id: key_id.into(),
                 status: status.into(),
-                activation_policy_ack: activation_policy_ack.cloned(),
                 reply: r,
             })
             .await

@@ -6,15 +6,11 @@
 //! funded account unable to spend its own balance whenever the two funding representations
 //! disagreed, which is exactly the failure this module no longer permits.
 //!
-//! `bridge` keeps only the engine-owned request identity and the small validation helpers the
-//! provider quote builders still use. `tariff_book` is the process-wide hot tariff override book,
-//! refreshed from the billing reader actor and read on the reserve/settlement hot paths.
-//! Contract — `crates/forward/CLAUDE.md`.
+//! `request_id` keeps the engine-owned request identity the provider quote builders mint.
+//! `tariff_book` is the process-wide hot tariff override book, refreshed from the billing reader
+//! actor and read on the reserve/settlement hot paths. Contract — `crates/forward/CLAUDE.md`.
 
-mod bridge;
+mod request_id;
 pub mod tariff_book;
 
-pub(crate) use bridge::{
-    snapshot_identity_is_oversized, EnginePricingRequestId, PricingBridgePrepare,
-};
-pub use bridge::PricingBridgeFallbackReason;
+pub(crate) use request_id::EnginePricingRequestId;

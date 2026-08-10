@@ -299,910 +299,6 @@ const COLS: &[(&str, &str)] = &[
     ("auth_token_fp", "TEXT"),
 ];
 
-const PRICING_POLICY_SCHEMA_SQL: &str = r#"
-CREATE TABLE IF NOT EXISTS pricing_catalog_versions (
-    product_id TEXT NOT NULL CHECK (product_id <> ''),
-    generation INTEGER NOT NULL CHECK (generation > 0),
-    schema_version INTEGER NOT NULL CHECK (schema_version > 0),
-    capability_generation INTEGER NOT NULL CHECK (capability_generation > 0),
-    capability_digest TEXT NOT NULL CHECK (capability_digest <> ''),
-    content_digest TEXT NOT NULL CHECK (content_digest <> ''),
-    created_ts INTEGER NOT NULL,
-    PRIMARY KEY (product_id, generation),
-    UNIQUE (
-        product_id,
-        generation,
-        schema_version,
-        capability_generation,
-        capability_digest,
-        content_digest
-    )
-);
-CREATE TABLE IF NOT EXISTS pricing_catalog_entries (
-    product_id TEXT NOT NULL,
-    generation INTEGER NOT NULL,
-    provider_id TEXT NOT NULL CHECK (provider_id <> ''),
-    canonical_model_id TEXT NOT NULL CHECK (canonical_model_id <> ''),
-    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
-    PRIMARY KEY (product_id, generation, provider_id, canonical_model_id),
-    FOREIGN KEY (product_id, generation)
-        REFERENCES pricing_catalog_versions(product_id, generation) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS pricing_catalog_entries_enabled
-    ON pricing_catalog_entries(product_id, generation, provider_id)
-    WHERE enabled = 1;
-CREATE TABLE IF NOT EXISTS pricing_catalog_heads (
-    product_id TEXT PRIMARY KEY CHECK (product_id <> ''),
-    active_generation INTEGER NOT NULL CHECK (active_generation > 0),
-    updated_ts INTEGER NOT NULL,
-    FOREIGN KEY (product_id, active_generation)
-        REFERENCES pricing_catalog_versions(product_id, generation) ON DELETE RESTRICT
-);
-
-CREATE TABLE IF NOT EXISTS provider_switch_versions (
-    generation INTEGER PRIMARY KEY CHECK (generation > 0),
-    schema_version INTEGER NOT NULL CHECK (schema_version > 0),
-    capability_generation INTEGER NOT NULL CHECK (capability_generation > 0),
-    capability_digest TEXT NOT NULL CHECK (capability_digest <> ''),
-    content_digest TEXT NOT NULL CHECK (content_digest <> ''),
-    created_ts INTEGER NOT NULL,
-    UNIQUE (
-        generation,
-        schema_version,
-        capability_generation,
-        capability_digest,
-        content_digest
-    )
-);
-CREATE TABLE IF NOT EXISTS provider_switch_entries (
-    generation INTEGER NOT NULL REFERENCES provider_switch_versions(generation) ON DELETE CASCADE,
-    provider_id TEXT NOT NULL CHECK (provider_id <> ''),
-    scope_type TEXT NOT NULL CHECK (scope_type IN ('master', 'product', 'segment')),
-    product_id TEXT NOT NULL DEFAULT '',
-    segment TEXT NOT NULL DEFAULT '',
-    catalog_generation INTEGER,
-    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
-    PRIMARY KEY (generation, provider_id, scope_type, product_id, segment),
-    FOREIGN KEY (product_id, catalog_generation)
-        REFERENCES pricing_catalog_versions(product_id, generation) ON DELETE RESTRICT,
-    CHECK (
-        (
-            scope_type = 'master'
-            AND product_id = ''
-            AND segment = ''
-            AND catalog_generation IS NULL
-        )
-        OR (
-            scope_type = 'product'
-            AND product_id <> ''
-            AND segment = ''
-            AND catalog_generation IS NOT NULL
-            AND catalog_generation > 0
-        )
-        OR (
-            scope_type = 'segment'
-            AND product_id <> ''
-            AND segment IN ('b2c', 'b2b')
-            AND catalog_generation IS NOT NULL
-            AND catalog_generation > 0
-        )
-    )
-);
-CREATE TABLE IF NOT EXISTS provider_switch_head (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    active_generation INTEGER NOT NULL
-        REFERENCES provider_switch_versions(generation) ON DELETE RESTRICT,
-    updated_ts INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS account_policy_versions (
-    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    effective_version INTEGER NOT NULL CHECK (effective_version > 0),
-    policy_id TEXT NOT NULL CHECK (policy_id <> ''),
-    policy_version INTEGER NOT NULL CHECK (policy_version > 0),
-    source_policy_digest TEXT NOT NULL CHECK (source_policy_digest <> ''),
-    owner_type TEXT NOT NULL
-        CHECK (owner_type IN ('global_b2c', 'b2b_client', 'openkeys', 'service')),
-    owner_id TEXT NOT NULL CHECK (owner_id <> ''),
-    account_class TEXT NOT NULL CHECK (account_class IN ('b2c', 'b2b', 'openkeys', 'service')),
-    product_id TEXT NOT NULL CHECK (product_id <> ''),
-    schema_version INTEGER NOT NULL CHECK (schema_version > 0),
-    catalog_generation INTEGER NOT NULL CHECK (catalog_generation > 0),
-    switch_generation INTEGER NOT NULL CHECK (switch_generation > 0),
-    content_digest TEXT NOT NULL CHECK (content_digest <> ''),
-    replacement_locked INTEGER NOT NULL CHECK (replacement_locked IN (0, 1)),
-    created_ts INTEGER NOT NULL,
-    PRIMARY KEY (account_id, effective_version),
-    UNIQUE (account_id, effective_version, product_id),
-    UNIQUE (account_id, effective_version, product_id, account_class),
-    UNIQUE (
-        account_id,
-        effective_version,
-        policy_id,
-        policy_version,
-        product_id,
-        catalog_generation,
-        content_digest
-    ),
-    UNIQUE (
-        account_id,
-        effective_version,
-        policy_id,
-        policy_version,
-        source_policy_digest,
-        owner_type,
-        owner_id,
-        product_id,
-        account_class,
-        catalog_generation,
-        switch_generation,
-        schema_version,
-        content_digest
-    ),
-    FOREIGN KEY (product_id, catalog_generation)
-        REFERENCES pricing_catalog_versions(product_id, generation) ON DELETE RESTRICT,
-    FOREIGN KEY (switch_generation)
-        REFERENCES provider_switch_versions(generation) ON DELETE RESTRICT,
-    CHECK (
-        (owner_type = 'global_b2c' AND account_class = 'b2c')
-        OR (owner_type = 'b2b_client' AND account_class = 'b2b')
-        OR (owner_type = 'openkeys' AND account_class = 'openkeys')
-        OR (owner_type = 'service' AND account_class = 'service')
-    )
-);
-CREATE INDEX IF NOT EXISTS account_policy_versions_policy
-    ON account_policy_versions(policy_id, policy_version);
-CREATE TABLE IF NOT EXISTS account_policy_rules (
-    account_id TEXT NOT NULL,
-    effective_version INTEGER NOT NULL,
-    rule_id TEXT NOT NULL CHECK (rule_id <> ''),
-    rule_digest TEXT NOT NULL CHECK (rule_digest <> ''),
-    scope_type TEXT NOT NULL CHECK (scope_type IN ('provider', 'model')),
-    provider_id TEXT NOT NULL CHECK (provider_id <> ''),
-    canonical_model_id TEXT,
-    pricing_mode TEXT NOT NULL CHECK (pricing_mode IN ('track', 'discount')),
-    rule_origin TEXT NOT NULL CHECK (rule_origin IN ('managed', 'legacy')),
-    discount_bps INTEGER,
-    payable_multiplier_bp INTEGER NOT NULL CHECK (payable_multiplier_bp BETWEEN 0 AND 10000),
-    track_eligible INTEGER NOT NULL CHECK (track_eligible IN (0, 1)),
-    retention_eligible INTEGER NOT NULL CHECK (retention_eligible IN (0, 1)),
-    commission_eligible INTEGER NOT NULL CHECK (commission_eligible IN (0, 1)),
-    PRIMARY KEY (account_id, effective_version, rule_id),
-    UNIQUE (account_id, effective_version, rule_id, rule_digest),
-    FOREIGN KEY (account_id, effective_version)
-        REFERENCES account_policy_versions(account_id, effective_version) ON DELETE CASCADE,
-    CHECK (
-        (scope_type = 'provider' AND canonical_model_id IS NULL)
-        OR (
-            scope_type = 'model'
-            AND canonical_model_id IS NOT NULL
-            AND canonical_model_id <> ''
-        )
-    ),
-    CHECK (
-        (
-            pricing_mode = 'track'
-            AND rule_origin = 'managed'
-            AND discount_bps IS NULL
-        )
-        OR (
-            pricing_mode = 'discount'
-            AND rule_origin = 'managed'
-            AND discount_bps IS NOT NULL
-            AND discount_bps BETWEEN 0 AND 10000
-            AND discount_bps % 100 = 0
-            AND payable_multiplier_bp = 10000 - discount_bps
-        )
-        OR (
-            pricing_mode = 'discount'
-            AND rule_origin = 'legacy'
-            AND discount_bps IS NULL
-            AND payable_multiplier_bp BETWEEN 1 AND 10000
-        )
-    ),
-    CHECK (
-        (
-            pricing_mode = 'track'
-            AND track_eligible = 1
-            AND retention_eligible = 1
-        )
-        OR (
-            pricing_mode = 'discount'
-            AND track_eligible = 0
-            AND retention_eligible = 0
-            AND commission_eligible = 0
-        )
-    ),
-    CHECK (commission_eligible = 0 OR pricing_mode = 'track')
-);
-CREATE UNIQUE INDEX IF NOT EXISTS account_policy_rules_provider_scope
-    ON account_policy_rules(account_id, effective_version, provider_id)
-    WHERE scope_type = 'provider';
-CREATE UNIQUE INDEX IF NOT EXISTS account_policy_rules_model_scope
-    ON account_policy_rules(account_id, effective_version, provider_id, canonical_model_id)
-    WHERE scope_type = 'model';
-CREATE TABLE IF NOT EXISTS account_policy_bindings (
-    account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
-    product_id TEXT NOT NULL CHECK (product_id <> ''),
-    account_class TEXT NOT NULL CHECK (account_class IN ('b2c', 'b2b', 'openkeys', 'service')),
-    active_effective_version INTEGER,
-    policy_enforcement TEXT NOT NULL
-        CHECK (policy_enforcement IN ('legacy_scalar', 'shadow', 'strict')),
-    funding_enforcement TEXT NOT NULL
-        CHECK (funding_enforcement IN ('legacy_single', 'shadow', 'strict')),
-    reconciliation_state TEXT NOT NULL
-        CHECK (reconciliation_state IN ('pending', 'verified', 'exception')),
-    updated_ts INTEGER NOT NULL,
-    FOREIGN KEY (account_id, active_effective_version, product_id)
-        REFERENCES account_policy_versions(account_id, effective_version, product_id)
-        ON DELETE RESTRICT,
-    FOREIGN KEY (account_id, active_effective_version, product_id, account_class)
-        REFERENCES account_policy_versions(
-            account_id,
-            effective_version,
-            product_id,
-            account_class
-        )
-        ON DELETE RESTRICT,
-    CHECK (policy_enforcement <> 'strict' OR active_effective_version IS NOT NULL),
-    CHECK (funding_enforcement <> 'strict' OR reconciliation_state = 'verified')
-);
-CREATE INDEX IF NOT EXISTS account_policy_bindings_enforcement
-    ON account_policy_bindings(policy_enforcement, funding_enforcement, reconciliation_state);
-
-CREATE TABLE IF NOT EXISTS funding_buckets (
-    bucket_id TEXT PRIMARY KEY CHECK (bucket_id <> ''),
-    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    source_type TEXT NOT NULL CHECK (source_type <> ''),
-    source_ref TEXT NOT NULL DEFAULT '',
-    eligibility TEXT NOT NULL CHECK (eligibility IN ('any', 'track', 'none')),
-    balance_nano INTEGER NOT NULL,
-    reserved_nano INTEGER NOT NULL CHECK (reserved_nano >= 0),
-    spent_nano INTEGER NOT NULL CHECK (spent_nano >= 0),
-    version INTEGER NOT NULL CHECK (version > 0),
-    status TEXT NOT NULL CHECK (status IN ('active', 'exhausted', 'retired')),
-    created_ts INTEGER NOT NULL,
-    updated_ts INTEGER NOT NULL,
-    UNIQUE (account_id, source_type, source_ref),
-    UNIQUE (bucket_id, account_id),
-    UNIQUE (bucket_id, account_id, source_type),
-    CHECK (source_type = 'paid' OR balance_nano >= 0),
-    CHECK (source_type <> 'paid' OR eligibility = 'any'),
-    CHECK (source_type <> 'welcome_track_bonus' OR eligibility = 'track'),
-    CHECK (source_type <> 'legacy_restricted' OR eligibility = 'none')
-);
-CREATE INDEX IF NOT EXISTS funding_buckets_account_status
-    ON funding_buckets(account_id, status);
-CREATE UNIQUE INDEX IF NOT EXISTS funding_buckets_one_welcome
-    ON funding_buckets(account_id)
-    WHERE source_type = 'welcome_track_bonus';
-
-CREATE TABLE IF NOT EXISTS pricing_admission_snapshots (
-    request_id TEXT PRIMARY KEY REFERENCES billing_reservations(request_id) ON DELETE CASCADE,
-    account_id TEXT NOT NULL,
-    snapshot_kind TEXT NOT NULL CHECK (snapshot_kind IN ('policy_v1', 'legacy_scalar')),
-    schema_version INTEGER NOT NULL CHECK (schema_version > 0),
-    provider_id TEXT NOT NULL CHECK (provider_id <> ''),
-    product_id TEXT,
-    account_class TEXT CHECK (account_class IN ('b2c', 'b2b', 'openkeys', 'service')),
-    requested_model_id TEXT NOT NULL CHECK (requested_model_id <> ''),
-    canonical_model_id TEXT NOT NULL CHECK (canonical_model_id <> ''),
-    alias_generation INTEGER NOT NULL CHECK (alias_generation > 0),
-    rule_id TEXT,
-    rule_digest TEXT,
-    rule_scope TEXT CHECK (rule_scope IN ('provider', 'model')),
-    pricing_mode TEXT NOT NULL CHECK (pricing_mode IN ('track', 'discount', 'legacy_scalar')),
-    rule_origin TEXT NOT NULL CHECK (rule_origin IN ('managed', 'legacy')),
-    discount_bps INTEGER,
-    payable_multiplier_bp INTEGER NOT NULL CHECK (payable_multiplier_bp BETWEEN 0 AND 10000),
-    policy_id TEXT,
-    policy_version INTEGER CHECK (policy_version > 0),
-    effective_policy_version INTEGER CHECK (effective_policy_version > 0),
-    policy_digest TEXT,
-    catalog_generation INTEGER CHECK (catalog_generation > 0),
-    switch_generation INTEGER CHECK (switch_generation > 0),
-    tariff_schedule_id TEXT NOT NULL CHECK (tariff_schedule_id <> ''),
-    tariff_priced_ts INTEGER NOT NULL CHECK (tariff_priced_ts > 0),
-    admission_ts INTEGER NOT NULL CHECK (admission_ts > 0),
-    official_hold_nano INTEGER NOT NULL CHECK (official_hold_nano >= 0),
-    charged_hold_nano INTEGER NOT NULL CHECK (charged_hold_nano >= 0),
-    track_eligible INTEGER CHECK (track_eligible IN (0, 1)),
-    retention_eligible INTEGER CHECK (retention_eligible IN (0, 1)),
-    commission_eligible INTEGER CHECK (commission_eligible IN (0, 1)),
-    premium_modifiers TEXT NOT NULL
-        CHECK (json_valid(premium_modifiers) AND json_type(premium_modifiers) = 'object'),
-    snapshot_digest TEXT NOT NULL CHECK (snapshot_digest <> ''),
-    UNIQUE (request_id, account_id),
-    FOREIGN KEY (
-        account_id,
-        effective_policy_version,
-        policy_id,
-        policy_version,
-        product_id,
-        catalog_generation,
-        policy_digest
-    )
-        REFERENCES account_policy_versions(
-            account_id,
-            effective_version,
-            policy_id,
-            policy_version,
-            product_id,
-            catalog_generation,
-            content_digest
-        ) ON DELETE RESTRICT,
-    FOREIGN KEY (account_id, effective_policy_version, rule_id, rule_digest)
-        REFERENCES account_policy_rules(
-            account_id,
-            effective_version,
-            rule_id,
-            rule_digest
-        ) ON DELETE RESTRICT,
-    FOREIGN KEY (product_id, catalog_generation, provider_id, canonical_model_id)
-        REFERENCES pricing_catalog_entries(
-            product_id,
-            generation,
-            provider_id,
-            canonical_model_id
-        ) ON DELETE RESTRICT,
-    FOREIGN KEY (switch_generation)
-        REFERENCES provider_switch_versions(generation) ON DELETE RESTRICT,
-    CHECK (
-        (
-            snapshot_kind = 'policy_v1'
-            AND product_id IS NOT NULL
-            AND product_id <> ''
-            AND account_class IS NOT NULL
-            AND rule_id IS NOT NULL
-            AND rule_id <> ''
-            AND rule_digest IS NOT NULL
-            AND rule_digest <> ''
-            AND rule_scope IS NOT NULL
-            AND policy_id IS NOT NULL
-            AND policy_id <> ''
-            AND policy_version IS NOT NULL
-            AND effective_policy_version IS NOT NULL
-            AND policy_digest IS NOT NULL
-            AND policy_digest <> ''
-            AND catalog_generation IS NOT NULL
-            AND switch_generation IS NOT NULL
-            AND track_eligible IS NOT NULL
-            AND retention_eligible IS NOT NULL
-            AND commission_eligible IS NOT NULL
-            AND (
-                (
-                    pricing_mode = 'track'
-                    AND rule_origin = 'managed'
-                    AND discount_bps IS NULL
-                    AND track_eligible = 1
-                    AND retention_eligible = 1
-                )
-                OR (
-                    pricing_mode = 'discount'
-                    AND rule_origin = 'managed'
-                    AND discount_bps IS NOT NULL
-                    AND (
-                        discount_bps BETWEEN 0 AND 9500
-                        OR (account_class = 'service' AND discount_bps BETWEEN 0 AND 10000)
-                    )
-                    AND discount_bps % 100 = 0
-                    AND payable_multiplier_bp = 10000 - discount_bps
-                    AND track_eligible = 0
-                    AND retention_eligible = 0
-                    AND commission_eligible = 0
-                )
-                OR (
-                    pricing_mode = 'discount'
-                    AND rule_origin = 'legacy'
-                    AND discount_bps IS NULL
-                    AND payable_multiplier_bp BETWEEN 1 AND 10000
-                    AND track_eligible = 0
-                    AND retention_eligible = 0
-                    AND commission_eligible = 0
-                )
-            )
-        )
-        OR (
-            snapshot_kind = 'legacy_scalar'
-            AND product_id IS NULL
-            AND account_class IS NULL
-            AND rule_id IS NULL
-            AND rule_digest IS NULL
-            AND rule_scope IS NULL
-            AND pricing_mode = 'legacy_scalar'
-            AND rule_origin = 'legacy'
-            AND discount_bps IS NULL
-            AND policy_id IS NULL
-            AND policy_version IS NULL
-            AND effective_policy_version IS NULL
-            AND policy_digest IS NULL
-            AND catalog_generation IS NULL
-            AND switch_generation IS NULL
-            AND track_eligible IS NULL
-            AND retention_eligible IS NULL
-            AND commission_eligible IS NULL
-        )
-    ),
-    CHECK (commission_eligible IS NOT 1 OR pricing_mode = 'track')
-);
-CREATE INDEX IF NOT EXISTS pricing_admission_snapshots_account
-    ON pricing_admission_snapshots(account_id, admission_ts);
-CREATE TRIGGER IF NOT EXISTS pricing_snapshot_reservation_account
-BEFORE INSERT ON pricing_admission_snapshots
-FOR EACH ROW
-WHEN NOT EXISTS (
-    SELECT 1
-    FROM billing_reservations
-    WHERE request_id = NEW.request_id
-      AND account_id = NEW.account_id
-)
-BEGIN
-    SELECT RAISE(ABORT, 'pricing snapshot account does not match reservation');
-END;
-CREATE TRIGGER IF NOT EXISTS pricing_snapshot_immutable_update
-BEFORE UPDATE ON pricing_admission_snapshots
-FOR EACH ROW
-BEGIN
-    SELECT RAISE(ABORT, 'pricing admission snapshots are immutable');
-END;
--- Service meter-only lane: a managed discount above 9500 bps (payable 0) is valid only under a
--- service-class parent policy; every other class keeps the engine's 9500 bps cap. Mirrors the
--- PostgreSQL account_policy_rules_service_meter_only trigger from migration 0040.
-CREATE TRIGGER IF NOT EXISTS account_policy_rules_service_meter_only_insert
-BEFORE INSERT ON account_policy_rules
-FOR EACH ROW
-WHEN NEW.pricing_mode = 'discount'
-  AND NEW.rule_origin = 'managed'
-  AND NEW.discount_bps IS NOT NULL
-  AND NEW.discount_bps > 9500
-  AND NOT EXISTS (
-      SELECT 1
-      FROM account_policy_versions
-      WHERE account_id = NEW.account_id
-        AND effective_version = NEW.effective_version
-        AND account_class = 'service'
-  )
-BEGIN
-    SELECT RAISE(ABORT, 'payable-zero managed discount rules are reserved for service policies');
-END;
-CREATE TRIGGER IF NOT EXISTS account_policy_rules_service_meter_only_update
-BEFORE UPDATE ON account_policy_rules
-FOR EACH ROW
-WHEN NEW.pricing_mode = 'discount'
-  AND NEW.rule_origin = 'managed'
-  AND NEW.discount_bps IS NOT NULL
-  AND NEW.discount_bps > 9500
-  AND NOT EXISTS (
-      SELECT 1
-      FROM account_policy_versions
-      WHERE account_id = NEW.account_id
-        AND effective_version = NEW.effective_version
-        AND account_class = 'service'
-  )
-BEGIN
-    SELECT RAISE(ABORT, 'payable-zero managed discount rules are reserved for service policies');
-END;
-
-CREATE UNIQUE INDEX IF NOT EXISTS pricing_admission_snapshots_shadow_actual_identity
-    ON pricing_admission_snapshots(
-        request_id,account_id,snapshot_kind,provider_id,requested_model_id,canonical_model_id,
-        alias_generation,payable_multiplier_bp,official_hold_nano,charged_hold_nano,snapshot_digest
-    );
-CREATE TABLE IF NOT EXISTS pricing_shadow_admission_evaluations (
-    request_id TEXT PRIMARY KEY,
-    account_id TEXT NOT NULL,
-    actual_snapshot_kind TEXT NOT NULL CHECK (actual_snapshot_kind = 'legacy_scalar'),
-    actual_snapshot_digest TEXT NOT NULL CHECK (actual_snapshot_digest <> ''),
-    provider_id TEXT NOT NULL CHECK (provider_id <> ''),
-    requested_model_id TEXT NOT NULL CHECK (requested_model_id <> ''),
-    canonical_model_id TEXT NOT NULL CHECK (canonical_model_id <> ''),
-    alias_generation INTEGER NOT NULL CHECK (alias_generation > 0),
-    evaluator_schema_version INTEGER NOT NULL CHECK (evaluator_schema_version > 0),
-    runtime_manifest_generation INTEGER NOT NULL CHECK (runtime_manifest_generation > 0),
-    runtime_manifest_digest TEXT NOT NULL CHECK (runtime_manifest_digest <> ''),
-    enqueued_ts INTEGER NOT NULL CHECK (enqueued_ts > 0),
-    evaluated_ts INTEGER NOT NULL CHECK (evaluated_ts > 0),
-    outcome TEXT NOT NULL CHECK (outcome IN ('resolved', 'rejected', 'read_error')),
-    reason_code TEXT,
-    authorized_multiplier_bp INTEGER NOT NULL
-        CHECK (authorized_multiplier_bp BETWEEN 0 AND 10000),
-    observed_multiplier_bp INTEGER CHECK (observed_multiplier_bp BETWEEN 0 AND 10000),
-    official_hold_nano INTEGER NOT NULL CHECK (official_hold_nano >= 0),
-    legacy_hold_nano INTEGER NOT NULL CHECK (legacy_hold_nano >= 0),
-    product_id TEXT,
-    account_class TEXT CHECK (account_class IN ('b2c', 'b2b', 'openkeys', 'service')),
-    effective_policy_version INTEGER CHECK (effective_policy_version > 0),
-    policy_id TEXT,
-    policy_version INTEGER CHECK (policy_version > 0),
-    source_policy_digest TEXT,
-    policy_digest TEXT,
-    policy_schema_version INTEGER CHECK (policy_schema_version > 0),
-    policy_catalog_generation INTEGER CHECK (policy_catalog_generation > 0),
-    policy_catalog_schema_version INTEGER CHECK (policy_catalog_schema_version > 0),
-    policy_catalog_capability_generation INTEGER
-        CHECK (policy_catalog_capability_generation > 0),
-    policy_catalog_capability_digest TEXT,
-    policy_catalog_digest TEXT,
-    policy_switch_generation INTEGER CHECK (policy_switch_generation > 0),
-    policy_switch_schema_version INTEGER CHECK (policy_switch_schema_version > 0),
-    policy_switch_capability_generation INTEGER
-        CHECK (policy_switch_capability_generation > 0),
-    policy_switch_capability_digest TEXT,
-    policy_switch_digest TEXT,
-    admission_catalog_generation INTEGER CHECK (admission_catalog_generation > 0),
-    admission_catalog_schema_version INTEGER CHECK (admission_catalog_schema_version > 0),
-    admission_catalog_capability_generation INTEGER
-        CHECK (admission_catalog_capability_generation > 0),
-    admission_catalog_capability_digest TEXT,
-    admission_catalog_digest TEXT,
-    admission_switch_generation INTEGER CHECK (admission_switch_generation > 0),
-    admission_switch_schema_version INTEGER CHECK (admission_switch_schema_version > 0),
-    admission_switch_capability_generation INTEGER
-        CHECK (admission_switch_capability_generation > 0),
-    admission_switch_capability_digest TEXT,
-    admission_switch_digest TEXT,
-    rule_id TEXT,
-    rule_digest TEXT,
-    rule_scope TEXT CHECK (rule_scope IN ('provider', 'model')),
-    pricing_mode TEXT CHECK (pricing_mode IN ('track', 'discount')),
-    rule_origin TEXT CHECK (rule_origin IN ('managed', 'legacy')),
-    discount_bps INTEGER,
-    payable_multiplier_bp INTEGER CHECK (payable_multiplier_bp BETWEEN 0 AND 10000),
-    track_eligible INTEGER CHECK (track_eligible IN (0, 1)),
-    retention_eligible INTEGER CHECK (retention_eligible IN (0, 1)),
-    commission_eligible INTEGER CHECK (commission_eligible IN (0, 1)),
-    policy_hold_nano INTEGER CHECK (policy_hold_nano >= 0),
-    comparison_result TEXT NOT NULL
-        CHECK (comparison_result IN ('equal', 'different', 'not_comparable')),
-    -- Best-effort, non-authoritative diagnostics. Immutable identity belongs in typed columns.
-    diagnostic_context TEXT NOT NULL
-        CHECK (json_valid(diagnostic_context) AND json_type(diagnostic_context) = 'object'),
-    evaluation_digest TEXT NOT NULL CHECK (evaluation_digest <> ''),
-    UNIQUE (request_id, account_id),
-    FOREIGN KEY (
-        request_id,account_id,actual_snapshot_kind,provider_id,requested_model_id,
-        canonical_model_id,alias_generation,authorized_multiplier_bp,official_hold_nano,
-        legacy_hold_nano,actual_snapshot_digest
-    ) REFERENCES pricing_admission_snapshots(
-        request_id,account_id,snapshot_kind,provider_id,requested_model_id,canonical_model_id,
-        alias_generation,payable_multiplier_bp,official_hold_nano,charged_hold_nano,snapshot_digest
-    ) ON DELETE CASCADE,
-    FOREIGN KEY (
-        account_id,
-        effective_policy_version,
-        policy_id,
-        policy_version,
-        source_policy_digest,
-        product_id,
-        account_class,
-        policy_schema_version,
-        policy_catalog_generation,
-        policy_switch_generation,
-        policy_digest
-    ) REFERENCES account_policy_versions(
-        account_id,
-        effective_version,
-        policy_id,
-        policy_version,
-        source_policy_digest,
-        product_id,
-        account_class,
-        schema_version,
-        catalog_generation,
-        switch_generation,
-        content_digest
-    ) ON DELETE RESTRICT,
-    FOREIGN KEY (account_id, effective_policy_version, rule_id, rule_digest)
-        REFERENCES account_policy_rules(account_id, effective_version, rule_id, rule_digest)
-        ON DELETE RESTRICT,
-    FOREIGN KEY (
-        product_id,
-        policy_catalog_generation,
-        provider_id,
-        canonical_model_id
-    ) REFERENCES pricing_catalog_entries(
-        product_id,
-        generation,
-        provider_id,
-        canonical_model_id
-    ) ON DELETE RESTRICT,
-    FOREIGN KEY (
-        product_id,
-        policy_catalog_generation,
-        policy_catalog_schema_version,
-        policy_catalog_capability_generation,
-        policy_catalog_capability_digest,
-        policy_catalog_digest
-    ) REFERENCES pricing_catalog_versions(
-        product_id,
-        generation,
-        schema_version,
-        capability_generation,
-        capability_digest,
-        content_digest
-    ) ON DELETE RESTRICT,
-    FOREIGN KEY (
-        policy_switch_generation,
-        policy_switch_schema_version,
-        policy_switch_capability_generation,
-        policy_switch_capability_digest,
-        policy_switch_digest
-    ) REFERENCES provider_switch_versions(
-        generation,
-        schema_version,
-        capability_generation,
-        capability_digest,
-        content_digest
-    ) ON DELETE RESTRICT,
-    FOREIGN KEY (
-        product_id,
-        admission_catalog_generation,
-        provider_id,
-        canonical_model_id
-    ) REFERENCES pricing_catalog_entries(
-        product_id,
-        generation,
-        provider_id,
-        canonical_model_id
-    ) ON DELETE RESTRICT,
-    FOREIGN KEY (
-        product_id,
-        admission_catalog_generation,
-        admission_catalog_schema_version,
-        admission_catalog_capability_generation,
-        admission_catalog_capability_digest,
-        admission_catalog_digest
-    ) REFERENCES pricing_catalog_versions(
-        product_id,
-        generation,
-        schema_version,
-        capability_generation,
-        capability_digest,
-        content_digest
-    ) ON DELETE RESTRICT,
-    FOREIGN KEY (
-        admission_switch_generation,
-        admission_switch_schema_version,
-        admission_switch_capability_generation,
-        admission_switch_capability_digest,
-        admission_switch_digest
-    ) REFERENCES provider_switch_versions(
-        generation,
-        schema_version,
-        capability_generation,
-        capability_digest,
-        content_digest
-    ) ON DELETE RESTRICT,
-    CHECK (evaluated_ts >= enqueued_ts),
-    CHECK (
-        (
-            outcome = 'resolved'
-            AND reason_code IS NULL
-            AND observed_multiplier_bp IS NOT NULL
-            AND product_id IS NOT NULL AND product_id <> ''
-            AND account_class IS NOT NULL
-            AND effective_policy_version IS NOT NULL
-            AND policy_id IS NOT NULL AND policy_id <> ''
-            AND policy_version IS NOT NULL
-            AND source_policy_digest IS NOT NULL AND source_policy_digest <> ''
-            AND policy_digest IS NOT NULL AND policy_digest <> ''
-            AND policy_schema_version IS NOT NULL
-            AND policy_schema_version = evaluator_schema_version
-            AND policy_catalog_generation IS NOT NULL
-            AND policy_catalog_schema_version IS NOT NULL
-            AND policy_catalog_schema_version = policy_schema_version
-            AND policy_catalog_capability_generation IS NOT NULL
-            AND policy_catalog_capability_digest IS NOT NULL
-            AND policy_catalog_capability_digest <> ''
-            AND policy_catalog_digest IS NOT NULL AND policy_catalog_digest <> ''
-            AND policy_switch_generation IS NOT NULL
-            AND policy_switch_schema_version IS NOT NULL
-            AND policy_switch_schema_version = policy_schema_version
-            AND policy_switch_capability_generation IS NOT NULL
-            AND policy_switch_capability_generation = policy_catalog_capability_generation
-            AND policy_switch_capability_digest IS NOT NULL
-            AND policy_switch_capability_digest <> ''
-            AND policy_switch_capability_digest = policy_catalog_capability_digest
-            AND policy_switch_digest IS NOT NULL AND policy_switch_digest <> ''
-            AND admission_catalog_generation IS NOT NULL
-            AND admission_catalog_schema_version IS NOT NULL
-            AND admission_catalog_schema_version = evaluator_schema_version
-            AND admission_catalog_capability_generation IS NOT NULL
-            AND admission_catalog_capability_digest IS NOT NULL
-            AND admission_catalog_capability_digest <> ''
-            AND admission_catalog_digest IS NOT NULL AND admission_catalog_digest <> ''
-            AND admission_switch_generation IS NOT NULL
-            AND admission_switch_schema_version IS NOT NULL
-            AND admission_switch_schema_version = evaluator_schema_version
-            AND admission_switch_capability_generation IS NOT NULL
-            AND admission_switch_capability_digest IS NOT NULL
-            AND admission_switch_capability_digest <> ''
-            AND admission_switch_digest IS NOT NULL AND admission_switch_digest <> ''
-            AND rule_id IS NOT NULL AND rule_id <> ''
-            AND rule_digest IS NOT NULL AND rule_digest <> ''
-            AND rule_scope IS NOT NULL
-            AND pricing_mode IS NOT NULL
-            AND rule_origin IS NOT NULL
-            AND payable_multiplier_bp IS NOT NULL
-            AND track_eligible IS NOT NULL
-            AND retention_eligible IS NOT NULL
-            AND commission_eligible IS NOT NULL
-            AND policy_hold_nano IS NOT NULL
-            AND (
-                (comparison_result = 'equal' AND policy_hold_nano = legacy_hold_nano)
-                OR (comparison_result = 'different' AND policy_hold_nano <> legacy_hold_nano)
-            )
-            AND (
-                (
-                    pricing_mode = 'track'
-                    AND rule_origin = 'managed'
-                    AND discount_bps IS NULL
-                    AND track_eligible = 1
-                    AND retention_eligible = 1
-                )
-                OR (
-                    pricing_mode = 'discount'
-                    AND rule_origin = 'managed'
-                    AND discount_bps IS NOT NULL
-                    AND discount_bps BETWEEN 0 AND 9500
-                    AND discount_bps % 100 = 0
-                    AND payable_multiplier_bp = 10000 - discount_bps
-                    AND track_eligible = 0
-                    AND retention_eligible = 0
-                    AND commission_eligible = 0
-                )
-                OR (
-                    pricing_mode = 'discount'
-                    AND rule_origin = 'legacy'
-                    AND discount_bps IS NULL
-                    AND payable_multiplier_bp BETWEEN 1 AND 10000
-                    AND track_eligible = 0
-                    AND retention_eligible = 0
-                    AND commission_eligible = 0
-                )
-            )
-        )
-        OR (
-            outcome IN ('rejected', 'read_error')
-            AND reason_code IS NOT NULL AND reason_code <> ''
-            AND (
-                (outcome = 'rejected' AND observed_multiplier_bp IS NOT NULL)
-                OR (outcome = 'read_error' AND observed_multiplier_bp IS NULL)
-            )
-            AND product_id IS NULL
-            AND account_class IS NULL
-            AND effective_policy_version IS NULL
-            AND policy_id IS NULL
-            AND policy_version IS NULL
-            AND source_policy_digest IS NULL
-            AND policy_digest IS NULL
-            AND policy_schema_version IS NULL
-            AND policy_catalog_generation IS NULL
-            AND policy_catalog_schema_version IS NULL
-            AND policy_catalog_capability_generation IS NULL
-            AND policy_catalog_capability_digest IS NULL
-            AND policy_catalog_digest IS NULL
-            AND policy_switch_generation IS NULL
-            AND policy_switch_schema_version IS NULL
-            AND policy_switch_capability_generation IS NULL
-            AND policy_switch_capability_digest IS NULL
-            AND policy_switch_digest IS NULL
-            AND admission_catalog_generation IS NULL
-            AND admission_catalog_schema_version IS NULL
-            AND admission_catalog_capability_generation IS NULL
-            AND admission_catalog_capability_digest IS NULL
-            AND admission_catalog_digest IS NULL
-            AND admission_switch_generation IS NULL
-            AND admission_switch_schema_version IS NULL
-            AND admission_switch_capability_generation IS NULL
-            AND admission_switch_capability_digest IS NULL
-            AND admission_switch_digest IS NULL
-            AND rule_id IS NULL
-            AND rule_digest IS NULL
-            AND rule_scope IS NULL
-            AND pricing_mode IS NULL
-            AND rule_origin IS NULL
-            AND discount_bps IS NULL
-            AND payable_multiplier_bp IS NULL
-            AND track_eligible IS NULL
-            AND retention_eligible IS NULL
-            AND commission_eligible IS NULL
-            AND policy_hold_nano IS NULL
-            AND comparison_result = 'not_comparable'
-        )
-    ),
-    CHECK (commission_eligible IS NOT 1 OR pricing_mode = 'track')
-);
-CREATE INDEX IF NOT EXISTS pricing_shadow_admission_evaluations_time
-    ON pricing_shadow_admission_evaluations(evaluated_ts, outcome);
-CREATE INDEX IF NOT EXISTS pricing_shadow_admission_evaluations_account
-    ON pricing_shadow_admission_evaluations(account_id, evaluated_ts);
-CREATE TRIGGER IF NOT EXISTS pricing_shadow_admission_evaluations_rule_identity
-BEFORE INSERT ON pricing_shadow_admission_evaluations
-FOR EACH ROW
-WHEN NEW.outcome = 'resolved' AND NOT EXISTS (
-    SELECT 1
-    FROM account_policy_rules AS rule
-    WHERE rule.account_id = NEW.account_id
-      AND rule.effective_version = NEW.effective_policy_version
-      AND rule.rule_id = NEW.rule_id
-      AND rule.rule_digest = NEW.rule_digest
-      AND rule.scope_type = NEW.rule_scope
-      AND rule.provider_id = NEW.provider_id
-      AND rule.canonical_model_id IS
-          CASE WHEN NEW.rule_scope = 'model' THEN NEW.canonical_model_id ELSE NULL END
-      AND rule.pricing_mode = NEW.pricing_mode
-      AND rule.rule_origin = NEW.rule_origin
-      AND rule.discount_bps IS NEW.discount_bps
-      AND rule.payable_multiplier_bp = NEW.payable_multiplier_bp
-      AND rule.track_eligible = NEW.track_eligible
-      AND rule.retention_eligible = NEW.retention_eligible
-      AND rule.commission_eligible = NEW.commission_eligible
-)
-BEGIN
-    SELECT RAISE(ABORT, 'pricing shadow admission rule identity does not match immutable policy rule');
-END;
-CREATE TRIGGER IF NOT EXISTS pricing_shadow_admission_evaluations_immutable_update
-BEFORE UPDATE ON pricing_shadow_admission_evaluations
-FOR EACH ROW
-BEGIN
-    SELECT RAISE(ABORT, 'pricing shadow admission evaluations are immutable');
-END;
-CREATE TABLE IF NOT EXISTS reservation_funding_allocations (
-    request_id TEXT NOT NULL,
-    account_id TEXT NOT NULL,
-    bucket_id TEXT NOT NULL,
-    bucket_version INTEGER NOT NULL CHECK (bucket_version > 0),
-    reserved_nano INTEGER NOT NULL CHECK (reserved_nano >= 0),
-    charged_nano INTEGER CHECK (charged_nano IS NULL OR charged_nano >= 0),
-    released_nano INTEGER CHECK (released_nano IS NULL OR released_nano >= 0),
-    allocation_order INTEGER CHECK (allocation_order IS NULL OR allocation_order > 0),
-    PRIMARY KEY (request_id, bucket_id),
-    FOREIGN KEY (request_id, account_id)
-        REFERENCES pricing_admission_snapshots(request_id, account_id) ON DELETE CASCADE,
-    FOREIGN KEY (bucket_id, account_id)
-        REFERENCES funding_buckets(bucket_id, account_id) ON DELETE RESTRICT,
-    CHECK (released_nano IS NULL OR released_nano <= reserved_nano)
-);
-CREATE INDEX IF NOT EXISTS reservation_funding_allocations_bucket
-    ON reservation_funding_allocations(bucket_id, request_id);
-CREATE TABLE IF NOT EXISTS ledger_funding_allocations (
-    ledger_id INTEGER NOT NULL REFERENCES ledger(id) ON DELETE CASCADE,
-    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    bucket_id TEXT NOT NULL,
-    bucket_source_type TEXT NOT NULL CHECK (bucket_source_type <> ''),
-    bucket_version INTEGER NOT NULL CHECK (bucket_version > 0),
-    direction TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
-    amount_nano INTEGER NOT NULL CHECK (amount_nano >= 0),
-    PRIMARY KEY (ledger_id, bucket_id),
-    FOREIGN KEY (bucket_id, account_id, bucket_source_type)
-        REFERENCES funding_buckets(bucket_id, account_id, source_type) ON DELETE RESTRICT
-);
-CREATE INDEX IF NOT EXISTS ledger_funding_allocations_bucket
-    ON ledger_funding_allocations(bucket_id, ledger_id);
-CREATE TRIGGER IF NOT EXISTS ledger_funding_allocation_account
-BEFORE INSERT ON ledger_funding_allocations
-FOR EACH ROW
-WHEN NOT EXISTS (
-    SELECT 1 FROM ledger
-    WHERE id = NEW.ledger_id
-      AND account_id = NEW.account_id
-)
-BEGIN
-    SELECT RAISE(ABORT, 'funding allocation account does not match ledger');
-END;
-CREATE TRIGGER IF NOT EXISTS ledger_funding_allocation_account_update
-BEFORE UPDATE ON ledger_funding_allocations
-FOR EACH ROW
-WHEN NOT EXISTS (
-    SELECT 1 FROM ledger
-    WHERE id = NEW.ledger_id
-      AND account_id = NEW.account_id
-)
-BEGIN
-    SELECT RAISE(ABORT, 'funding allocation account does not match ledger');
-END;
-"#;
 
 const SQLITE_ATTRIBUTION_COLUMNS: &[(&str, &str)] = &[
     ("attribution_schema_version", "INTEGER"),
@@ -1933,100 +1029,15 @@ fn ensure_sqlite_column(
 
 fn migrate_pricing_policy_schema(conn: &Connection) -> Result<()> {
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
-        .context("begin SQLite multi-discount schema transaction")?;
-    install_pricing_policy_schema(&tx)?;
+        .context("begin SQLite attribution schema transaction")?;
+    install_attribution_schema(&tx)?;
     tx.commit()
-        .context("commit SQLite multi-discount schema transaction")
+        .context("commit SQLite attribution schema transaction")
 }
 
-fn install_pricing_policy_schema(conn: &Connection) -> Result<()> {
-    conn.execute_batch(PRICING_POLICY_SCHEMA_SQL)
-        .context("install SQLite multi-discount foundation schema")?;
-
-    ensure_sqlite_column(
-        conn,
-        "pricing_catalog_versions",
-        "capability_generation",
-        "INTEGER",
-    )?;
-    ensure_sqlite_column(
-        conn,
-        "provider_switch_versions",
-        "capability_generation",
-        "INTEGER",
-    )?;
-    ensure_sqlite_column(
-        conn,
-        "provider_switch_versions",
-        "capability_digest",
-        "TEXT",
-    )?;
-    ensure_sqlite_column(
-        conn,
-        "provider_switch_entries",
-        "catalog_generation",
-        "INTEGER",
-    )?;
-    ensure_sqlite_column(
-        conn,
-        "account_policy_versions",
-        "switch_generation",
-        "INTEGER",
-    )?;
-    ensure_sqlite_column(
-        conn,
-        "account_policy_versions",
-        "source_policy_digest",
-        "TEXT",
-    )?;
-    ensure_sqlite_column(conn, "account_policy_versions", "account_class", "TEXT")?;
-    for (name, column_type) in [
-        ("source_policy_digest", "TEXT"),
-        ("admission_catalog_generation", "INTEGER"),
-        ("admission_catalog_digest", "TEXT"),
-        ("admission_switch_generation", "INTEGER"),
-        ("admission_switch_digest", "TEXT"),
-        ("runtime_manifest_generation", "INTEGER"),
-        ("runtime_manifest_digest", "TEXT"),
-    ] {
-        ensure_sqlite_column(conn, "pricing_admission_snapshots", name, column_type)?;
-    }
-    ensure_sqlite_column(
-        conn,
-        "reservation_funding_allocations",
-        "allocation_order",
-        "INTEGER",
-    )?;
-    for (name, column_type) in [
-        ("activation_policy_effective_version", "INTEGER"),
-        ("activation_policy_digest", "TEXT"),
-        ("activation_policy_ack_ts", "INTEGER"),
-    ] {
-        ensure_sqlite_column(conn, "api_keys", name, column_type)?;
-    }
-    conn.execute_batch(
-        "CREATE UNIQUE INDEX IF NOT EXISTS pricing_catalog_versions_shadow_identity
-             ON pricing_catalog_versions(
-                 product_id,generation,schema_version,capability_generation,capability_digest,
-                 content_digest
-             );
-         CREATE UNIQUE INDEX IF NOT EXISTS provider_switch_versions_shadow_identity
-             ON provider_switch_versions(
-                 generation,schema_version,capability_generation,capability_digest,content_digest
-             );
-         CREATE UNIQUE INDEX IF NOT EXISTS account_policy_versions_shadow_identity
-             ON account_policy_versions(
-                 account_id,effective_version,policy_id,policy_version,source_policy_digest,
-                 product_id,account_class,schema_version,catalog_generation,switch_generation,
-                 content_digest
-             );
-         CREATE UNIQUE INDEX IF NOT EXISTS reservation_funding_allocations_request_order
-             ON reservation_funding_allocations(request_id, allocation_order)
-             WHERE allocation_order IS NOT NULL;",
-    )
-    .context("install SQLite shadow attribution identity indexes")?;
-    install_sqlite_runtime_pin_guards(conn)?;
-
+/// Request-scoped money attribution: the columns and unique indexes that make a charge and its
+/// usage row idempotent per request. The retired multi-discount schema no longer installs here.
+fn install_attribution_schema(conn: &Connection) -> Result<()> {
     ensure_sqlite_column(conn, "billing_settlement_outbox", "provider", "TEXT")?;
     ensure_sqlite_column(
         conn,
@@ -2049,276 +1060,12 @@ fn install_pricing_policy_schema(conn: &Connection) -> Result<()> {
          CREATE UNIQUE INDEX IF NOT EXISTS usage_events_request_once \
            ON usage_events(request_id) WHERE request_id IS NOT NULL;",
     )
-    .context("install SQLite policy attribution indexes")?;
+    .context("install SQLite attribution indexes")?;
     install_sqlite_attribution_guards(conn)?;
     Ok(())
 }
 
-fn install_sqlite_runtime_pin_guards(conn: &Connection) -> Result<()> {
-    let unpinned_rows: i64 = conn.query_row(
-        "SELECT
-             (SELECT COUNT(*) FROM pricing_catalog_versions
-               WHERE capability_generation IS NULL OR capability_generation <= 0)
-           + (SELECT COUNT(*) FROM provider_switch_versions
-               WHERE capability_generation IS NULL
-                  OR capability_generation <= 0
-                  OR capability_digest IS NULL
-                  OR capability_digest = '')
-           + (SELECT COUNT(*) FROM provider_switch_entries
-               WHERE (scope_type = 'master' AND catalog_generation IS NOT NULL)
-                  OR (scope_type IN ('product', 'segment') AND catalog_generation IS NULL))
-           + (SELECT COUNT(*) FROM account_policy_versions
-               WHERE switch_generation IS NULL
-                  OR switch_generation <= 0
-                  OR source_policy_digest IS NULL
-                  OR source_policy_digest = ''
-                  OR account_class IS NULL
-                  OR NOT (
-                      (owner_type = 'global_b2c' AND account_class = 'b2c')
-                      OR (owner_type = 'b2b_client' AND account_class = 'b2b')
-                      OR (owner_type = 'openkeys' AND account_class = 'openkeys')
-                      OR (owner_type = 'service' AND account_class = 'service')
-                  )
-                  OR NOT EXISTS (
-                      SELECT 1 FROM provider_switch_versions
-                      WHERE generation = account_policy_versions.switch_generation
-                  ))
-           + (SELECT COUNT(*) FROM account_policy_bindings
-               WHERE active_effective_version IS NOT NULL
-                 AND NOT EXISTS (
-                     SELECT 1 FROM account_policy_versions
-                     WHERE account_id = account_policy_bindings.account_id
-                       AND effective_version =
-                           account_policy_bindings.active_effective_version
-                       AND product_id = account_policy_bindings.product_id
-                       AND account_class = account_policy_bindings.account_class
-                 ))",
-        [],
-        |row| row.get(0),
-    )?;
-    if unpinned_rows != 0 {
-        anyhow::bail!(
-            "SQLite contains pre-writer pricing rows without durable runtime pins; manual audit required"
-        );
-    }
 
-    const SWITCH_VERSION_INVALID: &str = "
-        NEW.capability_generation IS NULL
-        OR NEW.capability_generation <= 0
-        OR NEW.capability_digest IS NULL
-        OR NEW.capability_digest = ''
-    ";
-    const SWITCH_ENTRY_INVALID: &str = "
-        NOT (
-            (
-                NEW.scope_type = 'master'
-                AND NEW.product_id = ''
-                AND NEW.segment = ''
-                AND NEW.catalog_generation IS NULL
-            )
-            OR (
-                NEW.scope_type = 'product'
-                AND NEW.product_id <> ''
-                AND NEW.segment = ''
-                AND NEW.catalog_generation IS NOT NULL
-                AND NEW.catalog_generation > 0
-                AND EXISTS (
-                    SELECT 1 FROM pricing_catalog_versions
-                    WHERE product_id = NEW.product_id
-                      AND generation = NEW.catalog_generation
-                )
-            )
-            OR (
-                NEW.scope_type = 'segment'
-                AND NEW.product_id <> ''
-                AND NEW.segment IN ('b2c', 'b2b')
-                AND NEW.catalog_generation IS NOT NULL
-                AND NEW.catalog_generation > 0
-                AND EXISTS (
-                    SELECT 1 FROM pricing_catalog_versions
-                    WHERE product_id = NEW.product_id
-                      AND generation = NEW.catalog_generation
-                )
-            )
-        )
-    ";
-    const POLICY_VERSION_INVALID: &str = "
-        NEW.switch_generation IS NULL
-        OR NEW.switch_generation <= 0
-        OR NEW.source_policy_digest IS NULL
-        OR NEW.source_policy_digest = ''
-        OR NEW.account_class IS NULL
-        OR NOT (
-            (NEW.owner_type = 'global_b2c' AND NEW.account_class = 'b2c')
-            OR (NEW.owner_type = 'b2b_client' AND NEW.account_class = 'b2b')
-            OR (NEW.owner_type = 'openkeys' AND NEW.account_class = 'openkeys')
-            OR (NEW.owner_type = 'service' AND NEW.account_class = 'service')
-        )
-        OR NOT EXISTS (
-            SELECT 1 FROM provider_switch_versions
-            WHERE generation = NEW.switch_generation
-        )
-    ";
-    const POLICY_BINDING_INVALID: &str = "
-        NEW.active_effective_version IS NOT NULL
-        AND NOT EXISTS (
-            SELECT 1 FROM account_policy_versions
-            WHERE account_id = NEW.account_id
-              AND effective_version = NEW.active_effective_version
-              AND product_id = NEW.product_id
-              AND account_class = NEW.account_class
-        )
-    ";
-    for (table, condition, message) in [
-        (
-            "provider_switch_versions",
-            SWITCH_VERSION_INVALID,
-            "invalid provider switch capability pins",
-        ),
-        (
-            "provider_switch_entries",
-            SWITCH_ENTRY_INVALID,
-            "invalid provider switch catalog pin",
-        ),
-        (
-            "account_policy_versions",
-            POLICY_VERSION_INVALID,
-            "invalid account policy lineage",
-        ),
-        (
-            "account_policy_bindings",
-            POLICY_BINDING_INVALID,
-            "account policy binding does not match immutable account class",
-        ),
-    ] {
-        for (suffix, event) in [("insert", "INSERT"), ("update", "UPDATE")] {
-            conn.execute_batch(&format!(
-                "CREATE TRIGGER IF NOT EXISTS {table}_runtime_pins_{suffix}
-                 BEFORE {event} ON {table}
-                 FOR EACH ROW
-                 WHEN {condition}
-                 BEGIN
-                     SELECT RAISE(ABORT, '{message}');
-                 END;"
-            ))
-            .with_context(|| format!("install SQLite runtime pin guard for {table} {event}"))?;
-        }
-    }
-    conn.execute_batch(
-        "CREATE TRIGGER IF NOT EXISTS pricing_catalog_versions_capability_pin_insert
-         BEFORE INSERT ON pricing_catalog_versions
-         FOR EACH ROW
-         WHEN NEW.capability_generation IS NULL OR NEW.capability_generation <= 0
-         BEGIN
-             SELECT RAISE(ABORT, 'invalid pricing catalog capability generation');
-         END;
-         CREATE TRIGGER IF NOT EXISTS pricing_catalog_versions_capability_pin_update
-         BEFORE UPDATE ON pricing_catalog_versions
-         FOR EACH ROW
-         WHEN NEW.capability_generation IS NULL OR NEW.capability_generation <= 0
-         BEGIN
-             SELECT RAISE(ABORT, 'invalid pricing catalog capability generation');
-         END;",
-    )
-    .context("install SQLite catalog capability generation guards")?;
-    conn.execute_batch(
-        "CREATE TRIGGER IF NOT EXISTS account_policy_versions_lineage_v1_insert
-         BEFORE INSERT ON account_policy_versions
-         FOR EACH ROW
-         WHEN NEW.source_policy_digest IS NULL
-           OR NEW.source_policy_digest = ''
-           OR NEW.account_class IS NULL
-           OR NOT (
-               (NEW.owner_type = 'global_b2c' AND NEW.account_class = 'b2c')
-               OR (NEW.owner_type = 'b2b_client' AND NEW.account_class = 'b2b')
-               OR (NEW.owner_type = 'openkeys' AND NEW.account_class = 'openkeys')
-               OR (NEW.owner_type = 'service' AND NEW.account_class = 'service')
-           )
-         BEGIN
-             SELECT RAISE(ABORT, 'invalid immutable account policy lineage');
-         END;
-         CREATE TRIGGER IF NOT EXISTS account_policy_versions_lineage_v1_update
-         BEFORE UPDATE ON account_policy_versions
-         FOR EACH ROW
-         WHEN NEW.source_policy_digest IS NULL
-           OR NEW.source_policy_digest = ''
-           OR NEW.account_class IS NULL
-           OR NOT (
-               (NEW.owner_type = 'global_b2c' AND NEW.account_class = 'b2c')
-               OR (NEW.owner_type = 'b2b_client' AND NEW.account_class = 'b2b')
-               OR (NEW.owner_type = 'openkeys' AND NEW.account_class = 'openkeys')
-               OR (NEW.owner_type = 'service' AND NEW.account_class = 'service')
-           )
-         BEGIN
-             SELECT RAISE(ABORT, 'invalid immutable account policy lineage');
-         END;",
-    )
-    .context("install SQLite immutable account policy lineage guards")?;
-    conn.execute_batch(
-        "CREATE TRIGGER IF NOT EXISTS pricing_catalog_versions_runtime_pins_delete
-         BEFORE DELETE ON pricing_catalog_versions
-         FOR EACH ROW
-         WHEN EXISTS (
-             SELECT 1 FROM provider_switch_entries
-             WHERE product_id = OLD.product_id
-               AND catalog_generation = OLD.generation
-         )
-         BEGIN
-             SELECT RAISE(ABORT, 'pricing catalog version is pinned by a provider switch');
-         END;
-         CREATE TRIGGER IF NOT EXISTS pricing_catalog_versions_runtime_pins_update
-         BEFORE UPDATE OF product_id, generation ON pricing_catalog_versions
-         FOR EACH ROW
-         WHEN (
-             NEW.product_id <> OLD.product_id
-             OR NEW.generation <> OLD.generation
-         ) AND EXISTS (
-             SELECT 1 FROM provider_switch_entries
-             WHERE product_id = OLD.product_id
-               AND catalog_generation = OLD.generation
-         )
-         BEGIN
-             SELECT RAISE(ABORT, 'pricing catalog version is pinned by a provider switch');
-         END;
-         CREATE TRIGGER IF NOT EXISTS provider_switch_versions_policy_refs_delete
-         BEFORE DELETE ON provider_switch_versions
-         FOR EACH ROW
-         WHEN EXISTS (
-             SELECT 1 FROM account_policy_versions
-             WHERE switch_generation = OLD.generation
-         )
-         BEGIN
-             SELECT RAISE(ABORT, 'provider switch version is pinned by an account policy');
-         END;
-         CREATE TRIGGER IF NOT EXISTS provider_switch_versions_policy_refs_update
-         BEFORE UPDATE OF generation ON provider_switch_versions
-         FOR EACH ROW
-         WHEN NEW.generation <> OLD.generation
-          AND EXISTS (
-              SELECT 1 FROM account_policy_versions
-              WHERE switch_generation = OLD.generation
-          )
-         BEGIN
-             SELECT RAISE(ABORT, 'provider switch version is pinned by an account policy');
-         END;
-         CREATE TRIGGER IF NOT EXISTS account_policy_versions_binding_class_update
-         BEFORE UPDATE OF account_class ON account_policy_versions
-         FOR EACH ROW
-         WHEN NEW.account_class <> OLD.account_class
-          AND EXISTS (
-              SELECT 1 FROM account_policy_bindings
-              WHERE account_id = OLD.account_id
-                AND active_effective_version = OLD.effective_version
-                AND product_id = OLD.product_id
-                AND account_class = OLD.account_class
-          )
-         BEGIN
-             SELECT RAISE(ABORT, 'account policy class is pinned by an active binding');
-         END;",
-    )
-    .context("install SQLite runtime pin parent guards")?;
-    Ok(())
-}
 
 fn install_sqlite_attribution_guards(conn: &Connection) -> Result<()> {
     const COMMON_INVALID: &str = "
@@ -2868,24 +1615,7 @@ pub enum KeyPolicyUpdate {
     ExpiryNotFuture,
 }
 
-/// Exact immutable policy identity acknowledged before a key becomes usable.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct KeyActivationPolicyAck {
-    pub effective_policy_version: i64,
-    pub policy_digest: String,
-}
 
-impl KeyActivationPolicyAck {
-    pub fn validate(&self) -> Result<()> {
-        if self.effective_policy_version <= 0
-            || self.policy_digest.is_empty()
-            || self.policy_digest.trim() != self.policy_digest
-        {
-            anyhow::bail!("invalid key activation policy ACK identity");
-        }
-        Ok(())
-    }
-}
 
 /// Выпустить ключ ПОД аккаунт (баланс — на аккаунте, ключ лишь ссылается). `label` — имя ключа.
 pub fn key_issue(
@@ -2905,92 +1635,15 @@ pub fn key_issue_with_policy(
     spend_limit_nano: Option<i64>,
     expires_ts: Option<i64>,
 ) -> Result<()> {
-    key_issue_with_policy_ack(
-        conn,
-        key,
-        account_id,
-        label,
-        spend_limit_nano,
-        expires_ts,
-        None,
-    )
-}
-
-pub fn key_issue_with_policy_ack(
-    conn: &Connection,
-    key: &str,
-    account_id: &str,
-    label: Option<&str>,
-    spend_limit_nano: Option<i64>,
-    expires_ts: Option<i64>,
-    activation_policy_ack: Option<&KeyActivationPolicyAck>,
-) -> Result<()> {
     if key.trim().is_empty() || account_id.trim().is_empty() {
         anyhow::bail!("key and account id must not be empty");
     }
-    activation_policy_ack
-        .map(KeyActivationPolicyAck::validate)
-        .transpose()?;
-    let tx = conn.unchecked_transaction()?;
-    let policy_state = tx.query_row(
-        "SELECT binding.policy_enforcement,binding.active_effective_version,policy.content_digest
-           FROM account_policy_bindings binding
-           LEFT JOIN account_policy_versions policy
-             ON policy.account_id=binding.account_id
-            AND policy.effective_version=binding.active_effective_version
-          WHERE binding.account_id=?1",
-        rusqlite::params![account_id],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<i64>>(1)?,
-                row.get::<_, Option<String>>(2)?,
-            ))
-        },
-    );
-    let policy_state = match policy_state {
-        Ok(state) => Some(state),
-        Err(rusqlite::Error::QueryReturnedNoRows) => None,
-        Err(error) => return Err(error.into()),
-    };
-    let strict = policy_state
-        .as_ref()
-        .is_some_and(|state| state.0 == "strict");
-    let ack_matches = activation_policy_ack.is_some_and(|ack| {
-        policy_state.as_ref().is_some_and(|state| {
-            state.1 == Some(ack.effective_policy_version)
-                && state.2.as_deref() == Some(ack.policy_digest.as_str())
-        })
-    });
-    if activation_policy_ack.is_some() && !ack_matches {
-        anyhow::bail!("key activation policy ACK does not match the exact active policy");
-    }
-    if strict && !ack_matches {
-        anyhow::bail!("strict key activation requires the exact active policy ACK");
-    }
-    let ack_version = activation_policy_ack.map(|ack| ack.effective_policy_version);
-    let ack_digest = activation_policy_ack.map(|ack| ack.policy_digest.as_str());
-    let ack_ts = activation_policy_ack.map(|_| now());
-    let changed = tx.execute(
+    let changed = conn.execute(
         "INSERT INTO api_keys(key, key_id, account_id, label, spent_nano, reserved_nano, \
-         spend_limit_nano,expires_ts,status,created_ts,created,activation_policy_effective_version,
-         activation_policy_digest,activation_policy_ack_ts) \
-         VALUES(?1,'key_' || lower(hex(randomblob(16))),?2,?3,0,0,?4,?5,'active',?6,?7,
-                ?8,?9,?10) \
+         spend_limit_nano,expires_ts,status,created_ts,created) \
+         VALUES(?1,'key_' || lower(hex(randomblob(16))),?2,?3,0,0,?4,?5,'active',?6,?7) \
          ON CONFLICT(key) DO UPDATE SET label=excluded.label, \
-         spend_limit_nano=excluded.spend_limit_nano,expires_ts=excluded.expires_ts,
-         activation_policy_effective_version=COALESCE(
-             excluded.activation_policy_effective_version,
-             api_keys.activation_policy_effective_version
-         ),
-         activation_policy_digest=COALESCE(
-             excluded.activation_policy_digest,
-             api_keys.activation_policy_digest
-         ),
-         activation_policy_ack_ts=COALESCE(
-             excluded.activation_policy_ack_ts,
-             api_keys.activation_policy_ack_ts
-         ) \
+         spend_limit_nano=excluded.spend_limit_nano,expires_ts=excluded.expires_ts \
          WHERE api_keys.account_id=excluded.account_id",
         rusqlite::params![
             key,
@@ -3000,17 +1653,14 @@ pub fn key_issue_with_policy_ack(
             expires_ts,
             now(),
             chrono_like(now()),
-            ack_version,
-            ack_digest,
-            ack_ts,
         ],
     )?;
     if changed == 0 {
         anyhow::bail!("key is already owned by another account");
     }
-    tx.commit()?;
     Ok(())
 }
+
 
 /// Backward-compatible startup entry point. Only expired request-scoped leases are touched; legacy
 /// aggregate holds remain fail-closed because they still have no provable owner or age.
@@ -3033,107 +1683,8 @@ pub struct AccountRow {
     pub status: String,
 }
 
-/// One coherent account/funding read for Control API consumers. Bucket totals are grouped by
-/// durable source identity; any scalar amount not represented by a bucket stays explicit instead
-/// of being guessed as paid or promotional funding during the expand rollout.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AccountFundingSummary {
-    pub account_class: Option<pricing::AccountClass>,
-    pub funding_enforcement: Option<pricing::FundingEnforcement>,
-    pub reconciliation_state: Option<pricing::ReconciliationState>,
-    pub bucket_count: i64,
-    pub paid_balance_nano: i64,
-    pub bonus_balance_nano: i64,
-    pub other_balance_nano: i64,
-    pub unattributed_balance_nano: i64,
-    pub paid_reserved_nano: i64,
-    pub bonus_reserved_nano: i64,
-    pub other_reserved_nano: i64,
-    pub unattributed_reserved_nano: i64,
-    pub paid_spent_nano: i64,
-    pub bonus_spent_nano: i64,
-    pub other_spent_nano: i64,
-    pub unattributed_spent_nano: i64,
-}
 
-#[derive(Clone, Debug)]
-pub struct AccountFundingSnapshot {
-    pub account: AccountRow,
-    pub funding: AccountFundingSummary,
-}
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn account_funding_snapshot_from_parts(
-    account: AccountRow,
-    account_class: Option<String>,
-    funding_enforcement: Option<String>,
-    reconciliation_state: Option<String>,
-    bucket_count: i64,
-    paid_balance_nano: i64,
-    bonus_balance_nano: i64,
-    other_balance_nano: i64,
-    paid_reserved_nano: i64,
-    bonus_reserved_nano: i64,
-    other_reserved_nano: i64,
-    paid_spent_nano: i64,
-    bonus_spent_nano: i64,
-    other_spent_nano: i64,
-) -> Result<AccountFundingSnapshot> {
-    fn unattributed(total: i64, paid: i64, bonus: i64, other: i64, label: &str) -> Result<i64> {
-        i64::try_from(i128::from(total) - i128::from(paid) - i128::from(bonus) - i128::from(other))
-            .with_context(|| format!("{label} funding remainder exceeds signed 64-bit range"))
-    }
-
-    let summary = AccountFundingSummary {
-        account_class: account_class
-            .as_deref()
-            .map(pricing::AccountClass::from_db)
-            .transpose()?,
-        funding_enforcement: funding_enforcement
-            .as_deref()
-            .map(pricing::FundingEnforcement::from_db)
-            .transpose()?,
-        reconciliation_state: reconciliation_state
-            .as_deref()
-            .map(pricing::ReconciliationState::from_db)
-            .transpose()?,
-        bucket_count,
-        paid_balance_nano,
-        bonus_balance_nano,
-        other_balance_nano,
-        unattributed_balance_nano: unattributed(
-            account.balance_nano,
-            paid_balance_nano,
-            bonus_balance_nano,
-            other_balance_nano,
-            "balance",
-        )?,
-        paid_reserved_nano,
-        bonus_reserved_nano,
-        other_reserved_nano,
-        unattributed_reserved_nano: unattributed(
-            account.reserved_nano,
-            paid_reserved_nano,
-            bonus_reserved_nano,
-            other_reserved_nano,
-            "reserved",
-        )?,
-        paid_spent_nano,
-        bonus_spent_nano,
-        other_spent_nano,
-        unattributed_spent_nano: unattributed(
-            account.spent_nano,
-            paid_spent_nano,
-            bonus_spent_nano,
-            other_spent_nano,
-            "spent",
-        )?,
-    };
-    Ok(AccountFundingSnapshot {
-        account,
-        funding: summary,
-    })
-}
 
 /// Резолв ключа → аккаунт (горячий путь авторизации). Активны должны быть И ключ, И аккаунт.
 #[derive(Clone, Debug)]
@@ -3150,17 +1701,6 @@ pub struct KeyAuth {
     pub spend_limit_nano: Option<i64>,
     pub expires_ts: Option<i64>,
     pub active: bool, // ключ активен И аккаунт активен
-    pub policy_enforcement: Option<pricing::PolicyEnforcement>,
-    pub funding_enforcement: Option<pricing::FundingEnforcement>,
-    pub reconciliation_state: Option<pricing::ReconciliationState>,
-    pub active_policy_effective_version: Option<i64>,
-    pub active_policy_digest: Option<String>,
-    pub activation_policy_effective_version: Option<i64>,
-    pub activation_policy_digest: Option<String>,
-    pub activation_policy_ack_ts: Option<i64>,
-    pub policy_ack_current: bool,
-    pub paid_available_nano: Option<i64>,
-    pub track_available_nano: Option<i64>,
 }
 
 impl KeyAuth {
@@ -3175,15 +1715,8 @@ impl KeyAuth {
             .unwrap_or(self.mult_bp)
     }
 
-    pub fn strict_policy(&self) -> bool {
-        self.policy_enforcement == Some(pricing::PolicyEnforcement::Strict)
-            || self.funding_enforcement == Some(pricing::FundingEnforcement::Strict)
-    }
-
     pub fn active_at(&self, ts: i64) -> bool {
-        self.active
-            && self.expires_ts.is_none_or(|expires| expires > ts)
-            && (!self.strict_policy() || self.policy_ack_current)
+        self.active && self.expires_ts.is_none_or(|expires| expires > ts)
     }
 }
 
@@ -3211,83 +1744,6 @@ pub fn account_get(conn: &Connection, id: &str) -> Result<Option<AccountRow>> {
     one_account(conn, "id", id)
 }
 
-/// Read account aggregates and all funding-bucket categories from one SQLite statement snapshot.
-/// `unattributed_*` remains non-zero until migration/reconciliation has actually materialized the
-/// scalar amount, so an expand-era reader never labels historical money by analogy.
-pub fn account_funding_snapshot(
-    conn: &Connection,
-    id: &str,
-) -> Result<Option<AccountFundingSnapshot>> {
-    let row = conn.query_row(
-        "SELECT
-             account.id,account.handle,account.balance_nano,account.spent_nano,
-             account.reserved_nano,account.mult_bp,COALESCE(account.status,'active'),
-             binding.account_class,binding.funding_enforcement,binding.reconciliation_state,
-             COUNT(bucket.bucket_id),
-             COALESCE(SUM(CASE WHEN bucket.source_type='paid'
-                               THEN bucket.balance_nano ELSE 0 END),0),
-             COALESCE(SUM(CASE WHEN bucket.source_type='welcome_track_bonus'
-                               THEN bucket.balance_nano ELSE 0 END),0),
-             COALESCE(SUM(CASE WHEN bucket.source_type NOT IN ('paid','welcome_track_bonus')
-                               THEN bucket.balance_nano ELSE 0 END),0),
-             COALESCE(SUM(CASE WHEN bucket.source_type='paid'
-                               THEN bucket.reserved_nano ELSE 0 END),0),
-             COALESCE(SUM(CASE WHEN bucket.source_type='welcome_track_bonus'
-                               THEN bucket.reserved_nano ELSE 0 END),0),
-             COALESCE(SUM(CASE WHEN bucket.source_type NOT IN ('paid','welcome_track_bonus')
-                               THEN bucket.reserved_nano ELSE 0 END),0),
-             COALESCE(SUM(CASE WHEN bucket.source_type='paid'
-                               THEN bucket.spent_nano ELSE 0 END),0),
-             COALESCE(SUM(CASE WHEN bucket.source_type='welcome_track_bonus'
-                               THEN bucket.spent_nano ELSE 0 END),0),
-             COALESCE(SUM(CASE WHEN bucket.source_type NOT IN ('paid','welcome_track_bonus')
-                               THEN bucket.spent_nano ELSE 0 END),0)
-           FROM accounts account
-           LEFT JOIN account_policy_bindings binding ON binding.account_id=account.id
-           LEFT JOIN funding_buckets bucket ON bucket.account_id=account.id
-          WHERE account.id=?1
-          GROUP BY account.id,account.handle,account.balance_nano,account.spent_nano,
-                   account.reserved_nano,account.mult_bp,account.status,binding.account_class,
-                   binding.funding_enforcement,binding.reconciliation_state",
-        rusqlite::params![id],
-        |row| {
-            Ok((
-                AccountRow {
-                    id: row.get(0)?,
-                    handle: row.get(1)?,
-                    balance_nano: row.get(2)?,
-                    spent_nano: row.get(3)?,
-                    reserved_nano: row.get(4)?,
-                    mult_bp: row.get(5)?,
-                    status: row.get(6)?,
-                },
-                row.get::<_, Option<String>>(7)?,
-                row.get::<_, Option<String>>(8)?,
-                row.get::<_, Option<String>>(9)?,
-                row.get::<_, i64>(10)?,
-                row.get::<_, i64>(11)?,
-                row.get::<_, i64>(12)?,
-                row.get::<_, i64>(13)?,
-                row.get::<_, i64>(14)?,
-                row.get::<_, i64>(15)?,
-                row.get::<_, i64>(16)?,
-                row.get::<_, i64>(17)?,
-                row.get::<_, i64>(18)?,
-                row.get::<_, i64>(19)?,
-            ))
-        },
-    );
-    let parts = match row {
-        Ok(parts) => parts,
-        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    account_funding_snapshot_from_parts(
-        parts.0, parts.1, parts.2, parts.3, parts.4, parts.5, parts.6, parts.7, parts.8, parts.9,
-        parts.10, parts.11, parts.12, parts.13,
-    )
-    .map(Some)
-}
 /// Найти аккаунт по внешней идентичности (для входа юзера из TG/web).
 pub fn account_by_handle(conn: &Connection, handle: &str) -> Result<Option<AccountRow>> {
     one_account(conn, "handle", handle)
@@ -3370,21 +1826,7 @@ pub fn account_topup(
     if matches!(reference, Some(r) if r.trim().is_empty()) {
         anyhow::bail!("monetary idempotency reference must not be empty");
     }
-    let allocation_amount = amount_nano
-        .checked_abs()
-        .context("top-up amount cannot be represented as a funding allocation")?;
     let tx = conn.unchecked_transaction()?;
-    let strict_funding: bool = tx.query_row(
-        "SELECT EXISTS(
-             SELECT 1 FROM account_policy_bindings
-              WHERE account_id=?1
-                AND policy_enforcement='strict'
-                AND funding_enforcement='strict'
-                AND reconciliation_state='verified'
-         )",
-        rusqlite::params![id],
-        |row| row.get(0),
-    )?;
     // Начисляем баланс...
     let bal = match tx.query_row(
         "UPDATE accounts SET balance_nano = balance_nano + ?1 WHERE id = ?2 RETURNING balance_nano",
@@ -3398,29 +1840,6 @@ pub fn account_topup(
         Err(e) => return Err(e.into()),
     };
     let kind = if amount_nano >= 0 { "topup" } else { "adjust" };
-    let strict_bucket = if strict_funding {
-        let source_ref = reference.unwrap_or("");
-        Some(tx.query_row(
-            "INSERT INTO funding_buckets(
-                 bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
-                 reserved_nano,spent_nano,version,status,created_ts,updated_ts)
-             VALUES('fund_' || lower(hex(randomblob(16))),?1,'paid',?2,'any',?3,0,0,1,
-                    CASE WHEN ?3>0 THEN 'active' ELSE 'exhausted' END,?4,?4)
-             ON CONFLICT(account_id,source_type,source_ref) DO UPDATE SET
-                 balance_nano=funding_buckets.balance_nano+excluded.balance_nano,
-                 version=funding_buckets.version+1,updated_ts=excluded.updated_ts,
-                 status=CASE
-                   WHEN funding_buckets.status='retired' THEN funding_buckets.status
-                   WHEN funding_buckets.balance_nano+excluded.balance_nano>0 THEN 'active'
-                   ELSE 'exhausted'
-                 END
-             RETURNING bucket_id,version",
-            rusqlite::params![id, source_ref, amount_nano, now()],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-        )?)
-    } else {
-        None
-    };
     // ...и пишем ledger. UNIQUE откатывает предварительный UPDATE. После конфликта считаем операцию
     // идемпотентным повтором ТОЛЬКО при точном совпадении account + amount + kind.
     match tx.execute(
@@ -3429,23 +1848,6 @@ pub fn account_topup(
         rusqlite::params![id, kind, amount_nano, reference, bal, now()],
     ) {
         Ok(_) => {
-            if let Some((bucket_id, bucket_version)) = strict_bucket {
-                let ledger_id = tx.last_insert_rowid();
-                tx.execute(
-                    "INSERT INTO ledger_funding_allocations(
-                         ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
-                         direction,amount_nano)
-                     VALUES(?1,?2,?3,'paid',?4,?5,?6)",
-                    rusqlite::params![
-                        ledger_id,
-                        id,
-                        bucket_id,
-                        bucket_version,
-                        if amount_nano >= 0 { "credit" } else { "debit" },
-                        allocation_amount,
-                    ],
-                )?;
-            }
             tx.commit()?;
             Ok(Some(bal))
         }
@@ -3784,98 +2186,30 @@ pub fn key_account(conn: &Connection, key: &str) -> Result<Option<KeyAuth>> {
     let row = conn.query_row(
         "SELECT a.id, a.mult_bp, a.balance_nano, k.spent_nano, k.reserved_nano, \
          k.spend_limit_nano, k.expires_ts, \
-         (COALESCE(k.status,'active')='active' AND COALESCE(a.status,'active')='active'),
-         binding.policy_enforcement,binding.funding_enforcement,binding.reconciliation_state,
-         binding.active_effective_version,policy.content_digest,
-         k.activation_policy_effective_version,k.activation_policy_digest,
-         k.activation_policy_ack_ts,
-         COALESCE(
-             k.activation_policy_effective_version=binding.active_effective_version
-             AND k.activation_policy_digest=policy.content_digest
-             AND k.activation_policy_ack_ts IS NOT NULL,
-             0
-         ),
-         CASE WHEN binding.funding_enforcement='strict' THEN (
-             SELECT COALESCE(SUM(bucket.balance_nano),0)
-               FROM funding_buckets bucket
-              WHERE bucket.account_id=a.id AND bucket.eligibility='any'
-         ) END,
-         CASE WHEN binding.funding_enforcement='strict' THEN (
-             SELECT COALESCE(SUM(bucket.balance_nano),0)
-               FROM funding_buckets bucket
-              WHERE bucket.account_id=a.id AND bucket.eligibility IN ('track','any')
-         ) END \
-         FROM api_keys k
-         JOIN accounts a ON a.id = k.account_id
-         LEFT JOIN account_policy_bindings binding ON binding.account_id=a.id
-         LEFT JOIN account_policy_versions policy
-           ON policy.account_id=binding.account_id
-          AND policy.effective_version=binding.active_effective_version
+         (COALESCE(k.status,'active')='active' AND COALESCE(a.status,'active')='active') \
+         FROM api_keys k \
+         JOIN accounts a ON a.id = k.account_id \
          WHERE k.key = ?1",
         rusqlite::params![key],
         |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, i64>(4)?,
-                r.get::<_, Option<i64>>(5)?,
-                r.get::<_, Option<i64>>(6)?,
-                r.get::<_, i64>(7)? != 0,
-                r.get::<_, Option<String>>(8)?,
-                r.get::<_, Option<String>>(9)?,
-                r.get::<_, Option<String>>(10)?,
-                r.get::<_, Option<i64>>(11)?,
-                r.get::<_, Option<String>>(12)?,
-                r.get::<_, Option<i64>>(13)?,
-                r.get::<_, Option<String>>(14)?,
-                r.get::<_, Option<i64>>(15)?,
-                r.get::<_, i64>(16)? != 0,
-                r.get::<_, Option<i64>>(17)?,
-                r.get::<_, Option<i64>>(18)?,
-            ))
+            Ok(KeyAuth {
+                account_id: r.get(0)?,
+                mult_bp: r.get(1)?,
+                provider_mult_bp: provider_mult_bp.clone(),
+                balance_nano: r.get(2)?,
+                spent_nano: r.get(3)?,
+                reserved_nano: r.get(4)?,
+                spend_limit_nano: r.get(5)?,
+                expires_ts: r.get(6)?,
+                active: r.get::<_, i64>(7)? != 0,
+            })
         },
     );
-    let row = match row {
-        Ok(row) => row,
-        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    Ok(Some(KeyAuth {
-        account_id: row.0,
-        mult_bp: row.1,
-        provider_mult_bp,
-        balance_nano: row.2,
-        spent_nano: row.3,
-        reserved_nano: row.4,
-        spend_limit_nano: row.5,
-        expires_ts: row.6,
-        active: row.7,
-        policy_enforcement: row
-            .8
-            .as_deref()
-            .map(pricing::PolicyEnforcement::from_db)
-            .transpose()?,
-        funding_enforcement: row
-            .9
-            .as_deref()
-            .map(pricing::FundingEnforcement::from_db)
-            .transpose()?,
-        reconciliation_state: row
-            .10
-            .as_deref()
-            .map(pricing::ReconciliationState::from_db)
-            .transpose()?,
-        active_policy_effective_version: row.11,
-        active_policy_digest: row.12,
-        activation_policy_effective_version: row.13,
-        activation_policy_digest: row.14,
-        activation_policy_ack_ts: row.15,
-        policy_ack_current: row.16,
-        paid_available_nano: row.17,
-        track_available_nano: row.18,
-    }))
+    match row {
+        Ok(auth) => Ok(Some(auth)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Консистентный ОНЛАЙН-бэкап всей БД в `out_path` через `VACUUM INTO` (best-practice для живого
@@ -4048,1079 +2382,40 @@ pub fn sqlite_reserve_request(
 /// stay direct through `sqlite_reserve_request`, while exact replay also fences the immutable
 /// execution group and one-based attempt.
 #[allow(clippy::too_many_arguments)]
-pub fn sqlite_reserve_request_for_execution(
+pub fn sqlite_maintenance_prune(
     conn: &Connection,
-    request_id: &str,
-    account_id: &str,
-    key: &str,
-    hold_nano: i64,
-    lease_secs: i64,
-    execution: &ExecutionAttempt,
-) -> Result<Option<i64>> {
-    if request_id.trim().is_empty()
-        || account_id.trim().is_empty()
-        || key.trim().is_empty()
-        || hold_nano < 0
-        || lease_secs <= 0
-    {
-        anyhow::bail!("invalid SQLite reservation parameters");
-    }
+    older_than_ts: i64,
+) -> Result<crate::pg::MaintenanceReport> {
+    pricing::validate_request_lifecycle_prune_cutoff(older_than_ts, now())?;
     let tx = conn.unchecked_transaction()?;
-    let existing = tx.query_row(
-        "SELECT account_id,key,hold_nano,state,balance_after_reserve_nano,group_id,attempt \
-         FROM billing_reservations WHERE request_id=?1",
-        rusqlite::params![request_id],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, i32>(6)?,
-            ))
-        },
-    );
-    match existing {
-        Ok((stored_account, stored_key, stored_hold, state, balance, group_id, attempt)) => {
-            if stored_account != account_id
-                || stored_key != key
-                || stored_hold != hold_nano
-                || group_id.as_deref() != execution.group_id()
-                || attempt != execution.attempt()
-            {
-                anyhow::bail!("reservation request ID was reused with different parameters");
-            }
-            if state == "reserved" || state == "delivering" {
-                tx.commit()?;
-                return Ok(Some(balance));
-            }
-            anyhow::bail!("reservation request is already terminal");
-        }
-        Err(rusqlite::Error::QueryReturnedNoRows) => {}
-        Err(error) => return Err(error.into()),
-    }
-
-    let Some(balance) = account_reserve_for_key(&tx, account_id, key, hold_nano)? else {
-        tx.rollback()?;
-        return Ok(None);
-    };
-    let timestamp = now();
+    let outbox = tx.execute(
+        "DELETE FROM billing_settlement_outbox WHERE request_id IN ( \
+           SELECT request_id FROM billing_settlement_outbox WHERE state='done' AND committed_ts<?1 \
+           ORDER BY committed_ts,request_id LIMIT 5000)",
+        rusqlite::params![older_than_ts],
+    )?;
+    let reservations = tx.execute(
+        "DELETE FROM billing_reservations WHERE request_id IN ( \
+           SELECT request_id FROM billing_reservations
+            WHERE state IN ('settled','canceled') AND settled_ts<?1 \
+             AND request_id NOT IN (SELECT request_id FROM billing_settlement_outbox) \
+           ORDER BY settled_ts,request_id LIMIT 5000)",
+        rusqlite::params![older_than_ts],
+    )?;
     tx.execute(
-        "INSERT INTO billing_reservations( \
-           request_id,account_id,key,hold_nano,group_id,attempt,state,balance_after_reserve_nano, \
-           lease_until,created_ts,updated_ts) \
-         VALUES(?1,?2,?3,?4,?5,?6,'reserved',?7,?8,?9,?9)",
-        rusqlite::params![
-            request_id,
-            account_id,
-            key,
-            hold_nano,
-            execution.group_id(),
-            execution.attempt(),
-            balance,
-            timestamp.saturating_add(lease_secs),
-            timestamp
-        ],
+        "DELETE FROM execution_group_winner AS winner
+          WHERE NOT EXISTS (
+            SELECT 1 FROM billing_reservations reservation
+             WHERE COALESCE(reservation.group_id,reservation.request_id)=winner.group_id
+          )",
+        [],
     )?;
     tx.commit()?;
-    Ok(Some(balance))
-}
-
-/// Atomically reserve the charged legacy hold and persist its immutable pricing identity.
-///
-/// This is a dormant Stage 3B bridge primitive. The existing `sqlite_reserve_request` path remains
-/// unchanged and never requires or creates a snapshot. An existing reservation without a snapshot
-/// is deliberately a conflict: filling attribution in after the money commit would fabricate an
-/// atomic history that did not occur.
-pub fn sqlite_reserve_request_with_legacy_snapshot(
-    conn: &Connection,
-    key: &str,
-    lease_secs: i64,
-    snapshot: &pricing::LegacyScalarAdmissionSnapshot,
-) -> Result<pricing::LegacyScalarReserveOutcome> {
-    sqlite_reserve_request_with_legacy_snapshot_for_execution(
-        conn,
-        key,
-        lease_secs,
-        snapshot,
-        &ExecutionAttempt::direct(),
-    )
-}
-
-pub fn sqlite_reserve_request_with_legacy_snapshot_for_execution(
-    conn: &Connection,
-    key: &str,
-    lease_secs: i64,
-    snapshot: &pricing::LegacyScalarAdmissionSnapshot,
-    execution: &ExecutionAttempt,
-) -> Result<pricing::LegacyScalarReserveOutcome> {
-    sqlite_reserve_request_with_legacy_snapshot_guarded_for_execution(
-        conn,
-        key,
-        lease_secs,
-        snapshot,
-        execution,
-        || true,
-    )
-}
-
-/// Guarded variant for an async handoff: `commit_gate` runs after all fallible writes and
-/// immediately before commit. Returning false rolls the transaction back without durable money,
-/// reservation, or snapshot writes. The gate is called only for `Inserted` or exact `Unchanged`
-/// success, never for `NotReserved`, conflicts, or earlier failures.
-pub fn sqlite_reserve_request_with_legacy_snapshot_guarded(
-    conn: &Connection,
-    key: &str,
-    lease_secs: i64,
-    snapshot: &pricing::LegacyScalarAdmissionSnapshot,
-    commit_gate: impl FnMut() -> bool,
-) -> Result<pricing::LegacyScalarReserveOutcome> {
-    sqlite_reserve_request_with_legacy_snapshot_guarded_for_execution(
-        conn,
-        key,
-        lease_secs,
-        snapshot,
-        &ExecutionAttempt::direct(),
-        commit_gate,
-    )
-}
-
-pub fn sqlite_reserve_request_with_legacy_snapshot_guarded_for_execution(
-    conn: &Connection,
-    key: &str,
-    lease_secs: i64,
-    snapshot: &pricing::LegacyScalarAdmissionSnapshot,
-    execution: &ExecutionAttempt,
-    mut commit_gate: impl FnMut() -> bool,
-) -> Result<pricing::LegacyScalarReserveOutcome> {
-    use pricing::{
-        LegacyScalarReserveConflict as Conflict, LegacyScalarReserveOutcome as Outcome,
-        LegacyScalarReserveReceipt as Receipt, LegacyScalarSnapshotLookup as Lookup,
-    };
-
-    snapshot.validate()?;
-    if key.trim().is_empty() || lease_secs <= 0 {
-        anyhow::bail!("invalid SQLite legacy snapshot reservation parameters");
-    }
-    let window_conflict = |trusted_now_ts| -> Result<Option<Conflict>> {
-        match snapshot.validate_idempotency_window_at(trusted_now_ts) {
-            Ok(()) => Ok(None),
-            Err(pricing::LegacyScalarIdempotencyWindowError::Expired) => {
-                Ok(Some(Conflict::ExpiredIdempotencyWindow))
-            }
-            Err(pricing::LegacyScalarIdempotencyWindowError::AdmissionFromFuture) => {
-                Ok(Some(Conflict::AdmissionTimestampInFuture))
-            }
-            Err(pricing::LegacyScalarIdempotencyWindowError::InvalidTrustedTimestamp) => {
-                anyhow::bail!("trusted SQLite reservation clock is invalid")
-            }
-        }
-    };
-    if let Some(conflict) = window_conflict(now())? {
-        return Ok(Outcome::Conflict(conflict));
-    }
-
-    let request_id = snapshot.request_id.as_str();
-    let account_id = snapshot.account_id.as_str();
-    let hold_nano = snapshot.charged_hold_nano;
-    let tx = conn.unchecked_transaction()?;
-    let existing = match tx.query_row(
-        "SELECT account_id,key,hold_nano,state,balance_after_reserve_nano,group_id,attempt \
-         FROM billing_reservations WHERE request_id=?1",
-        rusqlite::params![request_id],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, i32>(6)?,
-            ))
-        },
-    ) {
-        Ok(row) => Some(row),
-        Err(rusqlite::Error::QueryReturnedNoRows) => None,
-        Err(error) => return Err(error.into()),
-    };
-    if let Some(conflict) = window_conflict(now())? {
-        tx.rollback()?;
-        return Ok(Outcome::Conflict(conflict));
-    }
-    if let Some((stored_account, stored_key, stored_hold, state, balance, group_id, attempt)) =
-        existing
-    {
-        let outcome = if stored_account != account_id
-            || stored_key != key
-            || stored_hold != hold_nano
-            || group_id.as_deref() != execution.group_id()
-            || attempt != execution.attempt()
-        {
-            Outcome::Conflict(Conflict::ReservationIdentity)
-        } else if state != "reserved" && state != "delivering" {
-            Outcome::Conflict(Conflict::TerminalReservation)
-        } else {
-            match pricing::sqlite_legacy_scalar_snapshot_lookup(&tx, request_id)? {
-                Lookup::Missing => Outcome::Conflict(Conflict::ExistingReservationWithoutSnapshot),
-                Lookup::NonLegacy => Outcome::Conflict(Conflict::ExistingNonLegacySnapshot),
-                Lookup::Legacy(stored) if stored.as_ref() == snapshot => {
-                    Outcome::Unchanged(Receipt {
-                        balance_after_reserve_nano: balance,
-                        snapshot: *stored,
-                    })
-                }
-                Lookup::Legacy(_) => Outcome::Conflict(Conflict::SnapshotPayload),
-            }
-        };
-        if matches!(&outcome, Outcome::Unchanged(_)) && !commit_gate() {
-            tx.rollback()?;
-            return Ok(Outcome::AbortedBeforeCommit);
-        }
-        tx.commit()?;
-        return Ok(outcome);
-    }
-
-    let Some(balance) = account_reserve_for_key(&tx, account_id, key, hold_nano)? else {
-        tx.rollback()?;
-        return Ok(Outcome::NotReserved);
-    };
-    let timestamp = now();
-    tx.execute(
-        "INSERT INTO billing_reservations( \
-           request_id,account_id,key,hold_nano,group_id,attempt,state,balance_after_reserve_nano, \
-           lease_until,created_ts,updated_ts) \
-         VALUES(?1,?2,?3,?4,?5,?6,'reserved',?7,?8,?9,?9)",
-        rusqlite::params![
-            request_id,
-            account_id,
-            key,
-            hold_nano,
-            execution.group_id(),
-            execution.attempt(),
-            balance,
-            timestamp.saturating_add(lease_secs),
-            timestamp
-        ],
-    )?;
-    if let Err(error) = pricing::sqlite_insert_legacy_scalar_admission_snapshot(&tx, snapshot) {
-        let _ = tx.rollback();
-        return Err(error);
-    }
-    if !commit_gate() {
-        tx.rollback()?;
-        return Ok(Outcome::AbortedBeforeCommit);
-    }
-    tx.commit()?;
-    Ok(Outcome::Inserted(Receipt {
-        balance_after_reserve_nano: balance,
-        snapshot: snapshot.clone(),
-    }))
-}
-
-fn sqlite_policy_state_matches(
-    conn: &Connection,
-    snapshot: &pricing::PolicyAdmissionSnapshot,
-) -> Result<bool> {
-    let (rule_scope, rule_provider, rule_model) = snapshot.rule_scope.db_parts();
-    let (scoped_type, scoped_product, scoped_segment) = match snapshot.account_class {
-        pricing::AccountClass::B2c => ("segment", snapshot.product_id.as_str(), "b2c"),
-        pricing::AccountClass::B2b => ("segment", snapshot.product_id.as_str(), "b2b"),
-        pricing::AccountClass::OpenKeys | pricing::AccountClass::Service => {
-            ("product", snapshot.product_id.as_str(), "")
-        }
-    };
-    Ok(conn.query_row(
-        "SELECT EXISTS(
-           SELECT 1
-           FROM account_policy_bindings binding
-           JOIN account_policy_versions policy
-             ON policy.account_id=binding.account_id
-            AND policy.effective_version=binding.active_effective_version
-           JOIN account_policy_rules rule
-             ON rule.account_id=policy.account_id
-            AND rule.effective_version=policy.effective_version
-           JOIN pricing_catalog_versions policy_catalog
-             ON policy_catalog.product_id=policy.product_id
-            AND policy_catalog.generation=policy.catalog_generation
-           JOIN pricing_catalog_entries policy_model
-             ON policy_model.product_id=policy_catalog.product_id
-            AND policy_model.generation=policy_catalog.generation
-           JOIN provider_switch_versions policy_switches
-             ON policy_switches.generation=policy.switch_generation
-           JOIN provider_switch_entries policy_master
-             ON policy_master.generation=policy_switches.generation
-           JOIN provider_switch_entries policy_scoped
-             ON policy_scoped.generation=policy_switches.generation
-           JOIN pricing_catalog_heads catalog_head ON catalog_head.product_id=policy.product_id
-           JOIN pricing_catalog_versions catalog
-             ON catalog.product_id=catalog_head.product_id
-            AND catalog.generation=catalog_head.active_generation
-           JOIN pricing_catalog_entries admission_model
-             ON admission_model.product_id=catalog.product_id
-            AND admission_model.generation=catalog.generation
-           JOIN provider_switch_head switch_head ON switch_head.singleton=1
-           JOIN provider_switch_versions switches
-             ON switches.generation=switch_head.active_generation
-           JOIN provider_switch_entries admission_master
-             ON admission_master.generation=switches.generation
-           JOIN provider_switch_entries admission_scoped
-             ON admission_scoped.generation=switches.generation
-           WHERE binding.account_id=?1
-             AND binding.policy_enforcement='strict'
-             AND binding.funding_enforcement='strict'
-             AND binding.reconciliation_state='verified'
-             AND policy.effective_version=?2
-             AND policy.policy_id=?3
-             AND policy.policy_version=?4
-             AND policy.source_policy_digest=?5
-             AND policy.content_digest=?6
-             AND policy.product_id=?7
-             AND policy.account_class=?8
-             AND policy.catalog_generation=?9
-             AND policy.switch_generation=?10
-             AND catalog.generation=?11
-             AND catalog.content_digest=?12
-             AND switches.generation=?13
-             AND switches.content_digest=?14
-             AND rule.rule_id=?15
-             AND rule.rule_digest=?16
-             AND rule.scope_type=?17
-             AND rule.provider_id=?18
-             AND rule.canonical_model_id IS ?19
-             AND rule.pricing_mode=?20
-             AND rule.rule_origin=?21
-             AND rule.discount_bps IS ?22
-             AND rule.payable_multiplier_bp=?23
-             AND rule.track_eligible=?24
-             AND rule.retention_eligible=?25
-             AND rule.commission_eligible=?26
-             AND policy_model.provider_id=?18
-             AND policy_model.canonical_model_id=?27
-             AND policy_model.enabled=1
-             AND admission_model.provider_id=?18
-             AND admission_model.canonical_model_id=?27
-             AND admission_model.enabled=1
-             AND policy_master.provider_id=?18
-             AND policy_master.scope_type='master'
-             AND policy_master.product_id=''
-             AND policy_master.segment=''
-             AND policy_master.enabled=1
-             AND policy_scoped.provider_id=?18
-             AND policy_scoped.scope_type=?28
-             AND policy_scoped.product_id=?29
-             AND policy_scoped.segment=?30
-             AND policy_scoped.catalog_generation=policy_catalog.generation
-             AND policy_scoped.enabled=1
-             AND admission_master.provider_id=?18
-             AND admission_master.scope_type='master'
-             AND admission_master.product_id=''
-             AND admission_master.segment=''
-             AND admission_master.enabled=1
-             AND admission_scoped.provider_id=?18
-             AND admission_scoped.scope_type=?28
-             AND admission_scoped.product_id=?29
-             AND admission_scoped.segment=?30
-             AND admission_scoped.catalog_generation IN (
-                 catalog.generation, policy_catalog.generation
-             )
-             AND admission_scoped.enabled=1
-         )",
-        rusqlite::params![
-            snapshot.account_id,
-            snapshot.effective_policy_version,
-            snapshot.policy_id,
-            snapshot.policy_version,
-            snapshot.source_policy_digest,
-            snapshot.policy_digest,
-            snapshot.product_id,
-            snapshot.account_class.as_str(),
-            snapshot.policy_catalog_generation,
-            snapshot.policy_switch_generation,
-            snapshot.admission_catalog_generation,
-            snapshot.admission_catalog_digest,
-            snapshot.admission_switch_generation,
-            snapshot.admission_switch_digest,
-            snapshot.rule_id,
-            snapshot.rule_digest,
-            rule_scope,
-            rule_provider,
-            rule_model,
-            snapshot.pricing_mode.as_str(),
-            snapshot.rule_origin.as_str(),
-            snapshot.discount_bps,
-            snapshot.payable_multiplier_bp,
-            i64::from(snapshot.track_eligible),
-            i64::from(snapshot.retention_eligible),
-            i64::from(snapshot.commission_eligible),
-            snapshot.canonical_model_id,
-            scoped_type,
-            scoped_product,
-            scoped_segment,
-        ],
-        |row| row.get(0),
-    )?)
-}
-
-/// Atomically validate the current strict binding, reserve exact eligible funding sources and
-/// persist the immutable policy snapshot. Track spends welcome bonus before paid; discount/static
-/// requests can reserve only `any` (paid) funding.
-pub fn sqlite_reserve_request_with_policy_snapshot(
-    conn: &Connection,
-    key: &str,
-    lease_secs: i64,
-    snapshot: &pricing::PolicyAdmissionSnapshot,
-) -> Result<pricing::PolicyReserveOutcome> {
-    sqlite_reserve_request_with_policy_snapshot_for_execution(
-        conn,
-        key,
-        lease_secs,
-        snapshot,
-        &ExecutionAttempt::direct(),
-    )
-}
-
-pub fn sqlite_reserve_request_with_policy_snapshot_for_execution(
-    conn: &Connection,
-    key: &str,
-    lease_secs: i64,
-    snapshot: &pricing::PolicyAdmissionSnapshot,
-    execution: &ExecutionAttempt,
-) -> Result<pricing::PolicyReserveOutcome> {
-    sqlite_reserve_request_with_policy_snapshot_guarded_for_execution(
-        conn,
-        key,
-        lease_secs,
-        snapshot,
-        execution,
-        || true,
-    )
-}
-
-/// Guarded strict reserve for the async writer. The callback is the final linearization gate for
-/// inserted reservations and exact active replays; a rejected gate rolls the transaction back
-/// before any money or snapshot mutation becomes visible.
-pub fn sqlite_reserve_request_with_policy_snapshot_guarded(
-    conn: &Connection,
-    key: &str,
-    lease_secs: i64,
-    snapshot: &pricing::PolicyAdmissionSnapshot,
-    commit_gate: impl FnMut() -> bool,
-) -> Result<pricing::PolicyReserveOutcome> {
-    sqlite_reserve_request_with_policy_snapshot_guarded_for_execution(
-        conn,
-        key,
-        lease_secs,
-        snapshot,
-        &ExecutionAttempt::direct(),
-        commit_gate,
-    )
-}
-
-pub fn sqlite_reserve_request_with_policy_snapshot_guarded_for_execution(
-    conn: &Connection,
-    key: &str,
-    lease_secs: i64,
-    snapshot: &pricing::PolicyAdmissionSnapshot,
-    execution: &ExecutionAttempt,
-    mut commit_gate: impl FnMut() -> bool,
-) -> Result<pricing::PolicyReserveOutcome> {
-    use pricing::{
-        PolicyReserveConflict as Conflict, PolicyReserveOutcome as Outcome,
-        PolicyReserveReceipt as Receipt, PolicySnapshotLookup as Lookup,
-    };
-
-    snapshot.validate()?;
-    if key.trim().is_empty() || lease_secs <= 0 {
-        anyhow::bail!("invalid SQLite policy snapshot reservation parameters");
-    }
-    let window_conflict = |trusted_now_ts| -> Result<Option<Conflict>> {
-        match snapshot.validate_idempotency_window_at(trusted_now_ts) {
-            Ok(()) => Ok(None),
-            Err(pricing::LegacyScalarIdempotencyWindowError::Expired) => {
-                Ok(Some(Conflict::ExpiredIdempotencyWindow))
-            }
-            Err(pricing::LegacyScalarIdempotencyWindowError::AdmissionFromFuture) => {
-                Ok(Some(Conflict::AdmissionTimestampInFuture))
-            }
-            Err(pricing::LegacyScalarIdempotencyWindowError::InvalidTrustedTimestamp) => {
-                anyhow::bail!("trusted SQLite reservation clock is invalid")
-            }
-        }
-    };
-    if let Some(conflict) = window_conflict(now())? {
-        return Ok(Outcome::Conflict(conflict));
-    }
-
-    let request_id = snapshot.request_id();
-    let account_id = snapshot.account_id();
-    let hold = snapshot.charged_hold_nano();
-    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
-    let existing = tx.query_row(
-        "SELECT account_id,key,hold_nano,state,balance_after_reserve_nano,group_id,attempt
-           FROM billing_reservations WHERE request_id=?1",
-        rusqlite::params![request_id],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, i32>(6)?,
-            ))
-        },
-    );
-    match existing {
-        Ok((stored_account, stored_key, stored_hold, state, balance, group_id, attempt)) => {
-            let outcome = if stored_account != account_id
-                || stored_key != key
-                || stored_hold != hold
-                || group_id.as_deref() != execution.group_id()
-                || attempt != execution.attempt()
-            {
-                Outcome::Conflict(Conflict::ReservationIdentity)
-            } else if state != "reserved" && state != "delivering" {
-                Outcome::Conflict(Conflict::TerminalReservation)
-            } else {
-                match pricing::sqlite_policy_snapshot_lookup(&tx, request_id)? {
-                    Lookup::Missing => {
-                        Outcome::Conflict(Conflict::ExistingReservationWithoutSnapshot)
-                    }
-                    Lookup::NonPolicy => Outcome::Conflict(Conflict::ExistingNonPolicySnapshot),
-                    Lookup::Policy(stored) if stored.as_ref() == snapshot => {
-                        Outcome::Unchanged(Receipt {
-                            balance_after_reserve_nano: balance,
-                            snapshot: *stored,
-                        })
-                    }
-                    Lookup::Policy(_) => Outcome::Conflict(Conflict::SnapshotPayload),
-                }
-            };
-            if matches!(&outcome, Outcome::Unchanged(_)) && !commit_gate() {
-                tx.rollback()?;
-                return Ok(Outcome::AbortedBeforeCommit);
-            }
-            tx.commit()?;
-            return Ok(outcome);
-        }
-        Err(rusqlite::Error::QueryReturnedNoRows) => {}
-        Err(error) => return Err(error.into()),
-    }
-    if let Some(conflict) = window_conflict(now())? {
-        tx.rollback()?;
-        return Ok(Outcome::Conflict(conflict));
-    }
-    if !sqlite_policy_state_matches(&tx, snapshot)? {
-        tx.rollback()?;
-        return Ok(Outcome::Conflict(Conflict::PolicyStateChanged));
-    }
-
-    let eligibility = if snapshot.track_eligible() {
-        "track"
-    } else {
-        "any"
-    };
-    // Service meter-only reserve holds no customer money: a zero/negative balance must not reject
-    // it. The flag is false for every customer class, keeping the balance gate byte-identical.
-    let meter_only = snapshot.is_service_meter_only();
-    let buckets: Vec<(String, i64, i64)> = {
-        let mut statement = tx.prepare(
-            "SELECT bucket_id,version,balance_nano
-               FROM funding_buckets
-              WHERE account_id=?1 AND status='active' AND balance_nano>0
-                AND ((?2='track' AND eligibility IN ('track','any'))
-                  OR (?2='any' AND eligibility='any'))
-              ORDER BY CASE source_type
-                         WHEN 'welcome_track_bonus' THEN 0
-                         WHEN 'paid' THEN 1
-                         ELSE 2
-                       END, created_ts, bucket_id",
-        )?;
-        let rows = statement
-            .query_map(rusqlite::params![account_id, eligibility], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?
-            .collect::<rusqlite::Result<_>>()?;
-        rows
-    };
-    let eligible_total = buckets.iter().try_fold(0_i64, |total, (_, _, balance)| {
-        total
-            .checked_add(*balance)
-            .context("eligible funding balance overflow")
-    })?;
-    if eligible_total < hold {
-        tx.rollback()?;
-        return Ok(Outcome::NotReserved);
-    }
-
-    let balance: i64 = match tx.query_row(
-        "UPDATE accounts
-            SET balance_nano=balance_nano-?1,reserved_nano=reserved_nano+?1
-          WHERE id=?2 AND status='active' AND (balance_nano>=?1 OR ?3)
-          RETURNING balance_nano",
-        rusqlite::params![hold, account_id, meter_only],
-        |row| row.get(0),
-    ) {
-        Ok(balance) => balance,
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
-            tx.rollback()?;
-            return Ok(Outcome::NotReserved);
-        }
-        Err(error) => return Err(error.into()),
-    };
-    if tx.execute(
-        "UPDATE api_keys SET reserved_nano=reserved_nano+?1
-          WHERE key=?2 AND account_id=?3 AND status='active'
-            AND (expires_ts IS NULL OR expires_ts>CAST(strftime('%s','now') AS INTEGER))
-            AND (spend_limit_nano IS NULL OR spent_nano+reserved_nano+?1<=spend_limit_nano)",
-        rusqlite::params![hold, key, account_id],
-    )? != 1
-    {
-        tx.rollback()?;
-        return Ok(Outcome::NotReserved);
-    }
-    let timestamp = now();
-    tx.execute(
-        "INSERT INTO billing_reservations(
-           request_id,account_id,key,hold_nano,group_id,attempt,state,balance_after_reserve_nano,
-           lease_until,created_ts,updated_ts)
-         VALUES(?1,?2,?3,?4,?5,?6,'reserved',?7,?8,?9,?9)",
-        rusqlite::params![
-            request_id,
-            account_id,
-            key,
-            hold,
-            execution.group_id(),
-            execution.attempt(),
-            balance,
-            timestamp.saturating_add(lease_secs),
-            timestamp
-        ],
-    )?;
-    pricing::sqlite_insert_policy_admission_snapshot(&tx, snapshot)?;
-
-    let mut remaining = hold;
-    let mut allocation_order = 1_i64;
-    for (bucket_id, version, available) in buckets {
-        if remaining == 0 {
-            break;
-        }
-        let reserved = remaining.min(available);
-        let next_version = version
-            .checked_add(1)
-            .context("funding bucket version overflow")?;
-        if tx.execute(
-            "UPDATE funding_buckets
-                SET balance_nano=balance_nano-?1,reserved_nano=reserved_nano+?1,
-                    version=?2,updated_ts=?3,
-                    status=CASE WHEN balance_nano-?1=0 THEN 'exhausted' ELSE 'active' END
-              WHERE bucket_id=?4 AND account_id=?5 AND version=?6 AND balance_nano>=?1",
-            rusqlite::params![
-                reserved,
-                next_version,
-                timestamp,
-                bucket_id,
-                account_id,
-                version
-            ],
-        )? != 1
-        {
-            anyhow::bail!("strict funding bucket changed during SQLite reserve");
-        }
-        tx.execute(
-            "INSERT INTO reservation_funding_allocations(
-               request_id,account_id,bucket_id,bucket_version,reserved_nano,allocation_order)
-             VALUES(?1,?2,?3,?4,?5,?6)",
-            rusqlite::params![
-                request_id,
-                account_id,
-                bucket_id,
-                next_version,
-                reserved,
-                allocation_order
-            ],
-        )?;
-        remaining -= reserved;
-        allocation_order += 1;
-    }
-    if remaining != 0 {
-        anyhow::bail!("strict funding allocation did not cover the reserved hold");
-    }
-    if !commit_gate() {
-        tx.rollback()?;
-        return Ok(Outcome::AbortedBeforeCommit);
-    }
-    tx.commit()?;
-    Ok(Outcome::Inserted(Receipt {
-        balance_after_reserve_nano: balance,
-        snapshot: snapshot.clone(),
-    }))
-}
-
-/// Mark a reservation as provider-accepted before handing its response body to the client.
-pub fn sqlite_mark_delivering(
-    conn: &Connection,
-    request_id: &str,
-    lease_secs: i64,
-) -> Result<bool> {
-    if lease_secs <= 0 {
-        anyhow::bail!("invalid delivery lease");
-    }
-    let timestamp = now();
-    let changed = conn.execute(
-        "UPDATE billing_reservations SET state='delivering',lease_until=?2,updated_ts=?3 \
-         WHERE request_id=?1 AND state IN ('reserved','delivering')",
-        rusqlite::params![request_id, timestamp.saturating_add(lease_secs), timestamp],
-    )?;
-    Ok(changed == 1)
-}
-
-pub fn sqlite_renew_reservation_lease(
-    conn: &Connection,
-    request_id: &str,
-    lease_secs: i64,
-) -> Result<bool> {
-    if lease_secs <= 0 {
-        anyhow::bail!("invalid reservation lease");
-    }
-    let timestamp = now();
-    Ok(conn.execute(
-        "UPDATE billing_reservations SET lease_until=?2,updated_ts=?3 \
-         WHERE request_id=?1 AND state IN ('reserved','delivering')",
-        rusqlite::params![request_id, timestamp.saturating_add(lease_secs), timestamp],
-    )? == 1)
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-struct PolicyFundingAllocationEvidence {
-    bucket_id: String,
-    source_type: String,
-    bucket_version: i64,
-    reserved_nano: i64,
-    charged_nano: i64,
-    released_nano: i64,
-    allocation_order: i64,
-}
-
-#[derive(Clone, Debug)]
-struct PolicyFundingEvidence {
-    allocations: Vec<PolicyFundingAllocationEvidence>,
-    paid_funded_nano: i64,
-    bonus_funded_nano: i64,
-    other_funded_nano: i64,
-    allocation_json: String,
-}
-
-impl PolicyFundingEvidence {
-    /// Service meter-only settlement: no money moved at reserve, so there is no funding
-    /// allocation to terminalize and the paid/bonus/other split is exactly zero.
-    fn meter_only() -> Self {
-        Self {
-            allocations: Vec::new(),
-            paid_funded_nano: 0,
-            bonus_funded_nano: 0,
-            other_funded_nano: 0,
-            allocation_json: "[]".to_owned(),
-        }
-    }
-}
-
-fn sqlite_policy_funding_evidence(
-    conn: &Connection,
-    request_id: &str,
-    hold_nano: i64,
-    actual_nano: i64,
-) -> Result<PolicyFundingEvidence> {
-    if actual_nano < 0 || actual_nano > hold_nano {
-        anyhow::bail!("strict settlement actual must be within the reserved hold");
-    }
-    let mut statement = conn.prepare(
-        "SELECT allocation.bucket_id,bucket.source_type,allocation.bucket_version,
-                allocation.reserved_nano,allocation.allocation_order
-           FROM reservation_funding_allocations allocation
-           JOIN funding_buckets bucket
-             ON bucket.bucket_id=allocation.bucket_id
-            AND bucket.account_id=allocation.account_id
-          WHERE allocation.request_id=?1
-          ORDER BY allocation.allocation_order,allocation.bucket_id",
-    )?;
-    let rows = statement
-        .query_map(rusqlite::params![request_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let reserved_total = rows.iter().try_fold(0_i64, |total, row| {
-        total
-            .checked_add(row.3)
-            .context("strict funding reservation total overflow")
-    })?;
-    if rows.is_empty() || reserved_total != hold_nano {
-        anyhow::bail!("strict settlement funding allocations do not cover the hold");
-    }
-
-    let mut charge_remaining = actual_nano;
-    let mut paid_funded_nano = 0_i64;
-    let mut bonus_funded_nano = 0_i64;
-    let mut other_funded_nano = 0_i64;
-    let mut allocations = Vec::with_capacity(rows.len());
-    for (bucket_id, source_type, bucket_version, reserved_nano, allocation_order) in rows {
-        let charged_nano = charge_remaining.min(reserved_nano);
-        let released_nano = reserved_nano - charged_nano;
-        charge_remaining -= charged_nano;
-        let category = match source_type.as_str() {
-            "paid" => &mut paid_funded_nano,
-            "welcome_track_bonus" => &mut bonus_funded_nano,
-            _ => &mut other_funded_nano,
-        };
-        *category = category
-            .checked_add(charged_nano)
-            .context("strict funding charge category overflow")?;
-        allocations.push(PolicyFundingAllocationEvidence {
-            bucket_id,
-            source_type,
-            bucket_version,
-            reserved_nano,
-            charged_nano,
-            released_nano,
-            allocation_order,
-        });
-    }
-    if charge_remaining != 0 {
-        anyhow::bail!("strict settlement funding allocations do not cover the actual charge");
-    }
-    let allocation_json = serde_json::to_string(&allocations)?;
-    Ok(PolicyFundingEvidence {
-        allocations,
-        paid_funded_nano,
-        bonus_funded_nano,
-        other_funded_nano,
-        allocation_json,
+    Ok(crate::pg::MaintenanceReport {
+        outbox,
+        reservations,
+        ..Default::default()
     })
-}
-
-fn validate_policy_settlement(
-    snapshot: &pricing::PolicyAdmissionSnapshot,
-    hold_nano: i64,
-    actual_nano: i64,
-    usage: Option<&UsageEventInput>,
-    disposition: &str,
-) -> Result<()> {
-    snapshot.validate()?;
-    if hold_nano != snapshot.charged_hold_nano() || actual_nano < 0 || actual_nano > hold_nano {
-        anyhow::bail!("strict settlement amount is outside its immutable admission hold");
-    }
-    let Some(usage) = usage else {
-        let valid_terminal = (disposition == "cancel" && actual_nano == 0)
-            || (disposition == "reconcile_full_hold" && actual_nano == hold_nano);
-        if !valid_terminal {
-            anyhow::bail!("strict settlement without usage must be cancel or full-hold recovery");
-        }
-        return Ok(());
-    };
-    if disposition != "settle" {
-        anyhow::bail!("strict usage settlement has an invalid disposition");
-    }
-    if usage.provider != snapshot.provider().as_str() {
-        anyhow::bail!("strict settlement provider differs from the fixed admission plane");
-    }
-    if usage.priced_ts != snapshot.tariff_priced_ts() {
-        anyhow::bail!("strict settlement did not use the admission-pinned tariff timestamp");
-    }
-    if usage.model.trim().is_empty() {
-        anyhow::bail!("strict settlement served model must not be empty");
-    }
-    for amount in [
-        usage.input_tokens,
-        usage.output_tokens,
-        usage.cache_read_tokens,
-        usage.cache_write_5m_tokens,
-        usage.cache_write_1h_tokens,
-        usage.web_search_requests,
-        usage.real_nano,
-        usage.input_nano,
-        usage.output_nano,
-        usage.cache_read_nano,
-        usage.cache_write_5m_nano,
-        usage.cache_write_1h_nano,
-        usage.web_search_nano,
-    ] {
-        if amount < 0 {
-            anyhow::bail!("strict settlement usage contains a negative integer amount");
-        }
-    }
-    if usage.real_nano > snapshot.official_hold_nano()
-        || snapshot.charge_for_official_nano(usage.real_nano)? != actual_nano
-    {
-        anyhow::bail!("strict settlement charge does not match pinned official pricing");
-    }
-    Ok(())
-}
-
-fn policy_official_cost_json(
-    snapshot: &pricing::PolicyAdmissionSnapshot,
-    usage: Option<&UsageEventInput>,
-    disposition: &str,
-) -> Result<String> {
-    let premium_modifiers: serde_json::Value =
-        serde_json::from_str(&snapshot.premium_modifiers_json()?)?;
-    let value = match usage {
-        Some(usage) => serde_json::json!({
-            "schema_version": 1,
-            "provider": usage.provider,
-            "official_nano": usage.real_nano,
-            "input_nano": usage.input_nano,
-            "output_nano": usage.output_nano,
-            "cache_read_nano": usage.cache_read_nano,
-            "cache_write_5m_nano": usage.cache_write_5m_nano,
-            "cache_write_1h_nano": usage.cache_write_1h_nano,
-            "web_search_nano": usage.web_search_nano,
-            "premium_modifiers": premium_modifiers,
-        }),
-        None => serde_json::json!({
-            "schema_version": 1,
-            "provider": snapshot.provider().as_str(),
-            "official_nano": if disposition == "reconcile_full_hold" {
-                snapshot.official_hold_nano()
-            } else {
-                0
-            },
-            "disposition": disposition,
-            "premium_modifiers": premium_modifiers,
-        }),
-    };
-    Ok(serde_json::to_string(&value)?)
-}
-
-fn sqlite_write_policy_attribution(
-    conn: &Connection,
-    table: &str,
-    request_id: &str,
-    snapshot: &pricing::PolicyAdmissionSnapshot,
-    usage: Option<&UsageEventInput>,
-    disposition: &str,
-    funding: &PolicyFundingEvidence,
-) -> Result<()> {
-    let (predicate, priced_ts_assignment) = match table {
-        "billing_settlement_outbox" => ("request_id=?1", ""),
-        "usage_events" => ("request_id=?1", "priced_ts=?25,"),
-        "ledger" => ("kind='charge' AND request_id=?1", ""),
-        _ => anyhow::bail!("unsupported SQLite policy attribution target"),
-    };
-    let (rule_scope, _, _) = snapshot.rule_scope.db_parts();
-    let served_model = usage
-        .map(|value| value.model.as_str())
-        .or_else(|| (disposition == "reconcile_full_hold").then(|| snapshot.canonical_model_id()));
-    let invariant = if disposition == "reconcile_full_hold" {
-        Some("reconciled_full_hold_without_usage")
-    } else {
-        served_model
-            .filter(|model| *model != snapshot.canonical_model_id())
-            .map(|_| "served_canonical_model_mismatch")
-    };
-    let official_cost_json = policy_official_cost_json(snapshot, usage, disposition)?;
-    let sql = format!(
-        "UPDATE {table} SET
-             provider=?2,attribution_schema_version=?3,snapshot_kind='policy_v1',product_id=?4,
-             account_class=?5,requested_model_id=?6,canonical_model_id=?7,served_model_id=?8,
-             served_canonical_model_id=?8,billing_invariant_code=?9,alias_generation=?10,
-             rule_id=?11,rule_digest=?12,rule_scope=?13,pricing_mode=?14,rule_origin=?15,
-             discount_bps=?16,payable_multiplier_bp=?17,policy_id=?18,policy_version=?19,
-             effective_policy_version=?20,policy_digest=?21,catalog_generation=?22,
-             switch_generation=?23,tariff_schedule_id=?24,{priced_ts_assignment}
-             tariff_priced_ts=?25,
-             official_cost_json=?26,paid_funded_nano=?27,bonus_funded_nano=?28,
-             other_funded_nano=?29,funding_allocation_json=?30,track_eligible=?31,
-             retention_eligible=?32,commission_eligible=?33,snapshot_digest=?34,
-             source_policy_digest=?35,admission_catalog_generation=?36,
-             admission_catalog_digest=?37,admission_switch_generation=?38,
-             admission_switch_digest=?39,runtime_manifest_generation=?40,
-             runtime_manifest_digest=?41
-           WHERE {predicate}"
-    );
-    if conn.execute(
-        &sql,
-        rusqlite::params![
-            request_id,
-            snapshot.provider().as_str(),
-            pricing::POLICY_ADMISSION_SNAPSHOT_SCHEMA_VERSION,
-            snapshot.product_id(),
-            snapshot.account_class().as_str(),
-            snapshot.requested_model_id(),
-            snapshot.canonical_model_id(),
-            served_model,
-            invariant,
-            snapshot.alias_generation(),
-            snapshot.rule_id(),
-            snapshot.rule_digest(),
-            rule_scope,
-            snapshot.pricing_mode().as_str(),
-            snapshot.rule_origin.as_str(),
-            snapshot.discount_bps,
-            snapshot.payable_multiplier_bp(),
-            snapshot.policy_id(),
-            snapshot.policy_version(),
-            snapshot.effective_policy_version(),
-            snapshot.policy_digest(),
-            snapshot.policy_catalog_generation(),
-            snapshot.policy_switch_generation(),
-            snapshot.tariff_schedule_id(),
-            snapshot.tariff_priced_ts(),
-            official_cost_json,
-            funding.paid_funded_nano,
-            funding.bonus_funded_nano,
-            funding.other_funded_nano,
-            funding.allocation_json,
-            i64::from(snapshot.track_eligible()),
-            i64::from(snapshot.retention_eligible()),
-            i64::from(snapshot.commission_eligible()),
-            snapshot.snapshot_digest(),
-            snapshot.source_policy_digest(),
-            snapshot.admission_catalog_generation(),
-            snapshot.admission_catalog_digest(),
-            snapshot.admission_switch_generation(),
-            snapshot.admission_switch_digest(),
-            snapshot.runtime_manifest_generation(),
-            snapshot.runtime_manifest_digest(),
-        ],
-    )? != 1
-    {
-        anyhow::bail!("SQLite policy attribution target row is missing");
-    }
-    Ok(())
-}
-
-fn sqlite_terminal_expected_actual(
-    conn: &Connection,
-    request_id: &str,
-    original_actual: i64,
-) -> Result<i64> {
-    if original_actual <= 0 {
-        return Ok(original_actual.max(0));
-    }
-    conn.query_row(
-        "SELECT CASE
-           WHEN winner.winner_request_id IS NOT NULL AND winner.winner_request_id<>reservation.request_id
-             THEN 0
-           ELSE ?2
-         END
-           FROM billing_reservations reservation
-           LEFT JOIN execution_group_winner winner
-             ON winner.group_id=COALESCE(reservation.group_id,reservation.request_id)
-          WHERE reservation.request_id=?1",
-        rusqlite::params![request_id, original_actual],
-        |row| row.get(0),
-    )
-    .context("terminal SQLite reservation is missing")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5167,16 +2462,7 @@ fn sqlite_enqueue_settlement(
     if stored_account != account_id || stored_key != key || stored_hold != hold_nano {
         anyhow::bail!("settlement parameters do not match reservation");
     }
-    let policy_snapshot = match pricing::sqlite_policy_snapshot_lookup(&tx, request_id)? {
-        pricing::PolicySnapshotLookup::Policy(snapshot) => Some(*snapshot),
-        pricing::PolicySnapshotLookup::Missing | pricing::PolicySnapshotLookup::NonPolicy => None,
-    };
-    let actual = if let Some(snapshot) = policy_snapshot.as_ref() {
-        validate_policy_settlement(snapshot, stored_hold, actual_nano, usage, disposition)?;
-        actual_nano
-    } else {
-        actual_nano.max(0)
-    };
+    let actual = actual_nano.max(0);
     if state == "settled" {
         let expected_actual = sqlite_terminal_expected_actual(&tx, request_id, actual)?;
         if stored_actual == Some(expected_actual) && stored_ref.as_deref() == reference {
@@ -5226,292 +2512,8 @@ fn sqlite_enqueue_settlement(
             anyhow::bail!("settlement request ID was reused with different parameters");
         }
     }
-    if let Some(snapshot) = policy_snapshot.as_ref() {
-        // Service meter-only: no funding allocations exist for a zero hold; the outbox
-        // attribution records the exact zero paid/bonus/other split instead.
-        let funding = if snapshot.is_service_meter_only() {
-            PolicyFundingEvidence::meter_only()
-        } else {
-            sqlite_policy_funding_evidence(&tx, request_id, stored_hold, actual)?
-        };
-        sqlite_write_policy_attribution(
-            &tx,
-            "billing_settlement_outbox",
-            request_id,
-            snapshot,
-            usage,
-            disposition,
-            &funding,
-        )?;
-    }
     tx.commit()?;
     Ok(None)
-}
-
-fn sqlite_process_policy_settlement(
-    conn: &Connection,
-    request_id: &str,
-    account_id: &str,
-    key: &str,
-    hold_nano: i64,
-    actual_nano: i64,
-    reference: Option<&str>,
-    usage: Option<&UsageEventInput>,
-    disposition: &str,
-    snapshot: &pricing::PolicyAdmissionSnapshot,
-    update_outbox_attribution: bool,
-) -> Result<i64> {
-    validate_policy_settlement(snapshot, hold_nano, actual_nano, usage, disposition)?;
-    // Service meter-only settlement carries no customer money: no funding allocations exist, no
-    // charge row is written, but the usage event and its policy attribution are fully recorded.
-    let meter_only = snapshot.is_service_meter_only();
-    if meter_only && (hold_nano != 0 || actual_nano != 0) {
-        anyhow::bail!("service meter-only settlement attempted a customer debit");
-    }
-    let funding = if meter_only {
-        PolicyFundingEvidence::meter_only()
-    } else {
-        sqlite_policy_funding_evidence(conn, request_id, hold_nano, actual_nano)?
-    };
-    let released_total = hold_nano - actual_nano;
-    let balance: i64 = conn
-        .query_row(
-            "UPDATE accounts
-            SET balance_nano=balance_nano+?1,spent_nano=spent_nano+?2,
-                reserved_nano=reserved_nano-?3
-          WHERE id=?4 AND reserved_nano>=?3
-          RETURNING balance_nano",
-            rusqlite::params![released_total, actual_nano, hold_nano, account_id],
-            |row| row.get(0),
-        )
-        .context("strict SQLite reservation/account aggregate invariant failed")?;
-    let key_updated = conn.execute(
-        "UPDATE api_keys
-            SET spent_nano=spent_nano+?1,reserved_nano=reserved_nano-?2
-          WHERE key=?3 AND account_id=?4 AND reserved_nano>=?2",
-        rusqlite::params![actual_nano, hold_nano, key, account_id],
-    )?;
-    if key_updated != 1 {
-        let key_still_exists = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM api_keys WHERE key=?1)",
-            rusqlite::params![key],
-            |row| row.get::<_, bool>(0),
-        )?;
-        if key_still_exists {
-            anyhow::bail!("strict SQLite reservation/key aggregate invariant failed");
-        }
-    }
-
-    let timestamp = now();
-    for allocation in &funding.allocations {
-        let next_version: i64 = conn
-            .query_row(
-                "UPDATE funding_buckets
-                SET balance_nano=balance_nano+?1,reserved_nano=reserved_nano-?2,
-                    spent_nano=spent_nano+?3,version=version+1,updated_ts=?4,
-                    status=CASE
-                      WHEN status='retired' THEN status
-                      WHEN balance_nano+?1>0 THEN 'active'
-                      ELSE 'exhausted'
-                    END
-              WHERE bucket_id=?5 AND account_id=?6 AND reserved_nano>=?2
-              RETURNING version",
-                rusqlite::params![
-                    allocation.released_nano,
-                    allocation.reserved_nano,
-                    allocation.charged_nano,
-                    timestamp,
-                    allocation.bucket_id,
-                    account_id,
-                ],
-                |row| row.get(0),
-            )
-            .with_context(|| {
-                format!(
-                    "strict SQLite funding bucket {} invariant failed",
-                    allocation.bucket_id
-                )
-            })?;
-        if next_version <= allocation.bucket_version {
-            anyhow::bail!("strict SQLite funding bucket version did not advance");
-        }
-        if conn.execute(
-            "UPDATE reservation_funding_allocations
-                SET charged_nano=?1,released_nano=?2
-              WHERE request_id=?3 AND account_id=?4 AND bucket_id=?5
-                AND charged_nano IS NULL AND released_nano IS NULL",
-            rusqlite::params![
-                allocation.charged_nano,
-                allocation.released_nano,
-                request_id,
-                account_id,
-                allocation.bucket_id,
-            ],
-        )? != 1
-        {
-            anyhow::bail!("strict SQLite funding allocation was already terminalized");
-        }
-    }
-
-    if let Some(usage) = usage {
-        if !meter_only {
-            let ledger_id: i64 = conn.query_row(
-                "INSERT INTO ledger(
-                 account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model,
-                 provider,official_nano)
-             VALUES(?1,?2,'charge',?3,?4,?5,?6,?7,NULLIF(?8,''),?9,?10)
-             RETURNING id",
-                rusqlite::params![
-                    account_id,
-                    key,
-                    request_id,
-                    actual_nano,
-                    reference,
-                    balance,
-                    timestamp,
-                    usage.model,
-                    usage.provider,
-                    usage.real_nano,
-                ],
-                |row| row.get(0),
-            )?;
-            sqlite_write_policy_attribution(
-                conn,
-                "ledger",
-                request_id,
-                snapshot,
-                Some(usage),
-                disposition,
-                &funding,
-            )?;
-            for allocation in funding
-                .allocations
-                .iter()
-                .filter(|allocation| allocation.charged_nano > 0)
-            {
-                conn.execute(
-                    "INSERT INTO ledger_funding_allocations(
-                     ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
-                     direction,amount_nano)
-                 VALUES(?1,?2,?3,?4,?5,'debit',?6)",
-                    rusqlite::params![
-                        ledger_id,
-                        account_id,
-                        allocation.bucket_id,
-                        allocation.source_type,
-                        allocation.bucket_version,
-                        allocation.charged_nano,
-                    ],
-                )?;
-            }
-        }
-        conn.execute(
-            "INSERT INTO usage_events(
-                 request_id,account_id,key,model,input_tokens,output_tokens,cache_read_tokens,
-                 cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests,real_nano,
-                 charge_nano,ref,ts,speed,inference_geo,input_nano,output_nano,cache_read_nano,
-                 cache_write_5m_nano,cache_write_1h_nano,web_search_nano,priced_ts,provider)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,
-                    ?17,?18,?19,?20,?21,?22,?23,?24)",
-            rusqlite::params![
-                request_id,
-                account_id,
-                key,
-                usage.model,
-                usage.input_tokens,
-                usage.output_tokens,
-                usage.cache_read_tokens,
-                usage.cache_write_5m_tokens,
-                usage.cache_write_1h_tokens,
-                usage.web_search_requests,
-                usage.real_nano,
-                actual_nano,
-                reference,
-                timestamp,
-                usage.speed,
-                usage.inference_geo,
-                usage.input_nano,
-                usage.output_nano,
-                usage.cache_read_nano,
-                usage.cache_write_5m_nano,
-                usage.cache_write_1h_nano,
-                usage.web_search_nano,
-                usage.priced_ts,
-                usage.provider,
-            ],
-        )?;
-        sqlite_write_policy_attribution(
-            conn,
-            "usage_events",
-            request_id,
-            snapshot,
-            Some(usage),
-            disposition,
-            &funding,
-        )?;
-    } else if actual_nano > 0 {
-        let ledger_id: i64 = conn.query_row(
-            "INSERT INTO ledger(
-                 account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model,
-                 provider,official_nano)
-             VALUES(?1,?2,'charge',?3,?4,?5,?6,?7,?8,?9,?10)
-             RETURNING id",
-            rusqlite::params![
-                account_id,
-                key,
-                request_id,
-                actual_nano,
-                reference,
-                balance,
-                timestamp,
-                snapshot.canonical_model_id(),
-                snapshot.provider().as_str(),
-                snapshot.official_hold_nano(),
-            ],
-            |row| row.get(0),
-        )?;
-        sqlite_write_policy_attribution(
-            conn,
-            "ledger",
-            request_id,
-            snapshot,
-            None,
-            disposition,
-            &funding,
-        )?;
-        for allocation in funding
-            .allocations
-            .iter()
-            .filter(|allocation| allocation.charged_nano > 0)
-        {
-            conn.execute(
-                "INSERT INTO ledger_funding_allocations(
-                     ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
-                     direction,amount_nano)
-                 VALUES(?1,?2,?3,?4,?5,'debit',?6)",
-                rusqlite::params![
-                    ledger_id,
-                    account_id,
-                    allocation.bucket_id,
-                    allocation.source_type,
-                    allocation.bucket_version,
-                    allocation.charged_nano,
-                ],
-            )?;
-        }
-    }
-    if update_outbox_attribution {
-        sqlite_write_policy_attribution(
-            conn,
-            "billing_settlement_outbox",
-            request_id,
-            snapshot,
-            usage,
-            disposition,
-            &funding,
-        )?;
-    }
-    Ok(balance)
 }
 
 /// Apply one already-durable SQLite settlement intent atomically with its ledger/usage rows.
@@ -5595,31 +2597,13 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
     } else {
         0
     };
-    let policy_snapshot = match pricing::sqlite_policy_snapshot_lookup(&tx, request_id)? {
-        pricing::PolicySnapshotLookup::Policy(snapshot) => Some(*snapshot),
-        pricing::PolicySnapshotLookup::Missing | pricing::PolicySnapshotLookup::NonPolicy => None,
-    };
     let effective_usage = losing_attempt.is_none().then_some(usage.as_ref()).flatten();
     let effective_disposition = if losing_attempt.is_some() {
         "cancel"
     } else {
         disposition.as_str()
     };
-    let balance = if let Some(snapshot) = policy_snapshot.as_ref() {
-        sqlite_process_policy_settlement(
-            &tx,
-            request_id,
-            &reservation.0,
-            &reservation.1,
-            reservation.2,
-            effective_actual,
-            reference.as_deref(),
-            effective_usage,
-            effective_disposition,
-            snapshot,
-            losing_attempt.is_none(),
-        )?
-    } else {
+    let balance = {
         account_settle_in(
             &tx,
             &reservation.0,
@@ -5661,6 +2645,161 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
     }
     Ok(Some(balance))
 }
+
+pub fn sqlite_reserve_request_for_execution(
+    conn: &Connection,
+    request_id: &str,
+    account_id: &str,
+    key: &str,
+    hold_nano: i64,
+    lease_secs: i64,
+    execution: &ExecutionAttempt,
+) -> Result<Option<i64>> {
+    if request_id.trim().is_empty()
+        || account_id.trim().is_empty()
+        || key.trim().is_empty()
+        || hold_nano < 0
+        || lease_secs <= 0
+    {
+        anyhow::bail!("invalid SQLite reservation parameters");
+    }
+    let tx = conn.unchecked_transaction()?;
+    let existing = tx.query_row(
+        "SELECT account_id,key,hold_nano,state,balance_after_reserve_nano,group_id,attempt \
+         FROM billing_reservations WHERE request_id=?1",
+        rusqlite::params![request_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, i32>(6)?,
+            ))
+        },
+    );
+    match existing {
+        Ok((stored_account, stored_key, stored_hold, state, balance, group_id, attempt)) => {
+            if stored_account != account_id
+                || stored_key != key
+                || stored_hold != hold_nano
+                || group_id.as_deref() != execution.group_id()
+                || attempt != execution.attempt()
+            {
+                anyhow::bail!("reservation request ID was reused with different parameters");
+            }
+            if state == "reserved" || state == "delivering" {
+                tx.commit()?;
+                return Ok(Some(balance));
+            }
+            anyhow::bail!("reservation request is already terminal");
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let Some(balance) = account_reserve_for_key(&tx, account_id, key, hold_nano)? else {
+        tx.rollback()?;
+        return Ok(None);
+    };
+    let timestamp = now();
+    tx.execute(
+        "INSERT INTO billing_reservations( \
+           request_id,account_id,key,hold_nano,group_id,attempt,state,balance_after_reserve_nano, \
+           lease_until,created_ts,updated_ts) \
+         VALUES(?1,?2,?3,?4,?5,?6,'reserved',?7,?8,?9,?9)",
+        rusqlite::params![
+            request_id,
+            account_id,
+            key,
+            hold_nano,
+            execution.group_id(),
+            execution.attempt(),
+            balance,
+            timestamp.saturating_add(lease_secs),
+            timestamp
+        ],
+    )?;
+    tx.commit()?;
+    Ok(Some(balance))
+}
+
+
+
+
+
+
+
+
+
+
+/// Mark a reservation as provider-accepted before handing its response body to the client.
+pub fn sqlite_mark_delivering(
+    conn: &Connection,
+    request_id: &str,
+    lease_secs: i64,
+) -> Result<bool> {
+    if lease_secs <= 0 {
+        anyhow::bail!("invalid delivery lease");
+    }
+    let timestamp = now();
+    let changed = conn.execute(
+        "UPDATE billing_reservations SET state='delivering',lease_until=?2,updated_ts=?3 \
+         WHERE request_id=?1 AND state IN ('reserved','delivering')",
+        rusqlite::params![request_id, timestamp.saturating_add(lease_secs), timestamp],
+    )?;
+    Ok(changed == 1)
+}
+
+pub fn sqlite_renew_reservation_lease(
+    conn: &Connection,
+    request_id: &str,
+    lease_secs: i64,
+) -> Result<bool> {
+    if lease_secs <= 0 {
+        anyhow::bail!("invalid reservation lease");
+    }
+    let timestamp = now();
+    Ok(conn.execute(
+        "UPDATE billing_reservations SET lease_until=?2,updated_ts=?3 \
+         WHERE request_id=?1 AND state IN ('reserved','delivering')",
+        rusqlite::params![request_id, timestamp.saturating_add(lease_secs), timestamp],
+    )? == 1)
+}
+
+
+
+
+
+
+fn sqlite_terminal_expected_actual(
+    conn: &Connection,
+    request_id: &str,
+    original_actual: i64,
+) -> Result<i64> {
+    if original_actual <= 0 {
+        return Ok(original_actual.max(0));
+    }
+    conn.query_row(
+        "SELECT CASE
+           WHEN winner.winner_request_id IS NOT NULL AND winner.winner_request_id<>reservation.request_id
+             THEN 0
+           ELSE ?2
+         END
+           FROM billing_reservations reservation
+           LEFT JOIN execution_group_winner winner
+             ON winner.group_id=COALESCE(reservation.group_id,reservation.request_id)
+          WHERE reservation.request_id=?1",
+        rusqlite::params![request_id, original_actual],
+        |row| row.get(0),
+    )
+    .context("terminal SQLite reservation is missing")
+}
+
+
+
 
 #[allow(clippy::too_many_arguments)]
 pub fn sqlite_settle_request(
@@ -5822,63 +2961,6 @@ pub fn sqlite_reconcile_expired(
     Ok(report)
 }
 
-pub fn sqlite_maintenance_prune(
-    conn: &Connection,
-    older_than_ts: i64,
-) -> Result<crate::pg::MaintenanceReport> {
-    pricing::validate_request_lifecycle_prune_cutoff(older_than_ts, now())?;
-    let tx = conn.unchecked_transaction()?;
-    let outbox = tx.execute(
-        "DELETE FROM billing_settlement_outbox WHERE request_id IN ( \
-           SELECT request_id FROM billing_settlement_outbox WHERE state='done' AND committed_ts<?1 \
-           ORDER BY committed_ts,request_id LIMIT 5000)",
-        rusqlite::params![older_than_ts],
-    )?;
-    let (pricing_snapshots_cascaded, pricing_shadow_evaluations_cascaded) = tx.query_row(
-        "WITH doomed AS ( \
-           SELECT r.request_id FROM billing_reservations r \
-           WHERE r.state IN ('settled','canceled') AND r.settled_ts<?1 \
-             AND r.request_id NOT IN (SELECT request_id FROM billing_settlement_outbox) \
-           ORDER BY r.settled_ts,r.request_id LIMIT 5000 \
-         ) \
-         SELECT \
-           (SELECT COUNT(*) FROM pricing_admission_snapshots s \
-             WHERE EXISTS (SELECT 1 FROM doomed d WHERE d.request_id=s.request_id)), \
-           (SELECT COUNT(*) FROM pricing_shadow_admission_evaluations e \
-             WHERE EXISTS (SELECT 1 FROM doomed d WHERE d.request_id=e.request_id))",
-        rusqlite::params![older_than_ts],
-        |row| {
-            Ok((
-                row.get::<_, i64>(0)? as usize,
-                row.get::<_, i64>(1)? as usize,
-            ))
-        },
-    )?;
-    let reservations = tx.execute(
-        "DELETE FROM billing_reservations WHERE request_id IN ( \
-           SELECT request_id FROM billing_reservations
-            WHERE state IN ('settled','canceled') AND settled_ts<?1 \
-             AND request_id NOT IN (SELECT request_id FROM billing_settlement_outbox) \
-           ORDER BY settled_ts,request_id LIMIT 5000)",
-        rusqlite::params![older_than_ts],
-    )?;
-    tx.execute(
-        "DELETE FROM execution_group_winner AS winner
-          WHERE NOT EXISTS (
-            SELECT 1 FROM billing_reservations reservation
-             WHERE COALESCE(reservation.group_id,reservation.request_id)=winner.group_id
-          )",
-        [],
-    )?;
-    tx.commit()?;
-    Ok(crate::pg::MaintenanceReport {
-        outbox,
-        reservations,
-        pricing_snapshots_cascaded,
-        pricing_shadow_evaluations_cascaded,
-        ..Default::default()
-    })
-}
 
 /// Записать usage-событие (аналитика; НЕ money-строка). Вызывается billing-writer'ом сразу после
 /// `account_settle` на той же connection. `charge_nano` — фактически списанное (после наценки).
@@ -6443,97 +3525,31 @@ pub fn key_get(conn: &Connection, key: &str) -> Result<Option<KeyRow>> {
 }
 
 pub fn key_set_status(conn: &Connection, key: &str, status: &str) -> Result<usize> {
-    key_set_status_with_policy_ack(conn, key, status, None)
+    sqlite_key_set_status(conn, "key", key, status)
 }
 
-pub fn key_set_status_with_policy_ack(
-    conn: &Connection,
-    key: &str,
-    status: &str,
-    activation_policy_ack: Option<&KeyActivationPolicyAck>,
-) -> Result<usize> {
-    sqlite_key_set_status_with_policy_ack(conn, "key", key, status, activation_policy_ack)
-}
 
 /// Change key status through its non-secret control-plane identifier.
 pub fn key_set_status_by_id(conn: &Connection, key_id: &str, status: &str) -> Result<usize> {
-    key_set_status_by_id_with_policy_ack(conn, key_id, status, None)
+    sqlite_key_set_status(conn, "key_id", key_id, status)
 }
 
-pub fn key_set_status_by_id_with_policy_ack(
-    conn: &Connection,
-    key_id: &str,
-    status: &str,
-    activation_policy_ack: Option<&KeyActivationPolicyAck>,
-) -> Result<usize> {
-    sqlite_key_set_status_with_policy_ack(conn, "key_id", key_id, status, activation_policy_ack)
-}
-
-fn sqlite_key_set_status_with_policy_ack(
+fn sqlite_key_set_status(
     conn: &Connection,
     identity_column: &str,
     identity: &str,
     status: &str,
-    activation_policy_ack: Option<&KeyActivationPolicyAck>,
 ) -> Result<usize> {
     if !matches!(identity_column, "key" | "key_id") {
         anyhow::bail!("invalid key status identity column");
     }
-    activation_policy_ack
-        .map(KeyActivationPolicyAck::validate)
-        .transpose()?;
-    let tx = conn.unchecked_transaction()?;
-    let query = format!(
-        "SELECT binding.policy_enforcement,binding.active_effective_version,policy.content_digest
-           FROM api_keys key
-           LEFT JOIN account_policy_bindings binding ON binding.account_id=key.account_id
-           LEFT JOIN account_policy_versions policy
-             ON policy.account_id=binding.account_id
-            AND policy.effective_version=binding.active_effective_version
-          WHERE key.{identity_column}=?1"
-    );
-    let policy_state = tx.query_row(&query, rusqlite::params![identity], |row| {
-        Ok((
-            row.get::<_, Option<String>>(0)?,
-            row.get::<_, Option<i64>>(1)?,
-            row.get::<_, Option<String>>(2)?,
-        ))
-    });
-    let policy_state = match policy_state {
-        Ok(state) => state,
-        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(0),
-        Err(error) => return Err(error.into()),
-    };
-    let ack_matches = activation_policy_ack.is_some_and(|ack| {
-        policy_state.1 == Some(ack.effective_policy_version)
-            && policy_state.2.as_deref() == Some(ack.policy_digest.as_str())
-    });
-    if activation_policy_ack.is_some() && !ack_matches {
-        anyhow::bail!("key activation policy ACK does not match the exact active policy");
-    }
-    if status == "active" && policy_state.0.as_deref() == Some("strict") && !ack_matches {
-        anyhow::bail!("strict key reactivation requires the exact active policy ACK");
-    }
-    let update = format!(
-        "UPDATE api_keys SET status=?1,
-             activation_policy_effective_version=COALESCE(?2,activation_policy_effective_version),
-             activation_policy_digest=COALESCE(?3,activation_policy_digest),
-             activation_policy_ack_ts=COALESCE(?4,activation_policy_ack_ts)
-          WHERE {identity_column}=?5"
-    );
-    let changed = tx.execute(
-        &update,
-        rusqlite::params![
-            status,
-            activation_policy_ack.map(|ack| ack.effective_policy_version),
-            activation_policy_ack.map(|ack| ack.policy_digest.as_str()),
-            activation_policy_ack.map(|_| now()),
-            identity,
-        ],
-    )?;
-    tx.commit()?;
-    Ok(changed)
+    Ok(conn.execute(
+        &format!("UPDATE api_keys SET status=?1 WHERE {identity_column}=?2"),
+        rusqlite::params![status, identity],
+    )?)
 }
+
+
 
 /// Change key label through its non-secret control-plane identifier.
 pub fn key_set_label_by_id(conn: &Connection, key_id: &str, label: &str) -> Result<usize> {
@@ -6627,83 +3643,10 @@ pub struct LedgerRow {
     pub model: Option<String>, // Claude-модель за charge (для per-model графика); topup/adjust → None
     pub provider: Option<String>,
     pub official_nano: Option<i64>,
-    pub attribution: Option<LedgerAttribution>,
-    pub funding_allocations: Vec<LedgerFundingAllocation>,
 }
 
-/// Immutable policy/funding evidence copied onto a charge ledger row by the Stage 9 settlement.
-/// Fields remain nullable because expand-era historical rows may contain only legacy/provider
-/// attribution; readers must preserve unknown rather than synthesize a policy identity.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub struct LedgerAttribution {
-    pub attribution_schema_version: i64,
-    pub snapshot_kind: Option<String>,
-    pub provider_id: Option<String>,
-    pub product_id: Option<String>,
-    pub account_class: Option<String>,
-    pub requested_model_id: Option<String>,
-    pub canonical_model_id: Option<String>,
-    pub served_model_id: Option<String>,
-    pub served_canonical_model_id: Option<String>,
-    pub billing_invariant_code: Option<String>,
-    pub alias_generation: Option<i64>,
-    pub rule_id: Option<String>,
-    pub rule_digest: Option<String>,
-    pub rule_scope: Option<String>,
-    pub pricing_mode: Option<String>,
-    pub rule_origin: Option<String>,
-    pub discount_bps: Option<i64>,
-    pub payable_multiplier_bp: Option<i64>,
-    pub policy_id: Option<String>,
-    pub policy_version: Option<i64>,
-    pub effective_policy_version: Option<i64>,
-    pub policy_digest: Option<String>,
-    pub source_policy_digest: Option<String>,
-    pub catalog_generation: Option<i64>,
-    pub switch_generation: Option<i64>,
-    pub admission_catalog_generation: Option<i64>,
-    pub admission_catalog_digest: Option<String>,
-    pub admission_switch_generation: Option<i64>,
-    pub admission_switch_digest: Option<String>,
-    pub runtime_manifest_generation: Option<i64>,
-    pub runtime_manifest_digest: Option<String>,
-    pub tariff_schedule_id: Option<String>,
-    pub tariff_priced_ts: Option<i64>,
-    pub official_nano: Option<i64>,
-    pub official_cost_json: Option<serde_json::Value>,
-    pub paid_funded_nano: Option<i64>,
-    pub bonus_funded_nano: Option<i64>,
-    pub other_funded_nano: Option<i64>,
-    pub funding_allocation_json: Option<serde_json::Value>,
-    pub track_eligible: Option<bool>,
-    pub retention_eligible: Option<bool>,
-    pub commission_eligible: Option<bool>,
-    pub snapshot_digest: Option<String>,
-    pub release_schema_version: Option<i64>,
-    pub release_generation: Option<i64>,
-    pub release_digest: Option<String>,
-    pub release_billing_mode: Option<String>,
-    pub release_funding_generation: Option<i64>,
-}
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct LedgerFundingAllocation {
-    pub bucket_id: String,
-    pub source_type: String,
-    pub source_ref: String,
-    pub bucket_version: i64,
-    pub direction: String,
-    pub amount_nano: i64,
-    pub allocation_order: Option<i64>,
-}
 
-fn parse_ledger_json(raw: Option<String>, field: &str) -> Result<Option<serde_json::Value>> {
-    raw.map(|value| {
-        serde_json::from_str(&value)
-            .with_context(|| format!("ledger {field} contains invalid JSON"))
-    })
-    .transpose()
-}
 
 pub(crate) fn resolve_ledger_provider(
     ledger_provider: Option<String>,
@@ -6721,67 +3664,8 @@ pub(crate) fn resolve_ledger_provider(
 fn sqlite_ledger_row(row: &rusqlite::Row<'_>) -> Result<LedgerRow> {
     let provider = resolve_ledger_provider(
         row.get::<_, Option<String>>(9)?,
-        row.get::<_, Option<String>>(52)?,
+        row.get::<_, Option<String>>(11)?,
     )?;
-    let official_nano = row.get::<_, Option<i64>>(10)?;
-    let attribution_schema_version = row.get::<_, Option<i64>>(11)?;
-    let attribution = attribution_schema_version
-        .map(|attribution_schema_version| {
-            Ok::<LedgerAttribution, anyhow::Error>(LedgerAttribution {
-                attribution_schema_version,
-                snapshot_kind: row.get(12)?,
-                provider_id: provider.clone(),
-                product_id: row.get(13)?,
-                account_class: row.get(14)?,
-                requested_model_id: row.get(15)?,
-                canonical_model_id: row.get(16)?,
-                served_model_id: row.get(17)?,
-                served_canonical_model_id: row.get(18)?,
-                billing_invariant_code: row.get(19)?,
-                alias_generation: row.get(20)?,
-                rule_id: row.get(21)?,
-                rule_digest: row.get(22)?,
-                rule_scope: row.get(23)?,
-                pricing_mode: row.get(24)?,
-                rule_origin: row.get(25)?,
-                discount_bps: row.get(26)?,
-                payable_multiplier_bp: row.get(27)?,
-                policy_id: row.get(28)?,
-                policy_version: row.get(29)?,
-                effective_policy_version: row.get(30)?,
-                policy_digest: row.get(31)?,
-                catalog_generation: row.get(32)?,
-                switch_generation: row.get(33)?,
-                tariff_schedule_id: row.get(34)?,
-                tariff_priced_ts: row.get(35)?,
-                official_nano,
-                official_cost_json: parse_ledger_json(row.get(36)?, "official_cost_json")?,
-                paid_funded_nano: row.get(37)?,
-                bonus_funded_nano: row.get(38)?,
-                other_funded_nano: row.get(39)?,
-                funding_allocation_json: parse_ledger_json(
-                    row.get(40)?,
-                    "funding_allocation_json",
-                )?,
-                track_eligible: row.get::<_, Option<i64>>(41)?.map(|value| value != 0),
-                retention_eligible: row.get::<_, Option<i64>>(42)?.map(|value| value != 0),
-                commission_eligible: row.get::<_, Option<i64>>(43)?.map(|value| value != 0),
-                snapshot_digest: row.get(44)?,
-                source_policy_digest: row.get(45)?,
-                admission_catalog_generation: row.get(46)?,
-                admission_catalog_digest: row.get(47)?,
-                admission_switch_generation: row.get(48)?,
-                admission_switch_digest: row.get(49)?,
-                runtime_manifest_generation: row.get(50)?,
-                runtime_manifest_digest: row.get(51)?,
-                release_schema_version: None,
-                release_generation: None,
-                release_digest: None,
-                release_billing_mode: None,
-                release_funding_generation: None,
-            })
-        })
-        .transpose()?;
     Ok(LedgerRow {
         id: row.get(0)?,
         key: row.get(1)?,
@@ -6793,29 +3677,13 @@ fn sqlite_ledger_row(row: &rusqlite::Row<'_>) -> Result<LedgerRow> {
         ts: row.get(7)?,
         model: row.get(8)?,
         provider,
-        official_nano,
-        attribution,
-        funding_allocations: Vec::new(),
+        official_nano: row.get(10)?,
     })
 }
 
 const SQLITE_LEDGER_READ_COLUMNS: &str = "
     ledger.id,ledger.key,ledger.kind,ledger.request_id,ledger.amount_nano,ledger.ref,
     ledger.balance_after_nano,ledger.ts,ledger.model,ledger.provider,ledger.official_nano,
-    ledger.attribution_schema_version,ledger.snapshot_kind,ledger.product_id,
-    ledger.account_class,ledger.requested_model_id,ledger.canonical_model_id,
-    ledger.served_model_id,ledger.served_canonical_model_id,ledger.billing_invariant_code,
-    ledger.alias_generation,ledger.rule_id,ledger.rule_digest,ledger.rule_scope,
-    ledger.pricing_mode,ledger.rule_origin,ledger.discount_bps,ledger.payable_multiplier_bp,
-    ledger.policy_id,ledger.policy_version,ledger.effective_policy_version,ledger.policy_digest,
-    ledger.catalog_generation,ledger.switch_generation,ledger.tariff_schedule_id,
-    ledger.tariff_priced_ts,ledger.official_cost_json,ledger.paid_funded_nano,
-    ledger.bonus_funded_nano,ledger.other_funded_nano,ledger.funding_allocation_json,
-    ledger.track_eligible,ledger.retention_eligible,ledger.commission_eligible,
-    ledger.snapshot_digest,ledger.source_policy_digest,ledger.admission_catalog_generation,
-    ledger.admission_catalog_digest,ledger.admission_switch_generation,
-    ledger.admission_switch_digest,ledger.runtime_manifest_generation,
-    ledger.runtime_manifest_digest,
     CASE
       WHEN ledger.kind<>'charge' THEN NULL
       WHEN ledger.request_id IS NOT NULL THEN (
@@ -6847,59 +3715,6 @@ const SQLITE_LEDGER_READ_COLUMNS: &str = "
       )
     END";
 
-fn sqlite_ledger_allocations(
-    conn: &Connection,
-    account_id: &str,
-    entries: &mut [LedgerRow],
-) -> Result<()> {
-    let Some(first_id) = entries.iter().map(|entry| entry.id).min() else {
-        return Ok(());
-    };
-    let last_id = entries
-        .iter()
-        .map(|entry| entry.id)
-        .max()
-        .unwrap_or(first_id);
-    let mut statement = conn.prepare(
-        "SELECT allocation.ledger_id,allocation.bucket_id,allocation.bucket_source_type,
-                bucket.source_ref,allocation.bucket_version,allocation.direction,
-                allocation.amount_nano,reservation.allocation_order
-           FROM ledger_funding_allocations allocation
-           JOIN ledger ON ledger.id=allocation.ledger_id
-           JOIN funding_buckets bucket
-             ON bucket.bucket_id=allocation.bucket_id
-            AND bucket.account_id=allocation.account_id
-            AND bucket.source_type=allocation.bucket_source_type
-           LEFT JOIN reservation_funding_allocations reservation
-             ON reservation.request_id=ledger.request_id
-            AND reservation.account_id=allocation.account_id
-            AND reservation.bucket_id=allocation.bucket_id
-          WHERE ledger.account_id=?1 AND ledger.id BETWEEN ?2 AND ?3
-          ORDER BY allocation.ledger_id,
-                   COALESCE(reservation.allocation_order,9223372036854775807),
-                   allocation.bucket_id",
-    )?;
-    let mut rows = statement.query(rusqlite::params![account_id, first_id, last_id])?;
-    let mut by_ledger = std::collections::BTreeMap::<i64, Vec<LedgerFundingAllocation>>::new();
-    while let Some(row) = rows.next()? {
-        by_ledger
-            .entry(row.get(0)?)
-            .or_default()
-            .push(LedgerFundingAllocation {
-                bucket_id: row.get(1)?,
-                source_type: row.get(2)?,
-                source_ref: row.get(3)?,
-                bucket_version: row.get(4)?,
-                direction: row.get(5)?,
-                amount_nano: row.get(6)?,
-                allocation_order: row.get(7)?,
-            });
-    }
-    for entry in entries {
-        entry.funding_allocations = by_ledger.remove(&entry.id).unwrap_or_default();
-    }
-    Ok(())
-}
 
 fn sqlite_ledger_page(
     conn: &Connection,
@@ -6929,7 +3744,6 @@ fn sqlite_ledger_page(
     }
     drop(query);
     drop(statement);
-    sqlite_ledger_allocations(&tx, account_id, &mut entries)?;
     tx.commit()?;
     Ok(entries)
 }

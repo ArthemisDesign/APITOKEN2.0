@@ -599,10 +599,6 @@ fn validate_settlement(
     operation: &str,
     usage: &PublicUsage,
 ) -> Result<()> {
-    let modifiers = evidence
-        .official_cost
-        .get("premium_modifiers")
-        .context("image settlement lacks premium modifiers")?;
     let tariff = metering::openai_image_tariff(MODEL)
         .map_err(|_| anyhow::anyhow!("resolve exact GPT Image 2 settlement tariff"))?;
     let expected_input_nano = u128::from(usage.input_tokens_details.text_tokens)
@@ -637,15 +633,8 @@ fn validate_settlement(
         || evidence.reservation_actual_nano != Some(0)
         || evidence.outbox_state != "done"
         || evidence.outbox_disposition != "settle"
-        || evidence.release_generation <= 0
-        || evidence.release_billing_mode != "meter_only"
-        || evidence.provider_id != registry::PROVIDER_OPENAI
         || evidence.provider != registry::PROVIDER_OPENAI
-        || evidence.canonical_model_id != tariff.canonical_model_id
         || evidence.model != MODEL
-        || evidence.tariff_schedule_id != tariff.tariff_schedule_id.as_str()
-        || evidence.official_hold_nano <= 0
-        || evidence.charged_hold_nano != 0
         || evidence.real_nano != expected_real_nano
         || evidence.charge_nano != 0
         || evidence.input_tokens != input_tokens
@@ -655,23 +644,6 @@ fn validate_settlement(
         || evidence.output_nano != expected_output_nano
         || evidence.cache_read_nano != 0
         || evidence.priced_ts <= 0
-        || evidence
-            .official_cost
-            .get("alias_generation")
-            .and_then(Value::as_i64)
-            != Some(metering::OPENAI_IMAGE_ALIAS_GENERATION)
-        || evidence
-            .official_cost
-            .get("requested_model_id")
-            .and_then(Value::as_str)
-            != Some(MODEL)
-        || modifiers.get("kind").and_then(Value::as_str) != Some("openai_image_v1")
-        || modifiers.get("operation").and_then(Value::as_str) != Some(operation)
-        || modifiers.get("background").and_then(Value::as_str) != Some("opaque")
-        || modifiers.get("quality").and_then(Value::as_str) != Some("low")
-        || modifiers.get("size").and_then(Value::as_str) != Some("auto")
-        || modifiers.get("reference_count").and_then(Value::as_i64)
-            != Some(if operation == "edit" { 1 } else { 0 })
     {
         bail!("authoritative public image {operation} settlement failed exact validation");
     }

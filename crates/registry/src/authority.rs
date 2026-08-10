@@ -2,7 +2,7 @@
 
 use crate::{
     pg::{Owner, PgStore},
-    AccountFundingSnapshot, AccountRow, BillingTotals, ClaudeLifecycleProfile, KeyAuth,
+    AccountRow, BillingTotals, ClaudeLifecycleProfile, KeyAuth,
     KeyPolicyUpdate, KeyRow, LedgerRow, PoolStateRow, SpendAccountAgg, Sub, SubAdmin, SubHealth,
     SubRow, UsageModelAgg, UsageReport,
 };
@@ -75,38 +75,10 @@ impl Authority {
             Self::Postgres(pg) => Ok(Some(pg.claim_instance(instance_id, ttl_secs)?)),
         }
     }
-    pub fn claim_instance_with_pricing_manifest(
-        &mut self,
-        instance_id: &str,
-        ttl_secs: i64,
-        manifest: &crate::pricing::PricingRuntimeManifestEvidence,
-    ) -> Result<Option<Owner>> {
-        match self {
-            Self::Sqlite(_) => Ok(None),
-            Self::Postgres(pg) => Ok(Some(pg.claim_instance_with_pricing_manifest(
-                instance_id,
-                ttl_secs,
-                manifest,
-            )?)),
-        }
-    }
     pub fn heartbeat_instance(&mut self, owner: &Owner, ttl_secs: i64) -> Result<bool> {
         match self {
             Self::Postgres(pg) => pg.heartbeat_instance(owner, ttl_secs),
             Self::Sqlite(_) => Ok(true),
-        }
-    }
-    pub fn heartbeat_instance_with_pricing_manifest(
-        &mut self,
-        owner: &Owner,
-        ttl_secs: i64,
-        manifest: &crate::pricing::PricingRuntimeManifestEvidence,
-    ) -> Result<bool> {
-        match self {
-            Self::Sqlite(_) => Ok(true),
-            Self::Postgres(pg) => {
-                pg.heartbeat_instance_with_pricing_manifest(owner, ttl_secs, manifest)
-            }
         }
     }
     pub fn load_active(&mut self, fleet: Option<&str>) -> Result<Vec<Sub>> {
@@ -275,12 +247,6 @@ impl Authority {
             Self::Postgres(pg) => pg.account_get(id),
         }
     }
-    pub fn account_funding_snapshot(&mut self, id: &str) -> Result<Option<AccountFundingSnapshot>> {
-        match self {
-            Self::Sqlite(c) => crate::account_funding_snapshot(c, id),
-            Self::Postgres(pg) => pg.account_funding_snapshot(id),
-        }
-    }
     pub fn account_by_handle(&mut self, handle: &str) -> Result<Option<AccountRow>> {
         match self {
             Self::Sqlite(c) => crate::account_by_handle(c, handle),
@@ -350,35 +316,6 @@ impl Authority {
             }
         }
     }
-    pub fn key_issue_with_policy_ack(
-        &mut self,
-        key: &str,
-        account_id: &str,
-        label: Option<&str>,
-        spend_limit_nano: Option<i64>,
-        expires_ts: Option<i64>,
-        activation_policy_ack: Option<&crate::KeyActivationPolicyAck>,
-    ) -> Result<()> {
-        match self {
-            Self::Sqlite(c) => crate::key_issue_with_policy_ack(
-                c,
-                key,
-                account_id,
-                label,
-                spend_limit_nano,
-                expires_ts,
-                activation_policy_ack,
-            ),
-            Self::Postgres(pg) => pg.key_issue_with_policy_ack(
-                key,
-                account_id,
-                label,
-                spend_limit_nano,
-                expires_ts,
-                activation_policy_ack,
-            ),
-        }
-    }
     pub fn key_account(&mut self, key: &str) -> Result<Option<KeyAuth>> {
         match self {
             Self::Sqlite(c) => crate::key_account(c, key),
@@ -409,43 +346,10 @@ impl Authority {
             Self::Postgres(pg) => pg.key_set_status(key, status),
         }
     }
-    pub fn key_set_status_with_policy_ack(
-        &mut self,
-        key: &str,
-        status: &str,
-        activation_policy_ack: Option<&crate::KeyActivationPolicyAck>,
-    ) -> Result<usize> {
-        match self {
-            Self::Sqlite(c) => {
-                crate::key_set_status_with_policy_ack(c, key, status, activation_policy_ack)
-            }
-            Self::Postgres(pg) => {
-                pg.key_set_status_with_policy_ack(key, status, activation_policy_ack)
-            }
-        }
-    }
     pub fn key_set_status_by_id(&mut self, key_id: &str, status: &str) -> Result<usize> {
         match self {
             Self::Sqlite(c) => crate::key_set_status_by_id(c, key_id, status),
             Self::Postgres(pg) => pg.key_set_status_by_id(key_id, status),
-        }
-    }
-    pub fn key_set_status_by_id_with_policy_ack(
-        &mut self,
-        key_id: &str,
-        status: &str,
-        activation_policy_ack: Option<&crate::KeyActivationPolicyAck>,
-    ) -> Result<usize> {
-        match self {
-            Self::Sqlite(c) => crate::key_set_status_by_id_with_policy_ack(
-                c,
-                key_id,
-                status,
-                activation_policy_ack,
-            ),
-            Self::Postgres(pg) => {
-                pg.key_set_status_by_id_with_policy_ack(key_id, status, activation_policy_ack)
-            }
         }
     }
     pub fn key_set_label_by_id(&mut self, key_id: &str, label: &str) -> Result<usize> {
@@ -620,181 +524,17 @@ impl Authority {
 }
 
 impl Authority {
-    pub fn pricing_read_bundle(
-        &mut self,
-        account_id: &str,
-    ) -> Result<crate::pricing::PricingReadBundle> {
-        match self {
-            Self::Sqlite(connection) => {
-                crate::pricing::sqlite_pricing_read_bundle(connection, account_id)
-            }
-            Self::Postgres(store) => store.pricing_read_bundle(account_id),
-        }
-    }
 
-    pub fn pricing_catalog_by_generation(
-        &mut self,
-        product_id: &str,
-        generation: i64,
-    ) -> Result<Option<crate::pricing::PricingCatalogSpec>> {
-        match self {
-            Self::Sqlite(connection) => crate::pricing::sqlite_pricing_catalog_by_generation(
-                connection, product_id, generation,
-            ),
-            Self::Postgres(store) => store.pricing_catalog_by_generation(product_id, generation),
-        }
-    }
 
-    pub fn active_pricing_catalog(
-        &mut self,
-        product_id: &str,
-    ) -> Result<Option<crate::pricing::PricingCatalogSpec>> {
-        match self {
-            Self::Sqlite(connection) => {
-                crate::pricing::sqlite_active_pricing_catalog(connection, product_id)
-            }
-            Self::Postgres(store) => store.active_pricing_catalog(product_id),
-        }
-    }
 
-    pub fn prepare_pricing_catalog(
-        &mut self,
-        spec: &crate::pricing::PricingCatalogSpec,
-    ) -> Result<crate::pricing::PricingMutation> {
-        match self {
-            Self::Sqlite(connection) => {
-                crate::pricing::sqlite_prepare_pricing_catalog(connection, spec)
-            }
-            Self::Postgres(store) => store.prepare_pricing_catalog(spec),
-        }
-    }
 
-    pub fn activate_pricing_catalog(
-        &mut self,
-        product_id: &str,
-        target: &crate::pricing::VersionTarget,
-        expectation: &crate::pricing::ActiveExpectation,
-    ) -> Result<crate::pricing::PricingMutation> {
-        match self {
-            Self::Sqlite(connection) => crate::pricing::sqlite_activate_pricing_catalog(
-                connection,
-                product_id,
-                target,
-                expectation,
-            ),
-            Self::Postgres(store) => {
-                store.activate_pricing_catalog(product_id, target, expectation)
-            }
-        }
-    }
 
-    pub fn provider_switches_by_generation(
-        &mut self,
-        generation: i64,
-    ) -> Result<Option<crate::pricing::ProviderSwitchSpec>> {
-        match self {
-            Self::Sqlite(connection) => {
-                crate::pricing::sqlite_provider_switches_by_generation(connection, generation)
-            }
-            Self::Postgres(store) => store.provider_switches_by_generation(generation),
-        }
-    }
 
-    pub fn active_provider_switches(
-        &mut self,
-    ) -> Result<Option<crate::pricing::ProviderSwitchSpec>> {
-        match self {
-            Self::Sqlite(connection) => crate::pricing::sqlite_active_provider_switches(connection),
-            Self::Postgres(store) => store.active_provider_switches(),
-        }
-    }
 
-    pub fn prepare_provider_switches(
-        &mut self,
-        spec: &crate::pricing::ProviderSwitchSpec,
-    ) -> Result<crate::pricing::PricingMutation> {
-        match self {
-            Self::Sqlite(connection) => {
-                crate::pricing::sqlite_prepare_provider_switches(connection, spec)
-            }
-            Self::Postgres(store) => store.prepare_provider_switches(spec),
-        }
-    }
 
-    pub fn activate_provider_switches(
-        &mut self,
-        target: &crate::pricing::VersionTarget,
-        expectation: &crate::pricing::ActiveExpectation,
-    ) -> Result<crate::pricing::PricingMutation> {
-        match self {
-            Self::Sqlite(connection) => {
-                crate::pricing::sqlite_activate_provider_switches(connection, target, expectation)
-            }
-            Self::Postgres(store) => store.activate_provider_switches(target, expectation),
-        }
-    }
 
-    pub fn account_policy_by_version(
-        &mut self,
-        account_id: &str,
-        effective_version: i64,
-    ) -> Result<Option<crate::pricing::AccountPolicySpec>> {
-        match self {
-            Self::Sqlite(connection) => crate::pricing::sqlite_account_policy_by_version(
-                connection,
-                account_id,
-                effective_version,
-            ),
-            Self::Postgres(store) => store.account_policy_by_version(account_id, effective_version),
-        }
-    }
 
-    pub fn active_account_policy(
-        &mut self,
-        account_id: &str,
-    ) -> Result<Option<crate::pricing::ActiveAccountPolicy>> {
-        match self {
-            Self::Sqlite(connection) => {
-                crate::pricing::sqlite_active_account_policy(connection, account_id)
-            }
-            Self::Postgres(store) => store.active_account_policy(account_id),
-        }
-    }
 
-    pub fn prepare_account_policy(
-        &mut self,
-        spec: &crate::pricing::AccountPolicySpec,
-    ) -> Result<crate::pricing::PricingMutation> {
-        match self {
-            Self::Sqlite(connection) => {
-                crate::pricing::sqlite_prepare_account_policy(connection, spec)
-            }
-            Self::Postgres(store) => store.prepare_account_policy(spec),
-        }
-    }
 
-    pub fn locked_openkeys_policy_transition(
-        &mut self,
-        transition: &crate::pricing::LockedOpenKeysPolicyTransitionSpec,
-    ) -> Result<crate::pricing::PricingMutation> {
-        match self {
-            Self::Sqlite(connection) => {
-                crate::pricing::sqlite_locked_openkeys_policy_transition(connection, transition)
-            }
-            Self::Postgres(store) => store.locked_openkeys_policy_transition(transition),
-        }
-    }
 
-    pub fn activate_account_policy(
-        &mut self,
-        activation: &crate::pricing::AccountPolicyActivationSpec,
-        expectation: &crate::pricing::PolicyActiveExpectation,
-    ) -> Result<crate::pricing::PricingMutation> {
-        match self {
-            Self::Sqlite(connection) => {
-                crate::pricing::sqlite_activate_account_policy(connection, activation, expectation)
-            }
-            Self::Postgres(store) => store.activate_account_policy(activation, expectation),
-        }
-    }
 }

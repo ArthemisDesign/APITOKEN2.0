@@ -17,7 +17,6 @@ pub mod history;
 mod image_api;
 mod images;
 mod openai_image_snapshot;
-mod openai_snapshot;
 mod runner;
 mod skin;
 mod transport;

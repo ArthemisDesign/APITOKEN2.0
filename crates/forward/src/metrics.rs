@@ -1,12 +1,6 @@
 //! Счётчики форвардинга для наблюдаемости (`/metrics`). Дёшевые атомики, монотонные с запуска.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
-
-use crate::pricing::{
-};
-use registry::pricing::{
-};
 
 
 

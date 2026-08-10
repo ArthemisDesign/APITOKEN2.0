@@ -24,19 +24,11 @@ pub(crate) enum AdmissionError {
 /// Which pricing authority produced the admission hold; selects the settlement rounding
 /// contract. Release-v2 settles with the exact contract floor (matching its reserve); the
 /// legacy scalar keeps its immutable half-up arithmetic. Legacy strict Gemini is rejected at
-/// admission, so it has no settlement lineage here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GeminiSettlementPricing {
-    LegacyScalar,
-    ReleaseV2,
-}
-
 type GeminiReserveResult = (
     u64,
     i64,
     i64,
     Option<i64>,
-    GeminiSettlementPricing,
     Option<tariff_book::PinnedTariff>,
 );
 
@@ -50,7 +42,6 @@ struct Reservation {
     /// The hot tariff override version admission priced the hold with; settlement replays exactly
     /// this version. `None` is the compiled constants, byte-identical to before.
     pinned_tariff: Option<tariff_book::PinnedTariff>,
-    settlement_pricing: GeminiSettlementPricing,
     request_id: String,
     guard: HoldGuard,
 }
@@ -112,7 +103,6 @@ impl PendingGeminiAdmission {
                     hold,
                     reservation_mult_bp,
                     tariff_priced_ts,
-                    settlement_pricing,
                     pinned_tariff,
                 ) = reserve_gemini_metered(
                     billing,
@@ -139,7 +129,6 @@ impl PendingGeminiAdmission {
                     hold,
                     tariff_priced_ts,
                     pinned_tariff,
-                    settlement_pricing,
                     request_id: request_id.clone(),
                     guard: HoldGuard::new(
                         Some(billing.clone()),
@@ -293,7 +282,6 @@ impl GeminiAdmission {
                 reservation.hold,
                 reservation.mult_bp,
                 priced_ts,
-                reservation.settlement_pricing,
                 prices,
             );
             reservation.billing.settle_detached(
@@ -486,7 +474,6 @@ fn settled_charge_or_hold(
     hold: i64,
     mult_bp: i64,
     now: i64,
-    settlement_pricing: GeminiSettlementPricing,
 ) -> (i64, Option<registry::UsageEventInput>) {
     let prices = metering::gemini_prices_at(&model.id, now).unwrap_or(model.prices);
     settled_charge_or_hold_with_prices(
@@ -495,7 +482,6 @@ fn settled_charge_or_hold(
         hold,
         mult_bp,
         now,
-        settlement_pricing,
         prices,
     )
 }
@@ -509,12 +495,11 @@ fn settled_charge_or_hold_with_prices(
     hold: i64,
     mult_bp: i64,
     now: i64,
-    settlement_pricing: GeminiSettlementPricing,
     prices: metering::GeminiPrices,
 ) -> (i64, Option<registry::UsageEventInput>) {
     match usage.filter(|usage| !usage.is_zero()) {
         Some(usage) => {
-            settled_charge_with_prices(model, usage, hold, mult_bp, now, settlement_pricing, prices)
+            settled_charge_with_prices(model, usage, hold, mult_bp, now, prices)
         }
         // Usage never arrived. The preflight hold is an admission device, not a price — billing it
         // charged a double-digit multiple of the real turn — so this settles at nothing unless an
@@ -788,7 +773,6 @@ async fn reserve_gemini_legacy(
             hold,
             mult_bp,
             None,
-            GeminiSettlementPricing::LegacyScalar,
             resolved.pin,
         )),
         Ok(None) => Err(AdmissionError::LowBalance),
@@ -806,10 +790,9 @@ fn settled_charge(
     hold: i64,
     mult_bp: i64,
     now: i64,
-    settlement_pricing: GeminiSettlementPricing,
 ) -> (i64, Option<registry::UsageEventInput>) {
     let prices = metering::gemini_prices_at(&model.id, now).unwrap_or(model.prices);
-    settled_charge_with_prices(model, usage, hold, mult_bp, now, settlement_pricing, prices)
+    settled_charge_with_prices(model, usage, hold, mult_bp, now, prices)
 }
 
 /// `settled_charge` under one explicit rate card.
@@ -820,14 +803,10 @@ fn settled_charge_with_prices(
     hold: i64,
     mult_bp: i64,
     now: i64,
-    settlement_pricing: GeminiSettlementPricing,
     prices: metering::GeminiPrices,
 ) -> (i64, Option<registry::UsageEventInput>) {
     let real = metering::gemini::cost_nanodollars(usage, &prices);
-    let computed = match settlement_pricing {
-        GeminiSettlementPricing::ReleaseV2 => metering::apply_multiplier_floor(real, mult_bp),
-        GeminiSettlementPricing::LegacyScalar => metering::apply_multiplier(real, mult_bp),
-    };
+    let computed = metering::apply_multiplier(real, mult_bp);
     let ceiling = hold.max(0) as i128 + metering::OVERDRAFT_NANO;
     let charge = computed.clamp(0, ceiling).min(i64::MAX as i128) as i64;
     if real <= 0 {
@@ -920,10 +899,6 @@ mod tests {
         ProxyConfig,
     };
     use pool::{Pool, Reserve};
-    use registry::pricing::{
-        FundingEnforcement, LegacyScalarReserveOutcome, PolicyEnforcement, PricingMode,
-        SnapshotProvider,
-    };
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1138,7 +1113,6 @@ mod tests {
             i64::MAX,
             10_000,
             123,
-            GeminiSettlementPricing::LegacyScalar,
         );
         let event = event.unwrap();
         assert_eq!(event.provider, registry::PROVIDER_GOOGLE);
@@ -1273,7 +1247,6 @@ mod tests {
             i64::MAX,
             10_000,
             123,
-            GeminiSettlementPricing::LegacyScalar,
         );
         let expected = 100 * 500 + 20 * 3_000 + 1_120 * 60_000;
         let event = event.unwrap();
@@ -1355,7 +1328,6 @@ mod tests {
                     version: 2,
                     schedule_id: "google/gemini/gemini-2.5-flash/v2".to_owned(),
                 }),
-                settlement_pricing: GeminiSettlementPricing::LegacyScalar,
                 request_id: REQUEST_ID.to_owned(),
                 guard: HoldGuard::new(
                     Some(Arc::clone(&billing)),
@@ -1391,7 +1363,7 @@ mod tests {
             output_tokens: u64::MAX,
             ..metering::GeminiUsage::default()
         };
-        let (charge, _) = settled_charge(&model(), &usage, 17, 10_000, 0, GeminiSettlementPricing::LegacyScalar);
+        let (charge, _) = settled_charge(&model(), &usage, 17, 10_000, 0);
         assert_eq!(charge as i128, 17 + metering::OVERDRAFT_NANO);
     }
 
@@ -1411,8 +1383,7 @@ mod tests {
                 123_456,
                 10_000,
                 0,
-                GeminiSettlementPricing::LegacyScalar,
-            );
+                );
             assert_eq!(charge, 0);
             assert!(event.is_none());
         }
@@ -1426,7 +1397,6 @@ mod tests {
             123_456,
             10_000,
             0,
-            GeminiSettlementPricing::LegacyScalar,
         );
         crate::settlement_policy::set_charge_hold_on_unknown_usage(false);
         assert_eq!(charge, 123_456);
