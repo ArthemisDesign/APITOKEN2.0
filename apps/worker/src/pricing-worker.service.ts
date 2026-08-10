@@ -256,4 +256,3 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "pricing worker failed";
 }
-

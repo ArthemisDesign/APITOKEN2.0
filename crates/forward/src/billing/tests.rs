@@ -2084,4 +2084,3 @@ fn kimi_postgres_recent_turns_read_is_bounded_newest_first_and_exact() {
         )
         .unwrap();
 }
-

@@ -101,4 +101,3 @@ describe("admin user list HTTP contract", () => {
     expect(setBusinessPricing).not.toHaveBeenCalled();
   });
 });
-

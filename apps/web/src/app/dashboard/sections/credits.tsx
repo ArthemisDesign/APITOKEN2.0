@@ -170,4 +170,3 @@ function safeCheckoutUrl(rawUrl: string, provider: CheckoutView["provider"]): st
     return parsed.href;
   } catch { return null; }
 }
-

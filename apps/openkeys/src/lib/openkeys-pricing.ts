@@ -105,4 +105,3 @@ export async function provisionOfficialOpenKeysCredential(
   await input.onCredited?.();
   return engine.issueKey(input.accountId, { label: input.keyLabel });
 }
-

@@ -267,4 +267,3 @@ export async function getAdminPricingJobHealth(
       : Number(row.oldest_unconfirmed_age_seconds),
   };
 }
-
