@@ -67,6 +67,13 @@ The worker claims a job, calls the engine and confirms. If the desired value mov
 delivery was in flight, the job is requeued with the new value rather than confirmed, so an edit
 made during an engine outage is delayed, never lost.
 
+Every terminal write fences on the lease the worker was given (`locked_by` plus the monotonic
+`attempts`), not merely on `status = 'processing'`. A worker whose lease expired can still be
+alive and still finish its HTTP call; without the fence its late verdict landed on the delivery
+that had already replaced it, clearing the new owner's lease and marking the job confirmed while
+the value that owner was sending had never reached the engine. Losing the fence race is silent by
+design — the job belongs to whoever re-claimed it.
+
 Admin surface: `PATCH /admin/business-users/{id}/pricing` accepts `discountPercent` and/or
 `providers` (a provider mapped to `null` clears its override), and `GET` returns the default
 (`discountPercent`, `multiplierBp`) together with the current overrides. The panel shows the

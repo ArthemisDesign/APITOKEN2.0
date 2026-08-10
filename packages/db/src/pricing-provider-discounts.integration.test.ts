@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase, type Database } from "./client.js";
-import { setBusinessPricingBundle } from "./pricing.js";
+import { claimNextPricingJob, confirmPricingJob, setBusinessPricingBundle } from "./pricing.js";
 import { listCustomerProviderDiscounts } from "./pricing-discounts.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -116,5 +116,37 @@ describe.runIf(Boolean(connectionString))("negotiated B2B terms commit as one fa
     await expect(setBusinessPricingBundle(db, {
       userId, actorId: "admin-1", reason: "nothing",
     })).rejects.toThrow(/empty/);
+  });
+
+  // Аренда джобы должна фехтоваться: воркер, у которого lease отобрали, всё ещё жив и может
+  // дописать свой вердикт поверх чужой доставки — пометить confirmed то, что новый владелец
+  // ещё не отправил в движок.
+  it("a worker that lost its lease cannot land a verdict on the new owner's delivery", async () => {
+    await setBusinessPricingBundle(db, {
+      userId, multiplierBp: 4_000, actorId: "admin-1", reason: "negotiated",
+    });
+    const stale = await claimNextPricingJob(db, "worker-old");
+    expect(stale).not.toBeNull();
+    // Аренда протухла и восстановлена, джобу забрал другой воркер.
+    await db.pool.query(
+      "UPDATE engine_pricing_jobs SET status = 'retry', locked_at = NULL, locked_by = NULL, next_attempt_at = now() WHERE id = $1",
+      [stale!.id],
+    );
+    const fresh = await claimNextPricingJob(db, "worker-new");
+    expect(fresh!.id).toBe(stale!.id);
+    expect(fresh!.attempts).toBe(stale!.attempts + 1);
+
+    await confirmPricingJob(db, stale!);
+    const after = await db.pool.query<{ status: string; locked_by: string | null }>(
+      "SELECT status, locked_by FROM engine_pricing_jobs WHERE id = $1", [stale!.id],
+    );
+    expect(after.rows[0]).toEqual({ status: "processing", locked_by: "worker-new" });
+
+    // Владелец аренды по-прежнему завершает её штатно.
+    await confirmPricingJob(db, fresh!);
+    const settled = await db.pool.query<{ status: string }>(
+      "SELECT status FROM engine_pricing_jobs WHERE id = $1", [stale!.id],
+    );
+    expect(settled.rows[0]!.status).toBe("confirmed");
   });
 });

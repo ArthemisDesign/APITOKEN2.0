@@ -26,6 +26,13 @@ export interface ClaimedPricingJob {
   /** `null` is only produced by a provider job and means "remove the override". */
   multiplierBp: number | null;
   attempts: number;
+  /**
+   * The lease this worker holds. Every terminal write fences on it, so a worker whose lease was
+   * recovered — and re-claimed by someone else — cannot land a verdict on the delivery that
+   * replaced its own. `attempts` is the monotonic half (a re-claim always increments it) and
+   * `workerId` separates two live workers.
+   */
+  workerId: string;
 }
 
 export function utcMonthStart(value = new Date()): Date {
@@ -1238,6 +1245,7 @@ export async function claimNextPricingJob(
       providerId: row.provider_id,
       multiplierBp: row.multiplier_bp,
       attempts: row.attempts + 1,
+      workerId,
     };
   } catch (error) {
     await client.query("ROLLBACK");
@@ -1287,6 +1295,16 @@ function pricingJobIsCurrent(
     && (desired.engineAccountId ?? job.engineAccountId) === job.engineAccountId;
 }
 
+/**
+ * A terminal verdict only counts while this worker still holds the lease it was given. A worker
+ * whose lease expired and was recovered may still be alive and still finish its HTTP call; without
+ * this fence its late write matched `status = 'processing'` and landed on the delivery that had
+ * already replaced it — clearing the new owner's lease and marking the job confirmed while the
+ * value the new owner was sending had never reached the engine. Losing the fence race is normal
+ * and silent: the job now belongs to whoever re-claimed it, and they will finish it.
+ */
+const LEASE_FENCE = "status = 'processing' AND locked_by = $2 AND attempts = $3";
+
 export async function confirmPricingJob(database: Database, job: ClaimedPricingJob): Promise<void> {
   const desired = await desiredPricingJobValue(database, job);
   if (pricingJobIsCurrent(job, desired)) {
@@ -1294,18 +1312,18 @@ export async function confirmPricingJob(database: Database, job: ClaimedPricingJ
       UPDATE engine_pricing_jobs
       SET status = 'confirmed', confirmed_at = now(),
           locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
-      WHERE id = $1 AND status = 'processing'
-    `, [job.id]);
+      WHERE id = $1 AND ${LEASE_FENCE}
+    `, [job.id, job.workerId, job.attempts]);
     return;
   }
   await database.pool.query(`
     UPDATE engine_pricing_jobs
-    SET engine_account_id = COALESCE($2, engine_account_id), multiplier_bp = $3,
+    SET engine_account_id = COALESCE($4, engine_account_id), multiplier_bp = $5,
         reason = 'superseded_after_processing', status = 'pending', attempts = 0,
         next_attempt_at = now(), confirmed_at = NULL,
         locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
-    WHERE id = $1 AND status = 'processing'
-  `, [job.id, desired.engineAccountId, desired.multiplierBp]);
+    WHERE id = $1 AND ${LEASE_FENCE}
+  `, [job.id, job.workerId, job.attempts, desired.engineAccountId, desired.multiplierBp]);
 }
 
 export async function retryPricingJob(database: Database, job: ClaimedPricingJob, error: string): Promise<void> {
@@ -1314,22 +1332,22 @@ export async function retryPricingJob(database: Database, job: ClaimedPricingJob
   if (pricingJobIsCurrent(job, desired)) {
     await database.pool.query(`
       UPDATE engine_pricing_jobs
-      SET status = 'retry', next_attempt_at = now() + ($3 * interval '1 second'),
-          locked_at = NULL, locked_by = NULL, last_error = $2, updated_at = now()
-      WHERE id = $1 AND status = 'processing'
-    `, [job.id, error.slice(0, 2000), delaySeconds]);
+      SET status = 'retry', next_attempt_at = now() + ($5 * interval '1 second'),
+          locked_at = NULL, locked_by = NULL, last_error = $4, updated_at = now()
+      WHERE id = $1 AND ${LEASE_FENCE}
+    `, [job.id, job.workerId, job.attempts, error.slice(0, 2000), delaySeconds]);
     return;
   }
   // The desired value moved while this attempt was in flight: deliver the new one immediately
   // rather than backing off on a value nobody wants any more.
   await database.pool.query(`
     UPDATE engine_pricing_jobs
-    SET engine_account_id = COALESCE($2, engine_account_id), multiplier_bp = $3,
+    SET engine_account_id = COALESCE($4, engine_account_id), multiplier_bp = $5,
         reason = 'superseded_after_processing', status = 'retry', attempts = 0,
         next_attempt_at = now(), locked_at = NULL, locked_by = NULL,
         last_error = NULL, updated_at = now()
-    WHERE id = $1 AND status = 'processing'
-  `, [job.id, desired.engineAccountId, desired.multiplierBp]);
+    WHERE id = $1 AND ${LEASE_FENCE}
+  `, [job.id, job.workerId, job.attempts, desired.engineAccountId, desired.multiplierBp]);
 }
 
 export async function recoverStalePricingJobs(database: Database): Promise<number> {
