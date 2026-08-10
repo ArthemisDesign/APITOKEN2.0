@@ -24,8 +24,8 @@ use registry::pricing::{
     PricingReleaseInventoryPageV2, PricingReleaseOptOutOutcomeV2, PricingReleaseOptOutV2,
     PricingReleasePolicyV2, PricingReleaseProvisioningContextV2,
     PricingReleaseQuoteV2, PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2,
-    PricingReleaseResolutionV2, PricingReleaseV2, PricingShadowAdmissionEvaluationInput,
-    PricingShadowEvaluationWrite, ProviderSwitchSpec, TariffOverride, TariffOverrideInsert,
+    PricingShadowAdmissionEvaluationInput,
+    TariffOverride, TariffOverrideInsert,
     TariffOverrideInsertOutcome, VersionTarget,
 };
 use registry::{
