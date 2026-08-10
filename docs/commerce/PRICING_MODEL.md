@@ -68,9 +68,17 @@ delivery was in flight, the job is requeued with the new value rather than confi
 made during an engine outage is delayed, never lost.
 
 Admin surface: `PATCH /admin/business-users/{id}/pricing` accepts `discountPercent` and/or
-`providers` (a provider mapped to `null` clears its override), `GET` returns the current
-overrides. The panel shows the default and one field per provider; an empty field means "use the
-default".
+`providers` (a provider mapped to `null` clears its override), and `GET` returns the default
+(`discountPercent`, `multiplierBp`) together with the current overrides. The panel shows the
+default and one field per provider; an empty field means "use the default".
+
+One PATCH is one deal, so it commits as one transaction (`setBusinessPricingBundle`): the default
+and every override land together or not at all, and each target still gets its own delivery job.
+Writing them as separate transactions — the shape until 2026-08-10 — left a window in which the
+customer was priced by half of the new terms, and a failure partway made that window permanent.
+The `GET` used to omit the default entirely, so an operator could not see the rate they were about
+to replace; four live per-provider overrides written straight to the engine were invisible in that
+view and one careless save would have dropped them.
 
 Invitations carry a discount percent, which the invitee's account is created with. Per-provider
 terms are set on the client after conversion.

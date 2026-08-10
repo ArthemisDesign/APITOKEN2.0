@@ -92,6 +92,59 @@ export async function listCustomerProviderDiscounts(
  * authority that prices requests, and the job queue is what makes the two converge after an
  * engine outage. There is no version, no activation and nothing to keep in step.
  */
+/**
+ * One provider override applied inside a caller's transaction. Split out of
+ * `setCustomerProviderDiscount` so an admin edit that changes the account default and several
+ * providers at once commits as one fact: before this existed each leg opened its own transaction,
+ * and a failure partway left the customer priced by a mixture of the old and new terms.
+ */
+export async function applyProviderDiscountTx(client: PoolClient, input: {
+  userId: string;
+  engineAccountId: string;
+  providerId: string;
+  multiplierBp: number | null;
+  actorId: string;
+  reason: string;
+}): Promise<string> {
+  if (!isDiscountProviderId(input.providerId)) {
+    throw new CustomerDiscountError("invalid_provider", `unknown provider id: ${input.providerId}`);
+  }
+  if (input.multiplierBp !== null
+    && (!Number.isInteger(input.multiplierBp) || input.multiplierBp < 0 || input.multiplierBp > 10_000)) {
+    throw new CustomerDiscountError("invalid_multiplier", "multiplier_bp must be an integer between 0 and 10000");
+  }
+  if (input.multiplierBp === null) {
+    await client.query(
+      `DELETE FROM customer_provider_discounts WHERE user_id = $1 AND provider_id = $2`,
+      [input.userId, input.providerId],
+    );
+  } else {
+    await client.query(`
+      INSERT INTO customer_provider_discounts (user_id, provider_id, multiplier_bp)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (user_id, provider_id)
+      DO UPDATE SET multiplier_bp = EXCLUDED.multiplier_bp, updated_at = now()
+    `, [input.userId, input.providerId, input.multiplierBp]);
+  }
+  const jobId = await enqueuePricingJob(client, {
+    userId: input.userId,
+    engineAccountId: input.engineAccountId,
+    providerId: input.providerId,
+    multiplierBp: input.multiplierBp,
+    reason: "provider_discount",
+  });
+  await client.query(`
+    INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+    VALUES ('admin', $1, 'pricing.provider_discount_changed', 'user', $2, $3::jsonb)
+  `, [input.actorId, input.userId, JSON.stringify({
+    providerId: input.providerId,
+    multiplierBp: input.multiplierBp,
+    reason: input.reason,
+    jobId,
+  })]);
+  return jobId;
+}
+
 export async function setCustomerProviderDiscount(database: Database, input: {
   userId: string;
   providerId: string;
@@ -118,35 +171,7 @@ export async function setCustomerProviderDiscount(database: Database, input: {
     if (!engineAccountId) {
       throw new CustomerDiscountError("unknown_customer", "customer has no engine account");
     }
-    if (input.multiplierBp === null) {
-      await client.query(
-        `DELETE FROM customer_provider_discounts WHERE user_id = $1 AND provider_id = $2`,
-        [input.userId, input.providerId],
-      );
-    } else {
-      await client.query(`
-        INSERT INTO customer_provider_discounts (user_id, provider_id, multiplier_bp)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (user_id, provider_id)
-        DO UPDATE SET multiplier_bp = EXCLUDED.multiplier_bp, updated_at = now()
-      `, [input.userId, input.providerId, input.multiplierBp]);
-    }
-    const jobId = await enqueuePricingJob(client, {
-      userId: input.userId,
-      engineAccountId,
-      providerId: input.providerId,
-      multiplierBp: input.multiplierBp,
-      reason: "provider_discount",
-    });
-    await client.query(`
-      INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
-      VALUES ('admin', $1, 'pricing.provider_discount_changed', 'user', $2, $3::jsonb)
-    `, [input.actorId, input.userId, JSON.stringify({
-      providerId: input.providerId,
-      multiplierBp: input.multiplierBp,
-      reason: input.reason,
-      jobId,
-    })]);
+    const jobId = await applyProviderDiscountTx(client, { ...input, engineAccountId });
     await client.query("COMMIT");
     return { engineAccountId, jobId };
   } catch (error) {

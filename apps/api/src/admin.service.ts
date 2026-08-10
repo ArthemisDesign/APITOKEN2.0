@@ -22,8 +22,8 @@ import {
   recordAdminCredit,
   revokeBusinessInvite,
   rotateBusinessInvite,
-  setBusinessPricing,
-  setCustomerProviderDiscount,
+  getPricingView,
+  setBusinessPricingBundle,
   listCustomerProviderDiscounts,
   type DiscountProviderId,
   type AdminUserOverviewRow,
@@ -272,29 +272,22 @@ export class AdminService {
     actorId: string,
     reason: string,
   ): Promise<Record<string, unknown>> {
-    const jobIds: string[] = [];
-    if (input.discountPercent !== undefined) {
-      const result = await setBusinessPricing(this.database, {
-        userId,
-        multiplierBp: multiplierForDiscount(input.discountPercent),
-        actorId,
-        reason,
-      });
-      jobIds.push(result.jobId);
-    }
-    for (const [providerId, discountPercent] of Object.entries(input.providers ?? {})) {
-      const result = await setCustomerProviderDiscount(this.database, {
-        userId,
-        providerId,
-        multiplierBp: discountPercent === null || discountPercent === undefined
-          ? null
-          : multiplierForDiscount(discountPercent),
-        actorId,
-        reason,
-      });
-      jobIds.push(result.jobId);
-    }
-    if (jobIds.length === 0) throw new Error("business pricing mutation is empty");
+    const { jobIds } = await setBusinessPricingBundle(this.database, {
+      userId,
+      ...(input.discountPercent === undefined
+        ? {}
+        : { multiplierBp: multiplierForDiscount(input.discountPercent) }),
+      providers: Object.fromEntries(
+        Object.entries(input.providers ?? {}).map(([providerId, discountPercent]) => [
+          providerId,
+          discountPercent === null || discountPercent === undefined
+            ? null
+            : multiplierForDiscount(discountPercent),
+        ]),
+      ),
+      actorId,
+      reason,
+    });
     const providers = await listCustomerProviderDiscounts(this.database, userId);
     return {
       userId,
@@ -310,9 +303,17 @@ export class AdminService {
 
   /** The customer's default discount plus every per-provider override, as percentages. */
   async getBusinessPricing(userId: string): Promise<Record<string, unknown>> {
-    const providers = await listCustomerProviderDiscounts(this.database, userId);
+    // The default belongs in this view. Without it the editor showed only the overrides, so an
+    // operator could not see the negotiated rate they were about to replace — and four live
+    // overrides written straight to the engine were invisible here entirely.
+    const [pricing, providers] = await Promise.all([
+      getPricingView(this.database, userId),
+      listCustomerProviderDiscounts(this.database, userId),
+    ]);
     return {
       userId,
+      discountPercent: pricing?.discountPercent ?? null,
+      multiplierBp: pricing?.multiplierBp ?? null,
       providers: Object.fromEntries(providers.map((row) => [
         row.providerId,
         100 - row.multiplierBp / 100,

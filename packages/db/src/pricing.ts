@@ -5,7 +5,7 @@ import {
 } from "@claude-api/contracts";
 import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
-import { enqueuePricingJob } from "./pricing-discounts.js";
+import { applyProviderDiscountTx, enqueuePricingJob } from "./pricing-discounts.js";
 
 export class InvalidBusinessInvitationError extends Error {}
 export class BusinessInvitationNotFoundError extends Error {}
@@ -474,12 +474,26 @@ export async function getPricingView(database: Database, userId: string): Promis
   };
 }
 
-export async function setBusinessPricing(database: Database, input: {
+/**
+ * One negotiated B2B change: the account default and any per-provider overrides, committed
+ * together. An admin edit is a single set of terms, so it must land as a single fact — writing the
+ * default in one transaction and each provider in its own left a window where the customer was
+ * priced by half of the new deal, and a failure partway made that window permanent.
+ *
+ * Delivery to the engine is still the durable job queue: commerce records what was agreed, the
+ * engine is the authority that prices a request, and the queue is what makes them converge.
+ */
+export async function setBusinessPricingBundle(database: Database, input: {
   userId: string;
-  multiplierBp: number;
+  multiplierBp?: number;
+  providers?: Record<string, number | null>;
   actorId: string;
   reason: string;
-}): Promise<{ engineAccountId: string; jobId: string }> {
+}): Promise<{ engineAccountId: string; jobIds: string[] }> {
+  const providers = Object.entries(input.providers ?? {});
+  if (input.multiplierBp === undefined && providers.length === 0) {
+    throw new Error("business pricing mutation is empty");
+  }
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
@@ -493,34 +507,80 @@ export async function setBusinessPricing(database: Database, input: {
     `, [input.userId]);
     const row = result.rows[0];
     if (!row) throw new BusinessCustomerNotFoundError("business customer not found");
-    await client.query(`
-      UPDATE customer_profiles SET multiplier_bp = $2, updated_at = now() WHERE user_id = $1;
-    `, [input.userId, input.multiplierBp]);
-    await client.query(`
-      UPDATE engine_accounts SET mult_bp = $2, updated_at = now() WHERE user_id = $1
-    `, [input.userId, input.multiplierBp]);
-    const jobId = await enqueuePricingJob(client, {
-      userId: input.userId,
-      engineAccountId: row.engine_account_id,
-      multiplierBp: input.multiplierBp,
-      reason: "b2b_manual",
-    });
-    await client.query(`
-      INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
-      VALUES ('admin', $1, 'pricing.b2b_changed', 'user', $2, $3::jsonb)
-    `, [input.actorId, input.userId, JSON.stringify({
-      multiplierBp: input.multiplierBp,
-      reason: input.reason,
-      jobId,
-    })]);
+    const jobIds: string[] = [];
+    if (input.multiplierBp !== undefined) {
+      jobIds.push(await applyBusinessDefaultTx(client, {
+        userId: input.userId,
+        engineAccountId: row.engine_account_id,
+        multiplierBp: input.multiplierBp,
+        actorId: input.actorId,
+        reason: input.reason,
+      }));
+    }
+    for (const [providerId, multiplierBp] of providers) {
+      jobIds.push(await applyProviderDiscountTx(client, {
+        userId: input.userId,
+        engineAccountId: row.engine_account_id,
+        providerId,
+        multiplierBp,
+        actorId: input.actorId,
+        reason: input.reason,
+      }));
+    }
     await client.query("COMMIT");
-    return { engineAccountId: row.engine_account_id, jobId };
+    return { engineAccountId: row.engine_account_id, jobIds };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
   } finally {
     client.release();
   }
+}
+
+/** The account default applied inside a caller's transaction. See setBusinessPricingBundle. */
+async function applyBusinessDefaultTx(client: PoolClient, input: {
+  userId: string;
+  engineAccountId: string;
+  multiplierBp: number;
+  actorId: string;
+  reason: string;
+}): Promise<string> {
+  await client.query(`
+    UPDATE customer_profiles SET multiplier_bp = $2, updated_at = now() WHERE user_id = $1;
+  `, [input.userId, input.multiplierBp]);
+  await client.query(`
+    UPDATE engine_accounts SET mult_bp = $2, updated_at = now() WHERE user_id = $1
+  `, [input.userId, input.multiplierBp]);
+  const jobId = await enqueuePricingJob(client, {
+    userId: input.userId,
+    engineAccountId: input.engineAccountId,
+    multiplierBp: input.multiplierBp,
+    reason: "b2b_manual",
+  });
+  await client.query(`
+    INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+    VALUES ('admin', $1, 'pricing.b2b_changed', 'user', $2, $3::jsonb)
+  `, [input.actorId, input.userId, JSON.stringify({
+    multiplierBp: input.multiplierBp,
+    reason: input.reason,
+    jobId,
+  })]);
+  return jobId;
+}
+
+export async function setBusinessPricing(database: Database, input: {
+  userId: string;
+  multiplierBp: number;
+  actorId: string;
+  reason: string;
+}): Promise<{ engineAccountId: string; jobId: string }> {
+  const { engineAccountId, jobIds } = await setBusinessPricingBundle(database, {
+    userId: input.userId,
+    multiplierBp: input.multiplierBp,
+    actorId: input.actorId,
+    reason: input.reason,
+  });
+  return { engineAccountId, jobId: jobIds[0]! };
 }
 
 /**
