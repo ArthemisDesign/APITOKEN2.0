@@ -137,7 +137,13 @@ side effect. `serve` may only perform the read-only schema verification before c
   168 strict accounts resolved zero available funds and every request was refused with 402 while
   the balance was intact. Their tables remain until an explicit drop migration; nothing may start
   reading them again — money has one authority (the account balance) and price has one (the
-  account discount).
+  account discount). Migration `0044` drops the constraint triggers that policed those structures
+  on every money mutation, and `0045` drops the two `engine_instances` triggers that gated the
+  owner lease on them (`engine_instances_policy_runtime_floor` from 0017 while any binding was
+  strict, `engine_instances_release_v2_epoch_fence` from 0025 while a release head existed). No
+  binary publishes those runtime pins any more, so both had become a permanent refusal of every
+  blue-green cutover; their columns stay nullable so a draining peer on the previous binary keeps
+  claiming its lease.
 - **Hot tariff override runtime authority:** `pricing::tariffs` is the PostgreSQL-only
   read/write side of the 0036 table (migration `0037` widens the family CHECK to admit the dots
   that canonical model ids carry; the old runtime still neither reads nor writes the table).

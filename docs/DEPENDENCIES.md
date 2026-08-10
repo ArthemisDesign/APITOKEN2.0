@@ -12,6 +12,19 @@ Changed a contract — update both the map line and the contract document. A lin
 not match the code is a bug-level defect; if a relationship disappears, the line is
 deleted, not kept "for history".
 
+## 0. Retired: the per-account pricing policy chain
+
+The engine↔commerce pricing-policy relationship is gone. Price is `accounts.mult_bp` plus
+optional `account_provider_discounts` rows; commerce records intent and delivers it through
+`engine_pricing_jobs`. There is no policy document, catalog/switch generation, release head,
+shadow rollout or strict binding on either side, and no runtime manifest for a slot to publish.
+
+Engine migrations `0044`/`0045` drop what the retired design still enforced at runtime: the
+constraint triggers on the money tables, and the two `engine_instances` triggers that gated the
+owner lease (`engine_instances_policy_runtime_floor`, `engine_instances_release_v2_epoch_fence`).
+Their tables and columns stay as immutable history under the expand-only rule. Nothing may start
+reading them again — contract: `docs/commerce/PRICING_MODEL.md`.
+
 ## 1. Contracts between contexts
 
 Format: producer → contract/channel → consumers. The contract document is where the
