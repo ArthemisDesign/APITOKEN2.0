@@ -8,16 +8,12 @@
 //! Ниже по стеку зависеть не от кого.
 
 pub mod authority;
-pub mod funding;
-pub mod funding_normalization_v2;
-mod funding_v2;
 mod glm_calibration;
 mod kimi_calibration;
 pub mod pg;
 pub mod pricing;
 mod provider_calibration;
 
-pub use funding_normalization_v2::*;
 pub use glm_calibration::*;
 pub use kimi_calibration::*;
 
