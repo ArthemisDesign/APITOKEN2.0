@@ -1,4 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+
+// Общий с партнёрским порталом контракт формы строки. Второй конец — apps/sales-api/src/
+// sync-feed.test.ts, который парсит этот же файл своей схемой. См. _comment внутри golden.
+const GOLDEN = JSON.parse(readFileSync(
+  new URL("../../../tests/contracts/sales-usage-feed.golden.json", import.meta.url),
+  "utf8",
+)) as { row: Record<string, unknown>; nextCursor: string };
 
 const dbMocks = vi.hoisted(() => ({
   listUsageEventsAfter: vi.fn(),
@@ -39,19 +47,8 @@ describe("sales usage feed controller", () => {
     const controller = new SalesFeedController({} as never, {} as never);
 
     await expect(controller.usageEvents("40", "10")).resolves.toEqual({
-      items: [{
-        id: "44",
-        userId: "00000000-0000-4000-8000-000000000044",
-        amountNano: "9007199254740993",
-        providerId: "anthropic",
-        accountClass: null,
-        pricingMode: null,
-        paidFundedNano: null,
-        commissionEligible: null,
-        snapshotDigest: null,
-        occurredAt: "2026-08-01T13:00:00.000Z",
-      }],
-      nextCursor: "45",
+      items: [GOLDEN.row],
+      nextCursor: GOLDEN.nextCursor,
     });
     expect(dbMocks.listUsageEventsAfter).toHaveBeenCalledWith({}, 40n, 10);
   });

@@ -60,9 +60,24 @@ Garbage in `after_id`/`limit` is not an error but a default (cursor 0, default l
   releaseGeneration,releaseDigest,occurredAt}], nextCursor}`; money fields and `releaseGeneration`
   are decimal strings. The `officialNano…releaseDigest` fields are an expand-only schema v2
   addition: on legacy/all-null and policy_v1 rows they are `null`, and are removed only as the
-  final contract step after the consumer has fully migrated. For immutable attribution the feed
-  allows two forms:
-  - **schema v1 `policy_v1`** (deployed consumer): `accountClass=b2c`, `pricingMode=track`,
+  final contract step after the consumer has fully migrated. The feed allows three forms:
+  - **scalar (live since 2026-08-10)** — the only form the current producer emits. `providerId` is
+    filled in, every attribution field (`accountClass`, `pricingMode`, `paidFundedNano`,
+    `commissionEligible`, `snapshotDigest`) and the whole v2 lineage are `null`, and `amountNano`
+    is already narrowed by the producer to `real_funded_nano` — the customer's own money — so it is
+    the commission basis as-is. **`providerId` is not part of attribution**: it is informational and
+    may be present or absent without making the row attributed. The consumer discriminates on
+    `accountClass`, not on `providerId`. This is the shape the old all-null legacy rows also parse
+    into, so the historical tail and the live stream share one path.
+
+    A wire-exact example of this row lives in `tests/contracts/sales-usage-feed.golden.json`, and
+    both ends assert against that same file — the producer that it serializes it, the consumer that
+    it accepts it. Changing the shape means changing the golden and rolling both sides together.
+    The rule exists because on 2026-08-10 both suites were green in isolation while the producer
+    emitted `providerId` with null attribution and the consumer rejected exactly that combination
+    (`usage attribution must be entirely null or complete`); the partner sync stopped for five
+    hours at cursor `usage_events=105302` and no commission accrued in that window.
+  - **schema v1 `policy_v1`** (retired producer, historical rows): `accountClass=b2c`, `pricingMode=track`,
     `commissionEligible=true` and a positive `paidFundedNano`; `amountNano` exactly equals this
     paid portion. Static, B2B/service, unsupported schema, zero-paid, and spend of a non-attributed
     user do not create an item.

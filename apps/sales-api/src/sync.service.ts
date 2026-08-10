@@ -57,7 +57,10 @@ const nullableDigestSchema = z.string().min(1).nullable().optional()
   .transform((value): string | null => value ?? null);
 
 // Фид эмитит три формы usage-строки (expand-only, неизвестные поля игнорируются):
-//   legacy — старый producer без attribution: все поля attribution и v2-lineage null;
+//   scalar (в коде — "legacy") — ЖИВАЯ форма: комиссия считается от amountNano, который producer
+//     уже сузил до real_funded_nano (деньги самого клиента). providerId информативен и может быть
+//     как заполнен, так и null — он НЕ часть attribution и сам по себе комиссию не образует;
+//     остальные attribution-поля и v2-lineage — null;
 //   v1 (policy_v1) — complete B2C track authority, amountNano === paidFundedNano > 0;
 //   v2 (release_v2) — pricingMode null, eligibility независима от pricing mode, полная release
 //     lineage (official/charged/bonus/other nano, releaseGeneration, releaseDigest) не-null,
@@ -81,8 +84,10 @@ export const usageEventSchema = z.object({
   releaseDigest: nullableDigestSchema,
   occurredAt: z.coerce.date(),
 }).superRefine((row, context) => {
+  // providerId намеренно вне кортежа: живой producer заполняет его на scalar-строке, где всё
+  // остальное null. Его наличие не делает форму attribution-полной и не открывает путь к
+  // v1/v2-комиссии — этот путь стережёт accountClass.
   const attribution = [
-    row.providerId,
     row.accountClass,
     row.paidFundedNano,
     row.commissionEligible,
@@ -103,9 +108,10 @@ export const usageEventSchema = z.object({
   const fail = (message: string) => context.addIssue({ code: z.ZodIssueCode.custom, message });
 
   if (attributionNull && lineageNull && row.pricingMode === null) {
-    return; // legacy all-null free-first form
+    return; // живая scalar-форма (и старая all-null legacy): комиссия от amountNano
   }
   if (!attributionComplete) return fail("usage attribution must be entirely null or complete");
+  if (row.providerId === null) return fail("attributed usage must carry its provider");
   if (row.paidFundedNano! <= 0n || row.amountNano !== row.paidFundedNano) {
     return fail("usage amount must equal positive attributed paid funding");
   }
@@ -122,7 +128,7 @@ export const usageEventSchema = z.object({
   }
 }).transform((row) => ({
   ...row,
-  form: (row.providerId === null ? "legacy"
+  form: (row.accountClass === null ? "legacy"
     : row.pricingMode === "track" ? "v1"
     : "v2") as "legacy" | "v1" | "v2",
 }));
@@ -324,11 +330,12 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
 function toReferredSpendAttribution(
   row: z.infer<typeof usageEventSchema>,
 ): ReferredSpendAttribution | null {
-  if (row.providerId === null) return null;
+  if (row.accountClass === null) return null;
   // usageEventSchema has already enforced all-or-none and the exact literal authority. Keep this
   // guard local so future schema edits cannot accidentally turn a partial payload into commission.
   if (
-    row.accountClass !== "b2c"
+    row.providerId === null
+    || row.accountClass !== "b2c"
     || row.pricingMode !== "track"
     || row.paidFundedNano === null
     || row.commissionEligible !== true

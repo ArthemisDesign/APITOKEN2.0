@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { parseFeedPage, SyncService, usageEventSchema } from "./sync.service.js";
 import {
@@ -90,9 +91,45 @@ describe("immutable usage attribution parser", () => {
     });
   });
 
+  it("accepts the live scalar row: provider set, attribution absent", () => {
+    // Регрессия 2026-08-10: producer после отката прайсинга шлёт providerId + amountNano
+    // (= real_funded_nano), а attribution больше не существует. Consumer отверг такую страницу
+    // и продакшн-синк комиссий встал на пять часов. Эта форма обязана проходить.
+    const row = usageEventSchema.parse({ ...base, providerId: "anthropic" });
+    expect(row).toMatchObject({
+      amountNano: 600n,
+      providerId: "anthropic",
+      accountClass: null,
+      paidFundedNano: null,
+      form: "legacy",
+    });
+  });
+
+  it("accepts the exact wire row the commerce feed serializes", () => {
+    // Тот же файл читает продюсерский тест apps/api/src/sales-feed.controller.test.ts.
+    // Раздельно-зелёные сюиты не ловят несовместимость — общий golden ловит.
+    const golden = JSON.parse(readFileSync(
+      new URL("../../../tests/contracts/sales-usage-feed.golden.json", import.meta.url),
+      "utf8",
+    )) as { row: unknown };
+    expect(usageEventSchema.parse(golden.row)).toMatchObject({
+      providerId: "anthropic",
+      amountNano: 9_007_199_254_740_993n,
+      form: "legacy",
+    });
+  });
+
   it("rejects partial, ineligible, and amount-divergent attributed payloads", () => {
-    expect(() => usageEventSchema.parse({ ...base, providerId: "anthropic" }))
+    expect(() => usageEventSchema.parse({ ...base, providerId: "anthropic", accountClass: "b2c" }))
       .toThrow("usage attribution must be entirely null or complete");
+    expect(() => usageEventSchema.parse({
+      ...base,
+      accountClass: "b2c",
+      pricingMode: "track",
+      paidFundedNano: "600",
+      commissionEligible: true,
+      snapshotDigest: "snapshot-17",
+    })).toThrow("attributed usage must carry its provider");
     expect(() => usageEventSchema.parse({
       ...base,
       providerId: "anthropic",
