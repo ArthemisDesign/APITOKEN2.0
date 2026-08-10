@@ -1050,6 +1050,18 @@ export const accountPolicyRules = pgTable("account_policy_rules", {
   `),
 ]);
 
+/**
+ * RETIRED PRICING TABLES (2026-08-09).
+ *
+ * The per-account policy/binding, catalog/switch/release-v2, funding-bucket, shadow-rollout and
+ * per-request usage-attribution tables below are no longer read or written by any runtime path.
+ * They remain declared because the repository is expand-only and their data is immutable history;
+ * a drop migration is a separate, explicit decision.
+ *
+ * Do not wire anything to them again. Price is `engine_accounts.mult_bp` plus
+ * `customer_provider_discounts`; the paid/bonus split of spend is `pricing_usage_events
+ * .real_funded_nano` under free-first accounting. Contract: docs/commerce/PRICING_MODEL.md.
+ */
 export const accountPolicyBindings = pgTable("account_policy_bindings", {
   id: uuid("id").primaryKey(),
   userId: uuid("user_id"),

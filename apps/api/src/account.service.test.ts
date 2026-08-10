@@ -119,7 +119,6 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
       spendLimitNano: "25500000000", expiresAt: "2099-01-01T00:00:00.000Z",
     });
     // An existing account without an armed strict chain keeps working untouched: no opt-out.
-    expect(engine.optOutCalls).toEqual([]);
 
     const persisted = await database.pool.query("SELECT * FROM api_keys WHERE user_id = $1", [aliceId]);
     expect(JSON.stringify(persisted.rows)).not.toContain(rawKey);
@@ -153,135 +152,6 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
     expect(engine.disabledKeyIds).toEqual(["key_issued"]);
     const status = await database.pool.query("SELECT status FROM api_keys WHERE id = $1", [apiKeyId]);
     expect(status.rows[0]?.status).toBe("disabled");
-  });
-
-  it("issues the first ACKed key and writes the one-way opt-out marker on an armed strict chain", async () => {
-    // Registration chain fixture: provisioning already delivered the shadow policy and the
-    // worker already flipped the binding strict/strict/verified; only the engine opt-out
-    // marker is missing. Key issuance must close that gap synchronously.
-    const userId = randomUUID();
-    await database.pool.query("INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)", [
-      userId, "chain-graduate@example.com", "Chain Graduate",
-    ]);
-    await database.pool.query(`
-      INSERT INTO customer_profiles (user_id, customer_type, current_tier, multiplier_bp, pricing_month_start)
-      VALUES ($1, 'b2c', 0, 5000, date_trunc('month', now())::date)
-    `, [userId]);
-    const engineAccountRecordId = randomUUID();
-    await database.pool.query(`
-      INSERT INTO engine_accounts (id, user_id, engine_account_id, mult_bp, status)
-      VALUES ($1, $2, 'acct_chain_graduate', 5000, 'active')
-    `, [engineAccountRecordId, userId]);
-    // The fixture policy is a b2b_client policy owned by the test user: the b2c-only managed
-    // policy lookups in the other tests of this file (which never truncates pricing_policies)
-    // can never match it, and the b2b_client uniqueness is per owner. The catalog/switch
-    // foundation rows are seeded defensively: sibling suites may truncate and re-seed them.
-    const fixturePolicyId = `policy:main:b2b:${userId}`;
-    await database.pool.query("DELETE FROM pricing_policies WHERE id = $1", [fixturePolicyId]);
-    await database.pool.query(`
-      INSERT INTO provider_capability_versions (
-        generation, schema_version, content_digest, source_runtime, source_revision, observed_at
-      ) VALUES (1, 1, 'fixture-capability', 'account-service-test', 'test-revision', now())
-      ON CONFLICT (generation) DO NOTHING
-    `);
-    await database.pool.query(`
-      INSERT INTO product_catalog_versions (
-        product_id, generation, schema_version, capability_generation,
-        capability_digest, content_digest, actor_type, actor_id, reason
-      ) VALUES ('main', 1, 1, 1, 'fixture-capability', 'fixture-catalog',
-                'system', 'account-service-test', 'strict chain fixture')
-      ON CONFLICT (product_id, generation) DO NOTHING
-    `);
-    await database.pool.query(`
-      INSERT INTO provider_switch_versions (
-        generation, schema_version, capability_generation, capability_digest, content_digest,
-        actor_type, actor_id, reason
-      ) VALUES (1, 1, 1, 'fixture-capability', 'fixture-switches',
-                'system', 'account-service-test', 'strict chain fixture')
-      ON CONFLICT (generation) DO NOTHING
-    `);
-    await database.pool.query(`
-      INSERT INTO pricing_policies (id, owner_type, owner_id, product_id, replacement_locked, status)
-      VALUES ($1, 'b2b_client', $2, 'main', false, 'active')
-    `, [fixturePolicyId, userId]);
-    await database.pool.query(`
-      INSERT INTO pricing_policy_versions (
-        policy_id, version, schema_version, product_id, catalog_generation,
-        content_digest, actor_type, actor_id, reason
-      ) VALUES ($1, 1, 1, 'main', 1, 'fixture-source-digest',
-                'admin', 'account-service-test', 'strict chain fixture')
-    `, [fixturePolicyId]);
-    const bindingId = randomUUID();
-    await database.pool.query(`
-      INSERT INTO account_policy_versions (
-        binding_id, effective_version, policy_id, policy_version, policy_digest,
-        product_id, account_class, schema_version, catalog_generation,
-        switch_generation, content_digest, replacement_locked
-      ) VALUES ($1, 1, $2, 1, 'fixture-source-digest',
-                'main', 'b2c', 1, 1, 1, 'chain-digest-v1', false)
-    `, [bindingId, fixturePolicyId]);
-    await database.pool.query(`
-      INSERT INTO account_policy_bindings (
-        id, user_id, engine_account_record_id, engine_account_id,
-        account_class, product_id, policy_id,
-        policy_enforcement, funding_enforcement, reconciliation_state, sync_state,
-        desired_effective_version, desired_digest, applied_effective_version, applied_digest,
-        last_ack_at, strict_chain_pending
-      ) VALUES ($1, $2, $3, 'acct_chain_graduate', 'b2c', 'main', $4,
-                'strict', 'strict', 'verified', 'confirmed', 1, 'chain-digest-v1', 1, 'chain-digest-v1',
-                now(), true)
-    `, [bindingId, userId, engineAccountRecordId, fixturePolicyId]);
-    engine.policyState = {
-      active: {
-        policy: {
-          account_id: "acct_chain_graduate",
-          effective_version: 1,
-          policy_id: fixturePolicyId,
-          policy_version: 1,
-          source_policy_digest: "fixture-source-digest",
-          owner_type: "b2b_client",
-          owner_id: userId,
-          account_class: "b2c",
-          product_id: "main",
-          schema_version: 1,
-          catalog_generation: 1,
-          switch_generation: 1,
-          content_digest: "chain-digest-v1",
-          replacement_locked: false,
-          rules: [],
-        },
-        binding: {
-          policy_enforcement: "strict",
-          funding_enforcement: "strict",
-          reconciliation_state: "verified",
-        },
-      },
-    };
-
-    const created = await service.createApiKey(userId, { label: "first" }) as Record<string, unknown>;
-    expect(created.key).toBe(rawKey);
-    // The key was born with the exact active-policy ACK — the strict account admits nothing
-    // else — and only then was the one-way marker written.
-    expect(engine.issuedActivationAcks).toEqual([{ effectivePolicyVersion: 1, policyDigest: "chain-digest-v1" }]);
-    expect(engine.optOutCalls).toEqual(["acct_chain_graduate"]);
-    const binding = await database.pool.query<{ strict_chain_pending: boolean }>(
-      "SELECT strict_chain_pending FROM account_policy_bindings WHERE user_id = $1",
-      [userId],
-    );
-    expect(binding.rows[0]?.strict_chain_pending).toBe(false);
-
-    // The second key on the graduated account is a plain strict issuance: no repeated opt-out.
-    const second = await service.createApiKey(userId, { label: "second" }) as Record<string, unknown>;
-    expect(second.key).toBe(rawKey);
-    expect(engine.optOutCalls).toEqual(["acct_chain_graduate"]);
-    expect(engine.issuedActivationAcks).toHaveLength(2);
-
-    // This file truncates only a fixed table list between tests: remove the policy fixture so
-    // the provisioning-recovery tests keep seeing the no-managed-policy world.
-    await database.pool.query("DELETE FROM account_policy_bindings WHERE user_id = $1", [userId]);
-    await database.pool.query("DELETE FROM account_policy_versions WHERE binding_id = $1", [bindingId]);
-    await database.pool.query("DELETE FROM pricing_policy_versions WHERE policy_id = $1", [fixturePolicyId]);
-    await database.pool.query("DELETE FROM pricing_policies WHERE id = $1", [fixturePolicyId]);
   });
 
   it("recovers failed provisioning through the engine's idempotent user handle", async () => {
@@ -440,9 +310,6 @@ class FakeEngine {
   failNextCredit = false;
   readonly signupCredits: Array<{ account: string; amountNano: string; reference: string }> = [];
   readonly missingAccountIds = new Set<string>();
-  readonly optOutCalls: string[] = [];
-  readonly issuedActivationAcks: Array<{ effectivePolicyVersion: number; policyDigest: string }> = [];
-  policyState: unknown = "unbound";
   recoveredAccountId = "acct_alice";
   private issued = false;
   private spendLimitNano: string | null = "25500000000";
@@ -455,20 +322,6 @@ class FakeEngine {
 
   private async fetch(url: string, init?: RequestInit): Promise<Response> {
     const path = new URL(url).pathname;
-    if (path.includes("/pricing/policy/") && path.endsWith("/state")) {
-      return Response.json({
-        state: { account_id: decodeURIComponent(path.split("/")[4] ?? ""), policy: this.policyState },
-      });
-    }
-    if (path === "/admin/pricing/v2/opt-out" && init?.method === "POST") {
-      const body = JSON.parse(String(init.body)) as { account_id: string };
-      this.optOutCalls.push(body.account_id);
-      return Response.json({
-        result: "applied",
-        identity: { account_id: body.account_id },
-        pricing_release_opt_out_ts: 1_700_000_000,
-      });
-    }
     if (path === "/admin/account" && init?.method === "POST") {
       return Response.json({ account: this.recoveredAccountId, mult_bp: 2000, handle: "user:test" });
     }
@@ -491,14 +344,7 @@ class FakeEngine {
         account_id: string;
         spend_limit_nano?: string;
         expires_ts?: number;
-        activation_policy_ack?: { effective_policy_version: number; policy_digest: string };
       };
-      if (body.activation_policy_ack) {
-        this.issuedActivationAcks.push({
-          effectivePolicyVersion: body.activation_policy_ack.effective_policy_version,
-          policyDigest: body.activation_policy_ack.policy_digest,
-        });
-      }
       return Response.json({
         key: rawKey, key_id: "key_issued", account: body.account_id, label: "production",
         spend_limit_nano: body.spend_limit_nano ?? null, expires_ts: body.expires_ts ?? null,
