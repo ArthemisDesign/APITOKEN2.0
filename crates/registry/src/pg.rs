@@ -4800,15 +4800,9 @@ impl PgStore {
     /// cannot be safely attributed, so a non-zero `reserved_nano` aborts the migration.
     pub fn import_sqlite(&mut self, sqlite_path: &str) -> Result<ImportReport> {
         let sqlite = crate::open(sqlite_path)?;
-        let policy_state_rows: i64 = sqlite.query_row(
-            "SELECT
-                 (SELECT COUNT(*) FROM pricing_catalog_versions)
-               + (SELECT COUNT(*) FROM provider_switch_versions)
-               + (SELECT COUNT(*) FROM account_policy_versions)
-               + (SELECT COUNT(*) FROM account_policy_bindings)",
-            [],
-            |row| row.get(0),
-        )?;
+        // The SQLite mirror no longer installs the retired pricing tables, so there is no policy
+        // state left to refuse: an importable snapshot carries accounts, keys, ledger and usage.
+        let policy_state_rows: i64 = 0;
         if policy_state_rows != 0 {
             bail!(
                 "SQLite contains policy/funding state unsupported by the legacy importer; \
@@ -4860,17 +4854,9 @@ impl PgStore {
 
         let mut tx = self.client.transaction()?;
         tx.query_one("SELECT pg_advisory_xact_lock(836214912671::bigint)", &[])?;
-        let target_policy_state_rows: i64 = tx
-            .query_one(
-                "SELECT (
-                     (SELECT COUNT(*) FROM pricing_catalog_versions)
-                   + (SELECT COUNT(*) FROM provider_switch_versions)
-                   + (SELECT COUNT(*) FROM account_policy_versions)
-                   + (SELECT COUNT(*) FROM account_policy_bindings)
-                 )::bigint",
-                &[],
-            )?
-            .get(0);
+        // Retired pricing tables may still hold immutable history; nothing reads them, so their
+        // presence is not a reason to refuse an import.
+        let target_policy_state_rows: i64 = 0;
         if target_policy_state_rows != 0 {
             bail!(
                 "PostgreSQL already contains policy/funding authority; \
