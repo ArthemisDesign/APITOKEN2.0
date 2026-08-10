@@ -138,6 +138,36 @@ pub(crate) fn bounded_cache_key(key: &str) -> String {
     }
 }
 
+/// Translate one parsed dynamic tool back into the public Responses descriptor the backend takes.
+///
+/// Function tools carry the internal app-server spelling (`inputSchema`) and are rebuilt; custom
+/// (Lark grammar) tools already hold the public shape. A namespace is rebuilt recursively — the
+/// official client puts client-executed function AND custom tools inside it (Codex CLI 0.147 moved
+/// `exec` there), and dropping the group would leave the model with no tools at all.
+fn upstream_tool(tool: &Value) -> Option<Value> {
+    match tool.get("type").and_then(Value::as_str) {
+        Some("function") => Some(json!({
+            "type": "function",
+            "name": tool.get("name").cloned().unwrap_or(Value::Null),
+            "description": tool.get("description").cloned().unwrap_or(Value::Null),
+            "parameters": tool.get("inputSchema").cloned().unwrap_or(json!({"type": "object"})),
+            "strict": false,
+        })),
+        Some("custom") => Some(tool.clone()),
+        Some("namespace") => Some(json!({
+            "type": "namespace",
+            "name": tool.get("name").cloned().unwrap_or(Value::Null),
+            "description": tool.get("description").cloned().unwrap_or(Value::Null),
+            "tools": tool
+                .get("tools")
+                .and_then(Value::as_array)
+                .map(|children| children.iter().filter_map(upstream_tool).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        })),
+        _ => None,
+    }
+}
+
 /// Assemble the exact upstream Responses body for one stateless turn.
 ///
 /// The body contains only what the client owns: explicit base instructions, the replayed history
@@ -176,18 +206,7 @@ pub(crate) fn build_responses_body(request: &CodexTurnRequest) -> Value {
     let tools: Vec<Value> = request
         .dynamic_tools
         .iter()
-        .filter_map(|tool| match tool.get("type").and_then(Value::as_str) {
-            Some("function") => Some(json!({
-                "type": "function",
-                "name": tool.get("name").cloned().unwrap_or(Value::Null),
-                "description": tool.get("description").cloned().unwrap_or(Value::Null),
-                "parameters": tool.get("inputSchema").cloned().unwrap_or(json!({"type": "object"})),
-                "strict": false,
-            })),
-            // Custom (Lark grammar) tools already carry the public Responses shape.
-            Some("custom") => Some(tool.clone()),
-            _ => None,
-        })
+        .filter_map(upstream_tool)
         .collect();
     let mut body = json!({
         "model": request.model.upstream,
@@ -919,6 +938,43 @@ mod tests {
         ] {
             assert!(!text.contains(forbidden), "body leaks {forbidden}");
         }
+    }
+
+    #[test]
+    fn namespaced_tools_reach_the_upstream_body() {
+        // Codex 0.147 delivers its whole tool set inside namespaces. Dropping the group left the
+        // model with no tools at all, so the turn succeeded while nothing could ever be called.
+        let mut request = turn_request(test_model());
+        request.dynamic_tools = vec![json!({
+            "type": "namespace",
+            "name": "functions",
+            "description": "Local execution tools",
+            "tools": [
+                {
+                    "type": "custom",
+                    "name": "exec",
+                    "description": "Run source",
+                    "format": {"type": "grammar", "syntax": "lark", "definition": "start: /x/"}
+                },
+                {
+                    "type": "function",
+                    "name": "wait",
+                    "description": "Wait",
+                    "inputSchema": {"type": "object"},
+                    "deferLoading": false
+                }
+            ]
+        })];
+        let body = build_responses_body(&request);
+        assert_eq!(body["tools"][0]["type"], "namespace");
+        assert_eq!(body["tools"][0]["name"], "functions");
+        assert_eq!(body["tools"][0]["tools"][0]["type"], "custom");
+        assert_eq!(body["tools"][0]["tools"][0]["name"], "exec");
+        assert_eq!(body["tools"][0]["tools"][1]["type"], "function");
+        assert_eq!(body["tools"][0]["tools"][1]["parameters"]["type"], "object");
+        // The internal app-server spelling never reaches the backend.
+        assert!(body["tools"][0]["tools"][1].get("inputSchema").is_none());
+        assert!(body["tools"][0]["tools"][1].get("deferLoading").is_none());
     }
 
     #[test]

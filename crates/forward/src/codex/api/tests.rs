@@ -968,6 +968,105 @@ fn official_codex_cli_request_shape_translates_all_additional_tool_kinds() {
 }
 
 #[test]
+fn codex_cli_0_147_namespaced_custom_tool_is_accepted() {
+    // Captured from Codex CLI 0.147.0 against a gpt-5.6 model: the Lark `exec` tool that 0.146
+    // sent as a sibling now lives INSIDE the `functions` namespace. Rejecting a non-function
+    // namespace child failed every 0.147 turn before generation.
+    let parsed = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": [
+                {
+                    "type": "additional_tools",
+                    "role": "developer",
+                    "tools": [
+                        {
+                            "type": "namespace",
+                            "name": "functions",
+                            "description": "Local execution tools",
+                            "tools": [
+                                {
+                                    "type": "custom",
+                                    "name": "exec",
+                                    "description": "Run source",
+                                    "format": {
+                                        "type": "grammar",
+                                        "syntax": "lark",
+                                        "definition": "start: /[\\s\\S]+/"
+                                    }
+                                },
+                                {
+                                    "type": "function",
+                                    "name": "wait",
+                                    "description": "Wait for a task",
+                                    "parameters": {
+                                        "type": "object",
+                                        "properties": {"id": {"type": "string"}},
+                                        "required": ["id"]
+                                    },
+                                    "strict": false
+                                }
+                            ]
+                        },
+                        {
+                            "type": "namespace",
+                            "name": "collaboration",
+                            "description": "Agent coordination",
+                            "tools": [{
+                                "type": "function",
+                                "name": "list_agents",
+                                "description": "List agents",
+                                "parameters": {"type": "object", "properties": {}},
+                                "strict": false
+                            }]
+                        }
+                    ]
+                },
+                {"role": "user", "content": "Reply briefly."}
+            ],
+            "store": false,
+            "stream": true
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(parsed.dynamic_tools.len(), 2);
+    assert_eq!(parsed.dynamic_tools[0]["type"], "namespace");
+    assert_eq!(parsed.dynamic_tools[0]["name"], "functions");
+    assert_eq!(parsed.dynamic_tools[0]["tools"][0]["type"], "custom");
+    assert_eq!(parsed.dynamic_tools[0]["tools"][0]["name"], "exec");
+    assert_eq!(
+        parsed.dynamic_tools[0]["tools"][0]["format"]["definition"],
+        "start: /[\\s\\S]+/"
+    );
+    assert_eq!(parsed.dynamic_tools[0]["tools"][1]["type"], "function");
+    assert_eq!(
+        parsed.dynamic_tools[0]["tools"][1]["inputSchema"]["required"],
+        json!(["id"])
+    );
+    assert_eq!(parsed.dynamic_tools[1]["tools"][0]["name"], "list_agents");
+}
+
+#[test]
+fn namespaced_hosted_tools_still_fail_closed() {
+    let error = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "hi",
+            "tools": [{
+                "type": "namespace",
+                "name": "functions",
+                "tools": [{"type": "web_search"}]
+            }]
+        }),
+    )
+    .unwrap_err();
+    assert_eq!(error.param.as_deref(), Some("tools.0.tools.0.type"));
+}
+
+#[test]
 fn codex_diagnostic_metadata_is_bounded() {
     let metadata_error = parse_responses_request(
         &gateway(),

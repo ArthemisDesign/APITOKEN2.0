@@ -629,9 +629,12 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    turn; tenant continuity — the `prompt_cache_key` digest plus opaque
    session/thread/window UUIDs derived from it (never the raw customer key).
    Current Codex top-level `tools` and legacy `additional_tools` accept client-executed function,
-   Lark custom and `tool_search` forms through one bounded parser; a custom/tool-search call is executed by the
+   Lark custom, `namespace` and `tool_search` forms through one bounded parser; a namespace groups
+   function AND custom children (Codex CLI 0.147 moved its Lark `exec` inside the `functions`
+   namespace) and is rebuilt into the upstream body as a group — dropping it would leave the model
+   with no callable tool at all. A custom/tool-search call is executed by the
    client, the gateway returns the raw call item and never executes it. Hosted `web_search` never
-   becomes a free client tool and is fail-closed rejected.
+   becomes a free client tool and is fail-closed rejected, at any nesting depth.
 4. **Provider windows — from `/wham/usage` and live headers/SSE `codex.rate_limits`.**
    A snapshot is accepted only with real duration+reset; a stale one never rejects and never wins a
    tie-break; one that never arrived equals a fresh one. The `/wham/usage` schema and header names

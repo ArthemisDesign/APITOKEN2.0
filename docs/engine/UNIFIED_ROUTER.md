@@ -305,12 +305,14 @@ Critical Claude Code requirements (native Anthropic lane contract):
 
 Codex: a full Responses API is required, not an adaptation of Chat Completions —
 custom provider supports only `wire_api="responses"` (this is the default when
-omitted). Codex 0.146 passes function, Lark custom, and client-executed `tool_search`
-in top-level `tools`; the Codex plane accepts these forms with the same bounded
-parser as legacy `additional_tools` and returns client tool calls without executing
-them on the gateway. Hosted `web_search` is not a client tool and is rejected
-fail-closed, so the harness's isolated custom-provider profile disables it
-explicitly.
+omitted). Codex 0.146/0.147 pass function, Lark custom, `namespace` and client-executed
+`tool_search` in top-level `tools` or in the legacy `additional_tools` item; 0.147
+groups the local tools — the Lark `exec` included — inside a `functions` namespace,
+so a namespace child may be function or custom. The Codex plane accepts these forms
+with one bounded parser, forwards namespaces as groups and returns client tool calls
+without executing them on the gateway. Hosted `web_search` is not a client tool and is
+rejected fail-closed at any nesting depth, so the harness's isolated custom-provider
+profile disables it explicitly.
 
 Namespaced IDs from the aggregated catalog are an executable contract, not just
 discovery metadata: the router preserves the universal request body, so each plane

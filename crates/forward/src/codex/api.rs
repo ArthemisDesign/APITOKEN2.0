@@ -1496,13 +1496,19 @@ fn parse_dynamic_tools(
                             Some(child_param.clone()),
                         )
                     })?;
-                    if child_object.get("type").and_then(Value::as_str) != Some("function") {
-                        return Err(ApiError::invalid(
-                            "Only function tools are supported inside a namespace.",
-                            Some(format!("{child_param}.type")),
-                        ));
-                    }
-                    let parsed = parse_additional_function(child_object, &child_param)?;
+                    // Codex CLI 0.147 moved the previously sibling Lark `exec` tool INTO the
+                    // `functions` namespace, so a namespaced child is no longer function-only.
+                    // Both forms are client-executed and keep their existing validation.
+                    let parsed = match child_object.get("type").and_then(Value::as_str) {
+                        Some("function") => parse_additional_function(child_object, &child_param)?,
+                        Some("custom") => parse_additional_custom(child_object, &child_param)?,
+                        _ => {
+                            return Err(ApiError::invalid(
+                                "Only function and custom tools are supported inside a namespace.",
+                                Some(format!("{child_param}.type")),
+                            ))
+                        }
+                    };
                     let child_name = parsed["name"].as_str().unwrap_or_default().to_string();
                     if !child_names.insert(child_name) {
                         return Err(ApiError::invalid(

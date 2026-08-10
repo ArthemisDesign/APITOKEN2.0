@@ -148,10 +148,14 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
 
 - **Wire.** One `POST {base}/responses` per turn: Responses body with explicit base
   instructions (`""` when the client supplied none), replayed history, new input and client
-  tools. Codex 0.146 emits function, Lark custom and client-executed `tool_search` definitions in
-  top-level `tools`; the public parser accepts the same bounded forms as the legacy
-  `additional_tools` item and translates them to one internal dynamic-tool vocabulary. Hosted
-  `web_search` remains unsupported and fails closed, so custom-provider harnesses disable it in
+  tools. Codex 0.146 emits function, Lark custom, `namespace` and client-executed `tool_search`
+  definitions in top-level `tools` (or, for the gpt-5.6 family, in the legacy `additional_tools`
+  item); 0.147 keeps the same vocabulary but groups the local tools — including the Lark `exec` —
+  inside a `functions` namespace, so a namespace child may be function or custom. The public
+  parser accepts the same bounded forms from both lists, translates them to one internal
+  dynamic-tool vocabulary and rebuilds namespaces as groups in the upstream body. Hosted
+  `web_search` remains unsupported and fails closed at any nesting depth, so custom-provider
+  harnesses disable it in
   their isolated config. The upstream request keeps `store:false`, `stream:true`,
   `include:["reasoning.encrypted_content"]`, tenant-scoped
   `prompt_cache_key` and first-party-shaped `client_metadata`. Headers carry the pinned client
