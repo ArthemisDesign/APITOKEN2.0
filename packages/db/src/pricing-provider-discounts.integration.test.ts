@@ -155,6 +155,84 @@ describe.runIf(Boolean(connectionString))("negotiated B2B terms commit as one fa
     expect(settled.rows[0]!.status).toBe("confirmed");
   });
 
+  it("cannot confirm the old desired value after a concurrent pricing edit commits", async () => {
+    await setBusinessPricingBundle(db, {
+      userId, multiplierBp: 4_000, actorId: "admin-1", reason: "negotiated",
+    });
+    const stale = await claimNextPricingJob(db, "worker-old");
+    expect(stale).not.toBeNull();
+
+    // Reproduce the exact commit-order race. The admin path locks desired state first, writes the
+    // new value, then observes the processing job under FOR UPDATE and leaves its immutable
+    // payload to the current worker. Before the desired-state row lock was part of confirmation,
+    // that worker could read 4000 outside a transaction, wait behind this job lock, and mark the
+    // row confirmed immediately after the 5000 edit committed.
+    const admin = await db.pool.connect();
+    let adminOpen = true;
+    try {
+      await admin.query("BEGIN");
+      await admin.query(`
+        SELECT ea.engine_account_id
+        FROM customer_profiles cp
+        JOIN engine_accounts ea ON ea.user_id = cp.user_id
+        WHERE cp.user_id = $1
+        FOR UPDATE OF cp, ea
+      `, [userId]);
+      await admin.query(
+        "UPDATE customer_profiles SET multiplier_bp = 5000 WHERE user_id = $1",
+        [userId],
+      );
+      await admin.query(
+        "UPDATE engine_accounts SET mult_bp = 5000 WHERE user_id = $1",
+        [userId],
+      );
+      await admin.query(
+        "SELECT id FROM engine_pricing_jobs WHERE id = $1 FOR UPDATE",
+        [stale!.id],
+      );
+
+      const confirmation = confirmPricingJob(db, stale!);
+      let authorityLockObserved = false;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const waiting = await db.pool.query<{ waiting: boolean }>(`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_stat_activity
+            WHERE datname = current_database()
+              AND pid <> pg_backend_pid()
+              AND wait_event_type = 'Lock'
+              AND query LIKE '%pricing_job_desired_lock%'
+          ) AS waiting
+        `);
+        if (waiting.rows[0]?.waiting) {
+          authorityLockObserved = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(authorityLockObserved).toBe(true);
+
+      await admin.query("COMMIT");
+      adminOpen = false;
+      await confirmation;
+    } finally {
+      if (adminOpen) await admin.query("ROLLBACK");
+      admin.release();
+    }
+
+    const after = await db.pool.query<{
+      status: string; multiplier_bp: number; reason: string; confirmed_at: Date | null;
+    }>(`
+      SELECT status, multiplier_bp, reason, confirmed_at
+      FROM engine_pricing_jobs WHERE id = $1
+    `, [stale!.id]);
+    expect(after.rows[0]).toEqual({
+      status: "pending",
+      multiplier_bp: 5_000,
+      reason: "superseded_after_processing",
+      confirmed_at: null,
+    });
+  });
+
   it("requeues a historical confirmed payload that no longer matches durable desired state", async () => {
     await setBusinessPricingBundle(db, {
       userId, multiplierBp: 4_000, actorId: "admin-1", reason: "negotiated",

@@ -82,6 +82,14 @@ that had already replaced it, clearing the new owner's lease and marking the job
 the value that owner was sending had never reached the engine. Losing the fence race is silent by
 design — the job belongs to whoever re-claimed it.
 
+The desired-state comparison and terminal job write are one transaction. Confirmation locks the
+same customer/account authority rows that every pricing edit locks, in the same order, before it
+reads the desired value and then updates the job. This closes the commit-order race where a worker
+could read the old desired value, wait behind an administrator's job-row lock, and mark that old
+payload confirmed immediately after the new deal committed. Whichever side gets the authority lock
+first wins cleanly: either the old delivery confirms before the edit and the edit requeues it, or
+the edit commits first and the worker requeues the new value.
+
 Admin surface: `PATCH /admin/business-users/{id}/pricing` accepts `discountPercent` and/or
 `providers` (a provider mapped to `null` clears its override), and `GET` returns the default
 (`discountPercent`, `multiplierBp`) together with the current overrides. The panel shows the

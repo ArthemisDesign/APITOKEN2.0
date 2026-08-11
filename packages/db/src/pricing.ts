@@ -1293,22 +1293,24 @@ export async function claimNextPricingJob(
  * in-flight delivery is never lost.
  */
 async function desiredPricingJobValue(
-  database: Database,
+  client: Pick<PoolClient, "query">,
   job: ClaimedPricingJob,
 ): Promise<{ engineAccountId: string | null; multiplierBp: number | null }> {
-  const result = await database.pool.query<{
+  const result = await client.query<{
     engine_account_id: string | null; multiplier_bp: number | null;
   }>(
     job.providerId === null
-      ? `SELECT ea.engine_account_id, cp.multiplier_bp
+      ? `SELECT /* pricing_job_desired_lock */ ea.engine_account_id, cp.multiplier_bp
            FROM customer_profiles cp
-           LEFT JOIN engine_accounts ea ON ea.user_id = cp.user_id
-          WHERE cp.user_id = $1`
-      : `SELECT ea.engine_account_id, d.multiplier_bp
+           JOIN engine_accounts ea ON ea.user_id = cp.user_id
+          WHERE cp.user_id = $1
+          FOR UPDATE OF cp, ea`
+      : `SELECT /* pricing_job_desired_lock */ ea.engine_account_id, d.multiplier_bp
            FROM engine_accounts ea
            LEFT JOIN customer_provider_discounts d
              ON d.user_id = ea.user_id AND d.provider_id = $2
-          WHERE ea.user_id = $1`,
+          WHERE ea.user_id = $1
+          FOR UPDATE OF ea`,
     job.providerId === null ? [job.userId] : [job.userId, job.providerId],
   );
   const row = result.rows[0];
@@ -1337,48 +1339,73 @@ function pricingJobIsCurrent(
 const LEASE_FENCE = "status = 'processing' AND locked_by = $2 AND attempts = $3";
 
 export async function confirmPricingJob(database: Database, job: ClaimedPricingJob): Promise<void> {
-  const desired = await desiredPricingJobValue(database, job);
-  if (pricingJobIsCurrent(job, desired)) {
-    await database.pool.query(`
-      UPDATE engine_pricing_jobs
-      SET status = 'confirmed', confirmed_at = now(),
-          locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
-      WHERE id = $1 AND ${LEASE_FENCE}
-    `, [job.id, job.workerId, job.attempts]);
-    return;
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    // Pricing writers lock customer_profiles/engine_accounts before the job row. Take the same
+    // authority lock before reading desired state and landing the terminal verdict, so a writer
+    // cannot commit a new desired value between those two operations. Without this transaction a
+    // worker could read the old value, wait behind the writer's job lock, and then confirm stale
+    // payload immediately after the writer committed.
+    const desired = await desiredPricingJobValue(client, job);
+    if (pricingJobIsCurrent(job, desired)) {
+      await client.query(`
+        UPDATE engine_pricing_jobs
+        SET status = 'confirmed', confirmed_at = now(),
+            locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
+        WHERE id = $1 AND ${LEASE_FENCE}
+      `, [job.id, job.workerId, job.attempts]);
+    } else {
+      await client.query(`
+        UPDATE engine_pricing_jobs
+        SET engine_account_id = COALESCE($4, engine_account_id), multiplier_bp = $5,
+            reason = 'superseded_after_processing', status = 'pending', attempts = 0,
+            next_attempt_at = now(), confirmed_at = NULL,
+            locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
+        WHERE id = $1 AND ${LEASE_FENCE}
+      `, [job.id, job.workerId, job.attempts, desired.engineAccountId, desired.multiplierBp]);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
   }
-  await database.pool.query(`
-    UPDATE engine_pricing_jobs
-    SET engine_account_id = COALESCE($4, engine_account_id), multiplier_bp = $5,
-        reason = 'superseded_after_processing', status = 'pending', attempts = 0,
-        next_attempt_at = now(), confirmed_at = NULL,
-        locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
-    WHERE id = $1 AND ${LEASE_FENCE}
-  `, [job.id, job.workerId, job.attempts, desired.engineAccountId, desired.multiplierBp]);
 }
 
 export async function retryPricingJob(database: Database, job: ClaimedPricingJob, error: string): Promise<void> {
-  const desired = await desiredPricingJobValue(database, job);
-  const delaySeconds = Math.min(3600, Math.max(5, 2 ** Math.min(job.attempts, 10)));
-  if (pricingJobIsCurrent(job, desired)) {
-    await database.pool.query(`
-      UPDATE engine_pricing_jobs
-      SET status = 'retry', next_attempt_at = now() + ($5 * interval '1 second'),
-          locked_at = NULL, locked_by = NULL, last_error = $4, updated_at = now()
-      WHERE id = $1 AND ${LEASE_FENCE}
-    `, [job.id, job.workerId, job.attempts, error.slice(0, 2000), delaySeconds]);
-    return;
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const desired = await desiredPricingJobValue(client, job);
+    const delaySeconds = Math.min(3600, Math.max(5, 2 ** Math.min(job.attempts, 10)));
+    if (pricingJobIsCurrent(job, desired)) {
+      await client.query(`
+        UPDATE engine_pricing_jobs
+        SET status = 'retry', next_attempt_at = now() + ($5 * interval '1 second'),
+            locked_at = NULL, locked_by = NULL, last_error = $4, updated_at = now()
+        WHERE id = $1 AND ${LEASE_FENCE}
+      `, [job.id, job.workerId, job.attempts, error.slice(0, 2000), delaySeconds]);
+    } else {
+      // The desired value moved while this attempt was in flight: deliver the new one immediately
+      // rather than backing off on a value nobody wants any more.
+      await client.query(`
+        UPDATE engine_pricing_jobs
+        SET engine_account_id = COALESCE($4, engine_account_id), multiplier_bp = $5,
+            reason = 'superseded_after_processing', status = 'retry', attempts = 0,
+            next_attempt_at = now(), locked_at = NULL, locked_by = NULL,
+            last_error = NULL, updated_at = now()
+        WHERE id = $1 AND ${LEASE_FENCE}
+      `, [job.id, job.workerId, job.attempts, desired.engineAccountId, desired.multiplierBp]);
+    }
+    await client.query("COMMIT");
+  } catch (queryError) {
+    await client.query("ROLLBACK");
+    throw queryError;
+  } finally {
+    client.release();
   }
-  // The desired value moved while this attempt was in flight: deliver the new one immediately
-  // rather than backing off on a value nobody wants any more.
-  await database.pool.query(`
-    UPDATE engine_pricing_jobs
-    SET engine_account_id = COALESCE($4, engine_account_id), multiplier_bp = $5,
-        reason = 'superseded_after_processing', status = 'retry', attempts = 0,
-        next_attempt_at = now(), locked_at = NULL, locked_by = NULL,
-        last_error = NULL, updated_at = now()
-    WHERE id = $1 AND ${LEASE_FENCE}
-  `, [job.id, job.workerId, job.attempts, desired.engineAccountId, desired.multiplierBp]);
 }
 
 export async function recoverStalePricingJobs(database: Database): Promise<number> {
