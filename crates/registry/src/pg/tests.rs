@@ -375,7 +375,7 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 47);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 48);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
@@ -417,6 +417,237 @@ fn settlement_floor_accounting_migration_is_expand_only_and_auditable() {
     assert!(!normalized.contains(" DELETE "));
     assert!(!normalized.contains(" UPDATE "));
     assert!(normalized.contains("INSERT INTO engine_schema_migrations(version) VALUES (47)"));
+}
+
+#[test]
+fn settlement_floor_terminal_fence_migration_blocks_mixed_version_writers() {
+    let normalized = MIGRATION_0048
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(normalized.contains("CREATE TRIGGER accounts_settlement_floor_fence"));
+    assert!(normalized.contains("CREATE TRIGGER reservations_priced_terminal_collection_fence"));
+    assert!(normalized.contains("NEW.spent_nano > OLD.spent_nano"));
+    assert!(normalized.contains("OLD.balance_nano < -1000000000"));
+    assert!(normalized.contains("ELSE -1000000000"));
+    assert!(normalized.contains("CHECK ((provider IS NULL) = (payable_multiplier_bp IS NULL))"));
+    assert!(normalized.contains("reservations_priced_terminal_collection_evidence"));
+    assert!(normalized.contains("state NOT IN ('settled', 'canceled')"));
+    assert!(normalized.contains("collected_nano IS NOT NULL AND uncollected_nano IS NOT NULL"));
+    assert_eq!(normalized.matches("USING ERRCODE = '40001'").count(), 2);
+    assert!(normalized.contains("VALIDATE CONSTRAINT reservations_scalar_pricing_pair"));
+    assert!(normalized
+        .contains("VALIDATE CONSTRAINT reservations_priced_terminal_collection_evidence"));
+    assert!(!normalized.contains(" DROP TABLE "));
+    assert!(!normalized.contains(" TRUNCATE "));
+    assert!(normalized.contains("INSERT INTO engine_schema_migrations(version) VALUES (48)"));
+}
+
+/// Real PostgreSQL proof that migration 0048 rejects an old settlement transaction before it can
+/// cross the shared floor, and rejects terminal priced rows without immutable collection evidence.
+/// Skipped unless an isolated destructive test database is supplied:
+/// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+/// pg::tests::settlement_floor_terminal_fence_postgres_matrix`
+#[test]
+fn settlement_floor_terminal_fence_postgres_matrix() {
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping settlement-floor terminal fence matrix: test URL is unset");
+        return;
+    };
+
+    let mut lock_holder = PgStore::connect(&url).unwrap();
+    lock_holder
+        .client
+        .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+        .unwrap();
+    lock_holder
+        .client
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+
+    let mut pg = PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    assert_eq!(pg.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
+
+    let mut tx = pg.client.transaction().unwrap();
+    tx.batch_execute(
+        "INSERT INTO accounts(id,balance_nano,spent_nano,mult_bp,status,created_ts,created)
+           VALUES('terminal-fence-account',-900000000,0,10000,'active',1,''),
+                 ('terminal-fence-debt-account',-1500000000,0,10000,'active',1,'');
+         INSERT INTO api_keys(key,key_id,account_id,created_ts,created)
+           VALUES('terminal-fence-key','terminal_fence_key_id','terminal-fence-account',1,'');
+         INSERT INTO reservations(
+             request_id,account_id,key,hold_nano,balance_after_reserve_nano,
+             owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts
+         ) VALUES(
+             'terminal-fence-legacy','terminal-fence-account','terminal-fence-key',0,-900000000,
+             'terminal-fence-owner',1,100,'settled',1,1
+         ),(
+             'terminal-fence-priced','terminal-fence-account','terminal-fence-key',0,-900000000,
+             'terminal-fence-owner',1,100,'reserved',1,1
+         );
+         UPDATE reservations
+            SET provider='anthropic',payable_multiplier_bp=10000
+          WHERE request_id='terminal-fence-priced';",
+    )
+    .unwrap();
+
+    tx.batch_execute("SAVEPOINT floor_cross").unwrap();
+    let floor_error = tx
+        .execute(
+            "UPDATE accounts
+                SET balance_nano=-1000000001,spent_nano=spent_nano+100000001
+              WHERE id='terminal-fence-account'",
+            &[],
+        )
+        .unwrap_err();
+    assert_eq!(
+        floor_error
+            .as_db_error()
+            .and_then(|error| error.constraint()),
+        Some("accounts_settlement_floor_fence")
+    );
+    assert_eq!(
+        floor_error.as_db_error().map(|error| error.code().code()),
+        Some("40001")
+    );
+    assert_eq!(
+        classify_failure(&anyhow::Error::new(floor_error)),
+        FailureClass::Transient,
+        "the deployed outbox actor must leave a fenced row pending"
+    );
+    tx.batch_execute("ROLLBACK TO SAVEPOINT floor_cross")
+        .unwrap();
+    let unchanged = tx
+        .query_one(
+            "SELECT balance_nano,spent_nano FROM accounts WHERE id='terminal-fence-account'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(unchanged.get::<_, i64>(0), -900_000_000);
+    assert_eq!(unchanged.get::<_, i64>(1), 0);
+
+    // Existing adjustment debt remains legal but settlement may not make it any deeper.
+    assert_eq!(
+        tx.execute(
+            "UPDATE accounts SET spent_nano=spent_nano+1
+              WHERE id='terminal-fence-debt-account'",
+            &[],
+        )
+        .unwrap(),
+        1
+    );
+    tx.batch_execute("SAVEPOINT debt_cross").unwrap();
+    let debt_error = tx
+        .execute(
+            "UPDATE accounts SET balance_nano=balance_nano-1,spent_nano=spent_nano+1
+              WHERE id='terminal-fence-debt-account'",
+            &[],
+        )
+        .unwrap_err();
+    assert_eq!(
+        debt_error
+            .as_db_error()
+            .and_then(|error| error.constraint()),
+        Some("accounts_settlement_floor_fence")
+    );
+    tx.batch_execute("ROLLBACK TO SAVEPOINT debt_cross")
+        .unwrap();
+
+    tx.batch_execute("SAVEPOINT terminal_without_evidence")
+        .unwrap();
+    let evidence_error = tx
+        .execute(
+            "UPDATE reservations
+                SET state='settled',actual_nano=10,settled_ts=2,updated_ts=2
+              WHERE request_id='terminal-fence-priced'",
+            &[],
+        )
+        .unwrap_err();
+    assert_eq!(
+        evidence_error
+            .as_db_error()
+            .and_then(|error| error.constraint()),
+        Some("reservations_priced_terminal_collection_evidence")
+    );
+    assert_eq!(
+        evidence_error
+            .as_db_error()
+            .map(|error| error.code().code()),
+        Some("40001")
+    );
+    assert_eq!(
+        classify_failure(&anyhow::Error::new(evidence_error)),
+        FailureClass::Transient,
+        "the deployed outbox actor must leave a fenced row pending"
+    );
+    tx.batch_execute("ROLLBACK TO SAVEPOINT terminal_without_evidence")
+        .unwrap();
+    assert_eq!(
+        tx.query_one(
+            "SELECT state FROM reservations WHERE request_id='terminal-fence-priced'",
+            &[],
+        )
+        .unwrap()
+        .get::<_, String>(0),
+        "reserved"
+    );
+
+    tx.batch_execute("SAVEPOINT incomplete_pricing_pair")
+        .unwrap();
+    let pricing_pair_error = tx
+        .execute(
+            "UPDATE reservations SET provider=NULL
+              WHERE request_id='terminal-fence-priced'",
+            &[],
+        )
+        .unwrap_err();
+    assert_eq!(
+        pricing_pair_error
+            .as_db_error()
+            .and_then(|error| error.constraint()),
+        Some("reservations_scalar_pricing_pair")
+    );
+    tx.batch_execute("ROLLBACK TO SAVEPOINT incomplete_pricing_pair")
+        .unwrap();
+
+    // The legacy both-null terminal shape stays readable, while the new priced shape closes only
+    // with evidence whose sum is already protected by migration 0047.
+    let legacy = tx
+        .query_one(
+            "SELECT state,provider,payable_multiplier_bp,collected_nano,uncollected_nano
+               FROM reservations WHERE request_id='terminal-fence-legacy'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(legacy.get::<_, String>(0), "settled");
+    assert_eq!(legacy.get::<_, Option<String>>(1), None);
+    assert_eq!(legacy.get::<_, Option<i64>>(2), None);
+    assert_eq!(legacy.get::<_, Option<i64>>(3), None);
+    assert_eq!(legacy.get::<_, Option<i64>>(4), None);
+    assert_eq!(
+        tx.execute(
+            "UPDATE reservations
+                SET state='settled',actual_nano=10,collected_nano=7,uncollected_nano=3,
+                    settled_ts=2,updated_ts=2
+              WHERE request_id='terminal-fence-priced'",
+            &[],
+        )
+        .unwrap(),
+        1
+    );
+
+    tx.rollback().unwrap();
+    lock_holder
+        .client
+        .query_one(
+            "SELECT pg_advisory_unlock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
 }
 
 /// A migration records its own version — `apply_migration` runs the SQL but never writes the

@@ -40,18 +40,24 @@ Money is signed 64-bit integer nanodollars; leases use Unix seconds.
 | `capacity_leases` | Atomic per-request subscription admission and matching inflight ownership. |
 | `leader_leases` | One PostgreSQL lease-epoch leader for polling; there is no Redlock path. |
 
-Migration `0047` is the expand-only, old-writer-compatible foundation for enforcing the
-account-wide floor at settlement as well as admission. It adds nullable per-request
+Migrations `0047` and `0048` are the expand-only, old-writer-compatible foundation for enforcing
+the account-wide floor at settlement as well as admission. Migration `0047` adds nullable per-request
 `collected_nano`/`uncollected_nano` evidence, a lifetime account shortfall aggregate, immutable
 ledger/usage shortfall columns, and nullable scalar pricing pins. The migration does not change the
-currently serving money path by itself; the dependent runtime is delivered only after this schema
-version is GREEN.
+currently serving money path by itself. Migration `0048` adds the mixed-version database fence: an
+account update that increases spend cannot cross −$1, or worsen a deeper pre-existing balance debt
+recorded by an adjustment; provider and payable multiplier pins are both null or both present; and
+a priced terminal reservation must contain collected/uncollected evidence. Thus an old draining
+slot can still settle its own both-null reservations, but its attempt to settle a reservation opened
+by the new runtime receives the retryable SQLSTATE used by the existing outbox actor, rolls back
+atomically, and remains pending in the shared outbox for the new slot. The
+dependent runtime is delivered only after both schema versions are GREEN.
 
 The admission invariant is `request hold <= balance + the shared $1 account buffer`; exact provider
 usage may later make the billed amount greater than its hold (the forwarding lanes cap one request
 at `hold + $1`). Settlement closes the exact reservation and, in one transaction, changes balances,
 inserts the unique charge, writes usage, and marks the outbox done. Retrying the request identity
-cannot double-charge. After the dependent `0047` runtime lands, billed usage is conserved as
+cannot double-charge. After the dependent settlement-floor runtime lands, billed usage is conserved as
 `actual = collected + uncollected`, while aggregate collection cannot move the account below the
 same floor.
 

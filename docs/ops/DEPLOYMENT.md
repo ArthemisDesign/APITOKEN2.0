@@ -717,6 +717,15 @@ unreadable is rejected. The controller compares targets with the immutable relea
 active API, worker and Control API PID, not with `current`, because link selection precedes
 blue-green process admission.
 
+Engine schema migration `0048` is also a permanent mixed-version money fence. A draining engine
+older than the account-wide settlement-floor runtime may finish reservations it opened without
+pricing pins, but PostgreSQL rolls back any attempt to cross the shared account floor or to
+terminalize a newly pinned reservation without collected/uncollected evidence. Its durable outbox
+row receives a retryable SQLSTATE, stays pending, and is then completed by the current runtime.
+Binary rollback never removes this fence; a rollback
+target must tolerate retryable settlement failures and a schema version newer than it understands,
+as all PostgreSQL-aware engine releases do.
+
 The supported pricing HTTP generations are:
 
 | Commerce process | Engine process | Result |
