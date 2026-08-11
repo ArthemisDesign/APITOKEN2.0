@@ -55,6 +55,11 @@ export interface TopupFeedRow {
   paidAt: Date;
 }
 
+export interface TopupV2FeedRow extends TopupFeedRow {
+  /** Commit-ordered paid-row insertion sequence; independent of provider timestamps. */
+  id: bigint;
+}
+
 export interface SalesFeedPage<T> {
   items: T[];
   // The source watermark advances even when every row in the scanned page belongs to an ordinary
@@ -221,6 +226,53 @@ export async function listPaidTopupsAfter(
       })),
     nextCursor: last ? BigInt(last.id) : afterId,
   };
+}
+
+/**
+ * Additive successor to the timestamp-cursor feed. The source page is ordered and limited by the
+ * commit-ordered payments.feed_seq before referral/status filtering, so every source row advances
+ * the watermark and equal provider paid_at timestamps remain independently resumable.
+ */
+export async function listPaidTopupsV2After(
+  database: Database,
+  afterId: bigint,
+  limit: number,
+): Promise<SalesFeedPage<TopupV2FeedRow>> {
+  const lagCutoff = new Date(Date.now() - FEED_VISIBILITY_LAG_MS);
+  const rows = await database.db
+    .select({
+      id: payments.feedSeq,
+      paymentId: payments.id,
+      userId: payments.userId,
+      amountNano: payments.amountNano,
+      status: payments.status,
+      paidAt: payments.paidAt,
+      attributedUserId: referralAttributions.userId,
+    })
+    .from(payments)
+    .leftJoin(referralAttributions, and(
+      eq(referralAttributions.userId, payments.userId),
+      gte(payments.paidAt, referralAttributions.createdAt),
+    ))
+    .where(and(gt(payments.feedSeq, afterId), lt(payments.createdAt, lagCutoff)))
+    .orderBy(asc(payments.feedSeq))
+    .limit(limit);
+
+  const items = rows.flatMap((row): TopupV2FeedRow[] => {
+    if (row.status !== "paid") return [];
+    if (row.paidAt === null) {
+      throw new Error(`paid payment ${row.paymentId} has no paid_at`);
+    }
+    if (row.attributedUserId === null) return [];
+    return [{
+      id: row.id,
+      paymentId: row.paymentId,
+      userId: row.userId,
+      amountNano: row.amountNano,
+      paidAt: row.paidAt,
+    }];
+  });
+  return { items, nextCursor: rows.at(-1)?.id ?? afterId };
 }
 
 // Профиль реферала для витрины партнёра: тип (b2b/b2c), скидка/floor и маппинг на engine-аккаунт

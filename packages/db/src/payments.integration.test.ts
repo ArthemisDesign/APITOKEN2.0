@@ -54,11 +54,14 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
     await database.pool.end();
   });
 
-  async function checkout(amountUsd = 25n): Promise<CheckoutSession> {
+  async function checkout(
+    amountUsd = 25n,
+    providerPaymentId = "26109ba0-b05b-4ee0-93d1-fd62c822ce95",
+  ): Promise<CheckoutSession> {
     const created = await createCheckoutSession(database, { userId, provider: "cryptomus", amountUsd });
     return activateCheckoutSession(database, {
       id: created.id,
-      providerPaymentId: "26109ba0-b05b-4ee0-93d1-fd62c822ce95",
+      providerPaymentId,
       checkoutUrl: "https://pay.test/invoice",
       providerState: { status: "check" },
     });
@@ -106,6 +109,57 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
     const credit = await database.pool.query("SELECT status, idempotency_ref FROM engine_credits");
     expect(payment.rows).toEqual([{ status: "paid", amount_minor: "2500", amount_nano: "25000000000" }]);
     expect(credit.rows).toEqual([{ status: "pending", idempotency_ref: `cryptomus:${session.providerPaymentId}` }]);
+  });
+
+  it("serializes the paid feed sequence against an in-flight legacy insert", async () => {
+    const legacy = await checkout(25n, "10000000-0000-4000-8000-000000000001");
+    const current = await checkout(25n, "10000000-0000-4000-8000-000000000002");
+    const blocker = await database.pool.connect();
+    let recording: Promise<unknown> | undefined;
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(`
+        INSERT INTO payments (
+          id, checkout_id, user_id, provider, provider_payment_id, amount_minor, currency,
+          amount_nano, status, provider_state, paid_at
+        ) VALUES ($1, $2, $3, 'cryptomus', $4, 2500, 'USD', 25000000000, 'paid', '{}', now())
+      `, [randomUUID(), legacy.id, userId, legacy.providerPaymentId]);
+
+      recording = applyVerifiedCheckoutPaymentEvent(database, event(current, {
+        providerEventId: "payment-2:paid",
+      }));
+      let observedWait = false;
+      for (let attempt = 0; attempt < 50 && !observedWait; attempt += 1) {
+        const locks = await database.pool.query<{ waiting: boolean }>(`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_locks
+            WHERE relation = 'payments'::regclass
+              AND mode = 'ShareRowExclusiveLock' AND NOT granted
+          ) AS waiting
+        `);
+        observedWait = locks.rows[0]?.waiting ?? false;
+        if (!observedWait) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (!observedWait) {
+        await blocker.query("ROLLBACK");
+        await recording;
+      }
+      expect(observedWait).toBe(true);
+
+      await blocker.query("COMMIT");
+      await recording;
+      const rows = await database.pool.query<{ provider_payment_id: string; feed_seq: string }>(`
+        SELECT provider_payment_id, feed_seq::text FROM payments ORDER BY feed_seq
+      `);
+      expect(rows.rows).toEqual([
+        { provider_payment_id: legacy.providerPaymentId, feed_seq: "1" },
+        { provider_payment_id: current.providerPaymentId, feed_seq: "2" },
+      ]);
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+      await recording?.catch(() => undefined);
+    }
   });
 
   it("deduplicates deliveries and never creates a second credit", async () => {

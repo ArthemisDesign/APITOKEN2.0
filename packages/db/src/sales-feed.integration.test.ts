@@ -4,6 +4,7 @@ import { createDatabase, type Database } from "./client.js";
 import {
   AmbiguousTopupCursorBoundaryError,
   listPaidTopupsAfter,
+  listPaidTopupsV2After,
   listUsageEventsAfter,
   recordReferralAttribution,
 } from "./sales-feed.js";
@@ -197,6 +198,57 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
 
     await expect(listPaidTopupsAfter(database, 0n, 1))
       .rejects.toBeInstanceOf(AmbiguousTopupCursorBoundaryError);
+  });
+
+  it("resumes equal paid_at top-ups independently by commit-ordered sequence", async () => {
+    const referred = await insertUser(true);
+    const paidAt = new Date(Date.now() - 120_000);
+    const firstPaymentId = await insertPaidTopup(referred, "v2-tie-a", paidAt);
+    const secondPaymentId = await insertPaidTopup(referred, "v2-tie-b", paidAt);
+
+    const first = await listPaidTopupsV2After(database, 0n, 1);
+    expect(first).toMatchObject({
+      items: [expect.objectContaining({ id: 1n, paymentId: firstPaymentId, paidAt })],
+      nextCursor: 1n,
+    });
+    const second = await listPaidTopupsV2After(database, first.nextCursor, 1);
+    expect(second).toMatchObject({
+      items: [expect.objectContaining({ id: 2n, paymentId: secondPaymentId, paidAt })],
+      nextCursor: 2n,
+    });
+    await expect(listPaidTopupsV2After(database, second.nextCursor, 1)).resolves.toEqual({
+      items: [],
+      nextCursor: 2n,
+    });
+  });
+
+  it("advances topups-v2 over every source row before referral filtering", async () => {
+    const ordinaryBefore = await insertUser(false);
+    const referred = await insertUser(true);
+    const ordinaryAfter = await insertUser(false);
+    const paidAt = new Date(Date.now() - 120_000);
+    await insertPaidTopup(ordinaryBefore, "v2-ordinary-before", paidAt);
+    const referredPaymentId = await insertPaidTopup(referred, "v2-referred", paidAt);
+    await insertPaidTopup(ordinaryAfter, "v2-ordinary-after", paidAt);
+
+    const first = await listPaidTopupsV2After(database, 0n, 1);
+    expect(first).toEqual({ items: [], nextCursor: 1n });
+    const second = await listPaidTopupsV2After(database, first.nextCursor, 1);
+    expect(second).toMatchObject({
+      items: [expect.objectContaining({ id: 2n, paymentId: referredPaymentId })],
+      nextCursor: 2n,
+    });
+    const third = await listPaidTopupsV2After(database, second.nextCursor, 1);
+    expect(third).toEqual({ items: [], nextCursor: 3n });
+  });
+
+  it("fails closed instead of advancing past a paid row without paid_at", async () => {
+    const referred = await insertUser(true);
+    await insertPaidTopup(referred, "v2-missing-paid-at", new Date(Date.now() - 120_000));
+    await database.pool.query("UPDATE payments SET paid_at = NULL");
+
+    await expect(listPaidTopupsV2After(database, 0n, 100))
+      .rejects.toThrow("has no paid_at");
   });
 
   it("serializes attribution ids against an in-flight legacy insert", async () => {

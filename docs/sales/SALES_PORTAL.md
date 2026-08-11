@@ -103,14 +103,20 @@ of reaching SQL as an out-of-range value.
   and v2 parsers/writers for expand-only replay: every row form still routes to exactly one writer
   (scalar/v1 → `recordReferredSpend`, v2 → `recordReferredSpendV2`), and readers aggregate both
   commission tables. This compatibility does not make either retired form a live producer contract.
-- `GET /v1/internal/sales/topups?after_id&limit` (default 500, max 1000) — paid
-  `payments`; the cursor is epoch microseconds from `paid_at` (not `feed_seq`: payment happens
-  after the insert, and a stale `feed_seq` would fall out of the cursor forever). Also filtered by
-  attribution and by `paid_at >= attributed created_at`. Response
-  `{items:[{id,paymentId,userId,amountNano,paidAt}], nextCursor}`. The producer reads one look-ahead
+- `GET /v1/internal/sales/topups?after_id&limit` (default 500, max 1000) — legacy rollback feed of
+  paid `payments`. Its cursor is epoch microseconds from `paid_at`; the producer reads one look-ahead
   row and fails the page without cursor advance when equal `paid_at` timestamps cross the page
-  boundary: a timestamp-only cursor cannot resume inside that group without losing rows. A future
-  additive feed revision will replace this guard with a monotonic paid-transition cursor.
+  boundary. The route remains unchanged while the Sales consumer rolls forward and back safely.
+- `GET /v1/internal/sales/topups-v2?after_id&limit` (default 500, max 1000) — additive successor.
+  `id`/`nextCursor` are `payments.feed_seq`, allocated only with the verified paid-row INSERT. The
+  payment writer takes `SHARE ROW EXCLUSIVE` on `payments` before that INSERT: this serializes new
+  transitions and fences an old rolling-deploy writer, making sequence allocation order equal
+  commit order. Existing production rows are already paid-at-insert and replay from sequence zero.
+  The producer limits the whole source stream before filtering, so unreferred/refunded rows advance
+  the watermark; referred rows still require `paid_at >= attributed created_at`. Equal `paid_at`
+  values are independently resumable. Response remains
+  `{items:[{id,paymentId,userId,amountNano,paidAt}], nextCursor}`. The Commerce producer ships first;
+  Sales keeps consuming legacy `topups` until the separate consumer checkpoint is GREEN.
 - `POST /v1/internal/sales/referral-discount` — records the salesperson's discount "floor" for a
   referral as partner attribution. Body `{userId, floorBps (0..9500), override?, actorId?}` →
   `{applied, multiplierBp}`. The floor does not move any price: B2C pricing is the stored account
@@ -137,7 +143,8 @@ Consumers on the sales side (`apps/sales-api`, reach commerce via `COMMERCE_BASE
   default 60 s): attributions → assignment of the user to a partner + atomic claim of the one-time
   discount link (the winner receives the floor via `POST referral-discount` — either for the first
   time or as an idempotent backfill if the synchronous application at registration failed);
-  topups → `referred_topups` (history/analytics only, create no commissions); usage events →
+  topups → `referred_topups` (history/analytics only, create no commissions; the deployed consumer
+  stays on legacy `topups` until the separate producer-first `topups-v2` checkpoint); usage events →
   commissions (idempotent by `commerce_event_id`). The live scalar row and historical policy-v1
   row use `recordReferredSpend`; a historical release-v2 row
   (`pricingMode=null` + full lineage) goes to the schema-v2 writer (`recordReferredSpendV2`,

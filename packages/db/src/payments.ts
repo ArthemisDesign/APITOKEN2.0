@@ -155,6 +155,11 @@ export async function applyVerifiedCheckoutPaymentEvent(
       // A delayed paid event must not recreate credit after an authoritative refund.
       checkoutStatus = "refunded";
     } else if (input.state === "paid") {
+      // feed_seq is the topups-v2 cursor. Serializing paid-row inserts makes its allocation order
+      // equal commit order. SHARE ROW EXCLUSIVE also fences the previous binary's ordinary
+      // ROW EXCLUSIVE INSERT during a rolling deploy, so a later committed payment can never move
+      // the external cursor past an older in-flight payment.
+      await client.query("LOCK TABLE payments IN SHARE ROW EXCLUSIVE MODE");
       const proposedPaymentId = randomUUID();
       const payment = await client.query<{
         id: string;

@@ -19,6 +19,7 @@ import { z } from "zod";
 import {
   setReferralFloor,
   listPaidTopupsAfter,
+  listPaidTopupsV2After,
   listReferralAttributionsAfter,
   listReferralProfiles,
   listUsageEventsAfter,
@@ -111,6 +112,21 @@ export class SalesFeedController {
   @Get("topups")
   async topups(@Query("after_id") afterId?: string, @Query("limit") limit?: string) {
     const page = await listPaidTopupsAfter(this.database, parseCursor(afterId), parseLimit(limit, 500, 1000));
+    return {
+      items: page.items.map((row) => ({
+        id: row.id.toString(),
+        paymentId: row.paymentId,
+        userId: row.userId,
+        amountNano: row.amountNano.toString(),
+        paidAt: row.paidAt.toISOString(),
+      })),
+      nextCursor: page.nextCursor.toString(),
+    };
+  }
+
+  @Get("topups-v2")
+  async topupsV2(@Query("after_id") afterId?: string, @Query("limit") limit?: string) {
+    const page = await listPaidTopupsV2After(this.database, parseCursor(afterId), parseLimit(limit, 500, 1000));
     return {
       items: page.items.map((row) => ({
         id: row.id.toString(),

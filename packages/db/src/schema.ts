@@ -3018,7 +3018,8 @@ export const payments = pgTable("payments", {
   status: paymentStatus("status").notNull().default("pending"),
   providerState: jsonb("provider_state").notNull().default({}),
   paidAt: timestamp("paid_at", { withTimezone: true }),
-  // Монотонный курсор вставки для внешних читателей; см. pricing_usage_events.feed_seq.
+  // Курсор topups-v2. Payment rows are created at the verified paid transition, and that INSERT
+  // is serialized by a payments table lock so sequence allocation order equals commit order.
   feedSeq: bigserial("feed_seq", { mode: "bigint" }).notNull(),
   createdAt,
   updatedAt,

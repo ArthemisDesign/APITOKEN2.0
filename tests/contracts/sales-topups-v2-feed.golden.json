@@ -1,0 +1,17 @@
+{
+  "_comment": [
+    "Одна строка additive topups-v2 фида ровно в wire-форме Commerce → Sales.",
+    "id — payments.feed_seq, сериализованный paid-writer lock и поэтому равный commit order;",
+    "paidAt остаётся бизнес-временем, но больше не является курсором.",
+    "Producer читает этот golden сейчас; consumer подключается к тому же файлу отдельной",
+    "producer-first стадией после GREEN Commerce SHA. Legacy /topups остаётся для rollback."
+  ],
+  "row": {
+    "id": "12",
+    "paymentId": "10000000-0000-4000-8000-000000000012",
+    "userId": "20000000-0000-4000-8000-000000000012",
+    "amountNano": "9007199254740993",
+    "paidAt": "2026-08-11T12:34:56.789Z"
+  },
+  "nextCursor": "13"
+}
