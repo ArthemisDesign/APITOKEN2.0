@@ -5,6 +5,7 @@ import { createDatabase } from "@claude-api/db";
 import { EngineClient } from "@claude-api/engine-client";
 import { validateEnvironment, type Environment } from "./config.js";
 import { CreditWorkerService } from "./credit-worker.service.js";
+import { AdjustmentWorkerService } from "./adjustment-worker.service.js";
 import { PricingWorkerService } from "./pricing-worker.service.js";
 import { EmailWorkerService } from "./email-worker.service.js";
 import { PlategaReconcileService } from "./platega-reconcile.service.js";
@@ -38,6 +39,7 @@ class DatabaseShutdown implements OnApplicationShutdown {
     },
     { provide: WORKER_ID, useFactory: () => `${hostname()}:${process.pid}` },
     CreditWorkerService,
+    AdjustmentWorkerService,
     PricingWorkerService,
     EmailWorkerService,
     PlategaReconcileService,

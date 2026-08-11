@@ -56,10 +56,12 @@ may only see a trusted reverse proxy address.
 | `confirm_check`, `wrong_amount`, other nonterminal states | pending | none |
 | `fail`, `cancel`, `system_fail` | canceled | none |
 | `refund_process`, `refund_fail` | pending | none |
-| `refund_paid` | refunded | never add positive credit |
+| `refund_paid` | refunded | cancel an unclaimed credit or durably compensate a possibly delivered one |
 
 For `paid_over`, grant only the locally requested top-up. Never convert the excess payment into
-extra engine credit automatically. Refunds require a separate operator policy.
+extra engine credit automatically. A terminal refund atomically records its negative
+`engine_adjustments` work; the worker waits for any ambiguous positive credit to confirm before
+applying the idempotent compensation.
 
 ## Configuration
 

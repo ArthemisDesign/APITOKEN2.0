@@ -89,7 +89,13 @@ TEST_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/comme
 Payment providers sit behind a provider-neutral adapter. Every adapter must verify
 the provider event using its authoritative API and persist the webhook's globally unique event ID.
 Only then may it create a payment and enqueue an engine credit. The worker uses the payment ID as a
-stable, idempotent engine credit reference. Provider specifics are in `docs/commerce/PLATEGA_INTEGRATION.md`
+stable, idempotent engine credit reference. A verified refund or chargeback changes the payment
+state and records its engine compensation in the same PostgreSQL transaction. A never-claimed
+positive credit is canceled; a credit that may already have reached the engine is first driven to
+`confirmed`, then a separately leased worker sends exactly one negative adjustment under
+`refund:<payment-id>`. This ordering handles a lost credit response without guessing whether the
+top-up landed, and the refund remains durable while either engine call is retried. Provider
+specifics are in `docs/commerce/PLATEGA_INTEGRATION.md`
 (default), `docs/commerce/CRYPTOMUS_INTEGRATION.md` and `docs/commerce/DIGISELLER_INTEGRATION.md` (disabled).
 
 Email/password authentication, authorization invariants and the future email/Google provider
@@ -432,6 +438,10 @@ change any of them. `paid_over` credits only the requested amount; underpayment 
 - Store requested whole USD and engine nanoUSD as PostgreSQL `bigint`; never use floating point.
 - A payment webhook may enqueue at most one credit; an engine credit reference may confirm once.
 - The worker may retry indefinitely until the engine confirms the credit or an operator marks it dead.
+- A terminal refund/chargeback atomically records `payments.status` and any required
+  `engine_adjustments` row. Adjustment claims wait for the paired positive credit to confirm,
+  terminal/retry writes fence on a unique worker lease, and the negative engine operation is
+  idempotent by payment ID. A refunded payment may never depend on a best-effort in-memory debit.
 - B2C usage rows are deduplicated by `(engine_account_id, ledger_entry_id)` and accepted only after
   exact local policy/admission/funding validation. Sales receives exact referred-B2C
   `paid_funded_nano`; commission eligibility is independent of pricing mode, and welcome-funded

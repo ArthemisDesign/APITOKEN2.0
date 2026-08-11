@@ -123,6 +123,7 @@ export async function applyVerifiedCheckoutPaymentEvent(
       await client.query("COMMIT");
       return { duplicateEvent: true, paymentId: null, creditId: null, checkoutStatus: null };
     }
+    const webhookEventId = event.rows[0].id;
 
     const checkoutResult = await client.query<{
       user_id: string;
@@ -219,18 +220,25 @@ export async function applyVerifiedCheckoutPaymentEvent(
       creditId = storedCredit.id;
     } else if (input.state === "refunded") {
       const creditResult = await client.query<{
+        payment_id: string;
         credit_id: string;
+        engine_account_id: string;
+        amount_nano: string;
         credit_status: "pending" | "processing" | "retry" | "confirmed" | "dead";
+        credit_attempts: number;
       }>(`
-        SELECT ec.id AS credit_id, ec.status AS credit_status
+        SELECT p.id AS payment_id, ec.id AS credit_id, ec.engine_account_id, ec.amount_nano,
+               ec.status AS credit_status, ec.attempts AS credit_attempts
         FROM payments p
         JOIN engine_credits ec ON ec.payment_id = p.id
         WHERE p.checkout_id = $1
-        FOR UPDATE OF ec
+        FOR UPDATE OF p, ec
       `, [input.checkoutId]);
       const existingCredit = creditResult.rows[0];
       if (existingCredit) {
-        if (existingCredit.credit_status === "pending" || existingCredit.credit_status === "retry") {
+        const definitelyNeverDelivered = existingCredit.credit_attempts === 0 &&
+          (existingCredit.credit_status === "pending" || existingCredit.credit_status === "dead");
+        if (definitelyNeverDelivered) {
           await client.query(`
             UPDATE engine_credits
             SET status = 'dead', locked_at = NULL, locked_by = NULL,
@@ -238,8 +246,61 @@ export async function applyVerifiedCheckoutPaymentEvent(
             WHERE id = $1
           `, [existingCredit.credit_id]);
         } else {
-          // AUDIT-TODO(C14): add a durable idempotent engine debit/reversal and worker lease protocol.
-          throw new Error("cannot finalize refund until engine credit compensation is durably recorded");
+          // A claimed credit is ambiguous until it confirms: the engine may have applied the
+          // idempotent top-up even if commerce saw a timeout. Keep/revive that credit so it first
+          // reaches `confirmed`; the adjustment worker joins on that state before debiting. This
+          // ordering guarantees exactly one top-up followed by exactly one compensation instead
+          // of guessing whether a retry/processing attempt reached the engine.
+          if (existingCredit.credit_status === "dead") {
+            await client.query(`
+              UPDATE engine_credits
+              SET status = 'retry', next_attempt_at = now(), locked_at = NULL, locked_by = NULL,
+                  last_error = 'revived to establish refund compensation ordering', updated_at = now()
+              WHERE id = $1
+            `, [existingCredit.credit_id]);
+          } else if (existingCredit.credit_status === "retry") {
+            await client.query(`
+              UPDATE engine_credits
+              SET next_attempt_at = now(), updated_at = now()
+              WHERE id = $1 AND status = 'retry'
+            `, [existingCredit.credit_id]);
+          }
+
+          const adjustmentId = randomUUID();
+          const adjustmentRef = `refund:${existingCredit.payment_id}`;
+          const adjustment = await client.query<{
+            payment_id: string;
+            engine_account_id: string;
+            amount_nano: string;
+            kind: "refund" | "dispute";
+            idempotency_ref: string;
+          }>(`
+            INSERT INTO engine_adjustments (
+              id, payment_id, webhook_event_id, engine_account_id, kind,
+              amount_nano, idempotency_ref
+            ) VALUES ($1, $2, $3, $4, 'refund', $5, $6)
+            ON CONFLICT (idempotency_ref) DO UPDATE
+            SET updated_at = engine_adjustments.updated_at
+            RETURNING payment_id, engine_account_id, amount_nano, kind, idempotency_ref
+          `, [
+            adjustmentId,
+            existingCredit.payment_id,
+            webhookEventId,
+            existingCredit.engine_account_id,
+            (-BigInt(existingCredit.amount_nano)).toString(),
+            adjustmentRef,
+          ]);
+          const stored = adjustment.rows[0];
+          if (
+            !stored ||
+            stored.payment_id !== existingCredit.payment_id ||
+            stored.engine_account_id !== existingCredit.engine_account_id ||
+            BigInt(stored.amount_nano) !== -BigInt(existingCredit.amount_nano) ||
+            stored.kind !== "refund" ||
+            stored.idempotency_ref !== adjustmentRef
+          ) {
+            throw new Error("payment already has a different engine refund adjustment");
+          }
         }
       }
 

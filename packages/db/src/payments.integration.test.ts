@@ -3,11 +3,15 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   activateCheckoutSession,
   applyVerifiedCheckoutPaymentEvent,
+  claimNextAdjustment,
   claimNextCredit,
+  confirmAdjustment,
   confirmCredit,
   createCheckoutSession,
   createDatabase,
   getCheckoutSession,
+  recoverStaleAdjustments,
+  retryAdjustment,
   retryCredit,
   type CheckoutSession,
   type Database,
@@ -27,7 +31,7 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
 
   beforeEach(async () => {
     await database.pool.query(`
-      TRUNCATE audit_log, api_keys, engine_credits, webhook_events, payments, email_outbox, auth_rate_limits,
+      TRUNCATE audit_log, api_keys, engine_adjustments, engine_credits, webhook_events, payments, email_outbox, auth_rate_limits,
                auth_tokens, auth_sessions, auth_identities,
                checkout_sessions, engine_accounts, users RESTART IDENTITY CASCADE
     `);
@@ -43,7 +47,7 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
 
   afterAll(async () => {
     await database.pool.query(`
-      TRUNCATE audit_log, api_keys, engine_credits, webhook_events, payments, email_outbox, auth_rate_limits,
+      TRUNCATE audit_log, api_keys, engine_adjustments, engine_credits, webhook_events, payments, email_outbox, auth_rate_limits,
                auth_tokens, auth_sessions, auth_identities,
                checkout_sessions, engine_accounts, users RESTART IDENTITY CASCADE
     `);
@@ -144,44 +148,83 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
     expect(credits.rows[0]).toEqual({ count: 0 });
   });
 
-  it.each(["pending", "retry"] as const)(
-    "refunds a paid checkout and kills its %s engine credit",
-    async (creditState) => {
-      const session = await checkout();
-      await applyVerifiedCheckoutPaymentEvent(database, event(session));
-      if (creditState === "retry") {
-        const claimed = await claimNextCredit(database, "worker-retry");
-        expect(claimed).not.toBeNull();
-        await expect(
-          retryCredit(database, claimed!.id, claimed!.leaseToken, "temporary engine error", claimed!.attempts),
-        ).resolves.toBe(true);
-      }
+  it("refunds without compensation when the positive credit was never claimed", async () => {
+    const session = await checkout();
+    await applyVerifiedCheckoutPaymentEvent(database, event(session));
 
-      await expect(
-        applyVerifiedCheckoutPaymentEvent(database, refundEvent(session)),
-      ).resolves.toMatchObject({ checkoutStatus: "refunded", paymentId: null, creditId: null });
+    await expect(
+      applyVerifiedCheckoutPaymentEvent(database, refundEvent(session)),
+    ).resolves.toMatchObject({ checkoutStatus: "refunded", paymentId: null, creditId: null });
 
-      const state = await database.pool.query(`
-        SELECT
-          (SELECT status FROM payments WHERE checkout_id = $1) AS payment_status,
-          (SELECT status FROM checkout_sessions WHERE id = $1) AS checkout_status,
-          (SELECT ec.status FROM engine_credits ec
-             JOIN payments p ON p.id = ec.payment_id
-            WHERE p.checkout_id = $1) AS credit_status,
-          (SELECT last_error FROM engine_credits ec
-             JOIN payments p ON p.id = ec.payment_id
-            WHERE p.checkout_id = $1) AS last_error
-      `, [session.id]);
-      expect(state.rows[0]).toEqual({
-        payment_status: "refunded",
-        checkout_status: "refunded",
-        credit_status: "dead",
-        last_error: "canceled because the provider payment was refunded",
-      });
-    },
-  );
+    const state = await database.pool.query(`
+      SELECT
+        (SELECT status FROM payments WHERE checkout_id = $1) AS payment_status,
+        (SELECT status FROM checkout_sessions WHERE id = $1) AS checkout_status,
+        (SELECT ec.status FROM engine_credits ec
+           JOIN payments p ON p.id = ec.payment_id
+          WHERE p.checkout_id = $1) AS credit_status,
+        (SELECT last_error FROM engine_credits ec
+           JOIN payments p ON p.id = ec.payment_id
+          WHERE p.checkout_id = $1) AS last_error,
+        (SELECT count(*)::int FROM engine_adjustments) AS adjustments
+    `, [session.id]);
+    expect(state.rows[0]).toEqual({
+      payment_status: "refunded",
+      checkout_status: "refunded",
+      credit_status: "dead",
+      last_error: "canceled because the provider payment was refunded",
+      adjustments: 0,
+    });
+  });
 
-  it("rolls back a refund until a confirmed engine credit has durable compensation", async () => {
+  it("records compensation for an ambiguous retry and waits for its positive credit", async () => {
+    const session = await checkout();
+    await applyVerifiedCheckoutPaymentEvent(database, event(session));
+    const firstAttempt = await claimNextCredit(database, "worker-retry");
+    expect(firstAttempt).not.toBeNull();
+    await expect(
+      retryCredit(
+        database,
+        firstAttempt!.id,
+        firstAttempt!.leaseToken,
+        "response lost after possible engine commit",
+        firstAttempt!.attempts,
+      ),
+    ).resolves.toBe(true);
+
+    await expect(
+      applyVerifiedCheckoutPaymentEvent(database, refundEvent(session)),
+    ).resolves.toMatchObject({ checkoutStatus: "refunded" });
+    await expect(claimNextAdjustment(database, "adjustment-too-early")).resolves.toBeNull();
+
+    const state = await database.pool.query(`
+      SELECT credit.status AS credit_status, adjustment.status AS adjustment_status,
+             adjustment.amount_nano, adjustment.idempotency_ref
+      FROM payments payment
+      JOIN engine_credits credit ON credit.payment_id = payment.id
+      JOIN engine_adjustments adjustment ON adjustment.payment_id = payment.id
+      WHERE payment.checkout_id = $1
+    `, [session.id]);
+    expect(state.rows[0]).toEqual({
+      credit_status: "retry",
+      adjustment_status: "pending",
+      amount_nano: "-25000000000",
+      idempotency_ref: `refund:${firstAttempt!.paymentId}`,
+    });
+
+    const replay = await claimNextCredit(database, "worker-replay");
+    expect(replay).not.toBeNull();
+    await expect(confirmCredit(database, replay!.id, replay!.leaseToken, 25_000_000_000n))
+      .resolves.toBe(true);
+    const adjustment = await claimNextAdjustment(database, "adjustment-after-credit");
+    expect(adjustment).toMatchObject({
+      paymentId: firstAttempt!.paymentId,
+      amountNano: 25_000_000_000n,
+      idempotencyRef: `refund:${firstAttempt!.paymentId}`,
+    });
+  });
+
+  it("finalizes a refund and durably queues compensation for a confirmed engine credit", async () => {
     const session = await checkout();
     await applyVerifiedCheckoutPaymentEvent(database, event(session));
     const claimed = await claimNextCredit(database, "worker-confirm");
@@ -192,7 +235,7 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
 
     await expect(
       applyVerifiedCheckoutPaymentEvent(database, refundEvent(session)),
-    ).rejects.toThrow("engine credit compensation");
+    ).resolves.toMatchObject({ checkoutStatus: "refunded", paymentId: null, creditId: null });
 
     const state = await database.pool.query(`
       SELECT
@@ -201,15 +244,73 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
         (SELECT ec.status FROM engine_credits ec
            JOIN payments p ON p.id = ec.payment_id
           WHERE p.checkout_id = $1) AS credit_status,
+        (SELECT status FROM engine_adjustments) AS adjustment_status,
+        (SELECT amount_nano FROM engine_adjustments) AS adjustment_amount,
         (SELECT count(*)::int FROM webhook_events
           WHERE provider_event_id = 'payment-1:refunded') AS refund_events
     `, [session.id]);
     expect(state.rows[0]).toEqual({
-      payment_status: "paid",
-      checkout_status: "paid",
+      payment_status: "refunded",
+      checkout_status: "refunded",
       credit_status: "confirmed",
-      refund_events: 0,
+      adjustment_status: "pending",
+      adjustment_amount: "-25000000000",
+      refund_events: 1,
     });
+
+    const adjustment = await claimNextAdjustment(database, "adjustment-confirm");
+    expect(adjustment).not.toBeNull();
+    await expect(
+      confirmAdjustment(database, adjustment!.id, adjustment!.leaseToken, -123n),
+    ).resolves.toBe(true);
+    const confirmed = await database.pool.query(
+      "SELECT status, engine_balance_after_nano FROM engine_adjustments",
+    );
+    expect(confirmed.rows).toEqual([{ status: "confirmed", engine_balance_after_nano: "-123" }]);
+  });
+
+  it("deduplicates distinct refund events onto one payment compensation", async () => {
+    const session = await checkout();
+    await applyVerifiedCheckoutPaymentEvent(database, event(session));
+    const credit = await claimNextCredit(database, "worker-confirm");
+    await confirmCredit(database, credit!.id, credit!.leaseToken, 25_000_000_000n);
+
+    await applyVerifiedCheckoutPaymentEvent(database, refundEvent(session, "refund-event-one"));
+    const adjustment = await claimNextAdjustment(database, "adjustment-dedupe");
+    await confirmAdjustment(database, adjustment!.id, adjustment!.leaseToken, 0n);
+    await applyVerifiedCheckoutPaymentEvent(database, refundEvent(session, "refund-event-two"));
+
+    const counts = await database.pool.query(`
+      SELECT (SELECT count(*)::int FROM engine_adjustments) AS adjustments,
+             (SELECT status FROM engine_adjustments) AS adjustment_status,
+             (SELECT count(*)::int FROM webhook_events WHERE event_type = 'payment.refunded') AS events
+    `);
+    expect(counts.rows[0]).toEqual({ adjustments: 1, adjustment_status: "confirmed", events: 2 });
+  });
+
+  it("fences a stale adjustment worker after lease recovery", async () => {
+    const session = await checkout();
+    await applyVerifiedCheckoutPaymentEvent(database, event(session));
+    const credit = await claimNextCredit(database, "worker-confirm");
+    await confirmCredit(database, credit!.id, credit!.leaseToken, 25_000_000_000n);
+    await applyVerifiedCheckoutPaymentEvent(database, refundEvent(session));
+
+    const stale = await claimNextAdjustment(database, "adjustment-stale");
+    expect(stale).not.toBeNull();
+    await database.pool.query(
+      "UPDATE engine_adjustments SET locked_at = now() - interval '10 minutes' WHERE id = $1",
+      [stale!.id],
+    );
+    await expect(recoverStaleAdjustments(database)).resolves.toBe(1);
+    const current = await claimNextAdjustment(database, "adjustment-current");
+    expect(current).not.toBeNull();
+    expect(current!.leaseToken).not.toBe(stale!.leaseToken);
+
+    await expect(
+      retryAdjustment(database, stale!.id, stale!.leaseToken, "late stale failure", stale!.attempts),
+    ).resolves.toBe(false);
+    await expect(confirmAdjustment(database, stale!.id, stale!.leaseToken, 1n)).resolves.toBe(false);
+    await expect(confirmAdjustment(database, current!.id, current!.leaseToken, 2n)).resolves.toBe(true);
   });
 
   it("never recreates credit when a paid event arrives after a refund", async () => {

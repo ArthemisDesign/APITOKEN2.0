@@ -99,7 +99,11 @@ the webhook address must be configured in the Platega merchant dashboard.
 | `CONFIRMED` | paid | allowed after all local checks |
 | `PENDING` and others | pending | none |
 | `CANCELED`, `CANCELLED` | canceled | none |
-| `CHARGEBACKED` | refunded | never add a positive credit |
+| `CHARGEBACKED` | refunded | cancel an unclaimed credit or durably compensate a possibly delivered one |
+
+`CHARGEBACKED` is terminal even when the original engine-credit response was lost. Commerce stores
+the refund state and its negative adjustment atomically; the adjustment is claimable only after the
+paired positive credit is durably confirmed, so retries converge to one top-up and one debit.
 
 ## Reconcile polling in the worker
 

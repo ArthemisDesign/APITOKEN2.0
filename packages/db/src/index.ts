@@ -7,6 +7,7 @@ export * from "./email.js";
 export * from "./oauth.js";
 export * from "./checkouts.js";
 export * from "./credits.js";
+export * from "./adjustments.js";
 export * from "./engine.js";
 export * from "./admin-overview.js";
 export * from "./admin-accounts.js";

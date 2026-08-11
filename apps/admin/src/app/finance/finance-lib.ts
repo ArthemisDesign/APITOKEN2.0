@@ -83,6 +83,9 @@ export interface RefundRow {
   provider?: string;
   amount_usd?: number;
   status?: string;
+  adjustment_status?: string | null;
+  adjustment_confirmed_at?: string | null;
+  adjustment_last_error?: string | null;
   paid_at?: string;
   updated_at?: string;
   provider_payment_id?: string;

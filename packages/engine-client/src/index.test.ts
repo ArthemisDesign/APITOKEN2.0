@@ -85,3 +85,52 @@ describe("account multiplier", () => {
     await expect(drifted.setAccountMultiplier("acct_1", 5_000)).rejects.toBeInstanceOf(EngineClientError);
   });
 });
+
+describe("account debit", () => {
+  it("sends one signed adjustment while exposing a positive magnitude to callers", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const engine = client((url, init) => {
+      calls.push({ url, body: JSON.parse(String(init.body)) });
+      return json({ account: "acct_1", balance_nano: "-25000000000", balance: "-25.000000000" });
+    });
+
+    await expect(engine.debitAccount("acct_1", 25_000_000_000n, "refund:payment-1"))
+      .resolves.toMatchObject({ account: "acct_1", balance_nano: "-25000000000" });
+    expect(calls).toEqual([{
+      url: "https://engine.test/admin/account/acct_1/credit",
+      body: { amount_nano: "-25000000000", ref: "refund:payment-1" },
+    }]);
+  });
+
+  it("rejects a non-positive debit before any request", async () => {
+    const fetchImpl = vi.fn();
+    const engine = new EngineClient({
+      baseUrl: "https://engine.test",
+      controlKey: "control-key",
+      fetch: fetchImpl as unknown as typeof globalThis.fetch,
+    });
+
+    await expect(engine.debitAccount("acct_1", 0n, "refund:payment-1"))
+      .rejects.toBeInstanceOf(RangeError);
+    await expect(engine.debitAccount("acct_1", -1n, "refund:payment-1"))
+      .rejects.toBeInstanceOf(RangeError);
+    await expect(engine.debitAccount("acct_1", 9_223_372_036_854_775_808n, "refund:payment-1"))
+      .rejects.toBeInstanceOf(RangeError);
+    await expect(engine.debitAccount("acct_1", 1n, ""))
+      .rejects.toBeInstanceOf(RangeError);
+    await expect(engine.debitAccount("acct_1", 1n, "refund with space:payment-1"))
+      .rejects.toBeInstanceOf(RangeError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a debit response names another account", async () => {
+    const engine = client(() => json({
+      account: "acct_other",
+      balance_nano: "0",
+      balance: "0.000000000",
+    }));
+
+    await expect(engine.debitAccount("acct_1", 1n, "refund:payment-1"))
+      .rejects.toBeInstanceOf(EngineClientError);
+  });
+});

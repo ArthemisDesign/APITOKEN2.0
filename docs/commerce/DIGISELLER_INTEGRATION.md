@@ -69,9 +69,9 @@ API key permission is **Operations → Invoice details**.
 | 35 | refund not completed by the buyer | refunded |
 | 5 | refund | refunded |
 
-Only state `3` may enqueue a positive engine credit. Refund states
-require a separate commercial policy and must never silently issue a new
-positive credit.
+Only state `3` may enqueue a positive engine credit. Refund states never issue a new customer
+credit: they cancel one that was provably unclaimed, or atomically enqueue the idempotent negative
+adjustment that runs after a possibly delivered positive credit becomes confirmed.
 
 ## Identity and amount rules (as designed)
 

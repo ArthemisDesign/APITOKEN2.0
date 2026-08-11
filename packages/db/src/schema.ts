@@ -3067,7 +3067,6 @@ export const pricingCreditAccruals = pgTable("pricing_credit_accruals", {
   appliedAt: timestamp("applied_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-// AUDIT-TODO(C24): run pnpm db:generate + migrate; enqueue the adjustment in the same transaction as the refund/dispute state change.
 export const engineAdjustments = pgTable("engine_adjustments", {
   id: uuid("id").primaryKey(),
   paymentId: uuid("payment_id").notNull().references(() => payments.id, { onDelete: "restrict" }),

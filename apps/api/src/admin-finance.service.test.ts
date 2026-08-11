@@ -667,12 +667,14 @@ describe("admin refunds", () => {
         {
           id: "p1", userId: "u1", email: "a@example.com", provider: "cryptomus",
           providerPaymentId: "prov-1", amountNano: "25000000000", currency: "USD",
-          status: "refunded", paidAt, updatedAt,
+          status: "refunded", adjustmentStatus: "confirmed", adjustmentConfirmedAt: updatedAt,
+          adjustmentLastError: null, paidAt, updatedAt,
         },
         {
           id: "p2", userId: "u2", email: "b@example.com", provider: "digiseller",
           providerPaymentId: "prov-2", amountNano: "5000000000", currency: "USD",
-          status: "disputed", paidAt: null, updatedAt,
+          status: "disputed", adjustmentStatus: "retry", adjustmentConfirmedAt: null,
+          adjustmentLastError: "engine unavailable", paidAt: null, updatedAt,
         },
       ],
       total: 7,
@@ -695,10 +697,19 @@ describe("admin refunds", () => {
       amount_nano: "25000000000",
       amount_usd: "25",
       status: "refunded",
+      adjustment_status: "confirmed",
+      adjustment_confirmed_at: updatedAt.toISOString(),
+      adjustment_last_error: null,
       paid_at: paidAt.toISOString(),
       updated_at: updatedAt.toISOString(),
     });
-    expect(value.rows[1]).toMatchObject({ status: "disputed", paid_at: null });
+    expect(value.rows[1]).toMatchObject({
+      status: "disputed",
+      adjustment_status: "retry",
+      adjustment_confirmed_at: null,
+      adjustment_last_error: "engine unavailable",
+      paid_at: null,
+    });
     expect(value).toMatchObject({
       total: 7,
       page_amount_nano: "30000000000",

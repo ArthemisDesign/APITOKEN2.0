@@ -135,6 +135,30 @@ Two things read it, and nothing else may reimplement the split:
   credit never becomes commission.
 - **Refund eligibility.** A top-up is refundable only while no real money has been spent since it.
 
+`admin-credit:*` is deliberately free/commission-ineligible. The admin audit reason “manual action”
+does not prove an external payment, and an irreversible partner payout must not be created from an
+unverified source. If off-platform B2B payments become a supported product, they need a separate
+typed reference plus durable payment evidence; reinterpreting an ordinary admin credit is forbidden.
+
+## Refund and chargeback compensation
+
+The provider's terminal refund event and its engine compensation are one durable workflow:
+
+1. Commerce locks the checkout, payment and positive `engine_credits` row in one transaction.
+2. If that credit was never claimed, it becomes `dead` and no engine debit is necessary.
+3. If an attempt may have reached the engine (retry/processing/confirmed), commerce atomically
+   marks the payment refunded and inserts one negative `engine_adjustments` row keyed by
+   `refund:<payment-id>`. A previously operator-dead attempted credit is revived so the sequence
+   can be established rather than guessed.
+4. The adjustment worker can claim only after the paired positive credit is `confirmed`; it then
+   calls the idempotent engine debit and confirms through its unique fenced lease. Lost responses,
+   expired leases and process restarts replay safely.
+
+This order intentionally proves “top-up once, compensate once”. Debiting immediately after an
+ambiguous credit timeout could subtract money that was never added; canceling the retry could leave
+a top-up whose successful response was lost. Queue state is exported through the existing
+`engine_adjustments` monitoring series and the admin refund table shows its terminal status.
+
 ## What was removed, and what remains
 
 The retired code is gone from every runtime path: the per-account policy/binding resolver, the

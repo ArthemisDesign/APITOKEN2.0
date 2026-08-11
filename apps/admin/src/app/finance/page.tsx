@@ -165,6 +165,12 @@ const RefundRowView = memo(function RefundRowView(props: { item: RefundRow }) {
       <td>
         <Pill kind={item.status === "refunded" ? "warn" : "bad"}>{item.status}</Pill>
       </td>
+      <td title={item.adjustment_last_error || ""}>
+        <Pill kind={item.adjustment_status === "confirmed" ? "ok" : item.adjustment_status ? "warn" : "bad"}>
+          {item.adjustment_status || "нет компенсации"}
+        </Pill>
+        {item.adjustment_confirmed_at ? <div className="sub">{formatDate(item.adjustment_confirmed_at, true)}</div> : null}
+      </td>
       <td>{formatDate(item.paid_at, true)}</td>
       <td>{formatDate(item.updated_at, true)}</td>
       <td className="left mono muted">{item.provider_payment_id}</td>
@@ -417,6 +423,7 @@ export default function FinancePage() {
                 <th>провайдер</th>
                 <th>сумма</th>
                 <th>статус</th>
+                <th>компенсация</th>
                 <th>оплачен</th>
                 <th>возврат</th>
                 <th className="left">provider id</th>
@@ -428,7 +435,7 @@ export default function FinancePage() {
                   <RefundRowView key={item.provider_payment_id ?? item.user_id ?? index} item={item} />
                 ))
               ) : (
-                <EmptyRow columns={7} />
+                <EmptyRow columns={8} />
               )}
             </tbody>
           </table>
@@ -776,7 +783,7 @@ export default function FinancePage() {
       <footer>
         Ручное обновление по кнопке ↻ и при смене окна — автообновления у вкладки нет. Выручка — только
         подтверждённые платежи (prepay, подписок-продуктов нет). Возвраты: авторитет статуса — payments;
-        движковый дебет по возвратам (engine_adjustments) пока наполняется не полностью. ARPU — выручка на
+        соседний статус показывает durable компенсацию баланса в engine_adjustments. ARPU — выручка на
         активного за 30д, ARPPU — на платящего.
       </footer>
     </>

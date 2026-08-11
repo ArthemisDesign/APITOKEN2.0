@@ -6,10 +6,9 @@ import type { Database } from "./client.js";
 // движка не читаются. Все денежные суммы отдаются строками nano-USD (без JS number и float),
 // агрегация выполняется на стороне БД (GROUP BY), таблицы в память не выгружаются.
 //
-// Возвраты: авторитет статуса — payments.status ('refunded'/'disputed'). Таблица
-// engine_adjustments (движковый дебет по возврату) пока наполняется не полностью
-// (AUDIT-TODO(C24) в schema.ts), поэтому список возвратов — операционный срез payments,
-// а не подтверждённый engine-ledger.
+// Возвраты: авторитет статуса — payments.status ('refunded'/'disputed'). Компенсация live-баланса
+// видна отдельно через durable engine_adjustments: статус платежа не откатывается из-за временной
+// недоступности движка, а админка показывает, подтверждён ли идемпотентный дебет.
 
 export interface AdminFinanceOverview {
   revenue30dNano: string;
@@ -62,6 +61,9 @@ export interface AdminRefundRow {
   amountNano: string;
   currency: string;
   status: string;
+  adjustmentStatus: string | null;
+  adjustmentConfirmedAt: Date | null;
+  adjustmentLastError: string | null;
   paidAt: Date | null;
   updatedAt: Date;
 }
@@ -696,10 +698,10 @@ export async function listAdminPayingUsers(
 }
 
 /**
- * Возвраты и диспуты: payments со статусом refunded/disputed. Авторитет — payments.status;
- * engine_adjustments (дебет движка по возврату) наполняется не полностью (AUDIT-TODO(C24)),
- * поэтому join с ним здесь намеренно отсутствует. Сортировка — по updated_at DESC (свежий
- * акт возврата первым), пагинация limit/offset + общее число и сумма всех возвратов.
+ * Возвраты и диспуты: payments со статусом refunded/disputed. Авторитет возврата —
+ * payments.status; состояние отдельной идемпотентной компенсации читается из последнего
+ * engine_adjustments для платежа. Сортировка — по updated_at DESC (свежий акт возврата первым),
+ * пагинация limit/offset + общее число и сумма всех возвратов.
  */
 export async function listAdminRefunds(
   database: Database,
@@ -710,13 +712,24 @@ export async function listAdminRefunds(
     database.pool.query<{
       id: string; user_id: string; email: string; provider: string; provider_payment_id: string;
       amount_nano: string; currency: string; status: string; paid_at: Date | null; updated_at: Date;
+      adjustment_status: string | null; adjustment_confirmed_at: Date | null;
+      adjustment_last_error: string | null;
     }>(`
       /* admin-finance:refunds */
       SELECT p.id, p.user_id, u.email, p.provider, p.provider_payment_id,
              p.amount_nano::text AS amount_nano, p.currency, p.status::text AS status,
-             p.paid_at, p.updated_at
+             p.paid_at, p.updated_at, adjustment.status AS adjustment_status,
+             adjustment.confirmed_at AS adjustment_confirmed_at,
+             adjustment.last_error AS adjustment_last_error
       FROM payments p
       JOIN users u ON u.id = p.user_id
+      LEFT JOIN LATERAL (
+        SELECT status::text AS status, confirmed_at, last_error
+        FROM engine_adjustments
+        WHERE payment_id = p.id
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      ) adjustment ON true
       WHERE p.status IN ('refunded', 'disputed')
       ORDER BY p.updated_at DESC, p.id
       LIMIT $1 OFFSET $2
@@ -738,6 +751,9 @@ export async function listAdminRefunds(
       amountNano: row.amount_nano,
       currency: row.currency,
       status: row.status,
+      adjustmentStatus: row.adjustment_status,
+      adjustmentConfirmedAt: row.adjustment_confirmed_at,
+      adjustmentLastError: row.adjustment_last_error,
       paidAt: row.paid_at,
       updatedAt: row.updated_at,
     })),

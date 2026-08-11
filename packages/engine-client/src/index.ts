@@ -56,6 +56,15 @@ const maxSignedI64 = 9_223_372_036_854_775_807n;
 // requests for a sub-second window, and pausing briefly lets the health-gated origin settle.
 const transientGetRetryDelayMs = 300;
 
+function assertMonetaryOperation(amountNano: bigint, reference: string): void {
+  if (amountNano <= 0n || amountNano > maxSignedI64) {
+    throw new RangeError("amountNano must be a positive signed i64");
+  }
+  if (!/^[^\s:]+:\S+$/u.test(reference)) {
+    throw new RangeError("reference must be provider-qualified as <provider>:<transaction-id>");
+  }
+}
+
 function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) {
     return Promise.reject(new EngineClientError("engine request aborted", undefined, false));
@@ -144,7 +153,7 @@ export class EngineClient {
   }
 
   async creditAccount(accountId: string, amountNano: bigint, reference: string): Promise<EngineCreditResult> {
-    if (amountNano <= 0n) throw new RangeError("amountNano must be positive");
+    assertMonetaryOperation(amountNano, reference);
     const body = JSON.stringify({ amount_nano: amountNano.toString(), ref: reference });
     const { response, payload } = await this.request(`/admin/account/${encodeURIComponent(accountId)}/credit`, {
       method: "POST",
@@ -160,7 +169,7 @@ export class EngineClient {
    * `amountNano` — положительная величина списания; идемпотентно по `ref` (UNIQUE в леджере).
    */
   async debitAccount(accountId: string, amountNano: bigint, reference: string): Promise<EngineCreditResult> {
-    if (amountNano <= 0n) throw new RangeError("amountNano must be positive");
+    assertMonetaryOperation(amountNano, reference);
     const body = JSON.stringify({ amount_nano: (-amountNano).toString(), ref: reference });
     const { response, payload } = await this.request(`/admin/account/${encodeURIComponent(accountId)}/credit`, {
       method: "POST",

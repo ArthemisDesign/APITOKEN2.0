@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase, type Database } from "./client.js";
-import { listAdminPayingUsers } from "./admin-finance.js";
+import { listAdminPayingUsers, listAdminRefunds } from "./admin-finance.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 
@@ -288,5 +288,48 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
       days: 30, funding: "all", provider: "kimi",
     });
     expect(kimi.rows).toEqual([]);
+  });
+
+  it("shows the durable engine compensation beside a refunded payment", async () => {
+    const userId = users.get("paid")!;
+    const payment = await database.pool.query<{ id: string; amount_nano: string }>(`
+      UPDATE payments
+      SET status = 'refunded', updated_at = now()
+      WHERE user_id = $1
+      RETURNING id, amount_nano
+    `, [userId]);
+    const paymentRow = payment.rows[0]!;
+    const webhookEventId = randomUUID();
+    await database.pool.query(`
+      INSERT INTO webhook_events (
+        id, provider, provider_event_id, event_type, payload, status, attempts, processed_at
+      ) VALUES ($1, 'test', $2, 'payment.refunded', '{}'::jsonb, 'processed', 1, now())
+    `, [webhookEventId, `refund-${paymentRow.id}`]);
+    await database.pool.query(`
+      INSERT INTO engine_adjustments (
+        id, payment_id, webhook_event_id, engine_account_id, kind, amount_nano,
+        idempotency_ref, status, attempts, last_error
+      ) VALUES ($1, $2, $3, $4, 'refund', $5, $6, 'retry', 2, 'engine unavailable')
+    `, [
+      randomUUID(),
+      paymentRow.id,
+      webhookEventId,
+      `acct-${userId}`,
+      (-BigInt(paymentRow.amount_nano)).toString(),
+      `refund:${paymentRow.id}`,
+    ]);
+
+    const refunds = await listAdminRefunds(database, 25, 0);
+    expect(refunds).toMatchObject({ total: 1, totalNano: paymentRow.amount_nano });
+    expect(refunds.rows).toEqual([
+      expect.objectContaining({
+        id: paymentRow.id,
+        userId,
+        status: "refunded",
+        adjustmentStatus: "retry",
+        adjustmentConfirmedAt: null,
+        adjustmentLastError: "engine unavailable",
+      }),
+    ]);
   });
 });
