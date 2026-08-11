@@ -75,7 +75,7 @@ scrolling:
 - Dashboard links: runbooks, devbot design, and this dashboard's Git source.
 
 Rows are collapsed by default to keep the initial view compact; every stat that can be wrong
-is thresholded green/yellow/red. The four PostgreSQL custom-format dumps remain
+is thresholded green/yellow/red. The five PostgreSQL custom-format dumps remain
 the authoritative hourly recovery artifacts and are validated again before database migrations.
 
 ## Failure-domain limitation
@@ -1062,13 +1062,15 @@ change.
 At least one usage row created during the last hour lacks exact top-level provider evidence and is
 still `NULL`, `unattributed`, or `unavailable`. New ingestion is required to copy the immutable
 engine ledger provider at version 2, so this is a producer/recovery regression rather than a model
-name to infer. The companion `window="all"` series is the historical recovery backlog and is not
-itself an alert.
+name to infer. The companion `window="all"` series is the total historical gap, including terminal
+`unavailable/version=2` rows, and is not itself an alert or a promise that evidence still exists.
 
 Inspect the pricing worker journal and the matching engine ledger entry. Recovery may fill only an
 exact provider carried by retained ledger evidence with the same account, ledger ID, and amount.
-Never guess from a model name or manually relabel an event; if evidence is outside retention, keep
-the terminal sentinel and document the irrecoverable count.
+Never guess from a model name or manually relabel an event. A current-version `unavailable` row has
+already exhausted the bounded exact recovery; retry it only after a strictly stronger evidence
+algorithm ships with a higher monotonic version. If the retained ledger row or its exact provider
+evidence is absent, keep the terminal sentinel and document the irrecoverable count.
 
 ## OpenKeysPricingDrift
 

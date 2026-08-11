@@ -814,10 +814,10 @@ export async function completePricingUsageSync(
 
 /**
  * Returns the ledger cursor immediately before the oldest recent usage row whose provider has not
- * completed the current evidence algorithm and cannot already be proven by immutable pricing
- * attribution. NULL and both historical sentinels are eligible only below the current version, so
- * a stronger producer can retry old terminal rows once without creating an idle polling loop. The
- * engine retains charge detail for the same 30-day horizon used by the paying-users control room.
+ * completed the current engine-ledger evidence algorithm. NULL and both historical sentinels are
+ * eligible only below the current version, so a stronger producer can retry old terminal rows once
+ * without creating an idle polling loop. The engine retains charge detail for the same 30-day
+ * horizon used by the paying-users control room.
  */
 export async function getPricingProviderBackfillCursor(
   database: Database,
