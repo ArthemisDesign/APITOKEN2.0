@@ -579,7 +579,9 @@ attempt.
 
 ### systemd (`systemd/`) — service → application
 
-`claude-api-anthropic@` → Anthropic slots 8787/8788 (current unit; `claude-api@` is legacy) ·
+`claude-api-anthropic@` → Anthropic slots 8787/8788 (current unit; `claude-api@` is legacy; the
+GLM backend preview is argv-pinned off on this public unit and both combined rollback anchors until
+owned live evidence plus a compliant private boundary or written permission) ·
 `claude-api-openai@` → 8793/8797 · `claude-api-gemini@` → 8795/8799 · `claude-api-kimi@` → 8804/8805 (`claude-api-kimi` → 8804, legacy/anchor singleton; stable origin 8803; the plane is enabled by the argv pin `CLAUDE_API_KIMI_ENABLED=1` in the reviewed units) · `claude-router@` → 8800/8801 (`claude-router` → 8798 only legacy handoff) ·
 `claude-authbot` → authbot ·
 `apitoken-api[@]` → `apps/api` 3000/3001 · `apitoken-worker` → `apps/worker` ·

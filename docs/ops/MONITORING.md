@@ -842,6 +842,13 @@ The GLM plane is enabled but no roster profile is authenticated, so exact GLM al
 closed while Claude keeps its existing path. GLM is default-off: this alert stays silent until
 the first enable, and `CLAUDE_API_GLM_ENABLED=false` keeps the plane dark at any time.
 
+In the current backend-preview state the public Anthropic and combined rollback units pin that
+switch to `0`, even if the shared engine env contains a staged keyring. Before the owned live matrix
+and a compliant private serving boundary (or written permission), this alert on the Anthropic
+target means the unit pin is missing or was bypassed. Compare `systemctl cat` with the repository
+definitions and restore it through the normal watchdog delivery; do not complete the rollout by
+placing an unverified credential into the public process.
+
 Safely diagnose: read `GET /glm-subs` with the control key (per-profile `live`, `account_dead`
 and `account_suspect`), then the unit journal of the Anthropic runtime for the bounded GLM
 failure classes. Check that the roster directory still parses, every envelope decrypts under the

@@ -1873,6 +1873,15 @@ grep -Fq 'CLAUDE_API_PROVIDER=anthropic CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_EN
   "$ROOT/systemd/claude-api-anthropic@.service"
 ! grep -Fq 'CLAUDE_API_PROVIDER=' "$ROOT/systemd/claude-api@.service"
 ! grep -Fq 'CLAUDE_API_PROVIDER=' "$ROOT/systemd/claude-api.service"
+# GLM has no live subscription and its terms forbid the customer proxy shape. A staged keyring in
+# the shared server env must therefore never activate it on the public Anthropic plane or either
+# legacy combined rollback anchor. Activation needs a reviewed private boundary (or written
+# permission) and a separate unit change after live evidence.
+for anthropic_serving_unit in claude-api.service claude-api@.service \
+  claude-api-anthropic@.service; do
+  grep -Fq 'CLAUDE_API_GLM_ENABLED=0' "$ROOT/systemd/$anthropic_serving_unit" \
+    || wd_die "$anthropic_serving_unit can inherit the dormant GLM preview from shared env"
+done
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-openai.service"
 grep -Fq 'CLAUDE_API_PROVIDER=openai CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8793' \
   "$ROOT/systemd/claude-api-openai.service"

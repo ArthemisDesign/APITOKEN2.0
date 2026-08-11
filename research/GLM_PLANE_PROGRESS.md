@@ -72,14 +72,14 @@ clean+merged (штатный критерий) вместе с локально�
 ## Следующее действие (ровно одно)
 
 Backend-цепочка полностью в master с зелёным deploy/watchdog (`1c8b7fc1`). Дальше — только
-человек/оператор: (1) provision host env движка `CLAUDE_API_GLM_ENABLED=true`,
-`CLAUDE_API_GLM_ROSTER_DIR=/srv/claude-api/data/glm`, `CLAUDE_API_GLM_CREDENTIAL_KEYS`,
-`CLAUDE_API_GLM_CREDENTIAL_ACTIVE_KID` (опционально `CLAUDE_API_GLM_AUTH_SCHEME=bearer`,
-`CLAUDE_API_GLM_QUOTA_POLL_SECS=300`) и симметрично `AUTH_BOT_GLM_*` для authbot;
-(2) первая живая GLM Coding Plan подписка через Auth Bot → live-гейты из манифеста §6
-(usage-форма, SSE-инкрементальность, единицы quota endpoint, quota wall на живом аккаунте)
-→ live-runner `tools/glm_calibration/` → same-origin admin UI consumer `/glm-subs`
-(`apps/admin`, отдельный checkpoint) → verified preview report.
+человек/оператор: (1) provision sealed keyring/roster paths for engine and `AUTH_BOT_GLM_*`, but
+keep `CLAUDE_API_GLM_ENABLED=false`; (2) acquire the first owned GLM Coding Plan subscription
+through Auth Bot and run the live gates from manifest §6 (usage shape, incremental SSE, quota
+endpoint units, quota wall); (3) before runtime activation, deliver either a genuinely private
+serving boundary or written permission resolving the documented proxy prohibition. The public
+Anthropic and combined rollback units argv-pin GLM off, so a staged shared-env `true` cannot expose
+an unverified hidden alias. Only after those gates may a separate reviewed unit change enable the
+preview and its same-origin `/glm-subs` admin consumer.
 
 Ключевые факты research (дата ревью 2026-08-03): credits-система с 2026-07-30
 (Lite 2000/5ч+10000/нед, Pro 12000/60000, Max 28000/140000); формула кредитов

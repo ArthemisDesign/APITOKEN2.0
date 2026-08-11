@@ -13,8 +13,9 @@ EnvironmentFile=-/srv/claude-api/data/config.env
 EnvironmentFile=-/srv/claude-api/data/server.env
 EnvironmentFile=/srv/claude-api/data/engine-postgres.env
 # `/usr/bin/env` is deliberately at ExecStart: EnvironmentFile values override `Environment=`
-# regardless of their textual order, while argv-level assignments always win for the slot.
-ExecStart=/usr/bin/env CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:%i /srv/claude-api/releases/current/claude-api serve
+# regardless of their textual order, while argv-level assignments always win for the slot. This
+# legacy combined rollback anchor must not inherit the dormant GLM preview from the shared env.
+ExecStart=/usr/bin/env CLAUDE_API_GLM_ENABLED=0 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:%i /srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM

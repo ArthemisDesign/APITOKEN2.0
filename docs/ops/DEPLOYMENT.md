@@ -503,6 +503,16 @@ itself never changes KIMI behavior.
 On the first split, this order guarantees the old combined process releases every Codex home before
 OpenAI starts; Gemini and KIMI remain separate subscription-pool failure domains throughout.
 
+GLM is not in the KIMI activation state. Its preview dispatcher is embedded in the public
+Anthropic Messages process, the first owned subscription/live matrix is still absent, and the
+reviewed provider terms prohibit the customer proxy shape. All Anthropic-serving definitions —
+the active `claude-api-anthropic@.service` and both combined rollback anchors
+`claude-api.service`/`claude-api@.service` — therefore pin `CLAUDE_API_GLM_ENABLED=0` at argv level.
+A staged keyring may remain in the shared env without activating the plane. Do not remove the pin
+until a separate reviewed change proves the owned-subscription live matrix and either a private
+serving boundary or written permission. A firing `GlmNoLiveProfiles` on the public Anthropic target
+before that gate is configuration drift, not a request to add an unverified credential.
+
 Phase 3 rolls the unified stateless router independently on fixed ports 8800/8801. The controller
 starts the inactive slot, proves direct readiness and the exact selected `claude-router` executable,
 then invokes the fixed root helper to atomically publish `/etc/caddy/router-active.caddy`, validate

@@ -1,7 +1,8 @@
 # GLM (Zhipu AI / Z.ai) — provider capability manifest
 
-Integration status: **default-off backend preview, research complete, runtime implemented in
-`forward` (gateway + dispatcher + billing writer), server composition and live gates ahead**.
+Integration status: **default-off backend preview, research/runtime/server composition complete;
+the public production units are pinned disabled, while the first owned subscription, live matrix,
+and a compliant private serving boundary remain ahead**.
 Source review date — **2026-08-03**.
 
 This document was created per `docs/engine/PROVIDER_ONBOARDING.md` §3.3 and is the capability
@@ -17,6 +18,15 @@ The GLM plane is built **backend-only**: engine runtime, metering, calibration, 
 and the internal live-runner. The provider is **not published** to the public catalog, the router's
 `/v1/models`, commerce/OpenKeys pricing, the site, or client documentation — the decision
 mirrors KIMI §0.
+
+`decision` The implemented dispatcher is embedded in the Anthropic Messages process, whose stable
+origin is customer-facing. Merely omitting GLM from discovery therefore does not make an enabled
+runtime private: a customer who knows an exact alias could still call it. The current
+`claude-api.service`, `claude-api@.service`, and `claude-api-anthropic@.service` definitions pin
+`CLAUDE_API_GLM_ENABLED=0` at argv level, overriding any staged shared-env value. Removing that pin
+requires both the owned-subscription live matrix and either a genuinely private serving boundary or
+written permission that resolves the terms conflict below; a hidden public alias is not an
+acceptable preview.
 
 - `official` `docs.z.ai/legal-agreement/subscription-terms` **explicitly forbids** resale:
   "you may not resell, sub-resell, repackage, aggregate, proxy or otherwise provide the GLM
@@ -385,6 +395,7 @@ text:
 | observability, alerts, admin projection | `crates/{forward,server}`, `observability/**`, `docs/ops/MONITORING.md` | done: operational status, admin-only `GET /glm-subs` (+`window_totals` for the fleet card), fixed-cardinality aggregate metrics, `glm-provider` alerts with runbook and consistency pins |
 | admin UI consumer | `apps/admin` | done: same-origin consumer of `/glm-subs` — GLM capacity board on `/subscriptions` (fleet card, per-account windows, exact API-$, native microcredits) |
 | safe live-runner | `tools/glm_calibration/`, `docs/ops/GLM_CALIBRATION.md` | done, awaiting the first subscription |
+| production activation boundary | `systemd/claude-api{,@,-anthropic@}.service` | public Anthropic/combined units pin `CLAUDE_API_GLM_ENABLED=0`; activation blocked on owned live evidence plus a compliant private boundary or written permission |
 | live matrix on our subscription | — | **subscription needed (blocked on a human)** |
 
 Queue and SHA tracking — `research/GLM_PLANE_PROGRESS.md`.
