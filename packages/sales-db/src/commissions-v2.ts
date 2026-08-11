@@ -1,7 +1,11 @@
 import type { SalesDatabase } from "./client.js";
 import {
   computeCommissionChain,
+  deleteReferralUsagePendingReplay,
   loadCommissionChain,
+  loadReferralUsageReplays,
+  lockReferralUsageEvent,
+  referralUsageReplayMatches,
   type SpendCommissionOutcome,
 } from "./commissions.js";
 
@@ -139,15 +143,105 @@ export async function recordReferredSpendV2(
   event: ReferredSpendV2Event,
 ): Promise<SpendCommissionOutcome> {
   assertReferredSpendV2Shape(event);
-  if (!isCommissionableSpendV2(event)) return "skipped";
+  const commissionable = isCommissionableSpendV2(event);
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
-    const referred = await client.query<{ partner_id: string }>(
-      "SELECT partner_id FROM referred_users WHERE commerce_user_id = $1",
+    await lockReferralUsageEvent(client, event.commerceEventId);
+    const replays = await loadReferralUsageReplays(client, event.commerceEventId);
+    if (replays.length > 1) throw new ReferredSpendV2ReplayConflictError(event.commerceEventId);
+    const replay = replays[0];
+    if (replay && !referralUsageReplayMatches(replay, {
+      commerceUserId: event.commerceUserId,
+      paidBasisNano: event.paidFundedNano,
+      occurredAt: event.occurredAt,
+    })) {
+      throw new ReferredSpendV2ReplayConflictError(event.commerceEventId);
+    }
+
+    const referred = await client.query<{ partner_id: string; attributed_at: Date }>(
+      `SELECT partner_id, attributed_at
+       FROM referred_users WHERE commerce_user_id = $1 FOR SHARE`,
       [event.commerceUserId],
     );
-    const directPartnerId = referred.rows[0]?.partner_id;
+    const referredUser = referred.rows[0];
+    const directPartnerId = referredUser?.partner_id;
+
+    if (replay?.store === "v1_recorded" || replay?.store === "v1_pending") {
+      if (!directPartnerId && replay.store === "v1_recorded") {
+        throw new ReferredSpendV2ReplayConflictError(event.commerceEventId);
+      }
+      if (referredUser && event.occurredAt.getTime() < referredUser.attributed_at.getTime()) {
+        if (replay.store === "v1_recorded") {
+          throw new ReferredSpendV2ReplayConflictError(event.commerceEventId);
+        }
+        await deleteReferralUsagePendingReplay(client, replay);
+        await client.query("COMMIT");
+        return "skipped";
+      }
+      await client.query("COMMIT");
+      return replay.store === "v1_recorded" ? "duplicate" : "buffered";
+    }
+
+    if (replay?.store === "v2_recorded") {
+      if (!directPartnerId) throw new ReferredSpendV2ReplayConflictError(event.commerceEventId);
+      const existing = await client.query<StoredSpendV2Row & { partner_id: string }>(`
+        SELECT commerce_user_id, partner_id, provider_id, account_class,
+               official_nano::text AS official_nano, charged_nano::text AS charged_nano,
+               paid_funded_nano::text AS paid_funded_nano,
+               bonus_funded_nano::text AS bonus_funded_nano,
+               other_funded_nano::text AS other_funded_nano, commission_eligible,
+               release_generation::text AS release_generation,
+               release_digest, snapshot_digest, occurred_at
+        FROM partner_usage_events_v2
+        WHERE commerce_event_id = $1
+        FOR SHARE
+      `, [event.commerceEventId.toString()]);
+      const stored = existing.rows[0];
+      if (
+        !stored
+        || stored.partner_id !== directPartnerId
+        || !storedSpendV2Matches(stored, event)
+        || event.occurredAt.getTime() < referredUser.attributed_at.getTime()
+      ) {
+        throw new ReferredSpendV2ReplayConflictError(event.commerceEventId);
+      }
+      await client.query("COMMIT");
+      return "duplicate";
+    }
+
+    if (replay?.store === "v2_pending") {
+      const existing = await client.query<StoredSpendV2Row>(`
+        SELECT commerce_user_id, provider_id, account_class,
+               official_nano::text AS official_nano, charged_nano::text AS charged_nano,
+               paid_funded_nano::text AS paid_funded_nano,
+               bonus_funded_nano::text AS bonus_funded_nano,
+               other_funded_nano::text AS other_funded_nano, commission_eligible,
+               release_generation::text AS release_generation,
+               release_digest, snapshot_digest, occurred_at
+        FROM pending_referral_usage_events_v2
+        WHERE id = $1
+        FOR UPDATE
+      `, [replay.rowId]);
+      const stored = existing.rows[0];
+      if (!stored || !storedSpendV2Matches(stored, event)) {
+        throw new ReferredSpendV2ReplayConflictError(event.commerceEventId);
+      }
+      if (!directPartnerId) {
+        await client.query("COMMIT");
+        return "buffered";
+      }
+      if (!commissionable || event.occurredAt.getTime() < referredUser.attributed_at.getTime()) {
+        await deleteReferralUsagePendingReplay(client, replay);
+        await client.query("COMMIT");
+        return "skipped";
+      }
+      await deleteReferralUsagePendingReplay(client, replay);
+    } else if (!commissionable) {
+      await client.query("COMMIT");
+      return "skipped";
+    }
+
     if (!directPartnerId) {
       // Событие пришло раньше атрибуции юзера — буферизуем со всей lineage, reconcile проиграет
       // позже. Конфликт по commerce_event_id: точный replay — идемпотентный "buffered", а любое
@@ -190,6 +284,10 @@ export async function recordReferredSpendV2(
       }
       await client.query("COMMIT");
       return "buffered";
+    }
+    if (event.occurredAt.getTime() < referredUser.attributed_at.getTime()) {
+      await client.query("COMMIT");
+      return "skipped";
     }
     const inserted = await client.query<{ id: string }>(`
       INSERT INTO partner_usage_events_v2 (

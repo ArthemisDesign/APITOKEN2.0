@@ -49,6 +49,26 @@ describe("sales feed page cursor", () => {
       nextCursor: "9",
     }, rowSchema, "usage_events")).toThrow("cursor behind its items");
   });
+
+  it("accepts the PostgreSQL bigint maximum and rejects overflow or non-canonical cursors", () => {
+    expect(parseFeedPage({ items: [], nextCursor: "9223372036854775807" }, rowSchema, "usage_events"))
+      .toEqual({ items: [], nextCursor: 9_223_372_036_854_775_807n });
+    expect(() => parseFeedPage(
+      { items: [], nextCursor: "9223372036854775808" },
+      rowSchema,
+      "usage_events",
+    )).toThrow();
+    expect(() => parseFeedPage(
+      { items: [], nextCursor: "01" },
+      rowSchema,
+      "usage_events",
+    )).toThrow();
+    expect(() => parseFeedPage(
+      { items: [], nextCursor: Number.MAX_SAFE_INTEGER + 1 },
+      rowSchema,
+      "usage_events",
+    )).toThrow();
+  });
 });
 
 describe("immutable usage attribution parser", () => {
@@ -58,6 +78,17 @@ describe("immutable usage attribution parser", () => {
     amountNano: "600",
     occurredAt: "2026-08-01T12:00:00.000Z",
   };
+
+  it("rejects unsafe numeric ids and out-of-range or non-canonical money strings", () => {
+    expect(usageEventSchema.safeParse({ ...base, id: "not-an-id" }).success).toBe(false);
+    expect(() => usageEventSchema.parse({ ...base, id: Number.MAX_SAFE_INTEGER + 1 })).toThrow();
+    expect(() => usageEventSchema.parse({ ...base, id: "9223372036854775808" })).toThrow();
+    expect(() => usageEventSchema.parse({ ...base, id: "017" })).toThrow();
+    expect(() => usageEventSchema.parse({ ...base, amountNano: "9223372036854775808" })).toThrow();
+    expect(() => usageEventSchema.parse({ ...base, amountNano: "0600" })).toThrow();
+    expect(usageEventSchema.parse({ ...base, id: Number.MAX_SAFE_INTEGER }).id)
+      .toBe(BigInt(Number.MAX_SAFE_INTEGER));
+  });
 
   it("normalizes an old producer payload to the all-null legacy shape", () => {
     expect(usageEventSchema.parse(base)).toMatchObject({

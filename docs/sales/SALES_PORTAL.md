@@ -141,7 +141,10 @@ Consumers on the sales side (`apps/sales-api`, reach commerce via `COMMERCE_BASE
   commissions (idempotent by `commerce_event_id`). The live scalar row and historical policy-v1
   row use `recordReferredSpend`; a historical release-v2 row
   (`pricingMode=null` + full lineage) goes to the schema-v2 writer (`recordReferredSpendV2`,
-  `packages/sales-db/src/commissions-v2.ts`). One event is processed by exactly one writer, and an
+  `packages/sales-db/src/commissions-v2.ts`). Feed ids, cursors and money strings must be canonical
+  non-negative decimals within PostgreSQL `bigint`; rolling-deploy numeric-id compatibility accepts
+  only JavaScript safe integers. Unsafe numbers, leading-zero strings and bigint overflow reject the
+  entire page before cursor advance. One event is processed by exactly one writer, and an
   incomplete or mixed form halts the page before cursor advance (fail closed, no silent fallback
   to v1). An attributed v1 payload is accepted only in the current full B2C schema-v1 form,
   and its exact paid basis and immutable fields are atomically preserved in
@@ -149,9 +152,17 @@ Consumers on the sales side (`apps/sales-api`, reach commerce via `COMMERCE_BASE
   `pending_referral_events`, v2 — in `pending_referral_usage_events_v2` (deterministic
   `commerce_ref` of the form `usage-v2:<commerce_event_id>`), and are caught up by replay without
   loss of fields (`reconcilePendingReferralEvents` + `reconcilePendingReferralUsageEventsV2` on
-  every tick). An exact repeat is idempotent, an all-null row
+  every tick). Both writers take the same transaction advisory lock derived bijectively from
+  `commerce_event_id` and inspect all four recorded/pending v1/v2 stores before writing. The common
+  immutable identity is user + exact paid basis + event timestamp: an exact cross-schema replay is
+  duplicate/buffered, any divergence or multiple owner rows fails closed, and one commerce event
+  cannot create commission in both schemas. The storage writer repeats the producer's temporal
+  gate: `occurred_at`/`paid_at` before `referred_users.attributed_at` is skipped, including deletion
+  of an older buffered row after attribution becomes visible. An exact same-schema repeat is
+  idempotent, an all-null row
   can be enriched with attribution once during rolling retry, and a conflicting immutable replay
-  is rejected. A 404 from the feed (the commerce side
+  is rejected. Deposit replay additionally requires exact payment id, user, partner, amount and
+  timestamp equality. A 404 from the feed (the commerce side
   is not deployed yet) is not an error — retry on the next tick; the cursor advances
   only over successfully processed rows (at-least-once).
 - `commerce.service.ts` — `referralProfiles` for the partner's storefront (**best-effort**: if
@@ -248,12 +259,15 @@ v1 rows use the same writer; historical v2 rows use their exact `paid_funded_nan
 partner P0:
 - level 0: `A * P0.commission_bps / 10000` (integer floor);
 - level N: `amount(level N-1) * Pn.sub_commission_bps / 10000` up the parent chain;
-- stop: no parent, amount 0, level > 10, or a suspended parent.
+- stop: no parent, amount 0, after 10 entries (levels 0..9), or a suspended parent.
 Entries are idempotent via the unique `commerce_event_id`; the calculation happens in the same
 transaction as the event insert. Scalar and historical v1 events are written to
 `partner_usage_events`/`commission_entries`; historical v2 rows go to
 `partner_usage_events_v2`/`commission_entries_v2` (the trigger `enforce_commission_entry_v2_source`
-fails closed on a row outside that chain). Readers sum both stores via UNION ALL.
+fails closed on a row outside that chain). Before computing either schema, every traversed partner
+row is held `FOR SHARE`, so parent/status/bps cannot change under the calculation; a repeated
+partner id is an explicit cycle error and rolls back the whole event. Readers sum both stores via
+UNION ALL.
 Payout balance = confirmed commissions − (paid + active requests).
 
 ## Env (apps/sales-api)

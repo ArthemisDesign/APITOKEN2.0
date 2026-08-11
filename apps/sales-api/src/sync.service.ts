@@ -21,8 +21,17 @@ import {
 import type { Environment } from "./config.js";
 import { SALES_DATABASE } from "./infrastructure.module.js";
 
-const nanoStringSchema = z.string().regex(/^\d{1,27}$/).transform(BigInt);
-const feedIdSchema = z.union([z.number().int().nonnegative(), z.string().regex(/^\d+$/)]).transform(BigInt);
+const POSTGRES_BIGINT_MAX = 9_223_372_036_854_775_807n;
+const canonicalPostgresBigintStringSchema = z.string()
+  .max(19)
+  .regex(/^(0|[1-9]\d*)$/)
+  .transform(BigInt)
+  .refine((value) => value <= POSTGRES_BIGINT_MAX, "value exceeds PostgreSQL bigint");
+const nanoStringSchema = canonicalPostgresBigintStringSchema;
+const feedIdSchema = z.union([
+  z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).transform(BigInt),
+  canonicalPostgresBigintStringSchema,
+]);
 
 const attributionSchema = z.object({
   id: feedIdSchema,

@@ -53,8 +53,8 @@ describe.runIf(Boolean(connectionString))("recordReferredSpendV2 (release-v2 wri
 
   async function attribute(commerceUserId: string, partnerId: string): Promise<void> {
     await db.pool.query(`
-      INSERT INTO referred_users(commerce_user_id, partner_id, referral_code)
-      VALUES($1, $2, 'v2w-direct')
+      INSERT INTO referred_users(commerce_user_id, partner_id, referral_code, attributed_at)
+      VALUES($1, $2, 'v2w-direct', '2026-07-01T00:00:00.000Z')
     `, [commerceUserId, partnerId]);
   }
 

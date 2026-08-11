@@ -13,6 +13,7 @@ import { upsertReferredUser } from "./referrals.js";
 
 const connectionString = process.env.TEST_SALES_DATABASE_URL;
 const USD = 1_000_000_000n;
+const ATTRIBUTED_AT = new Date("2026-07-01T00:00:00.000Z");
 
 describe.runIf(Boolean(connectionString))("pre-attribution buffer + reconcile (D1)", () => {
   let db: SalesDatabase;
@@ -77,7 +78,7 @@ describe.runIf(Boolean(connectionString))("pre-attribution buffer + reconcile (D
 
     // now the attribution arrives
     const p = await partner("late1");
-    await upsertReferredUser(db, { commerceUserId: user, partnerId: p, referralCode: "late1", attributedAt: new Date(), sourceAttributionId: 1n });
+    await upsertReferredUser(db, { commerceUserId: user, partnerId: p, referralCode: "late1", attributedAt: ATTRIBUTED_AT, sourceAttributionId: 1n });
 
     const replayed = await reconcilePendingReferralEvents(db);
     expect(replayed).toBe(1);
@@ -104,7 +105,7 @@ describe.runIf(Boolean(connectionString))("pre-attribution buffer + reconcile (D
     expect(out).toBe("buffered");
 
     const p = await partner("late2");
-    await upsertReferredUser(db, { commerceUserId: user, partnerId: p, referralCode: "late2", attributedAt: new Date(), sourceAttributionId: 2n });
+    await upsertReferredUser(db, { commerceUserId: user, partnerId: p, referralCode: "late2", attributedAt: ATTRIBUTED_AT, sourceAttributionId: 2n });
     expect(await reconcilePendingReferralEvents(db)).toBe(1);
 
     const dep = await db.pool.query<{ t: string }>("SELECT COALESCE(SUM(amount_nano),0)::text AS t FROM referred_topups WHERE partner_id = $1", [p]);
@@ -126,7 +127,7 @@ describe.runIf(Boolean(connectionString))("pre-attribution buffer + reconcile (D
 
     // attribute + reconcile once
     const p = await partner("late3");
-    await upsertReferredUser(db, { commerceUserId: user, partnerId: p, referralCode: "late3", attributedAt: new Date(), sourceAttributionId: 3n });
+    await upsertReferredUser(db, { commerceUserId: user, partnerId: p, referralCode: "late3", attributedAt: ATTRIBUTED_AT, sourceAttributionId: 3n });
     expect(await reconcilePendingReferralEvents(db)).toBe(1);
     // running again does nothing (buffer already drained)
     expect(await reconcilePendingReferralEvents(db)).toBe(0);
@@ -140,7 +141,7 @@ describe.runIf(Boolean(connectionString))("pre-attribution buffer + reconcile (D
       commerceUserId: user,
       partnerId: p,
       referralCode: "direct1",
-      attributedAt: new Date(),
+      attributedAt: ATTRIBUTED_AT,
       sourceAttributionId: 10n,
     });
     const occurredAt = new Date("2026-08-01T10:00:00.000Z");
@@ -201,7 +202,7 @@ describe.runIf(Boolean(connectionString))("pre-attribution buffer + reconcile (D
       commerceUserId: user,
       partnerId: p,
       referralCode: "upgrade1",
-      attributedAt: new Date(),
+      attributedAt: ATTRIBUTED_AT,
       sourceAttributionId: 11n,
     });
     expect(await reconcilePendingReferralEvents(db)).toBe(1);
@@ -217,7 +218,7 @@ describe.runIf(Boolean(connectionString))("pre-attribution buffer + reconcile (D
       commerceUserId: user,
       partnerId: p,
       referralCode: "conflict1",
-      attributedAt: new Date(),
+      attributedAt: ATTRIBUTED_AT,
       sourceAttributionId: 12n,
     });
     const occurredAt = new Date("2026-08-01T12:00:00.000Z");
