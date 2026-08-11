@@ -60,11 +60,11 @@ export async function createPromoCode(database: SalesDatabase, input: {
   partnerId: string;
   code: string;
   valueNano: bigint;
-  discountBps?: number; // >0 → редимщик получает спец-скидку (требует право на скидку, ≤ макс партнёра)
+  discountBps?: number; // retained marker; requires the legacy grant/ceiling and has no price effect
 }): Promise<PromoCode> {
   if (input.valueNano <= 0n) throw new PromoLimitError("promo value must be positive");
   const discountBps = input.discountBps ?? 0;
-  if (discountBps < 0 || discountBps > 9500) throw new PromoLimitError("promo discount must be 0–95%");
+  if (discountBps < 0 || discountBps > 9500) throw new PromoLimitError("promo marker must be 0–95%");
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
@@ -87,10 +87,10 @@ export async function createPromoCode(database: SalesDatabase, input: {
       await client.query("ROLLBACK");
       throw new PromoLimitError("promo value exceeds the allowed maximum");
     }
-    // Спец-скидка на промо требует права давать скидку и не выше собственного максимума партнёра.
+    // A legacy promo marker still obeys the retained permission/ceiling, but has no price effect.
     if (discountBps > 0 && (!row.referral_discount_enabled || discountBps > row.referral_discount_bps)) {
       await client.query("ROLLBACK");
-      throw new PromoNotAllowedError("this partner cannot attach that discount to a promo code");
+      throw new PromoNotAllowedError("this partner cannot attach that legacy marker to a promo code");
     }
     const count = await client.query<{ n: string }>(
       "SELECT count(*)::text AS n FROM promo_codes WHERE partner_id = $1",
@@ -149,7 +149,7 @@ export interface PromoRedemption {
   partnerId: string;
   referralCode: string;
   redemptionRef: string;
-  discountBps: number; // >0 → редимщику применяется спец-скидка (b2c + floor)
+  discountBps: number; // retained audit marker; never an applied price
   alreadyRedeemed: boolean;
 }
 

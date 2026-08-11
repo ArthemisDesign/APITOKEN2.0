@@ -11,7 +11,7 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-import UsersPage from "./page";
+import UsersPage, { GIFT_CREDIT_REASON } from "./page";
 import { buildUsersCsvRows, clampedOffset, tierLabel, usersQuery, INITIAL_USER_PAGE } from "./users-lib";
 
 describe("Пользователи (users page)", () => {
@@ -27,6 +27,10 @@ describe("Пользователи (users page)", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
+  });
+
+  it("names admin credit as a gift rather than external payment evidence", () => {
+    expect(GIFT_CREDIT_REASON).toBe("admin panel gift credit (not an external payment)");
   });
 });
 

@@ -5,7 +5,7 @@ import type { Environment } from "./config.js";
 
 // Клиент к commerce internal API (единственная граница sales→commerce, серверный SALES_CONTROL_KEY).
 // Используется витриной партнёра, чтобы обогатить рефералов авторитетными данными коммерции/движка:
-// тип (b2b/b2c), эффективная скидка, партнёрский floor, накопленные пополнения и живой баланс.
+// тип (b2b/b2c), фактическая скидка, legacy referral marker, пополнения и живой баланс.
 
 const nanoStringSchema = z.string().regex(/^\d{1,27}$/);
 
@@ -64,10 +64,10 @@ export class CommerceService {
   }
 
   /**
-   * Явная установка/смена «пола» скидки ДЕЙСТВУЮЩЕМУ рефералу (партнёр из кабинета или админ).
+   * Expand-only writer for the legacy referral marker. It never changes scalar/provider pricing.
    * override=true на стороне commerce: абсолютная запись, разрешено понижение и сброс (0).
    * НЕ best-effort: вызывающий должен знать результат, поэтому ошибки транспорта пробрасываем.
-   * applied=false при недоступном профиле (b2b/нет тира) или когда значение уже такое.
+   * applied=false for a non-B2C/missing profile or when the marker is unchanged.
    */
   async setReferralDiscount(
     userId: string,

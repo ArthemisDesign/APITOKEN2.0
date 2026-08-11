@@ -87,10 +87,12 @@ Example: a referral actually spent **$100** of their own money on the API → a 
 gets **$10**. If they spent the welcome bonus — the partner gets nothing from that portion (free
 credit is spent first).
 
-A salesperson's referrals remain **ordinary B2C**: their stored default (normally 50%), optional
-provider overrides, welcome bonus and promo — like all other B2C customers. The recorded referral
-floor is partner-attribution/display data, not a personal price. B2B invitation remains a separate
-model with its own default/provider terms.
+A salesperson's referrals keep their ordinary account pricing: the stored default (normally 50%
+for B2C) plus any explicit provider overrides. A referral link controls attribution and commission,
+not price. Historical `referral_*discount*` / `referral_floor_bps` fields are legacy attribution
+markers retained for expand-only API and audit compatibility; the current partner/admin UI neither
+grants nor presents them as a discount. They never enqueue a pricing job or change the engine
+multiplier. B2B remains a separate model with its own negotiated default/provider terms.
 
 ## 5. Multi-level structure (sub-salespeople and override)
 

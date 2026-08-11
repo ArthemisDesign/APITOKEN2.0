@@ -211,6 +211,15 @@ Pipeline delivery/drift status is shown through `GET /admin/pipeline-health` on 
 finance surfaces. Official provider tariff changes are an engine operator action, not a browser
 pricing editor (`docs/engine/CONTROL_API.md`).
 
+## Gift credits
+
+The `/users` action labelled `+ подарок` creates `admin-credit:*` funding. Its confirmation states
+the invariant before submission: this is platform gift credit, not evidence of an external payment,
+so it is excluded from revenue and partner-commission basis and is spent free-first. New audit rows
+use the explicit reason `admin panel gift credit (not an external payment)`. A real off-platform B2B
+payment must use a future typed payment workflow with durable evidence; it must never be represented
+by this action or retroactively inferred from its free-form reason.
+
 ## Paying customers
 
 The `/paying-users` page is a separate compact read-only control room, not a filter of the

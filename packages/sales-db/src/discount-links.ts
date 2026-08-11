@@ -1,7 +1,7 @@
 import type { SalesDatabase } from "./client.js";
 
-// Персональные одноразовые ссылки со скидкой (Part B). Обычный реф-код партнёра = без спец-скидки
-// (обычные b2c-тиры); персональная ссылка = отдельный код со скидкой, гаснет первым же привязанным.
+// Legacy one-time attribution links. The first attributed user atomically consumes the code;
+// discount_bps is immutable audit metadata and is not a Commerce/engine price authority.
 
 export interface DiscountLink {
   id: string;
@@ -41,8 +41,8 @@ function mapLink(row: DiscountLinkRow): DiscountLink {
 const LINK_COLUMNS = "id, code, discount_bps, note, consumed_by_commerce_user_id, consumed_at, created_at";
 
 /**
- * Партнёр выпускает персональную ссылку со скидкой. Требует право (`referral_discount_enabled`) и
- * скидку не выше собственного максимума (`referral_discount_bps`). Проверка под блокировкой партнёра.
+ * Creates a legacy one-time attribution link under the retained marker permission/ceiling. The
+ * stored bps never changes pricing. Permission and limit are checked under the partner lock.
  */
 export async function createDiscountLink(database: SalesDatabase, input: {
   partnerId: string;
@@ -51,7 +51,7 @@ export async function createDiscountLink(database: SalesDatabase, input: {
   note?: string | null;
 }): Promise<DiscountLink> {
   if (input.discountBps <= 0 || input.discountBps > 9500) {
-    throw new DiscountLinkNotAllowedError("discount must be between 1 and 95%");
+    throw new DiscountLinkNotAllowedError("legacy marker must be between 1 and 95%");
   }
   const client = await database.pool.connect();
   try {
@@ -63,11 +63,11 @@ export async function createDiscountLink(database: SalesDatabase, input: {
     const row = partner.rows[0];
     if (!row || row.status !== "active" || !row.referral_discount_enabled) {
       await client.query("ROLLBACK");
-      throw new DiscountLinkNotAllowedError("referral discount is not enabled for this partner");
+      throw new DiscountLinkNotAllowedError("legacy referral marker is not enabled for this partner");
     }
     if (input.discountBps > row.referral_discount_bps) {
       await client.query("ROLLBACK");
-      throw new DiscountLinkNotAllowedError("discount exceeds the partner's allowed maximum");
+      throw new DiscountLinkNotAllowedError("marker exceeds the partner's allowed maximum");
     }
     let inserted;
     try {
@@ -116,17 +116,15 @@ export async function deleteDiscountLink(database: SalesDatabase, partnerId: str
 
 export interface ResolvedReferralCode {
   partnerId: string;
-  // Скидка, которую даёт код: 0 — обычный реф-код (без скидки), >0 — персональная ссылка.
+  // Retained marker: zero for a regular referral code, nonzero for an unconsumed legacy link.
   discountBps: number;
-  // id персональной ссылки, если код именно ссылка (для гашения). null для обычного реф-кода.
+  // Legacy link id used for first-wins consumption; null for a regular referral code.
   discountLinkId: string | null;
   discountLinkConsumed: boolean;
 }
 
-/**
- * Резолвит ?ref= код: обычный реф-код партнёра (discount 0) ИЛИ персональную ссылку (discount>0).
- * Реф-коды 8 симв., ссылки 12 симв. — не пересекаются. null — код никому не принадлежит.
- */
+/** Resolves a regular referral code or a legacy one-time link. The returned bps is audit metadata,
+ * not a price. The code spaces do not overlap; null means no active owner. */
 export async function resolveReferralCode(database: SalesDatabase, code: string): Promise<ResolvedReferralCode | null> {
   const partner = await database.pool.query<{ id: string }>(
     "SELECT id FROM partners WHERE referral_code = $1 AND status = 'active'",
@@ -146,7 +144,7 @@ export async function resolveReferralCode(database: SalesDatabase, code: string)
   const consumed = row.consumed_by_commerce_user_id !== null;
   return {
     partnerId: row.partner_id,
-    // Гашёная ссылка больше скидку не даёт (одноразовая) — но всё равно закрепляет за партнёром.
+    // A consumed link still attributes its code owner but no longer yields its one-time marker.
     discountBps: consumed ? 0 : row.discount_bps,
     discountLinkId: row.id,
     discountLinkConsumed: consumed,
@@ -154,13 +152,10 @@ export async function resolveReferralCode(database: SalesDatabase, code: string)
 }
 
 /**
- * АТОМАРНО закрепляет одноразовую ссылку за пользователем (first-wins) и возвращает её скидку,
- * ЕСЛИ пользователь — владелец: только что выиграл гонку ИЛИ уже был владельцем (идемпотентный
- * повтор). Если ссылка уже погашена ДРУГИМ — возвращает 0 (floor не даётся). Обычный реф-код или
- * несуществующий код → 0. Один UPDATE закрывает гонку: одноразовая ссылка НИКОГДА не даёт скидку
- * более чем одному пользователю. Используется и синхронным путём при регистрации, и async-фидом
- * (idempotent backfill владельцу, если синхронное применение упало). Заменяет пару resolve+consume
- * для скидочной части, устраняя окно, где read-only резолв выдавал floor нескольким регистрациям.
+ * Atomically assigns a legacy one-time link to its first user and returns its marker to that same
+ * user on idempotent replay. A link owned by someone else, a regular referral code or an unknown
+ * code returns zero. One UPDATE closes the old resolve/consume race. Both signup and the async feed
+ * call this path; the returned marker never changes Commerce/engine pricing.
  */
 export async function claimReferralDiscount(database: SalesDatabase, code: string, commerceUserId: string): Promise<{ discountBps: number }> {
   const claimed = await database.pool.query<{ discount_bps: number }>(

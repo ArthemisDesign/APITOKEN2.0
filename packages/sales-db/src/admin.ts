@@ -129,8 +129,8 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
 }
 
 /**
- * Партнёр (из кабинета) ставит скидку своим рефам. Обновляет только если у партнёра есть право
- * (referral_discount_enabled) — проверка на уровне БД, не полагаемся на контроллер.
+ * Updates the retained referral marker ceiling. This is compatibility/audit metadata and never
+ * changes a referral's Commerce/engine price. The DB predicate enforces the legacy writer grant.
  */
 export async function setPartnerReferralDiscount(
   database: SalesDatabase,
@@ -239,7 +239,7 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
       commissionBps: input.commissionBps ?? null,
       subCommissionBps: input.subCommissionBps ?? null,
       status: input.status ?? null,
-      // granting/revoking the referral-discount ceiling must be visible in the audit trail
+      // Retained marker permission/ceiling changes remain visible in the audit trail.
       referralDiscountBps: input.referralDiscountBps ?? null,
       referralDiscountEnabled: input.referralDiscountEnabled ?? null,
     })]);

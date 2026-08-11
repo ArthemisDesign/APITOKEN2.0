@@ -20,7 +20,6 @@ import {
   Notice,
 } from "@/components/ui";
 import { EarningsChart } from "@/components/earnings-chart";
-import { ReferralDiscountCard } from "@/components/referral-discount-card";
 import { CommissionFormula } from "@/components/commission-formula";
 import { useI18n } from "@/components/i18n";
 
@@ -119,11 +118,6 @@ export default function OverviewPage() {
             {t("Referral code:", "Реферальный код:")} <span className="mono">{overview.referralCode}</span>
           </p>
         </Card>
-
-        <ReferralDiscountCard
-          enabled={overview.referralDiscountEnabled ?? false}
-          currentBps={overview.referralDiscountBps ?? 0}
-        />
 
         <Card title={t("How your commission works", "Как работает ваша комиссия")}>
           <ul className="how-list">

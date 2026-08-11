@@ -17,7 +17,7 @@ engine (Rust)  ←Control API─  commerce (apps/api + worker)  ←internal sale
   `@username` and sends the person a link `partners.apitoken.sale/register?invite=CODE`; the person
   confirms sign-in via Telegram — the account is immediately active, no password/email needed.
   The email/password fields in partners are legacy from the first wave.
-- A partner receives a **referral code** and a link `https://apitoken.sale/register?ref=CODE`.
+- A partner receives a **referral code** and a link `https://apitoken.sale/?ref=CODE`.
 - Users who arrive via the link are attributed to the partner. The partner earns
   `commission_bps` on the **spend** (charge-ledger) of their users.
 - **Multi-level:** a partner can invite sub-partners (invite link
@@ -119,16 +119,16 @@ of reaching SQL as an out-of-range value.
   the independent `topups_v2` cursor from sequence zero; migration `0016_topups_v2_cursor.sql`
   reserved that key before the consumer shipped. The legacy timestamp cursor and route remain
   unchanged as rollback evidence, but are not the live health authority.
-- `POST /v1/internal/sales/referral-discount` — records the salesperson's discount "floor" for a
-  referral as partner attribution. Body `{userId, floorBps (0..9500), override?, actorId?}` →
-  `{applied, multiplierBp}`. The floor does not move any price: B2C pricing is the stored account
-  scalar plus optional provider overrides, while this field records the rate promised by the
-  partner. `multiplierBp` is always `null` and no engine pricing job is enqueued. The floor stays
-  **monotonic** (`GREATEST`, the best for the customer) across its three writers (promo, partner
-  link, sales feed); `override=true` is an absolute write that can lower it (a partner or admin
-  from the sales dashboard), `floorBps=0` is an explicit reset. Only b2c profiles
-  (`applied:false` otherwise). Idempotent. The route remains live because partner and admin views
-  display the promised rate even though it is not a pricing authority.
+- `POST /v1/internal/sales/referral-discount` — expand-only writer for the historical referral
+  marker. Body `{userId, floorBps (0..9500), override?, actorId?}` →
+  `{applied, multiplierBp:null, pricingAffected:false}`.
+  It does not move any price: B2C pricing is the stored account scalar plus optional provider
+  overrides, `multiplierBp` is always `null`, and no engine pricing job is enqueued. The marker is
+  monotonic across automatic replay and can be explicitly replaced/cleared by the old override
+  path. Only B2C profiles accept it. The route and columns remain for rolling compatibility and
+  immutable audit evidence; the current partner/admin UI does not grant, edit or market them as a
+  discount. Partner-facing additive responses that expose the old fields also return
+  `pricingAffected:false`.
 - `POST /v1/internal/sales/referral-profiles` — referral profiles for the partner's storefront.
   Body `{userIds: uuid[] (max 500)}` → `{items:[{userId, customerType (b2c/b2b), multiplierBp,
   discountPercent, referralFloorBps, cumulativeTopupNano, balanceNano, status}]}`. Only for an
@@ -136,15 +136,15 @@ of reaching SQL as an out-of-range value.
   a partner sees only their own. `balanceNano` and the live `multiplierBp` are read from the engine
   (the money authority) with parallelism 8; an unavailable engine account does not take the page
   down — the fields degrade to `null`/values from `customer_profiles`.
-  `referralFloorBps` is display/partner-attribution data and `cumulativeTopupNano` is reporting;
-  neither is used to calculate the customer's price.
+  `referralFloorBps` is legacy audit/attribution metadata and `cumulativeTopupNano` is reporting;
+  neither is used to calculate or display an applied customer price. `discountPercent` is the
+  actual engine/commerce scalar discount.
 
 Consumers on the sales side (`apps/sales-api`, reach commerce via `COMMERCE_BASE_URL`):
 
 - `sync.service.ts` — sync loop over cursors (stored in the sales DB, interval `SYNC_INTERVAL_MS`,
-  default 60 s): attributions → assignment of the user to a partner + atomic claim of the one-time
-  discount link (the winner receives the floor via `POST referral-discount` — either for the first
-  time or as an idempotent backfill if the synchronous application at registration failed);
+  default 60 s): attributions → assignment of the user to a partner + atomic replay of a legacy
+  one-time marker claim (retained for old rows; it has no pricing effect);
   `topups-v2` → `referred_topups` (history/analytics only, create no commissions; replay starts at
   sequence zero and is idempotent by `commerce_payment_id`); usage events →
   commissions (idempotent by `commerce_event_id`). The live scalar row and historical policy-v1
@@ -205,29 +205,24 @@ Commerce calls sales-api at `SALES_API_URL` with the same `SALES_CONTROL_KEY`.
 - `POST /v1/internal/promo/redeem` — redeeming a partner promo code (called from
   `apps/api/src/promo.service.ts`, public `POST /v1/promo/redeem`). Body
   `{code, commerceUserId}` → `{valueNano, partnerId, referralCode, redemptionRef, discountBps,
-  alreadyRedeemed}`. Atomic and idempotent by (code, user): a repeat redemption by the same user
+  pricingAffected:false, alreadyRedeemed}`. Atomic and idempotent by (code, user): a repeat redemption by the same user
   returns the same `redemptionRef`, so the engine credit on the commerce side is idempotent by ref
   (retries are safe). One-time code; one promo per user (409); the code is unavailable if the
   partner is not active or the promo is disabled. Commerce continues on its own: credits the engine
   (up to 3 attempts), best-effort attributes an unassigned user to the code's owner, and with
-  `discountBps>0` applies the discount "floor" with local retries — the async feed does **not**
-  re-apply the promo discount (it derives the floor only from `partner_discount_links`).
-  `discountBps` records the promised partner rate but does not change the B2C scalar price.
-- `POST /v1/internal/partners/referral-discount` — atomic claim of a personal discount link. Body
-  `{code, commerceUserId}` → `{discountBps}`. First-wins, idempotent by (code, user): the link is
-  bound to the first owner in a single UPDATE and NEVER gives the discount to a second person; an
-  ordinary ref code or a link redeemed by someone else → 0. Called from
+  a nonzero legacy `discountBps` stores only its audit marker with local retries. It never changes
+  the B2C scalar/provider price.
+- `POST /v1/internal/partners/referral-discount` — atomic claim of a legacy one-time attribution
+  link. Body `{code, commerceUserId}` → `{discountBps, pricingAffected:false}`. First-wins and
+  idempotent by (code, user); an ordinary or already-consumed code returns zero. Called from
   `apps/api/src/auth.service.ts` at the first activation of the engine account (password
-  registration, email confirmation, OAuth) — synchronously, so the referral sees their rate from
-  the first visit; fully best-effort
-  (4 s timeout, failure → the async feed applies the owner's floor on the next tick).
-  The link keeps attribution/commission and the promised-rate display, but it does not create a
-  personal price.
+  registration, email confirmation, OAuth) as a best-effort compatibility replay; a failure is
+  retried by the async attribution feed. It does not create or promise a personal price.
 - `GET /v1/internal/partners/resolve?code` → `{found:false}` or `{found:true, partnerId,
   referralDiscountBps}` — resolving the ref code of an active partner (`Cache-Control: no-store`).
   The endpoint is live, but the current commerce code does **not** call it: the claim endpoint
-  above replaced the resolve+consume pair, closing the window where a read-only resolve handed the
-  floor to several registrations of one link.
+  above replaced the resolve+consume pair, closing the window where one marker could be claimed by
+  several registrations.
 
 Rules: sales does not open the commerce/engine PostgreSQL and does not import `@claude-api/db`;
 commerce symmetrically does not open the sales DB — everything goes through HTTP under the key.
@@ -244,9 +239,9 @@ Commerce writes the code best-effort to `referral_attributions` (unique by user_
 passed through OAuth registration: the social buttons pass it in `oauthUrl` (`apps/web/src/lib/api.ts`),
 `beginOAuth` saves the code in the OAuth transaction (it survives the redirect to the provider), and
 `completeOAuth` for a **new** account writes the attribution. The current code also calls
-`POST /v1/internal/partners/referral-discount` to claim a one-time link and record its promised
-rate immediately. Ref affects attribution, commission and partner-facing display; the B2C price
-remains the stored account scalar plus any provider override.
+`POST /v1/internal/partners/referral-discount` only to replay a legacy one-time marker. Ref affects
+attribution and commission; it never changes or promises a price. B2C price remains the stored
+account scalar plus any provider override.
 
 The complete product guide for the whole program (sign-in, attribution, commission, levels, wallet,
 periods, dashboard, admin panel, languages) — `docs/sales/PARTNER_PROGRAM.md`.

@@ -75,6 +75,7 @@ export class InternalController {
         referralCode: result.referralCode,
         redemptionRef: result.redemptionRef,
         discountBps: result.discountBps,
+        pricingAffected: false,
         alreadyRedeemed: result.alreadyRedeemed,
       };
     } catch (error) {
@@ -92,7 +93,7 @@ const resolveSchema = z.object({
 
 // Резервный read-only endpoint: сейчас НИКЕМ не вызывается — claim через POST
 // `referral-discount` (ниже) заменил прежнюю пару resolve+consume. Оставлен как expand-only
-// контракт: отвечает, является ли ?ref= кодом активного партнёра, и его обещанной ставкой.
+// контракт: отвечает, является ли ?ref= кодом активного партнёра, и возвращает legacy marker.
 @Controller("internal/partners")
 @UseGuards(InternalKeyGuard)
 export class InternalPartnersController {
@@ -104,22 +105,21 @@ export class InternalPartnersController {
     const parsed = resolveSchema.safeParse({ code });
     if (!parsed.success) return { found: false };
     const partner = await findPartnerByReferralCode(this.database, parsed.data.code.toLowerCase());
-    // Только активный партнёр триггерит B2B; иначе код трактуется как обычный (реф получит бонус).
+    // Only an active partner owns a resolvable referral code.
     if (!partner || partner.status !== "active") return { found: false };
     return { found: true, partnerId: partner.id, referralDiscountBps: partner.referralDiscountBps };
   }
 
-  // АТОМАРНО закрепляет одноразовую скидочную ссылку за юзером и возвращает её скидку, только если
-  // он владелец. commerce зовёт это при активации движок-аккаунта — кабинет видит атрибуцию сразу, а
-  // одноразовая ссылка НЕ может дать скидку второму. Обычный реф-код / гашёная-другим ссылка → 0.
+  // Atomically consumes a legacy one-time attribution link and returns its marker only to the
+  // winner. The marker does not change pricing; ordinary/already-consumed codes return zero.
   // POST, т.к. мутирует (consume). Идемпотентно по (code,user).
   @Post("referral-discount")
   @HttpCode(200)
   async referralDiscount(@Body() body: unknown): Promise<unknown> {
     const parsed = claimSchema.safeParse(body);
-    if (!parsed.success) return { discountBps: 0 };
+    if (!parsed.success) return { discountBps: 0, pricingAffected: false };
     const { discountBps } = await claimReferralDiscount(this.database, parsed.data.code.toLowerCase(), parsed.data.commerceUserId);
-    return { discountBps };
+    return { discountBps, pricingAffected: false };
   }
 }
 

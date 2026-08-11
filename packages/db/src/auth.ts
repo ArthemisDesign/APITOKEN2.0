@@ -24,10 +24,9 @@ export class EmailAlreadyRegisteredError extends Error {}
 
 export interface RegisteredAuthUser extends AuthUser {
   engineMultiplierBp: number;
-  // true ТОЛЬКО когда аккаунт реально создан этим вызовом (не возврат существующего и не линковка
-  // OAuth к существующему email-аккаунту). Реф-атрибуция и скидка-«пол» применяются лишь к новым:
-  // иначе существующий платящий юзер мог бы само-привязаться к партнёру и выдать себе скидку,
-  // залогинившись через ?ref=, а заодно сжечь одноразовую ссылку.
+  // true only when this call created the account (not an existing-user return/OAuth link).
+  // Referral attribution and its legacy one-time marker run only for new accounts; otherwise an
+  // existing user could self-attribute through ?ref= and consume another user's one-time link.
   isNewAccount?: boolean;
 }
 

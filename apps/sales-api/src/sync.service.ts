@@ -215,21 +215,16 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
             attributedAt: row.createdAt,
             sourceAttributionId: row.id,
           });
-          // Побочные эффекты запускаем, если юзер закреплён именно за ЭТИМ партнёром — либо мы только что
-          // выиграли атрибуцию (won), либо он уже был закреплён за ним же (идемпотентно к крашу/ретраю
-          // между upsert и consume). Если юзер закреплён за ДРУГИМ партнёром — не трогаем (не жжём чужую
-          // одноразовую ссылку и не даём незаслуженный floor). consume/apply идемпотентны.
+          // Side effects run only for this attribution's owner. A different owner must not consume
+          // somebody else's one-time link. Both the claim and marker replay are idempotent.
           const ownerPartnerId = won ? resolved.partnerId : await getReferredUserPartner(this.database, row.userId);
           if (ownerPartnerId === resolved.partnerId && resolved.discountLinkId) {
-            // Скидочная ссылка: АТОМАРНО закрепляем её за этим юзером (claim = consume+resolve одним
-            // UPDATE, идемпотентно по (code,user)). Победитель получает floor — либо впервые, либо как
-            // backfill, если синхронное применение при регистрации упало; проигравший (ссылка уже
-            // погашена другим) получает строго 0 и floor НЕ применяется. Это закрывает и гонку
-            // «одна ссылка → скидка нескольким», и потерю floor при сбое apply. Обычный реф-код
-            // (без discountLinkId) сюда не заходит — floor 0, атрибуция/комиссия уже сделаны выше.
+            // One UPDATE claims the legacy link for its first user. The winner receives its marker
+            // on first processing or retry; a loser receives zero. Regular referral codes have no
+            // discountLinkId. The marker is audit metadata and never changes pricing.
             const { discountBps } = await claimReferralDiscount(this.database, row.code, row.userId);
             if (discountBps > 0) {
-              await this.applyReferralDiscount(row.userId, discountBps);
+              await this.replayReferralMarker(row.userId, discountBps);
             }
           }
         }
@@ -240,8 +235,8 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
     }
   }
 
-  /** Просит commerce применить «пол» скидки сейлза рефералу партнёра (b2c + floor). Идемпотентно. */
-  private async applyReferralDiscount(userId: string, floorBps: number): Promise<void> {
+  /** Replays the legacy B2C referral marker into Commerce. It does not change pricing. */
+  private async replayReferralMarker(userId: string, floorBps: number): Promise<void> {
     const base = this.config.get("COMMERCE_BASE_URL", { infer: true });
     const url = new URL("/v1/internal/sales/referral-discount", base);
     const response = await fetch(url, {

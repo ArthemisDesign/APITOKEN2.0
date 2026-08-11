@@ -76,7 +76,9 @@ export const customerProfiles = pgTable("customer_profiles", {
   cumulativeTopupNano: bigint("cumulative_topup_nano", { mode: "bigint" }).notNull().default(sql`0`),
   tierWindowStart: timestamp("tier_window_start", { withTimezone: true }),
   tierWindowSpentNano: bigint("tier_window_spent_nano", { mode: "bigint" }).notNull().default(sql`0`),
-  // Скидка сейлза как «пол»: эффективный mult = min(тир-mult, 10000 - referral_floor_bps). 0 = нет.
+  // Legacy partner-attribution marker. It is retained for expand-only Sales contracts and audit
+  // display, but never participates in pricing: the live price is multiplier_bp plus provider
+  // overrides. A nonzero value must not be presented to a customer as an applied discount.
   referralFloorBps: integer("referral_floor_bps").notNull().default(0),
   // Локальная проекция welcome/промо. Legacy rows списывают её free-first; attributed policy rows
   // вычитают exact bonus+other evidence. Комиссия использует immutable eligible paid funding.

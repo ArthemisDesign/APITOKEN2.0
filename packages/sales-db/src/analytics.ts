@@ -277,11 +277,11 @@ export async function getPartnerActivity(
        FROM referred_topups rt WHERE rt.partner_id = $1)
     UNION ALL
     (SELECT 'discount_link_created', dl.created_at, NULL,
-            'Issued discount link ' || dl.code, jsonb_build_object('code', dl.code, 'discountBps', dl.discount_bps, 'note', dl.note)
+            'Issued legacy marker link ' || dl.code, jsonb_build_object('code', dl.code, 'discountBps', dl.discount_bps, 'note', dl.note)
        FROM partner_discount_links dl WHERE dl.partner_id = $1)
     UNION ALL
     (SELECT 'discount_link_used', dl.consumed_at, NULL,
-            'Discount link ' || dl.code || ' used', jsonb_build_object('code', dl.code)
+            'Legacy marker link ' || dl.code || ' used', jsonb_build_object('code', dl.code)
        FROM partner_discount_links dl WHERE dl.partner_id = $1 AND dl.consumed_at IS NOT NULL)
     UNION ALL
     (SELECT 'promo_created', pc.created_at, pc.value_nano::text,

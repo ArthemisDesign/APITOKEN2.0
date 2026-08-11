@@ -27,6 +27,7 @@ interface SalesRedeemResponse {
   referralCode: string;
   redemptionRef: string;
   discountBps?: number;
+  pricingAffected?: false;
   alreadyRedeemed: boolean;
 }
 
@@ -77,23 +78,21 @@ export class PromoService {
       // best-effort: не срываем успешный кредит из-за атрибуции
     }
 
-    // 4) Спец-промо со ставкой → записываем «пол» редимщику как партнёрскую атрибуцию;
-    // B2C scalar price и provider overrides эта запись не меняет.
-    // ВНИМАНИЕ: в отличие от партнёрских ссылок, промо-скидку async sales-фид НЕ переприменяет
-    // (он деривит floor только из partner_discount_links, а не из promo). Поэтому здесь ретраим
-    // локально и не глотаем окончательный сбой молча — иначе редим прошёл, а floor не встал.
+    // 4) Preserve a nonzero legacy promo marker as partner-attribution metadata. The async Sales
+    // feed cannot replay promo markers, so retry locally and report a terminal metadata failure.
+    // This path never changes the B2C scalar or provider overrides.
     if (redeemed.discountBps && redeemed.discountBps > 0) {
-      let floorApplied = false;
-      for (let attempt = 0; attempt < 3 && !floorApplied; attempt += 1) {
+      let markerStored = false;
+      for (let attempt = 0; attempt < 3 && !markerStored; attempt += 1) {
         try {
-          await setReferralFloor(this.database, { userId, floorBps: redeemed.discountBps, actorId: "promo-discount" });
-          floorApplied = true;
+          await setReferralFloor(this.database, { userId, floorBps: redeemed.discountBps, actorId: "promo-marker" });
+          markerStored = true;
         } catch {
-          // повторяем; финальный сбой логируем ниже (кредит уже зачислен — редим не откатываем)
+          // Retry; the credit is already durable and must not be rolled back for audit metadata.
         }
       }
-      if (!floorApplied) {
-        this.logger.error(`promo floor apply failed for ${userId} ref=${redeemed.redemptionRef} bps=${redeemed.discountBps}`);
+      if (!markerStored) {
+        this.logger.error(`promo marker store failed for ${userId} ref=${redeemed.redemptionRef} bps=${redeemed.discountBps}`);
       }
     }
 

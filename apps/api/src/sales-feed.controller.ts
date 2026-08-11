@@ -140,32 +140,30 @@ export class SalesFeedController {
   }
 
   /**
-   * Устанавливает «пол» скидки сейлза для реферала партнёра как партнёрскую АТРИБУЦИЮ
-   * обещанной ставки, а не цену: B2C price authority — сохранённый scalar плюс provider
-   * overrides, поэтому scalar/мультипликатор здесь не двигается и ответ
-   * возвращает multiplierBp=null. floorBps=0 снимает пол. Вызывает sales-api при атрибуции.
-   * Идемпотентно. Только партнёрские коды.
+   * Stores the legacy referral marker as partner attribution, never as a promised or applied price.
+   * B2C price authority is the saved scalar plus provider overrides; this route never moves either
+   * and returns multiplierBp=null plus pricingAffected=false. Zero clears the marker. Idempotent.
    */
   @Post("referral-discount")
   @HttpCode(200)
   async referralDiscount(@Body() body: unknown) {
     const parsed = referralDiscountSchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException("invalid referral discount payload");
+    if (!parsed.success) throw new BadRequestException("invalid legacy referral marker payload");
     const result = await setReferralFloor(this.database, {
       userId: parsed.data.userId,
       floorBps: parsed.data.floorBps,
       actorId: parsed.data.actorId ?? "sales-referral",
-      // Явная смена процента действующему рефералу (партнёр/админ из sales-кабинета): абсолютная
-      // запись, разрешает понижение. Автоматические пути поле не шлют — монотонность сохранена.
+      // The retained admin/partner compatibility path may replace/lower the marker explicitly.
+      // Automatic replays omit override and remain monotonic.
       override: parsed.data.override ?? false,
     });
-    return { applied: result.applied, multiplierBp: result.multiplierBp };
+    return { applied: result.applied, multiplierBp: result.multiplierBp, pricingAffected: false as const };
   }
 
   /**
-   * Профили рефералов для витрины партнёра: тип (b2b/b2c), эффективная скидка, партнёрский floor,
-   * накопленные пополнения и ЖИВОЙ баланс из движка. Только по явному списку user_id, который
-   * sales-api формирует из закреплённых за партнёром рефералов — partner видит лишь своих.
+   * Referral profiles: account type, actual discount, legacy marker, topups and live engine
+   * balance. Only an explicit user_id list supplied from the partner's assignments is accepted,
+   * so one partner cannot inspect another partner's referrals.
    */
   @Post("referral-profiles")
   @HttpCode(200)

@@ -182,7 +182,8 @@ export class AdminController {
       listPartnerPayouts(this.database, id),
       listReferredUsers(this.database, id),
     ]);
-    // Обогащаем рефералов типом/скидкой из commerce (best-effort: при недоступности — только локальные поля).
+    // Commerce supplies the actual price discount. referralFloorBps is separate legacy metadata
+    // and is never presented as an applied price.
     const profiles = await this.commerce.referralProfiles(referrals.map((r) => r.commerceUserId));
     // Commerce identities stay masked even for admins: expose only an 8-char prefix, never the full UUID.
     const maskedReferrals = referrals.map((r) => {
@@ -202,9 +203,8 @@ export class AdminController {
   }
 
   /**
-   * Админ ставит/меняет партнёрскую ставку рефералу партнёра :id (или снимает её нулём).
-   * Абсолютная запись (override) — можно и понижать; лимит только глобальный (≤95%),
-   * потолок самого партнёра админа не ограничивает.
+   * Expand-only admin writer for the legacy referral marker. It does not change pricing and the
+   * response says so explicitly. Absolute override can lower or clear the stored marker.
    */
   @Post("partners/:id/referrals/:userRef/discount")
   @HttpCode(200)
@@ -217,20 +217,25 @@ export class AdminController {
     const ref = referralUserRefSchema.safeParse(userRef);
     if (!ref.success) throw new BadRequestException("invalid referral reference");
     const parsed = setReferralDiscountSchema.safeParse(body ?? {});
-    if (!parsed.success) throw new BadRequestException("invalid discount");
+    if (!parsed.success) throw new BadRequestException("invalid legacy referral marker");
     const commerceUserId = await resolveReferredUserByPrefix(this.database, id, ref.data);
     if (commerceUserId === null) throw new NotFoundException("referral not found");
     if (commerceUserId === "ambiguous") throw new UnprocessableEntityException("ambiguous referral reference");
     const result = await this.commerce.setReferralDiscount(commerceUserId, parsed.data.discountBps, "sales-admin");
     if (!result.applied && result.multiplierBp === null) {
-      throw new UnprocessableEntityException("this referral is not eligible for a partner rate (b2b or inactive account)");
+      throw new UnprocessableEntityException("this referral cannot store the legacy B2C marker");
     }
     await insertSalesAudit(this.database, {
       actorType: "admin", actorId: "admin",
       action: "referral.discount_set", targetType: "referred_user", targetId: commerceUserId,
       metadata: { partnerId: id, discountBps: parsed.data.discountBps, multiplierBp: result.multiplierBp },
     });
-    return { userRef: ref.data, discountBps: parsed.data.discountBps, multiplierBp: result.multiplierBp };
+    return {
+      userRef: ref.data,
+      discountBps: parsed.data.discountBps,
+      multiplierBp: result.multiplierBp,
+      pricingAffected: false,
+    };
   }
 
   /** Лента действий партнёра (рефералы, депозиты, ссылки, промо, выплаты, входы, админ-действия). */

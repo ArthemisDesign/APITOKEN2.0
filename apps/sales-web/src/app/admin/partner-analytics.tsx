@@ -328,41 +328,6 @@ function PartnerDrawer({
   const suspended = p.status !== "active";
   const dirty = bps !== String(p.commissionBps) || subBps !== String(p.subCommissionBps);
 
-  function editDiscount() {
-    const cur = p.referralDiscountEnabled ? String(p.referralDiscountBps / 100) : "off";
-    const v = window.prompt(`Referral discount right for ${label}\nPercent 0–95 (price floor for their referrals), or "off".`, cur);
-    if (v == null) return;
-    if (v.trim().toLowerCase() === "off") return void patch({ referralDiscountEnabled: false, referralDiscountBps: 0 });
-    const pct = Number(v.trim());
-    if (!Number.isFinite(pct) || pct < 0 || pct > 95) return setError("Discount must be 0–95.");
-    void patch({ referralDiscountEnabled: true, referralDiscountBps: Math.round(pct * 100) });
-  }
-
-  // Партнёрская ставка конкретному рефералу: перевод b2c-реферала на фикс-процент или смена/снятие (0).
-  function editReferralRate(u: { userMask: string; userRef?: string; referralFloorBps?: number | null }) {
-    if (!u.userRef) return;
-    const cur = u.referralFloorBps ? String(u.referralFloorBps / 100) : "";
-    const v = window.prompt(`Partner rate for ${u.userMask}\nPercent 0–95 (price floor; 0 removes the rate, back to tiers).`, cur);
-    if (v == null) return;
-    const pct = Number(v.trim());
-    if (!Number.isFinite(pct) || pct < 0 || pct > 95) return setError("Rate must be 0–95.");
-    void (async () => {
-      setBusy(true);
-      setError(null);
-      try {
-        await api(`/v1/admin/partners/${row.id}/referrals/${u.userRef}/discount`, {
-          method: "POST", headers: adminHeaders(adminKey), body: { discountBps: Math.round(pct * 100) },
-        });
-        await reload();
-        onChanged();
-      } catch (err) {
-        setError(err instanceof ApiError ? err.message : "Rate update failed.");
-      } finally {
-        setBusy(false);
-      }
-    })();
-  }
-
   function editPromo() {
     const v = window.prompt(`Promo codes for ${label}\n"maxUSD/count" to enable (e.g. 20/10), or "off".`, p.promoEnabled ? "" : "off");
     if (v == null) return;
@@ -402,7 +367,9 @@ function PartnerDrawer({
           <Button size="sm" variant="ghost" disabled={!dirty || busy || !/^\d+$/.test(bps) || !/^\d+$/.test(subBps)} onClick={() => patch({ commissionBps: Number(bps), subCommissionBps: Number(subBps) })}>Save</Button>
           <Button size="sm" variant={suspended ? "primary" : "danger"} disabled={busy} onClick={() => patch({ status: suspended ? "active" : "suspended" })}>{suspended ? "Activate" : "Suspend"}</Button>
           <Button size="sm" variant="ghost" disabled={busy} onClick={editPromo}>{p.promoEnabled ? "Promo: on" : "Promo: off"}</Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={editDiscount}>{p.referralDiscountEnabled ? `Discount ${formatBps(p.referralDiscountBps)}` : "Discount: off"}</Button>
+          {p.referralDiscountEnabled ? (
+            <Badge tone="yellow">Legacy marker {formatBps(p.referralDiscountBps)} · no price effect</Badge>
+          ) : null}
         </div>
 
         {/* Stat grid */}
@@ -414,7 +381,7 @@ function PartnerDrawer({
           <Kpi label="Paid out" value={formatUsd(p.paidNano)} />
           <Kpi label="Unpaid owed" value={formatUsd(p.unpaidNano)} />
           <Kpi label="Team" value={String(p.teamSize)} foot="sub-partners" />
-          <Kpi label="Links / promos" value={`${p.linksUsed}/${p.linksTotal} · ${p.promosUsed}/${p.promosTotal}`} foot="used / total" />
+          <Kpi label="Legacy links / promos" value={`${p.linksUsed}/${p.linksTotal} · ${p.promosUsed}/${p.promosTotal}`} foot="used / total" />
         </div>
 
         {detail ? <Sparkline daily={detail.daily} /> : null}
@@ -437,14 +404,14 @@ function PartnerDrawer({
               )}
             </Section>
 
-            <Section title={`Discount links (${detail.discountLinks.length})`}>
+            <Section title={`Legacy marker links (${detail.discountLinks.length})`}>
               {detail.discountLinks.length === 0 ? <Muted>None issued.</Muted> : (
                 <MiniTable rows={detail.discountLinks.map((l) => [
                   <span key="c" className="mono">{l.code}</span>,
                   formatBps(l.discountBps),
                   l.note ?? "—",
                   l.consumedAt ? `used ${relTime(l.consumedAt)}` : "unused",
-                ])} cols={["Code", "Discount", "For", "State"]} />
+                ])} cols={["Code", "Marker", "For", "State"]} />
               )}
             </Section>
 
@@ -477,17 +444,12 @@ function PartnerDrawer({
                   u.customerType === "b2b"
                     ? <Badge key="t" tone="green">B2B</Badge>
                     : u.customerType === "b2c"
-                      ? ((u.referralFloorBps ?? 0) > 0
-                        ? <Badge key="t" tone="yellow">partner {u.discountPercent != null ? `${u.discountPercent}%` : ""}</Badge>
-                        : <span key="t">B2C{u.discountPercent != null ? ` · ${u.discountPercent}%` : ""}</span>)
+                      ? <span key="t">B2C{u.discountPercent != null ? ` · actual ${u.discountPercent}%` : ""}</span>
                       : "—",
                   formatDate(u.attributedAt),
                   formatUsd(u.spendNano) + " spend",
                   formatUsd(u.earnedNano) + " earned",
-                  u.userRef && u.customerType === "b2c"
-                    ? <Button key="a" size="sm" variant="ghost" disabled={busy} onClick={() => editReferralRate(u)}>Set&nbsp;rate</Button>
-                    : "—",
-                ])} cols={["User", "Type", "Joined", "Spend", "Earned", ""]} />
+                ])} cols={["User", "Type", "Joined", "Spend", "Earned"]} />
               )}
             </Section>
 

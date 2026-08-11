@@ -114,9 +114,8 @@ export class AuthService {
     await this.recordSignupProfile(user, input);
     if (verificationRequired) return { user: userView(user), session: null };
     await this.provisionEngineAccount(user, user.engineMultiplierBp, null);
-    // Атрибуция уже записана выше → применяем скидку-«пол» синхронно, до выдачи сессии,
-    // чтобы первый же /account дашборда вернул правильную ставку (без ожидания sales-фида).
-    await this.applyReferralFloorFromAttribution(user.id);
+    // Consume any legacy one-time marker before returning; this is attribution/audit only.
+    await this.replayReferralMarkerFromAttribution(user.id);
     const session = await this.issueSession(user, input.userAgent, input.ipAddress, input.deviceToken ?? null);
     return { user: session.user, session };
   }
@@ -132,20 +131,18 @@ export class AuthService {
   }
 
   /**
-   * При первой активации атомарно закрепляем персональную ссылку и записываем обещанную ставку как
-   * sales-атрибуцию. Это не меняет B2C scalar price; синхронный путь нужен, чтобы кабинет сразу
-   * показал корректные партнёрские условия. Полностью best-effort и идемпотентно: при недоступном
-   * sales тот же claim и запись повторит async feed.
+   * At first activation, atomically consume a legacy one-time attribution link and retain its
+   * marker. This never changes the B2C scalar/provider price. Fully best-effort and idempotent;
+   * the Sales async feed repeats the same claim and marker write.
    */
-  private async applyReferralFloorFromAttribution(userId: string): Promise<void> {
+  private async replayReferralMarkerFromAttribution(userId: string): Promise<void> {
     const base = this.config.get("SALES_API_URL", { infer: true });
     const key = this.config.get("SALES_CONTROL_KEY", { infer: true });
     if (!base || !key) return;
     try {
       const code = await getReferralAttributionCode(this.database, userId);
       if (!code) return;
-      // POST (мутирует): АТОМАРНО закрепляет одноразовую ссылку за этим юзером и возвращает скидку
-      // только если он её владелец. Второй регистрант той же ссылки получит 0 — гонка закрыта.
+      // POST mutates: the first registrant owns the legacy marker; later claimants receive zero.
       const url = new URL("/v1/internal/partners/referral-discount", base);
       const response = await fetch(url, {
         method: "POST",
@@ -160,7 +157,7 @@ export class AuthService {
         await setReferralFloor(this.database, { userId, floorBps: discountBps, actorId: "referral-signup" });
       }
     } catch {
-      // best-effort: async sales-фид (idempotent claim) применит floor владельцу при следующем тике
+      // best-effort: the async Sales feed replays the same idempotent marker claim.
     }
   }
 
@@ -205,8 +202,8 @@ export class AuthService {
     const user = await getAuthUser(this.database, userId);
     if (!user) throw new InvalidAuthTokenError("email verification user is unavailable");
     await this.provisionEngineAccount(user, await this.multiplierForUser(user.id), null);
-    // Реф-код был записан ещё при register(); движок-аккаунт только что активирован → floor сразу.
-    await this.applyReferralFloorFromAttribution(user.id);
+    // The referral code was recorded at register(); replay its legacy marker after activation.
+    await this.replayReferralMarkerFromAttribution(user.id);
     return this.issueSession(user, input.userAgent, input.ipAddress, input.deviceToken ?? null);
   }
 
@@ -283,16 +280,12 @@ export class AuthService {
     const user = await completeExternalSignIn(this.database, identity, transaction.inviteTokenHash);
     if (user.status !== "active") throw new InvalidOAuthTransactionError("account is disabled");
     await this.provisionEngineAccount(user, user.engineMultiplierBp, null);
-    // Реф партнёра остаётся обычным b2c и получает welcome-бонус, как все. Реф-код закрепляет
-    // атрибуцию (sales-фид подхватит для комиссии + атомарно закрепит одноразовую ссылку). Скидку-«пол»
-    // применяем ЗДЕСЬ ЖЕ, синхронно — идентично password/email-verify, чтобы OAuth-реферал видел
-    // свою ставку с первого захода, а не через async-фид (~30с).
-    // ТОЛЬКО для НОВОГО аккаунта: этот callback обслуживает и вход существующих юзеров — иначе
-    // существующий платящий клиент мог бы залогиниться через ?ref= и само-выдать себе скидку +
-    // сжечь чужую одноразовую ссылку + начать капать комиссию партнёру.
+    // A partner referral remains ordinary B2C. For a new account only, persist attribution and
+    // atomically consume any legacy one-time marker. Existing users must not self-attribute or
+    // consume somebody else's one-time link through an OAuth login carrying ?ref=.
     if (transaction.referralCode && user.isNewAccount) {
       await this.attributeReferral(user.id, transaction.referralCode);
-      await this.applyReferralFloorFromAttribution(user.id);
+      await this.replayReferralMarkerFromAttribution(user.id);
     }
     // Welcome-бонус: профиль и антифрод-флаги фиксируются всегда, клейм — только когда
     // engine-аккаунт уже active по свежему чтению (managed-provisioning подтверждается

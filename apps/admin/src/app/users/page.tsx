@@ -42,6 +42,8 @@ import {
   type UserSortKey,
 } from "./users-lib";
 
+export const GIFT_CREDIT_REASON = "admin panel gift credit (not an external payment)";
+
 type UsersOverview = EngineOverview & { demand?: EngineDemand };
 
 interface UsersData {
@@ -142,7 +144,7 @@ const UserRow = memo(function UserRow({ user, busyAction, onCredit, onAction }: 
         <div className="actions wrap">
           {user.engine_account_id && user.status === "active" ? (
             <button className="btn" disabled={busyAction === "credit"} onClick={() => onCredit(user)}>
-              + баланс
+              + подарок
             </button>
           ) : null}
           {user.engine_account_id && user.customer_type === "b2c" ? (
@@ -226,15 +228,14 @@ export default function UsersPage() {
     startTransition(() => setPage((prev) => ({ ...prev, offset })));
   }, []);
 
-  // + баланс: сумма целым 1–99999, idempotency-key генерируется на клиенте;
-  // при сброшенном запросе ключ лежит в sessionStorage, и повтор тех же суммы
-  // и причины безопасно доигрывает тот же adjustment (как creditUser() легаси).
+  // Gift credit is explicitly not external payment evidence and never becomes partner-commission
+  // basis. Its idempotency key survives a dropped request in sessionStorage.
   const creditUser = useCallback(
     async (user: AdminUser) => {
       const values = await dialog({
-        title: "Начислить баланс",
-        message: user.email ?? undefined,
-        confirmLabel: "Начислить",
+        title: "Начислить подарочный кредит",
+        message: `${user.email ?? "Пользователь"}\n\nЭто подарок платформы, не подтверждённая оплата. Он не считается выручкой и не создаёт партнёрскую комиссию.`,
+        confirmLabel: "Начислить подарок",
         fields: [{ name: "amount", label: "Сумма USD — целое число 1–99999" }],
       });
       if (!values) return;
@@ -246,7 +247,7 @@ export default function UsersPage() {
       const userId = String(user.id ?? "");
       setBusy({ userId, action: "credit" });
       const pendingKey = "admin-credit-pending:" + userId;
-      const payloadSignature = value + "\n" + PANEL_REASON;
+      const payloadSignature = value + "\n" + GIFT_CREDIT_REASON;
       let idempotencyKey = crypto.randomUUID();
       try {
         const pending = JSON.parse(sessionStorage.getItem(pendingKey) || "null") as
@@ -262,7 +263,7 @@ export default function UsersPage() {
       try {
         const result = await send<{ balance_usd?: number }>(`/admin/users/${userId}/balance-adjustments`, "POST", {
           amount_usd: value,
-          reason: PANEL_REASON,
+          reason: GIFT_CREDIT_REASON,
           idempotency_key: idempotencyKey,
         });
         sessionStorage.removeItem(pendingKey);

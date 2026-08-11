@@ -5,7 +5,7 @@ export const emailSchema = z.string().trim().email().max(320);
 export const passwordSchema = z.string().min(8).max(200);
 export const displayNameSchema = z.string().trim().min(1).max(80);
 export const commissionBpsSchema = z.number().int().min(0).max(10_000);
-// Скидка рефа (B2B). Максимум 95% = 9500 bps — жёсткий потолок того, что может поставить сейлз.
+// Retained referral marker, not pricing. The historical wire range remains 0..9500 bps.
 export const referralDiscountBpsSchema = z.number().int().min(0).max(9_500);
 export const promoMaxCountSchema = z.number().int().min(0).max(10_000);
 export const promoMaxValueUsdSchema = z.number().int().min(0).max(100_000);
@@ -35,7 +35,7 @@ export const telegramApplySchema = telegramAuthSchema.omit({ inviteCode: true })
 export const createInviteSchema = z.object({
   telegramUsername: telegramUsernameSchema,
   commissionBps: commissionBpsSchema.optional(),
-  // Каскад права давать скидку: партнёр с правом может включить его суб-сейлзу (скидка ≤ 90%).
+  // Legacy marker permission, retained only for expand-only request compatibility.
   referralDiscountEnabled: z.boolean().optional(),
   referralDiscountBps: referralDiscountBpsSchema.optional(),
 });
@@ -44,8 +44,7 @@ export const adminCreateInviteSchema = z.object({
   telegramUsername: telegramUsernameSchema,
   commissionBps: commissionBpsSchema.optional(),
   subCommissionBps: commissionBpsSchema.optional(),
-  // Право давать скидку рефам + сама скидка (≤90%), которую сейлз ставит как «пол» цены рефа
-  // (реф остаётся b2c на обычных тирах; скидка действует только при включённом праве).
+  // Legacy marker permission/value; current UI always creates invites with this disabled.
   referralDiscountEnabled: z.boolean().optional(),
   referralDiscountBps: referralDiscountBpsSchema.optional(),
   // Доступ к промокодам, задаваемый прямо на онбординге: сколько кодов и их макс. номинал в USD.
@@ -72,13 +71,12 @@ export const adminPatchPartnerSchema = z.object({
   message: "at least one field is required",
 });
 
-// Партнёр (с правом) ставит скидку своим рефам — из кабинета. ≤ 90%.
+// Legacy marker writer schema, retained for expand-only compatibility.
 export const partnerSetDiscountSchema = z.object({
   referralDiscountBps: referralDiscountBpsSchema,
 });
 
-// Смена процента ДЕЙСТВУЮЩЕМУ рефералу (партнёр — в пределах своего потолка, админ — до 95%).
-// 0 = снять партнёрскую ставку (реферал возвращается на обычные b2c-тиры).
+// Legacy marker replacement. Zero clears the marker; no value changes pricing.
 export const setReferralDiscountSchema = z.object({
   discountBps: referralDiscountBpsSchema,
 });
@@ -99,13 +97,13 @@ export const adminPayoutsQuerySchema = z.object({
   status: z.enum(["requested", "approved", "paid", "rejected"]).optional(),
 });
 
-// Партнёр создаёт промокод на целое число USD; опц. спец-скидка (если есть право), ≤ 90%.
+// Partner creates an integer-USD promo; discountBps is a retained, non-pricing marker.
 export const createPromoSchema = z.object({
   valueUsd: z.coerce.number().int().positive().max(100_000),
   discountBps: referralDiscountBpsSchema.optional(),
 });
 
-// Партнёр выпускает персональную одноразовую ссылку со скидкой (≤90%, ≤ своего максимума).
+// Legacy one-time attribution link; discountBps is audit metadata with no price effect.
 export const createDiscountLinkSchema = z.object({
   discountBps: referralDiscountBpsSchema,
   note: z.string().trim().max(120).optional(),

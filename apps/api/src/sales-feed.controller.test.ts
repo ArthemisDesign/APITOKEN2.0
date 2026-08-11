@@ -15,6 +15,7 @@ const TOPUPS_V2_GOLDEN = JSON.parse(readFileSync(
 const dbMocks = vi.hoisted(() => ({
   listUsageEventsAfter: vi.fn(),
   listPaidTopupsV2After: vi.fn(),
+  setReferralFloor: vi.fn(),
 }));
 
 vi.mock("@claude-api/db", () => ({
@@ -23,7 +24,7 @@ vi.mock("@claude-api/db", () => ({
   listPaidTopupsAfter: vi.fn(),
   listReferralAttributionsAfter: vi.fn(),
   listReferralProfiles: vi.fn(),
-  setReferralFloor: vi.fn(),
+  setReferralFloor: dbMocks.setReferralFloor,
 }));
 
 import { SalesFeedController } from "./sales-feed.controller.js";
@@ -32,6 +33,7 @@ describe("sales usage feed controller", () => {
   beforeEach(() => {
     dbMocks.listUsageEventsAfter.mockReset();
     dbMocks.listPaidTopupsV2After.mockReset();
+    dbMocks.setReferralFloor.mockReset();
   });
 
   it("serializes the free-first commission basis and bigint money without loss", async () => {
@@ -90,6 +92,16 @@ describe("sales usage feed controller", () => {
       nextCursor: TOPUPS_V2_GOLDEN.nextCursor,
     });
     expect(dbMocks.listPaidTopupsV2After).toHaveBeenCalledWith({}, 10n, 25);
+  });
+
+  it("marks the legacy referral writer as non-pricing", async () => {
+    dbMocks.setReferralFloor.mockResolvedValue({ applied: true, multiplierBp: null });
+    const controller = new SalesFeedController({} as never, {} as never);
+
+    await expect(controller.referralDiscount({
+      userId: "11111111-1111-4111-8111-111111111111",
+      floorBps: 9_500,
+    })).resolves.toEqual({ applied: true, multiplierBp: null, pricingAffected: false });
   });
 
 });

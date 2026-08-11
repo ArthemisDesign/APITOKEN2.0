@@ -190,6 +190,7 @@ export type PromoListResponse = {
   maxValueNano: string;
   maxCount: number;
   redeemUrl: string;
+  pricingAffected?: false;
   items: PromoCodeRow[];
 };
 
@@ -200,6 +201,7 @@ export type Overview = {
   subCommissionBps: number;
   referralDiscountEnabled?: boolean;
   referralDiscountBps?: number;
+  referralPricingAffected?: false;
   referredUsers: number;
   teamSize: number;
   totals: {
@@ -215,13 +217,14 @@ export type Overview = {
 
 export type ReferralRow = {
   userMask: string;
-  // Машинная ссылка на реферала (8-hex префикс) для действий: смена партнёрской ставки.
+  // Masked 8-hex machine reference retained by the expand-only API.
   userRef?: string;
   attributedAt: string;
   spendNano: string;
   earnedNano: string;
   topupNano: string;
-  // Обогащение из commerce/движка — может быть null, если commerce временно недоступен.
+  // Commerce/engine enrichment; discountPercent is the actual price. referralFloorBps is legacy
+  // attribution metadata only and must never be rendered as an applied discount.
   customerType: "b2c" | "b2b" | null;
   discountPercent: number | null;
   referralFloorBps: number | null;

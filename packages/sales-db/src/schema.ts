@@ -50,10 +50,10 @@ export const partners = pgTable("partners", {
   promoEnabled: boolean("promo_enabled").notNull().default(false),
   promoMaxValueNano: bigint("promo_max_value_nano", { mode: "bigint" }).notNull().default(sql`0`),
   promoMaxCount: integer("promo_max_count").notNull().default(0),
-  // Скидка, которую сейлз даёт своим рефам как «пол» цены (реф остаётся b2c на обычных тирах, но
-  // платит не дороже этой скидки). Действует только при referralDiscountEnabled. Максимум 90%.
+  // Legacy partner-attribution marker ceiling. The field and permission remain for expand-only
+  // contracts and historical rows, but they do not change Commerce/engine pricing.
   referralDiscountBps: integer("referral_discount_bps").notNull().default(0),
-  // Право давать скидку — выдаётся админом (или каскадом от партнёра с правом). По умолчанию нет.
+  // Legacy writer permission. Current product UI does not grant or market it as a discount.
   referralDiscountEnabled: boolean("referral_discount_enabled").notNull().default(false),
   createdAt,
   updatedAt,
@@ -130,7 +130,7 @@ export const partnerInvites = pgTable("partner_invites", {
   telegramUsername: text("telegram_username"),
   commissionBps: integer("commission_bps"),
   subCommissionBps: integer("sub_commission_bps"),
-  // Промо-доступ и B2B-скидка рефа, зашитые в инвайт — применяются при создании партнёра.
+  // Promo access plus retained referral-marker permission/ceiling copied into a new partner.
   promoEnabled: boolean("promo_enabled").notNull().default(false),
   promoMaxValueNano: bigint("promo_max_value_nano", { mode: "bigint" }).notNull().default(sql`0`),
   promoMaxCount: integer("promo_max_count").notNull().default(0),
@@ -180,7 +180,7 @@ export const promoCodes = pgTable("promo_codes", {
   redeemedAt: timestamp("redeemed_at", { withTimezone: true }),
   // Идемпотентный ref для кредита движка на стороне commerce.
   redemptionRef: text("redemption_ref"),
-  // Спец-скидка промокода: >0 → редимщик получает скидку-«пол» (b2c + floor). 0 = обычный промо.
+  // Legacy attribution marker carried by a promo. It never changes the redeemer's price.
   discountBps: integer("discount_bps").notNull().default(0),
   createdAt,
 }, (table) => [
@@ -203,8 +203,8 @@ export const referredUsers = pgTable("referred_users", {
   index("referred_users_partner_idx").on(table.partnerId, table.attributedAt),
 ]);
 
-// Персональные одноразовые ссылки со скидкой. Партнёр (с правом) выпускает под конкретного клиента;
-// первый привязанный по коду пользователь получает discount_bps как «пол» цены и гасит ссылку.
+// Legacy one-time attribution links. The first matching user consumes the code and the stored bps
+// is retained as audit/display metadata only; it never changes Commerce/engine pricing.
 export const partnerDiscountLinks = pgTable("partner_discount_links", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   partnerId: uuid("partner_id").notNull().references(() => partners.id, { onDelete: "restrict" }),

@@ -91,8 +91,8 @@ export async function recordReferralAttribution(database: Database, userId: stri
   }
 }
 
-/** Реф-код, по которому пользователь пришёл (или null). Нужен для синхронного применения скидки-«пола»
- * сразу при провижининге движок-аккаунта — чтобы реферал видел свою ставку, не дожидаясь sales-фида. */
+/** Referral code recorded at signup (or null). The activation path uses it to atomically consume
+ * legacy one-time attribution links; the async Sales feed retries that marker replay. */
 export async function getReferralAttributionCode(database: Database, userId: string): Promise<string | null> {
   const rows = await database.db
     .select({ code: referralAttributions.code })
@@ -275,7 +275,7 @@ export async function listPaidTopupsV2After(
   return { items, nextCursor: rows.at(-1)?.id ?? afterId };
 }
 
-// Профиль реферала для витрины партнёра: тип (b2b/b2c), скидка/floor и маппинг на engine-аккаунт
+// Referral profile for Sales: type, actual scalar discount, legacy marker and engine mapping.
 // (баланс читается уже из движка вызывающей стороной). Только по явному списку user_id — партнёр
 // видит исключительно закреплённых за ним пользователей (sales-api ограничивает список).
 export interface ReferralProfileRow {

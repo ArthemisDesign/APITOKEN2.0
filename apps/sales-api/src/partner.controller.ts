@@ -111,10 +111,11 @@ export class PartnerController {
       // и доживает до регистрации 30 дней.
       referralUrl: `${new URL(mainSite).origin}/?ref=${current.partner.referralCode}`,
       commissionBps: current.partner.commissionBps,
-      // Скидка рефам: право (выдаёт админ/родитель) + текущее значение. Кабинет показывает поле,
-      // только если право есть.
+      // Legacy marker fields remain additive API history. The explicit boolean prevents a client
+      // from mistaking them for a price authority.
       referralDiscountEnabled: current.partner.referralDiscountEnabled,
       referralDiscountBps: current.partner.referralDiscountBps,
+      referralPricingAffected: false,
       subCommissionBps: current.partner.subCommissionBps,
       referredUsers,
       teamSize,
@@ -137,7 +138,8 @@ export class PartnerController {
   @Header("Cache-Control", "no-store")
   async referrals(@CurrentAuth() current: RequestAuth): Promise<unknown> {
     const referrals = await listReferredUsers(this.database, current.partner.id);
-    // Обогащаем авторитетными данными коммерции/движка (тип, скидка, floor, баланс). Best-effort:
+    // Enrich with authoritative Commerce/engine type, actual discount and balance. The separate
+    // referral marker is legacy metadata and never changes the actual discount. Best-effort:
     // при недоступности commerce карта пуста и строки показывают только локальные поля.
     const profiles = await this.commerce.referralProfiles(referrals.map((r) => r.commerceUserId));
     return {
@@ -146,7 +148,7 @@ export class PartnerController {
         return {
           // Commerce identities stay masked: only a short uuid prefix is exposed to partners.
           userMask: `user-${referral.commerceUserId.slice(0, 8)}…`,
-          // Тот же префикс как машинная ссылка для действий над рефералом (смена процента).
+          // Stable masked machine reference retained for the expand-only API.
           userRef: referral.commerceUserId.slice(0, 8),
           attributedAt: referral.attributedAt.toISOString(),
           spendNano: referral.spendNano.toString(),
@@ -164,10 +166,8 @@ export class PartnerController {
   }
 
   /**
-   * Смена партнёрской ставки ДЕЙСТВУЮЩЕМУ рефералу: перевод обычного b2c-реферала на партнёрскую
-   * ставку (floor>0) или изменение уже действующего процента; 0 — снять ставку (обратно на тиры).
-   * Требует права давать скидку; процент ≤ собственного потолка партнёра (админского лимита).
-   * Реферал остаётся b2c: его кабинет сам переключится на «партнёрскую ставку» (floor>0).
+   * Expand-only legacy marker writer. It never changes the referral's scalar/provider price;
+   * `pricingAffected:false` is returned explicitly so API consumers cannot infer otherwise.
    */
   @Post("referrals/:userRef/discount")
   @HttpCode(200)
@@ -177,23 +177,23 @@ export class PartnerController {
     @Body() body: unknown,
   ): Promise<unknown> {
     if (!current.partner.referralDiscountEnabled) {
-      throw new ForbiddenException("referral discount is not enabled for this account");
+      throw new ForbiddenException("legacy referral marker is not enabled for this account");
     }
     const ref = referralUserRefSchema.safeParse(userRef);
     if (!ref.success) throw new BadRequestException("invalid referral reference");
     const parsed = setReferralDiscountSchema.safeParse(body ?? {});
-    if (!parsed.success) throw new BadRequestException("invalid discount");
-    // Потолок партнёра — как у discount-links: не выше выданного админом referral_discount_bps.
+    if (!parsed.success) throw new BadRequestException("invalid legacy referral marker");
+    // Preserve the historical per-partner marker ceiling.
     if (parsed.data.discountBps > current.partner.referralDiscountBps) {
-      throw new UnprocessableEntityException("discount exceeds your allowed maximum");
+      throw new UnprocessableEntityException("marker exceeds your allowed maximum");
     }
     const commerceUserId = await resolveReferredUserByPrefix(this.database, current.partner.id, ref.data);
     if (commerceUserId === null) throw new NotFoundException("referral not found");
     if (commerceUserId === "ambiguous") throw new UnprocessableEntityException("ambiguous referral reference");
     const result = await this.commerce.setReferralDiscount(commerceUserId, parsed.data.discountBps, "sales-partner");
-    // applied=false с multiplierBp=null — профиль не подходит (b2b / аккаунт ещё не активирован).
+    // applied=false with multiplierBp=null means a non-B2C or missing profile.
     if (!result.applied && result.multiplierBp === null) {
-      throw new UnprocessableEntityException("this referral is not eligible for a partner rate (b2b or inactive account)");
+      throw new UnprocessableEntityException("this referral cannot store the legacy B2C marker");
     }
     await insertSalesAudit(this.database, {
       actorType: "partner", actorId: current.partner.id,
@@ -204,6 +204,7 @@ export class PartnerController {
       userRef: ref.data,
       discountBps: parsed.data.discountBps,
       multiplierBp: result.multiplierBp,
+      pricingAffected: false,
     };
   }
 
@@ -252,8 +253,8 @@ export class PartnerController {
     // платформы). По умолчанию — своя ставка. Более широкий диапазон — только у админа.
     const cap = current.partner.commissionBps;
     const commissionBps = Math.min(parsed.data.commissionBps ?? cap, cap);
-    // Каскад права давать скидку: только партнёр, у кого право есть, может включить его суб-сейлзу,
-    // и не больше собственной скидки (нельзя раздать больше, чем разрешено самому). Нет права → нет.
+    // Preserve the legacy marker permission through existing invites without presenting it as a
+    // price capability. Current UI does not grant or expose this field.
     const canGrantDiscount = current.partner.referralDiscountEnabled;
     const subDiscountEnabled = canGrantDiscount && (parsed.data.referralDiscountEnabled ?? false);
     const subDiscountBps = subDiscountEnabled
@@ -289,9 +290,8 @@ export class PartnerController {
     }
   }
 
-  // Персональная скидка выдаётся ТОЛЬКО через одноразовые discount-links (см. ниже), лимит которых —
-  // потолок referral_discount_bps, выставляемый АДМИНОМ. Партнёрского эндпоинта менять свой потолок
-  // нет намеренно: иначе партнёр мог бы поднять себе скидку до глобальных 90% мимо лимита админа.
+  // Legacy marker endpoints remain for expand-only compatibility. Current UI does not market or
+  // expose them as a discount because they do not reach the pricing authority.
 
   @Get("invites")
   @Header("Cache-Control", "no-store")
@@ -349,9 +349,10 @@ export class PartnerController {
       maxValueNano: current.partner.promoMaxValueNano.toString(),
       maxCount: current.partner.promoMaxCount,
       redeemUrl: `${new URL(this.config.get("PUBLIC_MAIN_SITE_URL", { infer: true })).origin}/dashboard?promo=`,
-      // Кабинет показывает, можно ли вешать спец-скидку и её максимум (право + макс партнёра).
+      // Retained marker permission/ceiling for old clients. It is not a price capability.
       discountAllowed: current.partner.referralDiscountEnabled,
       maxDiscountBps: current.partner.referralDiscountBps,
+      pricingAffected: false,
       items: codes.map((c) => ({
         id: c.id,
         code: c.code,
@@ -378,7 +379,14 @@ export class PartnerController {
           valueNano,
           ...(parsed.data.discountBps !== undefined ? { discountBps: parsed.data.discountBps } : {}),
         });
-        return { id: promo.id, code: promo.code, valueNano: promo.valueNano.toString(), discountBps: promo.discountBps, status: promo.status };
+        return {
+          id: promo.id,
+          code: promo.code,
+          valueNano: promo.valueNano.toString(),
+          discountBps: promo.discountBps,
+          pricingAffected: false,
+          status: promo.status,
+        };
       } catch (error) {
         if (error instanceof PromoCodeCollisionError && attempt < 5) continue;
         if (error instanceof PromoNotAllowedError) throw new ForbiddenException(error.message);
@@ -388,7 +396,7 @@ export class PartnerController {
     }
   }
 
-  /** Персональные одноразовые ссылки со скидкой (нужно право давать скидку). */
+  /** Legacy one-time attribution links; their bps metadata does not affect pricing. */
   @Get("discount-links")
   @Header("Cache-Control", "no-store")
   async listLinks(@CurrentAuth() current: RequestAuth): Promise<unknown> {
@@ -397,6 +405,7 @@ export class PartnerController {
     return {
       enabled: current.partner.referralDiscountEnabled,
       maxDiscountBps: current.partner.referralDiscountBps,
+      pricingAffected: false,
       items: links.map((l) => ({
         id: l.id,
         code: l.code,
@@ -414,10 +423,10 @@ export class PartnerController {
   @HttpCode(201)
   async createLink(@CurrentAuth() current: RequestAuth, @Body() body: unknown): Promise<unknown> {
     if (!current.partner.referralDiscountEnabled) {
-      throw new ForbiddenException("referral discount is not enabled for this account");
+      throw new ForbiddenException("legacy referral marker is not enabled for this account");
     }
     const parsed = createDiscountLinkSchema.safeParse(body ?? {});
-    if (!parsed.success) throw new BadRequestException("invalid discount (1–90%)");
+    if (!parsed.success) throw new BadRequestException("invalid legacy marker (1–95%)");
     const origin = new URL(this.config.get("PUBLIC_MAIN_SITE_URL", { infer: true })).origin;
     for (let attempt = 0; ; attempt += 1) {
       try {
@@ -427,7 +436,14 @@ export class PartnerController {
           discountBps: parsed.data.discountBps,
           note: parsed.data.note ?? null,
         });
-        return { id: link.id, code: link.code, url: `${origin}/?ref=${link.code}`, discountBps: link.discountBps, note: link.note };
+        return {
+          id: link.id,
+          code: link.code,
+          url: `${origin}/?ref=${link.code}`,
+          discountBps: link.discountBps,
+          note: link.note,
+          pricingAffected: false,
+        };
       } catch (error) {
         if (error instanceof DiscountLinkCollisionError && attempt < 5) continue;
         if (error instanceof DiscountLinkNotAllowedError) throw new ForbiddenException(error.message);

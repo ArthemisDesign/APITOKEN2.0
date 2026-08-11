@@ -712,21 +712,20 @@ export async function convertCustomerToBusiness(database: Database, input: {
 }
 
 /**
- * Записывает обещанную партнёром ставку как sales-атрибуцию для B2C. Это не price authority:
- * функция не меняет multiplier_bp и не создаёт engine_pricing_jobs. floorBps=0 снимает запись;
- * B2B имеет отдельные договорные условия и сюда не входит. Идемпотентно.
+ * Stores the legacy Sales attribution marker for B2C. This is not a promised or applied price:
+ * the function never changes multiplier_bp or creates engine_pricing_jobs. Zero clears the marker;
+ * B2B negotiated pricing is out of scope. Idempotent.
  */
 export async function setReferralFloor(database: Database, input: {
   userId: string;
-  floorBps: number; // 0..9500 (скидка ≤ 95%); 0 = снять пол
+  floorBps: number; // 0..9500 legacy attribution marker; 0 clears it
   actorId: string;
-  // Явная АБСОЛЮТНАЯ установка пола (партнёр/админ меняет процент действующему рефералу):
-  // обходит монотонный GREATEST и позволяет ПОНИЗИТЬ floor. Автоматические пути (signup,
-  // sales-фид, промо) обязаны оставлять override=false — иначе replay затрёт лучшую скидку.
+  // Explicit absolute replacement used by retained admin/partner routes. Automatic signup/feed/
+  // promo replays leave override=false so an older replay cannot replace a larger stored marker.
   override?: boolean;
 }): Promise<{ applied: boolean; multiplierBp: number | null }> {
   if (!Number.isInteger(input.floorBps) || input.floorBps < 0 || input.floorBps > 9500) {
-    throw new RangeError("referral floor must be an integer between 0 and 9500 bps (≤95%)");
+    throw new RangeError("referral marker must be an integer between 0 and 9500 bps");
   }
   const client = await database.pool.connect();
   try {
@@ -741,16 +740,15 @@ export async function setReferralFloor(database: Database, input: {
       FOR UPDATE OF cp
     `, [input.userId]);
     const row = result.rows[0];
-    // Пол применяется только к обычным b2c-аккаунтам; business-b2b не трогаем (своя прайс-логика).
+    // The legacy marker exists only on B2C profiles; B2B has negotiated pricing and no marker.
     if (!row || row.customer_type !== "b2c") {
       await client.query("ROLLBACK");
       return { applied: false, multiplierBp: null };
     }
-    // «Пол» — партнёрская АТРИБУЦИЯ обещанной ставки, а не цена. Цена B2C задаётся сохранённым
-    // scalar и provider overrides, поэтому эта функция их не двигает. Колонка одна, но пишут
-    // в неё три независимых источника
-    // (промо, партнёрская ссылка, sales-фид) — берём максимум (лучшее клиенту), кроме явного
-    // сброса/override. floorBps===0 — единственный путь ЯВНОГО сброса (напр. отзыв).
+    // This is a partner-attribution marker, not a promised or applied price. B2C pricing is the
+    // stored scalar plus provider overrides, so this function never moves either. Signup, promo
+    // and Sales-feed replays share the column and converge monotonically; only an explicit
+    // override or zero can lower/clear it.
     const effectiveFloor = input.override === true
       ? input.floorBps
       : input.floorBps === 0 ? 0 : Math.max(row.referral_floor_bps, input.floorBps);

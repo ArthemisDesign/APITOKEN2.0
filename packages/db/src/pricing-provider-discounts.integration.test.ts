@@ -5,6 +5,7 @@ import {
   claimNextPricingJob,
   confirmPricingJob,
   recoverStalePricingJobs,
+  setReferralFloor,
   setBusinessPricingBundle,
 } from "./pricing.js";
 import { listCustomerProviderDiscounts } from "./pricing-discounts.js";
@@ -121,6 +122,41 @@ describe.runIf(Boolean(connectionString))("negotiated B2B terms commit as one fa
     await expect(setBusinessPricingBundle(db, {
       userId, actorId: "admin-1", reason: "nothing",
     })).rejects.toThrow(/empty/);
+  });
+
+  it("keeps the legacy referral marker out of the live price and delivery queue", async () => {
+    await db.pool.query(
+      `UPDATE customer_profiles
+       SET customer_type = 'b2c', current_tier = 1, multiplier_bp = 5000
+       WHERE user_id = $1`,
+      [userId],
+    );
+    await db.pool.query("UPDATE engine_accounts SET mult_bp = 5000 WHERE user_id = $1", [userId]);
+
+    await expect(setReferralFloor(db, {
+      userId,
+      floorBps: 9_500,
+      actorId: "sales-referral",
+    })).resolves.toEqual({ applied: true, multiplierBp: null });
+
+    const state = await db.pool.query<{
+      referral_floor_bps: number;
+      multiplier_bp: number;
+      engine_mult_bp: number;
+      jobs: string;
+    }>(`
+      SELECT cp.referral_floor_bps, cp.multiplier_bp, ea.mult_bp AS engine_mult_bp,
+             (SELECT count(*) FROM engine_pricing_jobs WHERE user_id = cp.user_id)::text AS jobs
+      FROM customer_profiles cp
+      JOIN engine_accounts ea ON ea.user_id = cp.user_id
+      WHERE cp.user_id = $1
+    `, [userId]);
+    expect(state.rows[0]).toEqual({
+      referral_floor_bps: 9_500,
+      multiplier_bp: 5_000,
+      engine_mult_bp: 5_000,
+      jobs: "0",
+    });
   });
 
   // Аренда джобы должна фехтоваться: воркер, у которого lease отобрали, всё ещё жив и может

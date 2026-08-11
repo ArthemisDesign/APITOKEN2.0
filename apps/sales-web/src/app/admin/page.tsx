@@ -505,8 +505,6 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
   const [username, setUsername] = useState("");
   const [commissionPct, setCommissionPct] = useState("");
   const [subPct, setSubPct] = useState("");
-  const [discountEnabled, setDiscountEnabled] = useState(false);
-  const [discountPct, setDiscountPct] = useState("");
   const [promoCount, setPromoCount] = useState("");
   const [promoMaxUsd, setPromoMaxUsd] = useState("");
   const [busy, setBusy] = useState(false);
@@ -538,17 +536,12 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
     // но не число → ошибка. undefined = омит, null = невалидно.
     const commissionBps = pctToBpsOptional(commissionPct);
     const subCommissionBps = pctToBpsOptional(subPct);
-    const discountBps = pctToBpsOptional(discountPct);
-    if (commissionBps === null || subCommissionBps === null || discountBps === null) {
+    if (commissionBps === null || subCommissionBps === null) {
       setError("Percents must be numbers like 10 or 12.5.");
       return;
     }
     if ((commissionBps ?? 0) > 10000 || (subCommissionBps ?? 0) > 10000) {
       setError("Commission percent cannot exceed 100%.");
-      return;
-    }
-    if (discountEnabled && (discountBps ?? 0) > 9500) {
-      setError("Referral discount cannot exceed 95%.");
       return;
     }
     const count = promoCount.trim() === "" ? 0 : Number(promoCount);
@@ -566,8 +559,10 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
           telegramUsername: clean,
           ...(commissionBps !== undefined ? { commissionBps } : {}),
           ...(subCommissionBps !== undefined ? { subCommissionBps } : {}),
-          referralDiscountEnabled: discountEnabled,
-          referralDiscountBps: discountEnabled ? (discountBps ?? 0) : 0,
+          // Legacy marker rights are retained in the API for old rows but are not granted by the
+          // current product: they never reach the Commerce/engine price authority.
+          referralDiscountEnabled: false,
+          referralDiscountBps: 0,
           promoMaxCount: count,
           promoMaxValueUsd: maxUsd,
         },
@@ -627,15 +622,6 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
               placeholder="10"
             />
           </Field>
-          <Field label="Referral discount %" hint={discountEnabled ? "Floor: their users never pay above this · max 95%" : "Enable below to allow this partner to give a discount"}>
-            <Input
-              value={discountPct}
-              onChange={(e) => setDiscountPct(e.target.value.replace(/[^\d.]/g, ""))}
-              inputMode="decimal"
-              placeholder="0"
-              disabled={!discountEnabled}
-            />
-          </Field>
           <Field label="Promo codes (count)" hint="0 = no promo access">
             <Input
               value={promoCount}
@@ -653,14 +639,6 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
             />
           </Field>
         </div>
-        <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, fontSize: 13, cursor: "pointer" }}>
-          <input
-            type="checkbox"
-            checked={discountEnabled}
-            onChange={(e) => setDiscountEnabled(e.target.checked)}
-          />
-          Allow this partner to give their referrals a discount (they stay normal accounts; the discount is a price floor)
-        </label>
         <div className="row-actions" style={{ marginTop: 14, alignItems: "center", gap: 12 }}>
           <Button onClick={create} loading={busy}>
             Create invite
@@ -669,7 +647,6 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
             {promoOn
               ? `Promo: up to ${promoCount} code(s), max $${promoMaxUsd} each.`
               : "Promo: off (set both count and max $ to enable)."}
-            {discountEnabled ? ` · Discount right: on (${discountPct || "0"}%).` : " · Discount right: off."}
           </span>
         </div>
       </Card>
@@ -686,7 +663,7 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
                 <th>For</th>
                 <th>Commission</th>
                 <th>Sub</th>
-                <th>Ref. discount</th>
+                <th>Legacy marker</th>
                 <th>Promo</th>
                 <th>Expires</th>
                 <th>Status</th>
