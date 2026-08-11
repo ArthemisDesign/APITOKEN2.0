@@ -163,6 +163,24 @@ preflight_api() {
   validate_commerce_release "$COMMERCE_RELEASE_ROOT" "$API_TARGET" "$(basename -- "$API_TARGET")"
 }
 
+preflight_compatibility() {
+  # Check every transitional pair before moving either symlink. A full rollback cannot smuggle an
+  # unsafe old-commerce/current-engine window through a compatible target pair; use an engine-first
+  # bridge rollout when the old commerce contract requires it.
+  if [[ "$ROLLBACK_ENGINE" == "1" ]]; then
+    require_engine_release_compatible_with_active_commerce \
+      "$ENGINE_TARGET" "$COMMERCE_RELEASE_ROOT"
+  fi
+  if [[ "$ROLLBACK_API" == "1" ]]; then
+    require_commerce_release_compatible_with_active_engines \
+      "$API_TARGET" "$ENGINE_RELEASE_ROOT"
+  fi
+  if [[ "$ROLLBACK_ENGINE" == "1" && "$ROLLBACK_API" == "1" ]]; then
+    require_engine_commerce_release_pair_compatible "$API_TARGET" "$ENGINE_TARGET"
+    log "selected commerce and engine rollback targets are mutually compatible"
+  fi
+}
+
 activate_rollback_links() {
   if [[ "$ROLLBACK_ENGINE" == "1" && "$ENGINE_TARGET" != "$ENGINE_ORIGINAL" ]]; then
     if [[ -n "$ENGINE_ORIGINAL" ]]; then
@@ -216,6 +234,7 @@ fi
 if [[ "$ROLLBACK_API" == "1" ]]; then
   preflight_api
 fi
+preflight_compatibility
 
 begin_activation recovery_restart_selected_services
 activate_rollback_links

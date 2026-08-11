@@ -710,6 +710,29 @@ slot under the new definition and preserves the old running slot as the rollback
 
 ## Rollback
 
+Commerce/engine rollback is capability-gated before any migration, release-link mutation or slot
+cutover. New releases publish `.engine-commerce-compatibility-v1`; known markerless releases in the
+scalar-pricing transition window are classified by exact Git ancestry, and anything older or
+unreadable is rejected. The controller compares targets with the immutable releases behind every
+active API, worker and Control API PID, not with `current`, because link selection precedes
+blue-green process admission.
+
+The supported pricing HTTP generations are:
+
+| Commerce process | Engine process | Result |
+|---|---|---|
+| scalar-only | scalar-only | allowed |
+| historical policy-only | scalar-only | rejected |
+| scalar-only | historical policy-only | rejected |
+| policy-only or policy+scalar | bridge providing policy+scalar | allowed |
+
+Consequently, a rollback from current scalar-only binaries to historical commerce that still calls
+the retired policy endpoints must be engine-first: select the known bridge engine, complete and
+verify `engine-bluegreen.sh`, then select and cut over commerce. A combined direct rollback is
+correctly rejected because its intermediate old-commerce/current-engine pair would be unsafe even
+when the two final targets are mutually compatible. Never bypass the guard by moving release links
+manually.
+
 Engine rollback to `previous`:
 
 ```bash

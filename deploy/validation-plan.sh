@@ -135,6 +135,7 @@ policy_sha256=$(
     deploy/typescript-build-contexts.sh \
     deploy/typescript-test-groups.sh \
     deploy/commerce-release-bundle.sh \
+    deploy/engine-commerce-compatibility.contract \
     deploy/release-tree-digest.mjs; do
     blob=$(git -c safe.directory="$REPO" -C "$REPO" rev-parse "$TARGET:$path" 2>/dev/null \
       || printf 'missing')

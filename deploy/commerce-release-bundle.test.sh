@@ -16,7 +16,9 @@ fail() {
 
 FIXTURE=$TEMP/candidate
 BIN=$TEMP/bin
-mkdir -p "$BIN" "$FIXTURE"
+mkdir -p "$BIN" "$FIXTURE/deploy"
+printf 'format=1\ncommerce_requires=scalar-pricing-v1\nengine_provides=scalar-pricing-v1\n' \
+  >"$FIXTURE/deploy/engine-commerce-compatibility.contract"
 for relative_dir in \
   apps/api \
   apps/worker \
@@ -85,6 +87,7 @@ built=$(bash "$ROOT/deploy/commerce-release-bundle.sh" "$FIXTURE")
 BUNDLE=$FIXTURE/.deploy-artifacts/commerce-release
 [[ $built == "$BUNDLE" && -d $BUNDLE ]] || fail "builder did not publish the fixed artifact"
 for required in \
+  .engine-commerce-compatibility-v1 \
   .release-bundle-format \
   apps/api/dist/main.js \
   apps/worker/dist/main.js \
@@ -97,6 +100,9 @@ for required in \
   [[ -e $BUNDLE/$required || -L $BUNDLE/$required ]] \
     || fail "compact bundle omitted $required"
 done
+cmp -s "$FIXTURE/deploy/engine-commerce-compatibility.contract" \
+  "$BUNDLE/.engine-commerce-compatibility-v1" \
+  || fail "compact bundle changed the engine/commerce compatibility contract"
 [[ ! -e $BUNDLE/apps/api/src ]] || fail "source tree leaked into compact bundle"
 [[ ! -w $BUNDLE && ! -w $BUNDLE/apps/api/dist/main.js ]] \
   || fail "published compact bundle is writable"

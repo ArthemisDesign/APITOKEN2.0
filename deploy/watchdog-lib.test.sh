@@ -1460,6 +1460,25 @@ for flag in typescript_required typescript_full rust_required static_required en
     || wd_die "unknown-path validation plan did not fail closed for $flag"
 done
 
+mkdir -p "$validation_repo/deploy"
+printf 'format=1\ncommerce_requires=scalar-pricing-v1\nengine_provides=scalar-pricing-v1\n' \
+  >"$validation_repo/deploy/engine-commerce-compatibility.contract"
+git -C "$validation_repo" add deploy/engine-commerce-compatibility.contract
+git -C "$validation_repo" commit --quiet -m compatibility-contract
+validation_compatibility=$(git -C "$validation_repo" rev-parse HEAD)
+compatibility_plan=$(bash "$ROOT/deploy/validation-plan.sh" "$validation_repo" \
+  "$validation_compatibility" "$validation_unknown" "$validation_unknown" \
+  "$validation_unknown" "$validation_unknown" "$validation_unknown")
+for flag in typescript_required rust_required static_required engine_artifacts_required; do
+  [[ $(plan_value "$compatibility_plan" "$flag") == 1 ]] \
+    || wd_die "engine/commerce compatibility contract did not enable $flag"
+done
+[[ $(plan_value "$compatibility_plan" typescript_full) == 0 ]] \
+  || wd_die "engine/commerce compatibility contract unnecessarily selected unrelated TypeScript contexts"
+[[ $(wd_typescript_components_for_range "$validation_repo" "$validation_unknown" \
+  "$validation_compatibility" 0) == commerce ]] \
+  || wd_die "engine/commerce compatibility contract did not build the commerce release bundle"
+
 # Package edits stay filterable, while shared inputs, selector changes, and deleted package paths
 # force a complete TypeScript workspace check.
 mkdir -p "$validation_repo/apps/example"

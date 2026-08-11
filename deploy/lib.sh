@@ -424,11 +424,276 @@ validate_release_marker() {
   local directory=$1
   local expected_sha=$2
   local marker="$directory/.release-sha"
-  local actual
+  local actual extra
 
-  [[ -f "$marker" ]] || die "release lacks marker: $marker"
-  IFS= read -r actual <"$marker" || die "cannot read release marker: $marker"
+  [[ -f "$marker" && ! -L "$marker" ]] || die "release lacks a safe marker: $marker"
+  {
+    IFS= read -r actual || die "cannot read release marker: $marker"
+    if IFS= read -r extra; then
+      die "release marker must contain exactly one line: $marker"
+    fi
+  } <"$marker"
   [[ "$actual" == "$expected_sha" ]] || die "release marker mismatch in $directory: expected $expected_sha, found $actual"
+}
+
+ENGINE_COMMERCE_COMPATIBILITY_MARKER=.engine-commerce-compatibility-v1
+LEGACY_SCALAR_ENGINE_FLOOR_SHA=2563b04328ce5911f3e7893df298da15535f5e95
+LEGACY_SCALAR_COMMERCE_FLOOR_SHA=261900596666763bee0f5795d4a77ebfe144ddf8
+LEGACY_SCALAR_ONLY_COMMERCE_SHA=e725b51ec6a166a40b8b232f3cc3a0617ba6d9b6
+LEGACY_SCALAR_ONLY_ENGINE_SHA=a6612450dfa521ee236d2ab0ac03a64e15c86557
+
+validate_compatibility_capability_list() {
+  local value=$1 label=$2 capability seen=,
+  local IFS=,
+
+  [[ "$value" =~ ^[a-z0-9]+(-[a-z0-9]+)*(,[a-z0-9]+(-[a-z0-9]+)*)*$ ]] \
+    || die "$label must be a non-empty comma-separated capability list"
+  for capability in $value; do
+    [[ "$seen" != *",$capability,"* ]] || die "duplicate capability $capability in $label"
+    seen+="$capability,"
+  done
+}
+
+# This file is a release-bound cross-component contract, not shell input. Parse its closed grammar
+# without sourcing it so a malformed or unexpectedly extended marker can never execute code or be
+# treated as a compatible generation.
+validate_engine_commerce_compatibility_contract() {
+  local marker=$1 line value
+  local format_seen=0 commerce_seen=0 engine_seen=0
+
+  [[ -f "$marker" && ! -L "$marker" ]] \
+    || die "engine/commerce compatibility contract is missing or unsafe: $marker"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      format=*)
+        (( format_seen == 0 )) || die "duplicate format in compatibility contract $marker"
+        value=${line#format=}
+        [[ "$value" == 1 ]] || die "unsupported engine/commerce compatibility format in $marker: $value"
+        format_seen=1
+        ;;
+      commerce_requires=*)
+        (( commerce_seen == 0 )) || die "duplicate commerce_requires in compatibility contract $marker"
+        value=${line#commerce_requires=}
+        validate_compatibility_capability_list "$value" "commerce_requires in $marker"
+        commerce_seen=1
+        ;;
+      engine_provides=*)
+        (( engine_seen == 0 )) || die "duplicate engine_provides in compatibility contract $marker"
+        value=${line#engine_provides=}
+        validate_compatibility_capability_list "$value" "engine_provides in $marker"
+        engine_seen=1
+        ;;
+      *) die "unknown or malformed line in compatibility contract $marker: $line" ;;
+    esac
+  done <"$marker"
+  (( format_seen == 1 && commerce_seen == 1 && engine_seen == 1 )) \
+    || die "compatibility contract must define format, commerce_requires, and engine_provides exactly once: $marker"
+}
+
+compatibility_contract_value() {
+  local marker=$1 key=$2 line
+  validate_engine_commerce_compatibility_contract "$marker"
+  while IFS= read -r line; do
+    case "$line" in
+      "$key="*) printf '%s\n' "${line#*=}"; return 0 ;;
+    esac
+  done <"$marker"
+  die "compatibility contract $marker has no $key"
+}
+
+compatibility_history_repository() {
+  local repository=${RELEASE_COMPATIBILITY_REPO:-${SOURCE_REPO:-/opt/apitoken/repo}}
+  [[ -d "$repository" && ( -d "$repository/.git" || -f "$repository/.git" ) ]] \
+    || die "Git history for markerless release compatibility is unavailable: $repository"
+  printf '%s\n' "$repository"
+}
+
+compatibility_commit_is_ancestor() {
+  local ancestor=$1 descendant=$2 repository
+  repository=$(compatibility_history_repository)
+  git -c safe.directory="$repository" -C "$repository" merge-base --is-ancestor \
+    "$ancestor" "$descendant"
+}
+
+validate_legacy_compatibility_commit() {
+  local sha=$1 repository
+  validate_sha "$sha"
+  repository=$(compatibility_history_repository)
+  git -c safe.directory="$repository" -C "$repository" cat-file -e "$sha^{commit}" 2>/dev/null \
+    || die "Git history cannot classify markerless release $sha"
+}
+
+legacy_commerce_requirements() {
+  local sha=$1
+  validate_legacy_compatibility_commit "$sha"
+  compatibility_commit_is_ancestor "$LEGACY_SCALAR_ENGINE_FLOOR_SHA" "$sha" \
+    || die "markerless commerce release predates the classified compatibility floor: $sha"
+  if compatibility_commit_is_ancestor "$LEGACY_SCALAR_ONLY_COMMERCE_SHA" "$sha"; then
+    printf 'scalar-pricing-v1\n'
+  elif compatibility_commit_is_ancestor "$LEGACY_SCALAR_COMMERCE_FLOOR_SHA" "$sha"; then
+    printf 'policy-pricing-v1,scalar-pricing-v1\n'
+  else
+    printf 'policy-pricing-v1\n'
+  fi
+}
+
+legacy_engine_provisions() {
+  local sha=$1
+  validate_legacy_compatibility_commit "$sha"
+  compatibility_commit_is_ancestor "$LEGACY_SCALAR_ENGINE_FLOOR_SHA" "$sha" \
+    || die "markerless engine release predates the classified compatibility floor: $sha"
+  if compatibility_commit_is_ancestor "$LEGACY_SCALAR_ONLY_ENGINE_SHA" "$sha"; then
+    printf 'scalar-pricing-v1\n'
+  else
+    printf 'policy-pricing-v1,scalar-pricing-v1\n'
+  fi
+}
+
+release_commerce_requirements() {
+  local release=$1 marker="$1/$ENGINE_COMMERCE_COMPATIBILITY_MARKER"
+  if [[ -e "$marker" || -L "$marker" ]]; then
+    compatibility_contract_value "$marker" commerce_requires
+  else
+    legacy_commerce_requirements "$(basename -- "$release")"
+  fi
+}
+
+release_engine_provisions() {
+  local release=$1 marker="$1/$ENGINE_COMMERCE_COMPATIBILITY_MARKER"
+  if [[ -e "$marker" || -L "$marker" ]]; then
+    compatibility_contract_value "$marker" engine_provides
+  else
+    legacy_engine_provisions "$(basename -- "$release")"
+  fi
+}
+
+capability_list_contains() {
+  local capabilities=$1 expected=$2 capability
+  local IFS=,
+  for capability in $capabilities; do
+    [[ "$capability" == "$expected" ]] && return 0
+  done
+  return 1
+}
+
+require_engine_commerce_release_pair_compatible() {
+  local commerce_release=$1 engine_release=$2 requirements provisions capability
+  requirements=$(release_commerce_requirements "$commerce_release") \
+    || die "cannot classify commerce compatibility for $commerce_release"
+  provisions=$(release_engine_provisions "$engine_release") \
+    || die "cannot classify engine compatibility for $engine_release"
+  local IFS=,
+  for capability in $requirements; do
+    capability_list_contains "$provisions" "$capability" || die \
+      "incompatible releases: commerce $(basename -- "$commerce_release") requires $capability, but engine $(basename -- "$engine_release") provides only $provisions"
+  done
+}
+
+commerce_compatibility_units() {
+  printf '%s\n' \
+    apitoken-api.service \
+    apitoken-api@3000.service \
+    apitoken-api@3001.service \
+    apitoken-worker.service
+}
+
+engine_control_compatibility_units() {
+  printf '%s\n' \
+    claude-api.service \
+    claude-api@8787.service \
+    claude-api@8788.service \
+    claude-api-anthropic@8787.service \
+    claude-api-anthropic@8788.service
+}
+
+ACTIVE_UNIT_RELEASE=
+resolve_active_unit_release() {
+  local role=$1 root=$2 unit=$3 pid runtime release
+  ACTIVE_UNIT_RELEASE=
+  systemctl_raw is-active --quiet "$unit" >/dev/null 2>&1 || return 1
+  pid=$(systemctl_show_value "$unit" MainPID) \
+    || die "cannot resolve MainPID for active compatibility unit $unit"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] \
+    || die "active compatibility unit $unit has invalid MainPID: $pid"
+
+  case "$role" in
+    commerce)
+      runtime=$(realpath -- "/proc/$pid/cwd" 2>/dev/null) \
+        || die "cannot resolve immutable working directory for active unit $unit"
+      release=$(dirname -- "$(dirname -- "$runtime")")
+      [[ "$runtime" == "$release/apps/api" || "$runtime" == "$release/apps/worker" ]] \
+        || die "active commerce unit $unit is not bound to an API/worker release directory: $runtime"
+      path_is_direct_release "$root" "$release" \
+        || die "active commerce unit $unit runs outside direct immutable releases: $runtime"
+      validate_commerce_release "$root" "$release" "$(basename -- "$release")"
+      ;;
+    engine)
+      runtime=$(realpath -- "/proc/$pid/exe" 2>/dev/null) \
+        || die "cannot resolve immutable executable for active unit $unit"
+      release=$(dirname -- "$runtime")
+      [[ "$runtime" == "$release/claude-api" ]] \
+        || die "active engine unit $unit does not run a claude-api release binary: $runtime"
+      path_is_direct_release "$root" "$release" \
+        || die "active engine unit $unit runs outside direct immutable releases: $runtime"
+      validate_engine_release "$root" "$release" "$(basename -- "$release")"
+      ;;
+    *) die "unknown compatibility process role: $role" ;;
+  esac
+  ACTIVE_UNIT_RELEASE=$release
+}
+
+list_active_releases_for_compatibility() {
+  local role=$1 root=$2 unit release seen=,
+  local units
+  case "$role" in
+    commerce) units=$(commerce_compatibility_units) ;;
+    engine) units=$(engine_control_compatibility_units) ;;
+    *) die "unknown compatibility release-list role: $role" ;;
+  esac
+
+  while IFS= read -r unit; do
+    [[ -n "$unit" ]] || continue
+    validate_service_unit "$unit"
+    if resolve_active_unit_release "$role" "$root" "$unit"; then
+      release=$ACTIVE_UNIT_RELEASE
+      if [[ "$seen" != *",$release,"* ]]; then
+        printf '%s\n' "$release"
+        seen+="$release,"
+      fi
+    fi
+  done <<<"$units"
+}
+
+list_active_commerce_releases() {
+  list_active_releases_for_compatibility commerce "$1"
+}
+
+list_active_engine_releases() {
+  list_active_releases_for_compatibility engine "$1"
+}
+
+require_commerce_release_compatible_with_active_engines() {
+  local commerce_release=$1 engine_root=$2 releases engine_release count=0
+  releases=$(list_active_engine_releases "$engine_root") \
+    || die "cannot enumerate active engine releases for compatibility"
+  while IFS= read -r engine_release; do
+    [[ -n "$engine_release" ]] || continue
+    require_engine_commerce_release_pair_compatible "$commerce_release" "$engine_release"
+    count=$((count + 1))
+  done <<<"$releases"
+  log "commerce release $(basename -- "$commerce_release") is compatible with $count active engine release generation(s)"
+}
+
+require_engine_release_compatible_with_active_commerce() {
+  local engine_release=$1 commerce_root=$2 releases commerce_release count=0
+  releases=$(list_active_commerce_releases "$commerce_root") \
+    || die "cannot enumerate active commerce releases for compatibility"
+  while IFS= read -r commerce_release; do
+    [[ -n "$commerce_release" ]] || continue
+    require_engine_commerce_release_pair_compatible "$commerce_release" "$engine_release"
+    count=$((count + 1))
+  done <<<"$releases"
+  log "engine release $(basename -- "$engine_release") is compatible with $count active commerce release generation(s)"
 }
 
 content_studio_runtime_directory() {
@@ -451,6 +716,11 @@ validate_commerce_release() {
   path_is_direct_release "$root" "$directory" || die "invalid commerce release path: $directory"
   [[ -d "$directory" ]] || die "commerce release does not exist: $directory"
   validate_release_marker "$directory" "$expected_sha"
+  if [[ -e "$directory/$ENGINE_COMMERCE_COMPATIBILITY_MARKER" \
+      || -L "$directory/$ENGINE_COMMERCE_COMPATIBILITY_MARKER" ]]; then
+    validate_engine_commerce_compatibility_contract \
+      "$directory/$ENGINE_COMMERCE_COMPATIBILITY_MARKER"
+  fi
   [[ -r "$directory/apps/api/dist/main.js" ]] || die "commerce API artifact is missing: $directory/apps/api/dist/main.js"
   # Releases created before Content Studio existed remain valid rollback anchors. Any release that
   # declares the app must carry its production build artifact.
@@ -480,6 +750,11 @@ validate_engine_release() {
   path_is_direct_release "$root" "$directory" || die "invalid engine release path: $directory"
   [[ -d "$directory" ]] || die "engine release does not exist: $directory"
   validate_release_marker "$directory" "$expected_sha"
+  if [[ -e "$directory/$ENGINE_COMMERCE_COMPATIBILITY_MARKER" \
+      || -L "$directory/$ENGINE_COMMERCE_COMPATIBILITY_MARKER" ]]; then
+    validate_engine_commerce_compatibility_contract \
+      "$directory/$ENGINE_COMMERCE_COMPATIBILITY_MARKER"
+  fi
   [[ -x "$directory/claude-api" ]] || die "engine release binary is missing or not executable: $directory/claude-api"
 }
 

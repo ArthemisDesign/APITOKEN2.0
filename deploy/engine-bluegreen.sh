@@ -26,6 +26,7 @@ PRE_DRAIN_SECONDS=${ENGINE_PRE_DRAIN_SECONDS:-6}
 # incident signal, not a normal outcome.
 DRAIN_WAIT_SECONDS=${ENGINE_DRAIN_WAIT_SECONDS:-900}
 ENGINE_RELEASE_ROOT=${ENGINE_RELEASE_ROOT:-/srv/claude-api/releases}
+COMMERCE_RELEASE_ROOT=${COMMERCE_RELEASE_ROOT:-/opt/apitoken/releases}
 DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}
 POSTGRES_ENV=${ENGINE_POSTGRES_ENV:-/srv/claude-api/data/engine-postgres.env}
 CADDY_CONFIG=${CADDY_CONFIG:-/etc/caddy/Caddyfile}
@@ -793,6 +794,7 @@ validate_service_unit "$(slot_unit 8788)"
 validate_service_unit "$(legacy_slot_unit 8787)"
 validate_service_unit "$(legacy_slot_unit 8788)"
 ENGINE_RELEASE_ROOT=$(canonicalize_release_root "$ENGINE_RELEASE_ROOT" /srv/claude-api engine)
+COMMERCE_RELEASE_ROOT=$(canonicalize_release_root "$COMMERCE_RELEASE_ROOT" /opt/apitoken commerce)
 
 log "preflighting PostgreSQL engine blue-green cutover (dry-run=$DRY_RUN target=${REQUESTED_TARGET_PORT:-auto})"
 acquire_deploy_lock "$DEPLOY_LOCK_FILE"
@@ -832,6 +834,8 @@ fi
 CURRENT_RELEASE=$(required_current_release_path "$ENGINE_RELEASE_ROOT")
 validate_release_marker "$CURRENT_RELEASE" "$(basename -- "$CURRENT_RELEASE")"
 [[ -x "$CURRENT_RELEASE/claude-api" ]] || die "current engine binary is missing"
+require_engine_release_compatible_with_active_commerce \
+  "$CURRENT_RELEASE" "$COMMERCE_RELEASE_ROOT"
 [[ -f "$CURRENT_RELEASE/$PROVIDER_CAPABILITY_MARKER" \
     && ! -L "$CURRENT_RELEASE/$PROVIDER_CAPABILITY_MARKER" ]] \
   || die "current engine release lacks the fixed-provider rollback capability"

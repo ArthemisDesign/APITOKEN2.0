@@ -30,6 +30,7 @@ trap cleanup EXIT
 [[ ! -e $STAGE && ! -L $STAGE ]] || fail "temporary artifact path already exists: $STAGE"
 
 required_files=(
+  deploy/engine-commerce-compatibility.contract
   package.json
   pnpm-lock.yaml
   pnpm-workspace.yaml
@@ -62,6 +63,8 @@ done
 mkdir -p -- "$STAGE"
 cp -- "$CANDIDATE/package.json" "$CANDIDATE/pnpm-lock.yaml" \
   "$CANDIDATE/pnpm-workspace.yaml" "$STAGE/"
+cp -- "$CANDIDATE/deploy/engine-commerce-compatibility.contract" \
+  "$STAGE/.engine-commerce-compatibility-v1"
 
 runtime_projects=(
   apps/api

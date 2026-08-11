@@ -11,6 +11,7 @@ Production releases are addressed by the full lowercase 40-character Git commit 
     ├── <sha>/                                 compact tested production bundle
     │   ├── .release-sha
     │   ├── .release-bundle-format
+    │   ├── .engine-commerce-compatibility-v1
     │   ├── node_modules/                      one shared production pnpm virtual store
     │   ├── apps/api/dist/main.js
     │   ├── apps/worker/dist/main.js
@@ -62,6 +63,7 @@ units are observed as live releases exactly like the other managed units.
 /srv/claude-api/releases/
 ├── <sha>/
 │   ├── .release-sha
+│   ├── .engine-commerce-compatibility-v1
 │   └── claude-api                             executable release binary
 ├── current -> /srv/claude-api/releases/<active-sha>
 └── previous -> /srv/claude-api/releases/<prior-sha>
@@ -83,6 +85,43 @@ incarnations. KIMI mirrors that shape: `claude-api-kimi@8804/8805` run the same 
 disables all KIMI incarnations, and both units pin `CLAUDE_API_KIMI_ENABLED=1` argv-level so the
 plane's on/off state lives only in reviewed unit changes.
 `claude-api.service` exists only as the bridge through the first cutover and is disabled afterward.
+
+## Engine/commerce compatibility contract
+
+Every newly assembled commerce and engine release carries the same reviewed source contract from
+`deploy/engine-commerce-compatibility.contract` as `.engine-commerce-compatibility-v1`. It is data, not
+shell input, and has a closed three-line grammar:
+
+```text
+format=1
+commerce_requires=scalar-pricing-v1
+engine_provides=scalar-pricing-v1
+```
+
+Capability lists are non-empty comma-separated lowercase identifiers. Duplicate keys,
+capabilities, unknown lines, unsafe symlinks and unsupported formats fail release validation. The
+commerce value declares every engine HTTP pricing generation that its API and worker require; the
+engine value declares every generation served by its Control API. Compatibility is set inclusion:
+all commerce requirements must occur in the engine provision list.
+
+The deploy, rollback and both blue-green controllers check every transitional pair before a link
+mutation, migration or process cutover. They resolve active commerce API/worker releases from
+`/proc/<MainPID>/cwd` and active Control API releases from `/proc/<MainPID>/exe`, validate each as a
+direct immutable release with an exact `.release-sha`, and deduplicate generations. A moved
+`current` symlink is deliberately not evidence that a target process is serving.
+
+Markerless rollback anchors are classified from verified Git ancestry in `/opt/apitoken/repo`:
+
+| First included commit | Commerce requirements | Engine provisions |
+|---|---|---|
+| `2563b04328ce5911f3e7893df298da15535f5e95` | `policy-pricing-v1` | `policy-pricing-v1,scalar-pricing-v1` |
+| `261900596666763bee0f5795d4a77ebfe144ddf8` | `policy-pricing-v1,scalar-pricing-v1` | unchanged bridge |
+| `e725b51ec6a166a40b8b232f3cc3a0617ba6d9b6` | `scalar-pricing-v1` | unchanged bridge |
+| `a6612450dfa521ee236d2ab0ac03a64e15c86557` | unchanged scalar | `scalar-pricing-v1` |
+
+A markerless release outside the ancestry rooted at `2563b043…` is unclassified and rejected. This
+bounded exception preserves the known bridge needed for rollback without turning all historical
+releases into implicit compatibility claims.
 
 The unified `claude-router` binary in the same engine release runs through
 `claude-router@8800/8801.service`. `/etc/caddy/router-active.caddy` names exactly one slot for both

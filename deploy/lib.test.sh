@@ -314,6 +314,145 @@ assert_active_requests '' ''
 # A negative or non-numeric value is not a count and must not be mistaken for one.
 assert_active_requests '{"active_requests":-1}' ''
 
+# Engine/commerce rollback compatibility is a closed release contract. Exercise the complete
+# explicit matrix, parser fail-closed behavior, markerless production-history bridge, and guards
+# against the generations that are actually running rather than whichever symlink was selected.
+compat_root="$TEMP/compatibility"
+mkdir -p "$compat_root"
+make_compat_release() {
+  local release=$1 requirements=$2 provisions=$3
+  mkdir -p "$release"
+  printf 'format=1\ncommerce_requires=%s\nengine_provides=%s\n' \
+    "$requirements" "$provisions" >"$release/$ENGINE_COMMERCE_COMPATIBILITY_MARKER"
+}
+
+scalar_commerce="$compat_root/1111111111111111111111111111111111111111"
+policy_commerce="$compat_root/2222222222222222222222222222222222222222"
+dual_commerce="$compat_root/3333333333333333333333333333333333333333"
+scalar_engine="$compat_root/4444444444444444444444444444444444444444"
+policy_engine="$compat_root/5555555555555555555555555555555555555555"
+bridge_engine="$compat_root/6666666666666666666666666666666666666666"
+make_compat_release "$scalar_commerce" scalar-pricing-v1 scalar-pricing-v1
+make_compat_release "$policy_commerce" policy-pricing-v1 scalar-pricing-v1
+make_compat_release "$dual_commerce" \
+  policy-pricing-v1,scalar-pricing-v1 scalar-pricing-v1
+make_compat_release "$scalar_engine" scalar-pricing-v1 scalar-pricing-v1
+make_compat_release "$policy_engine" scalar-pricing-v1 policy-pricing-v1
+make_compat_release "$bridge_engine" scalar-pricing-v1 \
+  policy-pricing-v1,scalar-pricing-v1
+
+require_engine_commerce_release_pair_compatible "$scalar_commerce" "$scalar_engine"
+require_engine_commerce_release_pair_compatible "$policy_commerce" "$bridge_engine"
+require_engine_commerce_release_pair_compatible "$dual_commerce" "$bridge_engine"
+if (require_engine_commerce_release_pair_compatible \
+    "$policy_commerce" "$scalar_engine") >"$TEMP/policy-scalar.out" 2>&1; then
+  fail "policy commerce was accepted with a scalar-only engine"
+fi
+grep -Fq 'requires policy-pricing-v1' "$TEMP/policy-scalar.out" \
+  || fail "policy/scalar incompatibility did not name the missing capability"
+if (require_engine_commerce_release_pair_compatible \
+    "$scalar_commerce" "$policy_engine") >"$TEMP/scalar-policy.out" 2>&1; then
+  fail "scalar commerce was accepted with a policy-only engine"
+fi
+
+for malformed in duplicate unknown invalid symlink; do
+  release="$compat_root/malformed-$malformed"
+  mkdir -p "$release"
+  marker="$release/$ENGINE_COMMERCE_COMPATIBILITY_MARKER"
+  case "$malformed" in
+    duplicate)
+      printf 'format=1\ncommerce_requires=scalar-pricing-v1\ncommerce_requires=scalar-pricing-v1\nengine_provides=scalar-pricing-v1\n' >"$marker"
+      ;;
+    unknown)
+      printf 'format=1\ncommerce_requires=scalar-pricing-v1\nengine_provides=scalar-pricing-v1\nfuture=unsafe\n' >"$marker"
+      ;;
+    invalid)
+      printf 'format=1\ncommerce_requires=Scalar Pricing\nengine_provides=scalar-pricing-v1\n' >"$marker"
+      ;;
+    symlink)
+      printf 'format=1\ncommerce_requires=scalar-pricing-v1\nengine_provides=scalar-pricing-v1\n' \
+        >"$release/outside"
+      ln -s outside "$marker"
+      ;;
+  esac
+  if (validate_engine_commerce_compatibility_contract "$marker") \
+      >"$TEMP/malformed-$malformed.out" 2>&1; then
+    fail "compatibility parser accepted $malformed input"
+  fi
+done
+
+RELEASE_COMPATIBILITY_REPO=$ROOT
+historical_release="$compat_root/$LEGACY_SCALAR_ENGINE_FLOOR_SHA"
+mkdir -p "$historical_release"
+[[ $(release_commerce_requirements "$historical_release") == policy-pricing-v1 ]] \
+  || fail "first scalar engine generation was not classified as policy-only commerce"
+[[ $(release_engine_provisions "$historical_release") == policy-pricing-v1,scalar-pricing-v1 ]] \
+  || fail "first scalar engine generation was not classified as a bridge engine"
+historical_release="$compat_root/$LEGACY_SCALAR_COMMERCE_FLOOR_SHA"
+mkdir -p "$historical_release"
+[[ $(release_commerce_requirements "$historical_release") == policy-pricing-v1,scalar-pricing-v1 ]] \
+  || fail "dual commerce generation lost one of its requirements"
+historical_release="$compat_root/$LEGACY_SCALAR_ONLY_COMMERCE_SHA"
+mkdir -p "$historical_release"
+[[ $(release_commerce_requirements "$historical_release") == scalar-pricing-v1 ]] \
+  || fail "scalar-only commerce boundary was classified incorrectly"
+historical_release="$compat_root/$LEGACY_SCALAR_ONLY_ENGINE_SHA"
+mkdir -p "$historical_release"
+[[ $(release_engine_provisions "$historical_release") == scalar-pricing-v1 ]] \
+  || fail "scalar-only engine boundary was classified incorrectly"
+pre_floor_sha=$(git -C "$ROOT" rev-parse "$LEGACY_SCALAR_ENGINE_FLOOR_SHA^")
+historical_release="$compat_root/$pre_floor_sha"
+mkdir -p "$historical_release"
+if (release_engine_provisions "$historical_release") >"$TEMP/pre-floor.out" 2>&1; then
+  fail "markerless release before the compatibility floor was classified"
+fi
+grep -Fq 'predates the classified compatibility floor' "$TEMP/pre-floor.out" \
+  || fail "pre-floor markerless refusal was not explicit"
+
+(
+  list_active_engine_releases() { printf '%s\n' "$scalar_engine"; }
+  require_commerce_release_compatible_with_active_engines \
+    "$scalar_commerce" "$compat_root"
+) >"$TEMP/active-engine-green.out"
+if (
+  list_active_engine_releases() { printf '%s\n' "$scalar_engine"; }
+  require_commerce_release_compatible_with_active_engines \
+    "$policy_commerce" "$compat_root"
+) >"$TEMP/active-engine-red.out" 2>&1; then
+  fail "commerce active-engine guard accepted an incompatible generation"
+fi
+(
+  list_active_commerce_releases() { printf '%s\n' "$scalar_commerce"; }
+  require_engine_release_compatible_with_active_commerce \
+    "$bridge_engine" "$compat_root"
+) >"$TEMP/active-commerce-green.out"
+if (
+  list_active_commerce_releases() { printf '%s\n' "$scalar_commerce"; }
+  require_engine_release_compatible_with_active_commerce \
+    "$policy_engine" "$compat_root"
+) >"$TEMP/active-commerce-red.out" 2>&1; then
+  fail "engine active-commerce guard accepted an incompatible generation"
+fi
+
+assert_guard_before_mutation() {
+  local path=$1 guard_pattern=$2 mutation_pattern=$3 guard_line mutation_line
+  guard_line=$(grep -n "$guard_pattern" "$path" | tail -n1 | cut -d: -f1)
+  mutation_line=$(grep -n "$mutation_pattern" "$path" | tail -n1 | cut -d: -f1)
+  [[ -n "$guard_line" && -n "$mutation_line" && $guard_line -lt $mutation_line ]] \
+    || fail "compatibility guard in $path does not precede $mutation_pattern"
+}
+assert_guard_before_mutation "$ROOT/deploy/api-bluegreen.sh" \
+  '^require_commerce_release_compatible_with_active_engines' '^begin_cutover$'
+assert_guard_before_mutation "$ROOT/deploy/engine-bluegreen.sh" \
+  '^require_engine_release_compatible_with_active_commerce' '^begin_cutover$'
+assert_guard_before_mutation "$ROOT/deploy/rollback.sh" \
+  '^preflight_compatibility$' '^begin_activation recovery_restart_selected_services$'
+assert_guard_before_mutation "$ROOT/deploy/deploy.sh" \
+  '^preflight_candidate_compatibility$' \
+  '^[[:space:]]*begin_activation recovery_restart_selected_services$'
+
+printf 'deploy/lib.sh engine-commerce compatibility tests passed\n'
+
 printf 'deploy/lib.sh drain-gate parser tests passed\n'
 
 printf 'deploy/lib.sh activation journal tests passed\n'

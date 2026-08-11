@@ -30,6 +30,12 @@ reading them again — contract: `docs/commerce/PRICING_MODEL.md`.
 Format: producer → contract/channel → consumers. The contract document is where the
 relationship is described in subject terms.
 
+### Deployment compatibility (commerce ↔ engine)
+
+| Producer | Contract / channel | Consumers | Contract document |
+|---|---|---|---|
+| `deploy/engine-commerce-compatibility.contract` | closed release marker `.engine-commerce-compatibility-v1`: `commerce_requires` and `engine_provides` capability sets; known markerless scalar-transition anchors use bounded exact Git-ancestry classification and older/unreadable history fails closed | `deploy/deploy.sh`, `deploy/rollback.sh`, `deploy/api-bluegreen.sh`, `deploy/engine-bluegreen.sh`; every transition is checked against immutable releases resolved from active API/worker/Control API PIDs, plus the selected target pair | `deploy/RELEASES.md`, `docs/ops/DEPLOYMENT.md` |
+
 ### Engine Control API (engine → commerce, OpenKeys)
 
 | Producer | Contract / channel | Consumers | Contract document |

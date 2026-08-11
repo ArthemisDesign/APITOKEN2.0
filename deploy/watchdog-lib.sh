@@ -633,7 +633,7 @@ wd_verification_plan_has() {
 
 wd_path_is_engine() {
   case "$1" in
-    crates/*|vendor/*|Cargo.toml|Cargo.lock|config.env.example|server.env.example|schema/*|tests/*|tools/refresh-fingerprint.sh|tools/codex-native/*|systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-openai@.service|systemd/claude-api-gemini.service|systemd/claude-api-gemini@.service|systemd/claude-api-kimi.service|systemd/claude-api-kimi@.service|systemd/claude-router.service|systemd/claude-router@.service|deploy/router-bluegreen.sh|deploy/router-promote.sh)
+    crates/*|vendor/*|Cargo.toml|Cargo.lock|config.env.example|server.env.example|schema/*|tests/*|tools/refresh-fingerprint.sh|tools/codex-native/*|systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-openai@.service|systemd/claude-api-gemini.service|systemd/claude-api-gemini@.service|systemd/claude-api-kimi.service|systemd/claude-api-kimi@.service|systemd/claude-router.service|systemd/claude-router@.service|deploy/router-bluegreen.sh|deploy/router-promote.sh|deploy/engine-commerce-compatibility.contract)
       return 0
       ;;
     *) return 1 ;;
@@ -653,7 +653,7 @@ wd_path_is_codex_tooling() {
 # including Vercel-only surfaces that do not map to a host deployment component.
 wd_path_is_typescript() {
   case "$1" in
-    apps/*|packages/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig*.json|.node-version)
+    apps/*|packages/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig*.json|.node-version|deploy/engine-commerce-compatibility.contract)
       return 0
       ;;
     *) return 1 ;;
@@ -676,7 +676,7 @@ wd_path_is_backend() {
     packages/sales-db/*|packages/openkeys-db/*|packages/opencode-router-plugin/*)
       return 1
       ;;
-    apps/api/*|apps/worker/*|apps/content-studio/*|packages/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig.base.json|.node-version)
+    apps/api/*|apps/worker/*|apps/content-studio/*|packages/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig.base.json|.node-version|deploy/engine-commerce-compatibility.contract)
       return 0
       ;;
     *) return 1 ;;

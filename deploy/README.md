@@ -90,6 +90,16 @@ their serving slots, then the matching blue-green controller owns admission, pre
 shutdown. They never restart PostgreSQL, never write into a finalized release, and never treat an
 arbitrary HTTP 2xx on the expected port as proof that the selected unit started.
 
+Engine and commerce releases also carry the closed
+`.engine-commerce-compatibility-v1` capability contract assembled from
+`deploy/engine-commerce-compatibility.contract`. Selection and blue-green admission compare the target
+against every counterpart generation resolved from active systemd PIDs; `current` alone is never
+trusted because it moves before the serving process does. A direct mixed-version transition that
+lacks a required pricing HTTP generation fails before migration, link activation, or cutover.
+Known markerless rollback anchors are ancestry-classified only from the bounded scalar migration
+window; older or unavailable history fails closed. The exact matrix and bridge order are in
+[`RELEASES.md`](RELEASES.md) and [`../docs/ops/DEPLOYMENT.md`](../docs/ops/DEPLOYMENT.md).
+
 Run them on the production host as the `deploy` operator from `/opt/apitoken/repo`, with narrowly scoped `sudo` access for application-unit and unit-file operations.
 
 The dedicated candidate-validator can consume up to two exact-SHA `candidate-validation` requests

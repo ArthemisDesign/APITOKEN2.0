@@ -30,6 +30,7 @@ READINESS_TIMEOUT=${READINESS_TIMEOUT_SECONDS:-60}
 CADDY_HEALTH_WINDOW_SECONDS=6
 PRE_DRAIN_SECONDS=6
 COMMERCE_RELEASE_ROOT=${COMMERCE_RELEASE_ROOT:-/opt/apitoken/releases}
+ENGINE_RELEASE_ROOT=${ENGINE_RELEASE_ROOT:-/srv/claude-api/releases}
 DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}
 WORKER_SERVICE=apitoken-worker.service
 WORKER_SOURCE_ROOT=$COMMERCE_RELEASE_ROOT/current
@@ -488,12 +489,15 @@ validate_service_unit "$(slot_unit 3001)"
 validate_service_unit "$WORKER_SERVICE"
 validate_service_unit "$CONTENT_STUDIO_SERVICE"
 COMMERCE_RELEASE_ROOT=$(canonicalize_release_root "$COMMERCE_RELEASE_ROOT" /opt/apitoken commerce)
+ENGINE_RELEASE_ROOT=$(canonicalize_release_root "$ENGINE_RELEASE_ROOT" /srv/claude-api engine)
 
 log "preflighting blue-green API cutover (dry-run=$DRY_RUN with-worker=$WITH_WORKER target=${REQUESTED_TARGET_PORT:-auto})"
 acquire_deploy_lock "$DEPLOY_LOCK_FILE"
 CURRENT_RELEASE=$(required_current_release_path "$COMMERCE_RELEASE_ROOT")
 validate_release_marker "$CURRENT_RELEASE" "$(basename -- "$CURRENT_RELEASE")"
 [[ -r "$CURRENT_RELEASE/apps/api/dist/main.js" ]] || die "commerce API artifact is missing: $CURRENT_RELEASE/apps/api/dist/main.js"
+require_commerce_release_compatible_with_active_engines \
+  "$CURRENT_RELEASE" "$ENGINE_RELEASE_ROOT"
 log "current points to validated release $(basename -- "$CURRENT_RELEASE")"
 
 READY_3000=0

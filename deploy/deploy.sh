@@ -190,6 +190,8 @@ validate_commerce_stage() {
   [[ -d "$directory/apps/content-studio/.next/standalone/apps/content-studio/.next/static" ]] \
     || die "staged standalone content studio static assets are missing"
   [[ -r "$directory/packages/db/dist/migrate.js" ]] || die "staged prebuilt migration artifact is missing: $directory/packages/db/dist/migrate.js"
+  validate_engine_commerce_compatibility_contract \
+    "$directory/$ENGINE_COMMERCE_COMPATIBILITY_MARKER"
 }
 
 populate_content_studio_standalone_assets() {
@@ -235,6 +237,8 @@ validate_engine_stage() {
     || die "staged engine KIMI blue-green capability marker is missing"
   [[ $(<"$directory/.kimi-bluegreen-v1") == kimi-bluegreen-v1 ]] \
     || die "staged engine KIMI blue-green capability marker is invalid"
+  validate_engine_commerce_compatibility_contract \
+    "$directory/$ENGINE_COMMERCE_COMPATIBILITY_MARKER"
 }
 
 fetch_release_commit() {
@@ -282,6 +286,10 @@ prepare_commerce_release() {
     # db:migrate itself builds; deployment must instead prebuild this artifact before finalization.
     run pnpm --dir "$COMMERCE_STAGE" --filter @claude-api/db build
     populate_content_studio_standalone_assets "$COMMERCE_STAGE"
+    validate_engine_commerce_compatibility_contract \
+      "$COMMERCE_STAGE/deploy/engine-commerce-compatibility.contract"
+    run install -m 0444 -- "$COMMERCE_STAGE/deploy/engine-commerce-compatibility.contract" \
+      "$COMMERCE_STAGE/$ENGINE_COMMERCE_COMPATIBILITY_MARKER"
   fi
   if [[ "$DRY_RUN" != "1" ]]; then
     validate_commerce_stage "$COMMERCE_STAGE"
@@ -312,6 +320,7 @@ prepare_engine_source() {
 }
 
 prepare_engine_release() {
+  local compatibility_source
   if [[ -e "$ENGINE_RELEASE" || -L "$ENGINE_RELEASE" ]]; then
     [[ -d "$ENGINE_RELEASE" && ! -L "$ENGINE_RELEASE" ]] || die "engine release path exists but is not an immutable directory: $ENGINE_RELEASE"
     validate_engine_release "$ENGINE_RELEASE_ROOT" "$ENGINE_RELEASE" "$SHA"
@@ -356,6 +365,7 @@ prepare_engine_release() {
     log "dry-run: would write $ENGINE_STAGE/.openai-bluegreen-v1"
     log "dry-run: would write $ENGINE_STAGE/.kimi-provider-v1"
     log "dry-run: would write $ENGINE_STAGE/.kimi-bluegreen-v1"
+    log "dry-run: would write $ENGINE_STAGE/$ENGINE_COMMERCE_COMPATIBILITY_MARKER"
   else
     printf '%s\n' provider-runtime-v1 >"$ENGINE_STAGE/.provider-runtime-v1"
     printf '%s\n' gemini-provider-v1 >"$ENGINE_STAGE/.gemini-provider-v1"
@@ -363,6 +373,14 @@ prepare_engine_release() {
     printf '%s\n' openai-bluegreen-v1 >"$ENGINE_STAGE/.openai-bluegreen-v1"
     printf '%s\n' kimi-provider-v1 >"$ENGINE_STAGE/.kimi-provider-v1"
     printf '%s\n' kimi-bluegreen-v1 >"$ENGINE_STAGE/.kimi-bluegreen-v1"
+    if [[ -n "$TESTED_CANDIDATE" ]]; then
+      compatibility_source=$TESTED_CANDIDATE/deploy/engine-commerce-compatibility.contract
+    else
+      compatibility_source=$ENGINE_SOURCE_DIR/deploy/engine-commerce-compatibility.contract
+    fi
+    validate_engine_commerce_compatibility_contract "$compatibility_source"
+    install -m 0444 -- "$compatibility_source" \
+      "$ENGINE_STAGE/$ENGINE_COMMERCE_COMPATIBILITY_MARKER"
   fi
   if [[ "$DRY_RUN" != "1" ]]; then
     validate_engine_stage "$ENGINE_STAGE"
@@ -626,6 +644,27 @@ preflight_links() {
   fi
 }
 
+preflight_candidate_compatibility() {
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run: would verify each selected release against the actually running counterpart generations"
+    [[ "$DEPLOY_ENGINE" != "1" || "$DEPLOY_API" != "1" ]] \
+      || log "dry-run: would verify the selected commerce/engine release pair"
+    return 0
+  fi
+  if [[ "$DEPLOY_ENGINE" == "1" ]]; then
+    require_engine_release_compatible_with_active_commerce \
+      "$ENGINE_RELEASE" "$COMMERCE_RELEASE_ROOT"
+  fi
+  if [[ "$DEPLOY_API" == "1" ]]; then
+    require_commerce_release_compatible_with_active_engines \
+      "$COMMERCE_RELEASE" "$ENGINE_RELEASE_ROOT"
+  fi
+  if [[ "$DEPLOY_ENGINE" == "1" && "$DEPLOY_API" == "1" ]]; then
+    require_engine_commerce_release_pair_compatible "$COMMERCE_RELEASE" "$ENGINE_RELEASE"
+    log "selected commerce and engine candidate releases are mutually compatible"
+  fi
+}
+
 activate_release_links() {
   if [[ "$DEPLOY_ENGINE" == "1" && "$ENGINE_ORIGINAL" != "$ENGINE_RELEASE" ]]; then
     if [[ -n "$ENGINE_ORIGINAL" ]]; then
@@ -691,6 +730,7 @@ fi
 if [[ "$DEPLOY_ENGINE" == "1" ]]; then
   prepare_engine_release
 fi
+preflight_candidate_compatibility
 if [[ "$DEPLOY_API" == "1" ]]; then
   run_locked_migration
 fi
