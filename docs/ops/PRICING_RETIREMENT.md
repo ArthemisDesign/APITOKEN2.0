@@ -111,7 +111,7 @@ Dropping these tables removes their owned indexes, constraints and triggers. It 
 trigger functions. The final migration must explicitly drop these 48 retired functions with their
 exact identity arguments after the tables:
 
-- `public.assert_active_funding_account_v2()`
+- `public.assert_active_funding_account_v2(text)`
 - `public.assert_funding_generation_v2(text, bigint)`
 - `public.assert_funding_reservation_snapshot_v2(text)`
 - `public.assert_normalized_reservation_funding_v2(text)`

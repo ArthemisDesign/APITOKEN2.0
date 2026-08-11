@@ -133,7 +133,7 @@ commerce_symbols=(
 )
 
 engine_retired_functions=(
-  'assert_active_funding_account_v2()'
+  'assert_active_funding_account_v2(text)'
   'assert_funding_generation_v2(text, bigint)'
   'assert_funding_reservation_snapshot_v2(text)'
   'assert_normalized_reservation_funding_v2(text)'
