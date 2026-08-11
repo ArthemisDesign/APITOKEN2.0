@@ -11,6 +11,7 @@ import {
   type PayoutReportDto,
   type PayoutRowDto,
 } from "@/lib/api";
+import { evaluatePayoutSendGate, isSendablePayoutRow } from "@/lib/payout-safety";
 import { Badge, Button, Card, EmptyState, Loading, Notice } from "@/components/ui";
 
 function adminHeaders(key: string): Record<string, string> {
@@ -118,13 +119,20 @@ export function PayoutSendTab({ adminKey }: { adminKey: string }) {
   }
   async function sendAll() {
     if (!report) return;
-    if (!confirm(`Send ${report.rows.filter((r) => r.status !== "paid").length} payouts totalling ${formatUsd(report.chain.requiredUsdtNano)} from the hot wallet? This is irreversible.`)) return;
+    const gate = evaluatePayoutSendGate(engine, report);
+    if (!gate.allowed) { setError(gate.reason); return; }
+    if (!confirm(`Send ${gate.sendableCount} payouts totalling ${formatUsd(report.chain.requiredUsdtNano)} from the hot wallet? This is irreversible.`)) return;
     const r = await act(() => api<PayoutReportDto>(`/v1/admin/payouts/batches/${report.batch.id}/send`, { method: "POST", headers: adminHeaders(adminKey) }));
     if (r) setReport(r);
     void loadEngine();
   }
   async function sendOne(row: PayoutRowDto) {
     if (!report) return;
+    const gate = evaluatePayoutSendGate(engine, report);
+    if (!gate.allowed || !isSendablePayoutRow(row)) {
+      setError(gate.allowed ? "This payout row is not in a sendable state." : gate.reason);
+      return;
+    }
     await act(() => api(`/v1/admin/payouts/rows/${row.id}/send`, { method: "POST", headers: adminHeaders(adminKey) }));
     await openBatch(report.batch.id);
   }
@@ -144,7 +152,8 @@ export function PayoutSendTab({ adminKey }: { adminKey: string }) {
   const windowOpen = engine.window.open;
   const b = report?.batch;
   const c = report?.chain;
-  const canSend = Boolean(report && windowOpen && engine.configured && c?.sufficientUsdt !== false && c?.sufficientBnb !== false && (b?.status === "prepared" || b?.status === "sending"));
+  const sendGate = evaluatePayoutSendGate(engine, report);
+  const canSend = sendGate.allowed && !busy;
 
   return (
     <div className="stack">
@@ -177,6 +186,10 @@ export function PayoutSendTab({ adminKey }: { adminKey: string }) {
         </Notice>
       ) : null}
 
+      {report && !sendGate.allowed ? (
+        <Notice kind="info"><strong>Send is disabled:</strong> {sendGate.reason}</Notice>
+      ) : null}
+
       {!report ? (
         <Card title="Prepare a payout run" sub="Collects every active partner with a valid BEP-20 address and unpaid balance > 0, validates addresses, and checks the hot wallet — nothing is sent yet.">
           <Button onClick={prepare} loading={busy} disabled={!engine.configured}>Prepare payout run</Button>
@@ -196,7 +209,7 @@ export function PayoutSendTab({ adminKey }: { adminKey: string }) {
           ) : null}
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-            <Button onClick={sendAll} loading={busy && b!.status !== "sending"} disabled={!canSend}>
+            <Button onClick={sendAll} loading={busy} disabled={!canSend}>
               {b!.status === "sending" ? "Sending…" : "Send all"}
             </Button>
             {b!.status === "prepared" ? <Button variant="ghost" onClick={cancel} disabled={busy}>Cancel batch</Button> : null}
@@ -234,9 +247,11 @@ export function PayoutSendTab({ adminKey }: { adminKey: string }) {
                       {r.txHash ? <a href={`https://bscscan.com/tx/${r.txHash}`} target="_blank" rel="noreferrer" style={{ ...mono, color: "var(--accent-strong,#3b5bdb)" }}>{r.txHash.slice(0, 10)}…</a> : "—"}
                     </td>
                     <td style={{ padding: "6px 8px" }}>
-                      {r.status !== "paid" && r.chainStatus !== "broadcast" ? (
+                      {isSendablePayoutRow(r) || (r.status === "requested" && r.chainStatus === "failed") ? (
                         <span style={{ display: "inline-flex", gap: 4 }}>
-                          <Button size="sm" variant="ghost" disabled={busy || !windowOpen} onClick={() => sendOne(r)}>{r.chainStatus === "failed" ? "Retry" : "Send"}</Button>
+                          {isSendablePayoutRow(r) ? (
+                            <Button size="sm" variant="ghost" disabled={!canSend} onClick={() => sendOne(r)}>{r.chainStatus === "failed" ? "Retry" : "Send"}</Button>
+                          ) : null}
                           {r.chainStatus === "failed" ? <Button size="sm" variant="ghost" disabled={busy} onClick={() => releaseOne(r)}>Release</Button> : null}
                         </span>
                       ) : null}

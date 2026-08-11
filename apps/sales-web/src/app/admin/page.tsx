@@ -7,6 +7,7 @@ import {
   formatBps,
   formatDate,
   formatUsd,
+  sumCanonicalNanoUsd,
   type AdminPayoutRow,
   type InviteRow,
   type PayoutListResponse,
@@ -701,7 +702,7 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
                 <td>{inv.referralDiscountEnabled ? formatBps(inv.referralDiscountBps ?? 0) : "—"}</td>
                 <td>
                   {inv.promoEnabled
-                    ? `${inv.promoMaxCount ?? 0} × $${inv.promoMaxValueNano ? Number(BigInt(inv.promoMaxValueNano) / 1_000_000_000n) : 0}`
+                    ? `${inv.promoMaxCount ?? 0} × ${formatUsd(inv.promoMaxValueNano)}`
                     : "—"}
                 </td>
                 <td>{inv.expiresAt ? formatDate(inv.expiresAt) : "—"}</td>
@@ -740,7 +741,9 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
   if (!data) return <Loading />;
 
   const eligible = data.items.filter((i) => i.eligible);
-  const eligibleTotal = eligible.reduce((acc, i) => acc + BigInt(i.payableNano), 0n).toString();
+  const eligibleTotal = sumCanonicalNanoUsd(eligible.map((i) => i.payableNano));
+  const heldTotal = sumCanonicalNanoUsd(data.items.filter((i) => !i.eligible).map((i) => i.payableNano));
+  const unpaidTotal = sumCanonicalNanoUsd(data.items.map((i) => i.payableNano));
   const win = data.period;
   const reasonLabel: Record<string, string> = {
     ok: "Ready",
@@ -766,14 +769,14 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
           <div className="stat-card">
             <div className="stat-label">Held (rolls over)</div>
             <div className="stat-value">
-              {formatUsd(data.items.filter((i) => !i.eligible).reduce((a, i) => a + BigInt(i.payableNano), 0n).toString())}
+              {formatUsd(heldTotal)}
             </div>
             <div className="stat-foot">{data.items.filter((i) => !i.eligible).length} not eligible yet</div>
           </div>
           <div className="stat-card">
             <div className="stat-label">Total unpaid</div>
             <div className="stat-value">
-              {formatUsd(data.items.reduce((a, i) => a + BigInt(i.payableNano), 0n).toString())}
+              {formatUsd(unpaidTotal)}
             </div>
             <div className="stat-foot">{data.items.length} partners with a balance</div>
           </div>
@@ -816,8 +819,9 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
         )}
       </Card>
       <p className="field-hint">
-        Sending is done manually for now: pay each “Ready” partner in USDT (BEP-20) to their wallet.
-        The automated on-chain payout &amp; reconciliation flow is a separate upcoming system.
+        This list is the read-only period preview. Prepare, verify, and execute the on-chain batch in
+        <strong> Send payouts</strong>; the server revalidates every partner, wallet, amount, balance,
+        window, and hot-wallet identity immediately before signing.
       </p>
     </div>
   );

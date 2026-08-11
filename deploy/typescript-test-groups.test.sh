@@ -85,7 +85,8 @@ case "$args" in
   *' --filter=@claude-api/content-studio '*|*' --filter=@claude-api/web '*|\
   *' --filter=@claude-api/opencode-router-plugin '*|\
   *' --filter=@claude-api/engine-client '*|*' --filter=@claude-api/payments '*|\
-  *' --filter=@claude-api/admin '*|*' --filter=@claude-api/devbot '*) group=pure ;;
+  *' --filter=@claude-api/admin '*|*' --filter=@claude-api/devbot '*|\
+  *' --filter=@claude-api/sales-web '*) group=pure ;;
   *) printf 'could not identify test group: %s\n' "$*" >&2; exit 91 ;;
 esac
 if [[ $group != pure && -n ${TYPESCRIPT_TEST_COMPONENTS:-} ]]; then
@@ -140,7 +141,7 @@ done
 grep -Fq -- '--workspace-concurrency=4' "$full_capture/pure.args" \
   || fail 'pure group lost bounded internal parallelism'
 for package in @claude-api/content-studio @claude-api/web @claude-api/opencode-router-plugin \
-  @claude-api/engine-client @claude-api/payments; do
+  @claude-api/engine-client @claude-api/payments @claude-api/sales-web; do
   grep -Fq -- "--filter=$package" "$full_capture/pure.args" \
     || fail "pure group omitted $package"
 done
@@ -183,13 +184,12 @@ if grep -Fq -- '--filter=@claude-api/commercial-api' "$filtered_capture/commerce
   fail 'filtered commerce group widened the exact package scope'
 fi
 
-testless_capture=$TEMP/testless
-mkdir -p "$testless_capture"
-PNPM_CAPTURE=$testless_capture PATH="$BIN:$PATH" \
+sales_web_capture=$TEMP/sales-web
+mkdir -p "$sales_web_capture"
+PNPM_CAPTURE=$sales_web_capture PATH="$BIN:$PATH" \
   bash "$RUNNER" "$FIXTURE" @claude-api/sales-web >/dev/null
-if find "$testless_capture" -type f -print -quit | grep -q .; then
-  fail 'an explicitly testless package launched a test command'
-fi
+grep -Fq -- '--filter=@claude-api/sales-web' "$sales_web_capture/pure.args" \
+  || fail 'Sales Web tests did not join the database-free pure lane'
 
 migration_only_capture=$TEMP/migration-only
 mkdir -p "$migration_only_capture"
@@ -198,10 +198,9 @@ PNPM_CAPTURE=$migration_only_capture MIGRATION_EXPECT_BARRIER=1 \
   PATH="$BIN:$PATH" \
   bash "$RUNNER" "$FIXTURE" @claude-api/sales-web >/dev/null
 [[ -f $migration_only_capture/sales.migration.completed ]] \
-  || fail 'a selected testless component omitted its migration smoke'
-if find "$migration_only_capture" -name '*.args' -print -quit | grep -q .; then
-  fail 'a migration-only component launched an unrelated package test'
-fi
+  || fail 'a selected Sales component omitted its migration smoke'
+grep -Fq -- '--filter=@claude-api/sales-web' "$migration_only_capture/pure.args" \
+  || fail 'the Sales component omitted selected Sales Web tests'
 
 expect_failure 'unknown package selector' env PATH="$BIN:$PATH" \
   bash "$RUNNER" "$FIXTURE" @claude-api/not-classified

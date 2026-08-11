@@ -255,6 +255,11 @@ Preparation revalidates amount/address under partner locks and pins the hot wall
 share a cross-process lock, persist exact hash/raw/nonce before broadcast and mark paid only from a
 confirmed BSC receipt. `SALES_MIN_PAYOUT_USD` is also the execution threshold; the retired fractional
 `PAYOUT_MIN_USD` knob does not exist.
+The Sales Web send controls are an additional fail-closed safety layer: API money must be canonical
+nanoUSD, row/recipient/batch/required totals must agree, both balances must be explicitly sufficient,
+the current hot wallet must match the batch-pinned wallet, and no row may remain in `broadcast`.
+Malformed money is rendered unavailable rather than as a false `$0.00`. The backend remains the
+authority and repeats all irreversible checks under the cross-process send lock.
 
 ## Commission math (sales-db)
 

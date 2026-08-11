@@ -4,7 +4,7 @@
 // Каждый код — одноразовый, даёт юзеру баланс на apitoken.sale. Погашение — на главном сайте.
 
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, formatUsd, type PromoListResponse } from "@/lib/api";
+import { api, ApiError, formatUsd, parseCanonicalNanoUsd, type PromoListResponse } from "@/lib/api";
 import { usePartner } from "@/components/partner-context";
 import { useI18n } from "@/components/i18n";
 import { Badge, Button, Card, CopyButton, EmptyState, Input, Loading, Notice, Table } from "@/components/ui";
@@ -31,11 +31,22 @@ export default function PromoPage() {
     void load();
   }, [load]);
 
-  const maxUsd = data ? Number(BigInt(data.maxValueNano) / 1_000_000_000n) : 0;
+  const maxNano = data ? parseCanonicalNanoUsd(data.maxValueNano) : null;
+  const maxWhole = maxNano === null ? null : maxNano / 1_000_000_000n;
+  const maxUsd = maxNano !== null
+    && maxNano % 1_000_000_000n === 0n
+    && maxWhole !== null
+    && maxWhole <= BigInt(Number.MAX_SAFE_INTEGER)
+    ? Number(maxWhole)
+    : null;
   const used = data?.items.length ?? 0;
   const remaining = data ? Math.max(0, data.maxCount - used) : 0;
 
   async function create() {
+    if (maxUsd === null) {
+      setFormError(t("The promo limit is unavailable. Refresh before creating a code.", "Лимит промокода недоступен. Обновите страницу перед созданием кода."));
+      return;
+    }
     const v = Number(value);
     if (!Number.isInteger(v) || v <= 0) {
       setFormError(t("Enter a whole dollar amount.", "Введите целую сумму в долларах."));
@@ -99,8 +110,8 @@ export default function PromoPage() {
         <Card
           title={t("Create a code", "Создать код")}
           sub={t(
-            `Up to $${maxUsd} per code · ${remaining} of ${data?.maxCount ?? 0} codes left.`,
-            `До $${maxUsd} за код · осталось ${remaining} из ${data?.maxCount ?? 0}.`,
+            `Up to ${maxUsd === null ? "—" : `$${maxUsd}`} per code · ${remaining} of ${data?.maxCount ?? 0} codes left.`,
+            `До ${maxUsd === null ? "—" : `$${maxUsd}`} за код · осталось ${remaining} из ${data?.maxCount ?? 0}.`,
           )}
         >
           {formError ? <Notice kind="error">{formError}</Notice> : null}
@@ -124,7 +135,7 @@ export default function PromoPage() {
                 inputMode="numeric"
                 value={value}
                 onChange={(e) => setValue(e.target.value.replace(/[^\d]/g, ""))}
-                placeholder={t(`Value in USD (max ${maxUsd})`, `Сумма в USD (макс ${maxUsd})`)}
+                placeholder={t(`Value in USD (max ${maxUsd ?? "—"})`, `Сумма в USD (макс ${maxUsd ?? "—"})`)}
                 style={{ maxWidth: 260 }}
               />
               <Button onClick={create} loading={busy}>{t("Create code", "Создать код")}</Button>

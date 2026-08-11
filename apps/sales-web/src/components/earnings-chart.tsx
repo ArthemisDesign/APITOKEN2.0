@@ -1,6 +1,6 @@
 "use client";
 
-import { formatUsd, type EarningRow } from "@/lib/api";
+import { formatUsd, parseCanonicalNanoUsd, type EarningRow } from "@/lib/api";
 
 /**
  * Pure-SVG bar chart of daily earnings (nanoUSD strings).
@@ -14,13 +14,16 @@ export function EarningsChart({ items }: { items: EarningRow[] }) {
   const plotH = H - PAD_BOTTOM - PAD_TOP;
 
   const rows = [...items].sort((a, b) => (a.date < b.date ? -1 : 1));
-  const values = rows.map((r) => {
-    try {
-      return BigInt(r.earnedNano || "0");
-    } catch {
-      return 0n;
-    }
-  });
+  const parsedValues = rows.map((r) => parseCanonicalNanoUsd(r.earnedNano));
+  if (parsedValues.some((value) => value === null)) {
+    return (
+      <div className="empty" style={{ padding: "36px 16px" }}>
+        <div className="empty-title">Earnings chart unavailable</div>
+        <div style={{ fontSize: 14 }}>The API returned an invalid money value. Refresh before relying on this chart.</div>
+      </div>
+    );
+  }
+  const values = parsedValues as bigint[];
   const max = values.reduce((m, v) => (v > m ? v : m), 0n);
 
   if (rows.length === 0 || max === 0n) {

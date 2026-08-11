@@ -8,6 +8,8 @@ import {
   formatDate,
   formatUsd,
   formatUsdCompact,
+  isPositiveNanoUsd,
+  parseCanonicalNanoUsd,
   type PartnerActivityEvent,
   type PartnerAnalyticsList,
   type PartnerAnalyticsRow,
@@ -186,7 +188,7 @@ export function PartnersTab({ adminKey }: { adminKey: string }) {
                   <div>{formatUsd(p.earnedTotalNano)}</div>
                   <div style={{ fontSize: 11, ...faint }}>{formatUsd(p.earned30dNano)} · 30d</div>
                 </td>
-                <td className="num" style={{ fontWeight: BigInt(p.unpaidNano || "0") > 0n ? 600 : 400 }}>{formatUsd(p.unpaidNano)}</td>
+                <td className="num" style={{ fontWeight: isPositiveNanoUsd(p.unpaidNano) ? 600 : 400 }}>{formatUsd(p.unpaidNano)}</td>
                 <td className="num">{p.teamSize}</td>
                 <td style={{ fontSize: 12, ...faint }}>{relTime(p.lastSeenAt)}</td>
                 <td><StatusBadge status={p.status} /></td>
@@ -508,11 +510,13 @@ function PartnerDrawer({
 
 function Sparkline({ daily }: { daily: { date: string; spendNano: string; earnedNano: string }[] }) {
   if (daily.length === 0) return null;
-  const max = daily.reduce((m, d) => {
-    const v = BigInt(d.spendNano || "0");
-    return v > m ? v : m;
-  }, 1n);
-  const total = daily.reduce((m, d) => m + BigInt(d.spendNano || "0"), 0n);
+  const parsed = daily.map((d) => parseCanonicalNanoUsd(d.spendNano));
+  if (parsed.some((value) => value === null)) {
+    return <div style={{ marginTop: 14, fontSize: 11, ...faint }}>Real-spend chart unavailable: invalid API money.</div>;
+  }
+  const values = parsed as bigint[];
+  const max = values.reduce((m, value) => value > m ? value : m, 1n);
+  const total = values.reduce((m, value) => m + value, 0n);
   return (
     <div style={{ marginTop: 14 }}>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, ...faint, marginBottom: 6 }}>
@@ -520,8 +524,8 @@ function Sparkline({ daily }: { daily: { date: string; spendNano: string; earned
         <span>{formatUsdCompact(total.toString())} total</span>
       </div>
       <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 44 }}>
-        {daily.map((d) => {
-          const v = BigInt(d.spendNano || "0");
+        {daily.map((d, index) => {
+          const v = values[index];
           const h = max > 0n ? Number((v * 100n) / max) : 0;
           return (
             <div

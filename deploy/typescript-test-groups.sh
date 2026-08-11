@@ -53,6 +53,7 @@ PURE_PACKAGES=(
   @claude-api/payments
   @claude-api/admin
   @claude-api/devbot
+  @claude-api/sales-web
 )
 COMMERCE_PACKAGES=(
   @claude-api/db
@@ -67,7 +68,6 @@ OPENKEYS_PACKAGES=(
   @claude-api/openkeys
 )
 TESTLESS_PACKAGES=(
-  @claude-api/sales-web
   @claude-api/contracts
   @claude-api/openkeys-db
 )

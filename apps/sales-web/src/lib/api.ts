@@ -62,34 +62,69 @@ export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
 
 const NANO = 1_000_000_000n;
 
+/** API money is an unsigned, canonical base-10 nanoUSD string. */
+export function isCanonicalNanoUsd(value: unknown): value is string {
+  return typeof value === "string" && /^(0|[1-9]\d*)$/.test(value);
+}
+
+/** Positive API money excludes zero while retaining the canonical string contract. */
+export function isPositiveNanoUsd(value: unknown): value is string {
+  return isCanonicalNanoUsd(value) && value !== "0";
+}
+
+/** Displayable balances may be signed, but still use one canonical base-10 representation. */
+export function isCanonicalSignedNanoUsd(value: unknown): value is string {
+  return typeof value === "string"
+    && value !== "-0"
+    && /^-?(0|[1-9]\d*)$/.test(value);
+}
+
+export function parseCanonicalNanoUsd(value: unknown): bigint | null {
+  return isCanonicalNanoUsd(value) ? BigInt(value) : null;
+}
+
+export function parseCanonicalSignedNanoUsd(value: unknown): bigint | null {
+  return isCanonicalSignedNanoUsd(value) ? BigInt(value) : null;
+}
+
+/** Sum API money without coercing malformed values to zero. */
+export function sumCanonicalNanoUsd(values: readonly unknown[]): string | null {
+  let total = 0n;
+  for (const value of values) {
+    const parsed = parseCanonicalNanoUsd(value);
+    if (parsed === null) return null;
+    total += parsed;
+  }
+  return total.toString();
+}
+
 /** Format a nanoUSD decimal string as "$1,234.56". Safe for arbitrary size. */
 export function formatUsd(nano: string | null | undefined): string {
-  if (nano === null || nano === undefined || nano === "") return "$0.00";
-  let s = String(nano).trim();
-  let neg = false;
-  if (s.startsWith("-")) {
-    neg = true;
-    s = s.slice(1);
-  }
-  if (!/^\d+$/.test(s)) return "$0.00";
-  const n = BigInt(s);
+  const parsed = parseCanonicalSignedNanoUsd(nano);
+  if (parsed === null) return "—";
+  const negative = parsed < 0n;
+  const n = negative ? -parsed : parsed;
   const dollars = n / NANO;
   const cents = (n % NANO) / 10_000_000n; // 2 decimal places, truncated
-  return `${neg ? "−" : ""}$${dollars.toLocaleString("en-US")}.${cents
+  return `${negative ? "−" : ""}$${dollars.toLocaleString("en-US")}.${cents
     .toString()
     .padStart(2, "0")}`;
 }
 
 /** Compact form for chart axes: "$12", "$1.2k". */
 export function formatUsdCompact(nano: string | null | undefined): string {
-  if (!nano || !/^\d+$/.test(String(nano).trim())) return "$0";
-  const dollars = BigInt(String(nano).trim()) / NANO;
+  const parsed = parseCanonicalSignedNanoUsd(nano);
+  if (parsed === null) return "—";
+  const negative = parsed < 0n;
+  const n = negative ? -parsed : parsed;
+  const dollars = n / NANO;
+  const prefix = negative ? "−$" : "$";
   if (dollars >= 1000n) {
     const whole = dollars / 1000n;
     const tenth = (dollars % 1000n) / 100n;
-    return tenth === 0n ? `$${whole}k` : `$${whole}.${tenth}k`;
+    return tenth === 0n ? `${prefix}${whole}k` : `${prefix}${whole}.${tenth}k`;
   }
-  return `$${dollars}`;
+  return `${prefix}${dollars}`;
 }
 
 /**
@@ -444,6 +479,8 @@ export type PayoutReportDto = {
   chain: {
     configured: boolean;
     hotWalletAddress: string | null;
+    currentHotWalletAddress: string | null;
+    configurationMatchesBatch: boolean | null;
     usdtBalanceNano: string | null;
     bnbBalanceWei: string | null;
     requiredUsdtNano: string;

@@ -2,13 +2,14 @@
 
 // Периодная модель выплат (USDT BEP-20 / BSC). Ручного запроса вывода нет — платим по
 // расписанию на привязанный кошелёк. Партнёр видит текущий период, лок, дату следующей
-// выплаты и историю по полумесячным периодам. Сама отправка — отдельная система.
+// выплаты и историю по полумесячным периодам. On-chain отправка доступна только администратору.
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import {
   api,
   ApiError,
   formatUsd,
+  sumCanonicalNanoUsd,
   type PeriodState,
   type Partner,
   type PayoutRow,
@@ -195,8 +196,8 @@ export default function PayoutsPage() {
   }, [load]);
 
   const lockedTotal = state
-    ? state.locked.reduce((acc, l) => acc + BigInt(l.earnedNano), 0n).toString()
-    : "0";
+    ? sumCanonicalNanoUsd(state.locked.map((locked) => locked.earnedNano))
+    : null;
 
   return (
     <>
