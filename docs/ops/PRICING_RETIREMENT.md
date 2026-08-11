@@ -269,10 +269,13 @@ All gates are conjunctive. A failure postpones the drop; it is never waived beca
    blocker only after the floor-bearing controller is GREEN in production and a real dry-run proves
    that one pre-floor SHA is rejected while `previous` is accepted.
 4. **Consumer watermarks.** Every currently mapped commerce account must have a pricing cursor and
-   complete its polling cycle; `last_ledger_id` must equal `topups_scanned_through_ledger_id`, and
-   any live engine-ledger gap must be small and closing. Sales `attributions`, `usage_events` and
-   `topups` cursors must equal their source watermarks after the 10-second visibility lag; sync
-   parse errors must be zero. Never advance a cursor by hand.
+   a completed polling cycle no older than 180 seconds;
+   `last_ledger_id` must equal `topups_scanned_through_ledger_id`, and it must cover the engine head
+   at the 120-second stable source boundary. The gate retries three snapshots to avoid rejecting the
+   instant in which a healthy worker invalidates its completion marker before network I/O. Sales
+   `attributions`, `usage_events` and `topups` cursors must cover their own 120-second stable source
+   boundary, two complete default sync intervals; sync parse errors must be zero. The lag is fixed,
+   not widened to make a failing deployment pass, and no cursor is ever advanced by hand.
 5. **Catalog dependency graph.** Re-run the foreign-key, view, materialized-view, trigger and
    `pg_proc` inventory. The only permitted external edge before the engine migration is
    `api_keys_activation_policy_fk`; commerce permits none. There must be no view/materialized view.

@@ -73,6 +73,9 @@ SOURCE_REPO=${PRICING_RETIREMENT_SOURCE_REPO:-$ROOT}
 BORG_CONFIG=${PRICING_RETIREMENT_BORG_CONFIG:-/etc/borgmatic/config.yaml}
 AUTHBOT_RUNTIME_STATE=${PRICING_RETIREMENT_AUTHBOT_RUNTIME_STATE:-/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh}
 BACKUP_MAX_AGE_SECONDS=1800
+PRICING_WATERMARK_LAG_SECONDS=120
+PRICING_CURSOR_MAX_AGE_SECONDS=180
+SALES_WATERMARK_LAG_SECONDS=120
 PGOPTIONS_RO='-c default_transaction_read_only=on -c statement_timeout=120000 -c lock_timeout=5000 -c timezone=UTC -c datestyle=ISO'
 
 if [[ $MODE == final && ${EUID:-$(id -u)} -ne 0 ]]; then
@@ -427,23 +430,28 @@ cleanup() {
 }
 trap cleanup EXIT
 
-verify_pricing_watermarks() {
-  psql_ro claude_engine >"$TEMP/engine-ledger-heads" <<'SQL'
+pricing_watermark_snapshot() {
+  local attempt=$1
+  psql_ro claude_engine >"$TEMP/engine-ledger-heads" <<SQL \
+    || die 'could not read the stable engine ledger heads'
 SELECT account.id,
        COALESCE(max(ledger.id) FILTER (
-         WHERE ledger.ts <= EXTRACT(EPOCH FROM now())::bigint - 15
+         WHERE ledger.ts <= EXTRACT(EPOCH FROM now())::bigint - $PRICING_WATERMARK_LAG_SECONDS
        ), 0)
 FROM accounts account
 LEFT JOIN ledger ON ledger.account_id = account.id
 GROUP BY account.id
 ORDER BY account.id;
 SQL
-  psql_ro commerce >"$TEMP/commerce-pricing-cursors" <<'SQL'
+  psql_ro commerce >"$TEMP/commerce-pricing-cursors" <<SQL \
+    || die 'could not read the commerce pricing cursors'
 SELECT account.engine_account_id,
        CASE WHEN cursor.engine_account_id IS NULL THEN 0 ELSE 1 END,
        COALESCE(cursor.last_ledger_id, -1),
        COALESCE(cursor.topups_scanned_through_ledger_id, -1),
-       CASE WHEN cursor.updated_at IS NOT NULL AND cursor.updated_at <> '-infinity' THEN 1 ELSE 0 END
+       CASE WHEN cursor.updated_at IS NOT NULL AND cursor.updated_at <> '-infinity'
+                  AND cursor.updated_at >= now() - make_interval(secs => $PRICING_CURSOR_MAX_AGE_SECONDS)
+            THEN 1 ELSE 0 END
 FROM customer_profiles profile
 JOIN engine_accounts account ON account.user_id = profile.user_id
 JOIN users customer ON customer.id = profile.user_id
@@ -454,29 +462,56 @@ WHERE profile.customer_type IN ('b2c', 'b2b')
   AND customer.status = 'active'
 ORDER BY account.engine_account_id;
 SQL
-  awk -F '\t' '
+  awk -F '\t' -v attempt="$attempt" '
     NR == FNR { head[$1] = $2; next }
     {
       targets++
-      if ($2 != 1 || $5 != 1 || $3 < 0 || $4 < 0 || $3 != $4 || $3 < (head[$1] + 0)) bad++
+      if (!($1 in head)) missing_engine++
+      if ($2 != 1) missing_cursor++
+      if ($5 != 1) incomplete_or_stale++
+      if ($3 < 0 || $4 < 0) invalid_cursor++
+      if ($3 != $4) topup_gap++
+      if (($1 in head) && $3 < (head[$1] + 0)) behind++
     }
-    END { if (targets == 0 || bad != 0) exit 1 }
+    END {
+      printf "watermark:pricing-snapshot attempt=%d mapped_accounts=%d missing_engine=%d missing_cursor=%d incomplete_or_stale=%d invalid_cursor=%d topup_gap=%d behind_stable_head=%d\n",
+        attempt, targets, missing_engine, missing_cursor, incomplete_or_stale, invalid_cursor,
+        topup_gap, behind
+      if (targets == 0 || missing_engine || missing_cursor || incomplete_or_stale ||
+          invalid_cursor || topup_gap || behind) exit 1
+    }
   ' "$TEMP/engine-ledger-heads" "$TEMP/commerce-pricing-cursors" \
-    || die 'a mapped pricing cursor is missing, incomplete, behind its stable engine head, or its top-up watermark'
-  printf 'watermark:pricing mapped_accounts=%s stable_ledger_cutoff_seconds=15\n' \
-    "$(wc -l <"$TEMP/commerce-pricing-cursors" | tr -d ' ')"
+    >"$TEMP/pricing-watermark-diagnostic"
+}
+
+verify_pricing_watermarks() {
+  local attempt
+  for attempt in 1 2 3; do
+    if pricing_watermark_snapshot "$attempt"; then
+      printf 'watermark:pricing mapped_accounts=%s stable_ledger_cutoff_seconds=%s max_cursor_age_seconds=%s snapshot_attempt=%s\n' \
+        "$(wc -l <"$TEMP/commerce-pricing-cursors" | tr -d ' ')" \
+        "$PRICING_WATERMARK_LAG_SECONDS" "$PRICING_CURSOR_MAX_AGE_SECONDS" "$attempt"
+      return 0
+    fi
+    (( attempt == 3 )) || sleep 2
+  done
+  cat "$TEMP/pricing-watermark-diagnostic" >&2
+  die 'a mapped pricing cursor is missing, stale, incomplete, behind its stable engine head, or its top-up watermark'
 }
 
 verify_sales_watermarks() {
-  psql_ro commerce >"$TEMP/sales-source-watermarks" <<'SQL'
+  psql_ro commerce >"$TEMP/sales-source-watermarks" <<SQL
 SELECT 'attributions', COALESCE(max(id), 0)
-FROM referral_attributions WHERE created_at < now() - interval '15 seconds'
+FROM referral_attributions
+WHERE created_at < now() - make_interval(secs => $SALES_WATERMARK_LAG_SECONDS)
 UNION ALL
 SELECT 'usage_events', COALESCE(max(feed_seq), 0)
-FROM pricing_usage_events WHERE created_at < now() - interval '15 seconds'
+FROM pricing_usage_events
+WHERE created_at < now() - make_interval(secs => $SALES_WATERMARK_LAG_SECONDS)
 UNION ALL
 SELECT 'topups', COALESCE(max((EXTRACT(EPOCH FROM paid_at) * 1000000)::bigint), 0)
-FROM payments WHERE status = 'paid' AND paid_at < now() - interval '15 seconds'
+FROM payments
+WHERE status = 'paid' AND paid_at < now() - make_interval(secs => $SALES_WATERMARK_LAG_SECONDS)
 ORDER BY 1;
 SQL
   psql_ro sales >"$TEMP/sales-cursors" <<'SQL'
@@ -500,7 +535,8 @@ SQL
   errors=$(journalctl -q -u apitoken-sales-api.service --since "$started" --no-pager -o cat \
     | awk '/sync iteration failed/ { count++ } END { print count + 0 }')
   [[ $errors == 0 ]] || die "sales sync logged $errors failed iteration(s) since serving activation"
-  printf 'watermark:sales feeds=3 parser_or_sync_errors_since_activation=0\n'
+  printf 'watermark:sales feeds=3 stable_source_cutoff_seconds=%s parser_or_sync_errors_since_activation=0\n' \
+    "$SALES_WATERMARK_LAG_SECONDS"
 }
 
 check_zero_query() {

@@ -194,11 +194,18 @@ grep -Fq "printf 'AUTHORIZED:%s" "$PREFLIGHT" \
   || die 'final preflight must list and fully render every exact-SHA dump'
 grep -Fq 'BACKUP_MAX_AGE_SECONDS=1800' "$PREFLIGHT" \
   || die 'final preflight does not enforce the fixed 30-minute recovery-evidence window'
+grep -Fq 'PRICING_WATERMARK_LAG_SECONDS=120' "$PREFLIGHT" \
+  || die 'pricing watermark gate does not cover two complete default sweep intervals'
+grep -Fq 'PRICING_CURSOR_MAX_AGE_SECONDS=180' "$PREFLIGHT" \
+  || die 'pricing watermark gate does not reject stale completed sweeps'
+grep -Fq 'SALES_WATERMARK_LAG_SECONDS=120' "$PREFLIGHT" \
+  || die 'sales watermark gate does not cover two complete default sync intervals'
 grep -Fq '$final_active == active && $final_load == loaded' "$PREFLIGHT" \
   || die 'active release inspection does not recheck both systemd active and load state'
 for required_text in \
   'deploy/pricing-retired-schema-baseline.tsv' \
   'deploy/pricing-retirement-preflight.sh --report' \
+  '120-second stable source boundary' \
   '30 minutes' \
   'AUTHORIZED:<plane>'; do
   grep -Fq "$required_text" "$RUNBOOK" \
