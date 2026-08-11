@@ -215,3 +215,10 @@ orchestration. The migration changes no existing row, job or constraint and stag
 itself; the orchestrator consumer (worker state machine and the AdminGuard stage/status routes)
 ships only after this migration SHA has green `deploy/migration` and `deploy/watchdog` in
 production.
+
+Migration `0046_scalar_pricing_bounds.sql` adds the missing upper half of the commerce engine
+account mirror's payable-multiplier contract as a separately named CHECK (`mult_bp <= 10000`). The
+existing non-negative CHECK remains untouched, all deployed writers already emit the strict subset,
+and the migration changes no value or job. Production was preflighted with zero rows outside
+`0..10000`. The dependent shared-contract narrowing ships only after this migration SHA has green
+`deploy/migration` and `deploy/watchdog`.

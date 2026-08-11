@@ -374,12 +374,24 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 45);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 46);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
         .map(|(_, sql)| *sql);
     assert_eq!(registered, Some(MIGRATION_0029));
+}
+
+#[test]
+fn account_discount_contract_migration_closes_the_runtime_provider_set() {
+    let normalized = MIGRATION_0046
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(normalized
+        .contains("CHECK (provider_id IN ('anthropic', 'openai', 'google', 'kimi', 'glm'))"));
+    assert!(!normalized.contains("'zhipu'"));
+    assert!(normalized.contains("INSERT INTO engine_schema_migrations(version) VALUES (46)"));
 }
 
 /// A migration records its own version — `apply_migration` runs the SQL but never writes the

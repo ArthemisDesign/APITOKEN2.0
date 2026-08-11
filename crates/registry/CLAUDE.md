@@ -124,12 +124,14 @@ side effect. `serve` may only perform the read-only schema verification before c
   the deletion of the last reservation with the same `COALESCE(group_id,request_id)`. SQLite and PostgreSQL
   must remain semantically identical; the per-process loser counter/log is only an incident tripwire —
   correctness belongs to the table PK.
-- **Account discounts (`account_provider_discounts`, migration `0043`)** — the entire pricing
+- **Account discounts (`account_provider_discounts`, migrations `0043` + `0046`)** — the entire pricing
   policy. An account carries one default multiplier (`accounts.mult_bp`) and, for a provider whose
   terms differ, one override row; `key_account` returns both, and the caller resolves them with
   `KeyAuth::mult_for(provider_id)`. Writes are `set_account_provider_discount` /
   `clear_account_provider_discount`, bounded to `0..=10000` bp and to the five engine provider ids;
-  a write is live on the next authorization. Model — `docs/commerce/PRICING_MODEL.md`.
+  PostgreSQL enforces that same closed set (`anthropic|openai|google|kimi|glm`) in the table; the
+  `zhipu` word in migration 0043's historical comment was never a runtime provider id.
+  A write is live on the next authorization. Model — `docs/commerce/PRICING_MODEL.md`.
 - **Retired pricing machinery.** The per-account policy/binding tables, the immutable
   catalog/switch/policy versions, release-v2, the funding buckets/lots and the shadow evaluation
   authority are no longer read by any runtime path. They were removed on 2026-08-09: strict

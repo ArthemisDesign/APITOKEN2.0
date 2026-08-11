@@ -49,8 +49,12 @@ materialize and nothing that can disagree with the balance.
 | `POST /admin/account/{id}/discounts` `{provider_id, mult_bp}` | Set one provider override; `mult_bp: null` removes it. |
 
 `provider_id` is one of `anthropic`, `openai`, `google`, `kimi`, `glm`; `mult_bp` is `0..=10000`.
-Both bounds are enforced by the engine — an unknown provider id would silently never match a
-request, and an out-of-range multiplier is either free inference or an overcharge.
+The write APIs and both PostgreSQL authorities enforce the closed provider/range contract; commerce
+also fences its account mirror at the same upper bound. An unknown provider id would silently never
+match a request, and an out-of-range multiplier is either free inference or an overcharge. `zhipu`
+appears only as a vendor namespace in GLM tariff/calibration identities, never as a pricing provider
+id; the `zhipu` word in engine migration 0043's historical comment was corrected by the additive
+0046 constraint rather than by rewriting an applied migration.
 
 ## The commerce side
 

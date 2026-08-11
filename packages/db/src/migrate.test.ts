@@ -100,4 +100,25 @@ describe("migration configuration", () => {
       .toMatchObject({ notNull: false, type: "text" });
   });
 
+  it("adds the missing commerce multiplier upper fence as its own checkpoint", () => {
+    const migrationName = "0046_scalar_pricing_bounds.sql";
+    const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, migrationName), "utf8");
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
+    const previousEntry = journal.entries.find((entry) => entry.idx === 45);
+    const currentEntry = journal.entries.find((entry) => entry.idx === 46);
+
+    expect(currentEntry).toMatchObject({
+      idx: 46,
+      version: "7",
+      tag: "0046_scalar_pricing_bounds",
+      breakpoints: true,
+    });
+    expect(currentEntry!.when).toBeGreaterThan(previousEntry!.when);
+    expect(migrationSql).toContain('ADD CONSTRAINT "engine_accounts_mult_bp_upper_check"');
+    expect(migrationSql).toContain('CHECK ("mult_bp" <= 10000)');
+    expect(migrationSql).not.toMatch(/^(?:DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
+  });
+
 });

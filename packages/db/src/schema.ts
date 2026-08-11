@@ -392,6 +392,7 @@ export const engineAccounts = pgTable("engine_accounts", {
   uniqueIndex("engine_accounts_engine_id_uidx").on(table.engineAccountId)
     .where(sql`${table.engineAccountId} IS NOT NULL`),
   check("engine_accounts_mult_bp_check", sql`${table.multBp} >= 0`),
+  check("engine_accounts_mult_bp_upper_check", sql`${table.multBp} <= 10000`),
 ]);
 
 // Multi-provider pricing is introduced as empty, versioned streams. The existing scalar

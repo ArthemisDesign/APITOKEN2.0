@@ -323,6 +323,13 @@
       "when": 1786083566492,
       "tag": "0045_customer_provider_discounts",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1786426500000,
+      "tag": "0046_scalar_pricing_bounds",
+      "breakpoints": true
     }
   ]
 }
