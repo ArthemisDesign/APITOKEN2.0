@@ -3475,6 +3475,9 @@ for (const relative of [...required, ...explicitlyTestless]) {
 }
 NODE
 
+grep -Fxq 'SuccessExitStatus=143' "$ROOT/systemd/apitoken-sales-web.service" \
+  || wd_die 'a normal Next.js SIGTERM is reported as a failed Sales Web rollout'
+
 grep -Fq 'CANDIDATE_RETENTION_SECONDS=$((24 * 60 * 60))' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'prune_expired_candidates' "$ROOT/deploy/watchdog.sh"
 

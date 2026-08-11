@@ -310,7 +310,9 @@ https://partners.apitoken.sale is live. How it is set up on 84.32.48.2:
   `current` symlink — the `isDirectExecution` guard compares realpaths and exits silently.
 - systemd: `apitoken-sales-api.service` (:3100) and `apitoken-sales-web.service` (:3200,
   `next start -H 127.0.0.1` — bind ONLY to loopback). **Gotcha:** sales-web needs `AF_NETLINK`
-  in `RestrictAddressFamilies`, otherwise Next crashes on `uv_interface_addresses`.
+  in `RestrictAddressFamilies`, otherwise Next crashes on `uv_interface_addresses`. Next exits
+  with status 143 after the rollout's normal SIGTERM, so the unit admits exactly 143 as a clean
+  exit; removing that exception turns every planned replacement into a false systemd failure.
 - **sales in the watchdog pipeline (auto-deploy).** Path class `wd_path_is_sales`
   (`apps/sales-api/*`, `apps/sales-web/*`, `packages/sales-db/*`, shared build files) with a separate
   baseline `/var/lib/apitoken/watchdog/sales.sha`. After green tests the watchdog calls
