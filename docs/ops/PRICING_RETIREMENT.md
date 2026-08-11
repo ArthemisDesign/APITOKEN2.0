@@ -303,13 +303,23 @@ authority reconciliation, OpenKeys integrity, and Sales sync errors since the se
 activated.
 
 Diagnostic mode is intentionally not an approval signal: it prints `NOT AUTHORIZED` and exits 3
-even if retention has elapsed. Run it only from the production source checkout; it neither writes
-the databases nor advances a cursor:
+even if retention has elapsed. Run it from the immutable candidate named by the watchdog's
+`processed.sha`, never from the mutable `/opt/apitoken/repo` checkout: that fetch-only repository's
+object database and `origin/master` are current, but its checked-out `HEAD` may deliberately lag.
+The report neither writes the databases nor advances a cursor:
 
 ```bash
-cd /opt/apitoken/repo
+SHA=$(cat /var/lib/apitoken/watchdog/processed.sha)
+CANDIDATE=/var/lib/apitoken/watchdog/candidates/$SHA
+test "$(git -C "$CANDIDATE" rev-parse HEAD)" = "$SHA"
+cd "$CANDIDATE"
 deploy/pricing-retirement-preflight.sh --report
 ```
+
+Validated candidates are retention-bounded. If that exact directory is no longer present, stop and
+use the next watchdog-validated `processed.sha`; do not fall back to the stale checkout or assemble
+an unvalidated source tree by hand. Final mode always runs inside the fresh exact migration
+candidate before candidate retention can remove it.
 
 Final mode is a watchdog migration-stage primitive, not an ad-hoc operator command:
 
