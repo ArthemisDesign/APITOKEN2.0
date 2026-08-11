@@ -376,11 +376,11 @@ export const renameApiKeySchema = z.object({
 
 export type RenameApiKey = z.infer<typeof renameApiKeySchema>;
 
-// The progressive B2C tier ladder was retired with the pricing release cutover on 2026-08-04:
+// The progressive B2C tier ladder is retired:
 // B2C is one flat 50% discount (docs/commerce/PRICING.md). The constant is removed so no new
 // code can resurrect tier semantics; historical rows keep their values as immutable history.
 
-// Welcome credit is an exact platform-balance amount, independent of the active pricing policy.
+// Welcome credit is an exact platform-balance amount, independent of the account multiplier.
 // The legacy nominal remains explicit only for rows issued before exact per-claim storage existed.
 export const B2C_SIGNUP_BONUS_BALANCE_NANO = 5_000_000_000n;
 export const B2C_LEGACY_SIGNUP_BONUS_BALANCE_NANO = 4_000_000_000n;

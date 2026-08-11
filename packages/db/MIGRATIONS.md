@@ -10,6 +10,13 @@
 
 Roll application code back by deploying the previous release; never down-migrate production schema during rollback.
 
+The retired policy/catalog/release/funding objects are a deliberate contract-stage exception to
+routine cleanup: they remain immutable incident evidence until the production retention, rollback,
+watermark, dependency, backup and business-health gates all pass. Their exact 43-table commerce
+manifest and staged forward-only contraction procedure live in
+[`docs/ops/PRICING_RETIREMENT.md`](../../docs/ops/PRICING_RETIREMENT.md). Do not add a drop migration,
+remove the Drizzle declarations or infer permission from elapsed time alone; all gates are conjunctive.
+
 ## Automatic production gate
 
 Do not run production migrations manually during normal delivery. A commit merged to `master` is
@@ -34,7 +41,12 @@ edit, rename, reorder, or delete a committed migration. Destructive contract cha
 later release after backfill and after all old processes no longer depend on the old shape. See the top-level [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and
 [`docs/ops/DEPLOYMENT.md`](../../docs/ops/DEPLOYMENT.md).
 
-## Pricing release v2 checkpoint
+## Historical pricing release v2 migrations (non-executable)
+
+The entries through migration 0044 below describe what each immutable migration did when it was
+delivered. Their workers, routes and runtime authorities have since been removed. Do not stage,
+resume or reconstruct the described release cycle; `docs/commerce/PRICING_MODEL.md` is the live
+pricing contract and `docs/ops/PRICING_RETIREMENT.md` controls the remaining schema evidence.
 
 Migration `0026_pricing_release_expand.sql` is the commerce half of the Stage 5/6/8/9 expansion.
 It creates empty policy documents/rules, B2B invitation snapshots, service inventory,
@@ -230,3 +242,8 @@ The `NOT NULL DEFAULT 0` shape keeps deployed writers and historical rows compat
 business-data rewrite, and stages no reconciliation or commission change. The dependent ledger
 consumer stores the engine field and derives free/paid funding only from the collected remainder;
 it ships only after this migration SHA has green `deploy/migration` and `deploy/watchdog`.
+
+Migrations `0026`–`0044` above remain immutable historical records, not descriptions of the current
+runtime. Their policy/release workers and HTTP consumers have been removed. The objects they created
+are retired under `docs/ops/PRICING_RETIREMENT.md`; historical migration text is not edited to pretend
+those stages never existed.

@@ -1,34 +1,13 @@
-# Multi-provider discount contract and online cutover
+# Multi-provider discount contract and online cutover — historical
 
-**Retired.** The catalog/switch/policy/release machinery below was removed on 2026-08-09. The live
-contract is [PRICING_MODEL.md](PRICING_MODEL.md). This file and the `MULTI_DISCOUNT_STAGE*.md`
-documents are history: they explain what existed and why it was withdrawn, not what to build.
-
-
-Document status: approved target contract dated 2026-08-02, LIVE since the Stage 9 one-head CAS
-on 2026-08-04 (release generation 13; durable cutover receipt in commerce and the engine head
-row). The release-v2 authority governs admission and pricing for every account class. What
-remains below the line is the removal of the retired progressive machinery (§6) and the final
-Definition of Done sweep. This document supersedes the previous progressive-tariff design: the
-target system has no active `track` mode, no tier ladder, and no 30-day retention.
-
-> **Stage machinery removed (2026-08-07).** The commerce firing pins for the Stage 5–9 cycle —
-> the `apps/api` routes (`pricing-stage5-v2`, `pricing-stage6-v2`, `pricing-stage8-capture-v2`,
-> `pricing-shadow-rollout-v2`, `pricing-release-activation-v2`,
-> `pricing-release-orchestration-v2`), the `apps/worker` funding-normalization/Stage 8
-> capture/shadow-rollout/activation/orchestration lanes, the admin-panel control room, and the
-> fixed host gates — are deleted. Prices are now hot data (engine `pricing_tariff_overrides` via
-> `docs/engine/CONTROL_API.md` `/admin/pricing/tariffs/*`) and discounts ship as managed policy
-> rules through the durable pricing-control jobs, so the orchestrated cycle's only remaining
-> effect was hazardous (a silent B2C policy recompile at a hardcoded 5000 bps plus a head CAS).
-> The invariant descriptions below that still hold — ledger lineage, immutable snapshot pinning,
-> evidence-gated head CAS on the engine side — remain the contract; the engine producers under
-> `/admin/pricing/v2/*` are unchanged but no longer driven: the release advance is retired with
-> head 55 as the final pricing release (`docs/ops/MODEL_RELEASE_CYCLE.md`). The `packages/db`
-> stage libraries are deleted as well, including the Stage 5 pair-preparation materializer
-> cluster; new models are priced through the `is_model_unpriced` fallthrough plus a hot tariff
-> seed.
-
+> **Retired in full on 2026-08-09.** The catalog/switch/policy/release runtime, its engine HTTP
+> producers, commerce workers, OpenKeys consumers and shared wire schemas are removed. Nothing
+> below is an executable instruction or current contract; statements such as “live”, “unchanged”
+> and route examples describe the 2026-08-02 through 2026-08-09 historical system only.
+>
+> Current pricing: `docs/commerce/PRICING_MODEL.md`. Retired-schema retention and deletion:
+> `docs/ops/PRICING_RETIREMENT.md`. Historical implementation remains in Git history and must not
+> be restored as a rollback shim.
 ## 1. Accepted product decisions
 
 1. Gemini is a full product provider alongside Anthropic and OpenAI.

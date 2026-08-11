@@ -26,8 +26,9 @@ Contents:
 
 An affiliate (referral) program for **salespeople** who bring customers to apitoken.sale.
 A partner earns **a percentage of what their referrals ACTUALLY SPEND** on API usage (the amount
-charged, accounting for their discount). Commission — ONLY on the portion of spend covered by real
-money: free credit (welcome bonus, promo) is spent first and earns no commission.
+charged, accounting for their discount). Commission — ONLY on the collected portion covered by real
+customer money: free credit (welcome bonus, promo, admin credit) is spent first and earns no
+commission; settlement shortfall funded by the pool earns none either.
 The program is **invite-only**: an account is created only by invitation or after an application
 is approved.
 
@@ -68,27 +69,28 @@ happens only for registration via the link; it does not affect the user's own pr
 ## 4. Commission: on what and how much
 
 A partner earns **a percentage of what a referral actually SPENDS** on API usage — of the amount
-already charged under the effective global/provider/model policy. Every charge records a pricing
-snapshot, so a later change of the provider/model discount does not recompute history.
+already charged under the account's default/provider multiplier. The immutable usage row records
+the customer-funded basis, so a later discount change does not recompute history.
 
-- **Real money only.** Free credit (welcome bonus: historical $4, new $5; promo) **is spent
+- **Real money only.** Free credit (welcome bonus: historical $4, new $5; promo; admin credit) **is spent
   first**: commerce
-  maintains a "free balance" and for every charge computes `real_funded` — the portion covered by
-  real money. Referral commission comes **only from `real_funded`**; the portion paid with free
+  maintains a "free balance" and for every charge computes `real_funded_nano` — the portion covered
+  by real money. Referral commission comes **only from `real_funded_nano`**; the portion paid with free
   credit is zero.
-- The source is the commerce usage feed (charges), field `real_funded` (free-first bucketing in
-  the pricing worker by credit `ref`: `signup-bonus:`/`promo:` = free, `platega:`/… = real).
-- Commission = `commission_bps × real_funded` (integer, floor). `commission_bps` is the partner's
+- The source is the commerce usage feed (charges), where live `amountNano` is already the
+  `real_funded_nano` result of free-first bucketing over the amount actually collected from the
+  customer. Pool-funded settlement shortfall is excluded before the feed.
+- Commission = `commission_bps × real_funded_nano` (integer, floor). `commission_bps` is the partner's
   rate (`1000 bps = 10%`), set by the operator.
 
 Example: a referral actually spent **$100** of their own money on the API → a partner with 10%
 gets **$10**. If they spent the welcome bonus — the partner gets nothing from that portion (free
 credit is spent first).
 
-A salesperson's referrals remain **ordinary B2C**: global 50%, provider/model overrides, welcome
-bonus and promo — like all other B2C customers. The tier-linked referral discount floor is removed
-together with tiers; the partner relationship yields commission, but not a personal pricing policy.
-B2B invitation remains a separate model and does not inherit the global B2C policy.
+A salesperson's referrals remain **ordinary B2C**: their stored default (normally 50%), optional
+provider overrides, welcome bonus and promo — like all other B2C customers. The recorded referral
+floor is partner-attribution/display data, not a personal price. B2B invitation remains a separate
+model with its own default/provider terms.
 
 ## 5. Multi-level structure (sub-salespeople and override)
 
@@ -105,9 +107,9 @@ commission.
   (otherwise they would be giving away the platform's margin). By default a sub-salesperson gets
   the parent's rate.
 
-All accruals are idempotent (by the charge's `commerce_event_id`) and computed in the same
-transaction as the insert of the `partner_usage_events` row (schema v1) or
-`partner_usage_events_v2` (release-v2, basis — exact `paid_funded_nano`).
+All accruals are idempotent by the charge's `commerce_event_id` and computed in the same
+transaction as the usage-row insert. Live scalar and historical v1 rows use
+`partner_usage_events`; `partner_usage_events_v2` remains only for historical release-v2 replay.
 
 ## 6. Wallet and payout currency
 

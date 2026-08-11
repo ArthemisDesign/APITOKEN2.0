@@ -337,23 +337,28 @@ enabled, the envelope is always disabled.
 
 ## 3. Money model (mandatory to understand)
 
-An account has three "buckets"; the engine maintains the invariant:
+An account has one balance plus explicit accounting accumulators; the engine maintains the
+per-account invariant:
 ```
-free_balance + reserved + spent = credited   (always, down to the nanodollar)
+balance + reserved + spent - uncollected = topups + adjustments
 ```
-- **balance_nano** — free money available to spend right now.
+- **balance_nano** — customer balance available to reserve; it may be negative within the shared
+  account floor, or lower after an explicit debit/clawback records debt.
 - **reserved_nano** — temporarily held for "in-flight" requests (the engine reserves a ceiling before
   the request and returns the difference after). You don't touch this — just know that "in the moment" the balance
   may be slightly lower by the amount of in-flight requests.
-- **spent_nano** — total spent (monotonically increasing).
+- **spent_nano** — total full billed usage (monotonically increasing).
+- **uncollected_nano** — the part of full billed usage the account-wide settlement floor prevented
+  the customer balance from collecting. It is explicit pool-loss evidence, not customer payment.
 - **mult_bp** — the account's payable default multiplier in basis points, bounded to `0..10000`:
   `2000 = ×0.20`. A row in `account_provider_discounts` overrides it for one canonical provider;
   otherwise this scalar prices the request. It is live state, not a migration fallback.
 
-Admission atomically permits at most the shared −$1 account overdraft floor so concurrent funded
-requests are not rejected spuriously. A later settlement still records the real delivered usage,
-and an explicit debit/clawback can take an already-spent account lower; a non-positive account is
-blocked from new paid requests. Service accounts are the explicit zero-charge exception.
+Admission and settlement lock the same account row and atomically enforce the shared −$1 floor.
+Settlement records full delivered usage and any amount it could not collect separately, rather
+than multiplying the floor by the number of concurrent requests or silently discarding cost. An
+explicit debit/clawback can take an already-spent account lower as recorded debt; a non-positive
+account is blocked from new paid requests. Service accounts are the explicit zero-charge exception.
 
 ---
 
@@ -364,9 +369,8 @@ blocked from new paid requests. Service accounts are the explicit zero-charge ex
 2. `POST /admin/account` → the engine returns `account_id` (`acct_…`). Store it next to the user.
    A retry with the same non-empty `handle` returns the same account, so registration recovery
    is idempotent and does not create orphaned accounts.
-3. `POST /admin/key` with this `account_id` → the engine returns **`sk-pool-…`**. For a strict account
-   the request must include the exact `activation_policy_ack` from the applied active policy. Show the key
-   to the user **once** (it is their API key, a secret). An account can have many keys.
+3. `POST /admin/key` with this `account_id` → the engine returns **`sk-pool-…`**. Show the key to
+   the user **once** (it is their API key, a secret). An account can have many keys.
 
 ### B. Payment → credit (IDEMPOTENT!)
 1. The user pays → your payment provider sends you a **webhook**.
@@ -409,8 +413,7 @@ POST /admin/accounts/query              {"account_ids":["acct_…"]}   → 200 {
                                                                             status,handle}]} (1..500 id;
                                                                             400 on an empty/invalid list)
 GET  /admin/account/{id}                                             → 200 {account, balance_nano, spent_nano,
-                                                                            reserved_nano, balance, mult_bp, status, handle,
-                                                                            funding:{...}} | 404
+                                                                            reserved_nano, balance, mult_bp, status, handle} | 404
 POST /admin/account/{id}/credit         {"amount_nano": "25000000000",
                                          "ref": "<provider>:<tx>"}   → 200 {account, balance_nano, balance} | 400 | 404 | 409
                                         (amount_nano only — a decimal i64 string in nano;
@@ -438,9 +441,7 @@ GET  /admin/account/{id}/keys                                        → 200 {ke
                                                                             created_ts,last_used_ts}]}
 GET  /admin/account/{id}/ledger?limit=N[&after_id=ID]                 → 200 {entries:[{id,kind,request_id,
                                                                             amount_nano,ref,ts,provider,
-                                                                            official_nano,uncollected_nano,
-                                                                            attribution,
-                                                                            funding_allocations,...}]}
+                                                                            official_nano,uncollected_nano,...}]}
 POST /admin/account/{id}/ledger/ack     {"last_id": "12345"}          → 200 {account, consumer:"pricing",
                                                                             last_id} | 400
                                         (durable watermark for consumer="pricing": a decimal string
@@ -459,21 +460,8 @@ GET  /admin/account/{id}/usage?window=30d                            → 200 {ac
 ```
 
 Without `after_id`, ledger entries are the newest bounded history. With `after_id`, entries are
-returned oldest-first with `id > after_id`; this is the durable worker cursor for usage attribution,
-funding validation and referral commission. It is no longer a tier/progressive-pricing authority in
-the target contract.
-
-`funding` is read together with the scalar account aggregates from one snapshot. It contains
-`account_class`, `funding_enforcement`, `reconciliation_state`, `bucket_count` and, for
-`balance/reserved/spent`, separate `paid_*_nano`, `bonus_*_nano`, `other_*_nano` and
-`unattributed_*_nano`. In the current schema `bonus` may reference the historical
-`welcome_track_bonus`; target writers create the provider-independent `welcome_bonus`, available to any
-B2C model. `paid` means durable paid funding. Online Stage 6 classifies the exact welcome
-remainder, and all other legacy residual as paid per the approved contract; the manual reviewer artifact
-is not used. An active legacy reservation does not require an idle gap if the exact source state proves a
-fully paid reserve: the normalization transaction simultaneously creates the generation/head and its
-immutable paid-only funding snapshot without changing the persisted pricing identity. An ambiguous live
-welcome reserve remains a typed blocker.
+returned oldest-first with `id > after_id`; this is the durable worker cursor for usage accounting
+and referral commission. It is not a pricing authority.
 
 A new ledger row persists the expand-compatible top-level `request_id`, `provider`, `official_nano`
 and non-negative `uncollected_nano`. For a charge, `amount_nano` remains the full billed actual and
@@ -488,26 +476,9 @@ the full settlement fingerprint is allowed: the same account, null-safe key/ref/
 only if all candidates contain the same non-empty value; ambiguity stays `null`,
 and a disagreement between the recovered value and the persisted ledger provider closes the read with an error.
 The model participates only in the full fingerprint and is never converted into a provider.
-`attribution` is `null` for a historical row without `attribution_schema_version`; otherwise it
-carries the persisted snapshot/policy/rule/catalog/switch/tariff/eligibility/runtime-manifest fields,
-`official_cost_json`, categorical funding totals and the original `funding_allocation_json` without
-re-resolving. `funding_allocations` is always an array of normalized durable
-allocations (`bucket_id`, `source_type`, `source_ref`, `bucket_version`, `direction`, `amount_nano`,
-optional `allocation_order`); old rows honestly return an empty array. All `*_nano`, ledger
-IDs and generations remain integer JSON values; `packages/contracts` normalizes them into decimal
-strings before they reach JavaScript business logic.
-
-After Stage 9, release-v2 settlement charge rows carry `attribution` with
-`snapshot_kind="release_v2"` and `attribution_schema_version=2`: release lineage
-(`release_schema_version`, `release_generation`, `release_digest`, `release_billing_mode`,
-`release_funding_generation`), `account_class`, the exact `paid_funded_nano`/`bonus_funded_nano`/
-`other_funded_nano` split of the actual charge (their sum always equals `amount_nano`),
-the `snapshot_digest` of the reserve-time snapshot and `funding_allocation_json` with the v2 lot identity
-(`lot_id`, `lot_source_type`, `lot_version`, `direction`, `amount_nano`, `allocation_order`), mirroring the
-durable `funding_ledger_allocations_v2`. The legacy fields `pricing_mode`, `rule_origin` and
-`*_eligible` on such rows remain `null`: commission eligibility for the release-v2 consumer
-is computed by the consumer itself from `account_class` + `paid_funded_nano`, not from the pricing mode. A `meter_only`
-(service) settlement does not create a charge row at all.
+The Control API does not expose the retired policy attribution or funding-allocation payloads.
+All `*_nano` and ledger IDs are integer JSON values; `packages/contracts` normalizes them into
+decimal strings before they reach JavaScript business logic.
 
 `GET /admin/account/{id}/usage` aggregates the persisted immutable settlement components over
 a fixed half-open interval `[since_ts, until_ts)` — it is NOT a recompute against the current price list. All
@@ -521,19 +492,12 @@ by models, days, providers and masked keys.
 ### Access keys
 ```
 POST /admin/key                         {"account_id", "label"?,
-                                         "spend_limit_nano"?, "expires_ts"?,
-                                         "activation_policy_ack"?: {
-                                           "effective_policy_version": integer,
-                                           "policy_digest": string
-                                         }}
+                                         "spend_limit_nano"?, "expires_ts"?}
                                                                      → 200 {key:"sk-pool-…", key_id:"key_…", account,
                                                                             label,spend_limit_nano,expires_ts}
                                                                        | 400 | 409  (key is visible 1 time!)
-POST /admin/key-id/{key_id}/status      {"status":"active"|"disabled",
-                                         "activation_policy_ack"?: {
-                                           "effective_policy_version": integer,
-                                           "policy_digest": string
-                                         }} → 200 {key_id,status,updated} | 400 | 404 | 409 (recommended)
+POST /admin/key-id/{key_id}/status      {"status":"active"|"disabled"}
+                                                                     → 200 {key_id,status,updated} | 400 | 404 | 409 (recommended)
 POST /admin/key-id/{key_id}/label       {"label":"…"}                → 200 {key_id,label,updated} | 400 | 404
                                         (1..64 characters after trim)
 POST /admin/account/{id}/key-id/{key_id}/policy
@@ -547,13 +511,6 @@ POST /admin/account/{id}/key-id/{key_id}/policy
 must revoke keys by `key_id`, so that a usable `sk-pool-…` is never persisted.
 The full key never appears in a URL; the legacy endpoint has been removed.
 
-For a strict account, issuing a new key and moving a disabled key back to `active` require an ACK
-that matches the current active policy's `effective_version` and `content_digest` verbatim.
-A missing, stale or incorrect ACK returns `409`; a syntactically valid but invalid identity
-(non-positive version, empty/untrimmed digest) returns `400`. Disabling a key
-does not require an ACK. For a legacy/shadow account the field is optional, but if it is passed, the engine
-still checks the exact match and does not accept an ambiguous confirmation.
-
 `spend_limit_nano` is an optional positive decimal string and caps lifetime charged platform spend
 for that key. `expires_ts` is an optional future Unix timestamp in seconds. The engine enforces both
 again inside the atomic reservation transaction, including in-flight holds, so concurrent requests
@@ -563,492 +520,18 @@ It can increase or clear a limit and extend or clear expiry without changing key
 limit below `spent_nano + reserved_nano` is rejected atomically with `409` and code
 `limit_below_committed`, so an edit cannot invalidate an in-flight reservation.
 
-### Versioned multi-provider pricing (Stage 3C)
+### Scalar and per-provider pricing
 
-Pricing control is an explicit `prepare → read → activate` protocol. Preparing an immutable
-version never changes traffic. Activation is a monotonic compare-and-set (CAS), and callers must
-send the exact expected active target. Catalog, switches, and account policy are separate heads;
-the supported order for a new release is catalog first, then switches, then policy.
+The account default and provider overrides documented under **Accounts** are the complete live
+customer-pricing control surface. Writes are bounded to `0..10000`, apply to the next authorization
+read and require no prepare/activate sequence. Hot tariff routes below control official upstream
+costs; they do not replace an account's payable multiplier.
 
-```
-POST /admin/pricing/catalog/prepare
-GET  /admin/pricing/catalog/{product_id}/version/{generation}
-GET  /admin/pricing/catalog/{product_id}/active
-POST /admin/pricing/catalog/{product_id}/activate
-
-POST /admin/pricing/switches/prepare
-GET  /admin/pricing/switches/version/{generation}
-GET  /admin/pricing/switches/active
-POST /admin/pricing/switches/activate
-
-POST /admin/pricing/policy/prepare
-GET  /admin/pricing/policy/{account_id}/version/{effective_version}
-GET  /admin/pricing/policy/{account_id}/active
-GET  /admin/pricing/policy/{account_id}/state
-POST /admin/pricing/policy/{account_id}/activate
-POST /admin/pricing/policy/{account_id}/locked-openkeys-transition
-```
-
-Prepare bodies are the complete immutable `PricingCatalogSpec`, `ProviderSwitchSpec`, or
-`AccountPolicySpec`. They include schema/capability generations and digests, content digest, full
-entries/rules, and all policy lineage pins. Unknown JSON fields are rejected. A prepare ACK returns
-`result=stored|unchanged` and echoes the complete immutable identity; the same version with a
-different body is `409 version_conflict`.
-
-Catalog activation repeats the complete prepared immutable spec rather than only its compact
-version/digest target:
-
-```json
-{
-  "catalog": {
-    "product_id": "main",
-    "generation": 2,
-    "schema_version": 1,
-    "capability_generation": 4,
-    "capability_digest": "sha256:capability...",
-    "content_digest": "sha256:catalog...",
-    "entries": []
-  },
-  "expectation": {"exact": {"version": 1, "content_digest": "sha256:..."}}
-}
-```
-
-Switch activation likewise sends `switches` with the complete prepared `ProviderSwitchSpec` plus
-the CAS `expectation`. Use `"expectation":"absent"` only for the first catalog or switch head.
-Account-policy activation sends the complete prepared `policy`, the complete target `binding`, and
-`expectation="unbound"|{"inactive":...}|{"exact":...}`. Catalog `product_id` and policy
-`account_id` must match the URL. Before CAS, the engine reads the named immutable generation and
-requires exact spec equality; a missing prepared version is `missing_dependency`, while different
-content under the same version is `version_conflict`.
-
-Successful activation returns `result=applied|unchanged`. Exact retry after a lost ACK returns
-`unchanged` for the same committed target. Its identity echoes the complete catalog/switch spec, or
-the complete policy plus derived binding target, together with the expectation. Rejections are
-typed and retain evidence:
-
-- `400 invalid` — malformed schema, rules, identity, binding, or unsupported strict state;
-- `409 missing_dependency` — required prepared/active catalog or switches are absent;
-- `409 stale` — target is older than durable state;
-- `409 version_conflict` — same version has another digest/content;
-- `409 cas_mismatch` / `policy_cas_mismatch` — expected head/binding differs; response includes
-  the actual durable state;
-- `423 locked` — immutable legacy policy cannot be replaced.
-
-#### Shadow lineage rebind (B2C↔B2B class change)
-
-An account's policy lineage identity (`policy_id`, owner, `account_class`, `product_id`) is
-immutable once established — with one additive exception. While the account's stored binding is
-`policy_enforcement="shadow"` (pre-strict rehearsal, where billing still runs off the legacy
-scalar), a prepare whose spec carries a different class/product identity is accepted as a rebind:
-the new lineage starts its own `policy_version` sequence while `effective_version` must stay
-monotonic across the whole account history. Activation of a rebind version still CAS-pins the
-exact OLD lineage target and requires the target binding to remain `shadow`; it atomically moves
-the binding row to the new class/product. This is the delivery path for B2C→B2B conversions,
-which move the account from the shared `global-b2c` policy to its own `b2b_client` policy. Once
-enforcement is `strict`, identity is fully immutable and a class/product change is
-`409 version_conflict`. A same-class lineage change (different `policy_id`/owner without a
-class/product change) is never a rebind and stays `409 version_conflict` even under `shadow`.
-
-`GET .../state` reads the live scalar, policy binding, pinned policy catalog/switches, and current
-admission catalog/switches in one database snapshot. Stage 3C does not backfill data, issue keys,
-enable strict enforcement, or bypass the catalog → switches → policy order.
-
-#### Replacement-locked legacy OpenKeys transition
-
-`POST /admin/pricing/policy/{account_id}/locked-openkeys-transition` is an additive
-producer-first exception for one migration shape; it is not a general policy-unlock operation.
-The request is:
-
-```json
-{
-  "policy": {
-    "account_id": "openkeys-account",
-    "effective_version": 2,
-    "policy_id": "openkeys:openkeys-account",
-    "policy_version": 2,
-    "source_policy_digest": "sha256:managed-source",
-    "owner_type": "open_keys",
-    "owner_id": "openkeys-account",
-    "account_class": "open_keys",
-    "product_id": "openkeys",
-    "schema_version": 1,
-    "catalog_generation": 5,
-    "switch_generation": 5,
-    "content_digest": "sha256:managed-policy",
-    "replacement_locked": false,
-    "rules": [
-      {
-        "rule_id": "openkeys-anthropic-1to1",
-        "rule_digest": "sha256:anthropic-rule",
-        "scope": {"provider": {"provider_id": "anthropic"}},
-        "pricing_mode": "discount",
-        "rule_origin": "managed",
-        "discount_bps": 0,
-        "payable_multiplier_bp": 10000,
-        "track_eligible": false,
-        "retention_eligible": false,
-        "commission_eligible": false
-      },
-      {
-        "rule_id": "openkeys-openai-1to1",
-        "rule_digest": "sha256:openai-rule",
-        "scope": {"provider": {"provider_id": "openai"}},
-        "pricing_mode": "discount",
-        "rule_origin": "managed",
-        "discount_bps": 0,
-        "payable_multiplier_bp": 10000,
-        "track_eligible": false,
-        "retention_eligible": false,
-        "commission_eligible": false
-      }
-    ]
-  },
-  "expected_active": {
-    "target": {
-      "version": 1,
-      "content_digest": "sha256:legacy-policy"
-    },
-    "binding": {
-      "policy_enforcement": "legacy_scalar",
-      "funding_enforcement": "legacy_single",
-      "reconciliation_state": "pending"
-    }
-  }
-}
-```
-
-`policy.rules` must contain only managed provider rules for the providers enabled by the named
-catalog/switch lineage. Every rule has `pricing_mode=discount`, `discount_bps=0`,
-`payable_multiplier_bp=10000`, and all track/retention/commission flags false. Model rules,
-discounted OpenKeys, an empty ruleset, identity changes, retained replacement lock, or a version
-jump other than exactly one are `400 invalid`.
-
-Under the account policy lock the engine verifies that `expected_active` is the exact current and
-latest replacement-locked legacy OpenKeys policy, validates both old and new policies against the
-live account multiplier and immutable dependencies, and requires the successor's exact catalog and
-switch targets to be active. One SQLite/PostgreSQL transaction then inserts the immutable successor
-and CAS-moves the binding to:
-
-```json
-{
-  "policy_enforcement": "shadow",
-  "funding_enforcement": "legacy_single",
-  "reconciliation_state": "verified"
-}
-```
-
-Success is `result=applied`; an exact retry after a lost ACK is `result=unchanged`. A competing
-binding change is `409 policy_cas_mismatch`; missing/inactive exact dependencies and immutable
-version conflicts retain the normal typed pricing errors. Any child insert or CAS failure rolls the
-whole transaction back. The transaction also consumes the source replacement lock: the historical
-locked row is cleared atomically with the binding switch, so later generations advance the
-engine-validated canonical managed 1:1 successor through the generic policy prepare/activate CAS
-lane. Until that transition, and for any lineage whose active policy is still replacement-locked,
-generic policy prepare/activate return `423 locked`. A second transition on the same lineage is
-rejected by the successor identity validation; an exact replay of the applied transition remains
-`result=unchanged`. Lineages whose one-time transition applied before lock consumption shipped
-keep a stale lock on the historical source row while the active target is already the canonical
-successor. Only the validated transition can move the active target off a locked row, so such a
-superseded lock is spent: the next generic policy prepare consumes that exact stale lock
-atomically (account, effective version, content digest, flag set) and proceeds with the normal
-prepare. A lock on the active row — or on a lineage with no active row, where the transition is
-still pending — still fails closed with `423 locked`. The transition changes neither live price nor funding authority: it only makes the
-canonical OpenKeys 1:1 successor available in shadow before the all-account Stage 9 release-head
-CAS. Consumers are connected after the GREEN producer SHA: strict request/identity schemas live in
-`packages/contracts`, and the typed transport is
-`EngineClient.lockedOpenkeysPolicyTransition`. The durable Stage 7 shadow-rollout lane
-(`packages/db` store, bounded `apps/worker` delivery, AdminGuard staging/read endpoints in
-`apps/api`) that was its only production caller was removed with the dismantled release cycle —
-the endpoint currently has no live consumer; the historical protocol record is
-`docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
-
-### Pricing release v2: producer and read surface
-
-Engine PostgreSQL exposes an additive producer-first surface for the immutable release/funding-v2
-authority. Head 55 is the final pricing release (`docs/ops/MODEL_RELEASE_CYCLE.md`): the
-release-advance producers `POST /admin/pricing/v2/stage8-evidence/capture` and
-`POST /admin/pricing/v2/activate` (and the `claude-api db stage8-evidence` CLI) were deleted with
-their last caller. The rest of the v2 surface — immutable prepare/read, head,
-provisioning-context, inventory, assignment extensions and funding normalization — stays live
-while the release resolver and post-cutover provisioning consume it:
-
-```text
-POST /admin/pricing/v2/policy/prepare
-GET  /admin/pricing/v2/policy/{policy_id}/version/{policy_version}
-GET  /admin/pricing/v2/policy/{policy_id}/latest
-POST /admin/pricing/v2/release/prepare
-GET  /admin/pricing/v2/release/{generation}
-POST /admin/pricing/v2/recovery-link/prepare
-GET  /admin/pricing/v2/recovery-link/{target_generation}/{recovery_generation}
-POST /admin/pricing/v2/assignment-extension/prepare
-GET  /admin/pricing/v2/assignment-extension/{head_version}/{account_id}
-POST /admin/pricing/v2/opt-out
-GET  /admin/pricing/v2/head
-GET  /admin/pricing/v2/provisioning-context
-GET  /admin/pricing/v2/inventory?after_account_id=<id>&limit=500
-GET  /admin/pricing/v2/funding/{account_id}/normalization
-POST /admin/pricing/v2/funding/{account_id}/normalization
-```
-
-Policy/release/link/assignment-extension rows are append-only; policy and release identities are
-monotonic by policy version or release generation. `GET .../policy/{policy_id}/latest` returns
-`{"policy": <newest complete immutable policy>}` or `404` when that lineage is absent. It is a
-read-only reconciliation surface for a consumer whose local evidence can lag a successfully prepared
-engine policy; it does not allocate a version or weaken prepare-time monotonicity. Prepare returns the
-same typed `stored|unchanged|stale|version_conflict|missing_dependency|invalid` result envelope as
-Stage 3C. `GET .../head` returns the singleton head (`{ "head": null }` only where no release was
-ever activated); with the release advance retired, no route moves it any more.
-Prepare routes cannot move the global head, mutate an immutable
-release manifest or change balances.
-An assignment extension can make one post-cutover account resolvable under an already-active head;
-the provisioning consumer must therefore complete its exact readback before issuing or enabling a
-usable customer key.
-
-`POST /admin/pricing/v2/opt-out` is the one-way dual-path writer of the release-v2 retirement
-(head 55 is final). The request shape is `{account_id, created_by?, reason?}` (unknown fields are
-rejected; each supplied string must be non-empty and trimmed). `created_by`/`reason` are operator
-attribution echoed back in the response identity — migration 0039 added only the marker column,
-so they are not durably stored; the durable authority is the marker timestamp itself. The write
-runs on the billing single writer in one transaction:
-
-- the account row is locked `FOR UPDATE`; an existing `pricing_release_opt_out_ts` makes any
-  well-formed call an exact replay returning `{"result":"unchanged","pricing_release_opt_out_ts":
-  <stored ts>}` without a mutation (the marker is keyed by the account; attribution is not part
-  of the replay identity);
-- otherwise the guard fails closed: the account must prove a LIVE strict path — an `active`
-  account and a `strict/strict/verified` policy binding (the same state the strict reserve gate
-  and the migration-0016 strict triggers require) — plus key safety: either the account has NO
-  active unexpired keys at all (nothing can be served with a stale ACK; the first later key is
-  born with the current ACK through strict issuance), or at least one active, unexpired key whose
-  activation ACK matches the active binding exactly (the `KeyAuth::active_at` strict-ack check).
-  An account with active keys and no current ACK is rejected: opting it out would silently strand
-  it on the stale `accounts.mult_bp` scalar. Without the proof the route answers 409
-  `missing_dependency` (`active_strict_policy_binding`, or `account` for an unknown id);
-- on success it answers 200 `{"result":"applied","pricing_release_opt_out_ts":<engine now()>}`
-  and the account's requests fall through to the strict-policy/legacy reserve paths while the
-  release head keeps serving every other account.
-
-Service accounts migrate through the same guard unchanged: once their service-class strict policy
-carries managed discount rules with `payable_multiplier_bp=0` (the meter-only strict lane,
-migration 0040 — engine validation admits payable 0 only for `account_class='service'`), a
-`strict/strict/verified` service binding with an ACK'd key proves the live strict path. After the
-opt-out the strict reserve holds exactly zero for such a rule, settlement meters full official
-usage into `usage_events` with the immutable policy attribution and creates NO ledger charge row,
-and the balance gate never rejects the account — the strict-path equivalent of release
-`meter_only`.
-
-In-flight release-v2 reservations of the account are unaffected and settle exactly once from
-their immutable reserve-time snapshots (settlement is dispatched by the snapshot, never by the
-marker); migration 0016's `account_policy_bindings_strict_state` trigger independently forbids
-the strict binding cutover while such reservations are active, so a guarded opt-out can only
-succeed on an already drained account. There is NO opt-in endpoint by design; repair is a
-support migration. The commerce consumer ships with the release-v2 retirement: the new-account
-direct strict chain (`packages/db/src/strict-chain.ts`), key issuance for a chain-armed account
-(`apps/api/src/account.service.ts`) and OpenKeys issuance
-(`apps/openkeys/src/lib/openkeys-pricing.ts`) call this route through
-`EngineClient.optOutPricingReleaseV2`, and the strict request/response zod contracts live in
-`packages/contracts` (`pricingReleaseOptOutRequestV2Schema`/`pricingReleaseOptOutAckV2Schema`).
-
-`GET /admin/pricing/v2/provisioning-context` is the post-cutover discovery authority for account
-provisioning outside the commerce database. It returns `{ "context": null }` before cutover. After
-cutover, `context` is materialized in one PostgreSQL `REPEATABLE READ READ ONLY` snapshot:
-
-```text
-head = { active_generation, active_digest, head_version, updated_ts }
-activation = { activation_id, activation_kind=cutover|recovery|successor,
-               evidence_digest, activated_ts }
-active_release = {
-  generation, release_kind, schema_version,
-  capability_generation, capability_digest,
-  main_catalog_generation, main_catalog_digest,
-  openkeys_catalog_generation, openkeys_catalog_digest,
-  switch_generation, switch_digest,
-  inventory_digest, funding_manifest_digest,
-  minimum_runtime_schema_version, content_digest
-}
-paired_recovery? = { release=<same projection>, recovery_link=<exact immutable link> }
-```
-
-The producer joins the exact head-version activation audit to its persisted passed Stage 8
-evidence, verifies target/recovery identities, immutable runtime/funding lineage, base funding
-assignment parity and the evidence-selected recovery link. Any disagreement returns authority
-unavailable; it never falls back to an arbitrary prepared link. An active target has exactly one
-`paired_recovery`; an active recovery has `paired_recovery=null` because no later pair has been
-confirmed by that head transition. The projection deliberately omits full base assignments: the
-account-specific extension remains the sole post-cutover assignment write contract.
-
-`PricingReleasePolicyV2` has the following exact shape (all unknown fields are rejected):
-
-```text
-policy_id, policy_version, owner_type, owner_id, account_class,
-product_id?, billing_mode, schema_version=2,
-capability_generation, capability_digest,
-catalog_generation?, catalog_digest?, switch_generation?, switch_digest?,
-content_digest,
-rules[] = { rule_id, rule_digest,
-            scope = { scope=global }
-                  | { scope=provider, provider_id }
-                  | { scope=model, provider_id, canonical_model_id },
-            discount_bps, payable_multiplier_bp }
-```
-
-Each rule's outer `scope` field contains the strict tagged snake-case object shown above; provider
-and model identity are inside that object, not sibling rule fields. Engine validation requires
-`payable_multiplier_bp = 10000 - discount_bps`, one global rule for B2C, no global rule for B2B,
-and one global zero-discount rule for OpenKeys. Service policy is rule-free, has no product/catalog/
-switch pins and uses only `billing_mode=meter_only`.
-
-`PricingReleaseV2` has:
-
-```text
-generation, release_kind=target|recovery, schema_version=2,
-capability_generation, capability_digest,
-main_catalog_generation, main_catalog_digest,
-openkeys_catalog_generation, openkeys_catalog_digest,
-switch_generation, switch_digest,
-inventory_digest, policy_manifest_digest, assignment_manifest_digest,
-funding_manifest_digest, minimum_runtime_schema_version, content_digest,
-assignments[] = { account_id, account_class, policy_id, policy_version, policy_digest,
-                  billing_mode, funding_generation?, purpose?, responsible?,
-                  assignment_digest }
-```
-
-Prepare runs under the release control-plane advisory lock and rejects any release whose unique
-assignments do not equal the exact full engine inventory, including both `active` and `disabled`
-accounts. Keeping disabled accounts in the immutable graph guarantees that a later enablement
-cannot expose an account without its prepared policy/funding identity. Every balance assignment must
-reference an existing funding generation; every service assignment is `meter_only`, has no funding
-generation and includes non-empty `purpose`/`responsible`. Main/OpenKeys catalogs, switches,
-policies and all digests must already exist with matching capability lineage. A recovery link binds
-a prepared `target` generation to a strictly newer prepared `recovery` generation.
-
-`PricingReleaseAssignmentExtensionV2` is the post-cutover provisioning shape (all unknown fields
-are rejected):
-
-```text
-provisioning_head_generation, provisioning_head_digest, provisioning_head_version,
-paired_recovery_generation?, paired_recovery_digest?, extension_group_digest,
-members[] = {
-  release_generation,
-  assignment = { account_id, account_class, policy_id, policy_version, policy_digest,
-                 billing_mode, funding_generation?, purpose?, responsible?, assignment_digest },
-  extension_digest
-}
-```
-
-Prepare takes the pricing-release control-plane advisory lock (the lock the retired activation CAS
-also used) and accepts
-only the exact current head. If that active target's activation evidence selected a recovery link,
-`members` must contain that exact atomic active/recovery pair; another prepared link or an omitted
-pair returns typed `missing_dependency`. An active recovery contains exactly the active member.
-Both members must name
-the same account, policy, class, billing mode, funding generation and service metadata while keeping
-their own release generation, assignment digest and extension digest. The account must already
-exist. For an account absent from both immutable base assignment manifests, every policy/funding
-dependency must exist. An account that is present in the base manifest is accepted in exactly two
-forms, so the immutable base is never rewritten. The first is an exact policy-version override:
-the extension references the same policy identity at a strictly newer version with identical
-account class, billing mode, funding generation and service metadata. The second is a B2C-to-B2B
-class-changing conversion: the extension references a new B2B policy lineage (a different
-`policy_id`, so the strictly-newer-version requirement does not apply to it) while the base side
-must be exactly `b2c` with `balance` billing, the extension side exactly `b2b` with `balance`
-billing, the funding generation non-null and identical to the base's, and purpose/responsible
-metadata identical to the base's (null on both sides for balance classes). Every other class
-transition — to or from `openkeys`, to or from `service`, and `b2b` back to `b2c` — and any
-billing-mode, funding-generation or metadata mismatch stays rejected as a typed
-`missing_dependency`.
-Balance accounts take the account funding lock and require the assignment
-generation to be the exact active funding head; service accounts remain `meter_only` with no
-funding generation.
-
-An exact replay returns `unchanged`, a different body for the same
-`(provisioning_head_version, account_id)` returns `version_conflict`, and a request for a head that is
-no longer current returns typed `stale` without inserting either member. `GET` performs exact
-readback by that tuple. Runtime resolution reads one coherent base assignment or append-only
-extension for the active release, preferring the extension when both exist; it never mutates the
-immutable release manifest. Reserve snapshots pin the resolved assignment identity, and the
-release-v2 snapshot invariants accept either the base lineage or the exact extension lineage
-(engine migration 0031). This surface does
-not create or activate a head.
-
-The retired release-advance producers — `POST /admin/pricing/v2/stage8-evidence/capture`,
-`POST /admin/pricing/v2/activate` and the `claude-api db stage8-evidence` CLI — were deleted
-together with their engine billing-actor commands, the `crates/registry::stage8` evidence builder
-and the `postgres_activate_pricing_release_v2` head CAS. Their durable commerce consumers were
-already removed with the dismantled release cycle, and the manual release-advance runbook was
-retired with head 55 as the final pricing release (`docs/ops/MODEL_RELEASE_CYCLE.md`). The
-`pricing_stage8_evidence_v2` and `pricing_release_activations_v2` tables remain as dormant
-history: the provisioning context above still joins the exact head-version activation audit to its
-persisted passed Stage 8 evidence.
-
-Inventory is ordered by `account_id`, returns at most 500 rows plus `next_after_account_id`, and
-contains status, legacy scalar, integer balance/reserved/spent and nullable funding-v2 head identity.
-It contains no key secret. Consumers must exhaust the cursor and join this engine inventory with the
-authoritative commerce/OpenKeys inventories; a partial page is never release evidence.
-
-Funding normalization is an account-local content-addressed producer and cannot activate pricing.
-`GET .../normalization` returns:
-
-```text
-normalization = {
-  account_id, account_status,
-  status = ready|blocked|normalized,
-  source = aggregate_paid_only|ledger_replay|legacy_buckets|stored_generation,
-  source_state_digest = sha256:v2:...,
-  normalization_digest?, funding_generation?, funding_head_version?,
-  balance_nano, reserved_nano, spent_nano,
-  lots[] = {lot_id, source_type=paid|welcome_bonus, source_ref,
-            balance_nano, reserved_nano, spent_nano, version, status},
-  blockers[] = {code, detail}
-}
-```
-
-`POST` accepts a strict body
-`{expected_source_state_digest, expected_normalization_digest}`. A successful response has
-`result.status=stored|unchanged`; `stale|blocked|conflict` return HTTP 409 together with a freshly
-rebuilt `result.normalization`; an unknown account returns 404; a malformed digest/body returns 400/422.
-Apply takes the same account funding lock as reserve/settlement/top-up and atomically writes the generation,
-lots and initial head. A legacy in-flight request blocks only its own account; a writer that waited for the lock
-re-reads the new head and dual-writes into funding v2. There is no global drain.
-An unrevoked `signup-bonus:<subject>` remains `welcome_bonus`, but an exact full negative
-`bonus-revoke:<subject>` for the same subject converts the entire current aggregate to `paid`: the entitlement
-is revoked and historical pre-revoke gaps do not restore it. Partial, mismatched, duplicate
-or mixed active/revoked evidence returns `invalid_ledger_evidence`, not a guessed plan.
-
-Assignment-extension typed TS consumers are connected only after the green exact producer SHA.
-`packages/contracts` strictly validates the nullable provisioning context and the exact active/recovery pair;
-`packages/engine-client` is the sole typed transport and the owner of the canonical Stage 5 v2
-policy/assignment digest builder. As originally connected, with a non-null context the commerce,
-OpenKeys and service writers
-completed the required account-local chain, the exact policy/extension prepare+GET readback and a fresh
-final context check before issuing a usable key or declaring a service account available.
-OpenKeys first credited the face value, then normalized funding and persisted the global 1:1 policy;
-the service policy is rule-free, `meter_only`, without funding/catalog/switch pins and with mandatory
-purpose/responsible. An active target gets only the evidence-selected recovery member; an active
-recovery gets one member. `apps/api` additionally repeated the commerce key check after the remote issue;
-if the head or authority changed, the key was disabled before the raw secret was returned. With `context=null`
-the consumer keeps the pre-cutover path and materializes nothing release-v2, so a deploy by itself does not
-start the cutover.
-With the release-v2 retirement (phase 2.1) the commerce registration and OpenKeys extension writers
-are deleted: new accounts of both contexts reach a usable key through the direct strict path and the
-`POST /admin/pricing/v2/opt-out` marker above. The remaining extension writers are the service
-writer (`ensureServicePricingReleaseProvisioningV2` — service `meter_only` accounts stay on the
-release path because the engine has no meter-only lane outside release-v2) and the B2B override
-sync (`packages/db/src/pricing-release-override-v2.ts`), which pins a strictly newer same-policy
-version or a class-changing conversion only for release-covered accounts; strict/opted-out
-accounts report `policy_owned` and their saves ride the policy_v1 delivery lane.
-Data-plane reserve/settlement do not take the release control-plane lock.
-After each producer SHA reached a green exact-SHA `deploy/watchdog`, `packages/contracts` gained the
-strict release, funding-normalization and assignment-extension wire schemas, while
-`packages/engine-client` gained typed prepare/read and account-local normalization/extension
-transports. The bounded `apps/worker` application-job consumers that used to run the
-staged target-release and activation jobs were removed with the dismantled release cycle; the
-`packages/db` job stores are deleted. With the release advance retired (head 55 is the final
-pricing release — `docs/ops/MODEL_RELEASE_CYCLE.md`) the release-advance transports
-(`preparePricingReleaseV2`, `preparePricingReleaseRecoveryLinkV2`,
-`getLatestPricingReleasePolicyV2`, `capturePricingStage8EvidenceV2`, `activatePricingReleaseV2`)
-are deleted from the client, and the engine capture/activation producers they called are deleted
-as well.
+The former catalog/switch/policy and `/admin/pricing/v2/*` routes are absent from the server,
+`packages/engine-client` and `packages/contracts`. Their tables are retained only as immutable
+incident evidence until every gate in `docs/ops/PRICING_RETIREMENT.md` passes. They must not be
+treated as an expand-only callable contract or restored for rollback; deployment compatibility is
+enforced by the closed scalar marker described in `deploy/RELEASES.md`.
 
 ### Hot tariff overrides (`/admin/pricing/tariffs*`)
 
@@ -1102,10 +585,10 @@ epoch change is published as a normal new override version of `anthropic/standar
 
 ### Error codes
 `400` invalid body (explicit handler validation) · `401` missing/incorrect control key · `404`
-account/key/version not found · `409` CAS/version conflict or a limit below what has already been
-charged+reserved · `422` JSON is syntactically valid but does not match the body schema
-(unknown field under `deny_unknown_fields`, wrong type) · `423` immutable
-pricing policy locked · `503` billing is disabled or the billing authority is unavailable.
+account/key/tariff not found · `409` idempotency/sequence conflict or a limit below what has already
+been charged+reserved · `422` JSON is syntactically valid but does not match the body schema
+(unknown field under `deny_unknown_fields`, wrong type) · `503` billing is disabled or the billing
+authority is unavailable.
 On the client `/v1`: `402` balance ≤ 0.
 
 ### Example: full cycle (bash)

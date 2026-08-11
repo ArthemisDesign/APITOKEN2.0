@@ -23,7 +23,8 @@ Engine migrations `0044`/`0045` drop what the retired design still enforced at r
 constraint triggers on the money tables, and the two `engine_instances` triggers that gated the
 owner lease (`engine_instances_policy_runtime_floor`, `engine_instances_release_v2_epoch_fence`).
 Their tables and columns stay as immutable history under the expand-only rule. Nothing may start
-reading them again — contract: `docs/commerce/PRICING_MODEL.md`.
+reading them again. Exact manifests, retention boundary and drop gates:
+`docs/ops/PRICING_RETIREMENT.md`; live model: `docs/commerce/PRICING_MODEL.md`.
 
 ## 1. Contracts between contexts
 
@@ -41,136 +42,30 @@ relationship is described in subject terms.
 | Producer | Contract / channel | Consumers | Contract document |
 |---|---|---|---|
 | `crates/server` (`src/http.rs`, `src/admin.rs`) | HTTP `/admin/*` under `x-api-key: CLAUDE_API_CONTROL_KEY`; account creation/readback, status, keys, ledger, scalar default pricing and canonical per-provider overrides. Account and override multipliers are `0..10000`; a charge ledger row keeps full billed `amount_nano` and additively exposes non-negative `uncollected_nano` (missing means zero), so consumers derive the collected debit and never commission pool-funded shortfall. Other additive fields remain ignorable. | `packages/engine-client` is the only TypeScript transport; `apps/api`, `apps/worker` and `apps/openkeys` consume it. Direct TypeScript calls to `/admin/*` outside the client remain forbidden. | `docs/engine/CONTROL_API.md`, `docs/commerce/PRICING_MODEL.md`, `docs/product/OPENKEYS.md` |
-| `crates/server` + `crates/forward` + `crates/registry` locked-OpenKeys producer | `POST /admin/pricing/policy/{account_id}/locked-openkeys-transition`: strict exact request, atomic immutable successor insert + binding CAS, only managed provider-level 1:1 rules, fixed `shadow + legacy_single + verified` target; generic prepare/activate stay `423 locked` until the one-time unlock consumes the source lock; a stale lock left by a pre-consumption transition (active target already the canonical successor) is spent and consumed atomically by the next generic prepare, while a lock on the active row stays fail-closed | the commerce consumer chain (strict `packages/contracts` → typed `packages/engine-client` → durable `packages/db` shadow-rollout store → bounded `apps/worker` delivery, staged only through the AdminGuard `POST /v1/admin/pricing-shadow-rollout-v2/stage` in `apps/api`) was removed with the dismantled release cycle: the route, the worker lane, and the staging UI are gone, so the endpoint currently has no live consumer and stays only as expand-only contract surface; the locked endpoint performs only the one-time legacy unlock, while later catalog/switch generations advance the verified unlocked successor through the generic policy-shadow CAS lane | `docs/engine/CONTROL_API.md`, `docs/commerce/MULTI-DISCOUNT.md`, `docs/commerce/MULTI_DISCOUNT_STAGE7.md` |
 | `packages/engine-client` | TS client `EngineClient`, strict Zod validation from `@claude-api/contracts`, money amounts as `json-bigint` strings; account creation and readback fail closed outside `mult_bp=0..10000`, and scalar/provider pricing writes use the same bound. | `apps/api`, `apps/worker`, `apps/openkeys` | `docs/engine/CONTROL_API.md`, `docs/commerce/PRICING_MODEL.md`, `docs/product/OPENKEYS.md` |
 | `crates/server` operator routes + `crates/authbot` proxy lifecycle | read-only `/overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /glm-subs` (→ 8790; GLM is a backend inside the Anthropic runtime), `/codex-subs` (→ 8792), `/gemini-subs` (→ 8794), `/kimi-subs` (→ 8803, a dedicated default-off KIMI plane; the Anthropic-embedded gateway is dev/test only), plus authbot `GET /proxy-admin/inventory` and explicit idempotent `POST /proxy-admin/renew` (→ loopback 8806) via Caddy `admin.apitoken.sale`, authenticated by `X-Proxy-Admin-Key` from the stable `root:root` `0600` non-symlink `/etc/apitoken/proxy-admin.key` (exactly 64 lowercase hex plus optional LF), atomically provisioned below the root-owned, non-deploy-writable `/etc/apitoken` parent before unit/Caddy installation; the installer removes one exact legacy `AUTH_BOT_PROXY_ADMIN_KEY` assignment from `authbot.env`, fails on malformed/duplicate/divergent input, and rejects either proxy-admin key or key-file setting in `server.env`. `LoadCredential=proxy-admin.key:/etc/apitoken/proxy-admin.key` gives only authbot a private copy; after all env files load, the `ExecStart=/usr/bin/env` command assignment pins `AUTH_BOT_PROXY_ADMIN_KEY_FILE=%d/proxy-admin.key` (not `Environment=`), so env files cannot redirect it. The bounded Rust parser accepts only that file, and sibling services receive no value. On Linux, after any operator subcommand has returned and before daemon secrets are loaded, authbot calls `prctl(PR_SET_DUMPABLE, 0)`, blocking same-UID `ptrace`, `process_vm_readv`, and sensitive `/proc` memory access; `ProtectProc=invisible` and `ProcSubset=pid` remain. Code already executing inside authbot itself is in the same trust boundary, and no defense can protect secrets from code already executing there. The root Caddy installer and renderer use only the `/etc` raw path, match the live `X-Proxy-Admin-Key` header name case-insensitively, and fail on duplicate or mismatched live values; Caddy additionally injects shared `x-api-key` only for the previous binary during mixed-version rollout/rollback, while new authbot ignores it and uses `CLAUDE_API_CONTROL_KEY` only for outgoing sanitized `/codex-subs` and `/gemini-subs` runtime status reads by opaque id, then produces a fail-closed inventory containing only subscription-backed durable exact IPRoyal bindings with liveness other than `dead`; GPT is public `gpt` over durable `codex`; one exact legacy `gpt` local-id/order/allocation-IP binding migrates in place while ambiguous or mismatched rows stay untouched, and Codex status accepts exactly `healthy|suspect|dead` with schema drift closing the source. The additive inventory item `account_email` is the sole full-identity exception, confined to the closed `managed_admin_auth` `/proxies` response with `no-store`/in-memory handling; raw proxy identity/credentials and other secrets remain absent. Renewal rechecks local expiry immediately before spend (`<= now` is inactive), and pending/in-progress selections are exclusive across UUIDs (`409 renewal_selection_busy` before enqueue on overlap; claim atomically terminalizes legacy overlapping pending siblings as `indeterminate`; disjoint selections proceed). All new IPRoyal orders have auto-extend disabled and the background guard disables it on every existing order without performing a paid renewal | `apps/admin` consumes the additive full `account_email` as the sole identity exception after matching the producer's strict ASCII grammar; it searches and renders that value without persistence, while recursively rejecting generic/nested identity or secret fields. The consumer independently drops every `dead` or non-`bound` row and marks non-null subscription/proxy expiries in separate cells when expired or within the exact inclusive 72-hour boundary, using valid `inventory.observed_at` or `Date.now()` fallback. Renewal behavior remains unchanged; there is no engine-client and the app owns no secrets. `/metrics` is also scraped by Prometheus directly over loopback, bypassing Caddy (`observability/prometheus/prometheus.yml`), including the KIMI origin 8803 with the target label `provider: kimi` | `docs/product/ADMIN_PANEL.md`, `docs/engine/CONTROL_API.md`, `crates/authbot/CLAUDE.md` |
 
-Control API endpoint groups: accounts, credit/ledger (idempotent credit by
-provider-qualified `ref`, cursor protocol `ledger` + `ledger/ack`), usage, keys, versioned
-pricing (catalog/switches/policy, including the narrow atomic locked-OpenKeys transition),
-PostgreSQL-only release-v2 prepare/read under `/admin/pricing/v2/*`, and hot
-tariff override list/compiled-dump/publish/seed under `/admin/pricing/tariffs*` (operator-only;
-no typed commerce consumer yet — the engine runtime itself consumes the table at
-reserve/settlement through the `crates/forward` tariff book, see `crates/forward/CLAUDE.md`).
-Legacy ledger provider recovery stays producer-owned: first the exact immutable
-`usage_events.provider` of the same `account_id + request_id` pair is used; for
-request-less history only a strict account/key/amount/ref/model/time settlement
-fingerprint with a single non-empty provider across all candidates is acceptable. Conflict
-is fail-closed, ambiguity stays unknown, model-name inference is forbidden. After GREEN
-producer SHA, commerce in a separate consumer commit re-selects old terminal sentinel rows
-by recovery version `2`, raises the exact evidence, and does not endlessly rescan a
-fruitless algorithm. Strict fingerprint producer SHA
-`d5f3d6bccdaa5015a443500d2530f1430596362b` received GREEN `deploy/watchdog` before this
-commerce consumer was wired.
-The release-v2 producer publishes immutable policy/release/recovery prepare, the full
-engine inventory, nullable head, account-local funding normalization plan/apply, and an
-append-only assignment extension for the exact active/recovery pair: for an account created
-after cutover, for a base-covered account as an exact same-policy version override (engine
-migration 0030), and for a base-covered `b2c` account as a `b2c`→`b2b` class-changing conversion
-onto a new B2B policy lineage with identical balance billing, funding generation and metadata
-(engine migration 0034); every other class transition stays rejected. The one-way dual-path
-opt-out writer `POST /admin/pricing/v2/opt-out` (the engine migration 0039 marker,
-`accounts.pricing_release_opt_out_ts`) is a producer-first route whose commerce consumer has
-arrived with the release-v2 retirement: the guarded single-writer mutation sets the marker only
-for an account that proves a live strict path (`strict/strict/verified` binding + a current
-activation ACK on an active key), an opted-out account falls through to the strict-policy/legacy
-reserve paths while the release head keeps serving everyone else, and the marker is written
-through `EngineClient.optOutPricingReleaseV2` by the new-account direct strict chain
-(`packages/db/src/strict-chain.ts`), by key issuance for a chain-armed account
-(`apps/api/src/account.service.ts`), and by OpenKeys issuance
-(`apps/openkeys/src/lib/openkeys-pricing.ts`); the strict request/response contracts are
-`pricingReleaseOptOutRequestV2Schema`/`pricingReleaseOptOutAckV2Schema` in `packages/contracts`. The read-only Stage 8 capture returns the same blocker-preserving report
-as the CLI through a bounded PostgreSQL reader and does not stage collection/activation
-work. Read-only
-`GET /admin/pricing/v2/provisioning-context` publishes in one snapshot the exact
-head/audit/evidence, active release lineage, and only evidence-selected recovery; before
-cutover it returns `null`, and on authority divergence it fails closed. It is a producer
-for independent service-account provisioning (the only remaining assignment-extension writer)
-and does not require that context to have
-access to commerce-local activation tables. The only activation producer accepts fresh
-combined evidence, re-verifies engine inventory/funding/runtime owner epochs, and
-atomically writes audit + singleton head; cutover/recovery do not update accounts or
-money rows. Funding apply is serialized with money writers and does not require a global
-drain. After the green exact producer SHA, `packages/contracts` validates the strict
-release/funding wire shape, and `packages/engine-client` is the only typed transport
-consumer. The commerce Stage 5/6 firing pins are removed: the AdminGuard-protected `apps/api` Stage 5
-dry-run/materialize/exact-run-read and Stage 6 status/stage routes and the bounded `apps/worker`
-Stage 6 application consumer were deleted with the dismantled release cycle
-(`docs/ops/MODEL_RELEASE_CYCLE.md`), and the Stage 6 library
-(`packages/db/src/funding-normalization-jobs.ts`) plus the Stage 6 CLI are deleted as well. The
-Stage 5 materializer cluster (`pricing-stage5-materializer-v2{,-store,-cli}.ts`) — the one
-remaining pair-preparation runner — is deleted with the retired release advance: head 55 is the
-final pricing release, and new models are priced through the engine's `is_model_unpriced`
-fallthrough plus a hot tariff seed (`docs/ops/MODEL_RELEASE_CYCLE.md`).
-After the green assignment-extension and provisioning-context producer SHA, consumers use
-only the chain strict `packages/contracts` → typed/canonical `packages/engine-client`.
-With the release-v2 retirement, commerce registration and OpenKeys issuance no longer write
-assignment extensions: a new commerce account completes the direct strict chain — registration
-provisioning arms `account_policy_bindings.strict_chain_pending`, the `apps/worker` pricing
-fast tick drives the engine preflight, the atomic strict/strict/verified staging
-(`stageProvisionedAccountStrictJob`) and the opt-out marker, and `createApiKey` waits for the
-strict flip, issues the key with its exact activation ACK and writes the one-way marker before
-returning the secret; OpenKeys issuance activates the strict 1:1 policy, credits the face
-value, issues the ACKed key and then opts out the account. The pre-existing fleet follows in
-phase 2.2 (`docs/ops/PRICING_RELEASE_BACKFILL.md`): the `apps/worker` slow sweep
-(`packages/db/src/pricing-backfill.ts`, knobs `PRICING_BACKFILL_ENABLED` /
-`PRICING_BACKFILL_BATCH_SIZE` / `PRICING_BACKFILL_ACCOUNT_ALLOWLIST`) aligns the dormant
-engine scalar to the release-derived rule-less fallback (idempotent `account_set_mult_bp`,
-asserted before arming; B2C 5000, B2B full price — B2B invitee registrations are born at the
-neutral 10000 placeholder), re-materializes each
-eligible commerce binding at the live catalog head, proves release/strict payable equivalence
-per scope (assignment extension over base, model → provider → global; B2C is the 5000-global
-identity, B2B exact scope-set equality — never a cross-domain digest compare) and arms the
-SAME `strict_chain_pending` chain, whose opt-out step now also writes the durable
-`pricing_release.opt_out` `audit_log` entry (the backfill's terminal "done"); the
-`apps/openkeys` internal admin route `POST /api/internal/admin/strict-backfill` sweeps
-pre-existing warehouse accounts onto the official strict 1:1 policy + ACK + opt-out,
-batch-limited and idempotent. Service-account admin CAS stays on
-the release path through the shared external-owner builder
-(`ensureServicePricingReleaseProvisioningV2`): the engine has no meter-only lane outside
-release-v2, so service accounts cannot be opted out in this phase. With a non-null context the
-service writer completes a rule-free `meter_only` policy/extension and requires exact readback
-plus a fresh context before a usable result. With a null
-context the release-v2 path is dormant. After the green policy-override producer SHA
-(engine migration 0030), an operator B2B policy CAS (`PATCH /v1/admin/business-users/:id/pricing`)
-also calls `packages/db/src/pricing-release-override-v2.ts` `syncPricingReleasePolicyOverrideV2`:
-for a base-covered account it prepares a strictly newer release policy version and pins it
-through the append-only assignment extension under the exact current head, returning the
-outcome additively in the CAS response; for a strict account (a direct-strict-chain graduate or
-a pre-cutover strict conversion) it returns `policy_owned` and writes nothing to the release
-authority — the strict→strict delivery was already staged by `materializeBinding` in the same
-policy-save transaction.
-The managed Stage 8 capture, Stage 9 activation, and release-orchestration commerce lanes are
-removed: the `apps/api` routes `POST /v1/admin/pricing-stage8-capture-v2/stage` (and its paired
-GET), `POST /v1/admin/pricing-release-activation-v2/stage` and `/reconcile` (and the paired GET),
-and `POST /v1/admin/pricing-release-orchestration-v2/stage` (and its paired GET), the
-`apps/worker` capture/activation/orchestration lanes, and the `apps/admin` `/pricing` control
-room were deleted with the dismantled release cycle (`docs/ops/MODEL_RELEASE_CYCLE.md`). The
-engine producers — the read-only `POST /admin/pricing/v2/stage8-evidence/capture`, the
-evidence-gated single-head `POST /admin/pricing/v2/activate` CAS, the `claude-api db
-stage8-evidence` CLI, the `crates/registry::stage8` evidence builder and the
-`postgres_activate_pricing_release_v2` head CAS — are deleted as well: the manual release-advance
-runbook was retired with head 55 as the final pricing release, and no consumer remained; the
-`packages/db` capture/activation/orchestration stores are deleted. The release-v2 prepare/read
-surface that the resolver and post-cutover provisioning still consume (head, provisioning-context,
-inventory, assignment extensions, funding normalization) is unchanged and documented in
-`docs/engine/CONTROL_API.md`.
-The Stage 7 durable shadow rollout lane (migration 0035) is removed on the commerce side: the
-AdminGuard-protected `POST /v1/admin/pricing-shadow-rollout-v2/stage` (and its paired GET) in
-`apps/api` and the bounded `apps/worker` `PricingShadowRolloutWorkerService` were deleted with
-the dismantled release cycle, and the fixed Stage 5–7 convergence/admission/refresh host gates
-were deleted with it; the `packages/db` rollout store is deleted as well. The engine
-`locked-openkeys-transition` endpoint remains as expand-only contract surface with no live
-commerce consumer.
+Live Control API endpoint groups are accounts, idempotent credit/debit and ledger cursors, usage,
+keys, scalar account/provider pricing and hot tariff overrides. The former catalog/switch/policy
+and release-v2 routes have been removed from the server, engine client and shared contracts; their
+database objects are retained evidence, not callable expand-only contracts
+(`docs/ops/PRICING_RETIREMENT.md`).
 
+Legacy ledger provider recovery stays producer-owned: first the exact immutable
+`usage_events.provider` of the same `account_id + request_id` pair is used; for request-less
+history only a strict account/key/amount/ref/model/time settlement fingerprint with a single
+non-empty provider across all candidates is acceptable. Conflict is fail-closed, ambiguity stays
+unknown and model-name inference is forbidden. Recovery version `2` prevents endless rescans after
+either exact evidence or a terminal no-evidence result. Strict fingerprint producer SHA
+`d5f3d6bccdaa5015a443500d2530f1430596362b` was watchdog-GREEN before the commerce consumer shipped.
 ### Sales feed (commerce ↔ sales)
 
 A bidirectional perimeter under one key `SALES_CONTROL_KEY` (header `x-api-key`).
 
 | Producer | Contract / channel | Consumers | Contract document |
 |---|---|---|---|
-| `apps/api` (`src/sales-feed.controller.ts`, `/v1/internal/sales/*`) | GET feeds `attributions` / `usage-events` / `topups` (cursors `after_id`); usage-events emits schema v1 (policy_v1 track) and schema v2 (release_v2: exact referred-B2C `paid_funded_nano` regardless of pricing mode + `officialNano`/`chargedNano`/`bonusFundedNano`/`otherFundedNano`/`releaseGeneration`/`releaseDigest`, `pricingMode=null`); `referral-discount` lives only on the producer-first transition | `apps/sales-api` (`sync.service.ts` — dual consumer delivered: routing by event shape into the v1 writer `recordReferredSpend` or the v2 writer `recordReferredSpendV2` from `packages/sales-db`, readers aggregate both schemas; `commerce.service.ts`; `COMMERCE_BASE_URL`) | `docs/sales/SALES_PORTAL.md` |
-| `apps/sales-api` (`src/internal.controller.ts`, `/v1/internal/*`) | POST `promo/redeem` is kept for credit/attribution; `partners/referral-discount` records the partner floor as attribution only — the tier-linked personal price was removed with the post-cutover cleanup, so the response `multiplierBp` is always `null` | `apps/api` (`promo.service.ts`, `auth.service.ts`; `SALES_API_URL`) | `docs/sales/SALES_PORTAL.md` |
+| `apps/api` (`src/sales-feed.controller.ts`, `/v1/internal/sales/*`) | GET feeds `attributions` / `usage-events` / `topups` (cursors `after_id`). The live usage producer emits only the scalar form: `amountNano=real_funded_nano`, optional informational `providerId`, and null retired attribution/release fields. | `apps/sales-api` (`sync.service.ts`) consumes the scalar form through `recordReferredSpend`; its v1/v2 parsers and writers remain only for expand-only replay of historical feed rows. `commerce.service.ts` uses `COMMERCE_BASE_URL`. | `docs/sales/SALES_PORTAL.md` |
+| `apps/sales-api` (`src/internal.controller.ts`, `/v1/internal/*`) | POST `promo/redeem` supplies credit/referral evidence; `partners/referral-discount` atomically claims a one-time link and returns its promised `discountBps` only to the winning user. Commerce records that rate as partner attribution; neither route changes the B2C scalar price. | `apps/api` (`promo.service.ts`, `auth.service.ts`; `SALES_API_URL`) | `docs/sales/SALES_PORTAL.md` |
 
 The feed types are duplicated as local zod schemas on both sides; they are not factored out
 into `packages/contracts`. Any feed change edits both sides — see the contract protocol in
@@ -184,7 +79,7 @@ into `packages/contracts`. Any feed change edits both sides — see the contract
 | `apps/api` (public API) | HTTPS `backend.apitoken.sale/v1/*`, cookie session | `apps/web` (`src/lib/api.ts`, `NEXT_PUBLIC_BACKEND_URL`) | `docs/commerce/COMMERCIAL_BACKEND.md` |
 | `apps/api` (paying/spender admin producer) | Read-only `GET /v1/admin/finance/paying-users` via the Caddy rewrite `admin.apitoken.sale/admin/*`: omitted funding and `payments|manual|bonus|all` preserve their existing lifetime-money/strict-bonus semantics; additive `spenders` selects every positive `pricing_usage_events` spender in 1/7/30d and labels zero-money non-strict rows `spend_only`; page/count/summary share one half-open cutoff in read-only `REPEATABLE READ`; omitted/false `include_usage` stays DB-only and exposes no engine IDs/usage, while literal `include_usage=true` performs page-wide concurrency-four, five-second abortable usage calls for every distinct event account and adds a minimal exact `(provider, model)` aggregate with safe counters serialized as decimal strings, exact nanoUSD strings, and explicit `complete|partial|unavailable` coverage—never full EngineUsage/account/key/daily detail or provider inference | `apps/admin` (`/paying-users`) consumes `funding=spenders&include_usage=true` by default, with expandable exact provider/model coverage and one-row-per-user×provider×model CSV; wired only after GREEN exact producer SHA `d27033effc237156bce91a38d1ca0ff5b6e66cbd`. Additive bonus was consumed after GREEN `b12a08fe872fb08a88943d7ade0a75a3e567b579`; the original consumer after GREEN `ce92503d1adc0e31967b2dda5853ce05ed480048` | `docs/commerce/COMMERCIAL_BACKEND.md`, `docs/product/ADMIN_PANEL.md` |
 | `apps/api` (admin API) | `/v1/admin/*` via the Caddy rewrite `admin.apitoken.sale/admin/*`, header `x-admin-key`; `/users/:id/provisioning-repair` reconciles only an existing mapped account after two fresh Control API readbacks: live `active` status and the exact default multiplier must match both commerce copies, then a row-locked CAS admits that exact `pending|error` mapping and writes one replay-idempotent audit event; it never creates/imports/reprices and fails closed for disabled or drifting state. Scalar B2B pricing uses atomic `PATCH /business-users/:id/pricing` plus the fenced durable delivery queue. `GET /admin/pipeline-health` exposes the live pipeline summaries. The same authenticated channel and key are used on `content-studio.apitoken.sale/v1/*`; retired release-cycle/policy/catalog/switch firing routes are not contracts and must not be restored. | engine Control API — via typed `packages/engine-client`; `apps/admin`; `apps/content-studio` (`/v1/admin/content/*`) | `docs/commerce/COMMERCIAL_BACKEND.md`, `docs/commerce/PRICING_MODEL.md`, `docs/product/ADMIN_PANEL.md`, `docs/engine/CONTROL_API.md` |
-| `apps/openkeys` (admin API) | `/api/internal/admin/*` via Caddy `admin.apitoken.sale/openkeys-admin/*`, headers `X-OpenKeys-Control-Key` + verified actor; additive `POST /strict-backfill` is the phase-2.2 bounded/idempotent backfill of pre-existing OpenKeys engine accounts (official 1:1 strict policy + key ACK + one-way opt-out; `limit`/`account_ids` canary; per-account outcomes; service/meter-only excluded by warehouse ownership and the engine funding-class check); additive read-only `GET /paying-keys` returns every non-removed warehouse or delivered key with explicit `stock|delivered` lifecycle and nullable delivery time, exact nullable lifetime engine spend, global `spent|nominal|created|delivered|status` + `asc|desc` server sorting, bounded batch account reads, page-only live usage for `1|7|30` days, exact nanoUSD/model counters, and row-local unavailable status without secrets | `apps/admin` (`/paying-users`, OpenKeys cohort) consumes sorting/lifetime spend only after GREEN exact producer SHA `65f2160f67f8662ec58fbf336444c0ca8b5ff76a`; warehouse+lifecycle consumption followed GREEN `11aec1b731a5b31b057641982957aa0142eaacf2`, and the original delivered-only consumer followed GREEN `558d4b34896792cfaed5760852f9001feb0d0443` | `docs/product/OPENKEYS.md`, `docs/product/ADMIN_PANEL.md` |
+| `apps/openkeys` (admin API) | `/api/internal/admin/*` via Caddy `admin.apitoken.sale/openkeys-admin/*`, headers `X-OpenKeys-Control-Key` + verified actor; read-only `GET /paying-keys` returns every non-removed warehouse or delivered key with explicit `stock|delivered` lifecycle and nullable delivery time, exact nullable lifetime engine spend, global `spent|nominal|created|delivered|status` + `asc|desc` server sorting, bounded batch account reads, page-only live usage for `1|7|30` days, exact nanoUSD/model counters, and row-local unavailable status without secrets | `apps/admin` (`/paying-users`, OpenKeys cohort) consumes sorting/lifetime spend only after GREEN exact producer SHA `65f2160f67f8662ec58fbf336444c0ca8b5ff76a`; warehouse+lifecycle consumption followed GREEN `11aec1b731a5b31b057641982957aa0142eaacf2`, and the original delivered-only consumer followed GREEN `558d4b34896792cfaed5760852f9001feb0d0443` | `docs/product/OPENKEYS.md`, `docs/product/ADMIN_PANEL.md` |
 | `apps/sales-api` (public + admin API) | `partners.apitoken.sale/v1/*`; `/v1/admin` via Caddy `admin.apitoken.sale/partner-admin/*`, header `x-sales-admin-key` | `apps/sales-web`; `apps/admin` | `docs/sales/SALES_PORTAL.md` |
 | `packages/payments` | provider adapters: Platega (default) and Cryptomus — live; DigiSeller — registered but disabled for customers (no entry point, status in the document); webhooks `POST /v1/payments/{platega,cryptomus}/webhook` in `apps/api`; reconcile polling in `apps/worker` | `apps/api`, `apps/worker` (the only consumers) | `docs/commerce/PLATEGA_INTEGRATION.md`, `docs/commerce/CRYPTOMUS_INTEGRATION.md`, `docs/commerce/DIGISELLER_INTEGRATION.md` |
 
@@ -221,19 +116,14 @@ is only what is needed to walk the relationships when making changes:
   and `src/openai_image.rs` (GPT Image 2). A price/model change is a reviewable commit here.
   Consumers: `crates/forward` (main), `crates/server` (types/tariff identifiers). The GPT Image 2
   tariff prices authoritative five-leg usage from the sealed Codex OAuth-pool runtime; customer
-  admission additionally requires the exact generation-6 capability/catalog/switch and release
-  pins. It is not ChatGPT native-credit accounting and introduces no reseller, external image key,
-  fallback, or environment setting.
-- `crates/registry/src/pricing/` — NOT a price list, but the durable identities of
-  multi-discount: catalogs/switches/policies, admission snapshots
-  (`docs/commerce/MULTI-DISCOUNT.md`). Fixed provider IDs actual/shadow contract —
-  `anthropic|openai|google`; `gemini` is not a durable authority.
-- `crates/forward/src/pricing*` — the pricing-resolver and shadow-evaluation pipeline.
-  Live: the resolver is called in the admission path of the strict policy (`proxy.rs`)
-  and in Codex billing (`codex/billing.rs`); atomic legacy snapshot producers are in the
-  Anthropic, Codex, and Gemini billing paths, and the shadow runtime for all three fixed
-  planes starts in production (`crates/server`). It does NOT read the DB and does NOT
-  compute token cost.
+  admission uses the same scalar/provider multiplier path as every other model. It is not ChatGPT
+  native-credit accounting and introduces no reseller, external image key, fallback, or
+  environment setting.
+- **Retired pricing modules.** `crates/registry/src/pricing/snapshots.rs` owns the live scalar
+  reserve/settlement identity types and `crates/forward/src/pricing.rs` contains scalar pricing
+  helpers; neither is a policy/catalog/release resolver or a reader of the retired tables. The hot
+  tariff authority remains live in `crates/registry/src/pricing/tariffs.rs`. Exact retirement
+  boundary: `docs/ops/PRICING_RETIREMENT.md`.
 - **Provider data plane (`crates/forward` → `crates/router`).** The planes produce the
   native and universal HTTP surfaces; the router consumes them only through stable
   loopback origins. In particular, `/v1/messages/count_tokens` is available on all three

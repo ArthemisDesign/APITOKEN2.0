@@ -40,7 +40,8 @@ and immutable/dormant artifacts are not rewritten.
       mapping, and a controlled canary path; runtime implementation is dormant by default.
 - [ ] `crates/metering/src/{lib,<provider>}.rs` (including `openai_image.rs`) — tariff table
       (price authority, nanoUSD).
-- [ ] `packages/contracts` — `CURRENT_*_CANONICAL_MODELS` and/or pricing schemas.
+- [ ] `packages/contracts` — public/display model identities such as
+      `OPENKEYS_SUPPORTED_MODELS`, only where the publication commit exposes the model.
 - [ ] GREEN exact implementation SHA + live gate: generation/output/usage/SSE/controls confirmed
       on every claimed subscription plan/model tier; sanitized evidence recorded in the provider doc.
 - [ ] Publication commit is not mixed with the implementation commit; on failed live, a
@@ -61,48 +62,48 @@ and immutable/dormant artifacts are not rewritten.
       `ANTHROPIC_DATED_SNAPSHOT_ALIASES` — the alias table stays deliberate so an unpublished
       future snapshot can never inherit today's price.
 - [ ] `docs/engine/<provider>.md` — provider's model list.
-- [ ] `docs/commerce/MULTI-DISCOUNT.md` §7 — head 55 is the final pricing release: a new model
-      gets NO capability/catalog generation and no release advance. It is priced through the
-      engine's `is_model_unpriced` → exact-legacy-tariff fallthrough, so the compiled
-      `crates/metering` tariff must be exact and bridged into the hot tariff table
-      (`POST /admin/pricing/tariffs/seed`, "Hot tariff overrides" in
-      `docs/engine/CONTROL_API.md`); later corrections ride `.../override`.
-- [ ] `apps/openkeys` — `assertOpenKeysCatalog()` is checked against `CURRENT_PRODUCT_CATALOG_ENTRIES`
-      from `packages/contracts`: without a catalog update OpenKeys fails closed.
+- [ ] `docs/ops/MODEL_RELEASE_CYCLE.md` — no capability/policy/catalog generation or release-head
+      advance. Verify the compiled tariff and bridge it into the hot tariff table with
+      `POST /admin/pricing/tariffs/seed`; later corrections use `.../override`.
+- [ ] `apps/openkeys` — every runtime-priceable model remains available at the fixed 1:1 account
+      scalar; after the live gate update `OPENKEYS_SUPPORTED_MODELS` only if the issuance/display
+      guidance should name the model, and prove no OpenKeys-specific allowlist blocks execution.
 - [ ] `docs/commerce/PRICING.md` — if the model changes customer pricing.
 - [ ] `apps/admin` — if the model is visible in quotas/calculator (`subscriptions`,
       `sales/calculator/calculation.ts`).
 
 ## Price or multiplier change
 
-- [ ] `crates/metering` — authority table (official provider prices), reviewable commit.
-- [ ] Engine multiplier changes only through durable jobs — never one-off calls (invariant from
-      `CLAUDE.md`); the protocol is versioned pricing in `docs/engine/CONTROL_API.md`. Machinery:
-      `packages/db/src/pricing-control-jobs.ts`, `apps/worker/src/pricing-worker.service.ts`,
-      `packages/engine-client` (ledger/ack), execution in `crates/forward/src/**/billing.rs`.
-- [ ] `packages/contracts` — global/provider/model discount and pricing release schemas;
-      `packages/db/src/pricing.ts`. Do not keep `B2C_PRICING_TIERS` as a target authority.
+- [ ] Classify the change first: an official provider tariff belongs to `crates/metering` plus the
+      hot tariff authority; a customer payable multiplier belongs to the account default or one
+      canonical provider override. Do not encode either in the retired policy/release schema.
+- [ ] Account multiplier changes are persisted through the atomic commerce writer and
+      `engine_pricing_jobs`, never one-off engine calls. Walk `packages/db/src/pricing.ts`,
+      `packages/db/src/pricing-discounts.ts`, `apps/worker/src/pricing-worker.service.ts`,
+      `packages/engine-client` and the engine Control API default/provider writes. Terminal queue
+      writes must retain exact lease fencing and stale-desired requeue.
+- [ ] `packages/contracts` and both PostgreSQL schemas keep the same closed multiplier range
+      `0..10000` and provider set `anthropic|openai|google|kimi|glm`; no model-specific customer
+      multiplier schema exists.
 - [ ] `apps/web` — storefront figures: remove dependencies on `src/lib/pricing-tiers.ts`, check
       `src/lib/models.ts` and all
       storefront copy (`src/components/marketing-pages.tsx`, `src/components/cost-calculator.tsx`,
       `src/lib/md-pages.ts`, `src/lib/messages.json`, `src/lib/llms.ts`, `src/lib/learn-*.ts`).
       Determine the radius by grepping for the old figure, not from memory.
-- [ ] `docs/commerce/PRICING.md` — global/provider/model pricing, B2B/OpenKeys/service, and bonus.
+- [ ] `docs/commerce/PRICING_MODEL.md` and the `PRICING.md` entry point — account default/provider
+      pricing, B2C/B2B/OpenKeys/service and paid/free attribution.
 - [ ] Prices are hot data: publish the new family version through
       `POST /admin/pricing/tariffs/override` (or `.../seed`) on the engine Control API
       (`docs/engine/CONTROL_API.md`) — the deleted Stage 5–9 release cycle, its orchestrator,
-      and its gates must not be revived for a price change; discounts ship as managed policy
-      rules through the durable pricing-control jobs, never one-off calls (invariant from
-      `CLAUDE.md`).
-- [ ] A terminal pre-cutover `strict + legacy_single` delivery is recovered only through exact-CAS
-      `/v1/admin/pricing-policy-delivery-repairs`: never rewrite the old payload, never retry a
-      generic dead job, and never fix commerce rows by hand.
-- [ ] B2B current discount stays an independent Anthropic rule; OpenKeys stays 1:1; service
-      stays `meter_only` and all-model. Explicitly mark the classes that do not apply.
+      and its gates must not be revived for a price change. Customer discounts use only the fenced
+      scalar/provider delivery queue.
+- [ ] B2B keeps its negotiated default plus explicit provider overrides; OpenKeys stays 1:1;
+      service stays zero-payable and metered. Explicitly mark the classes that do not apply.
 - [ ] Partner calculations: `docs/sales/SALES_PAYOUT_PERIODS.md`, `apps/sales-api` logic —
       if the price feeds the payout base.
-- [ ] Sales feed/commission: exact `paid_funded_nano` must not depend on pricing mode; the welcome
-      bonus is excluded. If the wire schema changes, walk the separate sales feed checklist.
+- [ ] Sales feed/commission: the live scalar producer emits collected customer-funded
+      `real_funded_nano`; welcome/promo/admin credit and settlement shortfall are excluded. If the
+      wire schema changes, walk the separate sales feed checklist.
 - [ ] `apps/admin/src/app/sales/calculator/calculation.ts` — `PRODUCT_CATALOG`.
 
 ## New subscription provider
@@ -130,8 +131,11 @@ radius, not a replacement for the phase gates and Definition of GA from the play
 - [ ] Observability: metrics and alerts in `observability/prometheus/rules/*`, Grafana dashboards,
       runbook sections in `docs/ops/MONITORING.md` (see the "New alert or metric" checklist).
 - [ ] `docs/engine/<PROVIDER>_PROVIDER.md` — new document + a line in `docs/README.md`.
-- [ ] `docs/commerce/MULTI-DISCOUNT.md` — catalogs, provider switch (§8), policies.
-- [ ] `packages/contracts` — canonical models, product catalogs.
+- [ ] `docs/commerce/PRICING_MODEL.md` plus engine/commerce schemas — add the canonical provider ID
+      to both closed provider CHECKs and both write validators if customers may receive a provider
+      override; never infer the ID from a model or revive a provider-switch policy.
+- [ ] `packages/contracts` — public/display model identities and strict wire schemas that actually
+      cross a live boundary.
 - [ ] `apps/web` (storefront), `apps/openkeys`, `apps/admin` — display and sale.
 - [ ] `apps/admin` adds the provider to the single compact fleet control-room and one account-table:
       real provider windows, exact remaining/full API-$, used rail, readiness/coverage, and masked
@@ -167,6 +171,9 @@ both are edited.
       if the feed change is visible to the partner.
 - [ ] `docs/sales/SALES_PORTAL.md` — the "The sales ↔ commerce boundary" section in the same commit.
 - [ ] The sales feed line in `docs/DEPENDENCIES.md` — if the set of endpoints changes.
+- [ ] Update `tests/contracts/sales-usage-feed.golden.json` and keep producer serialization plus
+      consumer parsing pinned to that same row. Add an end-to-end rejection/acceptance case for any
+      new nullable combination; isolated producer and consumer unit tests are insufficient.
 
 ## New payment method
 

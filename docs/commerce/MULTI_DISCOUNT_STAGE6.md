@@ -1,6 +1,9 @@
 # Stage 6 — online funding normalization
 
-> **Superseded (2026-08-07).** The commerce firing pins for this stage (admin routes, worker lanes, deploy gates) were removed with the dismantled release cycle — see `docs/ops/MODEL_RELEASE_CYCLE.md`. This file is kept as the protocol record; the engine-side producers under `/admin/pricing/v2/*` are unchanged.
+> **Historical only; retired in full on 2026-08-09.** Commerce firing pins, workers, engine
+> `/admin/pricing/v2/*` producers and shared wire contracts are removed. Commands below describe the
+> former protocol and must not be executed. Current model: `docs/commerce/PRICING_MODEL.md`; schema
+> closeout: `docs/ops/PRICING_RETIREMENT.md`.
 
 Status: the engine producer, the strict TypeScript transport consumer, and the bounded commerce
 orchestration are implemented on top of the already delivered migration

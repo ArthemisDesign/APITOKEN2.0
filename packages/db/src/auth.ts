@@ -73,11 +73,9 @@ export async function createEmailUser(
       ? await lockBusinessInvite(client, { email, tokenHash: businessInviteTokenHash })
       : null;
     const customerType = invite ? "b2b" : "b2c";
-    // Post-cutover the scalar is a display/legacy field only — the release authority prices
-    // every account — and after the strict opt-out it is the fallback for scopes with no
-    // New B2C registrations get the standard 50% off; a B2B invitee gets exactly the discount
-    // their invitation carries. The invitation multiplier IS the negotiated price now — there is
-    // no policy document behind it, so inheriting full price here would silently overcharge.
+    // The scalar is the live default price. New B2C registrations get the standard 50% off; a
+    // B2B invitee gets exactly the discount its invitation carries. There is no policy document
+    // behind it, so inheriting full price here would silently overcharge.
     const engineMultiplierBp = invite ? invite.multiplierBp : 5_000;
     const monthStart = utcMonthStart();
     await client.query(`

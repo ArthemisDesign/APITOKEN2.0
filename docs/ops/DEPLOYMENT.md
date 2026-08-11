@@ -329,96 +329,14 @@ cancel that timer once the policy is active. Either let it fire and re-run the i
   startup only verifies the schema and never issues DDL. Never edit an already-applied migration.
 - The one-time SQLite-to-PostgreSQL cutover is complete. Do not rerun it for a normal release.
 
-## Pricing evaluation-shadow rollout
+## Pricing evaluation shadow — removed
 
-The Stage 3B1c.3 application release is safe to deploy with the producer disabled. Shipping the
-binary is not authorization to activate it: production activation is a separate observed config
-checkpoint after the default-off SHA has a green exact-SHA `deploy/watchdog`. The producer may run
-only on a PostgreSQL-backed fixed Anthropic, OpenAI or Gemini plane with billing enabled; live
-SQLite composition remains unsupported. Because the fleet env file is shared by every plane,
-enabling the shadow env leaves non-pricing planes (KIMI) inert with an explicit startup notice
-instead of failing their boot. The durable provider identity of the Gemini plane is
-`google`, never `gemini`. Each plane keeps an independent default-off config and must complete the
-same observed rollout ladder after the producer SHA is green.
-
-This checkpoint produces immutable legacy-scalar actual snapshots and target-policy shadow
-evaluations for all three planes. It does not enable strict Gemini, create a release-v2
-reserve/settlement snapshot or authorize Stage 9. Stage 8/9 must not proceed until 100% target
-shadow coverage includes real Google snapshot/evaluation rows and the remaining release/funding
-runtime is delivered. External Gemini usage/admission counters are audit context, not a substitute
-for those rows.
-
-The startup validator rejects unknown boolean spellings, incoherent enabled/sample pairs, and every
-value outside these bounds:
-
-| Environment variable | Default | Accepted bound |
-|---|---:|---:|
-| `CLAUDE_API_PRICING_SHADOW_ENABLED` | `false` | strict `0|1|false|true` |
-| `CLAUDE_API_PRICING_SHADOW_SAMPLE_BP` | `0` | disabled: `0`; enabled: `1..=10000` |
-| `CLAUDE_API_PRICING_SHADOW_QUEUE_CAPACITY` | `256` | `1..=4096` |
-| `CLAUDE_API_PRICING_SHADOW_WORKER_CONCURRENCY` | `2` | `1..=32`, not above queue capacity |
-| `CLAUDE_API_PRICING_SHADOW_TIMEOUT_MS` | `750` | `10..=15000` |
-| `CLAUDE_API_PRICING_SHADOW_MAX_QUEUE_AGE_SECS` | `300` | `1..=86399` (`<24h`) |
-| `CLAUDE_API_PRICING_SHADOW_MAX_FIELD_BYTES` | `512` | `64..=4096` |
-| `CLAUDE_API_PRICING_SHADOW_MAX_ITEM_BYTES` | `16384` | `1024..=131072`, not below field limit |
-| `CLAUDE_API_PRICING_SHADOW_RATE_PER_SEC` | `20` | `1..=10000` |
-| `CLAUDE_API_PRICING_SHADOW_RATE_BURST` | `40` | `1..=rate_per_sec*60` |
-| `CLAUDE_API_PRICING_SHADOW_DB_READ_CONNECTIONS` | `2` | `1..=8` |
-
-**Never set these in a shared engine `EnvironmentFile`.** `/srv/claude-api/data/server.env` and
-`config.env` are read by *every* engine slot, and the startup validator rejects the shadow producer
-on any plane other than Anthropic, OpenAI or Gemini (`crates/server/src/main.rs`, "pricing shadow
-producer requires a fixed Anthropic, OpenAI, or Gemini provider plane"). A shared enablement
-therefore makes the KIMI slot — and any future non-producer plane — fail to start. Because the
-release is verified only after traffic is committed, the whole engine rollout then rolls back and
-quarantines whatever candidate SHA happened to be in flight, regardless of what that commit changed.
-This happened on 2026-08-04: the switch was added to `server.env`, and the next unrelated candidate
-was quarantined with `claude-api-kimi@8805.service did not become ready on current release`.
-
-Enable the shadow the same way every other plane-scoped switch is enabled: pinned argv-level in the
-reviewed unit of the one producing plane, exactly as `CLAUDE_API_KIMI_ENABLED=1` is pinned in
-`systemd/claude-api-kimi@.service`. Argv assignments cannot be overridden by a shared
-`EnvironmentFile`, and the plane's state stays visible in its own unit instead of leaking sideways
-into planes that must never run it.
-
-Current production state: all three producing planes pin
-`CLAUDE_API_PRICING_BRIDGE_ENABLED=1 CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP=10000
-CLAUDE_API_PRICING_SHADOW_ENABLED=1 CLAUDE_API_PRICING_SHADOW_SAMPLE_BP=10000` argv-level in
-`systemd/claude-api-anthropic@.service`, `systemd/claude-api-openai@.service` and
-`systemd/claude-api-gemini@.service`, because the Stage 8 evidence gate requires full shadow
-coverage of supported traffic. The bounded producer (queue drop, never traffic backpressure) ran
-at a 100% sample on the Anthropic plane for two hours before this pinning with no customer-facing
-impact; KIMI and any future non-producer plane stay inert by construction.
-
-Keep every ceiling fixed while changing only one rollout dimension on one fixed plane at a time.
-For Anthropic, OpenAI and Gemini the required order is: default-off binary → bridge small sample →
-bridge target sample → bridge 100% of eligible traffic → shadow small sample → wider shadow sample
-→ 100% of snapshot-bearing eligible traffic. Observe a complete peak traffic interval between
-steps. Before each increase, compare customer admission and reserve p95/p99, customer
-5xx/status/body, billing FIFO depth, engine PostgreSQL connections and lock waits, shadow queue
-depth/high-water/age, enqueue drop ratio, processing/read/write errors, CPU, and memory against the
-recorded pre-activation baseline. Early shadow before policy backfill validates transport and
-persistence only; it is not Stage 8 financial-parity evidence.
-
-Disable the independent shadow switch immediately, without changing schema or using shadow output
-as a rollback input, when any of these stop criteria occurs:
-
-- customer response, readiness, reserve, settlement, or actual charge depends on a shadow result;
-- sustained queue saturation/drop ratio exceeds the pre-recorded allowance;
-- PostgreSQL connection/lock pressure, admission/reserve p95/p99, customer 5xx, CPU, or memory
-  materially regresses from baseline;
-- an idempotency conflict, invariant alert, continuous read/write error storm, or unexplained
-  timeout/cancellation spike appears;
-- an actual snapshot reference or resolved lineage cannot be proven from durable rows.
-
-An eligible atomic-bridge DB/constraint failure is a separate bridge stop condition: disable the
-bridge rather than falling back to a second reserve. Queue full/closed, rate/size drops, shadow
-timeouts, and shadow read/write failures remain metrics-only and must not alter customer traffic or
-money. A funding-capped actual remains eligible and applies the same immutable ceiling to the policy
-candidate; an actual above the checked scalar quote is an invariant failure. Use the
-`claude_api_pricing_shadow_*` bounded series and the single runtime manifest info sample for rollout
-evidence; account, key, request, and model identities belong only in protected durable attribution,
-never metric labels or error storms.
+The bridge/shadow producers, environment variables, queues, runtime metrics and rollout procedure
+were removed with the policy/release authority. Do not add their former settings to a unit or
+`EnvironmentFile`: current binaries have no supported consumer for them, and a retained rollback
+binary is not allowed to become selectable after the retired schema contracts. Historical rollout
+evidence remains in Git history; the live scalar/provider model is
+`docs/commerce/PRICING_MODEL.md`, and schema closeout is `docs/ops/PRICING_RETIREMENT.md`.
 
 ## Pricing release cycle — removed
 
@@ -433,14 +351,13 @@ and the fixed root bridges (`pricing-stage56-admission-gate.sh`,
 `pricing-stage7-admission-gate.sh`, `pricing-stage7-refresh-gate.sh`,
 `pricing-stage7-identity-diagnostic-gate.sh`, including their sudoers stanzas).
 
-Prices and discounts no longer ride a release cycle: prices are hot tariff overrides
-(`POST /admin/pricing/tariffs/override`, see `docs/engine/CONTROL_API.md`) and discounts are
-managed policy rules delivered through the durable pricing-control jobs. Admitting a NEW model
-no longer advances the engine release pair either: head 55 is the final pricing release, the
-Stage 5 pair-preparation materializer cluster and the manual release-advance runbook are
-retired, and new models are priced through the engine's `is_model_unpriced` fallthrough plus a
-hot tariff seed (`docs/ops/MODEL_RELEASE_CYCLE.md`). The durable release/evidence rows from
-past cycles stay in the database as immutable historical evidence; never edit or delete them.
+Prices and discounts no longer ride a release cycle. Official prices use compiled metering plus
+the hot tariff authority (`POST /admin/pricing/tariffs/seed|override`); account discounts are one
+bounded default plus optional provider rows delivered through fenced `engine_pricing_jobs`.
+Admitting a new model requires dormant implementation and exact-SHA proof before the separate
+public-discovery change (`docs/ops/MODEL_RELEASE_CYCLE.md`), never a policy/release head advance.
+The durable historical rows remain immutable until every gate in
+`docs/ops/PRICING_RETIREMENT.md` passes.
 
 ## Local pre-push test gate
 

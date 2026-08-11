@@ -304,10 +304,8 @@ export class AdminOperationsService {
       ...input,
       multiplierBp: multiplierForDiscount(input.discountPercent),
     });
-    // Post-cutover the conversion reaches the live pricing authority only through the
-    // class-changing assignment extension. The sync is idempotent, so it doubles as the repair
-    // path for customers converted before this lane existed; its outcome is reported honestly
-    // instead of a blanket "pending".
+    // Conversion atomically records the B2B scalar and its durable engine delivery job. Repeating
+    // an already-complete conversion is unchanged; otherwise the response reports the queued sync.
     return {
       user_id: input.userId,
       customer_type: "b2b",

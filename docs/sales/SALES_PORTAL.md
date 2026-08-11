@@ -56,11 +56,11 @@ Garbage in `after_id`/`limit` is not an error but a default (cursor 0, default l
 - `GET /v1/internal/sales/usage-events?after_id&limit` (default 1000, max 2000) — from
   `pricing_usage_events`; the cursor is the `feed_seq bigserial` column (migration 0012). Response
   `{items:[{id,userId,amountNano,providerId,accountClass,pricingMode,paidFundedNano,
-  commissionEligible,snapshotDigest,officialNano,chargedNano,bonusFundedNano,otherFundedNano,
-  releaseGeneration,releaseDigest,occurredAt}], nextCursor}`; money fields and `releaseGeneration`
-  are decimal strings. The `officialNano…releaseDigest` fields are an expand-only schema v2
-  addition: on legacy/all-null and policy_v1 rows they are `null`, and are removed only as the
-  final contract step after the consumer has fully migrated. The feed allows three forms:
+  commissionEligible,snapshotDigest,occurredAt}], nextCursor}`; money fields are decimal strings.
+  The current producer returns only this scalar-compatible shape. For rollback and historical
+  replay, the consumer also accepts the former optional
+  `officialNano`/`chargedNano`/`bonusFundedNano`/`otherFundedNano`/`releaseGeneration`/
+  `releaseDigest` fields. The consumer recognizes three forms:
   - **scalar (live since 2026-08-10)** — the only form the current producer emits. `providerId` is
     filled in, every attribution field (`accountClass`, `pricingMode`, `paidFundedNano`,
     `commissionEligible`, `snapshotDigest`) and the whole v2 lineage are `null`, and `amountNano`
@@ -81,39 +81,36 @@ Garbage in `after_id`/`limit` is not an error but a default (cursor 0, default l
     `commissionEligible=true` and a positive `paidFundedNano`; `amountNano` exactly equals this
     paid portion. Static, B2B/service, unsupported schema, zero-paid, and spend of a non-attributed
     user do not create an item.
-  - **schema v2 `release_v2`**: eligibility independent of pricing mode — referred B2C authority,
+  - **schema v2 `release_v2`** (retired producer, historical rows): eligibility independent of
+    pricing mode — referred B2C authority,
     `commissionEligible=true` (computed by the commerce writer from `account_class='b2c'` + exact
     `paid_funded_nano>0`) and the full release lineage (`officialNano`, `chargedNano`,
     `bonusFundedNano`, `otherFundedNano`, `releaseGeneration`, `releaseDigest` non-null);
     `amountNano` equals the exact `paidFundedNano`, `pricingMode` is always `null` (no synthetic
-    `'track'`). Bonus-only (`paidFundedNano=0`), B2B, OpenKeys and service v2 rows are not emitted.
-  Historical rows without attribution temporarily remain all-null and use the
-  legacy `real_funded` free-first projection. The limit is applied to source rows before filtering,
+    `'track'`). Bonus-only (`paidFundedNano=0`), B2B, OpenKeys and service v2 rows were not emitted.
+  Historical all-null wire rows use the legacy `real_funded` free-first projection. The current
+  producer applies the limit to source rows before filtering,
   so `nextCursor` advances over the watermark of the whole page, including the
   static/service/unreferred tail, and it is never rescanned indefinitely.
 
-  Producer-first migration: the producer emits both schemas; the sales consumer is a dual-consumer
-  (delivered): every event is routed by row form to exactly one writer
-  (v1 → `recordReferredSpend`, v2 → `recordReferredSpendV2`), and readers aggregate both
-  commission tables. The `track` field is not a target authority; removing the legacy v1 form is
-  the final contract step after Stage 9.
+  The producer now emits only the scalar form. The consumer deliberately retains the historical v1
+  and v2 parsers/writers for expand-only replay: every row form still routes to exactly one writer
+  (scalar/v1 → `recordReferredSpend`, v2 → `recordReferredSpendV2`), and readers aggregate both
+  commission tables. This compatibility does not make either retired form a live producer contract.
 - `GET /v1/internal/sales/topups?after_id&limit` (default 500, max 1000) — paid
   `payments`; the cursor is epoch microseconds from `paid_at` (not `feed_seq`: payment happens
   after the insert, and a stale `feed_seq` would fall out of the cursor forever). Also filtered by
   attribution. Response `{items:[{id,paymentId,userId,amountNano,paidAt}], nextCursor}`.
 - `POST /v1/internal/sales/referral-discount` — records the salesperson's discount "floor" for a
   referral as partner attribution. Body `{userId, floorBps (0..9500), override?, actorId?}` →
-  `{applied, multiplierBp}`. Since the pricing release cutover (2026-08-04) the floor no longer
-  moves any price: B2C pricing is the flat global policy of the active release, so
-  `multiplierBp` is always `null` and no engine scalar job is enqueued. The floor stays
+  `{applied, multiplierBp}`. The floor does not move any price: B2C pricing is the stored account
+  scalar plus optional provider overrides, while this field records the rate promised by the
+  partner. `multiplierBp` is always `null` and no engine pricing job is enqueued. The floor stays
   **monotonic** (`GREATEST`, the best for the customer) across its three writers (promo, partner
   link, sales feed); `override=true` is an absolute write that can lower it (a partner or admin
   from the sales dashboard), `floorBps=0` is an explicit reset. Only b2c profiles
-  (`applied:false` otherwise). Idempotent.
-  This tier-linked contract is removed together with progressive pricing: target B2C gets the
-  global 50%/provider/model policy, and the partner relationship affects commission but does not
-  create a personal price. The route stays only for the producer-first compatibility period and is
-  then removed as the final contract step.
+  (`applied:false` otherwise). Idempotent. The route remains live because partner and admin views
+  display the promised rate even though it is not a pricing authority.
 - `POST /v1/internal/sales/referral-profiles` — referral profiles for the partner's storefront.
   Body `{userIds: uuid[] (max 500)}` → `{items:[{userId, customerType (b2c/b2b), multiplierBp,
   discountPercent, referralFloorBps, cumulativeTopupNano, balanceNano, status}]}`. Only for an
@@ -121,10 +118,8 @@ Garbage in `after_id`/`limit` is not an error but a default (cursor 0, default l
   a partner sees only their own. `balanceNano` and the live `multiplierBp` are read from the engine
   (the money authority) with parallelism 8; an unavailable engine account does not take the page
   down — the fields degrade to `null`/values from `customer_profiles`.
-  The target response removes tier-only `referralFloorBps`/`cumulativeTopupNano` from business
-  logic and shows the effective B2C discount/source or the independent B2B policy. The current
-  schema's fields may remain nullable during the expand-only migration, but the consumer does not
-  use them for pricing.
+  `referralFloorBps` is display/partner-attribution data and `cumulativeTopupNano` is reporting;
+  neither is used to calculate the customer's price.
 
 Consumers on the sales side (`apps/sales-api`, reach commerce via `COMMERCE_BASE_URL`):
 
@@ -133,10 +128,10 @@ Consumers on the sales side (`apps/sales-api`, reach commerce via `COMMERCE_BASE
   discount link (the winner receives the floor via `POST referral-discount` — either for the first
   time or as an idempotent backfill if the synchronous application at registration failed);
   topups → `referred_topups` (history/analytics only, create no commissions); usage events →
-  commissions (idempotent by `commerce_event_id`). The consumer is dual: a release-v2 row
+  commissions (idempotent by `commerce_event_id`). The live scalar row and historical policy-v1
+  row use `recordReferredSpend`; a historical release-v2 row
   (`pricingMode=null` + full lineage) goes to the schema-v2 writer (`recordReferredSpendV2`,
-  `packages/sales-db/src/commissions-v2.ts`), a policy_v1 track row and legacy all-null rows go to
-  the v1 writer (`recordReferredSpend`); one event is processed by exactly one writer, and an
+  `packages/sales-db/src/commissions-v2.ts`). One event is processed by exactly one writer, and an
   incomplete or mixed form halts the page before cursor advance (fail closed, no silent fallback
   to v1). An attributed v1 payload is accepted only in the current full B2C schema-v1 form,
   and its exact paid basis and immutable fields are atomically preserved in
@@ -162,17 +157,16 @@ Sales migration `0014_usage_attribution_buffer.sql` was delivered migration-firs
 The accompanying constraint on `partner_usage_events` forbids an attributed commission outside the
 same B2C track authority; the application writer and replay now obey this form.
 
-Target migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` created separate
+Migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` created separate
 `partner_usage_events_v2`, `pending_referral_usage_events_v2` and `commission_entries_v2`. They have
 no pricing-mode field: eligibility is set by the referred-B2C authority, `commission_eligible=true`
 and a positive exact `paid_funded_nano`; the trigger ties the direct partner, the active parent
 chain, the fixed bps values and integer-floor amounts. Usage/commission evidence is immutable. Old
-rows and constraints are not rewritten. The dual-consumer checkpoint is delivered: the v2 tables are
-no longer dormant — the schema-v2 writer (`commissions-v2.ts`) writes them in parallel with the v1
-writer (routing by event form), and all sum readers (partner storefront, periods/payouts, analytics,
-admin panel) aggregate BOTH schemas via UNION ALL — v1 and v2 events do not overlap, so there is no
-double counting. Removing the legacy v1 tables and the v1 feed form is the final contract step after
-Stage 9.
+rows and constraints are not rewritten. The historical v2 writer remains reachable only when a
+stored/replayed v2 wire row arrives; the live producer emits scalar rows to the v1 store. All sum
+readers (partner storefront, periods/payouts, analytics, admin panel) aggregate both stores via
+`UNION ALL`, and the event forms do not overlap. These sales money tables are outside the pricing
+retirement manifest; removing either store requires its own evidence and consumer migration.
 
 ### Sales → Commerce: promo and registration (`apps/sales-api/src/internal.controller.ts`)
 
@@ -188,9 +182,7 @@ Commerce calls sales-api at `SALES_API_URL` with the same `SALES_CONTROL_KEY`.
   (up to 3 attempts), best-effort attributes an unassigned user to the code's owner, and with
   `discountBps>0` applies the discount "floor" with local retries — the async feed does **not**
   re-apply the promo discount (it derives the floor only from `partner_discount_links`).
-  In the target contract promo keeps credit/referral attribution but does not change the B2C price:
-  `discountBps` becomes a deprecated producer field and is then removed producer-last after the
-  consumers switch over.
+  `discountBps` records the promised partner rate but does not change the B2C scalar price.
 - `POST /v1/internal/partners/referral-discount` — atomic claim of a personal discount link. Body
   `{code, commerceUserId}` → `{discountBps}`. First-wins, idempotent by (code, user): the link is
   bound to the first owner in a single UPDATE and NEVER gives the discount to a second person; an
@@ -199,8 +191,8 @@ Commerce calls sales-api at `SALES_API_URL` with the same `SALES_CONTROL_KEY`.
   registration, email confirmation, OAuth) — synchronously, so the referral sees their rate from
   the first visit; fully best-effort
   (4 s timeout, failure → the async feed applies the owner's floor on the next tick).
-  The route and the discount links are legacy tier-linked surface; target registration does not
-  call them. The referral link keeps attribution/commission but not a personal discount.
+  The link keeps attribution/commission and the promised-rate display, but it does not create a
+  personal price.
 - `GET /v1/internal/partners/resolve?code` → `{found:false}` or `{found:true, partnerId,
   referralDiscountBps}` — resolving the ref code of an active partner (`Cache-Control: no-store`).
   The endpoint is live, but the current commerce code does **not** call it: the claim endpoint
@@ -221,9 +213,10 @@ latest distinct referral click wins, while revisiting the same code does not ext
 Commerce writes the code best-effort to `referral_attributions` (unique by user_id). Ref is also
 passed through OAuth registration: the social buttons pass it in `oauthUrl` (`apps/web/src/lib/api.ts`),
 `beginOAuth` saves the code in the OAuth transaction (it survives the redirect to the provider), and
-`completeOAuth` for a **new** account writes the attribution. The current code also calls the legacy `POST
-/v1/internal/partners/referral-discount`; by Stage 9 this call is removed. In the target contract
-ref only affects commission, and the B2C price is determined by global/provider/model policy.
+`completeOAuth` for a **new** account writes the attribution. The current code also calls
+`POST /v1/internal/partners/referral-discount` to claim a one-time link and record its promised
+rate immediately. Ref affects attribution, commission and partner-facing display; the B2C price
+remains the stored account scalar plus any provider override.
 
 The complete product guide for the whole program (sign-in, attribution, commission, levels, wallet,
 periods, dashboard, admin panel, languages) — `docs/sales/PARTNER_PROGRAM.md`.
@@ -239,18 +232,18 @@ payouts (on-chain) is a separate upcoming system.
 
 ## Commission math (sales-db)
 
-For the target schema-v2 usage event, `A` is the exact `paid_funded_nano` from the immutable
-referred-B2C attribution; bonus-funded/B2B/OpenKeys/service/ineligible rows never reach the
-calculation. Only for the historical all-null form
-does `A` temporarily remain the legacy `real_funded` free-first projection. For a user of partner P0:
+For the live scalar usage event, `A` is `amountNano`, already narrowed by commerce to the
+customer-funded `real_funded_nano` after free-first accounting and settlement shortfall. Historical
+v1 rows use the same writer; historical v2 rows use their exact `paid_funded_nano`. For a user of
+partner P0:
 - level 0: `A * P0.commission_bps / 10000` (integer floor);
 - level N: `amount(level N-1) * Pn.sub_commission_bps / 10000` up the parent chain;
 - stop: no parent, amount 0, level > 10, or a suspended parent.
 Entries are idempotent via the unique `commerce_event_id`; the calculation happens in the same
-transaction as the event insert. Dual-consumer: v1 events are written to
-`partner_usage_events`/`commission_entries`, v2 — to
+transaction as the event insert. Scalar and historical v1 events are written to
+`partner_usage_events`/`commission_entries`; historical v2 rows go to
 `partner_usage_events_v2`/`commission_entries_v2` (the trigger `enforce_commission_entry_v2_source`
-fail-closed rejects a row outside the active chain); readers sum both schemas via UNION ALL.
+fails closed on a row outside that chain). Readers sum both stores via UNION ALL.
 Payout balance = confirmed commissions − (paid + active requests).
 
 ## Env (apps/sales-api)

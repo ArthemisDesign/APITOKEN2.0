@@ -92,7 +92,7 @@ const resolveSchema = z.object({
 
 // Резервный read-only endpoint: сейчас НИКЕМ не вызывается — claim через POST
 // `referral-discount` (ниже) заменил прежнюю пару resolve+consume. Оставлен как expand-only
-// контракт: отвечает, является ли ?ref= кодом активного партнёра, и его B2B-скидкой.
+// контракт: отвечает, является ли ?ref= кодом активного партнёра, и его обещанной ставкой.
 @Controller("internal/partners")
 @UseGuards(InternalKeyGuard)
 export class InternalPartnersController {
@@ -110,7 +110,7 @@ export class InternalPartnersController {
   }
 
   // АТОМАРНО закрепляет одноразовую скидочную ссылку за юзером и возвращает её скидку, только если
-  // он владелец. commerce зовёт это при активации движок-аккаунта — реферал видит ставку сразу, а
+  // он владелец. commerce зовёт это при активации движок-аккаунта — кабинет видит атрибуцию сразу, а
   // одноразовая ссылка НЕ может дать скидку второму. Обычный реф-код / гашёная-другим ссылка → 0.
   // POST, т.к. мутирует (consume). Идемпотентно по (code,user).
   @Post("referral-discount")

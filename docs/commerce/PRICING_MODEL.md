@@ -187,8 +187,10 @@ Two consequences worth knowing:
   nothing, and still records the usage row.
 
 The tables themselves (`account_policy_bindings`, `funding_buckets`, `funding_lots_v2`,
-`pricing_*`, `pricing_usage_attributions`) stay until an explicit drop migration, per the
-repository's expand-only rule. Until then, nothing may start reading them again.
+`pricing_*`, `pricing_usage_attributions`) are immutable incident evidence until every retention,
+rollback, watermark, dependency, backup and health gate in `docs/ops/PRICING_RETIREMENT.md` passes.
+The runbook pins the exact engine/commerce manifests and forward-only drop order. Until that staged
+contraction is GREEN, nothing may start reading them again.
 
 ## The 2026-08-09 aftermath: B2B discounts
 
@@ -199,7 +201,8 @@ caught. Their negotiated rates were recovered from the active policy version and
 `accounts.mult_bp`, and the commerce worker's strict-chain/backfill lanes — which kept resetting
 the scalar to 10000 — were disarmed (`PRICING_BACKFILL_ENABLED=false`) and then deleted.
 
-Three of those accounts had negotiated *different* rates per provider. Two carry the most
-favourable of their rates as a single number until their per-provider rows are written:
-`jerryerlawsones698@gmail.com` (default 3700, google 4500, openai 2500) and
-`riyamawanenchi@gmail.com` (default 4000, google 3000, openai 2500).
+Two affected accounts required exact Google/OpenAI terms in addition to their defaults. Their four
+provider rows are now present in both commerce desired state and the engine authority; the
+cross-database default/provider/status reconciliation is the production guard against losing them
+on a later admin save. Customer identities and negotiated values belong in protected audit data,
+not this repository document.

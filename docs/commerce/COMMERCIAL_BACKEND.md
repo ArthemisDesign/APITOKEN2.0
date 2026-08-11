@@ -71,11 +71,11 @@ indistinguishable from a browser-side failure when a customer reports a dashboar
 will not load. Typed HTTP exceptions (2FA required, policy conflict) are deliberate answers and
 are not logged as failures.
 
-A brand-new account provisions its engine mapping and pricing policy during its very first
-dashboard load, and the four section requests race each other through that provisioning. The
-confirmation poll therefore treats a SERIALIZABLE conflict as what it is — the account's own
-sibling requests, not a delivery failure — and keeps polling within its bounded window instead of
-reporting the policy as pending. The dashboard additionally waits out a `503` on an optional
+A brand-new account provisions its idempotent engine mapping and stored scalar price during its
+first dashboard load. Parallel section requests are serialized by the user-scoped PostgreSQL
+advisory transaction lock, and the compare-and-set to `active` cannot overwrite a concurrent
+administrative disable. There is no policy confirmation step: once the engine account exists with
+the requested scalar, the mapping is usable. The dashboard additionally waits out a `503` on an optional
 section (keys, ledger, usage) behind the skeleton for a few short attempts
 (`apps/web/src/lib/provisioning-retry.ts`) before showing the "could not be loaded" notice, so a
 first-time customer is not told their account is broken when it is one second old.
@@ -102,118 +102,33 @@ Email/password authentication, authorization invariants and the future email/Goo
 boundaries are documented in `docs/commerce/AUTHENTICATION.md`.
 Transactional email and self-hosted SMTP configuration are documented in `docs/commerce/EMAIL_INTEGRATION.md`.
 
-B2C global/provider/model discounts, B2B invitations/manual policies, OpenKeys/service boundaries
-and the zero-downtime engine sync pipeline are documented in `docs/commerce/PRICING.md` and
-`docs/commerce/PRICING_MODEL.md`. Progressive tiers, retention and `track` are migration-only
-legacy and must not receive new behavior.
+B2C/B2B scalar defaults, optional per-provider overrides, OpenKeys/service boundaries and the
+durable delivery queue are documented in `docs/commerce/PRICING.md` and
+`docs/commerce/PRICING_MODEL.md`. Commerce persists desired values, while the engine account is the
+request-time price authority. The worker delivers one independently leased `engine_pricing_jobs`
+row per default or provider target; terminal updates fence on the exact claimant and requeue when
+the desired value changed during the HTTP call.
 
-The multi-discount rollout adds a second, versioned synchronization lane beside the legacy scalar
-multiplier lane. Commerce remains the policy authority: immutable catalog, provider-switch and
-effective account-policy rows are staged into `engine_catalog_jobs`, `engine_switch_jobs` and
-`engine_policy_jobs`. The worker claims them in catalog → switches → policy order, derives an exact
-CAS expectation from the engine's active state, and stores the complete durable ACK before marking
-the desired binding confirmed. Expired leases replay safely, including a lost ACK after the engine
-commit; same-version/different-digest and malformed protocol responses are permanent failures.
+The former policy/catalog/switch/release/funding lanes and their Stage 5–9 workers are deleted.
+Their applied migrations remain immutable history, but their tables are neither a dormant feature
+nor a rollback API. The exact retention, rollback-release, backup and drop gates are in
+`docs/ops/PRICING_RETIREMENT.md`; historical stage documents are non-executable incident context.
 
-Commerce migration `packages/db/migrations/0026_pricing_release_expand.sql` is the dormant
-migration-first foundation for the target Stage 5/6/8/9 flow. It adds versioned target policy and
-rule documents, B2B invitation snapshots, service inventory, target/recovery plans, full-inventory
-assignments, resumable funding/control jobs, Stage 8 evidence and activation receipts. Service
-policies intentionally have no product catalog or product-switch pins because their access is
-runtime-capability-gated and `meter_only`. The migration does not seed a policy, enqueue a job or
-activate a release; dependent readers and writers are delivered only after this schema SHA has
-green `deploy/migration` and `deploy/watchdog` in production.
+Key issuance has no pricing-policy handshake. It first materializes the scalar engine account if
+needed, then issues the key and persists only its non-secret identity and mask. If persistence
+fails, commerce disables the just-issued engine key as compensation before returning an error.
 
-The separate expand-only migration `packages/db/migrations/0028_pricing_stage5_evidence.sql`
-adds empty Stage 5 run, typed-blocker and prepare/readback-ACK tables. It preserves the exact
-validated inventories and plan needed to prove a later apply was rebuilt from stable engine and
-OpenKeys scans; checks reject unequal scan digests and mismatched ACK readbacks. It neither seeds a
-run nor enqueues or activates any release, and its consumer follows only after the migration SHA is
-green in production.
-
-Migration `packages/db/migrations/0029_pricing_release_two_phase_finalize.sql` removes the cyclic
-requirement to know a live-money funding manifest before Stage 6 computes it. Stage 5 can persist an
-immutable full-inventory plan with nullable balance funding and release identities. Guard triggers
-allow only one-way funding finalization, reject source/policy or finalized-digest replacement and
-require exact ready queue coverage before `prepared`. It performs no data backfill, starts no job,
-does not move the release head and does not pause production writers. The dependent Stage 5/6
-consumers are delivered only after this migration SHA is green.
-
-The target Stage 6 worker consumer claims only explicitly staged `normalize_funding` target-plan jobs.
-It performs two stable full cursor scans, excludes exact `meter_only` service inventory, then plans
-and applies a bounded number of balance accounts per slice with durable leases and account-local
-retries. Every POST is preceded by a fresh GET and uses only that response's source/target digests.
-Parent confirmation requires a final repeat scan and exact queue coverage, then atomically freezes
-assignment funding generations and the newly computed canonical funding manifest. Engine
-target/recovery prepare+readback finalizes release digests afterward; this lane never moves the
-release head. The pre-0029 orchestration remains dormant until replaced by that consumer.
-Operational details and bounded env defaults are in `docs/commerce/MULTI_DISCOUNT_STAGE6.md`.
-
-This application checkpoint does not seed production policies or enable the engine's strict runtime.
-A legacy scalar job is drained only once its account's binding is `policy_enforcement = 'strict'`
-with a non-null desired full-policy version and digest, so empty version streams cannot alter
-current users. While bindings stay `shadow` (the entire pre-cutover fleet), the engine still bills
-off the legacy `accounts.mult_bp` scalar that only this lane writes, so scalar jobs are delivered
-normally. Application provisioning is now
-conditionally policy-before-key: when a managed Global B2C or B2B source policy exists, commerce
-creates the binding, immutable effective version and durable job before a usable key, keeps the
-engine account pending, and activates it only after the exact ACK. Accounts with no managed policy
-authority retain the legacy path until Stage 5 creates that authority. OpenKeys follows its separate
-Stage 7 cutover for existing inventory and uses account-local release extensions for every account
-created after the global cutover.
-
-Key issuance checks exact desired/applied version and digest both before and after the remote issue.
-If policy authority appears or changes in that race window, commerce disables the just-issued engine
-key as compensation and never stores it as usable. A provider-switch update creates a new immutable
-generation and rematerializes every existing managed binding against it, preserving unrelated
-product/OpenKeys scopes while preventing stale switch lineage.
-
-The same preflight/postflight boundary now covers release-v2 provisioning. While the global release
-head is null, it is a no-op and preserves the pre-cutover path. Once a head exists, a key can be
-returned only when the account is already in the immutable base release or after account-local
-funding normalization, exact release-policy prepare/readback, atomic active/recovery assignment
-extension and exact extension GET readback. A stale head retries the complete bounded chain; a
-conflict or blocked funding plan fails closed. If the postflight check fails, the raw key is disabled
-before it can reach the browser. This provisioning consumer cannot move the head.
-
-Global activation is isolated in a separate durable worker lane. Strict contracts validate the
-complete request, receipt and each typed rejection; `packages/engine-client` exposes the only
-transport method; `packages/db/src/pricing-release-activation-jobs.ts` accepts only an explicitly
-staged immutable job bound to persisted `passed=true`, zero-blocker Stage 8 evidence and prepared
-target/recovery engine digests. The request is stored before network I/O, expired leases replay that
-exact body, and confirmation atomically stores the complete validated ACK plus canonical
-request/receipt result digest. Before the first delivery, the worker revalidates full engine and
-OpenKeys inventories around a stable commerce/service snapshot, exact ownership/status and
-post-cutover assignment-extension/funding authority. Subject identities remain hashed. Once a
-request may have reached the engine, retry deliberately skips TTL and mutable-authority checks and
-replays the immutable body so an applied CAS with a lost ACK can return `unchanged`. Forward
-recovery derives its exact expected target head only from the durable cutover receipt. Migration,
-startup, evidence collection and worker polling never create a job. The only production staging
-entrypoint is the AdminGuard-protected explicit POST below; it derives `operator_id` from the
-verified `x-admin-actor`, stores actor/reason in both the immutable request and `audit_log`, and
-cannot accept an inferred/default evidence identity. New Stage 8 rows persist both source-engine
-and service-inventory identities; staging rejects legacy rows where either expand-only field is
-still `NULL`, and first delivery requires the fresh service digest to match. A transient
-engine/OpenKeys authority outage keeps the job retryable without spending the first-delivery
-attempt; deterministic drift remains terminal.
-
-The commercial admin API exposes the complete managed surface:
+The commercial admin API exposes the live managed surface:
 
 ```text
-GET       /admin/pricing-catalog?product_id=...
-PATCH     /admin/provider-switches
-GET/PATCH /admin/pricing-policies/global-b2c
-GET       /admin/business-users/{id}/pricing-policy
+GET       /admin/business-users/{id}/pricing
 PATCH     /admin/business-users/{id}/pricing
-GET/PATCH /admin/business-invites/{id}/pricing-policy
-GET       /admin/service-policies
-GET/PATCH /admin/service-policies/{id}?product_id=...
-GET       /admin/service-account-inventory
-PUT       /admin/service-account-inventory/{service_id}
+POST      /admin/business-invites
+GET       /admin/business-invites/{id}/link
+POST      /admin/business-invites/{id}/revoke
+POST      /admin/business-invites/{id}/resend
 POST      /admin/users/{id}/provisioning-repair
-POST      /admin/pricing-policy-delivery-repairs
-POST      /admin/pricing-catalog-jobs/stage
-POST      /admin/pricing-switch-jobs/stage
+GET       /admin/pipeline-health
 GET       /admin/finance/paying-users?days=1|7|30&limit=...&offset=...&funding=payments|manual|bonus|all|spenders&include_usage=true|false
 GET       /admin/finance/engine-spend?days=1|7|30
 ```
@@ -307,96 +222,16 @@ as complete. The engine's relative usage window is fetched after the commerce sn
 claimed to share its exact cutoff. `apps/admin` must consume this expand-only producer contract only
 after the exact producer SHA has a green `deploy/watchdog` verdict.
 
-The Stage 8 capture GET returns a bounded read-only view of durable job/artifact identities,
-status counts, freshness and sanitized combined blockers (`source/code/count` plus already-hashed
-subject digests; never raw account/request identity). It caps the newest artifacts and the first 100
-blockers per artifact, exposes the exact total count and marks a truncated summary. Its POST requires
-a strict UUID idempotency key, exact target/recovery generations,
-past capture window, provider/sample/Gemini bounds, verified `x-admin-actor` and explicit reason.
-It only inserts or idempotently finds the immutable capture job and audit row. The worker performs
-engine capture, persists exact raw engine JSON before any local collection, immediately combines
-commerce/service and two exhaustive OpenKeys scans, and commits combined artifact plus terminal
-`passed|blocked` state atomically. Transport/authority uncertainty retries within bounded leases and
-attempts; malformed or conflicting evidence fails closed. Startup, polling and activation requests
-never create capture work, and capture never creates an activation job or moves the engine head.
+The former Stage 5–9 capture/activation/orchestration, service-inventory, policy, catalog and
+switch admin routes are removed. They must not be restored as rollback helpers; their schema is
+retained only under `docs/ops/PRICING_RETIREMENT.md`.
 
-The activation GET is a bounded read-only snapshot of exact local release/evidence/job/receipt
-identities plus separately timestamped live engine head availability. The POST accepts only strict
-`activation_kind`, canonical `evidence_digest` and `reason`; it creates or idempotently finds the
-single durable job and returns before the worker performs any network delivery. Neither route
-collects Stage 8 evidence or moves the engine head inline.
-
-Policy writes are full CAS replacements over provider/model rules. Their responses include source
-actor/reason/version, desired/applied target versions, durable delivery state and the latest error.
-Service inventory is a separate admin-managed authority over
-`service_account_inventory_v2`. A PUT is an exact per-service CAS: create requires null expected
-version/digest, update requires the current pair, and an exact replay returns `unchanged`. The
-operator supplies only stable service identity plus `purpose`/`responsible`; the API performs two
-matching exhaustive engine pricing-inventory scans and copies the current engine status. It rejects
-missing accounts, commerce mappings, OpenKeys handles, duplicate engine ownership and stale CAS,
-then, if the global provisioning context is non-null, durably prepares/reads back the rule-free
-`meter_only` service policy and exact context-selected assignment extension before writing the row
-and audit evidence in one `SERIALIZABLE` commerce transaction. A fresh final context must still be
-covered; rejected ACK or readback drift fails closed. The mutation does not create an engine
-account, release or activation and cannot move the head. Stage 5 still proves that the aggregate
-commerce/OpenKeys/service inventories cover engine inventory exactly once, so an unregistered or
-misclassified account remains a typed blocker rather than being inferred from its name.
-An exact replay of an already registered service skips a second extension write. Changing
-purpose/responsible or ownership under an immutable active base/extension fails closed and must be
-carried by a later reviewed release generation; the API never rewrites live assignment history.
-
-Strict mutation body (unknown fields are rejected):
-
-```json
-{
-  "expected_source_version": null,
-  "expected_content_digest": null,
-  "engine_account_id": "acct_...",
-  "purpose": "internal workload description",
-  "responsible": "platform owner",
-  "reason": "operator audit reason"
-}
-```
-
-GET and successful PUT return schema-v2 rows sorted by `service_id`, each with monotonic
-`source_version` and canonical `content_digest`, plus one canonical `inventory_digest`. PUT also
-returns `stored|unchanged` and the exact stable engine identity-inventory digest used for validation.
-
-The resulting service inventory spans all runtime-capable models, carries authoritative
-purpose/responsible evidence and materializes `billing_mode=meter_only`; it is not restricted by
-product pricing rules and never depends on account balance.
-An invitation may use either a complete policy or the legacy scalar compatibility input, never both;
-policy-based invitations persist a neutral `10000` placeholder. Edit, resend and redemption preserve
-independent exact snapshots, and redemption copies the selected invitation version into the new B2B
-client policy before provisioning.
-
-If an account created before the pre-cutover compatibility fix is stuck on an exact terminal policy
-job with the historical `strict + legacy_single`, `POST /v1/admin/pricing-policy-delivery-repairs`
-accepts its UUID, effective version, content digest and reason. The producer works only while the
-global release head is absent, atomically marks the old job as `superseded`, and creates the next
-immutable `shadow + legacy_single` delivery plus an audit link. It is not a generic retry for
-permanent failures and does not permit manual editing of job/binding rows.
-
-If the commerce catalog/switch heads lag behind the engine-active lineage (the engine moved to a
-newer immutable generation via a separate producer), the protected
-`POST /v1/admin/pricing-catalog-jobs/stage` (`{product_id, generation, reason}`) and
-`POST /v1/admin/pricing-switch-jobs/stage` (`{generation, reason}`) stage a control job for exactly
-the stored immutable version: the request carries no payload, the version is re-read from commerce
-storage, and engine delivery is idempotent (an exact replay returns `unchanged`). Staging moves only
-the commerce head and creates an audited delivery job; it does not change traffic, account policies
-or money. A replay does not create a second job and does not duplicate the audit.
-
-The Stage 5–9 release-cycle machinery (managed Stage 5/6 preparation, Stage 8 capture, Stage 9
-activation, shadow rollout, orchestration) is removed from commerce: prices are hot tariff
-overrides on the engine Control API and discounts are hot managed policy rules delivered through
-the durable pricing-control jobs, so the cycle's routes, worker lanes, gates, and `packages/db`
-job/store libraries were deleted (`docs/ops/MODEL_RELEASE_CYCLE.md`). The Stage 5
-pair-preparation materializer cluster — the last runner of the manual new-model release
-advance — is deleted with the retired release advance: head 55 is the final pricing release and
-new models are priced through the engine's `is_model_unpriced` fallthrough plus a hot tariff
-seed; the engine release-v2 producers under `/admin/pricing/v2/*` are unchanged and remain as
-expand-only contract surface.
-
+The live pricing admin path is scalar: `PATCH /v1/admin/business-users/:id/pricing` atomically
+persists the B2B default plus provider overrides and enqueues independently fenced
+`engine_pricing_jobs`; read surfaces return those persisted desired values without substituting a
+hardcoded B2C default. `GET /v1/admin/pipeline-health` exposes delivery/drift status. Official
+provider tariffs use the engine's `/admin/pricing/tariffs*` surface; new model publication follows
+`docs/ops/MODEL_RELEASE_CYCLE.md` without any release head or policy generation.
 ## Authenticated client API
 
 All private routes use the HttpOnly session cookie and derive the owner from that session. Engine
@@ -410,10 +245,10 @@ POST   /v1/api-keys                {"label"?: "production"}; raw sk-pool key ret
 DELETE /v1/api-keys/{id}           disable an owned key by commercial UUID
 ```
 
-`GET /v1/account` also returns the authenticated customer's safe funding and desired/applied pricing
-view, including provider/model availability without inferring provider from model names. Commercial
-operator routes use a separate `COMMERCIAL_ADMIN_KEY`; they create email-bound or copy-only B2B
-invitations, revoke/rotate them, and manage full B2B pricing policies. That key is never a client
+`GET /v1/account` also returns the authenticated customer's stored scalar pricing view. Provider
+overrides are an operator surface and are not inferred from model names. Commercial operator routes
+use a separate `COMMERCIAL_ADMIN_KEY`; they create email-bound or copy-only B2B invitations,
+revoke/rotate them, and manage the B2B default plus provider overrides. That key is never a client
 session or an engine Control API credential.
 
 Engine provisioning is recoverable: the stable handle `user:<commercial UUID>` makes account
@@ -459,9 +294,9 @@ change any of them. `paid_over` credits only the requested amount; underpayment 
   terminal/retry writes fence on a unique worker lease, and the negative engine operation is
   idempotent by payment ID. A refunded payment may never depend on a best-effort in-memory debit.
 - B2C usage rows are deduplicated by `(engine_account_id, ledger_entry_id)` and accepted only after
-  exact local policy/admission/funding validation. Sales receives exact referred-B2C
-  `paid_funded_nano`; commission eligibility is independent of pricing mode, and welcome-funded
-  usage is excluded. Every new charge also persists the engine ledger's authoritative top-level
+  exact ledger validation. Sales receives the scalar feed's exact referred-B2C
+  `real_funded_nano`; welcome-funded usage and engine-pool settlement shortfall are excluded. Every
+  new charge also persists the engine ledger's authoritative top-level
   `provider`; after the live cursor the worker repairs pre-column rows in bounded resumable pages
   from the retained 30-day ledger. Recovery algorithm v2 retries legacy `NULL`, provisional
   `unattributed`, and older terminal `unavailable` rows only when
@@ -469,8 +304,8 @@ change any of them. `paid_over` credits only the requested amount; underpayment 
   Anthropic/OpenAI/Google and records an exhausted v2 attempt as `unavailable`; both outcomes store
   version `2`, and newly ingested exact providers start at that version. Model names never
   participate in recovery.
-- Legacy scalar pricing changes are persisted as durable jobs before the engine multiplier is
-  updated. Only an account whose binding enforces the full policy (`policy_enforcement = 'strict'`)
-  has its scalar lane audit-drained; for `shadow` bindings the engine still bills off the legacy
-  scalar, so the lane keeps delivering. Under strict, only the monotonic versioned policy lane may
-  advance the account's engine pricing state.
+- Account-default and provider pricing changes are persisted with durable delivery jobs before the
+  worker calls the engine. Each terminal write is fenced by the claim's `locked_by` and monotonic
+  attempt; a stale worker cannot confirm or retry a lease that another worker now owns. If the
+  desired value changed in flight, confirmation requeues the new value instead of acknowledging
+  the obsolete delivery.

@@ -712,12 +712,9 @@ export async function convertCustomerToBusiness(database: Database, input: {
 }
 
 /**
- * Устанавливает «пол» скидки от сейлза для реферала ПАРТНЁРА. Клиент ОСТАЁТСЯ b2c и идёт по
- * обычным тир-правилам (тир, бонус, промо — как у всех); floor лишь гарантирует, что цена не хуже
- * скидки сейлза: эффективный mult = min(тир-mult, 10000 - floorBps). floorBps=0 снимает пол
- * (возврат к чистому тиру). Разграничение b2c/b2b сохранено: для business-b2b пол не применяется.
- * Мультипликатор доставляется в движок через durable engine_pricing_jobs. Идемпотентно.
- * Вызывается ТОЛЬКО для партнёрских реф-кодов (обычная сайтовая рефка сюда не идёт).
+ * Записывает обещанную партнёром ставку как sales-атрибуцию для B2C. Это не price authority:
+ * функция не меняет multiplier_bp и не создаёт engine_pricing_jobs. floorBps=0 снимает запись;
+ * B2B имеет отдельные договорные условия и сюда не входит. Идемпотентно.
  */
 export async function setReferralFloor(database: Database, input: {
   userId: string;
@@ -749,9 +746,9 @@ export async function setReferralFloor(database: Database, input: {
       await client.query("ROLLBACK");
       return { applied: false, multiplierBp: null };
     }
-    // Пост-катовер: «пол» — это партнёрская АТРИБУЦИЯ обещанной ставки, а не цена. Цена B2C
-    // задаётся только активным pricing release (flat 50% + overrides), поэтому scalar/jobs
-    // здесь больше не двигаются. Колонка одна, но пишут в неё три независимых источника
+    // «Пол» — партнёрская АТРИБУЦИЯ обещанной ставки, а не цена. Цена B2C задаётся сохранённым
+    // scalar и provider overrides, поэтому эта функция их не двигает. Колонка одна, но пишут
+    // в неё три независимых источника
     // (промо, партнёрская ссылка, sales-фид) — берём максимум (лучшее клиенту), кроме явного
     // сброса/override. floorBps===0 — единственный путь ЯВНОГО сброса (напр. отзыв).
     const effectiveFloor = input.override === true
@@ -1446,8 +1443,8 @@ async function reconcileTopupTier(
 
   // The unique credit marker and the aggregate update stay in this transaction, so confirmed
   // top-ups and later refund/dispute reversals are applied exactly once across worker retries.
-  // Post-cutover this maintains only the cumulative top-up total used by finance reporting;
-  // no tier, window or multiplier state is advanced anymore.
+  // This maintains only the cumulative top-up total used by finance reporting; no tier, window or
+  // multiplier state is advanced.
   const appliedResult = await client.query<{ amount_nano: string }>(`
     WITH eligible AS (
       SELECT ec.id AS credit_id

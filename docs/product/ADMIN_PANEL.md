@@ -185,66 +185,31 @@ The existing `/subscriptions` page additionally shows acquisition/expiry/days-le
 from `/capacity`, `/codex-subs` and `/gemini-subs`; these are display data and do not by themselves
 make a proxy renewable.
 
-## Pricing configurators and B2B policies
+## B2B pricing
 
-The `/pricing` page is the operator surface of the versioned multi-discount authority:
+There is no `/pricing` page, policy editor, provider-switch UI, service-policy UI or release-cycle
+control room. Those surfaces were deleted with the policy/catalog/release authority and must not
+be restored from this document. The live model is `docs/commerce/PRICING_MODEL.md`.
 
-- Global B2C is edited as a full CAS replacement set: default 50%, provider overrides and
-  exact model overrides. An exact model rule takes priority over provider, provider — over
-  the global default;
-- provider switches show the master, product, B2C and B2B gates. Master is visually
-  separated, and changing it or disabling any gate requires a separate browser
-  confirmation. Saved policy rules are not deleted when a gate is disabled;
-- a provider rule does not automatically include future models. The editor offers only
-  models from the active product catalog; Gemini does not appear without an explicit
-  catalog entry;
-- the backend admin API publishes the canonical service inventory and exact-CAS mutation
-  under `/admin/service-account-inventory`; it shows `purpose`, `responsible`, last
-  verified engine status, all-runtime-model access and `billing_mode=meter_only`. The
-  current UI does not automatically classify unknown accounts: until a separate form
-  exists, the operator uses the same protected admin contract. Service does not edit
-  product discounts and does not depend on balance;
-- every save shows the new source version and is not declared applied until targets have
-  matching desired/applied versions and an exact ACK. The UI shows job state, last error,
-  actor, reason and the version time.
+The `/business` page owns B2B invitations and existing B2B terms:
 
-The `/business` page uses the same policy editor for existing B2B clients and active
-invitations. Every B2B client owns a managed policy: invitation redemption copies the
-invitation snapshot, and a manual B2C→B2B conversion from `/users` provisions a single-rule
-Anthropic discount policy from the negotiated multiplier; re-running that conversion on a
-client who still lacks the policy (converted before this provisioning existed) repairs it
-without touching the active discount. For a converted customer the binding is re-pointed at the
-client policy and the identity switch is staged as a normal delivery: the backfilled binding is
-shadow, and the engine accepts a shadow rebind pre-cutover, so the panel's versions move once
-the engine ACKs. Only a strict binding keeps the immutable lineage — its desired state is
-healed back to the confirmed one and the release cutover delivers the identity switch.
+- a new invitation records one scalar default discount; email-bound and copy-only invitations use
+  the same idempotent create/revoke/resend workflow;
+- an existing B2B client's dialog reads `GET /admin/business-users/:id/pricing`, shows the stored
+  default and one optional field for each canonical provider (Anthropic, OpenAI, Google, KIMI,
+  GLM), and writes them together through one `PATCH`;
+- an empty provider field removes that override and falls back to the default; every value is a
+  whole percentage, with the backend enforcing the corresponding `0..10000` multiplier bound;
+- one save is one commerce transaction. It records the default and all provider rows together and
+  enqueues a separately fenced delivery job for each changed target, so a partial editor save
+  cannot become a permanent half-deal;
+- the `/users` B2C→B2B action records the negotiated scalar and its delivery job. A new account is
+  usable once its idempotent engine account exists with that scalar; no policy ACK or release head
+  is involved.
 
-Conversion and every B2B policy save enforce the client's own policy per account
-(`docs/commerce/MULTI-DISCOUNT.md` decisions 13–14). Since the fleet cutover completed on
-2026-08-04, the enforcement lane is the append-only assignment extension: the save prepares a
-strictly newer release policy version and pins it under the exact current head and its paired
-recovery, and the resolver prefers the extension over the immutable base assignment — billing
-and the customer's badge both follow the materialized per-provider policy, while the global B2C
-rules, the legacy scalar and older versions never price a new charge again. In-flight
-reservations settle on their reserve-time snapshot. A pre-cutover converted account still on
-the legacy lane is disarmed as `superseded` by the pricing worker and the manual
-`POST /v1/admin/users/:id/policy-enforcement-cutover` endpoint refuses with `post_cutover`:
-the engine guards (funding parity, exact key ACKs) now live behind the extension writer's
-readback. A failed extension sync is reported on the save response with its typed code, never
-a silent half state. A new invitation is created immediately with a full provider/model policy; a
-scalar discount editor does not exist in the active UI. An unredeemed invitation is edited
-with CAS replacement versions, resend gets an independent exact snapshot, and after
-redemption changing the invitation no longer changes the client policy.
-Preview/email/registration describe the provider/model access and the account stays
-pending until engine ACK; no usable key is issued until the policy is confirmed.
-
-The admin panel does not perform release assignment/backfill itself and does not derive
-B2B/service/OpenKeys assignments from names. The release-cycle control room that used to live on
-`/pricing` (the activation snapshot poller and the managed Stage 8 capture control) was removed
-with the dismantled release cycle: prices are hot tariff overrides and discounts are managed
-policy rules, so the page now carries only the hot delivery surfaces — provider switches, the
-Global B2C policy editor, and explicit service policies. The engine release-v2 producers remain
-for the manual new-model path in `docs/ops/MODEL_RELEASE_CYCLE.md`.
+Pipeline delivery/drift status is shown through `GET /admin/pipeline-health` on the dashboard and
+finance surfaces. Official provider tariff changes are an engine operator action, not a browser
+pricing editor (`docs/engine/CONTROL_API.md`).
 
 ## Paying customers
 

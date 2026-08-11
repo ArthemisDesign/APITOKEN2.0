@@ -1,6 +1,9 @@
 # Stage 7 — OpenKeys canonical 1:1
 
-> **Superseded (2026-08-07).** The commerce firing pins for this stage (admin routes, worker lanes, deploy gates) were removed with the dismantled release cycle — see `docs/ops/MODEL_RELEASE_CYCLE.md`. This file is kept as the protocol record; the engine-side producers under `/admin/pricing/v2/*` are unchanged.
+> **Historical only; retired in full on 2026-08-09.** Commerce firing pins, workers, engine
+> policy/release producers and shared wire contracts are removed. Commands below describe the former
+> protocol and must not be executed. Current model: `docs/commerce/PRICING_MODEL.md`; schema
+> closeout: `docs/ops/PRICING_RETIREMENT.md`.
 
 Stage 7 closes all paths that issue OpenKeys at a price other than the official 1:1 and prepares all
 existing inventory for the shared Stage 9 cutover.

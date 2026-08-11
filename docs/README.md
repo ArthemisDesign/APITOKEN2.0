@@ -31,13 +31,13 @@ document, update this index.
 
 - [COMMERCIAL_BACKEND.md](commerce/COMMERCIAL_BACKEND.md) — map and local launch of the commercial backend.
 - [AUTHENTICATION.md](commerce/AUTHENTICATION.md) — authentication and authorization.
-- [PRICING.md](commerce/PRICING.md) — B2C 50%/overrides, B2B, OpenKeys, service, bonus, and referral.
+- [PRICING.md](commerce/PRICING.md) — customer-pricing entry point and retirement boundary; the live detailed contract is PRICING_MODEL.
 - [PRICING_MODEL.md](commerce/PRICING_MODEL.md) — LIVE pricing contract: one balance, one discount, per-provider overrides.
 - [MULTI-DISCOUNT.md](commerce/MULTI-DISCOUNT.md) — retired 2026-08-09; history of the catalog/switch/release design and why it was withdrawn.
-- [MULTI_DISCOUNT_STAGE5.md](commerce/MULTI_DISCOUNT_STAGE5.md) — Stage 5 v2: authoritative inventory and dormant target/recovery materialization (superseded: the commerce firing pins and the materializer cluster are removed; kept as the protocol record).
-- [MULTI_DISCOUNT_STAGE6.md](commerce/MULTI_DISCOUNT_STAGE6.md) — Stage 6: funding reconciliation (superseded: commerce routes/worker lane removed).
-- [MULTI_DISCOUNT_STAGE7.md](commerce/MULTI_DISCOUNT_STAGE7.md) — Stage 7: OpenKeys 1:1 cutover (superseded: the shadow-rollout lane is removed).
-- [MULTI_DISCOUNT_STAGE9.md](commerce/MULTI_DISCOUNT_STAGE9.md) — Stage 9: zero-downtime atomic full-inventory cutover (superseded: the activation lane is removed; the engine CAS producer remains).
+- [MULTI_DISCOUNT_STAGE5.md](commerce/MULTI_DISCOUNT_STAGE5.md) — historical Stage 5 protocol; all producers and consumers are removed.
+- [MULTI_DISCOUNT_STAGE6.md](commerce/MULTI_DISCOUNT_STAGE6.md) — historical Stage 6 funding-reconciliation protocol; all producers and consumers are removed.
+- [MULTI_DISCOUNT_STAGE7.md](commerce/MULTI_DISCOUNT_STAGE7.md) — historical Stage 7 OpenKeys cutover protocol; all producers and consumers are removed.
+- [MULTI_DISCOUNT_STAGE9.md](commerce/MULTI_DISCOUNT_STAGE9.md) — historical Stage 9 cutover protocol; all producers and consumers are removed.
 - [MULTI_DISCOUNT_CATALOG_GEN2.md](commerce/MULTI_DISCOUNT_CATALOG_GEN2.md) — catalog generation 2 (`claude-opus-5`, `claude-fable-5`): inert delivery and activation (historical; the gen2 library/CLI are deleted).
 - [CRYPTOMUS_INTEGRATION.md](commerce/CRYPTOMUS_INTEGRATION.md) — accepting payments via Cryptomus.
 - [PLATEGA_INTEGRATION.md](commerce/PLATEGA_INTEGRATION.md) — accepting payments via Platega (default provider).
@@ -60,8 +60,9 @@ document, update this index.
 
 - [DEPLOYMENT.md](ops/DEPLOYMENT.md) — production deployment runbook (operator-facing).
 - [INFRASTRUCTURE.md](ops/INFRASTRUCTURE.md) — production infrastructure and hosts.
-- [MODEL_RELEASE_CYCLE.md](ops/MODEL_RELEASE_CYCLE.md) — adding a model to the live pricing authority: dormant proof, hot tariff seed with the `is_model_unpriced` fallthrough (head 55 is the final pricing release; the release advance is retired), publication. Prices and discounts themselves are hot data and do not use this cycle.
-- [PRICING_RELEASE_BACKFILL.md](ops/PRICING_RELEASE_BACKFILL.md) — release-v2 retirement phase 2.2: canary-first backfill of existing commerce and OpenKeys accounts to the direct strict path (knobs, canary sequence, progress surface; service accounts intentionally stay on release).
+- [MODEL_RELEASE_CYCLE.md](ops/MODEL_RELEASE_CYCLE.md) — adding a model: dormant implementation, exact-SHA live proof, compiled/hot tariff verification, then separate public discovery and storefront publication; no policy or release-head advance.
+- [PRICING_RELEASE_BACKFILL.md](ops/PRICING_RELEASE_BACKFILL.md) — retired tombstone; its strict-chain sweep, knobs and endpoint no longer exist and must not be run.
+- [PRICING_RETIREMENT.md](ops/PRICING_RETIREMENT.md) — fail-closed retirement of the dead pricing policy/release/funding schema: exact manifests, retention/rollback gates and staged drop order.
 - [MONITORING.md](ops/MONITORING.md) — monitoring and alert runbook anchors (`docs/ops/MONITORING.md#<alert>`).
 - [REDIS.md](ops/REDIS.md) — Redis topology (both instances), standing rules for new consumers, and the ranked map of where Redis pays off next.
 - [DELETE_WORKTREE.md](ops/DELETE_WORKTREE.md) — permanent fail-closed cleanup of merged worktrees and explicitly registered clones on macOS.

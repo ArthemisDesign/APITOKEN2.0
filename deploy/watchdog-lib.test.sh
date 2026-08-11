@@ -4906,4 +4906,6 @@ if grep -Eq '^[[:space:]]*(postgres-native-tls|native-tls)[[:space:]]*=' \
   wd_die 'OpenSSL-compatible PostgreSQL TLS cannot be linked with the BoringSSL forward transport'
 fi
 
+bash "$ROOT/deploy/pricing-retired-schema.test.sh"
+
 printf 'watchdog retention, migration, and engine topology tests passed\n'

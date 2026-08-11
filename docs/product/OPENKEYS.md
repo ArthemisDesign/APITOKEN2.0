@@ -143,9 +143,7 @@ The loopback/internal `GET /api/internal/pricing/v2/inventory` producer (bounded
 `sha256:v2` manifest under `X-OpenKeys-Control-Key`) existed only for the Stage 5 v2
 materializer and the release-advance preflight. With the release advance retired (head 55 is
 the final pricing release — `docs/ops/MODEL_RELEASE_CYCLE.md`) its only consumers are gone, so
-the route and `apps/openkeys/src/lib/pricing-inventory.ts` are deleted; the
-`openKeysPricingInventory*V2` wire schemas in `packages/contracts` remain as expand-only
-contract surface until a separate removal pass.
+the route, `apps/openkeys/src/lib/pricing-inventory.ts` and its shared wire schemas are deleted.
 
 ## Administrative interfaces
 
@@ -193,7 +191,7 @@ issuance — computed by a single SQL without live balances.
   (`removed_by` is the actor verified by Caddy, never a value from the body), and the
   warehouse ciphertext is wiped. Keys already handed to buyers are revoked too — the
   "the issuing admin is compromised" case is not covered otherwise. Revoked rows leave the
-  catalog but stay in history and in the pricing inventory producer.
+  active catalog but stay in immutable OpenKeys history.
 
 An unknown `createdBy` answers `404 unknown_seller` instead of a silent "0 keys", so a typo
 cannot look like a successful revocation. One call touches at most 500 keys with

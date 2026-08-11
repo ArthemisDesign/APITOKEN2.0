@@ -174,9 +174,11 @@ side effect. `serve` may only perform the read-only schema verification before c
   authority are no longer read by any runtime path. They were removed on 2026-08-09: strict
   admission funded from `funding_buckets` while normalization wrote `funding_lots_v2`, so 166 of
   168 strict accounts resolved zero available funds and every request was refused with 402 while
-  the balance was intact. Their tables remain until an explicit drop migration; nothing may start
-  reading them again — money has one authority (the account balance) and price has one (the
-  account discount). Migration `0044` drops the constraint triggers that policed those structures
+  the balance was intact. Their exact 31-table manifest remains immutable until the retention
+  boundary after `2026-09-09 09:26:32 UTC` and every rollback/watermark/dependency/backup/health gate
+  in `docs/ops/PRICING_RETIREMENT.md` passes; nothing may start reading it again. Money has one
+  authority (the account balance) and price has one (the account discount). Migration `0044` drops
+  the constraint triggers that policed those structures
   on every money mutation, and `0045` drops the two `engine_instances` triggers that gated the
   owner lease on them (`engine_instances_policy_runtime_floor` from 0017 while any binding was
   strict, `engine_instances_release_v2_epoch_fence` from 0025 while a release head existed). No
