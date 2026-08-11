@@ -55,6 +55,7 @@ describe.runIf(Boolean(connectionString))("engine top-ups recorded for reporting
     return {
       id: String(id), kind, amount_nano: amountNano.toString(), amount: amountNano.toString(),
       key_masked: null, ref, balance_after_nano: null, ts: String(1_700_000_000 + id), model: null,
+      uncollected_nano: "0",
     };
   }
   async function topups(): Promise<Array<{ source: string; amount_nano: string }>> {

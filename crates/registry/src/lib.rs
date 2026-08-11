@@ -432,12 +432,19 @@ pub fn open(path: &str) -> Result<Connection> {
     c.execute(
         "CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, \
          key TEXT, kind TEXT NOT NULL, amount_nano INTEGER NOT NULL, ref TEXT, \
-         balance_after_nano INTEGER, ts INTEGER, model TEXT)",
+         balance_after_nano INTEGER, ts INTEGER, model TEXT, \
+         uncollected_nano INTEGER NOT NULL DEFAULT 0)",
         [],
     )?;
     // Атрибуция charge-строк к Claude-модели (для точного per-model дневного графика). Модель известна
     // в момент settle (тот же запрос, что и usage_event). topup/adjust модели не имеют → NULL. Идемпотентно.
     let _ = c.execute("ALTER TABLE ledger ADD COLUMN model TEXT", []);
+    ensure_sqlite_column(
+        &c,
+        "ledger",
+        "uncollected_nano",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     let _ = c.execute(
         "CREATE INDEX IF NOT EXISTS ledger_acct ON ledger(account_id, id)",
         [],
@@ -3653,6 +3660,8 @@ pub struct LedgerRow {
     pub model: Option<String>, // Claude-модель за charge (для per-model графика); topup/adjust → None
     pub provider: Option<String>,
     pub official_nano: Option<i64>,
+    /// Billed charge that the shared account floor prevented the balance from collecting.
+    pub uncollected_nano: i64,
 }
 
 
@@ -3674,7 +3683,7 @@ pub(crate) fn resolve_ledger_provider(
 fn sqlite_ledger_row(row: &rusqlite::Row<'_>) -> Result<LedgerRow> {
     let provider = resolve_ledger_provider(
         row.get::<_, Option<String>>(9)?,
-        row.get::<_, Option<String>>(11)?,
+        row.get::<_, Option<String>>(12)?,
     )?;
     Ok(LedgerRow {
         id: row.get(0)?,
@@ -3688,12 +3697,14 @@ fn sqlite_ledger_row(row: &rusqlite::Row<'_>) -> Result<LedgerRow> {
         model: row.get(8)?,
         provider,
         official_nano: row.get(10)?,
+        uncollected_nano: row.get(11)?,
     })
 }
 
 const SQLITE_LEDGER_READ_COLUMNS: &str = "
     ledger.id,ledger.key,ledger.kind,ledger.request_id,ledger.amount_nano,ledger.ref,
     ledger.balance_after_nano,ledger.ts,ledger.model,ledger.provider,ledger.official_nano,
+    ledger.uncollected_nano,
     CASE
       WHEN ledger.kind<>'charge' THEN NULL
       WHEN ledger.request_id IS NOT NULL THEN (

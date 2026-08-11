@@ -137,7 +137,11 @@ side effect. `serve` may only perform the read-only schema verification before c
   fails its whole settlement transaction, and leaves the outbox pending for the new runtime. Until
   the separate runtime commit is
   GREEN, the serving binary may leave all nullable fields empty and writes zero shortfall through
-  column defaults. The dependent settlement must cap only the amount moved from the balance at the
+  column defaults. The producer-first Control API ledger contract exposes
+  `uncollected_nano` additively (omission by an older producer means zero), while charge
+  `amount_nano` remains full billed actual; a consumer derives collected customer debit as their
+  difference and must never treat shortfall as paid/free customer funding or commission basis.
+  The dependent settlement must cap only the amount moved from the balance at the
   shared account floor, keep the full billed amount in `actual_nano`/key and account spend, and
   record every difference explicitly as uncollected; silently lowering actual usage or reviving
   retired funding tables is forbidden.

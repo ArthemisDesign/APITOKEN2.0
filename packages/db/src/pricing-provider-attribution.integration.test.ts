@@ -86,6 +86,7 @@ describe.runIf(Boolean(connectionString))("pricing provider recovery uses exact 
       model: null,
       provider,
       official_nano: amountNano.toString(),
+      uncollected_nano: "0",
     };
   }
 

@@ -438,7 +438,8 @@ GET  /admin/account/{id}/keys                                        → 200 {ke
                                                                             created_ts,last_used_ts}]}
 GET  /admin/account/{id}/ledger?limit=N[&after_id=ID]                 → 200 {entries:[{id,kind,request_id,
                                                                             amount_nano,ref,ts,provider,
-                                                                            official_nano,attribution,
+                                                                            official_nano,uncollected_nano,
+                                                                            attribution,
                                                                             funding_allocations,...}]}
 POST /admin/account/{id}/ledger/ack     {"last_id": "12345"}          → 200 {account, consumer:"pricing",
                                                                             last_id} | 400
@@ -474,7 +475,12 @@ fully paid reserve: the normalization transaction simultaneously creates the gen
 immutable paid-only funding snapshot without changing the persisted pricing identity. An ambiguous live
 welcome reserve remains a typed blocker.
 
-A new ledger row persists the expand-compatible top-level `request_id`, `provider` and `official_nano`.
+A new ledger row persists the expand-compatible top-level `request_id`, `provider`, `official_nano`
+and non-negative `uncollected_nano`. For a charge, `amount_nano` remains the full billed actual and
+`uncollected_nano` is the part the account-wide settlement floor could not collect; the collected
+customer debit is therefore `amount_nano - uncollected_nano`. Old producer rows and mixed-version
+responses omit the additive field or return zero, and consumers must treat omission as zero. A
+shortfall is pool loss evidence, not paid/free customer funding and never a partner-commission basis.
 For a pre-column charge with `ledger.provider IS NULL`, the reader first looks up immutable `usage_events` by the
 exact `account_id + request_id`. For an older pair where both `request_id IS NULL`, only
 the full settlement fingerprint is allowed: the same account, null-safe key/ref/model, exact

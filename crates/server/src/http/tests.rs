@@ -1193,10 +1193,10 @@ async fn account_and_ledger_control_reads_expose_balance_and_provider_evidence()
              ) VALUES('acct_read_surface','read-user',900,300,40,5000,'active',1,'');
              INSERT INTO ledger(
                  account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model,
-                 provider,official_nano
+                 provider,official_nano,uncollected_nano
              ) VALUES(
                  'acct_read_surface','read-key','charge','read-request',300,'provider:read',900,
-                 2,'claude-read','anthropic',600
+                 2,'claude-read','anthropic',600,70
              );",
         )
         .unwrap();
@@ -1238,6 +1238,7 @@ async fn account_and_ledger_control_reads_expose_balance_and_provider_evidence()
     assert_eq!(entry["provider"], "anthropic");
     assert_eq!(entry["official_nano"], 600);
     assert_eq!(entry["amount_nano"], 300);
+    assert_eq!(entry["uncollected_nano"], 70);
     assert_eq!(entry["model"], "claude-read");
     assert!(entry.get("attribution").is_none());
     assert!(entry.get("funding_allocations").is_none());

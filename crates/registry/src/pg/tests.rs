@@ -2174,6 +2174,20 @@ fn stage2_fault_matrix() {
         .unwrap()
         .get(0);
     assert_eq!(charge_count, 1, "exact retry must not double-charge");
+    pg.client
+        .execute(
+            "UPDATE ledger SET uncollected_nano=17 WHERE kind='charge' AND request_id='req-1'",
+            &[],
+        )
+        .unwrap();
+    let charge = pg
+        .ledger_after("acct", 0, 100)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.request_id.as_deref() == Some("req-1"))
+        .unwrap();
+    assert_eq!(charge.amount_nano, 250, "billed amount stays unchanged");
+    assert_eq!(charge.uncollected_nano, 17);
 
     const EXECUTION_GROUP: &str = "428f47a2-9b2d-4dc4-8f11-4d43b7d8b62a";
     const ZERO_EXECUTION_GROUP: &str = "528f47a2-9b2d-4dc4-8f11-4d43b7d8b62a";

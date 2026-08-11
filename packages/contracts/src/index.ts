@@ -86,6 +86,26 @@ export const engineLedgerEntrySchema = z.object({
   model: z.string().nullish(),
   provider: z.string().nullable().optional(),
   official_nano: nonNegativeIntegerSchema.nullable().optional(),
+  // Additive settlement-floor evidence. Old engines omit it and therefore mean zero shortfall.
+  uncollected_nano: nonNegativeIntegerSchema.optional().transform((value) => value ?? "0"),
+}).superRefine((entry, ctx) => {
+  const amount = BigInt(entry.amount_nano);
+  const uncollected = BigInt(entry.uncollected_nano);
+  if (entry.kind === "charge") {
+    if (amount < 0n || uncollected > amount) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["uncollected_nano"],
+        message: "charge shortfall must be within the billed amount",
+      });
+    }
+  } else if (uncollected !== 0n) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["uncollected_nano"],
+      message: "only charge rows may carry settlement shortfall",
+    });
+  }
 });
 
 export type EngineLedgerEntry = z.infer<typeof engineLedgerEntrySchema>;

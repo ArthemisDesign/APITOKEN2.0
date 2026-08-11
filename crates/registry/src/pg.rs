@@ -316,7 +316,7 @@ fn key_row(row: &Row) -> KeyRow {
 fn ledger_row(row: &Row) -> Result<LedgerRow> {
     let provider = crate::resolve_ledger_provider(
         row.get::<_, Option<String>>(9),
-        row.get::<_, Option<String>>(11),
+        row.get::<_, Option<String>>(12),
     )?;
     Ok(LedgerRow {
         id: row.get(0),
@@ -330,12 +330,14 @@ fn ledger_row(row: &Row) -> Result<LedgerRow> {
         model: row.get(8),
         provider,
         official_nano: row.get(10),
+        uncollected_nano: row.get(11),
     })
 }
 
 const POSTGRES_LEDGER_READ_COLUMNS: &str = "
     ledger.id,ledger.key,ledger.kind,ledger.request_id,ledger.amount_nano,ledger.ref,
     ledger.balance_after_nano,ledger.ts,ledger.model,ledger.provider,ledger.official_nano,
+    ledger.uncollected_nano,
     CASE
       WHEN ledger.kind<>'charge' THEN NULL
       WHEN ledger.request_id IS NOT NULL THEN (

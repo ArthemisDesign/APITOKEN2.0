@@ -167,3 +167,49 @@ describe("account debit", () => {
       .rejects.toBeInstanceOf(EngineClientError);
   });
 });
+
+describe("settlement shortfall ledger evidence", () => {
+  const charge = {
+    id: "7",
+    kind: "charge",
+    request_id: "request-7",
+    amount_nano: "100",
+    amount: "0.000000100",
+    key_masked: null,
+    ref: null,
+    balance_after_nano: "-1000000000",
+    ts: "1700000000",
+    model: "gpt-test",
+    provider: "openai",
+    official_nano: "200",
+  } as const;
+
+  it("defaults an older producer to zero and preserves additive evidence", async () => {
+    const older = client(() => json({ account: "acct_1", entries: [charge] }));
+    await expect(older.getLedgerAfter("acct_1", 0n)).resolves.toMatchObject([
+      { amount_nano: "100", uncollected_nano: "0" },
+    ]);
+
+    const expanded = client(() => json({
+      account: "acct_1",
+      entries: [{ ...charge, uncollected_nano: "40" }],
+    }));
+    await expect(expanded.getLedgerAfter("acct_1", 0n)).resolves.toMatchObject([
+      { amount_nano: "100", uncollected_nano: "40" },
+    ]);
+  });
+
+  it("fails closed on impossible shortfall evidence", async () => {
+    const excessive = client(() => json({
+      account: "acct_1",
+      entries: [{ ...charge, uncollected_nano: "101" }],
+    }));
+    await expect(excessive.getLedgerAfter("acct_1", 0n)).rejects.toThrow();
+
+    const nonCharge = client(() => json({
+      account: "acct_1",
+      entries: [{ ...charge, kind: "topup", uncollected_nano: "1" }],
+    }));
+    await expect(nonCharge.getLedgerAfter("acct_1", 0n)).rejects.toThrow();
+  });
+});

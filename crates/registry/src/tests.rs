@@ -867,7 +867,17 @@ fn settle_records_exact_actual_above_hold() {
     assert_eq!(acc.spent_nano, 150);
     assert_eq!(acc.reserved_nano, 0);
     assert_eq!(key_get(&c, "k").unwrap().unwrap().spent_nano, 150);
-    assert_eq!(ledger_recent(&c, "a", 10).unwrap()[0].amount_nano, 150);
+    let ledger = ledger_recent(&c, "a", 10).unwrap();
+    assert_eq!(ledger[0].amount_nano, 150);
+    assert_eq!(ledger[0].uncollected_nano, 0);
+    c.execute(
+        "UPDATE ledger SET uncollected_nano=7 WHERE kind='charge' AND account_id='a'",
+        [],
+    )
+    .unwrap();
+    let ledger = ledger_recent(&c, "a", 10).unwrap();
+    assert_eq!(ledger[0].amount_nano, 150, "billed amount stays unchanged");
+    assert_eq!(ledger[0].uncollected_nano, 7);
 }
 
 

@@ -50,7 +50,10 @@ background loops and the HTTP router. Here — and only here — everything is w
   Account pricing is updated by `/admin/account/{id}/pricing` (the default discount) and
   `GET|POST /admin/account/{id}/discounts` (per-provider overrides — the whole B2B pricing
   surface, `docs/commerce/PRICING_MODEL.md`); cursor ledger reads use `after_id` for
-  the commercial pricing worker. Account reads include the coherent paid/bonus/other/unattributed
+  the commercial pricing worker. Charge rows additively expose non-negative
+  `uncollected_nano` (missing from an older producer means zero): `amount_nano` stays full billed
+  actual, and the consumer derives the collected debit by subtraction so pool loss cannot become
+  customer funding or partner commission. Account reads include the coherent paid/bonus/other/unattributed
   funding summary. Ledger rows add stored immutable attribution and normalized funding allocations;
   old rows remain null/empty and are never reclassified at the HTTP boundary.
   Hot tariff overrides are exposed under `/admin/pricing/tariffs*`: list, a read-only compiled

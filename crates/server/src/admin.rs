@@ -331,6 +331,7 @@ pub async fn list_ledger(
                 "model": e.model,
                 "provider": e.provider,
                 "official_nano": e.official_nano,
+                "uncollected_nano": e.uncollected_nano,
             })
         })
         .collect();
