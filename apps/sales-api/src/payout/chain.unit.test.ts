@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { nanoToUsdtWei, normalizeBscAddress, PayoutChain } from "./chain.js";
 
 const RECIPIENT = "0x55d398326f99059fF775485246999027B3197955";
@@ -55,5 +55,61 @@ describe("payout chain helpers", () => {
     expect(() => normalizeBscAddress("not-an-address")).toThrow();
     expect(() => normalizeBscAddress("0x123")).toThrow();
     expect(() => normalizeBscAddress("0x0000000000000000000000000000000000000000")).toThrow(); // zero address
+  });
+});
+
+describe("retained transaction reconciliation", () => {
+  function provider(overrides: Record<string, unknown> = {}) {
+    return {
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+      getTransactionCount: vi.fn().mockResolvedValue(8),
+      ...overrides,
+    };
+  }
+
+  function withProviders(...providers: ReturnType<typeof provider>[]): PayoutChain {
+    const chain = testChain();
+    (chain as unknown as { readProviders: unknown[] }).readProviders = providers;
+    return chain;
+  }
+
+  it("accepts an authoritative confirmed receipt before considering nonce evidence", async () => {
+    const receipt = { status: 1, blockNumber: 100, confirmations: vi.fn().mockResolvedValue(3) };
+    const chain = withProviders(provider({ getTransactionReceipt: vi.fn().mockResolvedValue(receipt) }));
+    await expect(chain.reconcileTransaction(`0x${"1".repeat(64)}`, 7)).resolves.toEqual({
+      status: "confirmed",
+      blockNumber: 100,
+    });
+  });
+
+  it("requires every read RPC to agree before declaring a nonce consumed elsewhere", async () => {
+    const txHash = `0x${"2".repeat(64)}`;
+    await expect(withProviders(provider(), provider()).reconcileTransaction(txHash, 7)).resolves.toEqual({
+      status: "nonce_consumed",
+      blockNumber: null,
+    });
+    await expect(withProviders(
+      provider(),
+      provider({ getTransactionCount: vi.fn().mockResolvedValue(7) }),
+    ).reconcileTransaction(txHash, 7)).resolves.toBeNull();
+  });
+
+  it("fails closed on a pending hash, provider error, missing nonce or immature receipt", async () => {
+    const txHash = `0x${"3".repeat(64)}`;
+    await expect(withProviders(provider({
+      getTransaction: vi.fn().mockResolvedValue({ hash: txHash }),
+    })).reconcileTransaction(txHash, 7)).resolves.toBeNull();
+    await expect(withProviders(provider({
+      getTransactionReceipt: vi.fn().mockRejectedValue(new Error("offline")),
+    })).reconcileTransaction(txHash, 7)).resolves.toBeNull();
+    await expect(withProviders(provider()).reconcileTransaction(txHash, null)).resolves.toBeNull();
+    await expect(withProviders(provider({
+      getTransactionReceipt: vi.fn().mockResolvedValue({
+        status: 1,
+        blockNumber: 100,
+        confirmations: vi.fn().mockResolvedValue(0),
+      }),
+    })).reconcileTransaction(txHash, 7)).resolves.toBeNull();
   });
 });

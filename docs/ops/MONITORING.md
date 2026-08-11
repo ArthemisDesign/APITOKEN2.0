@@ -1263,13 +1263,33 @@ deploy, retry, or hand-edit the database. Compare the applied Drizzle journal ag
 
 ## SalesReferralReconciliationBacklog
 
-Check attribution-feed cursors and sales reconciliation logs. Buffered events are deliberately
-durable; fix feed ordering/visibility before replay.
+Check attribution-feed cursors and sales reconciliation logs. The metric is the sum of the legacy
+`pending_referral_events` and scalar-authority `pending_referral_usage_events_v2` buffers; neither
+may be ignored. Buffered events are deliberately durable; fix feed ordering/visibility before replay.
 
 ## SalesPayoutBatchFailed
 
 Freeze further sends, inspect chain simulation/broadcast state and nonces, then follow the payout
 service’s idempotent recovery path. Never rebroadcast blindly.
+
+## SalesPayoutRowFailed
+
+The chain has definitively rejected a transfer before broadcast or mined it as reverted, so the row
+still commits the partner’s balance but will not progress automatically. Freeze new payout batches,
+open the batch report, and inspect `chain_error`, the pinned wallet, amount and any retained nonce/raw
+evidence. Retry only through the Sales admin action; release the row only after its state is `failed`
+and chain history proves no transfer occurred. Never turn a `broadcast` row into `rejected` manually.
+
+## SalesPayoutBroadcastStale
+
+A payout has remained `chain_status='broadcast'` for more than ten minutes. The exact signed hash,
+raw transaction and nonce are durable, and the poller rechecks the receipt and rebroadcasts only that
+same raw transaction. Stop new sends, inspect the stored hash on BscScan and both read/send RPC health,
+then check `apitoken-sales-api` logs. A `nonce too low` response is not success by itself: the poller
+marks the row retryable only when every configured read RPC agrees that the hash/receipt is absent
+and the confirmed account nonce proves another transaction consumed the reserved nonce. Any RPC
+error or disagreement keeps the row fenced. Do not clear the hash/raw/nonce or sign a replacement
+while that proof is absent.
 
 
 ## DevBotHeartbeatMissing

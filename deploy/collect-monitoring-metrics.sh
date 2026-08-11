@@ -73,6 +73,10 @@ cat >"$temporary" <<'METRICS'
 # TYPE apitoken_sales_pending_referral_events gauge
 # HELP apitoken_sales_failed_payout_batches Sales payout batches in failed state.
 # TYPE apitoken_sales_failed_payout_batches gauge
+# HELP apitoken_sales_failed_payout_rows Sales payout rows in a definitive failed state awaiting retry or release.
+# TYPE apitoken_sales_failed_payout_rows gauge
+# HELP apitoken_sales_stale_broadcast_payouts Sales payout transactions unresolved for more than ten minutes after broadcast reservation.
+# TYPE apitoken_sales_stale_broadcast_payouts gauge
 # HELP apitoken_pricing_mirror_drift Customers whose commerce default multiplier disagrees with the engine mirror.
 # TYPE apitoken_pricing_mirror_drift gauge
 # HELP apitoken_pricing_job_stale_confirmed Pricing jobs marked confirmed while carrying a value commerce no longer wants.
@@ -247,8 +251,18 @@ if database_exists sales; then
 SELECT 'apitoken_queue_ready{queue="sales_email"} ' || count(*) FROM partner_email_outbox WHERE status = 'pending';
 SELECT 'apitoken_queue_dead{queue="sales_email"} ' || count(*) FROM partner_email_outbox WHERE status = 'failed';
 SELECT 'apitoken_queue_oldest_ready_seconds{queue="sales_email"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM partner_email_outbox WHERE status = 'pending';
-SELECT 'apitoken_sales_pending_referral_events ' || count(*) FROM pending_referral_events;
+SELECT 'apitoken_sales_pending_referral_events ' || (
+  (SELECT count(*) FROM pending_referral_events)
+  + (SELECT count(*) FROM pending_referral_usage_events_v2)
+);
 SELECT 'apitoken_sales_failed_payout_batches ' || count(*) FROM payout_batches WHERE status = 'failed';
+SELECT 'apitoken_sales_failed_payout_rows ' || count(*) FROM payouts WHERE status = 'requested' AND chain_status = 'failed';
+SELECT 'apitoken_sales_stale_broadcast_payouts ' || count(*)
+FROM payouts p
+LEFT JOIN payout_batches b ON b.id = p.batch_id
+WHERE p.status = 'requested'
+  AND p.chain_status = 'broadcast'
+  AND COALESCE(b.sent_at, p.requested_at) < now() - interval '10 minutes';
 -- Where the partner sync actually stands. Compared against apitoken_sales_feed_head from commerce,
 -- a gap that stops closing is the whole signal: on 2026-08-10 this cursor stood still for five
 -- hours while every service was up and healthy, and no commission accrued.

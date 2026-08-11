@@ -20,9 +20,10 @@ import {
   releasePayoutRow,
   lastEndedPeriod,
   periodInPayoutWindow,
-  setBatchStatus,
+  transitionPayoutBatchStatus,
   windowEnd,
   windowStart,
+  InvalidPayoutBatchError,
   PayoutBatchInProgressError,
   type PayoutBatch,
   type PayoutRow,
@@ -37,6 +38,8 @@ const SEND_RETRIES = 2;
 
 export class PayoutWindowClosedError extends Error {}
 export class PayoutNotConfiguredError extends Error {}
+export class PayoutConfigurationMismatchError extends Error {}
+export class PayoutInsufficientFundsError extends Error {}
 
 export interface PayoutReport {
   batch: PayoutBatch;
@@ -45,6 +48,8 @@ export interface PayoutReport {
   chain: {
     configured: boolean;
     hotWalletAddress: string | null;
+    currentHotWalletAddress: string | null;
+    configurationMatchesBatch: boolean | null;
     usdtBalanceNano: string | null;
     bnbBalanceWei: string | null;
     requiredUsdtNano: string;
@@ -90,7 +95,7 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
   }
 
   private minNano(): bigint {
-    return BigInt(Math.round(this.config.get("PAYOUT_MIN_USD", { infer: true }) * 1e9));
+    return BigInt(this.config.get("SALES_MIN_PAYOUT_USD", { infer: true })) * NANO;
   }
   private gasPriceGwei(): string {
     return this.config.get("PAYOUT_GAS_PRICE_GWEI", { infer: true });
@@ -100,20 +105,44 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
     return Boolean(this.config.get("PAYOUT_HOT_WALLET_KEY", { infer: true }) && this.config.get("PAYOUT_SEND_RPC_URL", { infer: true }));
   }
 
+  protected createChain(): PayoutChain {
+    return new PayoutChain({
+      privateKey: this.config.get("PAYOUT_HOT_WALLET_KEY", { infer: true })!,
+      sendRpcUrl: this.config.get("PAYOUT_SEND_RPC_URL", { infer: true })!,
+      readRpcUrls: this.config.get("PAYOUT_READ_RPC_URLS", { infer: true }).split(",").map((s) => s.trim()).filter(Boolean),
+      usdtContract: this.config.get("PAYOUT_USDT_CONTRACT", { infer: true }),
+      chainId: this.config.get("PAYOUT_CHAIN_ID", { infer: true }),
+      gasPriceGwei: this.gasPriceGwei(),
+      confirmations: this.config.get("PAYOUT_CONFIRMATIONS", { infer: true }),
+    });
+  }
+
   private getChain(): PayoutChain {
     if (!this.isConfigured()) throw new PayoutNotConfiguredError("payout engine is not configured (missing hot-wallet key or send RPC)");
-    if (!this.chain) {
-      this.chain = new PayoutChain({
-        privateKey: this.config.get("PAYOUT_HOT_WALLET_KEY", { infer: true })!,
-        sendRpcUrl: this.config.get("PAYOUT_SEND_RPC_URL", { infer: true })!,
-        readRpcUrls: this.config.get("PAYOUT_READ_RPC_URLS", { infer: true }).split(",").map((s) => s.trim()).filter(Boolean),
-        usdtContract: this.config.get("PAYOUT_USDT_CONTRACT", { infer: true }),
-        chainId: this.config.get("PAYOUT_CHAIN_ID", { infer: true }),
-        gasPriceGwei: this.gasPriceGwei(),
-        confirmations: this.config.get("PAYOUT_CONFIRMATIONS", { infer: true }),
-      });
-    }
+    if (!this.chain) this.chain = this.createChain();
     return this.chain;
+  }
+
+  private assertBatchWallet(batch: PayoutBatch, chain: PayoutChain): void {
+    if (!batch.hotWalletAddress || batch.hotWalletAddress.toLowerCase() !== chain.hotAddress.toLowerCase()) {
+      throw new PayoutConfigurationMismatchError(
+        "the current hot wallet does not match the wallet pinned when this batch was prepared",
+      );
+    }
+  }
+
+  private async assertFunds(chain: PayoutChain, rows: PayoutRow[]): Promise<void> {
+    const requiredNano = rows.reduce((total, row) => total + row.amountNano, 0n);
+    if (requiredNano <= 0n || rows.length === 0) {
+      throw new InvalidPayoutBatchError("payout batch has no sendable positive rows");
+    }
+    const { usdtWei, bnbWei } = await chain.balances();
+    if (usdtWei < nanoToUsdtWei(requiredNano)) {
+      throw new PayoutInsufficientFundsError("hot wallet has insufficient USDT for this payout batch");
+    }
+    if (bnbWei < chain.gasCostPerTransferWei() * BigInt(rows.length)) {
+      throw new PayoutInsufficientFundsError("hot wallet has insufficient BNB for this payout batch");
+    }
   }
 
   windowInfo(now = new Date()): { open: boolean; opensAt: string | null; closesAt: string | null; enforced: boolean } {
@@ -138,6 +167,9 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
   // --- prepare -------------------------------------------------------------
 
   async prepare(adminId: string): Promise<PayoutReport> {
+    if (!this.isConfigured()) throw new PayoutNotConfiguredError("payout engine is not configured");
+    const chain = this.getChain();
+    await chain.assertReady();
     const existing = await getActiveBatch(this.database);
     if (existing) throw new PayoutBatchInProgressError("a payout batch is already in progress");
 
@@ -158,12 +190,12 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
     if (recipients.length === 0) {
       throw new PayoutBatchInProgressError("no eligible recipients (valid address + balance > 0)");
     }
-    const hotAddress = this.isConfigured() ? this.getChain().hotAddress : "";
     const batch = await createPayoutBatch(this.database, {
       createdBy: adminId,
       minNano: this.minNano(),
       gasPriceGwei: this.gasPriceGwei(),
-      hotWalletAddress: hotAddress,
+      hotWalletAddress: chain.hotAddress,
+      earnedBefore: period.end,
       recipients,
     });
     const report = await this.report(batch.id, invalidAddresses);
@@ -175,12 +207,16 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
     const batch = await getPayoutBatch(this.database, batchId);
     if (!batch) return null;
     const rows = await listBatchPayouts(this.database, batchId);
-    const pendingRows = rows.filter((r) => r.status !== "paid" && r.chainStatus !== "confirmed");
+    const pendingRows = rows.filter(
+      (row) => row.status !== "paid" && row.status !== "rejected" && row.chainStatus !== "confirmed",
+    );
     const requiredUsdtNano = pendingRows.reduce((s, r) => s + r.amountNano, 0n);
 
     const chain: PayoutReport["chain"] = {
       configured: this.isConfigured(),
       hotWalletAddress: batch.hotWalletAddress,
+      currentHotWalletAddress: null,
+      configurationMatchesBatch: null,
       usdtBalanceNano: null,
       bnbBalanceWei: null,
       requiredUsdtNano: requiredUsdtNano.toString(),
@@ -192,10 +228,14 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
     if (this.isConfigured()) {
       try {
         const c = this.getChain();
+        chain.currentHotWalletAddress = c.hotAddress;
+        chain.configurationMatchesBatch = Boolean(
+          batch.hotWalletAddress
+            && batch.hotWalletAddress.toLowerCase() === c.hotAddress.toLowerCase(),
+        );
         const { usdtWei, bnbWei } = await c.balances();
         const usdtBalanceNano = usdtWei / NANO; // 1e18 wei → nano (1e9)
         const requiredBnbWei = c.gasCostPerTransferWei() * BigInt(pendingRows.length);
-        chain.hotWalletAddress = c.hotAddress;
         chain.usdtBalanceNano = usdtBalanceNano.toString();
         chain.bnbBalanceWei = bnbWei.toString();
         chain.requiredBnbWei = requiredBnbWei.toString();
@@ -213,13 +253,16 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async cancel(batchId: string): Promise<boolean> {
-    return cancelPayoutBatch(this.database, batchId);
+    return this.withSendLock(() => cancelPayoutBatch(this.database, batchId));
   }
 
   /** Возвращает баланс failed/sim-fail строки в оборот (→ статус 'rejected'). НЕ трогает 'broadcast'
    * (транза могла уйти). Не под гейтом окна — освобождение денег безопасно всегда. */
   async release(payoutId: string): Promise<boolean> {
-    return releasePayoutRow(this.database, payoutId);
+    const row = await this.findRow(payoutId);
+    const released = await releasePayoutRow(this.database, payoutId);
+    if (released && row?.batchId) await this.reconcileBatchState(row.batchId);
+    return released;
   }
 
   // --- send ----------------------------------------------------------------
@@ -258,28 +301,41 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
   async send(batchId: string): Promise<PayoutReport | null> {
     this.assertSendAllowed();
     if (!this.isConfigured()) throw new PayoutNotConfiguredError("payout engine is not configured");
-    const batch = await getPayoutBatch(this.database, batchId);
-    if (!batch || (batch.status !== "prepared" && batch.status !== "sending")) return this.report(batchId);
-
     await this.withSendLock(async () => {
+      // Re-read only after the cross-process lock. A cancel or an earlier sender may have changed
+      // the state after the HTTP request began; stale pre-lock state must never resurrect a batch.
+      const batch = await getPayoutBatch(this.database, batchId);
+      if (!batch || (batch.status !== "prepared" && batch.status !== "sending")) return;
       const chain = this.getChain();
-      await chain.assertNetwork();
-      await setBatchStatus(this.database, batchId, "sending");
+      await chain.assertReady();
+      this.assertBatchWallet(batch, chain);
+      if (await getMaxOutstandingNonce(this.database) !== null) {
+        this.logger.log(`batch ${batchId}: an earlier nonce is unresolved; poller owns progress`);
+        return;
+      }
       const rows = await listSendablePayouts(this.database, batchId); // читаем ВНУТРИ лока
+      if (rows.length === 0) {
+        await this.reconcileBatchState(batchId);
+        return;
+      }
+      await this.assertFunds(chain, rows);
+      const claimed = await transitionPayoutBatchStatus(
+        this.database,
+        batchId,
+        ["prepared", "sending"],
+        "sending",
+      );
+      if (!claimed) return;
       let nonce = await this.computeStartNonce(chain);
       for (const row of rows) {
         const result = await this.sendRow(chain, row, nonce);
         nonce = result.nextNonce;
         if (result.stop) break; // неопределённость/таймаут — не занимаем следующий nonce, дожмёт поллер
       }
-      // Финализация: пока есть 'broadcast'-строки — остаёмся 'sending' (дожмёт поллер). Если их нет —
-      // терминальный 'sent' (completed только если ВСЕ выплачены), иначе батч завис бы в 'sending'
-      // навсегда и заблокировал все будущие prepare() (DoS).
-      const after = await listBatchPayouts(this.database, batchId);
-      const anyBroadcast = after.some((r) => r.chainStatus === "broadcast");
-      const allPaid = after.every((r) => r.status === "paid");
-      await setBatchStatus(this.database, batchId, anyBroadcast ? "sending" : "sent", { sent: true, completed: allPaid });
-      if (anyBroadcast) this.logger.log(`batch ${batchId}: tx confirming; poller will finalize`);
+      await this.reconcileBatchState(batchId);
+      if (await getMaxOutstandingNonce(this.database) !== null) {
+        this.logger.log(`batch ${batchId}: tx confirming; poller will finalize`);
+      }
     });
     return this.report(batchId);
   }
@@ -290,15 +346,32 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
     if (!this.isConfigured()) throw new PayoutNotConfiguredError("payout engine is not configured");
     return this.withSendLock(async () => {
       const chain = this.getChain();
-      await chain.assertNetwork();
+      await chain.assertReady();
       const target = await this.findRow(payoutId);
       // 'broadcast'/'confirmed'/'paid'/'rejected' не пересылаем — иначе rejected→re-send = двойная выплата,
       // а broadcast/confirmed решает поллер по хешу.
       if (!target || target.status === "paid" || target.status === "rejected" || target.chainStatus === "broadcast" || target.chainStatus === "confirmed") {
         return { ok: false, row: target };
       }
+      if (!target.batchId) return { ok: false, row: target };
+      const batch = await getPayoutBatch(this.database, target.batchId);
+      if (!batch || (batch.status !== "prepared" && batch.status !== "sending")) {
+        return { ok: false, row: target };
+      }
+      this.assertBatchWallet(batch, chain);
+      if (await getMaxOutstandingNonce(this.database) !== null) {
+        throw new PayoutBatchInProgressError("an earlier payout transaction is still unresolved");
+      }
+      await this.assertFunds(chain, [target]);
+      if (!await transitionPayoutBatchStatus(
+        this.database,
+        batch.id,
+        ["prepared", "sending"],
+        "sending",
+      )) return { ok: false, row: target };
       const nonce = await this.computeStartNonce(chain);
       await this.sendRow(chain, target, nonce);
+      await this.reconcileBatchState(target.batchId);
       return { ok: true, row: await this.findRow(payoutId) };
     });
   }
@@ -306,7 +379,7 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
   private async findRow(payoutId: string): Promise<PayoutRow | null> {
     const r = await this.database.pool.query<Record<string, unknown>>(`
       SELECT po.id, po.partner_id, po.amount_nano::text AS amount_nano, po.status, po.wallet_address,
-             po.tx_hash, po.nonce, po.raw_tx, po.chain_status, po.chain_error, po.paid_at,
+             po.tx_hash, po.nonce, po.raw_tx, po.chain_status, po.chain_error, po.paid_at, po.batch_id,
              p.telegram_username, p.email, p.display_name
       FROM payouts po JOIN partners p ON p.id = po.partner_id WHERE po.id = $1
     `, [payoutId]);
@@ -321,6 +394,7 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
       rawTx: (row.raw_tx as string) ?? null,
       chainStatus: (row.chain_status as PayoutRow["chainStatus"]) ?? null,
       chainError: (row.chain_error as string) ?? null, paidAt: (row.paid_at as Date) ?? null,
+      batchId: (row.batch_id as string) ?? null,
     };
   }
 
@@ -364,7 +438,7 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
       try { await chain.broadcastRaw(signed.raw); broadcastOk = true; break; }
       catch (err) {
         const m = msg(err).toLowerCase();
-        if (m.includes("already known") || m.includes("nonce too low") || m.includes("already imported")) { broadcastOk = true; break; }
+        if (m.includes("already known") || m.includes("already imported")) { broadcastOk = true; break; }
         if (attempt === SEND_RETRIES) {
           // Бродкаст не удался: хеш СОХРАНЁН, строка остаётся 'broadcast'. Транза могла уйти в сеть или нет —
           // поллер разберётся/ре-бродкастнет по сохранённому хешу. Очередь СТОП: пока судьба этого nonce
@@ -376,7 +450,16 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
     }
     if (!broadcastOk) return { nextNonce: startNonce, stop: true };
     // 3) подтверждение
-    const conf = await chain.waitForConfirmation(signed.hash);
+    let conf;
+    try {
+      conf = await chain.waitForConfirmation(signed.hash);
+    } catch (err) {
+      await this.database.pool.query(
+        "UPDATE payouts SET chain_error = $2 WHERE id = $1 AND chain_status = 'broadcast'",
+        [row.id, `confirmation error (poller will reconcile): ${msg(err)}`.slice(0, 500)],
+      );
+      return { nextNonce: startNonce + 1, stop: true };
+    }
     if (conf?.status === "confirmed") {
       if (await markPayoutConfirmed(this.database, row.id)) await this.notifyPaid(row, signed.hash);
       return { nextNonce: startNonce + 1, stop: false };
@@ -405,12 +488,18 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
       for (const row of rows) {
         if (!row.txHash) continue;
         try {
-          const conf = await chain.checkReceipt(row.txHash);
+          const conf = await chain.reconcileTransaction(row.txHash, row.nonce);
           if (conf?.status === "confirmed") {
             // claim-once: уведомляем только если ЭТА сторона реально перевела 'broadcast'→'confirmed'
             if (await markPayoutConfirmed(this.database, row.id)) { await this.notifyPaid(row, row.txHash); done += 1; }
           } else if (conf?.status === "reverted") {
             await markPayoutFailed(this.database, row.id, "transaction reverted on-chain");
+            done += 1;
+          } else if (conf?.status === "nonce_consumed") {
+            // A later confirmed account nonce proves this exact hash can no longer land. This is
+            // the only safe escape from a retained `nonce too low` transaction: never infer it
+            // from the RPC error alone, and never abandon a hash while its nonce is still live.
+            await markPayoutFailed(this.database, row.id, "nonce was consumed by a different transaction");
             done += 1;
           } else if (row.rawTx) {
             // ещё не в блоке — ре-бродкастим СОХРАНЁННЫЙ raw (ровно тот же tx, идемпотентно), чтобы
@@ -420,7 +509,7 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
         } catch {
           // сеть недоступна — попробуем на следующем тике
         }
-        if (row.batchId) await this.finalizeBatchIfDone(row.batchId);
+        if (row.batchId) await this.reconcileBatchState(row.batchId);
       }
       // Разблокируем застрявшие 'sending'-батчи без broadcast-строк (напр. краш во время send).
       await finalizeStuckSendingBatches(this.database);
@@ -430,15 +519,24 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
     }
   }
 
-  private async finalizeBatchIfDone(batchId: string): Promise<void> {
+  private async reconcileBatchState(batchId: string): Promise<void> {
     const batch = await getPayoutBatch(this.database, batchId);
     if (!batch || batch.status === "sent" || batch.status === "canceled") return;
     const rows = await listBatchPayouts(this.database, batchId);
     const anyBroadcast = rows.some((r) => r.chainStatus === "broadcast");
+    const anySendable = rows.some(
+      (row) => row.status === "requested"
+        && (row.chainStatus === null || ["pending", "simulated", "failed"].includes(row.chainStatus)),
+    );
     const allPaid = rows.every((r) => r.status === "paid");
-    if (!anyBroadcast && batch.status === "sending") {
-      await setBatchStatus(this.database, batchId, "sent", { sent: true, completed: allPaid });
-    }
+    const next = anyBroadcast ? "sending" : anySendable ? "prepared" : "sent";
+    await transitionPayoutBatchStatus(
+      this.database,
+      batchId,
+      ["prepared", "sending"],
+      next,
+      { sent: next === "sent", completed: next === "sent" && allPaid },
+    );
   }
 
   // --- partner notification (cabinet + email) ------------------------------

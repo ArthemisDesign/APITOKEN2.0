@@ -164,6 +164,10 @@ A separate admin site; sign-in — the operator enters `SALES_ADMIN_KEY` (sent a
   history).
 - **Payout list** — the auto-generated "to be paid" list for the current/last period's window: who
   is ready for payout (wallet + amount > 0), who is held (no wallet), amounts and wallets.
+- **Send payouts** — prepares one immutable batch, pins amounts/recipient addresses/hot wallet,
+  checks BSC mainnet, canonical USDT, balances and gas, then sends sequentially with durable
+  hash/raw/nonce evidence and receipt reconciliation. Irreversible sends are server-gated to the
+  3-day payout window.
 
 ## 10. Interface languages
 
@@ -182,9 +186,6 @@ admin panel is in English.
 
 ## 12. What is not done yet
 
-- **Automatic payout sending (on-chain).** Currently the "Payout list" is a list of what to pay;
-  the actual USDT BEP-20 transfer and the "paid" mark are done manually by the operator. An
-  automatic payout provider (sender wallet, gas, signatures, reconciliation) is a separate
-  upcoming system; it will plug in on top of the ready-made list through the same invariant,
-  without changing the periods model.
+- Separate email/Telegram notifications for payout confirmation. The partner already sees the
+  exact amount, receipt status, transaction hash and BscScan link in the dashboard.
 - Ref attribution through OAuth registration (currently only password-based on the main site).

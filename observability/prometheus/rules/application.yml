@@ -940,6 +940,28 @@ groups:
           description: '{{ $value }} payout batches require manual review.'
           runbook: 'docs/ops/MONITORING.md#salespayoutbatchfailed'
 
+      - alert: SalesPayoutRowFailed
+        expr: apitoken_sales_failed_payout_rows > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: sales-payouts
+        annotations:
+          summary: 'A sales payout row needs a retry or release decision'
+          description: '{{ $value }} payout rows are definitively failed and remain committed to a partner balance.'
+          runbook: 'docs/ops/MONITORING.md#salespayoutrowfailed'
+
+      - alert: SalesPayoutBroadcastStale
+        expr: apitoken_sales_stale_broadcast_payouts > 0
+        for: 2m
+        labels:
+          severity: critical
+          component: sales-payouts
+        annotations:
+          summary: 'A reserved payout transaction is not resolving'
+          description: '{{ $value }} payout transactions have retained their exact hash/raw/nonce without confirmation for more than ten minutes.'
+          runbook: 'docs/ops/MONITORING.md#salespayoutbroadcaststale'
+
   # The devbot service is optional and disabled until the operator provisions
   # /etc/apitoken/devbot.env: while disabled, ConditionPathExists keeps the unit inactive and
   # this rule stays silent. Once the unit is active, the bot rewrites its textfile heartbeat

@@ -1850,8 +1850,8 @@
         "textMode": "auto",
         "wideLayout": true
       },
-      "targets": [{ "expr": "clamp_max(apitoken_sales_failed_payout_batches, 1)", "refId": "A" }],
-      "title": "Failed payout batches",
+      "targets": [{ "expr": "clamp_max(apitoken_sales_failed_payout_batches + apitoken_sales_failed_payout_rows + apitoken_sales_stale_broadcast_payouts, 1)", "refId": "A" }],
+      "title": "Payout intervention",
       "type": "stat"
     },
     {

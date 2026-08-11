@@ -245,11 +245,16 @@ periods, dashboard, admin panel, languages) — `docs/sales/PARTNER_PROGRAM.md`.
 ## Payouts by periods
 
 Half-month periods (1–15, 16–end, UTC), 7-day lock, 3-day payout window, auto-rollover of the
-uncovered, minimum `SALES_MIN_PAYOUT_USD` ($10), payouts to the bound BSC wallet.
+uncovered, and one integer threshold `SALES_MIN_PAYOUT_USD` (default/current `0`, inclusive when
+nonzero), with payouts to the bound BSC wallet.
 Computed from both commission tables (`commission_entries` + `commission_entries_v2`, UNION ALL —
 the events do not overlap) + `payouts`, with no separate table. Full description —
-`docs/sales/SALES_PAYOUT_PERIODS.md`. Code: `periods.ts` (+tests) and `payout-periods.ts`. Sending
-payouts (on-chain) is a separate upcoming system.
+`docs/sales/SALES_PAYOUT_PERIODS.md`. Code: `periods.ts` (+tests), `payout-periods.ts`, and the live
+on-chain state machine in `apps/sales-api/src/payout` + `packages/sales-db/src/payout-batch.ts`.
+Preparation revalidates amount/address under partner locks and pins the hot wallet; send/retry/poller
+share a cross-process lock, persist exact hash/raw/nonce before broadcast and mark paid only from a
+confirmed BSC receipt. `SALES_MIN_PAYOUT_USD` is also the execution threshold; the retired fractional
+`PAYOUT_MIN_USD` knob does not exist.
 
 ## Commission math (sales-db)
 
@@ -332,6 +337,5 @@ https://partners.apitoken.sale is live. How it is set up on 84.32.48.2:
 - Server-side attribution cookie instead of localStorage.
 - Promo materials in the dashboard (banners, UTM builder), click statistics storefront
   (today we only count registrations and spend).
-- Auto-payouts in USDT via a provider; minimum payout threshold.
 - Notifications to the partner (email/TG) about new referrals and accruals.
 - Personal landing pages/discount promo codes funded from the partner's commission.

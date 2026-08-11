@@ -17,8 +17,8 @@ export interface PayoutCandidate {
 
 /**
  * Кандидаты на выплату: АКТИВНЫЕ партнёры с привязанным BEP-20 кошельком и непогашенным балансом
- * (earned − committed[requested/approved/paid]) > minNano. committed включает уже созданные батчем
- * 'requested'-строки, поэтому один и тот же баланс не попадёт в два батча. Адрес берём из
+ * (earned − committed[requested/approved/paid]) >= minNano и строго > 0. committed включает уже
+ * созданные батчем 'requested'-строки, поэтому один баланс не попадёт в два батча. Адрес берём из
  * payout_details.address (формат уже проверен при привязке; checksum перепроверяет сервис через ethers).
  */
 export async function getPayoutCandidates(database: SalesDatabase, minNano: bigint, earnedBefore?: Date): Promise<PayoutCandidate[]> {
@@ -51,7 +51,7 @@ export async function getPayoutCandidates(database: SalesDatabase, minNano: bigi
       walletAddress: r.wallet ?? "",
       unpaidNano: BigInt(r.unpaid),
     }))
-    .filter((c) => c.walletAddress && c.unpaidNano > minNano);
+    .filter((c) => c.walletAddress && c.unpaidNano > 0n && c.unpaidNano >= minNano);
 }
 
 export interface PayoutBatch {
@@ -86,6 +86,7 @@ export interface PayoutRow {
   chainStatus: PayoutChainStatus | null;
   chainError: string | null;
   paidAt: Date | null;
+  batchId: string | null;
 }
 
 function mapBatch(r: Record<string, unknown>): PayoutBatch {
@@ -116,6 +117,7 @@ export async function getActiveBatch(database: SalesDatabase): Promise<PayoutBat
 }
 
 export class PayoutBatchInProgressError extends Error {}
+export class InvalidPayoutBatchError extends Error {}
 
 /**
  * Создаёт батч 'prepared' + payout-строки ('requested', chain_status 'pending') из уже проверенных
@@ -127,8 +129,20 @@ export async function createPayoutBatch(database: SalesDatabase, input: {
   minNano: bigint;
   gasPriceGwei: string;
   hotWalletAddress: string;
+  earnedBefore?: Date;
   recipients: { partnerId: string; amountNano: bigint; walletAddress: string }[];
 }): Promise<PayoutBatch> {
+  if (input.minNano < 0n) throw new InvalidPayoutBatchError("payout minimum cannot be negative");
+  if (input.recipients.length === 0) throw new InvalidPayoutBatchError("payout batch cannot be empty");
+  const partnerIds = input.recipients.map((recipient) => recipient.partnerId);
+  if (new Set(partnerIds).size !== partnerIds.length) {
+    throw new InvalidPayoutBatchError("payout batch contains duplicate partners");
+  }
+  for (const recipient of input.recipients) {
+    if (recipient.amountNano <= 0n || recipient.amountNano < input.minNano) {
+      throw new InvalidPayoutBatchError("payout amount is below the configured minimum");
+    }
+  }
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
@@ -140,8 +154,53 @@ export async function createPayoutBatch(database: SalesDatabase, input: {
       "SELECT 1 FROM payout_batches WHERE status IN ('preparing','prepared','sending')",
     );
     if (existing.rows[0]) {
-      await client.query("ROLLBACK");
       throw new PayoutBatchInProgressError("a payout batch is already in progress");
+    }
+    // Candidate discovery happens before this transaction so address validation can stay in the
+    // service. Re-lock every partner in a canonical order and recompute the exact payable balance
+    // at the same period boundary before reserving money. This serializes with createPayout() and
+    // closes the discovery→insert race without trusting caller-provided amounts or wallets.
+    const locked = await client.query<{ id: string }>(`
+      SELECT id
+      FROM partners
+      WHERE id = ANY($1::uuid[])
+      ORDER BY id
+      FOR UPDATE
+    `, [partnerIds]);
+    if (locked.rowCount !== partnerIds.length) {
+      throw new InvalidPayoutBatchError("payout batch contains an unknown partner");
+    }
+    const authoritative = await client.query<{
+      partner_id: string; status: string; payout_method: string | null; wallet: string | null; unpaid: string;
+    }>(`
+      SELECT p.id AS partner_id, p.status, p.payout_method,
+             p.payout_details->>'address' AS wallet,
+             (
+               COALESCE((SELECT SUM(ce.amount_nano) FROM (
+                           SELECT partner_id, amount_nano, created_at FROM commission_entries
+                           UNION ALL
+                           SELECT partner_id, amount_nano, created_at FROM commission_entries_v2
+                         ) ce
+                         WHERE ce.partner_id = p.id
+                           AND ($2::timestamptz IS NULL OR ce.created_at < $2)), 0)
+               - COALESCE((SELECT SUM(po.amount_nano) FROM payouts po
+                           WHERE po.partner_id = p.id
+                             AND po.status IN ('requested','approved','paid')), 0)
+             )::text AS unpaid
+      FROM partners p
+      WHERE p.id = ANY($1::uuid[])
+    `, [partnerIds, input.earnedBefore ?? null]);
+    const byPartner = new Map(authoritative.rows.map((row) => [row.partner_id, row]));
+    for (const recipient of input.recipients) {
+      const row = byPartner.get(recipient.partnerId);
+      const walletMatches = row?.wallet !== null
+        && row?.wallet.toLowerCase() === recipient.walletAddress.toLowerCase();
+      if (!row || row.status !== "active" || row.payout_method !== "usdt-bep20" || !walletMatches) {
+        throw new InvalidPayoutBatchError("payout recipient changed while the batch was prepared");
+      }
+      if (BigInt(row.unpaid) !== recipient.amountNano) {
+        throw new InvalidPayoutBatchError("payout balance changed while the batch was prepared");
+      }
     }
     const total = input.recipients.reduce((s, r) => s + r.amountNano, 0n);
     const batch = await client.query(`
@@ -179,7 +238,7 @@ export async function listPayoutBatches(database: SalesDatabase, limit = 30): Pr
 export async function listBatchPayouts(database: SalesDatabase, batchId: string): Promise<PayoutRow[]> {
   const r = await database.pool.query<Record<string, unknown>>(`
     SELECT po.id, po.partner_id, po.amount_nano::text AS amount_nano, po.status, po.wallet_address,
-           po.tx_hash, po.nonce, po.raw_tx, po.chain_status, po.chain_error, po.paid_at,
+           po.tx_hash, po.nonce, po.raw_tx, po.chain_status, po.chain_error, po.paid_at, po.batch_id,
            p.telegram_username, p.email, p.display_name
     FROM payouts po JOIN partners p ON p.id = po.partner_id
     WHERE po.batch_id = $1
@@ -200,6 +259,7 @@ export async function listBatchPayouts(database: SalesDatabase, batchId: string)
     chainStatus: (row.chain_status as PayoutChainStatus) ?? null,
     chainError: (row.chain_error as string) ?? null,
     paidAt: (row.paid_at as Date) ?? null,
+    batchId: (row.batch_id as string) ?? null,
   }));
 }
 
@@ -212,11 +272,20 @@ export async function listSendablePayouts(database: SalesDatabase, batchId: stri
 }
 
 /** Разблокирует батчи, зависшие в 'sending' без единой 'broadcast'-строки (напр. краш во время
- * отправки): переводит в терминальный 'sent' (completed только если все строки выплачены). */
+ * отправки). Если остались requested-строки, батч снова reviewable/retriable как `prepared`;
+ * терминальный `sent` допустим только когда каждая строка paid или rejected. */
 export async function finalizeStuckSendingBatches(database: SalesDatabase): Promise<number> {
   const r = await database.pool.query(`
     UPDATE payout_batches b
-    SET status = 'sent',
+    SET status = CASE
+          WHEN EXISTS (
+            SELECT 1 FROM payouts p
+            WHERE p.batch_id = b.id
+              AND p.status = 'requested'
+              AND (p.chain_status IS NULL OR p.chain_status IN ('pending','simulated','failed'))
+          ) THEN 'prepared'
+          ELSE 'sent'
+        END,
         sent_at = COALESCE(sent_at, now()),
         completed_at = CASE WHEN NOT EXISTS (SELECT 1 FROM payouts p WHERE p.batch_id = b.id AND p.status <> 'paid') THEN now() ELSE completed_at END
     WHERE b.status = 'sending'
@@ -225,27 +294,47 @@ export async function finalizeStuckSendingBatches(database: SalesDatabase): Prom
   return r.rowCount ?? 0;
 }
 
-export async function setBatchStatus(database: SalesDatabase, id: string, status: PayoutBatchStatus, fields: {
-  error?: string | null; sent?: boolean; completed?: boolean;
-} = {}): Promise<void> {
-  await database.pool.query(`
+export async function transitionPayoutBatchStatus(
+  database: SalesDatabase,
+  id: string,
+  from: PayoutBatchStatus[],
+  status: PayoutBatchStatus,
+  fields: {
+    error?: string | null; sent?: boolean; completed?: boolean;
+  } = {},
+): Promise<boolean> {
+  if (from.length === 0) return false;
+  const result = await database.pool.query(`
     UPDATE payout_batches
     SET status = $2,
         error = COALESCE($3, error),
         sent_at = CASE WHEN $4 THEN COALESCE(sent_at, now()) ELSE sent_at END,
-        completed_at = CASE WHEN $5 THEN now() ELSE completed_at END
-    WHERE id = $1
-  `, [id, status, fields.error ?? null, fields.sent ?? false, fields.completed ?? false]);
+        completed_at = CASE WHEN $5 THEN COALESCE(completed_at, now()) ELSE completed_at END
+    WHERE id = $1 AND status = ANY($6::text[])
+  `, [id, status, fields.error ?? null, fields.sent ?? false, fields.completed ?? false, from]);
+  return (result.rowCount ?? 0) > 0;
 }
 
 // --- on-chain state transitions per payout row (idempotent) ---
 
 export async function markPayoutBroadcast(database: SalesDatabase, payoutId: string, txHash: string, nonce: number, rawTx: string): Promise<boolean> {
   // Защита-в-глубину: не «бродкастим» уже освобождённую (rejected) или выплаченную (paid) строку.
-  const r = await database.pool.query(
-    "UPDATE payouts SET tx_hash = $2, nonce = $3, raw_tx = $4, chain_status = 'broadcast', chain_error = NULL WHERE id = $1 AND status = 'requested'",
-    [payoutId, txHash, nonce, rawTx],
-  );
+  // The same statement timestamps the owning batch. Monitoring can therefore age an unresolved
+  // broadcast from the exact reservation, even when the batch was prepared or previously retried
+  // days earlier; there is no discovery→timestamp crash window.
+  const r = await database.pool.query(`
+    WITH reserved AS (
+      UPDATE payouts
+      SET tx_hash = $2, nonce = $3, raw_tx = $4, chain_status = 'broadcast', chain_error = NULL
+      WHERE id = $1 AND status = 'requested' AND batch_id IS NOT NULL
+      RETURNING batch_id
+    )
+    UPDATE payout_batches batch
+    SET sent_at = now()
+    FROM reserved
+    WHERE batch.id = reserved.batch_id
+    RETURNING batch.id
+  `, [payoutId, txHash, nonce, rawTx]);
   return (r.rowCount ?? 0) > 0;
 }
 

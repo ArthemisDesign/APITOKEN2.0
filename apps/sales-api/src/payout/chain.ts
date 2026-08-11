@@ -36,6 +36,7 @@ export function normalizeBscAddress(address: string): string {
 
 export interface SignedTransfer { hash: string; raw: string; nonce: number; }
 export interface ConfirmResult { status: "confirmed" | "reverted"; blockNumber: number | null; }
+export interface NonceConsumedResult { status: "nonce_consumed"; blockNumber: null; }
 
 export class PayoutChain {
   private readonly wallet: ethers.Wallet;
@@ -55,7 +56,7 @@ export class PayoutChain {
     this.readProviders = (cfg.readRpcUrls.length ? cfg.readRpcUrls : [cfg.sendRpcUrl]).map(
       (url) => new ethers.JsonRpcProvider(url, net, { staticNetwork: net }),
     );
-    this.wallet = new ethers.Wallet(cfg.privateKey);
+    this.wallet = new ethers.Wallet(cfg.privateKey.startsWith("0x") ? cfg.privateKey : `0x${cfg.privateKey}`);
     this.usdt = normalizeBscAddress(cfg.usdtContract);
     this.gasPrice = ethers.parseUnits(cfg.gasPriceGwei, "gwei");
     this.confirmations = Math.max(1, cfg.confirmations);
@@ -85,6 +86,24 @@ export class PayoutChain {
     if (Number(net.chainId) !== this.chainId) {
       throw new Error(`send RPC chainId ${net.chainId} != expected ${this.chainId}`);
     }
+  }
+
+  /**
+   * Fail-closed admission before a batch is prepared or sent. Besides the configured chain ID,
+   * prove that the pinned token address has deployed code and the exact 18-decimal denomination
+   * used by nanoToUsdtWei. A wrong/empty contract must never turn a valid-looking batch into an
+   * irreversible transfer of another asset.
+   */
+  async assertReady(): Promise<void> {
+    await this.assertNetwork();
+    const [code, decimals] = await Promise.all([
+      this.read((provider) => provider.getCode(this.usdt)),
+      this.read((provider) =>
+        new ethers.Contract(this.usdt, USDT_ABI, provider).getFunction("decimals").staticCall() as Promise<bigint>,
+      ),
+    ]);
+    if (code === "0x") throw new Error("configured USDT contract has no deployed code");
+    if (decimals !== 18n) throw new Error(`configured USDT contract has ${decimals} decimals; expected 18`);
   }
 
   async balances(): Promise<{ usdtWei: bigint; bnbWei: bigint }> {
@@ -149,5 +168,43 @@ export class PayoutChain {
     if (!receipt) return null;
     if (receipt.confirmations && (await receipt.confirmations()) < this.confirmations) return null;
     return { status: receipt.status === 1 ? "confirmed" : "reverted", blockNumber: receipt.blockNumber ?? null };
+  }
+
+  /**
+   * Reconcile one retained transaction without turning a transient `nonce too low` into a false
+   * success. A nonce is considered consumed by a different transaction only when EVERY configured
+   * read RPC atomically agrees that this hash and receipt are absent while the confirmed account
+   * nonce has advanced. One error, pending hash, missing confirmation, or disagreement keeps the
+   * row unresolved; double-pay safety wins over liveness.
+   */
+  async reconcileTransaction(
+    txHash: string,
+    nonce: number | null,
+  ): Promise<ConfirmResult | NonceConsumedResult | null> {
+    let successful = 0;
+    let consumed = 0;
+    for (const provider of this.readProviders) {
+      try {
+        const receipt = await provider.getTransactionReceipt(txHash);
+        if (receipt) {
+          if (receipt.confirmations && (await receipt.confirmations()) < this.confirmations) return null;
+          return {
+            status: receipt.status === 1 ? "confirmed" : "reverted",
+            blockNumber: receipt.blockNumber ?? null,
+          };
+        }
+        if (await provider.getTransaction(txHash)) return null;
+        if (nonce === null) return null;
+        const confirmedNonce = await provider.getTransactionCount(this.hotAddress, "latest");
+        successful += 1;
+        if (confirmedNonce <= nonce) return null;
+        consumed += 1;
+      } catch {
+        return null;
+      }
+    }
+    return successful === this.readProviders.length && consumed === successful
+      ? { status: "nonce_consumed", blockNumber: null }
+      : null;
   }
 }

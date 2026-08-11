@@ -1,8 +1,15 @@
 import { Controller, Get, Header, HttpCode, HttpException, HttpStatus, NotFoundException, Param, Post, UseGuards } from "@nestjs/common";
 import { z } from "zod";
-import { PayoutBatchInProgressError, type PayoutBatch, type PayoutRow } from "@claude-api/sales-db";
+import { InvalidPayoutBatchError, PayoutBatchInProgressError, type PayoutBatch, type PayoutRow } from "@claude-api/sales-db";
 import { AdminKeyGuard } from "../admin.guard.js";
-import { PayoutNotConfiguredError, PayoutService, PayoutWindowClosedError, type PayoutReport as ServiceReport } from "./payout.service.js";
+import {
+  PayoutConfigurationMismatchError,
+  PayoutInsufficientFundsError,
+  PayoutNotConfiguredError,
+  PayoutService,
+  PayoutWindowClosedError,
+  type PayoutReport as ServiceReport,
+} from "./payout.service.js";
 
 const uuidSchema = z.string().uuid();
 
@@ -48,7 +55,12 @@ export class PayoutController {
     return fn().catch((err: unknown) => {
       if (err instanceof PayoutWindowClosedError) throw new HttpException(err.message, HttpStatus.LOCKED); // 423
       if (err instanceof PayoutNotConfiguredError) throw new HttpException(err.message, HttpStatus.SERVICE_UNAVAILABLE); // 503
-      if (err instanceof PayoutBatchInProgressError) throw new HttpException(err.message, HttpStatus.CONFLICT); // 409
+      if (err instanceof PayoutBatchInProgressError
+        || err instanceof InvalidPayoutBatchError
+        || err instanceof PayoutConfigurationMismatchError
+        || err instanceof PayoutInsufficientFundsError) {
+        throw new HttpException(err.message, HttpStatus.CONFLICT); // 409
+      }
       throw err;
     });
   }

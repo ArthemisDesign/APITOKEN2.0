@@ -59,14 +59,12 @@ function mapPayout(row: PayoutRow): Payout {
 }
 
 /**
- * ⚠️ ЗНАЙ ПЕРЕД ПОДКЛЮЧЕНИЕМ ОПЛАТ: это ЕДИНСТВЕННАЯ функция, создающая строки в `payouts`, и она
- * СЕЙЧАС НИ ОТКУДА НЕ ВЫЗЫВАЕТСЯ (нет ни админ-маршрута, ни крона). Следствия, пока не подключено:
- *   • `getDuePayoutList`/`getPartnerPeriodState`/`getPartnerEarningsTotals` вычитают committed-выплаты,
- *     но таблица пуста → вычитается 0, поэтому due-list — это ПРЕВЬЮ, а не журнал;
- *   • факт on-chain оплаты нигде не фиксируется → тот же партнёр будет показан «к оплате» в каждом окне.
- * Когда будем подключать реальные выплаты — завести админ-маршрут «сгенерировать выплаты из окна»
- * (пишет `requested` строки за окно) ИЛИ чтобы внешний исполнитель писал `paid` строки. До этого
- * выплаты ведём вручную вне системы. См. аудит 2026-07-20 (B1).
+ * Legacy single-row/manual payout writer. The scheduled on-chain path uses createPayoutBatch(),
+ * which creates the batch and all requested rows atomically at the locked period boundary.
+ * Both writers take the same partner-row lock and subtract requested/approved/paid commitments,
+ * so a manual integration cannot overcommit balance concurrently with batch preparation.
+ * decidePayout() is deliberately limited to batch_id IS NULL; on-chain rows transition only from
+ * their persisted receipt evidence in payout-batch.ts.
  */
 export async function requestPayout(database: SalesDatabase, input: {
   partnerId: string;

@@ -84,8 +84,9 @@ Why this is correct and convenient:
 2. a valid **BSC wallet** is bound (USDT BEP-20, address `0x…40 hex`).
 
 Otherwise (`reason` = `no_wallet` / `zero`) the amount is **held and rolled** into the next window.
-The `SALES_MIN_PAYOUT_USD` config exists as a knob for the future, default `0` (no threshold);
-the interface says nothing about a minimum.
+`SALES_MIN_PAYOUT_USD` is the single integer-USD threshold used by both the due list and the real
+batch sender. The default/current value is `0`; a positive balance is therefore eligible. At a
+nonzero setting the boundary is inclusive (`payable >= minimum`) and smaller balances roll over.
 
 ## 4. What the partner sees (`GET /v1/partner/periods`)
 
@@ -112,18 +113,28 @@ The auto-generated list for the current/last period's window:
 
 | Env | Default | Meaning |
 |---|---|---|
-| `SALES_MIN_PAYOUT_USD` | `0` | Minimum threshold. `0` = we pay any amount > 0 (the current decision). Knob for the future; the UI does not mention it. |
+| `SALES_MIN_PAYOUT_USD` | `0` | One integer-USD threshold for due-list and execution. `0` = pay any positive amount; a nonzero boundary is inclusive. |
 
 The lock (7d) and window (3d) are currently constants in `periods.ts`; they can easily be moved
 into config if needed.
 
-## 7. What is NOT part of this system (done separately)
+## 7. Payout execution
 
-**Payout sending (execution).** Currently the "to be paid" list is a read model; the actual
-on-chain USDT BEP-20 transfer and the `paid` mark are done manually by the operator, and the
-automatic payout provider (sender wallet, gas, signatures, reconciliation, the `payouts.paid`
-mark) is a separate upcoming system. When it arrives, it will simply subtract what was paid from
-`payable` through the same invariant — the periods model will not need to change.
+The due list remains a read model. `PayoutService.prepare()` turns its eligible rows into one
+transactionally revalidated batch: partner rows are locked in canonical order, current wallet,
+status and exact unpaid balance are recomputed at the same period end, and every requested payout
+becomes committed. Preparation first verifies BSC mainnet, deployed canonical USDT with 18 decimals,
+and pins the current hot-wallet address.
+
+`send()` and per-row retry share one PostgreSQL advisory lock across all API processes. Under that
+lock the service re-reads batch state, checks that the configured hot wallet still matches the pin,
+simulates, signs offline, stores hash + nonce + raw transaction before broadcast, and waits for the
+authoritative receipt. A timeout/network ambiguity stops the queue and leaves the exact transaction
+for the poller to reconcile; it is never re-signed with a fresh nonce. A `nonce too low` error is not
+treated as delivery: only unanimous read-RPC evidence that the hash is absent and the confirmed nonce
+advanced can make it retryable. Only a confirmed receipt marks `payouts.status='paid'`. A definitive
+revert becomes retryable; release back to partner balance is allowed only after such a failure and
+never while a transaction is `broadcast`.
 
 ## 8. Time zone
 

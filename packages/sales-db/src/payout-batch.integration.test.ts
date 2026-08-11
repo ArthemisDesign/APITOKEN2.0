@@ -3,10 +3,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createSalesDatabase, type SalesDatabase } from "./client.js";
 import {
   createPayoutBatch, getActiveBatch, getPayoutCandidates, cancelPayoutBatch,
+  finalizeStuckSendingBatches,
   listBatchPayouts, listSendablePayouts, listBroadcastPayouts,
-  markPayoutBroadcast, markPayoutConfirmed, markPayoutFailed, setBatchStatus,
+  markPayoutBroadcast, markPayoutConfirmed, markPayoutFailed, transitionPayoutBatchStatus,
   releasePayoutRow,
-  PayoutBatchInProgressError,
+  InvalidPayoutBatchError, PayoutBatchInProgressError,
 } from "./payout-batch.js";
 
 const connectionString = process.env.TEST_SALES_DATABASE_URL;
@@ -50,6 +51,13 @@ describe.runIf(Boolean(connectionString))("payout batches (on-chain state machin
     expect(cands.map((c) => c.partnerId).sort()).toEqual([a].sort());
     expect(cands[0]!.unpaidNano).toBe(100n * USD);
     void noWallet; void suspended; void zero;
+  });
+
+  it("uses one inclusive integer minimum and still excludes zero", async () => {
+    const exact = await partner("exact"); await earn(exact, 10n * USD);
+    const below = await partner("below"); await earn(below, 10n * USD - 1n);
+    const cands = await getPayoutCandidates(db, 10n * USD);
+    expect(cands.map((candidate) => candidate.partnerId)).toEqual([exact]);
   });
 
   it("createPayoutBatch inserts rows, blocks a second in-progress batch, and excludes committed balance next time", async () => {
@@ -111,7 +119,53 @@ describe.runIf(Boolean(connectionString))("payout batches (on-chain state machin
     expect(await listBatchPayouts(db, batch.id)).toHaveLength(0);
     // balance is available again
     expect((await getPayoutCandidates(db, 0n))[0]!.unpaidNano).toBe(20n * USD);
-    void setBatchStatus;
+  });
+
+  it("revalidates duplicate partners, balance, wallet and status under partner locks", async () => {
+    const a = await partner("aaa"); await earn(a, 20n * USD);
+    const recipient = { partnerId: a, amountNano: 20n * USD, walletAddress: W };
+    await expect(createPayoutBatch(db, {
+      createdBy: "admin", minNano: 0n, gasPriceGwei: "0.05", hotWalletAddress: W,
+      recipients: [recipient, recipient],
+    })).rejects.toBeInstanceOf(InvalidPayoutBatchError);
+    await expect(createPayoutBatch(db, {
+      createdBy: "admin", minNano: 0n, gasPriceGwei: "0.05", hotWalletAddress: W,
+      recipients: [{ ...recipient, amountNano: 20n * USD - 1n }],
+    })).rejects.toThrow("balance changed");
+    await db.pool.query("UPDATE partners SET status = 'suspended' WHERE id = $1", [a]);
+    await expect(createPayoutBatch(db, {
+      createdBy: "admin", minNano: 0n, gasPriceGwei: "0.05", hotWalletAddress: W,
+      recipients: [recipient],
+    })).rejects.toThrow("recipient changed");
+  });
+
+  it("terminal batch transitions are CAS-protected against stale senders", async () => {
+    const a = await partner("aaa"); await earn(a, 20n * USD);
+    const batch = await createPayoutBatch(db, {
+      createdBy: "admin", minNano: 0n, gasPriceGwei: "0.05", hotWalletAddress: W,
+      recipients: [{ partnerId: a, amountNano: 20n * USD, walletAddress: W }],
+    });
+    expect(await transitionPayoutBatchStatus(db, batch.id, ["prepared"], "sending")).toBe(true);
+    expect(await transitionPayoutBatchStatus(db, batch.id, ["prepared"], "canceled")).toBe(false);
+    expect(await transitionPayoutBatchStatus(db, batch.id, ["sending"], "sent", { sent: true })).toBe(true);
+    expect(await transitionPayoutBatchStatus(db, batch.id, ["sending"], "sending")).toBe(false);
+  });
+
+  it("recovers a crashed sender to prepared while work remains, then terminal after release", async () => {
+    const a = await partner("aaa"); await earn(a, 20n * USD);
+    const batch = await createPayoutBatch(db, {
+      createdBy: "admin", minNano: 0n, gasPriceGwei: "0.05", hotWalletAddress: W,
+      recipients: [{ partnerId: a, amountNano: 20n * USD, walletAddress: W }],
+    });
+    const row = (await listBatchPayouts(db, batch.id))[0]!;
+    await transitionPayoutBatchStatus(db, batch.id, ["prepared"], "sending");
+    expect(await finalizeStuckSendingBatches(db)).toBe(1);
+    expect((await getActiveBatch(db))!.status).toBe("prepared");
+
+    expect(await releasePayoutRow(db, row.id)).toBe(true);
+    await transitionPayoutBatchStatus(db, batch.id, ["prepared"], "sending");
+    expect(await finalizeStuckSendingBatches(db)).toBe(1);
+    expect(await getActiveBatch(db)).toBeNull();
   });
 
   it("getPayoutCandidates honors the earnedBefore cutoff (7-day lock)", async () => {
