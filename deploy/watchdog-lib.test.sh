@@ -1869,7 +1869,7 @@ grep -Fq 'Wants=network-online.target apitoken-affinity-redis.service' \
 ! grep -Fq 'Requires=apitoken-affinity-redis.service' "$ROOT/systemd/claude-api-anthropic@.service"
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-anthropic@.service"
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api.service"
-grep -Fq 'CLAUDE_API_PROVIDER=anthropic CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1' \
+grep -Fq 'CLAUDE_API_PROVIDER=anthropic CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_GLM_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1' \
   "$ROOT/systemd/claude-api-anthropic@.service"
 ! grep -Fq 'CLAUDE_API_PROVIDER=' "$ROOT/systemd/claude-api@.service"
 ! grep -Fq 'CLAUDE_API_PROVIDER=' "$ROOT/systemd/claude-api.service"
