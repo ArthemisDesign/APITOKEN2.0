@@ -1152,6 +1152,7 @@ export async function applyPricingLedgerPage(
     let freeBalance = BigInt(freeRow.rows[0]?.free_balance_nano ?? "0");
     let freeBalanceChanged = false;
     let lastLedgerId = 0n;
+    let usageFeedWriteLocked = false;
     for (const entry of ordered) {
       const ledgerId = BigInt(entry.id);
       if (ledgerId > lastLedgerId) lastLedgerId = ledgerId;
@@ -1184,6 +1185,15 @@ export async function applyPricingLedgerPage(
       const realFunded = collected - fromFree;
       const eventId = randomUUID();
       const providerId = ledgerProviderEvidence(entry);
+      if (!usageFeedWriteLocked) {
+        // feed_seq is allocated by nextval before this transaction commits. The table lock makes
+        // allocation and commit order identical across account workers, and conflicts with the old
+        // binary's ordinary INSERT lock during rollout. It is deliberately taken after the per-user
+        // profile lock (the old writer's lock order), and only when this page really writes spend,
+        // avoiding both a mixed-version profile↔table deadlock and contention on top-up-only pages.
+        await client.query("LOCK TABLE pricing_usage_events IN SHARE ROW EXCLUSIVE MODE");
+        usageFeedWriteLocked = true;
+      }
       const inserted = await client.query<{ id: string }>(`
         INSERT INTO pricing_usage_events (
           id, user_id, engine_account_id, ledger_entry_id, provider_id,

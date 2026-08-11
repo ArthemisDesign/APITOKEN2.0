@@ -53,4 +53,15 @@ describe("sales usage feed controller", () => {
     expect(dbMocks.listUsageEventsAfter).toHaveBeenCalledWith({}, 40n, 10);
   });
 
+  it("defaults malformed tokens and never sends an out-of-range bigint to PostgreSQL", async () => {
+    dbMocks.listUsageEventsAfter.mockResolvedValue({ items: [], nextCursor: 0n });
+    const controller = new SalesFeedController({} as never, {} as never);
+
+    await controller.usageEvents("9223372036854775808", "1junk");
+    expect(dbMocks.listUsageEventsAfter).toHaveBeenLastCalledWith({}, 0n, 1000);
+
+    await controller.usageEvents("9223372036854775807", "99999999999999999999");
+    expect(dbMocks.listUsageEventsAfter).toHaveBeenLastCalledWith({}, 9_223_372_036_854_775_807n, 2000);
+  });
+
 });

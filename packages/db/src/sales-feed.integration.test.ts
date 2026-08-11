@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase, type Database } from "./client.js";
-import { listPaidTopupsAfter, listUsageEventsAfter } from "./sales-feed.js";
+import {
+  AmbiguousTopupCursorBoundaryError,
+  listPaidTopupsAfter,
+  listUsageEventsAfter,
+  recordReferralAttribution,
+} from "./sales-feed.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 
@@ -35,7 +40,7 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
     );
     if (referred) {
       await database.pool.query(
-        "INSERT INTO referral_attributions (user_id, code, created_at) VALUES ($1, 'partner-code', now() - interval '1 minute')",
+        "INSERT INTO referral_attributions (user_id, code, created_at) VALUES ($1, 'partner-code', now() - interval '5 minutes')",
         [userId],
       );
     }
@@ -122,11 +127,33 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
     expect("releaseDigest" in page.items[0]!).toBe(false);
   });
 
+  it("never attributes spend that occurred before the referral was recorded", async () => {
+    const referred = await insertUser(true);
+    const attributedAt = new Date(Date.now() - 120_000);
+    await database.pool.query(
+      "UPDATE referral_attributions SET created_at = $2 WHERE user_id = $1",
+      [referred, attributedAt],
+    );
+    await insertUsage(referred, 40, new Date(attributedAt.getTime() - 1_000), 111n);
+    await insertUsage(referred, 41, new Date(attributedAt.getTime() + 1_000), 222n);
+
+    const page = await listUsageEventsAfter(database, 0n, 100);
+    expect(page.items).toEqual([
+      expect.objectContaining({ userId: referred, amountNano: 222n }),
+    ]);
+    // The ineligible historical row is still part of the source stream and advances the cursor.
+    expect(page.nextCursor).toBe(2n);
+  });
+
   it("excludes ordinary customer top-ups while preserving referred top-ups", async () => {
     const ordinaryBefore = await insertUser(false);
     const referred = await insertUser(true);
     const ordinaryAfter = await insertUser(false);
     const base = Date.now() - 120_000;
+    await database.pool.query(
+      "UPDATE referral_attributions SET created_at = now() - interval '3 minutes' WHERE user_id = $1",
+      [referred],
+    );
 
     await insertPaidTopup(ordinaryBefore, "ordinary-before", new Date(base));
     const referredPaymentId = await insertPaidTopup(referred, "referred", new Date(base + 1_000));
@@ -143,5 +170,70 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
     const secondPage = await listPaidTopupsAfter(database, firstPage.nextCursor, 1);
     expect(secondPage.items).toHaveLength(1);
     expect(secondPage.items[0]).toMatchObject({ userId: referred, paymentId: referredPaymentId });
+  });
+
+  it("never exposes top-ups paid before attribution", async () => {
+    const referred = await insertUser(true);
+    const attributedAt = new Date(Date.now() - 120_000);
+    await database.pool.query(
+      "UPDATE referral_attributions SET created_at = $2 WHERE user_id = $1",
+      [referred, attributedAt],
+    );
+    await insertPaidTopup(referred, "before-attribution", new Date(attributedAt.getTime() - 1_000));
+    const afterId = await insertPaidTopup(referred, "after-attribution", new Date(attributedAt.getTime() + 1_000));
+
+    const page = await listPaidTopupsAfter(database, 0n, 100);
+    expect(page.items).toEqual([
+      expect.objectContaining({ userId: referred, paymentId: afterId }),
+    ]);
+    expect(page.nextCursor).toBe(BigInt((attributedAt.getTime() + 1_000) * 1_000));
+  });
+
+  it("fails closed when equal paid_at timestamps cross the page boundary", async () => {
+    const referred = await insertUser(true);
+    const paidAt = new Date(Date.now() - 120_000);
+    await insertPaidTopup(referred, "tie-a", paidAt);
+    await insertPaidTopup(referred, "tie-b", paidAt);
+
+    await expect(listPaidTopupsAfter(database, 0n, 1))
+      .rejects.toBeInstanceOf(AmbiguousTopupCursorBoundaryError);
+  });
+
+  it("serializes attribution ids against an in-flight legacy insert", async () => {
+    const blockerUser = await insertUser(false);
+    const referred = await insertUser(false);
+    const blocker = await database.pool.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "INSERT INTO referral_attributions (user_id, code) VALUES ($1, 'legacy-in-flight')",
+        [blockerUser],
+      );
+
+      const recording = recordReferralAttribution(database, referred, "new-writer");
+      let observedWait = false;
+      for (let attempt = 0; attempt < 50 && !observedWait; attempt += 1) {
+        const locks = await database.pool.query<{ waiting: boolean }>(`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_locks
+            WHERE relation = 'referral_attributions'::regclass
+              AND mode = 'ShareRowExclusiveLock' AND NOT granted
+          ) AS waiting
+        `);
+        observedWait = locks.rows[0]?.waiting ?? false;
+        if (!observedWait) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(observedWait).toBe(true);
+
+      await blocker.query("COMMIT");
+      await recording;
+      const rows = await database.pool.query<{ code: string }>(
+        "SELECT code FROM referral_attributions ORDER BY id",
+      );
+      expect(rows.rows.map((row) => row.code)).toEqual(["legacy-in-flight", "new-writer"]);
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+    }
   });
 });

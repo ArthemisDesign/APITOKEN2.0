@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, lt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, lt, sql } from "drizzle-orm";
 import type { Database } from "./client.js";
 import {
   payments,
@@ -8,9 +8,17 @@ import {
 
 // Internal-фид для sales bounded context (sales.apitoken.sale). Читатель хранит курсор
 // last_id и запрашивает `after_id` — как ledger-фид Control API движка. Строки моложе
-// FEED_VISIBILITY_LAG_MS скрываются: bigserial присваивается на insert, и уже закоммиченная
-// строка с большим seq может стать видимой раньше in-flight строки с меньшим — лаг закрывает окно.
+// FEED_VISIBILITY_LAG_MS скрываются. Writers additionally serialize sequence allocation through
+// a table lock: the lag remains a rolling-deploy safeguard for the previous binary, while the lock
+// makes commit order match cursor order once the new writer is active.
 const FEED_VISIBILITY_LAG_MS = 10_000;
+
+export class AmbiguousTopupCursorBoundaryError extends Error {
+  constructor(cursor: bigint) {
+    super(`paid top-up cursor boundary is ambiguous at ${cursor}`);
+    this.name = "AmbiguousTopupCursorBoundaryError";
+  }
+}
 
 export interface ReferralAttributionFeedRow {
   id: bigint;
@@ -56,10 +64,26 @@ export interface SalesFeedPage<T> {
 
 /** Идемпотентно записывает атрибуцию регистрации к реф-коду (первый код побеждает). */
 export async function recordReferralAttribution(database: Database, userId: string, code: string): Promise<void> {
-  await database.db
-    .insert(referralAttributions)
-    .values({ userId, code })
-    .onConflictDoNothing({ target: referralAttributions.userId });
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    // bigserial is allocated before COMMIT. Serializing all inserts prevents a later id from
+    // becoming visible first and moving the sales cursor past an older in-flight attribution.
+    // SHARE ROW EXCLUSIVE also fences the previous binary's ordinary ROW EXCLUSIVE insert during
+    // a rolling deployment, so the protection does not depend on every process changing at once.
+    await client.query("LOCK TABLE referral_attributions IN SHARE ROW EXCLUSIVE MODE");
+    await client.query(`
+      INSERT INTO referral_attributions (user_id, code)
+      VALUES ($1, $2)
+      ON CONFLICT (user_id) DO NOTHING
+    `, [userId, code]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /** Реф-код, по которому пользователь пришёл (или null). Нужен для синхронного применения скидки-«пола»
@@ -114,7 +138,11 @@ export async function listUsageEventsAfter(
     // The sales database cannot distinguish a temporarily late row from a customer who was never
     // referred. Filter at the commerce authority, where that distinction is durable, so ordinary
     // customer spend cannot accumulate forever in pending_referral_events.
-    .leftJoin(referralAttributions, eq(referralAttributions.userId, pricingUsageEvents.userId))
+    .leftJoin(referralAttributions, and(
+      eq(referralAttributions.userId, pricingUsageEvents.userId),
+      // A referral acquired later must never capture spend that happened before attribution.
+      gte(pricingUsageEvents.occurredAt, referralAttributions.createdAt),
+    ))
     .where(and(gt(pricingUsageEvents.feedSeq, afterId), lt(pricingUsageEvents.createdAt, lagCutoff)))
     .orderBy(asc(pricingUsageEvents.feedSeq))
     .limit(limit);
@@ -160,16 +188,29 @@ export async function listPaidTopupsAfter(
       attributedUserId: referralAttributions.userId,
     })
     .from(payments)
-    .leftJoin(referralAttributions, eq(referralAttributions.userId, payments.userId))
+    .leftJoin(referralAttributions, and(
+      eq(referralAttributions.userId, payments.userId),
+      // Top-up history is partner-visible only from the durable attribution instant onward.
+      gte(payments.paidAt, referralAttributions.createdAt),
+    ))
     .where(and(
       eq(payments.status, "paid"),
       gt(paidMicros, sql`${afterId}`),
       lt(payments.paidAt, lagCutoff),
     ))
-    .orderBy(asc(paidMicros))
-    .limit(limit);
+    .orderBy(asc(paidMicros), asc(payments.id))
+    // One look-ahead row proves that the timestamp-only cursor does not split an equal-paid_at
+    // group. A split cannot be resumed safely without a composite cursor, so fail closed instead
+    // of silently skipping the remainder of the group.
+    .limit(limit + 1);
+  const pageRows = rows.slice(0, limit);
+  const lookahead = rows[limit];
+  const last = pageRows.at(-1);
+  if (last && lookahead && BigInt(last.id) === BigInt(lookahead.id)) {
+    throw new AmbiguousTopupCursorBoundaryError(BigInt(last.id));
+  }
   return {
-    items: rows
+    items: pageRows
       .filter((row) => row.attributedUserId !== null)
       .map((row) => ({
         id: BigInt(row.id),
@@ -178,7 +219,7 @@ export async function listPaidTopupsAfter(
         amountNano: row.amountNano,
         paidAt: row.paidAt as Date,
       })),
-    nextCursor: rows.at(-1) ? BigInt(rows.at(-1)!.id) : afterId,
+    nextCursor: last ? BigInt(last.id) : afterId,
   };
 }
 

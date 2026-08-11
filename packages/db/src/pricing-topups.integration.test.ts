@@ -106,7 +106,7 @@ describe.runIf(Boolean(connectionString))("engine top-ups recorded for reporting
       [userId],
     );
     await db.pool.query(
-      "INSERT INTO referral_attributions (user_id, code, created_at) VALUES ($1, 'shortfall-partner', now() - interval '1 minute')",
+      "INSERT INTO referral_attributions (user_id, code, created_at) VALUES ($1, 'shortfall-partner', to_timestamp(1600000000))",
       [userId],
     );
     const charge = entry(1, "charge", 100n, null, 30n);
@@ -138,6 +138,46 @@ describe.runIf(Boolean(connectionString))("engine top-ups recorded for reporting
     expect(feed.items).toEqual([
       expect.objectContaining({ userId, amountNano: 10n }),
     ]);
+  });
+
+  it("serializes usage feed sequence allocation against an in-flight legacy insert", async () => {
+    const blocker = await db.pool.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(`
+        INSERT INTO pricing_usage_events (
+          id, user_id, engine_account_id, ledger_entry_id,
+          amount_nano, real_funded_nano, occurred_at
+        ) VALUES ($1, $2, 'legacy-in-flight', 999, 1, 1, now() - interval '1 minute')
+      `, [randomUUID(), userId]);
+
+      const writing = applyPricingLedgerPage(db, { userId, engineAccountId }, [
+        entry(1, "charge", 100n, null),
+      ]);
+      let observedWait = false;
+      for (let attempt = 0; attempt < 50 && !observedWait; attempt += 1) {
+        const locks = await db.pool.query<{ waiting: boolean }>(`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_locks
+            WHERE relation = 'pricing_usage_events'::regclass
+              AND mode = 'ShareRowExclusiveLock' AND NOT granted
+          ) AS waiting
+        `);
+        observedWait = locks.rows[0]?.waiting ?? false;
+        if (!observedWait) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(observedWait).toBe(true);
+
+      await blocker.query("ROLLBACK");
+      await writing;
+      const rows = await db.pool.query<{ feed_seq: string }>(
+        "SELECT feed_seq::text FROM pricing_usage_events ORDER BY feed_seq",
+      );
+      expect(rows.rows).toHaveLength(1);
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+    }
   });
 
   it("rejects contradictory shortfall evidence without moving funding or the cursor", async () => {

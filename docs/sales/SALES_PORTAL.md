@@ -46,8 +46,12 @@ the endpoints), sales-internal without env — **401**.
 ### Commerce → Sales: feeds and profiles (`apps/api/src/sales-feed.controller.ts`)
 
 `@Controller("internal/sales")` behind the `SalesFeedGuard`. Cursor-based `after_id` model like the
-engine ledger feed; rows younger than 10 s are hidden (the lag closes the bigserial/commit race).
-Garbage in `after_id`/`limit` is not an error but a default (cursor 0, default limit).
+engine ledger feed; rows younger than 10 s are hidden. Attribution and usage writers additionally
+serialize `bigserial` allocation through a table lock, so commit order cannot expose a larger id
+before a smaller in-flight id; the lag remains a rolling-deploy safeguard for the previous binary.
+Garbage in `after_id`/`limit` is not an error but a default (cursor 0, default limit): parsing consumes
+the whole decimal token, and `after_id` above PostgreSQL `bigint` is rejected to the default instead
+of reaching SQL as an out-of-range value.
 
 - `GET /v1/internal/sales/attributions?after_id&limit` (default limit 500, max 1000) — from
   `referral_attributions` (written at registration with `referralCode`, unique by user_id).
@@ -88,7 +92,9 @@ Garbage in `after_id`/`limit` is not an error but a default (cursor 0, default l
     `bonusFundedNano`, `otherFundedNano`, `releaseGeneration`, `releaseDigest` non-null);
     `amountNano` equals the exact `paidFundedNano`, `pricingMode` is always `null` (no synthetic
     `'track'`). Bonus-only (`paidFundedNano=0`), B2B, OpenKeys and service v2 rows were not emitted.
-  Historical all-null wire rows use the legacy `real_funded` free-first projection. The current
+  Historical all-null wire rows use the legacy `real_funded` free-first projection. A usage row is
+  joined to referral attribution only when `occurred_at >= attributed created_at`, so assigning a
+  referral later cannot retroactively earn commission on earlier spend. The current
   producer applies the limit to source rows before filtering,
   so `nextCursor` advances over the watermark of the whole page, including the
   static/service/unreferred tail, and it is never rescanned indefinitely.
@@ -100,7 +106,11 @@ Garbage in `after_id`/`limit` is not an error but a default (cursor 0, default l
 - `GET /v1/internal/sales/topups?after_id&limit` (default 500, max 1000) — paid
   `payments`; the cursor is epoch microseconds from `paid_at` (not `feed_seq`: payment happens
   after the insert, and a stale `feed_seq` would fall out of the cursor forever). Also filtered by
-  attribution. Response `{items:[{id,paymentId,userId,amountNano,paidAt}], nextCursor}`.
+  attribution and by `paid_at >= attributed created_at`. Response
+  `{items:[{id,paymentId,userId,amountNano,paidAt}], nextCursor}`. The producer reads one look-ahead
+  row and fails the page without cursor advance when equal `paid_at` timestamps cross the page
+  boundary: a timestamp-only cursor cannot resume inside that group without losing rows. A future
+  additive feed revision will replace this guard with a monotonic paid-transition cursor.
 - `POST /v1/internal/sales/referral-discount` — records the salesperson's discount "floor" for a
   referral as partner attribution. Body `{userId, floorBps (0..9500), override?, actorId?}` →
   `{applied, multiplierBp}`. The floor does not move any price: B2C pricing is the stored account

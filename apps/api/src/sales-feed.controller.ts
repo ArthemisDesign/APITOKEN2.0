@@ -33,6 +33,8 @@ import { safeEqual } from "./admin.guard.js";
 // commerce→sales: курсорные фиды after_id под серверным ключом SALES_CONTROL_KEY.
 // Деньги в ответах — только decimal-строки nanoUSD; email пользователей не отдаём.
 
+const PG_BIGINT_MAX = 9_223_372_036_854_775_807n;
+
 @Injectable()
 export class SalesFeedGuard implements CanActivate {
   constructor(private readonly config: ConfigService<Environment, true>) {}
@@ -52,13 +54,17 @@ export class SalesFeedGuard implements CanActivate {
 function parseCursor(value: string | undefined): bigint {
   if (value === undefined || value === "") return 0n;
   if (!/^\d{1,19}$/.test(value)) return 0n;
-  return BigInt(value);
+  const parsed = BigInt(value);
+  return parsed <= PG_BIGINT_MAX ? parsed : 0n;
 }
 
 function parseLimit(value: string | undefined, fallback: number, max: number): number {
-  const parsed = Number.parseInt(value ?? "", 10);
-  if (!Number.isInteger(parsed) || parsed < 1) return fallback;
-  return Math.min(parsed, max);
+  // Parse the whole token. Number.parseInt("1junk") used to turn malformed input into a real
+  // page size, and converting an unbounded decimal through Number can lose integer precision.
+  if (!/^\d{1,20}$/.test(value ?? "")) return fallback;
+  const parsed = BigInt(value!);
+  if (parsed < 1n) return fallback;
+  return parsed > BigInt(max) ? max : Number(parsed);
 }
 
 @Controller("internal/sales")
