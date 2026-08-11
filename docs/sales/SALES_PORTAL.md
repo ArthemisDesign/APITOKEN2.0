@@ -310,11 +310,16 @@ https://partners.apitoken.sale is live. How it is set up on 84.32.48.2:
   (`apps/sales-api/*`, `apps/sales-web/*`, `packages/sales-db/*`, shared build files) with a separate
   baseline `/var/lib/apitoken/watchdog/sales.sha`. After green tests the watchdog calls
   `deploy/sales-deploy.sh <sha>`: promotes the tested candidate to an immutable release
-  `/opt/apitoken/sales-releases/<sha>` → sales-db migrations (advisory-lock, expand-only) →
+  `/opt/apitoken/sales-releases/<sha>` → verifies the byte-for-byte append-only Sales migration
+  history against `/var/lib/apitoken/watchdog/sales-database-migrations.manifest` → if and only if
+  history grew, creates a fresh validated exact-SHA backup and runs the advisory-locked migrator →
+  commits the new manifest only after migration success →
   atomic swap of `sales-releases/current` → restart of both units → health gate
   (`/v1/health` + `/` each 200, up to 60 s) → **symlink rollback** on failure. Status context —
   `deploy/sales`. sales has ITS OWN release root, NOT on the shared commerce `current` (that is
   commerce blue-green — do not touch). The units look at `sales-releases/current`.
+  The first guarded rollout bootstraps its manifest only from the already-live immutable Sales SHA,
+  never from an un-applied candidate. An app-only release skips the schema command entirely.
   Manual emergency deployment (if ever needed) — the same `sales-deploy.sh <sha>` from a candidate.
 - Env: `/etc/apitoken/sales.env` (all keys: SALES_DATABASE_URL, SALES_TOKEN_ENCRYPTION_KEY,
   `SALES_ADMIN_KEY` — the key for signing in to /admin, SALES_CONTROL_KEY, SMTP Brevo). The same

@@ -409,21 +409,27 @@ wd_typescript_component_list_is_canonical() {
   return 0
 }
 
-wd_migration_manifest() {
-  local tree=$1
-  [[ -d $tree/packages/db/migrations ]] || wd_die "migration directory is missing from $tree"
+wd_drizzle_migration_manifest() {
+  [[ $# -eq 3 ]] || wd_die "usage: wd_drizzle_migration_manifest <tree> <relative-root> <format>"
+  local tree=$1 relative_root=$2 format=$3
+  [[ $relative_root =~ ^[A-Za-z0-9._/-]+$ && $relative_root != /* && $relative_root != *..* ]] \
+    || wd_die "unsafe migration root: $relative_root"
+  [[ $format =~ ^[A-Za-z0-9._-]+$ ]] || wd_die "unsafe migration manifest format: $format"
+  [[ -d $tree/$relative_root ]] || wd_die "migration directory is missing from $tree: $relative_root"
 
   # Drizzle rewrites meta/_journal.json whenever it appends a migration. Hashing that file as one
   # immutable artifact would therefore reject every legitimate migration after the baseline. Build
   # a semantic manifest instead: existing SQL/snapshots remain byte-for-byte immutable, while each
   # canonical journal entry is an individually immutable, ordered record and new records may append.
-  node - "$tree" <<'NODE'
+  node - "$tree" "$relative_root" "$format" <<'NODE'
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
 const tree = process.argv[2];
-const root = path.join(tree, "packages/db/migrations");
+const relativeRoot = process.argv[3];
+const format = process.argv[4];
+const root = path.join(tree, relativeRoot);
 const journalPath = path.join(root, "meta/_journal.json");
 
 function fail(message) {
@@ -473,7 +479,7 @@ const sqlFiles = new Set(artifacts.filter((file) => file.endsWith(".sql")));
 const tags = new Set();
 let previousWhen = -1;
 
-process.stdout.write("format=apitoken-drizzle-manifest-v2\n");
+process.stdout.write(`format=${format}\n`);
 process.stdout.write(`journal=${digest(canonical({ version: journal.version, dialect: journal.dialect }))}\n`);
 for (let position = 0; position < journal.entries.length; position += 1) {
   const entry = journal.entries[position];
@@ -492,9 +498,17 @@ if (sqlFiles.size !== 0) fail(`unjournaled SQL artifact(s): ${[...sqlFiles].sort
 
 for (const relative of artifacts.filter((file) => file !== "meta/_journal.json").sort()) {
   const contents = fs.readFileSync(path.join(root, relative));
-  process.stdout.write(`file=${digest(contents)} packages/db/migrations/${relative}\n`);
+  process.stdout.write(`file=${digest(contents)} ${relativeRoot}/${relative}\n`);
 }
 NODE
+}
+
+wd_migration_manifest() {
+  wd_drizzle_migration_manifest "$1" packages/db/migrations apitoken-drizzle-manifest-v2
+}
+
+wd_sales_migration_manifest() {
+  wd_drizzle_migration_manifest "$1" packages/sales-db/migrations apitoken-sales-drizzle-manifest-v1
 }
 
 wd_manifest_digest() {

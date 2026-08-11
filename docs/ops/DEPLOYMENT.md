@@ -27,7 +27,7 @@ only after its migration and overall statuses are green may dependent applicatio
 | `deploy/migration` | Validated database backups plus exact tested commerce migrator, or no commerce migration needed |
 | `deploy/engine` | Exact-release engine rollout, or no engine change |
 | `deploy/backend` | Exact-release API/worker rollout, or no backend change |
-| `deploy/sales` | Exact tested Sales release rollout, or no sales change |
+| `deploy/sales` | Exact tested Sales release rollout; append-only Sales migrations are backup-gated inside the lane, or no sales change |
 | `deploy/openkeys` | Exact tested OpenKeys release rollout, or no OpenKeys change |
 | `deploy/admin` | Exact tested admin panel release rollout, or no admin change |
 | `deploy/devbot` | Exact tested devbot release rollout, no devbot change, or devbot disabled (`/etc/apitoken/devbot.env` not yet provisioned) |
@@ -239,6 +239,9 @@ After any required commerce migration and engine pre-deploy backup finish, compo
 joined failure-isolated lanes. Engine and commerce stay serial because both blue-green controllers
 own the same deployment lock. Sales and OpenKeys use separate databases, release roots, symlinks,
 units, and rollback paths, so their health-gated rollouts may run concurrently with that core lane.
+Sales keeps its own immutable migration manifest. A Sales schema delta must be append-only, triggers
+the same validated all-database exact-SHA backup before its migrator, and commits the manifest only
+after the migrator succeeds; a Sales app-only rollout performs no database command.
 Final cross-component verification and the overall green verdict run only after every started lane
 succeeds.
 

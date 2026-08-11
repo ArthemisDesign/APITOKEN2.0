@@ -640,6 +640,52 @@ if wd_manifest_is_append_only "$TEMP/baseline.manifest" "$TEMP/tampered-journal.
   wd_die "manifest accepted an edited historical journal entry"
 fi
 
+# Sales owns a separate Drizzle history and production database. Its flat SQL/journal artifacts
+# receive the same byte-for-byte append-only protection as commerce before sales-deploy may migrate.
+for fixture in sales-baseline sales-appended sales-tampered; do
+  mkdir -p "$TEMP/$fixture/packages/sales-db"
+  cp -R -- "$ROOT/packages/sales-db/migrations" "$TEMP/$fixture/packages/sales-db/migrations"
+done
+wd_sales_migration_manifest "$TEMP/sales-baseline" >"$TEMP/sales-baseline.manifest"
+node - "$TEMP/sales-appended/packages/sales-db/migrations/meta/_journal.json" \
+  "$TEMP/sales-appended/packages/sales-db/migrations/0016_watchdog_sales_manifest_test.sql" <<'NODE'
+const fs = require("node:fs");
+const [journalPath, sqlPath] = process.argv.slice(2);
+const journal = JSON.parse(fs.readFileSync(journalPath, "utf8"));
+const previous = journal.entries.at(-1);
+journal.entries.push({
+  idx: journal.entries.length,
+  version: journal.version,
+  when: previous.when + 1,
+  tag: "0016_watchdog_sales_manifest_test",
+  breakpoints: true,
+});
+fs.writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+fs.writeFileSync(sqlPath, "CREATE TABLE watchdog_sales_manifest_test (id integer PRIMARY KEY);\n");
+NODE
+wd_sales_migration_manifest "$TEMP/sales-appended" >"$TEMP/sales-appended.manifest"
+wd_manifest_is_append_only "$TEMP/sales-baseline.manifest" "$TEMP/sales-appended.manifest"
+[[ $(wd_manifest_digest "$TEMP/sales-baseline.manifest") \
+  != $(wd_manifest_digest "$TEMP/sales-appended.manifest") ]]
+printf '\n-- forbidden historical edit\n' \
+  >>"$TEMP/sales-tampered/packages/sales-db/migrations/0015_paid_funded_commission_v2.sql"
+wd_sales_migration_manifest "$TEMP/sales-tampered" >"$TEMP/sales-tampered.manifest"
+if wd_manifest_is_append_only "$TEMP/sales-baseline.manifest" "$TEMP/sales-tampered.manifest"; then
+  wd_die "sales manifest accepted an edited historical SQL migration"
+fi
+
+grep -Fq 'wd_manifest_is_append_only "$SALES_DB_MANIFEST" "$MANIFEST_TMP"' \
+  "$ROOT/deploy/sales-deploy.sh" \
+  || wd_die "sales deploy lost its append-only admission gate"
+awk '
+  /new append-only sales migration history detected/ { in_migration = 1 }
+  in_migration && /"\$BACKUP_RUNNER" "\$SHA"/ { backup = NR }
+  in_migration && /node "\$release\/packages\/sales-db\/dist\/migrate.js"/ { migrate = NR }
+  in_migration && /committed tested sales migration manifest/ { commit = NR }
+  END { exit !(backup > 0 && backup < migrate && migrate < commit) }
+' "$ROOT/deploy/sales-deploy.sh" \
+  || wd_die "sales deploy no longer orders backup before migrate before manifest commit"
+
 # Bounded retry: transient failures are absorbed, permanent ones still surface their exit status.
 retry_attempts_file="$TEMP/retry-attempts"
 printf '0\n' >"$retry_attempts_file"

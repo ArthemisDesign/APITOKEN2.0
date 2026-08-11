@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=deploy/watchdog-lib.sh
+source "$SCRIPT_DIR/watchdog-lib.sh"
+
 # Deploy the sales bounded context (partners.apitoken.sale) from the watchdog's already
 # tested+frozen candidate. Single-instance (not blue-green): promote an immutable release,
 # migrate the sales DB, atomically repoint the sales-current symlink, restart both units,
@@ -27,6 +31,9 @@ WEB_HEALTH=${SALES_WEB_HEALTH:-http://127.0.0.1:3200/}
 COMMERCE_BALANCER_URL=${COMMERCE_BALANCER_URL:-http://127.0.0.1:8791}
 HEALTH_RETRIES=${SALES_HEALTH_RETRIES:-30}
 HEALTH_INTERVAL=${SALES_HEALTH_INTERVAL:-2}
+STATE_ROOT=${SALES_STATE_ROOT:-/var/lib/apitoken/watchdog}
+SALES_DB_MANIFEST=$STATE_ROOT/sales-database-migrations.manifest
+BACKUP_RUNNER=${SALES_BACKUP_RUNNER:-$SCRIPT_DIR/watchdog-backup.sh}
 
 candidate="$CANDIDATE_ROOT/$SHA"
 release="$RELEASE_ROOT/$SHA"
@@ -35,7 +42,11 @@ current_link="$RELEASE_ROOT/current"
 log() { printf '[sales-deploy] %s\n' "$*"; }
 die() { printf '[sales-deploy] ERROR: %s\n' "$*" >&2; exit 1; }
 ENV_TMP=
-cleanup() { [[ -z $ENV_TMP ]] || rm -f -- "$ENV_TMP"; }
+MANIFEST_TMP=
+cleanup() {
+  [[ -z $ENV_TMP ]] || rm -f -- "$ENV_TMP"
+  [[ -z $MANIFEST_TMP ]] || rm -f -- "$MANIFEST_TMP"
+}
 trap cleanup EXIT
 
 [[ -d $candidate && ! -L $candidate ]] || die "tested candidate is missing: $candidate"
@@ -106,6 +117,35 @@ if [[ -L $current_link ]]; then
   previous_target=$(readlink -f -- "$current_link" || true)
 fi
 
+commit_sales_manifest() {
+  local source=$1 temporary=${SALES_DB_MANIFEST}.tmp.$$
+  cp -- "$source" "$temporary"
+  chown root:deploy "$temporary"
+  chmod 0640 "$temporary"
+  mv -f -- "$temporary" "$SALES_DB_MANIFEST"
+}
+
+bootstrap_sales_manifest() {
+  local previous_name previous_parent
+  if [[ -e $SALES_DB_MANIFEST || -L $SALES_DB_MANIFEST ]]; then
+    [[ -f $SALES_DB_MANIFEST && ! -L $SALES_DB_MANIFEST ]] \
+      || die "sales migration manifest is not a regular file: $SALES_DB_MANIFEST"
+    return 0
+  fi
+  [[ -n $previous_target && -d $previous_target && ! -L $previous_target ]] \
+    || die "cannot bootstrap sales migration history without a live immutable release"
+  previous_name=${previous_target##*/}
+  previous_parent=${previous_target%/*}
+  [[ $previous_parent == "$RELEASE_ROOT" && $previous_name =~ ^[0-9a-f]{40}$ ]] \
+    || die "unsafe live release while bootstrapping sales migration history: $previous_target"
+  MANIFEST_TMP=$(mktemp "$STATE_ROOT/.sales-migrations.bootstrap.XXXXXX")
+  wd_sales_migration_manifest "$previous_target" >"$MANIFEST_TMP"
+  commit_sales_manifest "$MANIFEST_TMP"
+  rm -f -- "$MANIFEST_TMP"
+  MANIFEST_TMP=
+  log "bootstrapped append-only sales migration baseline from $previous_name"
+}
+
 # 1) Promote an immutable release by copying the tested candidate (idempotent).
 install -d -o deploy -g deploy -m 0755 "$RELEASE_ROOT"
 if [[ ! -d $release ]]; then
@@ -118,11 +158,28 @@ if [[ ! -d $release ]]; then
 fi
 [[ -f $release/apps/sales-api/dist/main.js ]] || die "promoted release is incomplete: $release"
 
-# 2) Migrate the sales DB from the NEW release before cutover (expand-only, advisory-locked).
-log "applying sales-db migrations from $SHA"
-# shellcheck disable=SC1090
-( set -a; . "$ENV_FILE"; set +a; node "$release/packages/sales-db/dist/migrate.js" ) \
-  || die "sales-db migration failed; leaving current symlink untouched ($previous_target)"
+# 2) Admit and apply only append-only sales history. A fresh validated all-database backup is
+# mandatory before the first schema command for this exact SHA; app-only releases skip migrate.
+bootstrap_sales_manifest
+MANIFEST_TMP=$(mktemp "$STATE_ROOT/.sales-migrations.candidate.XXXXXX")
+wd_sales_migration_manifest "$release" >"$MANIFEST_TMP"
+wd_manifest_is_append_only "$SALES_DB_MANIFEST" "$MANIFEST_TMP" \
+  || die "candidate edits or deletes already-applied sales migration history"
+if [[ $(wd_manifest_digest "$SALES_DB_MANIFEST") != $(wd_manifest_digest "$MANIFEST_TMP") ]]; then
+  [[ -x $BACKUP_RUNNER && ! -L $BACKUP_RUNNER ]] || die "validated backup runner is unavailable"
+  log "new append-only sales migration history detected; creating validated backup"
+  "$BACKUP_RUNNER" "$SHA"
+  log "applying sales-db migrations from $SHA"
+  # shellcheck disable=SC1090
+  ( set -a; . "$ENV_FILE"; set +a; node "$release/packages/sales-db/dist/migrate.js" ) \
+    || die "sales-db migration failed; leaving current symlink untouched ($previous_target)"
+  commit_sales_manifest "$MANIFEST_TMP"
+  log "committed tested sales migration manifest for $SHA"
+else
+  log "sales migration history is unchanged; skipping schema command"
+fi
+rm -f -- "$MANIFEST_TMP"
+MANIFEST_TMP=
 
 # 3) Atomically repoint current → new release, then restart units.
 tmp_link="$RELEASE_ROOT/.current.$$"
