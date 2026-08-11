@@ -258,7 +258,7 @@ export const api = {
 export function oauthUrl(provider: "google" | "github", inviteToken?: string, referralCode?: string): string {
   const url = new URL(`${API_BASE_URL}/auth/${provider}`);
   if (inviteToken) url.searchParams.set("invite", inviteToken);
-  // Партнёрский ?ref= пробрасываем в OAuth: реф партнёра станет B2B до welcome-бонуса.
+  // Carry partner ?ref= through OAuth so a newly created ordinary B2C account is attributed.
   if (referralCode) url.searchParams.set("ref", referralCode);
   return url.toString();
 }

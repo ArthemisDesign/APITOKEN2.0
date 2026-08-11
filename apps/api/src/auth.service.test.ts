@@ -241,7 +241,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
       } as Environment),
       new OAuthProviderRegistry([externalProvider]),
     );
-    const started = await oauthAuth.beginOAuth("github");
+    const started = await oauthAuth.beginOAuth("github", undefined, "Partner-Code");
     const state = new URL(started.authorizationUrl).searchParams.get("state")!;
     const session = await oauthAuth.completeOAuth({
       provider: "github", code: "temporary-code", state, stateCookie: state, userAgent: null, ipAddress: null,
@@ -256,6 +256,8 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
     const rows = await database.pool.query(`
       SELECT u.password_hash, u.email_verified, ai.provider,
              (SELECT bonus_amount_nano::text FROM signup_profiles sp WHERE sp.user_id = u.id) AS bonus_amount_nano,
+             (SELECT cp.customer_type FROM customer_profiles cp WHERE cp.user_id = u.id) AS customer_type,
+             (SELECT ra.code FROM referral_attributions ra WHERE ra.user_id = u.id) AS referral_code,
              (SELECT count(*)::int FROM email_outbox) AS emails
       FROM users u JOIN auth_identities ai ON ai.user_id = u.id
     `);
@@ -264,6 +266,8 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
       email_verified: true,
       provider: "github",
       bonus_amount_nano: "5000000000",
+      customer_type: "b2c",
+      referral_code: "partner-code",
       emails: 0,
     });
   });
@@ -311,7 +315,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
       expect(creditAccount).not.toHaveBeenCalled();
       await oauthAuth.requestPasswordReset("claimed@gmail.com", "192.0.2.20");
 
-      const started = await oauthAuth.beginOAuth(providerCode);
+      const started = await oauthAuth.beginOAuth(providerCode, undefined, "existing-user-ref");
       const state = new URL(started.authorizationUrl).searchParams.get("state")!;
       const session = await oauthAuth.completeOAuth({
         provider: providerCode,
@@ -351,6 +355,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
                (SELECT count(*)::int FROM auth_sessions s WHERE s.user_id = u.id AND s.revoked_at IS NULL) AS active_sessions,
                (SELECT count(*)::int FROM auth_sessions s WHERE s.user_id = u.id AND s.revoked_at IS NOT NULL) AS revoked_sessions,
                (SELECT count(*)::int FROM auth_tokens t WHERE t.user_id = u.id AND t.used_at IS NOT NULL) AS invalidated_tokens,
+               (SELECT count(*)::int FROM referral_attributions ra WHERE ra.user_id = u.id) AS referral_attributions,
                (SELECT count(*)::int FROM audit_log al WHERE al.target_id = u.id::text AND al.action = 'auth.oauth_claimed') AS claim_events
         FROM users u JOIN auth_identities ai ON ai.user_id = u.id
         WHERE u.id = $1
@@ -362,6 +367,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
         active_sessions: 1,
         revoked_sessions: 1,
         invalidated_tokens: 1,
+        referral_attributions: 0,
         claim_events: 1,
       });
     },

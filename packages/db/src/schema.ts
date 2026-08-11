@@ -356,7 +356,8 @@ export const oauthTransactions = pgTable("oauth_transactions", {
   nonce: text("nonce"),
   codeVerifier: text("code_verifier").notNull(),
   inviteTokenHash: text("invite_token_hash"),
-  // Партнёрский реф-код (?ref=), протянутый через OAuth: реф партнёра станет B2B до бонуса.
+  // Partner ?ref= carried across OAuth so a newly created ordinary B2C account can be attributed
+  // before its welcome-bonus claim. It is ignored for an existing account.
   referralCode: text("referral_code"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   consumedAt: timestamp("consumed_at", { withTimezone: true }),

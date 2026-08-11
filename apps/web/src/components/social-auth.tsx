@@ -10,8 +10,8 @@ import { trackProductEvent } from "@/lib/product-analytics";
 export function SocialAuth({ inviteToken }: { inviteToken?: string }) {
   const { t } = useI18n();
   const [providers, setProviders] = useState<ProviderStatus | null>(null);
-  // Партнёрский реф-код из localStorage — прокидываем в OAuth-ссылку, чтобы реф партнёра стал
-  // B2B до welcome-бонуса. Читаем на клиенте после монтирования.
+  // Carry the stored partner code into OAuth so a newly created ordinary B2C account is
+  // attributed. Read browser storage only after mounting.
   const [ref, setRef] = useState<string | undefined>(undefined);
   useEffect(() => { api.providers().then(setProviders).catch(() => setProviders(null)); }, []);
   // Hydrate browser-only referral attribution after mount. Сначала фиксируем ?ref= из ТЕКУЩЕГО URL

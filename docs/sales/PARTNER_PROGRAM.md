@@ -64,7 +64,9 @@ Every partner has a **ref code** and a link to the main site:
 browser for **30 days**; the latest distinct referral click wins, while revisiting the same code does
 not extend its expiry. Navigation, including language changes, preserves the query until the code is
 captured. Registration on apitoken.sale then binds that user to the partner **forever**. Attribution
-happens only for registration via the link; it does not affect the user's own price/discount.
+happens only for registration via the link; it does not affect the user's own price/discount. Both
+password registration and a new-account Google/GitHub OAuth callback carry the saved code. An OAuth
+login to an existing account cannot attribute it or consume a legacy one-time referral marker.
 
 ## 4. Commission: on what and how much
 
@@ -190,4 +192,3 @@ admin panel is in English.
 
 - Separate email/Telegram notifications for payout confirmation. The partner already sees the
   exact amount, receipt status, transaction hash and BscScan link in the dashboard.
-- Ref attribution through OAuth registration (currently only password-based on the main site).

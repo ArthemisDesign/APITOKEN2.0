@@ -247,8 +247,8 @@ export class AuthService {
       nonce,
       codeVerifier,
       inviteTokenHash: inviteToken ? tokenHash(inviteToken) : null,
-      // Реф-код (?ref=) переживает редирект в провайдера, чтобы на complete закрепить атрибуцию
-      // и (если это код партнёра) сделать аккаунт B2B ДО выдачи welcome-бонуса.
+      // Keep ?ref= across the provider redirect so completeOAuth can attribute a new ordinary
+      // B2C account before its welcome-bonus claim. Existing OAuth accounts are never attributed.
       referralCode: normalizeReferralCode(referralCode),
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     });

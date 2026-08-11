@@ -623,13 +623,11 @@ export async function setBusinessPricing(database: Database, input: {
 
 /**
  * Converts an existing B2C customer to a supplied negotiated B2B multiplier atomically. B2C
- * progress remains historical data, while the live tier/window/floor controls are cleared so no
- * later B2C reconciliation can change the negotiated rate. The conversion also provisions the
- * managed b2b_client policy (single Anthropic discount rule mirroring the multiplier), its
- * account binding, and a staged engine delivery job — the same end state invitation redemption
- * reaches; without it the admin policy editor has nothing to manage. Re-running the conversion
- * on an already-B2B customer repairs a missing policy (customers converted before this
- * provisioning existed) and is otherwise an unchanged no-op.
+ * progress remains historical data, while the live tier/window/legacy referral marker controls
+ * are cleared so no later B2C reconciliation can change the negotiated rate. In the same
+ * transaction, the negotiated scalar becomes Commerce desired state and a fenced delivery job is
+ * queued for the engine. Re-running on an already-B2B customer is an unchanged no-op; later
+ * default/provider changes go through setBusinessPricingBundle.
  */
 export async function convertCustomerToBusiness(database: Database, input: {
   userId: string;
