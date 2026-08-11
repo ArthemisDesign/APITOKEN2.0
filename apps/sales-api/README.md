@@ -22,10 +22,11 @@ never logged.
 
 ## Background loops (in-process)
 
-- **Sync** (`SYNC_INTERVAL_MS`): pulls attributions, usage events and topups from the commerce
-  feed with per-feed cursors; usage events of referred users produce the multi-level commission
-  chain in one transaction (idempotent). A 404 feed (commerce side not deployed yet) is logged once
-  at debug and retried.
+- **Sync** (`SYNC_INTERVAL_MS`): pulls attributions, usage events and commit-ordered `topups-v2`
+  from the commerce feed with per-feed cursors; usage events of referred users produce the
+  multi-level commission chain in one transaction (idempotent), while deposits are reporting-only
+  and idempotent by payment id. The legacy topup cursor is retained but no longer advanced. A 404
+  feed (commerce side not deployed yet) is logged once at debug and retried.
 - **Email delivery** (`EMAIL_POLL_INTERVAL_MS`): claims outbox rows with FOR UPDATE SKIP LOCKED,
   decrypts the token, renders "APIToken Partners" emails, sends via SMTP or logs metadata in
   `log` mode.

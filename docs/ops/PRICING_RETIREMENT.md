@@ -276,7 +276,7 @@ All gates are conjunctive. A failure postpones the drop; it is never waived beca
    `last_ledger_id` must equal `topups_scanned_through_ledger_id`, and it must cover the engine head
    at the 120-second stable source boundary. The gate retries three snapshots to avoid rejecting the
    instant in which a healthy worker invalidates its completion marker before network I/O. Sales
-   `attributions`, `usage_events` and `topups` cursors must cover their own 120-second stable source
+   `attributions`, `usage_events` and `topups_v2` cursors must cover their own 120-second stable source
    boundary, two complete default sync intervals; sync parse errors must be zero. The lag is fixed,
    not widened to make a failing deployment pass, and no cursor is ever advanced by hand.
 5. **Catalog dependency graph.** Re-run the foreign-key, view, materialized-view, trigger and

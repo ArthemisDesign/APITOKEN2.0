@@ -509,13 +509,13 @@ SELECT 'usage_events', COALESCE(max(feed_seq), 0)
 FROM pricing_usage_events
 WHERE created_at < now() - make_interval(secs => $SALES_WATERMARK_LAG_SECONDS)
 UNION ALL
-SELECT 'topups', COALESCE(max((EXTRACT(EPOCH FROM paid_at) * 1000000)::bigint), 0)
+SELECT 'topups_v2', COALESCE(max(feed_seq), 0)
 FROM payments
-WHERE status = 'paid' AND paid_at < now() - make_interval(secs => $SALES_WATERMARK_LAG_SECONDS)
+WHERE created_at < now() - make_interval(secs => $SALES_WATERMARK_LAG_SECONDS)
 ORDER BY 1;
 SQL
   psql_ro sales >"$TEMP/sales-cursors" <<'SQL'
-WITH feeds(feed) AS (VALUES ('attributions'), ('usage_events'), ('topups'))
+WITH feeds(feed) AS (VALUES ('attributions'), ('usage_events'), ('topups_v2'))
 SELECT feeds.feed, COALESCE(cursor.last_id, -1)
 FROM feeds LEFT JOIN sync_cursors cursor USING (feed)
 ORDER BY feeds.feed;

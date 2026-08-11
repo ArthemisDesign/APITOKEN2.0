@@ -40,12 +40,12 @@ const attributionSchema = z.object({
   createdAt: z.coerce.date(),
 });
 
-const topupSchema = z.object({
-  id: feedIdSchema,
-  paymentId: z.string().min(1),
+export const topupV2Schema = z.object({
+  id: canonicalPostgresBigintStringSchema.refine((value) => value > 0n, "topup id must be positive"),
+  paymentId: z.string().uuid(),
   userId: z.string().uuid(),
-  amountNano: nanoStringSchema,
-  paidAt: z.coerce.date(),
+  amountNano: nanoStringSchema.refine((value) => value > 0n, "topup amount must be positive"),
+  paidAt: z.string().datetime({ offset: true }).transform((value) => new Date(value)),
 });
 
 const nullableProviderIdSchema = z.string().min(1).nullable().optional()
@@ -264,11 +264,15 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
    * фиксируем факт пополнения реальными деньгами.
    */
   private async syncTopups(): Promise<void> {
-    const after = await getSyncCursor(this.database, "topups");
-    const page = await this.fetchFeed("topups", `topups?after_id=${after}&limit=500`, topupSchema);
+    const after = await getSyncCursor(this.database, "topups_v2");
+    const page = await this.fetchFeed(
+      "topups_v2",
+      `topups-v2?after_id=${after}&limit=500`,
+      topupV2Schema,
+      after,
+    );
     if (!page) return;
     for (const row of page.items) {
-      if (row.amountNano <= 0n) continue;
       await recordReferredDeposit(this.database, {
         commercePaymentId: row.paymentId,
         commerceUserId: row.userId,
@@ -276,7 +280,9 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
         paidAt: row.paidAt,
       });
     }
-    if (page.nextCursor > after) await advanceSyncCursor(this.database, "topups", page.nextCursor);
+    if (page.nextCursor > after) {
+      await advanceSyncCursor(this.database, "topups_v2", page.nextCursor);
+    }
   }
 
   /**
@@ -311,6 +317,7 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
     feed: SyncFeed,
     pathAndQuery: string,
     schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+    canonicalAfter?: bigint,
   ): Promise<FeedPage<T> | null> {
     const base = this.config.get("COMMERCE_BASE_URL", { infer: true });
     const url = new URL(`/v1/internal/sales/${pathAndQuery}`, base);
@@ -328,7 +335,10 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
     }
     if (!response.ok) throw new Error(`commerce feed ${feed} responded ${response.status}`);
     this.missingFeedLogged.delete(feed);
-    return parseFeedPage(await response.json(), schema, feed);
+    const body = await response.json();
+    return canonicalAfter !== undefined
+      ? parseCanonicalFeedPage(body, schema, feed, canonicalAfter)
+      : parseFeedPage(body, schema, feed);
   }
 
   private async sleep(milliseconds: number): Promise<void> {
@@ -412,6 +422,35 @@ export function parseFeedPage<T extends { id: bigint }>(
   const rawNextCursor = isObject ? (body as { nextCursor?: unknown }).nextCursor : undefined;
   const nextCursor = rawNextCursor === undefined ? itemCursor : feedIdSchema.parse(rawNextCursor);
   if (nextCursor < itemCursor) {
+    throw new Error(`commerce feed ${feed} returned a cursor behind its items`);
+  }
+  return { items, nextCursor };
+}
+
+/** Producer-first feeds have no pre-page array form; require their explicit source watermark. */
+export function parseCanonicalFeedPage<T extends { id: bigint }>(
+  body: unknown,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  feed: SyncFeed,
+  afterExclusive?: bigint,
+): FeedPage<T> {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error(`commerce feed ${feed} returned an unexpected body shape`);
+  }
+  const candidate = body as { items?: unknown; nextCursor?: unknown };
+  if (!Array.isArray(candidate.items) || candidate.nextCursor === undefined) {
+    throw new Error(`commerce feed ${feed} returned an unexpected body shape`);
+  }
+  const items = candidate.items.map((item) => schema.parse(item));
+  if (items.some((item, index) => (
+    (afterExclusive !== undefined && item.id <= afterExclusive)
+    || (index > 0 && item.id <= items[index - 1]!.id)
+  ))) {
+    throw new Error(`commerce feed ${feed} returned non-monotonic items`);
+  }
+  const itemCursor = maxId(items);
+  const nextCursor = canonicalPostgresBigintStringSchema.parse(candidate.nextCursor);
+  if (nextCursor < itemCursor || (afterExclusive !== undefined && nextCursor < afterExclusive)) {
     throw new Error(`commerce feed ${feed} returned a cursor behind its items`);
   }
   return { items, nextCursor };

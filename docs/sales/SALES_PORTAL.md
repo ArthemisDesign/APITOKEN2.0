@@ -115,10 +115,10 @@ of reaching SQL as an out-of-range value.
   The producer limits the whole source stream before filtering, so unreferred/refunded rows advance
   the watermark; referred rows still require `paid_at >= attributed created_at`. Equal `paid_at`
   values are independently resumable. Response remains
-  `{items:[{id,paymentId,userId,amountNano,paidAt}], nextCursor}`. The Commerce producer ships first;
-  Sales keeps consuming legacy `topups` until the separate consumer checkpoint is GREEN. Sales
-  migration `0016_topups_v2_cursor.sql` first reserves the independent `topups_v2` key in
-  `sync_cursors`; it neither rewrites the legacy timestamp cursor nor activates the new consumer.
+  `{items:[{id,paymentId,userId,amountNano,paidAt}], nextCursor}`. Sales consumes this route under
+  the independent `topups_v2` cursor from sequence zero; migration `0016_topups_v2_cursor.sql`
+  reserved that key before the consumer shipped. The legacy timestamp cursor and route remain
+  unchanged as rollback evidence, but are not the live health authority.
 - `POST /v1/internal/sales/referral-discount` — records the salesperson's discount "floor" for a
   referral as partner attribution. Body `{userId, floorBps (0..9500), override?, actorId?}` →
   `{applied, multiplierBp}`. The floor does not move any price: B2C pricing is the stored account
@@ -145,8 +145,8 @@ Consumers on the sales side (`apps/sales-api`, reach commerce via `COMMERCE_BASE
   default 60 s): attributions → assignment of the user to a partner + atomic claim of the one-time
   discount link (the winner receives the floor via `POST referral-discount` — either for the first
   time or as an idempotent backfill if the synchronous application at registration failed);
-  topups → `referred_topups` (history/analytics only, create no commissions; the deployed consumer
-  stays on legacy `topups` until the separate producer-first `topups-v2` checkpoint); usage events →
+  `topups-v2` → `referred_topups` (history/analytics only, create no commissions; replay starts at
+  sequence zero and is idempotent by `commerce_payment_id`); usage events →
   commissions (idempotent by `commerce_event_id`). The live scalar row and historical policy-v1
   row use `recordReferredSpend`; a historical release-v2 row
   (`pricingMode=null` + full lineage) goes to the schema-v2 writer (`recordReferredSpendV2`,

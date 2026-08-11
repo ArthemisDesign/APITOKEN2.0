@@ -83,7 +83,9 @@ cat >"$temporary" <<'METRICS'
 # TYPE apitoken_pricing_job_stale_confirmed gauge
 # HELP apitoken_sales_feed_head Highest usage-event sequence commerce has published to the partner feed.
 # TYPE apitoken_sales_feed_head gauge
-# HELP apitoken_sales_cursor Partner-portal sync cursor per feed; a gap to the feed head that stops closing means commission is not accruing.
+# HELP apitoken_sales_topups_feed_head Highest payment sequence commerce has published to the partner feed.
+# TYPE apitoken_sales_topups_feed_head gauge
+# HELP apitoken_sales_cursor Partner-portal sync cursor per feed; a gap to its feed head that stops closing means partner data is stale.
 # TYPE apitoken_sales_cursor gauge
 # HELP apitoken_sales_cursor_age_seconds Time since the partner-portal sync cursor last advanced.
 # TYPE apitoken_sales_cursor_age_seconds gauge
@@ -144,6 +146,7 @@ WHERE j.status = 'confirmed'
 -- partner sync falling behind or refusing pages, which is exactly how five hours of commission
 -- went unaccrued on 2026-08-10 without a single alert.
 SELECT 'apitoken_sales_feed_head ' || COALESCE(max(feed_seq), 0) FROM pricing_usage_events;
+SELECT 'apitoken_sales_topups_feed_head ' || COALESCE(max(feed_seq), 0) FROM payments;
 SELECT 'apitoken_usage_provider_unresolved{window="all"} ' || count(*)
 FROM pricing_usage_events
 WHERE provider_id IS NULL OR provider_id IN ('unattributed', 'unavailable');
@@ -266,10 +269,10 @@ WHERE p.status = 'requested'
 -- Where the partner sync actually stands. Compared against apitoken_sales_feed_head from commerce,
 -- a gap that stops closing is the whole signal: on 2026-08-10 this cursor stood still for five
 -- hours while every service was up and healthy, and no commission accrued.
-WITH feeds(feed) AS (VALUES ('attributions'), ('usage_events'), ('topups'))
+WITH feeds(feed) AS (VALUES ('attributions'), ('usage_events'), ('topups_v2'))
 SELECT 'apitoken_sales_cursor{feed="' || feeds.feed || '"} ' || COALESCE(cursor.last_id, 0)
 FROM feeds LEFT JOIN sync_cursors cursor USING (feed);
-WITH feeds(feed) AS (VALUES ('attributions'), ('usage_events'), ('topups'))
+WITH feeds(feed) AS (VALUES ('attributions'), ('usage_events'), ('topups_v2'))
 SELECT 'apitoken_sales_cursor_age_seconds{feed="' || feeds.feed || '"} '
        || CASE WHEN cursor.updated_at IS NULL THEN 86400
                ELSE GREATEST(0, EXTRACT(EPOCH FROM now() - cursor.updated_at))::bigint END

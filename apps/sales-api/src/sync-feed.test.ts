@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
-import { parseFeedPage, SyncService, usageEventSchema } from "./sync.service.js";
+import {
+  parseCanonicalFeedPage,
+  parseFeedPage,
+  SyncService,
+  topupV2Schema,
+  usageEventSchema,
+} from "./sync.service.js";
 import {
   advanceSyncCursor,
+  getSyncCursor,
+  recordReferredDeposit,
   recordReferredSpend,
   recordReferredSpendV2,
 } from "@claude-api/sales-db";
@@ -14,6 +22,7 @@ vi.mock("@claude-api/sales-db", async (importOriginal) => {
     ...actual,
     getSyncCursor: vi.fn(async () => 0n),
     advanceSyncCursor: vi.fn(async () => undefined),
+    recordReferredDeposit: vi.fn(async () => "recorded"),
     recordReferredSpend: vi.fn(async () => "recorded"),
     recordReferredSpendV2: vi.fn(async () => "recorded"),
   };
@@ -68,6 +77,119 @@ describe("sales feed page cursor", () => {
       rowSchema,
       "usage_events",
     )).toThrow();
+  });
+});
+
+describe("commit-ordered topups-v2 feed", () => {
+  const golden = JSON.parse(readFileSync(
+    new URL("../../../tests/contracts/sales-topups-v2-feed.golden.json", import.meta.url),
+    "utf8",
+  )) as { row: unknown; nextCursor: string };
+
+  function service(): SyncService {
+    const config = {
+      get: (key: string) => ({
+        COMMERCE_BASE_URL: "http://127.0.0.1:8791",
+        SALES_CONTROL_KEY: "test-key",
+        SYNC_INTERVAL_MS: 60_000,
+      })[key],
+    };
+    return new SyncService({ pool: {} } as never, config as never);
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("parses the same golden row as the deployed Commerce producer", () => {
+    expect(topupV2Schema.parse(golden.row)).toMatchObject({
+      id: 12n,
+      amountNano: 9_007_199_254_740_993n,
+    });
+    expect(parseCanonicalFeedPage({ items: [golden.row], nextCursor: golden.nextCursor }, topupV2Schema, "topups_v2"))
+      .toMatchObject({ nextCursor: 13n });
+  });
+
+  it("rejects legacy pages and non-canonical identifiers, money, or timestamps", () => {
+    expect(() => parseCanonicalFeedPage([golden.row], topupV2Schema, "topups_v2"))
+      .toThrow("unexpected body shape");
+    expect(() => parseCanonicalFeedPage({ items: [golden.row] }, topupV2Schema, "topups_v2"))
+      .toThrow("unexpected body shape");
+    expect(() => topupV2Schema.parse({ ...golden.row as object, id: 12 })).toThrow();
+    expect(() => topupV2Schema.parse({ ...golden.row as object, id: "0" }))
+      .toThrow("topup id must be positive");
+    expect(() => topupV2Schema.parse({ ...golden.row as object, id: "012" })).toThrow();
+    expect(() => topupV2Schema.parse({ ...golden.row as object, amountNano: "0" }))
+      .toThrow("topup amount must be positive");
+    expect(() => topupV2Schema.parse({ ...golden.row as object, paymentId: "not-a-uuid" }))
+      .toThrow();
+    expect(() => topupV2Schema.parse({ ...golden.row as object, paidAt: 1_786_464_896_789 }))
+      .toThrow();
+  });
+
+  it("rejects replayed, duplicated, out-of-order, or regressing sequence pages", () => {
+    const row = golden.row as Record<string, unknown>;
+    expect(() => parseCanonicalFeedPage({
+      items: [row],
+      nextCursor: golden.nextCursor,
+    }, topupV2Schema, "topups_v2", 12n)).toThrow("non-monotonic items");
+    expect(() => parseCanonicalFeedPage({
+      items: [{ ...row, id: "12" }, { ...row, id: "12" }],
+      nextCursor: golden.nextCursor,
+    }, topupV2Schema, "topups_v2", 0n)).toThrow("non-monotonic items");
+    expect(() => parseCanonicalFeedPage({
+      items: [{ ...row, id: "12" }, { ...row, id: "11" }],
+      nextCursor: golden.nextCursor,
+    }, topupV2Schema, "topups_v2", 0n)).toThrow("non-monotonic items");
+    expect(() => parseCanonicalFeedPage({
+      items: [],
+      nextCursor: "11",
+    }, topupV2Schema, "topups_v2", 12n)).toThrow("cursor behind its items");
+  });
+
+  it("uses only the new cursor and endpoint, then advances across the full source page", async () => {
+    vi.mocked(getSyncCursor).mockResolvedValueOnce(0n);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      items: [golden.row],
+      nextCursor: golden.nextCursor,
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await (service() as never as { syncTopups(): Promise<void> }).syncTopups();
+
+    expect(getSyncCursor).toHaveBeenCalledWith(expect.anything(), "topups_v2");
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.objectContaining({ pathname: "/v1/internal/sales/topups-v2", search: "?after_id=0&limit=500" }),
+      expect.anything(),
+    );
+    expect(recordReferredDeposit).toHaveBeenCalledTimes(1);
+    expect(recordReferredDeposit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      amountNano: 9_007_199_254_740_993n,
+    }));
+    expect(advanceSyncCursor).toHaveBeenCalledWith(expect.anything(), "topups_v2", 13n);
+    expect(advanceSyncCursor).not.toHaveBeenCalledWith(expect.anything(), "topups", expect.anything());
+  });
+
+  it("advances an empty filtered page and keeps the cursor behind a failed write", async () => {
+    vi.mocked(getSyncCursor).mockResolvedValue(0n);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      items: [],
+      nextCursor: "13",
+    }), { status: 200 })));
+    await (service() as never as { syncTopups(): Promise<void> }).syncTopups();
+    expect(advanceSyncCursor).toHaveBeenCalledWith(expect.anything(), "topups_v2", 13n);
+
+    vi.clearAllMocks();
+    vi.mocked(getSyncCursor).mockResolvedValue(0n);
+    vi.mocked(recordReferredDeposit).mockRejectedValueOnce(new Error("db down"));
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      items: [golden.row],
+      nextCursor: golden.nextCursor,
+    }), { status: 200 })));
+    await expect((service() as never as { syncTopups(): Promise<void> }).syncTopups())
+      .rejects.toThrow("db down");
+    expect(advanceSyncCursor).not.toHaveBeenCalled();
   });
 });
 

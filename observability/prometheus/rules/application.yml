@@ -671,6 +671,18 @@ groups:
           description: 'The usage_events cursor last moved {{ $value | humanizeDuration }} ago while commerce keeps publishing. Referred spend accrues no commission for as long as this lasts, and nothing else reports it: on 2026-08-10 the feed and its consumer disagreed about one field and the sync stood still for five hours behind healthy services.'
           runbook: 'docs/ops/MONITORING.md#salessynccursorstalled'
 
+      - alert: SalesTopupSyncCursorStalled
+        expr: (apitoken_sales_topups_feed_head - on() apitoken_sales_cursor{feed="topups_v2"}) > 0
+          and on() apitoken_sales_cursor_age_seconds{feed="topups_v2"} > 1800
+        for: 10m
+        labels:
+          severity: critical
+          component: sales-api
+        annotations:
+          summary: 'The partner top-up sync has stopped advancing'
+          description: 'The commit-ordered topups_v2 cursor has remained behind Commerce for more than thirty minutes. Partner deposit history and conversion analytics are incomplete until the durable source rows replay.'
+          runbook: 'docs/ops/MONITORING.md#salestopupsynccursorstalled'
+
       - alert: PricingMirrorDrift
         expr: apitoken_pricing_mirror_drift > 0
         for: 10m

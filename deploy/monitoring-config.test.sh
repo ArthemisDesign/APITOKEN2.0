@@ -493,6 +493,7 @@ for drift_metric in \
   apitoken_pricing_mirror_drift \
   apitoken_pricing_job_stale_confirmed \
   apitoken_sales_feed_head \
+  apitoken_sales_topups_feed_head \
   apitoken_sales_cursor_age_seconds \
   apitoken_engine_accounts_below_floor \
   apitoken_pricing_authority_drift \
@@ -517,7 +518,7 @@ for drift_operand in \
   grep -Fq "$drift_operand" "$ROOT/deploy/collect-monitoring-metrics.sh" \
     || { printf 'drift collector is missing %s\n' "$drift_operand" >&2; exit 1; }
 done
-for drift_alert in SalesSyncCursorStalled PricingMirrorDrift PricingJobStaleConfirmed \
+for drift_alert in SalesSyncCursorStalled SalesTopupSyncCursorStalled PricingMirrorDrift PricingJobStaleConfirmed \
   EngineAccountsBelowFloor BusinessReconciliationUnavailable PricingAuthorityDrift \
   UsageProviderAttributionMissing OpenKeysPricingDrift PositiveBalancePaymentRequired; do
   grep -Fq "alert: $drift_alert" "$ROOT/observability/prometheus/rules/application.yml" \
@@ -538,6 +539,9 @@ grep -Fq 'engine_pricing_jobs' "$ROOT/docs/ops/MONITORING.md" \
 grep -Fq 'severity: critical' \
   <(grep -F 'alert: SalesSyncCursorStalled' -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
   || { printf 'sales-sync stall alert is not critical\n' >&2; exit 1; }
+grep -Fq 'severity: critical' \
+  <(grep -F 'alert: SalesTopupSyncCursorStalled' -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
+  || { printf 'sales-topup-sync stall alert is not critical\n' >&2; exit 1; }
 grep -Fq 'severity: critical' \
   <(grep -F 'alert: PricingMirrorDrift' -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
   || { printf 'pricing mirror drift alert is not critical\n' >&2; exit 1; }
