@@ -215,10 +215,13 @@ B2B spend IS ingested by the pricing usage sync: `listPricingSyncTargets` select
 `b2c` and `b2b`, so every charge lands in the immutable `pricing_usage_events` (with provider
 attribution and provider backfill) and the admin control room reports real B2B numbers. The scalar
 writer applies the same durable free-first rule to B2C and B2B: non-provider top-ups increase
-`customer_profiles.free_balance_nano`, every charge consumes that balance first, and only the
-remainder becomes `real_funded_nano` for the scalar sales feed. An `admin-credit:*` therefore never
-creates partner commission merely because the customer is B2B. Progressive B2C tier counters remain
-legacy and do not participate in this split.
+`customer_profiles.free_balance_nano`. A charge keeps its full billed actual in `amount_nano`, while
+`uncollected_nano` records any part the account-wide engine floor could not debit. Free-first spends
+only the collected remainder (`amount_nano - uncollected_nano`), and only its paid part becomes
+`real_funded_nano` for the scalar sales feed. Pool-funded shortfall therefore consumes no customer
+funding and creates no partner commission. An `admin-credit:*` likewise never creates partner
+commission merely because the customer is B2B. Progressive B2C tier counters remain legacy and do
+not participate in this split.
 
 ## OpenKeys
 

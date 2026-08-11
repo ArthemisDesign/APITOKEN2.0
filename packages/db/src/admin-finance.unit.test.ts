@@ -78,6 +78,7 @@ describe("listAdminPayingUsers", () => {
     // event; the retired per-request attribution table is not read at all.
     expect(queries[0]!.text).not.toContain("pricing_usage_attributions");
     expect(queries[0]!.text).toContain("e.real_funded_nano");
+    expect(queries[0]!.text).toContain("e.uncollected_nano AS other_funded_nano");
     expect(queries[0]!.text).toContain("AS exact_modern_funding");
     expect(queries[0]!.text).toContain("usage.event_count = usage.exact_modern_event_count");
     expect(queries[0]!.text).not.toContain("free_balance_nano");

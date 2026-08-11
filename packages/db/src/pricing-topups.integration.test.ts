@@ -8,7 +8,9 @@ import {
   applyPricingTopupBackfillPage,
   classifyTopupRef,
   getPricingTopupBackfillCursor,
+  PricingLedgerEvidenceError,
 } from "./pricing.js";
+import { listUsageEventsAfter } from "./sales-feed.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 
@@ -51,11 +53,17 @@ describe.runIf(Boolean(connectionString))("engine top-ups recorded for reporting
     );
   });
 
-  function entry(id: number, kind: "topup" | "charge", amountNano: bigint, ref: string | null): EngineLedgerEntry {
+  function entry(
+    id: number,
+    kind: "topup" | "charge",
+    amountNano: bigint,
+    ref: string | null,
+    uncollectedNano = 0n,
+  ): EngineLedgerEntry {
     return {
       id: String(id), kind, amount_nano: amountNano.toString(), amount: amountNano.toString(),
       key_masked: null, ref, balance_after_nano: null, ts: String(1_700_000_000 + id), model: null,
-      uncollected_nano: "0",
+      uncollected_nano: uncollectedNano.toString(),
     };
   }
   async function topups(): Promise<Array<{ source: string; amount_nano: string }>> {
@@ -90,6 +98,80 @@ describe.runIf(Boolean(connectionString))("engine top-ups recorded for reporting
       { source: "bonus", amount_nano: "500" },
       { source: "payment", amount_nano: "250" },
     ]);
+  });
+
+  it("stores full billed spend but funds and commissions only the collected remainder", async () => {
+    await db.pool.query(
+      "UPDATE customer_profiles SET free_balance_nano = 60 WHERE user_id = $1",
+      [userId],
+    );
+    await db.pool.query(
+      "INSERT INTO referral_attributions (user_id, code, created_at) VALUES ($1, 'shortfall-partner', now() - interval '1 minute')",
+      [userId],
+    );
+    const charge = entry(1, "charge", 100n, null, 30n);
+    await applyPricingLedgerPage(db, { userId, engineAccountId }, [charge]);
+    await applyPricingLedgerPage(db, { userId, engineAccountId }, [charge]);
+
+    const event = await db.pool.query<{
+      amount_nano: string;
+      uncollected_nano: string;
+      real_funded_nano: string;
+    }>(`
+      UPDATE pricing_usage_events
+      SET created_at = now() - interval '1 minute'
+      WHERE user_id = $1
+      RETURNING amount_nano::text, uncollected_nano::text, real_funded_nano::text
+    `, [userId]);
+    expect(event.rows).toEqual([{
+      amount_nano: "100",
+      uncollected_nano: "30",
+      real_funded_nano: "10",
+    }]);
+    const profile = await db.pool.query<{ free_balance_nano: string }>(
+      "SELECT free_balance_nano::text FROM customer_profiles WHERE user_id = $1",
+      [userId],
+    );
+    expect(profile.rows[0]?.free_balance_nano).toBe("0");
+
+    const feed = await listUsageEventsAfter(db, 0n, 10);
+    expect(feed.items).toEqual([
+      expect.objectContaining({ userId, amountNano: 10n }),
+    ]);
+  });
+
+  it("rejects contradictory shortfall evidence without moving funding or the cursor", async () => {
+    await db.pool.query(
+      "UPDATE customer_profiles SET free_balance_nano = 60 WHERE user_id = $1",
+      [userId],
+    );
+    await expect(applyPricingLedgerPage(db, { userId, engineAccountId }, [
+      entry(1, "charge", 100n, null, 101n),
+    ])).rejects.toBeInstanceOf(PricingLedgerEvidenceError);
+    await expect(applyPricingLedgerPage(db, { userId, engineAccountId }, [
+      entry(1, "topup", 100n, "admin-credit:invalid", 1n),
+    ])).rejects.toBeInstanceOf(PricingLedgerEvidenceError);
+
+    const state = await db.pool.query<{
+      free_balance_nano: string;
+      last_ledger_id: string;
+      event_count: string;
+      topup_count: string;
+    }>(`
+      SELECT p.free_balance_nano::text,
+             c.last_ledger_id::text,
+             (SELECT count(*)::text FROM pricing_usage_events WHERE user_id = $1) AS event_count,
+             (SELECT count(*)::text FROM pricing_usage_topups WHERE user_id = $1) AS topup_count
+      FROM customer_profiles p
+      JOIN pricing_usage_cursors c ON c.user_id = p.user_id
+      WHERE p.user_id = $1
+    `, [userId]);
+    expect(state.rows[0]).toEqual({
+      free_balance_nano: "60",
+      last_ledger_id: "0",
+      event_count: "0",
+      topup_count: "0",
+    });
   });
 
   it("догоняющий скан заполняет историю ниже курсора и останавливается", async () => {

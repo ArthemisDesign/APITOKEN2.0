@@ -24,7 +24,8 @@ export interface UsageEventFeedRow {
   userId: string;
   /**
    * The commission basis: the part of the charge the customer paid with their own money, under
-   * free-first accounting. Free credit never becomes commission. The retired per-request policy
+   * free-first accounting over the amount the engine actually collected. Free credit and the
+   * pool-funded settlement shortfall never become commission. The retired per-request policy
    * attribution carried a second, parallel basis; there is only this one now, and the fields it
    * populated stay in the payload as nulls so the sales contract does not shrink.
    */

@@ -265,8 +265,11 @@ unattributed funding evidence; a top-up without spend remains excluded. As a coh
 
 Rows add `funding_kind` (`payments|payments_and_manual|manual|bonus_only|spend_only`) and exact
 selected-window `paid_funded_spent_nano`, `bonus_funded_spent_nano`, `other_funded_spent_nano`, and
-`unattributed_spent_nano`. Zero-money spenders retain `bonus_only` only under the strict proof above;
-all other zero-money positive spenders are `spend_only`. Summary adds `bonus_only_users`,
+`unattributed_spent_nano`. A usage row keeps the full billed actual in `amount_nano`; the exact
+engine-pool shortfall is `other_funded_spent_nano`, while paid and bonus funding split only the
+collected remainder. Shortfall can therefore never make a row `bonus_only`. Zero-money spenders
+retain `bonus_only` only under the strict proof above; all other zero-money positive spenders are
+`spend_only`. Summary adds `bonus_only_users`,
 `bonus_only_spent_nano`, and `cohort_users`. Backward-compatible `paying_users` continues to count
 only money-funded users for every cohort; existing lifetime paid/manual and provider summary fields
 keep their semantics.

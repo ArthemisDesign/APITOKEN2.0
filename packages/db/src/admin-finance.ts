@@ -397,9 +397,9 @@ export async function listAdminPayingUsers(
   // stored as `manual`; exclude them by immutable ref as well as classifying all new rows as bonus.
   // This read-time compatibility rule corrects finance without rewriting the ledger copy.
   // `usage` is selected-window charge authority.
-  // The paid/bonus split of spend comes from the one authority that records it: free-first
-  // accounting on the immutable usage event. real_funded_nano is the part the customer paid for;
-  // the remainder was covered by free credit. No balance/model/top-up proxy participates.
+  // The paid/bonus/other split comes from the immutable usage event. real_funded_nano is the part
+  // the customer paid for, bonus funding is the collected remainder, and uncollected_nano is the
+  // engine-pool shortfall. No balance/model/top-up proxy participates.
   const commonCtes = (fundingParameter: number) => `
     WITH money AS (
       SELECT user_id,
@@ -425,10 +425,14 @@ export async function listAdminPayingUsers(
       GROUP BY user_id
     ), window_events AS (
       SELECT e.user_id, e.engine_account_id, e.amount_nano, e.provider_id,
-        e.real_funded_nano >= 0 AND e.real_funded_nano <= e.amount_nano AS exact_modern_funding,
-        LEAST(GREATEST(e.real_funded_nano, 0), e.amount_nano) AS paid_funded_nano,
-        e.amount_nano - LEAST(GREATEST(e.real_funded_nano, 0), e.amount_nano) AS bonus_funded_nano,
-        0::numeric AS other_funded_nano
+        e.uncollected_nano >= 0 AND e.uncollected_nano <= e.amount_nano
+          AND e.real_funded_nano >= 0
+          AND e.real_funded_nano <= e.amount_nano - e.uncollected_nano AS exact_modern_funding,
+        LEAST(GREATEST(e.real_funded_nano, 0), e.amount_nano - e.uncollected_nano) AS paid_funded_nano,
+        e.amount_nano - e.uncollected_nano
+          - LEAST(GREATEST(e.real_funded_nano, 0), e.amount_nano - e.uncollected_nano)
+          AS bonus_funded_nano,
+        e.uncollected_nano AS other_funded_nano
       FROM pricing_usage_events e
       -- now() is one coherent transaction-start timestamp at microsecond precision: an event
       -- written microseconds before this query stays inside the window (a JavaScript Date

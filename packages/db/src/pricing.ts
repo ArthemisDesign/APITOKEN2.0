@@ -113,6 +113,31 @@ function ledgerProviderEvidence(entry: EngineLedgerEntry): string {
     : providerId;
 }
 
+function ledgerSettlementEvidence(entry: EngineLedgerEntry): {
+  amount: bigint;
+  uncollected: bigint;
+  collected: bigint;
+} {
+  let amount: bigint;
+  let uncollected: bigint;
+  try {
+    amount = BigInt(entry.amount_nano);
+    uncollected = BigInt(entry.uncollected_nano);
+  } catch {
+    throw new PricingLedgerEvidenceError("ledger settlement evidence must use exact integers");
+  }
+  const invalidCharge = entry.kind === "charge" && (amount < 0n || uncollected > amount);
+  const invalidNonCharge = entry.kind !== "charge" && uncollected !== 0n;
+  if (uncollected < 0n || invalidCharge || invalidNonCharge) {
+    throw new PricingLedgerEvidenceError("ledger settlement shortfall contradicts the billed amount");
+  }
+  return {
+    amount,
+    uncollected,
+    collected: entry.kind === "charge" ? amount - uncollected : amount,
+  };
+}
+
 function epochSecondsDate(value: number | string, label: string): Date {
   const seconds = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(seconds) || !Number.isSafeInteger(seconds) || seconds <= 0) {
@@ -1134,7 +1159,7 @@ export async function applyPricingLedgerPage(
       const ledgerId = BigInt(entry.id);
       if (ledgerId > lastLedgerId) lastLedgerId = ledgerId;
       if (ledgerId <= startCursor) continue; // уже обработано ранее — не двоим эффекты
-      const amount = BigInt(entry.amount_nano);
+      const { amount, uncollected, collected } = ledgerSettlementEvidence(entry);
       // Иммутабельная копия пополнения для отчётности: движковые топапы (подарочные admin credit
       // и ручные внешние зачисления) не создают строки в payments, поэтому без неё их источник
       // и влияние на funding-когорту были бы невидимы админке.
@@ -1155,18 +1180,19 @@ export async function applyPricingLedgerPage(
       // ignoring it can only underpay, never overpay.
       if (entry.kind !== "charge" || amount <= 0n) continue;
       const occurredAt = epochSecondsDate(entry.ts, "event timestamp");
-      // Free money is spent first, so real_funded is the part covered by the customer's own
-      // money. This is the whole funding model: one durable free balance per customer, no
-      // per-request funding evidence, nothing to disagree with the engine about.
-      const fromFree = amount < freeBalance ? amount : freeBalance;
-      const realFunded = amount - fromFree;
+      // The engine keeps the full billed actual in amount_nano, even when the account-wide floor
+      // cannot collect all of it. Only the collected remainder may consume customer funding:
+      // pool-funded shortfall is neither free credit nor paid money and never earns commission.
+      const fromFree = collected < freeBalance ? collected : freeBalance;
+      const realFunded = collected - fromFree;
       const eventId = randomUUID();
       const providerId = ledgerProviderEvidence(entry);
       const inserted = await client.query<{ id: string }>(`
         INSERT INTO pricing_usage_events (
           id, user_id, engine_account_id, ledger_entry_id, provider_id,
-          amount_nano, real_funded_nano, occurred_at, provider_recovery_version
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          amount_nano, uncollected_nano, real_funded_nano, occurred_at,
+          provider_recovery_version
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT (engine_account_id, ledger_entry_id) DO NOTHING
         RETURNING id
       `, [
@@ -1175,7 +1201,8 @@ export async function applyPricingLedgerPage(
         target.engineAccountId,
         ledgerId.toString(),
         providerId,
-        entry.amount_nano,
+        amount.toString(),
+        uncollected.toString(),
         realFunded.toString(),
         occurredAt,
         providerId === UNATTRIBUTED_PROVIDER_ID ? 0 : PROVIDER_RECOVERY_VERSION,

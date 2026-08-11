@@ -82,7 +82,7 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
       amount: 400n, paid: 100n, eventProvider: "anthropic",
     });
     await insertEvent(users.get("other")!, {
-      amount: 500n, paid: 100n, eventProvider: "anthropic",
+      amount: 500n, paid: 100n, uncollected: 100n, eventProvider: "anthropic",
     });
     await insertEvent(users.get("legacy")!, {
       amount: 600n, paid: 600n, eventProvider: "google",
@@ -136,14 +136,16 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
     eventProvider: string | null;
     /** The part of the charge covered by the customer's own money (free-first). */
     paid?: bigint;
+    /** The engine-pool shortfall that the account-wide floor did not collect. */
+    uncollected?: bigint;
     engineAccountId?: string;
   }): Promise<void> {
     ledgerId += 1;
     await database.pool.query(`
       INSERT INTO pricing_usage_events (
         id, user_id, engine_account_id, ledger_entry_id, provider_id,
-        amount_nano, real_funded_nano, occurred_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+        amount_nano, uncollected_nano, real_funded_nano, occurred_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
     `, [
       randomUUID(),
       userId,
@@ -151,6 +153,7 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
       ledgerId,
       input.eventProvider,
       input.amount.toString(),
+      (input.uncollected ?? 0n).toString(),
       (input.paid ?? 0n).toString(),
     ]);
   }
@@ -231,6 +234,18 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
     ] as const) {
       expect(ids.has(users.get(kind)!)).toBe(false);
     }
+  });
+
+  it("reports pool-funded shortfall as other funding instead of bonus funding", async () => {
+    const spenders = await listAdminPayingUsers(database, { days: 30, funding: "spenders" });
+    expect(spenders.rows.find((row) => row.userId === users.get("other"))).toMatchObject({
+      fundingKind: "spend_only",
+      spentNano: "500",
+      paidFundedSpentNano: "100",
+      bonusFundedSpentNano: "300",
+      otherFundedSpentNano: "100",
+      unattributedSpentNano: "0",
+    });
   });
 
   it("includes every positive spender, keeps strict bonus_only, and marks other zero-money spenders spend_only", async () => {
