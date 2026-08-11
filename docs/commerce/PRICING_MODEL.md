@@ -125,7 +125,8 @@ and the drift surfaces as a customer being told they have no money.
 3. **A discount write takes effect on the next request.** No generation, no activation, no
    snapshot to keep in step.
 4. **A funded account can spend.** If a request is refused for money, the account balance must
-   actually be insufficient for the hold.
+   actually be insufficient for the hold plus the one account-wide $1 admission buffer. PostgreSQL
+   and the SQLite audit/fallback implementation apply the same post-reserve floor.
 
 ## Spend accounting: free money is spent first
 

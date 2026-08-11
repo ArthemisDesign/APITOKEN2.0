@@ -16,7 +16,7 @@ use crate::{
     ProviderTurnCalibrationEvent, SettlementFailure, SettlementHealth, SpendAccountAgg,
     SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, UsageDailyAgg,
     UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
-    PROVIDER_OPENAI,
+    ACCOUNT_OVERDRAFT_NANO, PROVIDER_OPENAI,
 };
 use anyhow::{bail, Context, Result};
 use postgres::config::{Host, SslMode};
@@ -804,16 +804,16 @@ impl PgStore {
         // конкуренцией (каждый успешный резерв гарантирует post_balance ≥ −$1; за полом любой h>0 отбит).
         // Стоимость: аккаунт может получить максимум $1 в долг (per-account, не per-request) — принятый
         // размен на «ноль ложных 402». Синхронно с `metering::OVERDRAFT_NANO`.
-        // $1 per-account floor.
-        const OVERDRAFT_NANO: i64 = 1_000_000_000;
-        // Гейт `balance-hold >= -OVERDRAFT` пишем как `balance + OVERDRAFT >= hold`: вычитание двух
-        // bind-параметров Postgres не типизирует, а сложение с bigint-колонкой выводит тип параметра.
+        // Write the gate as `balance >= hold-overdraft` with explicit bigint casts. Besides keeping
+        // parameter inference stable, this avoids overflowing a very large stored balance merely
+        // to decide whether a small hold fits.
         let reservation_ts = now();
         Self::assert_owner_locked(&mut tx, owner, reservation_ts)?;
         let Some(row) = tx.query_opt(
             "UPDATE accounts SET balance_nano=balance_nano-$1, reserved_nano=reserved_nano+$1 \
-             WHERE id=$2 AND status='active' AND balance_nano + $3 >= $1 RETURNING balance_nano",
-            &[&hold, &account_id, &OVERDRAFT_NANO],
+             WHERE id=$2 AND status='active' \
+               AND balance_nano >= $1::bigint - $3::bigint RETURNING balance_nano",
+            &[&hold, &account_id, &ACCOUNT_OVERDRAFT_NANO],
         )?
         else {
             tx.rollback()?;

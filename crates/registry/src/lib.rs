@@ -1916,12 +1916,16 @@ pub enum HotOp<'a> {
     },
 }
 
+/// Shared post-reserve account floor for both registry backends. This deliberately mirrors
+/// `metering::OVERDRAFT_NANO` without introducing an upward dependency from registry to metering.
+pub const ACCOUNT_OVERDRAFT_NANO: i64 = 1_000_000_000;
+
 /// Применить пачку reserve/settle в ОДНОЙ транзакции (group-commit): амортизирует стоимость коммита
-/// под нагрузкой. Команды применяются ПОСЛЕДОВАТЕЛЬНО — атомарный reserve (`WHERE balance>=hold`)
-/// видит эффекты предыдущих в этой же транзакции ⇒ инвариант `charge≤hold≤balance` сохранён, как при
-/// по-одному. Возвращает результаты в порядке `ops` (индекс-в-индекс). Ошибка BEGIN/COMMIT → Err
-/// (вызывающий откатывается на обработку по-одному). Per-op ошибки глушатся в None (как в прежнем
-/// writer'е: `.ok().flatten()`).
+/// под нагрузкой. Команды применяются ПОСЛЕДОВАТЕЛЬНО — атомарный reserve видит эффекты предыдущих
+/// в этой же транзакции и каждый успешный post-balance остаётся не ниже общего account floor.
+/// Возвращает результаты в порядке `ops` (индекс-в-индекс). Ошибка BEGIN/COMMIT → Err (вызывающий
+/// откатывается на обработку по-одному). Per-op ошибки глушатся в None (как в прежнем writer'е:
+/// `.ok().flatten()`).
 pub fn apply_hot_batch(conn: &Connection, ops: &[HotOp]) -> Result<Vec<Option<i64>>> {
     let tx = conn.unchecked_transaction()?;
     let mut out = Vec::with_capacity(ops.len());
@@ -1950,14 +1954,14 @@ pub fn apply_hot_batch(conn: &Connection, ops: &[HotOp]) -> Result<Vec<Option<i6
     Ok(out)
 }
 
-/// АТОМАРНО зарезервировать `hold` по АККАУНТУ, если баланс покрывает и аккаунт активен. Та же
-/// семантика, что была на ключе, но кошелёк — общий на профиль (все ключи юзера тратят из него).
+/// АТОМАРНО зарезервировать `hold` по АККАУНТУ, если post-balance не пересекает общий overdraft
+/// floor и аккаунт активен. Кошелёк — общий на профиль (все ключи юзера тратят из него).
 pub fn account_reserve(conn: &Connection, id: &str, hold_nano: i64) -> Result<Option<i64>> {
     let hold = hold_nano.max(0);
     match conn.query_row(
         "UPDATE accounts SET balance_nano = balance_nano - ?1, reserved_nano = reserved_nano + ?1 \
-         WHERE id = ?2 AND status = 'active' AND balance_nano >= ?1 RETURNING balance_nano",
-        rusqlite::params![hold, id],
+         WHERE id = ?2 AND status = 'active' AND balance_nano >= ?1 - ?3 RETURNING balance_nano",
+        rusqlite::params![hold, id, ACCOUNT_OVERDRAFT_NANO],
         |r| r.get::<_, i64>(0),
     ) {
         Ok(bal) => Ok(Some(bal)),
@@ -1977,8 +1981,8 @@ pub fn account_reserve_for_key(
     conn.execute_batch("SAVEPOINT key_policy_reserve")?;
     let balance = match conn.query_row(
         "UPDATE accounts SET balance_nano=balance_nano-?1, reserved_nano=reserved_nano+?1 \
-         WHERE id=?2 AND status='active' AND balance_nano>=?1 RETURNING balance_nano",
-        rusqlite::params![hold, id],
+         WHERE id=?2 AND status='active' AND balance_nano>=?1-?3 RETURNING balance_nano",
+        rusqlite::params![hold, id, ACCOUNT_OVERDRAFT_NANO],
         |r| r.get::<_, i64>(0),
     ) {
         Ok(value) => value,

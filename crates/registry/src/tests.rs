@@ -822,7 +822,7 @@ fn reconcile_does_not_refund_unowned_aggregate_reservations() {
     assert_eq!(acc.reserved_nano, 600_000_000);
 }
 
-/// reserve атомарно гейтит по балансу аккаунта; settle сводит пару к −actual; per-key spent + ledger.
+/// reserve атомарно гейтит по общему account floor; settle сводит пару к −actual; per-key spent + ledger.
 #[test]
 fn reserve_gates_and_settle_nets_to_actual() {
     let c = db();
@@ -831,7 +831,7 @@ fn reserve_gates_and_settle_nets_to_actual() {
         account_reserve(&c, "a", 600_000_000).unwrap(),
         Some(400_000_000)
     );
-    assert_eq!(account_reserve(&c, "a", 600_000_000).unwrap(), None); // $0.40 < $0.60 → отказ
+    assert_eq!(account_reserve(&c, "a", 1_500_000_000).unwrap(), None); // post-balance −$1.10 → отказ
     assert_eq!(
         account_settle(&c, "a", "k", 600_000_000, 100_000_000, Some("req1"), None).unwrap(),
         Some(900_000_000)
@@ -1864,40 +1864,56 @@ fn settle_writes_usage_event_in_same_tx() {
     );
 }
 
-/// group-commit: reserve/settle в ОДНОЙ транзакции видят эффекты предыдущих (атомарность
-/// `charge≤hold≤balance` сохранена), результаты в порядке ops, settle пишет usage.
+/// Group commit sees previous reserves in the same transaction: four contenders can consume the
+/// shared buffer down to exactly −$1, while the fifth is refused instead of receiving its own floor.
+/// Settles retain result order and write usage.
 #[test]
 fn hot_batch_sequential_and_atomic() {
     let c = db();
     acct_with_key(&c, "a", "k", 1_000_000_000, 4000);
-    // 3 резерва по 400M в одной пачке: 3-й видит списания первых двух → отказ (None).
+    // Five nominally concurrent 500M reserves: only the first four fit the one account-wide floor.
     let ops = vec![
         HotOp::Reserve {
             account_id: "a",
             key: "k",
-            hold: 400_000_000,
+            hold: 500_000_000,
         },
         HotOp::Reserve {
             account_id: "a",
             key: "k",
-            hold: 400_000_000,
+            hold: 500_000_000,
         },
         HotOp::Reserve {
             account_id: "a",
             key: "k",
-            hold: 400_000_000,
+            hold: 500_000_000,
+        },
+        HotOp::Reserve {
+            account_id: "a",
+            key: "k",
+            hold: 500_000_000,
+        },
+        HotOp::Reserve {
+            account_id: "a",
+            key: "k",
+            hold: 500_000_000,
         },
     ];
     let r = apply_hot_batch(&c, &ops).unwrap();
-    assert_eq!(r[0], Some(600_000_000));
-    assert_eq!(r[1], Some(200_000_000));
     assert_eq!(
-        r[2], None,
-        "3-й резерв видит эффекты предыдущих в той же tx → отказ"
+        r,
+        vec![
+            Some(500_000_000),
+            Some(0),
+            Some(-500_000_000),
+            Some(-ACCOUNT_OVERDRAFT_NANO),
+            None,
+        ],
+        "the floor belongs to the account, not to each request"
     );
     let acc = account_get(&c, "a").unwrap().unwrap();
-    assert_eq!(acc.balance_nano, 200_000_000);
-    assert_eq!(acc.reserved_nano, 800_000_000);
+    assert_eq!(acc.balance_nano, -ACCOUNT_OVERDRAFT_NANO);
+    assert_eq!(acc.reserved_nano, 2_000_000_000);
     // settle в пачке: возвращает hold − actual, пишет usage; release (actual=0) возвращает hold.
     let u = UsageEventInput {
         model: "claude-opus-4-8".into(),
@@ -1910,7 +1926,7 @@ fn hot_batch_sequential_and_atomic() {
         HotOp::Settle {
             account_id: "a",
             key: "k",
-            hold: 400_000_000,
+            hold: 500_000_000,
             actual: 100_000_000,
             reference: Some("r1"),
             usage: Some(&u),
@@ -1918,7 +1934,23 @@ fn hot_batch_sequential_and_atomic() {
         HotOp::Settle {
             account_id: "a",
             key: "k",
-            hold: 400_000_000,
+            hold: 500_000_000,
+            actual: 0,
+            reference: None,
+            usage: None,
+        },
+        HotOp::Settle {
+            account_id: "a",
+            key: "k",
+            hold: 500_000_000,
+            actual: 0,
+            reference: None,
+            usage: None,
+        },
+        HotOp::Settle {
+            account_id: "a",
+            key: "k",
+            hold: 500_000_000,
             actual: 0,
             reference: None,
             usage: None,
@@ -1926,7 +1958,7 @@ fn hot_batch_sequential_and_atomic() {
     ];
     apply_hot_batch(&c, &ops2).unwrap();
     let acc = account_get(&c, "a").unwrap().unwrap();
-    assert_eq!(acc.balance_nano, 900_000_000); // 200 +300(settle1) +400(settle2)
+    assert_eq!(acc.balance_nano, 900_000_000); // −1000 +400 + three 500M releases
     assert_eq!(acc.reserved_nano, 0);
     assert_eq!(acc.spent_nano, 100_000_000);
     assert_eq!(

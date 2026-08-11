@@ -36,8 +36,9 @@ side effect. `serve` may only perform the read-only schema verification before c
   request-less usage row with the same account, null-safe key/ref/model, exact charge and at most
   one second of settlement timestamp drift. Every candidate must carry the same non-empty provider;
   ambiguity stays unknown, and a conflict with persisted ledger provider fails the read. The model
-  is a fingerprint field only, never provider inference. SQLite and PostgreSQL semantics must stay
-  identical.
+  is a fingerprint field only, never provider inference. SQLite and PostgreSQL reserve semantics use
+  the same shared `ACCOUNT_OVERDRAFT_NANO` floor; the audit backend must not reject a request that
+  PostgreSQL would admit.
   Optional per-key `spend_limit_nano` and `expires_ts` are engine-authoritative. Reservation updates
   key `reserved_nano` in the same transaction and enforces
   `spent_nano + reserved_nano + hold <= spend_limit_nano`; settlement atomically converts the hold
