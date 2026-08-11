@@ -16,8 +16,11 @@ import { Client } from "pg";
 // Значения берутся из рантайм-модуля, а не переписываются литералом: тест обязан падать, если
 // код и CHECK-констрейнт БД снова разъедутся (регрессия 2026-08-09).
 import {
+  assertOpenKeysDatabaseContract,
+  OPENKEYS_DATABASE_CONTRACT_QUERY,
   OFFICIAL_ONE_TO_ONE_CONTRACT,
   OFFICIAL_ONE_TO_ONE_MULT_BP,
+  type OpenKeysDatabaseContractRow,
 } from "./openkeys-pricing.js";
 import { describe, expect, it } from "vitest";
 
@@ -279,6 +282,11 @@ describe.runIf(Boolean(connectionString))("OpenKeys pricing-contract migration",
 
       await migrate(drizzle(database.client), { migrationsFolder: MIGRATIONS_FOLDER });
       expect(await migrationCount(database.client)).toBe(migrationsBefore + 1);
+
+      const liveContract = await database.client.query<OpenKeysDatabaseContractRow>(
+        OPENKEYS_DATABASE_CONTRACT_QUERY,
+      );
+      expect(() => assertOpenKeysDatabaseContract(liveContract.rows)).not.toThrow();
 
       const after = await database.client.query<{ batches: string; keys: string }>(`
         SELECT

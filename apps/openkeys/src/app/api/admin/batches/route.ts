@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 import { OPENKEYS_SUPPORTED_MODELS } from "@claude-api/contracts";
+import { getDatabase } from "@/lib/db";
 import { getEngineClient } from "@/lib/engine";
 import { BatchIssuanceError, MAX_BATCH_QUANTITY, issueBatch, listBatches } from "@/lib/keys";
 import { formatUsd, usdStringToNano } from "@/lib/money";
 import {
   assertNoOpenKeysPricingOverride,
+  assertOpenKeysDatabaseContract,
   describeIssuanceBlock,
+  OPENKEYS_DATABASE_CONTRACT_QUERY,
+  type OpenKeysDatabaseContractRow,
   OFFICIAL_ONE_TO_ONE_CONTRACT,
   OpenKeysPricingError,
 } from "@/lib/openkeys-pricing";
@@ -40,6 +44,14 @@ export async function GET(request: Request): Promise<NextResponse> {
   const batches = await listBatches(admin, { limit, offset, q });
   try {
     const engine = getEngineClient();
+    const { pool } = getDatabase();
+    const [databaseContract] = await Promise.all([
+      pool.query<OpenKeysDatabaseContractRow>(OPENKEYS_DATABASE_CONTRACT_QUERY),
+      // Unlike /ready, this is authenticated with ENGINE_CONTROL_KEY and validates a real
+      // read-only Control API response. A constructed client is not authority evidence.
+      engine.getSpendStats(),
+    ]);
+    assertOpenKeysDatabaseContract(databaseContract.rows);
     const supportedModels = [...OPENKEYS_SUPPORTED_MODELS];
     return NextResponse.json({
       admin,
@@ -50,8 +62,8 @@ export async function GET(request: Request): Promise<NextResponse> {
       },
     });
   } catch (error) {
-    // Catalog/switch unavailability must not hide or mutate legacy inventory,
-    // но причина фиксируется в логе и уходит в UI безопасным кодом.
+    // Authority unavailability must not hide or mutate legacy inventory, но причина
+    // фиксируется в логе и уходит в UI безопасным кодом.
     const reason = describeIssuanceBlock(error);
     console.error("openkeys issuance authority check failed", {
       code: reason.code,

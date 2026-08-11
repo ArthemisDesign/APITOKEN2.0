@@ -2,13 +2,66 @@ import { describe, expect, it } from "vitest";
 import { EngineClientError } from "@claude-api/engine-client";
 import {
   assertNoOpenKeysPricingOverride,
+  assertOpenKeysDatabaseContract,
   assertOfficialEngineAccount,
   describeIssuanceBlock,
+  type OpenKeysDatabaseContractRow,
   OFFICIAL_ONE_TO_ONE_MULT_BP,
   OpenKeysPricingError,
 } from "./openkeys-pricing.js";
 
+const validDatabaseContract: readonly OpenKeysDatabaseContractRow[] = [
+  { kind: "column", name: "openkeys_batches.pricing_contract", definition: "text NOT NULL" },
+  { kind: "column", name: "openkeys_keys.pricing_contract", definition: "text NOT NULL" },
+  {
+    kind: "constraint",
+    name: "openkeys_batches_pricing_contract",
+    definition: "c:CHECK (pricing_contract = ANY (ARRAY['legacy'::text, 'official_1_to_1'::text]))",
+  },
+  {
+    kind: "constraint",
+    name: "openkeys_batches_official_1_to_1",
+    definition: "c:CHECK (pricing_contract <> 'official_1_to_1'::text OR mult_bp = 10000)",
+  },
+  {
+    kind: "constraint",
+    name: "openkeys_keys_pricing_contract",
+    definition: "c:CHECK (pricing_contract = ANY (ARRAY['legacy'::text, 'official_1_to_1'::text]))",
+  },
+  {
+    kind: "constraint",
+    name: "openkeys_keys_official_1_to_1",
+    definition: "c:CHECK (pricing_contract <> 'official_1_to_1'::text OR mult_bp = 10000)",
+  },
+  {
+    kind: "constraint",
+    name: "openkeys_keys_batch_contract_fk",
+    definition: "f:FOREIGN KEY (batch_id, pricing_contract) REFERENCES openkeys_batches(id, pricing_contract) ON DELETE RESTRICT",
+  },
+];
+
 describe("OpenKeys official 1:1 pricing", () => {
+
+  describe("database issuance contract", () => {
+    it("accepts the exact migration-0007 shape", () => {
+      expect(() => assertOpenKeysDatabaseContract(validDatabaseContract)).not.toThrow();
+    });
+
+    it("fails closed on a missing constraint, nullable column, or literal drift", () => {
+      expect(() => assertOpenKeysDatabaseContract(validDatabaseContract.slice(1)))
+        .toThrow(/missing or differs/u);
+      expect(() => assertOpenKeysDatabaseContract(validDatabaseContract.map((row) => (
+        row.name === "openkeys_batches.pricing_contract"
+          ? { ...row, definition: "text NULL" }
+          : row
+      )))).toThrow(/missing or differs/u);
+      expect(() => assertOpenKeysDatabaseContract(validDatabaseContract.map((row) => (
+        row.name === "openkeys_batches_pricing_contract"
+          ? { ...row, definition: row.definition.replace("official_1_to_1", "official_one_to_one") }
+          : row
+      )))).toThrow(/missing or differs/u);
+    });
+  });
 
 
 
@@ -43,11 +96,11 @@ describe("OpenKeys official 1:1 pricing", () => {
   describe("describeIssuanceBlock", () => {
     it("передаёт код pricing-ошибки без утечки внутреннего сообщения", () => {
       const reason = describeIssuanceBlock(
-        new OpenKeysPricingError("pricing_authority_missing", "internal catalog detail"),
+        new OpenKeysPricingError("pricing_database_contract_mismatch", "internal constraint detail"),
       );
-      expect(reason.code).toBe("pricing_authority_missing");
-      expect(reason.message).toContain("authority");
-      expect(reason.message).not.toContain("internal catalog detail");
+      expect(reason.code).toBe("pricing_database_contract_mismatch");
+      expect(reason.message).toContain("Контракт выпуска");
+      expect(reason.message).not.toContain("internal constraint detail");
     });
 
     it("сетевую/HTTP-ошибку движка отличает от неподтверждённого authority", () => {

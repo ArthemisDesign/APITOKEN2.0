@@ -65,9 +65,9 @@ allowed exactly one spelling. They drifted on 2026-08-09 (`official_one_to_one` 
 failed the next batch insert outright; production was spared only because no batch was issued in
 between. The constant is now typed as that literal and the migration test builds its inserts from
 it, so a future divergence fails to compile or fails the DB-backed test instead of the next sale.
-Until the global Stage 9 cutover, historical
-`pricing_contract=legacy` remains the migration source. The target release switches all
-existing and new OpenKeys to 1:1; past ledger rows are not recalculated.
+Historical `pricing_contract=legacy` rows remain immutable inventory at their stored multiplier;
+they are not silently repriced or rewritten. Every new batch is 1:1, and any future legacy
+inventory cutover requires a separate auditable decision.
 
 ## What the buyer sees
 
@@ -84,11 +84,11 @@ provider cards on the spend page and the Claude Code/Codex connection commands u
   /v1beta/models/{model}:generateContent`, `x-goog-api-key`,
   `GOOGLE_GEMINI_BASE_URL=https://router.apitoken.sale`).
 
-The Gemini block deliberately stays in the handover and the cards, and Gemini access is live:
-the pricing authority admits every runtime-capable provider at 1:1, and the issuance
-supported-model list (`MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES`) shows the full
-generation-5 main set — Anthropic, OpenAI and Gemini. The former per-provider
-hosts (`api.apitoken.sale`,
+The Gemini block deliberately stays in the handover and the cards, and Gemini access is live.
+The engine resolves the universal key at its stored 1:1 multiplier for every runtime-capable
+provider. The exact live model list comes from the key-scoped unified `/v1/models`; the
+`supportedModels` array in the protected issuance response is display guidance and never an
+admission or pricing authority. The former per-provider hosts (`api.apitoken.sale`,
 `openai.api.apitoken.sale`, `gemini.api.apitoken.sale`) keep working, but the buyer is
 given only the router address as the primary instruction. Balance lookup by key
 (`/balance`) still goes to `ENGINE_PUBLIC_BASE_URL`/`ENGINE_OPENAI_PUBLIC_BASE_URL` — this
@@ -124,43 +124,18 @@ again"). An env configuration failure (for example, a lost `OPENKEYS_SESSION_SEC
 answers with the same 401 but is always written to the server log (`openkeys admin session
 check failed`), so that a misconfiguration is not masked as an expired session.
 
-The economics of a new issuance is not configurable via env or request: the face value is
-credited to the engine exactly 1:1 and stored as `official_1_to_1`. Old `legacy` keys may
-be read with the historical multiplier only until Stage 9. After the global cutover the
-live reserve of any OpenKeys uses the canonical 1:1; the legacy contract cannot be chosen
-for a new batch and cannot be carried into the target release.
+The economics of a new issuance is not configurable through env or request. Before enabling the
+button, the protected batch endpoint checks the exact PostgreSQL `pricing_contract` columns,
+CHECKs and batch/key FK from migration 0007, then performs an authenticated, read-only Control API
+projection. This proves both the database literal and `ENGINE_CONTROL_KEY`; merely constructing an
+`EngineClient` or calling the public unauthenticated `/ready` is not sufficient.
 
-Issuance no longer touches the release-v2 assignment extension: with the release-v2 retirement
-(phase 2.1) a new OpenKeys account is born directly on the strict policy path
-(`provisionOfficialOpenKeysCredential` in `apps/openkeys/src/lib/openkeys-pricing.ts`). After the
-read-only authority check (`resolveOpenKeysPricingAuthority`) the writer activates the canonical
-official 1:1 policy on a `strict/strict/verified` binding (`officialOpenKeysStrictBinding`) — on a
-zero-key, zero-balance account the unbound→strict activation is vacuously valid — then credits
-exactly the face value (allocated into strict funding buckets), issues the `sk-pool` secret WITH
-its exact activation ACK, and finally writes the one-way engine opt-out marker through
-`EngineClient.optOutPricingReleaseV2`. Only after the marker lands is the uncovered account
-servable at all, so the usable secret is returned last. Every step is idempotent under the
-issuance job's retry; any rejected ACK, credit failure or opt-out guard rejection aborts the
-issuance job, and the existing issuance compensation disables the half-provisioned engine
-account. Pre-existing OpenKeys accounts keep working on the release path until the bounded
-backfill sweep retires them (release-v2 retirement, phase 2.2): the internal admin endpoint
-`POST /api/internal/admin/strict-backfill` (`apps/openkeys/src/lib/strict-backfill.ts`)
-advances each warehouse-owned account — `openkeys` funding-class proof, shared strict-cutover
-preflight, exact-CAS activation of the same official 1:1 strict policy over the observed
-active policy, key re-stamp on the new head, one-way opt-out marker — idempotently,
-batch-limited (`limit`, `account_ids` canary list), one account's failure never blocking the
-batch, and service/meter-only accounts excluded by construction (they are never in
-`openkeys_keys`) and by the engine funding-class check. Ops sequence:
-`docs/ops/PRICING_RELEASE_BACKFILL.md`.
-
-The Stage 7 existing-inventory shadow-rollout lane (migration
-`0035_pricing_shadow_rollout_jobs.sql`) was removed with the dismantled release cycle: the
-`POST /v1/admin/pricing-shadow-rollout-v2/stage` producer (and its paired GET) in `apps/api`
-and the bounded `apps/worker` rollout consumer no longer exist. The completed gpt-image-2
-rollouts remain durable historical evidence; new OpenKeys issuance never depended on the lane
-(release-native from birth through the direct strict provisioning path above). The engine
-`locked-openkeys-transition` endpoint stays as expand-only contract surface with no live
-consumer. The historical protocol record is `docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
+The writer creates an engine account with `mult_bp=10000`, verifies the returned multiplier,
+credits exactly the face value, issues the usable secret last, and stores batch/key rows with
+`pricing_contract=official_1_to_1`. The issuance saga records each external step. A retry is
+idempotent, and reconciliation disables a funded or key-bearing orphan before marking it
+compensated. Historical `legacy` rows keep their recorded economics and cannot be selected for a
+new batch.
 
 ### Authoritative pricing inventory v2 — removed
 
@@ -182,12 +157,12 @@ issuance history are shown separately. A new batch in the UI requires a label so
 seller does not get lost among a large number of issuances; historical batches without a
 label remain visible.
 
-If issuance is blocked (`GET /api/admin/batches` could not confirm the pricing authority),
+If issuance is blocked (`GET /api/admin/batches` could not confirm the issuance contract),
 the warehouse stays available and the response is augmented with the
 `issuanceAuthority.reason` diagnostics — a safe machine code and a human-readable
-description without internals: a pricing-error code (`pricing_authority_missing`,
-catalog/switches drift) means the authority must be fixed in commerce,
-`engine_unavailable` — that the engine is unreachable or `ENGINE_CONTROL_KEY` is invalid,
+description without internals: `pricing_database_contract_mismatch` means the live OpenKeys
+schema does not exactly match the service writer,
+`engine_unavailable` means the engine is unreachable or `ENGINE_CONTROL_KEY` is invalid,
 `authority_check_failed` — anything else (check the server log). The reason is shown in
 the issuance form next to the blocked button and is simultaneously written to the server
 log (`openkeys issuance authority check failed`).
@@ -276,9 +251,9 @@ yet been issued.
 manifests. For every candidate the openkeys migrations are run against a separate
 disposable PostgreSQL (`watchdog-test-db openkeys-dsn`), and only then does the rollout
 proceed with a readiness gate on `http://127.0.0.1:3410/api/ready`. Readiness checks the
-configuration, PostgreSQL and the engine Control API without exposing the reason for
-refusal. The `openkeys` database is included in the regular, mandatory pre-deploy backup
-together with the other PostgreSQL contexts.
+configuration, the exact PostgreSQL issuance constraints, and an authenticated read-only engine
+Control API response without exposing the reason for refusal. The `openkeys` database is included
+in the regular, mandatory pre-deploy backup together with the other PostgreSQL contexts.
 
 The GitHub context is called `deploy/openkeys`; its own baseline lives in
 `$STATE_ROOT/openkeys.sha`, so changes only in OpenKeys touch neither the engine nor the

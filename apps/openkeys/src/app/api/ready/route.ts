@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { loadConfig } from "@/lib/config";
 import { getDatabase } from "@/lib/db";
 import { getEngineClient } from "@/lib/engine";
+import {
+  assertOpenKeysDatabaseContract,
+  OPENKEYS_DATABASE_CONTRACT_QUERY,
+  type OpenKeysDatabaseContractRow,
+} from "@/lib/openkeys-pricing";
 import { assertSecretBoxReady } from "@/lib/secret-box";
 
 export const runtime = "nodejs";
@@ -13,7 +18,7 @@ export async function GET(): Promise<NextResponse> {
     loadConfig();
     assertSecretBoxReady();
     const { pool } = getDatabase();
-    const [database, schema, engine] = await Promise.all([
+    const [database, schema, databaseContract] = await Promise.all([
       pool.query("SELECT 1"),
       pool.query(`
         SELECT j.id, j.batch_id, j.item_index, j.status, j.updated_at,
@@ -22,9 +27,12 @@ export async function GET(): Promise<NextResponse> {
         LEFT JOIN openkeys_keys k ON false
         LIMIT 0
       `),
-      getEngineClient().readiness(),
+      pool.query<OpenKeysDatabaseContractRow>(OPENKEYS_DATABASE_CONTRACT_QUERY),
+      // Authenticated and read-only: this proves ENGINE_CONTROL_KEY as well as engine reachability.
+      getEngineClient().getSpendStats(),
     ]);
-    if (database.rowCount !== 1 || schema.rowCount !== 0 || !engine) {
+    assertOpenKeysDatabaseContract(databaseContract.rows);
+    if (database.rowCount !== 1 || schema.rowCount !== 0) {
       throw new Error("dependency unavailable");
     }
     return NextResponse.json({ status: "ready" }, {

@@ -450,9 +450,9 @@ export default function AdminPage() {
               <span>Номинал равен фактическому engine balance. Скидка и множитель не настраиваются.</span>
               <span>
                 {issuanceAuthority.ready
-                  ? `Активный каталог: ${issuanceAuthority.supportedModels.join(", ")}`
+                  ? `Контракт выпуска и Control API подтверждены. Модели: ${issuanceAuthority.supportedModels.join(", ")}`
                   : issuanceAuthority.reason?.message
-                    ?? "Выпуск недоступен: активный OpenKeys catalog/provider authority ещё не подтверждён."}
+                    ?? "Выпуск недоступен: контракт OpenKeys или engine Control API ещё не подтверждён."}
               </span>
             </div>
             <div className="openkeys-form-grid">
@@ -464,7 +464,7 @@ export default function AdminPage() {
             {!issuanceAuthority.ready ? (
               <span className="field-hint">
                 {issuanceAuthority.reason?.message
-                  ?? "Выпуск заблокирован до подтверждения активного OpenKeys catalog/provider authority."}
+                  ?? "Выпуск заблокирован до подтверждения контракта OpenKeys и engine Control API."}
               </span>
             ) : null}
           </form>
