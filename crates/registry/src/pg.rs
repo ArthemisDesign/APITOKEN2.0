@@ -17,6 +17,8 @@ use crate::{
     UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
     ACCOUNT_OVERDRAFT_NANO,
 };
+#[cfg(test)]
+use crate::PROVIDER_OPENAI;
 use anyhow::{bail, Context, Result};
 use postgres::config::{Host, SslMode};
 use postgres::{Client, IsolationLevel, Row, Transaction};
