@@ -51,17 +51,23 @@ export function isFreeCreditRef(ref: string | null | undefined): boolean {
   return !REAL_MONEY_REF_PREFIXES.some((prefix) => ref.startsWith(prefix));
 }
 
-/** Подарочные источники денег: welcome-бонус, промо и восстановление бонуса. */
-const BONUS_REF_PREFIXES: readonly string[] = ["signup-bonus:", "promo:", "bonus-restore", "welcome"];
+/** Подарочные источники денег: welcome-бонус, промо, admin credit и восстановление бонуса. */
+const BONUS_REF_PREFIXES: readonly string[] = [
+  "signup-bonus:",
+  "promo:",
+  "admin-credit:",
+  "bonus-restore",
+  "welcome",
+];
 
 export type PricingTopupSource = "payment" | "bonus" | "manual";
 
 /**
  * Классификация пополнения ДЛЯ ОТЧЁТНОСТИ (не для комиссии — та живёт в isFreeCreditRef и
  * остаётся whitelist-строгой). `payment` — депозит через платёжного провайдера, `bonus` —
- * известный подарок, `manual` — всё прочее: админ-кредит и ручные зачисления, то есть реальные
- * деньги, полученные мимо платёжной системы. Неизвестный ref безопаснее считать ручным
- * пополнением (он попадает в отчёт как «оплачено вручную» и виден оператору), а не подарком.
+ * известный подарок (включая `admin-credit:*`), `manual` — всё прочее: ручные зачисления,
+ * которые оператор считает реальными деньгами, полученными мимо платёжной системы. Неизвестный
+ * ref остаётся ручным для видимости, но комиссия по нему запрещена whitelist-классификатором.
  */
 export function classifyTopupRef(ref: string | null | undefined): PricingTopupSource {
   if (typeof ref !== "string" || ref.trim() === "") return "manual";
@@ -1129,8 +1135,9 @@ export async function applyPricingLedgerPage(
       if (ledgerId > lastLedgerId) lastLedgerId = ledgerId;
       if (ledgerId <= startCursor) continue; // уже обработано ранее — не двоим эффекты
       const amount = BigInt(entry.amount_nano);
-      // Иммутабельная копия пополнения для отчётности: движковые топапы (админ-кредит, ручные)
-      // не создают строки в payments, поэтому иначе реальные деньги клиента невидимы админке.
+      // Иммутабельная копия пополнения для отчётности: движковые топапы (подарочные admin credit
+      // и ручные внешние зачисления) не создают строки в payments, поэтому без неё их источник
+      // и влияние на funding-когорту были бы невидимы админке.
       // Деньгами и балансом эта таблица не управляет; вставка идемпотентна по (аккаунт, ledger id).
       if (entry.kind === "topup" && amount > 0n) {
         await recordPricingTopup(client, target, entry, amount);

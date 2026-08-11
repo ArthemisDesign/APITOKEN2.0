@@ -12,9 +12,9 @@ import {
 
 const connectionString = process.env.TEST_DATABASE_URL;
 
-// Пополнения, сделанные напрямую в движке (admin-credit, ручные зачисления), не создают строк в
-// payments — до этой правки такой клиент вообще не считался платящим, и его расход (в т.ч. весь
-// GPT/Gemini) не попадал ни в один финансовый отчёт админки.
+// Пополнения, сделанные напрямую в движке (подарочные admin-credit и ручные внешние зачисления),
+// не создают строк в payments. Ledger-копия сохраняет оба источника, но только подтверждённое
+// ручное внешнее зачисление входит в money-funded cohort.
 describe.runIf(Boolean(connectionString))("engine top-ups recorded for reporting", () => {
   let db: Database;
   let userId: string;
@@ -70,7 +70,7 @@ describe.runIf(Boolean(connectionString))("engine top-ups recorded for reporting
     expect(classifyTopupRef("cryptomus:abc")).toBe("payment");
     expect(classifyTopupRef("signup-bonus:u1")).toBe("bonus");
     expect(classifyTopupRef("promo:new-year")).toBe("bonus");
-    expect(classifyTopupRef("admin-credit:abc")).toBe("manual");
+    expect(classifyTopupRef("admin-credit:abc")).toBe("bonus");
     expect(classifyTopupRef("manual-balance-500")).toBe("manual");
     expect(classifyTopupRef(null)).toBe("manual");
   });
@@ -85,7 +85,7 @@ describe.runIf(Boolean(connectionString))("engine top-ups recorded for reporting
     await applyPricingLedgerPage(db, { userId, engineAccountId }, page);
     await applyPricingLedgerPage(db, { userId, engineAccountId }, page);
     expect(await topups()).toEqual([
-      { source: "manual", amount_nano: "1000" },
+      { source: "bonus", amount_nano: "1000" },
       { source: "bonus", amount_nano: "500" },
       { source: "payment", amount_nano: "250" },
     ]);
@@ -103,11 +103,11 @@ describe.runIf(Boolean(connectionString))("engine top-ups recorded for reporting
       entry(6, "charge", 70n, null),
     ], 9n);
     expect(recorded).toBe(1);
-    expect(await topups()).toEqual([{ source: "manual", amount_nano: "700" }]);
+    expect(await topups()).toEqual([{ source: "bonus", amount_nano: "700" }]);
     expect(await getPricingTopupBackfillCursor(db, { userId, engineAccountId }, 9n)).toBeNull();
   });
 
-  it("«оплачено» = платежи + ручные пополнения, без двойного счёта и без бонусов", async () => {
+  it("«оплачено» = платежи + ручные внешние пополнения, без двойного счёта и подарков", async () => {
     const checkoutId = randomUUID();
     await db.pool.query(
       `INSERT INTO checkout_sessions (id, user_id, engine_account_id, provider, amount_usd, amount_nano, status)
@@ -124,13 +124,15 @@ describe.runIf(Boolean(connectionString))("engine top-ups recorded for reporting
       entry(1, "topup", 1000n, "admin-credit:one"),
       entry(2, "topup", 500n, `signup-bonus:${userId}`),
       entry(3, "topup", 250n, "platega:pay-1"),
-      entry(4, "charge", 40n, null),
+      entry(4, "topup", 1000n, "manual-balance-1000"),
+      entry(5, "charge", 40n, null),
     ]);
 
     const page = await listAdminPayingUsers(db, { days: 30 });
     const row = page.rows.find((item) => item.userId === userId);
     expect(row).toBeDefined();
-    // 250 платежа + 1000 ручного зачисления; бонус 500 и топап-двойник платежа не учитываются.
+    // 250 платежа + 1000 ручного внешнего зачисления; admin-credit, бонус и топап-двойник
+    // платежа не учитываются.
     expect(row!.paidNano).toBe("1250");
     expect(row!.manualPaidNano).toBe("1000");
     expect(row!.paymentsCount).toBe(1);
@@ -140,9 +142,9 @@ describe.runIf(Boolean(connectionString))("engine top-ups recorded for reporting
   });
 
   it("фильтр источника денег делит когорту и сужает сводку", async () => {
-    // Клиент A: только ручное начисление. Клиент B: подтверждённый платёж.
+    // Клиент A: только ручное внешнее зачисление. Клиент B: подтверждённый платёж.
     await applyPricingLedgerPage(db, { userId, engineAccountId }, [
-      entry(1, "topup", 900n, "admin-credit:granted"),
+      entry(1, "topup", 900n, "manual-balance-900"),
       entry(2, "charge", 90n, null),
     ]);
     const payerId = randomUUID();
@@ -183,11 +185,37 @@ describe.runIf(Boolean(connectionString))("engine top-ups recorded for reporting
 
   it("клиент без единого платежа, но с ручным пополнением, считается платящим", async () => {
     await applyPricingLedgerPage(db, { userId, engineAccountId }, [
-      entry(1, "topup", 5000n, "admin-credit:offline-deal"),
+      entry(1, "topup", 5000n, "manual-balance-offline-deal"),
       entry(2, "charge", 300n, null),
     ]);
     const page = await listAdminPayingUsers(db, { days: 30 });
     expect(page.rows.map((row) => row.userId)).toContain(userId);
     expect(page.summary.payingUsers).toBe(1);
+  });
+
+  it("admin-credit остаётся подарком и не создаёт paying-user без внешнего платежа", async () => {
+    const recentCharge = entry(2, "charge", 300n, null);
+    recentCharge.ts = String(Math.floor(Date.now() / 1000) - 60);
+    await applyPricingLedgerPage(db, { userId, engineAccountId }, [
+      entry(1, "topup", 5000n, "admin-credit:gift"),
+      recentCharge,
+    ]);
+
+    const paid = await listAdminPayingUsers(db, { days: 30 });
+    expect(paid.rows.map((row) => row.userId)).not.toContain(userId);
+    expect(paid.summary.payingUsers).toBe(0);
+
+    const bonus = await listAdminPayingUsers(db, { days: 30, funding: "bonus" });
+    expect(bonus.rows).toEqual([
+      expect.objectContaining({
+        userId,
+        fundingKind: "bonus_only",
+        paidNano: "0",
+        manualPaidNano: "0",
+        spentNano: "300",
+        paidFundedSpentNano: "0",
+        bonusFundedSpentNano: "300",
+      }),
+    ]);
   });
 });

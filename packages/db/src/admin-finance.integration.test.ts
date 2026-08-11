@@ -50,6 +50,20 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
     await insertPayment(users.get("paid")!);
     await insertManualTopup(users.get("manual")!);
     await insertBonusTopup(users.get("bonus_topup")!);
+    // Regression for immutable rows written before admin-credit became a reporting bonus:
+    // source stays `manual`, but the canonical ref must keep it out of money-funded cohorts.
+    ledgerId += 1;
+    await database.pool.query(`
+      INSERT INTO pricing_usage_topups (
+        id, user_id, engine_account_id, ledger_entry_id, ref, source, amount_nano, occurred_at
+      ) VALUES ($1, $2, $3, $4, $5, 'manual', 1000, now())
+    `, [
+      randomUUID(),
+      users.get("bonus"),
+      `acct-${users.get("bonus")}`,
+      ledgerId,
+      `admin-credit:historical-${users.get("bonus")}`,
+    ]);
 
     await insertEvent(users.get("bonus")!, {
       amount: 100n, paid: 0n, eventProvider: "openai",

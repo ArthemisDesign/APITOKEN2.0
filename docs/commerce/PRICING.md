@@ -213,11 +213,12 @@ immutable history and as the migration source for the initial Anthropic rule.
 
 B2B spend IS ingested by the pricing usage sync: `listPricingSyncTargets` selects both
 `b2c` and `b2b`, so every charge lands in the immutable `pricing_usage_events` (with provider
-attribution and provider backfill) and the admin control room reports real B2B numbers. The
-progressive B2C machinery never touches B2B: `applyPricingLedgerPage` skips the free-first
-projection, `pricing_months` and the tier-window counters for it, and a pre-attribution B2B charge
-creates no commission basis (`real_funded_nano = 0`) because there is no local funding projection
-to prove paid money — under-paying commission is safe, over-paying is not.
+attribution and provider backfill) and the admin control room reports real B2B numbers. The scalar
+writer applies the same durable free-first rule to B2C and B2B: non-provider top-ups increase
+`customer_profiles.free_balance_nano`, every charge consumes that balance first, and only the
+remainder becomes `real_funded_nano` for the scalar sales feed. An `admin-credit:*` therefore never
+creates partner commission merely because the customer is B2B. Progressive B2C tier counters remain
+legacy and do not participate in this split.
 
 ## OpenKeys
 

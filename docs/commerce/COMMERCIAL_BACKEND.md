@@ -240,22 +240,24 @@ commerce nanoUSD strings: this endpoint is an operator projection, not a money a
 
 `GET /admin/finance/paying-users` is the read-only producer for the paid-customer control room.
 It includes a user with at least one `payments.status='paid'` row **or** at least one manual engine
-top-up (`pricing_usage_topups.source='manual'` — `admin-credit:` and other credits granted straight
-in the engine, i.e. real money received outside the payment provider). Payment-sourced engine
+top-up (`pricing_usage_topups.source='manual'`) whose ref is not `admin-credit:*`: these are explicit
+external-money credits granted straight in the engine. Payment-sourced engine
 top-ups are deliberately excluded from that sum: `payments` is their authority, so counting both
-would double the same deposit. Bonus top-ups (welcome/promo) are never money. Rows and summary
-expose `manual_paid_nano`/`manual_topups_count` next to the payment counters.
+would double the same deposit. Bonus top-ups (welcome/promo/admin-credit) are never money. New
+admin credits are stored as `source='bonus'`; historical immutable admin-credit rows with
+`source='manual'` are excluded by ref rather than rewritten. Rows and summary expose
+`manual_paid_nano`/`manual_topups_count` next to the payment counters.
 `pricing_usage_topups` is an immutable reporting copy of engine top-ups; it is not a balance and
-never drives one. Commission classification keeps using the stricter `isFreeCreditRef` whitelist.
+never drives one. Commission classification uses the stricter `isFreeCreditRef` whitelist.
 
 `funding` selects the cohort by funding authority: omitted preserves the historical payment/manual
-union; `payments` requires a lifetime confirmed provider payment; `manual` requires lifetime manual
-top-up(s) and no provider payment. `bonus` instead requires no lifetime paid payment, no lifetime
-manual top-up, and positive spend in the selected window where **every** event has a complete
-`policy_v1` or `release_v2` funding split equal to the immutable charged amount, with the complete
-window equal to bonus (`paid=0`, `other=0`, unknown/unattributed `=0`). A bonus top-up is neither
-required nor sufficient. Current balance, `real_funded_nano`, model names and other heuristics never
-classify this cohort. `all` is the union of the historical money cohort and strict bonus-only.
+union; `payments` requires a lifetime confirmed provider payment; `manual` requires lifetime
+qualifying manual top-up(s) and no provider payment. `bonus` instead requires no lifetime paid
+payment, no qualifying lifetime manual top-up, and positive spend in the selected window where
+every immutable event has a valid free-first split and the whole window is free-funded
+(`real_funded_nano=0`, no invalid amount). A bonus top-up is neither required nor sufficient.
+Current balance, model names and other heuristics never classify this cohort. `all` is the union of
+the money cohort and strict bonus-only.
 Additive `spenders` includes every commerce user with positive `pricing_usage_events.amount_nano`
 in the selected window, regardless of lifetime payments/manual credits or mixed, other, legacy and
 unattributed funding evidence; a top-up without spend remains excluded. As a cohort selector,
@@ -269,8 +271,8 @@ all other zero-money positive spenders are `spend_only`. Summary adds `bonus_onl
 only money-funded users for every cohort; existing lifetime paid/manual and provider summary fields
 keep their semantics.
 
-Provider attribution remains `COALESCE(pricing_usage_attributions.provider_id,
-pricing_usage_events.provider_id)` with no model inference. All money is a decimal nanoUSD string;
+Provider attribution is `pricing_usage_events.provider_id`, copied from exact engine ledger evidence
+with no model inference. All money is a decimal nanoUSD string;
 provider `other` still retains missing/unknown provider evidence, independently from the new funding
 `unattributed_spent_nano`. Page, count, and cohort summary use one half-open
 `[window_end-days, window_end)` cutoff inside one read-only `REPEATABLE READ` commerce snapshot.

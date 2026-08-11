@@ -164,10 +164,12 @@ export const pricingUsageCursors = pgTable("pricing_usage_cursors", {
 
 /**
  * Иммутабельная копия ПОПОЛНЕНИЙ из леджера движка. Балансом не является и им не управляет:
- * нужна отчётности, которая обязана видеть реальные деньги клиента целиком, включая
+ * нужна отчётности, которая обязана различать реальные деньги клиента и подарки, включая
  * пополнения, сделанные напрямую в движке (`admin-credit:`, ручные) — их нет в `payments`.
  * `source`: `payment` — депозит через платёжного провайдера (тот же ref, что в payments),
- * `bonus` — подарочные кредиты (welcome/промо), `manual` — всё остальное (админ-кредит и т.п.).
+ * `bonus` — подарочные кредиты (welcome/промо/admin-credit), `manual` — неизвестные и явно
+ * ручные внешние зачисления. Исторические admin-credit могут иметь source=manual; finance
+ * исключает их по immutable ref, не переписывая эту ledger-копию.
  */
 export const pricingUsageTopups = pgTable("pricing_usage_topups", {
   id: uuid("id").primaryKey(),

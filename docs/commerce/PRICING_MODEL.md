@@ -148,6 +148,9 @@ Two things read it, and nothing else may reimplement the split:
 does not prove an external payment, and an irreversible partner payout must not be created from an
 unverified source. If off-platform B2B payments become a supported product, they need a separate
 typed reference plus durable payment evidence; reinterpreting an ordinary admin credit is forbidden.
+The admin finance projection follows the same boundary: new `admin-credit:*` top-ups are recorded as
+`source='bonus'`, and historical immutable rows originally classified as `manual` are excluded from
+manual revenue and paying-user cohorts by their ref. The rows are evidence and are never rewritten.
 
 ## Refund and chargeback compensation
 

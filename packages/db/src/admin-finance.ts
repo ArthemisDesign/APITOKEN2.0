@@ -125,7 +125,7 @@ export interface AdminPayingUserRow {
   fundingKind: AdminPayingUserFundingKind;
   paidNano: string;
   paymentsCount: number;
-  /** Часть paidNano, зачисленная напрямую в движке (admin-credit/ручное), без платёжной системы. */
+  /** Часть paidNano из ручных внешних зачислений; подарочные admin-credit исключены. */
   manualPaidNano: string;
   manualTopupsCount: number;
   lastPaidAt: Date | null;
@@ -393,7 +393,10 @@ export async function listAdminPayingUsers(
     throw new Error(`unsupported paying users funding: ${String(query.funding)}`);
   }
 
-  // `money` is lifetime payment/manual authority. `usage` is selected-window charge authority.
+  // `money` is lifetime payment/manual authority. Historical admin-credit rows were initially
+  // stored as `manual`; exclude them by immutable ref as well as classifying all new rows as bonus.
+  // This read-time compatibility rule corrects finance without rewriting the ledger copy.
+  // `usage` is selected-window charge authority.
   // The paid/bonus split of spend comes from the one authority that records it: free-first
   // accounting on the immutable usage event. real_funded_nano is the part the customer paid for;
   // the remainder was covered by free credit. No balance/model/top-up proxy participates.
@@ -416,7 +419,7 @@ export async function listAdminPayingUsers(
         UNION ALL
         SELECT user_id, 0::bigint, count(*), 0::numeric, sum(amount_nano), max(occurred_at)
         FROM pricing_usage_topups
-        WHERE source = 'manual'
+        WHERE source = 'manual' AND (ref IS NULL OR ref NOT LIKE 'admin-credit:%')
         GROUP BY user_id
       ) sources
       GROUP BY user_id
