@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import JSONbigFactory from "json-bigint";
 import {
+  createEngineAccountSchema,
   engineAccountSchema,
   engineAccountListSchema,
   engineApiKeyListSchema,
@@ -114,15 +115,28 @@ export class EngineClient {
   }
 
   async createAccount(input: CreateEngineAccount): Promise<{ account: string; multBp: number; handle: string | null }> {
+    const parsed = createEngineAccountSchema.safeParse(input);
+    if (!parsed.success) {
+      const invalidMultiplier = parsed.error.issues.some((issue) => issue.path[0] === "multBp");
+      throw new RangeError(invalidMultiplier
+        ? "account multiplier must be an integer from 0 to 10000"
+        : "account handle must be 1 to 200 non-whitespace characters");
+    }
     const body: Record<string, unknown> = {};
-    if (input.handle !== undefined) body.handle = input.handle;
-    if (input.multBp !== undefined) body.mult_bp = input.multBp;
+    if (parsed.data.handle !== undefined) body.handle = parsed.data.handle;
+    if (parsed.data.multBp !== undefined) body.mult_bp = parsed.data.multBp;
     const { response, payload } = await this.request("/admin/account", {
       method: "POST",
       body: JSON.stringify(body),
     });
     const result = payload as Record<string, unknown>;
-    if (typeof result.account !== "string" || typeof result.mult_bp !== "number") {
+    if (
+      typeof result.account !== "string"
+      || typeof result.mult_bp !== "number"
+      || !Number.isInteger(result.mult_bp)
+      || result.mult_bp < 0
+      || result.mult_bp > 10_000
+    ) {
       throw new EngineClientError("engine returned an invalid account response", response.status, false);
     }
     return {

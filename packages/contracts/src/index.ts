@@ -21,7 +21,7 @@ export const engineAccountSchema = z.object({
   spent_nano: decimalIntegerSchema,
   reserved_nano: decimalIntegerSchema,
   balance: z.string(),
-  mult_bp: z.number().int(),
+  mult_bp: z.number().int().min(0).max(10_000),
   status: z.enum(["active", "disabled"]),
   handle: z.string().nullable(),
 });
@@ -213,7 +213,7 @@ export type EngineSpendProvider = z.infer<typeof spendStatsProviderSchema>;
 
 export const createEngineAccountSchema = z.object({
   handle: z.string().trim().min(1).max(200).optional(),
-  multBp: z.number().int().min(0).max(100_000).optional(),
+  multBp: z.number().int().min(0).max(10_000).optional(),
 });
 
 export type CreateEngineAccount = z.infer<typeof createEngineAccountSchema>;

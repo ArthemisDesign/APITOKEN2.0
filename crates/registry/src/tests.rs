@@ -2400,6 +2400,51 @@ fn provider_discount_writes_are_bounded_and_require_a_known_account() {
     );
 }
 
+/// Fresh SQLite audit databases carry the same table constraints as PostgreSQL. Runtime writer
+/// validation remains necessary for old snapshots whose table already predates these CREATE-time
+/// checks, but a direct import into a new snapshot must not bypass the money contract.
+#[test]
+fn sqlite_provider_discount_table_rejects_invalid_direct_rows() {
+    let c = db();
+    account_create(&c, "acct-table-bounds", None, 5_000).unwrap();
+
+    assert!(
+        c.execute(
+            "INSERT INTO account_provider_discounts(account_id,provider_id,mult_bp,updated_ts) \
+             VALUES(?1,'zhipu',5000,1)",
+            rusqlite::params!["acct-table-bounds"],
+        )
+        .is_err()
+    );
+    assert!(
+        c.execute(
+            "INSERT INTO account_provider_discounts(account_id,provider_id,mult_bp,updated_ts) \
+             VALUES(?1,'openai',-1,1)",
+            rusqlite::params!["acct-table-bounds"],
+        )
+        .is_err()
+    );
+    assert!(
+        c.execute(
+            "INSERT INTO account_provider_discounts(account_id,provider_id,mult_bp,updated_ts) \
+             VALUES(?1,'openai',10001,1)",
+            rusqlite::params!["acct-table-bounds"],
+        )
+        .is_err()
+    );
+
+    c.execute(
+        "INSERT INTO account_provider_discounts(account_id,provider_id,mult_bp,updated_ts) \
+         VALUES(?1,'openai',5000,1)",
+        rusqlite::params!["acct-table-bounds"],
+    )
+    .unwrap();
+    assert_eq!(
+        account_provider_discounts(&c, "acct-table-bounds").unwrap(),
+        vec![(PROVIDER_OPENAI.to_string(), 5_000)],
+    );
+}
+
 /// Discounts belong to the account, not the key: every key of an account is priced identically,
 /// and one account's override never reaches another account's key.
 #[test]

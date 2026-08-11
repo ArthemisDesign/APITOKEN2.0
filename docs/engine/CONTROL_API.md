@@ -346,13 +346,14 @@ free_balance + reserved + spent = credited   (always, down to the nanodollar)
   the request and returns the difference after). You don't touch this — just know that "in the moment" the balance
   may be slightly lower by the amount of in-flight requests.
 - **spent_nano** — total spent (monotonically increasing).
-- **mult_bp** — the current legacy scalar in basis points: `2000 = ×0.20`. After Stage 9 the client
-  price comes from the immutable release/policy rule; the scalar remains a migration/audit source and
-  is not a fallback. Service uses the separate `meter_only`, not `mult_bp=0`.
+- **mult_bp** — the account's payable default multiplier in basis points, bounded to `0..10000`:
+  `2000 = ×0.20`. A row in `account_provider_discounts` overrides it for one canonical provider;
+  otherwise this scalar prices the request. It is live state, not a migration fallback.
 
-B2C/B2B/OpenKeys physically cannot go negative: if money runs short, the engine will trim the response to
-the balance or return `402`. Service is an explicit exception: official usage is accounted durably, but the
-balance is neither reserved nor debited.
+Admission atomically permits at most the shared −$1 account overdraft floor so concurrent funded
+requests are not rejected spuriously. A later settlement still records the real delivered usage,
+and an explicit debit/clawback can take an already-spent account lower; a non-positive account is
+blocked from new paid requests. Service accounts are the explicit zero-charge exception.
 
 ---
 
@@ -401,7 +402,7 @@ The client checks their own balance: `GET /v1` → no; **`GET /balance`** with t
 
 ### Accounts
 ```
-POST /admin/account                     {"handle"?, "mult_bp"?}      → 200 {account, mult_bp, handle}
+POST /admin/account                     {"handle"?, "mult_bp":0..10000?} → 200 {account, mult_bp, handle}
 POST /admin/accounts/query              {"account_ids":["acct_…"]}   → 200 {accounts:[{account,
                                                                             balance_nano,spent_nano,
                                                                             reserved_nano,balance,mult_bp,

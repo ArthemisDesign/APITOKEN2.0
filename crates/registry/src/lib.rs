@@ -397,7 +397,9 @@ pub fn open(path: &str) -> Result<Connection> {
     // PostgreSQL authority (migration 0043) so the SQLite lane keeps API parity.
     c.execute(
         "CREATE TABLE IF NOT EXISTS account_provider_discounts(\
-         account_id TEXT NOT NULL, provider_id TEXT NOT NULL, mult_bp INTEGER NOT NULL, \
+         account_id TEXT NOT NULL, \
+         provider_id TEXT NOT NULL CHECK(provider_id IN ('anthropic','openai','google','kimi','glm')), \
+         mult_bp INTEGER NOT NULL CHECK(mult_bp BETWEEN 0 AND 10000), \
          updated_ts INTEGER NOT NULL, PRIMARY KEY(account_id, provider_id))",
         [],
     )?;

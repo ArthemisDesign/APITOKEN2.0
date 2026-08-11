@@ -67,6 +67,10 @@ that prices requests.
   a provider id delivers that override, and a null multiplier on a provider job removes it. A
   default change and a provider change are independent deliveries and never evict one another.
 
+Read surfaces return the persisted scalar for both B2B and B2C. They never substitute the common
+B2C value (`5000` today): dormant/unprovisioned historical accounts can legitimately carry another
+stored value, and hiding it makes operator reconciliation impossible without direct SQL.
+
 The worker claims a job, calls the engine and confirms. If the desired value moved while the
 delivery was in flight, the job is requeued with the new value rather than confirmed, so an edit
 made during an engine outage is delayed, never lost.

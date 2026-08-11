@@ -77,6 +77,39 @@ describe("account discounts", () => {
 });
 
 describe("account multiplier", () => {
+  it("rejects an account-creation multiplier outside the engine range before any request", async () => {
+    const fetchImpl = vi.fn();
+    const engine = new EngineClient({
+      baseUrl: "https://engine.test",
+      controlKey: "control-key",
+      fetch: fetchImpl as unknown as typeof globalThis.fetch,
+    });
+
+    await expect(engine.createAccount({ multBp: 10_001 })).rejects.toBeInstanceOf(RangeError);
+    await expect(engine.createAccount({ multBp: -1 })).rejects.toBeInstanceOf(RangeError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid account handle with an accurate error before any request", async () => {
+    const fetchImpl = vi.fn();
+    const engine = new EngineClient({
+      baseUrl: "https://engine.test",
+      controlKey: "control-key",
+      fetch: fetchImpl as unknown as typeof globalThis.fetch,
+    });
+
+    await expect(engine.createAccount({ handle: "   " }))
+      .rejects.toThrow("account handle must be 1 to 200 non-whitespace characters");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when account creation returns an out-of-range multiplier", async () => {
+    const engine = client(() => json({ account: "acct_1", mult_bp: 10_001, handle: null }));
+
+    await expect(engine.createAccount({ multBp: 10_000 }))
+      .rejects.toBeInstanceOf(EngineClientError);
+  });
+
   it("confirms the engine applied exactly the requested multiplier", async () => {
     const engine = client(() => json({ account: "acct_1", mult_bp: 5_000, updated: 1 }));
     await expect(engine.setAccountMultiplier("acct_1", 5_000)).resolves.toBeUndefined();

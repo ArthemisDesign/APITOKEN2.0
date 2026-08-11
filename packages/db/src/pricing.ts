@@ -470,14 +470,14 @@ export async function getPricingView(database: Database, userId: string): Promis
       multiplierBp: row.multiplier_bp,
     };
   }
-  // Post-cutover B2C is the flat global policy: 50% off every catalog model, with any
-  // provider/model overrides resolved by the release authority. No tiers, thresholds or
-  // retention windows exist to display anymore.
+  // B2C uses one flat scalar per account. The stored row is the desired state and must remain
+  // visible even for an unprovisioned/dormant account: returning today's common 5000 constant hid
+  // older legitimate 4000 rows from operators and made the view disagree with a later repair.
   return {
     customerType: "b2c",
     pricingMode: "flat",
-    discountPercent: 50,
-    multiplierBp: 5_000,
+    discountPercent: 100 - row.multiplier_bp / 100,
+    multiplierBp: row.multiplier_bp,
   };
 }
 

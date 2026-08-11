@@ -130,7 +130,9 @@ side effect. `serve` may only perform the read-only schema verification before c
   `KeyAuth::mult_for(provider_id)`. Writes are `set_account_provider_discount` /
   `clear_account_provider_discount`, bounded to `0..=10000` bp and to the five engine provider ids;
   PostgreSQL enforces that same closed set (`anthropic|openai|google|kimi|glm`) in the table; the
-  `zhipu` word in migration 0043's historical comment was never a runtime provider id.
+  `zhipu` word in migration 0043's historical comment was never a runtime provider id. Fresh
+  SQLite audit databases carry the same provider/range checks in their CREATE TABLE; old snapshots
+  retain writer validation because `CREATE TABLE IF NOT EXISTS` cannot retrofit a CHECK.
   A write is live on the next authorization. Model — `docs/commerce/PRICING_MODEL.md`.
 - **Retired pricing machinery.** The per-account policy/binding tables, the immutable
   catalog/switch/policy versions, release-v2, the funding buckets/lots and the shadow evaluation
