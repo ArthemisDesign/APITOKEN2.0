@@ -820,8 +820,8 @@ systemctl is-active caddy apitoken-worker claude-api-backup.timer
 
 ## Backups
 
-The hourly timer writes custom-format dumps of `commerce` and `claude_engine`; daily Borgmatic then
-copies `/var/lib/apitoken/backups` off-host.
+The hourly timer writes custom-format dumps of `commerce`, `claude_engine`, `sales`, `openkeys`, and
+`apitoken_crm` when present; daily Borgmatic then copies `/var/lib/apitoken/backups` off-host.
 
 ```bash
 sudo install -o root -g root -m 0644 systemd/claude-api-backup.service /etc/systemd/system/
@@ -832,8 +832,8 @@ sudo systemctl start claude-api-backup.service
 systemctl show claude-api-backup.service -p Result
 ```
 
-`commerce.dump` and `claude_engine.dump` must be non-empty, mode 0600, and readable by the matching
-PostgreSQL `pg_restore --list`. Replication is not a backup; future HA still needs independent PITR.
+Every present named dump must be non-empty, mode 0600, and readable by the matching PostgreSQL
+`pg_restore --list`. Replication is not a backup; future HA still needs independent PITR.
 
 ## Final post-deploy gate
 

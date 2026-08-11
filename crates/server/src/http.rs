@@ -555,6 +555,9 @@ async fn audit_customer_error(
         return response;
     };
     let account = billing.account(account_id).await.ok().flatten();
+    if is_positive_balance_402(response.status(), account.as_ref()) {
+        Metrics::inc(&state.app.metrics.positive_balance_402);
+    }
     let mut reason = response
         .extensions()
         .get::<TerminalErrorReason>()
@@ -577,6 +580,14 @@ async fn audit_customer_error(
     );
     elog::warn("server", event);
     response
+}
+
+fn is_positive_balance_402(
+    status: StatusCode,
+    account: Option<&registry::AccountRow>,
+) -> bool {
+    status == StatusCode::PAYMENT_REQUIRED
+        && account.is_some_and(|row| row.balance_nano > 0)
 }
 
 fn upstream_status_reason(status: StatusCode) -> &'static str {
@@ -884,6 +895,8 @@ async fn metrics(
          # HELP claude_api_stream_cut_transport_total Streams cut after the first byte by a transport failure.\n\
          # TYPE claude_api_stream_cut_transport_total counter\nclaude_api_stream_cut_transport_total {}\n\
          # TYPE claude_api_auth_failures_total counter\nclaude_api_auth_failures_total {}\n\
+         # HELP claude_api_positive_balance_402_total Customer-visible 402 responses audited while the authoritative account balance was positive.\n\
+         # TYPE claude_api_positive_balance_402_total counter\nclaude_api_positive_balance_402_total {}\n\
          # TYPE claude_api_route_rebind_total counter\nclaude_api_route_rebind_total {}\n\
          # TYPE claude_api_route_pin_total counter\nclaude_api_route_pin_total {}\n\
          # TYPE claude_api_route_spill_total counter\nclaude_api_route_spill_total {}\n\
@@ -926,6 +939,7 @@ async fn metrics(
         g(&m.stream_cut_timeout),
         g(&m.stream_cut_transport),
         g(&m.auth_failures),
+        g(&m.positive_balance_402),
         rs.rebind,
         rs.pin,
         rs.spill,

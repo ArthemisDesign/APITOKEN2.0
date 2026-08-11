@@ -101,7 +101,7 @@ monitoring_role_sql=$({
   printf "ALTER ROLE apitoken_monitoring WITH LOGIN PASSWORD '%s';\n" "$escaped_postgres_password"
   printf 'GRANT pg_monitor TO apitoken_monitoring;\n'
   printf 'GRANT CONNECT ON DATABASE commerce TO apitoken_monitoring;\n'
-  for database in claude_engine sales apitoken_crm; do
+  for database in claude_engine sales openkeys apitoken_crm; do
     if docker compose --env-file "$POSTGRES_ENV" -f "$POSTGRES_COMPOSE" exec -T commerce-postgres \
       psql -U commerce -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname='$database'" | grep -qx 1; then
       printf 'GRANT CONNECT ON DATABASE %s TO apitoken_monitoring;\n' "$database"

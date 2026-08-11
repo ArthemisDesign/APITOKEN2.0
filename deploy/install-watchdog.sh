@@ -386,6 +386,8 @@ install_systemd_definitions() {
 install_monitoring_definitions() {
   install -o root -g root -m 0755 "$ROOT/deploy/collect-monitoring-metrics.sh" \
     /usr/local/lib/apitoken-watchdog/collect-monitoring-metrics.sh
+  install -o root -g root -m 0644 "$ROOT/deploy/monitoring-authority-drift.awk" \
+    /usr/local/lib/apitoken-watchdog/monitoring-authority-drift.awk
   "$ROOT/deploy/install-monitoring.sh"
 }
 

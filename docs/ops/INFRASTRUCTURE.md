@@ -246,8 +246,9 @@ backups must include application-consistent logical database dumps staged below
 `/var/lib/apitoken/backups`; raw live database files are not a restore strategy.
 
 `systemd/claude-api-backup.timer` runs `deploy/apitoken-db-dump` hourly. The script atomically creates
-mode-0600 custom-format `commerce.dump` and `claude_engine.dump`; daily Borgmatic includes their
-staging directory. Validate both using the matching PostgreSQL container's `pg_restore --list`.
+mode-0600 custom-format dumps for `commerce`, `claude_engine`, `sales`, `openkeys`, and
+`apitoken_crm` when those databases exist; daily Borgmatic includes their staging directory.
+Validate every present dump using the matching PostgreSQL container's `pg_restore --list`.
 
 The Borg private identity, repository key and passphrase are required for disaster recovery. An
 independent copy exists on the operator workstation and must also be kept in an encrypted password
@@ -261,9 +262,10 @@ copying required archives to independent storage.
 
 [`docs/ops/DEPLOYMENT.md`](DEPLOYMENT.md) is the authoritative operator runbook and
 [`CONTRIBUTING.md`](../../CONTRIBUTING.md) is the contributor/AI workflow. Normal delivery is automatic
-after `master` changes: isolated tests, validated backups of both databases, migrations before
-traffic admission, affected blue-green component cutovers, and exact-release verification. GitHub displays `deploy/tests`,
-`deploy/migration`, `deploy/engine`, `deploy/backend`, and overall `deploy/watchdog` contexts.
+after `master` changes: isolated tests, validated backups of every present production database,
+migrations before traffic admission, affected blue-green component cutovers, and exact-release
+verification. GitHub displays `deploy/tests`, `deploy/migration`, `deploy/engine`, `deploy/backend`,
+and overall `deploy/watchdog` contexts.
 
 The watchdog invokes the same two-phase controllers. These direct commands are retained for
 recovery; every release remains an exact tested 40-character SHA:

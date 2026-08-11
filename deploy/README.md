@@ -337,7 +337,8 @@ does not print any secret-bearing line.
 If import, start, or readiness fails, the trap restores the old unit, moves the credential back to
 pending, and restarts SQLite. Once PostgreSQL readiness succeeds and traffic resumes, do not point the
 engine back at SQLite: it is then only an audit snapshot. `deploy/apitoken-db-dump` makes independent
-custom-format dumps for `commerce` and `claude_engine`. PostgreSQL mode uses fenced template slots;
+custom-format dumps for `commerce`, `claude_engine`, `sales`, `openkeys`, and `apitoken_crm` when
+present. PostgreSQL mode uses fenced template slots;
 SQLite mode continues to enforce the host-local `flock` singleton.
 
 A commerce release contains a prebuilt database migrator. Deployment invokes it directly:

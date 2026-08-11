@@ -16,15 +16,17 @@ database state only. Grafana users are auto-provisioned as viewers.
 - Engine and router: request totals, upstream 429/auth/5xx failures, breaker state, in-flight work,
   Claude/Codex/Gemini pool health, serial fallback continuations and their bounded reasons,
   exact per-plane `not_started` proofs, settlement backlog, and expired leases.
-- Commerce: database health plus credit, adjustment, pricing, email, webhook, and checkout state,
-  including the release-v2 pricing control queues (release control/activation jobs, funding
-  normalizations, shadow rollouts, and managed Stage 8 captures).
+- Commerce: database health plus the live scalar credit, adjustment, pricing, and email queues;
+  webhook and checkout state; recent provider-attribution completeness; and aggregate
+  commerce↔engine default/provider/status reconciliation. Retired release-v2 and catalog/switch
+  queues are intentionally excluded because no runtime drains them.
 - Sales: API/web health, email queue, referral reconciliation buffer, and payout-batch failures.
 - CRM, Content Studio, public web, support, and mail: process/systemd health, HTTP probes, and logs.
 - Deployments and recovery: watchdog/timer state and current backups for `commerce`,
-  `claude_engine`, `sales`, and `apitoken_crm`. The collector also exports the delivery pipeline's
-  own state — quarantine, status freshness, current phase, and uncommitted-migration marker — so a
-  failed or stalled deployment pages the operator instead of waiting to be noticed in GitHub.
+  `claude_engine`, `sales`, `openkeys`, and `apitoken_crm`. The collector also exports the delivery
+  pipeline's own state — quarantine, status freshness, current phase, and uncommitted-migration
+  marker — so a failed or stalled deployment pages the operator instead of waiting to be noticed
+  in GitHub.
 - Logs: host journald in Loki for 14 days. Prometheus metrics are retained for 30 days or 24 GB,
   whichever limit is reached first. The journal itself is persistent and bounded by
   `systemd/journald-apitoken.conf` (8 GB, 90 days); without that drop-in journald falls back to
@@ -39,7 +41,9 @@ database state only. Grafana users are auto-provisioned as viewers.
   customer quoting it can be found directly (`--grep='<request-id>'`) instead of by guessing at
   timestamps. It never includes the raw API key, email, key label, prompt/body, query string, or a
   client-controlled path ID. Internal retries are not events; only the status returned to the caller
-  is recorded. Investigate directly with:
+  is recorded. A recognized metered 402 whose fresh terminal authority read still has a positive
+  account balance also increments `claude_api_positive_balance_402_total`; its only dimension is
+  the fixed provider scrape target, never a customer or key. Investigate directly with:
 
   ```bash
   journalctl -u 'claude-api-anthropic@*.service' -u 'claude-api-openai@*.service' \
@@ -926,10 +930,11 @@ lower the plane's admission set; a plan that lapsed needs a paid renewal, not en
 Check the owning worker/service, its database lock/lease fields, retry schedule, and downstream
 dependency. A growing queue with a live process usually means dependency or poison-job failure.
 
-For the live pricing control queues (`engine_catalog_jobs`, `engine_switch_jobs`) the owner is
-the `apitoken-worker` unit (pricing worker; check `node_systemd_unit_state` and the unit
-journal). These are control-plane lanes, not customer traffic: a sustained backlog means catalog
-or switch delivery is not draining.
+The only live pricing delivery queue is `engine_pricing_jobs`; its owner is the
+`apitoken-worker` unit (check `node_systemd_unit_state` and the unit journal). Account-default and
+provider-override changes share this scalar queue. The retired `engine_policy_jobs`,
+`engine_catalog_jobs`, and `engine_switch_jobs` tables are historical evidence only: no runtime
+drains them and they must never be reintroduced into this alert.
 
 The release-v2 cycle queues (`pricing_release_control_jobs_v2`,
 `pricing_funding_normalizations_v2`, `pricing_shadow_policy_jobs_v2`,
@@ -944,9 +949,9 @@ evidence from the completed gpt-image-2 cycle — never requeue or edit them.
 Inspect the oldest row without editing it. Confirm lock expiry and worker heartbeat, then use the
 application’s idempotent retry path.
 
-On the live pricing control queues a stale oldest item usually means the owning
+On the live `engine_pricing_jobs` queue a stale oldest item usually means the owning
 `apitoken-worker` lane is down, crash-looping, or every claim fails and re-arms
-`next_attempt_at`. The live queues use lease recovery plus `FOR UPDATE SKIP LOCKED` claiming, so
+`next_attempt_at`. The live queue uses lease recovery plus `FOR UPDATE SKIP LOCKED` claiming, so
 once the cause is fixed the worker re-claims the row on its own — never update `status` or lock
 fields by hand. The release-v2 cycle queues are no longer exported (see `DurableQueueBacklog`),
 so a row stranded there stays invisible to this alert by design.
@@ -996,6 +1001,31 @@ writes both sides in one transaction and queues delivery. If the engine is wrong
 requeues the delivery. Never edit `mult_bp` or `multiplier_bp` with SQL — that creates a third
 version of the number.
 
+## BusinessReconciliationUnavailable
+
+The collector could not inspect one of the durable authorities needed for an aggregate
+reconciliation. `scope="pricing_authority"` requires both `commerce` and `claude_engine`;
+`scope="openkeys"` requires the dedicated OpenKeys database. The accompanying drift gauges are
+explicit zeros while the scope is unavailable and must not be interpreted as healthy.
+
+Check `apitoken-monitoring-collector.service` first. A SQL/schema error leaves the previous
+textfile in place and is additionally caught by collector staleness; a genuinely absent database
+publishes this zero directly. Restore connectivity or deploy the missing schema through the normal
+watchdog path. Do not create placeholder tables or relax the collector query to silence the alert.
+
+## PricingAuthorityDrift
+
+The cross-database comparison found a mapped commerce account whose actual engine authority differs
+on `default`, `provider`, or `status`. It uses only three fixed dimension labels; account IDs live
+briefly in root-only collector scratch files and never enter Prometheus.
+
+First allow one normal worker sweep: an admin edit commits durable commerce intent before the
+asynchronous engine delivery, and the ten-minute alert delay filters that expected interval. If it
+persists, compare the mapped account through the admin API and engine Control API. For `provider`,
+an absent override means fallback to the default and is different from an explicit row. For
+`status`, `pending` or `error` in commerce while the engine is active is real drift. Re-drive the
+intended state through the idempotent reconciliation/admin workflow; never patch either database.
+
 ## PricingJobStaleConfirmed
 
 A delivery job is marked `confirmed` while carrying a multiplier that is not what commerce
@@ -1026,6 +1056,44 @@ Identify which by reading the account's `ledger`. A clawback is intended and nee
 knowing the debt exists. Repeated settlement overshoot on one provider means that provider's
 reservation estimate is systematically low and should be raised — the floor is not the thing to
 change.
+
+## UsageProviderAttributionMissing
+
+At least one usage row created during the last hour lacks exact top-level provider evidence and is
+still `NULL`, `unattributed`, or `unavailable`. New ingestion is required to copy the immutable
+engine ledger provider at version 2, so this is a producer/recovery regression rather than a model
+name to infer. The companion `window="all"` series is the historical recovery backlog and is not
+itself an alert.
+
+Inspect the pricing worker journal and the matching engine ledger entry. Recovery may fill only an
+exact provider carried by retained ledger evidence with the same account, ledger ID, and amount.
+Never guess from a model name or manually relabel an event; if evidence is outside retention, keep
+the terminal sentinel and document the irrecoverable count.
+
+## OpenKeysPricingDrift
+
+Either an OpenKeys batch/key violates its stored pricing contract, or the baseline number of
+historical `legacy` rows increased. Existing legacy inventory is intentional until its staged
+cutover and does not fire by itself; a new issuance must store `official_1_to_1`, `mult_bp=10000`,
+and mirror face value, multiplier, and contract from batch to key.
+
+Stop issuance before investigating. Check the OpenKeys application journal and run the DB-backed
+pricing-contract test against the exact release. Do not edit issued rows to clear the metric: failed
+issuance is retried through the durable issuance workflow, while a genuinely wrong issued key needs
+an auditable disable/replacement decision.
+
+## PositiveBalancePaymentRequired
+
+A recognized metered request received 402 while the terminal audit's fresh engine read still showed
+a positive account balance. Small positive balances can legitimately be below an input/tool minimum,
+so one occurrence is warning-level evidence, not proof of lost money. A burst after a pricing or
+provider change is the incident signature this counter exists to expose.
+
+Query `customer_http_error` journal events for status 402 on the alerting provider and compare
+`account_balance_nano`, `account_reserved_nano`, the key lifetime limit, and the fixed error reason.
+If the key limit—not account money—bound admission, explain it as expected. Otherwise reproduce the
+quote/hold with the recorded route and fix the estimate or authority drift; never grant balance or
+lower the overdraft floor merely to suppress 402s.
 
 ## PricingChargeMismatch
 
@@ -1112,7 +1180,7 @@ Run `claude-api-backup.service`, check its result, then validate each dump with 
 
 ## BackupMissing
 
-Treat any missing dump for the four named databases as critical. Run the backup service and verify
+Treat any missing dump for the five named databases as critical. Run the backup service and verify
 ownership, mode 0600, archive readability, size, and timestamp.
 
 ## DeployQuarantined

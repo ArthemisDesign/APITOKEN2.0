@@ -657,8 +657,8 @@ groups:
           runbook: 'docs/ops/MONITORING.md#durablequeuedeaditems'
 
       # Both 2026-08 pricing incidents were silent: every service was up, every suite was green,
-      # and two components simply disagreed about one fact. These four alerts watch the
-      # disagreement itself, which is the only thing that was ever visible from outside.
+      # and two components simply disagreed about one fact. These alerts watch the disagreement
+      # itself, which is the only thing that was ever visible from outside.
       - alert: SalesSyncCursorStalled
         expr: (apitoken_sales_feed_head - on() apitoken_sales_cursor{feed="usage_events"}) > 0
           and on() apitoken_sales_cursor_age_seconds{feed="usage_events"} > 1800
@@ -682,6 +682,28 @@ groups:
           description: '{{ $value }} customers have a commerce default multiplier the engine mirror does not share. One of the two is what the customer is actually charged, and the panel shows the other — this is the exact shape of the 2026-08-09 fallout, where nine B2B accounts silently paid list price.'
           runbook: 'docs/ops/MONITORING.md#pricingmirrordrift'
 
+      - alert: BusinessReconciliationUnavailable
+        expr: apitoken_business_reconciliation_up == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: '{{ $labels.scope }}'
+        annotations:
+          summary: '{{ $labels.scope }} reconciliation could not inspect its authority'
+          description: 'The collector could not compare every durable side of {{ $labels.scope }}. Drift gauges are not authoritative while this is zero.'
+          runbook: 'docs/ops/MONITORING.md#businessreconciliationunavailable'
+
+      - alert: PricingAuthorityDrift
+        expr: apitoken_pricing_authority_drift > 0
+        for: 10m
+        labels:
+          severity: critical
+          component: pricing-worker
+        annotations:
+          summary: 'Engine and commerce disagree on pricing {{ $labels.dimension }}'
+          description: '{{ $value }} mapped accounts differ between commerce durable state and the engine authority on the fixed {{ $labels.dimension }} dimension.'
+          runbook: 'docs/ops/MONITORING.md#pricingauthoritydrift'
+
       - alert: PricingJobStaleConfirmed
         expr: apitoken_pricing_job_stale_confirmed > 0
         for: 15m
@@ -703,6 +725,40 @@ groups:
           summary: 'An account carries more debt than the overdraft floor allows'
           description: '{{ $value }} accounts are below the $1 floor admission is supposed to hold. Admission itself is atomic on the account row, so this means a settlement charged more than its reservation held, or money was clawed back after it was already spent — either way the pool funded the difference.'
           runbook: 'docs/ops/MONITORING.md#engineaccountsbelowfloor'
+
+      - alert: UsageProviderAttributionMissing
+        expr: apitoken_usage_provider_unresolved{window="1h"} > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: pricing-worker
+        annotations:
+          summary: 'New usage lacks exact provider attribution'
+          description: '{{ $value }} usage rows created in the last hour still have NULL or a recovery sentinel instead of immutable provider evidence.'
+          runbook: 'docs/ops/MONITORING.md#usageproviderattributionmissing'
+
+      - alert: OpenKeysPricingDrift
+        expr: apitoken_openkeys_pricing_drift > 0
+          or apitoken_openkeys_legacy_rows > min_over_time(apitoken_openkeys_legacy_rows[20m])
+        for: 2m
+        labels:
+          severity: critical
+          component: openkeys
+        annotations:
+          summary: 'OpenKeys pricing contract regressed'
+          description: 'OpenKeys contains a malformed pricing row or the historical legacy-row baseline increased. New issuance must be official_1_to_1 at 10000 bp.'
+          runbook: 'docs/ops/MONITORING.md#openkeyspricingdrift'
+
+      - alert: PositiveBalancePaymentRequired
+        expr: increase(claude_api_positive_balance_402_total[10m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          component: engine
+        annotations:
+          summary: 'The {{ $labels.provider }} plane returned 402 while account balance was positive'
+          description: '{{ $value }} recognized metered requests received Payment Required even though the fresh terminal audit still read a positive authoritative account balance.'
+          runbook: 'docs/ops/MONITORING.md#positivebalancepaymentrequired'
 
       # Settled money, not a dry run. The shadow evaluation lane that used to answer this question
       # ran ahead of a rollout, wrote rows nothing read, and was silent during the cutover it

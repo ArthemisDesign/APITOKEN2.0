@@ -10,6 +10,7 @@ POSTGRES_ENV=${MONITORING_POSTGRES_ENV:-/etc/apitoken/postgres.env}
 OUTPUT_DIR=${MONITORING_TEXTFILE_DIR:-/var/lib/apitoken/monitoring/textfile}
 BACKUP_ROOT=${MONITORING_BACKUP_ROOT:-/var/lib/apitoken/backups}
 WATCHDOG_STATE=${MONITORING_WATCHDOG_STATE:-/var/lib/apitoken/watchdog}
+AUTHORITY_DRIFT_AWK=${MONITORING_AUTHORITY_DRIFT_AWK:-/usr/local/lib/apitoken-watchdog/monitoring-authority-drift.awk}
 # Deliberately larger than any alert threshold: a missing status file must read as "stale", never
 # as a fresh zero.
 WATCHDOG_STATUS_MISSING_AGE_SECONDS=86400
@@ -17,13 +18,22 @@ WATCHDOG_STATUS_MISSING_AGE_SECONDS=86400
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { printf 'monitoring collector must run as root\n' >&2; exit 1; }
 [[ -f $COMPOSE_FILE && ! -L $COMPOSE_FILE ]] || { printf 'PostgreSQL compose definition is missing\n' >&2; exit 1; }
 [[ -f $POSTGRES_ENV && ! -L $POSTGRES_ENV ]] || { printf 'PostgreSQL environment file is missing\n' >&2; exit 1; }
+[[ -f $AUTHORITY_DRIFT_AWK && ! -L $AUTHORITY_DRIFT_AWK ]] \
+  || { printf 'pricing authority reconciliation program is missing\n' >&2; exit 1; }
 
 # Must stay group-deploy writable, matching install-monitoring.sh: apitoken-devbot.service
 # (User=deploy) publishes its devbot.prom heartbeat next to this collector's output, and this
 # line runs every minute — re-rooting the directory breaks the heartbeat write with EACCES.
 install -d -o root -g deploy -m 0775 "$OUTPUT_DIR"
 temporary=$(mktemp "$OUTPUT_DIR/.apitoken.prom.XXXXXX")
-cleanup() { rm -f -- "$temporary"; }
+authority_commerce_accounts=$(mktemp "$OUTPUT_DIR/.authority-commerce-accounts.XXXXXX")
+authority_engine_accounts=$(mktemp "$OUTPUT_DIR/.authority-engine-accounts.XXXXXX")
+authority_commerce_overrides=$(mktemp "$OUTPUT_DIR/.authority-commerce-overrides.XXXXXX")
+authority_engine_overrides=$(mktemp "$OUTPUT_DIR/.authority-engine-overrides.XXXXXX")
+cleanup() {
+  rm -f -- "$temporary" "$authority_commerce_accounts" "$authority_engine_accounts" \
+    "$authority_commerce_overrides" "$authority_engine_overrides"
+}
 trap cleanup EXIT
 chmod 0644 "$temporary"
 
@@ -32,7 +42,7 @@ psql_database() {
   docker compose --env-file "$POSTGRES_ENV" -f "$COMPOSE_FILE" \
     exec -T commerce-postgres psql \
       --username=commerce --dbname="$database" --no-psqlrc --tuples-only --no-align \
-      --set ON_ERROR_STOP=1
+      --field-separator=$'\t' --set ON_ERROR_STOP=1
 }
 
 database_exists() {
@@ -81,6 +91,16 @@ cat >"$temporary" <<'METRICS'
 # TYPE apitoken_pricing_output_overage_absorbed_nano gauge
 # HELP apitoken_pricing_effective_multiplier_bp Basis points actually charged against the official price, by account class.
 # TYPE apitoken_pricing_effective_multiplier_bp gauge
+# HELP apitoken_pricing_authority_drift Mapped commerce accounts whose engine authority disagrees on a fixed pricing dimension.
+# TYPE apitoken_pricing_authority_drift gauge
+# HELP apitoken_business_reconciliation_up Whether a required cross-database reconciliation completed against both authorities.
+# TYPE apitoken_business_reconciliation_up gauge
+# HELP apitoken_usage_provider_unresolved Usage rows without exact provider evidence, by bounded observation window.
+# TYPE apitoken_usage_provider_unresolved gauge
+# HELP apitoken_openkeys_pricing_drift OpenKeys batch or key rows that violate the stored pricing contract.
+# TYPE apitoken_openkeys_pricing_drift gauge
+# HELP apitoken_openkeys_legacy_rows Historical OpenKeys batch and key rows still carrying the legacy pricing contract.
+# TYPE apitoken_openkeys_legacy_rows gauge
 METRICS
 
 psql_database commerce >>"$temporary" <<'SQL'
@@ -118,6 +138,13 @@ WHERE j.status = 'confirmed'
 -- partner sync falling behind or refusing pages, which is exactly how five hours of commission
 -- went unaccrued on 2026-08-10 without a single alert.
 SELECT 'apitoken_sales_feed_head ' || COALESCE(max(feed_seq), 0) FROM pricing_usage_events;
+SELECT 'apitoken_usage_provider_unresolved{window="all"} ' || count(*)
+FROM pricing_usage_events
+WHERE provider_id IS NULL OR provider_id IN ('unattributed', 'unavailable');
+SELECT 'apitoken_usage_provider_unresolved{window="1h"} ' || count(*)
+FROM pricing_usage_events
+WHERE created_at >= now() - interval '1 hour'
+  AND (provider_id IS NULL OR provider_id IN ('unattributed', 'unavailable'));
 SELECT 'apitoken_queue_ready{queue="commerce_email"} ' || count(*) FROM email_outbox WHERE status = 'pending';
 SELECT 'apitoken_queue_dead{queue="commerce_email"} ' || count(*) FROM email_outbox WHERE status = 'failed';
 -- Infrastructure installs before application migrations. Cast the enum to text so this collector
@@ -140,7 +167,9 @@ SELECT 'apitoken_engine_accounts_below_floor ' || count(*) FROM accounts WHERE b
 -- rollout, wrote 2654 rows that nothing ever read, and was not running during the cutover it
 -- existed to protect. This reads settled money instead of a dry run, so it cannot be skipped.
 -- One basis point of tolerance absorbs integer rounding on sub-cent charges.
-WITH settled AS (
+WITH account_classes(account_class) AS (
+  VALUES ('b2c'), ('b2b'), ('openkeys'), ('service')
+), settled AS (
   SELECT account_class,
          amount_nano::numeric / official_nano AS charged_ratio,
          payable_multiplier_bp
@@ -149,9 +178,11 @@ WITH settled AS (
     AND official_nano > 0 AND amount_nano > 0
     AND payable_multiplier_bp IS NOT NULL AND account_class IS NOT NULL
 )
-SELECT 'apitoken_pricing_charge_mismatch{account_class="' || account_class || '"} '
+SELECT 'apitoken_pricing_charge_mismatch{account_class="' || class.account_class || '"} '
        || count(*) FILTER (WHERE ABS(charged_ratio * 10000 - payable_multiplier_bp) > 1)
-FROM settled GROUP BY account_class;
+FROM account_classes class
+LEFT JOIN settled ON settled.account_class = class.account_class
+GROUP BY class.account_class;
 WITH settled AS (
   SELECT account_class, amount_nano::numeric / official_nano AS charged_ratio
   FROM ledger
@@ -208,10 +239,101 @@ SELECT 'apitoken_sales_failed_payout_batches ' || count(*) FROM payout_batches W
 -- Where the partner sync actually stands. Compared against apitoken_sales_feed_head from commerce,
 -- a gap that stops closing is the whole signal: on 2026-08-10 this cursor stood still for five
 -- hours while every service was up and healthy, and no commission accrued.
-SELECT 'apitoken_sales_cursor{feed="' || feed || '"} ' || last_id FROM sync_cursors;
-SELECT 'apitoken_sales_cursor_age_seconds{feed="' || feed || '"} '
-       || GREATEST(0, EXTRACT(EPOCH FROM now() - updated_at))::bigint FROM sync_cursors;
+WITH feeds(feed) AS (VALUES ('attributions'), ('usage_events'), ('topups'))
+SELECT 'apitoken_sales_cursor{feed="' || feeds.feed || '"} ' || COALESCE(cursor.last_id, 0)
+FROM feeds LEFT JOIN sync_cursors cursor USING (feed);
+WITH feeds(feed) AS (VALUES ('attributions'), ('usage_events'), ('topups'))
+SELECT 'apitoken_sales_cursor_age_seconds{feed="' || feeds.feed || '"} '
+       || CASE WHEN cursor.updated_at IS NULL THEN 86400
+               ELSE GREATEST(0, EXTRACT(EPOCH FROM now() - cursor.updated_at))::bigint END
+FROM feeds LEFT JOIN sync_cursors cursor USING (feed);
 SQL
+fi
+
+# Compare the actual engine authority to commerce's durable mapped intent without exporting a
+# customer/account/provider identifier. PostgreSQL cannot join databases directly and enabling
+# dblink would create a second production dependency, so the collector takes four individual
+# statement snapshots and performs one bounded in-memory join. A ten-minute alert delay absorbs the
+# short interval in which a worker may legitimately reconcile state between those snapshots. Any
+# query failure aborts the collector and leaves the previous textfile in place; a missing engine
+# database exports an explicit reconciliation-down series instead of a healthy-looking zero drift.
+if database_exists claude_engine; then
+  psql_database commerce >"$authority_commerce_accounts" <<'SQL'
+SELECT engine_account_id, mult_bp, status::text
+FROM engine_accounts
+WHERE engine_account_id IS NOT NULL
+ORDER BY engine_account_id;
+SQL
+  psql_database claude_engine >"$authority_engine_accounts" <<'SQL'
+SELECT id, mult_bp, status FROM accounts ORDER BY id;
+SQL
+  psql_database commerce >"$authority_commerce_overrides" <<'SQL'
+SELECT account.engine_account_id, discount.provider_id, discount.multiplier_bp
+FROM customer_provider_discounts discount
+JOIN engine_accounts account ON account.user_id = discount.user_id
+WHERE account.engine_account_id IS NOT NULL
+ORDER BY account.engine_account_id, discount.provider_id;
+SQL
+  psql_database claude_engine >"$authority_engine_overrides" <<'SQL'
+SELECT account_id, provider_id, mult_bp
+FROM account_provider_discounts
+ORDER BY account_id, provider_id;
+SQL
+
+  awk \
+    -v engine_accounts="$authority_engine_accounts" \
+    -v commerce_accounts="$authority_commerce_accounts" \
+    -v commerce_overrides="$authority_commerce_overrides" \
+    -v engine_overrides="$authority_engine_overrides" \
+    -f "$AUTHORITY_DRIFT_AWK" \
+    "$authority_engine_accounts" "$authority_commerce_accounts" \
+    "$authority_commerce_overrides" "$authority_engine_overrides" >>"$temporary"
+else
+  printf '%s\n' \
+    'apitoken_pricing_authority_drift{dimension="default"} 0' \
+    'apitoken_pricing_authority_drift{dimension="provider"} 0' \
+    'apitoken_pricing_authority_drift{dimension="status"} 0' \
+    'apitoken_business_reconciliation_up{scope="pricing_authority"} 0' >>"$temporary"
+fi
+
+# OpenKeys keeps historical legacy inventory intentionally, so its baseline is not an error. The
+# integrity gauge catches malformed rows, while the monotonic legacy-row baseline lets Prometheus
+# alert only when a new issuance regresses to the old contract.
+if database_exists openkeys; then
+  psql_database openkeys >>"$temporary" <<'SQL'
+WITH drift AS (
+  SELECT batch.id
+  FROM openkeys_batches batch
+  WHERE batch.pricing_contract IS NULL
+     OR batch.pricing_contract NOT IN ('legacy', 'official_1_to_1')
+     OR batch.mult_bp IS NULL
+     OR batch.mult_bp NOT BETWEEN 1 AND 10000
+     OR (batch.pricing_contract = 'official_1_to_1' AND batch.mult_bp <> 10000)
+  UNION ALL
+  SELECT key_row.id
+  FROM openkeys_keys key_row
+  JOIN openkeys_batches batch ON batch.id = key_row.batch_id
+  WHERE key_row.pricing_contract IS NULL
+     OR key_row.pricing_contract NOT IN ('legacy', 'official_1_to_1')
+     OR key_row.mult_bp IS NULL
+     OR key_row.mult_bp NOT BETWEEN 1 AND 10000
+     OR (key_row.pricing_contract = 'official_1_to_1' AND key_row.mult_bp <> 10000)
+     OR key_row.pricing_contract IS DISTINCT FROM batch.pricing_contract
+     OR key_row.mult_bp IS DISTINCT FROM batch.mult_bp
+     OR key_row.face_value_nano IS DISTINCT FROM batch.face_value_nano
+)
+SELECT 'apitoken_openkeys_pricing_drift ' || count(*) FROM drift;
+SELECT 'apitoken_openkeys_legacy_rows ' || (
+  (SELECT count(*) FROM openkeys_batches WHERE pricing_contract = 'legacy')
+  + (SELECT count(*) FROM openkeys_keys WHERE pricing_contract = 'legacy')
+);
+SELECT 'apitoken_business_reconciliation_up{scope="openkeys"} 1';
+SQL
+else
+  printf '%s\n' \
+    'apitoken_openkeys_pricing_drift 0' \
+    'apitoken_openkeys_legacy_rows 0' \
+    'apitoken_business_reconciliation_up{scope="openkeys"} 0' >>"$temporary"
 fi
 
 {
@@ -222,7 +344,7 @@ fi
   printf '# HELP apitoken_backup_size_bytes Size of the current database dump.\n'
   printf '# TYPE apitoken_backup_size_bytes gauge\n'
   now=$(date +%s)
-  for database in commerce claude_engine sales apitoken_crm; do
+  for database in commerce claude_engine sales openkeys apitoken_crm; do
     dump=$BACKUP_ROOT/$database.dump
     if [[ -f $dump && ! -L $dump ]]; then
       modified=$(stat -c %Y -- "$dump")
@@ -290,4 +412,5 @@ fi
 } >>"$temporary"
 
 mv -f -- "$temporary" "$OUTPUT_DIR/apitoken.prom"
+cleanup
 trap - EXIT

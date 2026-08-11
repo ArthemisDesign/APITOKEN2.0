@@ -47,6 +47,10 @@ pub struct Metrics {
     /// configured Redis means publishes never arrive.
     pub cooling_hint_skips: AtomicU64,
     pub auth_failures: AtomicU64, // неудачных авторизаций (спайк = брутфорс/скан управляющих ключей)
+    /// Customer-visible 402 responses returned even though the authoritative account balance was
+    /// still positive when the terminal response was audited. This is process-wide and inherits
+    /// the fixed provider label from the scrape target; it never carries account or key identity.
+    pub positive_balance_402: AtomicU64,
     /// Last-resort ClaudeStore transport. These counters are intentionally provider-wide and carry
     /// no model, account, key, request, upstream-error, or customer labels. The Prometheus scrape
     /// target's provider label separates Anthropic Messages from OpenAI Responses observations.

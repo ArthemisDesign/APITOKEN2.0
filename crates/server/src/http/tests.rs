@@ -2035,6 +2035,7 @@ async fn fixed_provider_routers_ignore_the_legacy_plane_header() {
 async fn exact_not_started_responses_increment_only_the_serving_plane_counter() {
     let app = provider_test_app(forward::ProviderMode::Anthropic);
     let metrics = Arc::clone(&app.metrics);
+    forward::Metrics::inc(&metrics.positive_balance_402);
     let service = router(app, Arc::new(AtomicBool::new(true)));
     let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
 
@@ -2080,6 +2081,7 @@ async fn exact_not_started_responses_increment_only_the_serving_plane_counter() 
     assert!(body.contains("claude_api_execution_not_started_total{plane=\"anthropic\"} 1"));
     assert!(body.contains("claude_api_execution_not_started_total{plane=\"openai\"} 0"));
     assert!(body.contains("claude_api_execution_not_started_total{plane=\"gemini\"} 0"));
+    assert!(body.contains("claude_api_positive_balance_402_total 1"));
 }
 
 
@@ -3531,6 +3533,30 @@ fn billing_limit_reason_identifies_the_binding_budget() {
         billing_limit_reason(Some(&account), &key),
         "account_and_key_limit"
     );
+}
+
+#[test]
+fn positive_balance_402_counter_predicate_requires_both_facts() {
+    let mut account = registry::AccountRow {
+        id: "acct_safe".to_string(),
+        handle: None,
+        balance_nano: 1,
+        spent_nano: 0,
+        reserved_nano: 0,
+        mult_bp: 10_000,
+        status: "active".to_string(),
+    };
+    assert!(is_positive_balance_402(
+        StatusCode::PAYMENT_REQUIRED,
+        Some(&account),
+    ));
+    assert!(!is_positive_balance_402(StatusCode::BAD_REQUEST, Some(&account)));
+    account.balance_nano = 0;
+    assert!(!is_positive_balance_402(
+        StatusCode::PAYMENT_REQUIRED,
+        Some(&account),
+    ));
+    assert!(!is_positive_balance_402(StatusCode::PAYMENT_REQUIRED, None));
 }
 
 fn fleet_history_test_app(tag: &str) -> (AppState, std::path::PathBuf) {

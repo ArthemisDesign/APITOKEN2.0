@@ -57,6 +57,10 @@ with `max_tokens` clamped down (`cap_to_balance`)
 → the client never receives a single token/cent above their balance. 4xx/errors/rotation are NOT metered.
 For policy keys the cap takes the minimum of the account balance and the remaining lifetime limit. Such keys
 bypass the auth TTL cache; expiry and limit are re-checked inside the atomic reserve transaction.
+Every recognized metered 402 is audited after the response against a fresh authority read. The
+low-cardinality `claude_api_positive_balance_402_total` counter advances when that live balance is
+still positive; provider comes only from the fixed scrape target and customer/key identifiers never
+enter Prometheus labels.
 
 **Hot tariff overrides (`pricing/tariff_book.rs`):** the process-wide `TariffBook` (OnceLock +
 `RwLock<Arc<TariffBookSnapshot>>`, installed once by `server` from `CLAUDE_API_TARIFF_OVERRIDES`,

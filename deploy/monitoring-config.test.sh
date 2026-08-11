@@ -307,6 +307,8 @@ grep -Fq 'DEVBOT_AM_SECRET=$devbot_am_secret node' "$ROOT/deploy/install-monitor
   || { printf 'monitoring installer does not pass DEVBOT_AM_SECRET to the renderer\n' >&2; exit 1; }
 
 grep -Fq 'apitoken_backup_present{database="%s"}' "$ROOT/deploy/collect-monitoring-metrics.sh"
+[[ $(tail -n 3 "$ROOT/deploy/collect-monitoring-metrics.sh") == $'mv -f -- "$temporary" "$OUTPUT_DIR/apitoken.prom"\ncleanup\ntrap - EXIT' ]] \
+  || { printf 'collector does not remove root-only authority snapshots after publish\n' >&2; exit 1; }
 
 # Deployment-pipeline visibility. A failed or stalled delivery is otherwise only observable in the
 # GitHub UI, so the collector must export it and the rules must alert on it.
@@ -460,7 +462,12 @@ for drift_metric in \
   apitoken_pricing_job_stale_confirmed \
   apitoken_sales_feed_head \
   apitoken_sales_cursor_age_seconds \
-  apitoken_engine_accounts_below_floor; do
+  apitoken_engine_accounts_below_floor \
+  apitoken_pricing_authority_drift \
+  apitoken_business_reconciliation_up \
+  apitoken_usage_provider_unresolved \
+  apitoken_openkeys_pricing_drift \
+  apitoken_openkeys_legacy_rows; do
   grep -Fq "$drift_metric" "$ROOT/deploy/collect-monitoring-metrics.sh" \
     || { printf 'collector does not export %s\n' "$drift_metric" >&2; exit 1; }
   grep -Fq "$drift_metric" "$ROOT/observability/prometheus/rules/application.yml" \
@@ -469,12 +476,18 @@ done
 for drift_operand in \
   'ea.mult_bp IS DISTINCT FROM cp.multiplier_bp' \
   "j.status = 'confirmed'" \
-  'FROM sync_cursors' \
-  'balance_nano < -1000000000'; do
+  'LEFT JOIN sync_cursors' \
+  'balance_nano < -1000000000' \
+  'FROM customer_provider_discounts' \
+  'FROM account_provider_discounts' \
+  'provider_id IS NULL OR provider_id IN' \
+  "batch.pricing_contract = 'official_1_to_1'"; do
   grep -Fq "$drift_operand" "$ROOT/deploy/collect-monitoring-metrics.sh" \
     || { printf 'drift collector is missing %s\n' "$drift_operand" >&2; exit 1; }
 done
-for drift_alert in SalesSyncCursorStalled PricingMirrorDrift PricingJobStaleConfirmed EngineAccountsBelowFloor; do
+for drift_alert in SalesSyncCursorStalled PricingMirrorDrift PricingJobStaleConfirmed \
+  EngineAccountsBelowFloor BusinessReconciliationUnavailable PricingAuthorityDrift \
+  UsageProviderAttributionMissing OpenKeysPricingDrift PositiveBalancePaymentRequired; do
   grep -Fq "alert: $drift_alert" "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'missing %s alert\n' "$drift_alert" >&2; exit 1; }
   lowercase_alert=$(printf '%s' "$drift_alert" | tr '[:upper:]' '[:lower:]')
@@ -483,6 +496,13 @@ for drift_alert in SalesSyncCursorStalled PricingMirrorDrift PricingJobStaleConf
   grep -Fqi "## $drift_alert" "$ROOT/docs/ops/MONITORING.md" \
     || { printf 'docs/ops/MONITORING.md has no %s runbook\n' "$drift_alert" >&2; exit 1; }
 done
+grep -Fq 'claude_api_positive_balance_402_total' "$ROOT/crates/server/src/http.rs" \
+  || { printf 'engine does not export positive-balance 402 observations\n' >&2; exit 1; }
+grep -Fq 'increase(claude_api_positive_balance_402_total[10m]) > 0' \
+  "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'positive-balance 402 observations do not alert\n' >&2; exit 1; }
+grep -Fq 'engine_pricing_jobs' "$ROOT/docs/ops/MONITORING.md" \
+  || { printf 'pricing queue runbook omits the only live scalar queue\n' >&2; exit 1; }
 grep -Fq 'severity: critical' \
   <(grep -F 'alert: SalesSyncCursorStalled' -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
   || { printf 'sales-sync stall alert is not critical\n' >&2; exit 1; }
@@ -724,12 +744,16 @@ grep -Fq 'apitoken_queue_dead{queue="commerce_email"}' "$ROOT/deploy/collect-mon
 grep -Fq "FROM email_outbox WHERE status = 'failed'" "$ROOT/deploy/collect-monitoring-metrics.sh"
 grep -Fq 'apitoken_queue_canceled{queue="commerce_email"}' "$ROOT/deploy/collect-monitoring-metrics.sh"
 grep -Fq "FROM email_outbox WHERE status::text = 'canceled'" "$ROOT/deploy/collect-monitoring-metrics.sh"
-for database in commerce claude_engine sales apitoken_crm; do
+for database in commerce claude_engine sales openkeys apitoken_crm; do
   grep -Fq "$database" "$ROOT/deploy/apitoken-db-dump"
+  grep -Fq "$database" "$ROOT/deploy/collect-monitoring-metrics.sh"
+  grep -Fq "$database" "$ROOT/deploy/install-monitoring.sh"
 done
 grep -Fq 'observability/*' "$ROOT/deploy/watchdog-lib.sh"
 grep -Fq 'install-monitoring.sh' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'apitoken-monitoring-collector.timer' "$ROOT/deploy/install-watchdog.sh"
+grep -Fq 'monitoring-authority-drift.awk' "$ROOT/deploy/install-watchdog.sh"
+bash "$ROOT/deploy/monitoring-authority-drift.test.sh"
 
 if grep -R -E '(password|secret|token)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_-]{24,}' \
   "$ROOT/observability" --exclude='alertmanager.yml.template'; then
