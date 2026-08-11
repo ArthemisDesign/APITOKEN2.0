@@ -2,25 +2,6 @@ use super::*;
 use crate::{PROVIDER_ANTHROPIC, PROVIDER_GOOGLE};
 use std::sync::{Arc, Barrier};
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #[test]
 fn engine_migration_plan_is_contiguous() {
     let versions: Vec<_> = ENGINE_MIGRATIONS
@@ -784,10 +765,24 @@ fn pool_member_disable_postgres_roundtrip() {
         .is_empty());
 
     // Re-enabling is idempotent too.
-    pg.pool_member_set_disabled(crate::PROVIDER_GOOGLE, "gemini_oauth_000002", false, false, "", "")
-        .unwrap();
-    pg.pool_member_set_disabled(crate::PROVIDER_GOOGLE, "gemini_oauth_000002", false, false, "", "")
-        .unwrap();
+    pg.pool_member_set_disabled(
+        crate::PROVIDER_GOOGLE,
+        "gemini_oauth_000002",
+        false,
+        false,
+        "",
+        "",
+    )
+    .unwrap();
+    pg.pool_member_set_disabled(
+        crate::PROVIDER_GOOGLE,
+        "gemini_oauth_000002",
+        false,
+        false,
+        "",
+        "",
+    )
+    .unwrap();
     assert!(pg
         .pool_member_disabled(crate::PROVIDER_GOOGLE)
         .unwrap()
@@ -795,7 +790,14 @@ fn pool_member_disable_postgres_roundtrip() {
 
     // Claude can never be addressed through this store.
     assert!(pg
-        .pool_member_set_disabled(crate::PROVIDER_ANTHROPIC, "someone@example.com", true, false, "", "")
+        .pool_member_set_disabled(
+            crate::PROVIDER_ANTHROPIC,
+            "someone@example.com",
+            true,
+            false,
+            "",
+            ""
+        )
         .is_err());
     assert!(pg.pool_member_disabled(crate::PROVIDER_ANTHROPIC).is_err());
     assert!(pg
@@ -805,7 +807,14 @@ fn pool_member_disable_postgres_roundtrip() {
     // Hiding is a presentation choice layered on top of a disable, never a way to take a serving
     // profile out of the operator's view while it keeps receiving traffic.
     assert!(pg
-        .pool_member_set_disabled(crate::PROVIDER_GOOGLE, "gemini_oauth_000003", false, true, "", "")
+        .pool_member_set_disabled(
+            crate::PROVIDER_GOOGLE,
+            "gemini_oauth_000003",
+            false,
+            true,
+            "",
+            ""
+        )
         .is_err());
     pg.pool_member_set_disabled(
         crate::PROVIDER_GOOGLE,
@@ -824,8 +833,15 @@ fn pool_member_disable_postgres_roundtrip() {
         .unwrap()
         .contains("gemini_oauth_000003"));
     // Re-enabling drops the hidden flag with the row: a member back in rotation is visible again.
-    pg.pool_member_set_disabled(crate::PROVIDER_GOOGLE, "gemini_oauth_000003", false, false, "", "")
-        .unwrap();
+    pg.pool_member_set_disabled(
+        crate::PROVIDER_GOOGLE,
+        "gemini_oauth_000003",
+        false,
+        false,
+        "",
+        "",
+    )
+    .unwrap();
     assert!(pg
         .pool_member_disables(crate::PROVIDER_GOOGLE)
         .unwrap()
@@ -1325,17 +1341,9 @@ fn anthropic_initial_calibration_version_is_bound_as_bigint() {
     );
 }
 
-
-
-
-
 /// Run with an isolated database, for example:
 /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
 /// pg::tests::pre_cutover_funding_snapshot_postgres_matrix`
-
-
-
-
 
 /// Run with an isolated database, for example:
 /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry pg::tests::stage2_fault_matrix`
@@ -1599,7 +1607,6 @@ fn stage2_fault_matrix() {
                WHERE profile_id='stage2-gemini-profile';",
         )
         .unwrap();
-
 
     pg.client
         .batch_execute(
@@ -2368,6 +2375,560 @@ fn stage2_fault_matrix() {
         (650, 350, 0)
     );
 
+    // Three in-flight requests share one account-wide settlement floor. They deliberately finish
+    // on independent PostgreSQL sessions so the test covers the row-lock serialization, not merely
+    // the arithmetic of a sequential happy path.
+    pg.account_create("floor-pg-acct", None, 5_000).unwrap();
+    pg.account_topup("floor-pg-acct", 700_000_000, Some("floor-pg-seed"))
+        .unwrap();
+    pg.key_issue_with_policy(
+        "floor-pg-key",
+        "floor-pg-acct",
+        None,
+        Some(1_850_000_000),
+        None,
+    )
+    .unwrap();
+    let floor_pricing = crate::ReservationPricing::new(crate::PROVIDER_OPENAI, 5_000).unwrap();
+    for (request_id, hold, expected_balance) in [
+        ("floor-pg-1", 200_000_000, 500_000_000),
+        ("floor-pg-2", 200_000_000, 300_000_000),
+        ("floor-pg-3", 300_000_000, 0),
+    ] {
+        assert_eq!(
+            pg.reserve_priced_request_for_execution(
+                &owner,
+                request_id,
+                "floor-pg-acct",
+                "floor-pg-key",
+                hold,
+                60,
+                &crate::ExecutionAttempt::direct(),
+                &floor_pricing,
+            )
+            .unwrap(),
+            Some(expected_balance),
+        );
+    }
+    // An edit after admission affects only the next request; every in-flight charge keeps its
+    // reserve-time multiplier and remains reconcilable against the matching official basis.
+    pg.set_account_provider_discount("floor-pg-acct", crate::PROVIDER_OPENAI, 10_000, now())
+        .unwrap();
+
+    let settlement_barrier = Arc::new(Barrier::new(4));
+    let mut settlement_joins = Vec::new();
+    for (request_id, actual) in [
+        ("floor-pg-1", 550_000_000),
+        ("floor-pg-2", 600_000_000),
+        ("floor-pg-3", 700_000_000),
+    ] {
+        let settlement_url = url.clone();
+        let barrier = Arc::clone(&settlement_barrier);
+        settlement_joins.push(std::thread::spawn(move || {
+            let mut connection = PgStore::connect(&settlement_url).unwrap();
+            let usage = UsageEventInput {
+                model: "gpt-floor-test".into(),
+                provider: crate::PROVIDER_OPENAI.into(),
+                real_nano: actual * 2,
+                charge_basis_nano: actual * 2,
+                ..Default::default()
+            };
+            let reference = format!("{request_id}:provider");
+            barrier.wait();
+            connection
+                .settle_request(request_id, actual, Some(&reference), Some(&usage))
+                .unwrap()
+        }));
+    }
+    settlement_barrier.wait();
+    for result in settlement_joins {
+        assert!(
+            result
+                .join()
+                .unwrap()
+                .is_some_and(|balance| balance >= -1_000_000_000),
+            "every terminal update must observe the shared account floor",
+        );
+    }
+
+    let floor_account = pg
+        .client
+        .query_one(
+            "SELECT balance_nano,spent_nano,reserved_nano,uncollected_nano \
+             FROM accounts WHERE id='floor-pg-acct'",
+            &[],
+        )
+        .unwrap();
+    let floor_balance: i64 = floor_account.get(0);
+    let floor_spent: i64 = floor_account.get(1);
+    let floor_reserved: i64 = floor_account.get(2);
+    let floor_uncollected: i64 = floor_account.get(3);
+    assert_eq!(
+        (
+            floor_balance,
+            floor_spent,
+            floor_reserved,
+            floor_uncollected
+        ),
+        (-1_000_000_000, 1_850_000_000, 0, 150_000_000),
+    );
+    assert_eq!(
+        floor_balance + floor_spent + floor_reserved - floor_uncollected,
+        700_000_000,
+    );
+    let floor_key = pg.key_get("floor-pg-key").unwrap().unwrap();
+    assert_eq!(floor_key.spent_nano, 1_850_000_000);
+    assert_eq!(floor_key.reserved_nano, 0);
+    assert_eq!(floor_key.spend_limit_nano, Some(1_850_000_000));
+    assert_eq!(
+        pg.reserve_request(
+            &owner,
+            "floor-pg-over-limit",
+            "floor-pg-acct",
+            "floor-pg-key",
+            1,
+            60,
+        )
+        .unwrap(),
+        None,
+        "the full billed amount, including shortfall, must consume the key spend limit",
+    );
+    let floor_evidence = pg
+        .client
+        .query_one(
+            "SELECT COALESCE(SUM(reservation.actual_nano),0)::bigint, \
+                    COALESCE(SUM(reservation.collected_nano),0)::bigint, \
+                    COALESCE(SUM(reservation.uncollected_nano),0)::bigint, \
+                    COUNT(DISTINCT reservation.provider)::bigint, \
+                    MIN(reservation.payable_multiplier_bp),MAX(reservation.payable_multiplier_bp), \
+                    (SELECT COALESCE(SUM(amount_nano),0)::bigint FROM ledger \
+                      WHERE kind='charge' AND request_id LIKE 'floor-pg-%'), \
+                    (SELECT COALESCE(SUM(uncollected_nano),0)::bigint FROM ledger \
+                      WHERE kind='charge' AND request_id LIKE 'floor-pg-%'), \
+                    (SELECT COALESCE(SUM(official_nano),0)::bigint FROM ledger \
+                      WHERE kind='charge' AND request_id LIKE 'floor-pg-%'), \
+                    (SELECT COALESCE(SUM(charge_nano),0)::bigint FROM usage_events \
+                      WHERE request_id LIKE 'floor-pg-%'), \
+                    (SELECT COALESCE(SUM(uncollected_nano),0)::bigint FROM usage_events \
+                      WHERE request_id LIKE 'floor-pg-%'), \
+                    (SELECT COALESCE(SUM(charge_basis_nano),0)::bigint FROM usage_events \
+                      WHERE request_id LIKE 'floor-pg-%') \
+             FROM reservations reservation WHERE reservation.request_id LIKE 'floor-pg-%'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(floor_evidence.get::<_, i64>(0), 1_850_000_000);
+    assert_eq!(floor_evidence.get::<_, i64>(1), 1_700_000_000);
+    assert_eq!(floor_evidence.get::<_, i64>(2), 150_000_000);
+    assert_eq!(floor_evidence.get::<_, i64>(3), 1);
+    assert_eq!(floor_evidence.get::<_, Option<i64>>(4), Some(5_000));
+    assert_eq!(floor_evidence.get::<_, Option<i64>>(5), Some(5_000));
+    assert_eq!(floor_evidence.get::<_, i64>(6), 1_850_000_000);
+    assert_eq!(floor_evidence.get::<_, i64>(7), 150_000_000);
+    assert_eq!(floor_evidence.get::<_, i64>(8), 3_700_000_000);
+    assert_eq!(floor_evidence.get::<_, i64>(9), 1_850_000_000);
+    assert_eq!(floor_evidence.get::<_, i64>(10), 150_000_000);
+    assert_eq!(floor_evidence.get::<_, i64>(11), 3_700_000_000);
+    let replay_usage = UsageEventInput {
+        model: "gpt-floor-test".into(),
+        provider: crate::PROVIDER_OPENAI.into(),
+        real_nano: 1_400_000_000,
+        charge_basis_nano: 1_400_000_000,
+        ..Default::default()
+    };
+    assert_eq!(
+        pg.settle_request(
+            "floor-pg-3",
+            700_000_000,
+            Some("floor-pg-3:provider"),
+            Some(&replay_usage),
+        )
+        .unwrap(),
+        Some(-1_000_000_000),
+    );
+    assert_eq!(
+        pg.account_get("floor-pg-acct")
+            .unwrap()
+            .unwrap()
+            .uncollected_nano,
+        150_000_000,
+    );
+
+    // A negative adjustment may record debt below the ordinary floor while a hold is in flight.
+    // Settlement must not worsen that debt, but it must still consume the hold already removed
+    // from the balance rather than misclassifying the whole request as pool-funded loss.
+    pg.account_create("debt-pg-acct", None, 5_000).unwrap();
+    pg.account_topup("debt-pg-acct", 1_000_000_000, Some("debt-pg-seed"))
+        .unwrap();
+    pg.key_issue("debt-pg-key", "debt-pg-acct", None).unwrap();
+    assert_eq!(
+        pg.reserve_priced_request_for_execution(
+            &owner,
+            "debt-pg-request",
+            "debt-pg-acct",
+            "debt-pg-key",
+            500_000_000,
+            60,
+            &crate::ExecutionAttempt::direct(),
+            &floor_pricing,
+        )
+        .unwrap(),
+        Some(500_000_000),
+    );
+    assert_eq!(
+        pg.account_topup("debt-pg-acct", -2_000_000_000, Some("debt-pg-adjustment"),)
+            .unwrap(),
+        Some(-1_500_000_000),
+    );
+    let debt_usage = UsageEventInput {
+        model: "gpt-debt-test".into(),
+        provider: crate::PROVIDER_OPENAI.into(),
+        real_nano: 1_400_000_000,
+        charge_basis_nano: 1_400_000_000,
+        ..Default::default()
+    };
+    assert_eq!(
+        pg.settle_request(
+            "debt-pg-request",
+            700_000_000,
+            Some("debt-pg-provider-ref"),
+            Some(&debt_usage),
+        )
+        .unwrap(),
+        Some(-1_500_000_000),
+    );
+    let debt_evidence = pg
+        .client
+        .query_one(
+            "SELECT a.balance_nano,a.spent_nano,a.reserved_nano,a.uncollected_nano, \
+                    r.collected_nano,r.uncollected_nano,l.amount_nano,l.uncollected_nano \
+             FROM accounts a JOIN reservations r ON r.account_id=a.id \
+             JOIN ledger l ON l.account_id=a.id AND l.request_id=r.request_id \
+             WHERE a.id='debt-pg-acct'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        (0..8)
+            .map(|index| debt_evidence.get::<_, i64>(index))
+            .collect::<Vec<_>>(),
+        vec![
+            -1_500_000_000,
+            700_000_000,
+            0,
+            200_000_000,
+            500_000_000,
+            200_000_000,
+            700_000_000,
+            200_000_000,
+        ],
+    );
+
+    // Zero-multiplier requests carry no customer debit, but their authoritative provider usage is
+    // still durable. The settlement writes no charge ledger row and exact replay stays idempotent.
+    pg.account_create("meter-only-pg-acct", None, 0).unwrap();
+    pg.key_issue("meter-only-pg-key", "meter-only-pg-acct", None)
+        .unwrap();
+    let meter_only_pricing = crate::ReservationPricing::new(crate::PROVIDER_OPENAI, 0).unwrap();
+    assert_eq!(
+        pg.reserve_priced_request_for_execution(
+            &owner,
+            "meter-only-pg-request",
+            "meter-only-pg-acct",
+            "meter-only-pg-key",
+            0,
+            60,
+            &crate::ExecutionAttempt::direct(),
+            &meter_only_pricing,
+        )
+        .unwrap(),
+        Some(0),
+    );
+    let meter_only_usage = UsageEventInput {
+        model: "gpt-meter-only".into(),
+        provider: crate::PROVIDER_OPENAI.into(),
+        input_tokens: 7,
+        output_tokens: 11,
+        real_nano: 123,
+        charge_basis_nano: 123,
+        ..Default::default()
+    };
+    assert_eq!(
+        pg.settle_request(
+            "meter-only-pg-request",
+            0,
+            Some("meter-only-pg-ref"),
+            Some(&meter_only_usage),
+        )
+        .unwrap(),
+        Some(0),
+    );
+    let meter_only_evidence = pg
+        .client
+        .query_one(
+            "SELECT account.balance_nano,account.spent_nano,account.reserved_nano,
+                    account.uncollected_nano,
+                    usage.real_nano,usage.charge_nano,usage.provider,
+                    usage.payable_multiplier_bp,usage.charge_basis_nano,usage.uncollected_nano,
+                    (SELECT COUNT(*)::bigint FROM ledger
+                      WHERE kind='charge' AND request_id='meter-only-pg-request')
+               FROM accounts account
+               JOIN usage_events usage ON usage.account_id=account.id
+              WHERE account.id='meter-only-pg-acct'
+                AND usage.request_id='meter-only-pg-request'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(meter_only_evidence.get::<_, i64>(0), 0);
+    assert_eq!(meter_only_evidence.get::<_, i64>(1), 0);
+    assert_eq!(meter_only_evidence.get::<_, i64>(2), 0);
+    assert_eq!(meter_only_evidence.get::<_, i64>(3), 0);
+    assert_eq!(meter_only_evidence.get::<_, i64>(4), 123);
+    assert_eq!(meter_only_evidence.get::<_, i64>(5), 0);
+    assert_eq!(
+        meter_only_evidence.get::<_, String>(6),
+        crate::PROVIDER_OPENAI
+    );
+    assert_eq!(meter_only_evidence.get::<_, Option<i64>>(7), Some(0));
+    assert_eq!(meter_only_evidence.get::<_, Option<i64>>(8), Some(123));
+    assert_eq!(meter_only_evidence.get::<_, i64>(9), 0);
+    assert_eq!(meter_only_evidence.get::<_, i64>(10), 0);
+    assert_eq!(
+        pg.settle_request(
+            "meter-only-pg-request",
+            0,
+            Some("meter-only-pg-ref"),
+            Some(&meter_only_usage),
+        )
+        .unwrap(),
+        Some(0),
+    );
+    assert_eq!(
+        pg.client
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM usage_events
+                  WHERE request_id='meter-only-pg-request'",
+                &[],
+            )
+            .unwrap()
+            .get::<_, i64>(0),
+        1,
+    );
+
+    // A damaged per-key hold must not be hidden by the account aggregate. The account UPDATE runs
+    // first in the transaction, so observing the original tuple afterwards proves full rollback.
+    pg.account_create("key-fence-pg-acct", None, 10_000)
+        .unwrap();
+    pg.account_topup("key-fence-pg-acct", 1_000, Some("key-fence-pg-seed"))
+        .unwrap();
+    pg.key_issue("key-fence-pg-key", "key-fence-pg-acct", None)
+        .unwrap();
+    assert_eq!(
+        pg.reserve_request(
+            &owner,
+            "key-fence-pg-request",
+            "key-fence-pg-acct",
+            "key-fence-pg-key",
+            400,
+            60,
+        )
+        .unwrap(),
+        Some(600),
+    );
+    pg.client
+        .execute(
+            "UPDATE api_keys SET reserved_nano=0 WHERE key='key-fence-pg-key'",
+            &[],
+        )
+        .unwrap();
+    let key_fence_error = pg
+        .settle_request("key-fence-pg-request", 300, Some("key-fence-pg-ref"), None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        key_fence_error.contains("reservation/key aggregate invariant failed"),
+        "unexpected PostgreSQL key-fence error: {key_fence_error}",
+    );
+    let key_fence_account = pg
+        .client
+        .query_one(
+            "SELECT balance_nano,spent_nano,reserved_nano,uncollected_nano
+               FROM accounts WHERE id='key-fence-pg-acct'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        (
+            key_fence_account.get::<_, i64>(0),
+            key_fence_account.get::<_, i64>(1),
+            key_fence_account.get::<_, i64>(2),
+            key_fence_account.get::<_, i64>(3),
+        ),
+        (600, 0, 400, 0),
+    );
+    let key_fence_reservation = pg
+        .client
+        .query_one(
+            "SELECT state,actual_nano,collected_nano,uncollected_nano
+               FROM reservations WHERE request_id='key-fence-pg-request'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        (
+            key_fence_reservation.get::<_, String>(0),
+            key_fence_reservation.get::<_, Option<i64>>(1),
+            key_fence_reservation.get::<_, Option<i64>>(2),
+            key_fence_reservation.get::<_, Option<i64>>(3),
+        ),
+        ("settlement_pending".into(), Some(300), None, None),
+        "only the durable intent may survive a failed settlement transaction",
+    );
+    pg.client
+        .execute(
+            "UPDATE api_keys SET reserved_nano=400 WHERE key='key-fence-pg-key'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        pg.settle_request("key-fence-pg-request", 300, Some("key-fence-pg-ref"), None,)
+            .unwrap(),
+        Some(700),
+    );
+
+    // Unique request evidence is part of the money transaction. A pre-existing ledger or usage
+    // row must fail the settlement and roll back account/key/winner updates, never be ignored.
+    pg.account_create("evidence-pg-acct", None, 5_000).unwrap();
+    pg.account_topup("evidence-pg-acct", 1_000, Some("evidence-pg-seed"))
+        .unwrap();
+    pg.key_issue("evidence-pg-key", "evidence-pg-acct", None)
+        .unwrap();
+    let evidence_pricing = crate::ReservationPricing::new(crate::PROVIDER_OPENAI, 5_000).unwrap();
+    assert_eq!(
+        pg.reserve_priced_request_for_execution(
+            &owner,
+            "evidence-pg-request",
+            "evidence-pg-acct",
+            "evidence-pg-key",
+            400,
+            60,
+            &crate::ExecutionAttempt::direct(),
+            &evidence_pricing,
+        )
+        .unwrap(),
+        Some(600),
+    );
+    let evidence_usage = UsageEventInput {
+        model: "gpt-evidence".into(),
+        provider: crate::PROVIDER_OPENAI.into(),
+        real_nano: 600,
+        charge_basis_nano: 600,
+        ..Default::default()
+    };
+    pg.client
+        .execute(
+            "INSERT INTO ledger(
+                 account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,
+                 model,provider,official_nano,payable_multiplier_bp,uncollected_nano
+             ) VALUES(
+                 'evidence-pg-acct','evidence-pg-key','charge','evidence-pg-request',1,
+                 'foreign-ledger-row',999,1,'foreign','openai',2,5000,0
+             )",
+            &[],
+        )
+        .unwrap();
+    assert!(pg
+        .settle_request(
+            "evidence-pg-request",
+            300,
+            Some("evidence-pg-ref"),
+            Some(&evidence_usage),
+        )
+        .is_err());
+    let evidence_account = pg
+        .client
+        .query_one(
+            "SELECT balance_nano,spent_nano,reserved_nano,uncollected_nano
+               FROM accounts WHERE id='evidence-pg-acct'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        (
+            evidence_account.get::<_, i64>(0),
+            evidence_account.get::<_, i64>(1),
+            evidence_account.get::<_, i64>(2),
+            evidence_account.get::<_, i64>(3),
+        ),
+        (600, 0, 400, 0),
+    );
+    pg.client
+        .execute(
+            "DELETE FROM ledger WHERE kind='charge' AND request_id='evidence-pg-request'",
+            &[],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "INSERT INTO usage_events(request_id,account_id,key,model,provider,ts)
+             VALUES('evidence-pg-request','evidence-pg-acct','evidence-pg-key','foreign','openai',1)",
+            &[],
+        )
+        .unwrap();
+    assert!(pg
+        .settle_request(
+            "evidence-pg-request",
+            300,
+            Some("evidence-pg-ref"),
+            Some(&evidence_usage),
+        )
+        .is_err());
+    let evidence_account = pg
+        .client
+        .query_one(
+            "SELECT balance_nano,spent_nano,reserved_nano,uncollected_nano
+               FROM accounts WHERE id='evidence-pg-acct'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        (
+            evidence_account.get::<_, i64>(0),
+            evidence_account.get::<_, i64>(1),
+            evidence_account.get::<_, i64>(2),
+            evidence_account.get::<_, i64>(3),
+        ),
+        (600, 0, 400, 0),
+    );
+    assert_eq!(
+        pg.client
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM ledger
+                  WHERE kind='charge' AND request_id='evidence-pg-request'",
+                &[],
+            )
+            .unwrap()
+            .get::<_, i64>(0),
+        0,
+        "the ledger insert preceding the usage conflict must roll back",
+    );
+    pg.client
+        .execute(
+            "DELETE FROM usage_events WHERE request_id='evidence-pg-request'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        pg.settle_request(
+            "evidence-pg-request",
+            300,
+            Some("evidence-pg-ref"),
+            Some(&evidence_usage),
+        )
+        .unwrap(),
+        Some(700),
+    );
+
     // Овердрафт-буфер ($1): funded-запрос НЕ роняем из-за гонки — баланс может уйти в лёгкий минус
     // до пола −$1 (−1e9 nano), но НИКОГДА ниже; за полом любой положительный hold отбит. (`owner`
     // ещё валиден — фенсинг ниже.)
@@ -2522,7 +3083,7 @@ fn stage2_fault_matrix() {
           FROM ledger WHERE kind IN ('topup','adjust') GROUP BY account_id \
         ) \
         SELECT COALESCE(MAX(ABS( \
-          a.balance_nano + a.spent_nano + a.reserved_nano \
+          a.balance_nano + a.spent_nano + a.reserved_nano - a.uncollected_nano \
           - COALESCE(f.funded_nano,0) \
         )),0)::bigint \
         FROM accounts a LEFT JOIN funding f ON f.account_id=a.id";
@@ -2571,7 +3132,6 @@ fn stage2_fault_matrix() {
         )
         .unwrap();
 }
-
 
 /// PostgreSQL contract of the panel health read. Skipped without a live database:
 /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
@@ -2688,9 +3248,6 @@ fn postgres_settlement_health_contract() {
         .unwrap();
 }
 
-
-
-
 /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
 /// pg::tests::tariff_overrides_postgres_matrix`
 #[test]
@@ -2745,18 +3302,16 @@ fn tariff_overrides_postgres_matrix() {
     // The flat-price Gemini shape carries u64::MAX as the long-context threshold: the digest and
     // the typed read must survive the jsonb numeric round trip at the exact u64 boundary.
     let mut gemini_payload_max_threshold = gemini_payload(300);
-    gemini_payload_max_threshold["long_context_threshold"] =
-        serde_json::json!(u64::MAX);
-    let insert = |version: i64, effective_from: i64, payload: serde_json::Value| {
-        TariffOverrideInsert {
+    gemini_payload_max_threshold["long_context_threshold"] = serde_json::json!(u64::MAX);
+    let insert =
+        |version: i64, effective_from: i64, payload: serde_json::Value| TariffOverrideInsert {
             tariff_family: family.to_owned(),
             version,
             effective_from,
             payload,
             created_by: "matrix-operator".to_owned(),
             reason: "postgres matrix".to_owned(),
-        }
-    };
+        };
     let row_count = |pg: &mut PgStore| -> i64 {
         pg.client
             .query_one("SELECT COUNT(*)::bigint FROM pricing_tariff_overrides", &[])
@@ -2816,10 +3371,7 @@ fn tariff_overrides_postgres_matrix() {
     let gap = pg
         .insert_tariff_override(&insert(4, now(), gemini_payload(125)))
         .unwrap();
-    assert_eq!(
-        gap,
-        O::Rejected(R::SequenceViolation { expected_next: 3 })
-    );
+    assert_eq!(gap, O::Rejected(R::SequenceViolation { expected_next: 3 }));
     assert_eq!(row_count(&mut pg), 1);
 
     let t0 = now();
@@ -2892,7 +3444,10 @@ fn tariff_overrides_postgres_matrix() {
         resolve_tariff_override(&rows, family, t0 + 3_600).map(|row| row.version),
         Some(4)
     );
-    assert_eq!(resolve_tariff_override(&rows, "google/gemini/gemini-2.5-flash", i64::MAX), None);
+    assert_eq!(
+        resolve_tariff_override(&rows, "google/gemini/gemini-2.5-flash", i64::MAX),
+        None
+    );
 
     // A row whose stored digest does not match its payload fails the read closed. The writer
     // cannot produce such a row, so it is injected by raw SQL with a well-formed wrong digest.
@@ -2908,7 +3463,9 @@ fn tariff_overrides_postgres_matrix() {
              )",
         )
         .unwrap();
-    let tampered = pg.list_tariff_overrides().expect_err("tampered row must fail closed");
+    let tampered = pg
+        .list_tariff_overrides()
+        .expect_err("tampered row must fail closed");
     assert!(
         format!("{tampered:#}").contains("digest verification"),
         "unexpected error: {tampered:#}"

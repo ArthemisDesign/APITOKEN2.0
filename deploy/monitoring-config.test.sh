@@ -435,7 +435,8 @@ for required in \
   "kind IN ('topup', 'adjust')" \
   'account.balance_nano::numeric' \
   'account.spent_nano::numeric' \
-  'account.reserved_nano::numeric'; do
+  'account.reserved_nano::numeric' \
+  'account.uncollected_nano::numeric'; do
   grep -Fq "$required" "$ROOT/deploy/collect-monitoring-metrics.sh" \
     || { printf 'balance reconciliation collector is missing %s\n' "$required" >&2; exit 1; }
 done
@@ -450,6 +451,37 @@ grep -Fq 'docs/ops/MONITORING.md#balancedivergencedetected' "$ROOT/observability
   || { printf 'balance-divergence alert has no runbook anchor\n' >&2; exit 1; }
 grep -Fqi '## BalanceDivergenceDetected' "$ROOT/docs/ops/MONITORING.md" \
   || { printf 'docs/ops/MONITORING.md has no balance-divergence runbook\n' >&2; exit 1; }
+
+# A settlement that reaches the shared floor must preserve full usage as collected + explicit
+# shortfall. Pin the collector operands, the bounded provider dimension, both severity thresholds,
+# and both runbooks so a zero placeholder or a retired account-class join cannot hide money loss.
+for settlement_evidence in \
+  apitoken_settlement_uncollected_nano \
+  'SUM(uncollected_nano)' \
+  'amount_nano::numeric / official_nano' \
+  "VALUES ('anthropic'), ('openai'), ('google'), ('kimi'), ('glm')"; do
+  grep -Fq "$settlement_evidence" "$ROOT/deploy/collect-monitoring-metrics.sh" \
+    || { printf 'settlement evidence collector is missing %s\n' "$settlement_evidence" >&2; exit 1; }
+done
+for settlement_alert in SettlementUncollectedDetected SettlementUncollectedHigh; do
+  lowercase_alert=$(printf '%s' "$settlement_alert" | tr '[:upper:]' '[:lower:]')
+  grep -Fq "alert: $settlement_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'missing %s alert\n' "$settlement_alert" >&2; exit 1; }
+  grep -Fq "docs/ops/MONITORING.md#$lowercase_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf '%s alert has no runbook anchor\n' "$settlement_alert" >&2; exit 1; }
+  grep -Fqi "## $settlement_alert" "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'docs/ops/MONITORING.md has no %s runbook\n' "$settlement_alert" >&2; exit 1; }
+done
+grep -Fq 'severity: warning' \
+  <(grep -F 'alert: SettlementUncollectedDetected' -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
+  || { printf 'bounded settlement shortfall alert is not warning severity\n' >&2; exit 1; }
+grep -Fq 'severity: critical' \
+  <(grep -F 'alert: SettlementUncollectedHigh' -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
+  || { printf 'high settlement shortfall alert is not critical severity\n' >&2; exit 1; }
+if grep -Fq 'apitoken_pricing_charge_mismatch{account_class=' "$ROOT/deploy/collect-monitoring-metrics.sh"; then
+  printf 'pricing mismatch still depends on retired account-class attribution\n' >&2
+  exit 1
+fi
 
 # Both 2026-08 pricing incidents were silent because every component was individually healthy
 # while two of them disagreed about one fact. Each drift detector must therefore be a closed

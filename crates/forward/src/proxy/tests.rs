@@ -9,14 +9,6 @@ use axum::extract::{ConnectInfo, State};
 use pool::{Pool, Reserve};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-
-
-
-
-
-
-
-
 fn lim(u5: f64, u7: f64, claim: Option<&str>, r5: i64, r7: i64) -> Limits {
     Limits {
         util5h: Some(u5),
@@ -376,11 +368,6 @@ async fn metered_auth_accepts_any_valid_credential_deterministically() {
     let _ = std::fs::remove_file(path);
 }
 
-
-
-
-
-
 #[test]
 fn cap_to_balance_enforces_budget() {
     let p = metering::model_prices("claude-haiku-4-5"); // input 1000, output 5000, cw1h 2000
@@ -418,7 +405,7 @@ fn cap_to_balance_enforces_budget() {
     assert_eq!(eff, 50);
     // бесплатный ключ (наценка 0) → не лимитируем, hold 0
     assert_eq!(
-        cap_to_balance(1_000, 999_999, 0, &p, 0, 12345),
+        cap_to_balance(0, 999_999, 0, &p, 0, 12345),
         Some((12345, 0))
     );
     // funded (bal>0) НЕ роняем: овердрафт-буфер $1 покрывает — прежние балансовые «None» теперь Some

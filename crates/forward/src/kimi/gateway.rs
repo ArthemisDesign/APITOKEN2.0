@@ -18,12 +18,12 @@ use axum::response::Response;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use kimi_credential::{capabilities_or_base, KimiCredential};
+#[cfg(test)]
+use metering::kimi::kimi_prices_for_served_model;
 use metering::kimi::{
     cost_nanodollars, kimi_matched_tariff_at, kimi_resolve_subscription_model, merge_stream_event,
     KimiPrices, KimiUsage, KIMI_TARIFF_SCHEDULE_ID,
 };
-#[cfg(test)]
-use metering::kimi::kimi_prices_for_served_model;
 use registry::{ExecutionAttempt, KimiTurnCalibrationEvent};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex as AsyncMutex, Notify};
@@ -829,7 +829,10 @@ impl KimiGateway {
             Ok(_) => {
                 elog::warn(
                     "kimi",
-                    format!("KIMI quota poll returned no usable windows profile={}", profile.id),
+                    format!(
+                        "KIMI quota poll returned no usable windows profile={}",
+                        profile.id
+                    ),
                 );
                 return false;
             }
@@ -1388,8 +1391,8 @@ impl KimiGateway {
                     .is_empty()
                     .then(|| capacity_deadline.saturating_duration_since(std::time::Instant::now()))
                     .unwrap_or_default();
-                if let Some(step) =
-                    crate::proxy::smooth_step(0, remaining.as_millis()).filter(|_| !self.shutting_down.load(Ordering::Acquire))
+                if let Some(step) = crate::proxy::smooth_step(0, remaining.as_millis())
+                    .filter(|_| !self.shutting_down.load(Ordering::Acquire))
                 {
                     tokio::time::sleep(step).await;
                     continue;
@@ -1542,7 +1545,10 @@ impl KimiGateway {
                                 // budget and rotate when another profile is eligible — a wedged
                                 // profile must not stay instantly re-selectable.
                                 Ok(Err(error)) => {
-                                    elog::error("kimi", format!("kimi stream start failed: {error:?}"));
+                                    elog::error(
+                                        "kimi",
+                                        format!("kimi stream start failed: {error:?}"),
+                                    );
                                     let remaining =
                                         self.eligible_count(&request.model, &excluded, &profile.id);
                                     let decision = decide(
@@ -1650,7 +1656,10 @@ impl KimiGateway {
                             // whose body breaks is the model path, not the egress: cool this
                             // model on this profile and leave its other models eligible.
                             Err(error) => {
-                                elog::error("kimi", format!("kimi response body read failed: {error:?}"));
+                                elog::error(
+                                    "kimi",
+                                    format!("kimi response body read failed: {error:?}"),
+                                );
                                 let remaining =
                                     self.eligible_count(&request.model, &excluded, &profile.id);
                                 let decision = decide(
@@ -1760,20 +1769,21 @@ impl KimiGateway {
                 return Err(GatewayFailure::LowBalance);
             };
             match billing
-                .reserve_request_for_execution(
+                .reserve_priced_request_for_execution(
                     request_id,
                     &input.account_id,
                     &input.key,
                     hold,
                     execution.clone(),
+                    registry::PROVIDER_KIMI,
+                    input.mult_bp,
                 )
                 .await
                 .map_err(|error| {
                     elog::error("kimi", "kimi reservation failed");
                     let _ = error;
                     GatewayFailure::Unavailable("kimi_reservation_unavailable")
-                })?
-            {
+                })? {
                 Some(_) => {
                     if effective_max < requested_max {
                         body["max_tokens"] = json!(effective_max);
@@ -2152,12 +2162,7 @@ impl KimiGateway {
             if let Some(billing) = &self.billing {
                 match &priced {
                     Some(priced) => {
-                        let actual = metering::apply_multiplier(priced.total, reservation.mult_bp)
-                            .clamp(
-                                0,
-                                i128::from(reservation.hold.max(0)) + metering::OVERDRAFT_NANO,
-                            )
-                            .min(i128::from(i64::MAX)) as i64;
+                        let actual = customer_actual(priced.total, reservation.mult_bp);
                         let usage_event = Some(priced.usage_event(
                             parsed.served_model.as_deref().unwrap_or_default(),
                             reservation.priced_ts,
@@ -2174,7 +2179,10 @@ impl KimiGateway {
                             )
                             .await
                         {
-                            elog::error("kimi", format!("KIMI customer settlement deferred: {error:#}"));
+                            elog::error(
+                                "kimi",
+                                format!("KIMI customer settlement deferred: {error:#}"),
+                            );
                         }
                     }
                     None => {
@@ -2209,7 +2217,10 @@ impl KimiGateway {
         let event = match priced.calibration_event(context, &usage, &served_model) {
             Ok(event) => event,
             Err(error) => {
-                elog::error("kimi", format!("KIMI calibration event rejected before FIFO: {error:#}"));
+                elog::error(
+                    "kimi",
+                    format!("KIMI calibration event rejected before FIFO: {error:#}"),
+                );
                 return;
             }
         };
@@ -2555,6 +2566,10 @@ async fn price_turn_settlement(
     price_turn_with_prices(usage, prices, tariff_schedule_id)
 }
 
+fn customer_actual(charge_basis_nano: i128, mult_bp: i64) -> i64 {
+    metering::apply_multiplier(charge_basis_nano, mult_bp).clamp(0, i128::from(i64::MAX)) as i64
+}
+
 fn cap_to_balance(
     balance: i128,
     input_upper_bound: i128,
@@ -2648,8 +2663,6 @@ fn contains_provider_executed_tool(value: &Value) -> bool {
         _ => false,
     }
 }
-
-
 
 fn context_mode(model: &str) -> &'static str {
     match model.to_ascii_lowercase().as_str() {

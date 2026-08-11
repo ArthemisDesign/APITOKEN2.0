@@ -2,9 +2,7 @@
 
 use super::config::GeminiModel;
 use crate::metrics::Metrics;
-use crate::pricing::{
-    tariff_book, EnginePricingRequestId,
-};
+use crate::pricing::{tariff_book, EnginePricingRequestId};
 use crate::proxy::{authorize, Authz, HoldGuard};
 use crate::state::AppState;
 use axum::http::HeaderMap;
@@ -321,15 +319,13 @@ impl GeminiAdmission {
         usage.filter(|usage| !usage.is_zero()).and_then(|usage| {
             let compiled = metering::gemini_prices_at(&model.id, now).unwrap_or(model.prices);
             let (prices, schedule_id) = match metering::gemini_matched_tariff_at(&model.id, now) {
-                Some((family, compiled)) => {
-                    match tariff_book::snapshot().resolve(family, now) {
-                        Some((pin, payload)) => match tariff_book::as_gemini(&payload) {
-                            Some(prices) => (prices, Some(pin.schedule_id)),
-                            None => (compiled, None),
-                        },
+                Some((family, compiled)) => match tariff_book::snapshot().resolve(family, now) {
+                    Some((pin, payload)) => match tariff_book::as_gemini(&payload) {
+                        Some(prices) => (prices, Some(pin.schedule_id)),
                         None => (compiled, None),
-                    }
-                }
+                    },
+                    None => (compiled, None),
+                },
                 None => (compiled, None),
             };
             gemini_calibration_event_with_prices(
@@ -344,7 +340,6 @@ impl GeminiAdmission {
         })
     }
 }
-
 
 fn gemini_calibration_event(
     request_id: &str,
@@ -476,14 +471,7 @@ fn settled_charge_or_hold(
     now: i64,
 ) -> (i64, Option<registry::UsageEventInput>) {
     let prices = metering::gemini_prices_at(&model.id, now).unwrap_or(model.prices);
-    settled_charge_or_hold_with_prices(
-        model,
-        usage,
-        hold,
-        mult_bp,
-        now,
-        prices,
-    )
+    settled_charge_or_hold_with_prices(model, usage, hold, mult_bp, now, prices)
 }
 
 /// `settled_charge_or_hold` under one explicit rate card: settlement replays the exact override
@@ -498,9 +486,7 @@ fn settled_charge_or_hold_with_prices(
     prices: metering::GeminiPrices,
 ) -> (i64, Option<registry::UsageEventInput>) {
     match usage.filter(|usage| !usage.is_zero()) {
-        Some(usage) => {
-            settled_charge_with_prices(model, usage, hold, mult_bp, now, prices)
-        }
+        Some(usage) => settled_charge_with_prices(model, usage, hold, mult_bp, now, prices),
         // Usage never arrived. The preflight hold is an admission device, not a price — billing it
         // charged a double-digit multiple of the real turn — so this settles at nothing unless an
         // operator has deliberately re-armed the conservative fallback. No synthetic token event is
@@ -520,7 +506,10 @@ pub(crate) async fn begin_admission(
     let execution = crate::execution::parse_execution_attempt(headers).map_err(|error| {
         elog::error(
             "gemini-billing",
-            format!("Gemini execution identity rejected class={}", error.as_str()),
+            format!(
+                "Gemini execution identity rejected class={}",
+                error.as_str()
+            ),
         );
         AdmissionError::Unavailable
     })?;
@@ -674,15 +663,13 @@ pub(super) fn reservation_for_budget_with_prices(
     mult_bp: i64,
     available_nano: i64,
 ) -> Option<(u64, i64)> {
+    let requested = requested_output_tokens.max(1);
+    if mult_bp <= 0 {
+        return Some((requested, 0));
+    }
     let budget = available_nano.max(0) as i128;
     if budget == 0 {
         return None;
-    }
-    let requested = requested_output_tokens.max(1);
-    if mult_bp <= 0 {
-        // Keep a one-nanodollar reservation so the request lifecycle and zero-charge usage event
-        // remain durable even for an explicitly free account.
-        return Some((requested, 1));
     }
     let cost = |output_tokens| {
         metering::apply_multiplier(
@@ -765,19 +752,24 @@ async fn reserve_gemini_legacy(
         return Err(AdmissionError::LowBalance);
     };
     match billing
-        .reserve_request_for_execution(request_id, account_id, key, hold, execution.clone())
+        .reserve_priced_request_for_execution(
+            request_id,
+            account_id,
+            key,
+            hold,
+            execution.clone(),
+            registry::PROVIDER_GOOGLE,
+            mult_bp,
+        )
         .await
     {
-        Ok(Some(_)) => Ok((
-            effective_output_tokens,
-            hold,
-            mult_bp,
-            None,
-            resolved.pin,
-        )),
+        Ok(Some(_)) => Ok((effective_output_tokens, hold, mult_bp, None, resolved.pin)),
         Ok(None) => Err(AdmissionError::LowBalance),
         Err(error) => {
-            elog::error("gemini-billing", format!("Gemini billing reservation failed: {error:#}"));
+            elog::error(
+                "gemini-billing",
+                format!("Gemini billing reservation failed: {error:#}"),
+            );
             Err(AdmissionError::Unavailable)
         }
     }
@@ -800,15 +792,14 @@ fn settled_charge(
 fn settled_charge_with_prices(
     model: &GeminiModel,
     usage: &metering::GeminiUsage,
-    hold: i64,
+    _hold: i64,
     mult_bp: i64,
     now: i64,
     prices: metering::GeminiPrices,
 ) -> (i64, Option<registry::UsageEventInput>) {
     let real = metering::gemini::cost_nanodollars(usage, &prices);
     let computed = metering::apply_multiplier(real, mult_bp);
-    let ceiling = hold.max(0) as i128 + metering::OVERDRAFT_NANO;
-    let charge = computed.clamp(0, ceiling).min(i64::MAX as i128) as i64;
+    let charge = computed.clamp(0, i64::MAX as i128) as i64;
     if real <= 0 {
         return (charge, None);
     }
@@ -894,10 +885,7 @@ fn settled_charge_with_prices(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        AffinityStore, Breaker, Clients, ProviderMode,
-        ProxyConfig,
-    };
+    use crate::{AffinityStore, Breaker, Clients, ProviderMode, ProxyConfig};
     use pool::{Pool, Reserve};
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
@@ -1090,9 +1078,6 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-
-
-
     #[test]
     fn settlement_maps_google_usage_without_losing_audio_cache_thought_or_search() {
         let usage = metering::GeminiUsage {
@@ -1107,13 +1092,7 @@ mod tests {
             search_queries: 7,
             grounded_search_prompts: 1,
         };
-        let (charge, event) = settled_charge(
-            &model(),
-            &usage,
-            i64::MAX,
-            10_000,
-            123,
-        );
+        let (charge, event) = settled_charge(&model(), &usage, i64::MAX, 10_000, 123);
         let event = event.unwrap();
         assert_eq!(event.provider, registry::PROVIDER_GOOGLE);
         assert_eq!(event.input_tokens, 120);
@@ -1204,6 +1183,12 @@ mod tests {
             cannot_afford_one,
         )
         .is_none());
+
+        assert_eq!(
+            reservation_for_budget(&model, 1_000, 100, 0, false, true, 0, 0),
+            Some((100, 0)),
+            "a zero-multiplier service request is metered without reserving balance",
+        );
     }
 
     #[test]
@@ -1241,13 +1226,7 @@ mod tests {
             image_output_tokens: 1_120,
             ..metering::GeminiUsage::default()
         };
-        let (charge, event) = settled_charge(
-            &model,
-            &usage,
-            i64::MAX,
-            10_000,
-            123,
-        );
+        let (charge, event) = settled_charge(&model, &usage, i64::MAX, 10_000, 123);
         let expected = 100 * 500 + 20 * 3_000 + 1_120 * 60_000;
         let event = event.unwrap();
         assert_eq!(charge as i128, expected);
@@ -1357,16 +1336,16 @@ mod tests {
     }
 
     #[test]
-    fn settlement_overrun_is_bounded_by_hold_plus_overdraft() {
+    fn settlement_retains_full_actual_beyond_the_admission_hold() {
         let usage = metering::GeminiUsage {
             input_tokens: u64::MAX,
             output_tokens: u64::MAX,
             ..metering::GeminiUsage::default()
         };
         let (charge, _) = settled_charge(&model(), &usage, 17, 10_000, 0);
-        assert_eq!(charge as i128, 17 + metering::OVERDRAFT_NANO);
+        assert_eq!(charge, i64::MAX);
+        assert!(charge as i128 > 17 + metering::OVERDRAFT_NANO);
     }
-
 
     /// An unmeasured turn is not billed at the admission ceiling. The hold covers a
     /// byte-conservative input estimate plus the model's entire output limit, so charging it made
@@ -1377,13 +1356,7 @@ mod tests {
     fn an_unmeasured_turn_is_not_billed_at_the_admission_ceiling() {
         let zero = metering::GeminiUsage::default();
         for usage in [None, Some(&zero)] {
-            let (charge, event) = settled_charge_or_hold(
-                &model(),
-                usage,
-                123_456,
-                10_000,
-                0,
-                );
+            let (charge, event) = settled_charge_or_hold(&model(), usage, 123_456, 10_000, 0);
             assert_eq!(charge, 0);
             assert!(event.is_none());
         }
@@ -1391,13 +1364,7 @@ mod tests {
         // The conservative fallback survives as an operator switch for a provider that stops
         // reporting usage altogether.
         crate::settlement_policy::set_charge_hold_on_unknown_usage(true);
-        let (charge, event) = settled_charge_or_hold(
-            &model(),
-            None,
-            123_456,
-            10_000,
-            0,
-        );
+        let (charge, event) = settled_charge_or_hold(&model(), None, 123_456, 10_000, 0);
         crate::settlement_policy::set_charge_hold_on_unknown_usage(false);
         assert_eq!(charge, 123_456);
         assert!(event.is_none());

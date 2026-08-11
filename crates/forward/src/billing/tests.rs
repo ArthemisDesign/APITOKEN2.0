@@ -266,10 +266,6 @@ fn codex_event(
     }
 }
 
-
-
-
-
 #[tokio::test]
 async fn detached_dispatch_tracker_waits_for_a_backpressured_enqueue() {
     let tracker = Arc::new(DetachedDispatchTracker::default());
@@ -1390,6 +1386,7 @@ async fn canceled_sqlite_reserve_handoff_releases_key_allowance() {
             key: "limited".into(),
             hold: 500,
             execution: registry::ExecutionAttempt::direct(),
+            pricing: None,
             handoff: Arc::clone(&handoff),
             reply,
         })
@@ -1407,9 +1404,6 @@ async fn canceled_sqlite_reserve_handoff_releases_key_allowance() {
     drop(billing);
     let _ = std::fs::remove_file(path);
 }
-
-
-
 
 #[test]
 fn kimi_postgres_actor_pairs_spend_before_independent_window_cas() {

@@ -1514,6 +1514,15 @@ fn reservation_cap_is_an_integer_upper_bound_and_never_crosses_the_overdraft_flo
     let raw = 100 * prices.input + i128::from(tokens) * prices.output;
     assert_eq!(i128::from(hold), metering::apply_multiplier(raw, 10_000));
     assert!(cap_to_balance(-metering::OVERDRAFT_NANO, 1, prices, 10_000, 1).is_none());
+    assert_eq!(cap_to_balance(0, 1, prices, 0, 777), Some((777, 0)));
+}
+
+#[test]
+fn settlement_actual_is_not_capped_by_the_reservation_hold() {
+    let hold = 17i64;
+    let actual = customer_actual(2 * metering::OVERDRAFT_NANO, 10_000);
+    assert_eq!(i128::from(actual), 2 * metering::OVERDRAFT_NANO);
+    assert!(i128::from(actual) > i128::from(hold) + metering::OVERDRAFT_NANO);
 }
 
 #[test]
@@ -1871,6 +1880,10 @@ fn foreign_namespaces_and_tariff_keys_never_reach_the_kimi_plane() {
         "kimi/",
         "kimi/kimi/k3",
     ] {
-        assert_eq!(KimiGateway::resolve_public_model(foreign), None, "{foreign}");
+        assert_eq!(
+            KimiGateway::resolve_public_model(foreign),
+            None,
+            "{foreign}"
+        );
     }
 }

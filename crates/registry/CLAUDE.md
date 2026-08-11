@@ -22,9 +22,18 @@ side effect. `serve` may only perform the read-only schema verification before c
   (tokens→nano) does NOT belong here — that is `metering`; registry accepts the ready amount. **Money
   invariant (with overdraft buffer):** reserve keeps the balance FLOOR at −$1 (`OVERDRAFT_NANO`, in sync with
   `metering::OVERDRAFT_NANO`) — a funded request is NOT dropped with 402 due to a race of concurrent reserves; below the floor
-  any positive hold is rejected (max $1 in debt per account). Settle charges the REAL amount (`actual`
-  may be > hold — taken from the remaining balance), the forward cap keeps the charge within hold+$1. That is,
-  `hold ≤ balance+$1` and `charge ≤ hold+$1` at the ACCOUNT level. `reservations.request_id` is the ownership key;
+  any positive hold is rejected (max $1 in balance debt per account). Settle preserves the REAL
+  amount even when `actual > hold`, but the account-row lock collects only what leaves the shared
+  balance at or above −$1. If an explicit adjustment already recorded deeper debt while a request
+  was in flight, settlement uses that pre-settle balance as its floor: it cannot worsen the debt,
+  but it still collects the existing hold instead of refunding it as false pool loss. The remainder
+  is pool-funded evidence:
+  `actual_nano = collected_nano + uncollected_nano`. Account/key `spent_nano` and usage carry full
+  actual; ledger `amount_nano` is that same full billed actual and `uncollected_nano` is its
+  pool-funded subset. Customer balance movement is therefore `amount_nano - uncollected_nano`.
+  Conservation is `balance + spent + reserved - uncollected = topup/adjust funding`. A future top-up
+  is not auto-debited for old shortfall because registry cannot reconstruct its funding class.
+  `reservations.request_id` is the ownership key;
   `settlement_outbox` retries until the same transaction updates balances and inserts the unique
   `(kind,request_id)` charge. Upstream request IDs are audit metadata, never the money identity.
   Cursor consumers use `ledger_after(account, after_id, limit)` (oldest-first); account pricing uses
@@ -125,26 +134,29 @@ side effect. `serve` may only perform the read-only schema verification before c
   the deletion of the last reservation with the same `COALESCE(group_id,request_id)`. SQLite and PostgreSQL
   must remain semantically identical; the per-process loser counter/log is only an incident tripwire —
   correctness belongs to the table PK.
-- **Settlement-floor accounting expansion and mixed-version fence (migrations `0047` + `0048`).**
-  The schema has old-writer-compatible evidence for the dependent runtime: lifetime
+- **Settlement-floor accounting runtime and mixed-version fence (migrations `0047` + `0048`).**
+  The old-writer-compatible schema is live: lifetime
   `accounts.uncollected_nano`; per-reservation `collected_nano + uncollected_nano = actual_nano`;
   immutable ledger/usage shortfall; and nullable reserve-time provider/multiplier plus settlement
   charge-basis pins. Migration `0048` blocks a draining pre-runtime binary from increasing spend
-  while crossing the shared −$1 floor (or worsening a deeper balance debt already recorded by an
-  adjustment), and requires a reserve-time provider/multiplier pair plus collected/uncollected
-  evidence before any priced reservation becomes terminal. An old both-null reservation remains
-  valid, while an old writer touching a newly priced reservation gets a retryable database fence,
-  fails its whole settlement transaction, and leaves the outbox pending for the new runtime. Until
-  the separate runtime commit is
-  GREEN, the serving binary may leave all nullable fields empty and writes zero shortfall through
-  column defaults. The producer-first Control API ledger contract exposes
-  `uncollected_nano` additively (omission by an older producer means zero), while charge
-  `amount_nano` remains full billed actual; a consumer derives collected customer debit as their
-  difference and must never treat shortfall as paid/free customer funding or commission basis.
-  The dependent settlement must cap only the amount moved from the balance at the
-  shared account floor, keep the full billed amount in `actual_nano`/key and account spend, and
-  record every difference explicitly as uncollected; silently lowering actual usage or reviving
-  retired funding tables is forbidden.
+  while crossing the shared −$1 floor (or worsening deeper balance debt already recorded by an
+  adjustment), and requires a provider/multiplier pair plus collected/uncollected evidence before
+  any priced reservation becomes terminal. An old both-null reservation remains compatible; an old
+  writer touching a newly priced reservation fails its entire transaction with a retryable fence and
+  leaves the outbox pending for the current runtime. Every metered provider call pins its provider
+  and payable multiplier in the reservation transaction; an admin edit while the request is in
+  flight affects only the next admission. Terminal settlement caps only balance collection at the
+  shared account floor, keeps full billed usage in `actual_nano`/key and account spend, and records
+  every difference explicitly as uncollected. If an explicit adjustment already recorded deeper
+  debt, that pre-settle balance is the floor: settlement cannot worsen it and still consumes the
+  in-flight hold instead of forgiving it as false shortfall. Charge ledger `amount_nano` remains
+  full billed actual and `uncollected_nano` is its pool-funded subset, so consumers derive customer
+  balance movement by subtraction and never treat shortfall as funding or commission basis. A
+  zero-multiplier request has `actual_nano=0`, writes no ledger charge row, and still writes its
+  authoritative usage with the pinned provider/multiplier. Exact replay validates the stored
+  collection equation and never increments shortfall twice. Legacy reservations written before the
+  runtime may have both collection fields NULL, but a half-populated pair is invalid. Silently
+  lowering actual usage, charging a later top-up, or reviving retired funding tables is forbidden.
 - **Account discounts (`account_provider_discounts`, migrations `0043` + `0046`)** — the entire pricing
   policy. An account carries one default multiplier (`accounts.mult_bp`) and, for a provider whose
   terms differ, one override row; `key_account` returns both, and the caller resolves them with

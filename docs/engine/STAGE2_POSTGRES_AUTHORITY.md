@@ -30,8 +30,8 @@ Money is signed 64-bit integer nanodollars; leases use Unix seconds.
 |---|---|
 | `engine_instances` | Unique monotonic `owner_epoch` plus heartbeat lease for each process identity. |
 | `subs` | Engine-owned subscription credentials, proxy, plan, fleet, and status. |
-| `accounts`, `api_keys` | Customer balances and access keys; reserved money cannot be negative. |
-| `reservations` | One durable hold per generated `request_id`, owned by instance+epoch and state. |
+| `accounts`, `api_keys` | Customer balances, full spend and access keys; reserved/explicit uncollected aggregates cannot be negative. |
+| `reservations` | One durable hold per generated `request_id`, with owner fence, reserve-time scalar price and terminal collected/uncollected evidence. |
 | `settlement_outbox` | Idempotent settlement/cancel intent retried until the money transaction commits. |
 | `ledger` | Monetary journal; `(kind, request_id)` and payment/adjustment references are unique. |
 | `usage_events` | At most one usage record per request ID. |
@@ -44,34 +44,47 @@ Migrations `0047` and `0048` are the expand-only, old-writer-compatible foundati
 the account-wide floor at settlement as well as admission. Migration `0047` adds nullable per-request
 `collected_nano`/`uncollected_nano` evidence, a lifetime account shortfall aggregate, immutable
 ledger/usage shortfall columns, and nullable scalar pricing pins. The migration does not change the
-currently serving money path by itself. Migration `0048` adds the mixed-version database fence: an
+serving money path by itself. Migration `0048` adds the mixed-version database fence: an
 account update that increases spend cannot cross −$1, or worsen a deeper pre-existing balance debt
 recorded by an adjustment; provider and payable multiplier pins are both null or both present; and
 a priced terminal reservation must contain collected/uncollected evidence. Thus an old draining
 slot can still settle its own both-null reservations, but its attempt to settle a reservation opened
 by the new runtime receives the retryable SQLSTATE used by the existing outbox actor, rolls back
-atomically, and remains pending in the shared outbox for the new slot. The
-dependent runtime is delivered only after both schema versions are GREEN.
+atomically, and remains pending in the shared outbox for the current slot.
 
 The admission invariant is `request hold <= balance + the shared $1 account buffer`; exact provider
-usage may later make the billed amount greater than its hold (the forwarding lanes cap one request
-at `hold + $1`). Settlement closes the exact reservation and, in one transaction, changes balances,
-inserts the unique charge, writes usage, and marks the outbox done. Retrying the request identity
-cannot double-charge. After the dependent settlement-floor runtime lands, billed usage is conserved as
+usage may later make the billed amount greater than its hold. The hold is an admission estimate,
+not a second price ceiling: forwarding retains full authoritative billed usage, and only the
+account-row settlement fence limits how much can be collected. Settlement closes the exact
+reservation and, in one transaction, changes balances, inserts the unique charge, writes usage,
+and marks the outbox done. Retrying the request identity cannot double-charge or duplicate a
+shortfall. Billed usage is conserved as
 `actual = collected + uncollected`, while aggregate collection cannot move the account below the
-same floor.
+same floor. If an explicit adjustment already recorded deeper debt while a hold was in flight, the
+pre-settle balance is the floor: settlement cannot worsen the debt, but still consumes that hold
+instead of turning it into false shortfall. Account/key spend remains full actual, so the
+cross-authority equation is
+`balance + spent + reserved - uncollected = topup/adjust funding`. A later top-up is not used to
+repay old shortfall automatically: only commerce knows whether new money is paid, bonus or other
+funding, and reassigning it in the engine would corrupt that attribution. A zero-multiplier service
+request holds and debits zero on every provider but still commits its authoritative usage row; it
+does not create a zero-value ledger charge.
 
 ## Request lifecycle
 
 1. The engine generates its own unique `request_id`; an upstream request ID is audit metadata only.
 2. A transaction authenticates key/account, checks balance, creates the reservation, increments
-   account reserved money, and records owner instance/epoch/lease.
+   account reserved money, and records owner instance/epoch/lease plus the immutable serving
+   provider and payable multiplier.
 3. Before response delivery, the reservation moves from `reserved` to `delivering`.
 4. Settlement or cancellation is inserted idempotently into `settlement_outbox`.
-5. The outbox actor retries database failures until one transaction commits the final state.
-6. Reconciliation may cancel an expired pre-delivery hold. Once delivery began, it conservatively
-   charges the full hold when a dead owner cannot provide authoritative final usage; it does not
-   refund potentially delivered inference.
+5. The outbox actor locks the shared account, releases the hold, collects only to the shared floor,
+   records `actual = collected + uncollected`, and retries database failures until that entire
+   final state commits.
+6. Reconciliation cancels an expired pre-delivery hold. Once delivery began, it uses an exact
+   measured checkpoint when present; without measurement it charges zero by default rather than
+   inventing provider usage. The bounded operator fallback may explicitly restore full-hold
+   recovery during a provider-wide terminal-usage incident.
 
 Reservation states are `reserved`, `delivering`, `settlement_pending`, `settled`, and `canceled`.
 Outbox states are `pending`, `processing`, and `done`.

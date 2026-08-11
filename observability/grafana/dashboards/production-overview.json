@@ -1737,7 +1737,9 @@
         { "expr": "claude_api_metered_accounts", "legendFormat": "Metered accounts", "refId": "D" },
         { "expr": "apitoken_engine_settlement_pending", "legendFormat": "Settlement pending", "refId": "E" },
         { "expr": "apitoken_engine_expired_active_leases", "legendFormat": "Expired leases", "refId": "F" },
-        { "expr": "apitoken_balance_divergence_nano", "legendFormat": "Balance divergence (nano)", "refId": "G" }
+        { "expr": "apitoken_balance_divergence_nano", "legendFormat": "Balance divergence (nano)", "refId": "G" },
+        { "expr": "apitoken_settlement_uncollected_nano{window=\"1h\"} / 1e9", "legendFormat": "Settlement shortfall 1h (USD)", "refId": "H" },
+        { "expr": "apitoken_settlement_uncollected_nano{window=\"all\"} / 1e9", "legendFormat": "Settlement shortfall lifetime (USD)", "refId": "I" }
       ],
       "title": "Financial & settlement state",
       "type": "timeseries"

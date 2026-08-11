@@ -103,9 +103,7 @@ impl OpenAiImageQuote {
     }
 }
 
-pub(super) fn openai_image_quote(
-    input: OpenAiImageQuoteInput,
-) -> Result<Option<OpenAiImageQuote>> {
+pub(super) fn openai_image_quote(input: OpenAiImageQuoteInput) -> Result<Option<OpenAiImageQuote>> {
     ensure!(
         input.quote_ts > 0,
         "OpenAI image quote timestamp must be positive"
@@ -115,16 +113,18 @@ pub(super) fn openai_image_quote(
         "OpenAI image multiplier is outside the snapshot contract"
     );
     ensure!(
-        input.available_nano > 0,
-        "OpenAI image quote requires positive available balance"
+        input.payable_multiplier_bp == 0 || input.available_nano > 0,
+        "priced OpenAI image quote requires positive available balance"
     );
     // A zero multiplier is a free-but-metered account: it holds nothing. Any paying account
     // holds at least one nanoUSD so the reservation is a real claim on the balance.
     let minimum_hold = i128::from(input.payable_multiplier_bp.min(1));
-    let charged_hold_nano =
-        metering::apply_multiplier(i128::from(input_official_hold(&input)?), input.payable_multiplier_bp)
-            .clamp(minimum_hold, i128::from(i64::MAX)) as i64;
-    if charged_hold_nano > input.available_nano {
+    let charged_hold_nano = metering::apply_multiplier(
+        i128::from(input_official_hold(&input)?),
+        input.payable_multiplier_bp,
+    )
+    .clamp(minimum_hold, i128::from(i64::MAX)) as i64;
+    if input.payable_multiplier_bp > 0 && charged_hold_nano > input.available_nano {
         return Ok(None);
     }
     build_openai_image_quote(input, charged_hold_nano).map(Some)
@@ -206,7 +206,6 @@ mod tests {
         EnginePricingRequestId::from_engine_uuid_v4("123e4567-e89b-42d3-a456-426614174000").unwrap()
     }
 
-
     /// The price-parameterized hold formula must reproduce the pinned hold constants under the
     /// compiled rate card, or an empty override book would change admission money.
     #[test]
@@ -247,6 +246,19 @@ mod tests {
         })
         .unwrap()
         .is_none());
+
+        let meter_only = openai_image_quote(OpenAiImageQuoteInput {
+            request_id: request_id(),
+            account_id: "service".to_owned(),
+            requested_model_id: metering::GPT_IMAGE_2_ALIAS.to_owned(),
+            quote_ts: 1_800_000_000,
+            payable_multiplier_bp: 0,
+            operation: OpenAiImageOperation::Generation,
+            available_nano: 0,
+        })
+        .unwrap()
+        .expect("zero-multiplier image usage must not require customer balance");
+        assert_eq!(meter_only.into_snapshot().charged_hold_nano(), 0);
 
         assert!(openai_image_quote(OpenAiImageQuoteInput {
             request_id: request_id(),

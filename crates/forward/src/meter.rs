@@ -166,7 +166,10 @@ impl TeeMeter {
                             .await,
                         Ok(true)
                     ) {
-                        elog::error("meter", "stream lease renewal failed; live response remains fail-closed");
+                        elog::error(
+                            "meter",
+                            "stream lease renewal failed; live response remains fail-closed",
+                        );
                         return;
                     }
                 }
@@ -542,7 +545,10 @@ impl TeeMeter {
                         }
                     }
                 } else {
-                    elog::error("meter", "Anthropic calibration event exceeds durable bigint bounds");
+                    elog::error(
+                        "meter",
+                        "Anthropic calibration event exceeds durable bigint bounds",
+                    );
                 }
             }
         }
@@ -557,37 +563,34 @@ impl TeeMeter {
                 // A missing authoritative usage object is not proof that the provider consumed the
                 // maximum reservation. Downstream cancellation is drained asynchronously in Drop;
                 // a genuine upstream truncation is settled at zero and surfaced for reconciliation.
-                elog::warn("meter", "incomplete non-SSE response without authoritative usage; charge=0");
+                elog::warn(
+                    "meter",
+                    "incomplete non-SSE response without authoritative usage; charge=0",
+                );
                 0
             } else if real > 0 {
                 metering::apply_multiplier(real, b.mult_bp)
             } else {
                 0
             };
-            // Никогда не списываем больше атомарно зарезервированного потолка: иначе параллельные запросы
-            // могут совместно увести общий баланс аккаунта ниже нуля из-за неучтённого preflight-overhead.
-            // AUDIT-TODO(C53): резервировать по count_tokens точного post-injection запроса с tool overhead.
             let hold_cap = b.hold.max(0) as i128;
-            // Списываем РЕАЛЬНОЕ, а не clamp до hold: деньги на аккаунте есть, а clamp молча терял разницу
-            // (недобор). registry settle умеет actual>hold — списывает из остатка баланса (допустимый
-            // овердрафт). Кап на hold+$1 бьётся с овердрафт-буфером резерва: один запрос не спишет больше
-            // hold+буфер даже при аномальном usage (пол убытка ограничен).
-            let charge_ceiling = hold_cap + metering::OVERDRAFT_NANO;
             if computed_charge > hold_cap {
-                // Разбивка usage: реальный расход пробил (порезанный балансом) hold — обычно cache_read
-                // либо аномалия. Списываем реальное до hold+$1; разбивка нужна для точного preflight-резерва.
+                // The hold is admission evidence, not a second price ceiling. Registry serializes
+                // collection on the account row, leaves the balance at the shared floor and records
+                // the full remainder as uncollected; clamping here would silently erase pool loss.
                 elog::warn(
                     "meter",
                     format!(
                         "billing charge превысил hold: charge_nano={computed_charge} hold_nano={hold_cap}; \
-                         charge real до hold+$1 | model={price_model} us_geo={us_inference} real_nano={real} \
+                         full actual retained for account-floor settlement | model={price_model} \
+                         us_geo={us_inference} real_nano={real} \
                          in={} out={} cr={} cw5={} cw1={} web={}",
                         usage.input_tokens, usage.output_tokens, usage.cache_read_tokens,
                         usage.cache_write_5m_tokens, usage.cache_write_1h_tokens, usage.web_search_requests,
                     ),
                 );
             }
-            let charge_i64 = computed_charge.clamp(0, charge_ceiling) as i64;
+            let charge_i64 = computed_charge.clamp(0, i64::MAX as i128) as i64;
             // Разбивка токенов/модели для клиентского дашборда — пишется рядом с charge (аналитика).
             // Только при авторитетном usage; C8-preserved hold не изображаем как токеновое событие.
             // A zero multiplier is the free-but-metered account: it charges exactly zero and must

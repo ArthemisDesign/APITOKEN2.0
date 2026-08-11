@@ -67,7 +67,7 @@ cat >"$temporary" <<'METRICS'
 # TYPE apitoken_engine_settlement_pending gauge
 # HELP apitoken_engine_expired_active_leases Expired engine leases still marked active.
 # TYPE apitoken_engine_expired_active_leases gauge
-# HELP apitoken_balance_divergence_nano Maximum absolute per-account divergence between durable funding and balance plus charged or held nanodollars.
+# HELP apitoken_balance_divergence_nano Maximum absolute per-account divergence between durable funding and balance plus full billed usage and holds, net of explicit pool-funded shortfall.
 # TYPE apitoken_balance_divergence_nano gauge
 # HELP apitoken_sales_pending_referral_events Sales events buffered pending attribution reconciliation.
 # TYPE apitoken_sales_pending_referral_events gauge
@@ -85,11 +85,13 @@ cat >"$temporary" <<'METRICS'
 # TYPE apitoken_sales_cursor_age_seconds gauge
 # HELP apitoken_engine_accounts_below_floor Accounts whose balance is below the $1 overdraft floor.
 # TYPE apitoken_engine_accounts_below_floor gauge
-# HELP apitoken_pricing_charge_mismatch Settled charges whose amount does not match the multiplier the same row declares.
+# HELP apitoken_pricing_charge_mismatch Settled full billed amounts whose value does not match the reserve-time provider multiplier.
 # TYPE apitoken_pricing_charge_mismatch gauge
+# HELP apitoken_settlement_uncollected_nano Full billed usage the shared account floor prevented customer balances from collecting, by bounded observation window.
+# TYPE apitoken_settlement_uncollected_nano gauge
 # HELP apitoken_pricing_output_overage_absorbed_nano Provider cost of output generated past the ceiling a customer asked for, absorbed by the pool in the last hour.
 # TYPE apitoken_pricing_output_overage_absorbed_nano gauge
-# HELP apitoken_pricing_effective_multiplier_bp Basis points actually charged against the official price, by account class.
+# HELP apitoken_pricing_effective_multiplier_bp Basis points of full billed usage against official price, by bounded provider.
 # TYPE apitoken_pricing_effective_multiplier_bp gauge
 # HELP apitoken_pricing_authority_drift Mapped commerce accounts whose engine authority disagrees on a fixed pricing dimension.
 # TYPE apitoken_pricing_authority_drift gauge
@@ -158,40 +160,50 @@ SQL
 if database_exists claude_engine; then
   psql_database claude_engine >>"$temporary" <<'SQL'
 SELECT 'apitoken_engine_settlement_pending ' || count(*) FROM settlement_outbox WHERE state <> 'done';
--- Admission holds the account at no worse than −$1, atomically on the account row, so this can
--- only move when a settlement charges more than its reservation held or when an adjustment claws
--- money back after it was spent. Either way it is a customer carrying debt the pool funded.
+-- Admission and settlement now share the same atomic −$1 account fence. A row below it therefore
+-- means a later negative adjustment/clawback created recorded account debt; settlement overshoot is
+-- represented separately by the immutable uncollected metrics below.
 SELECT 'apitoken_engine_accounts_below_floor ' || count(*) FROM accounts WHERE balance_nano < -1000000000;
+SELECT 'apitoken_settlement_uncollected_nano{window="all"} '
+       || COALESCE(SUM(uncollected_nano)::bigint, 0)
+FROM accounts;
+SELECT 'apitoken_settlement_uncollected_nano{window="1h"} '
+       || COALESCE(SUM(uncollected_nano)::bigint, 0)
+FROM ledger
+WHERE kind = 'charge' AND ts > EXTRACT(EPOCH FROM now())::bigint - 3600;
 -- What a customer was actually charged, checked against the multiplier the same settled row
 -- declares. This replaces the shadow evaluation lane, which computed the comparison ahead of a
 -- rollout, wrote 2654 rows that nothing ever read, and was not running during the cutover it
 -- existed to protect. This reads settled money instead of a dry run, so it cannot be skipped.
 -- One basis point of tolerance absorbs integer rounding on sub-cent charges.
-WITH account_classes(account_class) AS (
-  VALUES ('b2c'), ('b2b'), ('openkeys'), ('service')
+WITH providers(provider) AS (
+  VALUES ('anthropic'), ('openai'), ('google'), ('kimi'), ('glm')
 ), settled AS (
-  SELECT account_class,
+  SELECT provider,
          amount_nano::numeric / official_nano AS charged_ratio,
          payable_multiplier_bp
   FROM ledger
   WHERE ts > EXTRACT(EPOCH FROM now())::bigint - 3600
     AND official_nano > 0 AND amount_nano > 0
-    AND payable_multiplier_bp IS NOT NULL AND account_class IS NOT NULL
+    AND payable_multiplier_bp IS NOT NULL
+    AND provider IN ('anthropic', 'openai', 'google', 'kimi', 'glm')
 )
-SELECT 'apitoken_pricing_charge_mismatch{account_class="' || class.account_class || '"} '
+SELECT 'apitoken_pricing_charge_mismatch{provider="' || providers.provider || '"} '
        || count(*) FILTER (WHERE ABS(charged_ratio * 10000 - payable_multiplier_bp) > 1)
-FROM account_classes class
-LEFT JOIN settled ON settled.account_class = class.account_class
-GROUP BY class.account_class;
+FROM providers
+LEFT JOIN settled USING (provider)
+GROUP BY providers.provider;
 WITH settled AS (
-  SELECT account_class, amount_nano::numeric / official_nano AS charged_ratio
+  SELECT provider,
+         amount_nano::numeric / official_nano AS charged_ratio
   FROM ledger
   WHERE ts > EXTRACT(EPOCH FROM now())::bigint - 3600
-    AND official_nano > 0 AND amount_nano > 0 AND account_class IS NOT NULL
+    AND official_nano > 0 AND amount_nano > 0
+    AND provider IN ('anthropic', 'openai', 'google', 'kimi', 'glm')
 )
-SELECT 'apitoken_pricing_effective_multiplier_bp{account_class="' || account_class || '"} '
+SELECT 'apitoken_pricing_effective_multiplier_bp{provider="' || provider || '"} '
        || round(avg(charged_ratio) * 10000)
-FROM settled GROUP BY account_class;
+FROM settled GROUP BY provider;
 -- A customer that sends `max_tokens` is billed only up to that ceiling, exactly as the emulated
 -- API would bill it, but this transport cannot stop generation: the provider may overshoot and the
 -- pool eats the difference. That absorption used to be invisible, and the only thing that surfaced
@@ -219,6 +231,7 @@ WITH funding AS (
     account.balance_nano::numeric
     + account.spent_nano::numeric
     + account.reserved_nano::numeric
+    - account.uncollected_nano::numeric
     - COALESCE(funding.funded_nano, 0)
   ) AS amount_nano
   FROM accounts account

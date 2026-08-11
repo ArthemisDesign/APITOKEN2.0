@@ -1043,19 +1043,39 @@ multiplier with SQL.
 
 ## EngineAccountsBelowFloor
 
-An account's balance is below the −$1 overdraft floor. Admission cannot cause this: the reserve
-gate is atomic on the account row and decrements the balance by the hold, so concurrent
-reservations share one floor rather than each getting their own. Two things can:
+An account's balance is below the −$1 shared admission/settlement floor. Both reserve and terminal
+collection serialize on the account row, so neither concurrent reservations nor over-hold provider
+usage can create this state. Settlement preserves any amount it cannot collect as explicit
+`uncollected_nano` without moving the balance farther down.
 
-- a settlement charged more than its reservation held (the tokens were already spent; the money
-  cannot be refused), which shows up as `actual_nano > hold_nano` on the `reservations` row;
-- money was clawed back after it was spent — a revoked bonus or an admin adjustment against a
-  balance that had already funded requests.
+Read the account's adjustment ledger and its commerce funding source. The expected cause is money
+clawed back after it was spent — for example a revoked bonus or an admin adjustment that records
+debt. If no matching negative adjustment exists, treat the row as authority corruption, take
+validated dumps, and investigate before changing any aggregate. Never raise or disable the floor to
+hide recorded debt.
 
-Identify which by reading the account's `ledger`. A clawback is intended and needs no action beyond
-knowing the debt exists. Repeated settlement overshoot on one provider means that provider's
-reservation estimate is systematically low and should be raised — the floor is not the thing to
-change.
+## SettlementUncollectedDetected
+
+The engine delivered provider usage whose full billed amount exceeded the money collectible from
+the account at the shared −$1 floor. The request is not rewritten or silently under-billed:
+`actual_nano = collected_nano + uncollected_nano`, account/key lifetime spend advances by full
+`actual_nano`, and both the reservation and charge ledger retain the shortfall. The
+`window="all"` companion series is the lifetime aggregate; only new shortfall in the one-hour
+window alerts.
+
+Inspect the newest reservations with `uncollected_nano > 0`, grouped by their immutable `provider`
+and reserve-time `payable_multiplier_bp`. Compare `hold_nano`, `actual_nano`, token mix, model and
+the provider response that set the final usage. Repeated rows on one route mean its conservative
+hold is too low; fix that estimate or hard upper bound. Do not debit a later top-up automatically:
+the engine cannot reconstruct whether that future funding is paid or commission-ineligible credit.
+
+## SettlementUncollectedHigh
+
+More than $1 of delivered usage became explicit settlement shortfall in the last hour. Treat this
+as an active money incident: stop or constrain the implicated provider/model lane, preserve its
+reservation/ledger/usage evidence, and repair the hold calculation before restoring normal traffic.
+The same forensic steps as `SettlementUncollectedDetected` apply, but this threshold is critical
+because the pool loss is material rather than a single bounded estimation miss.
 
 ## UsageProviderAttributionMissing
 
@@ -1099,10 +1119,14 @@ lower the overdraft floor merely to suppress 402s.
 
 ## PricingChargeMismatch
 
-A settled ledger row billed an amount that disagrees with the `payable_multiplier_bp` recorded on
-that same row, by more than the one basis point of tolerance integer rounding needs. Either a
-customer was overcharged or revenue was lost, so treat it as a money defect rather than a
-reporting one.
+A settled ledger row's full billed `amount_nano` disagrees with the
+`payable_multiplier_bp` pinned when that provider request reserved money, by more than the one basis
+point of tolerance integer rounding needs. `uncollected_nano` is already a subset of `amount_nano`,
+not an amount to add to it; the customer balance movement is `amount_nano - uncollected_nano`.
+Comparing only that collected movement would label a correctly fenced shortfall as undercharging.
+Either a customer was otherwise overcharged or revenue was lost, so treat a remaining mismatch as a
+money defect rather than a reporting one. The collector emits a bounded zero-or-count series for
+every runtime provider; it does not depend on retired `account_class` attribution.
 
 `official_nano` is the official price of **what the customer was billed for**, not always of what
 the provider produced. They differ on one path: a customer that caps its turn with `max_tokens` is
@@ -1119,20 +1143,20 @@ firing still means a real mismatch.
 Find the rows and read what they claim:
 
 ```sql
-SELECT to_timestamp(ts), account_class, payable_multiplier_bp,
+SELECT to_timestamp(ts), provider, payable_multiplier_bp,
        round(amount_nano::numeric / official_nano * 10000) AS charged_bp,
-       amount_nano, official_nano, rule_id, policy_id, policy_version
+       amount_nano, uncollected_nano, official_nano
 FROM ledger
 WHERE ts > EXTRACT(EPOCH FROM now())::bigint - 3600
   AND official_nano > 0 AND amount_nano > 0
-  AND ABS(amount_nano::numeric / official_nano * 10000 - payable_multiplier_bp) > 1
+  AND ABS(amount_nano::numeric / official_nano * 10000
+          - payable_multiplier_bp) > 1
 ORDER BY ts DESC;
 ```
 
-The row carries the whole decision — rule, policy version, catalog and switch generations — so the
-question is which of them disagreed with the charge, not which request it was. A cluster starting at
-one timestamp points at a pricing change; scattered rows on sub-cent charges are rounding and belong
-in the tolerance instead.
+The scalar row carries the serving provider and reserve-time multiplier. A cluster starting at one
+timestamp points at a pricing edit or a call site that failed to pin the admission value; scattered
+rows on sub-cent charges are rounding and belong in the tolerance instead.
 
 Never edit `ledger`: it is the money record. Correct a customer through an adjustment, and fix the
 rule that produced the charge.
@@ -1166,8 +1190,11 @@ recover the lease. Never delete live reservations directly.
 
 Stop manual credits, refunds, and destructive maintenance until the affected authority state is
 understood. The gauge is the maximum absolute per-account difference between durable
-`topup`/`adjust` funding and `balance_nano + spent_nano + reserved_nano`; any non-zero value violates
-money conservation.
+`topup`/`adjust` funding and
+`balance_nano + spent_nano + reserved_nano - uncollected_nano`; any non-zero value violates money
+conservation. `spent_nano` contains full billed usage, while `uncollected_nano` is the explicit
+pool-funded slice that never moved through the customer balance, so omitting that subtraction would
+turn every correctly fenced shortfall into a false divergence.
 
 Take validated `commerce` and `claude_engine` dumps before investigating. Compare the account's
 funding ledger, completed charge total, and non-terminal reservation holds without editing rows.

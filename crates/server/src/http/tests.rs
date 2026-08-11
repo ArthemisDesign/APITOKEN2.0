@@ -3426,6 +3426,7 @@ fn customer_error_event_is_structured_and_redacts_request_data() {
             balance_nano: 999,
             spent_nano: 1,
             reserved_nano: 2,
+            uncollected_nano: 0,
             mult_bp: 500,
             status: "active".to_string(),
         }),
@@ -3499,6 +3500,7 @@ fn billing_limit_reason_identifies_the_binding_budget() {
         balance_nano: 1_000,
         spent_nano: 0,
         reserved_nano: 0,
+        uncollected_nano: 0,
         mult_bp: 500,
         status: "active".to_string(),
     };
@@ -3544,6 +3546,7 @@ fn positive_balance_402_counter_predicate_requires_both_facts() {
         balance_nano: 1,
         spent_nano: 0,
         reserved_nano: 0,
+        uncollected_nano: 0,
         mult_bp: 10_000,
         status: "active".to_string(),
     };

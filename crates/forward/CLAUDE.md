@@ -48,13 +48,20 @@ by the provider quote builders, plus the hot tariff book below.
 
 **Billing (async, `billing.rs` + tee-metering `meter.rs`):** authorization (`authorize`, async):
 the env admin is checked FIRST in memory; otherwise the client key → `key_account` (JOIN key→account)
-→ ACCOUNT balance (≤0 → 402). Balance/reserve/markup live on the account (shared across all of a user's keys).
+→ ACCOUNT balance (a non-positive balance rejects only a positive multiplier). A zero multiplier is
+free but metered on every provider: admission holds zero, settlement debits zero and still persists
+the authoritative usage event. Balance/reserve/markup live on the account (shared across all of a user's keys).
 All DB operations go through `AsyncBilling` (DB actors: 1 writer + N readers; sync PostgreSQL/legacy
 SQLite live on dedicated threads, NOT on async workers). The generated request ID is created before reserve;
 successful delivery is marked durable before the stream is handed over; finalize puts an idempotent settlement into the
-outbox, and the writer retries it until commit. The RAII cancel closes exactly this request ID. Reserve is held against the balance
-with `max_tokens` clamped down (`cap_to_balance`)
-→ the client never receives a single token/cent above their balance. 4xx/errors/rotation are NOT metered.
+outbox, and the writer retries it until commit. The RAII cancel closes exactly this request ID.
+Every provider reserve pins the fixed provider id and `Authz::mult_for(provider)` value in the same
+money transaction, so a concurrent admin edit cannot reprice an in-flight response. Reserve uses a
+conservative hold with `max_tokens` clamped down (`cap_to_balance`), but authoritative provider
+usage may exceed that estimate. Settlement keeps full billed usage while the shared account-row
+fence limits collection to the aggregate −$1 floor; any remainder is explicit pool-funded
+`uncollected_nano`, never a silent clamp or a second per-request overdraft. 4xx/errors/rotation are
+NOT metered.
 For policy keys the cap takes the minimum of the account balance and the remaining lifetime limit. Such keys
 bypass the auth TTL cache; expiry and limit are re-checked inside the atomic reserve transaction.
 Every recognized metered 402 is audited after the response against a fresh authority read. The

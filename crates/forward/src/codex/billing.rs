@@ -1,14 +1,11 @@
 //! Shared customer admission and exact API-equivalent settlement for Codex turns.
 
 use super::openai_image_snapshot::{
-    openai_image_quote, OpenAiImageOperation,
-    OpenAiImageQuoteInput,
+    openai_image_quote, OpenAiImageOperation, OpenAiImageQuoteInput,
 };
 use super::{CodexModel, CodexUsage};
 use crate::metrics::Metrics;
-use crate::pricing::{
-    tariff_book, EnginePricingRequestId,
-};
+use crate::pricing::{tariff_book, EnginePricingRequestId};
 use crate::proxy::{authorize, Authz, HoldGuard};
 use crate::state::AppState;
 use anyhow::Context as _;
@@ -87,26 +84,21 @@ impl PendingCodexAdmission {
                 },
                 Some(billing),
             ) => {
-                let (
-                    request_id,
-                    hold,
-                    reservation_mult_bp,
-                    tariff_priced_ts,
-                    pinned_tariff,
-                ) = reserve_codex_metered(
-                    billing,
-                    account_id,
-                    key,
-                    model,
-                    estimated_input_tokens,
-                    requested_output_tokens,
-                    reserve_overhead_tokens,
-                    fast,
-                    self.authz.mult_for(registry::PROVIDER_OPENAI),
-                    *available_nano,
-                    &self.execution,
-                )
-                .await?;
+                let (request_id, hold, reservation_mult_bp, tariff_priced_ts, pinned_tariff) =
+                    reserve_codex_metered(
+                        billing,
+                        account_id,
+                        key,
+                        model,
+                        estimated_input_tokens,
+                        requested_output_tokens,
+                        reserve_overhead_tokens,
+                        fast,
+                        self.authz.mult_for(registry::PROVIDER_OPENAI),
+                        *available_nano,
+                        &self.execution,
+                    )
+                    .await?;
                 Some(Reservation {
                     billing: billing.clone(),
                     account_id: account_id.clone(),
@@ -179,7 +171,7 @@ async fn reserve_openai_image_metered(
     let request_id = crate::upstream::fresh_request_id();
     let typed_request_id = EnginePricingRequestId::from_engine_uuid_v4(&request_id)
         .ok_or(AdmissionError::Unavailable)?;
-    if available_nano <= 0 {
+    if mult_bp > 0 && available_nano <= 0 {
         return Err(AdmissionError::LowBalance);
     }
     let quote = openai_image_quote(OpenAiImageQuoteInput {
@@ -192,7 +184,10 @@ async fn reserve_openai_image_metered(
         available_nano,
     })
     .map_err(|error| {
-        elog::error("codex-billing", format!("OpenAI image quote failed: {error:#}"));
+        elog::error(
+            "codex-billing",
+            format!("OpenAI image quote failed: {error:#}"),
+        );
         AdmissionError::Unavailable
     })?
     .ok_or(AdmissionError::LowBalance)?;
@@ -201,7 +196,15 @@ async fn reserve_openai_image_metered(
     let hold = snapshot.charged_hold_nano();
     let payable_multiplier_bp = snapshot.payable_multiplier_bp();
     match billing
-        .reserve_request_for_execution(&request_id, account_id, key, hold, execution.clone())
+        .reserve_priced_request_for_execution(
+            &request_id,
+            account_id,
+            key,
+            hold,
+            execution.clone(),
+            registry::PROVIDER_OPENAI,
+            payable_multiplier_bp,
+        )
         .await
     {
         Ok(Some(_)) => Ok(image_reservation(
@@ -224,7 +227,6 @@ async fn reserve_openai_image_metered(
         }
     }
 }
-
 
 #[allow(clippy::too_many_arguments)]
 fn image_reservation(
@@ -272,7 +274,7 @@ async fn reserve_codex_metered(
     execution: &registry::ExecutionAttempt,
 ) -> Result<CodexReserveResult, AdmissionError> {
     let request_id = crate::upstream::fresh_request_id();
-    if available_nano <= 0 {
+    if mult_bp > 0 && available_nano <= 0 {
         return Err(AdmissionError::LowBalance);
     }
     reserve_codex_legacy(
@@ -333,24 +335,34 @@ async fn reserve_codex_legacy(
         requested_output_tokens,
         fast,
     );
-    let hold = metering::apply_multiplier(base, mult_bp).clamp(1, i64::MAX as i128) as i64;
+    let hold = if mult_bp <= 0 {
+        0
+    } else {
+        metering::apply_multiplier(base, mult_bp).clamp(1, i64::MAX as i128) as i64
+    };
     // Preserve the scalar admission contract exactly: a conservative full-output estimate is
-    // capped to the account balance, while exact settlement remains bounded by hold + overdraft.
+    // capped to the account balance. Exact settlement retains the full charge; registry caps only
+    // collection at the shared account floor and records any remainder as uncollected.
     let hold = hold.min(available_nano.max(1));
     match billing
-        .reserve_request_for_execution(request_id, account_id, key, hold, execution.clone())
+        .reserve_priced_request_for_execution(
+            request_id,
+            account_id,
+            key,
+            hold,
+            execution.clone(),
+            registry::PROVIDER_OPENAI,
+            mult_bp,
+        )
         .await
     {
-        Ok(Some(_)) => Ok((
-            request_id.to_owned(),
-            hold,
-            mult_bp,
-            None,
-            resolved.pin,
-        )),
+        Ok(Some(_)) => Ok((request_id.to_owned(), hold, mult_bp, None, resolved.pin)),
         Ok(None) => Err(AdmissionError::LowBalance),
         Err(error) => {
-            elog::error("codex-billing", format!("Codex billing reservation failed: {error:#}"));
+            elog::error(
+                "codex-billing",
+                format!("Codex billing reservation failed: {error:#}"),
+            );
             Err(AdmissionError::Unavailable)
         }
     }
@@ -508,8 +520,7 @@ fn settled_openai_image_charge_with_prices(
         return (crate::settlement_policy::unknown_usage_charge(hold), None);
     };
     let computed_charge = metering::apply_multiplier(real_nano, mult_bp);
-    let ceiling = i128::from(hold.max(0)) + metering::OVERDRAFT_NANO;
-    let charge = computed_charge.clamp(0, ceiling).min(i64::MAX as i128) as i64;
+    let charge = computed_charge.clamp(0, i64::MAX as i128) as i64;
     let fresh_text = usage
         .total_text_input_tokens
         .saturating_sub(usage.cached_text_input_tokens);
@@ -518,8 +529,7 @@ fn settled_openai_image_charge_with_prices(
         .saturating_sub(usage.cached_image_input_tokens);
     let input_nano = i128::from(fresh_text) * prices.fresh_text_input
         + i128::from(fresh_image) * prices.fresh_image_input;
-    let cache_read_nano = i128::from(usage.cached_text_input_tokens)
-        * prices.cached_text_input
+    let cache_read_nano = i128::from(usage.cached_text_input_tokens) * prices.cached_text_input
         + i128::from(usage.cached_image_input_tokens) * prices.cached_image_input;
     let output_nano = i128::from(usage.image_output_tokens) * prices.image_output;
     let input_tokens = usage
@@ -679,7 +689,7 @@ fn settled_charge(
 fn settled_charge_with_prices(
     model: &CodexModel,
     usage: &CodexUsage,
-    hold: i64,
+    _hold: i64,
     mult_bp: i64,
     requested_output_tokens: Option<u64>,
     now: i64,
@@ -701,8 +711,7 @@ fn settled_charge_with_prices(
         _ => priced.real_nano,
     };
     let computed_charge = metering::apply_multiplier(charge_basis_nano, mult_bp);
-    let ceiling = hold.max(0) as i128 + metering::OVERDRAFT_NANO;
-    let charge = computed_charge.clamp(0, ceiling).min(i64::MAX as i128) as i64;
+    let charge = computed_charge.clamp(0, i64::MAX as i128) as i64;
     let usage_event = (priced.real_nano > 0).then(|| registry::UsageEventInput {
         model: model.id.clone(),
         provider: registry::PROVIDER_OPENAI.to_string(),
@@ -741,7 +750,10 @@ pub(crate) async fn begin_admission(
     let execution = crate::execution::parse_execution_attempt(headers).map_err(|error| {
         elog::error(
             "codex-billing",
-            format!("OpenAI execution identity rejected class={}", error.as_str()),
+            format!(
+                "OpenAI execution identity rejected class={}",
+                error.as_str()
+            ),
         );
         AdmissionError::Unavailable
     })?;
@@ -891,9 +903,15 @@ pub(crate) fn price_calibration_event(
             Some((family, compiled_rates)) => match book.resolve(family, completed_at) {
                 Some((pin, payload)) => match tariff_book::as_codex_credits(&payload) {
                     Some(rates) => (rates, pin.schedule_id),
-                    None => (compiled_rates, metering::CODEX_CREDIT_SCHEDULE_ID.to_owned()),
+                    None => (
+                        compiled_rates,
+                        metering::CODEX_CREDIT_SCHEDULE_ID.to_owned(),
+                    ),
                 },
-                None => (compiled_rates, metering::CODEX_CREDIT_SCHEDULE_ID.to_owned()),
+                None => (
+                    compiled_rates,
+                    metering::CODEX_CREDIT_SCHEDULE_ID.to_owned(),
+                ),
             },
             None => anyhow::bail!("Codex subscription credit rate unavailable"),
         };
@@ -1081,12 +1099,6 @@ mod tests {
         model
     }
 
-
-
-
-
-
-
     async fn reserved_admission(
         mult_bp: i64,
         topup: i64,
@@ -1150,6 +1162,105 @@ mod tests {
             }),
         };
         (admission, billing, path)
+    }
+
+    #[tokio::test]
+    async fn zero_multiplier_text_and_image_admission_reserve_no_balance() {
+        const ACCOUNT: &str = "codex-meter-only-account";
+        const KEY: &str = "sk-pool-codex-meter-only";
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let sequence = NEXT_SETTLEMENT_DB.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-codex-meter-only-{}-{unique}-{sequence}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let billing = Arc::new(AsyncBilling::start(path_string.clone(), 1).unwrap());
+        billing.create_account(ACCOUNT, None, 0).await.unwrap();
+        billing
+            .issue_key(KEY, ACCOUNT, None, None, None)
+            .await
+            .unwrap();
+
+        let (text_request_id, text_hold, text_multiplier, _, _) = reserve_codex_metered(
+            &billing,
+            ACCOUNT,
+            KEY,
+            &model(),
+            100,
+            Some(64),
+            0,
+            false,
+            0,
+            0,
+            &registry::ExecutionAttempt::direct(),
+        )
+        .await
+        .expect("zero-multiplier text request must not require balance");
+        assert_eq!((text_hold, text_multiplier), (0, 0));
+
+        let mut image = reserve_openai_image_metered(
+            &billing,
+            ACCOUNT,
+            KEY,
+            metering::GPT_IMAGE_2_ALIAS,
+            OpenAiImageOperation::Generation,
+            0,
+            0,
+            &registry::ExecutionAttempt::direct(),
+        )
+        .await
+        .expect("zero-multiplier image request must not require balance");
+        assert_eq!((image.hold, image.mult_bp), (0, 0));
+        let image_request_id = image.request_id.clone();
+
+        assert_eq!(
+            billing
+                .settle_request(&text_request_id, ACCOUNT, KEY, 0, 0, None)
+                .await
+                .unwrap(),
+            Some(0),
+        );
+        assert_eq!(
+            billing
+                .settle_request(&image_request_id, ACCOUNT, KEY, 0, 0, None)
+                .await
+                .unwrap(),
+            Some(0),
+        );
+        image.guard.disarm();
+        drop(image);
+        billing.flush().await.unwrap();
+
+        let connection = registry::open(&path_string).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM billing_reservations
+                      WHERE request_id IN (?1,?2) AND hold_nano=0 AND actual_nano=0
+                        AND provider='openai' AND payable_multiplier_bp=0 AND state='canceled'",
+                    (text_request_id, image_request_id),
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2,
+        );
+        assert_eq!(
+            billing
+                .account(ACCOUNT)
+                .await
+                .unwrap()
+                .unwrap()
+                .balance_nano,
+            0,
+        );
+
+        drop(connection);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -1240,15 +1351,7 @@ mod tests {
             fast_usage as i128
         );
 
-        let (charge, event) = settled_charge(
-            &model(),
-            &usage,
-            i64::MAX,
-            10_000,
-            None,
-            0,
-            true,
-        );
+        let (charge, event) = settled_charge(&model(), &usage, i64::MAX, 10_000, None, 0, true);
         assert_eq!(charge, fast_usage);
         let event = event.expect("fast usage must produce a usage event");
         assert_eq!(event.speed, "fast");
@@ -1336,7 +1439,6 @@ mod tests {
         assert_eq!(event.output_tokens, 1_000);
         assert_eq!(event.real_nano, 100 * 5_000 + 1_000 * 30_000);
     }
-
 
     #[test]
     fn pricing_comes_from_the_audited_catalog_not_the_config_copy() {
@@ -1529,26 +1631,19 @@ mod tests {
         assert_eq!(event.priced_ts, 123);
     }
 
-
     #[test]
-    fn settlement_clamps_overrun_to_the_reserved_hold_plus_one_dollar() {
+    fn settlement_retains_full_actual_beyond_the_admission_hold() {
         let usage = CodexUsage {
             input_tokens: 1_000_000,
             output_tokens: 1_000_000,
             ..CodexUsage::default()
         };
         let hold = 17;
-        let (charge, event) = settled_charge(
-            &settlement_model(),
-            &usage,
-            hold,
-            10_000,
-            None,
-            456,
-            false,
-        );
-        assert_eq!(charge as i128, hold as i128 + metering::OVERDRAFT_NANO);
-        assert!(event.is_some());
+        let (charge, event) =
+            settled_charge(&settlement_model(), &usage, hold, 10_000, None, 456, false);
+        let event = event.expect("priced usage must remain auditable");
+        assert_eq!(charge, event.charge_basis_nano);
+        assert!(charge as i128 > hold as i128 + metering::OVERDRAFT_NANO);
     }
 
     /// A customer that caps its turn with `max_tokens` is billed to that ceiling and no further, but
@@ -1584,15 +1679,8 @@ mod tests {
         );
 
         // An uncapped turn leaves both figures identical, so nothing changes elsewhere.
-        let (_, uncapped) = settled_charge(
-            &settlement_model(),
-            &usage,
-            i64::MAX,
-            1_500,
-            None,
-            0,
-            false,
-        );
+        let (_, uncapped) =
+            settled_charge(&settlement_model(), &usage, i64::MAX, 1_500, None, 0, false);
         let uncapped = uncapped.expect("a priced turn emits a usage event");
         assert_eq!(uncapped.real_nano, uncapped.charge_basis_nano);
     }
@@ -1640,13 +1728,6 @@ mod tests {
         assert_eq!(event.cache_read_nano, i64::MAX);
         assert_eq!(event.output_nano, i64::MAX);
     }
-
-
-
-
-
-
-
 
     #[tokio::test]
     async fn codex_admission_settle_debits_once_and_persists_provider_usage() {
@@ -1730,6 +1811,25 @@ mod tests {
         assert_eq!(event.output_nano, 300_000);
         assert_eq!(event.real_nano, 1_950_000);
         assert_eq!(event.priced_ts, 1_800_000_000);
+    }
+
+    #[test]
+    fn openai_image_settlement_retains_full_actual_beyond_the_hold() {
+        let usage = metering::OpenAiImageUsage {
+            image_output_tokens: 100_000,
+            ..Default::default()
+        };
+        let hold = 1;
+        let (charge, event) = settled_openai_image_charge(
+            metering::GPT_IMAGE_2_ALIAS,
+            &usage,
+            hold,
+            10_000,
+            1_800_000_000,
+        );
+        let event = event.expect("priced image usage must remain auditable");
+        assert_eq!(charge, event.charge_basis_nano);
+        assert!(charge as i128 > hold as i128 + metering::OVERDRAFT_NANO);
     }
 
     #[tokio::test]

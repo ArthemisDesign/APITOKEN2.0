@@ -771,7 +771,10 @@ impl GlmGateway {
             Ok(_) => {
                 elog::warn(
                     "glm",
-                    format!("GLM quota poll returned no usable windows profile={}", profile.id),
+                    format!(
+                        "GLM quota poll returned no usable windows profile={}",
+                        profile.id
+                    ),
                 );
                 return false;
             }
@@ -1114,10 +1117,7 @@ impl GlmGateway {
             {
                 Ok(response) => response,
                 Err(error) => {
-                    elog::error(
-                        "glm",
-                        format!("glm upstream transport failed: {error:?}"),
-                    );
+                    elog::error("glm", format!("glm upstream transport failed: {error:?}"));
                     let remaining = self.eligible_count(&request.model, &excluded, &profile.id);
                     let decision = decide(
                         UpstreamVerdict::Transport,
@@ -1348,20 +1348,21 @@ impl GlmGateway {
                 return Err(GatewayFailure::LowBalance);
             };
             match billing
-                .reserve_request_for_execution(
+                .reserve_priced_request_for_execution(
                     request_id,
                     &input.account_id,
                     &input.key,
                     hold,
                     execution.clone(),
+                    registry::PROVIDER_GLM,
+                    input.mult_bp,
                 )
                 .await
                 .map_err(|error| {
                     elog::error("glm", "glm reservation failed");
                     let _ = error;
                     GatewayFailure::Unavailable("glm_reservation_unavailable")
-                })?
-            {
+                })? {
                 Some(_) => {
                     if effective_max < requested_max {
                         body["max_tokens"] = json!(effective_max);
@@ -1715,12 +1716,7 @@ impl GlmGateway {
             if let Some(billing) = &self.billing {
                 match &priced {
                     Some(priced) => {
-                        let actual = metering::apply_multiplier(priced.total, reservation.mult_bp)
-                            .clamp(
-                                0,
-                                i128::from(reservation.hold.max(0)) + metering::OVERDRAFT_NANO,
-                            )
-                            .min(i128::from(i64::MAX)) as i64;
+                        let actual = customer_actual(priced.total, reservation.mult_bp);
                         let usage_event = Some(priced.usage_event(
                             parsed.served_model.as_deref().unwrap_or_default(),
                             reservation.priced_ts,
@@ -1737,7 +1733,10 @@ impl GlmGateway {
                             )
                             .await
                         {
-                            elog::error("glm", format!("GLM customer settlement deferred: {error:#}"));
+                            elog::error(
+                                "glm",
+                                format!("GLM customer settlement deferred: {error:#}"),
+                            );
                         }
                     }
                     None => {
@@ -1781,7 +1780,10 @@ impl GlmGateway {
         let event = match priced.calibration_event(context, &usage, &served_model, completed_at) {
             Ok(event) => event,
             Err(error) => {
-                elog::error("glm", format!("GLM calibration event rejected before FIFO: {error:#}"));
+                elog::error(
+                    "glm",
+                    format!("GLM calibration event rejected before FIFO: {error:#}"),
+                );
                 return;
             }
         };
@@ -2224,6 +2226,10 @@ async fn price_turn_settlement(
         api_schedule_id,
         credit_schedule_id,
     )
+}
+
+fn customer_actual(charge_basis_nano: i128, mult_bp: i64) -> i64 {
+    metering::apply_multiplier(charge_basis_nano, mult_bp).clamp(0, i128::from(i64::MAX)) as i64
 }
 
 fn cap_to_balance(

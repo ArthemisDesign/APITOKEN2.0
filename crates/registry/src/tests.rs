@@ -18,11 +18,6 @@ fn only_roster_backed_fleets_accept_an_operator_disable() {
     assert!(require_roster_backed_provider("codex").is_err());
 }
 
-
-
-
-
-
 /// Персист состояния пула: save→load переносит cooling/калибровку (upsert по email).
 #[test]
 fn pool_state_save_load_roundtrip() {
@@ -725,9 +720,6 @@ fn acct_with_key(c: &Connection, acct: &str, key: &str, usd_nano: i64, mult: i64
     key_issue(c, key, acct, None).unwrap();
 }
 
-
-
-
 #[test]
 fn authoritative_database_uses_full_synchronous_durability() {
     let c = db();
@@ -880,6 +872,734 @@ fn settle_records_exact_actual_above_hold() {
     assert_eq!(ledger[0].uncollected_nano, 7);
 }
 
+#[test]
+fn sqlite_settlements_share_one_floor_and_preserve_full_billed_usage() {
+    let c = db();
+    acct_with_key(&c, "floor-account", "floor-key", 700_000_000, 5_000);
+    let pricing = ReservationPricing::new(PROVIDER_OPENAI, 5_000).unwrap();
+    let execution = ExecutionAttempt::direct();
+    for (request_id, hold, expected_balance) in [
+        ("floor-1", 200_000_000, 500_000_000),
+        ("floor-2", 200_000_000, 300_000_000),
+        ("floor-3", 300_000_000, 0),
+    ] {
+        assert_eq!(
+            sqlite_reserve_priced_request_for_execution(
+                &c,
+                request_id,
+                "floor-account",
+                "floor-key",
+                hold,
+                60,
+                &execution,
+                &pricing,
+            )
+            .unwrap(),
+            Some(expected_balance),
+        );
+    }
+
+    let usages = [
+        ("floor-1", 200_000_000, 550_000_000),
+        ("floor-2", 200_000_000, 600_000_000),
+        ("floor-3", 300_000_000, 700_000_000),
+    ]
+    .map(|(request_id, hold, actual)| {
+        (
+            request_id,
+            hold,
+            actual,
+            UsageEventInput {
+                model: "gpt-floor-test".into(),
+                provider: PROVIDER_OPENAI.into(),
+                real_nano: actual * 2,
+                charge_basis_nano: actual * 2,
+                ..Default::default()
+            },
+        )
+    });
+    assert_eq!(
+        sqlite_settle_request(
+            &c,
+            usages[0].0,
+            "floor-account",
+            "floor-key",
+            usages[0].1,
+            usages[0].2,
+            Some("floor-ref-1"),
+            Some(&usages[0].3),
+        )
+        .unwrap(),
+        Some(-350_000_000),
+    );
+    assert_eq!(
+        sqlite_settle_request(
+            &c,
+            usages[1].0,
+            "floor-account",
+            "floor-key",
+            usages[1].1,
+            usages[1].2,
+            Some("floor-ref-2"),
+            Some(&usages[1].3),
+        )
+        .unwrap(),
+        Some(-750_000_000),
+    );
+    assert_eq!(
+        sqlite_settle_request(
+            &c,
+            usages[2].0,
+            "floor-account",
+            "floor-key",
+            usages[2].1,
+            usages[2].2,
+            Some("floor-ref-3"),
+            Some(&usages[2].3),
+        )
+        .unwrap(),
+        Some(-1_000_000_000),
+    );
+
+    let account = c
+        .query_row(
+            "SELECT balance_nano,spent_nano,reserved_nano,uncollected_nano \
+             FROM accounts WHERE id='floor-account'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(account, (-1_000_000_000, 1_850_000_000, 0, 150_000_000));
+    assert_eq!(
+        account.0 + account.1 + account.2 - account.3,
+        700_000_000,
+        "funding must equal balance + full spend + holds - pool-funded shortfall",
+    );
+    assert_eq!(
+        key_get(&c, "floor-key").unwrap().unwrap().spent_nano,
+        1_850_000_000,
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT COALESCE(SUM(actual_nano),0),COALESCE(SUM(collected_nano),0), \
+                    COALESCE(SUM(uncollected_nano),0),COUNT(DISTINCT provider), \
+                    MIN(payable_multiplier_bp),MAX(payable_multiplier_bp) \
+             FROM billing_reservations WHERE request_id LIKE 'floor-%'",
+            [],
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            )),
+        )
+        .unwrap(),
+        (1_850_000_000, 1_700_000_000, 150_000_000, 1, 5_000, 5_000),
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT COALESCE(SUM(amount_nano),0),COALESCE(SUM(uncollected_nano),0), \
+                    COALESCE(SUM(official_nano),0),COUNT(*) \
+             FROM ledger WHERE kind='charge' AND request_id LIKE 'floor-%'",
+            [],
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            )),
+        )
+        .unwrap(),
+        (1_850_000_000, 150_000_000, 3_700_000_000, 3),
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT COALESCE(SUM(charge_nano),0),COALESCE(SUM(uncollected_nano),0), \
+                    COALESCE(SUM(charge_basis_nano),0),COUNT(*) \
+             FROM usage_events WHERE request_id LIKE 'floor-%'",
+            [],
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            )),
+        )
+        .unwrap(),
+        (1_850_000_000, 150_000_000, 3_700_000_000, 3),
+    );
+
+    // Exact terminal replay returns the durable result without duplicating either the customer
+    // charge or the explicit shortfall.
+    assert_eq!(
+        sqlite_settle_request(
+            &c,
+            usages[2].0,
+            "floor-account",
+            "floor-key",
+            usages[2].1,
+            usages[2].2,
+            Some("floor-ref-3"),
+            Some(&usages[2].3),
+        )
+        .unwrap(),
+        Some(-1_000_000_000),
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT uncollected_nano FROM accounts WHERE id='floor-account'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        150_000_000,
+    );
+    assert!(c
+        .execute(
+            "UPDATE billing_reservations SET collected_nano=NULL WHERE request_id='floor-3'",
+            [],
+        )
+        .is_err());
+    assert!(c
+        .execute(
+            "UPDATE accounts SET uncollected_nano=-1 WHERE id='floor-account'",
+            [],
+        )
+        .is_err());
+    assert!(c
+        .execute(
+            "UPDATE usage_events SET uncollected_nano=charge_nano+1 \
+             WHERE request_id='floor-3'",
+            [],
+        )
+        .is_err());
+}
+
+#[test]
+fn sqlite_settlement_preserves_preexisting_adjustment_debt_without_forgiving_the_hold() {
+    let c = db();
+    acct_with_key(&c, "debt-account", "debt-key", 1_000_000_000, 5_000);
+    let pricing = ReservationPricing::new(PROVIDER_OPENAI, 5_000).unwrap();
+    assert_eq!(
+        sqlite_reserve_priced_request_for_execution(
+            &c,
+            "debt-request",
+            "debt-account",
+            "debt-key",
+            500_000_000,
+            60,
+            &ExecutionAttempt::direct(),
+            &pricing,
+        )
+        .unwrap(),
+        Some(500_000_000),
+    );
+    assert_eq!(
+        account_topup(&c, "debt-account", -2_000_000_000, Some("debt-adjustment"),).unwrap(),
+        Some(-1_500_000_000),
+    );
+    let usage = UsageEventInput {
+        model: "gpt-debt-test".into(),
+        provider: PROVIDER_OPENAI.into(),
+        real_nano: 1_400_000_000,
+        charge_basis_nano: 1_400_000_000,
+        ..Default::default()
+    };
+    assert_eq!(
+        sqlite_settle_request(
+            &c,
+            "debt-request",
+            "debt-account",
+            "debt-key",
+            500_000_000,
+            700_000_000,
+            Some("debt-provider-ref"),
+            Some(&usage),
+        )
+        .unwrap(),
+        Some(-1_500_000_000),
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT a.balance_nano,a.spent_nano,a.reserved_nano,a.uncollected_nano, \
+                    r.collected_nano,r.uncollected_nano,l.amount_nano,l.uncollected_nano \
+             FROM accounts a JOIN billing_reservations r ON r.account_id=a.id \
+             JOIN ledger l ON l.account_id=a.id AND l.request_id=r.request_id \
+             WHERE a.id='debt-account'",
+            [],
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+            )),
+        )
+        .unwrap(),
+        (
+            -1_500_000_000,
+            700_000_000,
+            0,
+            200_000_000,
+            500_000_000,
+            200_000_000,
+            700_000_000,
+            200_000_000,
+        ),
+    );
+}
+
+#[test]
+fn sqlite_zero_multiplier_preserves_usage_without_a_charge_row() {
+    let c = db();
+    acct_with_key(&c, "meter-only-account", "meter-only-key", 0, 0);
+    let pricing = ReservationPricing::new(PROVIDER_OPENAI, 0).unwrap();
+    assert_eq!(
+        sqlite_reserve_priced_request_for_execution(
+            &c,
+            "meter-only-request",
+            "meter-only-account",
+            "meter-only-key",
+            0,
+            60,
+            &ExecutionAttempt::direct(),
+            &pricing,
+        )
+        .unwrap(),
+        Some(0),
+    );
+    let usage = UsageEventInput {
+        model: "gpt-meter-only".into(),
+        provider: PROVIDER_OPENAI.into(),
+        input_tokens: 7,
+        output_tokens: 11,
+        real_nano: 123,
+        charge_basis_nano: 123,
+        ..Default::default()
+    };
+    assert_eq!(
+        sqlite_settle_request(
+            &c,
+            "meter-only-request",
+            "meter-only-account",
+            "meter-only-key",
+            0,
+            0,
+            Some("meter-only-ref"),
+            Some(&usage),
+        )
+        .unwrap(),
+        Some(0),
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT balance_nano,spent_nano,reserved_nano,uncollected_nano
+               FROM accounts WHERE id='meter-only-account'",
+            [],
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            )),
+        )
+        .unwrap(),
+        (0, 0, 0, 0),
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT real_nano,charge_nano,provider,payable_multiplier_bp,
+                    charge_basis_nano,uncollected_nano
+               FROM usage_events WHERE request_id='meter-only-request'",
+            [],
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, i64>(5)?,
+            )),
+        )
+        .unwrap(),
+        (123, 0, PROVIDER_OPENAI.into(), Some(0), Some(123), 0),
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT COUNT(*) FROM ledger
+              WHERE kind='charge' AND request_id='meter-only-request'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0,
+    );
+
+    assert_eq!(
+        sqlite_settle_request(
+            &c,
+            "meter-only-request",
+            "meter-only-account",
+            "meter-only-key",
+            0,
+            0,
+            Some("meter-only-ref"),
+            Some(&usage),
+        )
+        .unwrap(),
+        Some(0),
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT COUNT(*) FROM usage_events WHERE request_id='meter-only-request'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1,
+    );
+}
+
+#[test]
+fn sqlite_priced_terminal_replay_requires_collection_evidence() {
+    let c = db();
+    acct_with_key(
+        &c,
+        "priced-terminal-account",
+        "priced-terminal-key",
+        1_000,
+        5_000,
+    );
+    let pricing = ReservationPricing::new(PROVIDER_OPENAI, 5_000).unwrap();
+    assert_eq!(
+        sqlite_reserve_priced_request_for_execution(
+            &c,
+            "priced-terminal-request",
+            "priced-terminal-account",
+            "priced-terminal-key",
+            100,
+            60,
+            &ExecutionAttempt::direct(),
+            &pricing,
+        )
+        .unwrap(),
+        Some(900),
+    );
+
+    // Simulate a pre-guard/corrupt audit snapshot. Fresh SQLite databases reject this UPDATE at
+    // the trigger, but the runtime must also fail closed while reading an already-bad terminal row.
+    c.execute_batch("DROP TRIGGER billing_reservations_settlement_evidence_update")
+        .unwrap();
+    c.execute(
+        "UPDATE billing_reservations
+            SET state='settled',actual_nano=50,balance_after_settle_nano=950,
+                reference='priced-terminal-ref',settled_ts=1
+          WHERE request_id='priced-terminal-request'",
+        [],
+    )
+    .unwrap();
+    let usage = UsageEventInput {
+        model: "gpt-priced-terminal".into(),
+        provider: PROVIDER_OPENAI.into(),
+        real_nano: 100,
+        charge_basis_nano: 100,
+        ..Default::default()
+    };
+    let replay_error = sqlite_settle_request(
+        &c,
+        "priced-terminal-request",
+        "priced-terminal-account",
+        "priced-terminal-key",
+        100,
+        50,
+        Some("priced-terminal-ref"),
+        Some(&usage),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        replay_error.contains("terminal settlement collection evidence is inconsistent"),
+        "unexpected replay error: {replay_error}",
+    );
+
+    let usage_json = serde_json::to_string(&usage).unwrap();
+    c.execute(
+        "INSERT INTO billing_settlement_outbox(
+             request_id,actual_nano,reference,usage_json,charge_basis_nano,disposition,state,
+             attempts,next_attempt_ts,created_ts,updated_ts
+         ) VALUES(?1,50,'priced-terminal-ref',?2,100,'settle','pending',0,0,1,1)",
+        rusqlite::params!["priced-terminal-request", usage_json],
+    )
+    .unwrap();
+    let process_error = sqlite_process_settlement(&c, "priced-terminal-request")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        process_error.contains("terminal settlement collection evidence is inconsistent"),
+        "unexpected process error: {process_error}",
+    );
+}
+
+#[test]
+fn sqlite_corrupt_key_reserve_rolls_back_the_whole_settlement() {
+    let c = db();
+    acct_with_key(&c, "key-fence-account", "key-fence-key", 1_000, 10_000);
+    assert_eq!(
+        sqlite_reserve_request(
+            &c,
+            "key-fence-request",
+            "key-fence-account",
+            "key-fence-key",
+            400,
+            60,
+        )
+        .unwrap(),
+        Some(600),
+    );
+    c.execute(
+        "UPDATE api_keys SET reserved_nano=0 WHERE key='key-fence-key'",
+        [],
+    )
+    .unwrap();
+
+    let error = sqlite_settle_request(
+        &c,
+        "key-fence-request",
+        "key-fence-account",
+        "key-fence-key",
+        400,
+        300,
+        Some("key-fence-ref"),
+        None,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("reservation/key aggregate invariant failed"),
+        "unexpected key-fence error: {error}",
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT balance_nano,spent_nano,reserved_nano,uncollected_nano
+               FROM accounts WHERE id='key-fence-account'",
+            [],
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?
+            )),
+        )
+        .unwrap(),
+        (600, 0, 400, 0),
+        "the account update before the key check must be rolled back",
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT state,actual_nano,collected_nano,uncollected_nano
+               FROM billing_reservations WHERE request_id='key-fence-request'",
+            [],
+            |row| Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<i64>>(3)?
+            )),
+        )
+        .unwrap(),
+        ("reserved".into(), None, None, None),
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT COUNT(*) FROM ledger WHERE kind='charge' AND request_id='key-fence-request'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0,
+    );
+
+    c.execute(
+        "UPDATE api_keys SET reserved_nano=400 WHERE key='key-fence-key'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        sqlite_settle_request(
+            &c,
+            "key-fence-request",
+            "key-fence-account",
+            "key-fence-key",
+            400,
+            300,
+            Some("key-fence-ref"),
+            None,
+        )
+        .unwrap(),
+        Some(700),
+    );
+}
+
+#[test]
+fn sqlite_conflicting_evidence_rows_cannot_commit_partial_aggregates() {
+    let c = db();
+    acct_with_key(&c, "evidence-account", "evidence-key", 1_000, 5_000);
+    let pricing = ReservationPricing::new(PROVIDER_OPENAI, 5_000).unwrap();
+    assert_eq!(
+        sqlite_reserve_priced_request_for_execution(
+            &c,
+            "evidence-request",
+            "evidence-account",
+            "evidence-key",
+            400,
+            60,
+            &ExecutionAttempt::direct(),
+            &pricing,
+        )
+        .unwrap(),
+        Some(600),
+    );
+    let usage = UsageEventInput {
+        model: "gpt-evidence".into(),
+        provider: PROVIDER_OPENAI.into(),
+        real_nano: 600,
+        charge_basis_nano: 600,
+        ..Default::default()
+    };
+
+    c.execute(
+        "INSERT INTO ledger(
+             account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,
+             model,provider,official_nano,payable_multiplier_bp,uncollected_nano
+         ) VALUES(
+             'evidence-account','evidence-key','charge','evidence-request',1,
+             'foreign-ledger-row',999,1,'foreign','openai',2,5000,0
+         )",
+        [],
+    )
+    .unwrap();
+    assert!(sqlite_settle_request(
+        &c,
+        "evidence-request",
+        "evidence-account",
+        "evidence-key",
+        400,
+        300,
+        Some("evidence-ref"),
+        Some(&usage),
+    )
+    .is_err());
+    assert_eq!(
+        c.query_row(
+            "SELECT balance_nano,spent_nano,reserved_nano,uncollected_nano
+               FROM accounts WHERE id='evidence-account'",
+            [],
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?
+            )),
+        )
+        .unwrap(),
+        (600, 0, 400, 0),
+    );
+    c.execute(
+        "DELETE FROM ledger WHERE kind='charge' AND request_id='evidence-request'",
+        [],
+    )
+    .unwrap();
+
+    c.execute(
+        "INSERT INTO usage_events(request_id,account_id,key,model,provider)
+         VALUES('evidence-request','evidence-account','evidence-key','foreign','openai')",
+        [],
+    )
+    .unwrap();
+    assert!(sqlite_settle_request(
+        &c,
+        "evidence-request",
+        "evidence-account",
+        "evidence-key",
+        400,
+        300,
+        Some("evidence-ref"),
+        Some(&usage),
+    )
+    .is_err());
+    assert_eq!(
+        c.query_row(
+            "SELECT balance_nano,spent_nano,reserved_nano,uncollected_nano
+               FROM accounts WHERE id='evidence-account'",
+            [],
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?
+            )),
+        )
+        .unwrap(),
+        (600, 0, 400, 0),
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT COUNT(*) FROM ledger WHERE kind='charge' AND request_id='evidence-request'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0,
+        "the ledger insert preceding the usage conflict must roll back",
+    );
+    c.execute(
+        "DELETE FROM usage_events WHERE request_id='evidence-request'",
+        [],
+    )
+    .unwrap();
+
+    assert_eq!(
+        sqlite_settle_request(
+            &c,
+            "evidence-request",
+            "evidence-account",
+            "evidence-key",
+            400,
+            300,
+            Some("evidence-ref"),
+            Some(&usage),
+        )
+        .unwrap(),
+        Some(700),
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT balance_nano,spent_nano,reserved_nano,uncollected_nano
+               FROM accounts WHERE id='evidence-account'",
+            [],
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?
+            )),
+        )
+        .unwrap(),
+        (700, 300, 0, 0),
+    );
+}
 
 #[test]
 fn sqlite_execution_group_charges_only_the_first_nonzero_settlement() {
@@ -1209,12 +1929,6 @@ fn sqlite_execution_group_winner_is_pruned_only_after_all_group_replays_expire()
         0,
     );
 }
-
-
-
-
-
-
 
 #[test]
 fn sqlite_pending_settlement_survives_until_recovery() {
@@ -2267,7 +2981,6 @@ fn key_policy_can_be_replaced_without_undercutting_live_usage() {
     );
 }
 
-
 #[test]
 fn ledger_reads_recover_exact_provider_from_matching_usage() {
     let c = db();
@@ -2367,8 +3080,6 @@ fn ledger_reads_recover_legacy_provider_only_from_strict_settlement_fingerprint(
     assert_eq!(provider_for("legacy:model-only"), None);
 }
 
-
-
 /// The whole pricing policy: one default discount on the account, optionally overridden per
 /// provider. A provider without a row must keep the default — that fallback is what lets a B2C
 /// account stay a single number while a B2B account holds different terms per provider.
@@ -2428,7 +3139,9 @@ fn provider_discount_writes_are_bounded_and_require_a_known_account() {
     assert!(
         set_account_provider_discount(&c, "missing-account", PROVIDER_OPENAI, 5_000, 1).is_err()
     );
-    assert!(account_provider_discounts(&c, "acct-bounds").unwrap().is_empty());
+    assert!(account_provider_discounts(&c, "acct-bounds")
+        .unwrap()
+        .is_empty());
 
     // The bounds are inclusive: a free key (0) and list price (10000) are both legitimate.
     set_account_provider_discount(&c, "acct-bounds", PROVIDER_OPENAI, 0, 1).unwrap();
@@ -2450,30 +3163,27 @@ fn sqlite_provider_discount_table_rejects_invalid_direct_rows() {
     let c = db();
     account_create(&c, "acct-table-bounds", None, 5_000).unwrap();
 
-    assert!(
-        c.execute(
+    assert!(c
+        .execute(
             "INSERT INTO account_provider_discounts(account_id,provider_id,mult_bp,updated_ts) \
              VALUES(?1,'zhipu',5000,1)",
             rusqlite::params!["acct-table-bounds"],
         )
-        .is_err()
-    );
-    assert!(
-        c.execute(
+        .is_err());
+    assert!(c
+        .execute(
             "INSERT INTO account_provider_discounts(account_id,provider_id,mult_bp,updated_ts) \
              VALUES(?1,'openai',-1,1)",
             rusqlite::params!["acct-table-bounds"],
         )
-        .is_err()
-    );
-    assert!(
-        c.execute(
+        .is_err());
+    assert!(c
+        .execute(
             "INSERT INTO account_provider_discounts(account_id,provider_id,mult_bp,updated_ts) \
              VALUES(?1,'openai',10001,1)",
             rusqlite::params!["acct-table-bounds"],
         )
-        .is_err()
-    );
+        .is_err());
 
     c.execute(
         "INSERT INTO account_provider_discounts(account_id,provider_id,mult_bp,updated_ts) \

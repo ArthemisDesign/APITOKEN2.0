@@ -9,10 +9,7 @@
 //!   4) при 429/5xx/протухшем токене — cooling и ротация на следующую подписку;
 //!   5) ответ (включая SSE-стрим) отдаём клиенту байт-в-байт.
 
-
-use crate::meter::{
-    BillCtx, CalibrationCtx, MeterCtx, SubscriptionMeterCtx, TeeMeter,
-};
+use crate::meter::{BillCtx, CalibrationCtx, MeterCtx, SubscriptionMeterCtx, TeeMeter};
 use crate::metrics::Metrics;
 use crate::pricing::tariff_book;
 use crate::state::AppState;
@@ -454,7 +451,10 @@ pub(crate) async fn authorize(app: &AppState, headers: &HeaderMap, peer: &Socket
             }
             Ok(None) => {}
             Err(error) => {
-                elog::error("forward", format!("billing key authorization failed: {error:#}"));
+                elog::error(
+                    "forward",
+                    format!("billing key authorization failed: {error:#}"),
+                );
                 return Authz::Unavailable;
             }
         }
@@ -836,7 +836,10 @@ async fn attempt_claudestore_fallback(
         Ok(client) => client,
         Err(error) => {
             Metrics::inc(&app.metrics.claudestore_fallback_failures);
-            elog::warn("forward", format!("ClaudeStore fallback client unavailable: {error}"));
+            elog::warn(
+                "forward",
+                format!("ClaudeStore fallback client unavailable: {error}"),
+            );
             return None;
         }
     };
@@ -854,7 +857,10 @@ async fn attempt_claudestore_fallback(
         Ok(response) => response,
         Err(error) => {
             Metrics::inc(&app.metrics.claudestore_fallback_failures);
-            elog::warn("forward", format!("ClaudeStore fallback transport failed: {error}"));
+            elog::warn(
+                "forward",
+                format!("ClaudeStore fallback transport failed: {error}"),
+            );
             return None;
         }
     };
@@ -959,7 +965,10 @@ pub async fn forward(
         Err(error) => {
             elog::error(
                 "forward",
-                format!("Anthropic execution identity rejected class={}", error.as_str()),
+                format!(
+                    "Anthropic execution identity rejected class={}",
+                    error.as_str()
+                ),
             );
             return with_not_started(local_err_for(
                 LocalErr::Overloaded,
@@ -1308,7 +1317,8 @@ pub async fn forward(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs() as i64)
             .unwrap_or(0);
-        let matched_tariff = metering::anthropic_matched_tariff_at(&model, price_ts, requested_fast);
+        let matched_tariff =
+            metering::anthropic_matched_tariff_at(&model, price_ts, requested_fast);
         let compiled_base = matched_tariff.map(|(_, prices)| prices).unwrap_or_else(|| {
             metering::model_prices_reserve_for_speed_at(&model, price_ts, requested_fast)
         });
@@ -1348,7 +1358,7 @@ pub async fn forward(
         let mut reserved_pair: Option<(u64, i64)> = None;
         let settlement_mult_bp = *mult_bp;
         let settlement_priced_ts: Option<i64> = None;
-        if bal <= 0 {
+        if *mult_bp > 0 && bal <= 0 {
             return local_err(LocalErr::LowBalance, None);
         }
         let mut cur = cap_to_balance(bal, input_est, web_buf, &p, *mult_bp, client_mt);
@@ -1358,12 +1368,14 @@ pub async fn forward(
                 None => break,
             };
             match billing
-                .reserve_request_for_execution(
+                .reserve_priced_request_for_execution(
                     &engine_request_id,
                     account_id,
                     key,
                     hold,
                     execution.clone(),
+                    registry::PROVIDER_ANTHROPIC,
+                    *mult_bp,
                 )
                 .await
             {
@@ -1385,15 +1397,17 @@ pub async fn forward(
                 Ok(Some(account)) => account.balance_nano as i128,
                 Ok(None) => 0,
                 Err(error) => {
-                    elog::error("forward", format!("billing balance refresh failed: {error:#}"));
+                    elog::error(
+                        "forward",
+                        format!("billing balance refresh failed: {error:#}"),
+                    );
                     return local_err_for(
                         LocalErr::Overloaded,
                         "billing_balance_refresh_unavailable",
                         Some(2),
                     );
                 }
-            }
-            ;
+            };
             match cap_to_balance(fresh, input_est, web_buf, &p, *mult_bp, client_mt) {
                 Some((e, h)) if h < hold => cur = Some((e, h)),
                 _ => break,
@@ -1809,7 +1823,10 @@ pub async fn forward(
                 let secs = cool_secs_429(&resp, &lim, now);
                 app.pool.mark_cooling(&sub.email, secs);
                 app.affinity.publish_cooling_hint(&sub.email, now + secs);
-                elog::warn("forward", format!("ротация: {} вернул 429 — cooling {}s", sub.email, secs));
+                elog::warn(
+                    "forward",
+                    format!("ротация: {} вернул 429 — cooling {}s", sub.email, secs),
+                );
                 last_upstream = Some((st, resp));
                 continue;
             }
@@ -1864,7 +1881,10 @@ pub async fn forward(
                 }
                 elog::warn(
                     "forward",
-                    format!("ротация: {} вернул {} — backend-fault (breaker+)", sub.email, code),
+                    format!(
+                        "ротация: {} вернул {} — backend-fault (breaker+)",
+                        sub.email, code
+                    ),
                 );
                 last_upstream = Some((st, resp));
                 backend_tries += 1; // backend тратит бюджет (аутейдж)
@@ -2288,10 +2308,7 @@ impl Stream for SseErrorTail {
                 } else {
                     Metrics::inc(&self.metrics.stream_cut_transport);
                 }
-                elog::error(
-                    "forward",
-                    format!("mid-stream transport failure: {e}"),
-                );
+                elog::error("forward", format!("mid-stream transport failure: {e}"));
                 self.failed = true;
                 self.done = true;
                 Poll::Ready(Some(Ok(Self::frame())))

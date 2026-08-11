@@ -4,14 +4,13 @@
 //! idempotency boundary; owner epochs fence stale instances. PostgreSQL is the recovery floor.
 
 use crate::{
-    mask_proxy, AccountRow, AnthropicCalibrationRow,
-    AnthropicWindowObservation, BillingTotals, ClaudeLifecycleProfile, CodexCalibrationRow,
-    CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate, CodexTurnCalibrationEvent,
-    CodexWindowObservation, GeminiCalibrationRow, GeminiExactCalibrationRow,
-    GeminiExactWindowObservation, GeminiWindowObservation, GlmCalibrationRow, GlmSubjectSpend,
-    GlmTurnCalibrationEvent, GlmWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow,
-    KimiCalibrationRow, KimiTurnCalibrationEvent, KimiWindowObservation,
-    LedgerConsumerLag, LedgerRow, PoolStateRow,
+    mask_proxy, AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation, BillingTotals,
+    ClaudeLifecycleProfile, CodexCalibrationRow, CodexHomeCalibrationSpend,
+    CodexTurnCalibrationAggregate, CodexTurnCalibrationEvent, CodexWindowObservation,
+    GeminiCalibrationRow, GeminiExactCalibrationRow, GeminiExactWindowObservation,
+    GeminiWindowObservation, GlmCalibrationRow, GlmSubjectSpend, GlmTurnCalibrationEvent,
+    GlmWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow, KimiCalibrationRow,
+    KimiTurnCalibrationEvent, KimiWindowObservation, LedgerConsumerLag, LedgerRow, PoolStateRow,
     ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
     ProviderTurnCalibrationEvent, SettlementFailure, SettlementHealth, SpendAccountAgg,
     SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, UsageDailyAgg,
@@ -189,21 +188,16 @@ const MIGRATION_0034: &str =
     include_str!("../migrations_pg/0034_pricing_release_b2c_to_b2b_extensions.sql");
 const MIGRATION_0035: &str =
     include_str!("../migrations_pg/0035_pricing_release_successor_activation.sql");
-const MIGRATION_0036: &str =
-    include_str!("../migrations_pg/0036_pricing_tariff_overrides.sql");
+const MIGRATION_0036: &str = include_str!("../migrations_pg/0036_pricing_tariff_overrides.sql");
 const MIGRATION_0037: &str =
     include_str!("../migrations_pg/0037_pricing_tariff_override_family_dots.sql");
-const MIGRATION_0038: &str =
-    include_str!("../migrations_pg/0038_reservation_measured_cost.sql");
-const MIGRATION_0039: &str =
-    include_str!("../migrations_pg/0039_pricing_release_opt_out.sql");
-const MIGRATION_0040: &str =
-    include_str!("../migrations_pg/0040_service_meter_only_strict.sql");
+const MIGRATION_0038: &str = include_str!("../migrations_pg/0038_reservation_measured_cost.sql");
+const MIGRATION_0039: &str = include_str!("../migrations_pg/0039_pricing_release_opt_out.sql");
+const MIGRATION_0040: &str = include_str!("../migrations_pg/0040_service_meter_only_strict.sql");
 const MIGRATION_0041: &str = include_str!("../migrations_pg/0041_strict_funding_lots_v2.sql");
 const MIGRATION_0042: &str =
     include_str!("../migrations_pg/0042_strict_funding_active_generation.sql");
-const MIGRATION_0043: &str =
-    include_str!("../migrations_pg/0043_account_provider_discounts.sql");
+const MIGRATION_0043: &str = include_str!("../migrations_pg/0043_account_provider_discounts.sql");
 const MIGRATION_0044: &str =
     include_str!("../migrations_pg/0044_retire_pricing_design_triggers.sql");
 const MIGRATION_0045: &str =
@@ -292,8 +286,9 @@ fn account_row(row: &Row) -> AccountRow {
         balance_nano: row.get(2),
         spent_nano: row.get(3),
         reserved_nano: row.get(4),
-        mult_bp: row.get(5),
-        status: row.get(6),
+        uncollected_nano: row.get(5),
+        mult_bp: row.get(6),
+        status: row.get(7),
     }
 }
 
@@ -561,11 +556,6 @@ pub fn is_statement_or_lock_timeout(error: &anyhow::Error) -> bool {
     })
 }
 
-
-
-
-
-
 impl PgStore {
     pub fn connect(url: &str) -> Result<Self> {
         Self::connect_with_application_name(url, DEFAULT_APPLICATION_NAME)
@@ -695,8 +685,6 @@ impl PgStore {
         })
     }
 
-
-
     pub fn heartbeat_instance(&mut self, owner: &Owner, ttl_secs: i64) -> Result<bool> {
         let ts = now();
         Ok(self.client.execute(
@@ -710,7 +698,6 @@ impl PgStore {
             ],
         )? == 1)
     }
-
 
     fn assert_owner(tx: &mut Transaction<'_>, owner: &Owner, ts: i64) -> Result<()> {
         let valid = tx.query_opt(
@@ -741,7 +728,6 @@ impl PgStore {
         }
         Ok(())
     }
-
 
     /// Atomically reserve money for one generated request ID. An exact retry is idempotent.
     pub fn reserve_request(
@@ -775,6 +761,48 @@ impl PgStore {
         lease_secs: i64,
         execution: &crate::ExecutionAttempt,
     ) -> Result<Option<i64>> {
+        self.reserve_request_for_execution_with_pricing(
+            owner, request_id, account_id, key, hold_nano, lease_secs, execution, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn reserve_priced_request_for_execution(
+        &mut self,
+        owner: &Owner,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold_nano: i64,
+        lease_secs: i64,
+        execution: &crate::ExecutionAttempt,
+        pricing: &crate::ReservationPricing,
+    ) -> Result<Option<i64>> {
+        crate::ensure_valid_provider_discount(&pricing.provider, pricing.payable_multiplier_bp)?;
+        self.reserve_request_for_execution_with_pricing(
+            owner,
+            request_id,
+            account_id,
+            key,
+            hold_nano,
+            lease_secs,
+            execution,
+            Some(pricing),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reserve_request_for_execution_with_pricing(
+        &mut self,
+        owner: &Owner,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold_nano: i64,
+        lease_secs: i64,
+        execution: &crate::ExecutionAttempt,
+        pricing: Option<&crate::ReservationPricing>,
+    ) -> Result<Option<i64>> {
         let hold = hold_nano.max(0);
         let preflight_ts = now();
         let mut tx = self.client.transaction()?;
@@ -786,7 +814,7 @@ impl PgStore {
         Self::assert_owner_locked(&mut tx, owner, now())?;
         if let Some(row) = tx.query_opt(
             "SELECT account_id,key,hold_nano,balance_after_reserve_nano,owner_instance,owner_epoch, \
-                    state,group_id,attempt \
+                    state,group_id,attempt,provider,payable_multiplier_bp \
              FROM reservations WHERE request_id=$1",
             &[&request_id],
         )? {
@@ -797,7 +825,11 @@ impl PgStore {
                 && row.get::<_, i64>(5) == owner.epoch
                 && row.get::<_, String>(6) == "reserved"
                 && row.get::<_, Option<String>>(7).as_deref() == execution.group_id()
-                && row.get::<_, i32>(8) == execution.attempt();
+                && row.get::<_, i32>(8) == execution.attempt()
+                && row.get::<_, Option<String>>(9).as_deref()
+                    == pricing.map(|value| value.provider.as_str())
+                && row.get::<_, Option<i64>>(10)
+                    == pricing.map(|value| value.payable_multiplier_bp);
             if !exact {
                 bail!("reservation request ID belongs to a different or completed operation");
             }
@@ -841,30 +873,20 @@ impl PgStore {
         }
         tx.execute(
             "INSERT INTO reservations(request_id,account_id,key,hold_nano,balance_after_reserve_nano, \
-             owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts,group_id,attempt) \
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'reserved',$9,$9,$10,$11)",
+             owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts,group_id,attempt,provider, \
+             payable_multiplier_bp) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'reserved',$9,$9,$10,$11,$12,$13)",
             &[&request_id, &account_id, &key, &hold, &balance, &owner.instance_id,
               &owner.epoch, &(reservation_ts.saturating_add(lease_secs.max(1))), &reservation_ts,
               &execution.group_id(),
-              &execution.attempt()],
+              &execution.attempt(),
+              &pricing.map(|value| value.provider.as_str()),
+              &pricing.map(|value| value.payable_multiplier_bp)],
         )?;
         Self::assert_owner_locked(&mut tx, owner, now())?;
         tx.commit()?;
         Ok(Some(balance))
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     /// Mark that a successful upstream response is about to be delivered. Recovery charges the hold
     /// for an expired `delivering` reservation rather than making delivered provider usage free.
@@ -969,7 +991,6 @@ impl PgStore {
         Ok(valid)
     }
 
-
     fn enqueue_outbox(
         &mut self,
         request_id: &str,
@@ -1010,6 +1031,7 @@ impl PgStore {
         }
         let actual = actual_nano.max(0);
         let u = usage.cloned().unwrap_or_default();
+        let charge_basis_nano = usage.map(|value| value.charge_basis_nano);
         let (
             release_schema_version,
             release_generation,
@@ -1029,26 +1051,27 @@ impl PgStore {
             "INSERT INTO settlement_outbox(request_id,actual_nano,disposition,reference,model,input_tokens, \
              output_tokens,cache_read_tokens,cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests, \
              real_nano,speed,inference_geo,input_nano,output_nano,cache_read_nano,cache_write_5m_nano, \
-             cache_write_1h_nano,web_search_nano,priced_ts,provider,release_schema_version,
+             cache_write_1h_nano,web_search_nano,priced_ts,provider,charge_basis_nano,release_schema_version,
              release_generation,release_digest,release_billing_mode,release_funding_generation,
              release_snapshot_digest,state,created_ts,updated_ts) \
              VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22, \
-                    $23,$24,$25,$26,$27,$28,'pending',$29,$29) \
+                    $23,$24,$25,$26,$27,$28,$29,'pending',$30,$30) \
              ON CONFLICT(request_id) DO NOTHING",
             &[&request_id, &actual, &disposition, &reference, &u.model, &u.input_tokens,
               &u.output_tokens, &u.cache_read_tokens, &u.cache_write_5m_tokens,
               &u.cache_write_1h_tokens, &u.web_search_requests, &u.real_nano, &u.speed,
               &u.inference_geo, &u.input_nano, &u.output_nano, &u.cache_read_nano,
               &u.cache_write_5m_nano, &u.cache_write_1h_nano, &u.web_search_nano, &u.priced_ts,
-              &u.provider, &release_schema_version, &release_generation, &release_digest,
-              &release_billing_mode, &release_funding_generation, &release_snapshot_digest, &ts],
+              &u.provider, &charge_basis_nano, &release_schema_version, &release_generation,
+              &release_digest, &release_billing_mode, &release_funding_generation,
+              &release_snapshot_digest, &ts],
         )?;
         if inserted == 0 {
             let row = tx.query_one(
                 "SELECT actual_nano,disposition,reference,model,input_tokens,output_tokens,cache_read_tokens, \
                  cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests,real_nano,speed, \
                  inference_geo,input_nano,output_nano,cache_read_nano,cache_write_5m_nano, \
-                 cache_write_1h_nano,web_search_nano,priced_ts,provider,
+                 cache_write_1h_nano,web_search_nano,priced_ts,provider,charge_basis_nano,
                  release_schema_version,release_generation,release_digest,release_billing_mode,
                  release_funding_generation,release_snapshot_digest \
                  FROM settlement_outbox WHERE request_id=$1",
@@ -1075,12 +1098,13 @@ impl PgStore {
                 && row.get::<_, i64>(18) == u.web_search_nano
                 && row.get::<_, i64>(19) == u.priced_ts
                 && row.get::<_, String>(20) == u.provider
-                && row.get::<_, Option<i64>>(21) == release_schema_version
-                && row.get::<_, Option<i64>>(22) == release_generation
-                && row.get::<_, Option<String>>(23) == release_digest
-                && row.get::<_, Option<String>>(24) == release_billing_mode
-                && row.get::<_, Option<i64>>(25) == release_funding_generation
-                && row.get::<_, Option<String>>(26) == release_snapshot_digest;
+                && row.get::<_, Option<i64>>(21) == charge_basis_nano
+                && row.get::<_, Option<i64>>(22) == release_schema_version
+                && row.get::<_, Option<i64>>(23) == release_generation
+                && row.get::<_, Option<String>>(24) == release_digest
+                && row.get::<_, Option<String>>(25) == release_billing_mode
+                && row.get::<_, Option<i64>>(26) == release_funding_generation
+                && row.get::<_, Option<String>>(27) == release_snapshot_digest;
             if !exact {
                 bail!("settlement request ID conflicts with different outbox payload");
             }
@@ -1236,8 +1260,9 @@ impl PgStore {
              o.cache_read_tokens,o.cache_write_5m_tokens,o.cache_write_1h_tokens,o.web_search_requests, \
              o.real_nano,o.speed,o.inference_geo,o.input_nano,o.output_nano,o.cache_read_nano, \
              o.cache_write_5m_nano,o.cache_write_1h_nano,o.web_search_nano,o.priced_ts,o.provider, \
-             o.state,r.account_id,r.key,r.hold_nano,r.state,COALESCE(r.group_id,r.request_id), \
-             r.attempt,r.actual_nano \
+             o.charge_basis_nano,o.state,r.account_id,r.key,r.hold_nano,r.state, \
+             COALESCE(r.group_id,r.request_id),r.attempt,r.actual_nano,r.collected_nano, \
+             r.uncollected_nano,r.provider,r.payable_multiplier_bp \
              FROM settlement_outbox o JOIN reservations r USING(request_id) \
              WHERE o.request_id=$1 FOR UPDATE OF o,r",
             &[&request_id],
@@ -1246,15 +1271,18 @@ impl PgStore {
             return Ok(None);
         };
         let provider: String = row.get(20);
-        let outbox_state: String = row.get(21);
-        let reservation_state: String = row.get(25);
-        let account_id: String = row.get(22);
+        let charge_basis_nano: Option<i64> = row.get(21);
+        let outbox_state: String = row.get(22);
+        let reservation_state: String = row.get(26);
+        let account_id: String = row.get(23);
         if account_id != locked_account_id {
             bail!("settlement reservation account changed while acquiring funding lock");
         }
         let actual: i64 = row.get(0);
-        let effective_group_id: String = row.get(26);
-        let execution_attempt: i32 = row.get(27);
+        let effective_group_id: String = row.get(27);
+        let execution_attempt: i32 = row.get(28);
+        let reservation_provider: Option<String> = row.get(32);
+        let payable_multiplier_bp: Option<i64> = row.get(33);
         if outbox_state == "done" || matches!(reservation_state.as_str(), "settled" | "canceled") {
             let winner = if actual > 0 {
                 tx.query_opt(
@@ -1270,8 +1298,27 @@ impl PgStore {
             } else {
                 actual
             };
-            if row.get::<_, Option<i64>>(28) != Some(expected_actual) {
+            if row.get::<_, Option<i64>>(29) != Some(expected_actual) {
                 bail!("stored settlement differs from durable execution-group winner");
+            }
+            let priced = match (reservation_provider.as_deref(), payable_multiplier_bp) {
+                (None, None) => false,
+                (Some(provider), Some(multiplier)) => {
+                    crate::ensure_valid_provider_discount(provider, multiplier)?;
+                    if charge_basis_nano.is_some() && provider != row.get::<_, String>(20) {
+                        bail!("settlement provider differs from the reserve-time pricing pin");
+                    }
+                    true
+                }
+                _ => bail!("reservation has incomplete scalar-pricing evidence"),
+            };
+            match (row.get::<_, Option<i64>>(30), row.get::<_, Option<i64>>(31)) {
+                (None, None) if !priced => {}
+                (Some(collected), Some(uncollected))
+                    if collected >= 0
+                        && uncollected >= 0
+                        && collected.checked_add(uncollected) == Some(expected_actual) => {}
+                _ => bail!("terminal settlement collection evidence is inconsistent"),
             }
             let balance = tx
                 .query_opt(
@@ -1290,8 +1337,8 @@ impl PgStore {
         let disposition: String = row.get(1);
         let reference: Option<String> = row.get(2);
         let model: String = row.get(3);
-        let account_key: String = row.get(23);
-        let hold: i64 = row.get(24);
+        let account_key: String = row.get(24);
+        let hold: i64 = row.get(25);
         let mut losing_attempt: Option<String> = None;
         let effective_actual = if actual > 0 {
             tx.execute(
@@ -1319,24 +1366,60 @@ impl PgStore {
         } else {
             disposition.as_str()
         };
-        // Release-format snapshots never reached production (zero rows were ever written) and
-        // One settlement for every reservation. A reservation opened by an older binary in a
-        // retired snapshot format settles here too: the money is the hold and the actual on the
-        // reservation row, which this path has always owned. Only the extra attribution those
-        // formats carried is dropped — never the customer's money.
-        let balance: i64;
+        match (reservation_provider.as_deref(), payable_multiplier_bp) {
+            (None, None) => {}
+            (Some(provider), Some(multiplier)) => {
+                crate::ensure_valid_provider_discount(provider, multiplier)?;
+                if charge_basis_nano.is_some() && provider != row.get::<_, String>(20) {
+                    bail!("settlement provider differs from the reserve-time pricing pin");
+                }
+            }
+            _ => bail!("reservation has incomplete scalar-pricing evidence"),
+        }
+        let ledger_provider = reservation_provider
+            .as_deref()
+            .or_else(|| (!provider.is_empty()).then_some(provider.as_str()));
+        let usage_provider = reservation_provider.as_deref().unwrap_or(provider.as_str());
+
+        // The account row is the one shared settlement fence. Refund this reservation's hold, then
+        // collect no more than the amount that leaves the aggregate balance at the same -$1 floor
+        // admission uses. If an explicit adjustment already recorded deeper debt, that pre-settle
+        // balance becomes the floor: settlement may neither worsen it nor forgive a reserved hold.
+        // Numeric intermediates avoid overflowing while evaluating a very large balance; the
+        // stored aggregates remain checked bigint values.
+        let collection_floor = -ACCOUNT_OVERDRAFT_NANO;
+        let account_update = tx.query_opt(
+            "WITH current AS MATERIALIZED ( \
+               SELECT id,LEAST( \
+                 $2::bigint::numeric, \
+                 GREATEST( \
+                   0::numeric, \
+                   balance_nano::numeric+$1::bigint::numeric \
+                     -LEAST(balance_nano::numeric,$4::bigint::numeric) \
+                 ) \
+               )::bigint AS collected_nano \
+               FROM accounts WHERE id=$3 AND reserved_nano >= $1 FOR UPDATE \
+             ) \
+             UPDATE accounts account SET \
+               balance_nano=(account.balance_nano::numeric+$1::bigint::numeric-current.collected_nano::numeric)::bigint, \
+               spent_nano=(account.spent_nano::numeric+$2::bigint::numeric)::bigint, \
+               reserved_nano=account.reserved_nano-$1, \
+               uncollected_nano=(account.uncollected_nano::numeric+$2::bigint::numeric-current.collected_nano::numeric)::bigint \
+             FROM current WHERE account.id=current.id \
+             RETURNING account.balance_nano,current.collected_nano",
+            &[&hold, &effective_actual, &account_id, &collection_floor],
+        )?.context("reservation/account aggregate invariant failed")?;
+        let balance: i64 = account_update.get(0);
+        let collected_nano: i64 = account_update.get(1);
+        let uncollected_nano = effective_actual
+            .checked_sub(collected_nano)
+            .context("settlement collection exceeds billed amount")?;
         {
-            balance = tx.query_one(
-            "UPDATE accounts SET balance_nano=balance_nano+$1-$2, spent_nano=spent_nano+$2, \
-             reserved_nano=reserved_nano-$1 WHERE id=$3 AND reserved_nano >= $1 RETURNING balance_nano",
-            &[&hold, &effective_actual, &account_id],
-        ).context("reservation/account aggregate invariant failed")?.get(0);
             let key_updated = tx.execute(
-            "UPDATE api_keys SET spent_nano=spent_nano+$1, \
-             reserved_nano=CASE WHEN reserved_nano >= $2 THEN reserved_nano-$2 ELSE reserved_nano END \
-             WHERE key=$3 AND (reserved_nano >= $2 OR spend_limit_nano IS NULL)",
-            &[&effective_actual, &hold, &account_key],
-        )?;
+                "UPDATE api_keys SET spent_nano=spent_nano+$1,reserved_nano=reserved_nano-$2 \
+                 WHERE key=$3 AND account_id=$4 AND reserved_nano >= $2",
+                &[&effective_actual, &hold, &account_key, &account_id],
+            )?;
             if key_updated != 1 {
                 let key_still_exists = tx
                     .query_opt("SELECT 1 FROM api_keys WHERE key=$1", &[&account_key])?
@@ -1347,41 +1430,50 @@ impl PgStore {
             }
             if effective_actual > 0 {
                 tx.execute(
-                "INSERT INTO ledger(account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model) \
-                 VALUES($1,$2,'charge',$3,$4,$5,$6,$7,NULLIF($8,'')) ON CONFLICT DO NOTHING",
-                &[&account_id, &account_key, &request_id, &effective_actual, &reference, &balance, &ts, &model],
-            )?;
-                if !model.is_empty() {
-                    let input_tokens: i64 = row.get(4);
-                    let output_tokens: i64 = row.get(5);
-                    let cache_read_tokens: i64 = row.get(6);
-                    let cache_write_5m_tokens: i64 = row.get(7);
-                    let cache_write_1h_tokens: i64 = row.get(8);
-                    let web_search_requests: i64 = row.get(9);
-                    let real_nano: i64 = row.get(10);
-                    let speed: String = row.get(11);
-                    let inference_geo: String = row.get(12);
-                    let input_nano: i64 = row.get(13);
-                    let output_nano: i64 = row.get(14);
-                    let cache_read_nano: i64 = row.get(15);
-                    let cache_write_5m_nano: i64 = row.get(16);
-                    let cache_write_1h_nano: i64 = row.get(17);
-                    let web_search_nano: i64 = row.get(18);
-                    let priced_ts: i64 = row.get(19);
-                    tx.execute(
+                    "INSERT INTO ledger(account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts, \
+                 model,provider,official_nano,payable_multiplier_bp,uncollected_nano) \
+                 VALUES($1,$2,'charge',$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,$11,$12)",
+                &[&account_id, &account_key, &request_id, &effective_actual, &reference, &balance,
+                  &ts, &model, &ledger_provider, &charge_basis_nano, &payable_multiplier_bp,
+                  &uncollected_nano],
+                )?;
+            }
+            // A zero multiplier is free but still metered. It has authoritative provider usage
+            // with a zero customer actual, so it intentionally creates no ledger charge row while
+            // preserving the usage event. A losing execution-group attempt passes no effective
+            // usage and must remain invisible here.
+            if losing_attempt.is_none() && !model.is_empty() {
+                let input_tokens: i64 = row.get(4);
+                let output_tokens: i64 = row.get(5);
+                let cache_read_tokens: i64 = row.get(6);
+                let cache_write_5m_tokens: i64 = row.get(7);
+                let cache_write_1h_tokens: i64 = row.get(8);
+                let web_search_requests: i64 = row.get(9);
+                let real_nano: i64 = row.get(10);
+                let speed: String = row.get(11);
+                let inference_geo: String = row.get(12);
+                let input_nano: i64 = row.get(13);
+                let output_nano: i64 = row.get(14);
+                let cache_read_nano: i64 = row.get(15);
+                let cache_write_5m_nano: i64 = row.get(16);
+                let cache_write_1h_nano: i64 = row.get(17);
+                let web_search_nano: i64 = row.get(18);
+                let priced_ts: i64 = row.get(19);
+                tx.execute(
                     "INSERT INTO usage_events(request_id,account_id,key,model,input_tokens,output_tokens, \
                      cache_read_tokens,cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests, \
                      real_nano,charge_nano,ref,ts,speed,inference_geo,input_nano,output_nano,cache_read_nano, \
-                     cache_write_5m_nano,cache_write_1h_nano,web_search_nano,priced_ts,provider) \
-                     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) \
-                     ON CONFLICT(request_id) DO NOTHING",
+                     cache_write_5m_nano,cache_write_1h_nano,web_search_nano,priced_ts,provider, \
+                     payable_multiplier_bp,uncollected_nano,charge_basis_nano) \
+                     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24, \
+                            $25,$26,$27)",
                     &[&request_id,&account_id,&account_key,&model,&input_tokens,&output_tokens,
                       &cache_read_tokens,&cache_write_5m_tokens,&cache_write_1h_tokens,
                       &web_search_requests,&real_nano,&effective_actual,&reference,&ts,&speed,&inference_geo,
                       &input_nano,&output_nano,&cache_read_nano,&cache_write_5m_nano,
-                      &cache_write_1h_nano,&web_search_nano,&priced_ts,&provider],
+                      &cache_write_1h_nano,&web_search_nano,&priced_ts,&usage_provider,
+                      &payable_multiplier_bp,&uncollected_nano,&charge_basis_nano],
                 )?;
-                }
             }
         }
         let final_state = if effective_disposition == "cancel" {
@@ -1390,8 +1482,10 @@ impl PgStore {
             "settled"
         };
         tx.execute(
-            "UPDATE reservations SET state=$2,actual_nano=$3,settled_ts=$4,updated_ts=$4 WHERE request_id=$1",
-            &[&request_id, &final_state, &effective_actual, &ts],
+            "UPDATE reservations SET state=$2,actual_nano=$3,collected_nano=$4,uncollected_nano=$5, \
+             settled_ts=$6,updated_ts=$6 WHERE request_id=$1",
+            &[&request_id, &final_state, &effective_actual, &collected_nano,
+              &uncollected_nano, &ts],
         )?;
         tx.execute(
             "UPDATE settlement_outbox SET state='done',attempts=attempts+1,committed_ts=$2,updated_ts=$2, \
@@ -1451,7 +1545,10 @@ impl PgStore {
                         &[&id, &state, &message, &next_attempt, &ts],
                     );
                     if state == "failed" {
-                        elog::error("registry", format!("billing outbox request {id} moved to failed: {message}"));
+                        elog::error(
+                            "registry",
+                            format!("billing outbox request {id} moved to failed: {message}"),
+                        );
                     }
                 }
             }
@@ -1985,19 +2082,22 @@ impl PgStore {
     }
     pub fn account_get(&mut self, id: &str) -> Result<Option<AccountRow>> {
         Ok(self.client.query_opt(
-            "SELECT id,handle,balance_nano,spent_nano,reserved_nano,mult_bp,status FROM accounts WHERE id=$1",
+            "SELECT id,handle,balance_nano,spent_nano,reserved_nano,uncollected_nano,mult_bp,status \
+             FROM accounts WHERE id=$1",
             &[&id],
         )?.map(|r| account_row(&r)))
     }
     pub fn account_by_handle(&mut self, handle: &str) -> Result<Option<AccountRow>> {
         Ok(self.client.query_opt(
-            "SELECT id,handle,balance_nano,spent_nano,reserved_nano,mult_bp,status FROM accounts WHERE handle=$1",
+            "SELECT id,handle,balance_nano,spent_nano,reserved_nano,uncollected_nano,mult_bp,status \
+             FROM accounts WHERE handle=$1",
             &[&handle],
         )?.map(|r| account_row(&r)))
     }
     pub fn account_list(&mut self) -> Result<Vec<AccountRow>> {
         Ok(self.client.query(
-            "SELECT id,handle,balance_nano,spent_nano,reserved_nano,mult_bp,status FROM accounts ORDER BY created_ts",
+            "SELECT id,handle,balance_nano,spent_nano,reserved_nano,uncollected_nano,mult_bp,status \
+             FROM accounts ORDER BY created_ts",
             &[],
         )?.into_iter().map(|r| account_row(&r)).collect())
     }
@@ -2035,10 +2135,6 @@ impl PgStore {
         transaction.commit()?;
         Ok(affected)
     }
-
-
-
-
 
     pub fn account_topup(
         &mut self,
@@ -5292,27 +5388,6 @@ impl PgStore {
 }
 
 impl PgStore {
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     pub fn list_tariff_overrides(&mut self) -> Result<Vec<crate::pricing::TariffOverride>> {
         crate::pricing::postgres_list_tariff_overrides(&mut self.client)
     }
@@ -5323,19 +5398,6 @@ impl PgStore {
     ) -> Result<crate::pricing::TariffOverrideInsertOutcome> {
         crate::pricing::postgres_insert_tariff_override(&mut self.client, insert)
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     /// Inspect each durable stage independently without returning request, account, or key identity.
     pub fn openai_image_settlement_diagnostic(

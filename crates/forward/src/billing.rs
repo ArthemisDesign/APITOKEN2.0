@@ -18,14 +18,13 @@
 
 use registry::pricing::{TariffOverride, TariffOverrideInsert, TariffOverrideInsertOutcome};
 use registry::{
-    AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation,
-    BillingTotals, CodexCalibrationRow, CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate,
+    AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation, BillingTotals,
+    CodexCalibrationRow, CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate,
     CodexTurnCalibrationEvent, CodexWindowObservation, GeminiExactCalibrationRow,
     GeminiExactWindowObservation, GlmCalibrationRow, GlmSubjectSpend, GlmTurnCalibrationEvent,
-    GlmWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow,
-    KimiCalibrationRow, KimiTurnCalibrationEvent, KimiWindowObservation,
-    ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
-    ProviderTurnCalibrationEvent,
+    GlmWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow, KimiCalibrationRow,
+    KimiTurnCalibrationEvent, KimiWindowObservation, ProviderCalibrationSubjectSpend,
+    ProviderTurnCalibrationAggregate, ProviderTurnCalibrationEvent,
 };
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -267,7 +266,10 @@ fn flush_pending_gemini_calibration_turns(
                 }
                 state.dropped_events.fetch_add(1, Ordering::Relaxed);
                 state.persistence_ok.store(false, Ordering::Relaxed);
-                elog::error("billing", "Gemini calibration event quarantined after immutable replay conflict");
+                elog::error(
+                    "billing",
+                    "Gemini calibration event quarantined after immutable replay conflict",
+                );
                 if target_delivery_id == Some(delivery_id) {
                     target_conflict = Some(error);
                 }
@@ -504,14 +506,6 @@ impl Drop for ReserveHandoffGuard<'_> {
     }
 }
 
-
-
-
-
-
-
-
-
 #[derive(Default)]
 struct DetachedDispatchTracker {
     pending: AtomicUsize,
@@ -645,9 +639,6 @@ fn run_pg_with_retry<T>(
         }
     }
 }
-
-
-
 
 fn observe_anthropic_postgres(
     pg: &mut registry::pg::PgStore,
@@ -1114,6 +1105,7 @@ enum WriteCmd {
         key: String,
         hold: i64,
         execution: registry::ExecutionAttempt,
+        pricing: Option<registry::ReservationPricing>,
         handoff: Arc<AtomicU8>,
         reply: oneshot::Sender<anyhow::Result<Option<i64>>>,
     },
@@ -2506,11 +2498,17 @@ impl AsyncBilling {
                         })();
                         let _ = reply.send(result);
                     }
-                    WriteCmd::Reserve { request_id, account_id, key, hold, execution, handoff, reply } => {
-                        let result = registry::sqlite_reserve_request_for_execution(
-                            &conn, &request_id, &account_id, &key, hold, RESERVATION_LEASE_SECS,
-                            &execution,
-                        );
+                    WriteCmd::Reserve { request_id, account_id, key, hold, execution, pricing, handoff, reply } => {
+                        let result = match pricing.as_ref() {
+                            Some(pricing) => registry::sqlite_reserve_priced_request_for_execution(
+                                &conn, &request_id, &account_id, &key, hold,
+                                RESERVATION_LEASE_SECS, &execution, pricing,
+                            ),
+                            None => registry::sqlite_reserve_request_for_execution(
+                                &conn, &request_id, &account_id, &key, hold,
+                                RESERVATION_LEASE_SECS, &execution,
+                            ),
+                        };
                         finish_reserve(request_id, account_id, key, hold, handoff, reply, result);
                     }
                     WriteCmd::InsertTariffOverride { reply, .. } => {
@@ -3202,7 +3200,7 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
-                        WriteCmd::Reserve { request_id, account_id, key, hold, execution, handoff, reply } => {
+                        WriteCmd::Reserve { request_id, account_id, key, hold, execution, pricing, handoff, reply } => {
                             let result = {
                                 let _timer = writer_pg_command.timer(PgCommandOp::Reserve);
                                 run_pg_with_retry(
@@ -3210,10 +3208,16 @@ impl AsyncBilling {
                                     &writer_url,
                                     &writer_owner,
                                     "reserve",
-                                    |pg| pg.reserve_request_for_execution(
-                                        &writer_owner, &request_id, &account_id, &key, hold,
-                                        RESERVATION_LEASE_SECS, &execution,
-                                    ),
+                                    |pg| match pricing.as_ref() {
+                                        Some(pricing) => pg.reserve_priced_request_for_execution(
+                                            &writer_owner, &request_id, &account_id, &key, hold,
+                                            RESERVATION_LEASE_SECS, &execution, pricing,
+                                        ),
+                                        None => pg.reserve_request_for_execution(
+                                            &writer_owner, &request_id, &account_id, &key, hold,
+                                            RESERVATION_LEASE_SECS, &execution,
+                                        ),
+                                    },
                                 )
                             };
                             let result = match result {
@@ -3528,18 +3532,18 @@ impl AsyncBilling {
                                         let _ = $reply.send(Ok(value));
                                     }
                                     Err(err) => {
+                                        elog::error(
+                                            "billing",
+                                            format!(
+                                                "billing PostgreSQL read failed closed: {err:#}"
+                                            ),
+                                        );
+                                        if let Ok(next) =
+                                            registry::pg::PgStore::connect(&reader_url)
                                         {
-                                            elog::error(
-                                                "billing",
-                                                format!("billing PostgreSQL read failed closed: {err:#}"),
-                                            );
-                                            if let Ok(next) =
-                                                registry::pg::PgStore::connect(&reader_url)
-                                            {
-                                                pg = next;
-                                            }
-                                            let _ = $reply.send(Err(err));
+                                            pg = next;
                                         }
+                                        let _ = $reply.send(Err(err));
                                     }
                                 }
                             }};
@@ -3659,21 +3663,6 @@ impl AsyncBilling {
         &self.readers[i]
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     /// Every hot tariff override row, ordered by (family, version). Read path, like the other
     /// pricing reads; the authority is PostgreSQL-only (the SQLite fallback answers with a typed
     /// unavailability error).
@@ -3703,23 +3692,6 @@ impl AsyncBilling {
             .await
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     pub async fn key_auth(&self, key: &str) -> anyhow::Result<Option<KeyAuth>> {
         // Policies are mutable. Even an unrestricted cached key can gain a limit or expiry on a
@@ -3751,10 +3723,7 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
     }
     /// Per-provider discount overrides of one account (empty when a single default prices it).
-    pub async fn account_provider_discounts(
-        &self,
-        id: &str,
-    ) -> anyhow::Result<Vec<(String, i64)>> {
+    pub async fn account_provider_discounts(&self, id: &str) -> anyhow::Result<Vec<(String, i64)>> {
         let (r, rx) = oneshot::channel();
         self.reader()
             .send(ReadCmd::AccountProviderDiscounts(id.into(), r))
@@ -3851,6 +3820,43 @@ impl AsyncBilling {
         hold: i64,
         execution: registry::ExecutionAttempt,
     ) -> anyhow::Result<Option<i64>> {
+        self.reserve_request_for_execution_with_pricing(
+            request_id, account_id, key, hold, execution, None,
+        )
+        .await
+    }
+
+    pub async fn reserve_priced_request_for_execution(
+        &self,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold: i64,
+        execution: registry::ExecutionAttempt,
+        provider: &str,
+        payable_multiplier_bp: i64,
+    ) -> anyhow::Result<Option<i64>> {
+        let pricing = registry::ReservationPricing::new(provider, payable_multiplier_bp)?;
+        self.reserve_request_for_execution_with_pricing(
+            request_id,
+            account_id,
+            key,
+            hold,
+            execution,
+            Some(pricing),
+        )
+        .await
+    }
+
+    async fn reserve_request_for_execution_with_pricing(
+        &self,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold: i64,
+        execution: registry::ExecutionAttempt,
+        pricing: Option<registry::ReservationPricing>,
+    ) -> anyhow::Result<Option<i64>> {
         let (r, rx) = oneshot::channel();
         let handoff = Arc::new(AtomicU8::new(RESERVE_HANDOFF_PENDING));
         let guard = ReserveHandoffGuard {
@@ -3869,6 +3875,7 @@ impl AsyncBilling {
                 key: key.into(),
                 hold,
                 execution,
+                pricing,
                 handoff,
                 reply: r,
             })
@@ -3883,8 +3890,6 @@ impl AsyncBilling {
             None => Ok(None),
         }
     }
-
-
 
     pub async fn settle_request(
         &self,

@@ -722,9 +722,31 @@ groups:
           severity: warning
           component: engine
         annotations:
-          summary: 'An account carries more debt than the overdraft floor allows'
-          description: '{{ $value }} accounts are below the $1 floor admission is supposed to hold. Admission itself is atomic on the account row, so this means a settlement charged more than its reservation held, or money was clawed back after it was already spent — either way the pool funded the difference.'
+          summary: 'An account carries recorded debt below the settlement floor'
+          description: '{{ $value }} accounts are below the shared $1 admission/settlement floor. Terminal billing can no longer cross it; inspect negative adjustments or bonus clawbacks that deliberately record account debt.'
           runbook: 'docs/ops/MONITORING.md#engineaccountsbelowfloor'
+
+      - alert: SettlementUncollectedDetected
+        expr: apitoken_settlement_uncollected_nano{window="1h"} > 0 and apitoken_settlement_uncollected_nano{window="1h"} <= 1000000000
+        for: 2m
+        labels:
+          severity: warning
+          component: engine-settlement
+        annotations:
+          summary: 'A provider turn exceeded collectible account money'
+          description: 'The shared account floor prevented {{ $value }} nanodollars of delivered usage from being collected in the last hour. The full usage remains billed and auditable, but the pool funded this shortfall.'
+          runbook: 'docs/ops/MONITORING.md#settlementuncollecteddetected'
+
+      - alert: SettlementUncollectedHigh
+        expr: apitoken_settlement_uncollected_nano{window="1h"} > 1000000000
+        for: 2m
+        labels:
+          severity: critical
+          component: engine-settlement
+        annotations:
+          summary: 'Settlement shortfall exceeded $1 in one hour'
+          description: 'The pool funded {{ $value }} nanodollars of delivered usage that account balances could not collect in the last hour. Hold estimation or a provider-specific upper bound is materially unsafe.'
+          runbook: 'docs/ops/MONITORING.md#settlementuncollectedhigh'
 
       - alert: UsageProviderAttributionMissing
         expr: apitoken_usage_provider_unresolved{window="1h"} > 0
@@ -771,8 +793,8 @@ groups:
           severity: critical
           component: pricing
         annotations:
-          summary: 'Charges do not match the multiplier they declare ({{ $labels.account_class }})'
-          description: '{{ $value }} settled charges in the last hour billed an amount that disagrees with the payable multiplier recorded on the same row. Either the customer was overcharged or revenue was lost; both are money defects.'
+          summary: 'Charges do not match the reserve-time multiplier ({{ $labels.provider }})'
+          description: '{{ $value }} settled charges in the last hour have a full billed amount that disagrees with the payable multiplier pinned at admission. The explicit shortfall is a subset of that amount, while only amount minus shortfall moved through the customer balance. Either the customer was overcharged or revenue was lost; both are money defects.'
           runbook: 'docs/ops/MONITORING.md#pricingchargemismatch'
 
       - alert: FailedWebhooksPresent

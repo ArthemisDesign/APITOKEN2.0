@@ -299,7 +299,6 @@ const COLS: &[(&str, &str)] = &[
     ("auth_token_fp", "TEXT"),
 ];
 
-
 const SQLITE_ATTRIBUTION_COLUMNS: &[(&str, &str)] = &[
     ("attribution_schema_version", "INTEGER"),
     ("snapshot_kind", "TEXT"),
@@ -389,7 +388,8 @@ pub fn open(path: &str) -> Result<Connection> {
     c.execute(
         "CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY, handle TEXT, \
          balance_nano INTEGER NOT NULL DEFAULT 0, spent_nano INTEGER NOT NULL DEFAULT 0, \
-         reserved_nano INTEGER NOT NULL DEFAULT 0, mult_bp INTEGER NOT NULL DEFAULT 2000, \
+         reserved_nano INTEGER NOT NULL DEFAULT 0, uncollected_nano INTEGER NOT NULL DEFAULT 0, \
+         mult_bp INTEGER NOT NULL DEFAULT 2000, \
          status TEXT NOT NULL DEFAULT 'active', created_ts INTEGER, created TEXT)",
         [],
     )?;
@@ -989,13 +989,16 @@ pub fn open(path: &str) -> Result<Connection> {
            hold_nano INTEGER NOT NULL, group_id TEXT CHECK(group_id IS NULL OR group_id<>''), \
            attempt INTEGER NOT NULL DEFAULT 1 CHECK(attempt>0), state TEXT NOT NULL, \
            balance_after_reserve_nano INTEGER NOT NULL, actual_nano INTEGER, \
+           collected_nano INTEGER, uncollected_nano INTEGER, provider TEXT, \
+           payable_multiplier_bp INTEGER, \
            balance_after_settle_nano INTEGER, reference TEXT, lease_until INTEGER NOT NULL, \
            created_ts INTEGER NOT NULL, updated_ts INTEGER NOT NULL, settled_ts INTEGER); \
          CREATE INDEX IF NOT EXISTS billing_reservations_lease \
            ON billing_reservations(state,lease_until); \
          CREATE TABLE IF NOT EXISTS billing_settlement_outbox( \
            request_id TEXT PRIMARY KEY, actual_nano INTEGER NOT NULL, reference TEXT, \
-           usage_json TEXT, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, \
+           usage_json TEXT, charge_basis_nano INTEGER, state TEXT NOT NULL DEFAULT 'pending', \
+           attempts INTEGER NOT NULL DEFAULT 0, \
            next_attempt_ts INTEGER NOT NULL DEFAULT 0, last_error TEXT, \
            created_ts INTEGER NOT NULL, updated_ts INTEGER NOT NULL, committed_ts INTEGER); \
          CREATE INDEX IF NOT EXISTS billing_outbox_pending \
@@ -1003,7 +1006,7 @@ pub fn open(path: &str) -> Result<Connection> {
          CREATE TABLE IF NOT EXISTS execution_group_winner( \
            group_id TEXT PRIMARY KEY CHECK(group_id<>''), \
            winner_request_id TEXT NOT NULL CHECK(winner_request_id<>''), \
-           decided_at INTEGER NOT NULL);"
+           decided_at INTEGER NOT NULL);",
     )?;
     ensure_sqlite_column(&c, "billing_reservations", "group_id", "TEXT")?;
     ensure_sqlite_column(
@@ -1012,8 +1015,88 @@ pub fn open(path: &str) -> Result<Connection> {
         "attempt",
         "INTEGER NOT NULL DEFAULT 1",
     )?;
+    ensure_sqlite_column(
+        &c,
+        "accounts",
+        "uncollected_nano",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_sqlite_column(&c, "billing_reservations", "collected_nano", "INTEGER")?;
+    ensure_sqlite_column(&c, "billing_reservations", "uncollected_nano", "INTEGER")?;
+    ensure_sqlite_column(&c, "billing_reservations", "provider", "TEXT")?;
+    ensure_sqlite_column(
+        &c,
+        "billing_reservations",
+        "payable_multiplier_bp",
+        "INTEGER",
+    )?;
+    ensure_sqlite_column(
+        &c,
+        "billing_settlement_outbox",
+        "charge_basis_nano",
+        "INTEGER",
+    )?;
+    ensure_sqlite_column(
+        &c,
+        "ledger",
+        "uncollected_nano",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_sqlite_column(
+        &c,
+        "usage_events",
+        "uncollected_nano",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_sqlite_column(&c, "usage_events", "charge_basis_nano", "INTEGER")?;
+    install_sqlite_settlement_guards(&c)?;
     migrate_pricing_policy_schema(&c)?;
     Ok(c)
+}
+
+fn install_sqlite_settlement_guards(conn: &Connection) -> Result<()> {
+    for (table, invalid) in [
+        ("accounts", "NEW.uncollected_nano < 0"),
+        (
+            "billing_reservations",
+            "((NEW.collected_nano IS NULL) <> (NEW.uncollected_nano IS NULL))
+             OR (NEW.collected_nano IS NOT NULL AND (
+                   NEW.actual_nano IS NULL OR NEW.collected_nano < 0
+                   OR NEW.uncollected_nano < 0
+                   OR NEW.actual_nano <> NEW.collected_nano + NEW.uncollected_nano
+             ))
+             OR ((NEW.provider IS NULL) <> (NEW.payable_multiplier_bp IS NULL))
+             OR (NEW.provider IS NOT NULL
+                 AND NEW.provider NOT IN ('anthropic','openai','google','kimi','glm'))
+             OR (NEW.payable_multiplier_bp IS NOT NULL
+                 AND (NEW.payable_multiplier_bp < 0 OR NEW.payable_multiplier_bp > 10000))
+             OR (NEW.state IN ('settled','canceled') AND NEW.provider IS NOT NULL
+                 AND (NEW.collected_nano IS NULL OR NEW.uncollected_nano IS NULL))",
+        ),
+        (
+            "billing_settlement_outbox",
+            "NEW.charge_basis_nano IS NOT NULL AND NEW.charge_basis_nano < 0",
+        ),
+        ("ledger", "NEW.uncollected_nano < 0"),
+        (
+            "usage_events",
+            "NEW.uncollected_nano < 0 OR NEW.uncollected_nano > NEW.charge_nano
+             OR (NEW.charge_basis_nano IS NOT NULL AND NEW.charge_basis_nano < 0)",
+        ),
+    ] {
+        for (suffix, event) in [("insert", "INSERT"), ("update", "UPDATE")] {
+            conn.execute_batch(&format!(
+                "CREATE TRIGGER IF NOT EXISTS {table}_settlement_evidence_{suffix}
+                 BEFORE {event} ON \"{table}\"
+                 FOR EACH ROW WHEN {invalid}
+                 BEGIN
+                     SELECT RAISE(ABORT, 'invalid settlement evidence');
+                 END;"
+            ))
+            .with_context(|| format!("install SQLite settlement guard for {table} {event}"))?;
+        }
+    }
+    Ok(())
 }
 
 fn ensure_sqlite_column(
@@ -1073,8 +1156,6 @@ fn install_attribution_schema(conn: &Connection) -> Result<()> {
     install_sqlite_attribution_guards(conn)?;
     Ok(())
 }
-
-
 
 fn install_sqlite_attribution_guards(conn: &Connection) -> Result<()> {
     const COMMON_INVALID: &str = "
@@ -1624,8 +1705,6 @@ pub enum KeyPolicyUpdate {
     ExpiryNotFuture,
 }
 
-
-
 /// Выпустить ключ ПОД аккаунт (баланс — на аккаунте, ключ лишь ссылается). `label` — имя ключа.
 pub fn key_issue(
     conn: &Connection,
@@ -1670,7 +1749,6 @@ pub fn key_issue_with_policy(
     Ok(())
 }
 
-
 /// Backward-compatible startup entry point. Only expired request-scoped leases are touched; legacy
 /// aggregate holds remain fail-closed because they still have no provable owner or age.
 pub fn reconcile_reservations(conn: &Connection) -> Result<usize> {
@@ -1688,12 +1766,11 @@ pub struct AccountRow {
     pub balance_nano: i64,
     pub spent_nano: i64,
     pub reserved_nano: i64,
+    /// Full billed usage that the shared account floor prevented the balance from collecting.
+    pub uncollected_nano: i64,
     pub mult_bp: i64,
     pub status: String,
 }
-
-
-
 
 /// Резолв ключа → аккаунт (горячий путь авторизации). Активны должны быть И ключ, И аккаунт.
 #[derive(Clone, Debug)]
@@ -1759,8 +1836,10 @@ pub fn account_by_handle(conn: &Connection, handle: &str) -> Result<Option<Accou
 }
 fn one_account(conn: &Connection, col: &str, val: &str) -> Result<Option<AccountRow>> {
     let sql = format!(
-        "SELECT id, handle, balance_nano, spent_nano, reserved_nano, mult_bp, COALESCE(status,'active') \
-         FROM accounts WHERE {col}=?1");
+        "SELECT id,handle,balance_nano,spent_nano,reserved_nano,uncollected_nano,mult_bp, \
+                COALESCE(status,'active') \
+         FROM accounts WHERE {col}=?1"
+    );
     match conn.query_row(&sql, rusqlite::params![val], |r| {
         Ok(AccountRow {
             id: r.get(0)?,
@@ -1768,8 +1847,9 @@ fn one_account(conn: &Connection, col: &str, val: &str) -> Result<Option<Account
             balance_nano: r.get(2)?,
             spent_nano: r.get(3)?,
             reserved_nano: r.get(4)?,
-            mult_bp: r.get(5)?,
-            status: r.get(6)?,
+            uncollected_nano: r.get(5)?,
+            mult_bp: r.get(6)?,
+            status: r.get(7)?,
         })
     }) {
         Ok(a) => Ok(Some(a)),
@@ -1781,8 +1861,10 @@ fn one_account(conn: &Connection, col: &str, val: &str) -> Result<Option<Account
 /// Список аккаунтов (для админ-CLI).
 pub fn account_list(conn: &Connection) -> Result<Vec<AccountRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, handle, balance_nano, spent_nano, reserved_nano, mult_bp, COALESCE(status,'active') \
-         FROM accounts ORDER BY COALESCE(created_ts,0)")?;
+        "SELECT id,handle,balance_nano,spent_nano,reserved_nano,uncollected_nano,mult_bp, \
+                COALESCE(status,'active') \
+         FROM accounts ORDER BY COALESCE(created_ts,0)",
+    )?;
     let rows = stmt.query_map([], |r| {
         Ok(AccountRow {
             id: r.get(0)?,
@@ -1790,8 +1872,9 @@ pub fn account_list(conn: &Connection) -> Result<Vec<AccountRow>> {
             balance_nano: r.get(2)?,
             spent_nano: r.get(3)?,
             reserved_nano: r.get(4)?,
-            mult_bp: r.get(5)?,
-            status: r.get(6)?,
+            uncollected_nano: r.get(5)?,
+            mult_bp: r.get(6)?,
+            status: r.get(7)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -1889,7 +1972,10 @@ pub fn account_topup(
                     Ok(Some(original_balance))
                 }
                 Ok(_) => {
-                    elog::error("registry", "billing idempotency conflict: parameters differ from the stored operation");
+                    elog::error(
+                        "registry",
+                        "billing idempotency conflict: parameters differ from the stored operation",
+                    );
                     // AUDIT-TODO(C42/C80): expose a typed idempotency conflict through Control API as HTTP 409.
                     anyhow::bail!(
                         "idempotency reference already belongs to a different monetary operation"
@@ -2055,44 +2141,271 @@ pub fn account_settle_in(
     usage: Option<&UsageEventInput>,
 ) -> Result<Option<i64>> {
     let hold = hold_nano.max(0);
-    // Exact provider usage may exceed a conservative hold because of provider-added tokens or a
-    // response-reported pricing modifier. Forward caps this at hold+$1, matching the account-level
-    // overdraft floor; silently clamping here would turn delivered provider usage into lost revenue.
     let actual = actual_nano.max(0);
-    // Возвращаем hold, но НЕ БОЛЬШЕ, чем реально числится в reserved_nano: MIN(hold, reserved).
-    // Защита от двойного settle (перекрытие деплоя: reconcile уже вернул резерв, затем прилетел
-    // settle старого инстанса) — иначе balance получил бы +hold дважды (over-credit) и reserved
-    // ушёл бы в минус. MAX(0, …) держит reserved ≥ 0. В норме (reserved≥hold) поведение прежнее.
-    let bal = match conn.query_row(
-        "UPDATE accounts SET \
-         balance_nano = balance_nano + MIN(?1, reserved_nano) - ?2, \
-         spent_nano = spent_nano + ?2, \
-         reserved_nano = MAX(0, reserved_nano - ?1) WHERE id = ?3 RETURNING balance_nano",
-        rusqlite::params![hold, actual, id],
-        |r| r.get::<_, i64>(0),
-    ) {
-        Ok(b) => Some(b),
-        Err(rusqlite::Error::QueryReturnedNoRows) => None,
-        Err(e) => return Err(e.into()),
+    let account = conn.query_row(
+        "SELECT balance_nano,spent_nano,reserved_nano,uncollected_nano FROM accounts WHERE id=?1",
+        rusqlite::params![id],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        },
+    );
+    let (balance_before, spent_before, reserved_before, account_uncollected_before) = match account
+    {
+        Ok(account) => account,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(error) => return Err(error.into()),
     };
+    // Legacy/group-commit callers do not carry a request identity, so an overlapping reconcile can
+    // already have released part of the aggregate hold. Refund only what remains, but serialize the
+    // collection on this account and never cross the shared admission floor.
+    let released = hold.min(reserved_before);
+    let collection_floor = i128::from(balance_before).min(-i128::from(ACCOUNT_OVERDRAFT_NANO));
+    let collectable = (i128::from(balance_before) + i128::from(released) - collection_floor)
+        .max(0)
+        .min(i128::from(actual));
+    let collected = i64::try_from(collectable).context("SQLite collected amount overflow")?;
+    let uncollected = actual
+        .checked_sub(collected)
+        .context("SQLite collection exceeds billed amount")?;
+    let balance = i64::try_from(i128::from(balance_before) + i128::from(released) - collectable)
+        .context("SQLite balance overflow during settlement")?;
+    let spent = i64::try_from(i128::from(spent_before) + i128::from(actual))
+        .context("SQLite account spend overflow during settlement")?;
+    let account_uncollected =
+        i64::try_from(i128::from(account_uncollected_before) + i128::from(uncollected))
+            .context("SQLite uncollected aggregate overflow during settlement")?;
+    conn.execute(
+        "UPDATE accounts SET balance_nano=?1,spent_nano=?2,reserved_nano=?3,uncollected_nano=?4 \
+         WHERE id=?5",
+        rusqlite::params![
+            balance,
+            spent,
+            reserved_before - released,
+            account_uncollected,
+            id
+        ],
+    )?;
+    let bal = Some(balance);
     if let Some(b) = bal {
         conn.execute(
             "UPDATE api_keys SET spent_nano=spent_nano+?1, \
              reserved_nano=MAX(0,reserved_nano-?2) WHERE key=?3",
-            rusqlite::params![actual, hold, key],
+            rusqlite::params![actual, released, key],
         )?;
         if actual > 0 {
             // Модель за списанием — из usage того же запроса (пустую строку не пишем → NULL).
             let model = usage.map(|u| u.model.as_str()).filter(|m| !m.is_empty());
-            ledger_add(conn, id, Some(key), "charge", actual, reference, b, model)?;
+            ledger_add_settlement(
+                conn,
+                id,
+                Some(key),
+                actual,
+                uncollected,
+                reference,
+                b,
+                model,
+            )?;
             // usage_events (аналитика) — в ТОЙ ЖЕ транзакции, что и charge (экономим коммит на запрос).
             // Best-effort: ошибка вставки usage НЕ роняет money-коммит (аналитика не критична).
             if let Some(u) = usage {
-                let _ = usage_event_add(conn, id, Some(key), u, actual, reference);
+                let _ = usage_event_add_settlement(
+                    conn,
+                    id,
+                    Some(key),
+                    u,
+                    actual,
+                    uncollected,
+                    reference,
+                );
+            }
+        }
+    };
+    Ok(bal)
+}
+
+/// Request-scoped settlement used by the durable SQLite lifecycle. The shared account balance may
+/// collect only down to the same floor as admission, while full billed usage still advances spend
+/// and any pool-funded remainder is immutable evidence rather than a silent clamp.
+#[allow(clippy::too_many_arguments)]
+fn account_settle_request_in(
+    conn: &Connection,
+    request_id: &str,
+    id: &str,
+    key: &str,
+    hold_nano: i64,
+    actual_nano: i64,
+    reference: Option<&str>,
+    usage: Option<&UsageEventInput>,
+    pricing: Option<&ReservationPricing>,
+) -> Result<Option<(i64, i64, i64)>> {
+    let hold = hold_nano.max(0);
+    let actual = actual_nano.max(0);
+    if let Some(pricing) = pricing {
+        ensure_valid_provider_discount(&pricing.provider, pricing.payable_multiplier_bp)?;
+        if let Some(usage) = usage {
+            if usage.provider != pricing.provider {
+                anyhow::bail!("settlement provider differs from the reserve-time pricing pin");
             }
         }
     }
-    Ok(bal)
+    let account = conn.query_row(
+        "SELECT balance_nano,spent_nano,reserved_nano,uncollected_nano FROM accounts WHERE id=?1",
+        rusqlite::params![id],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        },
+    );
+    let (balance_before, spent_before, reserved_before, account_uncollected_before) = match account
+    {
+        Ok(account) => account,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if reserved_before < hold {
+        anyhow::bail!("reservation/account aggregate invariant failed");
+    }
+    let collection_floor = i128::from(balance_before).min(-i128::from(ACCOUNT_OVERDRAFT_NANO));
+    let collectable = (i128::from(balance_before) + i128::from(hold) - collection_floor)
+        .max(0)
+        .min(i128::from(actual));
+    let collected = i64::try_from(collectable).context("SQLite collected amount overflow")?;
+    let uncollected = actual
+        .checked_sub(collected)
+        .context("SQLite collection exceeds billed amount")?;
+    let balance = i64::try_from(i128::from(balance_before) + i128::from(hold) - collectable)
+        .context("SQLite balance overflow during settlement")?;
+    let spent = i64::try_from(i128::from(spent_before) + i128::from(actual))
+        .context("SQLite account spend overflow during settlement")?;
+    let account_uncollected =
+        i64::try_from(i128::from(account_uncollected_before) + i128::from(uncollected))
+            .context("SQLite uncollected aggregate overflow during settlement")?;
+    conn.execute(
+        "UPDATE accounts SET balance_nano=?1,spent_nano=?2,reserved_nano=?3,uncollected_nano=?4 \
+         WHERE id=?5",
+        rusqlite::params![
+            balance,
+            spent,
+            reserved_before - hold,
+            account_uncollected,
+            id
+        ],
+    )?;
+
+    let key_aggregate = conn.query_row(
+        "SELECT account_id,spent_nano,reserved_nano FROM api_keys WHERE key=?1",
+        rusqlite::params![key],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        },
+    );
+    match key_aggregate {
+        Ok((key_account_id, key_spent_before, key_reserved_before)) => {
+            if key_account_id != id || key_reserved_before < hold {
+                anyhow::bail!("reservation/key aggregate invariant failed");
+            }
+            let key_spent = i64::try_from(i128::from(key_spent_before) + i128::from(actual))
+                .context("SQLite key spend overflow during settlement")?;
+            conn.execute(
+                "UPDATE api_keys SET spent_nano=?1,reserved_nano=?2 WHERE key=?3",
+                rusqlite::params![key_spent, key_reserved_before - hold, key],
+            )?;
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    if actual > 0 || usage.is_some() {
+        let timestamp = now();
+        let model = usage
+            .map(|value| value.model.as_str())
+            .filter(|value| !value.is_empty());
+        let ledger_provider = pricing.map(|value| value.provider.as_str()).or_else(|| {
+            usage
+                .map(|value| value.provider.as_str())
+                .filter(|value| !value.is_empty())
+        });
+        let usage_provider = pricing
+            .map(|value| value.provider.as_str())
+            .or_else(|| usage.map(|value| value.provider.as_str()));
+        let official_nano = usage.map(|value| value.charge_basis_nano);
+        let payable_multiplier_bp = pricing.map(|value| value.payable_multiplier_bp);
+        if actual > 0 {
+            conn.execute(
+                "INSERT INTO ledger(account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts, \
+                 model,provider,official_nano,payable_multiplier_bp,uncollected_nano) \
+                 VALUES(?1,?2,'charge',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                rusqlite::params![
+                    id,
+                    key,
+                    request_id,
+                    actual,
+                    reference,
+                    balance,
+                    timestamp,
+                    model,
+                    ledger_provider,
+                    official_nano,
+                    payable_multiplier_bp,
+                    uncollected
+                ],
+            )?;
+        }
+        if let Some(usage) = usage {
+            conn.execute(
+                "INSERT INTO usage_events(request_id,account_id,key,model,input_tokens,output_tokens, \
+                 cache_read_tokens,cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests, \
+                 real_nano,charge_nano,ref,ts,speed,inference_geo,input_nano,output_nano,cache_read_nano, \
+                 cache_write_5m_nano,cache_write_1h_nano,web_search_nano,priced_ts,provider, \
+                 payable_multiplier_bp,uncollected_nano,charge_basis_nano) \
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20, \
+                        ?21,?22,?23,?24,?25,?26,?27)",
+                rusqlite::params![
+                    request_id,
+                    id,
+                    key,
+                    usage.model,
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.cache_read_tokens,
+                    usage.cache_write_5m_tokens,
+                    usage.cache_write_1h_tokens,
+                    usage.web_search_requests,
+                    usage.real_nano,
+                    actual,
+                    reference,
+                    timestamp,
+                    usage.speed,
+                    usage.inference_geo,
+                    usage.input_nano,
+                    usage.output_nano,
+                    usage.cache_read_nano,
+                    usage.cache_write_5m_nano,
+                    usage.cache_write_1h_nano,
+                    usage.web_search_nano,
+                    usage.priced_ts,
+                    usage_provider,
+                    payable_multiplier_bp,
+                    uncollected,
+                    usage.charge_basis_nano
+                ],
+            )?;
+        }
+    }
+    Ok(Some((balance, collected, uncollected)))
 }
 
 /// Read every per-provider discount of one account (control-plane listing).
@@ -2281,23 +2594,31 @@ pub fn ledger_prune(conn: &Connection, older_than_ts: i64) -> Result<usize> {
     )?)
 }
 
-/// Добавить строку в append-only ledger (журнал движений баланса). `model` — Claude-модель за
-/// charge-строкой (для точного per-model графика); у topup/adjust модели нет → None.
 #[allow(clippy::too_many_arguments)]
-fn ledger_add(
+fn ledger_add_settlement(
     conn: &Connection,
     account_id: &str,
     key: Option<&str>,
-    kind: &str,
-    amount_nano: i64,
+    actual_nano: i64,
+    uncollected_nano: i64,
     reference: Option<&str>,
     balance_after: i64,
     model: Option<&str>,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO ledger(account_id, key, kind, amount_nano, ref, balance_after_nano, ts, model) \
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        rusqlite::params![account_id, key, kind, amount_nano, reference, balance_after, now(), model])?;
+        "INSERT INTO ledger(account_id,key,kind,amount_nano,uncollected_nano,ref, \
+         balance_after_nano,ts,model) VALUES(?1,?2,'charge',?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![
+            account_id,
+            key,
+            actual_nano,
+            uncollected_nano,
+            reference,
+            balance_after,
+            now(),
+            model
+        ],
+    )?;
     Ok(())
 }
 
@@ -2316,12 +2637,37 @@ pub const PROVIDER_KIMI: &str = "kimi";
 /// economics can never be blended with any other provider.
 pub const PROVIDER_GLM: &str = "glm";
 
+/// Immutable scalar-pricing decision pinned when a request reserves money.
+///
+/// The provider and multiplier are deliberately stored on the reservation rather than accepted
+/// from the settlement payload: an admin edit that lands while a turn is in flight must affect the
+/// next request, never rewrite the price of the request already admitted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReservationPricing {
+    pub provider: String,
+    pub payable_multiplier_bp: i64,
+}
+
+impl ReservationPricing {
+    pub fn new(provider: &str, payable_multiplier_bp: i64) -> Result<Self> {
+        ensure_valid_provider_discount(provider, payable_multiplier_bp)?;
+        Ok(Self {
+            provider: provider.to_owned(),
+            payable_multiplier_bp,
+        })
+    }
+}
+
 /// Fleets whose membership arrives as a sealed Auth Bot roster the engine may read but never
 /// write. Only these can carry an operator disable (`pool_member_disables`): Claude subscriptions
 /// live in this authority already and use their own `active|paused|disabled` status, so admitting
 /// them here would give one subscription two competing routability switches.
-pub const ROSTER_BACKED_PROVIDERS: &[&str] =
-    &[PROVIDER_GOOGLE, PROVIDER_OPENAI, PROVIDER_KIMI, PROVIDER_GLM];
+pub const ROSTER_BACKED_PROVIDERS: &[&str] = &[
+    PROVIDER_GOOGLE,
+    PROVIDER_OPENAI,
+    PROVIDER_KIMI,
+    PROVIDER_GLM,
+];
 
 /// Fail closed on anything outside the fixed roster-backed plane. The DB CHECK enforces the same
 /// set, but rejecting here keeps a typo from reaching PostgreSQL as a constraint violation the
@@ -2451,9 +2797,11 @@ fn sqlite_enqueue_settlement(
         anyhow::bail!("invalid SQLite settlement disposition");
     }
     let usage_json = usage.map(serde_json::to_string).transpose()?;
+    let charge_basis_nano = usage.map(|value| value.charge_basis_nano);
     let tx = conn.unchecked_transaction()?;
     let reservation = tx.query_row(
-        "SELECT account_id,key,hold_nano,state,actual_nano,balance_after_settle_nano,reference \
+        "SELECT account_id,key,hold_nano,state,actual_nano,balance_after_settle_nano,reference, \
+                collected_nano,uncollected_nano,provider,payable_multiplier_bp \
          FROM billing_reservations WHERE request_id=?1",
         rusqlite::params![request_id],
         |row| {
@@ -2465,48 +2813,85 @@ fn sqlite_enqueue_settlement(
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
                 row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<i64>>(10)?,
             ))
         },
     );
-    let (stored_account, stored_key, stored_hold, state, stored_actual, stored_balance, stored_ref) =
-        match reservation {
-            Ok(row) => row,
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                anyhow::bail!("settlement has no durable reservation")
-            }
-            Err(error) => return Err(error.into()),
-        };
+    let (
+        stored_account,
+        stored_key,
+        stored_hold,
+        state,
+        stored_actual,
+        _stored_balance,
+        stored_ref,
+        stored_collected,
+        stored_uncollected,
+        stored_provider,
+        stored_payable_multiplier_bp,
+    ) = match reservation {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            anyhow::bail!("settlement has no durable reservation")
+        }
+        Err(error) => return Err(error.into()),
+    };
     if stored_account != account_id || stored_key != key || stored_hold != hold_nano {
         anyhow::bail!("settlement parameters do not match reservation");
     }
     let actual = actual_nano.max(0);
     if state == "settled" {
         let expected_actual = sqlite_terminal_expected_actual(&tx, request_id, actual)?;
-        if stored_actual == Some(expected_actual) && stored_ref.as_deref() == reference {
-            tx.commit()?;
-            return Ok(stored_balance);
+        if stored_actual != Some(expected_actual) || stored_ref.as_deref() != reference {
+            anyhow::bail!("settlement request ID was reused with different parameters");
         }
-        anyhow::bail!("settlement request ID was reused with different parameters");
+        let priced = match (stored_provider.as_deref(), stored_payable_multiplier_bp) {
+            (None, None) => false,
+            (Some(provider), Some(payable_multiplier_bp)) => {
+                ReservationPricing::new(provider, payable_multiplier_bp)?;
+                true
+            }
+            _ => anyhow::bail!("reservation has incomplete scalar-pricing evidence"),
+        };
+        let collection_exact = match (stored_collected, stored_uncollected) {
+            (None, None) => !priced,
+            (Some(collected), Some(uncollected)) => {
+                collected >= 0
+                    && uncollected >= 0
+                    && collected.checked_add(uncollected) == Some(expected_actual)
+            }
+            _ => false,
+        };
+        if !collection_exact {
+            anyhow::bail!("terminal settlement collection evidence is inconsistent");
+        }
+        // Continue through the durable outbox comparison. Returning from the reservation row here
+        // would let a replay change usage/provider attribution after money became terminal. Legacy
+        // both-null terminals remain readable; their exact intent is materialized below.
     }
 
     let timestamp = now();
     let inserted = tx.execute(
         "INSERT INTO billing_settlement_outbox( \
-           request_id,actual_nano,reference,usage_json,disposition,state,attempts,next_attempt_ts,
+           request_id,actual_nano,reference,usage_json,charge_basis_nano,disposition,state,attempts,next_attempt_ts,
            created_ts,updated_ts) \
-         VALUES(?1,?2,?3,?4,?5,'pending',0,0,?6,?6) ON CONFLICT(request_id) DO NOTHING",
+         VALUES(?1,?2,?3,?4,?5,?6,'pending',0,0,?7,?7) ON CONFLICT(request_id) DO NOTHING",
         rusqlite::params![
             request_id,
             actual,
             reference,
             usage_json,
+            charge_basis_nano,
             disposition,
             timestamp
         ],
     )?;
     if inserted == 0 {
         let existing = tx.query_row(
-            "SELECT actual_nano,reference,usage_json,disposition
+            "SELECT actual_nano,reference,usage_json,charge_basis_nano,disposition
                FROM billing_settlement_outbox WHERE request_id=?1",
             rusqlite::params![request_id],
             |row| {
@@ -2514,7 +2899,8 @@ fn sqlite_enqueue_settlement(
                     row.get::<_, i64>(0)?,
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
-                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, String>(4)?,
                 ))
             },
         )?;
@@ -2523,6 +2909,7 @@ fn sqlite_enqueue_settlement(
                 actual,
                 reference.map(str::to_owned),
                 usage_json,
+                charge_basis_nano,
                 disposition.to_owned(),
             )
         {
@@ -2557,7 +2944,8 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
     };
     let reservation = tx.query_row(
         "SELECT account_id,key,hold_nano,state,actual_nano,balance_after_settle_nano, \
-                COALESCE(group_id,request_id),attempt \
+                COALESCE(group_id,request_id),attempt,collected_nano,uncollected_nano,provider, \
+                payable_multiplier_bp \
          FROM billing_reservations WHERE request_id=?1",
         rusqlite::params![request_id],
         |row| {
@@ -2570,6 +2958,10 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
                 row.get::<_, Option<i64>>(5)?,
                 row.get::<_, String>(6)?,
                 row.get::<_, i32>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<i64>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<i64>>(11)?,
             ))
         },
     )?;
@@ -2577,6 +2969,22 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
         let expected_actual = sqlite_terminal_expected_actual(&tx, request_id, actual)?;
         if reservation.4 != Some(expected_actual) {
             anyhow::bail!("stored settlement differs from outbox");
+        }
+        let priced = match (reservation.10.as_deref(), reservation.11) {
+            (None, None) => false,
+            (Some(provider), Some(payable_multiplier_bp)) => {
+                ReservationPricing::new(provider, payable_multiplier_bp)?;
+                true
+            }
+            _ => anyhow::bail!("reservation has incomplete scalar-pricing evidence"),
+        };
+        match (reservation.8, reservation.9) {
+            (None, None) if !priced => {}
+            (Some(collected), Some(uncollected))
+                if collected >= 0
+                    && uncollected >= 0
+                    && collected.checked_add(uncollected) == Some(expected_actual) => {}
+            _ => anyhow::bail!("terminal settlement collection evidence is inconsistent"),
         }
         tx.execute(
             "UPDATE billing_settlement_outbox SET state='done',committed_ts=COALESCE(committed_ts,?2), \
@@ -2620,15 +3028,24 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
     } else {
         disposition.as_str()
     };
-    let balance = {
-        account_settle_in(
+    let pricing = match (reservation.10.as_deref(), reservation.11) {
+        (None, None) => None,
+        (Some(provider), Some(payable_multiplier_bp)) => {
+            Some(ReservationPricing::new(provider, payable_multiplier_bp)?)
+        }
+        _ => anyhow::bail!("reservation has incomplete scalar-pricing evidence"),
+    };
+    let (balance, collected, uncollected) = {
+        account_settle_request_in(
             &tx,
+            request_id,
             &reservation.0,
             &reservation.1,
             reservation.2,
             effective_actual,
             reference.as_deref(),
             effective_usage,
+            pricing.as_ref(),
         )?
         .ok_or_else(|| anyhow::anyhow!("settlement account no longer exists"))?
     };
@@ -2639,13 +3056,15 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
         "settled"
     };
     tx.execute(
-        "UPDATE billing_reservations SET state=?2,actual_nano=?3, \
-         balance_after_settle_nano=?4,reference=?5,updated_ts=?6,settled_ts=?6 \
+        "UPDATE billing_reservations SET state=?2,actual_nano=?3,collected_nano=?4, \
+         uncollected_nano=?5,balance_after_settle_nano=?6,reference=?7,updated_ts=?8,settled_ts=?8 \
          WHERE request_id=?1 AND state IN ('reserved','delivering')",
         rusqlite::params![
             request_id,
             final_state,
             effective_actual,
+            collected,
+            uncollected,
             balance,
             reference,
             timestamp
@@ -2672,6 +3091,46 @@ pub fn sqlite_reserve_request_for_execution(
     lease_secs: i64,
     execution: &ExecutionAttempt,
 ) -> Result<Option<i64>> {
+    sqlite_reserve_request_for_execution_with_pricing(
+        conn, request_id, account_id, key, hold_nano, lease_secs, execution, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn sqlite_reserve_priced_request_for_execution(
+    conn: &Connection,
+    request_id: &str,
+    account_id: &str,
+    key: &str,
+    hold_nano: i64,
+    lease_secs: i64,
+    execution: &ExecutionAttempt,
+    pricing: &ReservationPricing,
+) -> Result<Option<i64>> {
+    ensure_valid_provider_discount(&pricing.provider, pricing.payable_multiplier_bp)?;
+    sqlite_reserve_request_for_execution_with_pricing(
+        conn,
+        request_id,
+        account_id,
+        key,
+        hold_nano,
+        lease_secs,
+        execution,
+        Some(pricing),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sqlite_reserve_request_for_execution_with_pricing(
+    conn: &Connection,
+    request_id: &str,
+    account_id: &str,
+    key: &str,
+    hold_nano: i64,
+    lease_secs: i64,
+    execution: &ExecutionAttempt,
+    pricing: Option<&ReservationPricing>,
+) -> Result<Option<i64>> {
     if request_id.trim().is_empty()
         || account_id.trim().is_empty()
         || key.trim().is_empty()
@@ -2682,7 +3141,8 @@ pub fn sqlite_reserve_request_for_execution(
     }
     let tx = conn.unchecked_transaction()?;
     let existing = tx.query_row(
-        "SELECT account_id,key,hold_nano,state,balance_after_reserve_nano,group_id,attempt \
+        "SELECT account_id,key,hold_nano,state,balance_after_reserve_nano,group_id,attempt, \
+                provider,payable_multiplier_bp \
          FROM billing_reservations WHERE request_id=?1",
         rusqlite::params![request_id],
         |row| {
@@ -2694,16 +3154,30 @@ pub fn sqlite_reserve_request_for_execution(
                 row.get::<_, i64>(4)?,
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, i32>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<i64>>(8)?,
             ))
         },
     );
     match existing {
-        Ok((stored_account, stored_key, stored_hold, state, balance, group_id, attempt)) => {
+        Ok((
+            stored_account,
+            stored_key,
+            stored_hold,
+            state,
+            balance,
+            group_id,
+            attempt,
+            provider,
+            payable_multiplier_bp,
+        )) => {
             if stored_account != account_id
                 || stored_key != key
                 || stored_hold != hold_nano
                 || group_id.as_deref() != execution.group_id()
                 || attempt != execution.attempt()
+                || provider.as_deref() != pricing.map(|value| value.provider.as_str())
+                || payable_multiplier_bp != pricing.map(|value| value.payable_multiplier_bp)
             {
                 anyhow::bail!("reservation request ID was reused with different parameters");
             }
@@ -2725,8 +3199,8 @@ pub fn sqlite_reserve_request_for_execution(
     tx.execute(
         "INSERT INTO billing_reservations( \
            request_id,account_id,key,hold_nano,group_id,attempt,state,balance_after_reserve_nano, \
-           lease_until,created_ts,updated_ts) \
-         VALUES(?1,?2,?3,?4,?5,?6,'reserved',?7,?8,?9,?9)",
+           lease_until,created_ts,updated_ts,provider,payable_multiplier_bp) \
+         VALUES(?1,?2,?3,?4,?5,?6,'reserved',?7,?8,?9,?9,?10,?11)",
         rusqlite::params![
             request_id,
             account_id,
@@ -2736,21 +3210,14 @@ pub fn sqlite_reserve_request_for_execution(
             execution.attempt(),
             balance,
             timestamp.saturating_add(lease_secs),
-            timestamp
+            timestamp,
+            pricing.map(|value| value.provider.as_str()),
+            pricing.map(|value| value.payable_multiplier_bp)
         ],
     )?;
     tx.commit()?;
     Ok(Some(balance))
 }
-
-
-
-
-
-
-
-
-
 
 /// Mark a reservation as provider-accepted before handing its response body to the client.
 pub fn sqlite_mark_delivering(
@@ -2786,11 +3253,6 @@ pub fn sqlite_renew_reservation_lease(
     )? == 1)
 }
 
-
-
-
-
-
 fn sqlite_terminal_expected_actual(
     conn: &Connection,
     request_id: &str,
@@ -2814,9 +3276,6 @@ fn sqlite_terminal_expected_actual(
     )
     .context("terminal SQLite reservation is missing")
 }
-
-
-
 
 #[allow(clippy::too_many_arguments)]
 pub fn sqlite_settle_request(
@@ -2970,14 +3429,14 @@ pub fn sqlite_reconcile_expired(
         match result {
             Ok(_) if state == "delivering" => report.charged_after_delivery += 1,
             Ok(_) => report.canceled_before_delivery += 1,
-            Err(error) => {
-                elog::error("registry", format!("SQLite reservation recovery failed for {request_id}: {error:#}"))
-            }
+            Err(error) => elog::error(
+                "registry",
+                format!("SQLite reservation recovery failed for {request_id}: {error:#}"),
+            ),
         }
     }
     Ok(report)
 }
-
 
 /// Записать usage-событие (аналитика; НЕ money-строка). Вызывается billing-writer'ом сразу после
 /// `account_settle` на той же connection. `charge_nano` — фактически списанное (после наценки).
@@ -2989,13 +3448,26 @@ pub fn usage_event_add(
     charge_nano: i64,
     reference: Option<&str>,
 ) -> Result<()> {
+    usage_event_add_settlement(conn, account_id, key, u, charge_nano, 0, reference)
+}
+
+fn usage_event_add_settlement(
+    conn: &Connection,
+    account_id: &str,
+    key: Option<&str>,
+    u: &UsageEventInput,
+    charge_nano: i64,
+    uncollected_nano: i64,
+    reference: Option<&str>,
+) -> Result<()> {
     conn.execute(
         "INSERT INTO usage_events(account_id, key, model, input_tokens, output_tokens, \
          cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, web_search_requests, \
          real_nano, charge_nano, ref, ts, speed, inference_geo, input_nano, output_nano, \
          cache_read_nano, cache_write_5m_nano, cache_write_1h_nano, web_search_nano, priced_ts, \
-         provider) \
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
+         provider,uncollected_nano,charge_basis_nano) \
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22, \
+                ?23,?24,?25)",
         rusqlite::params![
             account_id,
             key,
@@ -3019,7 +3491,9 @@ pub fn usage_event_add(
             u.cache_write_1h_nano,
             u.web_search_nano,
             u.priced_ts,
-            u.provider
+            u.provider,
+            uncollected_nano,
+            u.charge_basis_nano
         ],
     )?;
     Ok(())
@@ -3545,7 +4019,6 @@ pub fn key_set_status(conn: &Connection, key: &str, status: &str) -> Result<usiz
     sqlite_key_set_status(conn, "key", key, status)
 }
 
-
 /// Change key status through its non-secret control-plane identifier.
 pub fn key_set_status_by_id(conn: &Connection, key_id: &str, status: &str) -> Result<usize> {
     sqlite_key_set_status(conn, "key_id", key_id, status)
@@ -3565,8 +4038,6 @@ fn sqlite_key_set_status(
         rusqlite::params![status, identity],
     )?)
 }
-
-
 
 /// Change key label through its non-secret control-plane identifier.
 pub fn key_set_label_by_id(conn: &Connection, key_id: &str, label: &str) -> Result<usize> {
@@ -3664,9 +4135,6 @@ pub struct LedgerRow {
     pub uncollected_nano: i64,
 }
 
-
-
-
 pub(crate) fn resolve_ledger_provider(
     ledger_provider: Option<String>,
     usage_provider: Option<String>,
@@ -3735,7 +4203,6 @@ const SQLITE_LEDGER_READ_COLUMNS: &str = "
            AND ABS(candidate.ts-ledger.ts)<=1
       )
     END";
-
 
 fn sqlite_ledger_page(
     conn: &Connection,
