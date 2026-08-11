@@ -121,4 +121,29 @@ describe("migration configuration", () => {
     expect(migrationSql).not.toMatch(/^(?:DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
   });
 
+  it("adds bounded settlement shortfall evidence without changing existing usage rows", () => {
+    const migrationName = "0047_pricing_usage_uncollected.sql";
+    const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, migrationName), "utf8");
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
+    const previousEntry = journal.entries.find((entry) => entry.idx === 46);
+    const currentEntry = journal.entries.find((entry) => entry.idx === 47);
+
+    expect(currentEntry).toMatchObject({
+      idx: 47,
+      version: "7",
+      tag: "0047_pricing_usage_uncollected",
+      breakpoints: true,
+    });
+    expect(currentEntry!.when).toBeGreaterThan(previousEntry!.when);
+    expect(migrationSql).toContain(
+      'ADD COLUMN "uncollected_nano" bigint DEFAULT 0 NOT NULL',
+    );
+    expect(migrationSql).toContain(
+      'CHECK ("uncollected_nano" >= 0 AND "uncollected_nano" <= "amount_nano")',
+    );
+    expect(migrationSql).not.toMatch(/^(?:DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
+  });
+
 });

@@ -199,6 +199,9 @@ export const pricingUsageEvents = pgTable("pricing_usage_events", {
   providerId: text("provider_id"),
   providerRecoveryVersion: integer("provider_recovery_version").notNull().default(0),
   amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
+  // Pool-funded part of the full billed amount that the account-wide settlement floor could not
+  // collect. Old consumers omit it and receive the database default zero.
+  uncollectedNano: bigint("uncollected_nano", { mode: "bigint" }).notNull().default(sql`0`),
   // Legacy: free-first paid projection. Attributed: exact paid_funded only when commission-eligible;
   // static/ineligible rows store 0 while true paid evidence remains in pricing_usage_attributions.
   realFundedNano: bigint("real_funded_nano", { mode: "bigint" }).notNull().default(sql`0`),
@@ -212,6 +215,9 @@ export const pricingUsageEvents = pgTable("pricing_usage_events", {
   uniqueIndex("pricing_usage_events_feed_seq_uidx").on(table.feedSeq),
   index("pricing_usage_events_user_time_idx").on(table.userId, table.occurredAt),
   check("pricing_usage_events_amount_check", sql`${table.amountNano} > 0`),
+  check("pricing_usage_events_uncollected_check", sql`
+    ${table.uncollectedNano} >= 0 AND ${table.uncollectedNano} <= ${table.amountNano}
+  `),
   check("pricing_usage_events_provider_recovery_version_check", sql`${table.providerRecoveryVersion} >= 0`),
 ]);
 

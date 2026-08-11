@@ -222,3 +222,11 @@ existing non-negative CHECK remains untouched, all deployed writers already emit
 and the migration changes no value or job. Production was preflighted with zero rows outside
 `0..10000`. The dependent shared-contract narrowing ships only after this migration SHA has green
 `deploy/migration` and `deploy/watchdog`.
+
+Migration `0047_pricing_usage_uncollected.sql` adds exact settlement-shortfall evidence to immutable
+commerce usage rows. `amount_nano` remains the full billed actual; `uncollected_nano` is the
+non-negative part the account-wide engine floor could not debit and is bounded by `amount_nano`.
+The `NOT NULL DEFAULT 0` shape keeps deployed writers and historical rows compatible, performs no
+business-data rewrite, and stages no reconciliation or commission change. The dependent ledger
+consumer stores the engine field and derives free/paid funding only from the collected remainder;
+it ships only after this migration SHA has green `deploy/migration` and `deploy/watchdog`.

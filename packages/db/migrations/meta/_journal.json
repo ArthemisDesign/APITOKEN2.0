@@ -330,6 +330,13 @@
       "when": 1786426500000,
       "tag": "0046_scalar_pricing_bounds",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1786430000000,
+      "tag": "0047_pricing_usage_uncollected",
+      "breakpoints": true
     }
   ]
 }
