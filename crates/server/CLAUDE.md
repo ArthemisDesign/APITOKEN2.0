@@ -99,11 +99,11 @@ background loops and the HTTP router. Here — and only here — everything is w
   the gateway owns the idle/epoch boundary, the turn-before-quota ordering and the durable observation/CAS,
   server owns only the cadence.
 - `main.rs` — clap CLI: `serve`, `sub add/add-file/list/rm/status/proxy/fleet/set-plan/detect-plan/health`,
-  the private `openai-image-canary`, the
-  one-shot `openai-image-public-smoke`, and the read-only `openai-image-settlement-diagnostic`. The private
-  canary can freeze an explicitly named opaque Codex profile or the first currently admitted pool profile.
-  The diagnostic accepts its fenced UUIDv4 only on stdin and emits identifier-free JSON. None of these
-  commands is part of `AppState` or HTTP routing.
+  the private `openai-image-canary`, and the one-shot `openai-image-public-smoke`. The private canary
+  can freeze an explicitly named opaque Codex profile or the first currently admitted pool profile.
+  The temporary read-only settlement diagnostic used by two fenced 2026-08 deliveries is retired;
+  its terminal evidence remains in the immutable deployment statuses. None of these commands is part
+  of `AppState` or HTTP routing.
 
 **Invariants:**
 - At startup the PostgreSQL authority only read-only verifies the applied schema; DDL is executed

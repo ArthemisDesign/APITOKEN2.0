@@ -342,6 +342,11 @@ is no reseller image origin, image-specific API key, fallback, or environment va
 
 ## Outcome
 
+The diagnostic script names above identify the immutable deliveries that produced the recorded statuses.
+After the later v3 generation+edit gate succeeded, both settlement-diagnostic controllers, their sudo grants,
+and the diagnostic CLI were removed; no current engine or watchdog path reads the retired pricing request
+snapshots. The fenced artifacts and commit statuses remain historical evidence and cannot dispatch requests.
+
 The v3 gate delivery `d172c6fd0116ba73b051fc5aa02193a4885de5da` ran the exact one-shot contract above
 and is overall watchdog-GREEN: two strict byte-different PNGs, exact generation/edit usage, terminal
 `settled`/`done`, and `charge_nano=0` under release-v2 `meter_only`. Publication followed in the

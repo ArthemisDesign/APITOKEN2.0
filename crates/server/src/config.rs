@@ -88,11 +88,6 @@ pub(crate) fn openai_image_public_smoke_database_url() -> Option<String> {
     ev("CLAUDE_API_DATABASE_URL")
 }
 
-/// Sole environment input for the read-only fenced image settlement diagnostic.
-pub(crate) fn openai_image_settlement_diagnostic_database_url() -> Option<String> {
-    ev("CLAUDE_API_DATABASE_URL")
-}
-
 fn ev_or(k: &str, d: &str) -> String {
     ev(k).unwrap_or_else(|| d.to_string())
 }

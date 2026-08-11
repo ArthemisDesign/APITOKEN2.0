@@ -252,10 +252,6 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-surface-probe-gate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/gpt-image-2-public-paid-inspect-gate.sh" \
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-paid-inspect-gate.sh
-  install -o root -g root -m 0755 "$ROOT/deploy/gpt-image-2-settlement-diagnostic-gate.sh" \
-    /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-diagnostic-gate.sh
-  install -o root -g root -m 0755 "$ROOT/deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh" \
-    /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-v2-diagnostic-gate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-test-db.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-test-db
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-backup.sh" \
@@ -303,6 +299,11 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/admin-deploy.sh
   install -o root -g root -m 0755 "$ROOT/deploy/devbot-deploy.sh" \
     /usr/local/lib/apitoken-watchdog/controller/devbot-deploy.sh
+  # Both one-shot settlement diagnostics reached terminal GREEN evidence in 2026-08 and are
+  # intentionally retired before their historical pricing snapshot tables leave retention.
+  rm -f -- \
+    /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-diagnostic-gate.sh \
+    /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-v2-diagnostic-gate.sh
   # The entrypoint is the controller transaction's commit point: every dependency is present first.
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog.sh" "$watchdog_staged"
   mv -f -- "$watchdog_staged" "$watchdog_target"

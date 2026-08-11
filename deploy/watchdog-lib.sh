@@ -819,7 +819,6 @@ wd_path_is_controller_definition() {
     deploy/gpt-image-2-public-preflight-v3-gate.sh|deploy/gpt-image-2-public-paid-smoke-gate.sh|\
     deploy/gpt-image-2-public-paid-smoke-v2-gate.sh|deploy/gpt-image-2-public-paid-smoke-v3-gate.sh|\
     deploy/gpt-image-2-public-paid-inspect-gate.sh|\
-    deploy/gpt-image-2-settlement-diagnostic-gate.sh|deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh|\
     deploy/gpt-image-2-surface-probe-gate.sh|\
     deploy/watchdog-test-db.sh|deploy/watchdog-backup.sh|deploy/watchdog-migrate.sh|\
     deploy/watchdog-infrastructure.sh|deploy/watchdog-retention.sh|\
@@ -873,14 +872,6 @@ wd_path_is_gpt_image_2_public_paid_smoke_v3_gate_trigger() {
 
 wd_path_is_gpt_image_2_public_paid_inspect_gate_trigger() {
   [[ $1 == deploy/gpt-image-2-public-paid-inspect-gate.sh ]]
-}
-
-wd_path_is_gpt_image_2_settlement_diagnostic_gate_trigger() {
-  [[ $1 == deploy/gpt-image-2-settlement-diagnostic-gate.sh ]]
-}
-
-wd_path_is_gpt_image_2_settlement_v2_diagnostic_gate_trigger() {
-  [[ $1 == deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh ]]
 }
 
 wd_path_is_gpt_image_2_surface_probe_gate_trigger() {

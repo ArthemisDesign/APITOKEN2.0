@@ -367,12 +367,10 @@ is only what is needed to walk the relationships when making changes:
   retired. The separate `deploy/gpt-image-2-public-paid-inspect-gate.sh` is credential-, environment-, CLI-
   and network-free; it accepts only the exact generation-only two-file withdrawal and emits dimensions,
   bytes and SHA-256. This inspection is not a generation+edit success and no publication consumer can proceed.
-  Watchdog-GREEN producer `ab3b4e557f7b870b93f62a88a53e87e46b49fb4c` exposes only
-  `openai-image-settlement-diagnostic`: it reads the fenced request's PostgreSQL stages in one read-only
-  snapshot, receives its UUIDv4 only over stdin, and emits no request/account/key identity or raw error. The
-  sole consumer is the separately pinned `deploy/gpt-image-2-settlement-diagnostic-gate.sh`: it revalidates
-  the immutable generation-only fence, inherits only the production PostgreSQL DSN, passes the identity over
-  stdin, and publishes a bounded status. Watchdog-GREEN controller
+  Watchdog-GREEN producer `ab3b4e557f7b870b93f62a88a53e87e46b49fb4c` temporarily exposed the
+  identifier-free settlement diagnostic used by the separately pinned one-shot controller. It read the
+  fenced request's PostgreSQL stages in one read-only snapshot and published only a bounded status. The
+  watchdog-GREEN controller
   `d66e25babba5e55ef96ebec51971962656a4badf` reported `terminal_evidence_present` for that request:
   reservation `settled`, outbox `done` on attempt 1 without error, usage present, `real_nano=7_045_000`, and
   `charge_nano=0`. This proves the old smoke stopped while waiting for evidence rather than a failed
@@ -384,16 +382,18 @@ is only what is needed to walk the relationships when making changes:
   root; it inherited only the PostgreSQL DSN, permitted one `--execute`, and required strict generation+edit
   PNG, usage, settlement, and unchanged-money evidence. Delivery
   `2efcfbf69b672e531b62b8602a74d7fb76ee1fae` withdrew at
-  `generation_received:g=true:e=false`; the v2 root is permanently fenced. Its new read-only consumer is
-  `deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh`, which reuses the exact GREEN `853fdc6c...` diagnostic
-  binary and reads only that request's durable settlement state. Neither diagnostic side has image HTTP,
-  credential selection, dispatch, retry, or mutation. Diagnostic delivery
+  `generation_received:g=true:e=false`; the v2 root is permanently fenced. A second one-shot diagnostic
+  reused the exact GREEN `853fdc6c...` binary and read only that request's durable
+  settlement state. Neither diagnostic had image HTTP, credential selection, dispatch, retry, or mutation.
+  Diagnostic delivery
   `f1fb47c3e6e75c219f7b9f6f229db693e54197f5` is exact watchdog-GREEN with the same terminal
   `settled`/`done/1`, `real_nano=7_045_000`, `charge_nano=0` evidence. It isolated the repeated stop to the
   smoke runner: synchronous `PgStore` was invoked inside its Tokio runtime even though the synchronous
   `postgres` client uses an internal runtime for query and drop. The corrected producer keeps PostgreSQL
   observation and teardown outside Tokio and enters the network runtime only for each HTTP future; neither
-  fenced request is replayed. Corrective producer `8b68d73a2a6ba6ffae2f24692b283059f15b7c63` is exact
+  fenced request is replayed. Both diagnostic statuses are immutable historical evidence; after the later v3
+  gate succeeded, the diagnostic CLI/controllers/sudo grants were retired, so no current runtime consumer
+  reads `pricing_request_snapshots_v2`. Corrective producer `8b68d73a2a6ba6ffae2f24692b283059f15b7c63` is exact
   watchdog-GREEN. Its sole paid consumer is the separately delivered
   `deploy/gpt-image-2-public-paid-smoke-v3-gate.sh`, pinned to the fresh v3 evidence root and allowed exactly
   one `--execute`; every partial result permanently fences replay. The direct OpenAI plane and header-gated Combined
