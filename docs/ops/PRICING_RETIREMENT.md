@@ -10,14 +10,22 @@ object names and never `CASCADE` or `IF EXISTS`.
 The latest authoritative timestamp in the retired set is
 `2026-08-10 09:26:32 UTC`, from engine funding generation/lot rows written during the last
 pre-retirement reconciliation. The mandatory 30-day retention therefore ends at
-`2026-09-09 09:26:32 UTC`. A final change should use a conservative later time, not the exact
-second, and must recompute the boundary from production rather than trusting this snapshot.
+`2026-09-09 09:26:32 UTC`. Final admission uses the conservative boundary
+`2026-09-09 10:00:00 UTC`, not the exact second, and recomputes the maximum from production rather
+than trusting this snapshot. A newer authoritative timestamp moves admission to 30 full days after
+that timestamp even when it is later than the conservative boundary.
 
 The read-only production inventory on 2026-08-11 contained:
 
 - 31 engine tables, `154804224` bytes including indexes (about 148 MiB);
 - 43 commerce tables, `104783872` bytes including indexes (about 100 MiB);
 - `259588096` bytes total (about 247.6 MiB).
+
+The machine-readable inventory is `deploy/pricing-retired-schema-baseline.tsv`: all 74 tables,
+their exact row counts, observed physical sizes, and SHA-256 of their canonical row stream. It was
+captured read-only on 2026-08-11 and contains no row data. The content digests make a same-count
+`UPDATE` or `DELETE` detectable; physical size is reported but is not an immutability verdict,
+because VACUUM and index maintenance can change it without changing a row.
 
 A later consumer snapshot that day contained 174 mapped commerce cursors. All 174 had completed
 their current polling cycle and had identical ledger/top-up watermarks; all 122 mapped accounts
@@ -239,9 +247,11 @@ Keep the live content functions `public.enforce_blog_draft_identity()` and
 All gates are conjunctive. A failure postpones the drop; it is never waived because a backup exists.
 
 1. **Time and immutable evidence.** Recompute the maximum authoritative created/updated/normalized
-   time and table row counts. The maximum must still be `2026-08-10 09:26:32 UTC` or earlier, the
-   counts must not have grown since the recorded inventory, and at least 30 complete days must have
-   elapsed. A newer row restarts retention from its own time.
+   time and every table's row count plus canonical content digest. The maximum must still be
+   `2026-08-10 09:26:32 UTC` or earlier; counts and digests must equal
+   `deploy/pricing-retired-schema-baseline.tsv`; and at least 30 complete days plus the conservative
+   boundary above must have elapsed. Any content difference is an investigation, not a baseline
+   update. A newer authoritative timestamp restarts retention from its own time.
 2. **No source reader/writer.** `deploy/pricing-retired-schema.test.sh` must pass on the exact
    migration parent. It scans every engine and commerce runtime source path and pins the 31/43
    manifest, the 43 Drizzle symbol mappings and the removed route fragments. The migration commit
@@ -271,12 +281,47 @@ All gates are conjunctive. A failure postpones the drop; it is never waived beca
 6. **Recovery evidence.** The watchdog must create fresh custom-format dumps of both `commerce` and
    `claude_engine` immediately before each destructive migration. Validate each with
    `pg_restore --list`, record its path, size, SHA-256 and the exact migration SHA in the final
-   closeout, and confirm the off-host Borg path will include it. The pre-drop row-count/size/time/FK
-   inventory is the audit manifest retained with that closeout.
+   closeout, and confirm the off-host Borg path will include it. Both dumps and their root-owned
+   completion marker must be no more than 30 minutes old, cannot be future-dated, and the dumps must
+   predate the marker. The pre-drop row-count/size/time/FK inventory is the audit manifest retained
+   with that closeout.
 7. **Business health.** Pricing default/provider/status drift, stale confirmed jobs, charge
    mismatch, balance divergence, sales cursor stall, settlement backlog and current unresolved
    provider growth must all be clear. Historical terminal provider gaps do not authorize inferred
    data or delay unrelated schema cleanup.
+
+## Automated preflight
+
+`deploy/pricing-retirement-preflight.sh` evaluates the gates above with read-only PostgreSQL
+sessions. It verifies the canonical source manifest/reader guard, exact table rows and SHA-256
+content, authoritative timestamps, current/previous/recorded/active rollback ancestry, pricing and
+sales watermarks, public function/trigger/FK/view dependencies, live queue and money health, pricing
+authority reconciliation, OpenKeys integrity, and Sales sync errors since the serving process was
+activated.
+
+Diagnostic mode is intentionally not an approval signal: it prints `NOT AUTHORIZED` and exits 3
+even if retention has elapsed. Run it only from the production source checkout; it neither writes
+the databases nor advances a cursor:
+
+```bash
+cd /opt/apitoken/repo
+deploy/pricing-retirement-preflight.sh --report
+```
+
+Final mode is a watchdog migration-stage primitive, not an ad-hoc operator command:
+
+```text
+pricing-retirement-preflight.sh --final commerce <exact-migration-sha>
+pricing-retirement-preflight.sh --final engine <exact-migration-sha>
+```
+
+It must run as root from that exact candidate after `watchdog-backup.sh` has preserved both
+`commerce.pre-deploy-<sha>.dump` and `claude_engine.pre-deploy-<sha>.dump`. It validates both archives
+with the production `pg_restore` toolchain, rejects evidence older than 30 minutes, emits
+path/size/SHA-256/mtime/age/migration-SHA evidence, and requires the Borg source path to cover
+`/var/lib/apitoken`. Only a successful `--final` line beginning with `AUTHORIZED:<plane>` may feed
+the matching contraction. The migration itself retains its own transactional time, row-count and
+dependency assertions; this script is not a substitute for them.
 
 ## Delivery sequence after retention
 
@@ -285,11 +330,13 @@ failure domain.
 
 1. **Commerce migration-only contraction.** Add the next immutable commerce migration. It asserts
    the retention time and exact dependency set, sets a short lock timeout, drops the 43 tables in
-   the order above and then the five explicit functions. It uses neither `CASCADE`, `IF EXISTS` nor
-   dynamic SQL. Merge with `deploy/agent-merge.sh` and wait for exact-SHA `deploy/migration` and
-   `deploy/watchdog` GREEN.
+   the order above and then the five explicit functions. The watchdog runs exact-SHA
+   `--final commerce` after its fresh backups and before the migrator. The migration uses neither
+   `CASCADE`, `IF EXISTS` nor dynamic SQL. Merge with `deploy/agent-merge.sh` and wait for exact-SHA
+   `deploy/migration` and `deploy/watchdog` GREEN.
 2. **Engine migration-only contraction.** From fresh `origin/master`, add engine migration 0049,
-   register it in the contiguous migrator and add a real-PostgreSQL contract test. It first drops
+   register it in the contiguous migrator and add a real-PostgreSQL contract test. The watchdog runs
+   exact-SHA `--final engine` after its fresh backups. The migration first drops
    `api_keys_activation_policy_fk`, then the 31 tables in order and the 48 explicit functions. The
    inactive engine applies it transactionally before readiness, so failure leaves the serving slot
    and schema unchanged. Wait for exact-SHA `deploy/engine` and `deploy/watchdog` GREEN.

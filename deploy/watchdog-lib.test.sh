@@ -4907,5 +4907,6 @@ if grep -Eq '^[[:space:]]*(postgres-native-tls|native-tls)[[:space:]]*=' \
 fi
 
 bash "$ROOT/deploy/pricing-retired-schema.test.sh"
+bash "$ROOT/deploy/pricing-retirement-preflight.test.sh"
 
 printf 'watchdog retention, migration, and engine topology tests passed\n'
