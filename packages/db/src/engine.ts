@@ -12,6 +12,21 @@ export interface EngineAccountMapping {
   lastError: string | null;
 }
 
+export class EngineAccountReconciliationError extends Error {
+  constructor(
+    readonly code: "not_found" | "disabled" | "inactive_user" | "mapping_changed" | "pricing_drift",
+    message: string,
+  ) {
+    super(message);
+    this.name = "EngineAccountReconciliationError";
+  }
+}
+
+export interface EngineAccountReconciliationResult {
+  status: "activated" | "already_active";
+  previousStatus: "pending" | "active" | "error";
+}
+
 export interface StoredApiKey {
   id: string;
   engineKeyId: string;
@@ -38,6 +53,88 @@ export async function getEngineAccountMapping(database: Database, userId: string
     customerType: row.customer_type,
     lastError: row.last_error,
   } : null;
+}
+
+/**
+ * Admit an already-provisioned engine account back into commerce after a fresh Control API
+ * readback. The caller supplies the exact live account identity and multiplier it observed; this
+ * transaction refuses to turn an unrelated, disabled, repriced, or concurrently changed mapping
+ * active. Replays are a no-op and do not add duplicate audit rows.
+ *
+ * This is deliberately narrower than account provisioning: it never creates an engine account,
+ * changes pricing, or imports an identity. It only repairs the commerce readiness bit when the
+ * existing engine account is already active and carries the exact price commerce expects.
+ */
+export async function reconcileProvisionedEngineAccount(database: Database, input: {
+  userId: string;
+  engineAccountId: string;
+  multiplierBp: number;
+  actorId: string;
+  reason: string;
+}): Promise<EngineAccountReconciliationResult> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query<{
+      user_status: "active" | "disabled";
+      engine_account_id: string | null;
+      engine_status: "pending" | "active" | "error" | "disabled";
+      mirror_mult_bp: number;
+      desired_mult_bp: number;
+    }>(`
+      SELECT u.status AS user_status, ea.engine_account_id, ea.status AS engine_status,
+             ea.mult_bp AS mirror_mult_bp, cp.multiplier_bp AS desired_mult_bp
+      FROM users u
+      JOIN engine_accounts ea ON ea.user_id = u.id
+      JOIN customer_profiles cp ON cp.user_id = u.id
+      WHERE u.id = $1
+      FOR UPDATE OF u, ea, cp
+    `, [input.userId]);
+    const row = result.rows[0];
+    if (!row || row.engine_account_id === null) {
+      throw new EngineAccountReconciliationError("not_found", "user has no provisioned engine account mapping");
+    }
+    if (row.user_status !== "active") {
+      throw new EngineAccountReconciliationError("inactive_user", "disabled user cannot have provisioning repaired");
+    }
+    if (row.engine_status === "disabled") {
+      throw new EngineAccountReconciliationError("disabled", "disabled engine account cannot be repaired");
+    }
+    if (row.engine_account_id !== input.engineAccountId) {
+      throw new EngineAccountReconciliationError("mapping_changed", "engine account mapping changed during repair");
+    }
+    if (row.mirror_mult_bp !== input.multiplierBp || row.desired_mult_bp !== input.multiplierBp) {
+      throw new EngineAccountReconciliationError(
+        "pricing_drift",
+        "engine and commerce multipliers must agree before provisioning repair",
+      );
+    }
+    if (row.engine_status === "active") {
+      await client.query("COMMIT");
+      return { status: "already_active", previousStatus: "active" };
+    }
+    await client.query(`
+      UPDATE engine_accounts
+      SET status = 'active', last_error = NULL, updated_at = now()
+      WHERE user_id = $1 AND engine_account_id = $2 AND status = $3
+    `, [input.userId, input.engineAccountId, row.engine_status]);
+    await client.query(`
+      INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ('admin', $1, 'user.provisioning_reconciled', 'user', $2, $3::jsonb)
+    `, [input.actorId, input.userId, JSON.stringify({
+      reason: input.reason,
+      engineAccountId: input.engineAccountId,
+      multiplierBp: input.multiplierBp,
+      previousStatus: row.engine_status,
+    })]);
+    await client.query("COMMIT");
+    return { status: "activated", previousStatus: row.engine_status };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function markEngineAccountMissing(

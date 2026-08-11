@@ -1351,12 +1351,46 @@ export async function retryPricingJob(database: Database, job: ClaimedPricingJob
 }
 
 export async function recoverStalePricingJobs(database: Database): Promise<number> {
-  const result = await database.pool.query(`
-    UPDATE engine_pricing_jobs SET status = 'retry', locked_at = NULL, locked_by = NULL,
-      next_attempt_at = now(), last_error = 'recovered stale worker lease', updated_at = now()
-    WHERE status = 'processing' AND locked_at < now() - interval '5 minutes'
+  const result = await database.pool.query<{ recovered_count: string }>(`
+    WITH recovered_leases AS (
+      UPDATE engine_pricing_jobs
+      SET status = 'retry', locked_at = NULL, locked_by = NULL,
+          next_attempt_at = now(), last_error = 'recovered stale worker lease', updated_at = now()
+      WHERE status = 'processing'
+        AND (locked_at IS NULL OR locked_at < now() - interval '5 minutes')
+      RETURNING 1
+    ), desired AS (
+      SELECT job.id,
+             COALESCE(account.engine_account_id, job.engine_account_id) AS engine_account_id,
+             CASE WHEN job.provider_id IS NULL
+               THEN profile.multiplier_bp
+               ELSE discount.multiplier_bp
+             END AS multiplier_bp
+      FROM engine_pricing_jobs job
+      JOIN customer_profiles profile ON profile.user_id = job.user_id
+      LEFT JOIN engine_accounts account ON account.user_id = job.user_id
+      LEFT JOIN customer_provider_discounts discount
+        ON discount.user_id = job.user_id AND discount.provider_id = job.provider_id
+      WHERE job.status = 'confirmed'
+    ), recovered_confirmed AS (
+      UPDATE engine_pricing_jobs job
+      SET engine_account_id = desired.engine_account_id,
+          multiplier_bp = desired.multiplier_bp,
+          reason = 'recovered_stale_confirmed', status = 'pending', attempts = 0,
+          next_attempt_at = now(), confirmed_at = NULL,
+          locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
+      FROM desired
+      WHERE job.id = desired.id AND job.status = 'confirmed'
+        AND (job.engine_account_id IS DISTINCT FROM desired.engine_account_id
+          OR job.multiplier_bp IS DISTINCT FROM desired.multiplier_bp)
+      RETURNING 1
+    )
+    SELECT (
+      (SELECT count(*) FROM recovered_leases)
+      + (SELECT count(*) FROM recovered_confirmed)
+    )::text AS recovered_count
   `);
-  return result.rowCount ?? 0;
+  return Number(result.rows[0]?.recovered_count ?? "0");
 }
 
 async function reconcileTopupTier(

@@ -18,8 +18,10 @@ import {
   evaluateRefundEligibility,
   getBusinessInviteToken,
   getEngineAccountMapping,
+  EngineAccountReconciliationError,
   listAdminUserOverview,
   recordAdminCredit,
+  reconcileProvisionedEngineAccount,
   revokeBusinessInvite,
   rotateBusinessInvite,
   getPricingView,
@@ -162,28 +164,50 @@ export class AdminService {
     actorId: string,
     reason: string,
   ): Promise<Record<string, unknown>> {
-    const account = await this.database.pool.query<{
-      engine_account_id: string | null;
-      status: string;
-    }>(
-      "SELECT engine_account_id, status FROM engine_accounts WHERE user_id = $1",
-      [userId],
-    );
-    const row = account.rows[0];
-    if (!row || !row.engine_account_id) {
+    const mapping = await getEngineAccountMapping(this.database, userId);
+    if (!mapping?.engineAccountId) {
       throw new NotFoundException("user has no engine account mapping");
     }
-    if (row.status === "active") {
-      return { status: "already_active", job_id: null };
-    }
-    if (row.status === "disabled") {
+    if (mapping.status === "disabled") {
       throw new ConflictException("engine account is disabled");
     }
-    await this.database.pool.query(`
-      INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
-      VALUES ('admin', $1, 'user.provisioning_repair', 'user', $2, $3::jsonb)
-    `, [actorId, userId, JSON.stringify({ reason })]);
-    return { status: "pending", job_id: null };
+    const live = await this.engine.getAccount(mapping.engineAccountId);
+    if (live.status !== "active") {
+      throw new ConflictException(`engine account is not active (status: ${live.status})`);
+    }
+    if (live.mult_bp !== mapping.multBp) {
+      throw new ConflictException("engine and commerce multipliers differ; repair pricing first");
+    }
+    try {
+      const repaired = await reconcileProvisionedEngineAccount(this.database, {
+        userId,
+        engineAccountId: mapping.engineAccountId,
+        multiplierBp: live.mult_bp,
+        actorId,
+        reason,
+      });
+      // The pre-read protects the mutation and the post-read proves the external state still
+      // satisfies it. A concurrent engine disable/reprice is surfaced instead of reporting a
+      // successful reconciliation against an observation that is no longer true.
+      const verified = await this.engine.getAccount(mapping.engineAccountId);
+      if (verified.status !== "active" || verified.mult_bp !== live.mult_bp) {
+        throw new ConflictException("engine account changed during provisioning repair");
+      }
+      return {
+        status: repaired.status,
+        job_id: null,
+        previous_status: repaired.previousStatus,
+        engine_account_id: mapping.engineAccountId,
+        multiplier_bp: live.mult_bp,
+        engine_verified: true,
+      };
+    } catch (error) {
+      if (error instanceof EngineAccountReconciliationError) {
+        if (error.code === "not_found") throw new NotFoundException(error.message);
+        throw new ConflictException(error.message);
+      }
+      throw error;
+    }
   }
 
 

@@ -1004,9 +1004,12 @@ verdict landed out of order or the desired value moved without requeueing.
 
 Compare the job's `multiplier_bp` against `customer_profiles.multiplier_bp` (account jobs) or
 `customer_provider_discounts.multiplier_bp` (provider jobs), then against the engine's own value.
-The repair is to re-drive the desired terms through the admin PATCH, which enqueues a fresh
-delivery; the worker fences its verdicts on the lease it holds, so a re-drive cannot be overwritten
-by a straggler. Leave the confirmed row alone otherwise — it is history.
+The worker now performs the same comparison on startup and every pricing sweep. A mismatched
+historical `confirmed` row is changed back to `pending` with the current durable desired payload,
+then delivered through the ordinary fenced lease; a matching row remains immutable history. If the
+metric persists for more than one worker sweep, the recovery path itself is unhealthy: inspect the
+worker journal and re-drive the desired terms through the admin PATCH. Never rewrite a job or a
+multiplier with SQL.
 
 ## EngineAccountsBelowFloor
 

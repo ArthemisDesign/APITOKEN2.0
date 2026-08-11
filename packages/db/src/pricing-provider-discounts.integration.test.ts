@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase, type Database } from "./client.js";
-import { claimNextPricingJob, confirmPricingJob, setBusinessPricingBundle } from "./pricing.js";
+import {
+  claimNextPricingJob,
+  confirmPricingJob,
+  recoverStalePricingJobs,
+  setBusinessPricingBundle,
+} from "./pricing.js";
 import { listCustomerProviderDiscounts } from "./pricing-discounts.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -148,5 +153,43 @@ describe.runIf(Boolean(connectionString))("negotiated B2B terms commit as one fa
       "SELECT status FROM engine_pricing_jobs WHERE id = $1", [stale!.id],
     );
     expect(settled.rows[0]!.status).toBe("confirmed");
+  });
+
+  it("requeues a historical confirmed payload that no longer matches durable desired state", async () => {
+    await setBusinessPricingBundle(db, {
+      userId, multiplierBp: 4_000, actorId: "admin-1", reason: "negotiated",
+    });
+    const delivered = await claimNextPricingJob(db, "worker-old");
+    expect(delivered).not.toBeNull();
+    await confirmPricingJob(db, delivered!);
+
+    // Reproduce the historical pre-requeue shape: desired state moved without touching the job.
+    await db.pool.query(
+      "UPDATE customer_profiles SET multiplier_bp = 5000 WHERE user_id = $1",
+      [userId],
+    );
+    await db.pool.query(
+      "UPDATE engine_accounts SET mult_bp = 5000 WHERE user_id = $1",
+      [userId],
+    );
+
+    await expect(recoverStalePricingJobs(db)).resolves.toBe(1);
+    const recovered = await db.pool.query<{
+      status: string; multiplier_bp: number; reason: string; confirmed_at: Date | null;
+    }>(`
+      SELECT status, multiplier_bp, reason, confirmed_at
+      FROM engine_pricing_jobs WHERE user_id = $1 AND provider_id IS NULL
+    `, [userId]);
+    expect(recovered.rows[0]).toEqual({
+      status: "pending",
+      multiplier_bp: 5_000,
+      reason: "recovered_stale_confirmed",
+      confirmed_at: null,
+    });
+
+    const fresh = await claimNextPricingJob(db, "worker-new");
+    expect(fresh).toMatchObject({ multiplierBp: 5_000, workerId: "worker-new" });
+    await confirmPricingJob(db, fresh!);
+    await expect(recoverStalePricingJobs(db)).resolves.toBe(0);
   });
 });

@@ -210,12 +210,23 @@ GET       /admin/service-policies
 GET/PATCH /admin/service-policies/{id}?product_id=...
 GET       /admin/service-account-inventory
 PUT       /admin/service-account-inventory/{service_id}
+POST      /admin/users/{id}/provisioning-repair
 POST      /admin/pricing-policy-delivery-repairs
 POST      /admin/pricing-catalog-jobs/stage
 POST      /admin/pricing-switch-jobs/stage
 GET       /admin/finance/paying-users?days=1|7|30&limit=...&offset=...&funding=payments|manual|bonus|all|spenders&include_usage=true|false
 GET       /admin/finance/engine-spend?days=1|7|30
 ```
+
+`POST /admin/users/{id}/provisioning-repair` is a bounded reconciliation for an existing mapping,
+not a second provisioning implementation. It reads the mapped account from the engine before the
+commerce mutation, requires the engine account to be `active`, and requires its default multiplier
+to equal both commerce copies. A row lock then changes only that exact `pending|error` mapping to
+`active`, clears its old error and writes one audit event; disabled users/accounts, missing or
+changed identities, and pricing drift fail closed. A second engine read proves the external state
+did not move during the repair. Repeating a successful request returns `already_active` and adds no
+duplicate audit event. The endpoint never creates an account, imports an identity, or changes a
+price.
 
 `GET /admin/finance/engine-spend` is the fleet-wide counterpart of the paid-customer control room.
 It reads the engine's operator projection `GET /spend-stats` once (windows `d1`/`d7`/`d30`) and
