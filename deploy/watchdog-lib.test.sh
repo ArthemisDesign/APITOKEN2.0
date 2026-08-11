@@ -677,6 +677,24 @@ fi
 grep -Fq 'wd_manifest_is_append_only "$SALES_DB_MANIFEST" "$MANIFEST_TMP"' \
   "$ROOT/deploy/sales-deploy.sh" \
   || wd_die "sales deploy lost its append-only admission gate"
+
+# The installed component runner sits in controller/, while its fixed shared library and backup
+# runner sit one level above it. Execute that real layout far enough to prove startup resolves the
+# library, and pin the backup default to the same trusted root before the first Sales migration.
+sales_installed_root="$TEMP/sales-installed-controller"
+mkdir -p "$sales_installed_root/controller"
+cp -- "$ROOT/deploy/sales-deploy.sh" "$sales_installed_root/controller/sales-deploy.sh"
+cp -- "$ROOT/deploy/watchdog-lib.sh" "$sales_installed_root/watchdog-lib.sh"
+sales_installed_error="$TEMP/sales-installed-controller.error"
+if bash "$sales_installed_root/controller/sales-deploy.sh" >"$TEMP/sales-installed-controller.out" \
+  2>"$sales_installed_error"; then
+  wd_die "installed sales deploy unexpectedly accepted a missing SHA"
+fi
+grep -Fq 'usage: sales-deploy.sh <full-40-char-sha>' "$sales_installed_error" \
+  || wd_die "installed sales deploy cannot source the fixed parent watchdog library"
+grep -Fq 'BACKUP_RUNNER=${SALES_BACKUP_RUNNER:-$WATCHDOG_ROOT/watchdog-backup.sh}' \
+  "$ROOT/deploy/sales-deploy.sh" \
+  || wd_die "installed sales deploy does not resolve backup from the fixed watchdog root"
 awk '
   /new append-only sales migration history detected/ { in_migration = 1 }
   in_migration && /"\$BACKUP_RUNNER" "\$SHA"/ { backup = NR }

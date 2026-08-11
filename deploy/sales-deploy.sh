@@ -2,8 +2,18 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if [[ -f $SCRIPT_DIR/watchdog-lib.sh && ! -L $SCRIPT_DIR/watchdog-lib.sh ]]; then
+  # Repository and extracted-candidate layout.
+  WATCHDOG_ROOT=$SCRIPT_DIR
+elif [[ -f $SCRIPT_DIR/../watchdog-lib.sh && ! -L $SCRIPT_DIR/../watchdog-lib.sh ]]; then
+  # Installed controller layout: component runners live below the fixed shared helpers.
+  WATCHDOG_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
+else
+  printf 'sales-deploy: fixed watchdog-lib.sh is unavailable\n' >&2
+  exit 1
+fi
 # shellcheck source=deploy/watchdog-lib.sh
-source "$SCRIPT_DIR/watchdog-lib.sh"
+source "$WATCHDOG_ROOT/watchdog-lib.sh"
 
 # Deploy the sales bounded context (partners.apitoken.sale) from the watchdog's already
 # tested+frozen candidate. Single-instance (not blue-green): promote an immutable release,
@@ -14,12 +24,13 @@ source "$SCRIPT_DIR/watchdog-lib.sh"
 # from the shared commerce /opt/apitoken/releases/current (which governs the commerce blue-green
 # API and must not be disturbed by a sales-only change).
 
-# Needs root (chown, read root-only sales.env, systemctl). The watchdog runs as `deploy`
-# (NOPASSWD:ALL), so self-elevate — robust whether invoked with or without sudo.
-if [[ ${EUID:-$(id -u)} -ne 0 ]]; then exec sudo -n -- "$0" "$@"; fi
-
 SHA=${1:?usage: sales-deploy.sh <full-40-char-sha>}
 [[ $SHA =~ ^[0-9a-f]{40}$ ]] || { echo "sales-deploy: SHA must be a full 40-char commit hash" >&2; exit 1; }
+
+# Needs root (chown, read root-only sales.env, systemctl). Validate the immutable identity before
+# elevation so malformed/manual invocations never cross the privilege boundary. The watchdog runs
+# as `deploy` (NOPASSWD:ALL), so self-elevate — robust whether invoked with or without sudo.
+if [[ ${EUID:-$(id -u)} -ne 0 ]]; then exec sudo -n -- "$0" "$@"; fi
 
 CANDIDATE_ROOT=${SALES_CANDIDATE_ROOT:-/var/lib/apitoken/watchdog/candidates}
 RELEASE_ROOT=${SALES_RELEASE_ROOT:-/opt/apitoken/sales-releases}
@@ -33,7 +44,7 @@ HEALTH_RETRIES=${SALES_HEALTH_RETRIES:-30}
 HEALTH_INTERVAL=${SALES_HEALTH_INTERVAL:-2}
 STATE_ROOT=${SALES_STATE_ROOT:-/var/lib/apitoken/watchdog}
 SALES_DB_MANIFEST=$STATE_ROOT/sales-database-migrations.manifest
-BACKUP_RUNNER=${SALES_BACKUP_RUNNER:-$SCRIPT_DIR/watchdog-backup.sh}
+BACKUP_RUNNER=${SALES_BACKUP_RUNNER:-$WATCHDOG_ROOT/watchdog-backup.sh}
 
 candidate="$CANDIDATE_ROOT/$SHA"
 release="$RELEASE_ROOT/$SHA"

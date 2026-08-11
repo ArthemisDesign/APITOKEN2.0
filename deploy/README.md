@@ -151,6 +151,10 @@ generation/edit. A fresh paid-smoke controller gets a distinct producer-SHA evid
 its one generation-plus-edit attempt only when its own controller path triggers the gate; any recorded attempt
 permanently fences replay. Every transaction records its exact tested infrastructure SHA only after every
 selected concern succeeds.
+Installed component runners under `controller/` resolve shared watchdog helpers from the fixed parent
+directory; the repository and extracted-candidate layout resolves the same files beside the runner.
+The deployment regression suite executes both layouts so a controller self-update cannot publish a
+runner that fails before its component rollout begins.
 
 Pinned Codex tooling has its own artifact flag inside the engine lane. The isolated candidate builds
 and tests the audited upstream pin once. During engine release selection,
