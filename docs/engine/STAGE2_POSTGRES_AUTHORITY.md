@@ -40,9 +40,20 @@ Money is signed 64-bit integer nanodollars; leases use Unix seconds.
 | `capacity_leases` | Atomic per-request subscription admission and matching inflight ownership. |
 | `leader_leases` | One PostgreSQL lease-epoch leader for polling; there is no Redlock path. |
 
-The money invariant is `actual charge <= request hold <= available balance at reserve`. Settlement
-closes the exact reservation and, in one transaction, changes balances, inserts the unique charge,
-writes usage, and marks the outbox done. Retrying the request identity cannot double-charge.
+Migration `0047` is the expand-only, old-writer-compatible foundation for enforcing the
+account-wide floor at settlement as well as admission. It adds nullable per-request
+`collected_nano`/`uncollected_nano` evidence, a lifetime account shortfall aggregate, immutable
+ledger/usage shortfall columns, and nullable scalar pricing pins. The migration does not change the
+currently serving money path by itself; the dependent runtime is delivered only after this schema
+version is GREEN.
+
+The admission invariant is `request hold <= balance + the shared $1 account buffer`; exact provider
+usage may later make the billed amount greater than its hold (the forwarding lanes cap one request
+at `hold + $1`). Settlement closes the exact reservation and, in one transaction, changes balances,
+inserts the unique charge, writes usage, and marks the outbox done. Retrying the request identity
+cannot double-charge. After the dependent `0047` runtime lands, billed usage is conserved as
+`actual = collected + uncollected`, while aggregate collection cannot move the account below the
+same floor.
 
 ## Request lifecycle
 

@@ -375,7 +375,7 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 46);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 47);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
@@ -393,6 +393,30 @@ fn account_discount_contract_migration_closes_the_runtime_provider_set() {
         .contains("CHECK (provider_id IN ('anthropic', 'openai', 'google', 'kimi', 'glm'))"));
     assert!(!normalized.contains("'zhipu'"));
     assert!(normalized.contains("INSERT INTO engine_schema_migrations(version) VALUES (46)"));
+}
+
+#[test]
+fn settlement_floor_accounting_migration_is_expand_only_and_auditable() {
+    let normalized = MIGRATION_0047
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for column in [
+        "ADD COLUMN IF NOT EXISTS uncollected_nano bigint NOT NULL DEFAULT 0",
+        "ADD COLUMN IF NOT EXISTS collected_nano bigint",
+        "ADD COLUMN IF NOT EXISTS provider text",
+        "ADD COLUMN IF NOT EXISTS payable_multiplier_bp bigint",
+        "ADD COLUMN IF NOT EXISTS charge_basis_nano bigint",
+    ] {
+        assert!(normalized.contains(column), "missing expansion: {column}");
+    }
+    assert!(normalized.contains("actual_nano = collected_nano + uncollected_nano"));
+    assert!(normalized.contains("uncollected_nano <= charge_nano"));
+    assert!(normalized.contains("VALIDATE CONSTRAINT reservations_settlement_collection_shape"));
+    assert!(!normalized.contains(" DROP "));
+    assert!(!normalized.contains(" DELETE "));
+    assert!(!normalized.contains(" UPDATE "));
+    assert!(normalized.contains("INSERT INTO engine_schema_migrations(version) VALUES (47)"));
 }
 
 /// A migration records its own version — `apply_migration` runs the SQL but never writes the

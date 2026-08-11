@@ -125,6 +125,15 @@ side effect. `serve` may only perform the read-only schema verification before c
   the deletion of the last reservation with the same `COALESCE(group_id,request_id)`. SQLite and PostgreSQL
   must remain semantically identical; the per-process loser counter/log is only an incident tripwire —
   correctness belongs to the table PK.
+- **Settlement-floor accounting expansion (migration `0047`).** The schema now has dormant,
+  old-writer-compatible evidence for the dependent runtime: lifetime
+  `accounts.uncollected_nano`; per-reservation `collected_nano + uncollected_nano = actual_nano`;
+  immutable ledger/usage shortfall; and nullable reserve-time provider/multiplier plus settlement
+  charge-basis pins. Until the separate runtime commit is GREEN, the currently serving binary may
+  leave the nullable fields empty and writes zero shortfall through column defaults. The dependent
+  settlement must cap only the amount moved from the balance at the shared account floor, keep the
+  full billed amount in `actual_nano`/key and account spend, and record every difference explicitly
+  as uncollected; silently lowering actual usage or reviving retired funding tables is forbidden.
 - **Account discounts (`account_provider_discounts`, migrations `0043` + `0046`)** — the entire pricing
   policy. An account carries one default multiplier (`accounts.mult_bp`) and, for a provider whose
   terms differ, one override row; `key_account` returns both, and the caller resolves them with
