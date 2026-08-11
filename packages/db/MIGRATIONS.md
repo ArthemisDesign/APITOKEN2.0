@@ -25,14 +25,24 @@ the production watchdog:
 
 1. verifies that every already-applied migration still exists byte-for-byte;
 2. creates and validates a fresh production PostgreSQL backup;
-3. runs the exact tested `packages/db/dist/migrate.js` under the file and PostgreSQL advisory locks;
-4. atomically commits the new migration manifest;
-5. permits the backend blue-green deployment to start.
+3. runs the root-owned pricing-retirement admission bridge, which is a no-op for ordinary
+   migrations but requires exact-candidate final authorization before immutable contraction 0048;
+4. runs the exact tested `packages/db/dist/migrate.js` under the file and PostgreSQL advisory locks;
+5. atomically commits the new migration manifest;
+6. permits the backend blue-green deployment to start.
 
 Any backup or migration failure quarantines the SHA and blocks application deployment. Production
 does not run the package script because it rebuilds. The watchdog consumes the prebuilt immutable
 candidate directly. The manual `deploy/deploy.sh --api-only <sha>` path remains a recovery tool and
 uses the same locked prebuilt migrator.
+
+The pricing-retirement bridge recognizes only
+`packages/db/migrations/0048_retire_pricing_schema.sql`; it verifies the tested SHA/tree and
+append-only applied manifest, then accepts exactly one bounded `AUTHORIZED:commerce` verdict from
+the candidate preflight. A missing named artifact or a fully recorded 0048 is a no-op. Partial
+manifest state and any failed, duplicate or malformed verdict stop before Drizzle runs. The full
+contract and the separate engine 0049 stage are in
+[`docs/ops/PRICING_RETIREMENT.md`](../../docs/ops/PRICING_RETIREMENT.md).
 
 For a schema-dependent change, merge a migration-only expand commit first and wait for its
 `deploy/migration` and `deploy/watchdog` GitHub statuses to pass. Merge the dependent code only

@@ -336,12 +336,37 @@ path/size/SHA-256/mtime/age/migration-SHA evidence, and requires the Borg source
 the matching contraction. The migration itself retains its own transactional time, row-count and
 dependency assertions; this script is not a substitute for them.
 
+The fixed root-owned `deploy/pricing-retirement-admission.sh` is the executable bridge between this
+evidence and the two migrators. Every ordinary migration passes through it, but it invokes final
+preflight only for the exact immutable artifacts
+`packages/db/migrations/0048_retire_pricing_schema.sql` and
+`crates/registry/migrations_pg/0049_retire_pricing_schema.sql`. It binds the candidate SHA/tree,
+test marker, migration manifest and (for engine) tested release-binary digest before inspecting the
+applied commerce manifest or exact engine schema version. Absence of the named artifact and a fully
+recorded contraction are explicit no-ops; partial manifest state, a schema version other than the
+unique 48→49 boundary, a failed preflight, or anything except one exact
+`AUTHORIZED:<plane> migration_sha=<sha> retention_epoch=<integer> all_conjunctive_gates=passed`
+line stops before the migrator.
+
+Every newly promoted engine release also contains immutable
+`.pricing-retirement-admission-v1` metadata with exactly `pre-contraction` or `contraction-0049`.
+The engine migration runner invokes final admission only for the latter. Releases created before
+this metadata remain valid pre-contraction recovery anchors, and a later pruned watchdog candidate
+therefore cannot break an ordinary restart; conversely, a 0049 release cannot lose its gate when
+its candidate ages out.
+
+The commerce runner calls admission after the exact-SHA backup and while holding both deployment
+and migration locks. The engine runner calls it after taking the migration lock; its exact-SHA
+backup is created by the watchdog immediately before the engine rollout. This wiring is mandatory:
+elapsed retention or a manually successful diagnostic report cannot authorize either drop.
+
 ## Delivery sequence after retention
 
 Use three independently green changes; do not combine the two database contractions into one
 failure domain.
 
-1. **Commerce migration-only contraction.** Add the next immutable commerce migration. It asserts
+1. **Commerce migration-only contraction.** Add immutable migration
+   `0048_retire_pricing_schema.sql`. It asserts
    the retention time and exact dependency set, sets a short lock timeout, drops the 43 tables in
    the order above and then the five explicit functions. The watchdog runs exact-SHA
    `--final commerce` after its fresh backups and before the migrator. The migration uses neither
@@ -355,9 +380,9 @@ failure domain.
    and schema unchanged. Wait for exact-SHA `deploy/engine` and `deploy/watchdog` GREEN.
 3. **Schema/code/document cleanup.** Remove the 43 retired Drizzle declarations from
    `packages/db/src/schema.ts`, update the retired sections of local instructions, remove the
-   temporary source-reader regression once absence is guaranteed by nonexistence plus migration
-   tests, and publish the final finding→SHA→tests→production-evidence matrix. No historical
-   migration file is edited or deleted.
+   temporary source-reader regression and the one-time admission/preflight hooks only after both
+   migration records and object absence are proven in production, and publish the final
+   finding→SHA→tests→production-evidence matrix. No historical migration file is edited or deleted.
 
 Destructive migrations are forward-only. Binary rollback never recreates these objects. If a drop
 unexpectedly exposes a missed dependency, stop delivery and fix forward from the preserved dumps;

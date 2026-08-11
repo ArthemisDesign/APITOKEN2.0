@@ -349,6 +349,18 @@ node "/opt/apitoken/releases/<sha>/packages/db/dist/migrate.js"
 
 It never invokes `pnpm db:migrate` from a finalized release because that package script recompiles before running. `--skip-migrate` is an explicit operator override for a release known not to require a migration. Migrations are additive and are never reversed by application rollback.
 
+The automatic watchdog path additionally invokes the fixed root-owned
+`pricing-retirement-admission.sh` after its exact-SHA backup and before the prebuilt migrator. The
+helper is an explicit no-op for ordinary migrations. Only the immutable commerce 0048 retired
+pricing-schema contraction activates its exact-candidate final preflight; a failure or any verdict
+other than the single bounded `AUTHORIZED:commerce` line stops before Node is invoked. Engine
+migration 0049 uses the same helper after its migration lock and before `db migrate-engine`, with
+the watchdog-created exact-SHA backup and tested engine binary bound to the admission. New engine
+releases carry an immutable `.pricing-retirement-admission-v1` value, so only
+`contraction-0049` activates the destructive gate while legacy and explicit `pre-contraction`
+releases remain usable after their watchdog candidate is pruned. See
+`docs/ops/PRICING_RETIREMENT.md` for the retained-object manifest and post-retention sequence.
+
 A normal deploy:
 
 1. validates roots, lock files, unit names, timeout, and poll interval;

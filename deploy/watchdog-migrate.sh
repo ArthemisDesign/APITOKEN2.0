@@ -13,6 +13,7 @@ API_ENV_FILE=/etc/apitoken/api.env
 DEPLOY_LOCK=/run/lock/apitoken-deploy.lock
 MIGRATION_LOCK=/run/lock/apitoken-db-migrate.lock
 BACKUP_RUNNER=$SCRIPT_DIR/watchdog-backup.sh
+PRICING_RETIREMENT_ADMISSION=$SCRIPT_DIR/pricing-retirement-admission.sh
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || wd_die "automatic migration must run as root"
 [[ $# -eq 1 ]] || wd_die "usage: $0 <tested-full-sha>"
@@ -52,6 +53,10 @@ flock -w 30 8 || wd_die "timed out waiting for the database migration lock"
 
 wd_log "creating a fresh PostgreSQL backup before automatic migration"
 "$BACKUP_RUNNER" "$SHA"
+
+# Ordinary expand migrations return immediately. The named one-time pricing contraction may only
+# continue after the exact candidate emits its bounded final authorization verdict.
+"$PRICING_RETIREMENT_ADMISSION" commerce "$SHA"
 
 wd_log "automatically applying the exact build that passed the disposable-database test gate for $SHA"
 deploy_uid=$(id -u deploy)

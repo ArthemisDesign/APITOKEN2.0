@@ -437,12 +437,28 @@ validate_release_marker() {
 }
 
 ENGINE_COMMERCE_COMPATIBILITY_MARKER=.engine-commerce-compatibility-v1
+PRICING_RETIREMENT_ENGINE_ADMISSION_MARKER=.pricing-retirement-admission-v1
 LEGACY_SCALAR_ENGINE_FLOOR_SHA=2563b04328ce5911f3e7893df298da15535f5e95
 LEGACY_SCALAR_COMMERCE_FLOOR_SHA=261900596666763bee0f5795d4a77ebfe144ddf8
 LEGACY_SCALAR_ONLY_COMMERCE_SHA=e725b51ec6a166a40b8b232f3cc3a0617ba6d9b6
 LEGACY_SCALAR_ONLY_ENGINE_SHA=a6612450dfa521ee236d2ab0ac03a64e15c86557
 PRICING_RETIREMENT_ENGINE_ROLLBACK_FLOOR_SHA=e8cf49ae121b581042c582ddb3621ee29fae8103
 PRICING_RETIREMENT_COMMERCE_ROLLBACK_FLOOR_SHA=0c236aa2334f539786f53429d815d6b7c791adbe
+
+validate_pricing_retirement_engine_admission_marker() {
+  local marker=$1 value extra
+  [[ -f $marker && ! -L $marker ]] \
+    || die "engine pricing-retirement admission marker is missing or unsafe: $marker"
+  {
+    IFS= read -r value || die "engine pricing-retirement admission marker is unreadable: $marker"
+    if IFS= read -r extra; then
+      die "engine pricing-retirement admission marker must contain exactly one line: $marker"
+    fi
+  } <"$marker"
+  [[ $value == pre-contraction || $value == contraction-0049 ]] \
+    || die "engine pricing-retirement admission marker has an unknown value: $value"
+  printf '%s\n' "$value"
+}
 
 validate_compatibility_capability_list() {
   local value=$1 label=$2 capability seen=,
@@ -782,6 +798,11 @@ validate_engine_release() {
       || -L "$directory/$ENGINE_COMMERCE_COMPATIBILITY_MARKER" ]]; then
     validate_engine_commerce_compatibility_contract \
       "$directory/$ENGINE_COMMERCE_COMPATIBILITY_MARKER"
+  fi
+  if [[ -e "$directory/$PRICING_RETIREMENT_ENGINE_ADMISSION_MARKER" \
+      || -L "$directory/$PRICING_RETIREMENT_ENGINE_ADMISSION_MARKER" ]]; then
+    validate_pricing_retirement_engine_admission_marker \
+      "$directory/$PRICING_RETIREMENT_ENGINE_ADMISSION_MARKER" >/dev/null
   fi
   [[ -x "$directory/claude-api" ]] || die "engine release binary is missing or not executable: $directory/claude-api"
 }

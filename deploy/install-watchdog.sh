@@ -256,6 +256,8 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/watchdog-test-db
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-backup.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-backup.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/pricing-retirement-admission.sh" \
+    /usr/local/lib/apitoken-watchdog/pricing-retirement-admission.sh
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-migrate.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-infrastructure.sh" \

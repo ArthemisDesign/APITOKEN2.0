@@ -1286,6 +1286,7 @@ for controller_definition in \
   deploy/api-bluegreen.sh \
   deploy/engine-bluegreen.sh \
   deploy/engine-migrate.sh \
+  deploy/pricing-retirement-admission.sh \
   deploy/codex-homes-migrate.sh \
   deploy/rollback.sh \
   deploy/sales-deploy.sh \
@@ -4215,12 +4216,35 @@ grep -Fq 'ENGINE_MIGRATION_HELPER=/usr/local/lib/apitoken-watchdog/controller/en
   || wd_die 'engine controller has no fixed schema migration helper'
 grep -Fq 'controller/engine-migrate.sh' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'watchdog installer does not install the engine schema migration helper'
+grep -Fq 'PRICING_RETIREMENT_ENGINE_ADMISSION_MARKER=.pricing-retirement-admission-v1' \
+  "$ROOT/deploy/lib.sh" \
+  || wd_die 'engine releases have no immutable pricing-retirement capability marker'
+grep -Fq 'pricing_retirement_value=contraction-0049' "$ROOT/deploy/deploy.sh" \
+  || wd_die 'engine release promotion does not mark contraction 0049'
+grep -Fq 'pricing_retirement_value=pre-contraction' "$ROOT/deploy/deploy.sh" \
+  || wd_die 'ordinary engine releases are not explicitly fenced from contraction 0049'
+grep -Fq 'if [[ $pricing_retirement_capability == contraction-0049 ]]' \
+  "$ROOT/deploy/engine-migrate.sh" \
+  || wd_die 'engine migrator does not condition destructive admission on immutable release metadata'
 grep -Fq '/usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh [0-9a-f]*' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die 'deploy user cannot invoke the fixed engine schema migration helper'
 grep -Fq '/usr/bin/test -x /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die 'deploy user cannot probe the fixed engine schema migration helper'
+
+pricing_marker_fixture="$TEMP/pricing-retirement-engine-marker"
+for pricing_marker_value in pre-contraction contraction-0049; do
+  printf '%s\n' "$pricing_marker_value" >"$pricing_marker_fixture"
+  [[ $(bash -c 'source "$1"; validate_pricing_retirement_engine_admission_marker "$2"' \
+      _ "$ROOT/deploy/lib.sh" "$pricing_marker_fixture") == "$pricing_marker_value" ]] \
+    || wd_die "engine release marker rejected $pricing_marker_value"
+done
+printf '%s\n' bypass >"$pricing_marker_fixture"
+if bash -c 'source "$1"; validate_pricing_retirement_engine_admission_marker "$2"' \
+    _ "$ROOT/deploy/lib.sh" "$pricing_marker_fixture" >/dev/null 2>&1; then
+  wd_die 'engine release marker accepted an unknown contraction capability'
+fi
 
 # Core releases promote the frozen candidate, while manual deployments retain their fallback build.
 grep -Fq -- '--tested-candidate "$(candidate_for "$sha")"' "$ROOT/deploy/watchdog.sh" \
@@ -4908,5 +4932,6 @@ fi
 
 bash "$ROOT/deploy/pricing-retired-schema.test.sh"
 bash "$ROOT/deploy/pricing-retirement-preflight.test.sh"
+bash "$ROOT/deploy/pricing-retirement-admission.test.sh"
 
 printf 'watchdog retention, migration, and engine topology tests passed\n'

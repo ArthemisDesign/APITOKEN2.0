@@ -10,6 +10,7 @@ source "$SCRIPT_DIR/lib.sh"
 ENGINE_RELEASE_ROOT=/srv/claude-api/releases
 ENGINE_POSTGRES_ENV=/srv/claude-api/data/engine-postgres.env
 MIGRATION_LOCK_FILE=/run/lock/apitoken-db-migrate.lock
+PRICING_RETIREMENT_ADMISSION=/usr/local/lib/apitoken-watchdog/pricing-retirement-admission.sh
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || die "engine schema migration must run as root"
 [[ $# -eq 1 ]] || die "usage: $0 <engine-release-sha>"
@@ -31,6 +32,23 @@ validate_fixed_lock_file "$MIGRATION_LOCK_FILE" /run/lock/apitoken-db-migrate.lo
 
 exec 8<>"$MIGRATION_LOCK_FILE"
 flock -w 30 8 || die "timed out waiting for the engine PostgreSQL migration lock"
+
+# Existing releases predate this one-time capability marker and remain valid recovery anchors.
+# Every newly built release explicitly says whether it embeds contraction 0049, so a pruned
+# watchdog candidate cannot either block an old restart or bypass the destructive gate.
+pricing_retirement_marker=$CANDIDATE/$PRICING_RETIREMENT_ENGINE_ADMISSION_MARKER
+if [[ -e $pricing_retirement_marker || -L $pricing_retirement_marker ]]; then
+  pricing_retirement_capability=$(validate_pricing_retirement_engine_admission_marker \
+    "$pricing_retirement_marker")
+  if [[ $pricing_retirement_capability == contraction-0049 ]]; then
+    # The watchdog has already preserved the exact-SHA backup before engine promotion.
+    "$PRICING_RETIREMENT_ADMISSION" engine "$SHA"
+  else
+    log "engine release $SHA is explicitly pre-contraction; pricing-retirement admission is a no-op"
+  fi
+else
+  log "engine release $SHA predates pricing-retirement capability markers; admission is a no-op"
+fi
 
 deploy_uid=$(id -u deploy)
 deploy_gid=$(id -g deploy)

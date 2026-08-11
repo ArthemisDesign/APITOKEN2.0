@@ -237,6 +237,8 @@ validate_engine_stage() {
     || die "staged engine KIMI blue-green capability marker is missing"
   [[ $(<"$directory/.kimi-bluegreen-v1") == kimi-bluegreen-v1 ]] \
     || die "staged engine KIMI blue-green capability marker is invalid"
+  validate_pricing_retirement_engine_admission_marker \
+    "$directory/$PRICING_RETIREMENT_ENGINE_ADMISSION_MARKER" >/dev/null
   validate_engine_commerce_compatibility_contract \
     "$directory/$ENGINE_COMMERCE_COMPATIBILITY_MARKER"
 }
@@ -320,7 +322,7 @@ prepare_engine_source() {
 }
 
 prepare_engine_release() {
-  local compatibility_source
+  local compatibility_source pricing_retirement_source pricing_retirement_value
   if [[ -e "$ENGINE_RELEASE" || -L "$ENGINE_RELEASE" ]]; then
     [[ -d "$ENGINE_RELEASE" && ! -L "$ENGINE_RELEASE" ]] || die "engine release path exists but is not an immutable directory: $ENGINE_RELEASE"
     validate_engine_release "$ENGINE_RELEASE_ROOT" "$ENGINE_RELEASE" "$SHA"
@@ -365,6 +367,7 @@ prepare_engine_release() {
     log "dry-run: would write $ENGINE_STAGE/.openai-bluegreen-v1"
     log "dry-run: would write $ENGINE_STAGE/.kimi-provider-v1"
     log "dry-run: would write $ENGINE_STAGE/.kimi-bluegreen-v1"
+    log "dry-run: would write $ENGINE_STAGE/$PRICING_RETIREMENT_ENGINE_ADMISSION_MARKER"
     log "dry-run: would write $ENGINE_STAGE/$ENGINE_COMMERCE_COMPATIBILITY_MARKER"
   else
     printf '%s\n' provider-runtime-v1 >"$ENGINE_STAGE/.provider-runtime-v1"
@@ -375,9 +378,22 @@ prepare_engine_release() {
     printf '%s\n' kimi-bluegreen-v1 >"$ENGINE_STAGE/.kimi-bluegreen-v1"
     if [[ -n "$TESTED_CANDIDATE" ]]; then
       compatibility_source=$TESTED_CANDIDATE/deploy/engine-commerce-compatibility.contract
+      pricing_retirement_source=$TESTED_CANDIDATE
     else
       compatibility_source=$ENGINE_SOURCE_DIR/deploy/engine-commerce-compatibility.contract
+      pricing_retirement_source=$ENGINE_SOURCE_DIR
     fi
+    if [[ -e "$pricing_retirement_source/crates/registry/migrations_pg/0049_retire_pricing_schema.sql" \
+        || -L "$pricing_retirement_source/crates/registry/migrations_pg/0049_retire_pricing_schema.sql" ]]; then
+      [[ -f "$pricing_retirement_source/crates/registry/migrations_pg/0049_retire_pricing_schema.sql" \
+          && ! -L "$pricing_retirement_source/crates/registry/migrations_pg/0049_retire_pricing_schema.sql" ]] \
+        || die "engine pricing-retirement contraction source is unsafe"
+      pricing_retirement_value=contraction-0049
+    else
+      pricing_retirement_value=pre-contraction
+    fi
+    printf '%s\n' "$pricing_retirement_value" \
+      >"$ENGINE_STAGE/$PRICING_RETIREMENT_ENGINE_ADMISSION_MARKER"
     validate_engine_commerce_compatibility_contract "$compatibility_source"
     install -m 0444 -- "$compatibility_source" \
       "$ENGINE_STAGE/$ENGINE_COMMERCE_COMPATIBILITY_MARKER"

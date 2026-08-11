@@ -820,7 +820,7 @@ wd_path_is_controller_definition() {
     deploy/gpt-image-2-public-paid-smoke-v2-gate.sh|deploy/gpt-image-2-public-paid-smoke-v3-gate.sh|\
     deploy/gpt-image-2-public-paid-inspect-gate.sh|\
     deploy/gpt-image-2-surface-probe-gate.sh|\
-    deploy/watchdog-test-db.sh|deploy/watchdog-backup.sh|deploy/watchdog-migrate.sh|\
+    deploy/watchdog-test-db.sh|deploy/watchdog-backup.sh|deploy/pricing-retirement-admission.sh|deploy/watchdog-migrate.sh|\
     deploy/watchdog-infrastructure.sh|deploy/watchdog-retention.sh|\
     deploy/watchdog-github.sh|deploy/watchdog-control.sh|\
     deploy/deploy.sh|deploy/authbot-runtime-state.sh|deploy/lib.sh|deploy/commerce-release-bundle.sh|\
