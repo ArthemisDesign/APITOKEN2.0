@@ -33,11 +33,42 @@ retired_route_fragments=(
 (( ${#commerce_tables[@]} == 43 )) || die "commerce manifest has ${#commerce_tables[@]} tables, expected 43"
 (( ${#commerce_symbols[@]} == ${#commerce_tables[@]} )) \
   || die 'commerce Drizzle symbol manifest is not paired with the table manifest'
+(( ${#engine_live_tables[@]} == 10 )) \
+  || die 'engine post-drop survival allowlist must contain ten live tables'
+(( ${#commerce_live_tables[@]} == 14 )) \
+  || die 'commerce post-drop survival allowlist must contain fourteen live tables'
 (( ${#engine_retired_functions[@]} == 48 )) || die 'engine retired-function manifest must contain 48 functions'
 (( ${#engine_live_functions[@]} == 4 )) || die 'engine live-function allowlist must contain four functions'
 (( ${#commerce_retired_functions[@]} == 5 )) \
   || die 'commerce retired-function manifest must contain five functions'
 (( ${#commerce_live_functions[@]} == 2 )) || die 'commerce live-function allowlist must contain two functions'
+
+for inventory in engine_tables commerce_tables engine_live_tables commerce_live_tables \
+  engine_retired_functions engine_live_functions commerce_retired_functions commerce_live_functions; do
+  declare -n objects=$inventory
+  duplicates=$(printf '%s\n' "${objects[@]}" | LC_ALL=C sort | uniq -d)
+  [[ -z $duplicates ]] || die "$inventory contains duplicate identities: $duplicates"
+done
+engine_table_overlap=$(comm -12 \
+  <(printf '%s\n' "${engine_tables[@]}" | LC_ALL=C sort) \
+  <(printf '%s\n' "${engine_live_tables[@]}" | LC_ALL=C sort))
+[[ -z $engine_table_overlap ]] \
+  || die "engine retired/live table manifests overlap: $engine_table_overlap"
+commerce_table_overlap=$(comm -12 \
+  <(printf '%s\n' "${commerce_tables[@]}" | LC_ALL=C sort) \
+  <(printf '%s\n' "${commerce_live_tables[@]}" | LC_ALL=C sort))
+[[ -z $commerce_table_overlap ]] \
+  || die "commerce retired/live table manifests overlap: $commerce_table_overlap"
+engine_function_overlap=$(comm -12 \
+  <(printf '%s\n' "${engine_retired_functions[@]}" | LC_ALL=C sort) \
+  <(printf '%s\n' "${engine_live_functions[@]}" | LC_ALL=C sort))
+[[ -z $engine_function_overlap ]] \
+  || die "engine retired/live function manifests overlap: $engine_function_overlap"
+commerce_function_overlap=$(comm -12 \
+  <(printf '%s\n' "${commerce_retired_functions[@]}" | LC_ALL=C sort) \
+  <(printf '%s\n' "${commerce_live_functions[@]}" | LC_ALL=C sort))
+[[ -z $commerce_function_overlap ]] \
+  || die "commerce retired/live function manifests overlap: $commerce_function_overlap"
 [[ -f $RUNBOOK ]] || die "runbook is missing: $RUNBOOK"
 [[ -f $BASELINE ]] || die "production baseline is missing: $BASELINE"
 [[ -x $PREFLIGHT && ! -L $PREFLIGHT ]] || die "read-only preflight is missing or unsafe: $PREFLIGHT"

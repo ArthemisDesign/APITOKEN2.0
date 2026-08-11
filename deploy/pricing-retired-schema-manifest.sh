@@ -132,6 +132,40 @@ commerce_symbols=(
   providerCapabilityVersions
 )
 
+# Minimal live-table survival set for post-contraction evidence. These are not a complete public
+# schema inventory: they are the money, queue and reconciliation authorities whose accidental loss
+# would make a successful retired-object drop meaningless. New unrelated live tables need not be
+# added; replacement/removal of one of these authorities requires an explicit runbook update.
+engine_live_tables=(
+  engine_schema_migrations
+  accounts
+  api_keys
+  reservations
+  settlement_outbox
+  ledger
+  ledger_consumer_checkpoints
+  usage_events
+  account_provider_discounts
+  pricing_tariff_overrides
+)
+
+commerce_live_tables=(
+  users
+  customer_profiles
+  engine_accounts
+  engine_pricing_jobs
+  engine_credits
+  engine_adjustments
+  customer_provider_discounts
+  pricing_credit_accruals
+  pricing_usage_events
+  pricing_usage_cursors
+  pricing_usage_topups
+  payments
+  referral_attributions
+  webhook_events
+)
+
 engine_retired_functions=(
   'assert_active_funding_account_v2(text)'
   'assert_funding_generation_v2(text, bigint)'

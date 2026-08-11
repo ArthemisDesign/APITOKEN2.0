@@ -539,6 +539,37 @@ wd_range_files() {
   git -C "$repo" diff --name-only --no-renames --diff-filter=ACDMRTUXB "$base..$target"
 }
 
+# Identify the one pricing-retirement contraction whose newly added immutable migration must be
+# verified after deployment. The processed production SHA is the only valid base: if a failed
+# forward-only contraction remains unprocessed, its follow-up fix still re-runs this proof. Adding
+# both contraction paths in one range is deliberately invalid because the runbook requires two
+# independent production failure domains.
+wd_pricing_retirement_postdrop_stage() {
+  [[ $# -eq 3 ]] || return 2
+  local repo=$1 base=$2 target=$3 added path commerce=0 engine=0
+  [[ -d $repo ]] || return 2
+  [[ $base =~ ^[0-9a-f]{40}$ && $target =~ ^[0-9a-f]{40}$ ]] || return 2
+  added=$(git -C "$repo" diff --name-only --no-renames --diff-filter=A "$base..$target" -- \
+    packages/db/migrations/0048_retire_pricing_schema.sql \
+    crates/registry/migrations_pg/0049_retire_pricing_schema.sql) || return 1
+  while IFS= read -r path; do
+    [[ -n $path ]] || continue
+    case $path in
+      packages/db/migrations/0048_retire_pricing_schema.sql) commerce=1 ;;
+      crates/registry/migrations_pg/0049_retire_pricing_schema.sql) engine=1 ;;
+      *) return 2 ;;
+    esac
+  done <<<"$added"
+  (( commerce == 0 || engine == 0 )) || return 3
+  if (( commerce == 1 )); then
+    printf 'commerce\n'
+  elif (( engine == 1 )); then
+    printf 'engine\n'
+  else
+    printf 'none\n'
+  fi
+}
+
 # Infrastructure scopes are canonical, ordered sets. Keeping one representation lets the
 # unprivileged controller, fixed root bridge, final verifier, and regression tests agree on the
 # exact transaction without accepting duplicate, reordered, or unknown scope names.
@@ -820,7 +851,8 @@ wd_path_is_controller_definition() {
     deploy/gpt-image-2-public-paid-smoke-v2-gate.sh|deploy/gpt-image-2-public-paid-smoke-v3-gate.sh|\
     deploy/gpt-image-2-public-paid-inspect-gate.sh|\
     deploy/gpt-image-2-surface-probe-gate.sh|\
-    deploy/watchdog-test-db.sh|deploy/watchdog-backup.sh|deploy/pricing-retirement-admission.sh|deploy/watchdog-migrate.sh|\
+    deploy/watchdog-test-db.sh|deploy/watchdog-backup.sh|deploy/pricing-retirement-admission.sh|\
+    deploy/pricing-retirement-postdrop.sh|deploy/pricing-retired-schema-manifest.sh|deploy/watchdog-migrate.sh|\
     deploy/watchdog-infrastructure.sh|deploy/watchdog-retention.sh|\
     deploy/watchdog-github.sh|deploy/watchdog-control.sh|\
     deploy/deploy.sh|deploy/authbot-runtime-state.sh|deploy/lib.sh|deploy/commerce-release-bundle.sh|\

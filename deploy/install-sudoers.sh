@@ -233,6 +233,15 @@ require_permitted 'content studio enable' /usr/bin/systemctl enable apitoken-con
 require_permitted 'unit introspection' /usr/bin/systemctl show apitoken-api@3000.service
 require_permitted 'backup runner' /usr/local/lib/apitoken-watchdog/watchdog-backup.sh "$sample_sha"
 require_permitted 'migration runner' /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh "$sample_sha"
+pricing_retirement_postdrop=/usr/local/lib/apitoken-watchdog/pricing-retirement-postdrop.sh
+if ! fixed_root_helper_is_trusted "$pricing_retirement_postdrop"; then
+  warn "MISSING or unsafe pricing-retirement post-drop helper or parent"
+  verify_failures=$((verify_failures + 1))
+fi
+require_permitted 'commerce pricing-retirement post-drop verifier' \
+  "$pricing_retirement_postdrop" --stage commerce "$sample_sha"
+require_permitted 'engine pricing-retirement post-drop verifier' \
+  "$pricing_retirement_postdrop" --stage engine "$sample_sha"
 require_permitted 'engine schema migration runner' \
   /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh "$sample_sha"
 authbot_runtime_helper=/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh

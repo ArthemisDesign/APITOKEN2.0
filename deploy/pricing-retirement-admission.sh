@@ -134,6 +134,7 @@ pra_engine_schema_state() {
 pra_engine_is_pending() {
   local sha=$1 contraction=$CANDIDATE/$ENGINE_CONTRACTION_REL source marker_flag
   local expected_hash actual_hash release state applied_count max_version extra
+  local candidate_versions candidate_version
 
   if [[ ! -e $contraction && ! -L $contraction ]]; then
     wd_log "pricing retirement admission is not applicable to this engine migration"
@@ -145,8 +146,13 @@ pra_engine_is_pending() {
   [[ -f $source && ! -L $source ]] || wd_die "engine PostgreSQL migration registry is unsafe"
   grep -Fq 'include_str!("../migrations_pg/0049_retire_pricing_schema.sql")' "$source" \
     || wd_die "engine contraction is not embedded as migration 0049"
-  grep -Fq 'pub const CURRENT_SCHEMA_VERSION: i64 = 49;' "$source" \
-    || wd_die "engine schema version does not declare contraction version 49"
+  candidate_versions=$(sed -n \
+    's/^pub const CURRENT_SCHEMA_VERSION: i64 = \([0-9][0-9]*\);$/\1/p' "$source")
+  [[ $(printf '%s\n' "$candidate_versions" | awk 'NF { count++ } END { print count + 0 }') == 1 ]] \
+    || wd_die "engine migration registry has no unique current schema version"
+  candidate_version=$candidate_versions
+  [[ $candidate_version =~ ^[0-9]+$ && $candidate_version -ge $ENGINE_CONTRACTION_VERSION ]] \
+    || wd_die "engine schema version is older than contraction version 49"
   grep -Fq '(49, MIGRATION_0049),' "$source" \
     || wd_die "engine contraction is absent from the contiguous migration registry"
 
@@ -170,6 +176,8 @@ pra_engine_is_pending() {
   [[ $applied_count =~ ^[0-9]+$ && $max_version =~ ^[0-9]+$ && -z ${extra:-} ]] \
     || wd_die "engine schema migration state is malformed"
   if [[ $applied_count == 0 && $max_version == "$ENGINE_PREDECESSOR_VERSION" ]]; then
+    [[ $candidate_version == "$ENGINE_CONTRACTION_VERSION" ]] \
+      || wd_die "initial engine contraction must be an isolated exact version-49 delivery"
     return 0
   fi
   if [[ $applied_count == 1 ]] && (( max_version >= ENGINE_CONTRACTION_VERSION )); then

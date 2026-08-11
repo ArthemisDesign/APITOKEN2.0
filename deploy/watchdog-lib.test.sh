@@ -1287,6 +1287,8 @@ for controller_definition in \
   deploy/engine-bluegreen.sh \
   deploy/engine-migrate.sh \
   deploy/pricing-retirement-admission.sh \
+  deploy/pricing-retirement-postdrop.sh \
+  deploy/pricing-retired-schema-manifest.sh \
   deploy/codex-homes-migrate.sh \
   deploy/rollback.sh \
   deploy/sales-deploy.sh \
@@ -4175,6 +4177,30 @@ processed_line=$(grep -nF 'wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"' \
 [[ -n $handoff_line && -n $processed_line && $handoff_line -lt $processed_line ]] \
   || wd_die 'self-update handoff is not fenced before the processed/green path'
 
+postdrop_line=$(grep -nF 'sudo -n "$PRICING_RETIREMENT_POSTDROP" --stage' \
+  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+final_verification_line=$(grep -nF \
+  'if ! ( run_final_verification_plan "$final_verification_plan" "$ENGINE_SHA" ); then' \
+  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+[[ -n $final_verification_line && -n $postdrop_line && -n $processed_line \
+    && $final_verification_line -lt $postdrop_line && $postdrop_line -lt $processed_line ]] \
+  || wd_die 'pricing-retirement post-drop proof is not between final verification and processed/green'
+grep -Fq 'PRICING_RETIREMENT_POSTDROP=/usr/local/lib/apitoken-watchdog/pricing-retirement-postdrop.sh' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog does not pin the fixed pricing-retirement post-drop helper'
+grep -Fq 'pricing-retirement-postdrop.sh --stage commerce [0-9a-f]*' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'deploy user cannot invoke commerce post-drop proof with one exact candidate SHA'
+grep -Fq 'pricing-retirement-postdrop.sh --stage engine [0-9a-f]*' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'deploy user cannot invoke engine post-drop proof with one exact candidate SHA'
+grep -Fq '/usr/local/lib/apitoken-watchdog/pricing-retirement-postdrop.sh' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'controller installer does not publish the fixed post-drop helper'
+grep -Fq '/usr/local/lib/apitoken-watchdog/pricing-retired-schema-manifest.sh' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'controller installer does not publish the post-drop survival manifest'
+
 # Stateful component rollouts use joined lanes. Engine and commerce remain ordered behind
 # their shared deploy lock; bounded sales/OpenKeys/admin roots can make progress concurrently.
 rollout_contract=(
@@ -4933,5 +4959,6 @@ fi
 bash "$ROOT/deploy/pricing-retired-schema.test.sh"
 bash "$ROOT/deploy/pricing-retirement-preflight.test.sh"
 bash "$ROOT/deploy/pricing-retirement-admission.test.sh"
+bash "$ROOT/deploy/pricing-retirement-postdrop.test.sh"
 
 printf 'watchdog retention, migration, and engine topology tests passed\n'

@@ -196,17 +196,32 @@ publish_authbot_runtime_helper() {
     /usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
 }
 
+publish_pricing_retirement_postdrop_helper() {
+  publish_fixed_helper "$ROOT/deploy/pricing-retirement-postdrop.sh" \
+    /usr/local/lib/apitoken-watchdog/pricing-retirement-postdrop.sh
+}
+
 install_and_verify_sudo_policy() {
   local authbot_helper=/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
   local authbot_backup=${authbot_helper}.rollback.$$
+  local postdrop_helper=/usr/local/lib/apitoken-watchdog/pricing-retirement-postdrop.sh
+  local postdrop_backup=${postdrop_helper}.rollback.$$
   local had_authbot=0
+  local had_postdrop=0
   if [[ -e $authbot_helper || -L $authbot_helper ]]; then
     [[ -f $authbot_helper && ! -L $authbot_helper ]] \
       || { echo "$authbot_helper must be a regular file" >&2; return 1; }
     cp -p -- "$authbot_helper" "$authbot_backup"
     had_authbot=1
   fi
+  if [[ -e $postdrop_helper || -L $postdrop_helper ]]; then
+    [[ -f $postdrop_helper && ! -L $postdrop_helper ]] \
+      || { echo "$postdrop_helper must be a regular file" >&2; return 1; }
+    cp -p -- "$postdrop_helper" "$postdrop_backup"
+    had_postdrop=1
+  fi
   publish_authbot_runtime_helper
+  publish_pricing_retirement_postdrop_helper
   install -o root -g root -m 0755 "$ROOT/deploy/install-sudoers.sh" \
     /usr/local/lib/apitoken-watchdog/install-sudoers.sh
   install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/sudoers.d
@@ -217,9 +232,10 @@ install_and_verify_sudo_policy() {
   systemctl daemon-reload
   if ! systemctl start apitoken-sudoers-install.service; then
     if (( had_authbot == 1 )); then mv -f -- "$authbot_backup" "$authbot_helper"; else rm -f -- "$authbot_helper"; fi
+    if (( had_postdrop == 1 )); then mv -f -- "$postdrop_backup" "$postdrop_helper"; else rm -f -- "$postdrop_helper"; fi
     return 1
   fi
-  rm -f -- "$authbot_backup"
+  rm -f -- "$authbot_backup" "$postdrop_backup"
 }
 
 install_controller_definitions() {
@@ -258,6 +274,10 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/watchdog-backup.sh
   install -o root -g root -m 0755 "$ROOT/deploy/pricing-retirement-admission.sh" \
     /usr/local/lib/apitoken-watchdog/pricing-retirement-admission.sh
+  install -o root -g root -m 0644 "$ROOT/deploy/pricing-retired-schema-manifest.sh" \
+    /usr/local/lib/apitoken-watchdog/pricing-retired-schema-manifest.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/pricing-retirement-postdrop.sh" \
+    /usr/local/lib/apitoken-watchdog/pricing-retirement-postdrop.sh
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-migrate.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-infrastructure.sh" \

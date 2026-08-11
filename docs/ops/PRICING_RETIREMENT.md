@@ -38,15 +38,18 @@ The size is not a reason to shorten retention. The tables are not on a live requ
 
 ## Objects that stay live
 
-The following similarly named authorities are explicitly outside the drop set:
+The following authorities form the minimal post-drop survival allowlist. It is intentionally not
+the whole application schema: it pins the migration journals plus the identity, money, queue,
+pricing and reconciliation tables whose accidental loss would invalidate a successful contraction.
+The canonical arrays live in `deploy/pricing-retired-schema-manifest.sh`:
 
-- engine: `accounts`, `account_provider_discounts`, `api_keys`, `reservations`,
+- engine: `engine_schema_migrations`, `accounts`, `account_provider_discounts`, `api_keys`, `reservations`,
   `settlement_outbox`, `ledger`, `ledger_consumer_checkpoints`, `usage_events`,
   `pricing_tariff_overrides`;
-- commerce: `customer_profiles`, `customer_provider_discounts`, `engine_accounts`,
+- commerce: `users`, `customer_profiles`, `customer_provider_discounts`, `engine_accounts`,
   `engine_pricing_jobs`, `engine_credits`, `engine_adjustments`, `pricing_credit_accruals`,
   `pricing_usage_events`, `pricing_usage_cursors`, `pricing_usage_topups`, `payments`,
-  `referral_attributions`.
+  `referral_attributions`, `webhook_events`.
 
 `pricing_months` is retired. Registration, pricing, funding, commission and worker code no longer
 reads or writes it; keeping it because its name lacks a release suffix would preserve a dead
@@ -344,9 +347,11 @@ preflight only for the exact immutable artifacts
 test marker, migration manifest and (for engine) tested release-binary digest before inspecting the
 applied commerce manifest or exact engine schema version. Absence of the named artifact and a fully
 recorded contraction are explicit no-ops; partial manifest state, a schema version other than the
-unique 48→49 boundary, a failed preflight, or anything except one exact
+unique 48→49 boundary at the initial contraction, a failed preflight, or anything except one exact
 `AUTHORIZED:<plane> migration_sha=<sha> retention_epoch=<integer> all_conjunctive_gates=passed`
-line stops before the migrator.
+line stops before the migrator. Once 49 is recorded, a later append-only engine version is an
+admission no-op so a failed post-drop proof can be repaired forward; that later version is
+forbidden in the initial 48→49 delivery.
 
 Every newly promoted engine release also contains immutable
 `.pricing-retirement-admission-v1` metadata with exactly `pre-contraction` or `contraction-0049`.
@@ -390,8 +395,36 @@ do not hand-create placeholder tables and do not restore one database over live 
 
 ## Post-drop verification
 
-After each GREEN delivery, verify read-only that every named table/function is absent, every live
-allowlisted table/function remains, the engine schema version and commerce migration journal show
-the exact new migration, and no service journal contains undefined-table errors. Recheck all money,
-pricing, settlement, sales and backup alerts, then recompute database sizes. The audit is closed
-only after both databases and the final code cleanup are GREEN in production.
+The watchdog derives a stage only from newly added paths between its durable `processed.sha` and
+the exact candidate: commerce 0048 or engine 0049. Neither path means no-op; both paths in one
+delivery fail closed. This range rule also makes a forward fix re-run the proof when a contraction
+has committed but the candidate was not marked processed.
+
+After normal component and final production verification, but before `processed.sha` and the
+overall GREEN verdict, the watchdog invokes the fixed root-owned
+`pricing-retirement-postdrop.sh --stage <commerce|engine> <exact-sha>`. The helper independently
+binds the immutable candidate, test marker, migration manifest and stage, then uses PostgreSQL
+sessions with `default_transaction_read_only=on` to prove:
+
+- the stage's retired tables/functions are absent and every survival-allowlisted object remains;
+- commerce 0048 has its unique exact hash and the database ends at the exact candidate's latest
+  Drizzle entry (0048 in the initial contraction); engine migrations are the contiguous `1..48`
+  pre-engine sequence or `1..N`, where `N >= 49` is the exact candidate version;
+- the other plane is in the required pre/post state, so the contractions cannot be reordered;
+- the exact-SHA commerce and engine dumps are still root-only, complete, hashable and fully
+  readable by the production `pg_restore` toolchain, with Borg covering their path;
+- pricing and Sales cursors cover stable source watermarks; live queues, pricing mirrors/provider
+  overrides/status, settlement accounting, Sales reconciliation and OpenKeys contracts are clean;
+- the sole permitted below-floor row, if it still exists, is exactly the documented bonus-revocation
+  debt with its unique ledger adjustment—any additional or changed debt fails;
+- no database-owning service has logged `42P01`, `undefined_table`, `relation ... does not exist`,
+  or a Sales sync iteration failure since the exact candidate's test marker;
+- a monitoring collector cycle completed after the contraction, business reconciliation and all
+  backups are healthy, and no targeted money/pricing/settlement/Sales/OpenKeys/backup alert is
+  pending or firing apart from the validated `EngineAccountsBelowFloor` exception.
+
+The helper finally reports both current database sizes. A failed post-drop proof quarantines the
+candidate without rolling back binaries or recreating objects: destructive migrations are
+forward-only, so recovery is a new exact candidate containing a forward fix. The audit is closed
+only after both database deliveries and the final schema/code/document cleanup are GREEN in
+production.

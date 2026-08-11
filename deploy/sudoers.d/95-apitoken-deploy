@@ -20,6 +20,8 @@ Cmnd_Alias APITOKEN_HELPERS = \
     /usr/local/lib/apitoken-watchdog/watchdog-test-db [A-Za-z-]*, \
     /usr/local/lib/apitoken-watchdog/watchdog-test-db [A-Za-z-]* [0-2], \
     /usr/local/lib/apitoken-watchdog/watchdog-backup.sh [0-9a-f]*, \
+    /usr/local/lib/apitoken-watchdog/pricing-retirement-postdrop.sh --stage commerce [0-9a-f]*, \
+    /usr/local/lib/apitoken-watchdog/pricing-retirement-postdrop.sh --stage engine [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/watchdog-retention.sh [0-9]*, \
     /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh [0-9a-f]*, \

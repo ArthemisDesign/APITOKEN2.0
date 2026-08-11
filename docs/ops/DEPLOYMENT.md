@@ -123,9 +123,9 @@ mode resolves the same entry as root, accepts only the canonical immutable path
 retention. A missing unit is treated as inactive (empty output in release mode). Both modes recheck
 load state, active state, and PID for churn; malformed input, unexpected paths, and inspection
 failures abort without path or digest output. Controller installation publishes this
-backward-compatible helper and verifies its sudo policy before atomically publishing the watchdog
-entrypoint that depends on them. Authbot reconciliation is part of the
-release-link transaction: an activation abort restores
+backward-compatible authbot helper plus any other candidate-required fixed helper, verifies their
+sudo policy, and only then atomically publishes the watchdog entrypoint that depends on them.
+Authbot reconciliation is part of the release-link transaction: an activation abort restores
 links first and converges authbot to the captured original engine release only if engine `current`
 strictly resolves there; a failed or mismatched `current` restoration leaves authbot untouched. Explicit
 `rollback.sh --engine-bluegreen` converges it to the selected rollback release before provider slots
@@ -283,10 +283,11 @@ unrestricted `NOPASSWD: ALL` grant, `deploy` can read the GitHub credential and 
 trust anchors.
 
 Tested full and controller-only infrastructure transactions apply the policy automatically through
-the isolated root `apitoken-sudoers-install.service`. They first publish the backward-compatible
-fixed helper, then validate and live-verify the policy, and only after that succeeds atomically
-publish the watchdog entrypoint that depends on it. These commands remain useful as manual preflight
-or recovery procedures:
+the isolated root `apitoken-sudoers-install.service`. They first publish the candidate-required
+fixed helpers (currently authbot runtime inspection and pricing-retirement post-drop verification),
+then validate and live-verify the policy, and only after that succeeds atomically publish the
+watchdog entrypoint that depends on them. These commands remain useful as manual preflight or
+recovery procedures:
 
 ```bash
 sudo deploy/install-sudoers.sh --check

@@ -51,6 +51,7 @@ GPT_IMAGE_2_PUBLIC_PAID_INSPECT_PRODUCER_SHA=63972f2ddfd5906d7c30a87406053eb3782
 TEST_DB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-test-db
 BACKUP_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-backup.sh
 MIGRATION_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
+PRICING_RETIREMENT_POSTDROP=/usr/local/lib/apitoken-watchdog/pricing-retirement-postdrop.sh
 INFRASTRUCTURE_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
 RETENTION_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-retention.sh
 SALES_RUNNER=/usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
@@ -2473,6 +2474,7 @@ main() {
   local typescript_required=0 typescript_full=0 typescript_base= rust_required=0 static_required=0
   local engine_artifacts_required=0 codex_artifacts_required=0
   local validation_policy_sha256='' validation_plan_sha256='' final_verification_plan=''
+  local pricing_retirement_postdrop_stage=none
   local public_image_summary='' public_image_preflight_summary='' public_image_preflight_v2_summary=''
   local public_image_preflight_v3_summary='' public_image_paid_summary=''
   local public_image_generation_status='' public_image_edit_status='' public_image_paid_inspect_summary=''
@@ -2490,6 +2492,7 @@ main() {
   require_fixed_file "$TEST_DB_HELPER"
   require_fixed_file "$BACKUP_RUNNER"
   require_fixed_file "$MIGRATION_RUNNER"
+  require_fixed_root_executable "$PRICING_RETIREMENT_POSTDROP"
   require_fixed_file "$INFRASTRUCTURE_RUNNER"
   require_fixed_file "$RETENTION_HELPER"
   require_fixed_file "$SALES_RUNNER"
@@ -2558,6 +2561,10 @@ main() {
     wd_log "candidate $CANDIDATE_SHA is quarantined; waiting for a newer commit or explicit retry"
     exit 0
   fi
+
+  pricing_retirement_postdrop_stage=$(wd_pricing_retirement_postdrop_stage \
+    "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA") \
+    || wd_die "pricing-retirement contraction range must add at most one exact migration path"
 
   infra_scope=$(wd_infrastructure_install_scope \
     "$SOURCE_REPO" "$INFRASTRUCTURE_SHA" "$CANDIDATE_SHA")
@@ -2794,6 +2801,17 @@ main() {
     (( engine_changed == 0 )) || rollback_engine || true
     (( backend_changed == 0 )) || rollback_backend || true
     wd_die "selected final production verification failed after component admission"
+  fi
+
+  if [[ $pricing_retirement_postdrop_stage != none ]]; then
+    # Both contractions are forward-only. This proof runs after the selected applications are
+    # serving and deliberately has no rollback branch: a failure quarantines the SHA and requires
+    # a forward fix against the already-contracted schema.
+    CURRENT_PHASE=verifying-pricing-retirement-postdrop
+    CURRENT_PHASE_BEFORE_FAILURE=verifying-pricing-retirement-postdrop
+    status "verifying $pricing_retirement_postdrop_stage pricing-schema contraction in production"
+    sudo -n "$PRICING_RETIREMENT_POSTDROP" --stage \
+      "$pricing_retirement_postdrop_stage" "$CANDIDATE_SHA"
   fi
 
   if (( gpt_image_2_live_gate == 1 )); then

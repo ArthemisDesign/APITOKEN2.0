@@ -361,6 +361,18 @@ releases carry an immutable `.pricing-retirement-admission-v1` value, so only
 releases remain usable after their watchdog candidate is pruned. See
 `docs/ops/PRICING_RETIREMENT.md` for the retained-object manifest and post-retention sequence.
 
+The same closeout has a separate post-drop fence. Between the selected final production checks and
+the `processed.sha` write, the watchdog detects whether the exact processed-to-candidate range newly
+added commerce 0048 or engine 0049 and invokes the fixed root-owned
+`pricing-retirement-postdrop.sh`. One delivery cannot select both. The helper revalidates the exact
+candidate and recovery archives, inspects both PostgreSQL planes read-only, scans application
+journals, waits for a collector run newer than the contraction proof, rejects targeted active
+business alerts, and records current database sizes. Exact candidate-latest journal checks allow a
+new append-only migration to repair an already committed contraction without weakening the proof.
+Failure quarantines the SHA but deliberately does not roll back a binary onto the forward-only
+contracted schema; a later forward fix remains unprocessed and therefore re-runs the same stage
+proof.
+
 A normal deploy:
 
 1. validates roots, lock files, unit names, timeout, and poll interval;

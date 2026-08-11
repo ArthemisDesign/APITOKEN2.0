@@ -238,6 +238,28 @@ grep -Fq 'already recorded' "$fixture/engine-applied.out" \
   || fail 'already-applied engine contraction lacked a no-op verdict'
 PREFLIGHT_REL=$original_preflight_rel
 
+# A post-drop failure is repaired forward. Once version 49 exists, admission must allow an exact
+# candidate carrying a later append-only engine migration; before version 49, the initial
+# contraction remains isolated and cannot smuggle that later version into the same failure domain.
+cp "$CANDIDATE/crates/registry/src/pg.rs" "$fixture/engine-registry-v49"
+sed 's/CURRENT_SCHEMA_VERSION: i64 = 49/CURRENT_SCHEMA_VERSION: i64 = 50/' \
+  "$fixture/engine-registry-v49" >"$CANDIDATE/crates/registry/src/pg.rs"
+MARKER=$marker
+TEST_ENGINE_STATE=$'1\t49'
+set +e
+( pra_engine_is_pending "$sha" ) >"$fixture/engine-forward-noop.out" 2>&1
+engine_forward_rc=$?
+set -e
+[[ $engine_forward_rc == 1 ]] \
+  || fail 'already-contracted engine rejected a later append-only forward-fix version'
+grep -Fq 'already recorded' "$fixture/engine-forward-noop.out" \
+  || { cat "$fixture/engine-forward-noop.out" >&2; fail 'later engine forward-fix candidate lacked an explicit contraction no-op verdict'; }
+TEST_ENGINE_STATE=$'0\t48'
+if ( pra_engine_is_pending "$sha" ) >"$fixture/engine-combined-version.out" 2>&1; then
+  fail 'initial engine contraction accepted a combined version-49-plus-forward-fix delivery'
+fi
+cp "$fixture/engine-registry-v49" "$CANDIDATE/crates/registry/src/pg.rs"
+
 TEST_ENGINE_STATE=$'0\t47'
 if run_admission engine "$sha" >"$fixture/engine-gap.out" 2>&1; then
   fail 'engine contraction accepted a non-contiguous predecessor schema'
