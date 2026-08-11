@@ -233,7 +233,18 @@ retired_route_fragments=(
   || die 'commerce retired-function manifest must contain five functions'
 (( ${#commerce_live_functions[@]} == 2 )) || die 'commerce live-function allowlist must contain two functions'
 [[ -f $RUNBOOK ]] || die "runbook is missing: $RUNBOOK"
-command -v rg >/dev/null 2>&1 || die 'ripgrep is required'
+
+TEMP=$(mktemp -d "${TMPDIR:-/tmp}/pricing-retired-schema.XXXXXX") \
+  || die 'could not create a temporary scan directory'
+cleanup() {
+  rm -f -- "$TEMP/engine-patterns" "$TEMP/commerce-patterns" "$TEMP/route-patterns"
+  rmdir -- "$TEMP"
+}
+trap cleanup EXIT
+
+printf '%s\n' "${engine_tables[@]}" >"$TEMP/engine-patterns"
+printf '%s\n' "${commerce_tables[@]}" "${commerce_symbols[@]}" >"$TEMP/commerce-patterns"
+printf '%s\n' "${retired_route_fragments[@]}" >"$TEMP/route-patterns"
 
 grep_count() {
   local needle=$1 file=$2 count status
@@ -269,6 +280,51 @@ manifest_line_count() {
     0|1) printf '%s\n' "$count" ;;
     *) die 'could not count runbook manifest lines' ;;
   esac
+}
+
+scan_tracked_source() {
+  [[ $# -ge 3 ]] || die 'tracked-source scan requires a mode, pattern file, and path'
+  local mode=$1 pattern_file=$2 path output status matches=''
+  shift 2
+  while IFS= read -r -d '' path; do
+    case $mode in
+      engine)
+        [[ $path == crates/*/src/* ]] || continue
+        case $path in
+          */tests.rs|*/tests/*) continue ;;
+        esac
+        ;;
+      commerce)
+        case $path in
+          packages/db/src/schema.ts|*/migrations/*|*.test.*|*.spec.*|*/__tests__/*|*/dist/*|*.md)
+            continue
+            ;;
+        esac
+        ;;
+      routes)
+        case $path in
+          */migrations/*|*.test.*|*.spec.*|*/tests.rs|*/tests/*|*/__tests__/*|*/dist/*|*.md)
+            continue
+            ;;
+        esac
+        ;;
+      *) die "unknown tracked-source scan mode: $mode" ;;
+    esac
+
+    set +e
+    output=$(LC_ALL=C grep -IHnF -f "$pattern_file" -- "$path")
+    status=$?
+    set -e
+    case $status in
+      0)
+        [[ -z $matches ]] || matches+=$'\n'
+        matches+=$output
+        ;;
+      1) ;;
+      *) die "could not inspect tracked source file $path" ;;
+    esac
+  done < <(git ls-files -z -- "$@")
+  printf '%s' "$matches"
 }
 
 engine_manifest=$(sed -n '/^## Engine drop set /,/^## Commerce drop set /p' "$RUNBOOK")
@@ -312,61 +368,21 @@ done
 
 cd "$ROOT"
 
-set +e
-engine_matches=$(rg -n -F -f <(printf '%s\n' "${engine_tables[@]}") \
-  crates/*/src \
-  --glob '!**/tests.rs' \
-  --glob '!**/tests/**')
-engine_status=$?
-set -e
-case $engine_status in
-  0)
-    expected_engine_include='const MIGRATION_0041: &str = include_str!("../migrations_pg/0041_strict_funding_lots_v2.sql");'
-    [[ $(printf '%s\n' "$engine_matches" | wc -l | tr -d ' ') == 1 \
-      && $engine_matches == crates/registry/src/pg.rs:*":$expected_engine_include" ]] \
-      || die "engine runtime source references retired tables:\n$engine_matches"
-    ;;
-  1) ;;
-  *) die 'ripgrep failed while scanning engine runtime source' ;;
-esac
+engine_matches=$(scan_tracked_source engine "$TEMP/engine-patterns" crates)
+if [[ -n $engine_matches ]]; then
+  expected_engine_include='const MIGRATION_0041: &str = include_str!("../migrations_pg/0041_strict_funding_lots_v2.sql");'
+  [[ $(printf '%s\n' "$engine_matches" | wc -l | tr -d ' ') == 1 \
+    && $engine_matches == crates/registry/src/pg.rs:*":$expected_engine_include" ]] \
+    || die "engine runtime source references retired tables:\n$engine_matches"
+fi
 
-set +e
-commerce_matches=$(rg -n -F -f <(printf '%s\n' \
-  "${commerce_tables[@]}" "${commerce_symbols[@]}") \
-  apps packages \
-  --glob '!packages/db/src/schema.ts' \
-  --glob '!packages/db/migrations/**' \
-  --glob '!**/*.test.*' \
-  --glob '!**/*.spec.*' \
-  --glob '!**/__tests__/**' \
-  --glob '!**/dist/**' \
-  --glob '!**/*.md')
-commerce_status=$?
-set -e
-case $commerce_status in
-  0) die "commerce runtime source references retired tables:\n$commerce_matches" ;;
-  1) ;;
-  *) die 'ripgrep failed while scanning commerce runtime source' ;;
-esac
+commerce_matches=$(scan_tracked_source commerce "$TEMP/commerce-patterns" apps packages)
+[[ -z $commerce_matches ]] \
+  || die "commerce runtime source references retired tables:\n$commerce_matches"
 
 # A future controller/client must not resurrect the withdrawn policy/release endpoints as a
 # rollback shim. Historical migrations and tests may name them; deployable source may not.
-set +e
-route_matches=$(rg -n -F -f <(printf '%s\n' "${retired_route_fragments[@]}") \
-  apps packages crates/*/src \
-  --glob '!**/migrations/**' \
-  --glob '!**/*.test.*' \
-  --glob '!**/*.spec.*' \
-  --glob '!**/tests.rs' \
-  --glob '!**/tests/**' \
-  --glob '!**/dist/**' \
-  --glob '!**/*.md')
-route_status=$?
-set -e
-case $route_status in
-  0) die "runtime source resurrects retired pricing routes:\n$route_matches" ;;
-  1) ;;
-  *) die 'ripgrep failed while scanning retired pricing routes' ;;
-esac
+route_matches=$(scan_tracked_source routes "$TEMP/route-patterns" apps packages crates)
+[[ -z $route_matches ]] || die "runtime source resurrects retired pricing routes:\n$route_matches"
 
 printf 'pricing retired-schema manifest and source-reader checks passed\n'
