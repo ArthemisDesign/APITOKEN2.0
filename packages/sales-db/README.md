@@ -39,6 +39,10 @@ level to the previous partner's active parent, exact configured basis points and
 amount; usage and commission rows are immutable. The dual-schema consumer is a later checkpoint
 after this migration's production watchdog is green.
 
+Migration `0016_topups_v2_cursor.sql` widens the existing `sync_cursors` key check with the dormant
+`topups_v2` cursor. It does not move the live `topups` cursor or activate a consumer; the consumer
+switch is a separate checkpoint after this migration is watchdog-GREEN.
+
 ## Commands
 
 ```bash

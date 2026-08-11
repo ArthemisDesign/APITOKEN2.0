@@ -226,7 +226,7 @@ export const syncCursors = pgTable("sync_cursors", {
   lastId: bigint("last_id", { mode: "bigint" }).notNull().default(sql`0`),
   updatedAt,
 }, (table) => [
-  check("sync_cursors_feed_check", sql`${table.feed} IN ('attributions', 'usage_events', 'topups')`),
+  check("sync_cursors_feed_v2_check", sql`${table.feed} IN ('attributions', 'usage_events', 'topups', 'topups_v2')`),
 ]);
 
 export const partnerUsageEvents = pgTable("partner_usage_events", {

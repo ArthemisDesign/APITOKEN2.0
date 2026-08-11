@@ -108,4 +108,28 @@ describe("sales multi-discount migration", () => {
     ].map((match) => match[1]).filter((name): name is string => name !== undefined);
     expect(databaseObjectNames.filter((name) => Buffer.byteLength(name, "utf8") > 63)).toEqual([]);
   });
+
+  it("widens the durable cursor namespace before the topups-v2 consumer", () => {
+    const migration = readFileSync(
+      join(MIGRATIONS_FOLDER, "0016_topups_v2_cursor.sql"),
+      "utf8",
+    );
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; tag: string; when: number }> };
+    const previous = journal.entries.find((entry) => entry.idx === 15);
+    const current = journal.entries.find((entry) => entry.idx === 16);
+
+    expect(current).toMatchObject({ idx: 16, tag: "0016_topups_v2_cursor" });
+    expect(current!.when).toBeGreaterThan(previous!.when);
+    expect(migration).not.toMatch(/^(?:UPDATE|DELETE|TRUNCATE|CREATE TABLE)\b/im);
+    expect(migration).toContain("sync_cursors_feed_v2_check");
+    expect(migration).toContain("'attributions', 'usage_events', 'topups', 'topups_v2'");
+    expect(migration.indexOf("ADD CONSTRAINT")).toBeLessThan(
+      migration.indexOf("DROP CONSTRAINT"),
+    );
+    expect(migration.indexOf("VALIDATE CONSTRAINT")).toBeLessThan(
+      migration.indexOf("DROP CONSTRAINT"),
+    );
+  });
 });

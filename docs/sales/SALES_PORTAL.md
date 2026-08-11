@@ -116,7 +116,9 @@ of reaching SQL as an out-of-range value.
   the watermark; referred rows still require `paid_at >= attributed created_at`. Equal `paid_at`
   values are independently resumable. Response remains
   `{items:[{id,paymentId,userId,amountNano,paidAt}], nextCursor}`. The Commerce producer ships first;
-  Sales keeps consuming legacy `topups` until the separate consumer checkpoint is GREEN.
+  Sales keeps consuming legacy `topups` until the separate consumer checkpoint is GREEN. Sales
+  migration `0016_topups_v2_cursor.sql` first reserves the independent `topups_v2` key in
+  `sync_cursors`; it neither rewrites the legacy timestamp cursor nor activates the new consumer.
 - `POST /v1/internal/sales/referral-discount` — records the salesperson's discount "floor" for a
   referral as partner attribution. Body `{userId, floorBps (0..9500), override?, actorId?}` →
   `{applied, multiplierBp}`. The floor does not move any price: B2C pricing is the stored account
