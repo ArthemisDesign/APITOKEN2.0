@@ -2088,28 +2088,6 @@ pub fn account_settle_in(
     Ok(bal)
 }
 
-/// Per-provider discount rows of the account this key belongs to. One small indexed read on the
-/// same connection as the auth JOIN; an account without overrides returns an empty vector and is
-/// priced by `accounts.mult_bp` alone.
-fn sqlite_account_provider_discounts_for_key(
-    conn: &Connection,
-    key: &str,
-) -> Result<Vec<(String, i64)>> {
-    let mut statement = conn.prepare(
-        "SELECT d.provider_id, d.mult_bp FROM account_provider_discounts d \
-         JOIN api_keys k ON k.account_id = d.account_id \
-         WHERE k.key = ?1 ORDER BY d.provider_id",
-    )?;
-    let rows = statement.query_map(rusqlite::params![key], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-    })?;
-    let mut discounts = Vec::new();
-    for row in rows {
-        discounts.push(row?);
-    }
-    Ok(discounts)
-}
-
 /// Read every per-provider discount of one account (control-plane listing).
 pub fn account_provider_discounts(
     conn: &Connection,
@@ -2186,36 +2164,62 @@ pub fn ensure_valid_provider_discount(provider_id: &str, mult_bp: i64) -> Result
     Ok(())
 }
 
-/// Резолв ключа в аккаунт для авторизации запроса (JOIN api_keys→accounts).
+/// Resolve the key, account and every provider override in one database snapshot. The left join
+/// keeps an account with no overrides as one row, while the bounded provider table contributes at
+/// most five rows; a pricing write is therefore visible atomically on the next authorization.
 pub fn key_account(conn: &Connection, key: &str) -> Result<Option<KeyAuth>> {
-    let provider_mult_bp = sqlite_account_provider_discounts_for_key(conn, key)?;
-    let row = conn.query_row(
+    let mut statement = conn.prepare(
         "SELECT a.id, a.mult_bp, a.balance_nano, k.spent_nano, k.reserved_nano, \
          k.spend_limit_nano, k.expires_ts, \
-         (COALESCE(k.status,'active')='active' AND COALESCE(a.status,'active')='active') \
+         (COALESCE(k.status,'active')='active' AND COALESCE(a.status,'active')='active'), \
+         d.provider_id, d.mult_bp \
          FROM api_keys k \
          JOIN accounts a ON a.id = k.account_id \
-         WHERE k.key = ?1",
-        rusqlite::params![key],
-        |r| {
-            Ok(KeyAuth {
-                account_id: r.get(0)?,
-                mult_bp: r.get(1)?,
-                provider_mult_bp: provider_mult_bp.clone(),
-                balance_nano: r.get(2)?,
-                spent_nano: r.get(3)?,
-                reserved_nano: r.get(4)?,
-                spend_limit_nano: r.get(5)?,
-                expires_ts: r.get(6)?,
-                active: r.get::<_, i64>(7)? != 0,
-            })
-        },
-    );
-    match row {
-        Ok(auth) => Ok(Some(auth)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(error) => Err(error.into()),
+         LEFT JOIN account_provider_discounts d ON d.account_id = a.id \
+         WHERE k.key = ?1 ORDER BY d.provider_id",
+    )?;
+    let mut rows = statement.query(rusqlite::params![key])?;
+    let Some(first) = rows.next()? else {
+        return Ok(None);
+    };
+    let account_id = first.get(0)?;
+    let mult_bp = first.get(1)?;
+    let balance_nano = first.get(2)?;
+    let spent_nano = first.get(3)?;
+    let reserved_nano = first.get(4)?;
+    let spend_limit_nano = first.get(5)?;
+    let expires_ts = first.get(6)?;
+    let active = first.get::<_, i64>(7)? != 0;
+    let mut provider_mult_bp = Vec::with_capacity(DISCOUNT_PROVIDER_IDS.len());
+    match (
+        first.get::<_, Option<String>>(8)?,
+        first.get::<_, Option<i64>>(9)?,
+    ) {
+        (Some(provider), Some(multiplier)) => provider_mult_bp.push((provider, multiplier)),
+        (None, None) => {}
+        _ => bail!("provider discount row is structurally invalid"),
     }
+    while let Some(row) = rows.next()? {
+        match (
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<i64>>(9)?,
+        ) {
+            (Some(provider), Some(multiplier)) => provider_mult_bp.push((provider, multiplier)),
+            (None, None) => {}
+            _ => bail!("provider discount row is structurally invalid"),
+        }
+    }
+    Ok(Some(KeyAuth {
+        account_id,
+        mult_bp,
+        provider_mult_bp,
+        balance_nano,
+        spent_nano,
+        reserved_nano,
+        spend_limit_nano,
+        expires_ts,
+        active,
+    }))
 }
 
 /// Консистентный ОНЛАЙН-бэкап всей БД в `out_path` через `VACUUM INTO` (best-practice для живого

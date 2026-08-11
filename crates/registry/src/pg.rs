@@ -2117,23 +2117,6 @@ impl PgStore {
         }
         Ok(())
     }
-    /// Per-provider discount rows of the account this key belongs to. Two small primary-key reads
-    /// per authorization instead of one is the entire cost of per-provider pricing; the table
-    /// holds at most one row per provider per account.
-    fn provider_discounts_for_key(&mut self, key: &str) -> Result<Vec<(String, i64)>> {
-        Ok(self
-            .client
-            .query(
-                "SELECT d.provider_id,d.mult_bp FROM account_provider_discounts d
-                   JOIN api_keys k ON k.account_id=d.account_id
-                  WHERE k.key=$1 ORDER BY d.provider_id",
-                &[&key],
-            )?
-            .into_iter()
-            .map(|row| (row.get(0), row.get(1)))
-            .collect())
-    }
-
     /// Read every per-provider discount of one account (control-plane listing).
     pub fn account_provider_discounts(&mut self, account_id: &str) -> Result<Vec<(String, i64)>> {
         Ok(self
@@ -2184,18 +2167,33 @@ impl PgStore {
     }
 
     pub fn key_account(&mut self, key: &str) -> Result<Option<KeyAuth>> {
-        let provider_mult_bp = self.provider_discounts_for_key(key)?;
-        let Some(row) = self.client.query_opt(
+        // Account state and pricing must be one statement: besides removing a network round trip
+        // from every authorization, this prevents a concurrent override edit from being paired
+        // with account/key fields read from a different PostgreSQL snapshot.
+        let rows = self.client.query(
             "SELECT a.id,a.mult_bp,a.balance_nano,k.spent_nano,k.reserved_nano,
-                    k.spend_limit_nano,k.expires_ts,(k.status='active' AND a.status='active')
+                    k.spend_limit_nano,k.expires_ts,(k.status='active' AND a.status='active'),
+                    d.provider_id,d.mult_bp
                FROM api_keys k
                JOIN accounts a ON a.id=k.account_id
-              WHERE k.key=$1",
+               LEFT JOIN account_provider_discounts d ON d.account_id=a.id
+              WHERE k.key=$1 ORDER BY d.provider_id NULLS LAST",
             &[&key],
-        )?
-        else {
+        )?;
+        let Some(row) = rows.first() else {
             return Ok(None);
         };
+        let mut provider_mult_bp = Vec::with_capacity(crate::DISCOUNT_PROVIDER_IDS.len());
+        for discount in &rows {
+            match (
+                discount.get::<_, Option<String>>(8),
+                discount.get::<_, Option<i64>>(9),
+            ) {
+                (Some(provider), Some(multiplier)) => provider_mult_bp.push((provider, multiplier)),
+                (None, None) => {}
+                _ => bail!("provider discount row is structurally invalid"),
+            }
+        }
         Ok(Some(KeyAuth {
             account_id: row.get(0),
             mult_bp: row.get(1),

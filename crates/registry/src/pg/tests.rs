@@ -1,4 +1,5 @@
 use super::*;
+use crate::{PROVIDER_ANTHROPIC, PROVIDER_GOOGLE};
 use std::sync::{Arc, Barrier};
 
 
@@ -1553,6 +1554,48 @@ fn stage2_fault_matrix() {
         Some(1_000)
     );
     assert!(pg.account_topup("acct", 999, Some("seed")).is_err());
+
+    // The hot authorization statement returns account/key state and the entire bounded pricing
+    // override set from one PostgreSQL snapshot. A change is visible on the next call without a
+    // TTL cache, and absent overrides preserve the account default.
+    let auth = pg.key_account("key").unwrap().unwrap();
+    assert!(auth.active);
+    assert!(auth.provider_mult_bp.is_empty());
+    assert_eq!(auth.mult_for(PROVIDER_OPENAI), 2_000);
+    pg.set_account_provider_discount("acct", PROVIDER_OPENAI, 2_500, now())
+        .unwrap();
+    pg.set_account_provider_discount("acct", PROVIDER_GOOGLE, 10_000, now())
+        .unwrap();
+    let auth = pg.key_account("key").unwrap().unwrap();
+    assert_eq!(
+        auth.provider_mult_bp,
+        vec![
+            (PROVIDER_GOOGLE.to_string(), 10_000),
+            (PROVIDER_OPENAI.to_string(), 2_500),
+        ]
+    );
+    assert_eq!(auth.mult_for(PROVIDER_OPENAI), 2_500);
+    assert_eq!(auth.mult_for(PROVIDER_ANTHROPIC), 2_000);
+    assert!(pg
+        .clear_account_provider_discount("acct", PROVIDER_OPENAI)
+        .unwrap());
+    assert!(pg
+        .clear_account_provider_discount("acct", PROVIDER_GOOGLE)
+        .unwrap());
+    assert!(pg
+        .key_account("key")
+        .unwrap()
+        .unwrap()
+        .provider_mult_bp
+        .is_empty());
+
+    pg.account_set_status("acct", "disabled").unwrap();
+    assert!(!pg.key_account("key").unwrap().unwrap().active);
+    pg.account_set_status("acct", "active").unwrap();
+    pg.key_set_status("key", "disabled").unwrap();
+    assert!(!pg.key_account("key").unwrap().unwrap().active);
+    pg.key_set_status("key", "active").unwrap();
+    assert!(pg.key_account("key").unwrap().unwrap().active);
 
     let owner = pg.claim_instance("engine-a", 60).unwrap();
     pg.account_create("policy-acct", None, 10_000).unwrap();

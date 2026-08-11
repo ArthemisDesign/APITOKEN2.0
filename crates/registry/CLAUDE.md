@@ -128,8 +128,10 @@ side effect. `serve` may only perform the read-only schema verification before c
 - **Account discounts (`account_provider_discounts`, migrations `0043` + `0046`)** — the entire pricing
   policy. An account carries one default multiplier (`accounts.mult_bp`) and, for a provider whose
   terms differ, one override row; `key_account` returns both, and the caller resolves them with
-  `KeyAuth::mult_for(provider_id)`. Writes are `set_account_provider_discount` /
-  `clear_account_provider_discount`, bounded to `0..=10000` bp and to the five engine provider ids;
+  `KeyAuth::mult_for(provider_id)`. The hot authorization read joins key, account and every bounded
+  override in one database statement/snapshot; no TTL cache may delay a pricing edit. Writes are
+  `set_account_provider_discount` / `clear_account_provider_discount`, bounded to `0..=10000` bp
+  and to the five engine provider ids;
   PostgreSQL enforces that same closed set (`anthropic|openai|google|kimi|glm`) in the table; the
   `zhipu` word in migration 0043's historical comment was never a runtime provider id. Fresh
   SQLite audit databases carry the same provider/range checks in their CREATE TABLE; old snapshots
