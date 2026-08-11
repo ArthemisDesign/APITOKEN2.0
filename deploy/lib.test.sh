@@ -409,6 +409,37 @@ fi
 grep -Fq 'predates the classified compatibility floor' "$TEMP/pre-floor.out" \
   || fail "pre-floor markerless refusal was not explicit"
 
+# A valid modern compatibility marker cannot make a pre-retirement binary selectable. The
+# permanent floor is about schema readers, independently of the HTTP capability matrix above.
+engine_retirement_floor_release="$compat_root/$PRICING_RETIREMENT_ENGINE_ROLLBACK_FLOOR_SHA"
+commerce_retirement_floor_release="$compat_root/$PRICING_RETIREMENT_COMMERCE_ROLLBACK_FLOOR_SHA"
+mkdir -p "$engine_retirement_floor_release" "$commerce_retirement_floor_release"
+require_pricing_retirement_rollback_floor engine "$engine_retirement_floor_release"
+require_pricing_retirement_rollback_floor commerce "$commerce_retirement_floor_release"
+for component in engine commerce; do
+  case "$component" in
+    engine) floor=$PRICING_RETIREMENT_ENGINE_ROLLBACK_FLOOR_SHA ;;
+    commerce) floor=$PRICING_RETIREMENT_COMMERCE_ROLLBACK_FLOOR_SHA ;;
+  esac
+  before_floor=$(git -C "$ROOT" rev-parse "$floor^")
+  before_floor_release="$compat_root/$before_floor"
+  mkdir -p "$before_floor_release"
+  if (require_pricing_retirement_rollback_floor "$component" "$before_floor_release") \
+      >"$TEMP/$component-retirement-floor.out" 2>&1; then
+    fail "$component rollback floor accepted a pre-retirement release"
+  fi
+  grep -Fq "$component rollback release predates retired-pricing reader-removal floor $floor" \
+    "$TEMP/$component-retirement-floor.out" \
+    || fail "$component rollback floor refusal did not name the fixed boundary"
+done
+
+[[ $(grep -Fc 'require_pricing_retirement_rollback_floor engine "$ENGINE_TARGET"' \
+  "$ROOT/deploy/rollback.sh") == 1 ]] \
+  || fail "engine rollback target is not checked against the pricing-retirement floor exactly once"
+[[ $(grep -Fc 'require_pricing_retirement_rollback_floor commerce "$API_TARGET"' \
+  "$ROOT/deploy/rollback.sh") == 1 ]] \
+  || fail "commerce rollback target is not checked against the pricing-retirement floor exactly once"
+
 (
   list_active_engine_releases() { printf '%s\n' "$scalar_engine"; }
   require_commerce_release_compatible_with_active_engines \
@@ -445,6 +476,10 @@ assert_guard_before_mutation "$ROOT/deploy/api-bluegreen.sh" \
   '^require_commerce_release_compatible_with_active_engines' '^begin_cutover$'
 assert_guard_before_mutation "$ROOT/deploy/engine-bluegreen.sh" \
   '^require_engine_release_compatible_with_active_commerce' '^begin_cutover$'
+assert_guard_before_mutation "$ROOT/deploy/engine-bluegreen.sh" \
+  '^require_pricing_retirement_rollback_floor engine "$CURRENT_RELEASE"' '^begin_cutover$'
+assert_guard_before_mutation "$ROOT/deploy/api-bluegreen.sh" \
+  '^require_pricing_retirement_rollback_floor commerce "$CURRENT_RELEASE"' '^begin_cutover$'
 assert_guard_before_mutation "$ROOT/deploy/rollback.sh" \
   '^preflight_compatibility$' '^begin_activation recovery_restart_selected_services$'
 assert_guard_before_mutation "$ROOT/deploy/deploy.sh" \

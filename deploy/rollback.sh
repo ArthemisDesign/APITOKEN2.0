@@ -132,6 +132,7 @@ preflight_engine() {
   ENGINE_ORIGINAL=$(captured_link_target "$ENGINE_RELEASE_ROOT/current")
   if [[ -n "$ENGINE_ORIGINAL" ]]; then
     validate_engine_release "$ENGINE_RELEASE_ROOT" "$ENGINE_ORIGINAL" "$(basename -- "$ENGINE_ORIGINAL")"
+    require_pricing_retirement_rollback_floor engine "$ENGINE_ORIGINAL"
   fi
 
   if [[ -n "$SHA" ]]; then
@@ -142,6 +143,7 @@ preflight_engine() {
     ENGINE_TARGET=$previous
   fi
   validate_engine_release "$ENGINE_RELEASE_ROOT" "$ENGINE_TARGET" "$(basename -- "$ENGINE_TARGET")"
+  require_pricing_retirement_rollback_floor engine "$ENGINE_TARGET"
 }
 
 preflight_api() {
@@ -151,6 +153,7 @@ preflight_api() {
   API_ORIGINAL=$(captured_link_target "$COMMERCE_RELEASE_ROOT/current")
   if [[ -n "$API_ORIGINAL" ]]; then
     validate_commerce_release "$COMMERCE_RELEASE_ROOT" "$API_ORIGINAL" "$(basename -- "$API_ORIGINAL")"
+    require_pricing_retirement_rollback_floor commerce "$API_ORIGINAL"
   fi
 
   if [[ -n "$SHA" ]]; then
@@ -161,6 +164,7 @@ preflight_api() {
     API_TARGET=$previous
   fi
   validate_commerce_release "$COMMERCE_RELEASE_ROOT" "$API_TARGET" "$(basename -- "$API_TARGET")"
+  require_pricing_retirement_rollback_floor commerce "$API_TARGET"
 }
 
 preflight_compatibility() {

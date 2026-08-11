@@ -833,6 +833,7 @@ if [[ $DRY_RUN == 0 ]]; then
 fi
 CURRENT_RELEASE=$(required_current_release_path "$ENGINE_RELEASE_ROOT")
 validate_release_marker "$CURRENT_RELEASE" "$(basename -- "$CURRENT_RELEASE")"
+require_pricing_retirement_rollback_floor engine "$CURRENT_RELEASE"
 [[ -x "$CURRENT_RELEASE/claude-api" ]] || die "current engine binary is missing"
 require_engine_release_compatible_with_active_commerce \
   "$CURRENT_RELEASE" "$COMMERCE_RELEASE_ROOT"
@@ -890,6 +891,7 @@ fi
 PREVIOUS_RELEASE=$(release_path_from_link "$ENGINE_RELEASE_ROOT" "$ENGINE_RELEASE_ROOT/previous") \
   || die "previous engine release is required for provider cutover rollback"
 validate_release_marker "$PREVIOUS_RELEASE" "$(basename -- "$PREVIOUS_RELEASE")"
+require_pricing_retirement_rollback_floor engine "$PREVIOUS_RELEASE"
 [[ -f "$PREVIOUS_RELEASE/$PROVIDER_CAPABILITY_MARKER" \
     && ! -L "$PREVIOUS_RELEASE/$PROVIDER_CAPABILITY_MARKER" ]] \
   || die "previous engine release lacks the fixed-provider rollback capability"

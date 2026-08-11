@@ -246,14 +246,18 @@ All gates are conjunctive. A failure postpones the drop; it is never waived beca
    migration parent. It scans every engine and commerce runtime source path and pins the 31/43
    manifest, the 43 Drizzle symbol mappings and the removed route fragments. The migration commit
    must not remove or weaken this proof.
-3. **No selectable rollback consumer.** Every directory below `/srv/claude-api/releases` must be a
-   descendant of `e8cf49ae121b581042c582ddb3621ee29fae8103`, the release that removed the final
-   diagnostic CLI reader. Every directory below `/opt/apitoken/releases` must be a descendant of
-   `0c236aa2334f539786f53429d815d6b7c791adbe`, the scalar-only commerce runtime. `current`,
-   `previous`, every active PID and every recorded deployment SHA are included; checking only the
-   serving symlink is insufficient. As of 2026-08-11 this gate is intentionally RED: twelve retained
-   engine rollback releases predate `e8cf49ae`. Do not delete schema until normal retention or an
-   independently reviewed rollback fence makes them unselectable.
+3. **No selectable rollback consumer.** Every supported engine rollback target must descend from
+   `e8cf49ae121b581042c582ddb3621ee29fae8103`, the release that removed the final diagnostic CLI
+   reader. Every supported commerce rollback target must descend from
+   `0c236aa2334f539786f53429d815d6b7c791adbe`, the scalar-only commerce runtime. The canonical
+   `rollback.sh` enforces those exact Git-ancestry floors before any `current`/`previous` link move,
+   including the watchdog's automatic post-admission rollback path. `current`, `previous`, every
+   active PID and every recorded deployment SHA must also pass the same boundary; checking only the
+   serving symlink is insufficient. Older immutable directories may remain during normal ten-release
+   retention, but they are not selectable and manual link movement is forbidden. The 2026-08-11
+   inventory found twelve such old engine directories; their presence is no longer a contraction
+   blocker only after the floor-bearing controller is GREEN in production and a real dry-run proves
+   that one pre-floor SHA is rejected while `previous` is accepted.
 4. **Consumer watermarks.** Every currently mapped commerce account must have a pricing cursor and
    complete its polling cycle; `last_ledger_id` must equal `topups_scanned_through_ledger_id`, and
    any live engine-ledger gap must be small and closing. Sales `attributions`, `usage_events` and

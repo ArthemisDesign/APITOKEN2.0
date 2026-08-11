@@ -495,6 +495,7 @@ log "preflighting blue-green API cutover (dry-run=$DRY_RUN with-worker=$WITH_WOR
 acquire_deploy_lock "$DEPLOY_LOCK_FILE"
 CURRENT_RELEASE=$(required_current_release_path "$COMMERCE_RELEASE_ROOT")
 validate_release_marker "$CURRENT_RELEASE" "$(basename -- "$CURRENT_RELEASE")"
+require_pricing_retirement_rollback_floor commerce "$CURRENT_RELEASE"
 [[ -r "$CURRENT_RELEASE/apps/api/dist/main.js" ]] || die "commerce API artifact is missing: $CURRENT_RELEASE/apps/api/dist/main.js"
 require_commerce_release_compatible_with_active_engines \
   "$CURRENT_RELEASE" "$ENGINE_RELEASE_ROOT"

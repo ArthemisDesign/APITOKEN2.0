@@ -643,6 +643,15 @@ unreadable is rejected. The controller compares targets with the immutable relea
 active API, worker and Control API PID, not with `current`, because link selection precedes
 blue-green process admission.
 
+The compatibility matrix cannot by itself protect a later schema contraction: an old bridge may
+still speak scalar HTTP while reading the retired policy/funding tables. The canonical rollback
+controller therefore also has permanent reader-removal floors. Engine targets must descend from
+`e8cf49ae121b581042c582ddb3621ee29fae8103`; commerce targets must descend from
+`0c236aa2334f539786f53429d815d6b7c791adbe`. Both explicit-SHA and `previous` selection, including
+automatic post-admission recovery, check Git ancestry before changing a release link. Retained
+pre-floor directories are audit/rollback-window artifacts only and cannot be selected through a
+supported path. Never bypass the floor by moving `current` or `previous` manually.
+
 Engine schema migration `0048` is also a permanent mixed-version money fence. A draining engine
 older than the account-wide settlement-floor runtime may finish reservations it opened without
 pricing pins, but PostgreSQL rolls back any attempt to cross the shared account floor or to

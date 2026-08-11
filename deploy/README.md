@@ -418,6 +418,13 @@ The first command selects the immutable rollback release without touching either
 
 Rollback fully preflights every selected target before mutating anything: release directory, `.release-sha`, API and migration artifacts or engine binary, plus original `current` and `previous` states for all selected components. It activates links under the same `ERR`/`EXIT`/`INT`/`TERM` recovery trap. PostgreSQL engine and commerce slot lifecycles remain exclusively owned by their blue-green controllers, but authbot is an engine-release singleton: `--engine-bluegreen` reconciles it to the selected rollback release before the later provider-slot cutover.
 
+Preflight also enforces permanent Git-ancestry floors for the retired pricing schema. An engine
+target must descend from `e8cf49ae121b581042c582ddb3621ee29fae8103`; a commerce target must
+descend from `0c236aa2334f539786f53429d815d6b7c791adbe`. This applies equally to explicit SHAs,
+`previous`, and the watchdog's automatic post-admission recovery. Compatibility markers do not
+override these floors: a bridge binary that can speak scalar HTTP may still read tables that the
+retention-gated contraction will remove.
+
 If the target equals `current`, rollback is a link-bookkeeping no-op and does not overwrite `previous`. If activation, authbot reconciliation, engine restart/readiness, or a signal fails, recovery attempts to restore every changed link, reconciles authbot to the original engine release only when engine `current` verifies there, and restarts selected legacy engine services best-effort. A failed link restoration or reconciliation is reported as incomplete recovery; authbot remains untouched when engine `current` cannot be verified at the original release. Rollback never changes database state.
 
 ## Overrides and dry-run safety

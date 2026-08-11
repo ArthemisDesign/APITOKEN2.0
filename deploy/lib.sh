@@ -441,6 +441,8 @@ LEGACY_SCALAR_ENGINE_FLOOR_SHA=2563b04328ce5911f3e7893df298da15535f5e95
 LEGACY_SCALAR_COMMERCE_FLOOR_SHA=261900596666763bee0f5795d4a77ebfe144ddf8
 LEGACY_SCALAR_ONLY_COMMERCE_SHA=e725b51ec6a166a40b8b232f3cc3a0617ba6d9b6
 LEGACY_SCALAR_ONLY_ENGINE_SHA=a6612450dfa521ee236d2ab0ac03a64e15c86557
+PRICING_RETIREMENT_ENGINE_ROLLBACK_FLOOR_SHA=e8cf49ae121b581042c582ddb3621ee29fae8103
+PRICING_RETIREMENT_COMMERCE_ROLLBACK_FLOOR_SHA=0c236aa2334f539786f53429d815d6b7c791adbe
 
 validate_compatibility_capability_list() {
   local value=$1 label=$2 capability seen=,
@@ -513,6 +515,30 @@ compatibility_commit_is_ancestor() {
   repository=$(compatibility_history_repository)
   git -c safe.directory="$repository" -C "$repository" merge-base --is-ancestor \
     "$ancestor" "$descendant"
+}
+
+# Retired pricing tables remain only as time-bounded audit evidence. Once the controller carrying
+# this floor is installed, a supported rollback must never reintroduce a reader or writer for that
+# schema: those binaries would become an undefined-table outage after the later contraction.
+# Check the immutable release SHA against fixed, reviewed history before any release link moves.
+require_pricing_retirement_rollback_floor() {
+  [[ $# -eq 2 ]] || die "pricing-retirement rollback floor requires a component and release"
+  local component=$1 release=$2 floor sha repository
+  sha=$(basename -- "$release")
+  validate_sha "$sha"
+  case "$component" in
+    engine) floor=$PRICING_RETIREMENT_ENGINE_ROLLBACK_FLOOR_SHA ;;
+    commerce) floor=$PRICING_RETIREMENT_COMMERCE_ROLLBACK_FLOOR_SHA ;;
+    *) die "unknown pricing-retirement rollback component: $component" ;;
+  esac
+
+  repository=$(compatibility_history_repository)
+  git -c safe.directory="$repository" -C "$repository" cat-file -e "$floor^{commit}" 2>/dev/null \
+    || die "Git history lacks the configured $component pricing-retirement floor: $floor"
+  git -c safe.directory="$repository" -C "$repository" cat-file -e "$sha^{commit}" 2>/dev/null \
+    || die "Git history cannot classify $component rollback release $sha"
+  git -c safe.directory="$repository" -C "$repository" merge-base --is-ancestor "$floor" "$sha" \
+    || die "$component rollback release predates retired-pricing reader-removal floor $floor: $sha"
 }
 
 validate_legacy_compatibility_commit() {
@@ -626,6 +652,7 @@ resolve_active_unit_release() {
       path_is_direct_release "$root" "$release" \
         || die "active commerce unit $unit runs outside direct immutable releases: $runtime"
       validate_commerce_release "$root" "$release" "$(basename -- "$release")"
+      require_pricing_retirement_rollback_floor commerce "$release"
       ;;
     engine)
       runtime=$(realpath -- "/proc/$pid/exe" 2>/dev/null) \
@@ -636,6 +663,7 @@ resolve_active_unit_release() {
       path_is_direct_release "$root" "$release" \
         || die "active engine unit $unit runs outside direct immutable releases: $runtime"
       validate_engine_release "$root" "$release" "$(basename -- "$release")"
+      require_pricing_retirement_rollback_floor engine "$release"
       ;;
     *) die "unknown compatibility process role: $role" ;;
   esac
