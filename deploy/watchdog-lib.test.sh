@@ -3431,6 +3431,7 @@ const required = new Set([
   "apps/devbot",
   "apps/openkeys",
   "apps/sales-api",
+  "apps/sales-web",
   "apps/web",
   "apps/worker",
   "packages/db",
@@ -3440,7 +3441,6 @@ const required = new Set([
   "packages/sales-db",
 ]);
 const explicitlyTestless = new Set([
-  "apps/sales-web",
   "packages/contracts",
   // Только схема, пул и раннер миграций: собственной логики, которую можно
   // проверить в отрыве от PostgreSQL, здесь нет. Денежная арифметика OpenKeys
