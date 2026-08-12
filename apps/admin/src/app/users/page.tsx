@@ -3,8 +3,7 @@
 // Пользователи — порт 1:1 функций users()/renderUsers()/bindUserPage()/usersCsv()/
 // creditUser()/userAction() из crates/server/src/admin-panel.js (строки 637-730).
 // Серверный поиск и пагинация /admin/users (limit 50), фильтры q/status/auth,
-// сортировки — ровно USER_SORTS. Автоопроса нет (в легаси для вкладки delay 0 —
-// только фокус и кнопка ↻, уже встроены в usePoll).
+// сортировки — ровно USER_SORTS. Обновления приходят по resource-specific SSE.
 import {
   memo,
   startTransition,
@@ -14,8 +13,8 @@ import {
   type FormEvent,
   type ReactElement,
 } from "react";
-import { api, send } from "@/lib/api";
-import { usePoll } from "@/lib/usePoll";
+import { send } from "@/lib/api";
+import { useResources } from "@/lib/resources";
 import { toast } from "@/lib/toast";
 import { dialog } from "@/lib/dialog";
 import { csvDate, downloadCsv } from "@/lib/csv";
@@ -46,36 +45,6 @@ import {
 export const GIFT_CREDIT_REASON = "admin panel gift credit (not an external payment)";
 
 type UsersOverview = EngineOverview & { demand?: EngineDemand };
-
-interface UsersData {
-  page: AdminUsersPage;
-  dashboard: CommerceDashboard | null;
-  overview: UsersOverview | null;
-  /** Фактический offset после серверного отката за последнюю страницу. */
-  effectiveOffset: number;
-}
-
-// Все три источника параллельно; падение любого → null, панель продолжает работать.
-// Если offset ушёл за конец (клиенты удалились/отфильтровались), легаси откатывает
-// offset на последнюю валидную страницу и перезапрашивает — повторяем это здесь.
-async function loadUsers(state: UserPageState): Promise<UsersData> {
-  const [userData, dashboard, overview] = await Promise.all([
-    api<AdminUsersPage>(`/admin/users?${usersQuery(state)}`).catch(() => null),
-    api<CommerceDashboard>("/admin/dashboard").catch(() => null),
-    api<UsersOverview>("/overview").catch(() => null),
-  ]);
-  let page = userData ?? { users: [], total: 0, limit: state.limit, offset: state.offset };
-  let effectiveOffset = state.offset;
-  const retryOffset = clampedOffset(state.offset, state.limit, page.total ?? 0);
-  if (retryOffset !== null) {
-    effectiveOffset = retryOffset;
-    const retried = await api<AdminUsersPage>(
-      `/admin/users?${usersQuery({ ...state, offset: retryOffset })}`,
-    ).catch(() => null);
-    page = retried ?? { users: [], total: 0, limit: state.limit, offset: retryOffset };
-  }
-  return { page, dashboard, overview, effectiveOffset };
-}
 
 const show = (value: number | null | undefined): number | "—" => value ?? "—";
 
@@ -186,19 +155,26 @@ export default function UsersPage() {
   const [businessTarget, setBusinessTarget] = useState<BusinessConversionTarget | null>(null);
 
   const query = usersQuery(page);
-  const { data: result, refresh } = usePoll(`/admin/users?${query}`, () => loadUsers(page));
+  const { data: result, isLoading } = useResources<{
+    page: AdminUsersPage;
+    dashboard: CommerceDashboard;
+    overview: UsersOverview;
+  }>({
+    page: `/admin/users?${query}`,
+    dashboard: "/admin/dashboard",
+    overview: "/overview",
+  });
   const { openSpendStats, spendStatsModal } = useSpendStatsModal();
 
   // Сервер откатил offset за последнюю страницу — синхронизируем состояние,
   // чтобы пейджер и следующие запросы шли от фактического offset.
-  const effectiveOffset = result?.effectiveOffset ?? page.offset;
+  const effectiveOffset = clampedOffset(page.offset, page.limit, result.page?.total ?? 0) ?? page.offset;
+
   useEffect(() => {
-    if (result && result.effectiveOffset !== page.offset) {
-      startTransition(() =>
-        setPage((prev) => (prev.offset === result.effectiveOffset ? prev : { ...prev, offset: result.effectiveOffset })),
-      );
+    if (result.page && effectiveOffset !== page.offset) {
+      startTransition(() => setPage((current) => ({ ...current, offset: effectiveOffset })));
     }
-  }, [result, page.offset]);
+  }, [effectiveOffset, page.offset, result.page]);
 
   // Применить весь черновик формы: легаси-apply читает все поля сразу, поэтому
   // смена сортировки подхватывает и ещё не отправленный текст поиска. `draft` в
@@ -268,7 +244,6 @@ export default function UsersPage() {
         });
         sessionStorage.removeItem(pendingKey);
         toast("Готово. Новый баланс: " + money(result.balance_usd));
-        refresh();
       } catch (cause) {
         toast(
           (cause instanceof Error ? cause.message : String(cause)) +
@@ -279,7 +254,7 @@ export default function UsersPage() {
         setBusy(null);
       }
     },
-    [refresh],
+    [],
   );
 
   const userAction = useCallback(
@@ -324,14 +299,13 @@ export default function UsersPage() {
               ? ` · новый баланс: $${result.balance_usd}${result.idempotent_replay ? " (уже был отозван ранее)" : ""}`
               : ""),
         );
-        refresh();
       } catch (cause) {
         toast(cause instanceof Error ? cause.message : String(cause), "bad");
       } finally {
         setBusy(null);
       }
     },
-    [refresh],
+    [],
   );
 
   const convertToBusiness = useCallback(
@@ -347,17 +321,16 @@ export default function UsersPage() {
         });
         setBusinessTarget(null);
         toast(`Готово · B2B, базовая скидка ${result.discount_percent ?? discountPercent}%`);
-        refresh();
       } catch (cause) {
         toast(cause instanceof Error ? cause.message : String(cause), "bad");
       } finally {
         setBusy(null);
       }
     },
-    [businessTarget, refresh],
+    [businessTarget],
   );
 
-  if (!result) {
+  if (isLoading && Object.values(result).every((value) => value === undefined)) {
     return (
       <>
         <PageHead title="Пользователи" sub="данные загружаются, навигация уже доступна" />
@@ -366,7 +339,8 @@ export default function UsersPage() {
     );
   }
 
-  const { page: usersPage, dashboard, overview } = result;
+  const usersPage = result.page ?? { users: [], total: 0, limit: page.limit, offset: effectiveOffset };
+  const { dashboard, overview } = result;
   const users = usersPage.users ?? [];
   const total = usersPage.total ?? 0;
   const stats = dashboard?.users ?? {};
@@ -411,7 +385,10 @@ export default function UsersPage() {
         </label>
         <input
           id="search"
+          name="q"
           type="search"
+          autoComplete="off"
+          spellCheck={false}
           value={draft.q}
           onChange={(event) => setDraft((prev) => ({ ...prev, q: event.target.value }))}
           placeholder="email, имя или UUID…"
@@ -475,13 +452,14 @@ export default function UsersPage() {
               <th className="left">тариф</th>
               <th>баланс</th>
               <th>
-                <span
+                <button
+                  type="button"
+                  className="table-action"
                   onClick={openSpendStats}
                   title="Разбивка: сутки / 7 дней / 30 дней"
-                  style={{ cursor: "pointer" }}
                 >
                   потрачено
-                </span>
+                </button>
               </th>
               <th>пополнения</th>
               <th>ключи</th>

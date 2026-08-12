@@ -1,9 +1,8 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
-import { api } from "@/lib/api";
 import { nanoMoney } from "@/lib/format";
-import { usePoll } from "@/lib/usePoll";
+import { useResources } from "@/lib/resources";
 import { LoadingGrid, Pill } from "@/components/ui";
 import type {
   CapacityResponse,
@@ -22,21 +21,6 @@ import {
   type Provider,
   type WindowMetric,
 } from "./calculation";
-
-const POLL_INTERVAL_MS = 5_000;
-
-interface CalibrationSnapshot extends CalibrationPayload {
-  fetchedAt: number;
-}
-
-async function loadCalibration(): Promise<CalibrationSnapshot> {
-  const [capacity, codex, gemini] = await Promise.all([
-    api<CapacityResponse>("/capacity").catch(() => null),
-    api<CodexSubsResponse>("/codex-subs").catch(() => null),
-    api<GeminiSubsResponse>("/gemini-subs").catch(() => null),
-  ]);
-  return { capacity, codex, gemini, fetchedAt: Date.now() };
-}
 
 const PROVIDER_LABEL: Record<Provider, string> = {
   claude: "Claude",
@@ -113,6 +97,7 @@ function RangeControl({
         {label} <output>{value}%</output>
       </span>
       <input
+        name="percent"
         type="range"
         min="0"
         max="100"
@@ -126,7 +111,20 @@ function RangeControl({
 }
 
 export default function SalesCalculatorPage() {
-  const { data, isLoading } = usePoll("sales-calculator", loadCalibration, { interval: POLL_INTERVAL_MS });
+  const { data: partial, isLoading, updatedAt: fetchedAt } = useResources<{
+    capacity: CapacityResponse;
+    codex: CodexSubsResponse;
+    gemini: GeminiSubsResponse;
+  }>({
+    capacity: "/capacity",
+    codex: "/codex-subs",
+    gemini: "/gemini-subs",
+  });
+  const data: CalibrationPayload = useMemo(() => ({
+    capacity: partial.capacity ?? null,
+    codex: partial.codex ?? null,
+    gemini: partial.gemini ?? null,
+  }), [partial.capacity, partial.codex, partial.gemini]);
   const metrics = useMemo(() => (data ? buildProductMetrics(data) : []), [data]);
   const [selectedId, setSelectedId] = useState("claude-max20");
   const [quantity, setQuantity] = useState(1);
@@ -162,7 +160,7 @@ export default function SalesCalculatorPage() {
     setSubscriptionCost(nanoToEditableUsd(product?.defaultMonthlyCostNano ?? null));
   };
 
-  if (isLoading && !data) return <LoadingGrid count={8} />;
+  if (isLoading && Object.values(partial).every((value) => value === undefined)) return <LoadingGrid count={8} />;
 
   return (
     <div className="sales-calculator">
@@ -184,7 +182,7 @@ export default function SalesCalculatorPage() {
           <div>
             <strong>{sourceCount}/3 источника</strong>
             <small>
-              {data ? new Date(data.fetchedAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—"}
+              {fetchedAt ? new Date(fetchedAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—"}
             </small>
           </div>
           <div>
@@ -254,7 +252,7 @@ export default function SalesCalculatorPage() {
           <div className="calc-controls">
             <label className="calc-field">
               <span>Тариф</span>
-              <select value={selectedId} onChange={(event) => chooseProduct(event.target.value)}>
+              <select name="product" value={selectedId} onChange={(event) => chooseProduct(event.target.value)}>
                 {PRODUCT_CATALOG.map((product) => <option key={product.id} value={product.id}>{product.label}</option>)}
               </select>
               <small>калибровка обновляется автоматически</small>
@@ -262,6 +260,7 @@ export default function SalesCalculatorPage() {
             <label className="calc-field">
               <span>Подписок</span>
               <input
+                name="quantity"
                 type="number"
                 min="1"
                 max="10000"
@@ -274,8 +273,11 @@ export default function SalesCalculatorPage() {
             <label className="calc-field">
               <span>Цена подписки, $ / мес</span>
               <input
+                name="subscription_cost"
                 type="text"
                 inputMode="decimal"
+                autoComplete="off"
+                spellCheck={false}
                 placeholder="контрактная цена"
                 value={subscriptionCost}
                 onChange={(event) => setSubscriptionCost(event.target.value)}
@@ -355,7 +357,7 @@ export default function SalesCalculatorPage() {
         ))}. API-$ — эквивалент реально обслуженной смеси моделей, контекста, reasoning и tools.
         Значения со знаком ≈ масштабированы от live-калибровки; дополнительные недельные лимиты Claude/OpenAI могут не повторять пропорцию 5ч, поэтому 7д и 30д остаются оценкой до собственного измерения.
         Google публикует для AI Ultra верхнюю границу до 20× относительно AI Pro; до прямой Ultra-калибровки она показана как расчётная оценка.
-        Обновление — каждые 5 секунд. Полные email, OAuth, project и proxy в браузер не передаются.
+        Калибровка обновляется сразу по событиям provider runtime, без polling. Полные email, OAuth, project и proxy в браузер не передаются.
       </footer>
     </div>
   );

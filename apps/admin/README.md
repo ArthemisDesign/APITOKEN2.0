@@ -15,13 +15,16 @@ No secrets, and there never will be: the browser uses same-origin relative paths
 
 - `src/lib/api.ts` — `api<T>(path, opts)` / `send<T>(path, method, body)`: typed fetch
   for same-origin JSON, `ApiError` with the status and the message from the body.
-- `src/lib/usePoll.ts` — `usePoll(key, fetcher, { interval })`: SWR-like polling
-  (deduplication by key, pause on a hidden tab, revalidation on focus/remount,
-  stale-while-revalidate). `revalidateAll()` — the ↻ button in the sidebar; global refresh
-  and `refreshPoller(key)` call only sources with live subscribers, so an unmounted cohort
-  never performs a hidden request; its stale error card is removed on unsubscribe. Source
+- `src/lib/resources.ts` — URL-keyed external request cache: exact-URL in-flight deduplication,
+  retained last-good data (also while a filter/window URL changes), orphan request cancellation
+  and targeted mounted-only revalidation.
+  `src/lib/realtime.ts` owns one `EventSource` per producer feed and applies only `change`/`resync`
+  resource prefixes; heartbeat cannot initiate a request. Multi-source screens use independent
+  URL resources, so their ready sections render without waiting for the slowest endpoint. The sidebar ↻ explicitly
+  refreshes only resources on the current screen. An unmounted cohort never performs a hidden
+  request; its stale error card is removed on unsubscribe. Source
   error registry: `subscribeErrors(listener)` / `getErrors()`
-  (`PollError { key, message, dismissed }`), `dismissError(key)`.
+  (`ResourceError { key, message, dismissed }`), `dismissError(key)`.
 - `src/lib/toast.ts` — `toast(message, kind?)` (`kind: "ok" | "bad"`, defaults to
   `"ok"`; bad lives 9 s and has a ×, ok — 5 s) + `<Toaster/>` (mounted in the layout).
 - `src/lib/dialog.tsx` — `dialog(options): Promise<Record<string,string> | null>`,
@@ -42,9 +45,9 @@ No secrets, and there never will be: the browser uses same-origin relative paths
 - `src/components/ui.tsx` — `PageHead`, `SectionHeader`, `CardGrid`, `StatCard`,
   `Banner`, `Dot`, `Pill`, `TableCard`, `EmptyRow`, `LoadingGrid`, `Modal`
   (Esc/overlay close, Tab trap, focus restore; `wide` for wide modals).
-- `src/components/sidebar.tsx` — sidebar with navigation, refresh, and theme.
+- `src/components/sidebar.tsx` — sidebar with navigation, realtime health, current-screen refresh, and theme.
 - `src/components/error-center.tsx` — `<ErrorCenter/>` (mounted in the layout):
-  red cards for failing sources with ↻/×, reads the usePoll error registry.
+  red cards for failing sources with ↻/×, reads the shared request-cache error registry.
 - `src/components/spend-stats-modal.tsx` — the "Кто тратит" ("Who is spending") modal (`/spend-stats`,
   24h/7d/30d windows + arbitrary range, charged vs real-API and OpenKeys summary).
   Wiring: `const { openSpendStats, spendStatsModal } = useSpendStatsModal()`,
@@ -66,7 +69,7 @@ No secrets, and there never will be: the browser uses same-origin relative paths
   wei balances, current eligible requirements and payout window. Missing/malformed chain evidence
   is unavailable, never a fabricated zero; the page remains read-only.
 - `src/app/paying-users/page.tsx` — one read-only control room with independently filtered
-  `Клиенты` and `OpenKeys` cohorts. Only the active cohort mounts its 30-second poller. Commerce
+  `Клиенты` and `OpenKeys` cohorts. Only the active cohort mounts its realtime request. Commerce
   defaults to `funding=spenders`, retains the selected funding filter and always sends
   `include_usage=true`. The default contains every positive selected-window spender, including
   mixed/legacy/unattributed rows, with `spend_only` explicitly distinct from strict
@@ -98,11 +101,11 @@ No secrets, and there never will be: the browser uses same-origin relative paths
 
 ## Page conventions
 
-1. A page is `'use client'`, data via `usePoll("page-key", load, { interval })`;
-   all sources in a single `Promise.all` with `.catch(() => null)` per source
-   (degradation is silent, blocks show "—" / "источник недоступен" ("source unavailable")).
-   Intervals as in `admin-panel.js`: Overview and the active `/paying-users` cohort — 30 s,
-   Subscriptions and System — 10 s; the rest — no automatic polling (focus/↻ button only).
+1. A page is `'use client'`; one source uses `useResource<T>(actualUrl)`, while a multi-source
+   screen uses `useResources<T>({ section: actualUrl, … })`. Do not join independent page reads
+   behind `Promise.all`: each section must become visible and degradable on its own. Never add
+   `setInterval`, focus/visibility revalidation or a
+   heartbeat handler: producer `change`/`resync` events are the automatic update authority.
 2. Russian labels — verbatim from `admin-panel.js`.
 3. Money — only `nanoMoney` over integer strings; JS number for amounts is forbidden.
 4. While there is no data (`data === undefined`) — `PageHead` + `LoadingGrid`.

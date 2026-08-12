@@ -6,8 +6,9 @@
 // were negotiated separately, one override. There is no catalog to pick models from and no policy
 // version to fence: a saved change is queued on the durable pricing lane and is live on the
 // customer's next request.
-import { useCallback, useEffect, useState } from "react";
-import { api, send } from "@/lib/api";
+import { useCallback, useState } from "react";
+import { send } from "@/lib/api";
+import { useResource } from "@/lib/resources";
 import { LoadingGrid, Modal } from "@/components/ui";
 
 export const DISCOUNT_PROVIDERS = [
@@ -42,7 +43,6 @@ export function DiscountDialog(props: {
   target: DiscountDialogTarget | null;
   reason: string;
   onClose: () => void;
-  onSaved: () => void;
 }) {
   const target = props.target;
   return (
@@ -62,35 +62,38 @@ function DiscountDialogContent(props: {
   target: DiscountDialogTarget;
   reason: string;
   onClose: () => void;
-  onSaved: () => void;
 }) {
   const target = props.target;
-  const [draft, setDraft] = useState<ProviderDraft>({});
+  const pricingPath = `/admin/business-users/${target.userId}/pricing`;
+  const { data: current, error: loadError, isLoading: loading } = useResource<{
+    providers?: Record<string, number>;
+  }>(pricingPath);
+  if (loading) return <LoadingGrid count={2} />;
+  if (loadError || !current) {
+    return <div className="business-discount-error" role="alert">{loadError?.message ?? "не удалось прочитать скидки"}</div>;
+  }
+  return <DiscountEditor {...props} current={current} pricingPath={pricingPath} />;
+}
+
+function DiscountEditor(props: {
+  target: DiscountDialogTarget;
+  reason: string;
+  onClose: () => void;
+  current: { providers?: Record<string, number> };
+  pricingPath: string;
+}) {
+  const target = props.target;
+  const [draft, setDraft] = useState<ProviderDraft>(() => {
+    const next: ProviderDraft = {};
+    for (const provider of DISCOUNT_PROVIDERS) {
+      const value = props.current.providers?.[provider.id];
+      next[provider.id] = value === undefined ? "" : String(value);
+    }
+    return next;
+  });
   const [defaultPercent, setDefaultPercent] = useState(() => String(target.defaultPercent));
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    void api<{ providers?: Record<string, number> }>(`/admin/business-users/${target.userId}/pricing`)
-      .then((current) => {
-        if (!active) return;
-        const next: ProviderDraft = {};
-        for (const provider of DISCOUNT_PROVIDERS) {
-          const value = current.providers?.[provider.id];
-          next[provider.id] = value === undefined ? "" : String(value);
-        }
-        setDraft(next);
-        setLoading(false);
-      })
-      .catch((cause: unknown) => {
-        if (!active) return;
-        setError(cause instanceof Error ? cause.message : "не удалось прочитать скидки");
-        setLoading(false);
-      });
-    return () => { active = false; };
-  }, [target.userId]);
 
   const save = useCallback(async () => {
     const providers: Record<string, number | null> = {};
@@ -110,26 +113,23 @@ function DiscountDialogContent(props: {
     setSaving(true);
     setError(null);
     try {
-      await send(`/admin/business-users/${target.userId}/pricing`, "PATCH", {
+      await send(props.pricingPath, "PATCH", {
         discountPercent: parsedDefault,
         providers,
         reason: props.reason,
       });
-      props.onSaved();
       props.onClose();
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : "не удалось сохранить");
     } finally {
       setSaving(false);
     }
-  }, [defaultPercent, draft, props, target]);
+  }, [defaultPercent, draft, props]);
 
   return (
     <>
-      {loading ? <LoadingGrid count={2} /> : null}
       {error ? <div className="business-discount-error" role="alert">{error}</div> : null}
-      {!loading ? (
-        <div className="business-discount-editor">
+      <div className="business-discount-editor">
           <section className="business-default-discount" aria-labelledby="business-default-discount-label">
             <div>
               <span className="business-discount-kicker">Опорная ставка</span>
@@ -200,11 +200,10 @@ function DiscountDialogContent(props: {
               })}
             </div>
           </section>
-        </div>
-      ) : null}
+      </div>
       <div className="dlg-actions">
         <button type="button" className="btn ghost" onClick={props.onClose}>Отмена</button>
-        <button type="button" className="btn" disabled={loading || saving} onClick={() => void save()}>
+        <button type="button" className="btn" disabled={saving} onClick={() => void save()}>
           {saving ? "Сохраняем…" : "Сохранить условия"}
         </button>
       </div>

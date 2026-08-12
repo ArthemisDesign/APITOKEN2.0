@@ -2,6 +2,7 @@
 // Браузер ходит по относительным путям (/overview, /admin/*, /openkeys-admin/*,
 // /partner-admin/*); аутентификацию и серверные ключи внедряет Caddy — приложение
 // секретов не имеет. Поведение повторяет rawApi/api/send из admin-panel.js.
+import { publishInvalidation } from "@/lib/invalidation";
 
 export class ApiError extends Error {
   status: number;
@@ -52,6 +53,25 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
 }
 
 // POST/PATCH с JSON-телом — аналог send() из admin-panel.js.
-export function send<T>(path: string, method: ApiOptions["method"], body: unknown): Promise<T> {
-  return api<T>(path, { method, body });
+export async function send<T>(path: string, method: ApiOptions["method"], body: unknown): Promise<T> {
+  const result = await api<T>(path, { method, body });
+  publishInvalidation(mutationResources(path));
+  return result;
+}
+
+export function mutationResources(path: string): string[] {
+  const clean = path.split("?", 1)[0] ?? path;
+  if (clean.startsWith("/admin/users/")) return ["/admin/users"];
+  if (clean.startsWith("/admin/admin-accounts/")) return ["/admin/admin-accounts"];
+  if (clean.startsWith("/admin/business-invites/")) return ["/admin/business-invites"];
+  if (clean.startsWith("/admin/business-users/")) return ["/admin/business-users", "/admin/users"];
+  if (clean === "/openkeys-admin/keys" || clean.startsWith("/openkeys-admin/keys/")) {
+    return ["/openkeys-admin/keys", "/openkeys-admin/sellers", "/openkeys-admin/paying-keys", "/openkeys-admin/lookup"];
+  }
+  if (clean === "/openkeys-admin/sellers" || clean.startsWith("/openkeys-admin/sellers/")) {
+    return ["/openkeys-admin/sellers", "/openkeys-admin/keys", "/openkeys-admin/paying-keys", "/openkeys-admin/lookup"];
+  }
+  if (clean.startsWith("/proxy-admin/")) return ["/proxy-admin/inventory"];
+  if (clean.startsWith("/gemini-subs/")) return ["/gemini-subs"];
+  return [clean];
 }

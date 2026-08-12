@@ -13,10 +13,9 @@ import {
   type ReactElement,
   type SetStateAction,
 } from "react";
-import { api } from "@/lib/api";
 import { csvDate, downloadCsv } from "@/lib/csv";
 import { ago, count, formatDate, nanoMoney } from "@/lib/format";
-import { usePoll } from "@/lib/usePoll";
+import { useResource } from "@/lib/resources";
 import { Dot, EmptyRow, LoadingGrid, PageHead, Pill, SectionHeader, TableCard } from "@/components/ui";
 import {
   buildOpenkeysPayingCsvRows,
@@ -377,11 +376,7 @@ type CustomerCohortProps = {
 
 function CustomerCohort({ page, search, setPage, setSearch, onTotalChange }: CustomerCohortProps): ReactElement {
   const query = payingUsersQuery(page);
-  const { data } = usePoll(
-    `/admin/finance/paying-users?${query}`,
-    () => api<PayingUsersResponse>(`/admin/finance/paying-users?${query}`),
-    { interval: 30_000 },
-  );
+  const { data } = useResource<PayingUsersResponse>(`/admin/finance/paying-users?${query}`);
   const patchPage = useCallback((patch: Partial<PayingUsersPageState>, resetOffset = true) => {
     startTransition(() => setPage((current) => ({ ...current, ...patch, ...(resetOffset ? { offset: 0 } : {}) })));
   }, [setPage]);
@@ -548,11 +543,7 @@ type OpenkeysCohortProps = {
 
 function OpenkeysCohort({ page, search, setPage, setSearch, onTotalChange }: OpenkeysCohortProps): ReactElement {
   const query = openkeysPayingQuery(page);
-  const { data } = usePoll(
-    `/openkeys-admin/paying-keys?${query}`,
-    () => api<OpenkeysPayingResponse>(`/openkeys-admin/paying-keys?${query}`),
-    { interval: 30_000 },
-  );
+  const { data } = useResource<OpenkeysPayingResponse>(`/openkeys-admin/paying-keys?${query}`);
   const patchPage = useCallback((patch: Partial<OpenkeysPayingPageState>, resetOffset = true) => {
     startTransition(() => setPage((current) => ({ ...current, ...patch, ...(resetOffset ? { offset: 0 } : {}) })));
   }, [setPage]);

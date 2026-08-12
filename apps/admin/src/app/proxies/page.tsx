@@ -2,11 +2,11 @@
 
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Banner, EmptyRow, LoadingGrid, PageHead, Pill, SectionHeader, StatCard, TableCard } from "@/components/ui";
-import { api, send } from "@/lib/api";
+import { send } from "@/lib/api";
 import { dialog } from "@/lib/dialog";
 import { nanoMoney } from "@/lib/format";
 import { toast } from "@/lib/toast";
-import { usePoll } from "@/lib/usePoll";
+import { useResource } from "@/lib/resources";
 import {
   classifyExpiryWarning,
   createProxyRenewRequest,
@@ -67,8 +67,8 @@ export default function ProxiesPage() {
   const [uncertainRequest, setUncertainRequest] = useState<ReturnType<typeof createProxyRenewRequest> | null>(null);
   const submitLock = useRef(false);
 
-  const loadInventory = useCallback(async () => projectProxyInventory(await api<unknown>(INVENTORY_PATH)), []);
-  const { data: inventory, refresh } = usePoll(INVENTORY_PATH, loadInventory);
+  const { data: rawInventory, refresh } = useResource<unknown>(INVENTORY_PATH);
+  const inventory = useMemo(() => rawInventory === undefined ? undefined : projectProxyInventory(rawInventory), [rawInventory]);
   const items = useMemo(() => inventory?.items ?? [], [inventory]);
   const filtered = useMemo(() => filterProxyInventory(items, filters), [items, filters]);
   const visibleSelectable = useMemo(() => selectableProxyIds(filtered), [filtered]);
@@ -140,8 +140,10 @@ export default function ProxiesPage() {
           })),
         });
         toast(`${message}. Результат неопределён; реестр обновляется. Повторяйте только с сохранённым UUID.`, "bad");
-      } finally {
+        // Неуспешный POST не проходит через send()-инвалидацию, но фактический
+        // исход у провайдера может быть неопределённым — перечитываем реестр.
         refresh();
+      } finally {
         setBusy(false);
       }
     } finally {

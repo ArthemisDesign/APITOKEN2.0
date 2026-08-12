@@ -3,11 +3,10 @@
 // Подписки — порт 1:1 функции subscriptions() из crates/server/src/admin-panel.js.
 // Пять флотов на одной странице: Claude OAuth (/subs + live-ёмкость /capacity),
 // GPT/Codex homes (/codex-subs), Gemini-профили (/gemini-subs), KIMI-профили
-// (/kimi-subs) и GLM-профили (/glm-subs). Опрос 10 с, как в легаси
-// (scheduleRefresh: tab==='subs' → 10000).
+// (/kimi-subs) и GLM-профили (/glm-subs). Каждый provider-feed инвалидирует только
+// затронутые URL; интервальных запросов нет.
 import { useMemo } from "react";
-import { api } from "@/lib/api";
-import { usePoll } from "@/lib/usePoll";
+import { useResources } from "@/lib/resources";
 import { count, formatDate } from "@/lib/format";
 import { Banner, LoadingGrid, PageHead, Pill } from "@/components/ui";
 import { ClaudeCapacityBoard } from "./claude-capacity-board";
@@ -26,57 +25,46 @@ import type {
   SubsResponse,
 } from "./types";
 
-const POLL_INTERVAL_MS = 10_000;
-
 interface SubsData {
-  subs: SubsResponse | null;
-  capacity: CapacityResponse | null;
-  codex: CodexSubsResponse | null;
-  gemini: GeminiSubsResponse | null;
-  kimi: KimiSubsResponse | null;
-  glm: GlmSubsResponse | null;
-  /** Момент снимка (мс): все отсчёты «до сброса» считаются от него — чистый рендер. */
-  nowMs: number;
-}
-
-// Все шесть источников параллельно; падение любого → null, остальные флоты
-// продолжают рендериться независимо (конвенция деградации admin-panel.js).
-async function loadSubs(): Promise<SubsData> {
-  const [subs, capacity, codex, gemini, kimi, glm] = await Promise.all([
-    api<SubsResponse>("/subs").catch(() => null),
-    api<CapacityResponse>("/capacity").catch(() => null),
-    api<CodexSubsResponse>("/codex-subs").catch(() => null),
-    api<GeminiSubsResponse>("/gemini-subs").catch(() => null),
-    api<KimiSubsResponse>("/kimi-subs").catch(() => null),
-    api<GlmSubsResponse>("/glm-subs").catch(() => null),
-  ]);
-  return { subs, capacity, codex, gemini, kimi, glm, nowMs: Date.now() };
+  subs: SubsResponse;
+  capacity: CapacityResponse;
+  codex: CodexSubsResponse;
+  gemini: GeminiSubsResponse;
+  kimi: KimiSubsResponse;
+  glm: GlmSubsResponse;
 }
 
 export default function SubsPage() {
-  const { data: result } = usePoll("subs", loadSubs, { interval: POLL_INTERVAL_MS });
+  const { data: result, availability, isLoading, updatedAt: nowMs } = useResources<SubsData>({
+    subs: "/subs",
+    capacity: "/capacity",
+    codex: "/codex-subs",
+    gemini: "/gemini-subs",
+    kimi: "/kimi-subs",
+    glm: "/glm-subs",
+  });
 
   // Все производные флотов пересчитываются только при смене снимка данных.
   const derived = useMemo(() => {
-    if (!result) return null;
+    if (isLoading && Object.values(result).every((value) => value === undefined)) return null;
     const { subs, capacity, codex, gemini, kimi, glm } = result;
     const list = subs?.subs ?? [];
     const dead = list.filter((item) => item.auth_state === "dead").length;
     const suspect = list.filter((item) => item.auth_state === "suspect").length;
-    const subsDown = subs === null;
-    const claudeCapacityDown = capacity === null;
+    const subsDown = availability.subs === "error";
+    const claudeCapacityDown = availability.capacity === "error";
     const claudeCalibrationPending = Number(capacity?.calibration_delivery?.pending_events ?? 0);
     const claudeCalibrationDropped = Number(capacity?.calibration_delivery?.dropped_events ?? 0);
     const claudeCalibrationStorageBad = capacity?.calibration_delivery?.persistence_ok === false
       || capacity?.calibration_authority_available === false;
 
-    const gptDown = codex === null;
+    const gptDown = availability.codex === "error";
     const gptOff = Boolean(codex && codex.enabled === false);
     const homes = codex?.homes ?? [];
     const gptAuthBad = homes.filter((h) => !h.auth_ok).length;
     const gptProcDown = homes.filter((h) => !h.process_live).length;
 
-    const geminiDown = gemini === null;
+    const geminiDown = availability.gemini === "error";
     const geminiOff = Boolean(gemini && gemini.enabled === false);
     const geminiProfiles = gemini?.profiles ?? [];
     const geminiEmpty = !geminiDown && !geminiOff && !geminiProfiles.length;
@@ -89,7 +77,7 @@ export default function SubsPage() {
     const geminiCalibrationStorageBad = gemini?.calibration_authority_available === false
       || gemini?.calibration_delivery?.persistence_ok === false;
 
-    const kimiDown = kimi === null;
+    const kimiDown = availability.kimi === "error";
     const kimiOff = Boolean(kimi && kimi.enabled === false);
     const kimiProfiles = kimi?.profiles ?? [];
     const kimiEmpty = !kimiDown && !kimiOff && !kimiProfiles.length;
@@ -99,7 +87,7 @@ export default function SubsPage() {
     const kimiDeliveryDropped = Number(kimi?.delivery?.dropped_events ?? 0);
     const kimiDeliveryBad = kimi?.delivery?.persistence_ok === false;
 
-    const glmDown = glm === null;
+    const glmDown = availability.glm === "error";
     const glmOff = Boolean(glm && glm.enabled === false);
     const glmProfiles = glm?.profiles ?? [];
     const glmEmpty = !glmDown && !glmOff && !glmProfiles.length;
@@ -170,9 +158,9 @@ export default function SubsPage() {
       fleetTotal,
       fleetWarn,
     };
-  }, [result]);
+  }, [availability, result, isLoading]);
 
-  if (!result || !derived) {
+  if (!derived) {
     return (
       <>
         <PageHead title="Подписки" sub="данные загружаются, навигация уже доступна" />
@@ -204,7 +192,7 @@ export default function SubsPage() {
     geminiSummary: derived.geminiOff ? "выкл." : derived.geminiProfiles.length,
     kimiSummary: derived.kimiOff ? "выкл." : derived.kimiProfiles.length,
     glmSummary: derived.glmOff ? "выкл." : derived.glmProfiles.length,
-    updatedAt: formatDate(result.nowMs, true),
+    updatedAt: formatDate(nowMs, true),
   });
 
   return (
@@ -220,12 +208,12 @@ export default function SubsPage() {
       />
 
       <FleetCapacityOverview
-        claude={derived.capacity}
-        gpt={derived.codex}
-        gemini={derived.gemini}
-        kimi={derived.kimi}
-        glm={derived.glm}
-        nowMs={result.nowMs}
+        claude={derived.capacity ?? null}
+        gpt={derived.codex ?? null}
+        gemini={derived.gemini ?? null}
+        kimi={derived.kimi ?? null}
+        glm={derived.glm ?? null}
+        nowMs={nowMs}
       />
 
       {banner.kind === "ok" ? null : (
@@ -259,7 +247,7 @@ export default function SubsPage() {
               </div>
             </div>
           ) : (
-            <CodexCapacityBoard response={derived.codex!} nowMs={result.nowMs} showSummary={false} />
+            <CodexCapacityBoard response={derived.codex!} nowMs={nowMs} showSummary={false} />
           )}
         </section>
 
@@ -275,7 +263,7 @@ export default function SubsPage() {
               </div>
             </div>
           ) : (
-            <GeminiCapacityBoard response={derived.gemini!} nowMs={result.nowMs} showSummary={false} />
+            <GeminiCapacityBoard response={derived.gemini!} nowMs={nowMs} showSummary={false} />
           )}
         </section>
 
@@ -291,7 +279,7 @@ export default function SubsPage() {
               </div>
             </div>
           ) : (
-            <KimiCapacityBoard response={derived.kimi!} nowMs={result.nowMs} showSummary={false} />
+            <KimiCapacityBoard response={derived.kimi!} nowMs={nowMs} showSummary={false} />
           )}
         </section>
 
@@ -307,13 +295,13 @@ export default function SubsPage() {
               </div>
             </div>
           ) : (
-            <GlmCapacityBoard response={derived.glm!} nowMs={result.nowMs} showSummary={false} />
+            <GlmCapacityBoard response={derived.glm!} nowMs={nowMs} showSummary={false} />
           )}
         </section>
       </div>
 
       <footer>
-        10с · nanoUSD · почта маскирована
+        Realtime по изменениям провайдеров · nanoUSD · почта маскирована
       </footer>
     </>
   );

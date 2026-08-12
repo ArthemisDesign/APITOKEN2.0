@@ -2,7 +2,7 @@
 
 // Таблицы страницы «Подписки» — порт 1:1 разметки subscriptions() из
 // crates/server/src/admin-panel.js (Claude / GPT / Gemini / transport details).
-// Компоненты мемоизированы: рендер идёт каждый poll-тик (10 с).
+// Компоненты мемоизированы: рендер идёт только при изменении URL-снапшота.
 import { memo, type ReactElement, type ReactNode } from "react";
 import { ago, count, duration, formatDate, money, nanoMoney, windowLabel } from "@/lib/format";
 import { Dot, EmptyRow, Pill, TableCard } from "@/components/ui";
@@ -270,7 +270,7 @@ export const GptTable = memo(function GptTable({
   nowMs,
 }: {
   homes: CodexHome[];
-  /** Момент снимка (мс) из poller'а — отсчёты «до сброса» считаются от него. */
+  /** Момент realtime-снимка (мс) — отсчёты «до сброса» считаются от него. */
   nowMs: number;
 }): ReactElement {
   const nowSec = (nowMs / 1000) | 0;
@@ -432,7 +432,7 @@ export const GeminiTable = memo(function GeminiTable({
   models: GeminiModel[];
   /** Поле now из /gemini-subs (epoch-секунды по часам runtime); 0/отсутствие → момент снимка. */
   now?: number;
-  /** Момент снимка (мс) из poller'а — fallback и база для отсчётов. */
+  /** Момент realtime-снимка (мс) — fallback и база для отсчётов. */
   nowMs: number;
 }): ReactElement {
   const nowSec = Number(now || nowMs / 1000);

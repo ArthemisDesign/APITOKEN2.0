@@ -5,20 +5,19 @@
 // Источники: /overview (engine), /admin/dashboard (счётчик commerce),
 // /partner-admin/partner-analytics?sort=created_at&dir=desc (пейджер по 50),
 // /openkeys-admin/lookup (подписи OpenKeys, ленивый кэш на сессию).
-// Автоматического опроса у вкладки в легаси нет — только фокус/кнопка ↻.
+// Источники обновляются по их SSE-prefixes, без интервала и focus-запросов.
 //
 // POST /admin/accounts/query здесь не вызывается: в легаси его из браузера
 // дергает не панель, а коммерческий бэкенд (packages/engine-client) для
 // server-side снапшотов; у вкладки «Аккаунты» такого запроса нет.
 import Link from "next/link";
-import { startTransition, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import { api } from "@/lib/api";
-import { usePoll } from "@/lib/usePoll";
+import { startTransition, useEffect, useMemo, useState, type ReactElement } from "react";
+import { useResources } from "@/lib/resources";
 import { ago, count, money, nanoMoney } from "@/lib/format";
 import type { CommerceDashboard } from "@/lib/types";
 import { Banner, EmptyRow, LoadingGrid, PageHead, Pill, SectionHeader, TableCard } from "@/components/ui";
 import { isOpenkeys, useSpendStatsModal, type OkDirectoryRow } from "@/components/spend-stats-modal";
-import { OkInfo, okDirectory } from "./ok-directory";
+import { OkInfo } from "./ok-directory";
 
 const PARTNER_LIMIT = 50;
 
@@ -52,24 +51,10 @@ interface PartnerAnalyticsResponse {
 }
 
 interface AccountsData {
-  overview: { accounts?: EngineAccountRow[] } | null;
-  dashboard: CommerceDashboard | null;
-  partners: PartnerAnalyticsResponse | null;
-  okDir: Map<string, OkDirectoryRow>;
-}
-
-// Все четыре источника параллельно; падение любого → null/пустая карта,
-// страница продолжает работать (okDirectory сам деградирует в пустую Map).
-async function loadAccounts(offset: number): Promise<AccountsData> {
-  const [overview, dashboard, partners, okDir] = await Promise.all([
-    api<{ accounts?: EngineAccountRow[] }>("/overview").catch(() => null),
-    api<CommerceDashboard>("/admin/dashboard").catch(() => null),
-    api<PartnerAnalyticsResponse>(
-      `/partner-admin/partner-analytics?sort=created_at&dir=desc&limit=${PARTNER_LIMIT}&offset=${offset}`,
-    ).catch(() => null),
-    okDirectory(),
-  ]);
-  return { overview, dashboard, partners, okDir };
+  overview: { accounts?: EngineAccountRow[] };
+  dashboard: CommerceDashboard;
+  partners: PartnerAnalyticsResponse;
+  directory: { rows?: OkDirectoryRow[] };
 }
 
 const isCrmAccount = (handle: string | undefined): boolean => String(handle ?? "").toLowerCase() === "crm-parsing";
@@ -96,30 +81,32 @@ function partnerStatusKind(status: string | undefined): "ok" | "bad" | "warn" {
 
 export default function AccountsPage(): ReactElement {
   const [partnerOffset, setPartnerOffset] = useState(0);
-  // offset дублируется в ref: fetcher читает его, поэтому refresh() из клика
-  // по пейджеру идёт сразу с новой страницей, не дожидаясь эффекта setFetcher,
-  // а старые данные остаются на экране, пока грузится новая страница (как в легаси).
-  const offsetRef = useRef(0);
-  const { data, refresh } = usePoll("accounts", () => loadAccounts(offsetRef.current));
+  const { data, isLoading } = useResources<AccountsData>({
+    overview: "/overview",
+    dashboard: "/admin/dashboard",
+    partners: `/partner-admin/partner-analytics?sort=created_at&dir=desc&limit=${PARTNER_LIMIT}&offset=${partnerOffset}`,
+    directory: "/openkeys-admin/lookup",
+  });
   const { openSpendStats, spendStatsModal } = useSpendStatsModal();
+  const okDir = useMemo(
+    () => new Map((data.directory?.rows ?? []).map((row) => [String(row.engineAccountId ?? ""), row])),
+    [data.directory],
+  );
 
   const partnerTotal = data?.partners
     ? data.partners.totals?.total || (data.partners.items ?? []).length
     : 0;
 
+  const effectivePartnerOffset = clampPartnerOffset(partnerOffset, partnerTotal);
+
   useEffect(() => {
-    const clamped = clampPartnerOffset(offsetRef.current, partnerTotal);
-    if (clamped !== offsetRef.current) {
-      offsetRef.current = clamped;
-      setPartnerOffset(clamped);
-      refresh();
+    if (data.partners && effectivePartnerOffset !== partnerOffset) {
+      startTransition(() => setPartnerOffset(effectivePartnerOffset));
     }
-  }, [partnerTotal, refresh]);
+  }, [data.partners, effectivePartnerOffset, partnerOffset]);
 
   const goToOffset = (next: number): void => {
-    offsetRef.current = next;
     startTransition(() => setPartnerOffset(next));
-    refresh();
   };
 
   const engineAccounts = useMemo(() => data?.overview?.accounts ?? [], [data]);
@@ -139,7 +126,7 @@ export default function AccountsPage(): ReactElement {
                 </span>
               ) : null}
               <div className="sub mono">{account.account ?? ""}</div>
-              <OkInfo meta={data?.okDir.get(String(account.account ?? ""))} />
+              <OkInfo meta={okDir.get(String(account.account ?? ""))} />
             </td>
             <td className="left">{domain}</td>
             <td>
@@ -153,7 +140,7 @@ export default function AccountsPage(): ReactElement {
           </tr>
         );
       }),
-    [engineAccounts, data],
+    [engineAccounts, okDir],
   );
 
   const partnerItems = useMemo(() => data?.partners?.items ?? [], [data]);
@@ -179,7 +166,7 @@ export default function AccountsPage(): ReactElement {
     [partnerItems],
   );
 
-  if (!data) {
+  if (isLoading && Object.values(data).every((value) => value === undefined)) {
     return (
       <>
         <PageHead title="Аккаунты" sub="данные загружаются, навигация уже доступна" />
@@ -250,9 +237,9 @@ export default function AccountsPage(): ReactElement {
               <th>статус</th>
               <th>баланс</th>
               <th>
-                <span data-spend-stats="" onClick={openSpendStats} title="Разбивка: сутки / 7 дней / 30 дней">
+                <button type="button" className="table-action" onClick={openSpendStats} title="Разбивка: сутки / 7 дней / 30 дней">
                   потрачено
-                </span>
+                </button>
               </th>
               <th>множитель</th>
             </tr>
@@ -280,22 +267,22 @@ export default function AccountsPage(): ReactElement {
 
       <div className="pager">
         <span>
-          {partnerTotal ? partnerOffset + 1 : 0}–{Math.min(partnerOffset + PARTNER_LIMIT, partnerTotal)} из{" "}
+          {partnerTotal ? effectivePartnerOffset + 1 : 0}–{Math.min(effectivePartnerOffset + PARTNER_LIMIT, partnerTotal)} из{" "}
           {partnerTotal}
         </span>
         <button
           type="button"
           className="btn ghost"
-          disabled={partnerOffset <= 0}
-          onClick={() => goToOffset(Math.max(0, partnerOffset - PARTNER_LIMIT))}
+          disabled={effectivePartnerOffset <= 0}
+          onClick={() => goToOffset(Math.max(0, effectivePartnerOffset - PARTNER_LIMIT))}
         >
           Назад
         </button>
         <button
           type="button"
           className="btn ghost"
-          disabled={partnerOffset + PARTNER_LIMIT >= partnerTotal}
-          onClick={() => goToOffset(partnerOffset + PARTNER_LIMIT)}
+          disabled={effectivePartnerOffset + PARTNER_LIMIT >= partnerTotal}
+          onClick={() => goToOffset(effectivePartnerOffset + PARTNER_LIMIT)}
         >
           Дальше
         </button>

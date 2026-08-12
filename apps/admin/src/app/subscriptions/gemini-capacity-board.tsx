@@ -3,6 +3,7 @@
 import { type ReactElement, useState } from "react";
 import { Pill, TableCard } from "@/components/ui";
 import { apiErrorMessage, send } from "@/lib/api";
+import { dialog } from "@/lib/dialog";
 import { duration, nanoMoney } from "@/lib/format";
 import { providerInteger, usedPercentFromNano } from "./provider-calibration";
 import { ProviderCapacityStrip, ProviderQuotaMeter, ProviderSection } from "./provider-board-ui";
@@ -66,8 +67,8 @@ function GeminiMoney({
 
 /// Оператор выводит профиль из ротации, возвращает обратно и убирает окончательно мёртвый из
 /// списка. Запись durable на стороне движка (`pool_member_disables`), а не в запечатанный ростер
-/// authbot'а, поэтому переживает его перепубликацию. Список не обновляем руками: страница
-/// поллится раз в 10 с.
+/// authbot'а, поэтому переживает его перепубликацию. Успешная мутация сразу
+/// инвалидирует общий URL-store, затем авторитетное событие подтверждает снимок.
 function GeminiRotationActions({ profile }: { profile: GeminiProfile }): ReactElement {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,7 +78,14 @@ function GeminiRotationActions({ profile }: { profile: GeminiProfile }): ReactEl
 
   async function apply(next: { disabled: boolean; hidden: boolean }, confirmText?: string) {
     if (!id || busy) return;
-    if (confirmText && !window.confirm(confirmText)) return;
+    if (confirmText) {
+      const confirmed = await dialog({
+        title: confirmText,
+        confirmLabel: "Отключить",
+        danger: true,
+      });
+      if (!confirmed) return;
+    }
     setBusy(true);
     setError(null);
     try {

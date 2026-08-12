@@ -6,13 +6,12 @@
 // коммерции. Источник — /admin/finance/engine-spend (движковый /spend-stats,
 // склеенный со справочником владельцев engine-аккаунтов).
 
-import { startTransition, useEffect, useState, type ReactElement } from "react";
-import { api } from "@/lib/api";
+import { startTransition, useMemo, useState, type ReactElement } from "react";
 import { csvDate, downloadCsv } from "@/lib/csv";
 import { ago, count, money } from "@/lib/format";
-import { usePoll } from "@/lib/usePoll";
+import { useResources } from "@/lib/resources";
 import { CardGrid, EmptyRow, LoadingGrid, PageHead, Pill, SectionHeader, StatCard, TableCard } from "@/components/ui";
-import { OkInfo, okDirectory, type OkDirectoryRow } from "@/components/spend-stats-modal";
+import { OkInfo, type OkDirectoryRow } from "@/components/spend-stats-modal";
 import {
   accountClassLabel,
   accountTitle,
@@ -91,21 +90,16 @@ function AccountsTable({
 export default function EngineSpendPage(): ReactElement {
   const [days, setDays] = useState<EngineSpendDays>(1);
   const [filter, setFilter] = useState<EngineSpendFilter>("");
-  const [okDir, setOkDir] = useState<Map<string, OkDirectoryRow> | null>(null);
   const path = `/admin/finance/engine-spend?days=${days}`;
-  const { data } = usePoll(path, () => api<EngineSpendResponse>(path), { interval: 60_000 });
-
-  // Справочник ключей OpenKeys грузится один раз за вкладку; если портал недоступен —
-  // строки просто остаются без метки партии, страница продолжает работать.
-  useEffect(() => {
-    let cancelled = false;
-    okDirectory().then((directory) => {
-      if (!cancelled) setOkDir(directory);
-    }).catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const { data: resources } = useResources<{
+    spend: EngineSpendResponse;
+    directory: { rows?: OkDirectoryRow[] };
+  }>({ spend: path, directory: "/openkeys-admin/lookup" });
+  const data = resources.spend;
+  const okDir = useMemo(
+    () => new Map((resources.directory?.rows ?? []).map((row) => [String(row.engineAccountId ?? ""), row])),
+    [resources.directory],
+  );
 
   if (!data) {
     return (

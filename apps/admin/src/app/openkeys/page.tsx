@@ -4,16 +4,17 @@
 // crates/server/src/admin-panel.js (строки 606-635): карточки сводки, фильтры
 // (поиск + партия/использование/статус), таблица ключей с live-расходом,
 // пейджинг по 50, включение/отключение ключа через dialog() + toast.
-// Автоматического опроса в легаси нет — только фокус/кнопка ↻ (глобально в usePoll).
+// Изменения списка приходят по OpenKeys SSE; интервальных и focus-запросов нет.
 import {
   memo,
   startTransition,
   useCallback,
+  useEffect,
   useState,
   type FormEvent,
 } from "react";
-import { api, send } from "@/lib/api";
-import { usePoll } from "@/lib/usePoll";
+import { send } from "@/lib/api";
+import { useResources } from "@/lib/resources";
 import { dialog } from "@/lib/dialog";
 import { toast } from "@/lib/toast";
 import { count, formatDate, nanoMoney } from "@/lib/format";
@@ -47,34 +48,6 @@ import {
 } from "./lib";
 
 const EMPTY_QUERY: OpenkeysQuery = { offset: 0, q: "", batch: "", status: "", usage: "" };
-
-type OpenkeysResult = {
-  data: OpenkeysResponse | null;
-  /** Издатели грузятся отдельным контрактом: их падение не должно гасить каталог. */
-  sellers: OpenkeysSeller[] | null;
-  /** Фактически загруженная страница — после отката за пределы total. */
-  offset: number;
-};
-
-// Единственный источник страницы; падение → null, раздел показывает warn-баннер
-// (остальные разделы продолжают работать — как в легаси).
-// Если offset уехал за пределы total (фильтры сузили выдачу), перезапрашиваем
-// последнюю страницу — рекурсивный откат openkeys() из admin-panel.js:612.
-async function loadKeys(query: OpenkeysQuery): Promise<OpenkeysResult> {
-  const [data, sellers] = await Promise.all([
-    api<OpenkeysResponse>(buildKeysPath(query)).catch(() => null),
-    api<OpenkeysSellersResponse>(SELLERS_PATH)
-      .then((payload) => payload.sellers ?? [])
-      .catch(() => null),
-  ]);
-  const total = data?.total ?? 0;
-  if (!data || total <= 0 || query.offset < total) return { data, sellers, offset: query.offset };
-  const offset = clampOffset(query.offset, total);
-  const [clamped] = await Promise.all([
-    api<OpenkeysResponse>(buildKeysPath({ ...query, offset })).catch(() => null),
-  ]);
-  return { data: clamped, sellers, offset };
-}
 
 // percentBar из admin-panel.js (строки 188-190): округление, пороги 95/70.
 function PercentBar({ percent }: { percent: number }) {
@@ -328,7 +301,22 @@ export default function OpenKeysPage() {
   const [pendingSeller, setPendingSeller] = useState<string | null>(null);
 
   const path = buildKeysPath(query);
-  const { data: result, refresh } = usePoll(path, () => loadKeys(query));
+  const { data: result, isLoading } = useResources<{
+    data: OpenkeysResponse;
+    sellers: OpenkeysSellersResponse;
+  }>({
+    data: path,
+    sellers: SELLERS_PATH,
+  });
+  const catalog = result.data;
+  const catalogTotal = catalog?.total ?? 0;
+  const effectiveOffset = clampOffset(query.offset, catalogTotal);
+
+  useEffect(() => {
+    if (catalog && effectiveOffset !== query.offset) {
+      startTransition(() => setQuery((current) => ({ ...current, offset: effectiveOffset })));
+    }
+  }, [catalog, effectiveOffset, query.offset]);
 
   const applyFilters = (patch: Partial<OpenkeysQuery>) => {
     startTransition(() => setQuery((prev) => ({ ...prev, ...patch, offset: 0 })));
@@ -362,14 +350,13 @@ export default function OpenKeysPage() {
       try {
         await send("/openkeys-admin/keys", "POST", { id: item.id, enabled: next });
         toast(next ? "Ключ включён." : "Ключ отключён.");
-        refresh();
       } catch (error) {
         toast(error instanceof Error ? error.message : String(error), "bad");
       } finally {
         setPendingId(null);
       }
     },
-    [refresh],
+    [],
   );
 
   // Массовое действие по админу-издателю: подтверждение (для аннулирования —
@@ -399,17 +386,16 @@ export default function OpenKeysPage() {
           action,
         });
         toast(sellerActionToast(result), result.failed ? "bad" : "ok");
-        refresh();
       } catch (error) {
         toast(error instanceof Error ? error.message : String(error), "bad");
       } finally {
         setPendingSeller(null);
       }
     },
-    [refresh],
+    [],
   );
 
-  if (result === undefined) {
+  if (isLoading && Object.values(result).every((value) => value === undefined)) {
     return (
       <>
         <PageHead title="OpenKeys" sub="данные загружаются, навигация уже доступна" />
@@ -418,9 +404,10 @@ export default function OpenKeysPage() {
     );
   }
 
-  const { data, offset, sellers } = result;
+  const data = catalog;
+  const sellers = result.sellers?.sellers;
 
-  if (data === null) {
+  if (data === undefined) {
     return (
       <>
         <PageHead
@@ -436,7 +423,8 @@ export default function OpenKeysPage() {
   }
 
   const summary = data.summary ?? {};
-  const total = data.total ?? 0;
+  const total = catalogTotal;
+  const offset = effectiveOffset;
   const rows = data.rows ?? [];
   const batches = data.batches ?? [];
 
@@ -482,7 +470,7 @@ export default function OpenKeysPage() {
         sub="одно действие на весь выпуск конкретного админа — фильтры каталога на него не влияют"
       />
 
-      {sellers === null ? (
+      {sellers === undefined ? (
         <Banner kind="warn" title="Список админов-издателей недоступен">
           Каталог ключей ниже продолжает работать; массовые действия временно недоступны.
         </Banner>
@@ -516,7 +504,10 @@ export default function OpenKeysPage() {
         </label>
         <input
           id="ok-search"
+          name="q"
           type="search"
+          autoComplete="off"
+          spellCheck={false}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           placeholder="метка, маска ключа, acct_…, продавец или ID партии…"

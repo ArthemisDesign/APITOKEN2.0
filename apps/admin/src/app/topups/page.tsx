@@ -3,10 +3,9 @@
 // Пополнения — порт 1:1 функции topups() из crates/server/src/admin-panel.js
 // (строки 732-766): платежи + checkout-воронка одним экраном, общий offset
 // листает оба списка, один status-фильтр применяется к платежам и чекаутам
-// одновременно. Без автоопроса — только фокус и кнопка ↻ (как в легаси).
+// одновременно. Автоматическое обновление приходит только из commerce SSE.
 import { memo, startTransition, useCallback, useEffect, useState, type FormEvent } from "react";
-import { api } from "@/lib/api";
-import { usePoll } from "@/lib/usePoll";
+import { useResource } from "@/lib/resources";
 import { count, formatDate, money } from "@/lib/format";
 import { csvDate, downloadCsv } from "@/lib/csv";
 import { EmptyRow, LoadingGrid, PageHead, Pill, SectionHeader, TableCard } from "@/components/ui";
@@ -247,9 +246,9 @@ export default function TopupsPage() {
   }, []);
 
   const path = topupsPath(query);
-  // Ключ poller'а — сам путь: смена фильтров/страницы создаёт новый источник,
+  // Сам URL — ключ ресурса: смена фильтров/страницы получает отдельный снапшот,
   // данные предыдущего переживают навигацию (stale-while-revalidate).
-  const { data } = usePoll(path, () => api<TopupsResponse>(path).catch(() => null));
+  const { data } = useResource<TopupsResponse>(path);
 
   const payments = data?.payments ?? [];
   const checkouts = data?.checkouts ?? [];

@@ -65,9 +65,13 @@ Every connection begins with `resync`; listener lag or database reconnect produc
 because event delivery is an invalidation hint, not durable state. Heartbeats are transport-only.
 Engine resync/change delivery evicts the matching short-lived server response cache before the
 browser refetches, so push cannot immediately return a stale cached projection.
-The UI consumer must keep last-good data, deduplicate by actual request URL and revalidate only
-mounted resources whose URL matches an emitted prefix. It must not turn heartbeats or focus into
-blanket polling.
+The UI consumer keeps last-good data, deduplicates by actual request URL and revalidates only
+mounted resources whose URL matches an emitted prefix. Multi-source screens subscribe to independent
+URL resources, so a ready section does not wait for the slowest endpoint and one failed source does
+not block its neighbors. A request whose last
+subscriber unmounts is aborted, while cached successful data survives navigation. Heartbeats never
+enter the invalidation handler. The sidebar reports aggregate feed health and its explicit refresh
+button is limited to resources mounted on the current screen.
 
 ## Release cycle (watchdog lane `admin`)
 
@@ -325,9 +329,9 @@ digit. Untrusted text that could start a spreadsheet formula is apostrophe-prefi
 totals do not enter the commerce ledger summary.
 
 The window switch is shared, while search/status/sort/direction/pagination state is independent per
-cohort and an interval change resets offsets without clearing filters. Only the visible cohort component and
-its 30-second poller are mounted; the hidden producer is not called, including by the global
-refresh control. The page performs no money mutations.
+cohort and a window change resets offsets without clearing filters. Only the visible cohort component and
+its realtime-backed request are mounted; the hidden producer is not called, including by the
+current-screen refresh control. The page performs no money mutations.
 
 ## GPT capacity board on the subscriptions page
 
@@ -415,7 +419,7 @@ Claude is built from `/capacity`:
   to the provider reset separately for 5h/7d, and the status is `лимит … исчерпан` ("limit
   … exhausted") without the internal term `cooling`. Until the reset the money stays `вне
   ротации` ("out of rotation"); after the deadline the runtime automatically returns the
-  subscription to routing, and the panel's next poll shows it active. Dead and other
+  subscription to routing, and the provider event refreshes the mounted panel row. Dead and other
   non-routable accounts still do not look like sellable supply;
 - `calibration_evidence` and `conversion_models` keep arriving from the backend as an
   audit/calculation contract, but the main Claude UI does not expand them into additional

@@ -4,13 +4,15 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { NAV, isNavItemActive } from "@/lib/nav";
 import { toggleTheme } from "@/lib/theme";
-import { revalidateAll } from "@/lib/usePoll";
+import { refreshMountedResources } from "@/lib/resources";
+import { useRealtimeStatus } from "@/lib/realtime";
 
 // Сайдбар портирован из shell() в admin-panel.js: бренд, группы навигации,
-// футер с env, кнопкой ручного обновления (↻ — ревалидация всех poller'ов)
+// футер с env, состоянием realtime, точечным обновлением текущего экрана
 // и переключателем темы (◐, сохраняется в localStorage).
 export function Sidebar() {
   const pathname = usePathname();
+  const realtime = useRealtimeStatus();
   return (
     <aside>
       <div className="side-bar-head">
@@ -29,7 +31,7 @@ export function Sidebar() {
                 className={"nav-item" + (isNavItemActive(pathname, item.href) ? " on" : "")}
                 href={item.href}
               >
-                <span className="ico">{item.icon}</span>
+                <span className="ico" aria-hidden="true">{item.icon}</span>
                 {item.label}
               </Link>
             ))}
@@ -37,13 +39,19 @@ export function Sidebar() {
         ))}
       </nav>
       <div className="side-foot">
-        <span className="env">production</span>
+        <span
+          className={`env realtime ${realtime.state}`}
+          title={`Realtime-источники: ${realtime.live} из ${realtime.total}`}
+          aria-label={`Realtime: ${realtime.live} из ${realtime.total} источников`}
+        >
+          {realtime.state === "live" ? "live" : realtime.state === "recovering" ? "reconnect" : "connect"}
+        </span>
         <button
           type="button"
           className="theme"
           title="Обновить"
           aria-label="Обновить текущую страницу"
-          onClick={() => revalidateAll()}
+          onClick={() => refreshMountedResources()}
         >
           ↻
         </button>

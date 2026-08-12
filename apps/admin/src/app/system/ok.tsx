@@ -1,26 +1,11 @@
 "use client";
 
 // OpenKeys-контекст engine-аккаунтов для таблицы «Аккаунты движка».
-// Порт okDirectory()/okBadge()/okInfo() из admin-panel.js. В shared-модуле
-// components/spend-stats-modal.tsx те же хелперы приватные, поэтому здесь —
-// локальная копия (правило: shared-файлы не трогаем).
+// Порт okBadge()/okInfo() из admin-panel.js. Данные получает общий URL-store
+// страницы; этот модуль содержит только представление.
 import type { ReactElement } from "react";
-import { api } from "@/lib/api";
 import { nanoMoney } from "@/lib/format";
 import { isOpenkeys, type OkDirectoryRow } from "@/components/spend-stats-modal";
-
-// Карта engineAccountId → метаданные ключа. Грузится лениво один раз за сессию
-// вкладки; при сбое promise сбрасывается, чтобы повторить при следующем fetch.
-let okDirPromise: Promise<Map<string, OkDirectoryRow>> | null = null;
-export function okDirectory(): Promise<Map<string, OkDirectoryRow>> {
-  okDirPromise ??= api<{ rows?: OkDirectoryRow[] }>("/openkeys-admin/lookup")
-    .then((data) => new Map((data.rows ?? []).map((row) => [String(row.engineAccountId ?? ""), row])))
-    .catch(() => {
-      okDirPromise = null;
-      return new Map<string, OkDirectoryRow>();
-    });
-  return okDirPromise;
-}
 
 const okTypeLabel = (type: string | undefined): string => (type === "openai" ? "OpenAI" : "Claude");
 

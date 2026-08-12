@@ -2,13 +2,11 @@
 
 // Финансы — порт 1:1 функции finance() из crates/server/src/admin-panel.js.
 // Read-only агрегаты commerce БД (/admin/finance/*), здоровье денежных пайплайнов
-// (/admin/pipeline-health) и settlement движка (/settlement-health). Без автоопроса —
-// только ручное обновление (кнопка ↻ глобальная) и смена окна графика/страницы
-// возвратов. Каждый источник деградирует независимо (null → блок с предупреждением,
-// остальные секции рендерятся).
-import { memo, startTransition, useCallback, useEffect, useMemo, useState } from "react";
-import { api } from "@/lib/api";
-import { usePoll } from "@/lib/usePoll";
+// (/admin/pipeline-health) и settlement движка (/settlement-health). Девять
+// источников грузятся и обновляются независимо: быстрый блок не ждёт медленный,
+// а SSE-инвалидация перезапрашивает только затронутый URL.
+import { memo, startTransition, useEffect, useMemo, useState } from "react";
+import { useResources } from "@/lib/resources";
 import { ageText, ago, duration, formatDate, money, nanoMoney } from "@/lib/format";
 import {
   Banner,
@@ -45,31 +43,15 @@ import {
 } from "./finance-lib";
 
 interface FinanceData {
-  overview: FinanceOverview | null;
-  revenue: FinanceRevenue | null;
-  funnel: FinanceFunnel | null;
-  top: FinanceTopCustomers | null;
-  refunds: AdminRefunds | null;
-  cohorts: FinanceCohorts | null;
-  churn: FinanceChurn | null;
-  pipes: PipelineHealth | null;
-  settle: SettlementHealth | null;
-}
-
-// Все девять источников параллельно; падение любого → null, блок рисует предупреждение.
-async function fetchFinance(windowDays: number, refundOffset: number): Promise<FinanceData> {
-  const [overview, revenue, funnel, top, refunds, cohorts, churn, pipes, settle] = await Promise.all([
-    api<FinanceOverview>("/admin/finance/overview").catch(() => null),
-    api<FinanceRevenue>(`/admin/finance/revenue?days=${windowDays}`).catch(() => null),
-    api<FinanceFunnel>("/admin/finance/funnel?days=30").catch(() => null),
-    api<FinanceTopCustomers>("/admin/finance/top-customers?days=30&limit=20").catch(() => null),
-    api<AdminRefunds>(`/admin/refunds?limit=${REFUND_PAGE_LIMIT}&offset=${refundOffset}`).catch(() => null),
-    api<FinanceCohorts>("/admin/finance/cohorts?weeks=8").catch(() => null),
-    api<FinanceChurn>("/admin/finance/churn-signals?days=14").catch(() => null),
-    api<PipelineHealth>("/admin/pipeline-health").catch(() => null),
-    api<SettlementHealth>("/settlement-health").catch(() => null),
-  ]);
-  return { overview, revenue, funnel, top, refunds, cohorts, churn, pipes, settle };
+  overview: FinanceOverview;
+  revenue: FinanceRevenue;
+  funnel: FinanceFunnel;
+  top: FinanceTopCustomers;
+  refunds: AdminRefunds;
+  cohorts: FinanceCohorts;
+  churn: FinanceChurn;
+  pipes: PipelineHealth;
+  settle: SettlementHealth;
 }
 
 // plainBar из легаси: акцентная полоса + подпись процента (без warn/bad-раскраски).
@@ -189,32 +171,28 @@ function WarnBanner(props: { title: string; children: string }) {
 export default function FinancePage() {
   const [windowDays, setWindowDays] = useState(30);
   const [refundOffset, setRefundOffset] = useState(0);
+  const { data: result, availability, isLoading } = useResources<FinanceData>({
+    overview: "/admin/finance/overview",
+    revenue: `/admin/finance/revenue?days=${windowDays}`,
+    funnel: "/admin/finance/funnel?days=30",
+    top: "/admin/finance/top-customers?days=30&limit=20",
+    refunds: `/admin/refunds?limit=${REFUND_PAGE_LIMIT}&offset=${refundOffset}`,
+    cohorts: "/admin/finance/cohorts?weeks=8",
+    churn: "/admin/finance/churn-signals?days=14",
+    pipes: "/admin/pipeline-health",
+    settle: "/settlement-health",
+  });
 
-  const fetcher = useCallback(async (): Promise<FinanceData> => {
-    const data = await fetchFinance(windowDays, refundOffset);
-    // Как в легаси: ушедшая за пределы страница возвратов откатывается на последнюю,
-    // выборка перезапрашивается с новым offset.
-    const clamped = clampRefundOffset(refundOffset, REFUND_PAGE_LIMIT, data.refunds?.total);
-    if (clamped != null) {
-      startTransition(() => setRefundOffset(clamped));
-      return fetchFinance(windowDays, clamped);
-    }
-    return data;
-  }, [windowDays, refundOffset]);
-
-  // Ключ стабильный: данные переживают смену окна/страницы (stale-while-revalidate),
-  // скелетон показывается только на самой первой загрузке.
-  const { data: result, refresh } = usePoll("finance", fetcher);
-
-  // Смена окна графика или страницы возвратов — ручное обновление (bindFinance легаси).
-  // Эффект объявлен после usePoll, поэтому poller уже получил свежий fetcher.
+  // Если список возвратов сократился, новая последняя страница получает собственный
+  // URL. Остальные восемь источников при этом остаются в кэше и не запрашиваются.
   useEffect(() => {
-    refresh();
-  }, [fetcher, refresh]);
+    const clamped = clampRefundOffset(refundOffset, REFUND_PAGE_LIMIT, result.refunds?.total);
+    if (clamped != null) startTransition(() => setRefundOffset(clamped));
+  }, [refundOffset, result.refunds?.total]);
 
   const chartSeries = useMemo(() => (result?.revenue ? buildRevenueSeries(result.revenue) : []), [result]);
 
-  if (!result) {
+  if (isLoading && Object.values(result).every((value) => value === undefined)) {
     return (
       <>
         <PageHead title="Финансы" sub="данные загружаются, навигация уже доступна" />
@@ -255,16 +233,18 @@ export default function FinancePage() {
         hint={classText || "профилей нет"}
       />
     </CardGrid>
-  ) : (
+  ) : availability.overview === "error" ? (
     <WarnBanner title="Финансовая сводка недоступна">
       /admin/finance/overview не отвечает — остальные блоки ниже работают независимо
     </WarnBanner>
-  );
+  ) : <LoadingGrid count={4} />;
 
   // ── Выручка: SVG-график по дням, итог + линия на провайдера ──
   const revenueTotals = revenue?.totals ?? {};
-  const chartBlock = !revenue ? (
+  const chartBlock = availability.revenue === "error" ? (
     <WarnBanner title="Ряд выручки недоступен">/admin/finance/revenue не отвечает</WarnBanner>
+  ) : !revenue ? (
+    <LoadingGrid count={1} />
   ) : (
     <ChartCard
       title="Выручка по дням"
@@ -275,9 +255,9 @@ export default function FinancePage() {
   );
 
   // ── Воронка чекаутов за 30д: доли от созданных барами, провайдеры таблицей ──
-  let funnelBlock = (
+  let funnelBlock = availability.funnel === "error" ? (
     <WarnBanner title="Воронка чекаутов недоступна">/admin/finance/funnel не отвечает</WarnBanner>
-  );
+  ) : <LoadingGrid count={3} />;
   if (funnel) {
     const ft = funnel.totals ?? {};
     const created = Number(ft.created) || 0;
@@ -370,7 +350,9 @@ export default function FinancePage() {
   }
 
   // ── Топ клиентов: два списка — по пополнениям и по расходу, доля от суммы окна ──
-  let topBlock = <WarnBanner title="Топ клиентов недоступен">/admin/finance/top-customers не отвечает</WarnBanner>;
+  let topBlock = availability.top === "error" ? (
+    <WarnBanner title="Топ клиентов недоступен">/admin/finance/top-customers не отвечает</WarnBanner>
+  ) : <LoadingGrid count={2} />;
   if (top) {
     const topTotals = top.totals ?? {};
     const topTable = (items: TopCustomer[] | undefined, moneyField: "total_usd" | "spent_usd", withCount: boolean) => (
@@ -407,7 +389,9 @@ export default function FinancePage() {
   }
 
   // ── Возвраты/диспуты: авторитет — payments.status ──
-  let refundsBlock = <WarnBanner title="Список возвратов недоступен">/admin/refunds не отвечает</WarnBanner>;
+  let refundsBlock = availability.refunds === "error" ? (
+    <WarnBanner title="Список возвратов недоступен">/admin/refunds не отвечает</WarnBanner>
+  ) : <LoadingGrid count={2} />;
   if (refunds) {
     refundsBlock = (
       <>
@@ -528,9 +512,9 @@ export default function FinancePage() {
   ) : null;
 
   // ── Здоровье денежных пайплайнов: вердикт баннером, карточки, таблицы последних сбоев ──
-  let pipelineBlock = (
+  let pipelineBlock = availability.pipes === "error" ? (
     <WarnBanner title="Здоровье пайплайнов недоступно">/admin/pipeline-health не отвечает</WarnBanner>
-  );
+  ) : <LoadingGrid count={4} />;
   if (pipes) {
     const credits = pipes.engine_credits ?? {};
     const cc = credits.counts_by_status ?? {};
@@ -672,9 +656,9 @@ export default function FinancePage() {
   }
 
   // ── Settlement движка: outbox расчётов и лаг pricing-consumer ──
-  let settlementBlock = (
+  let settlementBlock = availability.settle === "error" ? (
     <WarnBanner title="Settlement движка недоступен">/settlement-health не отвечает</WarnBanner>
-  );
+  ) : <LoadingGrid count={4} />;
   if (settle) {
     const out = settle.outbox ?? {};
     const lag = settle.pricing_consumer ?? {};
@@ -781,10 +765,10 @@ export default function FinancePage() {
       {settlementBlock}
 
       <footer>
-        Ручное обновление по кнопке ↻ и при смене окна — автообновления у вкладки нет. Выручка — только
-        подтверждённые платежи (prepay, подписок-продуктов нет). Возвраты: авторитет статуса — payments;
-        соседний статус показывает durable компенсацию баланса в engine_adjustments. ARPU — выручка на
-        активного за 30д, ARPPU — на платящего.
+        Данные обновляются по событиям источников; кнопка ↻ остаётся для явной перепроверки. Выручка —
+        только подтверждённые платежи (prepay, подписок-продуктов нет). Возвраты: авторитет статуса —
+        payments; соседний статус показывает durable компенсацию баланса в engine_adjustments. ARPU —
+        выручка на активного за 30д, ARPPU — на платящего.
       </footer>
     </>
   );

@@ -7,7 +7,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 // (card/pill/banner/empty/dialog). Классы совпадают с globals.css.
 //
 // Конвенции для страниц:
-// - тяжёлые таблицы мемоизируйте (React.memo/useMemo) — рендер идёт каждый poll-тик;
+// - тяжёлые таблицы мемоизируйте (React.memo/useMemo) — realtime может обновить одну секцию;
 // - статичный JSX выносите из компонентов страниц;
 // - деньги форматируйте только через nanoMoney/money из @/lib/format.
 
@@ -46,22 +46,25 @@ export function StatCard(props: {
   title?: string;
 }) {
   const clickable = Boolean(props.onClick);
-  return (
-    <div
-      className={"card" + (clickable ? " clickable" : "")}
-      onClick={props.onClick}
-      title={props.title}
-      role={clickable ? "button" : undefined}
-    >
+  const body = (
+    <>
       <div className="label">{props.label}</div>
       <div className="value">{props.value}</div>
       <div className="hint">{props.hint}</div>
-    </div>
+    </>
   );
+  if (clickable) {
+    return (
+      <button type="button" className="card clickable" onClick={props.onClick} title={props.title}>
+        {body}
+      </button>
+    );
+  }
+  return <div className="card" title={props.title}>{body}</div>;
 }
 
 export function Dot(props: { kind?: Tone | "off" }) {
-  return <span className={"dot" + (props.kind ? " " + props.kind : "")} />;
+  return <span className={"dot" + (props.kind ? " " + props.kind : "")} aria-hidden="true" />;
 }
 
 export function Banner(props: {

@@ -1,15 +1,24 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { THEME_STORAGE_KEY } from "@/lib/theme";
 import { Sidebar } from "@/components/sidebar";
 import { ErrorCenter } from "@/components/error-center";
 import { DialogHost } from "@/lib/dialog";
 import { Toaster } from "@/lib/toast";
+import { RealtimeBridge } from "@/lib/realtime";
 
 export const metadata: Metadata = {
   title: "apiToken.sale · admin",
   description: "Операционная админ-панель apiToken.sale",
   robots: { index: false, follow: false },
+};
+
+export const viewport: Viewport = {
+  colorScheme: "light dark",
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f3f5f8" },
+    { media: "(prefers-color-scheme: dark)", color: "#0c0e11" },
+  ],
 };
 
 // Inline-скрипт выставляет data-theme на <html> ДО первой отрисовки, чтобы не было
@@ -28,6 +37,7 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body>
+        <RealtimeBridge />
         <div className="shell">
           <Sidebar />
           <main id="main-content">{children}</main>

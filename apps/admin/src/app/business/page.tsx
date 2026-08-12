@@ -3,10 +3,10 @@
 // B2B — порт 1:1 функций business()/bindBusiness() из crates/server/src/admin-panel.js
 // (строки 892-938): B2B-клиенты с индивидуальными скидками и инвайты с идемпотентным
 // созданием, переотправкой письма, отзывом и копированием ссылки.
-// Автоопроса у вкладки нет (как в легаси) — только фокус/кнопка ↻.
-import { memo, useCallback, useState, type FormEvent, type ReactElement } from "react";
+// Автоматические обновления приходят из commerce SSE, polling отсутствует.
+import { memo, startTransition, useCallback, useEffect, useState, type FormEvent, type ReactElement } from "react";
 import { api, send } from "@/lib/api";
-import { usePoll } from "@/lib/usePoll";
+import { useResources } from "@/lib/resources";
 import { count, formatDate, money } from "@/lib/format";
 import { dialog } from "@/lib/dialog";
 import { toast } from "@/lib/toast";
@@ -33,32 +33,6 @@ import {
 
 const CLIENT_LIMIT = 50;
 const INVITES_LIMIT = 100;
-
-interface BusinessData {
-  invites: BusinessInvitesPage | null;
-  users: BusinessUsersPage | null;
-  /** Фактический offset загруженной страницы (после отсечения за конец списка). */
-  offset: number;
-}
-
-// Оба источника параллельно; падение любого → null, таблица показывает «данных нет».
-// Как в легаси: offset за концом списка (клиентов стало меньше) — повторный запрос
-// последней страницы тем же fetcher'ом, без setState в эффектах.
-async function loadBusiness(offset: number): Promise<BusinessData> {
-  const [invites, users] = await Promise.all([
-    api<BusinessInvitesPage>(`/admin/business-invites?limit=${INVITES_LIMIT}`).catch(() => null),
-    api<BusinessUsersPage>(`/admin/users?limit=${CLIENT_LIMIT}&offset=${offset}&customer_type=b2b`).catch(() => null),
-  ]);
-  const total = users?.total ?? users?.users?.length ?? 0;
-  if (users && total > 0 && offset >= total) {
-    const clamped = Math.max(0, Math.floor((total - 1) / CLIENT_LIMIT) * CLIENT_LIMIT);
-    const refetched = await api<BusinessUsersPage>(
-      `/admin/users?limit=${CLIENT_LIMIT}&offset=${clamped}&customer_type=b2b`,
-    ).catch(() => null);
-    return { invites, users: refetched, offset: clamped };
-  }
-  return { invites, users, offset };
-}
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -242,8 +216,13 @@ export default function BusinessPage() {
   const [requestedOffset, setOffset] = useState(0);
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set<string>());
   const [discountTarget, setDiscountTarget] = useState<DiscountDialogTarget | null>(null);
-  // Ключ включает offset: у каждой страницы свой poller со своим кэшем (stale-while-revalidate).
-  const { data: result, refresh } = usePoll(`business-${requestedOffset}`, () => loadBusiness(requestedOffset));
+  const { data: result, isLoading } = useResources<{
+    invites: BusinessInvitesPage;
+    users: BusinessUsersPage;
+  }>({
+    invites: `/admin/business-invites?limit=${INVITES_LIMIT}`,
+    users: `/admin/users?limit=${CLIENT_LIMIT}&offset=${requestedOffset}&customer_type=b2b`,
+  });
 
   const addBusy = useCallback((id: string) => {
     setBusyIds((prev) => {
@@ -264,8 +243,13 @@ export default function BusinessPage() {
 
   const clients = result?.users?.users ?? [];
   const clientTotal = result?.users?.total ?? clients.length;
-  // Отображаемый offset — из данных (после отсечения в loadBusiness), не из запроса.
-  const offset = result?.offset ?? requestedOffset;
+  const offset = clientTotal > 0 && requestedOffset >= clientTotal
+    ? Math.max(0, Math.floor((clientTotal - 1) / CLIENT_LIMIT) * CLIENT_LIMIT)
+    : requestedOffset;
+
+  useEffect(() => {
+    if (result.users && offset !== requestedOffset) startTransition(() => setOffset(offset));
+  }, [offset, requestedOffset, result.users]);
 
   const submitInvite = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
@@ -294,14 +278,13 @@ export default function BusinessPage() {
         }
         // Легаси перерисовывал shell — форма возвращалась к значениям по умолчанию.
         form.reset();
-        refresh();
       } catch (error) {
         toast(`${errorText(error)} — безопасный ключ повтора сохранён.`, "bad");
       } finally {
         dropBusy("submit");
       }
     },
-    [addBusy, dropBusy, refresh],
+    [addBusy, dropBusy],
   );
 
   const copyInviteLink = useCallback(
@@ -329,14 +312,13 @@ export default function BusinessPage() {
       try {
         await send(`/admin/business-invites/${id}/revoke`, "POST", { reason: PANEL_REASON });
         toast("Инвайт отозван.");
-        refresh();
       } catch (error) {
         toast(errorText(error), "bad");
       } finally {
         dropBusy(`revoke:${id}`);
       }
     },
-    [addBusy, dropBusy, refresh],
+    [addBusy, dropBusy],
   );
 
   const resendInvite = useCallback(
@@ -363,14 +345,13 @@ export default function BusinessPage() {
         });
         forgetPending(pendingKey);
         toast("Старая ссылка отозвана, новое письмо поставлено в очередь.");
-        refresh();
       } catch (error) {
         toast(`${errorText(error)} — безопасный ключ повтора сохранён.`, "bad");
       } finally {
         dropBusy(`resend:${id}`);
       }
     },
-    [addBusy, dropBusy, refresh],
+    [addBusy, dropBusy],
   );
 
   const openClientDiscounts = useCallback((user: BusinessUser) => {
@@ -382,7 +363,7 @@ export default function BusinessPage() {
     });
   }, []);
 
-  if (!result) {
+  if (isLoading && Object.values(result).every((value) => value === undefined)) {
     return (
       <>
         <PageHead title="B2B" sub="данные загружаются, навигация уже доступна" />
@@ -448,7 +429,6 @@ export default function BusinessPage() {
         target={discountTarget}
         reason={PANEL_REASON}
         onClose={() => setDiscountTarget(null)}
-        onSaved={refresh}
       />
     </div>
   );

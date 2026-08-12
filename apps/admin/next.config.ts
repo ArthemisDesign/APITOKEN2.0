@@ -1,5 +1,7 @@
 import type { NextConfig } from "next";
 
+const workspaceRoot = new URL("../..", import.meta.url).pathname;
+
 // Админка живёт за Caddy на admin.apitoken.sale: forward_auth и серверные ключи
 // внедряет Caddy, само приложение секретов не имеет и ходит в API по same-origin
 // относительным путям. CSP без хэшей: Next 16 встраивает inline-скрипты
@@ -19,6 +21,7 @@ const csp = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  turbopack: { root: workspaceRoot },
   async headers() {
     return [
       {

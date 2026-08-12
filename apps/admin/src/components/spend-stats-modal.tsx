@@ -10,9 +10,9 @@
 //   const { openSpendStats, spendStatsModal } = useSpendStatsModal();
 //   <StatCard ... onClick={openSpendStats} title="Разбивка: сутки / 7 дней / 30 дней" />
 //   {spendStatsModal}
-import { useCallback, useEffect, useState, type FormEvent, type ReactElement, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type FormEvent, type ReactElement, type ReactNode } from "react";
 import { api } from "@/lib/api";
-import { toast } from "@/lib/toast";
+import { useResources } from "@/lib/resources";
 import { ago, formatDate, money, nanoMoney } from "@/lib/format";
 import { CardGrid, EmptyRow, LoadingGrid, Modal, SectionHeader, StatCard, TableCard } from "@/components/ui";
 
@@ -60,20 +60,6 @@ const PERIODS = [
   ["d30", "30 дней"],
 ] as const;
 type PeriodKey = (typeof PERIODS)[number][0] | "custom";
-
-// Контекст ключа (метка, номинал, продавец, профиль) по engine-аккаунту. Карта
-// грузится лениво один раз за сессию вкладки; если портал недоступен — строки
-// остаются без подписи. Порт okDirectory() из admin-panel.js.
-let okDirPromise: Promise<Map<string, OkDirectoryRow>> | null = null;
-export function okDirectory(): Promise<Map<string, OkDirectoryRow>> {
-  okDirPromise ??= api<{ rows?: OkDirectoryRow[] }>("/openkeys-admin/lookup")
-    .then((data) => new Map((data.rows ?? []).map((row) => [String(row.engineAccountId ?? ""), row])))
-    .catch(() => {
-      okDirPromise = null;
-      return new Map<string, OkDirectoryRow>();
-    });
-  return okDirPromise;
-}
 
 const discount = (charge: number, real: number): string =>
   real > 0 ? Math.round((1 - charge / real) * 100) + "%" : "—";
@@ -260,8 +246,18 @@ function PeriodBody({
 // возвращает null при закрытии), поэтому сброс состояния не нужен — вкладка
 // всегда стартует с d1, а данные грузятся заново (окна live).
 function SpendStatsContent({ onClose }: { onClose: () => void }): ReactElement {
-  const [data, setData] = useState<SpendStatsResponse | null>(null);
-  const [okDir, setOkDir] = useState<Map<string, OkDirectoryRow> | null>(null);
+  const { data: resources } = useResources<{
+    stats: SpendStatsResponse;
+    directory: { rows?: OkDirectoryRow[] };
+  }>({
+    stats: "/spend-stats",
+    directory: "/openkeys-admin/lookup",
+  });
+  const data = resources.stats;
+  const okDir = useMemo(
+    () => new Map((resources.directory?.rows ?? []).map((row) => [String(row.engineAccountId ?? ""), row])),
+    [resources.directory],
+  );
   const [periodKey, setPeriodKey] = useState<PeriodKey>("d1");
   const [custom, setCustom] = useState<SpendPeriod | null>(null);
   const [customSubtitle, setCustomSubtitle] = useState("");
@@ -269,26 +265,6 @@ function SpendStatsContent({ onClose }: { onClose: () => void }): ReactElement {
   const [customBusy, setCustomBusy] = useState(false);
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
-
-  // Падение загрузки — bad-тост и закрытие: ровно поведение легаси, где
-  // модалка просто не открывалась.
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([api<SpendStatsResponse>("/spend-stats"), okDirectory()])
-      .then(([stats, dir]) => {
-        if (cancelled) return;
-        setData(stats);
-        setOkDir(dir);
-      })
-      .catch((cause) => {
-        if (cancelled) return;
-        toast("Статистика расхода не загрузилась: " + (cause instanceof Error ? cause.message : String(cause)), "bad");
-        onClose();
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [onClose]);
 
   // Произвольный диапазон: /spend-stats?from&to (epoch-секунды). «по»
   // включительно → полуоткрытая граница +1 сутки; лимит 92 дней и зажатие
@@ -349,11 +325,11 @@ function SpendStatsContent({ onClose }: { onClose: () => void }): ReactElement {
         <label className="sr-only" htmlFor="spend-from">
           С даты
         </label>
-        <input id="spend-from" type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} />
+        <input id="spend-from" name="from" type="date" autoComplete="off" value={fromDate} onChange={(event) => setFromDate(event.target.value)} />
         <label className="sr-only" htmlFor="spend-to">
           По дату
         </label>
-        <input id="spend-to" type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} />
+        <input id="spend-to" name="to" type="date" autoComplete="off" value={toDate} onChange={(event) => setToDate(event.target.value)} />
         <button className="btn" type="submit" disabled={customBusy}>
           Показать
         </button>
@@ -361,7 +337,7 @@ function SpendStatsContent({ onClose }: { onClose: () => void }): ReactElement {
           {customError}
         </span>
       </form>
-      {data === null ? (
+      {data === undefined ? (
         <LoadingGrid count={4} />
       ) : (
         <PeriodBody period={activePeriod} okDir={okDir} subtitle={periodKey === "custom" ? customSubtitle : undefined} />

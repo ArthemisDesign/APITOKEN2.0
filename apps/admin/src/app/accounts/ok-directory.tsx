@@ -2,26 +2,11 @@
 
 // Контекст ключа OpenKeys (метка, номинал, продавец, профиль) по engine-аккаунту
 // для таблицы «Engine и service accounts». Порт okDirectory()/okInfo() из
-// crates/server/src/admin-panel.js (строки 401-410): карта грузится лениво один
-// раз за сессию вкладки; если портал недоступен — строки остаются без подписи.
-// В shared components/spend-stats-modal.tsx эта пара приватная, поэтому для
-// страницы она продублирована локально (тип OkDirectoryRow — оттуда).
+// crates/server/src/admin-panel.js (строки 401-410). Данные получает URL-store
+// страницы; компонент отвечает только за отображение строки справочника.
 import type { ReactElement } from "react";
-import { api } from "@/lib/api";
 import { nanoMoney } from "@/lib/format";
 import type { OkDirectoryRow } from "@/components/spend-stats-modal";
-
-let okDirPromise: Promise<Map<string, OkDirectoryRow>> | null = null;
-
-export function okDirectory(): Promise<Map<string, OkDirectoryRow>> {
-  okDirPromise ??= api<{ rows?: OkDirectoryRow[] }>("/openkeys-admin/lookup")
-    .then((data) => new Map((data.rows ?? []).map((row) => [String(row.engineAccountId ?? ""), row])))
-    .catch(() => {
-      okDirPromise = null;
-      return new Map<string, OkDirectoryRow>();
-    });
-  return okDirPromise;
-}
 
 const okTypeLabel = (type: string | undefined): string => (type === "openai" ? "OpenAI" : "Claude");
 

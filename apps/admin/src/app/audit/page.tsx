@@ -2,10 +2,10 @@
 
 // Аудит — порт 1:1 секции audit()/bindAuditPage() из crates/server/src/admin-panel.js
 // (строки 1026-1058): фильтры action/actor_type/q, пагинация offset/limit 50,
-// CSV-выгрузка текущей страницы. Автообновления у вкладки нет — только фокус/кнопка ↻.
-import { memo, useCallback, useRef, useState, type FormEvent } from "react";
-import { api } from "@/lib/api";
-import { usePoll } from "@/lib/usePoll";
+// CSV-выгрузка текущей страницы. Текущий URL и справочник действий — отдельные
+// ресурсы: они делят кэш между возвратами на страницу и обновляются по SSE.
+import { memo, startTransition, useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useResource } from "@/lib/resources";
 import { count, formatDate } from "@/lib/format";
 import { csvDate, downloadCsv } from "@/lib/csv";
 import { EmptyRow, LoadingGrid, PageHead, Pill, TableCard } from "@/components/ui";
@@ -24,15 +24,7 @@ import {
   type AuditPagePayload,
 } from "./lib";
 
-interface AuditData {
-  rows: AuditEntry[];
-  total: number;
-}
-
-// Ключ — путь API без query (sourceName маппит его в «Аудит» для ErrorCenter);
-// конкретные фильтры fetcher читает из ref, поэтому poller один и данные
-// переживают смену фильтров/страницы (stale-while-revalidate, как shell легаси).
-const POLL_KEY = "/admin/audit";
+const AUDIT_PATH = "/admin/audit";
 
 // Статичный футер страницы — дословно из легаси.
 const FOOTER = (
@@ -65,70 +57,45 @@ const AuditRow = memo(function AuditRow({ item }: { item: AuditEntry }) {
 });
 
 export default function AuditPage() {
-  // Применённые фильтры: state — для рендера, ref — для fetcher'а (читается
-  // синхронно в момент запроса, до коммита React).
   const [filters, setFilters] = useState<AuditFilters>(INITIAL_AUDIT_FILTERS);
-  const filtersRef = useRef(filters);
-  // Distinct-список action для выпадайки тянем лениво один раз; ошибка/404
-  // старого backend — просто нет опций, список событий работает независимо.
-  const [actions, setActions] = useState<string[]>([]);
-  const actionsRef = useRef<string[] | null>(null);
+  const pagePath = `${AUDIT_PATH}?${buildAuditQuery(filters)}`;
+  const { data } = useResource<AuditPagePayload>(pagePath);
+  const { data: actionsPayload } = useResource<unknown>("/admin/audit/actions");
+  const actions = useMemo(() => normalizeAuditActions(actionsPayload), [actionsPayload]);
+  const rows = useMemo(() => data?.rows ?? [], [data]);
+  const total = auditPageTotal(data ?? null);
 
-  const loadAudit = useCallback(async (): Promise<AuditData> => {
-    for (;;) {
-      const current = filtersRef.current;
-      const [page, actionsPayload] = await Promise.all([
-        api<AuditPagePayload>(`${POLL_KEY}?${buildAuditQuery(current)}`).catch(() => null),
-        actionsRef.current === null ? api<unknown>("/admin/audit/actions").catch(() => null) : Promise.resolve(null),
-      ]);
-      if (actionsPayload !== null) {
-        actionsRef.current = normalizeAuditActions(actionsPayload);
-        setActions(actionsRef.current);
-      }
-      const rows = page?.rows ?? [];
-      const total = auditPageTotal(page);
-      // Offset уехал за хвост лога → прыжок на последнюю страницу и повторный запрос,
-      // как `return audit()` в легаси.
-      const clamped = clampAuditOffset(current.offset, current.limit, total);
-      if (clamped === current.offset) return { rows, total };
-      const next = { ...current, offset: clamped };
-      filtersRef.current = next;
-      setFilters(next);
-    }
+  // Удаление хвоста журнала может сделать offset недействительным. Меняем только
+  // URL страницы; справочник действий и прежние страницы остаются в кэше.
+  useEffect(() => {
+    if (!data) return;
+    const offset = clampAuditOffset(filters.offset, filters.limit, total);
+    if (offset !== filters.offset) startTransition(() => setFilters((current) => ({ ...current, offset })));
+  }, [data, filters.limit, filters.offset, total]);
+
+  const applyFilters = useCallback((next: AuditFilters) => {
+    startTransition(() => setFilters(next));
   }, []);
-
-  const { data, refresh } = usePoll(POLL_KEY, loadAudit);
-
-  // Применить фильтры/страницу: ref обновляется синхронно (fetcher увидит его
-  // сразу при refresh), state — через обычный апдейт.
-  const applyFilters = useCallback(
-    (next: AuditFilters) => {
-      filtersRef.current = next;
-      setFilters(next);
-      refresh();
-    },
-    [refresh],
-  );
 
   const onSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       const form = new FormData(event.currentTarget);
       applyFilters({
-        ...filtersRef.current,
+        ...filters,
         offset: 0,
         action: String(form.get("action") ?? ""),
         actorType: String(form.get("actorType") ?? ""),
         q: String(form.get("q") ?? "").trim(),
       });
     },
-    [applyFilters],
+    [applyFilters, filters],
   );
 
   const exportCsv = useCallback(() => {
     if (!data) return;
-    downloadCsv(`audit-${csvDate()}.csv`, AUDIT_CSV_HEADER, auditCsvRows(data.rows));
-  }, [data]);
+    downloadCsv(`audit-${csvDate()}.csv`, AUDIT_CSV_HEADER, auditCsvRows(rows));
+  }, [data, rows]);
 
   if (!data) {
     return (
@@ -139,7 +106,6 @@ export default function AuditPage() {
     );
   }
 
-  const { rows, total } = data;
   const { offset, limit } = filters;
   const actionOptions = auditActionOptions(actions, filters.action);
 
@@ -183,7 +149,7 @@ export default function AuditPage() {
         <label className="sr-only" htmlFor="audit-q">
           Поиск по аудиту
         </label>
-        <input id="audit-q" name="q" type="search" defaultValue={filters.q} placeholder="id цели или текст в metadata…" />
+        <input id="audit-q" name="q" type="search" autoComplete="off" spellCheck={false} defaultValue={filters.q} placeholder="id цели или текст в metadata…" />
         <button className="btn" type="submit">
           Найти
         </button>
@@ -217,7 +183,7 @@ export default function AuditPage() {
           type="button"
           className="btn ghost"
           disabled={offset <= 0}
-          onClick={() => applyFilters({ ...filtersRef.current, offset: Math.max(0, offset - limit) })}
+          onClick={() => applyFilters({ ...filters, offset: Math.max(0, offset - limit) })}
         >
           Назад
         </button>
@@ -225,7 +191,7 @@ export default function AuditPage() {
           type="button"
           className="btn ghost"
           disabled={offset + limit >= total}
-          onClick={() => applyFilters({ ...filtersRef.current, offset: offset + limit })}
+          onClick={() => applyFilters({ ...filters, offset: offset + limit })}
         >
           Дальше
         </button>

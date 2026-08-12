@@ -2,11 +2,10 @@
 
 // Система — порт 1:1 функций system() и systemVerdict() из
 // crates/server/src/admin-panel.js: ёмкость флота vs спрос, рекомендации
-// по докупке подписок и балансы engine-аккаунтов. Опрос каждые 10 с.
+// по докупке подписок и балансы engine-аккаунтов. Обновление — по engine/OpenKeys SSE.
 import Link from "next/link";
 import { memo } from "react";
-import { api } from "@/lib/api";
-import { usePoll } from "@/lib/usePoll";
+import { useResources } from "@/lib/resources";
 import { count, money, ratio } from "@/lib/format";
 import {
   Banner,
@@ -21,9 +20,7 @@ import {
   type Tone,
 } from "@/components/ui";
 import { useSpendStatsModal, type OkDirectoryRow } from "@/components/spend-stats-modal";
-import { OkBadge, OkInfo, okDirectory } from "./ok";
-
-const POLL_INTERVAL_MS = 10_000;
+import { OkBadge, OkInfo } from "./ok";
 
 // Полная форма GET /overview, которую читает системная вкладка (lib/types.ts
 // держит усечённый EngineOverview для Сводки — здесь нужны supply/demand/headroom).
@@ -60,21 +57,6 @@ export interface SystemOverview {
   coverage?: Record<string, number | null>;
   recommend?: { subs_needed?: number | null; gap?: number | null };
   accounts?: SystemAccount[];
-}
-
-interface SystemData {
-  overview: SystemOverview | null;
-  okDir: Map<string, OkDirectoryRow>;
-}
-
-// Источники параллельны; `/overview` уже использует exact `/capacity` authority, поэтому второй
-// дублирующий browser request больше не нужен. OpenKeys directory fail-open становится пустой Map.
-async function loadSystem(): Promise<SystemData> {
-  const [overview, okDir] = await Promise.all([
-    api<SystemOverview>("/overview").catch(() => null),
-    okDirectory(),
-  ]);
-  return { overview, okDir };
 }
 
 export type SystemVerdict = { kind: "ok" | "warn" | "bad"; title: string; detail: string };
@@ -177,10 +159,16 @@ const AccountRows = memo(function AccountRows({
 });
 
 export default function SystemPage() {
-  const { data: result } = usePoll("system", loadSystem, { interval: POLL_INTERVAL_MS });
+  const { data: result, isLoading } = useResources<{
+    overview: SystemOverview;
+    directory: { rows?: OkDirectoryRow[] };
+  }>({
+    overview: "/overview",
+    directory: "/openkeys-admin/lookup",
+  });
   const { openSpendStats, spendStatsModal } = useSpendStatsModal();
 
-  if (!result) {
+  if (isLoading && Object.values(result).every((value) => value === undefined)) {
     return (
       <>
         <PageHead title="Система" sub="данные загружаются, навигация уже доступна" />
@@ -189,7 +177,8 @@ export default function SystemPage() {
     );
   }
 
-  const { overview, okDir } = result;
+  const overview = result.overview;
+  const okDir = new Map((result.directory?.rows ?? []).map((row) => [String(row.engineAccountId ?? ""), row]));
 
   // Без /overview страница сводится к warn-баннеру — как в легаси system().
   if (!overview) {
@@ -323,9 +312,9 @@ export default function SystemPage() {
               <th>статус</th>
               <th>баланс</th>
               <th>
-                <span data-spend-stats title="Разбивка: сутки / 7 дней / 30 дней" onClick={openSpendStats}>
+                <button type="button" className="table-action" title="Разбивка: сутки / 7 дней / 30 дней" onClick={openSpendStats}>
                   потрачено
-                </span>
+                </button>
               </th>
               <th>множитель</th>
             </tr>
@@ -337,7 +326,7 @@ export default function SystemPage() {
       </TableCard>
 
       <footer>
-        Обновление каждые 10с, пока вкладка видима · «доступно» учитывает сбросы окон · «запас» = доступно ÷ текущее
+        Live-обновление по изменениям движка и OpenKeys · «доступно» учитывает сбросы окон · «запас» = доступно ÷ текущее
         потребление · клиентам ×{mult}
       </footer>
 

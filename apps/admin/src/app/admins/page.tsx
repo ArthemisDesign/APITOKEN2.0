@@ -3,11 +3,10 @@
 // Админы — порт 1:1 admins()/bindAdmins()/adminAction() из
 // crates/server/src/admin-panel.js (строки 348-393): центральное управление
 // администраторами внутренних доменов — создание, смена пароля, domain grants,
-// отключение/включение. Автоопроса в легаси нет — только ревалидация на фокусе
-// и кнопка ↻ в сайдбаре.
+// отключение/включение. Автоматические обновления приходят из commerce SSE.
 import { Fragment, memo, useCallback, useMemo, useState, type FormEvent } from "react";
-import { api, send } from "@/lib/api";
-import { usePoll } from "@/lib/usePoll";
+import { send } from "@/lib/api";
+import { useResources } from "@/lib/resources";
 import { formatDate } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { dialog } from "@/lib/dialog";
@@ -41,23 +40,8 @@ interface AdminDomainsResponse {
   external_domains?: { domain?: string; account_system?: string }[];
 }
 
-interface AdminsData {
-  data: AdminAccountsResponse | null;
-  directory: AdminDomainsResponse | null;
-}
-
 interface MutationResult {
   changed_self?: boolean;
-}
-
-// Оба источника параллельно; падение любого → null, панель продолжает работать.
-async function loadAdmins(domainFilter: string): Promise<AdminsData> {
-  const suffix = domainFilter ? "?domain=" + encodeURIComponent(domainFilter) : "";
-  const [data, directory] = await Promise.all([
-    api<AdminAccountsResponse>("/admin/admin-accounts" + suffix).catch(() => null),
-    api<AdminDomainsResponse>("/admin/admin-accounts/domains").catch(() => null),
-  ]);
-  return { data, directory };
 }
 
 // Статичная разметка — вынесена из компонента страницы.
@@ -138,12 +122,18 @@ export default function AdminsPage() {
   const [domainFilter, setDomainFilter] = useState("");
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
-  // Фильтр по домену — часть ключа опроса: смена фильтра создаёт poller под
-  // новый суффикс ?domain=, который сразу грузит данные (аналог refresh({force:true})).
-  const pollKey = domainFilter
+  // Фильтр по домену — часть URL: смена фильтра получает отдельный кэшируемый
+  // снапшот и не перезапрашивает справочник доменов.
+  const dataPath = domainFilter
     ? `/admin/admin-accounts?domain=${encodeURIComponent(domainFilter)}`
     : "/admin/admin-accounts";
-  const { data: result, refresh } = usePoll(pollKey, () => loadAdmins(domainFilter));
+  const { data: result, isLoading } = useResources<{
+    data: AdminAccountsResponse;
+    directory: AdminDomainsResponse;
+  }>({
+    data: dataPath,
+    directory: "/admin/admin-accounts/domains",
+  });
 
   const accounts = useMemo(() => result?.data?.accounts ?? [], [result]);
   const domains = useMemo(() => result?.directory?.domains ?? [], [result]);
@@ -151,7 +141,7 @@ export default function AdminsPage() {
 
   // Общий хвост всех трёх PATCH-мутаций (adminAction): PATCH → тост → обновление.
   // Отдельный тост «список не обновился» из легаси не нужен — сбой источника
-  // показывает ErrorCenter по реестру ошибок usePoll.
+  // показывает ErrorCenter общего URL-store.
   const runMutation = useCallback(
     async (path: string, body: unknown) => {
       setBusy(true);
@@ -161,14 +151,13 @@ export default function AdminsPage() {
           "Изменение сохранено." +
             (mutation.changed_self ? " Введите новый пароль при следующем запросе." : ""),
         );
-        refresh();
       } catch (error) {
         toast("Изменение не сохранено: " + (error instanceof Error ? error.message : String(error)), "bad");
       } finally {
         setBusy(false);
       }
     },
-    [refresh],
+    [],
   );
 
   const handlePassword = useCallback(
@@ -256,7 +245,6 @@ export default function AdminsPage() {
       });
       form.reset();
       toast("Администратор создан.");
-      refresh();
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), "bad");
     } finally {
@@ -264,7 +252,7 @@ export default function AdminsPage() {
     }
   };
 
-  if (!result) {
+  if (isLoading && Object.values(result).every((value) => value === undefined)) {
     return (
       <>
         <PageHead title="Админы" sub="данные загружаются, навигация уже доступна" />

@@ -1,14 +1,13 @@
 "use client";
 
 // Партнёры — порт 1:1 функции partners() из crates/server/src/admin-panel.js.
-// Шесть источников одним Promise.all (каждый деградирует молча в null), автоопроса
-// нет — ручное обновление по кнопке ↻ и ревалидация на фокусе (как в легаси).
+// Шесть независимых URL-ресурсов деградируют и рендерятся отдельно; изменения
+// приходят из sales SSE без interval/focus-запросов.
 // Страница read-only: все мутации partner-контура живут на admin.partners.apitoken.sale.
-import { api } from "@/lib/api";
-import { usePoll } from "@/lib/usePoll";
+import { useResources } from "@/lib/resources";
 import { ago, count, formatDate, nanoMoney } from "@/lib/format";
 import { Banner, CardGrid, EmptyRow, LoadingGrid, PageHead, Pill, SectionHeader, StatCard, TableCard } from "@/components/ui";
-import { memo, startTransition, useMemo, useState } from "react";
+import { memo, startTransition, useEffect, useMemo, useState } from "react";
 import {
   BATCH_STATUS_KIND,
   PARTNER_PHASE_LABEL,
@@ -43,46 +42,12 @@ interface PartnersPage {
 }
 
 interface PartnersData {
-  overview: PartnerOverview | null;
-  engine: PayoutEngine | null;
-  due: PayoutDue | null;
-  analytics: PartnerAnalytics | null;
-  payouts: PayoutHistory | null;
-  batches: PayoutBatches | null;
-  /** Фактический offset аналитики после клампа по total (см. loadPartners). */
-  offset: number;
-}
-
-// Все шесть источников параллельно; падение любого → null, блок рендерит warn-баннер.
-async function loadPartners(page: PartnersPage): Promise<PartnersData> {
-  const analyticsQuery =
-    "?sort=" + page.sort + "&dir=" + page.dir + "&limit=" + page.limit + "&offset=" + page.offset;
-  const [overview, engine, due, firstAnalytics, payouts, batches] = await Promise.all([
-    api<PartnerOverview>("/partner-admin/overview").catch(() => null),
-    api<PayoutEngine>("/partner-admin/payouts/engine").catch(() => null),
-    api<PayoutDue>("/partner-admin/payout-list").catch(() => null),
-    api<PartnerAnalytics>("/partner-admin/partner-analytics" + analyticsQuery).catch(() => null),
-    api<PayoutHistory>("/partner-admin/payouts").catch(() => null),
-    api<PayoutBatches>("/partner-admin/payouts/batches").catch(() => null),
-  ]);
-  // Кламп offset, если total сократился под текущую страницу: легаси перезапрашивает
-  // последнюю полную страницу и перерисовывает — здесь повторный fetch в том же проходе.
-  const total = firstAnalytics?.totals?.total || 0;
-  const offset = clampOffset(page.offset, page.limit, total);
-  const analytics =
-    firstAnalytics && offset !== page.offset
-      ? await api<PartnerAnalytics>(
-          "/partner-admin/partner-analytics?sort=" +
-            page.sort +
-            "&dir=" +
-            page.dir +
-            "&limit=" +
-            page.limit +
-            "&offset=" +
-            offset,
-        ).catch(() => null)
-      : firstAnalytics;
-  return { overview, engine, due, analytics, payouts, batches, offset };
+  overview: PartnerOverview;
+  engine: PayoutEngine;
+  due: PayoutDue;
+  analytics: PartnerAnalytics;
+  payouts: PayoutHistory;
+  batches: PayoutBatches;
 }
 
 const ANALYTICS_HEAD = (
@@ -305,9 +270,23 @@ export default function PartnersPage() {
     pageParams.limit +
     "&offset=" +
     pageParams.offset;
-  const { data: result } = usePoll(analyticsPath, () => loadPartners(pageParams));
+  const { data: result, isLoading } = useResources<PartnersData>({
+    overview: "/partner-admin/overview",
+    engine: "/partner-admin/payouts/engine",
+    due: "/partner-admin/payout-list",
+    analytics: analyticsPath,
+    payouts: "/partner-admin/payouts",
+    batches: "/partner-admin/payouts/batches",
+  });
 
   const analyticsTotal = result?.analytics?.totals?.total || 0;
+  const effectiveOffset = clampOffset(pageParams.offset, pageParams.limit, analyticsTotal);
+
+  useEffect(() => {
+    if (result.analytics && effectiveOffset !== pageParams.offset) {
+      startTransition(() => setPageParams((current) => ({ ...current, offset: effectiveOffset })));
+    }
+  }, [effectiveOffset, pageParams.offset, result.analytics]);
 
   // Имена партнёров для истории выплат — из загруженной страницы аналитики.
   const names = useMemo(() => {
@@ -318,7 +297,7 @@ export default function PartnersPage() {
     return map;
   }, [result]);
 
-  if (!result) {
+  if (isLoading && Object.values(result).every((value) => value === undefined)) {
     return (
       <>
         <PageHead title="Партнёры" sub="данные загружаются, навигация уже доступна" />
@@ -327,7 +306,8 @@ export default function PartnersPage() {
     );
   }
 
-  const { overview, engine, due, analytics, payouts, batches, offset } = result;
+  const { overview, engine, due, analytics, payouts, batches } = result;
+  const offset = effectiveOffset;
   const degraded = !overview || !engine || !due || !analytics || !payouts || !batches;
 
   const applyPage = (patch: Partial<PartnersPage>) => {
@@ -564,8 +544,8 @@ export default function PartnersPage() {
       )}
 
       <footer>
-        Ручное обновление по кнопке ↻ — автообновления у вкладки нет. Суммы — nanoUSD-строки sales-api. Подготовка и
-        отправка батчей, решения по заявкам и полный partner workflow остаются на{" "}
+        Данные обновляются по событиям sales-api; кнопка ↻ остаётся для явной перепроверки. Суммы —
+        nanoUSD-строки sales-api. Подготовка и отправка батчей, решения по заявкам и полный partner workflow остаются на{" "}
         <a className="link" href="https://admin.partners.apitoken.sale/admin" target="_blank" rel="noreferrer">
           admin.partners.apitoken.sale ↗
         </a>

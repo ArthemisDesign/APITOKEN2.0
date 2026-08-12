@@ -1,11 +1,9 @@
 "use client";
 
 // Сводка — порт 1:1 функции dashboard() из crates/server/src/admin-panel.js.
-// Эталонная страница для остальных разделов: данные грузятся через usePoll
-// (Promise.all по всем источникам, каждый деградирует молча в null), опрос 30 с.
-import { api } from "@/lib/api";
+// Данные грузятся параллельно и обновляются только по producer SSE invalidation.
 import Link from "next/link";
-import { usePoll } from "@/lib/usePoll";
+import { useResources } from "@/lib/resources";
 import { formatDate, money, nanoMoney } from "@/lib/format";
 import type {
   CommerceDashboard,
@@ -17,35 +15,27 @@ import type {
 import { Banner, CardGrid, LoadingGrid, PageHead, Pill, SectionHeader, StatCard } from "@/components/ui";
 import { useSpendStatsModal } from "@/components/spend-stats-modal";
 
-const POLL_INTERVAL_MS = 30_000;
-
 interface DashboardData {
-  data: CommerceDashboard | null;
-  engine: EngineOverview | null;
-  partners: PartnerOverview | null;
-  pipes: PipelineHealth | null;
-  settle: SettlementHealth | null;
-}
-
-// Все пять источников параллельно; падение любого → null, панель продолжает работать.
-async function loadDashboard(): Promise<DashboardData> {
-  const [data, engine, partners, pipes, settle] = await Promise.all([
-    api<CommerceDashboard>("/admin/dashboard").catch(() => null),
-    api<EngineOverview>("/overview").catch(() => null),
-    api<PartnerOverview>("/partner-admin/overview").catch(() => null),
-    api<PipelineHealth>("/admin/pipeline-health").catch(() => null),
-    api<SettlementHealth>("/settlement-health").catch(() => null),
-  ]);
-  return { data, engine, partners, pipes, settle };
+  data: CommerceDashboard;
+  engine: EngineOverview;
+  partners: PartnerOverview;
+  pipes: PipelineHealth;
+  settle: SettlementHealth;
 }
 
 const show = (value: number | null | undefined): number | "—" => value ?? "—";
 
 export default function DashboardPage() {
-  const { data: result } = usePoll("dashboard", loadDashboard, { interval: POLL_INTERVAL_MS });
+  const { data: result, isLoading } = useResources<DashboardData>({
+    data: "/admin/dashboard",
+    engine: "/overview",
+    partners: "/partner-admin/overview",
+    pipes: "/admin/pipeline-health",
+    settle: "/settlement-health",
+  });
   const { openSpendStats, spendStatsModal } = useSpendStatsModal();
 
-  if (!result) {
+  if (isLoading && Object.values(result).every((value) => value === undefined)) {
     return (
       <>
         <PageHead title="Сводка" sub="данные загружаются, навигация уже доступна" />

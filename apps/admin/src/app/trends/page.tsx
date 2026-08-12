@@ -2,11 +2,9 @@
 
 // Тренды — порт 1:1 функции trends() из crates/server/src/admin-panel.js.
 // История флота из metrics.db: GET /fleet-history?window=<окно>[&sub=<маска>],
-// маски подписок — GET /subs (поле email). Автообновления у вкладки нет
-// (как в легаси): ревалидация на фокусе и по кнопке ↻ уже встроены в usePoll.
+// маски подписок — GET /subs (поле email). Новые снапшоты приходят по engine SSE.
 import { startTransition, useMemo, useState, type ReactNode } from "react";
-import { api } from "@/lib/api";
-import { usePoll } from "@/lib/usePoll";
+import { useResources } from "@/lib/resources";
 import { count, duration, formatDate, money } from "@/lib/format";
 import { Banner, LoadingGrid, PageHead, Pill } from "@/components/ui";
 import { LineChart, type ChartPoint } from "./line-chart";
@@ -45,26 +43,6 @@ interface SubsList {
   subs?: Array<{ email?: string }>;
 }
 
-interface TrendsData {
-  data: FleetHistory | null;
-  subs: string[];
-  /** Момент загрузки — для «обновлено …» (аналог date(Date.now(),true) в легаси). */
-  fetchedAt: number;
-}
-
-// Оба источника параллельно; падение /fleet-history → null (warn-баннер),
-// падение /subs → пустой список масок, как trendsSubsList() в легаси.
-async function loadTrends(window: string, sub: string): Promise<TrendsData> {
-  const suffix = "?window=" + window + (sub ? "&sub=" + encodeURIComponent(sub) : "");
-  const [data, subs] = await Promise.all([
-    api<FleetHistory>("/fleet-history" + suffix).catch(() => null),
-    api<SubsList>("/subs")
-      .then((list) => (list.subs ?? []).map((item) => item.email ?? ""))
-      .catch(() => [] as string[]),
-  ]);
-  return { data, subs, fetchedAt: Date.now() };
-}
-
 const pct = (value: number) => Math.round(value * 100) + "%";
 const integer = (value: number) => String(Math.round(value));
 
@@ -85,7 +63,14 @@ export default function TrendsPage() {
   const [window, setWindow] = useState("7d");
   const [sub, setSub] = useState("");
   const suffix = "?window=" + window + (sub ? "&sub=" + encodeURIComponent(sub) : "");
-  const { data: result } = usePoll("/fleet-history" + suffix, () => loadTrends(window, sub));
+  const { data: result, isLoading, updatedAt: fetchedAt } = useResources<{
+    data: FleetHistory;
+    subs: SubsList;
+  }>({
+    data: "/fleet-history" + suffix,
+    subs: "/subs",
+  });
+  const subscriptions = useMemo(() => (result.subs?.subs ?? []).map((item) => item.email ?? ""), [result.subs]);
 
   // Наборы точек для графиков — пересчитываем только при смене данных/фильтра.
   const charts = useMemo(() => {
@@ -147,7 +132,7 @@ export default function TrendsPage() {
       </label>
       <select id="trends-sub" value={sub} onChange={(event) => startTransition(() => setSub(event.target.value))}>
         <option value="">весь флот</option>
-        {(result?.subs ?? []).map((email) => (
+        {subscriptions.map((email) => (
           <option key={email} value={email}>
             {email}
           </option>
@@ -156,7 +141,7 @@ export default function TrendsPage() {
     </div>
   );
 
-  if (!result) {
+  if (isLoading && Object.values(result).every((value) => value === undefined)) {
     return (
       <>
         <PageHead title="Тренды" sub="данные загружаются, навигация уже доступна" />
@@ -197,7 +182,7 @@ export default function TrendsPage() {
       {toolbar}
       {series.length ? (
         <Banner kind="ok" title={(sub ? "История подписки " + sub : "История флота") + ": " + count(series.length, "точка", "точки", "точек")}>
-          окно {windowText} · бакет {duration(data.bucket_secs)} · обновлено {formatDate(result.fetchedAt, true)}
+          окно {windowText} · бакет {duration(data.bucket_secs)} · обновлено {formatDate(fetchedAt, true)}
         </Banner>
       ) : (
         <Banner kind="warn" title={"За окно «" + windowText + "» данных пока нет"}>
@@ -207,7 +192,7 @@ export default function TrendsPage() {
       )}
       {charts}
       <footer>
-        Ручное обновление по кнопке ↻ и при смене окна — автообновления у вкладки нет. Агрегация бакета: среднее по
+        Новые минутные снапшоты приходят по realtime-событию; ↻ оставлен для ручной проверки. Агрегация бакета: среднее по
         уровням и деньгам, максимум по gap/«нужно подписок» (планирование по худшей точке). Per-sub ряд строится по
         префиксу маски: при совпадении первых 4 символов email у двух подписок их ряды склеиваются.
       </footer>
