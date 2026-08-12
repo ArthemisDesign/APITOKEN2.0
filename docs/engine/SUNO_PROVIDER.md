@@ -283,6 +283,7 @@ Each `unknown` fails closed and is cleared only by a controlled live run on our 
 | research / capability manifest | this file | done |
 | reviewed derived rate card | `crates/metering/src/suno.rs` | done (8e2d147d) |
 | calibration authority (schema 0050) | `crates/registry/migrations_pg/0050_suno_window_calibration.sql` | done (this commit) |
+| pricing provider admission (schema 0052) | `crates/registry/migrations_pg/0052_suno_pricing_provider.sql` | done (this commit) |
 | observation types | `crates/registry/src/suno_calibration.rs` | done (this commit) |
 | credential | `crates/suno-credential` | pending |
 | calibration estimator | `crates/forward/src/suno_calibration.rs` | pending |

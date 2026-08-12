@@ -563,7 +563,7 @@ pub fn open(path: &str) -> Result<Connection> {
     c.execute(
         "CREATE TABLE IF NOT EXISTS account_provider_discounts(\
          account_id TEXT NOT NULL, \
-         provider_id TEXT NOT NULL CHECK(provider_id IN ('anthropic','openai','google','kimi','glm','tripo3d')), \
+         provider_id TEXT NOT NULL CHECK(provider_id IN ('anthropic','openai','google','kimi','glm','tripo3d','suno')), \
          mult_bp INTEGER NOT NULL CHECK(mult_bp BETWEEN 0 AND 10000), \
          updated_ts INTEGER NOT NULL, PRIMARY KEY(account_id, provider_id))",
         [],
@@ -1232,7 +1232,7 @@ fn install_sqlite_settlement_guards(conn: &Connection) -> Result<()> {
              ))
              OR ((NEW.provider IS NULL) <> (NEW.payable_multiplier_bp IS NULL))
              OR (NEW.provider IS NOT NULL
-                 AND NEW.provider NOT IN ('anthropic','openai','google','kimi','glm','tripo3d'))
+                 AND NEW.provider NOT IN ('anthropic','openai','google','kimi','glm','tripo3d','suno'))
              OR (NEW.payable_multiplier_bp IS NOT NULL
                  AND (NEW.payable_multiplier_bp < 0 OR NEW.payable_multiplier_bp > 10000))
              OR (NEW.state IN ('settled','canceled') AND NEW.provider IS NOT NULL
@@ -2631,15 +2631,16 @@ pub fn clear_account_provider_discount(
 
 /// Provider ids the engine actually prices, plus the bounds every discount must respect. A typo
 /// here would silently never match a request, so the set is closed rather than free-form.
-/// `tripo3d` is admitted for the task-media plane's reservation/discount surface
-/// (migration 0051); `suno` stays out until its runtime plane lands.
-pub const DISCOUNT_PROVIDER_IDS: [&str; 6] = [
+/// `tripo3d` and `suno` are admitted for their task-media planes' reservation/discount
+/// surface (migrations 0051 and 0052).
+pub const DISCOUNT_PROVIDER_IDS: [&str; 7] = [
     PROVIDER_ANTHROPIC,
     PROVIDER_OPENAI,
     PROVIDER_GOOGLE,
     PROVIDER_KIMI,
     PROVIDER_GLM,
     PROVIDER_TRIPO3D,
+    PROVIDER_SUNO,
 ];
 
 pub fn ensure_valid_provider_discount(provider_id: &str, mult_bp: i64) -> Result<()> {
@@ -2811,8 +2812,8 @@ pub const PROVIDER_GLM: &str = "glm";
 pub const PROVIDER_TRIPO3D: &str = "tripo3d";
 /// Backend-only Suno (suno.com) subscription session pool. A task-based media plane with its
 /// own serving surface and a monthly credit window; the distinct attribution keeps Suno credit
-/// economics unblendable. Not part of the priced discount/reservation provider sets yet —
-/// those CHECK extensions are a separate expand-only decision tied to the runtime plane.
+/// economics unblendable. Admitted to the priced discount/reservation provider sets by
+/// migration 0052 together with the runtime plane that reserves under this id.
 pub const PROVIDER_SUNO: &str = "suno";
 
 /// Immutable scalar-pricing decision pinned when a request reserves money.
