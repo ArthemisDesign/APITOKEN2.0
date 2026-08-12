@@ -11,6 +11,8 @@ use crate::kimi_oauth;
 use crate::kimi_roster;
 use crate::setup_token::{self, Outcome};
 use crate::tg::{Bot, CallbackQuery, Keyboard};
+use crate::tripo3d_key;
+use crate::tripo3d_roster;
 use crate::Config;
 use std::sync::Arc;
 
@@ -143,12 +145,15 @@ fn product_kb() -> Keyboard {
         vec![("GLM Coding Plan Lite".into(), "noffer:glm_lite".into())],
         vec![("GLM Coding Plan Pro".into(), "noffer:glm_pro".into())],
         vec![("GLM Coding Plan Max".into(), "noffer:glm_max".into())],
+        vec![("Tripo3D API $25".into(), "noffer:tripo3d_api_25".into())],
+        vec![("Tripo3D API $50".into(), "noffer:tripo3d_api_50".into())],
+        vec![("Tripo3D API $100".into(), "noffer:tripo3d_api_100".into())],
     ]
 }
 
-/// Пять несовместимых единиц пополнения: Claude token, ChatGPT CODEX_HOME, зашифрованный
-/// Gemini OAuth profile, зашифрованный KIMI (Kimi Code) OAuth profile и статический GLM
-/// (Zhipu AI / Z.ai Coding Plan) API-ключ.
+/// Несовместимые единицы пополнения: Claude token, ChatGPT CODEX_HOME, зашифрованный
+/// Gemini OAuth profile, зашифрованный KIMI (Kimi Code) OAuth profile, статический GLM
+/// (Zhipu AI / Z.ai Coding Plan) API-ключ и статический Tripo3D (VAST / Holymolly) API-ключ.
 /// Явный enum не даёт новому продукту тихо провалиться в Claude setup-token ветку.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HandoffKind {
@@ -157,6 +162,7 @@ pub(crate) enum HandoffKind {
     Gemini,
     Kimi,
     Glm,
+    Tripo3d,
 }
 
 fn handoff_kind(product: &str) -> HandoffKind {
@@ -175,6 +181,11 @@ fn handoff_kind(product: &str) -> HandoffKind {
     // substring rule must never be able to claim one of them.
     } else if p.contains("kimi") || p.contains("moonshot") {
         HandoffKind::Kimi
+    // Tripo3D keys on the provider word: its cohort names are bare top-up amounts ("$50"),
+    // which mean nothing without the provider name. No existing rule contains "tripo", and a
+    // Tripo3D product name contains none of the earlier provider words.
+    } else if p.contains("tripo3d") || p.contains("tripo") {
+        HandoffKind::Tripo3d
     } else if p.contains("gemini")
         || p.contains("google ai")
         || p.contains("code assist")
@@ -213,6 +224,12 @@ fn tier_name(code: &str) -> Option<&'static str> {
         "glm_lite" => Some("GLM Coding Plan Lite"),
         "glm_pro" => Some("GLM Coding Plan Pro"),
         "glm_max" => Some("GLM Coding Plan Max"),
+        // Tripo3D API-platform top-up cohorts. There is no plan ladder on the API side
+        // (prepaid credits, $0.01/credit), so the product names the declared top-up cohort;
+        // the price of the offer is still entered per offer and never assumed.
+        "tripo3d_api_25" => Some("Tripo3D API $25"),
+        "tripo3d_api_50" => Some("Tripo3D API $50"),
+        "tripo3d_api_100" => Some("Tripo3D API $100"),
         _ => None,
     }
 }
@@ -237,6 +254,9 @@ fn admin_quick_tier(text: &str) -> Option<&'static str> {
         "📦 GLM Coding Plan Lite" => Some("GLM Coding Plan Lite"),
         "📦 GLM Coding Plan Pro" => Some("GLM Coding Plan Pro"),
         "📦 GLM Coding Plan Max" => Some("GLM Coding Plan Max"),
+        "📦 Tripo3D API $25" => Some("Tripo3D API $25"),
+        "📦 Tripo3D API $50" => Some("Tripo3D API $50"),
+        "📦 Tripo3D API $100" => Some("Tripo3D API $100"),
         _ => None,
     }
 }
@@ -255,6 +275,7 @@ fn admin_home_kb() -> Vec<Vec<&'static str>> {
             "📦 GLM Coding Plan Pro",
             "📦 GLM Coding Plan Max",
         ],
+        vec!["📦 Tripo3D API $25", "📦 Tripo3D API $50", "📦 Tripo3D API $100"],
         vec!["🧺 Batch-покупка"],
         vec!["📋 Активные сделки"],
         vec!["🛠 Панель"],
@@ -585,6 +606,51 @@ fn glm_invalid_key_guidance(reason: glm_key::InvalidKeyReason) -> &'static str {
     }
 }
 
+const TRIPO3D_OFFER_GUIDE: &str = "🧭 <b>Что нужно будет сделать после принятия</b>\n\
+1. Дождаться выплаты и персонального HTTP-прокси от бота.\n\
+2. Создать <b>новый чистый профиль</b> в антидетект-браузере и подключить к нему этот прокси.\n\
+3. Только через этот профиль самостоятельно зарегистрировать новый аккаунт на выбранной площадке Tripo3D и пополнить баланс API <b>ровно на сумму, указанную в оффере</b>.\n\
+4. В консоли создать API-ключ, вернуться в бот, нажать «Аккаунт готов» и прислать ключ одним сообщением.\n\n\
+Если автоматическая выдача прокси временно недоступна, бот отдельно попросит прокси и продолжит только после его проверки.\n\n\
+⚠️ <b>Не регистрируй и не открывай аккаунт до получения прокси.</b> До завершения не меняй профиль, прокси или устройство. Пароль, cookie, банковские данные и коды из почты бот не просит — единственное, что нужно прислать, это API-ключ из консоли.";
+
+const TRIPO3D_ACCOUNT_SETUP: &str = "🧩 <b>Этап 2 из 3 — подготовь аккаунт Tripo3D</b>\n\n\
+1️⃣ Открой антидетект-браузер (например, Dolphin или AdsPower) и создай <b>новый чистый профиль</b>. Не используй обычный браузер, старый профиль или телефон.\n\n\
+2️⃣ В настройках профиля выбери тип прокси <b>HTTP</b> и вставь данные, которые бот прислал выше. Если браузер просит отдельные поля, строка <code>ip:port:user:pass</code> означает: IP — первое поле, порт — второе, логин — третье, пароль — четвёртое. Нажми проверку и продолжай только если прокси работает и IP изменился. Дополнительный VPN не включай.\n\n\
+3️⃣ В этом же профиле открой сайт выбранной площадки — международную <code>https://platform.tripo3d.ai</code> или китайскую <code>https://platform.tripo3d.com</code> — и самостоятельно зарегистрируй <b>новый</b> аккаунт. Аккаунт и ключ обязаны жить на одной площадке: ключ одной площадки не работает на другой.\n\n\
+4️⃣ В том же профиле пополни баланс API <b>ровно на сумму, указанную в оффере</b> — ни больше, ни меньше. Пополнение идёт на API-платформу, а не на подписку Studio.\n\n\
+5️⃣ Открой <b>API Keys</b> (<code>/api-keys</code>) и создай <b>API-ключ</b> — он начинается с <code>tsk_</code>. Client ID вида <code>tcli_</code> не подходит. Сам ключ пока никуда не отправляй. Не закрывай профиль и не меняй прокси: они понадобятся на следующем этапе. Когда аккаунт, пополнение и ключ готовы, нажми кнопку <b>«Аккаунт готов — продолжить»</b> ниже.\n\n\
+🔒 Бот никогда не попросит пароль, коды 2FA, cookie или банковские данные — только сам API-ключ.";
+
+const TRIPO3D_PROXY_PROMPT: &str = "🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта Tripo3D</b>\n\
+Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
+Не регистрируй аккаунт Tripo3D до подтверждения прокси ботом: регистрация и дальнейшая проверка ключа должны пройти с одного IP.";
+
+const TRIPO3D_STEP_PROXY_RETRY: &str = "🤔 Не разобрал прокси. Пришли его как <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code> одним сообщением.";
+
+/// Промпт шага `t3_wait`: API-ключ — единственный credential-артефакт этой ветки, как
+/// `sk-ant-oat01-…` у Claude. Продавец присылает только ключ, и бот подчёркивает это явно.
+const TRIPO3D_KEY_PROMPT: &str = "🔐 <b>Этап 3 из 3 — пришли API-ключ Tripo3D</b>\n\n\
+В консоли выбранной площадки открой <b>API Keys</b>, создай ключ (начинается с <code>tsk_</code>) и пришли его сюда <b>одним сообщением</b>.\n\n\
+Бот проверит ключ бесплатным запросом баланса и сразу подключит аккаунт. Ключ нигде не сохраняется в открытом виде и не пересылается дальше.\n\n\
+Больше ничего присылать не нужно: ни пароль, ни коды 2FA, ни cookie, ни банковские данные — только сам ключ.";
+
+/// Типовые подсказки шага `t3_wait`. Все статические: текст продавца (и тем более ключ) в
+/// ответ бота и в журнал не подставляется никогда.
+const TRIPO3D_KEY_MALFORMED: &str = "🤔 Это не похоже на API-ключ. Пришли ключ одной строкой, без пробелов и переносов — ровно так, как его показывает консоль.";
+const TRIPO3D_KEY_REJECTED: &str = "❌ Провайдер отклонил этот ключ. Проверь, что ключ скопирован из консоли полностью (API Keys, ключ вида <code>tsk_…</code>), без лишних символов. Доступ не передан и выплата не завершена. Нажми «Аккаунт готов — продолжить» и пришли ключ ещё раз.";
+const TRIPO3D_BALANCE_UNREADABLE: &str = "❌ Не удалось прочитать баланс этого аккаунта: ответ провайдера не похож на обычный prepaid-баланс API. Убедись, что баланс API пополнен ровно на сумму из оффера, и пришли ключ ещё раз. Доступ не передан и выплата не завершена.";
+const TRIPO3D_VALIDATION_TRANSPORT: &str = "⚠️ Не удалось проверить ключ: сервис провайдера временно недоступен. Ключ не отклонён и никуда не отправлен. Нажми «Аккаунт готов — продолжить» и пришли ключ ещё раз чуть позже.";
+
+/// Подсказка по классу отказа приёма ключа. Чистая функция: покрытие всех классов и их
+/// тексты проверяются тестом без единого сетевого вызова.
+fn tripo3d_invalid_key_guidance(reason: tripo3d_key::InvalidKeyReason) -> &'static str {
+    match reason {
+        tripo3d_key::InvalidKeyReason::Auth => "❌ Ключ не прошёл проверку: провайдер его не принимает. Пересоздай ключ в консоли (API Keys, ключ вида <code>tsk_…</code>) и пришли новый. Доступ не передан и выплата не завершена.",
+        tripo3d_key::InvalidKeyReason::ClientIdMisuse => "❌ Это Client ID (вида <code>tcli_…</code>), а не API-ключ. В консоли открой API Keys и создай именно API-ключ (вида <code>tsk_…</code>), затем пришли его. Доступ не передан и выплата не завершена.",
+    }
+}
+
 const CODEX_PROXY_PROMPT: &str = "🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта ChatGPT</b>\n\
 Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
 Не регистрируй аккаунт до подтверждения прокси ботом: регистрация и дальнейшая авторизация должны пройти с одного IP.";
@@ -624,6 +690,27 @@ fn glm_ready_kb(back: Option<&HandoffStepBack>) -> Keyboard {
     keyboard
 }
 
+/// Площадка Tripo3D-аккаунта: международная `api.tripo3d.ai` (default) или китайская
+/// `api.tripo3d.com`. Ключ одной площадки не работает на другой, поэтому выбор доживает до
+/// `credential_from`.
+fn tripo3d_region_row() -> Vec<(String, String)> {
+    vec![
+        ("🌐 Площадка: tripo3d.ai".into(), "t3:region:global".into()),
+        ("🌐 Площадка: tripo3d.com".into(), "t3:region:cn".into()),
+    ]
+}
+
+fn tripo3d_ready_kb(back: Option<&HandoffStepBack>) -> Keyboard {
+    let mut keyboard = vec![
+        vec![("✅ Аккаунт готов — продолжить".into(), "t3:ready".into())],
+        tripo3d_region_row(),
+    ];
+    if let Some(step) = back {
+        keyboard.push(handoff_back_row(step, "t3_ready"));
+    }
+    keyboard
+}
+
 fn gemini_ready_kb(back: Option<&HandoffStepBack>) -> Keyboard {
     let mut keyboard = vec![vec![(
         "✅ Аккаунт готов — продолжить".into(),
@@ -652,6 +739,7 @@ fn seller_offer_guide(product: &str) -> &'static str {
         HandoffKind::Gemini => GEMINI_OFFER_GUIDE,
         HandoffKind::Kimi => KIMI_OFFER_GUIDE,
         HandoffKind::Glm => GLM_OFFER_GUIDE,
+        HandoffKind::Tripo3d => TRIPO3D_OFFER_GUIDE,
     }
 }
 
@@ -662,6 +750,7 @@ fn account_setup_prompt(step: &str) -> &'static str {
         "gm_ready" => GEMINI_ACCOUNT_SETUP,
         "km_ready" => KIMI_ACCOUNT_SETUP,
         "glm_ready" => GLM_ACCOUNT_SETUP,
+        "t3_ready" => TRIPO3D_ACCOUNT_SETUP,
         _ => "",
     }
 }
@@ -673,6 +762,7 @@ fn proxy_prompt(step: &str) -> &'static str {
         "gm_gproxy" => GEMINI_PROXY_PROMPT,
         "km_proxy" => KIMI_PROXY_PROMPT,
         "glm_proxy" => GLM_PROXY_PROMPT,
+        "t3_proxy" => TRIPO3D_PROXY_PROMPT,
         _ => CLAUDE_PROXY_PROMPT,
     }
 }
@@ -693,6 +783,7 @@ fn accepted_next_step(product: &str, proxy_source: &str) -> &'static str {
         HandoffKind::Gemini => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай Google-аккаунт.</b>",
         HandoffKind::Kimi => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай аккаунт Kimi.</b>",
         HandoffKind::Glm => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай аккаунт Z.ai или bigmodel.cn.</b>",
+        HandoffKind::Tripo3d => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай аккаунт Tripo3D.</b>",
     }
 }
 
@@ -1746,6 +1837,72 @@ pub async fn on_message(
             }
             "glm_wait" => {
                 handle_glm_key_message(bot, store, cfg, chat, text).await;
+            }
+            "t3_proxy" => {
+                let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+                    return;
+                };
+                if !seller_job_matches_handoff(&job, &job.reference, HandoffKind::Tripo3d) {
+                    return;
+                }
+                match select_tripo3d_proxy_input(
+                    store,
+                    &job.reference,
+                    &rec.hproxy,
+                    rec.hproxy_order,
+                    text,
+                ) {
+                    Tripo3dProxyInput::SellerSupplied(proxy, credentials) => {
+                        if !credentials {
+                            // Тот же риск, что и у GLM: обрезанная вставка без userinfo иначе
+                            // проявится только как отказ прокси внутри проверки ключа.
+                            let _ = bot
+                                .send(
+                                    chat,
+                                    "ℹ️ В этом прокси не распознаны логин и пароль — подключение пойдёт с авторизацией по IP. Если у прокси есть логин и пароль, пришли его целиком в формате <code>ip:port:user:pass</code>.",
+                                )
+                                .await;
+                        }
+                        // A manually supplied replacement is unrelated to any prior IPRoyal order.
+                        prepare_tripo3d_account(bot, store, cfg, chat, Some(&proxy), 0).await;
+                    }
+                    Tripo3dProxyInput::Fixed(..) => {
+                        let _ = bot
+                            .send(
+                                chat,
+                                "🔁 Использую закреплённый за этой позицией прокси. В следующем сообщении нажми <b>«Аккаунт готов — продолжить»</b>, чтобы прислать API-ключ. Сообщением продавца этот прокси заменить нельзя.",
+                            )
+                            .await;
+                        prepare_tripo3d_account(bot, store, cfg, chat, None, rec.hproxy_order).await;
+                    }
+                    Tripo3dProxyInput::Invalid => {
+                        elog::error("authbot", format!("[tripo3d-proxy] chat={} rejected seller proxy input: {}", chat,
+                            proxy_input_fingerprint(text)));
+                        let _ = bot
+                            .send_kb(
+                                chat,
+                                TRIPO3D_STEP_PROXY_RETRY,
+                                handoff_back_kb(store, cfg, chat).as_ref(),
+                            )
+                            .await;
+                    }
+                }
+            }
+            "t3_ready" => {
+                if text.to_lowercase() == "готово" {
+                    continue_tripo3d_handoff(bot, store, cfg, chat).await;
+                } else {
+                    let _ = bot
+                        .send_kb(
+                            chat,
+                            "Когда аккаунт Tripo3D создан, баланс API пополнен ровно на сумму из оффера и API-ключ создан в консоли, нажми кнопку ниже. До этого не меняй профиль или прокси.",
+                            Some(&tripo3d_ready_kb(current_handoff_back(store, cfg, chat).as_ref())),
+                        )
+                        .await;
+                }
+            }
+            "t3_wait" => {
+                handle_tripo3d_key_message(bot, store, cfg, chat, text).await;
             }
             "ho_code" => match extract_code_state(text) {
                 Some(cs) => do_feed_token(bot, store, cfg, chat, &cs).await,
@@ -3531,6 +3688,571 @@ async fn handle_glm_key_message(
     }
 }
 
+/// Put the seller on the Tripo3D "account ready" step and show the button that arms the key
+/// intake. Mirrors `prepare_glm_account`: the Tripo3D branch needs no keyring to reach this
+/// step — it is required only once a key is actually sealed. Entering this step resets the
+/// platform selection to the international default: the choice lives in the seller job
+/// context, and a finished deal must never leak its region into the next one.
+async fn prepare_tripo3d_account(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    proxy: Option<&str>,
+    proxy_order_id: i64,
+) {
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        return;
+    };
+    let expected_job = job.job_ref();
+    if !seller_job_matches_handoff(&job, &expected_job, HandoffKind::Tripo3d) {
+        return;
+    }
+    let user = store.get_user(chat).ok().flatten().unwrap_or_default();
+    let effective_proxy = proxy.unwrap_or(&user.hproxy);
+    let effective_order = if proxy.is_some() {
+        proxy_order_id
+    } else {
+        user.hproxy_order
+    };
+    if effective_proxy.is_empty() {
+        // Without an egress the seller must not open the account yet: registration and key
+        // validation have to come from the same IP.
+        if !store
+            .set_handoff_state_for_seller_job(chat, &expected_job, "t3_proxy", "", effective_order)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let _ = bot.send(chat, TRIPO3D_PROXY_PROMPT).await;
+        return;
+    }
+    // A proxy that only passed the shape check would strand the seller on t3_ready: key
+    // validation would run against an egress that can never work, with no way to fix it in
+    // place. Canonicalise before pinning, exactly like the GLM branch does.
+    let replaceable_proxy = job_accepts_seller_proxy(store, &expected_job, effective_order);
+    let effective_proxy = match tripo3d_credential::normalize_proxy_url(effective_proxy) {
+        Ok(proxy) => proxy,
+        Err(_) => {
+            elog::error("authbot", format!("[tripo3d-proxy] chat={} canonicalisation rejected proxy: {}", chat,
+                proxy_input_fingerprint(effective_proxy)));
+            let (retry_proxy, retry_order) = if replaceable_proxy {
+                ("", 0)
+            } else {
+                (effective_proxy, effective_order)
+            };
+            if !store
+                .set_handoff_state_for_seller_job(
+                    chat,
+                    &expected_job,
+                    "t3_proxy",
+                    retry_proxy,
+                    retry_order,
+                )
+                .unwrap_or(false)
+            {
+                return;
+            }
+            let seller_message = if replaceable_proxy {
+                "❌ Не удалось разобрать этот прокси. Приём ключа не начат — пришли прокси заново в указанном формате."
+            } else {
+                "⚠️ Закреплённый за этой позицией прокси имеет неверный формат. Приём ключа не начат; администратор уведомлён."
+            };
+            let _ = bot.send(chat, seller_message).await;
+            notify_admins(
+                bot,
+                cfg,
+                &format!(
+                    "⚠️ Tripo3D proxy не прошёл локальную проверку формата для {}. Сетевых запросов не выполнялось; секреты прокси не логировались.",
+                    seller_job_label(&job),
+                ),
+                None,
+            )
+            .await;
+            return;
+        }
+    };
+    // A fresh deal re-chooses the platform: the international default applies until the seller
+    // explicitly picks tripo3d.com on the ready card.
+    let _ = store.set_hregion(chat, "");
+    if !store
+        .set_handoff_state_for_seller_job(
+            chat,
+            &expected_job,
+            "t3_ready",
+            &effective_proxy,
+            effective_order,
+        )
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let _ = bot
+        .send_kb(
+            chat,
+            TRIPO3D_ACCOUNT_SETUP,
+            Some(&tripo3d_ready_kb(
+                current_handoff_back(store, cfg, chat).as_ref(),
+            )),
+        )
+        .await;
+}
+
+/// Return the proxy only for the explicit Tripo3D readiness state. Callback buttons can be old
+/// or forwarded, so neither the button itself nor a stored proxy alone authorizes a state
+/// transition.
+fn tripo3d_ready_handoff(store: &Store, chat: i64) -> Option<(String, i64)> {
+    let user = store.get_user(chat).ok().flatten()?;
+    if user.want != "t3_ready" || user.hproxy.is_empty() {
+        return None;
+    }
+    Some((user.hproxy, user.hproxy_order))
+}
+
+async fn continue_tripo3d_handoff(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, chat: i64) {
+    let Some((proxy, proxy_order_id)) = tripo3d_ready_handoff(store, chat) else {
+        let _ = bot
+            .send(
+                chat,
+                "Эта кнопка уже неактивна. Открой актуальное сообщение бота или отправь /start.",
+            )
+            .await;
+        return;
+    };
+    start_tripo3d_handoff(bot, store, cfg, chat, &proxy, proxy_order_id).await;
+}
+
+/// Arm the Tripo3D key intake for the seller's current deal.
+///
+/// Like GLM there is no device flow to start: confirming readiness simply moves the deal to
+/// `t3_wait`, where the seller sends the console-issued API key as one text message. The key
+/// is the only credential artifact — the seller never sends a password, 2FA or cookie.
+async fn start_tripo3d_handoff(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    proxy: &str,
+    proxy_order_id: i64,
+) {
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        let _ = bot
+            .send(
+                chat,
+                "Эта кнопка уже не относится к активной сделке. Отправь /start.",
+            )
+            .await;
+        return;
+    };
+    let expected_job = job.job_ref();
+    if !seller_job_matches_handoff(&job, &expected_job, HandoffKind::Tripo3d) {
+        let _ = bot
+            .send(
+                chat,
+                "Текущая сделка не является Tripo3D-сделкой. Открой актуальную карточку через /start.",
+            )
+            .await;
+        return;
+    }
+    if cfg.tripo3d_roster.is_none() {
+        // Without a keyring nothing can be sealed, so the seller must not be sent through a
+        // flow whose result we would have to throw away.
+        let _ = store.set_want_for_seller_job(chat, &expected_job, "t3_ready");
+        let _ = bot
+            .send_kb(
+                chat,
+                "⚠️ Подключение Tripo3D сейчас временно недоступно. Доступ не передан; администратор уведомлён. Попробуй ещё раз этой же кнопкой после исправления.",
+                Some(&tripo3d_ready_kb(None)),
+            )
+            .await;
+        notify_admins(
+            bot,
+            cfg,
+            "⚠️ Tripo3D handoff недоступен: не настроен AEAD keyring (AUTH_BOT_TRIPO3D_CREDENTIAL_KEYS / _ACTIVE_KID).",
+            None,
+        )
+        .await;
+        return;
+    }
+    if proxy.is_empty() {
+        // The readiness gate already refuses to arm the intake without an egress; fail closed
+        // rather than validating a key from a different IP than the account was opened on.
+        if store
+            .set_handoff_state_for_seller_job(chat, &expected_job, "t3_proxy", "", proxy_order_id)
+            .unwrap_or(false)
+        {
+            let _ = bot.send(chat, TRIPO3D_PROXY_PROMPT).await;
+        }
+        return;
+    }
+    let _ = store.set_want_for_seller_job(chat, &expected_job, "t3_wait");
+    let _ = bot
+        .send_kb(
+            chat,
+            TRIPO3D_KEY_PROMPT,
+            handoff_back_kb(store, cfg, chat).as_ref(),
+        )
+        .await;
+}
+
+/// Callback `t3:region:global|cn` с карточки `t3_ready`. Кнопка ничего не авторизует сама по
+/// себе: выбор принимается только внутри активной Tripo3D-сделки ровно на шаге подтверждения
+/// аккаунта и переживает рестарт в `users.hregion` до самого `credential_from`.
+async fn select_tripo3d_region(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    region: &str,
+) {
+    let region = match region {
+        "global" | "cn" => region,
+        _ => return,
+    };
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        let _ = bot
+            .send(
+                chat,
+                "Эта кнопка уже не относится к активной сделке. Отправь /start.",
+            )
+            .await;
+        return;
+    };
+    if !seller_job_matches_handoff(&job, &job.reference, HandoffKind::Tripo3d) {
+        return;
+    }
+    let want = store
+        .get_user(chat)
+        .ok()
+        .flatten()
+        .map(|user| user.want)
+        .unwrap_or_default();
+    if want != "t3_ready" {
+        let _ = bot
+            .send(
+                chat,
+                "Эта кнопка уже неактивна. Открой актуальное сообщение бота или отправь /start.",
+            )
+            .await;
+        return;
+    }
+    if store.set_hregion(chat, region).is_err() {
+        return;
+    }
+    let label = if region == "cn" {
+        "api.tripo3d.com (Китай)"
+    } else {
+        "api.tripo3d.ai (международная)"
+    };
+    let _ = bot
+        .send(
+            chat,
+            &format!(
+                "🌐 Площадка аккаунта: <b>{label}</b>. Аккаунт и API-ключ обязаны быть созданы именно на ней."
+            ),
+        )
+        .await;
+    send_handoff_step_card(bot, store, cfg, chat, "t3_ready", false).await;
+}
+
+/// Canonical base URL выбранной площадки. Пустое или неизвестное значение — международная
+/// площадка: default global по `docs/engine/TRIPO3D_PROVIDER.md` §7.
+fn tripo3d_base_url(region: &str) -> &'static str {
+    match region {
+        "cn" => tripo3d_credential::TRIPO3D_BASE_URL_CHINA,
+        _ => tripo3d_credential::TRIPO3D_BASE_URL_GLOBAL,
+    }
+}
+
+/// Declared top-up cohort продукта оффера. Классификация обязана подтвердить
+/// Tripo3D-провайдера, иначе голая сумма пополнения («$50») не имеет права стать когортой.
+/// Когорта — это само имя продукта в канонической форме (`normalize_cohort`): именно оно
+/// попадает в `cohort` конверта и дальше в calibration-схему 0049.
+fn tripo3d_declared_cohort(product: &str) -> Option<String> {
+    if handoff_kind(product) != HandoffKind::Tripo3d {
+        return None;
+    }
+    tripo3d_credential::normalize_cohort(product).ok()
+}
+
+/// Форма введённого ключа до любого сетевого вызова: одна непустая строка без пробельных
+/// символов. Всё остальное решает провайдер — локальных предположений о формате ключа нет
+/// сверх задокументированного префикса (его проверяет `preflight_key_rejection`).
+fn tripo3d_key_text(text: &str) -> Option<&str> {
+    let key = text.trim();
+    if key.is_empty() || key.len() > 512 || key.chars().any(char::is_whitespace) {
+        return None;
+    }
+    Some(key)
+}
+
+/// Единственное, что журнал может узнать о ключе: его длину. Сам ключ не печатается никогда.
+fn tripo3d_key_fingerprint(key: &str) -> String {
+    format!("key_len={}", key.len())
+}
+
+/// Вернуть сделку на подтверждение аккаунта после неудачной передачи ключа: ни конверта, ни
+/// строки roster, ни завершения выплаты. Подсказки статические — ключ в них не подставляется.
+async fn tripo3d_back_to_ready(
+    bot: &Bot,
+    store: &Arc<Store>,
+    chat: i64,
+    expected_job: &SellerJobRef,
+    message: &str,
+) {
+    let _ = store.set_want_for_seller_job(chat, expected_job, "t3_ready");
+    let _ = bot.send_kb(chat, message, Some(&tripo3d_ready_kb(None))).await;
+}
+
+/// Приём API-ключа на шаге `t3_wait`. Вся цепочка идёт через egress продавца: аккаунт открыт с
+/// этого IP, и проверка с другого адреса — ровно то, что триггерит risk-контроль провайдера.
+/// Ключ — секрет уровня Claude setup-token: не логируется, не возвращается эхом в чат и не
+/// сохраняется в SQLite в открытом виде; валидация живёт только в памяти.
+///
+/// Платной admission-задачи здесь намеренно нет: самая дешёвая платная задача Tripo3D
+/// (5 кредитов = $0.05) превышает штатный бюджет admission micro-smoke $0.0001, а бесплатная
+/// zero-cost задача не доказана (`docs/engine/TRIPO3D_PROVIDER.md` §7 — открытый вопрос
+/// бюджета, fail closed). Валидация заканчивается на бесплатном probe баланса.
+async fn handle_tripo3d_key_message(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    text: &str,
+) {
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        return;
+    };
+    if !seller_job_matches_handoff(&job, &job.reference, HandoffKind::Tripo3d) {
+        return;
+    }
+    let expected_job = job.job_ref();
+    let Some(key) = tripo3d_key_text(text) else {
+        let _ = bot
+            .send_kb(
+                chat,
+                TRIPO3D_KEY_MALFORMED,
+                handoff_back_kb(store, cfg, chat).as_ref(),
+            )
+            .await;
+        return;
+    };
+    let key = zeroize::Zeroizing::new(key.to_string());
+    // Задокументированная путаница Client ID решается локально, до любого сетевого вызова.
+    if let Some(reason) = tripo3d_key::preflight_key_rejection(key.as_str()) {
+        elog::error("authbot", format!("[tripo3d-key] chat={} key refused by local preflight: class={reason:?} {}", chat,
+            tripo3d_key_fingerprint(key.as_str())));
+        tripo3d_back_to_ready(
+            bot,
+            store,
+            chat,
+            &expected_job,
+            tripo3d_invalid_key_guidance(reason),
+        )
+        .await;
+        return;
+    }
+    let Some(roster) = cfg.tripo3d_roster.clone() else {
+        tripo3d_back_to_ready(
+            bot,
+            store,
+            chat,
+            &expected_job,
+            "⚠️ Подключение Tripo3D сейчас временно недоступно. Доступ не передан; администратор уведомлён. Попробуй ещё раз после исправления.",
+        )
+        .await;
+        notify_admins(
+            bot,
+            cfg,
+            "⚠️ Tripo3D handoff недоступен: не настроен AEAD keyring (AUTH_BOT_TRIPO3D_CREDENTIAL_KEYS / _ACTIVE_KID).",
+            None,
+        )
+        .await;
+        return;
+    };
+    let Some(cohort) = tripo3d_declared_cohort(&job.product) else {
+        tripo3d_back_to_ready(
+            bot,
+            store,
+            chat,
+            &expected_job,
+            "⚠️ Продукт оффера не распознан как Tripo3D API. Доступ не передан; администратор уведомлён.",
+        )
+        .await;
+        notify_admins(
+            bot,
+            cfg,
+            &format!(
+                "⚠️ Tripo3D-сделка {} имеет нераспознанную declared cohort; запрос к провайдеру не выполнялся.",
+                seller_job_label(&job),
+            ),
+            None,
+        )
+        .await;
+        return;
+    };
+    let user = store.get_user(chat).ok().flatten().unwrap_or_default();
+    let proxy = user.hproxy.clone();
+    if proxy.is_empty() {
+        if store
+            .set_handoff_state_for_seller_job(
+                chat,
+                &expected_job,
+                "t3_proxy",
+                "",
+                user.hproxy_order,
+            )
+            .unwrap_or(false)
+        {
+            let _ = bot.send(chat, TRIPO3D_PROXY_PROMPT).await;
+        }
+        return;
+    }
+    let base_url = tripo3d_base_url(&user.hregion);
+
+    // 1. Бесплатный read-only balance probe с bounded retry: он не расходует кредиты, поэтому
+    // transport-сбой безопасно повторить. Отказ провайдера — финальный вердикт по ключу.
+    let mut attempt = 0u32;
+    let snapshot = loop {
+        if !seller_handoff_is_current(store, chat, Some(&expected_job), HandoffKind::Tripo3d) {
+            return;
+        }
+        match tripo3d_key::probe_balance(base_url, key.as_str(), &proxy).await {
+            Ok(tripo3d_key::BalanceProbe::Valid(snapshot)) => break snapshot,
+            Ok(tripo3d_key::BalanceProbe::Invalid) => {
+                elog::error("authbot", format!("[tripo3d-key] chat={} provider rejected key: {}", chat,
+                    tripo3d_key_fingerprint(key.as_str())));
+                tripo3d_back_to_ready(bot, store, chat, &expected_job, TRIPO3D_KEY_REJECTED).await;
+                return;
+            }
+            Err(_) => {
+                attempt += 1;
+                if attempt >= 3 {
+                    elog::error("authbot", format!("[tripo3d-key] chat={} balance probe transport failed after {attempt} attempts", chat));
+                    tripo3d_back_to_ready(bot, store, chat, &expected_job, TRIPO3D_VALIDATION_TRANSPORT)
+                        .await;
+                    return;
+                }
+                tokio::time::sleep(tripo3d_key::probe_retry_backoff(attempt - 1)).await;
+            }
+        }
+    };
+
+    // 2. Declared когорта обязана подтвердиться наблюдаемым балансом. Пока единица
+    // balance/frozen не доказана (manifest §5.2), corroboration проверяет только читаемость
+    // счётчиков — сравнение суммы невозможно и не подделывается. Нечитаемый ответ — отказ.
+    match tripo3d_key::corroborate_cohort(&snapshot, &cohort) {
+        tripo3d_key::CohortVerdict::Consistent => {}
+        tripo3d_key::CohortVerdict::Unreadable => {
+            elog::error("authbot", format!("[tripo3d-key] chat={} balance snapshot cannot corroborate the declared cohort", chat));
+            tripo3d_back_to_ready(bot, store, chat, &expected_job, TRIPO3D_BALANCE_UNREADABLE).await;
+            return;
+        }
+    }
+
+    // Платной admission-задачи здесь нет намеренно (см. документацию функции): публикация
+    // опирается на бесплатный probe и corroboration, а вопрос бюджета платного допуска
+    // записан в манифесте §7 как открытый.
+
+    // Последний generation guard перед любой долговременной записью. SQLite и roster — не одна
+    // транзакция, поэтому это лишь сужает неизбежное cross-store окно, а не закрывает его.
+    if !seller_handoff_is_current(store, chat, Some(&expected_job), HandoffKind::Tripo3d) {
+        return;
+    }
+    let credential = match tripo3d_key::credential_from(key.as_str(), &cohort, base_url, &proxy) {
+        Ok(credential) => credential,
+        Err(_) => {
+            tripo3d_back_to_ready(
+                bot,
+                store,
+                chat,
+                &expected_job,
+                "⚠️ Ключ не прошёл внутреннюю проверку формата. Доступ не передан и выплата не завершена; администратор уведомлён.",
+            )
+            .await;
+            notify_admins(
+                bot,
+                cfg,
+                &format!(
+                    "⚠️ Tripo3D credential_from отклонил уже валидированный материал для {}; секреты не логировались.",
+                    seller_job_label(&job),
+                ),
+                None,
+            )
+            .await;
+            return;
+        }
+    };
+
+    let profile_id = format!("tripo3d-{}", &new_profile_suffix());
+    match tripo3d_roster::publish(
+        &roster.dir,
+        &roster.keyring,
+        &roster.active_key_id,
+        &profile_id,
+        &credential,
+    ) {
+        Ok(published) => {
+            let _ = bot
+                .send(
+                    chat,
+                    if published.replaced_existing {
+                        "✅ Аккаунт Tripo3D подключён (обновлён существующий профиль этой подписки)."
+                    } else {
+                        "✅ Аккаунт Tripo3D подключён."
+                    },
+                )
+                .await;
+            complete_seller_job_after_handoff(
+                bot,
+                store,
+                cfg,
+                chat,
+                Some(expected_job),
+                HandoffKind::Tripo3d,
+            )
+            .await;
+        }
+        Err(tripo3d_roster::PublishError::Duplicate) => {
+            tripo3d_back_to_ready(
+                bot,
+                store,
+                chat,
+                &expected_job,
+                "⚠️ Такой идентификатор профиля уже занят другим ключом. Доступ не передан и выплата не завершена; администратор уведомлён.",
+            )
+            .await;
+            notify_admins(
+                bot,
+                cfg,
+                &format!(
+                    "⚠️ Tripo3D publication hit a profile-id collision для {}; секреты не логировались.",
+                    seller_job_label(&job),
+                ),
+                None,
+            )
+            .await;
+        }
+        Err(tripo3d_roster::PublishError::Storage) => {
+            tripo3d_back_to_ready(
+                bot,
+                store,
+                chat,
+                &expected_job,
+                "⚠️ Не удалось сохранить доступ. Доступ не передан и выплата не завершена; администратор уведомлён.",
+            )
+            .await;
+            notify_admins(
+                bot,
+                cfg,
+                "⚠️ Tripo3D publication failed closed. Проверь права AUTH_BOT_TRIPO3D_DIR, profiles.json и совпадение credential keyring; секреты не логировались.",
+                None,
+            )
+            .await;
+        }
+    }
+}
+
 async fn continue_gemini_handoff(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, chat: i64) {
     let Some((proxy, proxy_order_id)) = gemini_ready_handoff(store, chat) else {
         let _ = bot
@@ -3688,6 +4410,7 @@ fn handoff_steps_for_kind(kind: HandoffKind) -> (&'static str, &'static str) {
         HandoffKind::Gemini => ("gm_gproxy", "gm_ready"),
         HandoffKind::Kimi => ("km_proxy", "km_ready"),
         HandoffKind::Glm => ("glm_proxy", "glm_ready"),
+        HandoffKind::Tripo3d => ("t3_proxy", "t3_ready"),
     }
 }
 
@@ -3782,6 +4505,27 @@ pub(crate) fn handoff_step_back(
                 None
             }
         }
+        (HandoffKind::Tripo3d, "t3_ready") => to_proxy_step("t3_proxy", false),
+        // Mirrors the GLM edge: stepping back from the key intake must cancel the pending key
+        // submission, and without a recoverable egress it degrades to the proxy step rather
+        // than landing on t3_ready with an empty hproxy, which tripo3d_ready_handoff rejects.
+        (HandoffKind::Tripo3d, "t3_wait") => {
+            if pinned_egress_known {
+                Some(HandoffStepBack {
+                    target: "t3_ready",
+                    clears_proxy: false,
+                    invalidates_link: true,
+                })
+            } else if proxy_replaceable {
+                Some(HandoffStepBack {
+                    target: "t3_proxy",
+                    clears_proxy: true,
+                    invalidates_link: true,
+                })
+            } else {
+                None
+            }
+        }
         (HandoffKind::Gemini, "gm_ready") => to_proxy_step("gm_gproxy", false),
         // Единственное двухисходное ребро. Без восстановленного egress шаг назад привёл бы на
         // `gm_ready` с пустым `hproxy`, который `gemini_ready_handoff` отвергает — это тупик,
@@ -3820,6 +4564,8 @@ fn back_step_wire(want: &str) -> Option<&'static str> {
         "km_wait" => Some("km_wait"),
         "glm_ready" => Some("glm_ready"),
         "glm_wait" => Some("glm_wait"),
+        "t3_ready" => Some("t3_ready"),
+        "t3_wait" => Some("t3_wait"),
         _ => None,
     }
 }
@@ -3839,7 +4585,7 @@ fn handoff_back_row(step: &HandoffStepBack, from_wire: &str) -> Vec<(String, Str
         "↩️ Изменить прокси"
     } else if step.target == "gm_ready" {
         "↩️ Назад: новая ссылка"
-    } else if step.target == "glm_ready" {
+    } else if step.target == "glm_ready" || step.target == "t3_ready" {
         "↩️ Назад: подтверждение аккаунта"
     } else {
         "↩️ Назад: другой email"
@@ -3943,6 +4689,7 @@ fn handoff_back_confirm_text(want: &str) -> &'static str {
         "ho_code" => "⚠️ Вернуться к вводу email?\n\nВыданная ссылка авторизации перестанет работать, и бот выдаст новую. Если ты <b>уже подтвердил доступ</b> в браузере, аккаунт может всё равно засчитаться — тогда напиши администратору, чтобы он сверил результат.",
         "km_wait" => "⚠️ Вернуться к подтверждению аккаунта?\n\nВыданный код устройства Kimi перестанет работать, и бот выдаст новый. Если ты <b>уже подтвердил вход</b>, аккаунт может всё равно засчитаться — тогда напиши администратору.",
         "glm_wait" => "⚠️ Вернуться к подтверждению аккаунта?\n\nОжидание API-ключа будет сброшено: чтобы передать ключ, нажми «Аккаунт готов — продолжить» ещё раз. Если ты <b>уже прислал ключ</b> и бот его проверяет, аккаунт может всё равно засчитаться — тогда напиши администратору.",
+        "t3_wait" => "⚠️ Вернуться к подтверждению аккаунта?\n\nОжидание API-ключа будет сброшено: чтобы передать ключ, нажми «Аккаунт готов — продолжить» ещё раз. Если ты <b>уже прислал ключ</b> и бот его проверяет, аккаунт может всё равно засчитаться — тогда напиши администратору.",
         "cx_wait" => "⚠️ Вернуться к вводу email?\n\nВыданный одноразовый код ChatGPT перестанет работать, и бот выдаст новый. Если ты <b>уже подтвердил вход</b>, аккаунт может всё равно засчитаться — тогда напиши администратору.",
         _ => "⚠️ Вернуться на шаг назад?\n\nВыданная ссылка авторизации перестанет работать, и бот выдаст новую с тем же прокси. Если ты <b>уже подтвердил доступ</b> в браузере, аккаунт может всё равно засчитаться — тогда напиши администратору.",
     }
@@ -4087,7 +4834,7 @@ async fn send_handoff_step_card(
         Some(vec![handoff_back_row(back, back_step_wire(&want)?)])
     });
     match step {
-        "ho_proxy" | "cx_proxy" | "gm_gproxy" | "km_proxy" | "glm_proxy" => {
+        "ho_proxy" | "cx_proxy" | "gm_gproxy" | "km_proxy" | "glm_proxy" | "t3_proxy" => {
             let _ = bot
                 .send_kb(
                     chat,
@@ -4145,6 +4892,18 @@ async fn send_handoff_step_card(
                         moved("Вернулись на подтверждение аккаунта. Прокси сохранён.")
                     ),
                     Some(&glm_ready_kb(back.as_ref())),
+                )
+                .await;
+        }
+        "t3_ready" => {
+            let _ = bot
+                .send_kb(
+                    chat,
+                    &format!(
+                        "{}{TRIPO3D_ACCOUNT_SETUP}",
+                        moved("Вернулись на подтверждение аккаунта. Прокси сохранён.")
+                    ),
+                    Some(&tripo3d_ready_kb(back.as_ref())),
                 )
                 .await;
         }
@@ -4309,6 +5068,41 @@ fn select_glm_proxy_input(
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Tripo3dProxyInput {
+    /// URL продавца плюс признак того, что в нём распознаны логин и пароль.
+    SellerSupplied(String, bool),
+    /// Закреплённый прокси покупателя/IPRoyal: сообщение продавца его заменить не может.
+    Fixed(String, i64),
+    /// Ввод не похож на прокси, а закреплённого egress подставить нечего.
+    Invalid,
+}
+
+/// Решение шага `t3_proxy`. Зеркалит GLM-шаг: приём ключа живёт на более позднем шаге, поэтому
+/// здесь сообщение продавца — это всегда ввод egress. Закреплённый buyer/IPRoyal прокси
+/// сообщение продавца заменить не может никогда.
+fn select_tripo3d_proxy_input(
+    store: &Store,
+    expected: &SellerJobRef,
+    current_proxy: &str,
+    current_proxy_order_id: i64,
+    input: &str,
+) -> Tripo3dProxyInput {
+    if job_accepts_seller_proxy(store, expected, current_proxy_order_id) {
+        let parsed = parse_proxy_input(input);
+        return if parsed.url.is_empty() {
+            Tripo3dProxyInput::Invalid
+        } else {
+            Tripo3dProxyInput::SellerSupplied(parsed.url, parsed.credentials)
+        };
+    }
+    if current_proxy.is_empty() {
+        Tripo3dProxyInput::Invalid
+    } else {
+        Tripo3dProxyInput::Fixed(current_proxy.to_string(), current_proxy_order_id)
+    }
+}
+
 fn seller_job_matches_handoff(
     job: &SellerJob,
     expected: &SellerJobRef,
@@ -4412,7 +5206,7 @@ async fn start_batch_item(
             return;
         }
         let setup =
-            if next_step == "gm_ready" || next_step == "km_ready" || next_step == "glm_ready" {
+            if next_step == "gm_ready" || next_step == "km_ready" || next_step == "glm_ready" || next_step == "t3_ready" {
                 ""
             } else {
                 account_setup_prompt(next_step)
@@ -4432,6 +5226,8 @@ async fn start_batch_item(
             prepare_kimi_account(bot, store, cfg, seller_chat, None, 0).await;
         } else if next_step == "glm_ready" {
             prepare_glm_account(bot, store, cfg, seller_chat, None, 0).await;
+        } else if next_step == "t3_ready" {
+            prepare_tripo3d_account(bot, store, cfg, seller_chat, None, 0).await;
         }
     } else {
         if !store
@@ -4952,7 +5748,7 @@ async fn deliver_issued_proxy(
                 .await;
                 return;
             }
-            let next_prompt = if gemini || next_step == "km_ready" || next_step == "glm_ready" {
+            let next_prompt = if gemini || next_step == "km_ready" || next_step == "glm_ready" || next_step == "t3_ready" {
                 "Сохрани эти данные: аккаунт нужно создать и подключить именно через этот прокси. Подробная инструкция придёт следующим сообщением."
             } else {
                 account_setup_prompt(next_step)
@@ -4976,6 +5772,8 @@ async fn deliver_issued_proxy(
                 prepare_kimi_account(bot, store, cfg, seller_chat, None, 0).await;
             } else if next_step == "glm_ready" {
                 prepare_glm_account(bot, store, cfg, seller_chat, None, 0).await;
+            } else if next_step == "t3_ready" {
+                prepare_tripo3d_account(bot, store, cfg, seller_chat, None, 0).await;
             }
             let _ = bot.send(admin_chat, &format!(
                 "✅ Прокси по офферу #{oid} выпущен (UK · {}, заказ IPRoyal #{}) и отправлен продавцу.",
@@ -5056,7 +5854,7 @@ async fn start_buyer_offer_handoff(
     {
         return;
     }
-    let setup = if next_step == "gm_ready" || next_step == "km_ready" || next_step == "glm_ready" {
+    let setup = if next_step == "gm_ready" || next_step == "km_ready" || next_step == "glm_ready" || next_step == "t3_ready" {
         ""
     } else {
         account_setup_prompt(next_step)
@@ -5071,6 +5869,8 @@ async fn start_buyer_offer_handoff(
         prepare_kimi_account(bot, store, cfg, seller_chat, None, 0).await;
     } else if next_step == "glm_ready" {
         prepare_glm_account(bot, store, cfg, seller_chat, None, 0).await;
+    } else if next_step == "t3_ready" {
+        prepare_tripo3d_account(bot, store, cfg, seller_chat, None, 0).await;
     }
 }
 
@@ -5134,6 +5934,18 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
     // Platform selection for the GLM key intake: int (api.z.ai, default) or cn (bigmodel.cn).
     if let Some(region) = data.strip_prefix("glm:region:") {
         select_glm_region(bot, store, cfg, chat, region).await;
+        return;
+    }
+
+    if data == "t3:ready" {
+        continue_tripo3d_handoff(bot, store, cfg, chat).await;
+        return;
+    }
+
+    // Platform selection for the Tripo3D key intake: global (api.tripo3d.ai, default) or cn
+    // (api.tripo3d.com).
+    if let Some(region) = data.strip_prefix("t3:region:") {
+        select_tripo3d_region(bot, store, cfg, chat, region).await;
         return;
     }
 

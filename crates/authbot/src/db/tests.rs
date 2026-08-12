@@ -1284,6 +1284,36 @@ fn restart_returns_a_waiting_glm_seller_to_the_ready_step() {
     let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
 }
 
+/// Та же дисциплина, что и у GLM: валидация ключа Tripo3D живёт только в памяти, а сам ключ
+/// нигде не персистится, поэтому рестарт посреди `t3_wait` его теряет. Продавец возвращается
+/// на шаг подтверждения и присылает ключ заново; прокси и выбор площадки переживают рестарт.
+#[test]
+fn restart_returns_a_waiting_tripo3d_seller_to_the_ready_step() {
+    let p = tmp();
+    let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    {
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "tripo3d-seller").unwrap();
+        s.set_want(111, "t3_wait").unwrap();
+        s.set_hproxy(111, "http://user:pass@1.2.3.4:8080").unwrap();
+        s.set_hregion(111, "cn").unwrap();
+        s.register_user(222, 222, "tripo3d-seller-at-ready").unwrap();
+        s.set_want(222, "t3_ready").unwrap();
+    }
+    let s = Store::open(&p).unwrap();
+    assert_eq!(s.recover_interrupted_tripo3d_handoffs().unwrap(), 1);
+    let user = s.get_user(111).unwrap().unwrap();
+    assert_eq!(user.want, "t3_ready");
+    // Прокси и площадка сохраняются: повторная валидация уйдёт с того же egress на ту же
+    // площадку.
+    assert_eq!(user.hproxy, "http://user:pass@1.2.3.4:8080");
+    assert_eq!(user.hregion, "cn");
+    // Продавец, уже стоящий на шаге подтверждения, не трогается.
+    assert_eq!(s.get_user(222).unwrap().unwrap().want, "t3_ready");
+    assert_eq!(s.recover_interrupted_tripo3d_handoffs().unwrap(), 0);
+    let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+}
+
 #[test]
 fn batch_has_one_proxy_per_item_and_advances_atomically() {
     let p = tmp();

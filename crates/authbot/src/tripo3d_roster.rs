@@ -16,10 +16,6 @@
 //! creating a second one. The comparison runs on opened envelopes inside the safe zone; the
 //! raw key never leaves the sealed directory.
 
-// The seller wizard in `bot.rs` arrives as the dependent follow-up commit; until it lands,
-// only `RosterConfig` (wired from `main.rs`) and this module's tests touch `publish`.
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;

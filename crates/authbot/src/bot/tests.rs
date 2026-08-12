@@ -66,6 +66,8 @@ fn every_product_button_resolves_and_classifies() {
             assert_eq!(name, label, "button label and product name must match");
             let expected = if label.contains("GLM") {
                 HandoffKind::Glm
+            } else if label.contains("Tripo3D") {
+                HandoffKind::Tripo3d
             } else if label.contains("Kimi") {
                 HandoffKind::Kimi
             } else if label.contains("Gemini")
@@ -148,7 +150,7 @@ fn batch_product_menu_covers_every_subscription_variant() {
             (label, tier_name(code).expect("batch product code"))
         })
         .collect::<Vec<_>>();
-    assert_eq!(labels.len(), 15);
+    assert_eq!(labels.len(), 18);
     for (label, product) in labels {
         assert_eq!(label, product);
         assert!(matches!(
@@ -158,6 +160,7 @@ fn batch_product_menu_covers_every_subscription_variant() {
                 | HandoffKind::Gemini
                 | HandoffKind::Kimi
                 | HandoffKind::Glm
+                | HandoffKind::Tripo3d
         ));
     }
 }
@@ -897,6 +900,399 @@ fn invalid_key_guidance_is_typed_static_and_never_carries_the_key() {
 }
 
 #[test]
+fn tripo3d_products_are_a_distinct_handoff_and_never_fall_through_to_claude() {
+    // A new product silently classified as Claude would be handed to the setup-token branch
+    // and burn a paid subscription on the wrong flow.
+    for product in ["Tripo3D API $25", "Tripo3D API $50", "Tripo3D API $100"] {
+        assert_eq!(handoff_kind(product), HandoffKind::Tripo3d, "{product}");
+    }
+    assert_eq!(handoff_kind("Tripo API account"), HandoffKind::Tripo3d);
+}
+
+#[test]
+fn tripo3d_cohort_words_cannot_be_claimed_without_the_provider_name() {
+    // The cohort names are bare top-up amounts, so classification must key on the provider
+    // word, never on the amount or the generic "API" word.
+    for bare in ["$50", "API $50", "api account", "100"] {
+        assert_ne!(
+            handoff_kind(bare),
+            HandoffKind::Tripo3d,
+            "{bare} must not be treated as a Tripo3D product without the provider name"
+        );
+    }
+}
+
+#[test]
+fn tripo3d_offers_route_to_their_own_wizard_steps_and_texts() {
+    assert_eq!(
+        handoff_steps_for_product("Tripo3D API $50"),
+        ("t3_proxy", "t3_ready")
+    );
+    // Each provider owns distinct steps: a shared step id would let one provider's callback
+    // advance another provider's deal.
+    for other in [
+        "Claude Pro",
+        "ChatGPT Plus",
+        "Google AI Pro",
+        "Kimi Moderato",
+        "GLM Coding Plan Pro",
+    ] {
+        assert_ne!(handoff_steps_for_product(other).0, "t3_proxy");
+        assert_ne!(handoff_steps_for_product(other).1, "t3_ready");
+    }
+    assert_eq!(seller_offer_guide("Tripo3D API $25"), TRIPO3D_OFFER_GUIDE);
+    assert_eq!(account_setup_prompt("t3_ready"), TRIPO3D_ACCOUNT_SETUP);
+    assert_eq!(proxy_prompt("t3_proxy"), TRIPO3D_PROXY_PROMPT);
+}
+
+#[test]
+fn tripo3d_appears_in_both_operator_menus() {
+    let offer_codes = product_kb()
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, data)| data.strip_prefix("noffer:").map(str::to_string))
+        .filter(|code| code.starts_with("tripo3d_"))
+        .count();
+    assert_eq!(offer_codes, 3);
+    for label in ["📦 Tripo3D API $25", "📦 Tripo3D API $50", "📦 Tripo3D API $100"] {
+        assert!(admin_quick_tier(label).is_some(), "{label} missing");
+        assert!(
+            admin_home_kb().iter().flatten().any(|b| *b == label),
+            "{label} missing from the persistent keyboard"
+        );
+    }
+}
+
+#[test]
+fn tripo3d_seller_texts_name_the_exact_top_up_and_never_ask_for_secrets() {
+    // The declared top-up cohort is the only quota axis: the seller must top up exactly the
+    // offer's amount, on the API platform, and hand over nothing but the tsk_ key.
+    assert!(TRIPO3D_ACCOUNT_SETUP.contains("ровно на сумму, указанную в оффере"));
+    assert!(TRIPO3D_ACCOUNT_SETUP.contains("platform.tripo3d.ai"));
+    assert!(TRIPO3D_ACCOUNT_SETUP.contains("tsk_"));
+    assert!(TRIPO3D_ACCOUNT_SETUP.contains("tcli_"));
+    assert!(TRIPO3D_OFFER_GUIDE.contains("бот не просит"));
+    assert!(TRIPO3D_KEY_PROMPT.contains("API-ключ"));
+    for text in [
+        TRIPO3D_OFFER_GUIDE,
+        TRIPO3D_ACCOUNT_SETUP,
+        TRIPO3D_PROXY_PROMPT,
+        TRIPO3D_KEY_PROMPT,
+    ] {
+        let lowered = text.to_lowercase();
+        for forbidden in [
+            "пришли пароль",
+            "пароль от аккаунта",
+            "пришли код из",
+            "пришли cookie",
+            "пришли токен",
+            "код 2fa",
+        ] {
+            assert!(
+                !lowered.contains(forbidden),
+                "seller text must never solicit: {forbidden}"
+            );
+        }
+    }
+}
+
+#[test]
+fn tripo3d_proxy_step_accepts_and_reconstructs_seller_input() {
+    let store = store();
+    store.register_user(111, 111, "tripo3d-seller").unwrap();
+    let offer = store
+        .create_offer("Tripo3D API $50", "$20", 999, 111)
+        .unwrap();
+    let reference = SellerJobRef {
+        kind: "offer".into(),
+        offer_id: offer,
+        batch_id: 0,
+        item_no: 0,
+        token: "generation".into(),
+    };
+    assert_eq!(
+        select_tripo3d_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080:user:pass"),
+        Tripo3dProxyInput::SellerSupplied("http://user:pass@1.2.3.4:8080".into(), true)
+    );
+    // Пароль с двоеточием обязан пережить реконструкцию.
+    assert_eq!(
+        select_tripo3d_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080:user:pa:ss"),
+        Tripo3dProxyInput::SellerSupplied("http://user:pa%3Ass@1.2.3.4:8080".into(), true)
+    );
+    assert_eq!(
+        select_tripo3d_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080"),
+        Tripo3dProxyInput::SellerSupplied("http://1.2.3.4:8080".into(), false)
+    );
+}
+
+#[test]
+fn tripo3d_proxy_step_rejects_malformed_input_without_leaking_it() {
+    let store = store();
+    store.register_user(111, 111, "tripo3d-seller").unwrap();
+    let offer = store
+        .create_offer("Tripo3D API $50", "$20", 999, 111)
+        .unwrap();
+    let reference = SellerJobRef {
+        kind: "offer".into(),
+        offer_id: offer,
+        batch_id: 0,
+        item_no: 0,
+        token: "generation".into(),
+    };
+    for rejected in ["", "не прокси", "1.2.3.4", "1.2.3.4:abc", "1.2.3.4:0"] {
+        assert_eq!(
+            select_tripo3d_proxy_input(&store, &reference, "", 0, rejected),
+            Tripo3dProxyInput::Invalid,
+            "{rejected:?}"
+        );
+    }
+}
+
+#[test]
+fn tripo3d_proxy_step_never_replaces_a_pinned_proxy() {
+    let store = store();
+    store.register_user(111, 111, "tripo3d-seller").unwrap();
+    let offer = store
+        .create_offer("Tripo3D API $50", "$20", 999, 111)
+        .unwrap();
+    let reference = SellerJobRef {
+        kind: "offer".into(),
+        offer_id: offer,
+        batch_id: 0,
+        item_no: 0,
+        token: "generation".into(),
+    };
+    // Оплаченный лиз закреплён: валидное сообщение продавца не может его заменить.
+    store.mark_offer_proxy_issued(offer).unwrap();
+    assert_eq!(
+        select_tripo3d_proxy_input(
+            &store,
+            &reference,
+            "http://user:pass@5.6.7.8:8080",
+            0,
+            "1.2.3.4:8080:user:pass"
+        ),
+        Tripo3dProxyInput::Fixed("http://user:pass@5.6.7.8:8080".into(), 0)
+    );
+    // Закреплённый egress потерян: принимать ввод продавца нельзя, остаёмся fail-closed.
+    assert_eq!(
+        select_tripo3d_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080:user:pass"),
+        Tripo3dProxyInput::Invalid
+    );
+}
+
+#[test]
+fn tripo3d_seller_proxy_is_canonicalised_before_it_is_pinned() {
+    let shaped = parse_proxy_input("http://foo bar:8080");
+    assert!(!shaped.url.is_empty());
+    assert!(tripo3d_credential::normalize_proxy_url(&shaped.url).is_err());
+    // Канонический вывод обеих форм ввода одинаково валиден для credential-контракта.
+    for raw in [
+        "1.2.3.4:8080:user:pa:ss",
+        "http://user:pa%3Ass@1.2.3.4:8080",
+    ] {
+        let parsed = parse_proxy_input(raw);
+        assert!(
+            tripo3d_credential::normalize_proxy_url(&parsed.url).is_ok(),
+            "{raw}"
+        );
+    }
+}
+
+#[test]
+fn tripo3d_proxy_step_has_clean_manual_and_retry_prompts() {
+    assert!(!TRIPO3D_PROXY_PROMPT.contains("не получилось"));
+    assert_eq!(
+        manual_proxy_prompt("t3_proxy"),
+        format!("{MANUAL_PROXY_WARNING}{TRIPO3D_PROXY_PROMPT}")
+    );
+    assert!(TRIPO3D_STEP_PROXY_RETRY.contains("ip:port:user:pass"));
+    // Подсказка не может содержать сам присланный прокси: только форма, никаких секретов.
+    assert!(!TRIPO3D_STEP_PROXY_RETRY.contains("<code>1"));
+}
+
+#[test]
+fn the_tripo3d_ready_button_carries_its_own_callback() {
+    let keyboard = tripo3d_ready_kb(None);
+    assert_eq!(keyboard[0][0].1, "t3:ready");
+    // A shared callback would let one provider's button advance another provider's deal.
+    assert_ne!(keyboard[0][0].1, kimi_ready_kb(None)[0][0].1);
+    assert_ne!(keyboard[0][0].1, glm_ready_kb(None)[0][0].1);
+    assert_ne!(keyboard[0][0].1, gemini_ready_kb(None)[0][0].1);
+    // The platform selection rides the same card, with its own callbacks.
+    assert_eq!(keyboard[1][0].1, "t3:region:global");
+    assert_eq!(keyboard[1][1].1, "t3:region:cn");
+}
+
+#[test]
+fn the_tripo3d_ready_gate_requires_both_its_step_and_a_stored_proxy() {
+    let store = store();
+    // Unknown seller, wrong step, or a right step with no stored egress must all leave the
+    // button inert: validating a key without the assigned proxy would authorize from a
+    // different IP than the one the account was opened on.
+    assert!(tripo3d_ready_handoff(&store, 1).is_none());
+    let _ = store.set_want(1, "t3_ready");
+    assert!(tripo3d_ready_handoff(&store, 1).is_none());
+}
+
+#[test]
+fn stepping_back_from_t3_wait_requires_confirmation_and_invalidates() {
+    // The seller already armed the key intake; going back must cancel it, not leave an
+    // in-flight validation racing to publish into a rewound deal.
+    let back = handoff_step_back(HandoffKind::Tripo3d, "t3_wait", true, true).expect("edge");
+    assert_eq!(back.target, "t3_ready");
+    assert!(back.invalidates_link);
+    assert!(
+        !back.clears_proxy,
+        "the pinned egress must survive a step back"
+    );
+    // Одноразовое ожидание молча не гасим: сначала явное подтверждение.
+    let row = handoff_back_row(&back, back_step_wire("t3_wait").unwrap());
+    assert_eq!(row[0].1, "hoback:t3_wait:ask");
+}
+
+#[test]
+fn a_tripo3d_step_back_without_a_recoverable_egress_degrades_to_the_proxy_step() {
+    // Landing on t3_ready with an empty hproxy would be a dead end: tripo3d_ready_handoff
+    // rejects it and the seller could never continue.
+    let back = handoff_step_back(HandoffKind::Tripo3d, "t3_wait", true, false).expect("edge");
+    assert_eq!(back.target, "t3_proxy");
+    assert!(back.clears_proxy);
+    // A seller who may not replace the proxy has no such step in their history at all.
+    assert!(handoff_step_back(HandoffKind::Tripo3d, "t3_wait", false, false).is_none());
+}
+
+#[test]
+fn tripo3d_ready_steps_back_to_its_own_proxy_step() {
+    let back = handoff_step_back(HandoffKind::Tripo3d, "t3_ready", true, true).expect("edge");
+    assert_eq!(back.target, "t3_proxy");
+    assert!(
+        !back.invalidates_link,
+        "the key intake has not been armed yet"
+    );
+}
+
+#[test]
+fn the_t3_wait_confirmation_warns_that_the_key_intake_dies() {
+    let text = handoff_back_confirm_text("t3_wait");
+    assert!(text.contains("сброшено"));
+    assert!(text.contains("уже прислал"));
+}
+
+#[test]
+fn tripo3d_region_selection_persists_into_the_credential() {
+    let store = store();
+    store.register_user(111, 111, "tripo3d-seller").unwrap();
+    // Default — международная площадка.
+    let region = store.get_user(111).unwrap().unwrap().hregion;
+    assert_eq!(
+        tripo3d_base_url(&region),
+        tripo3d_credential::TRIPO3D_BASE_URL_GLOBAL
+    );
+    store.set_hregion(111, "cn").unwrap();
+    let region = store.get_user(111).unwrap().unwrap().hregion;
+    assert_eq!(tripo3d_base_url(&region), tripo3d_credential::TRIPO3D_BASE_URL_CHINA);
+    // Выбор доживает до credential_from: ключ одной площадки не работает на другой.
+    let credential = tripo3d_key::credential_from(
+        "tsk_key-1",
+        "tripo3d api $50",
+        tripo3d_base_url("cn"),
+        "",
+    )
+    .unwrap();
+    assert_eq!(credential.base_url, tripo3d_credential::TRIPO3D_BASE_URL_CHINA);
+    let credential = tripo3d_key::credential_from(
+        "tsk_key-1",
+        "tripo3d api $50",
+        tripo3d_base_url("global"),
+        "",
+    )
+    .unwrap();
+    assert_eq!(
+        credential.base_url,
+        tripo3d_credential::TRIPO3D_BASE_URL_GLOBAL
+    );
+    // Сброс возвращает международный default.
+    store.set_hregion(111, "").unwrap();
+    let region = store.get_user(111).unwrap().unwrap().hregion;
+    assert_eq!(
+        tripo3d_base_url(&region),
+        tripo3d_credential::TRIPO3D_BASE_URL_GLOBAL
+    );
+}
+
+#[test]
+fn tripo3d_declared_cohort_comes_from_the_offer_product() {
+    assert_eq!(
+        tripo3d_declared_cohort("Tripo3D API $50").as_deref(),
+        Some("tripo3d api $50")
+    );
+    // Голая сумма не становится когортой: классификация обязана подтвердить провайдера.
+    assert_eq!(tripo3d_declared_cohort("Claude Pro"), None);
+    assert_eq!(tripo3d_declared_cohort("$50"), None);
+}
+
+#[test]
+fn malformed_tripo3d_key_text_never_reaches_the_provider() {
+    let oversized = "x".repeat(513);
+    for rejected in [
+        "",
+        "  ",
+        "key with spaces",
+        "multi\nline",
+        oversized.as_str(),
+    ] {
+        assert_eq!(tripo3d_key_text(rejected), None, "{rejected:?}");
+    }
+    assert_eq!(tripo3d_key_text("  tsk_abcd0123  "), Some("tsk_abcd0123"));
+    // Журнал видит только длину ключа — никогда сам ключ.
+    let fingerprint = tripo3d_key_fingerprint("tsk_secret-key-9f8c7b");
+    assert!(!fingerprint.contains("tsk_secret"), "{fingerprint}");
+    assert!(!fingerprint.contains("9f8c7b"), "{fingerprint}");
+}
+
+#[test]
+fn tripo3d_invalid_key_guidance_is_typed_static_and_never_carries_the_key() {
+    // Каждый класс отказа приёма ключа — своя подсказка продавцу.
+    let reasons = [
+        tripo3d_key::InvalidKeyReason::Auth,
+        tripo3d_key::InvalidKeyReason::ClientIdMisuse,
+    ];
+    let texts: std::collections::HashSet<&'static str> = reasons
+        .iter()
+        .map(|reason| tripo3d_invalid_key_guidance(*reason))
+        .collect();
+    assert_eq!(
+        texts.len(),
+        reasons.len(),
+        "each invalid class needs its own guidance"
+    );
+    // Подсказки статические и не содержат ни ключа продавца, ни формулировок-просьб секретов.
+    let submitted_key = "tsk_secret-key-9f8c7b";
+    for text in reasons
+        .iter()
+        .map(|reason| tripo3d_invalid_key_guidance(*reason))
+        .into_iter()
+        .chain([
+            TRIPO3D_KEY_REJECTED,
+            TRIPO3D_BALANCE_UNREADABLE,
+            TRIPO3D_VALIDATION_TRANSPORT,
+            TRIPO3D_KEY_MALFORMED,
+        ])
+    {
+        assert!(
+            !text.contains(submitted_key),
+            "guidance must be static, never an echo of the submitted key"
+        );
+        let lowered = text.to_lowercase();
+        for forbidden in ["пришли пароль", "пароль от аккаунта", "пришли cookie"]
+        {
+            assert!(!lowered.contains(forbidden), "{forbidden}");
+        }
+    }
+}
+
+#[test]
 fn proxy_source_is_visible_and_changes_seller_instructions() {
     let store = store();
     let seller_proxy = store
@@ -1223,7 +1619,7 @@ fn the_three_handovers_never_share_a_step_name() {
 /// ровно её, поэтому любая лишняя или потерянная строка немедленно разводит UI и состояние.
 #[test]
 fn handoff_back_maps_every_seller_step_to_exactly_one_predecessor() {
-    use HandoffKind::{Claude, Codex, Gemini};
+    use HandoffKind::{Claude, Codex, Gemini, Tripo3d};
     let reversible = [
         (Claude, "ho_email", "ho_proxy", true, false),
         (Claude, "ho_code", "ho_email", false, true),
@@ -1231,6 +1627,8 @@ fn handoff_back_maps_every_seller_step_to_exactly_one_predecessor() {
         (Codex, "cx_wait", "cx_email", false, true),
         (Gemini, "gm_ready", "gm_gproxy", true, false),
         (Gemini, "gm_wait", "gm_ready", false, true),
+        (Tripo3d, "t3_ready", "t3_proxy", true, false),
+        (Tripo3d, "t3_wait", "t3_ready", false, true),
     ];
     for (kind, want, target, clears_proxy, invalidates_link) in reversible {
         assert_eq!(
@@ -1251,6 +1649,7 @@ fn handoff_back_maps_every_seller_step_to_exactly_one_predecessor() {
         (Gemini, "gm_gproxy"),
         (Gemini, "gm_gid"),
         (Gemini, "gm_gsecret"),
+        (Tripo3d, "t3_proxy"),
         (Claude, "reg_address"),
         (Claude, ""),
         (Claude, "нет такого шага"),
@@ -1270,6 +1669,10 @@ fn handoff_back_maps_every_seller_step_to_exactly_one_predecessor() {
         (Codex, "gm_ready"),
         (Gemini, "ho_email"),
         (Gemini, "cx_wait"),
+        (Tripo3d, "glm_wait"),
+        (Tripo3d, "cx_wait"),
+        (Claude, "t3_wait"),
+        (Codex, "t3_ready"),
     ] {
         assert_eq!(
             handoff_step_back(kind, want, true, true),
@@ -1283,11 +1686,12 @@ fn handoff_back_maps_every_seller_step_to_exactly_one_predecessor() {
 /// продавца. Шаги после выдачи ссылки при этом обязаны оставаться обратимыми.
 #[test]
 fn handoff_back_refuses_to_unpin_a_pinned_proxy() {
-    use HandoffKind::{Claude, Codex, Gemini};
+    use HandoffKind::{Claude, Codex, Gemini, Tripo3d};
     for (kind, want) in [
         (Claude, "ho_email"),
         (Codex, "cx_email"),
         (Gemini, "gm_ready"),
+        (Tripo3d, "t3_ready"),
     ] {
         assert_eq!(handoff_step_back(kind, want, false, true), None, "{kind:?}");
     }
@@ -1295,6 +1699,7 @@ fn handoff_back_refuses_to_unpin_a_pinned_proxy() {
         (Claude, "ho_code", "ho_email"),
         (Codex, "cx_wait", "cx_email"),
         (Gemini, "gm_wait", "gm_ready"),
+        (Tripo3d, "t3_wait", "t3_ready"),
     ] {
         assert_eq!(
             handoff_step_back(kind, want, false, true).map(|step| step.target),
@@ -1338,6 +1743,8 @@ fn handoff_back_callback_data_covers_exactly_the_reversible_steps() {
         "km_wait",
         "glm_ready",
         "glm_wait",
+        "t3_ready",
+        "t3_wait",
     ] {
         assert_eq!(back_step_wire(step), Some(step));
     }
@@ -1347,6 +1754,7 @@ fn handoff_back_callback_data_covers_exactly_the_reversible_steps() {
         "gm_gproxy",
         "km_proxy",
         "glm_proxy",
+        "t3_proxy",
         "reg_address",
         "",
         "gm_wait:go",

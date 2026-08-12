@@ -20,10 +20,6 @@
 //! balance probe, and this module carries no paid code path at all — adding one requires an
 //! explicit operator-approved budget raise first, not a leftover stub.
 
-// The seller wizard in `bot.rs` arrives as the dependent follow-up commit; until it lands,
-// nothing outside this module's tests calls the intake protocol.
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};

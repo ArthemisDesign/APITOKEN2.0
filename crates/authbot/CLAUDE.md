@@ -620,9 +620,39 @@ publication: the seller wizard in `bot.rs` calls it step by step. Evidence facts
   holds only the opaque id and path — no key, no cohort, no proxy.
 
 **Seller wizard.** Steps `t3_proxy → t3_ready → t3_wait`, button `t3:ready`, platform
-sub-buttons `t3:region:global|cn`. The wizard in `bot.rs` arrives as the dependent follow-up
-change (same split as KIMI/GLM), so that the provider contract is not mixed with seller
-state-machine edits in one diff; the modules above are dormant until it lands.
+sub-buttons `t3:region:global|cn` (global `api.tripo3d.ai` is the default). A separate callback
+per provider is deliberate: a shared id would let one deal's button advance another deal.
+Products — the three declared top-up cohorts "Tripo3D API $25/$50/$100"; the `handoff_kind`
+rule keys on the provider word (`tripo3d`/`tripo`) and ranks above the Claude fallback, because
+the bare amounts mean nothing. At `t3_proxy` the bot accepts the proxy as a text message:
+parsing is the same reversible one as GLM's (`parse_proxy_input`, a password with `:` survives
+reconstruction), and before pinning, the proxy passes
+`tripo3d_credential::normalize_proxy_url` canonization, so garbage never reaches `t3_ready`.
+A pinned buyer/IPRoyal proxy cannot be replaced by the seller's message — the shared
+`job_accepts_seller_proxy` decides; invalid input leaves the deal on `t3_proxy` with a safe
+re-prompt, and only the keyless form fingerprint goes to the log. A single-offer with the
+buyer's proxy and IPRoyal issuance arrive at `t3_ready` through the same
+`prepare_tripo3d_account` as a batch. The `t3_ready` card offers the platform selection; the
+choice is stored in `users.hregion` all the way to `credential_from`, survives a restart and
+resets to the global default when each new deal enters `t3_ready`. `t3_ready` requires both its
+own step AND a saved proxy — otherwise the button is inert, because validation without an
+assigned egress would come from an IP other than the one the account was opened from. At
+`t3_wait` the seller sends the API key as a single text message, and the bot validates it on
+the deal's egress: local preflight (a documented `tcli_` Client ID is refused without a network
+call) → free balance probe (bounded retry; failure — return to `t3_ready` with a typed hint) →
+`corroborate_cohort` (fail-closed readability check while the balance unit is unproven) →
+`credential_from` → `tripo3d_roster::publish` (same key — replace-in-place; occupied id —
+typed error) → payout completion ONLY after publication. There is deliberately no paid
+admission task: the cheapest one costs $0.05 against the default $0.0001 admission cap
+(manifest §7 open question), so validation stops at the free probe. All hints are static: the
+key is not logged (the log sees only `key_len`), is not echoed back to the chat and is not
+stored in SQLite — validation lives only in memory. Stepping back from `t3_wait` extinguishes
+the key wait and requires confirmation; without a recoverable egress it degrades to `t3_proxy`,
+otherwise the seller would land on `t3_ready` with an empty `hproxy` — a dead end. An invalid,
+unreadable-balance or transport-broken flow returns to `t3_ready`, leaves neither an envelope
+nor a roster row and **does not complete the payout**. After a restart an unfinished `t3_wait`
+is restored into `t3_ready` (`recover_interrupted_tripo3d_handoffs`) — the seller will send the
+key again, while the proxy and the platform selection survive the restart.
 
 **Env:** `AUTH_BOT_TRIPO3D_DIR` (root of `credentials/` + `profiles.json`, default
 `/srv/claude-api/data/tripo3d`), `AUTH_BOT_TRIPO3D_CREDENTIAL_KEYS`,

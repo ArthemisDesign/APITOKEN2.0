@@ -296,7 +296,7 @@ Each `unknown` fails closed and is cleared only by a controlled live run on our 
 | credential | `crates/tripo3d-credential` | done (this commit) |
 | calibration estimator | `crates/forward/src/tripo3d_calibration.rs` | done (this commit) |
 | Auth Bot: validation protocol + roster | `crates/authbot/src/{tripo3d_key,tripo3d_roster}.rs` (+`main.rs` env) | done (this commit) |
-| Auth Bot: seller wizard | `crates/authbot/src/bot.rs` (+`db.rs` recovery, `main.rs`) | pending |
+| Auth Bot: seller wizard | `crates/authbot/src/bot.rs` (+`db.rs` recovery, `main.rs`) | done (this commit) |
 | runtime primitives + gateway | `crates/forward/src/tripo3d/**` | pending |
 | server wiring | `crates/server/src/{config,main,poller,http}.rs` | pending |
 | observability / admin projection | `observability/**`, `docs/ops/MONITORING.md`, `GET /tripo3d-subs` | pending |

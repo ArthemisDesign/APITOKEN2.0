@@ -26,10 +26,12 @@ pub struct UserRow {
     pub status: String,    // new | pending | approved | rejected | pending_admin
     pub role: String,      // "" | admin
     pub address: String,   // BEP-20
-    pub want: String,      // ожидаемый ввод (reg_address | ho_* | cx_* | gm_* | km_* | glm_*)
+    pub want: String,      // ожидаемый ввод (reg_address | ho_* | cx_* | gm_* | km_* | glm_* | t3_*)
     pub hproxy: String,    // прокси аккаунта при передаче доступа (handover)
     pub hproxy_order: i64, // IPRoyal order id за handover-прокси (0 = ручной/внешний)
-    pub hregion: String,   // площадка GLM-аккаунта текущей сделки ("" = int, "cn" = bigmodel.cn)
+    // Площадка аккаунта текущей сделки: GLM ("" = int, "cn" = bigmodel.cn) или Tripo3D
+    // ("" = global, "cn" = api.tripo3d.com). Per-deal context: prepare_*_account resets it on entry.
+    pub hregion: String,
 }
 
 #[derive(Clone, Debug)]
@@ -1134,8 +1136,9 @@ impl Store {
             "ALTER TABLE users ADD COLUMN hproxy_order INTEGER DEFAULT 0",
             [],
         );
-        // GLM platform of the current seller job ("" = international default, "cn" =
-        // bigmodel.cn). Per-deal context: prepare_glm_account resets it on entry.
+        // Platform of the current seller job: GLM ("" = international default, "cn" =
+        // bigmodel.cn) or Tripo3D ("" = global, "cn" = api.tripo3d.com). Per-deal context:
+        // prepare_glm_account / prepare_tripo3d_account reset it on entry.
         let _ = c.execute("ALTER TABLE users ADD COLUMN hregion TEXT DEFAULT ''", []);
         let _ = c.execute(
             "ALTER TABLE gemini_oauth_sessions ADD COLUMN sealed_payload TEXT NOT NULL DEFAULT ''",
@@ -1984,6 +1987,18 @@ impl Store {
     pub fn recover_interrupted_glm_handoffs(&self) -> Result<usize> {
         Ok(self.c.lock().unwrap().execute(
             "UPDATE users SET want='glm_ready' WHERE want='glm_wait'",
+            [],
+        )?)
+    }
+
+    /// Same discipline as the GLM key intake: key validation lives only in memory and the key
+    /// itself is never persisted, so a restart mid-validation loses it. Return the seller to
+    /// the readiness step: they press the button again and resend the key into a fresh
+    /// validation. The proxy and the platform selection survive, so the retry runs on the
+    /// same egress and platform.
+    pub fn recover_interrupted_tripo3d_handoffs(&self) -> Result<usize> {
+        Ok(self.c.lock().unwrap().execute(
+            "UPDATE users SET want='t3_ready' WHERE want='t3_wait'",
             [],
         )?)
     }
