@@ -226,13 +226,15 @@ export async function applyVerifiedCheckoutPaymentEvent(
     } else if (input.state === "refunded") {
       const creditResult = await client.query<{
         payment_id: string;
+        payment_status: "pending" | "paid" | "failed" | "refunded" | "disputed";
         credit_id: string;
         engine_account_id: string;
         amount_nano: string;
         credit_status: "pending" | "processing" | "retry" | "confirmed" | "dead";
         credit_attempts: number;
       }>(`
-        SELECT p.id AS payment_id, ec.id AS credit_id, ec.engine_account_id, ec.amount_nano,
+        SELECT p.id AS payment_id, p.status AS payment_status,
+               ec.id AS credit_id, ec.engine_account_id, ec.amount_nano,
                ec.status AS credit_status, ec.attempts AS credit_attempts
         FROM payments p
         JOIN engine_credits ec ON ec.payment_id = p.id
@@ -240,7 +242,10 @@ export async function applyVerifiedCheckoutPaymentEvent(
         FOR UPDATE OF p, ec
       `, [input.checkoutId]);
       const existingCredit = creditResult.rows[0];
-      if (existingCredit) {
+      const firstReversal = existingCredit !== undefined
+        && existingCredit.payment_status !== "refunded"
+        && existingCredit.payment_status !== "disputed";
+      if (firstReversal) {
         const definitelyNeverDelivered = existingCredit.credit_attempts === 0 &&
           (existingCredit.credit_status === "pending" || existingCredit.credit_status === "dead");
         if (definitelyNeverDelivered) {
@@ -313,6 +318,33 @@ export async function applyVerifiedCheckoutPaymentEvent(
         UPDATE payments SET status = 'refunded', provider_state = $2::jsonb, updated_at = now()
         WHERE checkout_id = $1
       `, [input.checkoutId, JSON.stringify({ last_event_id: input.providerEventId, raw: input.payload })]);
+      if (firstReversal) {
+        // The shared bigserial is allocated before COMMIT. Fence every legacy audit writer so a
+        // later reversal id cannot become visible before this one and move the Sales cursor past
+        // it. The immutable row is the additive commerce→Sales refund producer; payment status,
+        // engine compensation intent and partner reversal evidence commit atomically.
+        await client.query("LOCK TABLE audit_log IN SHARE ROW EXCLUSIVE MODE");
+        const kind = "refund" as const;
+        await client.query(`
+          INSERT INTO audit_log (
+            actor_type, actor_id, action, target_type, target_id, metadata
+          )
+          VALUES (
+            'system', $2, 'payment.reversed', 'payment', $1,
+            jsonb_build_object(
+              'kind', $3::text,
+              'amountNano', $4::text,
+              'providerEventId', $5::text
+            )
+          )
+        `, [
+          existingCredit.payment_id,
+          `payment-provider:${input.provider}`,
+          kind,
+          existingCredit.amount_nano,
+          input.providerEventId,
+        ]);
+      }
     }
 
     const checkoutUpdate = await client.query<{ status: CheckoutState }>(`

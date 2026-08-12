@@ -173,11 +173,19 @@ The provider's terminal refund event and its engine compensation are one durable
 4. The adjustment worker can claim only after the paired positive credit is `confirmed`; it then
    calls the idempotent engine debit and confirms through its unique fenced lease. Lost responses,
    expired leases and process restarts replay safely.
+5. The same terminal transaction appends one immutable `payment.reversed` audit row for a payment
+   that previously existed. `GET /v1/internal/sales/payment-reversals` publishes these rows under a
+   commit-ordered cursor. This is partner-accounting evidence only: it never mutates usage history
+   or engine money, and an unreferred customer's reversal advances the source watermark without
+   crossing the Sales boundary.
 
 This order intentionally proves “top-up once, compensate once”. Debiting immediately after an
 ambiguous credit timeout could subtract money that was never added; canceling the retry could leave
 a top-up whose successful response was lost. Queue state is exported through the existing
 `engine_adjustments` monitoring series and the admin refund table shows its terminal status.
+Provider chargebacks normalized by an adapter to the terminal `refunded` state follow the same
+workflow and currently carry `kind=refund`; the expand-only wire enum also reserves `dispute` for a
+future provider that can prove that distinction directly.
 
 ## What was removed, and what remains
 

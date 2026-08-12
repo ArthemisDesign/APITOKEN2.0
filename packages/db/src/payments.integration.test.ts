@@ -300,6 +300,10 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
           WHERE p.checkout_id = $1) AS credit_status,
         (SELECT status FROM engine_adjustments) AS adjustment_status,
         (SELECT amount_nano FROM engine_adjustments) AS adjustment_amount,
+        (SELECT count(*)::int FROM audit_log
+          WHERE action = 'payment.reversed') AS reversal_events,
+        (SELECT metadata FROM audit_log
+          WHERE action = 'payment.reversed') AS reversal_metadata,
         (SELECT count(*)::int FROM webhook_events
           WHERE provider_event_id = 'payment-1:refunded') AS refund_events
     `, [session.id]);
@@ -309,6 +313,12 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
       credit_status: "confirmed",
       adjustment_status: "pending",
       adjustment_amount: "-25000000000",
+      reversal_events: 1,
+      reversal_metadata: {
+        kind: "refund",
+        amountNano: "25000000000",
+        providerEventId: "payment-1:refunded",
+      },
       refund_events: 1,
     });
 
@@ -321,6 +331,57 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
       "SELECT status, engine_balance_after_nano FROM engine_adjustments",
     );
     expect(confirmed.rows).toEqual([{ status: "confirmed", engine_balance_after_nano: "-123" }]);
+  });
+
+  it("orders reversal evidence after an in-flight legacy audit insert", async () => {
+    const session = await checkout();
+    await applyVerifiedCheckoutPaymentEvent(database, event(session));
+    const blocker = await database.pool.connect();
+    let refunding: Promise<unknown> | undefined;
+    try {
+      await blocker.query("BEGIN");
+      const legacy = await blocker.query<{ id: string }>(`
+        INSERT INTO audit_log (actor_type, action, target_type, target_id)
+        VALUES ('system', 'legacy.concurrent', 'test', 'legacy-before-reversal')
+        RETURNING id::text
+      `);
+
+      refunding = applyVerifiedCheckoutPaymentEvent(database, refundEvent(session));
+      let observedWait = false;
+      for (let attempt = 0; attempt < 50 && !observedWait; attempt += 1) {
+        const locks = await database.pool.query<{ waiting: boolean }>(`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_locks
+            WHERE relation = 'audit_log'::regclass
+              AND mode = 'ShareRowExclusiveLock' AND NOT granted
+          ) AS waiting
+        `);
+        observedWait = locks.rows[0]?.waiting ?? false;
+        if (!observedWait) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (!observedWait) {
+        await blocker.query("ROLLBACK");
+        await refunding;
+      }
+      expect(observedWait).toBe(true);
+
+      await blocker.query("COMMIT");
+      await refunding;
+      const rows = await database.pool.query<{ id: string; action: string }>(`
+        SELECT id::text, action
+        FROM audit_log
+        WHERE action IN ('legacy.concurrent', 'payment.reversed')
+        ORDER BY id
+      `);
+      expect(rows.rows).toEqual([
+        { id: legacy.rows[0]!.id, action: "legacy.concurrent" },
+        { id: (BigInt(legacy.rows[0]!.id) + 1n).toString(), action: "payment.reversed" },
+      ]);
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+      await refunding?.catch(() => undefined);
+    }
   });
 
   it("deduplicates distinct refund events onto one payment compensation", async () => {
@@ -337,9 +398,16 @@ describe.runIf(Boolean(connectionString))("whole-USD checkout persistence", () =
     const counts = await database.pool.query(`
       SELECT (SELECT count(*)::int FROM engine_adjustments) AS adjustments,
              (SELECT status FROM engine_adjustments) AS adjustment_status,
+             (SELECT count(*)::int FROM audit_log
+               WHERE action = 'payment.reversed') AS reversals,
              (SELECT count(*)::int FROM webhook_events WHERE event_type = 'payment.refunded') AS events
     `);
-    expect(counts.rows[0]).toEqual({ adjustments: 1, adjustment_status: "confirmed", events: 2 });
+    expect(counts.rows[0]).toEqual({
+      adjustments: 1,
+      adjustment_status: "confirmed",
+      reversals: 1,
+      events: 2,
+    });
   });
 
   it("fences a stale adjustment worker after lease recovery", async () => {

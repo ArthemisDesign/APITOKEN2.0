@@ -5,6 +5,7 @@ import {
   AmbiguousTopupCursorBoundaryError,
   listPaidTopupsAfter,
   listPaidTopupsV2After,
+  listPaymentReversalsAfter,
   listUsageEventsAfter,
   recordReferralAttribution,
   ReferralAttributionConflictError,
@@ -24,7 +25,7 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
   beforeEach(async () => {
     await database.pool.query(`
       TRUNCATE
-        pricing_usage_events, referral_attributions, customer_profiles,
+        audit_log, pricing_usage_events, referral_attributions, customer_profiles,
         payments, checkout_sessions, engine_accounts, users
       RESTART IDENTITY CASCADE
     `);
@@ -268,6 +269,53 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
       items: [expect.objectContaining({ id: 1n, paymentId, userId: referred, paidAt })],
       nextCursor: 1n,
     });
+  });
+
+  it("pages immutable referred payment reversals and advances over ordinary customers", async () => {
+    const ordinary = await insertUser(false);
+    const referred = await insertUser(true);
+    const paidAt = new Date(Date.now() - 180_000);
+    const ordinaryPaymentId = await insertPaidTopup(ordinary, "reversal-ordinary", paidAt);
+    const referredPaymentId = await insertPaidTopup(referred, "reversal-referred", paidAt);
+    const reversedAt = new Date(Date.now() - 60_000);
+    await database.pool.query(`
+      INSERT INTO audit_log
+        (actor_type, action, target_type, target_id, metadata, created_at)
+      VALUES
+        ('system', 'payment.reversed', 'payment', $1,
+         '{"kind":"refund","amountNano":"1000000000"}'::jsonb, $3),
+        ('system', 'payment.reversed', 'payment', $2,
+         '{"kind":"refund","amountNano":"1000000000"}'::jsonb, $3)
+    `, [ordinaryPaymentId, referredPaymentId, reversedAt]);
+
+    const first = await listPaymentReversalsAfter(database, 0n, 1);
+    expect(first).toEqual({ items: [], nextCursor: 1n });
+    const second = await listPaymentReversalsAfter(database, first.nextCursor, 1);
+    expect(second).toEqual({
+      items: [{
+        id: 2n,
+        paymentId: referredPaymentId,
+        userId: referred,
+        kind: "refund",
+        amountNano: 1_000_000_000n,
+        reversedAt,
+      }],
+      nextCursor: 2n,
+    });
+  });
+
+  it("fails closed on malformed reversal evidence without advancing a cursor", async () => {
+    const referred = await insertUser(true);
+    const paymentId = await insertPaidTopup(referred, "reversal-malformed", new Date(Date.now() - 180_000));
+    await database.pool.query(`
+      INSERT INTO audit_log
+        (actor_type, action, target_type, target_id, metadata, created_at)
+      VALUES ('system', 'payment.reversed', 'payment', $1,
+              '{"kind":"refund","amountNano":"0"}'::jsonb, now() - interval '1 minute')
+    `, [paymentId]);
+
+    await expect(listPaymentReversalsAfter(database, 0n, 10))
+      .rejects.toThrow("has a non-positive amount");
   });
 
   it("advances topups-v2 over every source row before referral filtering", async () => {

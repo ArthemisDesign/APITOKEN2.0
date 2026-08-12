@@ -11,16 +11,22 @@ const TOPUPS_V2_GOLDEN = JSON.parse(readFileSync(
   new URL("../../../tests/contracts/sales-topups-v2-feed.golden.json", import.meta.url),
   "utf8",
 )) as { row: Record<string, unknown>; nextCursor: string };
+const REVERSALS_GOLDEN = JSON.parse(readFileSync(
+  new URL("../../../tests/contracts/sales-payment-reversals-feed.golden.json", import.meta.url),
+  "utf8",
+)) as { row: Record<string, unknown>; nextCursor: string };
 
 const dbMocks = vi.hoisted(() => ({
   listUsageEventsAfter: vi.fn(),
   listPaidTopupsV2After: vi.fn(),
+  listPaymentReversalsAfter: vi.fn(),
   setReferralFloor: vi.fn(),
 }));
 
 vi.mock("@claude-api/db", () => ({
   listUsageEventsAfter: dbMocks.listUsageEventsAfter,
   listPaidTopupsV2After: dbMocks.listPaidTopupsV2After,
+  listPaymentReversalsAfter: dbMocks.listPaymentReversalsAfter,
   listPaidTopupsAfter: vi.fn(),
   listReferralAttributionsAfter: vi.fn(),
   listReferralProfiles: vi.fn(),
@@ -33,6 +39,7 @@ describe("sales usage feed controller", () => {
   beforeEach(() => {
     dbMocks.listUsageEventsAfter.mockReset();
     dbMocks.listPaidTopupsV2After.mockReset();
+    dbMocks.listPaymentReversalsAfter.mockReset();
     dbMocks.setReferralFloor.mockReset();
   });
 
@@ -102,6 +109,27 @@ describe("sales usage feed controller", () => {
       userId: "11111111-1111-4111-8111-111111111111",
       floorBps: 9_500,
     })).resolves.toEqual({ applied: true, multiplierBp: null, pricingAffected: false });
+  });
+
+  it("serializes immutable payment reversals with exact bigint money", async () => {
+    dbMocks.listPaymentReversalsAfter.mockResolvedValue({
+      items: [{
+        id: 77n,
+        paymentId: "10000000-0000-4000-8000-000000000077",
+        userId: "20000000-0000-4000-8000-000000000077",
+        kind: "refund",
+        amountNano: 9_007_199_254_740_993n,
+        reversedAt: new Date("2026-08-12T02:03:04.567Z"),
+      }],
+      nextCursor: 78n,
+    });
+    const controller = new SalesFeedController({} as never, {} as never);
+
+    await expect(controller.paymentReversals("70", "25")).resolves.toEqual({
+      items: [REVERSALS_GOLDEN.row],
+      nextCursor: REVERSALS_GOLDEN.nextCursor,
+    });
+    expect(dbMocks.listPaymentReversalsAfter).toHaveBeenCalledWith({}, 70n, 25);
   });
 
 });

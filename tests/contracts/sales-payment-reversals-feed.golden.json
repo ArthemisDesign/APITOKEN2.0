@@ -1,0 +1,16 @@
+{
+  "_comment": [
+    "Additive commerce-to-Sales terminal payment reversal row.",
+    "The producer and consumer both pin this exact wire shape before the consumer may deploy.",
+    "amountNano is the original verified payment amount in exact decimal nanoUSD."
+  ],
+  "row": {
+    "id": "77",
+    "paymentId": "10000000-0000-4000-8000-000000000077",
+    "userId": "20000000-0000-4000-8000-000000000077",
+    "kind": "refund",
+    "amountNano": "9007199254740993",
+    "reversedAt": "2026-08-12T02:03:04.567Z"
+  },
+  "nextCursor": "78"
+}

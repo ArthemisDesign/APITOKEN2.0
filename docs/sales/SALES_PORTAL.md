@@ -128,6 +128,16 @@ of reaching SQL as an out-of-range value.
   the independent `topups_v2` cursor from sequence zero; migration `0016_topups_v2_cursor.sql`
   reserved that key before the consumer shipped. The legacy timestamp cursor and route remain
   unchanged as rollback evidence, but are not the live health authority.
+- `GET /v1/internal/sales/payment-reversals?after_id&limit` (default 500, max 1000) — additive
+  producer for terminal refunds and provider-normalized chargebacks. The payment transition,
+  engine-compensation intent and one immutable `audit_log(action='payment.reversed')` row commit in
+  the same commerce transaction. Its shared audit `bigserial` is fenced against older writers;
+  rows younger than 10 seconds stay hidden during rolling deploy. The page is limited before
+  referral filtering and returns `{items:[{id,paymentId,userId,kind,amountNano,reversedAt}],
+  nextCursor}`, so an ordinary customer's reversal advances the source watermark but does not
+  cross the boundary. `amountNano` is the exact original verified payment amount. This producer is
+  deliberately deployable before any Sales schema/consumer; a missing consumer has no commerce or
+  payout side effect.
 - `POST /v1/internal/sales/referral-discount` — expand-only writer for the historical referral
   marker. Body `{userId, floorBps (0..9500), override?, actorId?}` →
   `{applied, multiplierBp:null, pricingAffected:false}`.

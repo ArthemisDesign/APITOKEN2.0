@@ -20,6 +20,7 @@ import {
   setReferralFloor,
   listPaidTopupsAfter,
   listPaidTopupsV2After,
+  listPaymentReversalsAfter,
   listReferralAttributionsAfter,
   listReferralProfiles,
   listUsageEventsAfter,
@@ -134,6 +135,26 @@ export class SalesFeedController {
         userId: row.userId,
         amountNano: row.amountNano.toString(),
         paidAt: row.paidAt.toISOString(),
+      })),
+      nextCursor: page.nextCursor.toString(),
+    };
+  }
+
+  @Get("payment-reversals")
+  async paymentReversals(@Query("after_id") afterId?: string, @Query("limit") limit?: string) {
+    const page = await listPaymentReversalsAfter(
+      this.database,
+      parseCursor(afterId),
+      parseLimit(limit, 500, 1000),
+    );
+    return {
+      items: page.items.map((row) => ({
+        id: row.id.toString(),
+        paymentId: row.paymentId,
+        userId: row.userId,
+        kind: row.kind,
+        amountNano: row.amountNano.toString(),
+        reversedAt: row.reversedAt.toISOString(),
       })),
       nextCursor: page.nextCursor.toString(),
     };

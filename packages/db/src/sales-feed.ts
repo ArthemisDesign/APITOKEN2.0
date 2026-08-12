@@ -68,6 +68,16 @@ export interface TopupV2FeedRow extends TopupFeedRow {
   id: bigint;
 }
 
+export interface PaymentReversalFeedRow {
+  /** Commit-ordered audit-log sequence allocated by the terminal payment transaction. */
+  id: bigint;
+  paymentId: string;
+  userId: string;
+  kind: "refund" | "dispute";
+  amountNano: bigint;
+  reversedAt: Date;
+}
+
 export interface SalesFeedPage<T> {
   items: T[];
   // The source watermark advances even when every row in the scanned page belongs to an ordinary
@@ -300,6 +310,73 @@ export async function listPaidTopupsV2After(
     }];
   });
   return { items, nextCursor: rows.at(-1)?.id ?? afterId };
+}
+
+/**
+ * Terminal payment reversals. The immutable audit row is inserted in the same transaction that
+ * changes payments.status, so Sales can never observe one side without the other. Limit applies
+ * before referral filtering and nextCursor is the whole source-page watermark: an ordinary
+ * customer's reversal cannot pin the partner consumer forever. Audit ids are shared with other
+ * actions, but selecting the next reversal id remains safe because the cursor is scoped to this
+ * feed and only skips non-reversal rows that can never become reversal rows later.
+ */
+export async function listPaymentReversalsAfter(
+  database: Database,
+  afterId: bigint,
+  limit: number,
+): Promise<SalesFeedPage<PaymentReversalFeedRow>> {
+  const lagCutoff = new Date(Date.now() - FEED_VISIBILITY_LAG_MS);
+  const rows = await database.pool.query<{
+    id: string;
+    payment_id: string | null;
+    user_id: string | null;
+    kind: "refund" | "dispute";
+    amount_nano: string;
+    reversed_at: Date;
+    attributed_user_id: string | null;
+  }>(`
+    WITH source_page AS (
+      SELECT audit.id, audit.target_id, audit.metadata, audit.created_at
+      FROM audit_log audit
+      WHERE audit.action = 'payment.reversed'
+        AND audit.id > $1
+        AND audit.created_at < $2
+      ORDER BY audit.id
+      LIMIT $3
+    )
+    SELECT source.id::text, payment.id AS payment_id, payment.user_id,
+           source.metadata->>'kind' AS kind,
+           source.metadata->>'amountNano' AS amount_nano,
+           source.created_at AS reversed_at,
+           attribution.user_id AS attributed_user_id
+    FROM source_page source
+    LEFT JOIN payments payment ON source.target_id = payment.id::text
+    LEFT JOIN referral_attributions attribution
+      ON attribution.user_id = payment.user_id
+     AND payment.paid_at >= attribution.created_at
+    ORDER BY source.id
+  `, [afterId.toString(), lagCutoff, limit]);
+
+  const items = rows.rows.flatMap((row): PaymentReversalFeedRow[] => {
+    if (row.payment_id === null || row.user_id === null) {
+      throw new Error(`payment reversal ${row.id} has no payment`);
+    }
+    if (row.attributed_user_id === null) return [];
+    if (row.kind !== "refund" && row.kind !== "dispute") {
+      throw new Error(`payment reversal ${row.id} has an invalid kind`);
+    }
+    const amountNano = BigInt(row.amount_nano);
+    if (amountNano <= 0n) throw new Error(`payment reversal ${row.id} has a non-positive amount`);
+    return [{
+      id: BigInt(row.id),
+      paymentId: row.payment_id,
+      userId: row.user_id,
+      kind: row.kind,
+      amountNano,
+      reversedAt: row.reversed_at,
+    }];
+  });
+  return { items, nextCursor: rows.rows.at(-1) === undefined ? afterId : BigInt(rows.rows.at(-1)!.id) };
 }
 
 // Referral profile for Sales: type, actual scalar discount, legacy marker and engine mapping.

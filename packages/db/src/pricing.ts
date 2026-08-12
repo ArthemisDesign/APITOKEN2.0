@@ -1169,10 +1169,9 @@ export async function applyPricingLedgerPage(
         }
         continue;
       }
-      // Only a positive charge creates real_funded/commission. A negative `adjust` (refund,
-      // chargeback, admin clawback) currently does not reverse commission already accrued. That
-      // is an explicit unresolved clawback policy, not a conservative accounting guarantee: when
-      // customer funds are reversed, retaining commission can overpay relative to collected revenue.
+      // Only a positive charge creates real_funded/commission. Negative engine adjustments do not
+      // mutate immutable usage history. A verified payment reversal instead crosses the additive
+      // payment-reversals Sales feed, where its commission effect is an immutable negative entry.
       if (entry.kind !== "charge" || amount <= 0n) continue;
       const occurredAt = epochSecondsDate(entry.ts, "event timestamp");
       // The engine keeps the full billed actual in amount_nano, even when the account-wide floor
