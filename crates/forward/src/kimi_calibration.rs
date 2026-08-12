@@ -12,15 +12,19 @@
 //! `capacity_nano = 100_000_000 * ΣΔspend_nano / ΣΔused_fraction_units`.
 //!
 //! There is no plan prior, subscription-price nominal, EMA, WLS, floating-point money or hidden
-//! fallback here. The one structural advantage over the Anthropic estimator is resolution: a
-//! quota limit of 1000 measures to 0.1% instead of a whole percent, which narrows the
-//! quantisation envelope and lets a finite high bound be proved far sooner.
+//! fallback here. The low/high envelope is computed over the **aggregate** observed interval:
+//! every sample is its own interval whose two endpoints each carry half a resolution of
+//! quantisation, so the total width is bounded by `samples × max stored resolution`. A finite
+//! high is published only once aggregate movement strictly exceeds that width — at the
+//! resolution production actually publishes (limit=100, i.e. 1%) the older per-sample min/max
+//! envelope could never prove one, because a single turn moves quota by exactly one resolution
+//! unit and any such sample destroyed the high bound for the whole row.
 
 use anyhow::Context as _;
 use registry::{KimiCalibrationRow, KimiWindowObservation, KIMI_FRACTION_SCALE};
 
 pub(crate) const FRACTION_SCALE: i64 = KIMI_FRACTION_SCALE;
-pub(crate) const ESTIMATOR_VERSION: i64 = 1;
+pub(crate) const ESTIMATOR_VERSION: i64 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct KimiWindowCalibration {
@@ -147,11 +151,6 @@ impl KimiWindowCalibration {
             return Ok(());
         }
 
-        let uncertainty = interval_fraction_uncertainty(
-            self.row.anchor_resolution_fraction_units,
-            observation.measurement_resolution_fraction_units,
-        );
-        self.update_workload_envelope(delta_used, uncertainty, delta_spend)?;
         self.row.observed_fraction_units = self
             .row
             .observed_fraction_units
@@ -193,48 +192,6 @@ impl KimiWindowCalibration {
         self.row.native_used_units = observation.native_used_units;
     }
 
-    /// Widen the interval denominator by half the resolution of both endpoints, then keep the
-    /// most conservative low and high seen so far.
-    fn update_workload_envelope(
-        &mut self,
-        delta_used: i64,
-        uncertainty: i64,
-        delta_spend: i64,
-    ) -> anyhow::Result<()> {
-        let numerator = i128::from(FRACTION_SCALE)
-            .checked_mul(i128::from(delta_spend))
-            .context("KIMI workload envelope numerator overflow")?;
-        let low = checked_i64(
-            numerator
-                .checked_div(i128::from(delta_used) + i128::from(uncertainty))
-                .context("KIMI workload low bound overflow")?,
-        )?;
-        self.row.current_low_nano = Some(
-            self.row
-                .current_low_nano
-                .map_or(low, |existing| existing.min(low)),
-        );
-        // If movement did not exceed the quantisation envelope, a finite high is not
-        // mathematically proved. Publish nothing rather than a guessed ceiling.
-        let sample_high = if delta_used > uncertainty {
-            Some(checked_i64(ceil_nonnegative(
-                numerator,
-                i128::from(delta_used) - i128::from(uncertainty),
-            )?)?)
-        } else {
-            None
-        };
-        self.row.current_high_nano = if self.row.samples == 0 {
-            sample_high
-        } else {
-            match (self.row.current_high_nano, sample_high) {
-                (Some(existing), Some(sample)) => Some(existing.max(sample)),
-                _ => None,
-            }
-        };
-        Ok(())
-    }
-
     fn recompute(&mut self) -> anyhow::Result<()> {
         let denominator = i128::from(self.row.observed_fraction_units);
         if denominator <= 0 {
@@ -246,22 +203,43 @@ impl KimiWindowCalibration {
         self.row.current_capacity_nano =
             Some(checked_i64(round_nonnegative(numerator, denominator)?)?);
 
+        // Envelope over the aggregate interval: every observed sample is its own interval whose
+        // two endpoints each carry half a resolution of quantisation, so the total width is
+        // bounded by samples × the coarsest stored resolution. The low divides by denominator +
+        // width (floor), the high by denominator − width (ceil), and the high stays NULL while
+        // aggregate movement does not strictly exceed the width — never a guessed ceiling.
+        let resolution = i128::from(
+            self.row
+                .measurement_resolution_fraction_units
+                .max(self.row.anchor_resolution_fraction_units),
+        );
+        let uncertainty = i128::from(self.row.samples)
+            .checked_mul(resolution)
+            .context("KIMI envelope uncertainty overflow")?;
+        self.row.current_low_nano = Some(checked_i64(
+            numerator
+                .checked_div(denominator + uncertainty)
+                .context("KIMI low bound overflow")?,
+        )?);
+        self.row.current_high_nano = if denominator > uncertainty {
+            Some(checked_i64(ceil_nonnegative(
+                numerator,
+                denominator - uncertainty,
+            )?)?)
+        } else {
+            None
+        };
+
         let samples = i128::from(self.row.samples);
         let maturity_bp = ratio_bp(samples, samples + 2)?;
         let stability_bp = match (self.row.current_low_nano, self.row.current_high_nano) {
             (Some(low), Some(high)) if high > 0 => ratio_bp(i128::from(low), i128::from(high))?,
             _ => 0,
         };
-        let resolution = i128::from(
-            self.row
-                .measurement_resolution_fraction_units
-                .max(self.row.anchor_resolution_fraction_units),
-        );
         let quantisation_denominator = denominator
             .checked_add(
-                resolution
+                uncertainty
                     .checked_mul(2)
-                    .and_then(|value| value.checked_mul(samples))
                     .context("KIMI confidence resolution overflow")?,
             )
             .context("KIMI confidence denominator overflow")?;
@@ -329,11 +307,6 @@ pub(crate) fn apply_observation_with_history(
         .context("missing immutable history for KIMI estimator rebuild")?;
     rebuilt.version = version;
     apply_observation(Some(rebuilt), observation)
-}
-
-fn interval_fraction_uncertainty(anchor_resolution: i64, current_resolution: i64) -> i64 {
-    // Half the resolution at each endpoint of the interval.
-    anchor_resolution / 2 + current_resolution / 2
 }
 
 fn validate_observation(observation: &KimiWindowObservation) -> anyhow::Result<()> {
@@ -705,6 +678,54 @@ mod tests {
             &obs(WEEK, T0, T0 - 100, 10, 1_000, 1_000_000_000),
         )
         .is_err());
+    }
+
+    #[test]
+    fn the_aggregate_envelope_finally_bounds_the_high_at_whole_percent_resolution() {
+        // limit=100 → 1% resolution, and one turn moves quota by exactly one resolution unit.
+        // The retired per-sample envelope could never prove a finite high on such traffic; the
+        // aggregate one can, because what matters is the total observed movement.
+        let row = apply_observation(None, &obs(WEEK, T0, T0 - 400, 0, 100, 0)).unwrap();
+        let row = apply_observation(
+            Some(row),
+            &obs(WEEK, T0, T0 - 300, 2, 100, 1_000_000_000),
+        )
+        .unwrap();
+        assert!(
+            row.current_high_nano.is_some(),
+            "a 2% move at 1% resolution strictly exceeds the one-sample envelope"
+        );
+        let (low, capacity, high) = (
+            row.current_low_nano.unwrap(),
+            row.current_capacity_nano.unwrap(),
+            row.current_high_nano.unwrap(),
+        );
+        assert!(low <= capacity && capacity <= high);
+        // A later thin sample cannot kill the proven high: 3% observed still exceeds 2 samples
+        // of envelope width, and confidence finally leaves zero.
+        let row = apply_observation(
+            Some(row),
+            &obs(WEEK, T0, T0 - 200, 3, 100, 2_000_000_000),
+        )
+        .unwrap();
+        assert!(row.current_high_nano.is_some());
+        assert!(row.current_confidence_bp > 0);
+    }
+
+    #[test]
+    fn an_aggregate_within_the_envelope_keeps_the_high_unproven() {
+        let row = apply_observation(None, &obs(WEEK, T0, T0 - 400, 0, 100, 0)).unwrap();
+        let row = apply_observation(
+            Some(row),
+            &obs(WEEK, T0, T0 - 300, 1, 100, 1_000_000_000),
+        )
+        .unwrap();
+        // 1% at 1% resolution: movement equals the envelope width, so a finite high is not
+        // mathematically proved and stays NULL rather than becoming a guessed ceiling.
+        assert_eq!(row.current_high_nano, None);
+        assert!(row.current_low_nano.is_some());
+        assert!(row.current_capacity_nano.is_some());
+        assert_eq!(row.current_confidence_bp, 0);
     }
 
     #[test]

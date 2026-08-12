@@ -17,6 +17,15 @@ The `/kimi-subs` endpoint and the admin-only calibration request headers arrive 
 separate engine change; the runner is written against the frozen contract, and the offline
 tests mock the endpoint, so its existence is not required to verify the runner.
 
+Estimator **v2** (2026-08-12) computes the low/high envelope over the aggregate observed interval
+— `samples × max stored resolution` of quantisation width — instead of the retired per-sample
+min/max, which at the production resolution (limit=100, i.e. 1% per turn) could never prove a
+finite high: a single turn moves quota by exactly one resolution unit, and any such sample
+destroyed the bound for the whole row, pinning `confidence_bp` at 0 forever. A finite high is now
+published once aggregate movement strictly exceeds the aggregate width; an unprovable bound still
+stays `null`, never a guessed ceiling. The version bump rebuilds rows from the immutable
+observation history (`apply_observation_with_history`), never from stored v1 derived values.
+
 ## What the run covers
 
 The matrix is built from `--models` (by default the documented served set: `kimi-k3`,
