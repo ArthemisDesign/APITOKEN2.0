@@ -27,6 +27,13 @@
   credits or subscription quota. If authoritative cached subsets are present, validate each subset
   and derive fresh input by subtraction; if absent, charge all corresponding input as fresh. Use
   checked i128 arithmetic. This pure authority does not itself publish a model or grant catalog access.
+- The Tripo3D per-task credit rate card lives in `tripo3d`: official base prices per task kind and
+  model_version tier (P1 all-in and surcharge-rejecting, standard, legacy v1.4), the published
+  surcharge stack, per-unit helpers for retarget/edit/convert, and checked nanoUSD conversion at
+  the fixed $0.01/credit (`TRIPO3D_NANOUSD_PER_CREDIT`). Free tasks (`animate_prerigcheck`,
+  `import_model`) return an explicit documented `Some(0)`; unknown kinds, versions, option
+  combinations and the manifest's conflicted version spellings return `None` and fail closed.
+  Tariff identity `tripo3d/openapi-billing/2026-08-12`, hot-override family `tripo3d/openapi`.
 - Versioned model/tariff identity is capability only, not product access. The exact canonical map,
   alias generation, immutable schedule ID/epoch and typed reserve modifiers live here; access still
   requires a separate product catalog and account policy. An unknown/historical ID is not turned into

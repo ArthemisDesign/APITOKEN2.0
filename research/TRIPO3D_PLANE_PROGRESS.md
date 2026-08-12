@@ -14,6 +14,7 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 | Pre-flight + wiring maps | 1e15c793 | baseline `cargo build --locked` green (1m12s, warnings only); `git push -u origin HEAD` works; engine wiring map and authbot/admin wiring map collected (KIMI/GLM as templates); reference manifests studied: KIMI, GLM |
 | Research + capability manifest | (this commit) | `docs/engine/TRIPO3D_PROVIDER.md`; full official docs + ToS + SDK research 2026-08-12; key facts below |
 | Metering tariff | (this commit) | `crates/metering/src/tripo3d.rs`; official per-task rate card §5.1, fail-closed catalog §3, checked nanoUSD at $0.01/credit; 16 exact-vector tests |
+| Migration 0049 + registry observation types | (this commit) | `crates/registry/migrations_pg/0049_tripo3d_calibration.sql` + `crates/registry/src/tripo3d_calibration.rs`; windowless dual-ledger authority per manifest §5.3 (millicredits + fixed-rate nanoUSD legs, verbatim raw balance halves with NULL parsed units, subject+cohort state, cold/measured CHECK); `tripo3d_*` PG family mirrors `glm_*`; real-PG replay/CAS matrix green on a scratch DB |
 
 ## Key research facts (review date 2026-08-12)
 
@@ -61,9 +62,9 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 
 ## Next action (exactly one)
 
-Migration `crates/registry/migrations_pg/0049_tripo3d_calibration.sql` (expand-only, separate
-commit) — calibration schema sized to the manifest §5.3 ledger model (API-nanoUSD + native
-millicredits ledgers, balance-track sentinel instead of a quota window).
+Credential crate `crates/tripo3d-credential` (expand-only, separate commit) — encrypted AEAD
+envelope for the static `tsk_` API key plus the pinned base-URL allowlist (global/CN), modeled
+on `crates/glm-credential`; no network, no HTTP.
 
 ## Queue
 

@@ -13,9 +13,11 @@ mod kimi_calibration;
 pub mod pg;
 pub mod pricing;
 mod provider_calibration;
+mod tripo3d_calibration;
 
 pub use glm_calibration::*;
 pub use kimi_calibration::*;
+pub use tripo3d_calibration::*;
 
 /// Column order shared by every KIMI calibration read. One list keeps SELECT and the row mapper
 /// from drifting apart, which is the classic source of silently shifted columns.
@@ -154,6 +156,84 @@ pub fn validate_glm_calibration_pair(
         || state.window_duration_secs != observation.window_duration_secs
     {
         bail!("GLM calibration state and observation describe different windows");
+    }
+    Ok(())
+}
+
+/// Column order shared by every Tripo3D calibration read. One list keeps SELECT and the row
+/// mapper from drifting apart, which is the classic source of silently shifted columns.
+pub const TRIPO3D_CALIBRATION_COLUMNS: &str = "subject_id,cohort,anchor_balance_micro_units,\
+anchor_frozen_micro_units,anchor_spend_api_nanousd,anchor_spend_native_millicredits,\
+latest_balance_raw,latest_frozen_raw,latest_balance_micro_units,latest_frozen_micro_units,\
+observed_at,observed_spend_api_nanousd,observed_spend_native_millicredits,samples,\
+current_capacity_nanousd,current_low_nanousd,current_high_nanousd,current_confidence_bp,\
+last_measured_at,estimator_version,version,updated_ts";
+
+/// Validate a Tripo3D calibration row read back from the authority.
+///
+/// A stored row that violates its own invariants is refused rather than served: publishing a
+/// capacity built on an impossible row would be worse than publishing nothing. The balance
+/// halves are nullable because the endpoint's units are unproven — but a present half must be
+/// sane, and a measured row must carry proven halves (the cold/measured split lives in the
+/// migration's CHECK; here we refuse the individually impossible shapes).
+pub fn validate_tripo3d_calibration_row(row: &Tripo3dCalibrationRow) -> Result<()> {
+    if row.subject_id.is_empty() || row.cohort.is_empty() {
+        bail!("Tripo3D calibration row has no identity");
+    }
+    if row.latest_balance_raw.is_empty() || row.latest_frozen_raw.is_empty() {
+        bail!("Tripo3D calibration row lost its raw balance evidence");
+    }
+    if row
+        .anchor_balance_micro_units
+        .is_some_and(|balance| balance < 0)
+        || row
+            .anchor_frozen_micro_units
+            .is_some_and(|frozen| frozen < 0)
+        || row
+            .latest_balance_micro_units
+            .is_some_and(|balance| balance < 0)
+        || row
+            .latest_frozen_micro_units
+            .is_some_and(|frozen| frozen < 0)
+    {
+        bail!("Tripo3D calibration row has a negative balance half");
+    }
+    if let (Some(frozen), Some(balance)) = (
+        row.latest_frozen_micro_units,
+        row.latest_balance_micro_units,
+    ) {
+        if frozen > balance {
+            bail!("Tripo3D calibration row has frozen above balance");
+        }
+    }
+    if row.observed_at <= 0 || row.updated_ts <= 0 {
+        bail!("Tripo3D calibration row has an invalid timestamp");
+    }
+    match (
+        row.current_low_nanousd,
+        row.current_high_nanousd,
+        row.current_capacity_nanousd,
+    ) {
+        (Some(_), _, None) | (_, Some(_), None) => {
+            bail!("Tripo3D calibration row has bounds without a capacity")
+        }
+        (Some(low), Some(high), _) if low > high => {
+            bail!("Tripo3D calibration row bounds are inverted")
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Validate that a state row and the observation about to advance it describe the same
+/// subject's balance track.
+pub fn validate_tripo3d_calibration_pair(
+    state: &Tripo3dCalibrationRow,
+    observation: &Tripo3dBalanceObservation,
+) -> Result<()> {
+    validate_tripo3d_calibration_row(state)?;
+    if state.subject_id != observation.subject_id || state.cohort != observation.cohort {
+        bail!("Tripo3D calibration state and observation describe different balance tracks");
     }
     Ok(())
 }
@@ -2636,6 +2716,11 @@ pub const PROVIDER_KIMI: &str = "kimi";
 /// public wire but keeps a distinct settlement attribution and dual-ledger calibration so GLM
 /// economics can never be blended with any other provider.
 pub const PROVIDER_GLM: &str = "glm";
+/// Backend-only Tripo3D (VAST / Holymolly) prepaid API pool. A task-based media plane with its
+/// own serving surface; the distinct attribution keeps Tripo3D credit economics unblendable.
+/// Not part of the priced discount/reservation provider sets yet — those CHECK extensions are
+/// a separate expand-only decision tied to the runtime plane.
+pub const PROVIDER_TRIPO3D: &str = "tripo3d";
 
 /// Immutable scalar-pricing decision pinned when a request reserves money.
 ///

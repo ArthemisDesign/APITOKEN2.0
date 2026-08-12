@@ -289,9 +289,9 @@ Each `unknown` fails closed and is cleared only by a controlled live run on our 
 | Stage | Artifact | Status |
 |---|---|---|
 | research / capability manifest | this file | done |
-| official rate card | `crates/metering/src/tripo3d.rs` | pending |
-| calibration authority (schema 0049) | `crates/registry/migrations_pg/0049_tripo3d_calibration.sql` | pending |
-| observation types | `crates/registry/src/tripo3d_calibration.rs` | pending |
+| official rate card | `crates/metering/src/tripo3d.rs` | done (2f80d806) |
+| calibration authority (schema 0049) | `crates/registry/migrations_pg/0049_tripo3d_calibration.sql` | done (this commit) |
+| observation types | `crates/registry/src/tripo3d_calibration.rs` | done (this commit) |
 | credential | `crates/tripo3d-credential` | pending |
 | calibration estimator | `crates/forward/src/tripo3d_calibration.rs` | pending |
 | Auth Bot protocol + wizard | `crates/authbot/src/{tripo3d_key,tripo3d_roster}.rs`, `bot.rs` | pending |

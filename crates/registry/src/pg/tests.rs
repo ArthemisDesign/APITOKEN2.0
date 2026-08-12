@@ -356,12 +356,122 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 48);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 49);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
         .map(|(_, sql)| *sql);
     assert_eq!(registered, Some(MIGRATION_0029));
+}
+
+#[test]
+fn tripo3d_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
+    // Strip `--` comment lines first: the header prose deliberately names the 0019, 0027 and
+    // 0029 authorities to explain why this migration stands beside them, and those mentions
+    // must not be mistaken for statements touching them.
+    let ddl = MIGRATION_0049
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let normalized = ddl.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for table in [
+        "tripo3d_turn_calibration_events",
+        "tripo3d_calibration_subject_spend",
+        "tripo3d_balance_observations",
+        "tripo3d_calibration_state",
+    ] {
+        assert!(
+            normalized.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")),
+            "missing Tripo3D calibration table {table}",
+        );
+    }
+
+    // Expand-only: nothing is dropped, truncated or altered.
+    assert!(!normalized.contains(" DROP TABLE "));
+    assert!(!normalized.contains(" TRUNCATE "));
+    assert!(!normalized.contains(" DROP CONSTRAINT "));
+    assert!(!normalized.contains(" ALTER TABLE "));
+
+    // The 0019 shared authority, the KIMI 0027 authority and the GLM 0029 authority must all
+    // be left completely untouched: none of their durable identities can carry a per-task
+    // native credit total on a windowless prepaid balance track.
+    assert!(!normalized.contains("provider_turn_calibration_events"));
+    assert!(!normalized.contains("provider_calibration_subject_spend"));
+    assert!(!normalized.contains("kimi_turn_calibration_events"));
+    assert!(!normalized.contains("kimi_calibration_subject_spend"));
+    assert!(!normalized.contains("kimi_window_observations"));
+    assert!(!normalized.contains("kimi_window_calibrations"));
+    assert!(!normalized.contains("glm_turn_calibration_events"));
+    assert!(!normalized.contains("glm_calibration_subject_spend"));
+    assert!(!normalized.contains("glm_window_observations"));
+    assert!(!normalized.contains("glm_window_calibrations"));
+
+    // Requested and resolved model versions are separate columns, nullable because
+    // version-independent task kinds exist.
+    assert!(normalized.contains("requested_model_version text CHECK"));
+    assert!(normalized.contains("resolved_model_version text CHECK"));
+    assert!(!normalized.contains("requested_model_version text NOT NULL"));
+
+    // The upstream task id is audit metadata, never the money identity: request_id is the PK.
+    assert!(normalized.contains("PRIMARY KEY (request_id)"));
+    assert!(normalized.contains("upstream_task_id text NOT NULL"));
+
+    // Dual ledger at the published fixed rate: the API nanoUSD leg is the exact fixed-rate
+    // image of the native millicredit leg, which also makes a partial zero impossible. A zero
+    // pair stays legal for the documented free tasks.
+    assert!(normalized.contains("native_total_millicredits bigint NOT NULL CHECK (native_total_millicredits >= 0)"));
+    assert!(normalized.contains("api_total_nanousd bigint NOT NULL CHECK (api_total_nanousd >= 0)"));
+    assert!(normalized.contains("CHECK (api_total_nanousd = native_total_millicredits * 10000)"));
+    assert!(normalized.contains("spent_api_nanousd bigint NOT NULL"));
+    assert!(normalized.contains("spent_native_millicredits bigint NOT NULL"));
+
+    // Raw balance floats are preserved verbatim as text; the parsed fixed-point halves stay
+    // NULL until the unit is proven — unknown stays NULL, never 0.
+    assert!(normalized.contains("balance_raw text NOT NULL"));
+    assert!(normalized.contains("frozen_raw text NOT NULL"));
+    assert!(normalized.contains(
+        "balance_micro_units bigint CHECK (balance_micro_units IS NULL OR balance_micro_units >= 0)"
+    ));
+    assert!(normalized.contains(
+        "frozen_micro_units bigint CHECK (frozen_micro_units IS NULL OR frozen_micro_units >= 0)"
+    ));
+
+    // Balance arrives by poll and in the wake of responses; a response names its request, a
+    // poll invents none, and the dedup key treats NULL parsed halves as equal.
+    assert!(normalized.contains("observation_source IN ('poll', 'response')"));
+    assert!(normalized.contains("source_request_id"));
+    assert!(normalized.contains("UNIQUE NULLS NOT DISTINCT"));
+
+    // No window anywhere: prepaid balance never resets, so there is no duration to key on and
+    // the state keys on subject + declared top-up cohort.
+    assert!(!normalized.contains("window_duration_secs"));
+    assert!(!normalized.contains("reset_at"));
+    assert!(normalized.contains("PRIMARY KEY (subject_id, cohort)"));
+
+    // The cold/measured split: cold publishes nothing; measured requires proven balance
+    // halves, movement on both spend ledgers and a capacity with a proven low.
+    assert!(normalized.contains("latest_balance_micro_units IS NOT NULL"));
+    assert!(normalized.contains("current_capacity_nanousd IS NOT NULL"));
+
+    assert!(normalized.contains("INSERT INTO engine_schema_migrations(version) VALUES (49)"));
+}
+
+#[test]
+fn tripo3d_calibration_migration_is_registered_at_the_current_schema_version() {
+    assert_eq!(CURRENT_SCHEMA_VERSION, 49);
+    let registered = ENGINE_MIGRATIONS
+        .iter()
+        .find(|(version, _)| *version == 49)
+        .map(|(_, sql)| *sql);
+    // Compare by content, not by identity: two `&str` constants over the same source are not
+    // guaranteed to share an address.
+    assert_eq!(registered, Some(MIGRATION_0049));
+    assert_eq!(
+        ENGINE_MIGRATIONS.last().map(|(version, _)| *version),
+        Some(CURRENT_SCHEMA_VERSION)
+    );
 }
 
 #[test]
@@ -1321,6 +1431,237 @@ fn glm_calibration_postgres_matrix() {
         .batch_execute(
             "TRUNCATE glm_window_calibrations,glm_window_observations,\
              glm_calibration_subject_spend,glm_turn_calibration_events \
+             RESTART IDENTITY CASCADE",
+        )
+        .unwrap();
+    lock_holder
+        .client
+        .query_one(
+            "SELECT pg_advisory_unlock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+}
+
+/// Real PostgreSQL proof for immutable turn replay, cumulative dual-ledger spend, balance
+/// observation history and estimator-state CAS on the windowless Tripo3D track. Skipped unless
+/// the dedicated destructive test database is supplied:
+/// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+/// pg::tests::tripo3d_calibration_postgres_matrix`
+#[test]
+fn tripo3d_calibration_postgres_matrix() {
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping Tripo3D PostgreSQL calibration matrix: test URL is unset");
+        return;
+    };
+    let mut lock_holder = PgStore::connect(&url).unwrap();
+    lock_holder
+        .client
+        .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+        .unwrap();
+    lock_holder
+        .client
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    lock_holder
+        .client
+        .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+        .unwrap();
+
+    let mut pg = PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    pg.client
+        .batch_execute(
+            "TRUNCATE tripo3d_calibration_state,tripo3d_balance_observations,\
+             tripo3d_calibration_subject_spend,tripo3d_turn_calibration_events \
+             RESTART IDENTITY CASCADE",
+        )
+        .unwrap();
+
+    let event = Tripo3dTurnCalibrationEvent {
+        request_id: "tripo3d-pg-replay".into(),
+        subject_id: "tripo3d-pg-subject".into(),
+        cohort: "tripo3d-api-50".into(),
+        task_type: "image_to_model".into(),
+        requested_model_version: Some("v2.5-20250123".into()),
+        resolved_model_version: Some("v2.5-20250123".into()),
+        tariff_schedule_id: "tripo3d/openapi-billing/2026-08-12".into(),
+        priced_ts: 190,
+        completed_at: 200,
+        upstream_task_id: "task_pg_1".into(),
+        native_total_millicredits: 20_000,
+        api_total_nanousd: 200_000_000,
+    };
+
+    // Two ambiguous replies may race from active and candidate blue-green generations. The
+    // immutable key must pick one insert while the loser observes an exact replay, not a
+    // unique-violation and never a second spend advance on either ledger.
+    let barrier = Arc::new(Barrier::new(2));
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        let url = url.clone();
+        let event = event.clone();
+        let barrier = Arc::clone(&barrier);
+        handles.push(std::thread::spawn(move || {
+            let mut pg = PgStore::connect(&url).unwrap();
+            barrier.wait();
+            pg.record_tripo3d_turn(&event).unwrap()
+        }));
+    }
+    let mut insert_outcomes = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    insert_outcomes.sort_unstable();
+    assert_eq!(insert_outcomes, vec![false, true]);
+    assert_eq!(
+        pg.tripo3d_subject_spend(&event.subject_id).unwrap(),
+        Tripo3dSubjectSpend {
+            spent_api_nanousd: 200_000_000,
+            spent_native_millicredits: 20_000,
+        }
+    );
+
+    let mut conflict = event.clone();
+    conflict.task_type = "text_to_model".into();
+    let error = pg.record_tripo3d_turn(&conflict).unwrap_err().to_string();
+    assert!(
+        error.contains("replay conflict"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        pg.tripo3d_subject_spend(&event.subject_id).unwrap(),
+        Tripo3dSubjectSpend {
+            spent_api_nanousd: 200_000_000,
+            spent_native_millicredits: 20_000,
+        }
+    );
+
+    // A documented free task settles at the legal zero pair; out-of-order finalizers still
+    // retain the earliest tracking start and latest update.
+    let free = Tripo3dTurnCalibrationEvent {
+        request_id: "tripo3d-pg-free".into(),
+        task_type: "animate_prerigcheck".into(),
+        requested_model_version: Some("v2.0-20250506".into()),
+        resolved_model_version: Some("v2.0-20250506".into()),
+        priced_ts: 90,
+        completed_at: 100,
+        upstream_task_id: "task_pg_0".into(),
+        native_total_millicredits: 0,
+        api_total_nanousd: 0,
+        ..event.clone()
+    };
+    assert!(pg.record_tripo3d_turn(&free).unwrap());
+    assert_eq!(
+        pg.tripo3d_subject_spend(&event.subject_id).unwrap(),
+        Tripo3dSubjectSpend {
+            spent_api_nanousd: 200_000_000,
+            spent_native_millicredits: 20_000,
+        }
+    );
+    let spend_times = pg
+        .client
+        .query_one(
+            "SELECT tracking_started_ts,updated_ts FROM tripo3d_calibration_subject_spend \
+             WHERE subject_id=$1",
+            &[&event.subject_id],
+        )
+        .unwrap();
+    assert_eq!(
+        (spend_times.get::<_, i64>(0), spend_times.get::<_, i64>(1)),
+        (100, 200)
+    );
+
+    let observation = Tripo3dBalanceObservation {
+        subject_id: event.subject_id.clone(),
+        cohort: event.cohort.clone(),
+        observed_at: 300,
+        balance_raw: "4980.0".into(),
+        frozen_raw: "0.0".into(),
+        // Unproven units: the parsed halves stay NULL, never 0.
+        balance_micro_units: None,
+        frozen_micro_units: None,
+        cumulative_api_nanousd: 200_000_000,
+        cumulative_native_millicredits: 20_000,
+        observation_source: "poll".into(),
+        source_request_id: None,
+    };
+    let state = Tripo3dCalibrationRow {
+        subject_id: observation.subject_id.clone(),
+        cohort: observation.cohort.clone(),
+        anchor_balance_micro_units: None,
+        anchor_frozen_micro_units: None,
+        anchor_spend_api_nanousd: observation.cumulative_api_nanousd,
+        anchor_spend_native_millicredits: observation.cumulative_native_millicredits,
+        latest_balance_raw: observation.balance_raw.clone(),
+        latest_frozen_raw: observation.frozen_raw.clone(),
+        latest_balance_micro_units: None,
+        latest_frozen_micro_units: None,
+        observed_at: observation.observed_at,
+        observed_spend_api_nanousd: 0,
+        observed_spend_native_millicredits: 0,
+        samples: 0,
+        current_capacity_nanousd: None,
+        current_low_nanousd: None,
+        current_high_nanousd: None,
+        current_confidence_bp: 0,
+        last_measured_at: None,
+        estimator_version: 1,
+        version: 0,
+        updated_ts: observation.observed_at,
+    };
+    assert_eq!(
+        pg.save_tripo3d_calibration(&state, &observation).unwrap(),
+        Some(1)
+    );
+
+    let mut second_observation = observation.clone();
+    second_observation.observed_at = 301;
+    second_observation.balance_raw = "4960.0".into();
+    let mut second_state = pg
+        .load_tripo3d_calibration(&state.subject_id, &state.cohort)
+        .unwrap()
+        .unwrap();
+    second_state.observed_at = second_observation.observed_at;
+    second_state.latest_balance_raw = second_observation.balance_raw.clone();
+    second_state.updated_ts = second_observation.observed_at;
+    assert_eq!(
+        pg.save_tripo3d_calibration(&second_state, &second_observation)
+            .unwrap(),
+        Some(2)
+    );
+
+    // A stale writer loses the CAS and rolls its observation back. Raw history remains exact,
+    // oldest-first and contains only the two winning transitions.
+    assert_eq!(
+        pg.save_tripo3d_calibration(&state, &observation).unwrap(),
+        None
+    );
+    let history = pg
+        .load_tripo3d_balance_observations(&state.subject_id, &state.cohort)
+        .unwrap();
+    assert_eq!(
+        history
+            .iter()
+            .map(|row| row.observed_at)
+            .collect::<Vec<_>>(),
+        vec![300, 301]
+    );
+    let stored = pg
+        .load_tripo3d_calibration(&state.subject_id, &state.cohort)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.version, 2);
+    assert_eq!(stored.latest_balance_raw, "4960.0");
+    assert_eq!(stored.native_remaining_micro_units(), None);
+
+    pg.client
+        .batch_execute(
+            "TRUNCATE tripo3d_calibration_state,tripo3d_balance_observations,\
+             tripo3d_calibration_subject_spend,tripo3d_turn_calibration_events \
              RESTART IDENTITY CASCADE",
         )
         .unwrap();

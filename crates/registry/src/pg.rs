@@ -13,7 +13,8 @@ use crate::{
     KimiTurnCalibrationEvent, KimiWindowObservation, LedgerConsumerLag, LedgerRow, PoolStateRow,
     ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
     ProviderTurnCalibrationEvent, SettlementFailure, SettlementHealth, SpendAccountAgg,
-    SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, UsageDailyAgg,
+    SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, Tripo3dBalanceObservation,
+    Tripo3dCalibrationRow, Tripo3dSubjectSpend, Tripo3dTurnCalibrationEvent, UsageDailyAgg,
     UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
     ACCOUNT_OVERDRAFT_NANO,
 };
@@ -210,9 +211,10 @@ const MIGRATION_0047: &str =
     include_str!("../migrations_pg/0047_settlement_floor_accounting.sql");
 const MIGRATION_0048: &str =
     include_str!("../migrations_pg/0048_settlement_floor_terminal_fence.sql");
+const MIGRATION_0049: &str = include_str!("../migrations_pg/0049_tripo3d_calibration.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 48;
+pub const CURRENT_SCHEMA_VERSION: i64 = 49;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -264,6 +266,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (46, MIGRATION_0046),
     (47, MIGRATION_0047),
     (48, MIGRATION_0048),
+    (49, MIGRATION_0049),
 ];
 
 #[cfg(test)]
@@ -3817,6 +3820,319 @@ impl PgStore {
         if updated == 0 {
             // Another writer advanced this window first. Rolling back keeps the observation and
             // the state consistent; the caller re-reads and folds again.
+            tx.rollback()?;
+            return Ok(None);
+        }
+        tx.commit()?;
+        Ok(Some(next_version))
+    }
+
+    fn tripo3d_calibration_row(row: &Row) -> Tripo3dCalibrationRow {
+        Tripo3dCalibrationRow {
+            subject_id: row.get(0),
+            cohort: row.get(1),
+            anchor_balance_micro_units: row.get(2),
+            anchor_frozen_micro_units: row.get(3),
+            anchor_spend_api_nanousd: row.get(4),
+            anchor_spend_native_millicredits: row.get(5),
+            latest_balance_raw: row.get(6),
+            latest_frozen_raw: row.get(7),
+            latest_balance_micro_units: row.get(8),
+            latest_frozen_micro_units: row.get(9),
+            observed_at: row.get(10),
+            observed_spend_api_nanousd: row.get(11),
+            observed_spend_native_millicredits: row.get(12),
+            samples: row.get(13),
+            current_capacity_nanousd: row.get(14),
+            current_low_nanousd: row.get(15),
+            current_high_nanousd: row.get(16),
+            current_confidence_bp: row.get(17),
+            last_measured_at: row.get(18),
+            estimator_version: row.get(19),
+            version: row.get(20),
+            updated_ts: row.get(21),
+        }
+    }
+
+    pub fn load_tripo3d_calibration(
+        &mut self,
+        subject_id: &str,
+        cohort: &str,
+    ) -> Result<Option<Tripo3dCalibrationRow>> {
+        let row = self.client.query_opt(
+            &format!(
+                "SELECT {} FROM tripo3d_calibration_state \
+                 WHERE subject_id=$1 AND cohort=$2",
+                crate::TRIPO3D_CALIBRATION_COLUMNS
+            ),
+            &[&subject_id, &cohort],
+        )?;
+        let row = row.as_ref().map(Self::tripo3d_calibration_row);
+        if let Some(row) = &row {
+            crate::validate_tripo3d_calibration_row(row)?;
+        }
+        Ok(row)
+    }
+
+    pub fn list_tripo3d_calibrations(&mut self) -> Result<Vec<Tripo3dCalibrationRow>> {
+        let rows = self.client.query(
+            &format!(
+                "SELECT {} FROM tripo3d_calibration_state \
+                 ORDER BY cohort, subject_id",
+                crate::TRIPO3D_CALIBRATION_COLUMNS
+            ),
+            &[],
+        )?;
+        let rows: Vec<Tripo3dCalibrationRow> =
+            rows.iter().map(Self::tripo3d_calibration_row).collect();
+        for row in &rows {
+            crate::validate_tripo3d_calibration_row(row)?;
+        }
+        Ok(rows)
+    }
+
+    /// Immutable observation history for one subject's balance track, oldest first.
+    ///
+    /// This is what an estimator-version change rebuilds from: a stored derived value is never
+    /// authority, so the raw rows must remain readable in order.
+    pub fn load_tripo3d_balance_observations(
+        &mut self,
+        subject_id: &str,
+        cohort: &str,
+    ) -> Result<Vec<Tripo3dBalanceObservation>> {
+        let rows = self.client.query(
+            "SELECT subject_id,cohort,observed_at,balance_raw,frozen_raw,balance_micro_units,\
+             frozen_micro_units,cumulative_api_nanousd,cumulative_native_millicredits,\
+             observation_source,source_request_id \
+             FROM tripo3d_balance_observations \
+             WHERE subject_id=$1 AND cohort=$2 \
+             ORDER BY observed_at, id",
+            &[&subject_id, &cohort],
+        )?;
+        Ok(rows
+            .iter()
+            .map(|row| Tripo3dBalanceObservation {
+                subject_id: row.get(0),
+                cohort: row.get(1),
+                observed_at: row.get(2),
+                balance_raw: row.get(3),
+                frozen_raw: row.get(4),
+                balance_micro_units: row.get(5),
+                frozen_micro_units: row.get(6),
+                cumulative_api_nanousd: row.get(7),
+                cumulative_native_millicredits: row.get(8),
+                observation_source: row.get(9),
+                source_request_id: row.get(10),
+            })
+            .collect())
+    }
+
+    /// Persist one priced turn and advance the subject's cumulative dual ledgers in the same
+    /// transaction.
+    ///
+    /// The pairing is the whole point: a balance observation read afterwards must never see a
+    /// spend total that its own traffic has not yet been added to, or the estimator would
+    /// attribute our consumption to somebody else's balance movement. The API nanoUSD leg is
+    /// the fixed-rate image of the native millicredit leg (the schema enforces the equality),
+    /// but both advance here as exact sums over immutable events.
+    ///
+    /// Returns `Ok(true)` for a fresh insert and `Ok(false)` when the exact same payload was
+    /// already stored — the internal request id survives every pre-byte retry, so replay must
+    /// be a no-op. A *different* payload under that id is an error, never an update:
+    /// overwriting would silently rewrite priced history.
+    pub fn record_tripo3d_turn(&mut self, event: &Tripo3dTurnCalibrationEvent) -> Result<bool> {
+        event.validate()?;
+        let mut tx = self.client.transaction()?;
+        let inserted = tx.execute(
+            "INSERT INTO tripo3d_turn_calibration_events(request_id,subject_id,cohort,task_type,\
+             requested_model_version,resolved_model_version,tariff_schedule_id,priced_ts,\
+             completed_at,upstream_task_id,native_total_millicredits,api_total_nanousd) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
+             ON CONFLICT(request_id) DO NOTHING",
+            &[
+                &event.request_id,
+                &event.subject_id,
+                &event.cohort,
+                &event.task_type,
+                &event.requested_model_version,
+                &event.resolved_model_version,
+                &event.tariff_schedule_id,
+                &event.priced_ts,
+                &event.completed_at,
+                &event.upstream_task_id,
+                &event.native_total_millicredits,
+                &event.api_total_nanousd,
+            ],
+        )? == 1;
+        if !inserted {
+            // `ON CONFLICT` serializes two simultaneous ambiguous replies on the immutable key.
+            // Once the winner commits, the loser reads its row and can distinguish an exact
+            // replay from a semantic conflict without ever advancing spend twice.
+            let row = tx.query_one(
+                "SELECT subject_id,cohort,task_type,requested_model_version,\
+                 resolved_model_version,tariff_schedule_id,priced_ts,completed_at,\
+                 upstream_task_id,native_total_millicredits,api_total_nanousd \
+                 FROM tripo3d_turn_calibration_events WHERE request_id=$1",
+                &[&event.request_id],
+            )?;
+            let stored = Tripo3dTurnCalibrationEvent {
+                request_id: event.request_id.clone(),
+                subject_id: row.get(0),
+                cohort: row.get(1),
+                task_type: row.get(2),
+                requested_model_version: row.get(3),
+                resolved_model_version: row.get(4),
+                tariff_schedule_id: row.get(5),
+                priced_ts: row.get(6),
+                completed_at: row.get(7),
+                upstream_task_id: row.get(8),
+                native_total_millicredits: row.get(9),
+                api_total_nanousd: row.get(10),
+            };
+            if !event.is_exact_replay_of(&stored) {
+                return Err(crate::Tripo3dTurnReplayConflict.into());
+            }
+            tx.commit()?;
+            return Ok(false);
+        }
+
+        tx.execute(
+            "INSERT INTO tripo3d_calibration_subject_spend(subject_id,spent_api_nanousd,\
+             spent_native_millicredits,tracking_started_ts,updated_ts) VALUES($1,$2,$3,$4,$4) \
+             ON CONFLICT(subject_id) DO UPDATE SET \
+             spent_api_nanousd=tripo3d_calibration_subject_spend.spent_api_nanousd\
+                 +EXCLUDED.spent_api_nanousd, \
+             spent_native_millicredits=tripo3d_calibration_subject_spend.spent_native_millicredits\
+                 +EXCLUDED.spent_native_millicredits, \
+             tracking_started_ts=LEAST(\
+                 tripo3d_calibration_subject_spend.tracking_started_ts,EXCLUDED.tracking_started_ts), \
+             updated_ts=GREATEST(\
+                 tripo3d_calibration_subject_spend.updated_ts,EXCLUDED.updated_ts)",
+            &[
+                &event.subject_id,
+                &event.api_total_nanousd,
+                &event.native_total_millicredits,
+                &event.completed_at,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Cumulative dual ledgers for a subject, or zeroes when nothing is tracked.
+    pub fn tripo3d_subject_spend(&mut self, subject_id: &str) -> Result<Tripo3dSubjectSpend> {
+        let row = self.client.query_opt(
+            "SELECT spent_api_nanousd,spent_native_millicredits \
+             FROM tripo3d_calibration_subject_spend WHERE subject_id=$1",
+            &[&subject_id],
+        )?;
+        Ok(row
+            .map(|row| Tripo3dSubjectSpend {
+                spent_api_nanousd: row.get(0),
+                spent_native_millicredits: row.get(1),
+            })
+            .unwrap_or_default())
+    }
+
+    /// Store an immutable balance observation and the estimator state it produced, under a CAS
+    /// on `version`.
+    ///
+    /// The observation row is inserted first and is idempotent by its own unique constraint,
+    /// so a duplicate poll adds no sample. Returns the new version, or `None` when the CAS
+    /// lost — a lost CAS means another writer advanced the same balance track and this caller
+    /// must re-read rather than overwrite.
+    pub fn save_tripo3d_calibration(
+        &mut self,
+        state: &Tripo3dCalibrationRow,
+        observation: &Tripo3dBalanceObservation,
+    ) -> Result<Option<i64>> {
+        crate::validate_tripo3d_calibration_pair(state, observation)?;
+        let mut tx = self.client.transaction()?;
+        tx.execute(
+            "INSERT INTO tripo3d_balance_observations(subject_id,cohort,observed_at,balance_raw,\
+             frozen_raw,balance_micro_units,frozen_micro_units,cumulative_api_nanousd,\
+             cumulative_native_millicredits,observation_source,source_request_id,\
+             estimator_version) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
+             ON CONFLICT DO NOTHING",
+            &[
+                &observation.subject_id,
+                &observation.cohort,
+                &observation.observed_at,
+                &observation.balance_raw,
+                &observation.frozen_raw,
+                &observation.balance_micro_units,
+                &observation.frozen_micro_units,
+                &observation.cumulative_api_nanousd,
+                &observation.cumulative_native_millicredits,
+                &observation.observation_source,
+                &observation.source_request_id,
+                &state.estimator_version,
+            ],
+        )?;
+        let next_version = state
+            .version
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("Tripo3D calibration version overflow"))?;
+        let updated = tx.execute(
+            "INSERT INTO tripo3d_calibration_state(subject_id,cohort,anchor_balance_micro_units,\
+             anchor_frozen_micro_units,anchor_spend_api_nanousd,anchor_spend_native_millicredits,\
+             latest_balance_raw,latest_frozen_raw,latest_balance_micro_units,\
+             latest_frozen_micro_units,observed_at,observed_spend_api_nanousd,\
+             observed_spend_native_millicredits,samples,current_capacity_nanousd,\
+             current_low_nanousd,current_high_nanousd,current_confidence_bp,last_measured_at,\
+             estimator_version,version,updated_ts) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) \
+             ON CONFLICT(subject_id,cohort) DO UPDATE SET \
+             anchor_balance_micro_units=EXCLUDED.anchor_balance_micro_units,\
+             anchor_frozen_micro_units=EXCLUDED.anchor_frozen_micro_units,\
+             anchor_spend_api_nanousd=EXCLUDED.anchor_spend_api_nanousd,\
+             anchor_spend_native_millicredits=EXCLUDED.anchor_spend_native_millicredits,\
+             latest_balance_raw=EXCLUDED.latest_balance_raw,\
+             latest_frozen_raw=EXCLUDED.latest_frozen_raw,\
+             latest_balance_micro_units=EXCLUDED.latest_balance_micro_units,\
+             latest_frozen_micro_units=EXCLUDED.latest_frozen_micro_units,\
+             observed_at=EXCLUDED.observed_at,\
+             observed_spend_api_nanousd=EXCLUDED.observed_spend_api_nanousd,\
+             observed_spend_native_millicredits=EXCLUDED.observed_spend_native_millicredits,\
+             samples=EXCLUDED.samples,\
+             current_capacity_nanousd=EXCLUDED.current_capacity_nanousd,\
+             current_low_nanousd=EXCLUDED.current_low_nanousd,\
+             current_high_nanousd=EXCLUDED.current_high_nanousd,\
+             current_confidence_bp=EXCLUDED.current_confidence_bp,\
+             last_measured_at=EXCLUDED.last_measured_at,\
+             estimator_version=EXCLUDED.estimator_version,version=EXCLUDED.version,\
+             updated_ts=EXCLUDED.updated_ts \
+             WHERE tripo3d_calibration_state.version=$23",
+            &[
+                &state.subject_id,
+                &state.cohort,
+                &state.anchor_balance_micro_units,
+                &state.anchor_frozen_micro_units,
+                &state.anchor_spend_api_nanousd,
+                &state.anchor_spend_native_millicredits,
+                &state.latest_balance_raw,
+                &state.latest_frozen_raw,
+                &state.latest_balance_micro_units,
+                &state.latest_frozen_micro_units,
+                &state.observed_at,
+                &state.observed_spend_api_nanousd,
+                &state.observed_spend_native_millicredits,
+                &state.samples,
+                &state.current_capacity_nanousd,
+                &state.current_low_nanousd,
+                &state.current_high_nanousd,
+                &state.current_confidence_bp,
+                &state.last_measured_at,
+                &state.estimator_version,
+                &next_version,
+                &state.updated_ts,
+                &state.version,
+            ],
+        )?;
+        if updated == 0 {
+            // Another writer advanced this balance track first. Rolling back keeps the
+            // observation and the state consistent; the caller re-reads and folds again.
             tx.rollback()?;
             return Ok(None);
         }
