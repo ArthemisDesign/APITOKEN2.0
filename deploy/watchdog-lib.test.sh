@@ -2235,20 +2235,20 @@ grep -Fq 'reverse_proxy 127.0.0.1:8792' "$ROOT/deploy/Caddyfile"
 grep -Fq 'http://127.0.0.1:8792 {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8793 127.0.0.1:8797 {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8794' "$ROOT/deploy/Caddyfile"
-grep -Fq '@admin_gemini_data path /gemini-subs' "$ROOT/deploy/Caddyfile"
+grep -Fq '@admin_gemini_data path /gemini-subs /gemini-subs/* /events/gemini' "$ROOT/deploy/Caddyfile"
 # KIMI owns its runtime now: the dedicated default-off plane serves the sanitized projection from
 # the stable loopback origin, so /kimi-subs leaves the Anthropic-origin matcher for its own route.
 # GLM is still a backend inside the Anthropic runtime, so /glm-subs rides the Anthropic-origin
 # matcher — never a separate origin or key while that is true.
-grep -Fq '@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /glm-subs' \
+grep -Fq '@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /glm-subs /events/engine' \
   "$ROOT/deploy/Caddyfile" || wd_die 'the Anthropic-origin admin matcher drifted'
-if grep -Fq '@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /glm-subs /kimi-subs' \
+if grep -Fq '@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /glm-subs /events/engine /kimi-subs' \
   "$ROOT/deploy/Caddyfile"; then
   wd_die 'KIMI admin projection still rides the Anthropic-origin route'
 fi
 ! grep -Fq '@admin_glm_data' "$ROOT/deploy/Caddyfile" \
   || wd_die 'GLM must not grow a separate admin origin while it lives in the Anthropic runtime'
-grep -Fq '@admin_kimi_data path /kimi-subs' "$ROOT/deploy/Caddyfile" \
+grep -Fq '@admin_kimi_data path /kimi-subs /events/kimi' "$ROOT/deploy/Caddyfile" \
   || wd_die 'KIMI admin projection lost its dedicated origin route'
 grep -Fq '(kimi_engine_backend) {' "$ROOT/deploy/Caddyfile" \
   || wd_die 'KIMI lost its symmetric backend snippet'
@@ -2354,6 +2354,10 @@ grep -Fq 'handle /api/internal/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-OpenKeys-Control-Key "<OPENKEYS_INTERNAL_KEY_PLACEHOLDER>"' "$ROOT/deploy/Caddyfile"
 grep -Fq 'handle_path /partner-admin/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'handle /proxy-admin/* {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'rewrite /events/engine /admin-events' "$ROOT/deploy/Caddyfile"
+grep -Fq 'rewrite /events/openai /admin-events' "$ROOT/deploy/Caddyfile"
+grep -Fq 'rewrite /events/gemini /admin-events' "$ROOT/deploy/Caddyfile"
+grep -Fq 'rewrite /events/kimi /admin-events' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8806' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up Host 127.0.0.1:8806' "$ROOT/deploy/Caddyfile"
 [[ $(grep -Fc 'header_up X-Proxy-Admin-Key "<AUTH_BOT_PROXY_ADMIN_KEY_PLACEHOLDER>"' \

@@ -29,7 +29,7 @@ mkdir -p \
 cp -R "$ROOT/packages/db/migrations" "$repo/packages/db/migrations"
 cp "$ROOT/deploy/pricing-retirement-preflight.sh" "$repo/deploy/pricing-retirement-preflight.sh"
 printf '%s\n' '-- fixture commerce contraction' \
-  >"$repo/packages/db/migrations/0048_retire_pricing_schema.sql"
+  >"$repo/packages/db/migrations/0049_retire_pricing_schema.sql"
 node - "$repo/packages/db/migrations/meta/_journal.json" <<'NODE'
 const fs = require("node:fs");
 const path = process.argv[2];
@@ -38,7 +38,7 @@ journal.entries.push({
   idx: journal.entries.length,
   version: journal.version,
   when: journal.entries[journal.entries.length - 1].when + 1,
-  tag: "0048_retire_pricing_schema",
+  tag: "0049_retire_pricing_schema",
   breakpoints: true,
 });
 fs.writeFileSync(path, `${JSON.stringify(journal, null, 2)}\n`);
@@ -83,7 +83,7 @@ chmod 0755 "$ENGINE_RELEASE_ROOT/$sha/claude-api"
 candidate_manifest=$fixture/candidate.manifest
 wd_migration_manifest "$CANDIDATE" >"$candidate_manifest"
 awk -v tag="$COMMERCE_CONTRACTION_TAG" -v path="$COMMERCE_CONTRACTION_REL" '
-  !($1 == "entry=00000048" && $3 == tag) &&
+  !($1 == "entry=00000049" && $3 == tag) &&
   !(($1 ~ /^file=[0-9a-f]{64}$/) && $2 == path)
 ' "$candidate_manifest" >"$COMMERCE_APPLIED_MANIFEST"
 marker=$STATE_ROOT/$sha.tested
@@ -178,7 +178,7 @@ if run_admission commerce "$sha" >"$fixture/commerce-partial.out" 2>&1; then
   fail 'commerce contraction accepted a partial applied manifest'
 fi
 awk -v tag="$COMMERCE_CONTRACTION_TAG" -v path="$COMMERCE_CONTRACTION_REL" '
-  !($1 == "entry=00000048" && $3 == tag) &&
+  !($1 == "entry=00000049" && $3 == tag) &&
   !(($1 ~ /^file=[0-9a-f]{64}$/) && $2 == path)
 ' "$candidate_manifest" >"$COMMERCE_APPLIED_MANIFEST"
 
@@ -191,7 +191,7 @@ grep -Fq 'already recorded' "$fixture/commerce-applied.out" \
   || fail 'already-applied commerce contraction lacked a no-op verdict'
 PREFLIGHT_REL=$original_preflight_rel
 awk -v tag="$COMMERCE_CONTRACTION_TAG" -v path="$COMMERCE_CONTRACTION_REL" '
-  !($1 == "entry=00000048" && $3 == tag) &&
+  !($1 == "entry=00000049" && $3 == tag) &&
   !(($1 ~ /^file=[0-9a-f]{64}$/) && $2 == path)
 ' "$candidate_manifest" >"$COMMERCE_APPLIED_MANIFEST"
 

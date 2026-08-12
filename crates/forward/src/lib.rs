@@ -74,7 +74,7 @@ pub use proxy::{
     authed, client_keys, control_authed, forward, is_exact_not_started_response, readonly_authed,
     resolve_client_key, resolve_client_keys, TerminalErrorReason,
 };
-pub use state::{AppState, ProviderMode};
+pub use state::{AdminChange, AppState, ProviderMode};
 pub use upstream::{
     detect_plan, fresh_request_id, limits_from_headers, persona_ccbuild, persona_cch,
     persona_session_id, persona_ua, persona_user_id, poll_sub, Clients, Limits, PlanDetect,

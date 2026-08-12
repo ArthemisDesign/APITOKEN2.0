@@ -19,7 +19,7 @@ BACKUP_ROOT=/var/lib/apitoken/backups
 COMPOSE_FILE=/usr/local/lib/apitoken-watchdog/controller/commerce-postgres.compose.yaml
 POSTGRES_ENV=/etc/apitoken/postgres.env
 BORG_CONFIG=/etc/borgmatic/config.yaml
-COMMERCE_CONTRACTION_REL=packages/db/migrations/0048_retire_pricing_schema.sql
+COMMERCE_CONTRACTION_REL=packages/db/migrations/0049_retire_pricing_schema.sql
 ENGINE_CONTRACTION_REL=crates/registry/migrations_pg/0049_retire_pricing_schema.sql
 COMMERCE_CONTRACTION_HASH=
 BACKUP_MAX_AGE_SECONDS=3600
@@ -251,21 +251,21 @@ prp_verify_commerce_journal() {
     || prp_die 'commerce contraction artifact hash is malformed'
   manifest_file="file=$COMMERCE_CONTRACTION_HASH $COMMERCE_CONTRACTION_REL"
   manifest_entry=$(awk '
-    $1 == "entry=00000048" && $3 == "0048_retire_pricing_schema" && NF == 3 { print }
+    $1 == "entry=00000049" && $3 == "0049_retire_pricing_schema" && NF == 3 { print }
   ' "$TEMP/candidate-migrations.manifest")
   [[ $(grep -Fxc -- "$manifest_file" "$TEMP/candidate-migrations.manifest" || true) == 1 \
       && $(printf '%s\n' "$manifest_entry" | awk 'NF { count++ } END { print count + 0 }') == 1 ]] \
-    || prp_die 'candidate manifest does not bind the contraction to canonical commerce entry 0048'
+    || prp_die 'candidate manifest does not bind the contraction to canonical commerce entry 0049'
 
   journal=$CANDIDATE/packages/db/migrations/meta/_journal.json
   [[ -f $journal && ! -L $journal ]] || prp_die 'candidate Drizzle journal is absent or unsafe'
   jq --exit-status '
-    (.entries | type == "array" and length >= 49) and
-    .entries[48].idx == 48 and .entries[48].tag == "0048_retire_pricing_schema" and
+    (.entries | type == "array" and length >= 50) and
+    .entries[49].idx == 49 and .entries[49].tag == "0049_retire_pricing_schema" and
     (.entries[-1].idx == (.entries | length) - 1) and
     (.entries[-1].tag | type == "string" and test("^[A-Za-z0-9._-]+$")) and
     (.entries[-1].when | type == "number" and floor == . and . > 0)
-  ' "$journal" >/dev/null || prp_die 'candidate Drizzle journal does not retain canonical entry 0048'
+  ' "$journal" >/dev/null || prp_die 'candidate Drizzle journal does not retain canonical entry 0049'
   latest_tag=$(jq -r '.entries[-1].tag' "$journal")
   expected_entries=$(jq -r '.entries | length' "$journal")
   expected_when=$(jq -r '.entries[-1].when' "$journal")
@@ -291,7 +291,7 @@ prp_verify_commerce_journal() {
       && $database_latest_hash == "$expected_latest_hash" \
       && $latest_id == "$expected_entries" && $total == "$expected_entries" \
       && $latest_created == "$expected_when" && -z ${extra:-} ]] \
-    || prp_die 'commerce Drizzle journal lacks exact 0048 or does not end at the exact candidate migration'
+    || prp_die 'commerce Drizzle journal lacks exact 0049 or does not end at the exact candidate migration'
   printf 'postdrop-journal:commerce contraction_sha256=%s latest_id=%s latest_tag=%s latest_sha256=%s created_at=%s\n' \
     "$COMMERCE_CONTRACTION_HASH" "$latest_id" "$latest_tag" "$expected_latest_hash" \
     "$latest_created"

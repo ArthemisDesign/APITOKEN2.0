@@ -64,6 +64,17 @@ Client (Anthropic SDK / curl)  ──POST /v1/messages (our api-key)──►  c
 | env config, CLI, router, background loops, wiring | `server` | `comp/server` |
 | subscription purchasing and pool replenishment (Telegram bot) | `crates/authbot` | `comp/authbot` |
 
+The admin invalidation stream is composition-owned. Every fixed engine process exposes the same
+authenticated `GET /admin-events` SSE route backed by one bounded `tokio::broadcast` channel.
+Provider maintenance publishes only when the operator-visible fingerprint changes; Anthropic
+roster/probe transitions publish directly. Successful billing-writer settlements and durable
+provider-turn records publish after the authority write, so spend, settlement health and the
+owning provider projection never wait for the next maintenance sweep.
+The minute metrics writer invalidates `/fleet-history` only after its SQLite snapshot commits.
+The feed contains resource prefixes and a bounded reason only, never provider or customer data.
+Caddy rewrites it to the plane-specific same-origin `/events/{engine,openai,gemini,kimi}` routes so
+one browser can subscribe without learning runtime credentials.
+
 **Pool replenishment (outside the API layers).** `crates/authbot` — a Rust Telegram bot: purchases Claude,
 ChatGPT, and Gemini access, writes Claude tokens via `registry::authority`, atomically publishes completed Codex
 device flows as separate `CODEX_HOME`s, and verified paid Antigravity OAuth

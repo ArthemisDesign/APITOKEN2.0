@@ -834,6 +834,7 @@ fn admin_auth_test_app() -> AppState {
         breaker: Arc::new(forward::Breaker::new(0)),
         metrics: Arc::new(Metrics::new()),
         probe_poke: None,
+        admin_changes: tokio::sync::broadcast::channel(16).0,
     }
 }
 
@@ -912,6 +913,68 @@ async fn every_admin_route_enforces_the_control_key_lattice() {
     }
 }
 
+#[tokio::test]
+async fn admin_event_feed_is_protected_and_starts_with_resync_on_every_plane() {
+    use futures_util::StreamExt as _;
+
+    let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+    for provider in [
+        forward::ProviderMode::Combined,
+        forward::ProviderMode::Anthropic,
+        forward::ProviderMode::OpenAi,
+        forward::ProviderMode::Gemini,
+        forward::ProviderMode::Kimi,
+    ] {
+        let service = router(provider_test_app(provider), Arc::new(AtomicBool::new(true)));
+        let mut unauthorized = Request::builder()
+            .uri("/admin-events")
+            .body(Body::empty())
+            .unwrap();
+        unauthorized.extensions_mut().insert(peer);
+        assert_eq!(
+            service
+                .clone()
+                .oneshot(unauthorized)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED,
+            "{provider:?} exposed the event stream without a control credential"
+        );
+
+        let mut request = Request::builder()
+            .uri("/admin-events")
+            .header("x-api-key", "control-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{provider:?}");
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/event-stream")
+        );
+
+        // The body is intentionally infinite. Read only the eager first frame so this proves
+        // reconnect safety without waiting for a keepalive or EOF.
+        let mut body = response.into_body().into_data_stream();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(1), body.next())
+            .await
+            .expect("initial SSE frame timed out")
+            .expect("SSE body ended before its initial frame")
+            .expect("initial SSE frame failed");
+        let first = std::str::from_utf8(&first).unwrap();
+        assert!(first.contains("event: resync"), "{provider:?}: {first}");
+        assert!(
+            first.contains("\"source\":\"engine\""),
+            "{provider:?}: {first}"
+        );
+        assert!(first.contains("\"resync\":true"), "{provider:?}: {first}");
+    }
+}
 
 #[tokio::test]
 async fn tariff_override_route_validates_before_touching_the_authority() {
@@ -3750,6 +3813,7 @@ fn billing_test_app(tag: &str) -> (AppState, std::path::PathBuf) {
     std::fs::create_dir_all(&dir).unwrap();
     let db = dir.join("data.db");
     let billing = forward::AsyncBilling::start(db.to_string_lossy().into_owned(), 1).unwrap();
+    billing.set_admin_changes(app.admin_changes.clone());
     app.billing = Some(Arc::new(billing));
     (app, dir)
 }

@@ -15,6 +15,47 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AdminChange {
+    pub source: &'static str,
+    pub resources: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub resync: bool,
+}
+
+impl AdminChange {
+    pub fn engine(resources: &[&'static str], reason: &'static str) -> Self {
+        Self {
+            source: "engine",
+            resources: resources.to_vec(),
+            reason: Some(reason),
+            resync: false,
+        }
+    }
+
+    pub fn engine_resync() -> Self {
+        Self {
+            source: "engine",
+            resources: vec![
+                "/overview",
+                "/capacity",
+                "/subs",
+                "/spend-stats",
+                "/fleet-history",
+                "/settlement-health",
+                "/codex-subs",
+                "/gemini-subs",
+                "/kimi-subs",
+                "/glm-subs",
+            ],
+            reason: None,
+            resync: true,
+        }
+    }
+}
+
 /// Provider surface selected once at process startup. `Combined` is retained only as the rollout
 /// bridge for installations whose systemd unit predates provider-specific services.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -100,6 +141,9 @@ pub struct AppState {
     /// clean auth-вердикта 401/403 и post-turn calibration pairing. `None` → поллер выключен
     /// (`CLAUDE_API_POLL=0`), тогда probe-по-требованию недоступен.
     pub probe_poke: Option<Arc<tokio::sync::Notify>>,
+    /// Process-local invalidations for the admin console. It carries no data or secrets; browser
+    /// consumers refetch only mounted resources after a real state transition.
+    pub admin_changes: tokio::sync::broadcast::Sender<AdminChange>,
 }
 
 /// Unlimited request-task registration with an exact graceful-shutdown barrier.

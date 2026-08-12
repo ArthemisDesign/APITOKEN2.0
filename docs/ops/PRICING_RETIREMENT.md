@@ -342,7 +342,7 @@ dependency assertions; this script is not a substitute for them.
 The fixed root-owned `deploy/pricing-retirement-admission.sh` is the executable bridge between this
 evidence and the two migrators. Every ordinary migration passes through it, but it invokes final
 preflight only for the exact immutable artifacts
-`packages/db/migrations/0048_retire_pricing_schema.sql` and
+`packages/db/migrations/0049_retire_pricing_schema.sql` and
 `crates/registry/migrations_pg/0049_retire_pricing_schema.sql`. It binds the candidate SHA/tree,
 test marker, migration manifest and (for engine) tested release-binary digest before inspecting the
 applied commerce manifest or exact engine schema version. Absence of the named artifact and a fully
@@ -371,7 +371,7 @@ Use three independently green changes; do not combine the two database contracti
 failure domain.
 
 1. **Commerce migration-only contraction.** Add immutable migration
-   `0048_retire_pricing_schema.sql`. It asserts
+   `0049_retire_pricing_schema.sql`. It asserts
    the retention time and exact dependency set, sets a short lock timeout, drops the 43 tables in
    the order above and then the five explicit functions. The watchdog runs exact-SHA
    `--final commerce` after its fresh backups and before the migrator. The migration uses neither
@@ -396,7 +396,7 @@ do not hand-create placeholder tables and do not restore one database over live 
 ## Post-drop verification
 
 The watchdog derives a stage only from newly added paths between its durable `processed.sha` and
-the exact candidate: commerce 0048 or engine 0049. Neither path means no-op; both paths in one
+the exact candidate: commerce 0049 or engine 0049. Neither path means no-op; both paths in one
 delivery fail closed. This range rule also makes a forward fix re-run the proof when a contraction
 has committed but the candidate was not marked processed.
 
@@ -407,8 +407,8 @@ binds the immutable candidate, test marker, migration manifest and stage, then u
 sessions with `default_transaction_read_only=on` to prove:
 
 - the stage's retired tables/functions are absent and every survival-allowlisted object remains;
-- commerce 0048 has its unique exact hash and the database ends at the exact candidate's latest
-  Drizzle entry (0048 in the initial contraction); engine migrations are the contiguous `1..48`
+- commerce 0049 has its unique exact hash and the database ends at the exact candidate's latest
+  Drizzle entry (0049 in the initial contraction); engine migrations are the contiguous `1..48`
   pre-engine sequence or `1..N`, where `N >= 49` is the exact candidate version;
 - the other plane is in the required pre/post state, so the contractions cannot be reordered;
 - the exact-SHA commerce and engine dumps are still root-only, complete, hashable and fully

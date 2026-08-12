@@ -1301,6 +1301,10 @@ async fn serve() -> Result<()> {
         ),
     );
     let metrics = Arc::new(forward::Metrics::new());
+    let (admin_changes, _) = tokio::sync::broadcast::channel(128);
+    if let Some(billing) = &billing {
+        billing.set_admin_changes(admin_changes.clone());
+    }
     let codex = if let Some(config) = s.codex.clone() {
         let calibration_store = billing
             .clone()
@@ -1319,8 +1323,11 @@ async fn serve() -> Result<()> {
             .await
             .context("validate Codex provider")?;
         elog::info("server", "Codex native provider preflight passed");
-        tokio::spawn(poller::codex_health_loop(gateway.clone()));
-        spawn_codex_reconcile_signal(gateway.clone());
+        tokio::spawn(poller::codex_health_loop(
+            gateway.clone(),
+            admin_changes.clone(),
+        ));
+        spawn_codex_reconcile_signal(gateway.clone(), admin_changes.clone());
         Some(gateway)
     } else {
         None
@@ -1338,7 +1345,10 @@ async fn serve() -> Result<()> {
             .await
             .context("validate Gemini provider")?;
         elog::info("server", "Gemini OAuth subscription provider preflight passed");
-        tokio::spawn(poller::gemini_health_loop(gateway.clone()));
+        tokio::spawn(poller::gemini_health_loop(
+            gateway.clone(),
+            admin_changes.clone(),
+        ));
         Some(gateway)
     } else {
         None
@@ -1364,7 +1374,10 @@ async fn serve() -> Result<()> {
                         "KIMI backend preview has no authenticated profile; exact KIMI aliases fail closed",
                     );
                 }
-                tokio::spawn(poller::kimi_maintenance_loop(gateway.clone()));
+                tokio::spawn(poller::kimi_maintenance_loop(
+                    gateway.clone(),
+                    admin_changes.clone(),
+                ));
                 Some(gateway)
             }
             Err(_) => {
@@ -1379,7 +1392,10 @@ async fn serve() -> Result<()> {
                     config,
                     Some(calibration_store),
                 ));
-                tokio::spawn(poller::kimi_maintenance_loop(gateway.clone()));
+                tokio::spawn(poller::kimi_maintenance_loop(
+                    gateway.clone(),
+                    admin_changes.clone(),
+                ));
                 Some(gateway)
             }
         }
@@ -1407,7 +1423,10 @@ async fn serve() -> Result<()> {
                         "GLM backend has no authenticated profile; exact GLM aliases fail closed",
                     );
                 }
-                tokio::spawn(poller::glm_maintenance_loop(gateway.clone()));
+                tokio::spawn(poller::glm_maintenance_loop(
+                    gateway.clone(),
+                    admin_changes.clone(),
+                ));
                 Some(gateway)
             }
             Err(_) => {
@@ -1422,7 +1441,10 @@ async fn serve() -> Result<()> {
                     config,
                     Some(calibration_store),
                 ));
-                tokio::spawn(poller::glm_maintenance_loop(gateway.clone()));
+                tokio::spawn(poller::glm_maintenance_loop(
+                    gateway.clone(),
+                    admin_changes.clone(),
+                ));
                 Some(gateway)
             }
         }
@@ -1455,6 +1477,7 @@ async fn serve() -> Result<()> {
         } else {
             None
         },
+        admin_changes,
     };
     let restored = pool_rows.len();
     let repaired_calibrations = if serves_anthropic {
@@ -1755,12 +1778,19 @@ fn spawn_pre_drain_signal(_accepting: Arc<AtomicBool>) {}
 /// SIGUSR2 asks the Codex pool to reconcile out of band: rediscover the roster and re-probe every
 /// profile now instead of waiting for the next health tick.
 #[cfg(unix)]
-fn spawn_codex_reconcile_signal(gateway: Arc<forward::CodexGateway>) {
+fn spawn_codex_reconcile_signal(
+    gateway: Arc<forward::CodexGateway>,
+    admin_changes: tokio::sync::broadcast::Sender<forward::AdminChange>,
+) {
     tokio::spawn(async move {
         match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined2()) {
             Ok(mut signal) => {
                 while signal.recv().await.is_some() {
                     gateway.probe_health().await;
+                    let _ = admin_changes.send(forward::AdminChange::engine(
+                        &["/codex-subs", "/capacity", "/overview"],
+                        "codex_reconcile",
+                    ));
                 }
             }
             Err(e) => elog::error("server", format!("SIGUSR2 Codex reconcile handler unavailable: {e}")),
@@ -1769,4 +1799,8 @@ fn spawn_codex_reconcile_signal(gateway: Arc<forward::CodexGateway>) {
 }
 
 #[cfg(not(unix))]
-fn spawn_codex_reconcile_signal(_gateway: Arc<forward::CodexGateway>) {}
+fn spawn_codex_reconcile_signal(
+    _gateway: Arc<forward::CodexGateway>,
+    _admin_changes: tokio::sync::broadcast::Sender<forward::AdminChange>,
+) {
+}

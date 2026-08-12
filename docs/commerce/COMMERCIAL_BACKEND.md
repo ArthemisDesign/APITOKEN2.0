@@ -131,7 +131,18 @@ POST      /admin/users/{id}/provisioning-repair
 GET       /admin/pipeline-health
 GET       /admin/finance/paying-users?days=1|7|30&limit=...&offset=...&funding=payments|manual|bonus|all|spenders&include_usage=true|false
 GET       /admin/finance/engine-spend?days=1|7|30
+GET       /admin/events  (SSE invalidation feed)
 ```
+
+`GET /admin/events` is an additive managed-admin SSE contract for cache invalidation, not a data
+replica. One process-wide PostgreSQL listener consumes the commit-bound
+`commerce_admin_changes` channel and maps its allowlisted table name to bounded resource prefixes
+such as `/admin/users`, `/admin/dashboard` or `/admin/finance`. The process starts and awaits one
+shared listener during module initialization; browser connections only subscribe to its in-memory
+fanout, so concurrent first streams cannot open duplicate listeners and no initial refetch can race
+ahead of `LISTEN`. Each stream receives an initial `resync`, real `change` events and transport-only heartbeats.
+PostgreSQL notifications are intentionally non-durable, so reconnecting the listener publishes a
+full commerce-owner `resync`; the consumer then refetches only matching mounted resources.
 
 `POST /admin/users/{id}/provisioning-repair` is a bounded reconciliation for an existing mapping,
 not a second provisioning implementation. It reads the mapped account from the engine before the

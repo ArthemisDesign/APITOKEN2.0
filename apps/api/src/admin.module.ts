@@ -2,6 +2,8 @@ import { Module } from "@nestjs/common";
 import { AdminAccountsController } from "./admin-accounts.controller.js";
 import { AdminAccountsService } from "./admin-accounts.service.js";
 import { AdminController } from "./admin.controller.js";
+import { AdminEventsController } from "./admin-events.controller.js";
+import { AdminEventsService } from "./admin-events.service.js";
 import { AdminFinanceController } from "./admin-finance.controller.js";
 import { AdminFinanceService } from "./admin-finance.service.js";
 import { AdminGuard } from "./admin.guard.js";
@@ -15,6 +17,7 @@ import { InternalAdminAuthController } from "./internal-admin-auth.controller.js
 @Module({
   controllers: [
     AdminController,
+    AdminEventsController,
     AdminOperationsController,
     AdminAccountsController,
     AdminFinanceController,
@@ -23,6 +26,7 @@ import { InternalAdminAuthController } from "./internal-admin-auth.controller.js
   ],
   providers: [
     AdminGuard,
+    AdminEventsService,
     AdminService,
     AdminOperationsService,
     AdminAccountsService,

@@ -181,12 +181,16 @@ pub async fn ledger_prune_loop(
 /// of one would mean a total provider outage discovered by the customer. The sweep also refreshes
 /// the rate-limit snapshot that the admission gate and the `/metrics` gauges read, and it lets a
 /// re-authenticated home rejoin the rotation without an engine restart.
-pub async fn codex_health_loop(gateway: Arc<forward::CodexGateway>) {
+pub async fn codex_health_loop(
+    gateway: Arc<forward::CodexGateway>,
+    admin_changes: tokio::sync::broadcast::Sender<forward::AdminChange>,
+) {
     let interval = Duration::from_secs(codex_health_interval_secs(
         gateway.config().health_probe_interval_secs,
     ));
     // Seed the last-good model snapshot without making startup or customer discovery wait on it.
     gateway.refresh_model_catalog().await;
+    let mut status_fingerprint = codex_admin_fingerprint(&gateway).await;
     loop {
         // Race the steady cadence against a forced-probe request from the data path. A healthy pool
         // keeps its normal interval; a home that just failed a customer turn is re-checked at once,
@@ -196,15 +200,69 @@ pub async fn codex_health_loop(gateway: Arc<forward::CodexGateway>) {
             _ = gateway.probe_requested() => {}
         }
         gateway.probe_health().await;
+        let next = codex_admin_fingerprint(&gateway).await;
+        if next != status_fingerprint {
+            status_fingerprint = next;
+            let _ = admin_changes.send(forward::AdminChange::engine(
+                &["/codex-subs", "/capacity", "/overview"],
+                "codex_health",
+            ));
+        }
     }
+}
+
+async fn codex_admin_fingerprint(gateway: &forward::CodexGateway) -> String {
+    let status = gateway.operational_status().await;
+    format!(
+        "{}|{}|{:?}|{:?}",
+        status.process_live,
+        status.available,
+        status.soonest_ready,
+        status
+            .homes
+            .iter()
+            .map(|home| {
+                (
+                    &home.id,
+                    home.admitted,
+                    home.reject_reason,
+                    home.cooling_until,
+                    home.limit_reached,
+                    home.rate_limits.as_ref().map(|limits| {
+                        (
+                            limits.primary.as_ref().map(|window| {
+                                (
+                                    window.used_fraction_units,
+                                    window.window_duration_mins,
+                                    window.resets_at,
+                                )
+                            }),
+                            limits.secondary.as_ref().map(|window| {
+                                (
+                                    window.used_fraction_units,
+                                    window.window_duration_mins,
+                                    window.resets_at,
+                                )
+                            }),
+                            limits.reached,
+                        )
+                    }),
+                )
+            })
+            .collect::<Vec<_>>()
+    )
 }
 
 /// Periodically validates every paid Gemini project so an expired/disabled key is quarantined
 /// before customer traffic needs that profile, and a repaired credential rejoins automatically.
-pub async fn gemini_health_loop(gateway: Arc<forward::GeminiGateway>) {
+pub async fn gemini_health_loop(
+    gateway: Arc<forward::GeminiGateway>,
+    admin_changes: tokio::sync::broadcast::Sender<forward::AdminChange>,
+) {
     const PROFILE_DISCOVERY_SECS: u64 = 15;
     let health_interval = Duration::from_secs(gateway.config().health_probe_interval_secs.max(30));
     let mut last_health = tokio::time::Instant::now();
+    let mut status_fingerprint = gemini_admin_fingerprint(&gateway).await;
     loop {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(PROFILE_DISCOVERY_SECS)) => {
@@ -214,19 +272,62 @@ pub async fn gemini_health_loop(gateway: Arc<forward::GeminiGateway>) {
                 } else {
                     gateway.refresh_profiles().await;
                 }
+                let next = gemini_admin_fingerprint(&gateway).await;
+                if next != status_fingerprint {
+                    status_fingerprint = next;
+                    let _ = admin_changes.send(forward::AdminChange::engine(
+                        &["/gemini-subs", "/capacity", "/overview"],
+                        "gemini_profiles",
+                    ));
+                }
             }
             _ = gateway.probe_requested() => {
                 gateway.probe_health().await;
                 last_health = tokio::time::Instant::now();
+                let next = gemini_admin_fingerprint(&gateway).await;
+                if next != status_fingerprint {
+                    status_fingerprint = next;
+                    let _ = admin_changes.send(forward::AdminChange::engine(
+                        &["/gemini-subs", "/capacity", "/overview"],
+                        "gemini_health",
+                    ));
+                }
             }
         }
     }
 }
 
+async fn gemini_admin_fingerprint(gateway: &forward::GeminiGateway) -> String {
+    let status = gateway.operational_status().await;
+    format!(
+        "{}|{}|{:?}|{:?}",
+        status.available,
+        status.authenticated,
+        status.soonest_ready,
+        status
+            .profiles
+            .iter()
+            .map(|profile| {
+                (
+                    &profile.id,
+                    profile.authenticated,
+                    profile.disabled,
+                    profile.hidden,
+                    profile.cooling_until,
+                    &profile.quotas,
+                )
+            })
+            .collect::<Vec<_>>()
+    )
+}
+
 /// Discover atomic Auth Bot roster publications and poll free subscription quota independently.
 /// The gateway owns profile-idle exclusion, turn-FIFO ordering and durable observation/CAS; this
 /// server loop owns only cadence and never consumes customer concurrency permits.
-pub async fn kimi_maintenance_loop(gateway: Arc<forward::KimiGateway>) {
+pub async fn kimi_maintenance_loop(
+    gateway: Arc<forward::KimiGateway>,
+    admin_changes: tokio::sync::broadcast::Sender<forward::AdminChange>,
+) {
     const PROFILE_DISCOVERY_SECS: u64 = 15;
     let mut discovery = tokio::time::interval(Duration::from_secs(PROFILE_DISCOVERY_SECS));
     discovery.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -235,16 +336,68 @@ pub async fn kimi_maintenance_loop(gateway: Arc<forward::KimiGateway>) {
     discovery.tick().await;
     let mut quota = tokio::time::interval(gateway.quota_poll_interval());
     quota.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut status_fingerprint = kimi_admin_fingerprint(&gateway);
     loop {
         tokio::select! {
             _ = discovery.tick() => {
                 gateway.refresh_profiles().await;
+                let next = kimi_admin_fingerprint(&gateway);
+                if next != status_fingerprint {
+                    status_fingerprint = next;
+                    let _ = admin_changes.send(forward::AdminChange::engine(
+                        &["/kimi-subs", "/capacity", "/overview"],
+                        "kimi_profiles",
+                    ));
+                }
             }
             _ = quota.tick() => {
                 gateway.poll_quotas().await;
+                let next = kimi_admin_fingerprint(&gateway);
+                if next != status_fingerprint {
+                    status_fingerprint = next;
+                    let _ = admin_changes.send(forward::AdminChange::engine(
+                        &["/kimi-subs", "/capacity", "/overview"],
+                        "kimi_quota",
+                    ));
+                }
             }
         }
     }
+}
+
+fn kimi_admin_fingerprint(gateway: &forward::KimiGateway) -> String {
+    let status = gateway.operational_status();
+    format!(
+        "{}|{}|{}|{}|{}|{:?}",
+        status.total_profiles,
+        status.live_profiles,
+        status.available_profiles,
+        status.auth_quarantined_profiles,
+        status.quota_cooling_profiles,
+        status
+            .profiles
+            .iter()
+            .map(|profile| (
+                &profile.id,
+                profile.live,
+                profile.auth_quarantined_until,
+                profile.transport_cool_until,
+                profile.quota_cool_until,
+                profile
+                    .quota_windows
+                    .iter()
+                    .map(|window| {
+                        (
+                            window.duration_secs,
+                            window.used_units,
+                            window.limit_units,
+                            window.resets_at,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            ))
+            .collect::<Vec<_>>()
+    )
 }
 
 /// GLM mirror of the KIMI maintenance loop (`docs/engine/GLM_PROVIDER.md` §5.4): discover
@@ -252,7 +405,10 @@ pub async fn kimi_maintenance_loop(gateway: Arc<forward::KimiGateway>) {
 /// quota sweep on `CLAUDE_API_GLM_QUOTA_POLL_SECS`. The gateway owns profile-idle exclusion,
 /// turn-FIFO turn-before-quota ordering and durable observation/CAS; this server loop owns only
 /// cadence and never consumes customer concurrency permits.
-pub async fn glm_maintenance_loop(gateway: Arc<forward::glm::GlmGateway>) {
+pub async fn glm_maintenance_loop(
+    gateway: Arc<forward::glm::GlmGateway>,
+    admin_changes: tokio::sync::broadcast::Sender<forward::AdminChange>,
+) {
     const PROFILE_DISCOVERY_SECS: u64 = 15;
     let mut discovery = tokio::time::interval(Duration::from_secs(PROFILE_DISCOVERY_SECS));
     discovery.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -261,16 +417,70 @@ pub async fn glm_maintenance_loop(gateway: Arc<forward::glm::GlmGateway>) {
     discovery.tick().await;
     let mut quota = tokio::time::interval(gateway.quota_poll_interval());
     quota.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut status_fingerprint = glm_admin_fingerprint(&gateway);
     loop {
         tokio::select! {
             _ = discovery.tick() => {
                 gateway.refresh_profiles().await;
+                let next = glm_admin_fingerprint(&gateway);
+                if next != status_fingerprint {
+                    status_fingerprint = next;
+                    let _ = admin_changes.send(forward::AdminChange::engine(
+                        &["/glm-subs", "/capacity", "/overview"],
+                        "glm_profiles",
+                    ));
+                }
             }
             _ = quota.tick() => {
                 gateway.poll_quotas().await;
+                let next = glm_admin_fingerprint(&gateway);
+                if next != status_fingerprint {
+                    status_fingerprint = next;
+                    let _ = admin_changes.send(forward::AdminChange::engine(
+                        &["/glm-subs", "/capacity", "/overview"],
+                        "glm_quota",
+                    ));
+                }
             }
         }
     }
+}
+
+fn glm_admin_fingerprint(gateway: &forward::glm::GlmGateway) -> String {
+    let status = gateway.operational_status();
+    format!(
+        "{}|{}|{}|{}|{}|{}|{:?}",
+        status.total_profiles,
+        status.live_profiles,
+        status.available_profiles,
+        status.account_dead_profiles,
+        status.account_suspect_profiles,
+        status.quota_cooling_profiles,
+        status
+            .profiles
+            .iter()
+            .map(|profile| (
+                &profile.id,
+                profile.live,
+                profile.account_dead,
+                profile.account_suspect,
+                profile.transport_cool_until,
+                profile.quota_cool_until,
+                profile
+                    .quota_windows
+                    .iter()
+                    .map(|window| {
+                        (
+                            window.duration_secs,
+                            window.used_units,
+                            window.limit_units,
+                            window.resets_at,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            ))
+            .collect::<Vec<_>>()
+    )
 }
 
 pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64) {
@@ -342,16 +552,22 @@ pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64
         let do_prune = retention_days > 0 && ticks.is_multiple_of(60);
         // Запись в SQLite — на blocking-потоке (не блокируем async-воркер). Открываем per-write:
         // снапшоты редки (60с), проще, чем таскать не-Sync Connection через .await.
-        let _ = tokio::task::spawn_blocking(move || {
-            if let Ok(c) = crate::metrics_store::open(&db) {
-                let _ = crate::metrics_store::insert_snapshot(&c, &snap);
-                let _ = crate::metrics_store::insert_sub_snapshots(&c, now, &subs);
-                if do_prune {
-                    let _ = crate::metrics_store::prune(&c, cutoff);
-                }
+        let stored = tokio::task::spawn_blocking(move || {
+            let c = crate::metrics_store::open(&db)?;
+            crate::metrics_store::insert_snapshot(&c, &snap)?;
+            crate::metrics_store::insert_sub_snapshots(&c, now, &subs)?;
+            if do_prune {
+                crate::metrics_store::prune(&c, cutoff)?;
             }
+            Ok::<_, rusqlite::Error>(())
         })
         .await;
+        if matches!(stored, Ok(Ok(()))) {
+            let _ = app.admin_changes.send(forward::AdminChange::engine(
+                &["/fleet-history"],
+                "metrics_snapshot",
+            ));
+        }
         ticks = ticks.wrapping_add(1);
         tokio::time::sleep(Duration::from_secs(SNAP_SECS)).await;
     }
@@ -425,7 +641,13 @@ pub async fn reload_loop(
                 // ВСЕГДА заменяем: подхватываем смену token/proxy того же email (внешняя
                 // перепровизия authbot/CLI на живом сервере) — иначе держали бы протухший до рестарта.
                 // replace_subs сохраняет volatile-состояние существующих (retain по email).
-                app.pool.replace_subs(subs);
+                let roster_changed = app.pool.replace_subs(subs);
+                if roster_changed {
+                    let _ = app.admin_changes.send(forward::AdminChange::engine(
+                        &["/subs", "/capacity", "/overview"],
+                        "anthropic_roster",
+                    ));
+                }
                 if membership_changed {
                     prev = cur;
                     poke.notify_one(); // состав изменился → поллер probe-нёт новых
@@ -544,6 +766,7 @@ async fn probe(
     }
     match poll_sub(&client, &app.cfg, &sub.token, &ua, &sub.email).await {
         Some(r) => {
+            let before = anthropic_admin_fingerprint(&app.pool, &sub.email);
             let observed_at = pool::now();
             app.pool.set_util(
                 &sub.email,
@@ -633,9 +856,36 @@ async fn probe(
             {
                 persist_health(authority, owner, health).await;
             }
+            let after = anthropic_admin_fingerprint(&app.pool, &sub.email);
+            if after != before {
+                let _ = app.admin_changes.send(forward::AdminChange::engine(
+                    &["/subs", "/capacity", "/overview"],
+                    "anthropic_probe",
+                ));
+            }
         }
         None => app.pool.set_util(&sub.email, None, None, None, None, None), // записать попытку (backoff)
     }
+}
+
+fn anthropic_admin_fingerprint(pool: &pool::Pool, email: &str) -> String {
+    let live = pool
+        .snapshot()
+        .into_iter()
+        .find(|(sub, _)| sub.email == email)
+        .map(|(_, live)| live)
+        .unwrap_or_default();
+    format!(
+        "{:.6}|{:.6}|{}|{}|{:?}|{:?}|{:?}|{:?}",
+        live.util5h,
+        live.util7d,
+        live.status,
+        live.cooling_until,
+        live.auth_state,
+        live.quota5h,
+        live.quota7d,
+        live.dead_reason,
+    )
 }
 
 /// Персист durable-вердикта auth-health одной подписки (owner-fenced в PostgreSQL). Синхронный

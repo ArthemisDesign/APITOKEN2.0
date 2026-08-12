@@ -564,12 +564,12 @@ wd_pricing_retirement_postdrop_stage() {
   [[ -d $repo ]] || return 2
   [[ $base =~ ^[0-9a-f]{40}$ && $target =~ ^[0-9a-f]{40}$ ]] || return 2
   added=$(git -C "$repo" diff --name-only --no-renames --diff-filter=A "$base..$target" -- \
-    packages/db/migrations/0048_retire_pricing_schema.sql \
+    packages/db/migrations/0049_retire_pricing_schema.sql \
     crates/registry/migrations_pg/0049_retire_pricing_schema.sql) || return 1
   while IFS= read -r path; do
     [[ -n $path ]] || continue
     case $path in
-      packages/db/migrations/0048_retire_pricing_schema.sql) commerce=1 ;;
+      packages/db/migrations/0049_retire_pricing_schema.sql) commerce=1 ;;
       crates/registry/migrations_pg/0049_retire_pricing_schema.sql) engine=1 ;;
       *) return 2 ;;
     esac

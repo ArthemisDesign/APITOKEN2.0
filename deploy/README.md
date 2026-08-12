@@ -355,7 +355,7 @@ It never invokes `pnpm db:migrate` from a finalized release because that package
 
 The automatic watchdog path additionally invokes the fixed root-owned
 `pricing-retirement-admission.sh` after its exact-SHA backup and before the prebuilt migrator. The
-helper is an explicit no-op for ordinary migrations. Only the immutable commerce 0048 retired
+helper is an explicit no-op for ordinary migrations. Only the immutable commerce 0049 retired
 pricing-schema contraction activates its exact-candidate final preflight; a failure or any verdict
 other than the single bounded `AUTHORIZED:commerce` line stops before Node is invoked. Engine
 migration 0049 uses the same helper after its migration lock and before `db migrate-engine`, with
@@ -367,7 +367,7 @@ releases remain usable after their watchdog candidate is pruned. See
 
 The same closeout has a separate post-drop fence. Between the selected final production checks and
 the `processed.sha` write, the watchdog detects whether the exact processed-to-candidate range newly
-added commerce 0048 or engine 0049 and invokes the fixed root-owned
+added commerce 0049 or engine 0049 and invokes the fixed root-owned
 `pricing-retirement-postdrop.sh`. One delivery cannot select both. The helper revalidates the exact
 candidate and recovery archives, inspects both PostgreSQL planes read-only, scans application
 journals, waits for a collector run newer than the contraction proof, rejects targeted active

@@ -342,6 +342,16 @@ are canonical integer strings (`nanoUSD` for USDT and wei for BNB); a chain/RPC/
 returns null balances with `issue=read_unavailable`, never a fabricated zero or a provider error.
 The private key and RPC endpoints never cross this boundary. Older consumers may ignore `chain`.
 
+`GET /v1/admin/events` is the additive managed-admin SSE invalidation feed. A single listener in
+the Sales API process consumes the commit-bound `sales_admin_changes` PostgreSQL channel and maps
+each allowlisted table to partner, application or payout resource prefixes. Module initialization
+awaits the single process-wide listener; browser streams only subscribe to its in-memory fanout,
+so concurrent first streams cannot duplicate `LISTEN` or race their initial refetch. Every browser stream
+gets an initial `resync`; reconnecting the database listener emits another owner-wide `resync`
+because PostgreSQL `NOTIFY` is deliberately non-durable. Heartbeats only keep the transport open
+and never cause a read. The route uses the same `x-sales-admin-key` boundary as the other admin
+endpoints and returns no partner or money data itself.
+
 ## Commission math (sales-db)
 
 For the live scalar usage event, `A` is `amountNano`, already narrowed by commerce to the

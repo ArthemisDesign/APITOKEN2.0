@@ -192,6 +192,7 @@ dependencies = [
  "base64",
  "codex-credential",
  "elog",
+ "futures-util",
  "gemini-credential",
  "getrandom 0.3.4",
  "glm-credential",

@@ -349,7 +349,7 @@ monitoring.apitoken.sale {
 
 # Unified administration site for commerce, engine capacity, partner accounts and CRM visibility.
 # The UI is the standalone Next.js app `apps/admin` on 127.0.0.1:3700 (own deploy lane); the
-# engine only serves the data routes below, which the app polls same-origin behind managed auth.
+# engine only serves the data routes below; event feeds let the app invalidate them same-origin.
 # The app sends its own security headers via next.config.ts; the two headers here are defence in
 # depth that must not depend on the app release.
 admin.apitoken.sale {
@@ -361,8 +361,9 @@ admin.apitoken.sale {
 	}
 	# /glm-subs stays on this same Anthropic origin: GLM is a backend inside the Anthropic
 	# runtime, so unlike /codex-subs and /gemini-subs it needs no separate origin or key.
-	@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /glm-subs
+	@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /glm-subs /events/engine
 	handle @admin_data {
+		rewrite /events/engine /admin-events
 		reverse_proxy 127.0.0.1:8790 {
 			header_up Host 127.0.0.1:8790
 			header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"
@@ -381,8 +382,9 @@ admin.apitoken.sale {
 	}
 	# GPT-подписки живут в отдельном OpenAI-runtime: его operational status отдаёт только
 	# стабильный OpenAI origin; на Anthropic-процессе /codex-subs вернул бы enabled:false.
-	@admin_openai_data path /codex-subs
+	@admin_openai_data path /codex-subs /events/openai
 	handle @admin_openai_data {
+		rewrite /events/openai /admin-events
 		reverse_proxy 127.0.0.1:8792 {
 			header_up Host 127.0.0.1:8792
 			header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"
@@ -392,8 +394,9 @@ admin.apitoken.sale {
 	# read from the stable Gemini origin instead of either of the other provider processes. The
 	# nested path is the operator switch (POST .../disabled), which pulls one profile out of
 	# rotation; it rides the same origin and the same injected control key as the read.
-	@admin_gemini_data path /gemini-subs /gemini-subs/*
+	@admin_gemini_data path /gemini-subs /gemini-subs/* /events/gemini
 	handle @admin_gemini_data {
+		rewrite /events/gemini /admin-events
 		reverse_proxy 127.0.0.1:8794 {
 			header_up Host 127.0.0.1:8794
 			header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"
@@ -402,8 +405,9 @@ admin.apitoken.sale {
 	# KIMI now owns its runtime: the dedicated default-off plane serves the sanitized projection
 	# from the stable loopback origin. The gateway embedded in the Anthropic runtime is dev/test
 	# only, so /kimi-subs no longer lives on the Anthropic-origin matcher.
-	@admin_kimi_data path /kimi-subs
+	@admin_kimi_data path /kimi-subs /events/kimi
 	handle @admin_kimi_data {
+		rewrite /events/kimi /admin-events
 		reverse_proxy 127.0.0.1:8803 {
 			header_up Host 127.0.0.1:8803
 			header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"

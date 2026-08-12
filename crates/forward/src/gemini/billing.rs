@@ -949,6 +949,7 @@ mod tests {
             breaker: Arc::new(Breaker::new(1)),
             metrics: Arc::new(Metrics::new()),
             probe_poke: None,
+            admin_changes: tokio::sync::broadcast::channel(16).0,
             cfg,
         }
     }

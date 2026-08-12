@@ -50,6 +50,25 @@ authority as `/capacity`. If canonical remaining is unavailable, the UI shows `â
 warning rather than `$0` or an old pool prior/EMA; the separate duplicate browser request
 to `/capacity` has been removed.
 
+## Realtime invalidation contract
+
+The producer side exposes same-origin, credential-injected SSE feeds for the admin's shared
+request cache: `/admin/events` (commerce), `/partner-admin/events` (sales),
+`/openkeys-admin/events` (OpenKeys), `/proxy-admin/events` (Authbot) and engine feeds
+`/events/{engine,openai,gemini,kimi}`. Each payload contains only `source`, affected resource
+prefixes and an optional bounded reason/table identifier; it never carries the underlying admin
+data or credentials. Engine changes come from real roster/health/quota transitions and from
+successful authority writes for settlements/provider turns. Commerce, Sales and OpenKeys changes are commit-bound
+PostgreSQL notifications; Authbot emits only when provider inventory or renewal results change.
+
+Every connection begins with `resync`; listener lag or database reconnect produces another one
+because event delivery is an invalidation hint, not durable state. Heartbeats are transport-only.
+Engine resync/change delivery evicts the matching short-lived server response cache before the
+browser refetches, so push cannot immediately return a stale cached projection.
+The UI consumer must keep last-good data, deduplicate by actual request URL and revalidate only
+mounted resources whose URL matches an emitted prefix. It must not turn heartbeats or focus into
+blanket polling.
+
 ## Release cycle (watchdog lane `admin`)
 
 - Path classification: `wd_path_is_admin` in `deploy/watchdog-lib.sh` (`apps/admin/**`
@@ -94,7 +113,9 @@ protection applies to all pages, including `/sales/calculator`.
 
 The `/proxies` UI consumes authbot's separate proxy lifecycle contract and renders the full
 producer-validated account email for each visible proxy. The authbot-owned
-`GET /proxy-admin/inventory` route listens on loopback `127.0.0.1:8806`. Its
+`GET /proxy-admin/inventory` and invalidation-only `GET /proxy-admin/events` routes listen on
+loopback `127.0.0.1:8806`. The feed emits `resync` on connect and `change` only after provider
+inventory or renewal results actually change; its keepalive is never a request trigger. Its
 stable raw authorization secret is `/etc/apitoken/proxy-admin.key`, provisioned atomically before
 the systemd unit and Caddy configuration. The `/etc/apitoken` parent is root-owned and
 non-deploy-writable, unlike the deploy-writable `/srv/claude-api/data` parent; the key is a

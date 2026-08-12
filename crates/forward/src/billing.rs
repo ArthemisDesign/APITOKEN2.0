@@ -28,7 +28,7 @@ use registry::{
 };
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, Notify};
 
@@ -39,6 +39,38 @@ const READ_QUEUE_CAPACITY: usize = 1_024;
 const PG_OPERATION_RETRY_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_PENDING_ANTHROPIC_CALIBRATION_EVENTS: usize = 4_096;
 const MAX_PENDING_GEMINI_CALIBRATION_EVENTS: usize = 4_096;
+
+type AdminChanges = Arc<RwLock<Option<tokio::sync::broadcast::Sender<crate::AdminChange>>>>;
+
+fn publish_admin_change(
+    changes: &AdminChanges,
+    resources: &[&'static str],
+    reason: &'static str,
+) {
+    let sender = changes.read().unwrap_or_else(|error| error.into_inner());
+    if let Some(sender) = sender.as_ref() {
+        let _ = sender.send(crate::AdminChange::engine(resources, reason));
+    }
+}
+
+#[cfg(test)]
+mod admin_change_tests {
+    use super::*;
+
+    #[test]
+    fn admin_change_is_emitted_only_after_a_publisher_is_attached() {
+        let changes: AdminChanges = Arc::new(RwLock::new(None));
+        publish_admin_change(&changes, &["/overview"], "settlement");
+
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(4);
+        *changes.write().unwrap() = Some(sender);
+        publish_admin_change(&changes, &["/overview"], "settlement");
+
+        let event = receiver.try_recv().expect("change is published");
+        assert_eq!(event.resources, vec!["/overview"]);
+        assert_eq!(event.reason, Some("settlement"));
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AnthropicQuotaSnapshot {
@@ -1431,9 +1463,19 @@ pub struct AsyncBilling {
     /// Present only for the PostgreSQL authority; the SQLite fallback keeps no latency stats
     /// because it is never the production hot path.
     pg_command: Option<Arc<PgCommandMetrics>>,
+    admin_changes: AdminChanges,
 }
 
 impl AsyncBilling {
+    pub fn set_admin_changes(
+        &self,
+        sender: tokio::sync::broadcast::Sender<crate::AdminChange>,
+    ) {
+        *self
+            .admin_changes
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = Some(sender);
+    }
     pub(crate) fn track_detached_work(&self) -> DetachedDispatchGuard {
         self.detached.begin()
     }
@@ -2067,10 +2109,12 @@ impl AsyncBilling {
         let (wtx, mut wrx) = mpsc::channel::<WriteCmd>(WRITE_QUEUE_CAPACITY);
         let anthropic_calibration_delivery = Arc::new(AnthropicCalibrationDeliveryState::default());
         let gemini_calibration_delivery = Arc::new(GeminiCalibrationDeliveryState::default());
+        let admin_changes = Arc::new(RwLock::new(None));
         {
             let conn = registry::open(&db_path)?;
             let writer_anthropic_delivery = Arc::clone(&anthropic_calibration_delivery);
             let writer_gemini_delivery = Arc::clone(&gemini_calibration_delivery);
+            let writer_admin_changes = Arc::clone(&admin_changes);
             std::thread::Builder::new().name("billing-writer".into()).spawn(move || {
                 const RESERVATION_LEASE_SECS: i64 = 3600;
                 let refund_canceled_reserve = |request_id: &str, account_id: &str, key: &str,
@@ -2293,6 +2337,13 @@ impl AsyncBilling {
                                     )
                                 })
                             });
+                            if result.is_ok() {
+                                publish_admin_change(
+                                    &writer_admin_changes,
+                                    &["/subs", "/capacity", "/overview"],
+                                    "anthropic_turn",
+                                );
+                            }
                             let _ = reply.send(result);
                         } else {
                             let result = flush_pending_anthropic_calibration_turns(
@@ -2300,7 +2351,13 @@ impl AsyncBilling {
                                 None,
                                 &persist_anthropic_turn,
                             );
-                            if let Err(error) = result {
+                            if result.is_ok() {
+                                publish_admin_change(
+                                    &writer_admin_changes,
+                                    &["/subs", "/capacity", "/overview"],
+                                    "anthropic_turn",
+                                );
+                            } else if let Err(error) = result {
                                 elog::error(
                                     "billing",
                                     format!(
@@ -2349,18 +2406,34 @@ impl AsyncBilling {
                                     anyhow::anyhow!("Gemini calibration target was not replayed")
                                 })
                             });
+                            if result.is_ok() {
+                                publish_admin_change(
+                                    &writer_admin_changes,
+                                    &["/gemini-subs", "/capacity", "/overview"],
+                                    "gemini_turn",
+                                );
+                            }
                             let _ = reply.send(result);
-                        } else if let Err(error) = flush_pending_gemini_calibration_turns(
-                            &writer_gemini_delivery,
-                            None,
-                            &persist_gemini_turn,
-                        ) {
-                            elog::error(
-                                "billing",
-                                format!(
-                                    "Gemini calibration persistence deferred with FIFO head retained: {error:#}"
-                                ),
+                        } else {
+                            let result = flush_pending_gemini_calibration_turns(
+                                &writer_gemini_delivery,
+                                None,
+                                &persist_gemini_turn,
                             );
+                            if result.is_ok() {
+                                publish_admin_change(
+                                    &writer_admin_changes,
+                                    &["/gemini-subs", "/capacity", "/overview"],
+                                    "gemini_turn",
+                                );
+                            } else if let Err(error) = result {
+                                elog::error(
+                                    "billing",
+                                    format!(
+                                        "Gemini calibration persistence deferred with FIFO head retained: {error:#}"
+                                    ),
+                                );
+                            }
                         }
                     }
                     WriteCmd::GeminiObserveWindow {
@@ -2411,9 +2484,17 @@ impl AsyncBilling {
                         )));
                     }
                     WriteCmd::CodexRecordTurn { event, reply } => {
-                        let _ = reply.send(registry::record_codex_turn_calibration_event(
+                        let result = registry::record_codex_turn_calibration_event(
                             &conn, &event,
-                        ));
+                        );
+                        if result.is_ok() {
+                            publish_admin_change(
+                                &writer_admin_changes,
+                                &["/codex-subs", "/capacity", "/overview"],
+                                "codex_turn",
+                            );
+                        }
+                        let _ = reply.send(result);
                     }
                     WriteCmd::CodexLoadHealth { home_id, reply } => {
                         let _ = reply.send(registry::load_codex_home_health(&conn, &home_id));
@@ -2548,6 +2629,13 @@ impl AsyncBilling {
                                 format!(
                                     "billing SQLite settlement persisted/retryable failure: {error:#}"
                                 ),
+                            );
+                        }
+                        if result.is_ok() {
+                            publish_admin_change(
+                                &writer_admin_changes,
+                                &["/overview", "/spend-stats", "/settlement-health"],
+                                "settlement",
                             );
                         }
                         if let Some(reply) = reply { let _ = reply.send(result); }
@@ -2784,6 +2872,7 @@ impl AsyncBilling {
             readers: rtxs,
             rr: AtomicUsize::new(0),
             pg_command: None,
+            admin_changes,
         })
     }
 
@@ -2799,6 +2888,7 @@ impl AsyncBilling {
         let anthropic_calibration_delivery = Arc::new(AnthropicCalibrationDeliveryState::default());
         let gemini_calibration_delivery = Arc::new(GeminiCalibrationDeliveryState::default());
         let pg_command = Arc::new(PgCommandMetrics::default());
+        let admin_changes = Arc::new(RwLock::new(None));
         {
             let mut pg = registry::pg::PgStore::connect(&url)?;
             let writer_url = url.clone();
@@ -2806,6 +2896,7 @@ impl AsyncBilling {
             let writer_anthropic_delivery = Arc::clone(&anthropic_calibration_delivery);
             let writer_gemini_delivery = Arc::clone(&gemini_calibration_delivery);
             let writer_pg_command = Arc::clone(&pg_command);
+            let writer_admin_changes = Arc::clone(&admin_changes);
             std::thread::Builder::new().name("billing-pg-writer".into()).spawn(move || {
                 while let Some(cmd) = wrx.blocking_recv() {
                     match cmd {
@@ -2833,6 +2924,13 @@ impl AsyncBilling {
                                         )
                                     })
                                 });
+                                if result.is_ok() {
+                                    publish_admin_change(
+                                        &writer_admin_changes,
+                                        &["/subs", "/capacity", "/overview"],
+                                        "anthropic_turn",
+                                    );
+                                }
                                 let _ = reply.send(result);
                             } else {
                                 let result = flush_pending_anthropic_calibration_turns(
@@ -2847,7 +2945,13 @@ impl AsyncBilling {
                                         )
                                     },
                                 );
-                                if let Err(error) = result {
+                                if result.is_ok() {
+                                    publish_admin_change(
+                                        &writer_admin_changes,
+                                        &["/subs", "/capacity", "/overview"],
+                                        "anthropic_turn",
+                                    );
+                                } else if let Err(error) = result {
                                     elog::error(
                                         "billing",
                                         format!(
@@ -2923,6 +3027,13 @@ impl AsyncBilling {
                                         )
                                     })
                                 });
+                                if result.is_ok() {
+                                    publish_admin_change(
+                                        &writer_admin_changes,
+                                        &["/gemini-subs", "/capacity", "/overview"],
+                                        "gemini_turn",
+                                    );
+                                }
                                 let _ = reply.send(result);
                             } else {
                                 let result = flush_pending_gemini_calibration_turns(
@@ -2937,7 +3048,13 @@ impl AsyncBilling {
                                         )
                                     },
                                 );
-                                if let Err(error) = result {
+                                if result.is_ok() {
+                                    publish_admin_change(
+                                        &writer_admin_changes,
+                                        &["/gemini-subs", "/capacity", "/overview"],
+                                        "gemini_turn",
+                                    );
+                                } else if let Err(error) = result {
                                     elog::error(
                                         "billing",
                                         format!(
@@ -2996,6 +3113,13 @@ impl AsyncBilling {
                                 "KIMI turn calibration event",
                                 |pg| pg.record_kimi_turn(&event),
                             );
+                            if result.is_ok() {
+                                publish_admin_change(
+                                    &writer_admin_changes,
+                                    &["/kimi-subs", "/capacity", "/overview"],
+                                    "kimi_turn",
+                                );
+                            }
                             let _ = reply.send(result);
                         }
                         WriteCmd::KimiObserveWindows {
@@ -3034,6 +3158,13 @@ impl AsyncBilling {
                                 "GLM turn calibration event",
                                 |pg| pg.record_glm_turn(&event),
                             );
+                            if result.is_ok() {
+                                publish_admin_change(
+                                    &writer_admin_changes,
+                                    &["/glm-subs", "/capacity", "/overview"],
+                                    "glm_turn",
+                                );
+                            }
                             let _ = reply.send(result);
                         }
                         WriteCmd::GlmObserveWindows {
@@ -3078,6 +3209,13 @@ impl AsyncBilling {
                                 "Codex turn calibration event",
                                 |pg| pg.record_codex_turn_calibration_event(&event),
                             );
+                            if result.is_ok() {
+                                publish_admin_change(
+                                    &writer_admin_changes,
+                                    &["/codex-subs", "/capacity", "/overview"],
+                                    "codex_turn",
+                                );
+                            }
                             let _ = reply.send(result);
                         }
                         WriteCmd::CodexLoadHealth { home_id, reply } => {
@@ -3320,6 +3458,13 @@ impl AsyncBilling {
                                 elog::error(
                                     "billing",
                                     format!("billing PostgreSQL settlement failed: {error:#}"),
+                                );
+                            }
+                            if result.is_ok() {
+                                publish_admin_change(
+                                    &writer_admin_changes,
+                                    &["/overview", "/spend-stats", "/settlement-health"],
+                                    "settlement",
                                 );
                             }
                             if let Some(reply) = reply { let _ = reply.send(result); }
@@ -3655,6 +3800,7 @@ impl AsyncBilling {
             readers: rtxs,
             rr: AtomicUsize::new(0),
             pg_command: Some(pg_command),
+            admin_changes,
         })
     }
 

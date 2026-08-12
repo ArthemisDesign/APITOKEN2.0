@@ -14,8 +14,8 @@ COMMERCE_APPLIED_MANIFEST=$STATE_ROOT/database-migrations.manifest
 ENGINE_RELEASE_ROOT=/srv/claude-api/releases
 COMPOSE_FILE=/usr/local/lib/apitoken-watchdog/controller/commerce-postgres.compose.yaml
 POSTGRES_ENV=/etc/apitoken/postgres.env
-COMMERCE_CONTRACTION_REL=packages/db/migrations/0048_retire_pricing_schema.sql
-COMMERCE_CONTRACTION_TAG=0048_retire_pricing_schema
+COMMERCE_CONTRACTION_REL=packages/db/migrations/0049_retire_pricing_schema.sql
+COMMERCE_CONTRACTION_TAG=0049_retire_pricing_schema
 ENGINE_CONTRACTION_REL=crates/registry/migrations_pg/0049_retire_pricing_schema.sql
 ENGINE_CONTRACTION_VERSION=49
 ENGINE_PREDECESSOR_VERSION=48
@@ -104,9 +104,9 @@ pra_commerce_is_pending() {
   [[ $(printf '%s\n' "$candidate_file" | awk 'NF { count++ } END { print count + 0 }') == 1 ]] \
     || wd_die "commerce contraction must have exactly one canonical migration artifact"
   candidate_entry=$(pra_manifest_record "$CANDIDATE_MANIFEST" \
-    entry=00000048 "$COMMERCE_CONTRACTION_TAG")
+    entry=00000049 "$COMMERCE_CONTRACTION_TAG")
   [[ $(printf '%s\n' "$candidate_entry" | awk 'NF { count++ } END { print count + 0 }') == 1 ]] \
-    || wd_die "commerce contraction is not the canonical journal entry 0048"
+    || wd_die "commerce contraction is not the canonical journal entry 0049"
 
   applied_file=$(grep -Fxc -- "$candidate_file" "$COMMERCE_APPLIED_MANIFEST" || true)
   applied_entry=$(grep -Fxc -- "$candidate_entry" "$COMMERCE_APPLIED_MANIFEST" || true)

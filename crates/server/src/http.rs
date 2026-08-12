@@ -9,7 +9,10 @@ use crate::admin;
 use axum::extract::{ConnectInfo, FromRef, Path, Query, Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
-use axum::response::{IntoResponse, Json, Response};
+use axum::response::{
+    sse::{Event, KeepAlive, Sse},
+    IntoResponse, Json, Response,
+};
 use axum::routing::{get, post};
 use axum::Router;
 use forward::{
@@ -21,8 +24,10 @@ use forward::{
     openai_response_input_items, openai_responses, readonly_authed, resolve_client_key,
     resolve_client_keys, AppState, Metrics, TerminalErrorReason,
 };
+use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -94,6 +99,25 @@ fn cache_put(cell: &DashCache, v: &serde_json::Value) {
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .unwrap() = Some((std::time::Instant::now(), v.clone()));
+}
+
+fn invalidate_admin_caches(resources: &[&str]) {
+    for resource in resources {
+        let cell = match *resource {
+            "/overview" => Some(&OVERVIEW_CACHE),
+            "/capacity" => Some(&CAPACITY_CACHE),
+            "/subs" => Some(&SUBS_CACHE),
+            "/spend-stats" => Some(&SPEND_CACHE),
+            "/settlement-health" => Some(&SETTLEMENT_CACHE),
+            _ => None,
+        };
+        if let Some(cell) = cell {
+            *cell
+                .get_or_init(|| std::sync::Mutex::new(None))
+                .lock()
+                .unwrap() = None;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -310,6 +334,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
         );
     let router = match provider {
         forward::ProviderMode::Combined => common
+            .route("/admin-events", get(admin_events))
             .route("/pool", get(pool_status))
             .route("/capacity", get(capacity))
             .route("/overview", get(overview))
@@ -349,6 +374,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .fallback(provider_fallback_dispatch)
             .method_not_allowed_fallback(method_not_allowed_dispatch),
         forward::ProviderMode::Anthropic => common
+            .route("/admin-events", get(admin_events))
             .route("/pool", get(pool_status))
             .route("/capacity", get(capacity))
             .route("/overview", get(overview))
@@ -368,6 +394,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .merge(admin)
             .fallback(forward),
         forward::ProviderMode::OpenAi => common
+            .route("/admin-events", get(admin_events))
             .route("/codex-subs", get(codex_subs))
             .route("/v1/responses", post(openai_responses))
             .route("/v1/responses/input_tokens", post(openai_input_tokens))
@@ -403,6 +430,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .fallback(fixed_openai_not_found)
             .method_not_allowed_fallback(fixed_openai_not_found),
         forward::ProviderMode::Gemini => common
+            .route("/admin-events", get(admin_events))
             .route("/gemini-subs", get(gemini_subs))
             .route(
                 "/gemini-subs/{profile_id}/disabled",
@@ -430,6 +458,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
         // entry the Anthropic path uses; `forward` fails closed with a bounded 404 for every other
         // model or path, so this plane can never fall through into the Claude pool it does not run.
         forward::ProviderMode::Kimi => common
+            .route("/admin-events", get(admin_events))
             .route("/kimi-subs", get(kimi_subs))
             .route("/v1/messages", post(forward))
             .fallback(forward)
@@ -444,6 +473,56 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
         // Outermost, so the gauge covers the request from the first byte in to the last byte out,
         // including everything the audit layer wraps.
         .layer(middleware::from_fn_with_state(state, track_active_request))
+}
+
+async fn admin_events(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !readonly_authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+    let receiver = app.admin_changes.subscribe();
+    let resync = forward::AdminChange::engine_resync();
+    invalidate_admin_caches(&resync.resources);
+    let initial = futures_util::stream::once(async {
+        Ok::<_, Infallible>(admin_change_event(
+            &forward::AdminChange::engine_resync(),
+            "resync",
+        ))
+    });
+    let changes = futures_util::stream::unfold(receiver, |mut receiver| async move {
+        let change = match receiver.recv().await {
+            Ok(change) => change,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                forward::AdminChange::engine_resync()
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+        };
+        invalidate_admin_caches(&change.resources);
+        let event = admin_change_event(&change, if change.resync { "resync" } else { "change" });
+        Some((Ok::<_, Infallible>(event), receiver))
+    });
+    Sse::new(initial.chain(changes))
+        .keep_alive(
+            KeepAlive::new()
+                .interval(std::time::Duration::from_secs(25))
+                .text("heartbeat"),
+        )
+        .into_response()
+}
+
+fn admin_change_event(change: &forward::AdminChange, event_type: &'static str) -> Event {
+    Event::default()
+        .event(event_type)
+        .json_data(change)
+        .expect("AdminChange always serializes")
 }
 
 async fn fixed_openai_not_found() -> Response {
@@ -470,7 +549,7 @@ async fn track_active_request(
 ) -> Response {
     if matches!(
         request.uri().path(),
-        "/health" | "/live" | "/ready" | "/metrics"
+        "/health" | "/live" | "/ready" | "/metrics" | "/admin-events"
     ) {
         return next.run(request).await;
     }
@@ -2284,6 +2363,10 @@ async fn gemini_sub_set_disabled(
             .into_response();
     }
     gemini.refresh_disabled().await;
+    let _ = app.admin_changes.send(forward::AdminChange::engine(
+        &["/gemini-subs", "/capacity", "/overview"],
+        "gemini_operator_state",
+    ));
     elog::info(
         "server",
         format!(

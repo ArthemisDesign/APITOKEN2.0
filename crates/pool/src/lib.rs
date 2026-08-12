@@ -804,8 +804,16 @@ impl Pool {
     /// следующий `route`/`pick` слал бы живой трафик обратно на отлимиченный аккаунт (429-шторм).
     /// `import_state` работает только на старте, reload `pool_state` не перечитывает — поэтому
     /// удерживаем cooling здесь, в памяти. Протухший cooling отсеется на следующем replace_subs.
-    pub fn replace_subs(&self, subs: Vec<Sub>) {
+    pub fn replace_subs(&self, subs: Vec<Sub>) -> bool {
         let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let changed = g.subs.len() != subs.len()
+            || g.subs.iter().zip(&subs).any(|(left, right)| {
+                left.email != right.email
+                    || left.token != right.token
+                    || left.proxy != right.proxy
+                    || left.fleet != right.fleet
+                    || left.plan != right.plan
+            });
         let keep: HashSet<String> = subs.iter().map(|s| s.email.clone()).collect();
         let now = now();
         g.live
@@ -826,6 +834,7 @@ impl Pool {
             }
         }
         g.subs = subs;
+        changed
     }
 
     /// Apply a provider-detected paid plan immediately after its durable registry write. The
@@ -1955,11 +1964,21 @@ mod tests {
     fn cooling_survives_roster_flap() {
         let p = pool(&["a", "b"]);
         p.mark_cooling("a", 3600);
-        p.replace_subs(vec![sub("b")]); // "a" выпала из активного набора
+        assert!(p.replace_subs(vec![sub("b")])); // "a" выпала из активного набора
         assert!(
             p.is_cooling("a"),
             "cooling пережил replace_subs (бан не забыт)"
         );
+    }
+
+    #[test]
+    fn roster_change_signal_ignores_identical_reloads_and_detects_credential_rotation() {
+        let p = pool(&["a"]);
+        assert!(!p.replace_subs(vec![sub("a")]));
+
+        let mut replacement = sub("a");
+        replacement.token = "replacement-token".to_owned();
+        assert!(p.replace_subs(vec![replacement]));
     }
 
     /// Cooling исключает подписку, пока есть живая альтернатива.

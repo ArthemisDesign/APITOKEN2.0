@@ -10,7 +10,10 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::header::CACHE_CONTROL;
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{
+    sse::{Event, KeepAlive, Sse},
+    IntoResponse, Response,
+};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use registry::authority::AuthorityConfig;
@@ -25,7 +28,7 @@ pub const DEFAULT_CODEX_RUNTIME_URL: &str = "http://127.0.0.1:8792/codex-subs";
 pub const DEFAULT_GEMINI_RUNTIME_URL: &str = "http://127.0.0.1:8794/gemini-subs";
 const RUNTIME_RESPONSE_LIMIT: usize = 1024 * 1024;
 const RUNTIME_REQUEST_TIMEOUT: Duration = Duration::from_secs(4);
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use zeroize::Zeroizing;
 
 const SCHEMA_VERSION: u8 = 1;
@@ -186,6 +189,7 @@ impl Service {
                 codex_runtime_url,
                 gemini_runtime_url,
                 provider_cache: RwLock::new(ProviderSnapshot::unavailable()),
+                admin_changes: broadcast::channel(64).0,
                 #[cfg(test)]
                 test_local_projection: std::sync::RwLock::new(None),
             }),
@@ -216,6 +220,7 @@ struct Runtime {
     codex_runtime_url: reqwest::Url,
     gemini_runtime_url: reqwest::Url,
     provider_cache: RwLock<ProviderSnapshot>,
+    admin_changes: broadcast::Sender<AdminChange>,
     #[cfg(test)]
     test_local_projection: std::sync::RwLock<Option<LocalProjection>>,
 }
@@ -223,9 +228,78 @@ struct Runtime {
 fn router(runtime: Arc<Runtime>) -> Router {
     Router::new()
         .route("/proxy-admin/inventory", get(inventory_handler))
+        .route("/proxy-admin/events", get(events_handler))
         .route("/proxy-admin/renew", post(renew_handler))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .with_state(runtime)
+}
+
+#[derive(Clone, Serialize)]
+struct AdminChange {
+    source: &'static str,
+    resources: &'static [&'static str],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    resync: bool,
+}
+
+impl AdminChange {
+    fn inventory(reason: &'static str) -> Self {
+        Self {
+            source: "authbot",
+            resources: &["/proxy-admin/inventory"],
+            reason: Some(reason),
+            resync: false,
+        }
+    }
+
+    fn resync() -> Self {
+        Self {
+            source: "authbot",
+            resources: &["/proxy-admin/inventory"],
+            reason: None,
+            resync: true,
+        }
+    }
+}
+
+async fn events_handler(State(runtime): State<Arc<Runtime>>, headers: HeaderMap) -> Response {
+    if !authorized(&runtime, &headers) {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "authentication required",
+        );
+    }
+    let receiver = runtime.admin_changes.subscribe();
+    let initial = futures_util::stream::once(async {
+        Ok::<_, std::convert::Infallible>(admin_event(&AdminChange::resync(), "resync"))
+    });
+    let changes = futures_util::stream::unfold(receiver, |mut receiver| async move {
+        let change = match receiver.recv().await {
+            Ok(change) => change,
+            Err(broadcast::error::RecvError::Lagged(_)) => AdminChange::resync(),
+            Err(broadcast::error::RecvError::Closed) => return None,
+        };
+        let event = admin_event(&change, if change.resync { "resync" } else { "change" });
+        Some((Ok::<_, std::convert::Infallible>(event), receiver))
+    });
+    use futures_util::StreamExt as _;
+    Sse::new(initial.chain(changes))
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(25))
+                .text("heartbeat"),
+        )
+        .into_response()
+}
+
+fn admin_event(change: &AdminChange, event_type: &'static str) -> Event {
+    Event::default()
+        .event(event_type)
+        .json_data(change)
+        .expect("AdminChange always serializes")
 }
 
 async fn serve_listener(bind: SocketAddr, runtime: Arc<Runtime>) -> Result<()> {
@@ -304,7 +378,7 @@ fn valid_inventory_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct ProviderSnapshot {
     inventory_ok: bool,
     orders: HashMap<i64, IspOrder>,
@@ -1349,6 +1423,9 @@ async fn renew_handler(
     };
 
     process_request(&runtime, claimed.clone()).await;
+    let _ = runtime
+        .admin_changes
+        .send(AdminChange::inventory("renewal_finished"));
     match runtime.store.get_renewal_request(claimed.id) {
         Ok(Some(current)) => replay_response(&runtime.store, current, replay),
         Ok(None) | Err(_) => json_response(
@@ -1705,7 +1782,7 @@ async fn refresh_provider(runtime: &Arc<Runtime>, guard_auto_extend: bool) {
         Err(_) => (None, None),
     };
     let cards_auto_extend = cards_result.map(|cards| cards.warning).unwrap_or(false);
-    *runtime.provider_cache.write().await = ProviderSnapshot {
+    let snapshot = ProviderSnapshot {
         inventory_ok,
         orders: orders
             .into_iter()
@@ -1715,6 +1792,17 @@ async fn refresh_provider(runtime: &Arc<Runtime>, guard_auto_extend: bool) {
         balance_observed_at,
         cards_auto_extend,
     };
+    let changed = {
+        let mut cached = runtime.provider_cache.write().await;
+        let changed = *cached != snapshot;
+        *cached = snapshot;
+        changed
+    };
+    if changed {
+        let _ = runtime
+            .admin_changes
+            .send(AdminChange::inventory("provider_inventory"));
+    }
 }
 
 fn parse_expiry(value: &str) -> Option<i64> {
@@ -1851,6 +1939,7 @@ mod tests {
             codex_runtime_url: reqwest::Url::parse(DEFAULT_CODEX_RUNTIME_URL).unwrap(),
             gemini_runtime_url: reqwest::Url::parse(DEFAULT_GEMINI_RUNTIME_URL).unwrap(),
             provider_cache: RwLock::new(ProviderSnapshot::unavailable()),
+            admin_changes: broadcast::channel(16).0,
             test_local_projection: std::sync::RwLock::new(None),
         })
     }
@@ -2814,6 +2903,41 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(response_json(response).await["code"], "invalid_actor");
+    }
+
+    #[tokio::test]
+    async fn event_feed_requires_admin_key_and_starts_with_resync() {
+        use futures_util::StreamExt as _;
+
+        let runtime = runtime(None);
+        assert_eq!(
+            events_handler(State(runtime.clone()), HeaderMap::new())
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        let response = events_handler(State(runtime), headers(Some("test-admin-key"), None)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/event-stream")
+        );
+
+        // Do not buffer an infinite SSE body: the eager resync is the reconnect contract.
+        let mut body = response.into_body().into_data_stream();
+        let first = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .expect("initial SSE frame timed out")
+            .expect("SSE body ended before its initial frame")
+            .expect("initial SSE frame failed");
+        let first = std::str::from_utf8(&first).unwrap();
+        assert!(first.contains("event: resync"), "{first}");
+        assert!(first.contains("\"source\":\"authbot\""), "{first}");
+        assert!(first.contains("\"resync\":true"), "{first}");
     }
 
     #[tokio::test]

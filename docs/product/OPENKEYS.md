@@ -173,6 +173,17 @@ disabling. Filters work by batch, status and usage. The browser only talks to sa
 public `openkeys.apitoken.sale/api/internal/*` is closed with a `404` response, and the
 internal API never returns the full key or the AES-GCM ciphertext.
 
+The additive `GET /api/internal/admin/events` route is an SSE invalidation feed for these same
+managed-admin projections. A Next.js process-global singleton owns one PostgreSQL connection and
+`LISTEN openkeys_admin_changes`; browser streams subscribe to its in-memory fanout instead of each
+holding a database connection. Listener acquisition is single-flight, stays process-wide after the
+last stream closes, and a subscriber's initial `resync` waits for the first `LISTEN` attempt, closing
+the otherwise possible gap between its refetch and notification readiness.
+Events contain only the source, an allowlisted table name and
+affected `/openkeys-admin/*` resource prefixes. An initial or post-reconnect `resync` compensates
+for non-durable `NOTIFY`; comment heartbeats are transport keepalive and never trigger data reads.
+The route applies `internalAdminActor` exactly like the JSON admin endpoints.
+
 ### Bulk control by issuing admin
 
 The same section lists the issuing admins above the catalog. An admin is not a table row:

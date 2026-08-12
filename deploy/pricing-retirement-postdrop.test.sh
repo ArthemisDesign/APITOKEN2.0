@@ -35,8 +35,8 @@ base=$(git -C "$repo" rev-parse HEAD)
   || fail 'unchanged range selected a post-drop stage'
 
 mkdir -p "$repo/packages/db/migrations"
-printf 'SELECT 1;\n' >"$repo/packages/db/migrations/0048_retire_pricing_schema.sql"
-git -C "$repo" add packages/db/migrations/0048_retire_pricing_schema.sql
+printf 'SELECT 1;\n' >"$repo/packages/db/migrations/0049_retire_pricing_schema.sql"
+git -C "$repo" add packages/db/migrations/0049_retire_pricing_schema.sql
 git -C "$repo" commit -q -m commerce
 commerce_sha=$(git -C "$repo" rev-parse HEAD)
 [[ $(wd_pricing_retirement_postdrop_stage "$repo" "$base" "$commerce_sha") == commerce ]] \
@@ -79,9 +79,9 @@ prp_psql_ro() {
     *pricing-retirement-postdrop:commerce-journal*)
       if [[ $JOURNAL_MODE == good ]]; then
         if [[ -n ${JOURNAL_FORWARD_HASH:-} ]]; then
-          printf '1\t1\t%s\t50\t50\t1788948001000\n' "$JOURNAL_FORWARD_HASH"
+          printf '1\t1\t%s\t51\t51\t1788948001000\n' "$JOURNAL_FORWARD_HASH"
         else
-          printf '1\t1\t%s\t49\t49\t1788948000000\n' "$COMMERCE_CONTRACTION_HASH"
+          printf '1\t1\t%s\t50\t50\t1788948000000\n' "$COMMERCE_CONTRACTION_HASH"
         fi
       else
         printf '1\t1\t%s\t48\t49\t1788947000000\n' \
@@ -125,20 +125,20 @@ printf 'DROP TABLE public.retired_table;\n' \
 node - "$CANDIDATE/packages/db/migrations/meta/_journal.json" <<'NODE'
 const fs = require("node:fs");
 const destination = process.argv[2];
-const entries = Array.from({ length: 49 }, (_, idx) => ({
+const entries = Array.from({ length: 50 }, (_, idx) => ({
   idx,
   version: "7",
   when: 1788947952000 + idx * 1000,
   tag: `fixture_${String(idx).padStart(4, "0")}`,
   breakpoints: true,
 }));
-entries[48].tag = "0048_retire_pricing_schema";
-entries[48].when = 1788948000000;
+entries[49].tag = "0049_retire_pricing_schema";
+entries[49].when = 1788948000000;
 fs.writeFileSync(destination, `${JSON.stringify({ version: "7", dialect: "postgresql", entries })}\n`);
 NODE
 fixture_contraction_hash=$(wd_sha256_file "$CANDIDATE/$COMMERCE_CONTRACTION_REL")
 {
-  printf 'entry=00000048 %s 0048_retire_pricing_schema\n' \
+  printf 'entry=00000049 %s 0049_retire_pricing_schema\n' \
     bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   printf 'file=%s %s\n' "$fixture_contraction_hash" "$COMMERCE_CONTRACTION_REL"
 } >"$TEMP/candidate-migrations.manifest"
@@ -149,29 +149,29 @@ if ( prp_verify_commerce_journal ) >/dev/null 2>&1; then
 fi
 JOURNAL_MODE=good
 
-printf 'SELECT 1;\n' >"$CANDIDATE/packages/db/migrations/0049_forward_fix.sql"
+printf 'SELECT 1;\n' >"$CANDIDATE/packages/db/migrations/0050_forward_fix.sql"
 JOURNAL_FORWARD_HASH=$(wd_sha256_file \
-  "$CANDIDATE/packages/db/migrations/0049_forward_fix.sql")
+  "$CANDIDATE/packages/db/migrations/0050_forward_fix.sql")
 node - "$CANDIDATE/packages/db/migrations/meta/_journal.json" <<'NODE'
 const fs = require("node:fs");
 const path = process.argv[2];
 const journal = JSON.parse(fs.readFileSync(path, "utf8"));
 journal.entries.push({
-  idx: 49,
+  idx: 50,
   version: "7",
   when: 1788948001000,
-  tag: "0049_forward_fix",
+  tag: "0050_forward_fix",
   breakpoints: true,
 });
 fs.writeFileSync(path, `${JSON.stringify(journal)}\n`);
 NODE
 {
-  printf 'entry=00000049 %s 0049_forward_fix\n' \
+  printf 'entry=00000050 %s 0050_forward_fix\n' \
     cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-  printf 'file=%s packages/db/migrations/0049_forward_fix.sql\n' "$JOURNAL_FORWARD_HASH"
+  printf 'file=%s packages/db/migrations/0050_forward_fix.sql\n' "$JOURNAL_FORWARD_HASH"
 } >>"$TEMP/candidate-migrations.manifest"
 prp_verify_commerce_journal >/dev/null \
-  || fail 'commerce journal verifier rejected an exact append-only forward fix after 0048'
+  || fail 'commerce journal verifier rejected an exact append-only forward fix after 0049'
 
 {
   printf '%s\n' 'pub const CURRENT_SCHEMA_VERSION: i64 = 49;'
