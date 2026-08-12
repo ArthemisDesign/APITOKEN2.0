@@ -11,6 +11,7 @@ const SOURCE_NAMES: Record<string, string> = {
   "/gemini-subs": "Gemini-подписки",
   "/kimi-subs": "KIMI-подписки",
   "/glm-subs": "GLM-подписки",
+  "/tripo3d-subs": "Tripo3D-подписки",
   "/fleet-history": "История флота",
   "/partner-admin/overview": "Партнёрская сводка",
   "/partner-admin/partner-analytics": "Партнёрские аккаунты",

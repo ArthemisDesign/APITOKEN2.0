@@ -313,7 +313,7 @@ Each `unknown` fails closed and is cleared only by a controlled live run on our 
 | task-lifecycle gateway + durable billing | `crates/forward/src/tripo3d/{gateway,upload,artifacts}.rs`, `crates/forward/src/billing.rs` | done (this commit) |
 | server wiring | `crates/server/src/{config,main,poller,http}.rs` | done (this commit) |
 | observability / admin projection | `observability/**`, `docs/ops/MONITORING.md`, `GET /tripo3d-subs` | done (this commit) |
-| admin UI consumer | `apps/admin` | pending |
+| admin UI consumer | `apps/admin` | done (this commit) — capacity board + fleet card reading `GET /tripo3d-subs`; no Caddy route/systemd unit by design (dormant plane → the page shows the null state) |
 | safe live-runner | `tools/tripo3d_calibration/`, `docs/ops/TRIPO3D_CALIBRATION.md` | pending |
 | production activation boundary | systemd/Caddy — default-off pins only | pending (dormant) |
 | live matrix on our account | — | **account needed (blocked on a human)** |

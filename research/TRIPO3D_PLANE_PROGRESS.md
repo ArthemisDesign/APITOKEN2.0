@@ -26,6 +26,8 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 
 | Server wiring + observability + admin projection | (this commit) | `crates/server`: `config.rs` (`CLAUDE_API_TRIPO3D_{ENABLED,ROSTER_DIR,CREDENTIAL_KEYS,CREDENTIAL_ACTIVE_KID,BALANCE_POLL_SECS,ARTIFACT_DIR}` strict default-off, `CLAUDE_API_TRIPO3D_BASE_URL` rejected as unknown — origin is per-profile in the sealed credential; `CLAUDE_API_PROVIDER=tripo3d` → `ProviderMode::Tripo3d`), `main.rs` (compose + PG-billing guard + degraded-gateway fallback + shutdown drain before the billing flush), `poller.rs` `tripo3d_maintenance_loop` (15 s roster discovery + balance sweep cadence only), `http.rs` (Tripo3d router arm: common + `/tripo3d-subs` + `/v1/3d/generations|uploads/image|uploads/model|tasks/{id}|tasks/{id}/artifact/{name}` + bounded 404 fallback; `/ready` tracks gateway readiness; `write_tripo3d_operational_metrics` — 20+ fixed-cardinality `claude_api_tripo3d_*` series, no profile/task labels); admin projection `GET /tripo3d-subs` (control key; disabled envelope without the plane; privacy-safe per-profile status + joined calibration rows via `profile_id_for_subject`, unknown stays null); `observability/prometheus/rules/application.yml` `tripo3d-provider` group (7 alerts, all gated on `claude_api_tripo3d_enabled == 1`) + same-named runbook sections in `docs/ops/MONITORING.md` + `deploy/monitoring-config.test.sh` block + the settlement collector's bounded provider list extended with `tripo3d`; `docs/DEPENDENCIES.md` gains the authbot→plane roster channel row; `crates/server/CLAUDE.md` gains the plane contract |
 
+| Admin control room consumer | (this commit) | `apps/admin` subscriptions control room reads `GET /tripo3d-subs` (same-origin fetch, `.catch(() => null)` degradation): `types.ts` `Tripo3dSubsResponse` block mirrored from the serialized producer fields, `logic.ts` `tripo3d*` helper family (status axes = runtime admission hard/soft: balance wall, rate-limit/auth/transport cooling, probe-less `live:false` → `ждём данные`, stale → `обновляем`; fail-closed BigInt fleet money), `tripo3d-capacity-board.tsx` (windowless balance track: verbatim raw halves, exact remaining/full API-$, native micro-units column, one row per identity), fleet card `tripo3d` with a single `баланс` rail (no invented used share), banner/`fleetWarn`/`fleetTotal` wiring, `sources.ts` name, `RESERVED_EXACT` reservation, CSS accents; SSR tests for exact money, privacy mask, null/stale/wall/cooling/pending, BigInt sums, one-row-per-identity; NO Caddy route or systemd unit — dormant plane, the page degrades to `нет связи` by design |
+
 ## Key research facts (review date 2026-08-12)
 
 - Two billing systems: Studio subscriptions (web) vs API platform (prepaid credits). Provider =
@@ -72,10 +74,10 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 
 ## Next action (exactly one)
 
-Admin control room consumer (`apps/admin`, separate commit) reading `GET /tripo3d-subs`; then the
-safe live-runner (`tools/tripo3d_calibration/`, `docs/ops/TRIPO3D_CALIBRATION.md`). The engine
+Safe live-runner (`tools/tripo3d_calibration/`, `docs/ops/TRIPO3D_CALIBRATION.md`). The engine
 chain (primitives → migration 0051 → pricing → gateway/uploads/billing → server/observability)
-is delivered and dormant: nothing in production units, Caddy or the router exposes the plane.
+and the admin control room consumer are delivered and dormant: nothing in production units,
+Caddy or the router exposes the plane, so the admin board renders its null state by design.
 The runtime gates left for live evidence: the STS signing region, `consumed_credit` precision,
 balance unit semantics, result-URL TTL pin — all fail closed until the owned-account matrix.
 

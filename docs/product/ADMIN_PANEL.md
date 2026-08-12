@@ -118,7 +118,10 @@ domain grants. Caddy same-origin proxies the depersonalized `/capacity`, `/codex
 plane with its own stable loopback origin `127.0.0.1:8803`; GLM remains a backend inside the
 Anthropic runtime. Caddy adds
 the server keys; the browser never receives control keys, OAuth, Google project, KIMI/GLM
-subject, keys or proxy. Full account email has one narrow exception described below for the
+subject, keys or proxy. `/tripo3d-subs` is fetched the same way but intentionally has no
+Caddy origin yet — the Tripo3D plane is dormant, and the subscriptions page degrades to its
+null state until the plane is activated. Full account email has one narrow exception
+described below for the
 closed managed-admin `/proxies` response; the other subscription routes remain masked. The
 protection applies to all pages, including `/sales/calculator`.
 
@@ -373,7 +376,7 @@ backend `/codex-subs` without any money authority of its own:
   movement appears the UI shows the short `ждём Δquota` ("waiting for Δquota"), never
   substituting zero or a prior.
 
-## Claude, Gemini, KIMI and GLM capacity boards
+## Claude, Gemini, KIMI, GLM and Tripo3D capacity boards
 
 The Claude block of `/subscriptions` deliberately keeps only one compact accounts table:
 bounded email hint, routing/auth state, quota+reset and exact available/full API-$
@@ -385,13 +388,17 @@ table; the separate local summary strip, model-quota and profitability tables ha
 removed. The old StatCard sets, proxy/transport details and long calibration explanations
 are not surfaced on the main screen. In all pools the identity on the left is bounded: for
 Claude/GPT/Gemini — an email hint (first four characters of the local part without the
-domain), for KIMI and GLM — an opaque roster id (email/subject/key are absent from the
-wire entirely).
+domain), for KIMI, GLM and Tripo3D — an opaque roster id (email/subject/key are absent from
+the wire entirely).
 
-Above the details sits a unified control room of five Claude/GPT/Gemini/KIMI/GLM cards.
-Each has only two equally readable rails: `5ч` ("5h") and `7д` ("7d") (KIMI and GLM label
+Above the details sits a unified control room of six Claude/GPT/Gemini/KIMI/GLM/Tripo3D
+cards.
+Each card shows the provider's real rails: `5ч` ("5h") and `7д` ("7d") for the pools that
+have them (KIMI and GLM label
 the rails with the real `duration_secs`: 18000 → `5ч`, 604800 → `7д`, without fictitious
-equivalents), current remaining / full-window API-$, used share, the number of routable
+equivalents; Tripo3D has no windows — prepaid balance never resets — so its single rail is
+`баланс`, the fail-closed remaining/full of the balance track, and a used share is not
+invented for it), current remaining / full-window API-$, used share, the number of routable
 identities and coverage. This is the main screen for comparing the capacity being sold;
 per-account details follow below without additional cache/model/token matrices. Instead of
 false money the Claude card immediately shows `N сохраняется` ("N being saved"), `N
@@ -399,7 +406,7 @@ false money the Claude card immediately shows `N сохраняется` ("N bei
 same fail-closed contract and does not show stale API-$ under pending/degraded exact
 authority. Its fresh provider quota/reset remains visible, while the money cell compactly
 says `обновляем` ("refreshing"): a dollar-evidence failure must not blind the operator to
-the real quota wall. KIMI and GLM hold the same contract on their delivery FIFOs.
+the real quota wall. KIMI, GLM and Tripo3D hold the same contract on their delivery FIFOs.
 
 Claude is built from `/capacity`:
 
@@ -526,3 +533,25 @@ money, while fresh quota/reset and native counters remain visible. A stale snaps
 minutes) says `обновляем` ("refreshing"); fleet sums in the strip are computed only over
 profiles whose row shows real money, and null on any of them makes the total unknown
 rather than a partial sum.
+
+Tripo3D is built from `/tripo3d-subs` (an `enabled:false` envelope is shown as
+"Tripo3D-контур выключен" — "Tripo3D plane disabled"; the plane is dormant and has no
+production Caddy origin yet, so until activation the fetch fails and the board shows the
+null state `нет связи` — "no connection" — by design) and repeats the same compact
+contract on a windowless balance track: prepaid API credits never reset
+(`docs/engine/TRIPO3D_PROVIDER.md` §5.3), so there are no 5h/7d columns and no fictitious
+equivalents — one row per identity, one money column per account. The profile identity is
+only an opaque roster id and the bounded top-up cohort; subject (key digest), the API key,
+proxy, base_url and credential path are never serialized or displayed. The provider's
+verbatim balance halves (`balance_raw`/`frozen_raw`) stay visible as live facts — never
+recomputed, never zero-filled — while the parsed micro-unit remainder appears in a separate
+compact column as exact integers, null stays `—`. Saleable API-$ is only the calibrated
+`api_nano`/`current_nano` decimal strings, all arithmetic in BigInt; the unknown stays
+`ждём данные` ("waiting for data") and never `$0`. A HARD balance verdict
+(`balance_walled`) says `баланс исчерпан` ("balance exhausted"), cooling on any of the
+three axes (rate-limit/auth/transport) counts down, a key without a passed probe
+(`live:false`) and missing evidence say `ждём данные`, a stale snapshot (>10 minutes) says
+`обновляем` ("refreshing"); pending/dropped delivery and a persistence error hide saleable
+money behind `сохраняется`/`обновляем`. Fleet sums are computed only over profiles whose
+row shows real money, and null on any of them makes the total unknown rather than a
+partial sum.

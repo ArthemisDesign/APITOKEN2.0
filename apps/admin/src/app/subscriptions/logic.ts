@@ -1,10 +1,10 @@
 // Чистая логика страницы «Подписки» — порт вычислений из subscriptions()
-// (crates/server/src/admin-panel.js): баннер флота, статусы Claude/GPT/Gemini/KIMI/GLM,
-// пороговые бары. Вынесена из JSX ради юнит-тестов.
+// (crates/server/src/admin-panel.js): баннер флота, статусы Claude/GPT/Gemini/KIMI/GLM/
+// Tripo3D, пороговые бары. Вынесена из JSX ради юнит-тестов.
 import { count, duration } from "@/lib/format";
 import type { Tone } from "@/components/ui";
 import { providerInteger } from "./provider-calibration";
-import type { CodexHome, GeminiProfile, GlmProfile, KimiProfile } from "./types";
+import type { CodexHome, GeminiProfile, GlmProfile, KimiProfile, Tripo3dProfile } from "./types";
 
 // deadLabel: причина смерти Claude-токена → русская подпись пилюли.
 export function deadLabel(reason: string | null | undefined): string {
@@ -461,6 +461,103 @@ export function glmMeasuredCoverage(
   return { measured, observed: profiles.length };
 }
 
+/* ── Tripo3D ───────────────────────────────────────────── */
+
+// Возраст evidence, после которого snapshot считается протухшим (как snapshot_age_secs у GPT).
+const TRIPO3D_STALE_SECS = 600;
+
+export interface Tripo3dCoolingAxis {
+  name: string;
+  until: number;
+}
+
+// tripo3dActiveCoolingAxes: активные cooling-оси (rate-limit/auth/transport) с их until.
+// Balance wall — отдельный HARD verdict, а не timed ось, поэтому здесь его нет:
+// он обрабатывается в tripo3dProfileStatus отдельно.
+export function tripo3dActiveCoolingAxes(profile: Tripo3dProfile, nowSec: number): Tripo3dCoolingAxis[] {
+  const cooling = profile.cooling;
+  return [
+    { name: "rate-limit", until: Number(cooling?.rate_limit_until ?? 0) },
+    { name: "auth", until: Number(cooling?.auth_until ?? 0) },
+    { name: "транспорт", until: Number(cooling?.transport_until ?? 0) },
+  ].filter((axis) => axis.until > nowSec);
+}
+
+// tripo3dLastObservedAt: свежайшая метка evidence профиля (balance-probe или замер
+// калибровки); null — наблюдений ещё не было.
+export function tripo3dLastObservedAt(profile: Tripo3dProfile): number | null {
+  const stamps = [
+    Number(profile.balance?.observed_at ?? 0),
+    Number(profile.calibration?.last_measured_at ?? 0),
+  ].filter((value) => value > 0);
+  return stamps.length ? Math.max(...stamps) : null;
+}
+
+export type Tripo3dEvidenceState = "fresh" | "stale" | "empty";
+
+export function tripo3dEvidenceState(profile: Tripo3dProfile, nowSec: number): Tripo3dEvidenceState {
+  const observed = tripo3dLastObservedAt(profile);
+  if (observed == null) return "empty";
+  return nowSec - observed > TRIPO3D_STALE_SECS ? "stale" : "fresh";
+}
+
+// tripo3dProfileStatus: состояние профиля целиком, оси — ровно допуск runtime
+// (selection hard/soft): balance_walled (HARD provider verdict) → «баланс исчерпан»;
+// активные cooling-оси — с отсчётом до последнего until; ключ без прошедшего probe
+// (live:false) и полное отсутствие наблюдений → «ждём данные»; протухшие данные →
+// «обновляем» (null не превращается в 0).
+export function tripo3dProfileStatus(profile: Tripo3dProfile, nowSec: number): StatusPill {
+  if (profile.balance_walled === true) return { label: "баланс исчерпан", kind: "warn" };
+  const axes = tripo3dActiveCoolingAxes(profile, nowSec);
+  if (axes.length > 0) {
+    const last = Math.max(...axes.map((axis) => axis.until));
+    const names = axes.map((axis) => axis.name).join("+");
+    return { label: `cooling ${names} ${duration(last - nowSec)}`, kind: "warn" };
+  }
+  if (profile.live !== true) return { label: "ждём данные", kind: "warn" };
+  const evidence = tripo3dEvidenceState(profile, nowSec);
+  if (evidence === "empty") return { label: "ждём данные", kind: "warn" };
+  if (evidence === "stale") return { label: "обновляем", kind: "warn" };
+  return { label: "active", kind: "ok" };
+}
+
+// tripo3dFleetMoney: сумма calibrated remaining/capacity баланс-трека только по
+// профилям, чьи деньги продаваемы прямо сейчас (probe подтверждён, нет balance wall,
+// без активной cooling-оси, без протухшего snapshot) — ровно тем, чья строка показывает
+// реальные API-$. Fail-closed: пустой набор или null у любого такого профиля делает
+// итог неизвестным — никогда не частичная сумма и никогда не $0 вместо неизвестного.
+export function tripo3dFleetMoney(
+  profiles: Tripo3dProfile[],
+  nowSec: number,
+): { capacity: string | null; remaining: string | null } {
+  const contributing = profiles.filter(
+    (profile) =>
+      profile.live === true
+      && profile.balance_walled !== true
+      && tripo3dActiveCoolingAxes(profile, nowSec).length === 0
+      && tripo3dEvidenceState(profile, nowSec) !== "stale",
+  );
+  if (!contributing.length) return { capacity: null, remaining: null };
+  let capacity = 0n;
+  let remaining = 0n;
+  for (const profile of contributing) {
+    const current = providerInteger(profile.calibration?.capacity?.current_nano ?? null);
+    const api = providerInteger(profile.calibration?.remaining?.api_nano ?? null);
+    if (current == null || api == null) return { capacity: null, remaining: null };
+    capacity += current;
+    remaining += api;
+  }
+  return { capacity: capacity.toString(), remaining: remaining.toString() };
+}
+
+// tripo3dMeasuredCoverage: доля профилей с реальными замерами (samples > 0) на треке.
+export function tripo3dMeasuredCoverage(
+  profiles: Tripo3dProfile[],
+): { measured: number; observed: number } {
+  const measured = profiles.filter((profile) => Number(profile.calibration?.samples ?? 0) > 0).length;
+  return { measured, observed: profiles.length };
+}
+
 export interface FleetBanner {
   kind: "ok" | "warn" | "bad";
   title: string;
@@ -485,6 +582,9 @@ export interface FleetBannerInput {
   glmDown: boolean;
   glmEmpty: boolean;
   glmUnavailable: boolean;
+  tripo3dDown: boolean;
+  tripo3dEmpty: boolean;
+  tripo3dUnavailable: boolean;
   claudeCount: number;
   /** homes.length или «выкл.» при отключённом контуре. */
   gptSummary: number | string;
@@ -494,6 +594,8 @@ export interface FleetBannerInput {
   kimiSummary: number | string;
   /** profiles.length или «выкл.». */
   glmSummary: number | string;
+  /** profiles.length или «выкл.». */
+  tripo3dSummary: number | string;
   /** Уже отформатированная метка обновления (formatDate(Date.now(), true)). */
   updatedAt: string;
 }
@@ -600,6 +702,24 @@ export function resolveBanner(input: FleetBannerInput): FleetBanner {
       title: "GLM: нет доступных профилей",
       sub: "все профили dead/suspect, cooling по одной из осей или вне ротации — ёмкость временно не продаётся",
     };
+  if (input.tripo3dDown)
+    return {
+      kind: "warn",
+      title: "Tripo3D-контур не отвечает",
+      sub: "/tripo3d-subs недоступен — плоскость пока dormant: production origin не настроен, данные появятся после активации",
+    };
+  if (input.tripo3dEmpty)
+    return {
+      kind: "warn",
+      title: "В Tripo3D-пуле нет профилей",
+      sub: "плоскость включена, но roster ещё пуст — ни одного API-ключа не опубликовано",
+    };
+  if (input.tripo3dUnavailable)
+    return {
+      kind: "warn",
+      title: "Tripo3D: нет доступных профилей",
+      sub: "все профили balance-walled, cooling по одной из осей или вне ротации — ёмкость временно не продаётся",
+    };
   if (input.suspect)
     return {
       kind: "warn",
@@ -610,7 +730,7 @@ export function resolveBanner(input: FleetBannerInput): FleetBanner {
     };
   return {
     kind: "ok",
-    title: "Все пять флотов подписок в ротации",
-    sub: `Claude ${input.claudeCount} · GPT ${input.gptSummary} · Gemini ${input.geminiSummary} · KIMI ${input.kimiSummary} · GLM ${input.glmSummary} · обновлено ${input.updatedAt}`,
+    title: "Все шесть флотов подписок в ротации",
+    sub: `Claude ${input.claudeCount} · GPT ${input.gptSummary} · Gemini ${input.geminiSummary} · KIMI ${input.kimiSummary} · GLM ${input.glmSummary} · Tripo3D ${input.tripo3dSummary} · обновлено ${input.updatedAt}`,
   };
 }

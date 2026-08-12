@@ -766,3 +766,94 @@ export interface GlmSubsResponse {
   window_totals?: GlmWindowTotal[];
   profiles?: GlmProfile[];
 }
+
+// GET /tripo3d-subs — Tripo3D (VAST API platform) профили (dedicated dormant plane
+// `ProviderMode::Tripo3d`). Окон нет: prepaid баланс никогда не сбрасывается, поэтому
+// единственный трек — balance remaining/full, а cohort заменяет plan+window как ось
+// (docs/engine/TRIPO3D_PROVIDER.md §5.3). Деньги — decimal nano strings (BigInt); native
+// counters — exact integers (micro-units прованной единицы, пока единица не доказана — null);
+// неизвестное — null, никогда не 0. Subject (digest ключа), ключ, proxy, base_url и
+// credential path не сериализуются никогда: идентичность — opaque roster id + bounded cohort.
+export interface Tripo3dBalanceEvidence {
+  /** epoch-секунды последнего balance-probe; null — наблюдений ещё не было. */
+  observed_at?: number | null;
+  /** Verbatim текст провайдера; parsed halves — micro-units либо null, пока unit не доказан. */
+  balance_raw?: string | null;
+  frozen_raw?: string | null;
+  balance_micro_units?: number | null;
+  frozen_micro_units?: number | null;
+}
+
+export interface Tripo3dCalibration {
+  cohort?: string;
+  samples?: number;
+  confidence_bp?: number;
+  capacity?: {
+    current_nano?: string | null;
+    low_nano?: string | null;
+    high_nano?: string | null;
+  } | null;
+  /** null целиком, пока неизвестны обе половины баланса; api_nano — remaining sellable API-$. */
+  remaining?: {
+    native_micro_units?: number | null;
+    api_nano?: string | null;
+  } | null;
+  observed_spend_nano?: string;
+  observed_spend_native_millicredits?: number;
+  last_measured_at?: number | null;
+  estimator_version?: number;
+}
+
+export interface Tripo3dProfile {
+  /** Opaque roster id; subject/key/proxy/base_url не покидают runtime. */
+  id?: string;
+  /** Declared top-up cohort (bounded, lowercase-normalized). */
+  cohort?: string;
+  /** Баланс-probe прошёл на этом поколении runtime. Не ось допуска: допуск решают
+   *  hard (rate-limit/balance wall/shortfall) и soft (auth/transport) оси. */
+  live?: boolean;
+  /** HARD balance verdict (403 + code 2010): resting, пока probe не покажет средства. */
+  balance_walled?: boolean;
+  /** Три cooling-оси; epoch-секунды окончания либо null. */
+  cooling?: {
+    rate_limit_until?: number | null;
+    auth_until?: number | null;
+    transport_until?: number | null;
+  } | null;
+  inflight?: number;
+  balance?: Tripo3dBalanceEvidence | null;
+  calibration?: Tripo3dCalibration | null;
+}
+
+export interface Tripo3dDelivery {
+  pending_events?: number;
+  dropped_events?: number;
+  persistence_ok?: boolean;
+}
+
+export interface Tripo3dFleet {
+  profiles?: number;
+  live_profiles?: number;
+  available_profiles?: number;
+  inflight_requests?: number;
+  inflight_drains?: number;
+  tracked_tasks?: number;
+  rate_limited_profiles?: number;
+  balance_walled_profiles?: number;
+  auth_cooling_profiles?: number;
+  transport_cooling_profiles?: number;
+  missing_consumed_credit?: number;
+  tariff_anomaly?: number;
+  undocumented_final?: number;
+  artifact_failures?: number;
+}
+
+export interface Tripo3dSubsResponse {
+  /** epoch-секунды «сейчас» по часам runtime (сбросы считаются от него). */
+  now?: number;
+  enabled?: boolean;
+  delivery?: Tripo3dDelivery | null;
+  calibration_authority_available?: boolean;
+  fleet?: Tripo3dFleet | null;
+  profiles?: Tripo3dProfile[];
+}
