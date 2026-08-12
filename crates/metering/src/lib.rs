@@ -17,6 +17,7 @@ pub mod gemini;
 pub mod glm;
 pub mod kimi;
 pub mod openai_image;
+pub mod tripo3d;
 pub use codex::{
     codex_catalog_at, codex_compiled_credit_rates, codex_compiled_tariffs_at,
     codex_credit_cost_nano, codex_credit_cost_nano_with_rates, codex_credit_rates,
@@ -50,6 +51,13 @@ pub use openai_image::{
     openai_image_tariff_family, OpenAiImageMeteringError, OpenAiImagePrices,
     OpenAiImageTariffIdentity, OpenAiImageUsage, GPT_IMAGE_2_ALIAS, GPT_IMAGE_2_SNAPSHOT,
     OPENAI_IMAGE_ALIAS_GENERATION, OPENAI_IMAGE_TARIFF_FAMILY, OPENAI_IMAGE_TARIFF_SCHEDULE_ID,
+};
+pub use tripo3d::{
+    tripo3d_animate_retarget_credits, tripo3d_convert_model_credits, tripo3d_cost_nanodollars,
+    tripo3d_edit_multiview_image_credits, tripo3d_tariff_family, tripo3d_tariff_schedule_id,
+    tripo3d_task_credits, Tripo3dConvertMode, Tripo3dGeometryQuality, Tripo3dMeteringError,
+    Tripo3dOptions, Tripo3dTaskKind, Tripo3dTextureQuality, TRIPO3D_NANOUSD_PER_CREDIT,
+    TRIPO3D_TARIFF_FAMILY, TRIPO3D_TARIFF_SCHEDULE_ID,
 };
 
 pub const NANO_PER_USD: i128 = 1_000_000_000;

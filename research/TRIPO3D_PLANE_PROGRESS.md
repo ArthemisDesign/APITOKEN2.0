@@ -13,6 +13,7 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 | Ledger skeleton | e9b0494e | scope, plan, open seams |
 | Pre-flight + wiring maps | 1e15c793 | baseline `cargo build --locked` green (1m12s, warnings only); `git push -u origin HEAD` works; engine wiring map and authbot/admin wiring map collected (KIMI/GLM as templates); reference manifests studied: KIMI, GLM |
 | Research + capability manifest | (this commit) | `docs/engine/TRIPO3D_PROVIDER.md`; full official docs + ToS + SDK research 2026-08-12; key facts below |
+| Metering tariff | (this commit) | `crates/metering/src/tripo3d.rs`; official per-task rate card §5.1, fail-closed catalog §3, checked nanoUSD at $0.01/credit; 16 exact-vector tests |
 
 ## Key research facts (review date 2026-08-12)
 
@@ -53,13 +54,16 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 
 ## Open seams
 
-- Metering tariff `crates/metering/src/tripo3d.rs` — next code step.
-- Everything downstream of the manifest (see Queue).
+- Resolved metering ambiguities now baked into the tariff: P1 rejects surcharges (all-in);
+  `highpoly_to_lowpoly` fails closed on both conflicted version spellings; `generate_image`
+  priced at the conservative upper bound 10; mesh-completion `P-v2.0-20251225` fails closed.
+- Everything downstream of the tariff (see Queue).
 
 ## Next action (exactly one)
 
-Write `crates/metering/src/tripo3d.rs` (official per-task credit rate card from manifest §5.1,
-nanoUSD conversion at $0.01/credit, checked math, fail-closed catalog) + full metering tests.
+Migration `crates/registry/migrations_pg/0049_tripo3d_calibration.sql` (expand-only, separate
+commit) — calibration schema sized to the manifest §5.3 ledger model (API-nanoUSD + native
+millicredits ledgers, balance-track sentinel instead of a quota window).
 
 ## Queue
 
