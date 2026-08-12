@@ -37,8 +37,9 @@ duplicate legs are deduplicated by the exact alias/context/effort triple.
   (`kimi-live-calibration-plan/v1` with per-leg `upper_bound_nanousd`) and exits with code
   0. No live request is sent without `--execute`.
 - `--budget-usd` is parsed by a strict decimal parser (no float/exponent) into integer
-  nanoUSD, default `0.0001`; values above the hard cap of `0.0001` USD (= `100_000`
-  nanoUSD) are a CLI error. The budget is a single aggregate for the entire run.
+  nanoUSD, default `0.0001`; values above the hard cap of `10.00` USD (= `10_000_000_000`
+  nanoUSD, the aggregate ceiling authorized by the product owner on 2026-08-07) are a CLI
+  error. The budget is a single aggregate for the entire run.
 - Before every paid request, a worst-case upper bound is built from the official rate card
   of the served model: the full accepted input context of the alias at the miss rate (cache
   write == miss, hit is cheaper) plus the entire requested max output. Billing follows the
@@ -103,13 +104,13 @@ python3 tools/kimi_calibration/run_live.py \
   --report /tmp/kimi-calibration-report.json
 ```
 
-`$0.0001` is the hard default ceiling of the aggregate budget for the entire run: a larger
-value cannot be passed through the CLI. The production SSH path reads `/kimi-subs` and
-sends paid turns to the loopback of the KIMI plane's stable origin (`127.0.0.1:8803`); the
-forwarding-admin key is disclosed only inside the remote shell (`${CLAUDE_API_KEYS%%,*}`),
-the control key is `$CLAUDE_API_CONTROL_KEY`, and no secret is returned over SSH. 1m legs
-require a reviewed plan: `--one-m-plans Allegretto Allegro Vivace` (by default the list is
-empty, and 1m is recorded as unavailable).
+`$0.0001` is the default value of the aggregate budget: anything larger must be passed
+explicitly, and nothing above the owner-authorized `$10.00` hard cap passes the CLI at all. The
+production SSH path reads `/kimi-subs` and sends paid turns to the loopback of the KIMI plane's
+stable origin (`127.0.0.1:8803`); the forwarding-admin key is disclosed only inside the remote
+shell (`${CLAUDE_API_KEYS%%,*}`), the control key is `$CLAUDE_API_CONTROL_KEY`, and no secret is
+returned over SSH. 1m legs require a reviewed plan: `--one-m-plans Allegretto Allegro Vivace`
+(by default the list is empty, and 1m is recorded as unavailable).
 
 Preflight checklist (everything is mandatory):
 
@@ -132,28 +133,41 @@ fails closed.
 
 ## Capability probes (tools and media)
 
-The plane refuses `tools`, `tool_choice`, `mcp_servers` and media parts with
-`kimi_tools_unpriced` / `kimi_media_unpriced`. That is not a missing feature: unknown 8 of the
-manifest is "the existence and cost of paid tool/search units on the subscription route", and the
-onboarding contract forbids dispatching a paid capability before a finite per-request unit ceiling
-is proved. A caller therefore cannot use tools or images on KIMI today.
+The gateway already accepts client-side tool declarations, `tool_use`/`tool_result` blocks and
+inline media parts: they are text in the request body, and the customer hold reserves one
+input-token price per body byte, so their cost is bounded before dispatch. What stays refused
+with `kimi_tools_unpriced` is provider-executed work — `mcp_servers` and server-side
+search/computer/code-execution tools — because it may bill a unit that is invisible in the body
+(unknown 8 of the manifest).
 
-These probes are how that changes. They carry their own authorization, separate from the coverage
-budget, because their cost is exactly what is unproven — letting them share `--budget-usd` would
-hide an unbounded spend behind a bounded one:
+What the probes still have to prove is on the provider side: that the subscription route actually
+accepts an image part and that the metered cost of a tool declaration or media part stays inside
+the hold bound. The media probe is the gate for advertising `image_input` in the unified router
+catalog — the official models page declares image input for every published subscription id
+(reviewed 2026-08-12), but a declaration is not live proof. The probes carry their own
+authorization switch, separate from the coverage budget, because their cost is exactly what is
+unproven:
 
 ```bash
 python3 tools/kimi_calibration/run_live.py \
   --execute --profile <opaque-profile-id> \
   --production-capacity-over-ssh --production-api-over-ssh \
-  --budget-usd 0.0001 \
+  --budget-usd 2.00 \
   --capability-probe-budget-usd 0.0001 \
   --report /tmp/kimi-calibration-report.json
 ```
 
-Without `--capability-probe-budget-usd` the probes are recorded in `unavailable_capabilities` with
-`skipped_before_dispatch: true` and a reason naming the unproven cost — never silently omitted, so
-an untested capability can never read as a tested one.
+`--capability-probe-budget-usd` is the explicit human authorization for probe legs (hard-capped
+at `0.0001` USD; omitting it records the probes in `unavailable_capabilities` with
+`skipped_before_dispatch: true` — never silently dropped, so an untested capability can never
+read as a tested one). Dispatch is still guarded by the aggregate `--budget-usd` through the
+usual worst-case bound, and that bound prices the full accepted input context of the probed
+alias: ≈$0.79 for `k3-256k`, ≈$0.50 for `kimi-for-coding-highspeed`, ≈$0.25 for `kimi-for-coding`
+at the reviewed card. A probe run therefore needs an aggregate budget that covers every probed
+alias's bound (≈$1.54 for the three) — with the documented default `0.0001` no probe leg can
+dispatch, and the runner stops before spending, as designed. The authorized budget is a ceiling,
+not an estimate: the actual 1x1-PNG probe costs a small fraction of it, and the report accounts
+the observed spend separately.
 
 Each probe is the smallest thing that still exercises the surface: one tool with an empty schema
 that the model can call at most once, and a single 1x1 PNG part beside the prompt. They must stay

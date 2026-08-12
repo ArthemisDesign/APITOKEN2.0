@@ -1150,7 +1150,7 @@ def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
             "healthy-authority-and-empty-fifo",
             "full-input-context-miss-rate-plus-max-output-bound",
             "served-model-rate-card-including-thinking-off-reroute",
-            "single-aggregate-budget-hard-capped-at-0.0001-usd",
+            "single-aggregate-budget-hard-capped-at-10-usd",
             "no-paid-request-retry-after-transport-ambiguity",
             "post-turn-window-observation-before-quota-deltas",
             "reset-crossed-window-is-never-a-delta",
