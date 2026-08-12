@@ -1,4 +1,6 @@
+import type { PoolClient } from "pg";
 import type { SalesDatabase } from "./client.js";
+import { PARTNER_ACCOUNTING_LOCK_KEY } from "./reversal-accounting.js";
 
 // Пакетные on-chain выплаты. Двухфазно: prepare (собрать кандидатов, посчитать, создать батч в
 // статусе 'prepared') → send (по одному, симуляция → бродкаст → подтверждение). Деньги — nanoUSD.
@@ -17,7 +19,7 @@ export interface PayoutCandidate {
 
 /**
  * Кандидаты на выплату: АКТИВНЫЕ партнёры с привязанным BEP-20 кошельком и непогашенным балансом
- * (earned − committed[requested/approved/paid]) >= minNano и строго > 0. committed включает уже
+ * (gross + signed adjustments − committed[requested/approved/paid]) >= minNano и строго > 0.
  * созданные батчем 'requested'-строки, поэтому один баланс не попадёт в два батча. Адрес берём из
  * payout_details.address (формат уже проверен при привязке; checksum перепроверяет сервис через ethers).
  */
@@ -37,6 +39,9 @@ export async function getPayoutCandidates(database: SalesDatabase, minNano: bigi
                     UNION ALL
                     SELECT partner_id, amount_nano, created_at FROM commission_entries_v2
                   ) ce WHERE ce.partner_id = p.id AND ($1::timestamptz IS NULL OR ce.created_at < $1)), 0)
+        + COALESCE((SELECT SUM(adjustment.amount_nano)
+                    FROM partner_commission_adjustments adjustment
+                    WHERE adjustment.partner_id = p.id), 0)
         - COALESCE((SELECT SUM(po.amount_nano) FROM payouts po WHERE po.partner_id = p.id AND po.status IN ('requested','approved','paid')), 0)
       ) AS unpaid
     FROM partners p
@@ -62,6 +67,7 @@ export interface PayoutBatch {
   recipientCount: number;
   gasPriceGwei: string | null;
   minNano: bigint;
+  earnedBefore: Date | null;
   note: string | null;
   createdBy: string | null;
   error: string | null;
@@ -98,6 +104,7 @@ function mapBatch(r: Record<string, unknown>): PayoutBatch {
     recipientCount: Number(r.recipient_count),
     gasPriceGwei: (r.gas_price_gwei as string) ?? null,
     minNano: BigInt((r.min_nano as string) ?? "0"),
+    earnedBefore: (r.earned_before as Date) ?? null,
     note: (r.note as string) ?? null,
     createdBy: (r.created_by as string) ?? null,
     error: (r.error as string) ?? null,
@@ -130,6 +137,8 @@ export async function createPayoutBatch(database: SalesDatabase, input: {
   gasPriceGwei: string;
   hotWalletAddress: string;
   earnedBefore?: Date;
+  /** Optional caller-owned session that already holds PARTNER_ACCOUNTING_LOCK_KEY. */
+  accountingClient?: PoolClient;
   recipients: { partnerId: string; amountNano: bigint; walletAddress: string }[];
 }): Promise<PayoutBatch> {
   if (input.minNano < 0n) throw new InvalidPayoutBatchError("payout minimum cannot be negative");
@@ -143,9 +152,16 @@ export async function createPayoutBatch(database: SalesDatabase, input: {
       throw new InvalidPayoutBatchError("payout amount is below the configured minimum");
     }
   }
-  const client = await database.pool.connect();
+  const ownsClient = input.accountingClient === undefined;
+  const client = input.accountingClient ?? await database.pool.connect();
   try {
-    await client.query("BEGIN");
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    // Prevent a reversal adjustment from appearing between authoritative recomputation and the
+    // payout commitment. A fenced service caller already owns the session-level form on this same
+    // connection; direct callers acquire the matching transaction-scoped form here.
+    if (ownsClient) {
+      await client.query("SELECT pg_advisory_xact_lock($1)", [PARTNER_ACCOUNTING_LOCK_KEY]);
+    }
     // Транзакционный advisory-lock сериализует СОЗДАНИЕ батчей: `SELECT ... FOR UPDATE` ниже на пустом
     // результате ничего не блокирует, поэтому два параллельных prepare() без этого лока могли бы создать
     // два батча и заплатить каждому дважды. Лок снимается при COMMIT/ROLLBACK.
@@ -183,6 +199,9 @@ export async function createPayoutBatch(database: SalesDatabase, input: {
                          ) ce
                          WHERE ce.partner_id = p.id
                            AND ($2::timestamptz IS NULL OR ce.created_at < $2)), 0)
+               + COALESCE((SELECT SUM(adjustment.amount_nano)
+                           FROM partner_commission_adjustments adjustment
+                           WHERE adjustment.partner_id = p.id), 0)
                - COALESCE((SELECT SUM(po.amount_nano) FROM payouts po
                            WHERE po.partner_id = p.id
                              AND po.status IN ('requested','approved','paid')), 0)
@@ -204,10 +223,21 @@ export async function createPayoutBatch(database: SalesDatabase, input: {
     }
     const total = input.recipients.reduce((s, r) => s + r.amountNano, 0n);
     const batch = await client.query(`
-      INSERT INTO payout_batches (status, hot_wallet_address, total_nano, recipient_count, gas_price_gwei, min_nano, created_by, prepared_at)
-      VALUES ('prepared', $1, $2, $3, $4, $5, $6, now())
+      INSERT INTO payout_batches (
+        status, hot_wallet_address, total_nano, recipient_count, gas_price_gwei,
+        min_nano, earned_before, created_by, prepared_at
+      )
+      VALUES ('prepared', $1, $2, $3, $4, $5, $6, $7, now())
       RETURNING *
-    `, [input.hotWalletAddress, total.toString(), input.recipients.length, input.gasPriceGwei, input.minNano.toString(), input.createdBy]);
+    `, [
+      input.hotWalletAddress,
+      total.toString(),
+      input.recipients.length,
+      input.gasPriceGwei,
+      input.minNano.toString(),
+      input.earnedBefore ?? null,
+      input.createdBy,
+    ]);
     const batchId = batch.rows[0]!.id as string;
     for (const r of input.recipients) {
       await client.query(`
@@ -221,7 +251,7 @@ export async function createPayoutBatch(database: SalesDatabase, input: {
     await client.query("ROLLBACK");
     throw error;
   } finally {
-    client.release();
+    if (ownsClient) client.release();
   }
 }
 
@@ -269,6 +299,67 @@ export async function listSendablePayouts(database: SalesDatabase, batchId: stri
   return (await listBatchPayouts(database, batchId)).filter(
     (p) => p.status !== "paid" && p.status !== "rejected" && p.chainStatus !== "broadcast" && p.chainStatus !== "confirmed",
   );
+}
+
+export interface PreparedPayoutBalanceProof {
+  payoutId: string;
+  partnerId: string;
+  amountNano: bigint;
+  allowedNano: bigint;
+}
+
+/**
+ * Final authoritative proof for rows that are about to be signed. The supplied client owns the
+ * session-level partner accounting lock, so a refund/dispute adjustment cannot appear between
+ * this read and broadcast. Other committed payouts are deducted, while the target row itself is
+ * excluded so `allowedNano` is the maximum amount that this exact row may still transfer.
+ */
+export async function getPreparedPayoutBalanceProofs(
+  client: PoolClient,
+  payoutIds: string[],
+  earnedBefore: Date,
+): Promise<PreparedPayoutBalanceProof[]> {
+  if (payoutIds.length === 0) return [];
+  const result = await client.query<{
+    payout_id: string;
+    partner_id: string;
+    amount_nano: string;
+    allowed_nano: string;
+  }>(`
+    SELECT target.id AS payout_id,
+           target.partner_id,
+           target.amount_nano::text AS amount_nano,
+           (
+             COALESCE((SELECT SUM(entry.amount_nano)
+                       FROM (
+                         SELECT partner_id, amount_nano, created_at FROM commission_entries
+                         UNION ALL
+                         SELECT partner_id, amount_nano, created_at FROM commission_entries_v2
+                       ) entry
+                       WHERE entry.partner_id = target.partner_id
+                         AND entry.created_at < $2), 0)
+             + COALESCE((SELECT SUM(adjustment.amount_nano)
+                         FROM partner_commission_adjustments adjustment
+                         WHERE adjustment.partner_id = target.partner_id), 0)
+             - COALESCE((SELECT SUM(committed.amount_nano)
+                         FROM payouts committed
+                         WHERE committed.partner_id = target.partner_id
+                           AND committed.id <> target.id
+                           AND committed.status IN ('requested','approved','paid')), 0)
+           )::text AS allowed_nano
+    FROM payouts target
+    WHERE target.id = ANY($1::uuid[])
+      AND target.batch_id IS NOT NULL
+      AND target.status = 'requested'
+      AND (target.chain_status IS NULL OR target.chain_status IN ('pending','simulated','failed'))
+    ORDER BY target.id
+  `, [payoutIds, earnedBefore]);
+  return result.rows.map((row) => ({
+    payoutId: row.payout_id,
+    partnerId: row.partner_id,
+    amountNano: BigInt(row.amount_nano),
+    allowedNano: BigInt(row.allowed_nano),
+  }));
 }
 
 /** Разблокирует батчи, зависшие в 'sending' без единой 'broadcast'-строки (напр. краш во время

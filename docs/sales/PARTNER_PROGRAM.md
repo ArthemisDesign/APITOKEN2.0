@@ -117,6 +117,12 @@ All accruals are idempotent by the charge's `commerce_event_id` and computed in 
 transaction as the usage-row insert. Live scalar and historical v1 rows use
 `partner_usage_events`; `partner_usage_events_v2` remains only for historical release-v2 replay.
 
+If a customer's paid top-up is later refunded or disputed, the original positive commission stays
+immutable for audit and an exact negative adjustment is appended for the slices funded by that
+payment. This reduces unpaid earnings immediately. If that commission was already paid, the partner
+sees an explicit debt; future commission is withheld until the debt is repaid. No automatic debit is
+made from the partner's external wallet.
+
 ## 6. Wallet and payout currency
 
 Payouts — **only in USDT (BEP-20) on the BNB Smart Chain (BSC) network**. The partner binds a
@@ -138,8 +144,9 @@ Lifecycle of each period: accrual → **7-day lock** after the end of the period
 window**. In other words, the money for a period goes out roughly on the 8th–10th day after it
 closes.
 
-Key rule (it gives both the lock and the auto-rollover):
-**payable = confirmed commissions up to the end of the period − already paid.**
+Key rule (it gives the lock, refunds and auto-rollover):
+**net = gross commissions + signed refund adjustments; payable = max(net − committed payouts, 0).**
+Already-paid commission above net is shown separately as partner debt.
 - **Any amount above zero** is paid out — there is no minimum threshold.
 - If a payout was not made (no wallet) — the amount is not lost, it rolls into the next window
   (it may arrive covering two periods at once).
@@ -156,7 +163,8 @@ In detail (phases, formula, time zone, what the partner/admin sees) —
 - **Team** — sub-salespeople and invitations (the tab is currently temporarily closed with a
   "Soon" placeholder).
 - **Payouts** — BSC wallet binding, the current period, the locked amount + unfreeze date, the
-  date and estimate of the next payout, history by periods, a "How payouts work" explanation.
+  date and estimate of the next payout, explicit debt after refunds, net history by periods, a
+  "How payouts work" explanation.
 - **Settings** — profile (display name) and commission terms (view only).
 
 ## 9. Admin panel (`admin.partners.apitoken.sale`)
@@ -171,7 +179,8 @@ A separate admin site; sign-in — the operator enters `SALES_ADMIN_KEY` (sent a
 - **Payout list** — the auto-generated "to be paid" list for the current/last period's window: who
   is ready for payout (wallet + amount > 0), who is held (no wallet), amounts and wallets.
 - **Send payouts** — prepares one immutable batch, pins amounts/recipient addresses/hot wallet,
-  checks BSC mainnet, canonical USDT, balances and gas, then sends sequentially with durable
+  first proves the usage/funding/reversal feeds and allocation ledger are current, checks BSC
+  mainnet, canonical USDT, balances and gas, then sends sequentially with durable
   hash/raw/nonce evidence and receipt reconciliation. Irreversible sends are server-gated to the
   3-day payout window.
 

@@ -22,7 +22,8 @@ never logged.
 
 ## Background loops (in-process)
 
-- **Sync** (`SYNC_INTERVAL_MS`): pulls attributions, usage events and commit-ordered `topups-v2`
+- **Sync** (`SYNC_INTERVAL_MS`): pulls attributions, usage events, commit-ordered `topups-v2` and
+  payment reversals
   from the commerce feed with per-feed cursors; usage events of referred users produce the
   multi-level commission chain in one transaction (idempotent), while deposits are reporting-only
   and idempotent by payment id. The legacy topup cursor is retained but no longer advanced. A 404
@@ -50,11 +51,10 @@ never logged.
 | POST | /v1/partner/invites | session | Create sub-partner invite (optional commissionBps preset) |
 | GET | /v1/partner/invites | session | List invites |
 | GET | /v1/partner/payouts | session | List own payouts |
-| POST | /v1/partner/payouts | session | Request payout (validated against available earnings) |
 | PATCH | /v1/partner/settings | session | Update displayName / payout method+details |
 | GET | /v1/admin/overview | x-sales-admin-key | Program totals |
 | GET | /v1/admin/partners | x-sales-admin-key | Partners with aggregates + parent info |
 | PATCH | /v1/admin/partners/:id | x-sales-admin-key | Change commission bps / status |
 | GET | /v1/admin/payouts?status= | x-sales-admin-key | List payouts |
-| POST | /v1/admin/payouts/:id/decision | x-sales-admin-key | approve / reject / paid |
+| POST | /v1/admin/payouts/:id/decision | x-sales-admin-key | Reject a retained legacy manual payout; positive payouts use fenced batches |
 | GET | /v1/health, /v1/live, /v1/ready | — | Health/liveness/readiness |

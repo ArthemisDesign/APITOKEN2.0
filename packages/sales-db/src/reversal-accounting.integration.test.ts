@@ -9,6 +9,8 @@ import {
   recordPaidFundingLot,
   recordPaymentReversalPage,
 } from "./reversal-accounting.js";
+import { getPartnerEarningsTotals } from "./commissions.js";
+import { getPayoutCandidates } from "./payout-batch.js";
 
 const connectionString = process.env.TEST_SALES_DATABASE_URL;
 
@@ -184,6 +186,53 @@ describe.runIf(Boolean(connectionString))("payment reversal consumer accounting"
       reversalCount: 1n,
       adjustmentCount: 1n,
       adjustmentNano: -138n,
+      incompleteReversalCount: 0n,
+    });
+
+    const unpaidClawback = await getPartnerEarningsTotals(db, source.partnerId);
+    expect(unpaidClawback).toMatchObject({
+      earnedNano: 230n,
+      adjustmentNano: -138n,
+      netNano: 92n,
+      debtNano: 0n,
+      availableNano: 92n,
+    });
+
+    await db.pool.query(`
+      INSERT INTO payouts(partner_id, amount_nano, status, method)
+      VALUES($1, 230, 'paid', 'usdt-bep20')
+    `, [source.partnerId]);
+    const afterPaidClawback = await getPartnerEarningsTotals(db, source.partnerId);
+    expect(afterPaidClawback).toMatchObject({ debtNano: 138n, availableNano: 0n });
+    expect(await getPayoutCandidates(db, 0n)).toHaveLength(0);
+
+    // Future earnings first repay the explicit debt. 100 leaves 38 debt; another 50 leaves exactly
+    // 12 payable. The external wallet is never debited by this accounting.
+    const laterUsage = await db.pool.query<{ id: string }>(`
+      INSERT INTO partner_usage_events(
+        commerce_event_id, commerce_user_id, partner_id, amount_nano, occurred_at
+      ) VALUES(51, $1, $2, 150, '2026-08-05T00:00:00.000Z')
+      RETURNING id::text
+    `, [source.userId, source.partnerId]);
+    await db.pool.query(`
+      INSERT INTO commission_entries(usage_event_id, partner_id, level, applied_bps, amount_nano)
+      VALUES($1, $2, 0, 10000, 100)
+    `, [laterUsage.rows[0]!.id, source.partnerId]);
+    expect(await getPartnerEarningsTotals(db, source.partnerId)).toMatchObject({
+      debtNano: 38n, availableNano: 0n,
+    });
+    const finalUsage = await db.pool.query<{ id: string }>(`
+      INSERT INTO partner_usage_events(
+        commerce_event_id, commerce_user_id, partner_id, amount_nano, occurred_at
+      ) VALUES(52, $1, $2, 50, '2026-08-05T01:00:00.000Z')
+      RETURNING id::text
+    `, [source.userId, source.partnerId]);
+    await db.pool.query(`
+      INSERT INTO commission_entries(usage_event_id, partner_id, level, applied_bps, amount_nano)
+      VALUES($1, $2, 0, 10000, 50)
+    `, [finalUsage.rows[0]!.id, source.partnerId]);
+    expect(await getPartnerEarningsTotals(db, source.partnerId)).toMatchObject({
+      debtNano: 0n, availableNano: 12n,
     });
   });
 

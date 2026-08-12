@@ -735,7 +735,7 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
     <div className="stack">
       <Card
         title={`Payout list — period ${win.key}`}
-        sub={`Auto-generated from confirmed commissions before ${dt(win.end)} minus what was already paid. Window ${dt(win.payoutWindowStart)} → ${dt(win.payoutWindowEnd)} · phase: ${win.phase}. Any balance above zero with a bound wallet is paid.`}
+        sub={`Auto-generated from gross commissions before ${dt(win.end)}, signed refund adjustments and committed payouts. Window ${dt(win.payoutWindowStart)} → ${dt(win.payoutWindowEnd)} · phase: ${win.phase}. Debt is shown separately and future earnings repay it first.`}
       >
         <div className="stat-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)", marginBottom: 0 }}>
           <div className="stat-card">
@@ -751,7 +751,7 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
             <div className="stat-foot">{data.items.filter((i) => !i.eligible).length} not eligible yet</div>
           </div>
           <div className="stat-card">
-            <div className="stat-label">Total unpaid</div>
+            <div className="stat-label">Total payable</div>
             <div className="stat-value">
               {formatUsd(unpaidTotal)}
             </div>
@@ -774,14 +774,18 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
               </>
             }
           >
-            {data.items.map((row) => (
-              <tr key={row.partnerId}>
+            {data.items.map((row) => {
+              const debtNano = /^\d+$/.test(row.debtNano) ? BigInt(row.debtNano) : 0n;
+              return <tr key={row.partnerId}>
                 <td>
                   <div style={{ fontWeight: 600 }}>
                     {row.telegramUsername ? `@${row.telegramUsername}` : row.displayName ?? row.partnerId.slice(0, 8)}
                   </div>
                 </td>
-                <td className="num" style={{ fontWeight: 700 }}>{formatUsd(row.payableNano)}</td>
+                <td className="num" style={{ fontWeight: 700 }}>
+                  {formatUsd(row.payableNano)}
+                  {debtNano > 0n ? <div style={{ color: "#d6455a", fontSize: 11 }}>{formatUsd(row.debtNano)} debt</div> : null}
+                </td>
                 <td className="mono">{row.walletAddress ? `${row.walletAddress.slice(0, 8)}…${row.walletAddress.slice(-6)}` : "—"}</td>
                 <td>
                   {row.eligible ? (
@@ -790,8 +794,8 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
                     <Badge tone="yellow">{reasonLabel[row.reason] ?? row.reason}</Badge>
                   )}
                 </td>
-              </tr>
-            ))}
+              </tr>;
+            })}
           </Table>
         )}
       </Card>

@@ -20,11 +20,22 @@ import {
 
 export interface PartnerPeriodState {
   now: string;
-  current: { key: string; start: string; end: string; accruedNano: string };
-  locked: { key: string; endedAt: string; unlocksAt: string; earnedNano: string }[];
+  current: {
+    key: string; start: string; end: string; accruedNano: string;
+    adjustmentNano: string; netNano: string;
+  };
+  locked: {
+    key: string; endedAt: string; unlocksAt: string; earnedNano: string;
+    adjustmentNano: string; netNano: string;
+  }[];
   nextPayout: { date: string; estimatedNano: string };
   lifetimeEarnedNano: string;
+  lifetimeAdjustmentNano: string;
+  lifetimeNetNano: string;
   lifetimePaidNano: string;
+  debtNano: string;
+  payableNano: string;
+  /** Gross legacy balance retained during the expand-only API rollout. */
   unpaidNano: string;
 }
 
@@ -36,6 +47,8 @@ export interface PeriodHistoryRow {
   phase: PeriodPhase;
   payoutDate: string; // window start
   earnedNano: string;
+  adjustmentNano: string;
+  netNano: string;
 }
 
 export interface DuePayoutRow {
@@ -44,6 +57,9 @@ export interface DuePayoutRow {
   displayName: string | null;
   status: PartnerStatus;
   payableNano: string;
+  debtNano: string;
+  adjustmentNano: string;
+  netNano: string;
   walletAddress: string | null;
   eligible: boolean;
   reason: "ok" | "below_minimum" | "no_wallet" | "zero" | "inactive";
@@ -71,6 +87,25 @@ async function sumCommissions(
        UNION ALL
        SELECT partner_id, amount_nano, created_at FROM commission_entries_v2
      ) all_commissions WHERE ${conditions.join(" AND ")}`,
+    params,
+  );
+  return BigInt(result.rows[0]?.total ?? "0");
+}
+
+/** Adjustments are dated by the refund/dispute, not by the original usage. */
+async function sumAdjustments(
+  database: SalesDatabase,
+  partnerId: string,
+  from: Date | null,
+  to: Date | null,
+): Promise<bigint> {
+  const conditions = ["partner_id = $1"];
+  const params: unknown[] = [partnerId];
+  if (from) { params.push(from); conditions.push(`effective_at >= $${params.length}`); }
+  if (to) { params.push(to); conditions.push(`effective_at < $${params.length}`); }
+  const result = await database.pool.query<{ total: string }>(
+    `SELECT COALESCE(SUM(amount_nano), 0)::text AS total
+     FROM partner_commission_adjustments WHERE ${conditions.join(" AND ")}`,
     params,
   );
   return BigInt(result.rows[0]?.total ?? "0");
@@ -105,28 +140,38 @@ export async function getPartnerPeriodState(
   const lastEnded = lastEndedPeriod(now);
   const openWindow = periodInPayoutWindow(now);
 
-  const [accrued, lifetimeEarned, paid, committed, lockedEarned] = await Promise.all([
+  const [accrued, currentAdjustment, lifetimeEarned, lifetimeAdjustment, paid, committed,
+    lockedEarned, lockedAdjustment] = await Promise.all([
     sumCommissions(database, partnerId, current.start, now),
+    sumAdjustments(database, partnerId, current.start, now),
     sumCommissions(database, partnerId, null, null),
+    sumAdjustments(database, partnerId, null, null),
     sumPaid(database, partnerId),
     sumCommitted(database, partnerId),
     // The just-ended period is "locked" until its payout window opens.
     sumCommissions(database, partnerId, lastEnded.start, lastEnded.end),
+    sumAdjustments(database, partnerId, lastEnded.start, lastEnded.end),
   ]);
 
   const locked: PartnerPeriodState["locked"] = [];
-  if (phaseOf(lastEnded, now) === "locked" && lockedEarned > 0n) {
+  const lockedNet = lockedEarned + lockedAdjustment;
+  if (phaseOf(lastEnded, now) === "locked" && (lockedEarned !== 0n || lockedAdjustment !== 0n)) {
     locked.push({
       key: lastEnded.key,
       endedAt: lastEnded.end.toISOString(),
       unlocksAt: windowStart(lastEnded).toISOString(),
       earnedNano: lockedEarned.toString(),
+      adjustmentNano: lockedAdjustment.toString(),
+      netNano: lockedNet.toString(),
     });
   }
 
   // «Не выплачено» = заработано − уже зафиксированное (выплачено + в очереди). Вычитаем committed,
   // а не только paid, чтобы сумма в процессе выплаты не считалась причитающейся повторно.
-  const unpaid = lifetimeEarned - committed;
+  const legacyUnpaid = lifetimeEarned - committed;
+  const lifetimeNet = lifetimeEarned + lifetimeAdjustment;
+  const signedPayable = lifetimeNet - committed;
+  const debt = paid - lifetimeNet;
   // Дата и сумма следующей выплаты — корректно во время ОТКРЫТОГО окна (иначе кабинет показывал бы
   // выплату «через 2 недели», хотя деньги причитаются к оплате прямо сейчас).
   let nextDate: Date;
@@ -142,16 +187,27 @@ export async function getPartnerPeriodState(
     payablePeriodEnd = current.end;
   }
   const confirmedByThen = await sumCommissions(database, partnerId, null, payablePeriodEnd);
-  const estimated = confirmedByThen - committed > 0n ? confirmedByThen - committed : 0n;
+  // A reversal discovered during the lock/window must reduce the imminent payout even though its
+  // effective timestamp is after the original earning-period boundary.
+  const estimatedSigned = confirmedByThen + lifetimeAdjustment - committed;
+  const estimated = estimatedSigned > 0n ? estimatedSigned : 0n;
 
   return {
     now: now.toISOString(),
-    current: { ...periodSummary(current), accruedNano: accrued.toString() },
+    current: {
+      ...periodSummary(current), accruedNano: accrued.toString(),
+      adjustmentNano: currentAdjustment.toString(),
+      netNano: (accrued + currentAdjustment).toString(),
+    },
     locked,
     nextPayout: { date: nextDate.toISOString(), estimatedNano: estimated.toString() },
     lifetimeEarnedNano: lifetimeEarned.toString(),
+    lifetimeAdjustmentNano: lifetimeAdjustment.toString(),
+    lifetimeNetNano: lifetimeNet.toString(),
     lifetimePaidNano: paid.toString(),
-    unpaidNano: (unpaid > 0n ? unpaid : 0n).toString(),
+    debtNano: (debt > 0n ? debt : 0n).toString(),
+    payableNano: (signedPayable > 0n ? signedPayable : 0n).toString(),
+    unpaidNano: (legacyUnpaid > 0n ? legacyUnpaid : 0n).toString(),
   };
 }
 
@@ -162,16 +218,24 @@ export async function getPartnerPeriodHistory(
   now: Date,
   limit = 12,
 ): Promise<PeriodHistoryRow[]> {
-  const result = await database.pool.query<{ ym: string; half: string; earned: string }>(
+  const result = await database.pool.query<{
+    ym: string; half: string; earned: string; adjustment: string; net: string;
+  }>(
     `
-    SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM') AS ym,
-           (CASE WHEN extract(day FROM created_at AT TIME ZONE 'UTC') <= 15 THEN 1 ELSE 2 END)::text AS half,
-           SUM(amount_nano)::text AS earned
+    SELECT to_char(effective_at AT TIME ZONE 'UTC', 'YYYY-MM') AS ym,
+           (CASE WHEN extract(day FROM effective_at AT TIME ZONE 'UTC') <= 15 THEN 1 ELSE 2 END)::text AS half,
+           SUM(gross_nano)::text AS earned,
+           SUM(adjustment_nano)::text AS adjustment,
+           SUM(gross_nano + adjustment_nano)::text AS net
     FROM (
-      SELECT partner_id, amount_nano, created_at FROM commission_entries
+      SELECT partner_id, amount_nano AS gross_nano, 0::bigint AS adjustment_nano,
+             created_at AS effective_at FROM commission_entries
       UNION ALL
-      SELECT partner_id, amount_nano, created_at FROM commission_entries_v2
-    ) all_commissions
+      SELECT partner_id, amount_nano, 0::bigint, created_at FROM commission_entries_v2
+      UNION ALL
+      SELECT partner_id, 0::bigint, amount_nano, effective_at
+      FROM partner_commission_adjustments
+    ) all_earnings
     WHERE partner_id = $1
     GROUP BY ym, half
     ORDER BY ym DESC, half DESC
@@ -191,6 +255,8 @@ export async function getPartnerPeriodHistory(
       phase: phaseOf(period, now),
       payoutDate: windowStart(period).toISOString(),
       earnedNano: row.earned,
+      adjustmentNano: row.adjustment,
+      netNano: row.net,
     };
   });
 }
@@ -198,9 +264,9 @@ export async function getPartnerPeriodHistory(
 /**
  * Auto-generated due list for the payout window. Target period = the one whose window is open now;
  * if none is open, the last ended period is used so the admin can preview the upcoming batch.
- * Payable per partner = confirmed commissions before the period end − already paid (rollover is
- * automatic: unpaid prior periods are included because the cut-off only excludes what is not yet
- * locked). Eligibility requires a bound BSC wallet and payable ≥ minPayout.
+ * Payable per partner = gross commissions before the period end + every known signed adjustment −
+ * committed payouts. Rollover is automatic; debt stays separate and can never become a payout.
+ * Eligibility requires a bound BSC wallet and payable ≥ minPayout.
  */
 export async function getDuePayoutList(
   database: SalesDatabase,
@@ -219,20 +285,33 @@ export async function getDuePayoutList(
   // активны), он должен быть виден админу — но платить их нельзя (eligible=false, reason=inactive).
   const result = await database.pool.query<{
     partner_id: string; telegram_username: string | null; display_name: string | null;
-    status: PartnerStatus; payable: string; payout_method: string | null; payout_details: unknown;
+    status: PartnerStatus; gross: string; adjustment: string; net: string; paid: string;
+    committed: string; payout_method: string | null; payout_details: unknown;
   }>(
     `
     SELECT p.id AS partner_id, p.telegram_username, p.display_name, p.status, p.payout_method, p.payout_details,
-      (
-        COALESCE((SELECT SUM(ce.amount_nano) FROM (
+      COALESCE((SELECT SUM(ce.amount_nano) FROM (
                     SELECT partner_id, amount_nano, created_at FROM commission_entries
                     UNION ALL
                     SELECT partner_id, amount_nano, created_at FROM commission_entries_v2
                   ) ce
-                  WHERE ce.partner_id = p.id AND ce.created_at < $1), 0)
-        - COALESCE((SELECT SUM(po.amount_nano) FROM payouts po
-                    WHERE po.partner_id = p.id AND po.status IN ('requested', 'approved', 'paid')), 0)
-      )::text AS payable
+                  WHERE ce.partner_id = p.id AND ce.created_at < $1), 0)::text AS gross,
+      COALESCE((SELECT SUM(adjustment.amount_nano)
+                FROM partner_commission_adjustments adjustment
+                WHERE adjustment.partner_id = p.id), 0)::text AS adjustment,
+      (COALESCE((SELECT SUM(ce.amount_nano) FROM (
+                    SELECT partner_id, amount_nano, created_at FROM commission_entries
+                    UNION ALL
+                    SELECT partner_id, amount_nano, created_at FROM commission_entries_v2
+                  ) ce WHERE ce.partner_id = p.id AND ce.created_at < $1), 0)
+       + COALESCE((SELECT SUM(adjustment.amount_nano)
+                   FROM partner_commission_adjustments adjustment
+                   WHERE adjustment.partner_id = p.id), 0))::text AS net,
+      COALESCE((SELECT SUM(po.amount_nano) FROM payouts po
+                WHERE po.partner_id = p.id AND po.status = 'paid'), 0)::text AS paid,
+      COALESCE((SELECT SUM(po.amount_nano) FROM payouts po
+                WHERE po.partner_id = p.id
+                  AND po.status IN ('requested', 'approved', 'paid')), 0)::text AS committed
     FROM partners p
     `,
     [target.end],
@@ -240,7 +319,13 @@ export async function getDuePayoutList(
 
   const items: DuePayoutRow[] = result.rows
     .map((row) => {
-      const payable = BigInt(row.payable);
+      const gross = BigInt(row.gross);
+      const adjustment = BigInt(row.adjustment);
+      const net = BigInt(row.net);
+      const paid = BigInt(row.paid);
+      const signedPayable = net - BigInt(row.committed);
+      const payable = signedPayable > 0n ? signedPayable : 0n;
+      const debt = paid - (gross + adjustment);
       const wallet = walletAddressOf(row.payout_method, row.payout_details);
       let reason: DuePayoutRow["reason"] = "ok";
       if (payable <= 0n) reason = "zero";
@@ -252,13 +337,16 @@ export async function getDuePayoutList(
         telegramUsername: row.telegram_username,
         displayName: row.display_name,
         status: row.status,
-        payableNano: (payable > 0n ? payable : 0n).toString(),
+        payableNano: payable.toString(),
+        debtNano: (debt > 0n ? debt : 0n).toString(),
+        adjustmentNano: adjustment.toString(),
+        netNano: net.toString(),
         walletAddress: wallet,
         eligible: reason === "ok" && windowOpen,
         reason,
       };
     })
-    .filter((row) => BigInt(row.payableNano) > 0n)
+    .filter((row) => BigInt(row.payableNano) > 0n || BigInt(row.debtNano) > 0n)
     .sort((a, b) => (BigInt(b.payableNano) > BigInt(a.payableNano) ? 1 : -1));
 
   return {

@@ -115,7 +115,7 @@ export function PartnersTab({ adminKey }: { adminKey: string }) {
         <Kpi label="Deposits driven" value={totals ? formatUsd(totals.depositsNano) : "…"} foot="real money in" accent />
         <Kpi label="Referred users" value={totals ? String(totals.referredUsers) : "…"} foot={`${totals?.convertedUsers ?? 0} deposited`} />
         <Kpi label="Conversion" value={totals ? `${convTotal}%` : "…"} foot="referred → paid" />
-        <Kpi label="Unpaid owed" value={totals ? formatUsd(totals.unpaidNano) : "…"} foot="across filter" />
+        <Kpi label="Payable now" value={totals ? formatUsd(totals.payableNano) : "…"} foot={`${totals ? formatUsd(totals.debtNano) : "…"} partner debt`} />
       </div>
 
       <Card
@@ -185,10 +185,13 @@ export function PartnersTab({ adminKey }: { adminKey: string }) {
                 </td>
                 <td className="num">{formatUsd(p.spendTotalNano)}</td>
                 <td className="num">
-                  <div>{formatUsd(p.earnedTotalNano)}</div>
-                  <div style={{ fontSize: 11, ...faint }}>{formatUsd(p.earned30dNano)} · 30d</div>
+                  <div>{formatUsd(p.netTotalNano)}</div>
+                  <div style={{ fontSize: 11, ...faint }}>{formatUsd(p.net30dNano)} · 30d net</div>
                 </td>
-                <td className="num" style={{ fontWeight: isPositiveNanoUsd(p.unpaidNano) ? 600 : 400 }}>{formatUsd(p.unpaidNano)}</td>
+                <td className="num" style={{ fontWeight: isPositiveNanoUsd(p.payableNano) ? 600 : 400 }}>
+                  {formatUsd(p.payableNano)}
+                  {isPositiveNanoUsd(p.debtNano) ? <div style={{ color: "#d6455a", fontSize: 11 }}>{formatUsd(p.debtNano)} debt</div> : null}
+                </td>
                 <td className="num">{p.teamSize}</td>
                 <td style={{ fontSize: 12, ...faint }}>{relTime(p.lastSeenAt)}</td>
                 <td><StatusBadge status={p.status} /></td>
@@ -377,9 +380,9 @@ function PartnerDrawer({
           <Kpi label="Deposits driven" value={formatUsd(p.depositsTotalNano)} foot={`${formatUsd(p.deposits30dNano)} · 30d`} accent />
           <Kpi label="Referred / paid" value={`${p.referredUsers} / ${p.convertedUsers}`} foot={`${convPct(p)} conversion`} />
           <Kpi label="Real spend" value={formatUsd(p.spendTotalNano)} foot={`${formatUsd(p.spend30dNano)} · 30d`} />
-          <Kpi label="Earned" value={formatUsd(p.earnedTotalNano)} foot={`${formatUsd(p.earned30dNano)} · 30d`} />
+          <Kpi label="Net earnings" value={formatUsd(p.netTotalNano)} foot={`${formatUsd(p.adjustmentTotalNano)} returns`} />
           <Kpi label="Paid out" value={formatUsd(p.paidNano)} />
-          <Kpi label="Unpaid owed" value={formatUsd(p.unpaidNano)} />
+          <Kpi label="Payable now" value={formatUsd(p.payableNano)} foot={`${formatUsd(p.debtNano)} debt`} />
           <Kpi label="Team" value={String(p.teamSize)} foot="sub-partners" />
           <Kpi label="Legacy links / promos" value={`${p.linksUsed}/${p.linksTotal} · ${p.promosUsed}/${p.promosTotal}`} foot="used / total" />
         </div>
@@ -432,7 +435,7 @@ function PartnerDrawer({
                   m.telegramUsername ? `@${m.telegramUsername}` : m.email ?? m.id.slice(0, 8),
                   formatBps(m.commissionBps),
                   `${m.referredUsers} refs`,
-                  formatUsd(m.myOverrideNano) + " override",
+                  formatUsd(m.myOverrideNetNano) + " net override",
                 ])} cols={["Sub-partner", "Rate", "Referrals", "My override"]} />
               )}
             </Section>
@@ -448,7 +451,7 @@ function PartnerDrawer({
                       : "—",
                   formatDate(u.attributedAt),
                   formatUsd(u.spendNano) + " spend",
-                  formatUsd(u.earnedNano) + " earned",
+                  formatUsd(u.netNano) + " net earned",
                 ])} cols={["User", "Type", "Joined", "Spend", "Earned"]} />
               )}
             </Section>
@@ -470,7 +473,7 @@ function PartnerDrawer({
   );
 }
 
-function Sparkline({ daily }: { daily: { date: string; spendNano: string; earnedNano: string }[] }) {
+function Sparkline({ daily }: { daily: { date: string; spendNano: string; earnedNano: string; adjustmentNano: string; netNano: string }[] }) {
   if (daily.length === 0) return null;
   const parsed = daily.map((d) => parseCanonicalNanoUsd(d.spendNano));
   if (parsed.some((value) => value === null)) {

@@ -82,9 +82,11 @@ export default function OverviewPage() {
           </div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">{t("Total earned", "Всего заработано")}</div>
-          <div className="stat-value">{formatUsd(overview.totals.earnedNano)}</div>
-          <div className="stat-foot">{formatUsd(overview.totals.paidNano)} {t("paid out", "выплачено")}</div>
+          <div className="stat-label">{t("Net earnings", "Чистый заработок")}</div>
+          <div className="stat-value">{formatUsd(overview.totals.netNano)}</div>
+          <div className="stat-foot">
+            {formatUsd(overview.totals.earnedNano)} {t("gross", "начислено")} · {formatUsd(overview.totals.adjustmentNano)} {t("returns", "возвраты")}
+          </div>
         </div>
         <div className="stat-card">
           <div className="stat-label">{t("Referred users", "Приглашённые пользователи")}</div>
@@ -94,11 +96,21 @@ export default function OverviewPage() {
           </div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">{t("Earned in 30d", "Заработано за 30 дн.")}</div>
-          <div className="stat-value">{formatUsd(overview.last30d.earnedNano)}</div>
-          <div className="stat-foot">{t("rolling 30-day window", "скользящее окно 30 дней")}</div>
+          <div className="stat-label">{t("Net in 30d", "Чистыми за 30 дн.")}</div>
+          <div className="stat-value">{formatUsd(overview.last30d.netNano)}</div>
+          <div className="stat-foot">{formatUsd(overview.last30d.adjustmentNano)} {t("refund adjustments", "корректировки возвратов")}</div>
         </div>
       </div>
+
+      {BigInt(overview.totals.debtNano) > 0n ? (
+        <Notice kind="error">
+          <strong>{t("Partner debt:", "Долг партнёра:")} {formatUsd(overview.totals.debtNano)}.</strong>{" "}
+          {t(
+            "A customer payment was reversed after commission had already been paid. Future earnings automatically repay this balance; your external wallet is not debited.",
+            "Платёж клиента был возвращён после выплаты комиссии. Будущие начисления автоматически погасят этот баланс; внешний кошелёк не списывается.",
+          )}
+        </Notice>
+      ) : null}
 
       <div className="stack">
         <CommissionFormula commissionBps={overview.commissionBps} />
@@ -154,8 +166,8 @@ export default function OverviewPage() {
         <Card
           title={t("Last 30 days", "Последние 30 дней")}
           sub={t(
-            `${formatUsd(overview.last30d.earnedNano)} earned on ${formatUsd(overview.last30d.spendNano)} of real referral spend.`,
-            `${formatUsd(overview.last30d.earnedNano)} заработано с ${formatUsd(overview.last30d.spendNano)} реальных трат рефералов.`,
+            `${formatUsd(overview.last30d.netNano)} net on ${formatUsd(overview.last30d.spendNano)} of real referral spend.`,
+            `${formatUsd(overview.last30d.netNano)} чистыми с ${formatUsd(overview.last30d.spendNano)} реальных трат рефералов.`,
           )}
         >
           <EarningsChart items={earnings} />
@@ -179,7 +191,7 @@ export default function OverviewPage() {
                   <span>
                     <span className="mono">{r.userMask}</span> {t("joined ·", "присоединился ·")}{" "}
                     <span style={{ color: "var(--accent-strong)" }}>
-                      {formatUsd(r.earnedNano)}
+                      {formatUsd(r.netNano)}
                     </span>{" "}
                     {t("earned for you", "заработано для вас")}
                   </span>

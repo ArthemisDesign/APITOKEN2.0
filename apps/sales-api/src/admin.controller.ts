@@ -111,6 +111,10 @@ export class AdminController {
       referredUsers: overview.referredUsers,
       totalSpendNano: overview.totalSpendNano.toString(),
       totalCommissionsNano: overview.totalCommissionsNano.toString(),
+      totalAdjustmentsNano: overview.totalAdjustmentsNano.toString(),
+      totalNetCommissionsNano: overview.totalNetCommissionsNano.toString(),
+      totalDebtNano: overview.totalDebtNano.toString(),
+      totalPayableNano: overview.totalPayableNano.toString(),
       pendingPayoutsNano: overview.pendingPayoutsNano.toString(),
       paidPayoutsNano: overview.paidPayoutsNano.toString(),
     };
@@ -139,6 +143,10 @@ export class AdminController {
         referredUsers: partner.referredUsers,
         teamSize: partner.teamSize,
         earnedNano: partner.earnedNano.toString(),
+        adjustmentNano: partner.adjustmentNano.toString(),
+        netNano: partner.netNano.toString(),
+        debtNano: partner.debtNano.toString(),
+        payableNano: partner.payableNano.toString(),
         paidNano: partner.paidNano.toString(),
         promoEnabled: partner.promoEnabled,
         promoMaxValueNano: partner.promoMaxValueNano.toString(),
@@ -194,6 +202,8 @@ export class AdminController {
         attributedAt: r.attributedAt,
         spendNano: r.spendNano,
         earnedNano: r.earnedNano,
+        adjustmentNano: r.adjustmentNano,
+        netNano: r.netNano,
         customerType: profile?.customerType ?? null,
         discountPercent: profile?.discountPercent ?? null,
         referralFloorBps: profile?.referralFloorBps ?? null,
@@ -463,6 +473,11 @@ export class AdminController {
     if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid payout id");
     const parsed = adminPayoutDecisionSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException("invalid payout decision");
+    if (parsed.data.action !== "reject") {
+      throw new UnprocessableEntityException(
+        "legacy manual payouts can only be rejected; prepare a fenced on-chain payout batch instead",
+      );
+    }
     try {
       const payout = await decidePayout(this.database, {
         payoutId: id,
@@ -482,7 +497,9 @@ export class AdminController {
         },
       };
     } catch (error) {
-      if (error instanceof InvalidPayoutTransitionError) throw new UnprocessableEntityException(error.message);
+      if (error instanceof InvalidPayoutTransitionError) {
+        throw new UnprocessableEntityException(error.message);
+      }
       throw error;
     }
   }

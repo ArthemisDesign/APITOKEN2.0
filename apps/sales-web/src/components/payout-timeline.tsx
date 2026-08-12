@@ -49,7 +49,7 @@ export function PayoutTimeline({ state }: { state: PeriodState }) {
     key: state.current.key,
     start: curStart,
     end: curEnd,
-    amount: state.current.accruedNano,
+    amount: state.current.netNano,
     kind: "current",
   }];
   const seen = new Set<string>([state.current.key]);
@@ -60,7 +60,7 @@ export function PayoutTimeline({ state }: { state: PeriodState }) {
   const prevWinEnd = prev.end + (lockDays + windowDays) * DAY;
   if (now < prevWinEnd) {
     const match = state.history.find((h) => new Date(h.start).getTime() === prev.start);
-    lanes.push({ key: match?.key ?? `prev-${prev.start}`, start: prev.start, end: prev.end, amount: match?.earnedNano ?? "0", kind: "past" });
+    lanes.push({ key: match?.key ?? `prev-${prev.start}`, start: prev.start, end: prev.end, amount: match?.netNano ?? "0", kind: "past" });
     if (match) seen.add(match.key);
   }
 
@@ -69,7 +69,7 @@ export function PayoutTimeline({ state }: { state: PeriodState }) {
     if (seen.has(h.key)) continue;
     if (h.phase === "locked" || h.phase === "payable") {
       seen.add(h.key);
-      lanes.push({ key: h.key, start: new Date(h.start).getTime(), end: new Date(h.end).getTime(), amount: h.earnedNano, kind: "past" });
+      lanes.push({ key: h.key, start: new Date(h.start).getTime(), end: new Date(h.end).getTime(), amount: h.netNano, kind: "past" });
     }
   }
   lanes.sort((a, b) => a.start - b.start);

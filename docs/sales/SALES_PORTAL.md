@@ -68,7 +68,8 @@ of reaching SQL as an out-of-range value.
   `{items:[{id,userId,amountNano,providerId,accountClass,pricingMode,paidFundedNano,
   commissionEligible,snapshotDigest,occurredAt}], nextCursor,sourceHead}`; money fields are decimal
   strings. `sourceHead` is the latest committed `pricing_usage_events.feed_seq`, including rows
-  still intentionally hidden by the visibility lag; it never authorizes cursor advancement.
+  still intentionally hidden by the visibility lag; it never authorizes cursor advancement, but
+  irreversible payout work requires `nextCursor === sourceHead`.
   The current producer returns only this scalar-compatible shape. For rollback and historical
   replay, the consumer also accepts the former optional
   `officialNano`/`chargedNano`/`bonusFundedNano`/`otherFundedNano`/`releaseGeneration`/
@@ -125,7 +126,7 @@ of reaching SQL as an out-of-range value.
   current payment status: rebuilding from cursor zero and an incremental consumer produce the same
   partner history. The producer limits the whole source stream before referral filtering, so
   unreferred rows advance the watermark; referred rows still require
-  `paid_at >= attributed created_at`. Equal `paid_at` values are independently resumable. Response remains
+  `paid_at >= attributed created_at`. Equal `paid_at` values are independently resumable. Response is
   `{items:[{id,paymentId,userId,amountNano,paidAt}], nextCursor,sourceHead}`. `sourceHead` is the
   latest committed `payments.feed_seq`, including a row still inside the visibility lag. Sales
   consumes this route under
@@ -197,7 +198,8 @@ Consumers on the sales side (`apps/sales-api`, reach commerce via `COMMERCE_BASE
   idempotent, an all-null row
   can be enriched with attribution once during rolling retry, and a conflicting immutable replay
   is rejected. Deposit replay additionally requires exact payment id, user, partner, amount and
-  timestamp equality. A 404 from the feed (the commerce side
+  timestamp equality. The three causal money feeds require explicit committed `sourceHead`; a head
+  ahead of the visible cursor blocks payout rather than assuming absence. A 404 from the feed (the commerce side
   is not deployed yet) is not an error — retry on the next tick; the cursor advances
   only over successfully processed rows (at-least-once).
 - `commerce.service.ts` — `referralProfiles` for the partner's storefront (**best-effort**: if
@@ -258,8 +260,12 @@ pages, proving they reached a visibility cutoff no earlier than the one that exp
 Feed ids are independent sequences and are never compared.
 `payment-reversals` then commits the reversal, every exact negative adjustment and its cursor in one
 `SERIALIZABLE` transaction. Exact crash replay is a no-op; missing source evidence or any immutable
-field conflict leaves the cursor behind. This stage writes signed evidence but payout/earnings
-readers remain gross-only until their separate fail-closed net/debt rollout.
+field conflict leaves the cursor behind. Earnings and payout readers now expose gross, signed
+adjustments, net, debt and payable separately. Prepare/send actively drain all causal feeds to fresh
+source heads and fail closed on cursor lag or incomplete allocation/reversal evidence. The sync
+mutex remains held through a final read-only Commerce-head probe under the shared Sales accounting
+lock; the final balance proof and commitment/signing remain inside that fence. Legacy manual payout
+rows are reject-only, and an old batch without an `earned_before` checkpoint must be re-prepared.
 
 ### Sales → Commerce: promo and registration (`apps/sales-api/src/internal.controller.ts`)
 
@@ -347,7 +353,8 @@ fails closed on a row outside that chain). Before computing either schema, every
 row is held `FOR SHARE`, so parent/status/bps cannot change under the calculation; a repeated
 partner id is an explicit cycle error and rolls back the whole event. Readers sum both stores via
 UNION ALL.
-Payout balance = confirmed commissions − (paid + active requests).
+Payout balance = `max(confirmed gross + signed adjustments − (paid + active requests), 0)`.
+Debt = `max(paid − (lifetime gross + signed adjustments), 0)` and remains visible separately.
 
 ## Env (apps/sales-api)
 

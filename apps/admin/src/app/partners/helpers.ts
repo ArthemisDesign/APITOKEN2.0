@@ -53,6 +53,10 @@ export interface PartnerOverview {
   referredUsers?: number;
   totalSpendNano?: string;
   totalCommissionsNano?: string;
+  totalAdjustmentsNano?: string;
+  totalNetCommissionsNano?: string;
+  totalDebtNano?: string;
+  totalPayableNano?: string;
   pendingPayoutsNano?: string;
   paidPayoutsNano?: string;
 }
@@ -72,6 +76,9 @@ export interface PayoutDueItem {
   telegramUsername?: string;
   displayName?: string;
   payableNano?: string;
+  debtNano?: string;
+  adjustmentNano?: string;
+  netNano?: string;
   walletAddress?: string;
   eligible?: boolean;
   reason?: string;
@@ -105,12 +112,17 @@ export interface PartnerAnalyticsItem {
   earned30dNano?: string;
   earnedTotalNano?: string;
   unpaidNano?: string;
+  adjustmentTotalNano?: string;
+  netTotalNano?: string;
+  net30dNano?: string;
+  debtNano?: string;
+  payableNano?: string;
   lastSeenAt?: string;
 }
 
 export interface PartnerAnalytics {
   items?: PartnerAnalyticsItem[];
-  totals?: { total?: number; active?: number; unpaidNano?: string };
+  totals?: { total?: number; active?: number; unpaidNano?: string; debtNano?: string; payableNano?: string };
 }
 
 export interface PayoutItem {

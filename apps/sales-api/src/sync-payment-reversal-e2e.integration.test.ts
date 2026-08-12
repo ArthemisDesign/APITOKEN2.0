@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSalesDatabase, type SalesDatabase } from "@claude-api/sales-db";
-import { SyncService } from "./sync.service.js";
+import { PartnerFeedNotReadyError, SyncService } from "./sync.service.js";
 
 const connectionString = process.env.TEST_SALES_DATABASE_URL;
 
@@ -107,18 +107,21 @@ describe.runIf(Boolean(connectionString))("commerce feed to reversal ledger E2E"
         return new Response(JSON.stringify({
           items: after < 10n ? [topup] : [],
           nextCursor: after < 10n ? "10" : after.toString(),
+          sourceHead: "10",
         }));
       }
       if (url.pathname.endsWith("/usage-events")) {
         return new Response(JSON.stringify({
           items: after < 20n ? [usage] : [],
           nextCursor: after < 20n ? "20" : after.toString(),
+          sourceHead: "20",
         }));
       }
       if (url.pathname.endsWith("/payment-reversals")) {
         return new Response(JSON.stringify({
           items: after < 30n ? [reversal] : [],
           nextCursor: after < 30n ? "30" : after.toString(),
+          sourceHead: "30",
         }));
       }
       throw new Error(`unexpected feed URL ${url}`);
@@ -165,5 +168,49 @@ describe.runIf(Boolean(connectionString))("commerce feed to reversal ledger E2E"
         (SELECT count(*)::text FROM partner_commission_adjustments) AS adjustments
     `);
     expect(replay.rows[0]).toEqual({ reversals: "1", adjustments: "1" });
+  });
+
+  it("proves all payout cursors at source head and rejects a stale local cursor", async () => {
+    installFeed();
+    const sync = service();
+    await expect(sync.drainForPayout()).resolves.toEqual({
+      usageEvents: 20n,
+      fundingLots: 10n,
+      paymentReversals: 30n,
+    });
+    const { getPartnerPayoutAccountingProof } = await import("@claude-api/sales-db");
+    await expect(getPartnerPayoutAccountingProof(database, sync.getPartnerFeedHeads()))
+      .resolves.toMatchObject({ ready: true, reasons: [] });
+
+    await database.pool.query("UPDATE sync_cursors SET last_id=0 WHERE feed='payment_reversals'");
+    await expect(getPartnerPayoutAccountingProof(database, sync.getPartnerFeedHeads()))
+      .resolves.toMatchObject({
+        ready: false,
+        reasons: ["payment-reversal cursor is behind its source head"],
+      });
+  });
+
+  it("fails a payout drain immediately while a committed reversal is hidden by visibility lag", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (request: Parameters<typeof fetch>[0]) => {
+      const url = request instanceof URL ? request : new URL(String(request));
+      const after = url.searchParams.get("after_id") ?? "0";
+      if (url.pathname.endsWith("/attributions")) {
+        return new Response(JSON.stringify({ items: [], nextCursor: after }));
+      }
+      if (url.pathname.endsWith("/payment-reversals")) {
+        return new Response(JSON.stringify({
+          items: [],
+          nextCursor: after,
+          sourceHead: "30",
+        }));
+      }
+      return new Response(JSON.stringify({
+        items: [],
+        nextCursor: after,
+        sourceHead: after,
+      }));
+    }));
+
+    await expect(service().drainForPayout()).rejects.toBeInstanceOf(PartnerFeedNotReadyError);
   });
 });

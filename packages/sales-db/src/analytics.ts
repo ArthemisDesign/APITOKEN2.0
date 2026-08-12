@@ -17,7 +17,7 @@ const SORT_EXPR: Record<PartnerAnalyticsSort, string> = {
   referred_users: "t.referred_users", converted_users: "t.converted_users",
   spend_total: "t.spend_total", spend_30d: "t.spend_30d",
   earned_total: "t.earned_total", earned_30d: "t.earned_30d",
-  unpaid: "t.unpaid_nano", team_size: "t.team_size",
+  unpaid: "payable_nano", team_size: "t.team_size",
   last_seen_at: "t.last_seen_at", created_at: "t.created_at",
 };
 
@@ -43,8 +43,14 @@ export interface PartnerAnalyticsRow {
   spend30dNano: string;
   earnedTotalNano: string;
   earned30dNano: string;
+  adjustmentTotalNano: string;
+  adjustment30dNano: string;
+  netTotalNano: string;
+  net30dNano: string;
   paidNano: string;
-  unpaidNano: string; // earned − committed(paid+in-flight)
+  unpaidNano: string; // legacy gross − committed; retained for expand-only API compatibility
+  debtNano: string; // paid − net, clamped at zero
+  payableNano: string; // net − committed(paid+in-flight), clamped at zero
   teamSize: number;
   linksTotal: number;
   linksUsed: number;
@@ -62,7 +68,11 @@ export interface PartnerAnalyticsTotals {
   depositsNano: string;
   referredUsers: number;
   convertedUsers: number;
-  unpaidNano: string;
+  unpaidNano: string; // legacy gross − committed
+  adjustmentsNano: string;
+  netCommissionsNano: string;
+  debtNano: string;
+  payableNano: string;
 }
 
 export interface PartnerAnalyticsListResult {
@@ -147,6 +157,11 @@ export async function listPartnerAnalytics(
         UNION ALL
         SELECT partner_id, amount_nano, created_at FROM commission_entries_v2
       ) ce WHERE ce.partner_id = p.id AND ce.created_at >= now() - interval '30 days'), 0) AS earned_30d,
+      COALESCE((SELECT SUM(amount_nano) FROM partner_commission_adjustments adjustment
+                WHERE adjustment.partner_id = p.id), 0) AS adjustment_total,
+      COALESCE((SELECT SUM(amount_nano) FROM partner_commission_adjustments adjustment
+                WHERE adjustment.partner_id = p.id
+                  AND adjustment.effective_at >= now() - interval '30 days'), 0) AS adjustment_30d,
       COALESCE((SELECT SUM(po.amount_nano) FROM payouts po WHERE po.partner_id = p.id AND po.status = 'paid'), 0) AS paid_total,
       COALESCE((SELECT SUM(po.amount_nano) FROM payouts po WHERE po.partner_id = p.id AND po.status IN ('requested','approved','paid')), 0) AS committed_total,
       (SELECT count(*) FROM partners c WHERE c.parent_partner_id = p.id) AS team_size,
@@ -162,7 +177,12 @@ export async function listPartnerAnalytics(
     ${filter.clause}
   `;
   const rowsSql = `
-    SELECT t.*, (t.earned_total - t.committed_total) AS unpaid_nano
+    SELECT t.*,
+      (t.earned_total - t.committed_total) AS unpaid_nano,
+      (t.earned_total + t.adjustment_total) AS net_total,
+      (t.earned_30d + t.adjustment_30d) AS net_30d,
+      GREATEST(t.paid_total - (t.earned_total + t.adjustment_total), 0) AS debt_nano,
+      GREATEST((t.earned_total + t.adjustment_total) - t.committed_total, 0) AS payable_nano
     FROM (${inner}) t
     ORDER BY ${SORT_EXPR[sort]} ${dir} NULLS LAST, t.created_at DESC
     LIMIT $${filter.params.length + 1} OFFSET $${filter.params.length + 2}
@@ -188,9 +208,56 @@ export async function listPartnerAnalytics(
                   ) ce JOIN partners p ON p.id = ce.partner_id ${filter.clause}), 0)
         - COALESCE((SELECT SUM(po.amount_nano) FROM payouts po JOIN partners p ON p.id = po.partner_id ${filter.clause}${andActive} po.status IN ('requested','approved','paid')), 0)
       )::text AS unpaid
+      ,COALESCE((SELECT SUM(adjustment.amount_nano)
+                 FROM partner_commission_adjustments adjustment
+                 JOIN partners p ON p.id = adjustment.partner_id ${filter.clause}), 0)::text AS adjustments
+      ,(
+        COALESCE((SELECT SUM(ce.amount_nano) FROM (
+                    SELECT partner_id, amount_nano FROM commission_entries
+                    UNION ALL
+                    SELECT partner_id, amount_nano FROM commission_entries_v2
+                  ) ce JOIN partners p ON p.id = ce.partner_id ${filter.clause}), 0)
+        + COALESCE((SELECT SUM(adjustment.amount_nano)
+                    FROM partner_commission_adjustments adjustment
+                    JOIN partners p ON p.id = adjustment.partner_id ${filter.clause}), 0)
+      )::text AS net_commissions
+      ,COALESCE((
+        SELECT SUM(GREATEST(row.paid_total - row.net_total, 0)) FROM (
+          SELECT p.id,
+            COALESCE((SELECT SUM(ce.amount_nano) FROM (
+              SELECT partner_id, amount_nano FROM commission_entries
+              UNION ALL
+              SELECT partner_id, amount_nano FROM commission_entries_v2
+            ) ce WHERE ce.partner_id = p.id), 0)
+            + COALESCE((SELECT SUM(adjustment.amount_nano)
+                        FROM partner_commission_adjustments adjustment
+                        WHERE adjustment.partner_id = p.id), 0) AS net_total,
+            COALESCE((SELECT SUM(po.amount_nano) FROM payouts po
+                      WHERE po.partner_id = p.id AND po.status = 'paid'), 0) AS paid_total
+          FROM partners p ${filter.clause}
+        ) row
+      ), 0)::text AS debt
+      ,COALESCE((
+        SELECT SUM(GREATEST(row.net_total - row.committed_total, 0)) FROM (
+          SELECT p.id,
+            COALESCE((SELECT SUM(ce.amount_nano) FROM (
+              SELECT partner_id, amount_nano FROM commission_entries
+              UNION ALL
+              SELECT partner_id, amount_nano FROM commission_entries_v2
+            ) ce WHERE ce.partner_id = p.id), 0)
+            + COALESCE((SELECT SUM(adjustment.amount_nano)
+                        FROM partner_commission_adjustments adjustment
+                        WHERE adjustment.partner_id = p.id), 0) AS net_total,
+            COALESCE((SELECT SUM(po.amount_nano) FROM payouts po
+                      WHERE po.partner_id = p.id
+                        AND po.status IN ('requested','approved','paid')), 0) AS committed_total
+          FROM partners p ${filter.clause}
+        ) row
+      ), 0)::text AS payable
   `;
   const totalsRes = await database.pool.query<{
-    total: number; active: number; deposits: string; referred: number; converted: number; unpaid: string;
+    total: number; active: number; deposits: string; referred: number; converted: number;
+    unpaid: string; adjustments: string; net_commissions: string; debt: string; payable: string;
   }>(totalsSql, filter.params);
   const tr = totalsRes.rows[0]!;
 
@@ -199,6 +266,8 @@ export async function listPartnerAnalytics(
     totals: {
       total: tr.total, active: tr.active, depositsNano: tr.deposits,
       referredUsers: tr.referred, convertedUsers: tr.converted, unpaidNano: tr.unpaid,
+      adjustmentsNano: tr.adjustments, netCommissionsNano: tr.net_commissions,
+      debtNano: tr.debt, payableNano: tr.payable,
     },
   };
 }
@@ -228,8 +297,14 @@ function serializeRow(r: Record<string, unknown>): PartnerAnalyticsRow {
     spend30dNano: s(r.spend_30d),
     earnedTotalNano: s(r.earned_total),
     earned30dNano: s(r.earned_30d),
+    adjustmentTotalNano: s(r.adjustment_total),
+    adjustment30dNano: s(r.adjustment_30d),
+    netTotalNano: s(r.net_total),
+    net30dNano: s(r.net_30d),
     paidNano: s(r.paid_total),
     unpaidNano: s(r.unpaid_nano),
+    debtNano: s(r.debt_nano),
+    payableNano: s(r.payable_nano),
     teamSize: Number(r.team_size),
     linksTotal: Number(r.links_total),
     linksUsed: Number(r.links_used),

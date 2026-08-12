@@ -7,7 +7,10 @@ export interface ReferredUserSummary {
   commerceUserId: string;
   attributedAt: Date;
   spendNano: bigint;
+  /** Immutable positive history. */
   earnedNano: bigint;
+  adjustmentNano: bigint;
+  netNano: bigint;
   topupNano: bigint;
 }
 
@@ -71,6 +74,7 @@ export async function listReferredUsers(database: SalesDatabase, partnerId: stri
     attributed_at: Date;
     spend_nano: string;
     earned_nano: string;
+    adjustment_nano: string;
     topup_nano: string;
   }>(`
     SELECT ru.commerce_user_id, ru.attributed_at,
@@ -95,6 +99,18 @@ export async function listReferredUsers(database: SalesDatabase, partnerId: stri
         WHERE earned.partner_id = $1 AND earned.commerce_user_id = ru.commerce_user_id
       ), 0)::text AS earned_nano,
       COALESCE((
+        SELECT SUM(adjustment.amount_nano)
+        FROM partner_commission_adjustments adjustment
+        JOIN partner_commission_funding_allocations allocation
+          ON allocation.id = adjustment.commission_funding_allocation_id
+        LEFT JOIN commission_entries entry ON entry.id = allocation.commission_entry_id
+        LEFT JOIN commission_entries_v2 entry_v2 ON entry_v2.id = allocation.commission_entry_v2_id
+        LEFT JOIN partner_usage_events usage ON usage.id = entry.usage_event_id
+        LEFT JOIN partner_usage_events_v2 usage_v2 ON usage_v2.id = entry_v2.usage_event_id
+        WHERE adjustment.partner_id = $1
+          AND COALESCE(usage.commerce_user_id, usage_v2.commerce_user_id) = ru.commerce_user_id
+      ), 0)::text AS adjustment_nano,
+      COALESCE((
         SELECT SUM(rt.amount_nano) FROM referred_topups rt
         WHERE rt.commerce_user_id = ru.commerce_user_id
       ), 0)::text AS topup_nano
@@ -102,13 +118,19 @@ export async function listReferredUsers(database: SalesDatabase, partnerId: stri
     WHERE ru.partner_id = $1
     ORDER BY ru.attributed_at DESC
   `, [partnerId]);
-  return result.rows.map((row) => ({
-    commerceUserId: row.commerce_user_id,
-    attributedAt: row.attributed_at,
-    spendNano: BigInt(row.spend_nano),
-    earnedNano: BigInt(row.earned_nano),
-    topupNano: BigInt(row.topup_nano),
-  }));
+  return result.rows.map((row) => {
+    const earnedNano = BigInt(row.earned_nano);
+    const adjustmentNano = BigInt(row.adjustment_nano);
+    return {
+      commerceUserId: row.commerce_user_id,
+      attributedAt: row.attributed_at,
+      spendNano: BigInt(row.spend_nano),
+      earnedNano,
+      adjustmentNano,
+      netNano: earnedNano + adjustmentNano,
+      topupNano: BigInt(row.topup_nano),
+    };
+  });
 }
 
 export async function getSyncCursor(database: SalesDatabase, feed: SyncFeed): Promise<bigint> {

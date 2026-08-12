@@ -70,6 +70,10 @@ export interface PartnerOverview {
   activePartners?: number;
   referredUsers?: number;
   totalCommissionsNano?: string;
+  totalAdjustmentsNano?: string;
+  totalNetCommissionsNano?: string;
+  totalDebtNano?: string;
+  totalPayableNano?: string;
   pendingPayoutsNano?: string;
   paidPayoutsNano?: string;
   [key: string]: unknown;

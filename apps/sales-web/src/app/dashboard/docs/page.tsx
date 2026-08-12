@@ -101,6 +101,12 @@ export default function DocsPage() {
                 "Комиссия начисляется только пока ваш аккаунт активен. Приостановленный или ещё не одобренный аккаунт не зарабатывает, и траты уже привлечённых рефералов в это время не начисляются.",
               )}
             </li>
+            <li>
+              {t(
+                "If a customer's payment is refunded or disputed, the exact commission funded by it is reversed. If it was already paid, you will see a debt and future earnings repay it first; we never debit your external wallet automatically.",
+                "Если платёж клиента возвращён или оспорен, профинансированная им комиссия точно отменяется. Если она уже была выплачена, вы увидите долг, который сначала погасят будущие начисления; внешний кошелёк автоматически не списывается.",
+              )}
+            </li>
           </ul>
         </Card>
 

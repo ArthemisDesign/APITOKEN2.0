@@ -1,4 +1,5 @@
 import type { SalesDatabase } from "./client.js";
+import { PARTNER_ACCOUNTING_LOCK_KEY } from "./reversal-accounting.js";
 
 export type PayoutStatus = "requested" | "approved" | "paid" | "rejected";
 export type PayoutDecision = "approve" | "reject" | "paid";
@@ -61,10 +62,11 @@ function mapPayout(row: PayoutRow): Payout {
 /**
  * Legacy single-row/manual payout writer. The scheduled on-chain path uses createPayoutBatch(),
  * which creates the batch and all requested rows atomically at the locked period boundary.
- * Both writers take the same partner-row lock and subtract requested/approved/paid commitments,
+ * The request writer takes the accounting fence, locks the partner row and subtracts
+ * requested/approved/paid commitments,
  * so a manual integration cannot overcommit balance concurrently with batch preparation.
- * decidePayout() is deliberately limited to batch_id IS NULL; on-chain rows transition only from
- * their persisted receipt evidence in payout-batch.ts.
+ * The current API has no request caller. Existing legacy rows may only be rejected; all positive
+ * decisions use the source-head-fenced on-chain batch flow.
  */
 export async function requestPayout(database: SalesDatabase, input: {
   partnerId: string;
@@ -75,7 +77,8 @@ export async function requestPayout(database: SalesDatabase, input: {
   if (input.amountNano <= 0n) throw new InsufficientEarningsError("payout amount must be positive");
   const client = await database.pool.connect();
   try {
-    await client.query("BEGIN");
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [PARTNER_ACCOUNTING_LOCK_KEY]);
     // Serialize concurrent payout requests per partner.
     await client.query("SELECT id FROM partners WHERE id = $1 FOR UPDATE", [input.partnerId]);
     const balance = await client.query<{ available: string }>(`
@@ -85,6 +88,8 @@ export async function requestPayout(database: SalesDatabase, input: {
                     UNION ALL
                     SELECT partner_id, amount_nano FROM commission_entries_v2
                   ) all_commissions WHERE partner_id = $1), 0)
+        + COALESCE((SELECT SUM(amount_nano) FROM partner_commission_adjustments
+                    WHERE partner_id = $1), 0)
         - COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE partner_id = $1 AND status IN ('requested', 'approved', 'paid')), 0)
       )::text AS available
     `, [input.partnerId]);
@@ -146,7 +151,24 @@ export async function decidePayout(database: SalesDatabase, input: {
   const transition = DECISION_TRANSITIONS[input.decision];
   const client = await database.pool.connect();
   try {
-    await client.query("BEGIN");
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    if (input.decision !== "reject") {
+      await client.query("ROLLBACK");
+      throw new InvalidPayoutTransitionError(
+        "legacy manual payouts can only be rejected; use the fenced on-chain batch flow",
+      );
+    }
+    const current = await client.query<PayoutRow & { batch_id: string | null }>(`
+      SELECT ${PAYOUT_COLUMNS}, batch_id
+      FROM payouts
+      WHERE id = $1
+      FOR UPDATE
+    `, [input.payoutId]);
+    const selected = current.rows[0];
+    if (!selected || selected.batch_id !== null || !transition.from.includes(selected.status)) {
+      await client.query("ROLLBACK");
+      throw new InvalidPayoutTransitionError("payout is not in a state that allows this decision");
+    }
     const result = await client.query<PayoutRow>(`
       UPDATE payouts
       SET status = $2::payout_status,

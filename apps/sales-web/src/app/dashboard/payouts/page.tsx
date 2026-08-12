@@ -196,7 +196,7 @@ export default function PayoutsPage() {
   }, [load]);
 
   const lockedTotal = state
-    ? sumCanonicalNanoUsd(state.locked.map((locked) => locked.earnedNano))
+    ? sumCanonicalNanoUsd(state.locked.map((locked) => locked.netNano))
     : null;
 
   return (
@@ -241,7 +241,7 @@ export default function PayoutsPage() {
         <div className="stat-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
           <div className="stat-card">
             <div className="stat-label">{t("This period", "Текущий период")}</div>
-            <div className="stat-value green">{state ? formatUsd(state.current.accruedNano) : "…"}</div>
+            <div className="stat-value green">{state ? formatUsd(state.current.netNano) : "…"}</div>
             <div className="stat-foot">
               {state
                 ? `${t("accruing", "начисляется")} · ${periodRange(state.current.start, state.current.end, lang)}`
@@ -267,13 +267,23 @@ export default function PayoutsPage() {
             </div>
           </div>
           <div className="stat-card">
-            <div className="stat-label">{t("Unpaid total", "Всего не выплачено")}</div>
-            <div className="stat-value">{state ? formatUsd(state.unpaidNano) : "…"}</div>
+            <div className="stat-label">{t("Available to pay", "Доступно к выплате")}</div>
+            <div className="stat-value">{state ? formatUsd(state.payableNano) : "…"}</div>
             <div className="stat-foot">
               {state ? `${formatUsd(state.lifetimePaidNano)} ${t("paid to date", "выплачено на данный момент")}` : ""}
             </div>
           </div>
         </div>
+
+        {state && BigInt(state.debtNano) > 0n ? (
+          <Notice kind="error">
+            <strong>{t("Debt after refunds:", "Долг после возвратов:")} {formatUsd(state.debtNano)}.</strong>{" "}
+            {t(
+              "Future earnings are withheld until this amount is repaid. No automatic debit is made from your wallet.",
+              "Будущие начисления удерживаются до погашения этой суммы. Автоматического списания с кошелька нет.",
+            )}
+          </Notice>
+        ) : null}
 
         <WalletCard wallet={wallet} onBound={setWallet} />
 
@@ -345,7 +355,10 @@ export default function PayoutsPage() {
                 return (
                   <tr key={row.key}>
                     <td>{periodRange(row.start, row.end, lang)}</td>
-                    <td className="num" style={{ fontWeight: 700 }}>{formatUsd(row.earnedNano)}</td>
+                    <td className="num" style={{ fontWeight: 700 }}>
+                      {formatUsd(row.netNano)}
+                      {BigInt(row.adjustmentNano) !== 0n ? <div className="field-hint">{formatUsd(row.adjustmentNano)} {t("returns", "возвраты")}</div> : null}
+                    </td>
                     <td><Badge tone={badge!.tone}>{t(badge!.en, badge!.ru)}</Badge></td>
                     <td>{dateLabel(row.payoutDate, lang)}</td>
                   </tr>

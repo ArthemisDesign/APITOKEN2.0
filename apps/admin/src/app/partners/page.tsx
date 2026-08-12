@@ -140,6 +140,7 @@ const BATCHES_HEAD = (
 );
 
 const DueRow = memo(function DueRow({ item, minPayoutNano }: { item: PayoutDueItem; minPayoutNano?: string }) {
+  const debtNano = /^\d+$/.test(item.debtNano || "") ? BigInt(item.debtNano!) : 0n;
   return (
     <tr>
       <td className="left">
@@ -148,6 +149,7 @@ const DueRow = memo(function DueRow({ item, minPayoutNano }: { item: PayoutDueIt
       </td>
       <td>
         <b>{nanoMoney(item.payableNano)}</b>
+        {debtNano > 0n ? <div className="sub" style={{ color: "var(--bad)" }}>долг {nanoMoney(item.debtNano)}</div> : null}
       </td>
       <td className="left mono" title={item.walletAddress || "не привязан"}>
         {item.walletAddress ? shortWallet(item.walletAddress) : "—"}
@@ -161,6 +163,7 @@ const DueRow = memo(function DueRow({ item, minPayoutNano }: { item: PayoutDueIt
 });
 
 const AnalyticsRow = memo(function AnalyticsRow({ partner }: { partner: PartnerAnalyticsItem }) {
+  const debtNano = /^\d+$/.test(partner.debtNano || "") ? BigInt(partner.debtNano!) : 0n;
   return (
     <tr>
       <td className="left">
@@ -184,11 +187,12 @@ const AnalyticsRow = memo(function AnalyticsRow({ partner }: { partner: PartnerA
       </td>
       <td>{nanoMoney(partner.spend30dNano)}</td>
       <td>
-        {nanoMoney(partner.earned30dNano)}
-        <div className="sub">всего {nanoMoney(partner.earnedTotalNano)}</div>
+        {nanoMoney(partner.net30dNano)}
+        <div className="sub">net всего {nanoMoney(partner.netTotalNano)}</div>
       </td>
       <td>
-        <b>{nanoMoney(partner.unpaidNano)}</b>
+        <b>{nanoMoney(partner.payableNano)}</b>
+        {debtNano > 0n ? <div className="sub" style={{ color: "var(--bad)" }}>долг {nanoMoney(partner.debtNano)}</div> : null}
       </td>
       <td>{ago(partner.lastSeenAt)}</td>
     </tr>
@@ -357,8 +361,8 @@ export default function PartnersPage() {
           <StatCard label="партнёры" value={overview.partners ?? "—"} hint={`активны ${overview.activePartners ?? "—"}`} />
           <StatCard label="рефералы" value={overview.referredUsers ?? "—"} hint="привлечённые клиенты" />
           <StatCard label="оборот рефералов" value={nanoMoney(overview.totalSpendNano)} hint="расход привлечённых клиентов" />
-          <StatCard label="комиссии всего" value={nanoMoney(overview.totalCommissionsNano)} hint="начислено партнёрам" />
-          <StatCard label="к выплате" value={nanoMoney(overview.pendingPayoutsNano)} hint="requested + approved" />
+          <StatCard label="комиссии net" value={nanoMoney(overview.totalNetCommissionsNano)} hint={`${nanoMoney(overview.totalAdjustmentsNano)} возвраты`} />
+          <StatCard label="доступно к выплате" value={nanoMoney(overview.totalPayableNano)} hint={`${nanoMoney(overview.totalDebtNano)} долг партнёров`} />
           <StatCard label="выплачено" value={nanoMoney(overview.paidPayoutsNano)} hint="статус paid" />
         </CardGrid>
       ) : (
@@ -427,7 +431,7 @@ export default function PartnersPage() {
         <>
           <SectionHeader
             title="Аналитика партнёров"
-            sub={`${aTotals.total ?? "—"} · активны ${aTotals.active ?? "—"} · к выплате ${nanoMoney(aTotals.unpaidNano)}`}
+            sub={`${aTotals.total ?? "—"} · активны ${aTotals.active ?? "—"} · к выплате ${nanoMoney(aTotals.payableNano)} · долг ${nanoMoney(aTotals.debtNano)}`}
           />
           <form
             className="toolbar"

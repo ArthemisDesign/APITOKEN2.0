@@ -123,13 +123,22 @@ export class PartnerController {
         earnedNano: totals.earnedNano.toString(),
         directNano: totals.directNano.toString(),
         overrideNano: totals.overrideNano.toString(),
+        adjustmentNano: totals.adjustmentNano.toString(),
+        directAdjustmentNano: totals.directAdjustmentNano.toString(),
+        overrideAdjustmentNano: totals.overrideAdjustmentNano.toString(),
+        netNano: totals.netNano.toString(),
+        directNetNano: totals.directNetNano.toString(),
+        overrideNetNano: totals.overrideNetNano.toString(),
         paidNano: totals.paidNano.toString(),
         pendingPayoutNano: totals.pendingPayoutNano.toString(),
+        debtNano: totals.debtNano.toString(),
         availableNano: totals.availableNano.toString(),
       },
       last30d: {
         spendNano: totals.last30dSpendNano.toString(),
         earnedNano: totals.last30dEarnedNano.toString(),
+        adjustmentNano: totals.last30dAdjustmentNano.toString(),
+        netNano: totals.last30dNetNano.toString(),
       },
     };
   }
@@ -153,6 +162,8 @@ export class PartnerController {
           attributedAt: referral.attributedAt.toISOString(),
           spendNano: referral.spendNano.toString(),
           earnedNano: referral.earnedNano.toString(),
+          adjustmentNano: referral.adjustmentNano.toString(),
+          netNano: referral.netNano.toString(),
           topupNano: referral.topupNano.toString(),
           // Коммерческие поля (могут отсутствовать, если commerce недоступен).
           customerType: profile?.customerType ?? null,
@@ -220,6 +231,8 @@ export class PartnerController {
         date: point.date,
         spendNano: point.spendNano.toString(),
         earnedNano: point.earnedNano.toString(),
+        adjustmentNano: point.adjustmentNano.toString(),
+        netNano: point.netNano.toString(),
       })),
     };
   }
@@ -238,7 +251,11 @@ export class PartnerController {
         commissionBps: member.commissionBps,
         referredUsers: member.referredUsers,
         earnedNano: member.theirEarnedNano.toString(),
+        adjustmentNano: member.theirAdjustmentNano.toString(),
+        netNano: member.theirNetNano.toString(),
         myOverrideNano: member.myOverrideNano.toString(),
+        myOverrideAdjustmentNano: member.myOverrideAdjustmentNano.toString(),
+        myOverrideNetNano: member.myOverrideNetNano.toString(),
       })),
     };
   }

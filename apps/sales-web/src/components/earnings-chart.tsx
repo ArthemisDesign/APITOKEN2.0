@@ -1,6 +1,6 @@
 "use client";
 
-import { formatUsd, parseCanonicalNanoUsd, type EarningRow } from "@/lib/api";
+import { formatUsd, parseCanonicalSignedNanoUsd, type EarningRow } from "@/lib/api";
 
 /**
  * Pure-SVG bar chart of daily earnings (nanoUSD strings).
@@ -14,7 +14,7 @@ export function EarningsChart({ items }: { items: EarningRow[] }) {
   const plotH = H - PAD_BOTTOM - PAD_TOP;
 
   const rows = [...items].sort((a, b) => (a.date < b.date ? -1 : 1));
-  const parsedValues = rows.map((r) => parseCanonicalNanoUsd(r.earnedNano));
+  const parsedValues = rows.map((r) => parseCanonicalSignedNanoUsd(r.netNano));
   if (parsedValues.some((value) => value === null)) {
     return (
       <div className="empty" style={{ padding: "36px 16px" }}>
@@ -24,7 +24,8 @@ export function EarningsChart({ items }: { items: EarningRow[] }) {
     );
   }
   const values = parsedValues as bigint[];
-  const max = values.reduce((m, v) => (v > m ? v : m), 0n);
+  const magnitudes = values.map((value) => (value < 0n ? -value : value));
+  const max = magnitudes.reduce((m, v) => (v > m ? v : m), 0n);
 
   if (rows.length === 0 || max === 0n) {
     return (
@@ -45,10 +46,11 @@ export function EarningsChart({ items }: { items: EarningRow[] }) {
   const bars = rows.map((row, i) => {
     const v = values[i];
     // height = v / max * plotH, computed in BigInt with 4 digits of precision
-    const h = Number((v * 10000n) / max) / 10000 * plotH;
+    const magnitude = v < 0n ? -v : v;
+    const h = Number((magnitude * 10000n) / max) / 10000 * plotH;
     const x = i * (barW + gap);
     const y = PAD_TOP + (plotH - h);
-    return { x, y, h: Math.max(h, v > 0n ? 2 : 0), row };
+    return { x, y, h: Math.max(h, magnitude > 0n ? 2 : 0), negative: v < 0n, row };
   });
 
   const first = rows[0].date;
@@ -79,10 +81,10 @@ export function EarningsChart({ items }: { items: EarningRow[] }) {
               width={barW}
               height={b.h}
               rx={2}
-              fill="var(--accent)"
+              fill={b.negative ? "#d6455a" : "var(--accent)"}
               opacity={0.85}
             >
-              <title>{`${b.row.date}: ${formatUsd(b.row.earnedNano)} earned (spend ${formatUsd(b.row.spendNano)})`}</title>
+              <title>{`${b.row.date}: ${formatUsd(b.row.netNano)} net (${formatUsd(b.row.adjustmentNano)} returns; spend ${formatUsd(b.row.spendNano)})`}</title>
             </rect>
           </g>
         ))}

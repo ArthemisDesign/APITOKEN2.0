@@ -4,6 +4,7 @@ import { InvalidPayoutBatchError, PayoutBatchInProgressError, type PayoutBatch, 
 import { AdminKeyGuard } from "../admin.guard.js";
 import {
   PayoutConfigurationMismatchError,
+  PayoutAccountingNotReadyError,
   PayoutInsufficientFundsError,
   PayoutNotConfiguredError,
   PayoutService,
@@ -17,7 +18,8 @@ function serializeBatch(b: PayoutBatch): Record<string, unknown> {
   return {
     id: b.id, status: b.status, hotWalletAddress: b.hotWalletAddress,
     totalNano: b.totalNano.toString(), recipientCount: b.recipientCount,
-    gasPriceGwei: b.gasPriceGwei, minNano: b.minNano.toString(), note: b.note,
+    gasPriceGwei: b.gasPriceGwei, minNano: b.minNano.toString(),
+    earnedBefore: b.earnedBefore?.toISOString() ?? null, note: b.note,
     createdBy: b.createdBy, error: b.error,
     createdAt: b.createdAt.toISOString(),
     preparedAt: b.preparedAt?.toISOString() ?? null,
@@ -43,6 +45,7 @@ function serializeReport(report: ServiceReport): Record<string, unknown> {
     window: report.window,
     chain: report.chain,
     invalidAddresses: report.invalidAddresses,
+    accounting: report.accounting,
   };
 }
 
@@ -54,6 +57,9 @@ export class PayoutController {
   private wrap<T>(fn: () => Promise<T>): Promise<T> {
     return fn().catch((err: unknown) => {
       if (err instanceof PayoutWindowClosedError) throw new HttpException(err.message, HttpStatus.LOCKED); // 423
+      if (err instanceof PayoutAccountingNotReadyError) {
+        throw new HttpException({ error: err.message, reasons: err.reasons }, HttpStatus.LOCKED); // 423
+      }
       if (err instanceof PayoutNotConfiguredError) throw new HttpException(err.message, HttpStatus.SERVICE_UNAVAILABLE); // 503
       if (err instanceof PayoutBatchInProgressError
         || err instanceof InvalidPayoutBatchError

@@ -4,12 +4,15 @@ import {
   acquirePayoutSendLock,
   releasePayoutSendLock,
   cancelPayoutBatch,
+  acquirePartnerAccountingLock,
   createPayoutBatch,
   finalizeStuckSendingBatches,
   getActiveBatch,
   getMaxOutstandingNonce,
   getPayoutBatch,
   getPayoutCandidates,
+  getPreparedPayoutBalanceProofs,
+  getPartnerPayoutAccountingProof,
   listBatchPayouts,
   listBroadcastPayouts,
   listPayoutBatches,
@@ -18,6 +21,7 @@ import {
   markPayoutConfirmed,
   markPayoutFailed,
   releasePayoutRow,
+  releasePartnerAccountingLock,
   lastEndedPeriod,
   periodInPayoutWindow,
   transitionPayoutBatchStatus,
@@ -27,19 +31,31 @@ import {
   PayoutBatchInProgressError,
   type PayoutBatch,
   type PayoutRow,
+  type PartnerPayoutAccountingProof,
   type SalesDatabase,
 } from "@claude-api/sales-db";
 import { SALES_DATABASE } from "../infrastructure.module.js";
 import type { Environment } from "../config.js";
+import {
+  PartnerFeedNotReadyError,
+  SyncService,
+  type PartnerFeedHeads,
+} from "../sync.service.js";
 import { PayoutChain, normalizeBscAddress, nanoToUsdtWei } from "./chain.js";
 
 const NANO = 1_000_000_000n;
 const SEND_RETRIES = 2;
+export type AccountingLockClient = Awaited<ReturnType<typeof acquirePartnerAccountingLock>>;
 
 export class PayoutWindowClosedError extends Error {}
 export class PayoutNotConfiguredError extends Error {}
 export class PayoutConfigurationMismatchError extends Error {}
 export class PayoutInsufficientFundsError extends Error {}
+export class PayoutAccountingNotReadyError extends Error {
+  constructor(public readonly reasons: string[]) {
+    super(`partner accounting is not ready: ${reasons.join("; ")}`);
+  }
+}
 
 export interface PayoutReport {
   batch: PayoutBatch;
@@ -59,6 +75,26 @@ export interface PayoutReport {
     gasPriceGwei: string;
   };
   invalidAddresses: { partnerId: string; walletAddress: string; reason: string }[];
+  accounting: ReturnType<typeof serializeAccountingProof> | null;
+}
+
+function serializeAccountingProof(proof: PartnerPayoutAccountingProof) {
+  return {
+    ready: proof.ready,
+    reasons: proof.reasons,
+    usageCursor: proof.usageCursor.toString(),
+    usageSourceHead: proof.expectedUsageHead.toString(),
+    fundingLotCursor: proof.fundingLotCursor.toString(),
+    fundingLotSourceHead: proof.expectedFundingLotHead.toString(),
+    paymentReversalCursor: proof.paymentReversalCursor.toString(),
+    paymentReversalSourceHead: proof.expectedPaymentReversalHead.toString(),
+    incompleteUsageCount: proof.incompleteUsageCount.toString(),
+    missingCommissionSliceCount: proof.missingCommissionSliceCount.toString(),
+    incompleteReversalCount: proof.incompleteReversalCount.toString(),
+    reversalCount: proof.reversalCount.toString(),
+    adjustmentCount: proof.adjustmentCount.toString(),
+    adjustmentNano: proof.adjustmentNano.toString(),
+  };
 }
 
 @Injectable()
@@ -71,7 +107,56 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
   constructor(
     @Inject(SALES_DATABASE) private readonly database: SalesDatabase,
     private readonly config: ConfigService<Environment, true>,
+    private readonly sync: SyncService,
   ) {}
+
+  private lastAccountingProof: ReturnType<typeof serializeAccountingProof> | null = null;
+
+  protected async assertAccountingReady(): Promise<PartnerPayoutAccountingProof> {
+    try {
+      return await this.sync.withPayoutFence(async (heads) => {
+        const proof = await getPartnerPayoutAccountingProof(this.database, heads);
+        this.rememberAccounting(proof);
+        if (!proof.ready) throw new PayoutAccountingNotReadyError(proof.reasons);
+        return proof;
+      });
+    } catch (error) {
+      if (error instanceof PartnerFeedNotReadyError) {
+        throw new PayoutAccountingNotReadyError(error.reasons);
+      }
+      throw error;
+    }
+  }
+
+  private rememberAccounting(proof: PartnerPayoutAccountingProof): void {
+    this.lastAccountingProof = serializeAccountingProof(proof);
+  }
+
+  /**
+   * Linearizable money boundary: drain while owning the SyncService mutex, then take the shared
+   * Sales accounting lock, re-probe all three Commerce source heads, and keep both fences through
+   * the caller's final local proof and payout commitment/signing.
+   */
+  protected async withCurrentAccounting<T>(
+    callback: (client: AccountingLockClient, proof: PartnerPayoutAccountingProof) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await this.sync.withPayoutFence(async (drainedHeads) => this.withAccountingLock(
+        async (accountingClient) => {
+          const heads = await this.sync.probePayoutSourceHeads(drainedHeads);
+          const proof = await getPartnerPayoutAccountingProof(this.database, heads);
+          this.rememberAccounting(proof);
+          if (!proof.ready) throw new PayoutAccountingNotReadyError(proof.reasons);
+          return callback(accountingClient, proof);
+        },
+      ));
+    } catch (error) {
+      if (error instanceof PartnerFeedNotReadyError) {
+        throw new PayoutAccountingNotReadyError(error.reasons);
+      }
+      throw error;
+    }
+  }
 
   onModuleInit(): void {
     if (!this.isConfigured()) return;
@@ -170,35 +255,39 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
     if (!this.isConfigured()) throw new PayoutNotConfiguredError("payout engine is not configured");
     const chain = this.getChain();
     await chain.assertReady();
-    const existing = await getActiveBatch(this.database);
-    if (existing) throw new PayoutBatchInProgressError("a payout batch is already in progress");
+    const prepared = await this.withCurrentAccounting(async (accountingClient) => {
+      const existing = await getActiveBatch(this.database);
+      if (existing) throw new PayoutBatchInProgressError("a payout batch is already in progress");
 
-    // Граница начислений = конец периода, чьё окно выплат открыто (иначе — последний завершённый).
-    // Так батч платит только «разлоченные» деньги и совпадает с превью getDuePayoutList (уважает лок 7д).
-    const now = new Date();
-    const period = periodInPayoutWindow(now) ?? lastEndedPeriod(now);
-    const candidates = await getPayoutCandidates(this.database, this.minNano(), period.end);
-    const recipients: { partnerId: string; amountNano: bigint; walletAddress: string }[] = [];
-    const invalidAddresses: PayoutReport["invalidAddresses"] = [];
-    for (const c of candidates) {
-      try {
-        recipients.push({ partnerId: c.partnerId, amountNano: c.unpaidNano, walletAddress: normalizeBscAddress(c.walletAddress) });
-      } catch (err) {
-        invalidAddresses.push({ partnerId: c.partnerId, walletAddress: c.walletAddress, reason: err instanceof Error ? err.message : "invalid address" });
+      // Граница начислений = конец периода, чьё окно выплат открыто (иначе — последний завершённый).
+      // Так батч платит только «разлоченные» деньги и совпадает с превью getDuePayoutList (уважает лок 7д).
+      const now = new Date();
+      const period = periodInPayoutWindow(now) ?? lastEndedPeriod(now);
+      const candidates = await getPayoutCandidates(this.database, this.minNano(), period.end);
+      const recipients: { partnerId: string; amountNano: bigint; walletAddress: string }[] = [];
+      const invalidAddresses: PayoutReport["invalidAddresses"] = [];
+      for (const c of candidates) {
+        try {
+          recipients.push({ partnerId: c.partnerId, amountNano: c.unpaidNano, walletAddress: normalizeBscAddress(c.walletAddress) });
+        } catch (err) {
+          invalidAddresses.push({ partnerId: c.partnerId, walletAddress: c.walletAddress, reason: err instanceof Error ? err.message : "invalid address" });
+        }
       }
-    }
-    if (recipients.length === 0) {
-      throw new PayoutBatchInProgressError("no eligible recipients (valid address + balance > 0)");
-    }
-    const batch = await createPayoutBatch(this.database, {
-      createdBy: adminId,
-      minNano: this.minNano(),
-      gasPriceGwei: this.gasPriceGwei(),
-      hotWalletAddress: chain.hotAddress,
-      earnedBefore: period.end,
-      recipients,
+      if (recipients.length === 0) {
+        throw new PayoutBatchInProgressError("no eligible recipients (valid address + balance > 0)");
+      }
+      const batch = await createPayoutBatch(this.database, {
+        createdBy: adminId,
+        minNano: this.minNano(),
+        gasPriceGwei: this.gasPriceGwei(),
+        hotWalletAddress: chain.hotAddress,
+        earnedBefore: period.end,
+        accountingClient,
+        recipients,
+      });
+      return { batch, invalidAddresses };
     });
-    const report = await this.report(batch.id, invalidAddresses);
+    const report = await this.report(prepared.batch.id, prepared.invalidAddresses);
     if (!report) throw new Error("batch vanished after creation");
     return report;
   }
@@ -245,7 +334,10 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
         this.logger.error(`report balance read failed: ${err instanceof Error ? err.message : "unknown"}`);
       }
     }
-    return { batch, rows, window: this.windowInfo(), chain, invalidAddresses };
+    return {
+      batch, rows, window: this.windowInfo(), chain, invalidAddresses,
+      accounting: this.lastAccountingProof,
+    };
   }
 
   async listBatches(): Promise<PayoutBatch[]> {
@@ -297,45 +389,86 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
     }
   }
 
+  private async withAccountingLock<T>(fn: (client: AccountingLockClient) => Promise<T>): Promise<T> {
+    const client = await acquirePartnerAccountingLock(this.database);
+    try {
+      return await fn(client);
+    } finally {
+      await releasePartnerAccountingLock(client);
+    }
+  }
+
+  private async assertPreparedBalances(
+    client: AccountingLockClient,
+    batch: PayoutBatch,
+    rows: PayoutRow[],
+  ): Promise<void> {
+    if (batch.earnedBefore === null) {
+      throw new InvalidPayoutBatchError(
+        "payout batch has no pinned earnings boundary; cancel it and prepare a fresh batch",
+      );
+    }
+    const proofs = await getPreparedPayoutBalanceProofs(
+      client,
+      rows.map((row) => row.id),
+      batch.earnedBefore,
+    );
+    const byPayout = new Map(proofs.map((proof) => [proof.payoutId, proof]));
+    for (const row of rows) {
+      const proof = byPayout.get(row.id);
+      if (!proof || proof.partnerId !== row.partnerId || proof.amountNano !== row.amountNano) {
+        throw new InvalidPayoutBatchError("payout row changed before its final accounting proof");
+      }
+      if (proof.amountNano > proof.allowedNano) {
+        throw new InvalidPayoutBatchError(
+          "payout exceeds the current signed partner balance; cancel it and prepare a fresh batch",
+        );
+      }
+    }
+  }
+
   /** Отправляет весь батч по очереди: симуляция → подпись → сохранение хеша → бродкаст → подтверждение. */
   async send(batchId: string): Promise<PayoutReport | null> {
     this.assertSendAllowed();
     if (!this.isConfigured()) throw new PayoutNotConfiguredError("payout engine is not configured");
     await this.withSendLock(async () => {
-      // Re-read only after the cross-process lock. A cancel or an earlier sender may have changed
-      // the state after the HTTP request began; stale pre-lock state must never resurrect a batch.
-      const batch = await getPayoutBatch(this.database, batchId);
-      if (!batch || (batch.status !== "prepared" && batch.status !== "sending")) return;
-      const chain = this.getChain();
-      await chain.assertReady();
-      this.assertBatchWallet(batch, chain);
-      if (await getMaxOutstandingNonce(this.database) !== null) {
-        this.logger.log(`batch ${batchId}: an earlier nonce is unresolved; poller owns progress`);
-        return;
-      }
-      const rows = await listSendablePayouts(this.database, batchId); // читаем ВНУТРИ лока
-      if (rows.length === 0) {
+      await this.withCurrentAccounting(async (accountingClient) => {
+        // Re-read only after both cross-process locks. A cancellation, reversal, or earlier sender
+        // may have changed state after the HTTP request began; stale state must never be signed.
+        const batch = await getPayoutBatch(this.database, batchId);
+        if (!batch || (batch.status !== "prepared" && batch.status !== "sending")) return;
+        const chain = this.getChain();
+        await chain.assertReady();
+        this.assertBatchWallet(batch, chain);
+        if (await getMaxOutstandingNonce(this.database) !== null) {
+          this.logger.log(`batch ${batchId}: an earlier nonce is unresolved; poller owns progress`);
+          return;
+        }
+        const rows = await listSendablePayouts(this.database, batchId);
+        if (rows.length === 0) {
+          await this.reconcileBatchState(batchId);
+          return;
+        }
+        await this.assertPreparedBalances(accountingClient, batch, rows);
+        await this.assertFunds(chain, rows);
+        const claimed = await transitionPayoutBatchStatus(
+          this.database,
+          batchId,
+          ["prepared", "sending"],
+          "sending",
+        );
+        if (!claimed) return;
+        let nonce = await this.computeStartNonce(chain);
+        for (const row of rows) {
+          const result = await this.sendRow(chain, row, nonce);
+          nonce = result.nextNonce;
+          if (result.stop) break;
+        }
         await this.reconcileBatchState(batchId);
-        return;
-      }
-      await this.assertFunds(chain, rows);
-      const claimed = await transitionPayoutBatchStatus(
-        this.database,
-        batchId,
-        ["prepared", "sending"],
-        "sending",
-      );
-      if (!claimed) return;
-      let nonce = await this.computeStartNonce(chain);
-      for (const row of rows) {
-        const result = await this.sendRow(chain, row, nonce);
-        nonce = result.nextNonce;
-        if (result.stop) break; // неопределённость/таймаут — не занимаем следующий nonce, дожмёт поллер
-      }
-      await this.reconcileBatchState(batchId);
-      if (await getMaxOutstandingNonce(this.database) !== null) {
-        this.logger.log(`batch ${batchId}: tx confirming; poller will finalize`);
-      }
+        if (await getMaxOutstandingNonce(this.database) !== null) {
+          this.logger.log(`batch ${batchId}: tx confirming; poller will finalize`);
+        }
+      });
     });
     return this.report(batchId);
   }
@@ -345,34 +478,38 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
     this.assertSendAllowed();
     if (!this.isConfigured()) throw new PayoutNotConfiguredError("payout engine is not configured");
     return this.withSendLock(async () => {
-      const chain = this.getChain();
-      await chain.assertReady();
-      const target = await this.findRow(payoutId);
-      // 'broadcast'/'confirmed'/'paid'/'rejected' не пересылаем — иначе rejected→re-send = двойная выплата,
-      // а broadcast/confirmed решает поллер по хешу.
-      if (!target || target.status === "paid" || target.status === "rejected" || target.chainStatus === "broadcast" || target.chainStatus === "confirmed") {
-        return { ok: false, row: target };
-      }
-      if (!target.batchId) return { ok: false, row: target };
-      const batch = await getPayoutBatch(this.database, target.batchId);
-      if (!batch || (batch.status !== "prepared" && batch.status !== "sending")) {
-        return { ok: false, row: target };
-      }
-      this.assertBatchWallet(batch, chain);
-      if (await getMaxOutstandingNonce(this.database) !== null) {
-        throw new PayoutBatchInProgressError("an earlier payout transaction is still unresolved");
-      }
-      await this.assertFunds(chain, [target]);
-      if (!await transitionPayoutBatchStatus(
-        this.database,
-        batch.id,
-        ["prepared", "sending"],
-        "sending",
-      )) return { ok: false, row: target };
-      const nonce = await this.computeStartNonce(chain);
-      await this.sendRow(chain, target, nonce);
-      await this.reconcileBatchState(target.batchId);
-      return { ok: true, row: await this.findRow(payoutId) };
+      return this.withCurrentAccounting(async (accountingClient) => {
+        const chain = this.getChain();
+        await chain.assertReady();
+        const target = await this.findRow(payoutId);
+        // 'broadcast'/'confirmed'/'paid'/'rejected' не пересылаем — иначе rejected→re-send =
+        // двойная выплата, а broadcast/confirmed решает поллер по хешу.
+        if (!target || target.status === "paid" || target.status === "rejected"
+            || target.chainStatus === "broadcast" || target.chainStatus === "confirmed") {
+          return { ok: false, row: target };
+        }
+        if (!target.batchId) return { ok: false, row: target };
+        const batch = await getPayoutBatch(this.database, target.batchId);
+        if (!batch || (batch.status !== "prepared" && batch.status !== "sending")) {
+          return { ok: false, row: target };
+        }
+        this.assertBatchWallet(batch, chain);
+        if (await getMaxOutstandingNonce(this.database) !== null) {
+          throw new PayoutBatchInProgressError("an earlier payout transaction is still unresolved");
+        }
+        await this.assertPreparedBalances(accountingClient, batch, [target]);
+        await this.assertFunds(chain, [target]);
+        if (!await transitionPayoutBatchStatus(
+          this.database,
+          batch.id,
+          ["prepared", "sending"],
+          "sending",
+        )) return { ok: false, row: target };
+        const nonce = await this.computeStartNonce(chain);
+        await this.sendRow(chain, target, nonce);
+        await this.reconcileBatchState(target.batchId);
+        return { ok: true, row: await this.findRow(payoutId) };
+      });
     });
   }
 

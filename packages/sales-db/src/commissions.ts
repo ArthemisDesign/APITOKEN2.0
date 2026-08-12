@@ -755,14 +755,26 @@ export async function reconcilePendingReferralEvents(database: SalesDatabase, li
 }
 
 export interface PartnerEarningsTotals {
+  /** Immutable positive commission history. */
   earnedNano: bigint;
   directNano: bigint;
   overrideNano: bigint;
+  /** Signed refund/dispute corrections; always zero or negative. */
+  adjustmentNano: bigint;
+  directAdjustmentNano: bigint;
+  overrideAdjustmentNano: bigint;
+  netNano: bigint;
+  directNetNano: bigint;
+  overrideNetNano: bigint;
   paidNano: bigint;
   pendingPayoutNano: bigint;
+  debtNano: bigint;
   availableNano: bigint;
   last30dSpendNano: bigint;
+  /** Gross is retained for audit/API compatibility; net is what is actually owed. */
   last30dEarnedNano: bigint;
+  last30dAdjustmentNano: bigint;
+  last30dNetNano: bigint;
 }
 
 export async function getPartnerEarningsTotals(database: SalesDatabase, partnerId: string): Promise<PartnerEarningsTotals> {
@@ -770,8 +782,10 @@ export async function getPartnerEarningsTotals(database: SalesDatabase, partnerI
   // v2 commission_entries_v2/partner_usage_events_v2): события между ними не пересекаются, поэтому
   // UNION ALL не даёт двойного счёта. V2-спенд — exact paid_funded_nano (там нет amount_nano).
   const result = await database.pool.query<{
-    earned: string; direct: string; override: string; paid: string; pending: string;
-    spend_30d: string; earned_30d: string;
+    earned: string; direct: string; override: string;
+    adjustment: string; direct_adjustment: string; override_adjustment: string;
+    paid: string; pending: string; spend_30d: string; earned_30d: string;
+    adjustment_30d: string;
   }>(`
     WITH all_commissions AS (
       SELECT partner_id, level, amount_nano FROM commission_entries
@@ -789,11 +803,22 @@ export async function getPartnerEarningsTotals(database: SalesDatabase, partnerI
       SELECT ce.partner_id, ce.amount_nano, pue.occurred_at
       FROM commission_entries_v2 ce
       JOIN partner_usage_events_v2 pue ON pue.id = ce.usage_event_id
+    ), all_adjustments AS (
+      SELECT adjustment.partner_id, adjustment.amount_nano, adjustment.effective_at,
+             COALESCE(entry.level, entry_v2.level) AS level
+      FROM partner_commission_adjustments adjustment
+      JOIN partner_commission_funding_allocations allocation
+        ON allocation.id = adjustment.commission_funding_allocation_id
+      LEFT JOIN commission_entries entry ON entry.id = allocation.commission_entry_id
+      LEFT JOIN commission_entries_v2 entry_v2 ON entry_v2.id = allocation.commission_entry_v2_id
     )
     SELECT
       COALESCE((SELECT SUM(amount_nano) FROM all_commissions WHERE partner_id = $1), 0)::text AS earned,
       COALESCE((SELECT SUM(amount_nano) FROM all_commissions WHERE partner_id = $1 AND level = 0), 0)::text AS direct,
       COALESCE((SELECT SUM(amount_nano) FROM all_commissions WHERE partner_id = $1 AND level > 0), 0)::text AS override,
+      COALESCE((SELECT SUM(amount_nano) FROM all_adjustments WHERE partner_id = $1), 0)::text AS adjustment,
+      COALESCE((SELECT SUM(amount_nano) FROM all_adjustments WHERE partner_id = $1 AND level = 0), 0)::text AS direct_adjustment,
+      COALESCE((SELECT SUM(amount_nano) FROM all_adjustments WHERE partner_id = $1 AND level > 0), 0)::text AS override_adjustment,
       COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE partner_id = $1 AND status = 'paid'), 0)::text AS paid,
       COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE partner_id = $1 AND status IN ('requested', 'approved')), 0)::text AS pending,
       COALESCE((
@@ -803,28 +828,54 @@ export async function getPartnerEarningsTotals(database: SalesDatabase, partnerI
       COALESCE((
         SELECT SUM(amount_nano) FROM all_earned_by_usage
         WHERE partner_id = $1 AND occurred_at >= now() - interval '30 days'
-      ), 0)::text AS earned_30d
+      ), 0)::text AS earned_30d,
+      COALESCE((
+        SELECT SUM(amount_nano) FROM all_adjustments
+        WHERE partner_id = $1 AND effective_at >= now() - interval '30 days'
+      ), 0)::text AS adjustment_30d
   `, [partnerId]);
   const row = result.rows[0]!;
   const earnedNano = BigInt(row.earned);
+  const directNano = BigInt(row.direct);
+  const overrideNano = BigInt(row.override);
+  const adjustmentNano = BigInt(row.adjustment);
+  const directAdjustmentNano = BigInt(row.direct_adjustment);
+  const overrideAdjustmentNano = BigInt(row.override_adjustment);
+  const netNano = earnedNano + adjustmentNano;
   const paidNano = BigInt(row.paid);
   const pendingPayoutNano = BigInt(row.pending);
+  const availableBalance = netNano - paidNano - pendingPayoutNano;
+  const paidBalance = netNano - paidNano;
+  const last30dEarnedNano = BigInt(row.earned_30d);
+  const last30dAdjustmentNano = BigInt(row.adjustment_30d);
   return {
     earnedNano,
-    directNano: BigInt(row.direct),
-    overrideNano: BigInt(row.override),
+    directNano,
+    overrideNano,
+    adjustmentNano,
+    directAdjustmentNano,
+    overrideAdjustmentNano,
+    netNano,
+    directNetNano: directNano + directAdjustmentNano,
+    overrideNetNano: overrideNano + overrideAdjustmentNano,
     paidNano,
     pendingPayoutNano,
-    availableNano: earnedNano - paidNano - pendingPayoutNano,
+    debtNano: paidBalance < 0n ? -paidBalance : 0n,
+    availableNano: availableBalance > 0n ? availableBalance : 0n,
     last30dSpendNano: BigInt(row.spend_30d),
-    last30dEarnedNano: BigInt(row.earned_30d),
+    last30dEarnedNano,
+    last30dAdjustmentNano,
+    last30dNetNano: last30dEarnedNano + last30dAdjustmentNano,
   };
 }
 
 export interface DailyEarningsPoint {
   date: string;
   spendNano: bigint;
+  /** Gross positive commissions retained for audit compatibility. */
   earnedNano: bigint;
+  adjustmentNano: bigint;
+  netNano: bigint;
 }
 
 export async function getPartnerDailyEarnings(
@@ -832,7 +883,7 @@ export async function getPartnerDailyEarnings(
   partnerId: string,
   days: number,
 ): Promise<DailyEarningsPoint[]> {
-  const [spendResult, earnedResult] = await Promise.all([
+  const [spendResult, earnedResult, adjustmentResult] = await Promise.all([
     database.pool.query<{ day: string; total: string }>(`
       SELECT to_char(date_trunc('day', occurred_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
              SUM(amount_nano)::text AS total
@@ -859,19 +910,31 @@ export async function getPartnerDailyEarnings(
       WHERE partner_id = $1 AND occurred_at >= now() - ($2 * interval '1 day')
       GROUP BY 1
     `, [partnerId, days]),
+    database.pool.query<{ day: string; total: string }>(`
+      SELECT to_char(date_trunc('day', effective_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+             SUM(amount_nano)::text AS total
+      FROM partner_commission_adjustments
+      WHERE partner_id = $1 AND effective_at >= now() - ($2 * interval '1 day')
+      GROUP BY 1
+    `, [partnerId, days]),
   ]);
   const depositByDay = new Map(spendResult.rows.map((row) => [row.day, BigInt(row.total)]));
   const earnedByDay = new Map(earnedResult.rows.map((row) => [row.day, BigInt(row.total)]));
+  const adjustmentByDay = new Map(adjustmentResult.rows.map((row) => [row.day, BigInt(row.total)]));
 
   const series: DailyEarningsPoint[] = [];
   const today = new Date();
   for (let offset = days - 1; offset >= 0; offset -= 1) {
     const day = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - offset));
     const date = day.toISOString().slice(0, 10);
+    const earnedNano = earnedByDay.get(date) ?? 0n;
+    const adjustmentNano = adjustmentByDay.get(date) ?? 0n;
     series.push({
       date,
       spendNano: depositByDay.get(date) ?? 0n,
-      earnedNano: earnedByDay.get(date) ?? 0n,
+      earnedNano,
+      adjustmentNano,
+      netNano: earnedNano + adjustmentNano,
     });
   }
   return series;
@@ -886,14 +949,19 @@ export interface TeamMemberSummary {
   commissionBps: number;
   referredUsers: number;
   theirEarnedNano: bigint;
+  theirAdjustmentNano: bigint;
+  theirNetNano: bigint;
   myOverrideNano: bigint;
+  myOverrideAdjustmentNano: bigint;
+  myOverrideNetNano: bigint;
 }
 
 export async function listPartnerTeam(database: SalesDatabase, partnerId: string): Promise<TeamMemberSummary[]> {
   const result = await database.pool.query<{
     id: string; email: string | null; telegram_username: string | null; display_name: string | null;
     status: PartnerStatus; commission_bps: number;
-    referred_users: string; their_earned: string; my_override: string;
+    referred_users: string; their_earned: string; their_adjustment: string;
+    my_override: string; my_override_adjustment: string;
   }>(`
     SELECT p.id, p.email, p.telegram_username, p.display_name, p.status, p.commission_bps,
       (SELECT count(*) FROM referred_users ru WHERE ru.partner_id = p.id)::text AS referred_users,
@@ -904,6 +972,10 @@ export async function listPartnerTeam(database: SalesDatabase, partnerId: string
           SELECT partner_id, amount_nano FROM commission_entries_v2
         ) ce WHERE ce.partner_id = p.id
       ), 0)::text AS their_earned,
+      COALESCE((
+        SELECT SUM(amount_nano) FROM partner_commission_adjustments adjustment
+        WHERE adjustment.partner_id = p.id
+      ), 0)::text AS their_adjustment,
       COALESCE((
         SELECT SUM(amount_nano) FROM (
           SELECT ce.partner_id, ce.level, ce.amount_nano, pue.partner_id AS source_partner_id
@@ -916,12 +988,30 @@ export async function listPartnerTeam(database: SalesDatabase, partnerId: string
         ) override_entries
         WHERE override_entries.partner_id = $1 AND override_entries.level > 0
           AND override_entries.source_partner_id = p.id
-      ), 0)::text AS my_override
+      ), 0)::text AS my_override,
+      COALESCE((
+        SELECT SUM(adjustment.amount_nano)
+        FROM partner_commission_adjustments adjustment
+        JOIN partner_commission_funding_allocations allocation
+          ON allocation.id = adjustment.commission_funding_allocation_id
+        LEFT JOIN commission_entries entry ON entry.id = allocation.commission_entry_id
+        LEFT JOIN commission_entries_v2 entry_v2 ON entry_v2.id = allocation.commission_entry_v2_id
+        LEFT JOIN partner_usage_events usage ON usage.id = entry.usage_event_id
+        LEFT JOIN partner_usage_events_v2 usage_v2 ON usage_v2.id = entry_v2.usage_event_id
+        WHERE adjustment.partner_id = $1
+          AND COALESCE(entry.level, entry_v2.level) > 0
+          AND COALESCE(usage.partner_id, usage_v2.partner_id) = p.id
+      ), 0)::text AS my_override_adjustment
     FROM partners p
     WHERE p.parent_partner_id = $1
     ORDER BY p.created_at
   `, [partnerId]);
-  return result.rows.map((row) => ({
+  return result.rows.map((row) => {
+    const theirEarnedNano = BigInt(row.their_earned);
+    const theirAdjustmentNano = BigInt(row.their_adjustment);
+    const myOverrideNano = BigInt(row.my_override);
+    const myOverrideAdjustmentNano = BigInt(row.my_override_adjustment);
+    return {
     id: row.id,
     email: row.email,
     telegramUsername: row.telegram_username,
@@ -929,9 +1019,14 @@ export async function listPartnerTeam(database: SalesDatabase, partnerId: string
     status: row.status,
     commissionBps: row.commission_bps,
     referredUsers: Number(row.referred_users),
-    theirEarnedNano: BigInt(row.their_earned),
-    myOverrideNano: BigInt(row.my_override),
-  }));
+      theirEarnedNano,
+      theirAdjustmentNano,
+      theirNetNano: theirEarnedNano + theirAdjustmentNano,
+      myOverrideNano,
+      myOverrideAdjustmentNano,
+      myOverrideNetNano: myOverrideNano + myOverrideAdjustmentNano,
+    };
+  });
 }
 
 export async function countPartnerTeam(database: SalesDatabase, partnerId: string): Promise<number> {

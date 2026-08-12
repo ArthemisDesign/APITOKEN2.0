@@ -1,6 +1,33 @@
 import type { PoolClient } from "pg";
 import type { SalesDatabase } from "./client.js";
 
+/** Shared money fence: every negative adjustment writer and payout prepare/send takes this lock. */
+export const PARTNER_ACCOUNTING_LOCK_KEY = 918273647;
+
+/**
+ * Holds the partner money fence on one dedicated PostgreSQL session. Payout sending keeps this
+ * lease from its final local balance proof through signing and broadcast, while reversal writers
+ * take the matching transaction-scoped lock. Callers must release the returned client in finally.
+ */
+export async function acquirePartnerAccountingLock(database: SalesDatabase): Promise<PoolClient> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("SELECT pg_advisory_lock($1)", [PARTNER_ACCOUNTING_LOCK_KEY]);
+    return client;
+  } catch (error) {
+    client.release();
+    throw error;
+  }
+}
+
+export async function releasePartnerAccountingLock(client: PoolClient): Promise<void> {
+  try {
+    await client.query("SELECT pg_advisory_unlock($1)", [PARTNER_ACCOUNTING_LOCK_KEY]);
+  } finally {
+    client.release();
+  }
+}
+
 export interface PaidFundingLotSource {
   commerceTopupId: bigint;
   commercePaymentId: string;
@@ -183,6 +210,7 @@ async function allocateOneUsage(database: SalesDatabase, usage: IncompleteUsage)
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [PARTNER_ACCOUNTING_LOCK_KEY]);
     await client.query(`
       SET CONSTRAINTS partner_reversed_usage_complete_guard,
         partner_reversed_commission_complete_guard,
@@ -382,6 +410,7 @@ async function reconcileCommissionFundingEvidence(database: SalesDatabase, limit
     const client = await database.pool.connect();
     try {
       await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      await client.query("SELECT pg_advisory_xact_lock($1)", [PARTNER_ACCOUNTING_LOCK_KEY]);
       await client.query(`
         SET CONSTRAINTS partner_reversed_commission_complete_guard,
           partner_reversal_adjustment_set_guard DEFERRED
@@ -450,6 +479,7 @@ export async function recordPaymentReversalPage(
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [PARTNER_ACCOUNTING_LOCK_KEY]);
     await client.query(`
       SET CONSTRAINTS partner_reversal_adjustment_set_guard,
         partner_reversal_insert_complete_guard DEFERRED
@@ -482,6 +512,7 @@ export async function getPartnerReversalAccountingHealth(database: SalesDatabase
   reversalCount: bigint;
   adjustmentCount: bigint;
   adjustmentNano: bigint;
+  incompleteReversalCount: bigint;
 }> {
   const result = await database.pool.query<{
     funding_lot_cursor: string;
@@ -491,6 +522,7 @@ export async function getPartnerReversalAccountingHealth(database: SalesDatabase
     reversal_count: string;
     adjustment_count: string;
     adjustment_nano: string;
+    incomplete_reversal_count: string;
   }>(`
     WITH all_usage AS (
       SELECT 1::int AS source_schema, usage.id, usage.amount_nano AS basis_nano
@@ -539,7 +571,23 @@ export async function getPartnerReversalAccountingHealth(database: SalesDatabase
       (SELECT count(*)::text FROM partner_payment_reversals) AS reversal_count,
       (SELECT count(*)::text FROM partner_commission_adjustments) AS adjustment_count,
       (SELECT COALESCE(sum(amount_nano), 0)::text FROM partner_commission_adjustments)
-        AS adjustment_nano
+        AS adjustment_nano,
+      (SELECT count(*)::text
+       FROM partner_payment_reversals reversal
+       WHERE EXISTS (
+         SELECT 1
+         FROM partner_commission_funding_allocations commission_allocation
+         JOIN partner_usage_funding_allocations usage_allocation
+           ON usage_allocation.id = commission_allocation.usage_funding_allocation_id
+         WHERE usage_allocation.funding_lot_id = reversal.funding_lot_id
+           AND commission_allocation.allocated_commission_nano > 0
+           AND NOT EXISTS (
+             SELECT 1 FROM partner_commission_adjustments adjustment
+             WHERE adjustment.reversal_id = reversal.id
+               AND adjustment.commission_funding_allocation_id = commission_allocation.id
+               AND adjustment.amount_nano = -commission_allocation.allocated_commission_nano
+           )
+       )) AS incomplete_reversal_count
     FROM incomplete_usage, missing_commission
   `);
   const row = result.rows[0]!;
@@ -551,6 +599,57 @@ export async function getPartnerReversalAccountingHealth(database: SalesDatabase
     reversalCount: BigInt(row.reversal_count),
     adjustmentCount: BigInt(row.adjustment_count),
     adjustmentNano: BigInt(row.adjustment_nano),
+    incompleteReversalCount: BigInt(row.incomplete_reversal_count),
+  };
+}
+
+export interface PartnerPayoutAccountingProof
+  extends Awaited<ReturnType<typeof getPartnerReversalAccountingHealth>> {
+  usageCursor: bigint;
+  expectedUsageHead: bigint;
+  expectedFundingLotHead: bigint;
+  expectedPaymentReversalHead: bigint;
+  ready: boolean;
+  reasons: string[];
+}
+
+/**
+ * Exact local proof against source heads freshly observed by SyncService. This deliberately does
+ * not infer a remote head from time or row counts: payout callers must first drain the HTTP feeds.
+ */
+export async function getPartnerPayoutAccountingProof(
+  database: SalesDatabase,
+  expected: {
+    usageEvents: bigint;
+    fundingLots: bigint;
+    paymentReversals: bigint;
+  },
+): Promise<PartnerPayoutAccountingProof> {
+  const [health, usageCursor] = await Promise.all([
+    getPartnerReversalAccountingHealth(database),
+    database.pool.query<{ last_id: string }>(`
+      SELECT COALESCE((SELECT last_id FROM sync_cursors WHERE feed='usage_events'), 0)::text AS last_id
+    `).then((result) => BigInt(result.rows[0]!.last_id)),
+  ]);
+  const reasons: string[] = [];
+  if (usageCursor !== expected.usageEvents) reasons.push("usage cursor is behind its source head");
+  if (health.fundingLotCursor !== expected.fundingLots) {
+    reasons.push("funding-lot cursor is behind its source head");
+  }
+  if (health.paymentReversalCursor !== expected.paymentReversals) {
+    reasons.push("payment-reversal cursor is behind its source head");
+  }
+  if (health.incompleteUsageCount !== 0n) reasons.push("usage funding allocation is incomplete");
+  if (health.missingCommissionSliceCount !== 0n) reasons.push("commission funding slices are incomplete");
+  if (health.incompleteReversalCount !== 0n) reasons.push("a payment reversal is not fully reflected");
+  return {
+    ...health,
+    usageCursor,
+    expectedUsageHead: expected.usageEvents,
+    expectedFundingLotHead: expected.fundingLots,
+    expectedPaymentReversalHead: expected.paymentReversals,
+    ready: reasons.length === 0,
+    reasons,
   };
 }
 

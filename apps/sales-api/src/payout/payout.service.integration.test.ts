@@ -2,13 +2,19 @@ import { randomUUID } from "node:crypto";
 import type { ConfigService } from "@nestjs/config";
 import {
   PayoutBatchInProgressError,
+  InvalidPayoutBatchError,
   createPayoutBatch,
   createSalesDatabase,
   getPayoutBatch,
   listBatchPayouts,
+  reconcilePartnerFundingEvidence,
+  recordPaidFundingLot,
+  recordPaymentReversalPage,
   releasePayoutRow,
   type SalesDatabase,
+  type PartnerPayoutAccountingProof,
 } from "@claude-api/sales-db";
+import type { AccountingLockClient } from "./payout.service.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Environment } from "../config.js";
 import type { ConfirmResult, PayoutChain, SignedTransfer } from "./chain.js";
@@ -75,8 +81,32 @@ function config(overrides: Record<string, unknown> = {}): ConfigService<Environm
 }
 
 class TestPayoutService extends PayoutService {
-  constructor(database: SalesDatabase, cfg: ConfigService<Environment, true>, private readonly fake: FakeChain) {
-    super(database, cfg);
+  constructor(
+    private readonly testDatabase: SalesDatabase,
+    cfg: ConfigService<Environment, true>,
+    private readonly fake: FakeChain,
+    private readonly accountingError: Error | null = null,
+  ) {
+    super(testDatabase, cfg, {} as never);
+  }
+
+  protected override async assertAccountingReady(): Promise<PartnerPayoutAccountingProof> {
+    // Composition tests exercise the chain state machine. Exact accounting readiness has its own
+    // integration suite and is not coupled to these deliberately minimal legacy fixtures.
+    if (this.accountingError) throw this.accountingError;
+    return {} as PartnerPayoutAccountingProof;
+  }
+
+  protected override async withCurrentAccounting<T>(
+    callback: (client: AccountingLockClient, proof: PartnerPayoutAccountingProof) => Promise<T>,
+  ): Promise<T> {
+    if (this.accountingError) throw this.accountingError;
+    const client = await this.testDatabase.pool.connect();
+    try {
+      return await callback(client, {} as PartnerPayoutAccountingProof);
+    } finally {
+      client.release();
+    }
   }
 
   protected override createChain(): PayoutChain {
@@ -136,6 +166,7 @@ describe.runIf(Boolean(connectionString))("PayoutService composition", () => {
       minNano: 0n,
       gasPriceGwei: "0.05",
       hotWalletAddress,
+      earnedBefore: new Date("2099-01-01T00:00:00.000Z"),
       recipients,
     });
   }
@@ -153,6 +184,112 @@ describe.runIf(Boolean(connectionString))("PayoutService composition", () => {
     const enabled = new TestPayoutService(database, config(), chain);
     await expect(enabled.prepare("admin")).rejects.toThrow("wrong token");
     expect(await database.pool.query("SELECT count(*)::int AS n FROM payout_batches").then((r) => r.rows[0]!.n)).toBe(0);
+  });
+
+  it("blocks prepare and send before chain signing when accounting is not current", async () => {
+    const lag = new Error("partner accounting is not ready: payment-reversal cursor is behind");
+    await earn(10n * USD, new Date("2020-01-01T00:00:00Z"));
+    const prepareChain = fakeChain();
+    await expect(new TestPayoutService(database, config(), prepareChain, lag).prepare("admin"))
+      .rejects.toThrow("payment-reversal cursor is behind");
+    expect(await database.pool.query("SELECT count(*)::int AS n FROM payout_batches").then((r) => r.rows[0]!.n)).toBe(0);
+
+    await database.pool.query("TRUNCATE partners, commission_entries, payouts, payout_batches RESTART IDENTITY CASCADE");
+    const created = await batch([10n * USD]);
+    const sendChain = fakeChain();
+    await expect(new TestPayoutService(database, config(), sendChain, lag).send(created.id))
+      .rejects.toThrow("payment-reversal cursor is behind");
+    expect(sendChain.signTransfer).not.toHaveBeenCalled();
+  });
+
+  it("blocks a prepared row after signed balance drops and never signs or broadcasts it", async () => {
+    const created = await batch([10n * USD]);
+    const row = (await listBatchPayouts(database, created.id))[0]!;
+    // A separately committed payout reduces the exact signed allowance after this batch was
+    // prepared. Refund adjustments enter the same expression; this fixture isolates the final
+    // pre-sign proof from the already-covered reversal writer machinery.
+    await database.pool.query(`
+      INSERT INTO payouts(partner_id, amount_nano, status, method)
+      VALUES($1, 1, 'paid', 'usdt-bep20')
+    `, [row.partnerId]);
+    const chain = fakeChain();
+    await expect(new TestPayoutService(database, config(), chain).send(created.id))
+      .rejects.toBeInstanceOf(InvalidPayoutBatchError);
+    expect(chain.signTransfer).not.toHaveBeenCalled();
+    expect(chain.broadcastRaw).not.toHaveBeenCalled();
+  });
+
+  it("blocks prepare-then-refund before signing or broadcasting", async () => {
+    const userId = randomUUID();
+    const paymentId = randomUUID();
+    const partner = await database.pool.query<{ id: string }>(`
+      INSERT INTO partners(
+        referral_code, status, commission_bps, payout_method, payout_details
+      ) VALUES($1, 'active', 10000, 'usdt-bep20', $2::jsonb)
+      RETURNING id
+    `, [randomUUID(), JSON.stringify({ network: "BSC", address: RECIPIENT })]);
+    const partnerId = partner.rows[0]!.id;
+    await database.pool.query(`
+      INSERT INTO referred_users(commerce_user_id, partner_id, attributed_at)
+      VALUES($1, $2, '2026-08-01T00:00:00.000Z')
+    `, [userId, partnerId]);
+    await database.pool.query(`
+      INSERT INTO referred_topups(
+        commerce_payment_id, commerce_user_id, partner_id, amount_nano, paid_at
+      ) VALUES($1, $2, $3, $4, '2026-08-02T00:00:00.000Z')
+    `, [paymentId, userId, partnerId, (10n * USD).toString()]);
+    await recordPaidFundingLot(database, {
+      commerceTopupId: 9001n,
+      commercePaymentId: paymentId,
+      commerceUserId: userId,
+      amountNano: 10n * USD,
+      paidAt: new Date("2026-08-02T00:00:00.000Z"),
+    });
+    const usage = await database.pool.query<{ id: string }>(`
+      INSERT INTO partner_usage_events(
+        commerce_event_id, commerce_user_id, partner_id, amount_nano, occurred_at
+      ) VALUES(9001, $1, $2, $3, '2026-08-03T00:00:00.000Z')
+      RETURNING id
+    `, [userId, partnerId, (10n * USD).toString()]);
+    await database.pool.query(`
+      INSERT INTO commission_entries(
+        usage_event_id, partner_id, level, applied_bps, amount_nano, created_at
+      ) VALUES($1, $2, 0, 10000, $3, '2026-08-03T00:00:00.000Z')
+    `, [usage.rows[0]!.id, partnerId, (10n * USD).toString()]);
+    await expect(reconcilePartnerFundingEvidence(database))
+      .resolves.toMatchObject({ completed: 1 });
+    const created = await createPayoutBatch(database, {
+      createdBy: "test-admin",
+      minNano: 0n,
+      gasPriceGwei: "0.05",
+      hotWalletAddress: HOT_WALLET,
+      earnedBefore: new Date("2099-01-01T00:00:00.000Z"),
+      recipients: [{ partnerId, amountNano: 10n * USD, walletAddress: RECIPIENT }],
+    });
+    await recordPaymentReversalPage(database, [{
+      commerceReversalId: 9001n,
+      commercePaymentId: paymentId,
+      commerceUserId: userId,
+      kind: "refund",
+      amountNano: 10n * USD,
+      reversedAt: new Date("2026-08-04T00:00:00.000Z"),
+    }], 9001n);
+
+    const chain = fakeChain();
+    await expect(new TestPayoutService(database, config(), chain).send(created.id))
+      .rejects.toBeInstanceOf(InvalidPayoutBatchError);
+    expect(chain.signTransfer).not.toHaveBeenCalled();
+    expect(chain.broadcastRaw).not.toHaveBeenCalled();
+  });
+
+  it("requires cancel and re-prepare for a legacy batch without an earnings boundary", async () => {
+    const created = await batch([10n * USD]);
+    await database.pool.query("UPDATE payout_batches SET earned_before = NULL WHERE id = $1", [created.id]);
+    const chain = fakeChain();
+    await expect(new TestPayoutService(database, config(), chain).send(created.id))
+      .rejects.toThrow("no pinned earnings boundary");
+    expect(chain.signTransfer).not.toHaveBeenCalled();
+    expect(chain.broadcastRaw).not.toHaveBeenCalled();
   });
 
   it("uses the one integer minimum and admits the exact boundary", async () => {

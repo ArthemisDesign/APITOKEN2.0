@@ -9,6 +9,7 @@ import {
   releasePayoutRow,
   InvalidPayoutBatchError, PayoutBatchInProgressError,
 } from "./payout-batch.js";
+import { decidePayout, requestPayout, InvalidPayoutTransitionError } from "./payouts.js";
 
 const connectionString = process.env.TEST_SALES_DATABASE_URL;
 const USD = 1_000_000_000n;
@@ -41,6 +42,7 @@ describe.runIf(Boolean(connectionString))("payout batches (on-chain state machin
       [ev, randomUUID(), partnerId, nano.toString()]);
     await db.pool.query("INSERT INTO commission_entries (usage_event_id, partner_id, level, applied_bps, amount_nano) VALUES ($1,$2,0,1000,$3)", [src.rows[0]!.id, partnerId, nano.toString()]);
   }
+
 
   it("candidates = active + valid wallet + unpaid > min; excludes others", async () => {
     const a = await partner("aaa"); await earn(a, 100n * USD);
@@ -203,5 +205,28 @@ describe.runIf(Boolean(connectionString))("payout batches (on-chain state machin
     expect(await releasePayoutRow(db, row.id)).toBe(true);
     expect((await listBatchPayouts(db, batch.id))[0]!.status).toBe("rejected");
     expect((await getPayoutCandidates(db, 0n))[0]!.unpaidNano).toBe(15n * USD); // balance freed
+  });
+
+  it("keeps retained legacy manual payouts reject-only", async () => {
+    const id = await partner("legacy-manual");
+    await earn(id, 10n * USD);
+    const payout = await requestPayout(db, {
+      partnerId: id,
+      amountNano: 10n * USD,
+      method: "usdt-bep20",
+      details: { address: W },
+    });
+    await expect(decidePayout(db, {
+      payoutId: payout.id,
+      decision: "approve",
+      note: null,
+      actorId: "admin",
+    })).rejects.toBeInstanceOf(InvalidPayoutTransitionError);
+    await expect(decidePayout(db, {
+      payoutId: payout.id,
+      decision: "reject",
+      note: "moved to fenced batches",
+      actorId: "admin",
+    })).resolves.toMatchObject({ status: "rejected" });
   });
 });

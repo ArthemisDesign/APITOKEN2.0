@@ -75,6 +75,7 @@ describe.runIf(Boolean(connectionString))("topups-v2 sync replay", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       items: [golden.row],
       nextCursor: golden.nextCursor,
+      sourceHead: golden.nextCursor,
     }), { status: 200 })));
   }
 

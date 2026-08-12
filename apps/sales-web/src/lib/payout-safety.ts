@@ -58,6 +58,23 @@ export function evaluatePayoutSendGate(
   if (report.batch.status !== "prepared") {
     return deny("Only a prepared, idle batch can be sent.");
   }
+  const accounting = report.accounting;
+  if (!accounting || accounting.ready !== true || accounting.reasons.length !== 0) {
+    return deny("Partner refund accounting is not proven current.");
+  }
+  if (
+    !isCanonicalUnsignedInteger(accounting.usageCursor)
+    || accounting.usageCursor !== accounting.usageSourceHead
+    || !isCanonicalUnsignedInteger(accounting.fundingLotCursor)
+    || accounting.fundingLotCursor !== accounting.fundingLotSourceHead
+    || !isCanonicalUnsignedInteger(accounting.paymentReversalCursor)
+    || accounting.paymentReversalCursor !== accounting.paymentReversalSourceHead
+    || accounting.incompleteUsageCount !== "0"
+    || accounting.missingCommissionSliceCount !== "0"
+    || accounting.incompleteReversalCount !== "0"
+  ) {
+    return deny("Partner refund cursors or allocations are incomplete.");
+  }
   if (report.chain.configurationMatchesBatch !== true) {
     return deny("The current hot wallet does not match the wallet pinned to this batch.");
   }

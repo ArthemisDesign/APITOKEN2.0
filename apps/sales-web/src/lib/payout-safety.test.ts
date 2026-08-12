@@ -66,6 +66,22 @@ function fixture(): { engine: PayoutEngine; report: PayoutReportDto } {
         gasPriceGwei: "0.1",
       },
       invalidAddresses: [],
+      accounting: {
+        ready: true,
+        reasons: [],
+        usageCursor: "10",
+        usageSourceHead: "10",
+        fundingLotCursor: "20",
+        fundingLotSourceHead: "20",
+        paymentReversalCursor: "30",
+        paymentReversalSourceHead: "30",
+        incompleteUsageCount: "0",
+        missingCommissionSliceCount: "0",
+        incompleteReversalCount: "0",
+        reversalCount: "1",
+        adjustmentCount: "1",
+        adjustmentNano: "-100",
+      },
     },
   };
 }
@@ -88,6 +104,8 @@ describe("payout send gate", () => {
     ["sending batch", (f: ReturnType<typeof fixture>) => { f.report.batch.status = "sending"; }],
     ["closed report window", (f: ReturnType<typeof fixture>) => { f.report.window.open = false; }],
     ["unknown row state", (f: ReturnType<typeof fixture>) => { f.report.rows[0].status = "mystery"; }],
+    ["accounting lag", (f: ReturnType<typeof fixture>) => { f.report.accounting!.paymentReversalSourceHead = "31"; }],
+    ["incomplete reversal", (f: ReturnType<typeof fixture>) => { f.report.accounting!.incompleteReversalCount = "1"; }],
   ])("fails closed for %s", (_name, mutate) => {
     const value = fixture();
     mutate(value);

@@ -4,7 +4,7 @@ How accruals and payouts to salespeople work over half-month periods: how to com
 when they get "frozen", when they are sent to the wallet, and how rollover works. The model is
 deliberately built so that **all calculations are derived from already existing data**
 (`commission_entries` + `commission_entries_v2` — a dual-schema UNION, the events do not overlap —
-and `payouts`) without a separate "accruing" process — the period is defined by time and the
+plus signed `partner_commission_adjustments` and `payouts`) without a separate "accruing" process — the period is defined by time and the
 amounts are computed by a query on the fly.
 
 Code: `packages/sales-db/src/periods.ts` (pure period math, covered by tests
@@ -58,9 +58,12 @@ happen **twice a month**, roughly on the 8th–11th day after the period closes.
 
 The main invariant that makes everything simple and gives rollover automatically:
 
-> **Payable to a partner in period P's window** = `SUM(commission_entries + commission_entries_v2,
-> created_at < end of P)` −
-> `SUM(payouts with status paid)`.
+> **Net** = immutable gross commissions + signed refund/dispute adjustments.
+>
+> **Payable to a partner in period P's window** = `max(gross commissions created before end of P
+> + all adjustments known at preparation − committed payouts, 0)`.
+>
+> **Debt** = `max(paid payouts − lifetime net, 0)`.
 
 Why this is correct and convenient:
 
@@ -74,6 +77,10 @@ Why this is correct and convenient:
   for v1 events and `commission_entries_v2` for release-v2, one row per
   usage event, with `created_at`); paid = `payouts.paid`. Period state is not stored —
   it is derived from time.
+- **Refunds never rewrite gross history.** Each exact negative adjustment names the funding slice
+  of the original payment. If commission was not paid, payable drops immediately. If it was already
+  paid, the difference becomes explicit partner debt; future earnings repay it first. The system
+  never debits the partner's external wallet automatically.
 
 ### Payout condition
 
@@ -93,8 +100,8 @@ nonzero setting the boundary is inclusive (`payable >= minimum`) and smaller bal
 - **This period** — how much has accrued in the current (open) period.
 - **Locked** — earnings of the period that just ended, on the 7-day lock + unfreeze date.
 - **Next payout** — the date of the nearest window and an estimate of the amount that will go out.
-- **Unpaid total / paid to date** — all outstanding earnings and how much has already been paid.
-- **Period history** — for each half-month period: earnings, phase, payout date.
+- **Payable / debt / paid to date** — positive payable is clamped at zero, but debt is never hidden.
+- **Period history** — for each half-month period: gross, refund adjustments, net, phase, payout date.
 - Plus a "How payouts work" explanation card and wallet binding.
 
 There is no manual "request withdrawal" — payouts follow the schedule.
@@ -106,8 +113,9 @@ The auto-generated list for the current/last period's window:
 - **Ready to pay** — the amount and number of partners ready for payout (wallet + profit ≥ minimum).
 - **Held (rolls over)** — the amount and the partners who do not yet qualify (no wallet/below the
   minimum).
-- **Total unpaid** — the entire outstanding debt across all partners.
-- Table: partner, `payable`, wallet (masked), status (`Ready` / `No wallet` / `Below minimum`).
+- **Total payable** — the positive net balance still available across all partners.
+- **Partner debt** — already-paid commission reversed by customer refunds/disputes.
+- Table: partner, `payable`, `debt`, wallet (masked), status (`Ready` / `No wallet` / `Below minimum`).
 
 ## 6. Config
 
@@ -127,9 +135,18 @@ becomes committed. Preparation first verifies BSC mainnet, deployed canonical US
 and pins the current hot-wallet address.
 
 The batch schema also has a nullable `earned_before` checkpoint for that exact period end. This is
-an expand-only prerequisite: existing batches remain readable with `NULL`; a later consumer release
-will populate the cutoff and reuse it for the final pre-transfer signed-balance proof. Adding the
-column alone does not change payout eligibility, the Sales API, or the Commerce→Sales feed.
+the boundary reused by the final pre-transfer signed-balance proof. Existing batches remain readable
+with `NULL`, but must be canceled and prepared again before sending.
+
+Before both prepare and send, Sales actively drains usage, funding-lot and payment-reversal feeds to
+fresh source heads. It then requires zero incomplete usage allocation, zero missing commission slice
+and zero partially reflected reversal. Cursor/source-head evidence is returned to the admin report.
+The sync mutex stays held while Sales takes the shared accounting advisory lock and probes all three
+Commerce heads again. The final local proof and commitment/signing stay under both fences, so a
+refund committed before the probe blocks the payout; one committed after it is ordered after the
+payout and becomes explicit debt. A legacy batch without `earned_before` must be canceled and
+prepared again. Legacy manual payout rows are reject-only; positive settlement uses this fenced
+on-chain flow.
 
 `send()` and per-row retry share one PostgreSQL advisory lock across all API processes. Under that
 lock the service re-reads batch state, checks that the configured hot wallet still matches the pin,

@@ -103,7 +103,8 @@ export default function ReferralsPage() {
                   <td className="num">{formatUsd(r.topupNano)}</td>
                   <td className="num">{formatUsd(r.spendNano)}</td>
                   <td className="num" style={{ color: "var(--accent-strong)", fontWeight: 700 }}>
-                    {formatUsd(r.earnedNano)}
+                    {formatUsd(r.netNano)}
+                    {BigInt(r.adjustmentNano) !== 0n ? <div className="field-hint">{formatUsd(r.adjustmentNano)} {t("returns", "возвраты")}</div> : null}
                   </td>
                 </tr>
               );

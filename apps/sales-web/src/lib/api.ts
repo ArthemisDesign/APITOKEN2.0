@@ -208,11 +208,18 @@ export type Overview = {
     earnedNano: string;
     directNano: string;
     overrideNano: string;
+    adjustmentNano: string;
+    directAdjustmentNano: string;
+    overrideAdjustmentNano: string;
+    netNano: string;
+    directNetNano: string;
+    overrideNetNano: string;
     paidNano: string;
     pendingPayoutNano: string;
+    debtNano: string;
     availableNano: string;
   };
-  last30d: { spendNano: string; earnedNano: string };
+  last30d: { spendNano: string; earnedNano: string; adjustmentNano: string; netNano: string };
 };
 
 export type ReferralRow = {
@@ -222,6 +229,8 @@ export type ReferralRow = {
   attributedAt: string;
   spendNano: string;
   earnedNano: string;
+  adjustmentNano: string;
+  netNano: string;
   topupNano: string;
   // Commerce/engine enrichment; discountPercent is the actual price. referralFloorBps is legacy
   // attribution metadata only and must never be rendered as an applied discount.
@@ -232,7 +241,9 @@ export type ReferralRow = {
   status: string | null;
 };
 
-export type EarningRow = { date: string; spendNano: string; earnedNano: string };
+export type EarningRow = {
+  date: string; spendNano: string; earnedNano: string; adjustmentNano: string; netNano: string;
+};
 
 export type TeamRow = {
   id: string;
@@ -242,7 +253,11 @@ export type TeamRow = {
   commissionBps: number;
   referredUsers: number;
   earnedNano: string;
+  adjustmentNano: string;
+  netNano: string;
   myOverrideNano: string;
+  myOverrideAdjustmentNano: string;
+  myOverrideNetNano: string;
   status: string;
 };
 
@@ -282,15 +297,21 @@ export type PeriodHistoryRow = {
   phase: "accruing" | "locked" | "payable" | "closed";
   payoutDate: string;
   earnedNano: string;
+  adjustmentNano: string;
+  netNano: string;
 };
 
 export type PeriodState = {
   now: string;
-  current: { key: string; start: string; end: string; accruedNano: string };
-  locked: { key: string; endedAt: string; unlocksAt: string; earnedNano: string }[];
+  current: { key: string; start: string; end: string; accruedNano: string; adjustmentNano: string; netNano: string };
+  locked: { key: string; endedAt: string; unlocksAt: string; earnedNano: string; adjustmentNano: string; netNano: string }[];
   nextPayout: { date: string; estimatedNano: string };
   lifetimeEarnedNano: string;
+  lifetimeAdjustmentNano: string;
+  lifetimeNetNano: string;
   lifetimePaidNano: string;
+  debtNano: string;
+  payableNano: string;
   unpaidNano: string;
   wallet: string | null;
   minPayoutNano: string;
@@ -305,6 +326,9 @@ export type DuePayoutRow = {
   displayName: string | null;
   status: "active" | "suspended" | "pending";
   payableNano: string;
+  debtNano: string;
+  adjustmentNano: string;
+  netNano: string;
   walletAddress: string | null;
   eligible: boolean;
   reason: "ok" | "below_minimum" | "no_wallet" | "zero" | "inactive";
@@ -384,8 +408,14 @@ export type PartnerAnalyticsRow = {
   spend30dNano: string;
   earnedTotalNano: string;
   earned30dNano: string;
+  adjustmentTotalNano: string;
+  adjustment30dNano: string;
+  netTotalNano: string;
+  net30dNano: string;
   paidNano: string;
   unpaidNano: string;
+  debtNano: string;
+  payableNano: string;
   teamSize: number;
   linksTotal: number;
   linksUsed: number;
@@ -404,6 +434,10 @@ export type PartnerAnalyticsTotals = {
   referredUsers: number;
   convertedUsers: number;
   unpaidNano: string;
+  adjustmentsNano: string;
+  netCommissionsNano: string;
+  debtNano: string;
+  payableNano: string;
 };
 
 export type PartnerAnalyticsList = { items: PartnerAnalyticsRow[]; totals: PartnerAnalyticsTotals };
@@ -423,16 +457,19 @@ export type PartnerActivityEvent = {
 
 export type PartnerDetailBundle = {
   partner: PartnerAnalyticsRow;
-  daily: { date: string; spendNano: string; earnedNano: string }[];
+  daily: { date: string; spendNano: string; earnedNano: string; adjustmentNano: string; netNano: string }[];
   team: {
     id: string; email: string | null; telegramUsername: string | null; displayName: string | null;
-    status: string; commissionBps: number; referredUsers: number; theirEarnedNano: string; myOverrideNano: string;
+    status: string; commissionBps: number; referredUsers: number;
+    theirEarnedNano: string; theirAdjustmentNano: string; theirNetNano: string;
+    myOverrideNano: string; myOverrideAdjustmentNano: string; myOverrideNetNano: string;
   }[];
   discountLinks: { id: string; code: string; discountBps: number; note: string | null; consumedAt: string | null; createdAt: string }[];
   promos: { id: string; code: string; valueNano: string; status: string; discountBps: number; redeemedAt: string | null; createdAt: string }[];
   payouts: { id: string; amountNano: string; status: string; requestedAt: string; decidedAt: string | null; paidAt: string | null; adminNote: string | null }[];
   referrals: {
-    userMask: string; userRef?: string; attributedAt: string; spendNano: string; earnedNano: string;
+    userMask: string; userRef?: string; attributedAt: string; spendNano: string;
+    earnedNano: string; adjustmentNano: string; netNano: string;
     customerType?: "b2c" | "b2b" | null; discountPercent?: number | null; referralFloorBps?: number | null;
   }[];
 };
@@ -493,4 +530,20 @@ export type PayoutReportDto = {
     gasPriceGwei: string;
   };
   invalidAddresses: { partnerId: string; walletAddress: string; reason: string }[];
+  accounting: {
+    ready: boolean;
+    reasons: string[];
+    usageCursor: string;
+    usageSourceHead: string;
+    fundingLotCursor: string;
+    fundingLotSourceHead: string;
+    paymentReversalCursor: string;
+    paymentReversalSourceHead: string;
+    incompleteUsageCount: string;
+    missingCommissionSliceCount: string;
+    incompleteReversalCount: string;
+    reversalCount: string;
+    adjustmentCount: string;
+    adjustmentNano: string;
+  } | null;
 };

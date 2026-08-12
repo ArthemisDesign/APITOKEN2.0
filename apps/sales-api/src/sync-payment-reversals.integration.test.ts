@@ -100,9 +100,10 @@ describe.runIf(Boolean(connectionString))("payment reversal golden sync", () => 
         return new Response(JSON.stringify({
           items: [golden.row],
           nextCursor: golden.nextCursor,
+          sourceHead: golden.nextCursor,
         }), { status: 200 });
       }
-      return new Response(JSON.stringify({ items: [], nextCursor: "0" }), { status: 200 });
+      return new Response(JSON.stringify({ items: [], nextCursor: "0", sourceHead: "0" }), { status: 200 });
     }));
   }
 
@@ -138,11 +139,14 @@ describe.runIf(Boolean(connectionString))("payment reversal golden sync", () => 
         return new Response(JSON.stringify({
           items: [golden.row],
           nextCursor: golden.nextCursor,
+          sourceHead: golden.nextCursor,
         }), { status: 200 });
       }
+      const nextCursor = url.pathname.endsWith("/usage-events") ? "1" : "0";
       return new Response(JSON.stringify({
         items: [],
-        nextCursor: url.pathname.endsWith("/usage-events") ? "1" : "0",
+        nextCursor,
+        sourceHead: nextCursor === "1" ? "2" : "0",
       }), { status: 200 });
     }));
     await (service() as never as { syncPaymentReversals(): Promise<void> }).syncPaymentReversals();

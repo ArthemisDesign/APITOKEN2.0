@@ -7,6 +7,10 @@ export interface SalesOverview {
   referredUsers: number;
   totalSpendNano: bigint;
   totalCommissionsNano: bigint;
+  totalAdjustmentsNano: bigint;
+  totalNetCommissionsNano: bigint;
+  totalDebtNano: bigint;
+  totalPayableNano: bigint;
   pendingPayoutsNano: bigint;
   paidPayoutsNano: bigint;
 }
@@ -14,7 +18,8 @@ export interface SalesOverview {
 export async function getSalesOverview(database: SalesDatabase): Promise<SalesOverview> {
   const result = await database.pool.query<{
     partners: string; active_partners: string; referred_users: string;
-    total_spend: string; total_commissions: string; pending_payouts: string; paid_payouts: string;
+    total_spend: string; total_commissions: string; total_adjustments: string;
+    total_debt: string; total_payable: string; pending_payouts: string; paid_payouts: string;
   }>(`
     SELECT
       (SELECT count(*) FROM partners)::text AS partners,
@@ -30,16 +35,54 @@ export async function getSalesOverview(database: SalesDatabase): Promise<SalesOv
         UNION ALL
         SELECT amount_nano FROM commission_entries_v2
       ) all_commissions), 0)::text AS total_commissions,
+      COALESCE((SELECT SUM(amount_nano) FROM partner_commission_adjustments), 0)::text AS total_adjustments,
+      COALESCE((
+        SELECT SUM(GREATEST(0, -balance)) FROM (
+          SELECT
+            COALESCE((SELECT SUM(amount_nano) FROM (
+              SELECT partner_id, amount_nano FROM commission_entries
+              UNION ALL
+              SELECT partner_id, amount_nano FROM commission_entries_v2
+            ) commission WHERE commission.partner_id = partner.id), 0)
+            + COALESCE((SELECT SUM(amount_nano) FROM partner_commission_adjustments adjustment
+                        WHERE adjustment.partner_id = partner.id), 0)
+            - COALESCE((SELECT SUM(amount_nano) FROM payouts payout
+                        WHERE payout.partner_id = partner.id AND payout.status = 'paid'), 0) AS balance
+          FROM partners partner
+        ) partner_balances
+      ), 0)::text AS total_debt,
+      COALESCE((
+        SELECT SUM(GREATEST(0, balance)) FROM (
+          SELECT
+            COALESCE((SELECT SUM(amount_nano) FROM (
+              SELECT partner_id, amount_nano FROM commission_entries
+              UNION ALL
+              SELECT partner_id, amount_nano FROM commission_entries_v2
+            ) commission WHERE commission.partner_id = partner.id), 0)
+            + COALESCE((SELECT SUM(amount_nano) FROM partner_commission_adjustments adjustment
+                        WHERE adjustment.partner_id = partner.id), 0)
+            - COALESCE((SELECT SUM(amount_nano) FROM payouts payout
+                        WHERE payout.partner_id = partner.id
+                          AND payout.status IN ('requested','approved','paid')), 0) AS balance
+          FROM partners partner
+        ) partner_balances
+      ), 0)::text AS total_payable,
       COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE status IN ('requested', 'approved')), 0)::text AS pending_payouts,
       COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE status = 'paid'), 0)::text AS paid_payouts
   `);
   const row = result.rows[0]!;
+  const totalCommissionsNano = BigInt(row.total_commissions);
+  const totalAdjustmentsNano = BigInt(row.total_adjustments);
   return {
     partners: Number(row.partners),
     activePartners: Number(row.active_partners),
     referredUsers: Number(row.referred_users),
     totalSpendNano: BigInt(row.total_spend),
-    totalCommissionsNano: BigInt(row.total_commissions),
+    totalCommissionsNano,
+    totalAdjustmentsNano,
+    totalNetCommissionsNano: totalCommissionsNano + totalAdjustmentsNano,
+    totalDebtNano: BigInt(row.total_debt),
+    totalPayableNano: BigInt(row.total_payable),
     pendingPayoutsNano: BigInt(row.pending_payouts),
     paidPayoutsNano: BigInt(row.paid_payouts),
   };
@@ -61,6 +104,10 @@ export interface AdminPartnerSummary {
   referredUsers: number;
   teamSize: number;
   earnedNano: bigint;
+  adjustmentNano: bigint;
+  netNano: bigint;
+  debtNano: bigint;
+  payableNano: bigint;
   paidNano: bigint;
   promoEnabled: boolean;
   promoMaxValueNano: bigint;
@@ -77,7 +124,8 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     status: PartnerStatus;
     email_verified: boolean; referral_code: string; commission_bps: number; sub_commission_bps: number;
     parent_partner_id: string | null; parent_email: string | null; parent_telegram_username: string | null;
-    referred_users: string; team_size: string; earned: string; paid: string;
+    referred_users: string; team_size: string; earned: string; adjustment: string;
+    paid: string; committed: string;
     promo_enabled: boolean; promo_max_value_nano: string; promo_max_count: number; promo_used: string;
     referral_discount_bps: number; referral_discount_enabled: boolean;
     created_at: Date;
@@ -95,13 +143,23 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
         UNION ALL
         SELECT partner_id, amount_nano FROM commission_entries_v2
       ) ce WHERE ce.partner_id = p.id), 0)::text AS earned,
+      COALESCE((SELECT SUM(amount_nano) FROM partner_commission_adjustments adjustment
+                WHERE adjustment.partner_id = p.id), 0)::text AS adjustment,
       COALESCE((SELECT SUM(amount_nano) FROM payouts po WHERE po.partner_id = p.id AND po.status = 'paid'), 0)::text AS paid,
+      COALESCE((SELECT SUM(amount_nano) FROM payouts po WHERE po.partner_id = p.id
+                AND po.status IN ('requested','approved','paid')), 0)::text AS committed,
       p.created_at
     FROM partners p
     LEFT JOIN partners parent ON parent.id = p.parent_partner_id
     ORDER BY p.created_at DESC
   `);
-  return result.rows.map((row) => ({
+  return result.rows.map((row) => {
+    const earnedNano = BigInt(row.earned);
+    const adjustmentNano = BigInt(row.adjustment);
+    const netNano = earnedNano + adjustmentNano;
+    const paidNano = BigInt(row.paid);
+    const committedNano = BigInt(row.committed);
+    return {
     id: row.id,
     email: row.email,
     telegramUsername: row.telegram_username,
@@ -116,16 +174,21 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     parentTelegramUsername: row.parent_telegram_username,
     referredUsers: Number(row.referred_users),
     teamSize: Number(row.team_size),
-    earnedNano: BigInt(row.earned),
-    paidNano: BigInt(row.paid),
+      earnedNano,
+      adjustmentNano,
+      netNano,
+      paidNano,
+      debtNano: netNano - paidNano < 0n ? paidNano - netNano : 0n,
+      payableNano: netNano - committedNano > 0n ? netNano - committedNano : 0n,
     promoEnabled: row.promo_enabled,
     promoMaxValueNano: BigInt(row.promo_max_value_nano),
     promoMaxCount: row.promo_max_count,
     promoUsed: Number(row.promo_used),
     referralDiscountBps: row.referral_discount_bps,
     referralDiscountEnabled: row.referral_discount_enabled,
-    createdAt: row.created_at,
-  }));
+      createdAt: row.created_at,
+    };
+  });
 }
 
 /**
@@ -164,7 +227,7 @@ export async function deletePartnerAdmin(database: SalesDatabase, partnerId: str
       await client.query("ROLLBACK");
       return false;
     }
-    const history = await client.query<{ referred: string; topups: string; commissions: string; payouts: string; children: string; promos: string; links: string }>(`
+    const history = await client.query<{ referred: string; topups: string; commissions: string; adjustments: string; payouts: string; children: string; promos: string; links: string }>(`
       SELECT
         (SELECT count(*) FROM referred_users WHERE partner_id = $1)::text AS referred,
         (SELECT count(*) FROM referred_topups WHERE partner_id = $1)::text AS topups,
@@ -173,13 +236,14 @@ export async function deletePartnerAdmin(database: SalesDatabase, partnerId: str
           UNION ALL
           SELECT partner_id FROM commission_entries_v2
         ) ce WHERE ce.partner_id = $1)::text AS commissions,
+        (SELECT count(*) FROM partner_commission_adjustments WHERE partner_id = $1)::text AS adjustments,
         (SELECT count(*) FROM payouts WHERE partner_id = $1)::text AS payouts,
         (SELECT count(*) FROM promo_codes WHERE partner_id = $1)::text AS promos,
         (SELECT count(*) FROM partner_discount_links WHERE partner_id = $1)::text AS links,
         (SELECT count(*) FROM partners WHERE parent_partner_id = $1)::text AS children
     `, [partnerId]);
     const h = history.rows[0]!;
-    if (h.referred !== "0" || h.topups !== "0" || h.commissions !== "0" || h.payouts !== "0" || h.promos !== "0" || h.links !== "0" || h.children !== "0") {
+    if (h.referred !== "0" || h.topups !== "0" || h.commissions !== "0" || h.adjustments !== "0" || h.payouts !== "0" || h.promos !== "0" || h.links !== "0" || h.children !== "0") {
       await client.query("ROLLBACK");
       throw new PartnerHasHistoryError(
         "partner has referrals, earnings, payouts or sub-partners — suspend instead of deleting",

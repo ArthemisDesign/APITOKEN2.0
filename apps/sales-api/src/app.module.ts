@@ -10,7 +10,6 @@ import { InternalModule } from "./internal.module.js";
 import { PartnerModule } from "./partner.module.js";
 import { PayoutModule } from "./payout/payout.module.js";
 import { ReadinessService } from "./readiness.service.js";
-import { SyncService } from "./sync.service.js";
 
 @Module({
   imports: [
@@ -23,6 +22,6 @@ import { SyncService } from "./sync.service.js";
     InternalModule,
   ],
   controllers: [HealthController],
-  providers: [ReadinessService, SyncService, EmailService],
+  providers: [ReadinessService, EmailService],
 })
 export class AppModule {}

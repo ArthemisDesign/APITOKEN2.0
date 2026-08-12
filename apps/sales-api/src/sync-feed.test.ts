@@ -45,7 +45,7 @@ const rowSchema = z.object({
 describe("sales feed page cursor", () => {
   it("advances across a canonical page containing only filtered source rows", () => {
     expect(parseFeedPage({ items: [], nextCursor: "42" }, rowSchema, "usage_events"))
-      .toEqual({ items: [], nextCursor: 42n });
+      .toEqual({ items: [], nextCursor: 42n, sourceHead: null });
   });
 
   it("keeps compatibility with the legacy array response during a rolling deploy", () => {
@@ -58,6 +58,7 @@ describe("sales feed page cursor", () => {
         { id: 9n, value: "second" },
       ],
       nextCursor: 9n,
+      sourceHead: null,
     });
   });
 
@@ -70,7 +71,7 @@ describe("sales feed page cursor", () => {
 
   it("accepts the PostgreSQL bigint maximum and rejects overflow or non-canonical cursors", () => {
     expect(parseFeedPage({ items: [], nextCursor: "9223372036854775807" }, rowSchema, "usage_events"))
-      .toEqual({ items: [], nextCursor: 9_223_372_036_854_775_807n });
+      .toEqual({ items: [], nextCursor: 9_223_372_036_854_775_807n, sourceHead: null });
     expect(() => parseFeedPage(
       { items: [], nextCursor: "9223372036854775808" },
       rowSchema,
@@ -86,6 +87,14 @@ describe("sales feed page cursor", () => {
       rowSchema,
       "usage_events",
     )).toThrow();
+  });
+
+  it("rejects a source head behind the returned cursor", () => {
+    expect(() => parseFeedPage({
+      items: [],
+      nextCursor: "42",
+      sourceHead: "41",
+    }, rowSchema, "usage_events")).toThrow("source head behind its cursor");
   });
 });
 
@@ -229,13 +238,16 @@ describe("payment reversal feed", () => {
         return new Response(JSON.stringify({
           items: [golden.row],
           nextCursor: golden.nextCursor,
+          sourceHead: golden.nextCursor,
         }), { status: 200 });
       }
+      const nextCursor = url.pathname.endsWith("/usage-events")
+        ? (input.usageCursor ?? "0")
+        : (input.fundingCursor ?? "0");
       return new Response(JSON.stringify({
         items: [],
-        nextCursor: url.pathname.endsWith("/usage-events")
-          ? (input.usageCursor ?? "0")
-          : (input.fundingCursor ?? "0"),
+        nextCursor,
+        sourceHead: nextCursor,
       }), { status: 200 });
     });
   }
@@ -526,7 +538,7 @@ describe("usage feed routing (dual consumer)", () => {
   });
 
   it("routes each event to exactly one writer and advances the cursor", async () => {
-    stubFeed({ items: [v1Row, v2Row], nextCursor: "18" });
+    stubFeed({ items: [v1Row, v2Row], nextCursor: "18", sourceHead: "18" });
     const sync = service();
     await (sync as never as { syncUsageEvents(): Promise<void> }).syncUsageEvents();
 
@@ -546,7 +558,7 @@ describe("usage feed routing (dual consumer)", () => {
   });
 
   it("keeps the cursor behind when a writer fails (at-least-once)", async () => {
-    stubFeed({ items: [v1Row, v2Row], nextCursor: "18" });
+    stubFeed({ items: [v1Row, v2Row], nextCursor: "18", sourceHead: "18" });
     vi.mocked(recordReferredSpendV2).mockRejectedValueOnce(new Error("db down"));
     const sync = service();
     await expect((sync as never as { syncUsageEvents(): Promise<void> }).syncUsageEvents())

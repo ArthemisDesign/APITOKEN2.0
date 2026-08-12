@@ -190,6 +190,14 @@ export function PayoutSendTab({ adminKey }: { adminKey: string }) {
         <Notice kind="info"><strong>Send is disabled:</strong> {sendGate.reason}</Notice>
       ) : null}
 
+      {report?.accounting ? (
+        <Notice kind={report.accounting.ready ? "info" : "error"}>
+          <strong>{report.accounting.ready ? "Refund accounting current." : "Refund accounting blocks payout."}</strong>{" "}
+          usage {report.accounting.usageCursor}/{report.accounting.usageSourceHead} · funding {report.accounting.fundingLotCursor}/{report.accounting.fundingLotSourceHead} · reversals {report.accounting.paymentReversalCursor}/{report.accounting.paymentReversalSourceHead}
+          {report.accounting.reasons.length ? ` · ${report.accounting.reasons.join("; ")}` : ""}
+        </Notice>
+      ) : null}
+
       {!report ? (
         <Card title="Prepare a payout run" sub="Collects every active partner with a valid BEP-20 address and unpaid balance > 0, validates addresses, and checks the hot wallet — nothing is sent yet.">
           <Button onClick={prepare} loading={busy} disabled={!engine.configured}>Prepare payout run</Button>
