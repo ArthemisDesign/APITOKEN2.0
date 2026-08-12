@@ -28,6 +28,8 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 
 | Admin control room consumer | (this commit) | `apps/admin` subscriptions control room reads `GET /tripo3d-subs` (same-origin fetch, `.catch(() => null)` degradation): `types.ts` `Tripo3dSubsResponse` block mirrored from the serialized producer fields, `logic.ts` `tripo3d*` helper family (status axes = runtime admission hard/soft: balance wall, rate-limit/auth/transport cooling, probe-less `live:false` → `ждём данные`, stale → `обновляем`; fail-closed BigInt fleet money), `tripo3d-capacity-board.tsx` (windowless balance track: verbatim raw halves, exact remaining/full API-$, native micro-units column, one row per identity), fleet card `tripo3d` with a single `баланс` rail (no invented used share), banner/`fleetWarn`/`fleetTotal` wiring, `sources.ts` name, `RESERVED_EXACT` reservation, CSS accents; SSR tests for exact money, privacy mask, null/stale/wall/cooling/pending, BigInt sums, one-row-per-identity; NO Caddy route or systemd unit — dormant plane, the page degrades to `нет связи` by design |
 
+| Safe live-runner | (this commit) | `tools/tripo3d_calibration/{run_live.py,test_run_live.py}` + `docs/ops/TRIPO3D_CALIBRATION.md` + docs/README.md index line + manifest §8 row. Through-the-plane runner (never direct): paid creates on `POST /v1/3d/generations` via the forwarding-admin (unmetered) key, evidence from `GET /tripo3d-subs` only. Attribution WITHOUT admin-only calibration headers (the gateway has none — deliberate): structural single-profile roster guard (`fleet.profiles == 1` + exact id), exact internal `task_id` per create, fleet-counter concurrency proof (`tracked_tasks` +1, zero foreign `inflight` at settle) else `attribution: "ambiguous"` + fail-closed stop. Explicit `--budget-usd` REQUIRED with `--execute` (no default — the $0.0001 admission cap cannot buy the cheapest 5-credit task, §7 open question), hard CLI ceiling $5.00; per-leg worst case = exact published card price × $0.01/credit; typed non-2xx create = pre-money-boundary (nothing held), transport ambiguity = held-ambiguous, never re-sent even on resume; GLM-style atomic checkpoint + identity-checked resume; matrix = text_to_model × 7 reviewed versions + 7 texture/quality option legs on v2.5 + refund-probe (deliberately failing image_to_model, must settle 0) + conditional image sweep / texture_model legs recorded unavailable without operator inputs; 50 offline tests green (`python3 -m unittest tools.tripo3d_calibration.test_run_live`) |
+
 ## Key research facts (review date 2026-08-12)
 
 - Two billing systems: Studio subscriptions (web) vs API platform (prepaid credits). Provider =
@@ -74,12 +76,12 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 
 ## Next action (exactly one)
 
-Safe live-runner (`tools/tripo3d_calibration/`, `docs/ops/TRIPO3D_CALIBRATION.md`). The engine
-chain (primitives → migration 0051 → pricing → gateway/uploads/billing → server/observability)
-and the admin control room consumer are delivered and dormant: nothing in production units,
-Caddy or the router exposes the plane, so the admin board renders its null state by design.
-The runtime gates left for live evidence: the STS signing region, `consumed_credit` precision,
-balance unit semantics, result-URL TTL pin — all fail closed until the owned-account matrix.
+Merge chain of the delivered dormant plane (producer-first: migrations 0049/0051 already landed
+first, code follows), then the controlled live matrix with
+`tools/tripo3d_calibration/run_live.py` — BLOCKED on a human-owned topped-up Tripo3D API account.
+The live matrix must prove: the balance unit (`balance`/`frozen` semantics vs exact millicredit
+settlement), `consumed_credit` precision, result-URL TTL, the refund path, and real concurrency
+limits. The runner is delivered and offline-tested; nothing else can advance without the account.
 
 ## Queue
 
