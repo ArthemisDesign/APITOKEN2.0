@@ -17,6 +17,7 @@ codex-credential = { path = "../codex-credential" }
 kimi-credential = { path = "../kimi-credential" }
 glm-credential = { path = "../glm-credential" }
 suno-credential = { path = "../suno-credential" }
+tripo3d-credential = { path = "../tripo3d-credential" }
 tokio = { version = "1", features = ["sync", "rt", "time", "process", "io-util", "macros"] }
 anyhow = "1"
 axum = { version = "0.8", features = ["multipart"] }

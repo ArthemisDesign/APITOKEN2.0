@@ -65,6 +65,9 @@ pub enum ProviderMode {
     OpenAi,
     Gemini,
     Kimi,
+    /// The dedicated backend-only Tripo3D task-media plane (default-off; composes only under
+    /// `CLAUDE_API_TRIPO3D_ENABLED=1`). It never shares the Anthropic Messages surface.
+    Tripo3d,
 }
 
 impl ProviderMode {
@@ -87,6 +90,12 @@ impl ProviderMode {
         matches!(self, Self::Combined | Self::Anthropic | Self::Kimi)
     }
 
+    /// The dedicated Tripo3D plane. Unlike KIMI/GLM there is no embedded form: a task-based
+    /// media API cannot ride the Anthropic Messages surface, so only `Tripo3d` composes it.
+    pub fn serves_tripo3d(self) -> bool {
+        matches!(self, Self::Tripo3d)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Combined => "combined",
@@ -94,6 +103,7 @@ impl ProviderMode {
             Self::OpenAi => "openai",
             Self::Gemini => "gemini",
             Self::Kimi => "kimi",
+            Self::Tripo3d => "tripo3d",
         }
     }
 }

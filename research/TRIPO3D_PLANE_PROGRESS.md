@@ -20,6 +20,7 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 | Calibration estimator | (this commit) | `crates/forward/src/tripo3d_calibration.rs`; windowless balance-track state machine per manifest §5.3 (anchor/cold branch while the unit is unproven, top-up re-anchor, quota-before-settlement hold, repeated balance-only movement excluded via anchor advance — the 0049 state schema has no unattributed column, version rebuild from immutable history, checked i64/i128 only); capacity = remaining × ΣΔapi/ΣΔbalance drawdown with the quantisation envelope from the raw decimal resolution, high stays `None` when unproven; 28 deterministic tests |
 | Auth Bot protocol + roster | (this commit) | `crates/authbot/src/{tripo3d_key,tripo3d_roster}.rs` + `main.rs` env (`AUTH_BOT_TRIPO3D_{DIR,CREDENTIAL_KEYS,CREDENTIAL_ACTIVE_KID}`) + `tripo3d-credential` dep; GLM-pattern static-key intake per manifest §7: free Bearer balance probe (HTTP 401 / body code 401 → invalid key, other business codes transport-class, raw `balance`/`frozen` tokens), fail-closed cohort corroboration (probe succeeded + both counters parse as non-negative decimals — no magnitude comparison while the unit is unproven, §5.2), **no paid admission task at all** ($0.05 cheapest task > $0.0001 cap, §7 open question), `tcli_` Client ID refused locally; roster = glm_roster mirror with key-as-identity replace-in-place; modules dormant (`#![allow(dead_code)]`) until the wizard commit; 17 new tests |
 | Auth Bot seller wizard | (this commit) | `HandoffKind::Tripo3d` in `crates/authbot/src/bot.rs` per manifest §7: steps `t3_proxy → t3_ready → t3_wait`, button `t3:ready`, platform sub-buttons `t3:region:global\|cn` (choice persisted in the shared `users.hregion`, reset per deal, global default); tier codes `tripo3d_api_{25,50,100}` ("Tripo3D API $25/$50/$100") across `product_kb`/`tier_name`/`admin_quick_tier`/`admin_home_kb`; classification keys on `tripo3d`/`tripo` above the Claude fallback; seller texts (offer guide, account setup, proxy prompt, key prompt + typed static guidance incl. `tcli_` misuse); full GLM-mirror wizard (`prepare_tripo3d_account`, readiness gate `t3:ready` requires step+stored proxy, `handle_tripo3d_key_message`: preflight → bounded free balance probe → fail-closed cohort corroboration → seal → atomic publish → payout, keyring-gated dormant intake, key never logged/echoed/persisted); step-back edges incl. the confirm + degrade-to-proxy rule; `db.rs` `recover_interrupted_tripo3d_handoffs` (`t3_wait`→`t3_ready` on restart) wired in `main.rs`; batch/buyer/IPRoyal start paths extended; 21 new tests, exhaustive menu/step-back tests extended (hard counter 15→18) |
+| Runtime primitives | (this commit) | `crates/forward/src/tripo3d/{mod,config,transport,roster,client,selection,pool,queue}.rs` + `ProviderMode::Tripo3d` in `state.rs` (+ the two exhaustive matches: `metrics.rs` plane series, `http.rs` router placeholder 404 arm until the server wiring commit); GLM-pattern plane but task-based: money boundary = successful upstream `code:0 + task_id` create (pool.rs `Phase`), hard axis = provider verdicts only (429+`2000`+`Retry-After`, 403+`2010`, proven balance shortfall), soft axis = 401/transport/probe (never empties the pool — `select_ignoring_soft`), balance probe preserves raw decimal text (never float), `consumed_credit` → strict millicredits (≤3 decimals, fail closed finer), artifact field allowlist `{model,base_model,pbr_model,rendered_image}`, turn FIFO gates balance polls; modules dormant (`#![allow(dead_code)]`) until the gateway commit; 67 new tests |
 
 ## Key research facts (review date 2026-08-12)
 
@@ -67,11 +68,13 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 
 ## Next action (exactly one)
 
-Runtime transport/pool/billing (`crates/forward/src/tripo3d/**`, separate commit) — per the
-queue below: config/transport/roster/pool/selection/queue/client + the task-lifecycle gateway
-(create → poll → download-to-our-storage → settle) on the two-origin base-URL contract, then
-server wiring (`crates/server`). The Auth Bot branch is delivered and dormant on the
-`AUTH_BOT_TRIPO3D_*` keyring.
+Task-lifecycle gateway + durable billing (`crates/forward/src/tripo3d/gateway.rs` +
+`crates/forward/src/billing.rs` Tripo3D writer commands, separate commit): reserve → select →
+create → delivering → detached poll (2s cadence, bounded deadline) → immediate artifact download
+into `ARTIFACT_DIR` (≤60s upstream URL TTL) → settle exact `consumed_credit` → turn FIFO →
+registry authority → balance observations. Then server wiring (`crates/server`). The Auth Bot
+branch is delivered and dormant on the `AUTH_BOT_TRIPO3D_*` keyring; runtime primitives are
+delivered and dormant under `ProviderMode::Tripo3d`.
 
 ## Queue
 

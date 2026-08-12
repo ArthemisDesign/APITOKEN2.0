@@ -178,8 +178,11 @@ fn execution_plane_index(plane: crate::ProviderMode) -> Option<usize> {
         crate::ProviderMode::Gemini => Some(2),
         // The backend-only KIMI plane has no public hostname feeding the Caddy no-upstream marker,
         // so its synthetic refusals stay out of the three public plane series, exactly like the
-        // `Combined` bridge.
-        crate::ProviderMode::Combined | crate::ProviderMode::Kimi => None,
+        // `Combined` bridge. The dedicated Tripo3D plane is not an Anthropic/OpenAI/Gemini wire at
+        // all, so it likewise owns no execution-not-started series here.
+        crate::ProviderMode::Combined | crate::ProviderMode::Kimi | crate::ProviderMode::Tripo3d => {
+            None
+        }
     }
 }
 

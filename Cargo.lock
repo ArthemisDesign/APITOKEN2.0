@@ -1032,6 +1032,7 @@ dependencies = [
  "suno-credential",
  "tokio",
  "tokio-tungstenite",
+ "tripo3d-credential",
  "wreq",
  "zeroize",
 ]
