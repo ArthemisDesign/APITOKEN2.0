@@ -43,8 +43,8 @@ set -euo pipefail
 printf '%q ' "$@" >>"$GH_LOG"
 printf '\n' >>"$GH_LOG"
 if [[ " $* " == *' --method GET '* && " $* " == *' repos/test/repository/issues/1 '* ]]; then
-  if [[ -n ${MOCK_OPEN_ISSUE:-} ]]; then
-    printf '%s\n' "$MOCK_OPEN_ISSUE"
+  if [[ -n ${MOCK_ISSUE_STATE:-} ]]; then
+    printf '%s\n' "$MOCK_ISSUE_STATE"
   fi
 fi
 MOCK
@@ -93,14 +93,14 @@ grep -Fq -- '- Commerce database and engine readiness: HTTP 503' "$TEMP/summary"
 
 : >"$TEMP/gh.log"
 : >"$TEMP/summary"
-MOCK_OPEN_ISSUE=77 run_probe
-grep -Fq 'repos/test/repository/issues/77/comments' "$TEMP/gh.log"
+MOCK_ISSUE_STATE=open run_probe
+grep -Fq 'repos/test/repository/issues/1/comments' "$TEMP/gh.log"
 grep -Fq -- '--method PATCH' "$TEMP/gh.log"
-grep -Fq 'repos/test/repository/issues/77' "$TEMP/gh.log"
+grep -Fq 'repos/test/repository/issues/1' "$TEMP/gh.log"
 
 : >"$TEMP/gh.log"
 : >"$TEMP/summary"
-if MOCK_OPEN_ISSUE=77 UPTIME_SIMULATE_FAILURE=true run_probe; then
+if MOCK_ISSUE_STATE=open UPTIME_SIMULATE_FAILURE=true run_probe; then
   printf 'existing-incident failure unexpectedly passed\n' >&2
   exit 1
 fi
@@ -108,5 +108,15 @@ fi
   printf 'repeat failure mutated the existing incident\n' >&2
   exit 1
 }
+
+: >"$TEMP/gh.log"
+: >"$TEMP/summary"
+if MOCK_ISSUE_STATE=closed UPTIME_SIMULATE_FAILURE=true run_probe; then
+  printf 'reopen failure unexpectedly passed\n' >&2
+  exit 1
+fi
+grep -Fq -- '--method PATCH' "$TEMP/gh.log"
+grep -Fq 'state=open' "$TEMP/gh.log"
+grep -Fq 'repos/test/repository/issues/1' "$TEMP/gh.log"
 
 printf 'production external uptime tests passed\n'

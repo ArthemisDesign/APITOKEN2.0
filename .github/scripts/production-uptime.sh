@@ -92,23 +92,31 @@ if [[ ${UPTIME_SIMULATE_FAILURE:-} == true ]]; then
   record_failure 'Synthetic delivery drill requested by workflow_dispatch'
 fi
 
-issue_number=$(gh api --hostname "$GH_HOST" --method GET \
+issue_state=$(gh api --hostname "$GH_HOST" --method GET \
   "repos/$GITHUB_REPOSITORY/issues/1" \
-  --jq 'select(.state == "open" and .title == "[uptime] Production public readiness is failing") | .number' \
+  --jq 'select(.title == "[uptime] Production public readiness is failing") | .state' \
   2>/dev/null || true)
+if [[ -n $issue_state && $issue_state != open && $issue_state != closed ]]; then
+  printf 'reserved uptime incident has an invalid state: %s\n' "$issue_state" >&2
+  exit 2
+fi
 observed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 run_url="$GITHUB_WEB/$GITHUB_REPOSITORY/actions/runs/${GITHUB_RUN_ID:-unknown}"
 
 if (( ${#failures[@]} > 0 )); then
   failure_lines=$(printf -- '- %s\n' "${failures[@]}")
-  if [[ -z $issue_number ]]; then
+  if [[ -z $issue_state ]]; then
     body=$(printf 'The independent GitHub-hosted production probe failed at `%s`.\n\n%s\nWorkflow: %s\n\nThis issue remains open without per-run comments until a healthy probe closes it.' \
       "$observed_at" "$failure_lines" "$run_url")
     gh api --hostname "$GH_HOST" --method POST \
       "repos/$GITHUB_REPOSITORY/issues" -f title="$INCIDENT_TITLE" -f body="$body" >/dev/null
     printf 'Opened production uptime incident.\n'
+  elif [[ $issue_state == closed ]]; then
+    gh api --hostname "$GH_HOST" --method PATCH \
+      "repos/$GITHUB_REPOSITORY/issues/1" -f state=open >/dev/null
+    printf 'Reopened production uptime incident #1.\n'
   else
-    printf 'Production uptime incident is already open: #%s\n' "$issue_number"
+    printf 'Production uptime incident is already open: #1\n'
   fi
   if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
     {
@@ -119,15 +127,15 @@ if (( ${#failures[@]} > 0 )); then
   exit 1
 fi
 
-if [[ -n $issue_number ]]; then
+if [[ $issue_state == open ]]; then
   recovery=$(printf 'All independent public readiness probes recovered at `%s`.\n\nWorkflow: %s' \
     "$observed_at" "$run_url")
   gh api --hostname "$GH_HOST" --method POST \
-    "repos/$GITHUB_REPOSITORY/issues/$issue_number/comments" -f body="$recovery" >/dev/null
+    "repos/$GITHUB_REPOSITORY/issues/1/comments" -f body="$recovery" >/dev/null
   gh api --hostname "$GH_HOST" --method PATCH \
-    "repos/$GITHUB_REPOSITORY/issues/$issue_number" \
+    "repos/$GITHUB_REPOSITORY/issues/1" \
     -f state=closed -f state_reason=completed >/dev/null
-  printf 'Closed recovered production uptime incident #%s.\n' "$issue_number"
+  printf 'Closed recovered production uptime incident #1.\n'
 fi
 
 if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
