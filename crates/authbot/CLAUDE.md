@@ -574,3 +574,59 @@ onboarding is temporarily unavailable, instead of walking them through a flow wh
 have to be discarded.
 
 Verification: `cargo test -p authbot glm`.
+
+## TRIPO3D (VAST / Holymolly API platform) — static API key
+
+`tripo3d_key.rs` — a pure protocol module for validating a Tripo3D API-platform key, a mirror
+of `glm_key.rs`. It does NOT own the Telegram state, the seller job, the payout or the roster
+publication: the seller wizard in `bot.rs` calls it step by step. Evidence facts and labels —
+`docs/engine/TRIPO3D_PROVIDER.md` §2 (credential/identity), §4 (wire), §5.2 (native quota),
+§7 (acquisition flow).
+
+- **Credential — a static `tsk_` key from the console** (`platform.tripo3d.ai/api-keys`); there
+  is no OAuth flow. The seller registers on the chosen platform origin (global
+  `api.tripo3d.ai` or China `api.tripo3d.com`), tops up exactly the declared amount of the
+  offer product and sends the key to the bot as text. A documented `tcli_` Client ID is
+  refused locally before any network call — it is not a credential and answers 401.
+- **The balance probe is free and read-only**: `GET {base}/v2/openapi/user/balance` with a
+  `Bearer` prefix. Invalid key = HTTP 401, or a business code 401 carried in the body (the
+  GLM trap defense). Success is the `{"code":0,"data":{balance,frozen}}` envelope; any other
+  business code is transport-class, never a verdict on the key. `balance`/`frozen` are kept
+  as raw JSON tokens — the unit is unproven (`oss-hypothesis`, manifest §5.2), nothing is
+  divided or reinterpreted.
+- **Cohort corroboration is fail-closed while the unit is unknown**: `corroborate_cohort`
+  attests only that the probe succeeded and both counters parse as non-negative decimals. A
+  magnitude comparison against the declared top-up is impossible until a live run proves the
+  unit (manifest §5.2/§7); anything unreadable refuses publication instead of guessing.
+- **No paid admission task exists at all.** The cheapest paid task (5 credits = $0.05)
+  exceeds the default $0.0001 admission micro-smoke cap, and no free zero-cost task is proven
+  (manifest §7 records this fail-closed as an open admission-budget question). Validation
+  stops at the free probe; there is deliberately no paid code path to stub or forget.
+- **Envelope sealing — only BEFORE completing the payout**: a failed, unreadable or
+  wrong-platform flow leaves neither a credential file nor a roster row.
+
+`tripo3d_roster.rs` — the file contract of publication, a mirror of `glm_roster.rs`.
+
+- **Order — envelope, then roster**, both atomic + parent fsync (files 0600, directories
+  0700): the engine never reads a roster row whose credential file does not exist yet.
+- **The key is the quota identity.** Tripo3D has no machine-readable `/me`, so subject dedup
+  runs on the API key itself: the comparison is performed on opened envelopes inside the safe
+  zone, the raw key never leaves it. Re-publication of the same key **replaces** the profile
+  in place, preserving the profile id (affinity, health and calibration history survive); a
+  new key with an already occupied profile id is rejected.
+- **Fail closed:** a roster row must point exactly at the canonical path of its own id; a
+  symlink, a world-readable file and an unreadable envelope stop publication rather than
+  dropping the profile; an invalid credential does not touch the roster at all. The roster
+  holds only the opaque id and path — no key, no cohort, no proxy.
+
+**Seller wizard.** Steps `t3_proxy → t3_ready → t3_wait`, button `t3:ready`, platform
+sub-buttons `t3:region:global|cn`. The wizard in `bot.rs` arrives as the dependent follow-up
+change (same split as KIMI/GLM), so that the provider contract is not mixed with seller
+state-machine edits in one diff; the modules above are dormant until it lands.
+
+**Env:** `AUTH_BOT_TRIPO3D_DIR` (root of `credentials/` + `profiles.json`, default
+`/srv/claude-api/data/tripo3d`), `AUTH_BOT_TRIPO3D_CREDENTIAL_KEYS`,
+`AUTH_BOT_TRIPO3D_CREDENTIAL_ACTIVE_KID`. Without a keyring the branch publishes nothing — as
+with GLM, intake is gated only on the AEAD keyring.
+
+Verification: `cargo test -p authbot tripo3d`.

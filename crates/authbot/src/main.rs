@@ -19,6 +19,8 @@ mod kimi_roster;
 mod proxy_admin;
 mod setup_token;
 mod tg;
+mod tripo3d_key;
+mod tripo3d_roster;
 
 use anyhow::{anyhow, Context, Result};
 use db::Store;
@@ -49,6 +51,7 @@ pub struct Config {
     pub gemini_oauth: Option<gemini_oauth::Config>,
     pub kimi_roster: Option<kimi_roster::RosterConfig>,
     pub glm_roster: Option<glm_roster::RosterConfig>,
+    pub tripo3d_roster: Option<tripo3d_roster::RosterConfig>,
 }
 
 fn env_opt(k: &str) -> Option<String> {
@@ -174,6 +177,32 @@ fn glm_roster_config() -> Result<Option<glm_roster::RosterConfig>> {
         return Err(anyhow!("AUTH_BOT_GLM_DIR должен быть абсолютным путём"));
     }
     Ok(Some(glm_roster::RosterConfig {
+        dir,
+        keyring,
+        active_key_id: active,
+    }))
+}
+
+/// Encrypted roster of the Tripo3D plane. Gated on the AEAD keyring exactly like GLM: with
+/// no keys the branch publishes nothing instead of starting half-configured.
+fn tripo3d_roster_config() -> Result<Option<tripo3d_roster::RosterConfig>> {
+    let keys = env_opt("AUTH_BOT_TRIPO3D_CREDENTIAL_KEYS");
+    let active = env_opt("AUTH_BOT_TRIPO3D_CREDENTIAL_ACTIVE_KID");
+    if keys.is_none() && active.is_none() {
+        return Ok(None);
+    }
+    let keyring = tripo3d_credential::CredentialKeyring::parse(
+        &keys.ok_or_else(|| anyhow!("AUTH_BOT_TRIPO3D_CREDENTIAL_KEYS не задан"))?,
+    )?;
+    let active =
+        active.ok_or_else(|| anyhow!("AUTH_BOT_TRIPO3D_CREDENTIAL_ACTIVE_KID не задан"))?;
+    let dir = std::path::PathBuf::from(
+        env_opt("AUTH_BOT_TRIPO3D_DIR").unwrap_or_else(|| "/srv/claude-api/data/tripo3d".into()),
+    );
+    if dir.is_relative() {
+        return Err(anyhow!("AUTH_BOT_TRIPO3D_DIR должен быть абсолютным путём"));
+    }
+    Ok(Some(tripo3d_roster::RosterConfig {
         dir,
         keyring,
         active_key_id: active,
@@ -414,6 +443,7 @@ async fn main() -> Result<()> {
         gemini_oauth,
         kimi_roster: kimi_roster_config()?,
         glm_roster: glm_roster_config()?,
+        tripo3d_roster: tripo3d_roster_config()?,
     });
     let store = Arc::new(Store::open(&state_db())?);
     let recovered = store.recover_interrupted_handoffs()?;

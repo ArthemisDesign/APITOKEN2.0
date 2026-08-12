@@ -18,6 +18,7 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 | Pricing provider set (migration 0051) | (this commit) | `crates/registry/migrations_pg/0051_tripo3d_pricing_provider.sql` (schema 50 → 51): the runtime reserves under `provider = 'tripo3d'`, so both closed sets widen expand-only — `account_provider_discounts_provider_id_check` (0046) and `reservations_scalar_pricing_shape` (0047), drop + re-add strictly wider NOT VALID + VALIDATE; `DISCOUNT_PROVIDER_IDS` 5→6 and the legacy SQLite CHECK texts mirror it; new registration/content tests, the three `CURRENT_SCHEMA_VERSION` pins move 50→51 |
 | Credential crate | (this commit) | `crates/tripo3d-credential`; GLM-pattern AEAD envelope for the static `tsk_` key + declared top-up cohort (lowercase-normalized, matches 0049 `cohort`); two-origin base-URL allowlist (global/CN) with the `test-loopback-base-url` escape; no rotate surface; 19 tests green with and without the feature |
 | Calibration estimator | (this commit) | `crates/forward/src/tripo3d_calibration.rs`; windowless balance-track state machine per manifest §5.3 (anchor/cold branch while the unit is unproven, top-up re-anchor, quota-before-settlement hold, repeated balance-only movement excluded via anchor advance — the 0049 state schema has no unattributed column, version rebuild from immutable history, checked i64/i128 only); capacity = remaining × ΣΔapi/ΣΔbalance drawdown with the quantisation envelope from the raw decimal resolution, high stays `None` when unproven; 28 deterministic tests |
+| Auth Bot protocol + roster | (this commit) | `crates/authbot/src/{tripo3d_key,tripo3d_roster}.rs` + `main.rs` env (`AUTH_BOT_TRIPO3D_{DIR,CREDENTIAL_KEYS,CREDENTIAL_ACTIVE_KID}`) + `tripo3d-credential` dep; GLM-pattern static-key intake per manifest §7: free Bearer balance probe (HTTP 401 / body code 401 → invalid key, other business codes transport-class, raw `balance`/`frozen` tokens), fail-closed cohort corroboration (probe succeeded + both counters parse as non-negative decimals — no magnitude comparison while the unit is unproven, §5.2), **no paid admission task at all** ($0.05 cheapest task > $0.0001 cap, §7 open question), `tcli_` Client ID refused locally; roster = glm_roster mirror with key-as-identity replace-in-place; modules dormant (`#![allow(dead_code)]`) until the wizard commit; 17 new tests |
 
 ## Key research facts (review date 2026-08-12)
 
@@ -65,11 +66,11 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 
 ## Next action (exactly one)
 
-Auth Bot protocol + wizard (`crates/authbot`, separate commit) — `HandoffKind::Tripo3d` with the
-`t3_proxy → t3_ready → t3_wait` steps per manifest §7: proxy canonicalization via
+Auth Bot seller wizard (`crates/authbot/src/bot.rs`, separate commit) — `HandoffKind::Tripo3d`
+with the `t3_proxy → t3_ready → t3_wait` steps per manifest §7: proxy canonicalization via
 `tripo3d_credential::normalize_proxy_url`, platform button (global/CN), seller newcomer guide,
-key intake, validation stub (balance probe → admission micro-smoke → seal → atomic roster
-publish), payout completion.
+key intake, validation (balance probe → cohort corroboration → seal → atomic roster publish —
+no paid admission while the $0.0001 cap stands), payout completion.
 
 ## Queue
 

@@ -379,6 +379,7 @@ async fn claimed_invalid_callback_finishes_outside_the_http_future() {
     let bot_config = Arc::new(BotConfig {
         kimi_roster: None,
         glm_roster: None,
+        tripo3d_roster: None,
         admins_id: HashSet::new(),
         admins_name: HashSet::new(),
         claude_bin: String::new(),
