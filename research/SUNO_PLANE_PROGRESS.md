@@ -13,6 +13,7 @@ storefront, public docs) is OUT of scope for this task — dormant implementatio
 | Ledger skeleton | e9b0494e | scope, plan, open seams |
 | Pre-flight + wiring maps | 1e15c793 | baseline `cargo build --locked` green; push works; engine + authbot/admin wiring maps collected (KIMI/GLM templates). See TRIPO3D_PLANE_PROGRESS.md "Key wiring facts" — shared with this plane |
 | Research + capability manifest | (this commit) | `docs/engine/SUNO_PROVIDER.md`; official pricing/ToS/blog + OSS wire blueprint research 2026-08-12; key facts below |
+| Metering tariff | (this commit) | `crates/metering/src/suno.rs`; reviewed derived schedule §5.1 ($0.004/credit, 5 cr/song = $0.02), fail-closed paid model catalog; 7 exact-vector tests |
 
 ## Key research facts (review date 2026-08-12)
 
@@ -34,13 +35,16 @@ storefront, public docs) is OUT of scope for this task — dormant implementatio
 
 ## Open seams
 
-- Metering tariff `crates/metering/src/suno.rs` — next code step.
-- Everything downstream of the manifest (see Queue).
+- The schedule is DERIVED, not official: a top-up price list or an official API rate card, once
+  available, replaces it as a new dated epoch (`suno/derived-subscription/...` → new id; the
+  `suno/credits` override family stays stable). Wire spellings of the model ids remain `unknown`.
+- Everything downstream of the tariff (see Queue).
 
 ## Next action (exactly one)
 
-Write `crates/metering/src/suno.rs` (reviewed derived schedule: $0.004/credit, 5 credits/song,
-dated schedule id, paid model catalog, checked math, fail-closed on unknown ids) + full tests.
+Migration `crates/registry/migrations_pg/0050_suno_window_calibration.sql` (expand-only,
+separate commit) — monthly-window calibration schema sized to the manifest §5.2/§5.3 quota
+facts (published per-plan limits 2 500 / 10 000 credits, GLM-style, no capacity estimation).
 
 ## Queue
 

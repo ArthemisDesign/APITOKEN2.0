@@ -17,6 +17,7 @@ pub mod gemini;
 pub mod glm;
 pub mod kimi;
 pub mod openai_image;
+pub mod suno;
 pub mod tripo3d;
 pub use codex::{
     codex_catalog_at, codex_compiled_credit_rates, codex_compiled_tariffs_at,
@@ -51,6 +52,12 @@ pub use openai_image::{
     openai_image_tariff_family, OpenAiImageMeteringError, OpenAiImagePrices,
     OpenAiImageTariffIdentity, OpenAiImageUsage, GPT_IMAGE_2_ALIAS, GPT_IMAGE_2_SNAPSHOT,
     OPENAI_IMAGE_ALIAS_GENERATION, OPENAI_IMAGE_TARIFF_FAMILY, OPENAI_IMAGE_TARIFF_SCHEDULE_ID,
+};
+pub use suno::{
+    suno_cost_nanodollars, suno_operation_credits, suno_paid_model, suno_song_cost_nanodollars,
+    suno_song_credits_for_model, suno_stems_advanced_split_credits, suno_tariff_family,
+    suno_tariff_schedule_id, SunoMeteringError, SunoOperation, SUNO_CREDITS_PER_SONG,
+    SUNO_NANOUSD_PER_CREDIT, SUNO_PAID_MODELS, SUNO_TARIFF_FAMILY, SUNO_TARIFF_SCHEDULE_ID,
 };
 pub use tripo3d::{
     tripo3d_animate_retarget_credits, tripo3d_convert_model_credits, tripo3d_cost_nanodollars,
