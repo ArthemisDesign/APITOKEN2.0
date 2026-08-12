@@ -66,6 +66,11 @@ pub struct Metrics {
     pub kimi_failures: AtomicU64,
     /// The subset of failures that are our own capacity refusal rather than a provider verdict.
     pub kimi_capacity_exhausted: AtomicU64,
+    /// Fleet-wide sum of KIMI quota fraction units that moved without any recorded durable spend
+    /// (the calibration estimator's `unattributed_fraction_units`, refreshed from the durable
+    /// report each quota cycle). Gauge, not a counter: it is re-read from authority, so a rebuild
+    /// or an estimator version change can lower it. Fixed cardinality, no profile/plan labels.
+    pub kimi_calibration_unattributed_units: AtomicU64,
     /// Successful Gemini generations that ended without authoritative usage. Metered non-stream
     /// delivery is withheld; a stream already delivered settles its conservative hold.
     pub gemini_usage_missing: AtomicU64,
@@ -93,6 +98,13 @@ impl Metrics {
     #[inline]
     pub fn get(c: &AtomicU64) -> u64 {
         c.load(Ordering::Relaxed)
+    }
+
+    /// Store a gauge-shaped value re-read from an authority (unlike `inc` counters, such series
+    /// legitimately move both ways between scrapes).
+    #[inline]
+    pub fn set(c: &AtomicU64, value: u64) {
+        c.store(value, Ordering::Relaxed);
     }
 
     /// Saturating decrement for the gauge-shaped counters. A gauge that underflows to `u64::MAX`

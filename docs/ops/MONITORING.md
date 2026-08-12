@@ -840,6 +840,26 @@ PostgreSQL authority first. A permanently conflicting head (same request id, dif
 is quarantined as poisoned and dropped — check `claude_api_kimi_calibration_dropped_events_total`
 and the journal for the exact class; never hand-edit durable rows to unblock the queue.
 
+## KimiCalibrationUnattributedSpend
+
+More than a full KIMI quota window (`100_000_000` fraction units) moved within six hours without
+any matching durable turn spend, so the calibration estimator is learning from a shrinking subset
+of real traffic. The gauge is the fleet sum of the estimator's `unattributed_fraction_units`,
+re-read from the durable report every quota cycle; KIMI is default-off: this alert stays silent
+until the first enable, and `CLAUDE_API_KIMI_ENABLED=false` keeps the plane dark at any time.
+
+Check in order: (1) the customer-side use of the same subscriptions outside this gateway — quota
+movement that is not ours is recorded as unattributed by design and is the benign cause;
+(2) lost turn evidence — restarts or crashes with a non-empty in-memory FIFO, visible as gaps in
+`calibration_recent_turns` against served traffic, and the journal lines `KIMI calibration direct
+persistence deferred to the FIFO` / `dropped because the bounded FIFO is full`;
+(3) a blue-green overlap where the draining slot's events landed after the candidate's quota
+observation — self-healing, the estimator holds the anchor once and pairs on the next cycle.
+Do not reseed or zero durable rows to quiet the gauge: unattributed movement is excluded from
+capacity evidence exactly so the estimate cannot be inflated, and hand-editing breaks that
+protection. If the cause is external use of the subscription, either move that usage behind the
+gateway or accept the slower convergence as the honest state.
+
 ## KimiQuotaStale
 
 The newest KIMI `/usages` observation is older than three default poll intervals (3 × 300 s =

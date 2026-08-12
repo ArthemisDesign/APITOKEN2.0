@@ -2270,6 +2270,37 @@ impl KimiGateway {
 
     async fn enqueue_turn(&self, event: KimiTurnCalibrationEvent) {
         let _drain = self.turn_drain.lock().await;
+        // Durable-first: a completed turn writes its immutable event inline, so a restart loses
+        // at most the turn still streaming, never a finished one. The direct write is attempted
+        // only when the FIFO is empty — while an older head is undelivered the new event joins
+        // the queue instead, because the quota barrier and the replay-conflict quarantine rely on
+        // the drain's total order. The bounded FIFO remains the fallback for transient
+        // persistence failures and for a missing billing authority.
+        let idle = self.turn_queue.lock().expect("KIMI turn queue lock").is_empty();
+        if idle {
+            if let Some(billing) = &self.billing {
+                match billing.record_kimi_turn(event.clone()).await {
+                    Ok(_) => return,
+                    Err(error) if registry::is_kimi_turn_replay_conflict(&error) => {
+                        elog::error(
+                            "kimi",
+                            format!(
+                                "KIMI calibration event quarantined on replay conflict: {error:#}"
+                            ),
+                        );
+                        return;
+                    }
+                    Err(error) => {
+                        elog::warn(
+                            "kimi",
+                            format!(
+                                "KIMI calibration direct persistence deferred to the FIFO: {error:#}"
+                            ),
+                        );
+                    }
+                }
+            }
+        }
         let accepted = self
             .turn_queue
             .lock()

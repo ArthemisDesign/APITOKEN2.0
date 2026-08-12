@@ -1770,7 +1770,9 @@ fn write_kimi_operational_metrics(
          # TYPE claude_api_kimi_calibration_dropped_events_total counter\n\
          claude_api_kimi_calibration_dropped_events_total {}\n\
          # TYPE claude_api_kimi_calibration_persistence_ok gauge\n\
-         claude_api_kimi_calibration_persistence_ok {}",
+         claude_api_kimi_calibration_persistence_ok {}\n\
+         # TYPE claude_api_kimi_calibration_unattributed_fraction_units gauge\n\
+         claude_api_kimi_calibration_unattributed_fraction_units {}",
         status.map_or(0, |status| status.total_profiles),
         status.map_or(0, |status| status.live_profiles),
         status.map_or(0, |status| status.available_profiles),
@@ -1785,6 +1787,7 @@ fn write_kimi_operational_metrics(
         status.map_or(0, |status| status.delivery.pending_events),
         status.map_or(0, |status| status.delivery.dropped_events),
         status.map_or(0, |status| u8::from(status.delivery.persistence_ok)),
+        Metrics::get(&m.kimi_calibration_unattributed_units),
     );
     if let Some(observed_at) = status.and_then(|status| {
         status

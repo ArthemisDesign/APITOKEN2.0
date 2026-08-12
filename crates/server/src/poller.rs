@@ -323,9 +323,14 @@ async fn gemini_admin_fingerprint(gateway: &forward::GeminiGateway) -> String {
 
 /// Discover atomic Auth Bot roster publications and poll free subscription quota independently.
 /// The gateway owns profile-idle exclusion, turn-FIFO ordering and durable observation/CAS; this
-/// server loop owns only cadence and never consumes customer concurrency permits.
+/// server loop owns only cadence and never consumes customer concurrency permits. After each
+/// quota cycle it also republishes the fleet-wide unattributed-spend gauge from the durable
+/// calibration report: quota that burns without recorded spend is the first sign of lost turn
+/// evidence, and it must be visible in Prometheus rather than only in the admin projection.
 pub async fn kimi_maintenance_loop(
     gateway: Arc<forward::KimiGateway>,
+    billing: Option<Arc<forward::AsyncBilling>>,
+    metrics: Arc<forward::Metrics>,
     admin_changes: tokio::sync::broadcast::Sender<forward::AdminChange>,
 ) {
     const PROFILE_DISCOVERY_SECS: u64 = 15;
@@ -352,6 +357,7 @@ pub async fn kimi_maintenance_loop(
             }
             _ = quota.tick() => {
                 gateway.poll_quotas().await;
+                refresh_kimi_unattributed_gauge(billing.as_deref(), &metrics).await;
                 let next = kimi_admin_fingerprint(&gateway);
                 if next != status_fingerprint {
                     status_fingerprint = next;
@@ -361,6 +367,35 @@ pub async fn kimi_maintenance_loop(
                     ));
                 }
             }
+        }
+    }
+}
+
+/// Re-read the durable calibration report and republish the fleet sum of quota fraction units
+/// that moved without recorded spend. A read failure keeps the last published value: a transient
+/// PostgreSQL outage must not zero a series the alert reads as "evidence is being lost".
+async fn refresh_kimi_unattributed_gauge(
+    billing: Option<&forward::AsyncBilling>,
+    metrics: &forward::Metrics,
+) {
+    let Some(billing) = billing else {
+        return;
+    };
+    match billing.kimi_calibration_report().await {
+        Ok(rows) => {
+            let sum = rows.iter().fold(0i128, |sum, row| {
+                sum + i128::from(row.unattributed_fraction_units.max(0))
+            });
+            forward::Metrics::set(
+                &metrics.kimi_calibration_unattributed_units,
+                u64::try_from(sum.min(i128::from(u64::MAX))).unwrap_or(u64::MAX),
+            );
+        }
+        Err(error) => {
+            elog::warn(
+                "server",
+                format!("KIMI unattributed-spend gauge refresh deferred: {error:#}"),
+            );
         }
     }
 }

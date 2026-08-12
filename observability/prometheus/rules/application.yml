@@ -538,6 +538,17 @@ groups:
           description: 'The bounded turn FIFO holds pending events, and the provider quota read is suspended by design until the head drains.'
           runbook: 'docs/ops/MONITORING.md#kimicalibrationbacklog'
 
+      - alert: KimiCalibrationUnattributedSpend
+        expr: claude_api_kimi_enabled == 1 and delta(claude_api_kimi_calibration_unattributed_fraction_units[6h]) > 100000000
+        for: 15m
+        labels:
+          severity: warning
+          component: kimi-provider
+        annotations:
+          summary: 'KIMI quota is burning without recorded spend'
+          description: 'More than a full quota window moved in 6h with no matching durable turn evidence: turn events are being lost or the subscription is used outside the gateway; measured capacity converges slower while this grows.'
+          runbook: 'docs/ops/MONITORING.md#kimicalibrationunattributedspend'
+
       - alert: KimiQuotaStale
         expr: claude_api_kimi_enabled == 1 and claude_api_kimi_live_profiles > 0 and time() - claude_api_kimi_quota_last_observation_timestamp_seconds > 900
         for: 15m

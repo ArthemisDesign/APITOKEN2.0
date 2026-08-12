@@ -1376,6 +1376,8 @@ async fn serve() -> Result<()> {
                 }
                 tokio::spawn(poller::kimi_maintenance_loop(
                     gateway.clone(),
+                    Some(calibration_store.clone()),
+                    metrics.clone(),
                     admin_changes.clone(),
                 ));
                 Some(gateway)
@@ -1390,10 +1392,12 @@ async fn serve() -> Result<()> {
                 );
                 let gateway = Arc::new(forward::KimiGateway::new_degraded(
                     config,
-                    Some(calibration_store),
+                    Some(calibration_store.clone()),
                 ));
                 tokio::spawn(poller::kimi_maintenance_loop(
                     gateway.clone(),
+                    Some(calibration_store),
+                    metrics.clone(),
                     admin_changes.clone(),
                 ));
                 Some(gateway)
