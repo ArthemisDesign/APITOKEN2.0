@@ -10,7 +10,8 @@ storefront, public docs) is OUT of scope for this task — dormant implementatio
 
 | Step | Commit SHA | Notes |
 |---|---|---|
-| Ledger skeleton | (this commit) | scope, plan, open seams |
+| Ledger skeleton | e9b0494e | scope, plan, open seams |
+| Pre-flight + wiring maps | (this commit) | baseline `cargo build --locked` green; push works; engine + authbot/admin wiring maps collected (KIMI/GLM templates). See TRIPO3D_PLANE_PROGRESS.md "Key wiring facts" — shared with this plane |
 
 ## Open seams
 
