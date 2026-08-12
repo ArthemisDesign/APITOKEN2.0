@@ -1,22 +1,37 @@
 //! Bounded delivery queue between the Tripo3D (VAST / Holymolly) task finalizer and the
 //! calibration authority.
 //!
-//! Contract: `docs/engine/PROVIDER_ONBOARDING.md` §10.2. Pure state machine — the caller
-//! performs the database write and reports the outcome back.
+//! Contract: `docs/engine/PROVIDER_ONBOARDING.md` §10.2, following the Codex/Gemini pairing
+//! discipline (NOT the split KIMI/GLM one): the FIFO head is the immutable turn event PLUS the
+//! post-turn balance read taken in the task's wake, so one writer command persists the event
+//! and an observation whose cumulative ledgers already include that turn — an observation is
+//! never paired with a spend total that its own task has not reached.
+//!
+//! Pure state machine — the caller performs the database write and reports the outcome back.
 //!
 //! The invariant this exists to protect: **a balance observation must never be paired with a
 //! spend total that an earlier task has not yet reached.** Tripo3D turn events carry the
 //! authoritative `consumed_credit` as two exact legs (native millicredits AND its fixed-rate
 //! API nanoUSD image, `docs/engine/TRIPO3D_PROVIDER.md` §5.3), and both cumulative ledgers
 //! advance per task: if a task's event is stuck and a later free balance poll went ahead
-//! anyway, the estimator would see balance drawdown it cannot attribute to settled spend and
-//! would either misprice capacity or record our own consumption as somebody else's. So a
+//! anyway, the estimator would see balance drawdown it cannot attribute to settled spend. So a
 //! failed head stays at the front and blocks both later turns and balance polls until it
 //! drains.
 
 use std::collections::VecDeque;
 
 use registry::Tripo3dTurnCalibrationEvent;
+
+use crate::billing::Tripo3dBalanceSnapshot;
+
+/// One FIFO entry: the immutable turn event plus the post-turn balance read taken in its wake
+/// (Codex/Gemini pairing). A missing snapshot means the post-turn read failed; the periodic
+/// poll path covers balance freshness independently, and the turn event still persists alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingTurn {
+    pub event: Tripo3dTurnCalibrationEvent,
+    pub balance: Option<Tripo3dBalanceSnapshot>,
+}
 
 /// What the authority reported for one attempted write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,8 +55,8 @@ pub struct DeliveryHealth {
 }
 
 /// Bounded FIFO of settled tasks awaiting durable storage.
-pub struct TurnQueue {
-    queue: VecDeque<Tripo3dTurnCalibrationEvent>,
+pub(crate) struct TurnQueue {
+    queue: VecDeque<PendingTurn>,
     capacity: usize,
     dropped: u64,
     /// False once a write failed transiently, until the head drains.
@@ -64,23 +79,23 @@ impl TurnQueue {
     /// polling, so discarding it to make room would release the block and let a poll pair
     /// balance with a spend total that never arrived — exactly the corruption this queue
     /// prevents.
-    pub fn push(&mut self, event: Tripo3dTurnCalibrationEvent) -> bool {
+    pub(crate) fn push(&mut self, turn: PendingTurn) -> bool {
         if self.queue.len() >= self.capacity {
             self.dropped = self.dropped.saturating_add(1);
             self.healthy = false;
             return false;
         }
-        self.queue.push_back(event);
+        self.queue.push_back(turn);
         true
     }
 
     /// The event a caller should attempt next, if any.
-    pub fn head(&self) -> Option<&Tripo3dTurnCalibrationEvent> {
+    pub(crate) fn head(&self) -> Option<&PendingTurn> {
         self.queue.front()
     }
 
     /// Report the result of writing the head.
-    pub fn resolve_head(&mut self, outcome: WriteOutcome) {
+    pub(crate) fn resolve_head(&mut self, outcome: WriteOutcome) {
         match outcome {
             WriteOutcome::Durable => {
                 self.queue.pop_front();
@@ -105,7 +120,7 @@ impl TurnQueue {
     ///
     /// Reads never create evidence, but a read taken while a task is undelivered would be
     /// paired with a stale total, so polling waits for the queue to drain.
-    pub fn may_poll_balance(&self) -> bool {
+    pub(crate) fn may_poll_balance(&self) -> bool {
         self.queue.is_empty()
     }
 
@@ -117,11 +132,11 @@ impl TurnQueue {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.queue.len()
     }
 }
@@ -133,8 +148,9 @@ pub const DEFAULT_QUEUE_CAPACITY: usize = 4096;
 mod tests {
     use super::*;
 
-    fn event(id: &str) -> Tripo3dTurnCalibrationEvent {
-        Tripo3dTurnCalibrationEvent {
+    fn event(id: &str) -> PendingTurn {
+        PendingTurn {
+            event: Tripo3dTurnCalibrationEvent {
             request_id: id.into(),
             subject_id: "u_1".into(),
             cohort: "tripo3d-api-50".into(),
@@ -146,7 +162,9 @@ mod tests {
             completed_at: 1_800_000_001,
             upstream_task_id: "task_1".into(),
             native_total_millicredits: 20_000,
-            api_total_nanousd: 200_000_000,
+                api_total_nanousd: 200_000_000,
+            },
+            balance: None,
         }
     }
 
@@ -175,7 +193,7 @@ mod tests {
         let mut queue = TurnQueue::new(8);
         queue.push(event("a"));
         queue.resolve_head(WriteOutcome::Transient);
-        assert_eq!(queue.head().unwrap().request_id, "a");
+        assert_eq!(queue.head().unwrap().event.request_id, "a");
         assert!(!queue.may_poll_balance());
         assert!(!queue.health().persistence_ok);
         assert_eq!(queue.health().pending_events, 1);
@@ -192,9 +210,9 @@ mod tests {
         queue.push(event("b"));
         queue.resolve_head(WriteOutcome::Transient);
         // Order is preserved: "b" cannot overtake a task that has not landed.
-        assert_eq!(queue.head().unwrap().request_id, "a");
+        assert_eq!(queue.head().unwrap().event.request_id, "a");
         queue.resolve_head(WriteOutcome::Durable);
-        assert_eq!(queue.head().unwrap().request_id, "b");
+        assert_eq!(queue.head().unwrap().event.request_id, "b");
     }
 
     #[test]
@@ -205,7 +223,7 @@ mod tests {
         queue.push(event("a"));
         queue.push(event("b"));
         queue.resolve_head(WriteOutcome::Conflict);
-        assert_eq!(queue.head().unwrap().request_id, "b");
+        assert_eq!(queue.head().unwrap().event.request_id, "b");
         assert_eq!(queue.health().dropped_events, 1);
         queue.resolve_head(WriteOutcome::Durable);
         assert!(queue.health().persistence_ok);
@@ -221,7 +239,7 @@ mod tests {
         assert!(queue.push(event("a")));
         assert!(queue.push(event("b")));
         assert!(!queue.push(event("c")));
-        assert_eq!(queue.head().unwrap().request_id, "a");
+        assert_eq!(queue.head().unwrap().event.request_id, "a");
         assert_eq!(queue.len(), 2);
         assert_eq!(queue.health().dropped_events, 1);
         assert!(!queue.health().persistence_ok);

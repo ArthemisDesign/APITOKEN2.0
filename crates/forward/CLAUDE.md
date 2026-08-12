@@ -1075,6 +1075,58 @@ plans anyway). Privacy by construction: the subject (keyed digest of the key) st
 PostgreSQL-only `PgStore::list_glm_calibrations`, an empty report on the SQLite authority) are joined
 to the opaque id only through `profile_id_for_subject`, and a foreign subject is never serialized outward.
 
+**Tripo3D backend preview runtime — default-off, dedicated plane, no public catalog:**
+`tripo3d_calibration.rs` holds the windowless balance-track estimator (migration 0049), and
+`tripo3d/` — a strict loader of the encrypted roster, last-good atomic reload, the balance/task
+wire, hard/soft selection, a create-bounded attempt loop, the bounded paired-turn FIFO, the
+artifact store, the upload transport and the task-lifecycle gateway. Contract and facts —
+`docs/engine/TRIPO3D_PROVIDER.md`, schema — migration `0049_tripo3d_calibration.sql`, types and
+PostgreSQL authority — `registry::tripo3d_calibration`/`PgStore::{record_tripo3d_turn,save_tripo3d_calibration}`.
+
+The differences from KIMI/GLM that must not be "unified":
+
+1. **Task-based media API, not a chat wire.** The lifecycle is create task → detached poll (2 s
+   cadence, bounded deadline) → immediate artifact download into `ARTIFACT_DIR` (result URLs
+   live ≤60 s) → exact settle. The money boundary is a successful upstream create
+   (`code: 0 + task_id`), not a first public byte; rotation is expressible only before it, and
+   per-key task isolation pins the whole drain to the creating profile. A client disconnect
+   never cancels the drain. There is no streaming, no Anthropic envelope and no fleet persona:
+   requests authenticate with `Bearer tsk_…` only.
+2. **Calibration pairs like Codex/Gemini, not KIMI/GLM.** The FIFO head is the immutable turn
+   event PLUS the post-turn balance read taken in the task's wake; one writer command records
+   the turn, reads the cumulative dual ledgers already including it, and persists the
+   observation (`response` source naming the request id) + estimator CAS. The free periodic
+   balance poll still runs the turn-before-quota gate and never reads with a pending head.
+3. **Hard/soft cooling per manifest §4.1.** Hard axis = provider verdicts only: 429+`2000` with
+   `Retry-After` (exact timed cool), 403+`2010` insufficient balance (rest until a balance probe
+   shows funds), a proven balance shortfall against the reserve. Soft axis = 401 (static key,
+   no refresh — soft quarantine with exponential backoff from 15 s, reset on proven success),
+   transport faults, failed probes. The strict pass honors both; `selection::select_ignoring_soft`
+   is the second pass bounded by the tried set; a full-hard fleet answers an honest 429 with
+   `Retry-After`. Unknown business codes fail closed onto the HTTP class; a 2xx without
+   `code: 0` is a protocol anomaly that never rotates (a possible double-create).
+4. **Money: reserve = exact published price or the documented family-max conservative reserve**
+   (`metering::tripo3d::tripo3d_reserve_credits`); settlement is exactly the authoritative
+   `consumed_credit` (millicredits, float-free parse, ≤3 decimals). Above the reserve bound →
+   typed anomaly, conservative hold, no event. Missing `consumed_credit` on success → hold +
+   counter. Documented `failed`/`expired` → zero settle + refund + legal zero-pair event.
+   Undocumented `banned`/`cancelled`/`unknown` finals (manifest §6.5) → conservative hold +
+   counter, no fabricated consumption.
+5. **Attachments are account-scoped.** The upload endpoints (`upload/sts` multipart images
+   ≤20 MB → `image_token`; `upload/sts/token` + SigV4 S3 PUT model files ≤64 MiB → plane
+   `t3m-` token) pin the token to the uploading profile; task creation with a pinned token is
+   sticky to that profile because another key cannot see the upload. The pin map is bounded,
+   TTL'd, in-memory and never money state.
+
+`Tripo3dGateway::operational_status` publishes a `Tripo3dOperationalStatus` for readiness,
+`/metrics` and admin-only `GET /tripo3d-subs`: fleet counts, per-profile hard/soft cooling with
+resets, raw balance halves (parsed halves `None` while the unit is unproven), the typed anomaly
+counters, tracked-task count and the FIFO `DeliveryHealth`. Privacy by construction: the
+subject (keyed digest) stays private in `RuntimeProfile`; durable calibration rows
+(`AsyncBilling::tripo3d_calibration_report`, PostgreSQL-only) join to the opaque id only
+through `profile_id_for_subject`, and the read model (`Tripo3dTaskView`) never carries the
+upstream task id or signed URLs.
+
 **GPT Image 2 native wire and producer-first Images API:** `codex::images` owns the strict native
 Codex OAuth generation/edit wire. It posts JSON to `{CodexConfig.base_url}/images/generations|edits`
 through one existing sealed Codex home, with the existing bearer/account/originator/UA/version headers

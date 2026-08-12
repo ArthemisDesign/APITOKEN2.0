@@ -40,17 +40,6 @@ pub enum BalanceProbe {
     Invalid,
 }
 
-/// Outcome of a task-creation attempt. The money boundary is `Created`: from that point the
-/// task is owned by the creating profile (per-key isolation, manifest §2) and no rotation is
-/// possible.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CreateOutcome {
-    /// `code: 0` with a non-empty `data.task_id`.
-    Created(String),
-    /// The provider refused before creating anything; the verdict classifies the refusal.
-    Refused(UpstreamVerdict),
-}
-
 /// Lifecycle state of one upstream task (manifest §4: ongoing `queued`/`running`, finalized
 /// `success`/`failed`/`banned`/`expired`/`cancelled`/`unknown`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +88,9 @@ pub struct TaskState {
     pub progress: Option<i64>,
     /// Raw decimal text of the authoritative consumption. Absent until the provider reports it.
     pub consumed_credit_raw: Option<String>,
+    /// The `model_version` the task actually ran with (`input.model_version` echoed back).
+    /// `None` for version-independent task kinds — never a fabricated value (manifest §3).
+    pub resolved_model_version: Option<String>,
     /// Provider error code on a failed task (raw evidence only; never surfaced to customers).
     pub error_code: Option<i64>,
     /// `(name, url)` pairs of the documented downloadable output fields. The URLs are
@@ -169,13 +161,11 @@ pub fn parse_balance_probe(status: u16, body: &[u8]) -> Result<BalanceProbe> {
     }))
 }
 
-/// Parse a task-creation response. `retry_after` is the parsed `Retry-After` header when the
-/// provider sent one; the caller uses it for exact hard-wall cooling. The upstream body is
-/// bounded by the caller before this runs.
-pub fn parse_create_task(
-    status: u16,
-    body: &[u8],
-) -> Result<CreateOutcome, UpstreamVerdict> {
+/// Parse a task-creation response: the upstream task id on the documented success envelope, or
+/// the classified refusal. The money boundary is `Ok`: from that point the task is owned by the
+/// creating profile (per-key isolation, manifest §2) and no rotation is possible. The upstream
+/// body is bounded by the caller before this runs.
+pub fn parse_create_task(status: u16, body: &[u8]) -> Result<String, UpstreamVerdict> {
     let parsed: Option<Value> = serde_json::from_slice(body).ok();
     let code = parsed.as_ref().and_then(error_business_code);
     let verdict = classify_status(status, code);
@@ -190,7 +180,7 @@ pub fn parse_create_task(
         .filter(|id| !id.is_empty())
         .map(str::to_owned);
     match task_id {
-        Some(task_id) => Ok(CreateOutcome::Created(task_id)),
+        Some(task_id) => Ok(task_id),
         // `code: 0` without a task id is a lying success envelope: a contract change, never a
         // created task.
         None => Err(UpstreamVerdict::Protocol),
@@ -224,6 +214,12 @@ pub fn parse_task_poll(status: u16, body: &[u8]) -> Result<TaskState, UpstreamVe
         .get("error_code")
         .and_then(Value::as_i64);
     let progress = data.get("progress").and_then(Value::as_i64);
+    let resolved_model_version = data
+        .get("input")
+        .and_then(|input| input.get("model_version"))
+        .and_then(Value::as_str)
+        .filter(|version| !version.is_empty())
+        .map(str::to_owned);
     let mut artifacts = Vec::new();
     if let Some(output) = data.get("output") {
         for field in ARTIFACT_FIELDS {
@@ -238,6 +234,7 @@ pub fn parse_task_poll(status: u16, body: &[u8]) -> Result<TaskState, UpstreamVe
         lifecycle: Some(lifecycle),
         progress,
         consumed_credit_raw,
+        resolved_model_version,
         error_code,
         artifacts,
     })
@@ -294,6 +291,90 @@ pub fn build_client(
     builder.build().context("build Tripo3D client")
 }
 
+// ── upload wire (manifest §4: upload/sts images, upload/sts/token model files) ──
+
+/// Outcome of the direct image upload (`POST {base}/v2/openapi/upload/sts`, multipart,
+/// ≤20 MB): an `image_token` usable in task `file.file_token` on THE SAME account — uploads
+/// are account-scoped, so the plane pins the token to the uploading profile.
+///
+/// Free per the rate card (no priced upload leg), so this doubles as another auth-validating
+/// surface only in shape — classification still goes through the shared verdicts.
+pub fn parse_image_upload(status: u16, body: &[u8]) -> Result<String, UpstreamVerdict> {
+    let parsed: Option<Value> = serde_json::from_slice(body).ok();
+    let verdict = classify_status(status, parsed.as_ref().and_then(error_business_code));
+    if verdict != UpstreamVerdict::Ok {
+        return Err(verdict);
+    }
+    parsed
+        .as_ref()
+        .and_then(|value| value.get("data"))
+        .and_then(|data| data.get("image_token"))
+        .and_then(Value::as_str)
+        .filter(|token| !token.is_empty() && token.len() <= 512)
+        .map(str::to_owned)
+        .ok_or(UpstreamVerdict::Protocol)
+}
+
+/// Temporary S3 credentials for the model-file flow (`POST {base}/v2/openapi/upload/sts/token`,
+/// `oss-hypothesis`: official Python SDK `client.py`, manifest §4). The plane uploads the
+/// customer's model file to the returned bucket/key itself and then references
+/// `file: {"object": {bucket, key}}` in the task.
+#[derive(Clone)]
+pub struct StsSession {
+    /// Bare host of the S3-compatible endpoint (the SDK prefixes it with `https://`).
+    pub s3_host: String,
+    pub access_key: String,
+    pub secret_key: String,
+    pub session_token: String,
+    pub bucket: String,
+    /// The exact object key the session is authorized to write (`resource_uri` on the wire).
+    pub object_key: String,
+}
+
+impl std::fmt::Debug for StsSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StsSession")
+            .field("s3_host", &self.s3_host)
+            .field("bucket", &self.bucket)
+            .field("object_key", &self.object_key)
+            .field("access_key", &"REDACTED")
+            .field("secret_key", &"REDACTED")
+            .field("session_token", &"REDACTED")
+            .finish()
+    }
+}
+
+/// Parse the STS token response. Every field is required and bounded; a missing one fails
+/// closed. The signing region is NOT on the wire: the SDK's boto3 call leaves it at the
+/// default, so the S3 PUT signs `us-east-1` — an `unknown` (manifest §6) until the live gate
+/// pins the real region.
+pub fn parse_sts_token(status: u16, body: &[u8]) -> Result<StsSession, UpstreamVerdict> {
+    let parsed: Option<Value> = serde_json::from_slice(body).ok();
+    let verdict = classify_status(status, parsed.as_ref().and_then(error_business_code));
+    if verdict != UpstreamVerdict::Ok {
+        return Err(verdict);
+    }
+    let Some(data) = parsed.as_ref().and_then(|value| value.get("data")) else {
+        return Err(UpstreamVerdict::Protocol);
+    };
+    let bounded = |field: &str, max: usize| -> Result<String, UpstreamVerdict> {
+        data.get(field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= max)
+            .map(str::to_owned)
+            .ok_or(UpstreamVerdict::Protocol)
+    };
+    Ok(StsSession {
+        s3_host: bounded("s3_host", 256)?,
+        access_key: bounded("sts_ak", 256)?,
+        secret_key: bounded("sts_sk", 512)?,
+        session_token: bounded("session_token", 4096)?,
+        bucket: bounded("resource_bucket", 128)?,
+        object_key: bounded("resource_uri", 1024)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,9 +416,7 @@ mod tests {
         let body = br#"{"code":0,"data":{"task_id":"07764597-9c93-4eb9-92b6-4ea96a8c7d1a"}}"#;
         assert_eq!(
             parse_create_task(200, body),
-            Ok(CreateOutcome::Created(
-                "07764597-9c93-4eb9-92b6-4ea96a8c7d1a".into()
-            ))
+            Ok("07764597-9c93-4eb9-92b6-4ea96a8c7d1a".to_string())
         );
     }
 
@@ -439,6 +518,54 @@ mod tests {
         assert_eq!(millicredits_from_raw(""), None);
         assert_eq!(millicredits_from_raw("1."), Some(1_000));
         assert_eq!(millicredits_from_raw(".5"), None);
+    }
+
+    #[test]
+    fn the_image_upload_wire_returns_the_token_or_a_classified_refusal() {
+        let body = br#"{"code":0,"data":{"image_token":"imgtok-1"}}"#;
+        assert_eq!(parse_image_upload(200, body), Ok("imgtok-1".to_string()));
+        // Refusals classify on the business code, exactly like task creation.
+        assert_eq!(
+            parse_image_upload(429, br#"{"code":2000,"message":"concurrency"}"#),
+            Err(UpstreamVerdict::RateLimitedHard)
+        );
+        assert_eq!(
+            parse_image_upload(401, br#"{"code":401,"message":"invalid key"}"#),
+            Err(UpstreamVerdict::AuthRefused)
+        );
+        // A success envelope without a token is a lying wire: protocol, never an empty token.
+        assert_eq!(
+            parse_image_upload(200, br#"{"code":0,"data":{}}"#),
+            Err(UpstreamVerdict::Protocol)
+        );
+    }
+
+    #[test]
+    fn the_sts_token_wire_requires_every_field() {
+        let full = br#"{"code":0,"data":{"s3_host":"s3.example.com","sts_ak":"AK","sts_sk":"SK","session_token":"ST","resource_bucket":"bucket","resource_uri":"obj/key.glb"}}"#;
+        let session = parse_sts_token(200, full).unwrap();
+        assert_eq!(session.s3_host, "s3.example.com");
+        assert_eq!(session.bucket, "bucket");
+        assert_eq!(session.object_key, "obj/key.glb");
+        // Debug never prints the session secrets.
+        let rendered = format!("{session:?}");
+        assert!(!rendered.contains("\"SK\""));
+        assert!(!rendered.contains("ST\""));
+        assert!(rendered.contains("REDACTED"));
+        // Any missing half fails closed.
+        for field in ["s3_host", "sts_ak", "sts_sk", "session_token", "resource_bucket", "resource_uri"] {
+            let broken = String::from_utf8_lossy(full)
+                .replace(&format!("\"{field}\":"), "\"removed\":")
+                .into_bytes();
+            assert!(
+                matches!(parse_sts_token(200, &broken), Err(UpstreamVerdict::Protocol)),
+                "{field} missing"
+            );
+        }
+        assert!(matches!(
+            parse_sts_token(503, b"down"),
+            Err(UpstreamVerdict::Transport)
+        ));
     }
 
     #[test]

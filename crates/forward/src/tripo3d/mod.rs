@@ -15,15 +15,18 @@
 //! internal capacity and calibration only, with no public catalog, router namespace or
 //! storefront.
 
-// Dormant until the task-lifecycle gateway lands (docs/engine/TRIPO3D_PROVIDER.md §8): these
-// modules are consumed only by their own tests so far. The allowance is module-wide rather
-// than per-item so the compiler does not force a piecemeal gateway.
-#![allow(dead_code)]
-
+pub mod artifacts;
 pub mod client;
 pub mod config;
+mod gateway;
 pub mod pool;
 pub mod queue;
 pub mod roster;
 pub mod selection;
 pub mod transport;
+pub mod upload;
+
+pub use gateway::{
+    create_generation, task_artifact, task_status, upload_image, upload_model, Tripo3dGateway,
+    Tripo3dOperationalStatus, Tripo3dProfileStatus, Tripo3dTaskView,
+};

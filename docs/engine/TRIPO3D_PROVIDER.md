@@ -310,7 +310,7 @@ Each `unknown` fails closed and is cleared only by a controlled live run on our 
 | Auth Bot: validation protocol + roster | `crates/authbot/src/{tripo3d_key,tripo3d_roster}.rs` (+`main.rs` env) | done (this commit) |
 | Auth Bot: seller wizard | `crates/authbot/src/bot.rs` (+`db.rs` recovery, `main.rs`) | done (this commit) |
 | runtime primitives | `crates/forward/src/tripo3d/{mod,config,transport,roster,client,selection,pool,queue}.rs` + `ProviderMode::Tripo3d` | done (this commit) |
-| task-lifecycle gateway + durable billing | `crates/forward/src/tripo3d/gateway.rs`, `crates/forward/src/billing.rs` | pending |
+| task-lifecycle gateway + durable billing | `crates/forward/src/tripo3d/{gateway,upload,artifacts}.rs`, `crates/forward/src/billing.rs` | done (this commit) |
 | server wiring | `crates/server/src/{config,main,poller,http}.rs` | pending |
 | observability / admin projection | `observability/**`, `docs/ops/MONITORING.md`, `GET /tripo3d-subs` | pending |
 | admin UI consumer | `apps/admin` | pending |

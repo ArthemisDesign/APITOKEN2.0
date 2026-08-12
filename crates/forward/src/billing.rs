@@ -24,7 +24,8 @@ use registry::{
     GeminiExactWindowObservation, GlmCalibrationRow, GlmSubjectSpend, GlmTurnCalibrationEvent,
     GlmWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow, KimiCalibrationRow,
     KimiTurnCalibrationEvent, KimiWindowObservation, ProviderCalibrationSubjectSpend,
-    ProviderTurnCalibrationAggregate, ProviderTurnCalibrationEvent,
+    ProviderTurnCalibrationAggregate, ProviderTurnCalibrationEvent, Tripo3dBalanceObservation,
+    Tripo3dCalibrationRow, Tripo3dSubjectSpend,
 };
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -170,6 +171,75 @@ pub(crate) struct GlmQuotaSnapshot {
     /// Derived fraction pair, present only for the documented credits form.
     pub used_fraction_units: Option<i64>,
     pub measurement_resolution_fraction_units: Option<i64>,
+}
+
+/// One parsed Tripo3D balance-endpoint snapshot before the writer pairs it with the subject's
+/// durable cumulative dual-ledger spend (same single-writer hop as GLM). The provider halves are
+/// raw decimal TEXT — their unit is unproven (`docs/engine/TRIPO3D_PROVIDER.md` §5.2/§6.1), so
+/// the parsed micro-units stay `None` until a live run proves the unit: unknown is `None`,
+/// never `0`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Tripo3dBalanceSnapshot {
+    pub observed_at: i64,
+    pub balance_raw: String,
+    pub frozen_raw: String,
+    pub balance_micro_units: Option<i64>,
+    pub frozen_micro_units: Option<i64>,
+}
+
+/// Build the immutable Tripo3D balance observation: provider-side raw halves from the snapshot
+/// plus the subject's exact durable cumulative dual ledgers, which only this serial writer may
+/// read. The observation is source-tagged: a free poll invents no request id, a response-carried
+/// read names the turn that carried it.
+fn tripo3d_observation(
+    subject_id: &str,
+    cohort: &str,
+    snapshot: &Tripo3dBalanceSnapshot,
+    spend: Tripo3dSubjectSpend,
+    source: &str,
+    source_request_id: Option<&str>,
+) -> Tripo3dBalanceObservation {
+    Tripo3dBalanceObservation {
+        subject_id: subject_id.to_owned(),
+        cohort: cohort.to_owned(),
+        observed_at: snapshot.observed_at,
+        balance_raw: snapshot.balance_raw.clone(),
+        frozen_raw: snapshot.frozen_raw.clone(),
+        balance_micro_units: snapshot.balance_micro_units,
+        frozen_micro_units: snapshot.frozen_micro_units,
+        cumulative_api_nanousd: spend.spent_api_nanousd,
+        cumulative_native_millicredits: spend.spent_native_millicredits,
+        observation_source: source.to_owned(),
+        source_request_id: source_request_id.map(str::to_owned),
+    }
+}
+
+fn observe_tripo3d_postgres(
+    pg: &mut registry::pg::PgStore,
+    observation: &Tripo3dBalanceObservation,
+) -> anyhow::Result<Tripo3dCalibrationRow> {
+    loop {
+        let existing =
+            pg.load_tripo3d_calibration(&observation.subject_id, &observation.cohort)?;
+        let history = if existing
+            .as_ref()
+            .is_some_and(|row| row.estimator_version != crate::tripo3d_calibration::ESTIMATOR_VERSION)
+        {
+            pg.load_tripo3d_balance_observations(&observation.subject_id, &observation.cohort)?
+        } else {
+            Vec::new()
+        };
+        let mut state = crate::tripo3d_calibration::apply_observation_with_history(
+            existing,
+            &history,
+            observation,
+        )?;
+        // The save validates the state/observation pair and applies the estimator CAS.
+        if let Some(version) = pg.save_tripo3d_calibration(&state, observation)? {
+            state.version = version;
+            return Ok(state);
+        }
+    }
 }
 
 type GeminiTurnPersistenceResult = (
@@ -1093,6 +1163,16 @@ enum WriteCmd {
         snapshots: Vec<GlmQuotaSnapshot>,
         reply: oneshot::Sender<anyhow::Result<Vec<GlmCalibrationRow>>>,
     },
+    Tripo3dRecordTurn {
+        turn: crate::tripo3d::queue::PendingTurn,
+        reply: oneshot::Sender<anyhow::Result<bool>>,
+    },
+    Tripo3dObserveBalance {
+        subject_id: String,
+        cohort: String,
+        snapshot: Tripo3dBalanceSnapshot,
+        reply: oneshot::Sender<anyhow::Result<Tripo3dCalibrationRow>>,
+    },
     CodexRecordTurn {
         event: CodexTurnCalibrationEvent,
         reply: oneshot::Sender<anyhow::Result<CodexHomeCalibrationSpend>>,
@@ -1290,6 +1370,7 @@ enum ReadCmd {
         oneshot::Sender<anyhow::Result<Vec<KimiTurnCalibrationEvent>>>,
     ),
     GlmCalibrationReport(oneshot::Sender<anyhow::Result<Vec<GlmCalibrationRow>>>),
+    Tripo3dCalibrationReport(oneshot::Sender<anyhow::Result<Vec<Tripo3dCalibrationRow>>>),
     KeyAuth(String, oneshot::Sender<anyhow::Result<Option<KeyAuth>>>),
     KeyGet(String, oneshot::Sender<anyhow::Result<Option<KeyRow>>>),
     Account(String, oneshot::Sender<anyhow::Result<Option<AccountRow>>>),
@@ -1929,6 +2010,77 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
 
+    /// Read every durable Tripo3D balance-track calibration row for the admin operational
+    /// projection.
+    ///
+    /// Rows are keyed by provider subject; joining them to opaque roster ids is the caller's
+    /// concern (the gateway owns that mapping). Tripo3D calibration is PostgreSQL-only, so a
+    /// SQLite authority reports an empty fleet rather than an error.
+    pub async fn tripo3d_calibration_report(&self) -> anyhow::Result<Vec<Tripo3dCalibrationRow>> {
+        let (reply, result) = oneshot::channel();
+        let reader = &self.readers[self.rr.fetch_add(1, Ordering::Relaxed) % self.readers.len()];
+        reader
+            .send(ReadCmd::Tripo3dCalibrationReport(reply))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    /// Persist one immutable Tripo3D turn (a finalized upstream task) and advance the subject's
+    /// exact dual ledgers (native millicredits AND the fixed-rate API nanoUSD image).
+    ///
+    /// Codex/Gemini pairing discipline: the entry carries the post-turn balance read taken in
+    /// the task's wake, and this single writer command records the turn FIRST, then pairs the
+    /// balance observation with the cumulative ledgers that already include it (`response`
+    /// source naming the turn's request id) — an observation is never written against a spend
+    /// total its own task has not reached. The gateway owns the bounded FIFO because it must
+    /// gate balance polling on a fully drained queue; exact request-id replay is a no-op and a
+    /// different payload is a permanent typed conflict.
+    pub(crate) async fn record_tripo3d_turn(
+        &self,
+        turn: crate::tripo3d::queue::PendingTurn,
+    ) -> anyhow::Result<bool> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::Tripo3dRecordTurn { turn, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    /// Pair one Tripo3D balance snapshot with exact durable subject dual-ledger spend and
+    /// advance the balance track through immutable observation + estimator CAS.
+    ///
+    /// The caller has already drained the gateway's bounded turn FIFO and keeps that drain
+    /// barrier held until this command returns. The writer still owns the spend read so no
+    /// async caller can accidentally construct an observation from a stale total.
+    pub(crate) async fn observe_tripo3d_balance(
+        &self,
+        subject_id: &str,
+        cohort: &str,
+        snapshot: Tripo3dBalanceSnapshot,
+    ) -> anyhow::Result<Tripo3dCalibrationRow> {
+        if subject_id.is_empty() || cohort.is_empty() {
+            anyhow::bail!("invalid Tripo3D balance observation command");
+        }
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::Tripo3dObserveBalance {
+                subject_id: subject_id.to_owned(),
+                cohort: cohort.to_owned(),
+                snapshot,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
     /// Persist exact official-price spend for one Codex home and return its durable cumulative
     /// total. This is provider-capacity evidence, independent of whether the customer turn was
     /// billable (admin turns consume the same subscription window).
@@ -2483,6 +2635,16 @@ impl AsyncBilling {
                             "GLM calibration authority requires PostgreSQL"
                         )));
                     }
+                    WriteCmd::Tripo3dRecordTurn { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "Tripo3D calibration authority requires PostgreSQL"
+                        )));
+                    }
+                    WriteCmd::Tripo3dObserveBalance { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "Tripo3D calibration authority requires PostgreSQL"
+                        )));
+                    }
                     WriteCmd::CodexRecordTurn { event, reply } => {
                         let result = registry::record_codex_turn_calibration_event(
                             &conn, &event,
@@ -2781,6 +2943,11 @@ impl AsyncBilling {
                             }
                             ReadCmd::GlmCalibrationReport(reply) => {
                                 // GLM calibration authority is PostgreSQL-only; a SQLite
+                                // authority simply has no rows to report.
+                                let _ = reply.send(Ok(Vec::new()));
+                            }
+                            ReadCmd::Tripo3dCalibrationReport(reply) => {
+                                // Tripo3D calibration authority is PostgreSQL-only; a SQLite
                                 // authority simply has no rows to report.
                                 let _ = reply.send(Ok(Vec::new()));
                             }
@@ -3197,6 +3364,64 @@ impl AsyncBilling {
                                         states.push(observe_glm_postgres(pg, &observation)?);
                                     }
                                     Ok(states)
+                                },
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::Tripo3dRecordTurn { turn, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "Tripo3D turn calibration event",
+                                |pg| {
+                                    let event = &turn.event;
+                                    // The turn lands FIRST so its spend is inside the cumulative
+                                    // ledgers the paired balance observation then reads.
+                                    let recorded = pg.record_tripo3d_turn(event)?;
+                                    if let Some(snapshot) = &turn.balance {
+                                        let spend = pg.tripo3d_subject_spend(&event.subject_id)?;
+                                        let observation = tripo3d_observation(
+                                            &event.subject_id,
+                                            &event.cohort,
+                                            snapshot,
+                                            spend,
+                                            "response",
+                                            Some(&event.request_id),
+                                        );
+                                        observe_tripo3d_postgres(pg, &observation)?;
+                                    }
+                                    Ok(recorded)
+                                },
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::Tripo3dObserveBalance {
+                            subject_id,
+                            cohort,
+                            snapshot,
+                            reply,
+                        } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "Tripo3D balance observation",
+                                |pg| {
+                                    // Durable dual-ledger spend is read FIRST; only then may a
+                                    // balance observation/CAS pair itself with it. Reversing the
+                                    // order would let an observation see a balance that an
+                                    // earlier settled task has not yet reached.
+                                    let spend = pg.tripo3d_subject_spend(&subject_id)?;
+                                    let observation = tripo3d_observation(
+                                        &subject_id,
+                                        &cohort,
+                                        &snapshot,
+                                        spend,
+                                        "poll",
+                                        None,
+                                    );
+                                    observe_tripo3d_postgres(pg, &observation)
                                 },
                             );
                             let _ = reply.send(result);
@@ -3735,6 +3960,9 @@ impl AsyncBilling {
                             }
                             ReadCmd::GlmCalibrationReport(reply) => {
                                 answer!(reply, pg.list_glm_calibrations())
+                            }
+                            ReadCmd::Tripo3dCalibrationReport(reply) => {
+                                answer!(reply, pg.list_tripo3d_calibrations())
                             }
                             ReadCmd::KeyAuth(k, r) => answer!(r, pg.key_account(&k)),
                             ReadCmd::KeyGet(k, r) => answer!(r, pg.key_get(&k)),

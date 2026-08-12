@@ -134,6 +134,10 @@ pub struct AppState {
     /// exact reviewed GLM aliases dispatch inside the Anthropic Messages plane; the credential
     /// is a static API key with a dual-ledger (API nanoUSD + native microcredits) calibration.
     pub glm: Option<Arc<GlmGateway>>,
+    /// Optional backend-only Tripo3D (VAST) prepaid API pool on the dedicated
+    /// `ProviderMode::Tripo3d` plane: a task-based media surface (create → poll → artifact
+    /// download → exact settle from `consumed_credit`), never the Anthropic Messages wire.
+    pub tripo3d: Option<Arc<crate::tripo3d::Tripo3dGateway>>,
     /// Биллинг клиентов (async DB-актор — синхронный SQLite не блокирует воркеры).
     /// `None` → биллинг выключен (только env-ключи/localhost).
     pub billing: Option<Arc<AsyncBilling>>,

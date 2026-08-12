@@ -71,6 +71,13 @@ pub struct Metrics {
     /// report each quota cycle). Gauge, not a counter: it is re-read from authority, so a rebuild
     /// or an estimator version change can lower it. Fixed cardinality, no profile/plan labels.
     pub kimi_calibration_unattributed_units: AtomicU64,
+    /// Tripo3D plane request outcomes — the same three fixed counters as KIMI, with no task,
+    /// account, profile or upstream-error labels.
+    pub tripo3d_requests: AtomicU64,
+    /// Non-2xx responses the plane actually returned to a caller.
+    pub tripo3d_failures: AtomicU64,
+    /// The subset of failures that are our own capacity refusal rather than a provider verdict.
+    pub tripo3d_capacity_exhausted: AtomicU64,
     /// Successful Gemini generations that ended without authoritative usage. Metered non-stream
     /// delivery is withheld; a stream already delivered settles its conservative hold.
     pub gemini_usage_missing: AtomicU64,

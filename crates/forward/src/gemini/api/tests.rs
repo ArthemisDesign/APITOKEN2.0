@@ -563,6 +563,7 @@ fn app_state(gateway: Arc<GeminiGateway>, billing: Option<Arc<AsyncBilling>>) ->
         gemini: Some(gateway),
         kimi: None,
         glm: None,
+        tripo3d: None,
         billing,
         authority_ready: Arc::new(AtomicBool::new(true)),
         breaker: Arc::new(Breaker::new(1)),

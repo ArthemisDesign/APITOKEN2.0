@@ -1472,6 +1472,7 @@ async fn serve() -> Result<()> {
         gemini,
         kimi,
         glm,
+        tripo3d: None,
         billing,
         authority_ready: authority_ready.clone(),
         breaker: Arc::new(forward::Breaker::new(fleet_size)),
