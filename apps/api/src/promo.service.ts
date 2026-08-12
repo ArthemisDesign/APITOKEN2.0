@@ -11,8 +11,8 @@ import type { Environment } from "./config.js";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
 
 // Погашение партнёрского промокода на стороне commerce. Код живёт в sales-БД — здесь только
-// HTTP-вызов sales-api для атомарного погашения, затем идемпотентный кредит движка и атрибуция
-// незакреплённого юзера к владельцу кода. sales-БД commerce не открывает.
+// HTTP-вызов sales-api для атомарного погашения, затем durable-атрибуция незакреплённого юзера
+// к владельцу кода и идемпотентный кредит движка. sales-БД commerce не открывает.
 
 export class PromoError extends Error {
   constructor(readonly status: number, message: string) {
@@ -46,14 +46,34 @@ export class PromoService {
     const key = this.config.get("SALES_CONTROL_KEY", { infer: true });
     if (!base || !key) throw new PromoError(503, "promo codes are not available right now");
 
-    // 1) Атомарно погасить код в sales (резервирование). Идемпотентно по (code,user).
-    const redeemed = await this.consumeInSales(base, key, code, userId);
-
-    // 2) Кредитовать движок идемпотентно по redemptionRef (ретраи безопасны).
+    // Do not consume the one-time Sales code until its target engine account can accept the
+    // idempotent credit. A later transient engine failure remains safe to retry by redemptionRef.
     const mapping = await getEngineAccountMapping(this.database, userId);
     if (!mapping?.engineAccountId || mapping.status !== "active") {
       throw new PromoError(409, "your account is not ready to receive a promo credit yet");
     }
+
+    // 1) Атомарно погасить код в sales (резервирование). Идемпотентно по (code,user).
+    const redeemed = await this.consumeInSales(base, key, code, userId);
+
+    // 2) Durably attribute before returning value to the customer. If Commerce is transiently
+    // unavailable the request fails before the engine credit, and the idempotent Sales redemption
+    // can be retried without losing the partner assignment.
+    let attributionStored = false;
+    for (let attempt = 0; attempt < 3 && !attributionStored; attempt += 1) {
+      try {
+        await recordReferralAttribution(this.database, userId, redeemed.referralCode);
+        attributionStored = true;
+      } catch {
+        // Exact user/code replay is idempotent; retry a transient PostgreSQL failure locally.
+      }
+    }
+    if (!attributionStored) {
+      this.logger.error(`promo referral attribution failed for ${userId}`);
+      throw new PromoError(502, "could not preserve partner attribution — try again in a minute");
+    }
+
+    // 3) Кредитовать движок идемпотентно по redemptionRef (ретраи безопасны).
     const valueNano = BigInt(redeemed.valueNano);
     let balance: string | undefined;
     let balanceNano: string | undefined;
@@ -69,13 +89,6 @@ export class PromoService {
         this.logger.error(`promo credit failed for ${userId} ref=${redeemed.redemptionRef}`);
         throw new PromoError(502, "could not credit your balance — please try again in a minute");
       }
-    }
-
-    // 3) Атрибуция: если юзер ещё ни за кем не закреплён — становится рефералом владельца кода.
-    try {
-      await recordReferralAttribution(this.database, userId, redeemed.referralCode);
-    } catch {
-      // best-effort: не срываем успешный кредит из-за атрибуции
     }
 
     // 4) Preserve a nonzero legacy promo marker as partner-attribution metadata. The async Sales

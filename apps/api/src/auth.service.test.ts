@@ -53,6 +53,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
     const registration = await auth.register({
       email: "alice@example.com",
       password: "correct horse battery staple",
+      referralCode: "Partner-Code",
       userAgent: "test-agent",
       ipAddress: "127.0.0.1",
     });
@@ -62,19 +63,58 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
     expect(registration.session).toBeNull();
 
     const stored = await database.pool.query(`
-      SELECT u.password_hash, at.token_hash, eo.template, eo.payload, ea.engine_account_id
+      SELECT u.password_hash, at.token_hash, eo.template, eo.payload, ea.engine_account_id,
+             ra.code AS referral_code
       FROM users u JOIN auth_tokens at ON at.user_id = u.id
       JOIN email_outbox eo ON eo.user_id = u.id JOIN engine_accounts ea ON ea.user_id = u.id
+      JOIN referral_attributions ra ON ra.user_id = u.id
     `);
     expect(stored.rows[0].password_hash).toMatch(/^\$argon2id\$/);
     expect(stored.rows[0].password_hash).not.toContain("correct horse");
-    expect(stored.rows[0]).toMatchObject({ template: "verify_email", engine_account_id: null });
+    expect(stored.rows[0]).toMatchObject({
+      template: "verify_email",
+      engine_account_id: null,
+      referral_code: "partner-code",
+    });
     const rawToken = decryptAuthToken(stored.rows[0].payload.encryptedToken, decodeAuthEncryptionKey(encryptionKey));
     expect(stored.rows[0].token_hash).not.toBe(rawToken);
     const session = await auth.verifyEmail({ token: rawToken, userAgent: "test-agent", ipAddress: "127.0.0.1" });
     expect(session.user).toMatchObject({ id: registration.user.id, emailVerified: true });
     await expect(auth.authenticate(session.token)).resolves.toMatchObject({ user: { id: registration.user.id } });
     await expect(auth.verifyEmail({ token: rawToken, userAgent: null, ipAddress: null })).rejects.toThrow("invalid or expired");
+  });
+
+  it("rolls back a new account when its referral attribution cannot commit", async () => {
+    await database.pool.query(`
+      CREATE OR REPLACE FUNCTION test_reject_referral_attribution() RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'forced referral attribution failure';
+      END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_reject_referral_attribution
+      BEFORE INSERT ON referral_attributions
+      FOR EACH ROW EXECUTE FUNCTION test_reject_referral_attribution();
+    `);
+    try {
+      await expect(auth.register({
+        email: "atomic-referral@example.com",
+        password: "correct horse battery staple",
+        referralCode: "partner-code",
+        userAgent: null,
+        ipAddress: "192.0.2.60",
+      })).rejects.toThrow("forced referral attribution failure");
+      const stored = await database.pool.query<{ users: number; attributions: number }>(`
+        SELECT
+          (SELECT count(*)::int FROM users WHERE email = 'atomic-referral@example.com') AS users,
+          (SELECT count(*)::int FROM referral_attributions) AS attributions
+      `);
+      expect(stored.rows[0]).toEqual({ users: 0, attributions: 0 });
+    } finally {
+      await database.pool.query(`
+        DROP TRIGGER IF EXISTS test_reject_referral_attribution ON referral_attributions;
+        DROP FUNCTION IF EXISTS test_reject_referral_attribution();
+      `);
+    }
   });
 
   it("allows password registration while verification is disabled without granting the OAuth bonus", async () => {
@@ -270,6 +310,68 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
       referral_code: "partner-code",
       emails: 0,
     });
+  });
+
+  it("rolls back a new OAuth account when its referral attribution cannot commit", async () => {
+    const externalProvider: ExternalIdentityProvider = {
+      code: "github",
+      createAuthorizationUrl: ({ state }) => new URL(`https://github.test/authorize?state=${state}`),
+      exchangeCallback: async () => ({
+        provider: "github",
+        subject: "github-atomic-referral",
+        email: "oauth-atomic-referral@gmail.com",
+        emailVerified: true,
+        displayName: "Atomic Referral",
+        metadata: {},
+      }),
+    };
+    const createAccount = vi.fn();
+    const oauthAuth = new AuthService(
+      database,
+      { createAccount, creditAccount: vi.fn() } as unknown as EngineClient,
+      new ConfigService<Environment, true>({
+        SESSION_TTL_SECONDS: 604_800,
+        AUTH_TOKEN_ENCRYPTION_KEY: encryptionKey,
+        EMAIL_VERIFICATION_TTL_SECONDS: 86_400,
+        PASSWORD_RESET_TTL_SECONDS: 3_600,
+      } as Environment),
+      new OAuthProviderRegistry([externalProvider]),
+    );
+    await database.pool.query(`
+      CREATE OR REPLACE FUNCTION test_reject_oauth_referral_attribution() RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'forced OAuth referral attribution failure';
+      END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_reject_oauth_referral_attribution
+      BEFORE INSERT ON referral_attributions
+      FOR EACH ROW EXECUTE FUNCTION test_reject_oauth_referral_attribution();
+    `);
+    try {
+      const started = await oauthAuth.beginOAuth("github", undefined, "partner-code");
+      const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+      await expect(oauthAuth.completeOAuth({
+        provider: "github",
+        code: "temporary-code",
+        state,
+        stateCookie: state,
+        userAgent: null,
+        ipAddress: null,
+      })).rejects.toThrow("forced OAuth referral attribution failure");
+      const stored = await database.pool.query<{ users: number; identities: number; attributions: number }>(`
+        SELECT
+          (SELECT count(*)::int FROM users WHERE email = 'oauth-atomic-referral@gmail.com') AS users,
+          (SELECT count(*)::int FROM auth_identities WHERE subject = 'github-atomic-referral') AS identities,
+          (SELECT count(*)::int FROM referral_attributions) AS attributions
+      `);
+      expect(stored.rows[0]).toEqual({ users: 0, identities: 0, attributions: 0 });
+      expect(createAccount).not.toHaveBeenCalled();
+    } finally {
+      await database.pool.query(`
+        DROP TRIGGER IF EXISTS test_reject_oauth_referral_attribution ON referral_attributions;
+        DROP FUNCTION IF EXISTS test_reject_oauth_referral_attribution();
+      `);
+    }
   });
 
   it.each(["google", "github"] as const)(

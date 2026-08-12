@@ -23,7 +23,6 @@ import {
   decodeAuthEncryptionKey,
   encryptAuthToken,
   queueAuthEmailForAddress,
-  recordReferralAttribution,
   getReferralAttributionCode,
   setReferralFloor,
   resolveAuthSession,
@@ -109,8 +108,8 @@ export class AuthService {
       passwordHash,
       input.inviteToken ? tokenHash(input.inviteToken) : undefined,
       verification,
+      normalizeReferralCode(input.referralCode) ?? undefined,
     );
-    await this.attributeReferral(user.id, input.referralCode);
     await this.recordSignupProfile(user, input);
     if (verificationRequired) return { user: userView(user), session: null };
     await this.provisionEngineAccount(user, user.engineMultiplierBp, null);
@@ -118,16 +117,6 @@ export class AuthService {
     await this.replayReferralMarkerFromAttribution(user.id);
     const session = await this.issueSession(user, input.userAgent, input.ipAddress, input.deviceToken ?? null);
     return { user: session.user, session };
-  }
-
-  /** Атрибуция — best-effort: сбой записи реф-кода не должен ломать регистрацию. */
-  private async attributeReferral(userId: string, referralCode: string | undefined): Promise<void> {
-    if (!referralCode) return;
-    try {
-      await recordReferralAttribution(this.database, userId, referralCode.toLowerCase());
-    } catch {
-      // не логируем код — этого достаточно для диагностики по user_id через БД
-    }
   }
 
   /**
@@ -277,14 +266,18 @@ export class AuthService {
       expectedNonce: transaction.nonce,
       codeVerifier: transaction.codeVerifier,
     });
-    const user = await completeExternalSignIn(this.database, identity, transaction.inviteTokenHash);
+    const user = await completeExternalSignIn(
+      this.database,
+      identity,
+      transaction.inviteTokenHash,
+      transaction.referralCode,
+    );
     if (user.status !== "active") throw new InvalidOAuthTransactionError("account is disabled");
     await this.provisionEngineAccount(user, user.engineMultiplierBp, null);
     // A partner referral remains ordinary B2C. For a new account only, persist attribution and
     // atomically consume any legacy one-time marker. Existing users must not self-attribute or
     // consume somebody else's one-time link through an OAuth login carrying ?ref=.
     if (transaction.referralCode && user.isNewAccount) {
-      await this.attributeReferral(user.id, transaction.referralCode);
       await this.replayReferralMarkerFromAttribution(user.id);
     }
     // Welcome-бонус: профиль и антифрод-флаги фиксируются всегда, клейм — только когда

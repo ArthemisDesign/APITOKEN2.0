@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "./client.js";
 import { initialDisplayName, type AuthUser, type RegisteredAuthUser } from "./auth.js";
 import { lockBusinessInvite, utcMonthStart } from "./pricing.js";
+import { recordReferralAttributionTx } from "./sales-feed.js";
 
 export type OAuthProvider = "google" | "github";
 
@@ -99,6 +100,7 @@ export async function completeExternalSignIn(
   database: Database,
   identity: VerifiedExternalIdentity,
   businessInviteTokenHash: string | null,
+  referralCode: string | null,
 ): Promise<RegisteredAuthUser> {
   const existing = await findExternalAuthUser(database, identity.provider, identity.subject);
   if (existing) return { ...existing, engineMultiplierBp: await multiplierForUser(database, existing.id), isNewAccount: false };
@@ -214,6 +216,9 @@ export async function completeExternalSignIn(
       INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
       VALUES ('provider', $1, 'auth.oauth_registered', 'user', $2, $3::jsonb)
     `, [identity.provider, userId, JSON.stringify({ provider: identity.provider })]);
+    if (referralCode) {
+      await recordReferralAttributionTx(client, userId, referralCode);
+    }
     await client.query("COMMIT");
     return {
       id: userId,

@@ -55,6 +55,11 @@ of reaching SQL as an out-of-range value.
 
 - `GET /v1/internal/sales/attributions?after_id&limit` (default limit 500, max 1000) — from
   `referral_attributions` (written at registration with `referralCode`, unique by user_id).
+  Password and new-account OAuth registration insert this row inside the same PostgreSQL
+  transaction as the user/profile/engine mapping, so a successful signup cannot lose its partner
+  attribution after a transient second write. Promo redemption commits the same row before issuing
+  its idempotent engine credit; a storage failure leaves the request retryable instead of returning
+  a credited-but-unattributed success.
   Response `{items:[{id,userId,code,createdAt}]}`; there is no `nextCursor` — the reader's cursor
   is the page's max `id` (rows come in ascending `id` order).
 - `GET /v1/internal/sales/usage-events?after_id&limit` (default 1000, max 2000) — from
@@ -112,9 +117,12 @@ of reaching SQL as an out-of-range value.
   payment writer takes `SHARE ROW EXCLUSIVE` on `payments` before that INSERT: this serializes new
   transitions and fences an old rolling-deploy writer, making sequence allocation order equal
   commit order. Existing production rows are already paid-at-insert and replay from sequence zero.
-  The producer limits the whole source stream before filtering, so unreferred/refunded rows advance
-  the watermark; referred rows still require `paid_at >= attributed created_at`. Equal `paid_at`
-  values are independently resumable. Response remains
+  Every row in `payments` was created by a verified paid event. A later refund changes its current
+  status but does not erase that historical deposit, so `topups-v2` deliberately does not filter on
+  current payment status: rebuilding from cursor zero and an incremental consumer produce the same
+  partner history. The producer limits the whole source stream before referral filtering, so
+  unreferred rows advance the watermark; referred rows still require
+  `paid_at >= attributed created_at`. Equal `paid_at` values are independently resumable. Response remains
   `{items:[{id,paymentId,userId,amountNano,paidAt}], nextCursor}`. Sales consumes this route under
   the independent `topups_v2` cursor from sequence zero; migration `0016_topups_v2_cursor.sql`
   reserved that key before the consumer shipped. The legacy timestamp cursor and route remain
@@ -209,7 +217,7 @@ Commerce calls sales-api at `SALES_API_URL` with the same `SALES_CONTROL_KEY`.
   returns the same `redemptionRef`, so the engine credit on the commerce side is idempotent by ref
   (retries are safe). One-time code; one promo per user (409); the code is unavailable if the
   partner is not active or the promo is disabled. Commerce continues on its own: credits the engine
-  (up to 3 attempts), best-effort attributes an unassigned user to the code's owner, and with
+  (up to 3 attempts), after durably attributing an unassigned user to the code's owner, and with
   a nonzero legacy `discountBps` stores only its audit marker with local retries. It never changes
   the B2C scalar/provider price.
 - `POST /v1/internal/partners/referral-discount` — atomic claim of a legacy one-time attribution
@@ -235,8 +243,8 @@ Money amounts — only integer nanoUSD decimal strings; end-user emails are neve
 30 days and sent at registration as `referralCode`. Initial capture runs before visible navigation;
 client-side route capture repeats it, and locale changes preserve the full query and fragment. The
 latest distinct referral click wins, while revisiting the same code does not extend its expiry.
-Commerce writes the code best-effort to `referral_attributions` (unique by user_id). Ref is also
-passed through OAuth registration: the social buttons pass it in `oauthUrl` (`apps/web/src/lib/api.ts`),
+Commerce commits the code to `referral_attributions` (unique by user_id) in the same transaction as
+a new password/OAuth account. Ref is also passed through OAuth registration: the social buttons pass it in `oauthUrl` (`apps/web/src/lib/api.ts`),
 `beginOAuth` saves the code in the OAuth transaction (it survives the redirect to the provider), and
 `completeOAuth` for a **new** account writes the attribution. The current code also calls
 `POST /v1/internal/partners/referral-discount` only to replay a legacy one-time marker. Ref affects

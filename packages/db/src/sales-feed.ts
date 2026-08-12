@@ -1,4 +1,5 @@
 import { and, asc, eq, gt, gte, lt, sql } from "drizzle-orm";
+import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
 import {
   payments,
@@ -67,21 +68,34 @@ export interface SalesFeedPage<T> {
   nextCursor: bigint;
 }
 
-/** Идемпотентно записывает атрибуцию регистрации к реф-коду (первый код побеждает). */
+/**
+ * Transactional attribution writer for signup/OAuth. Keeping this inside the account-creation
+ * transaction means a successful registration can never exist without the referral row that its
+ * request carried.
+ */
+export async function recordReferralAttributionTx(
+  client: PoolClient,
+  userId: string,
+  code: string,
+): Promise<void> {
+  // bigserial is allocated before COMMIT. Serializing all inserts prevents a later id from
+  // becoming visible first and moving the sales cursor past an older in-flight attribution.
+  // SHARE ROW EXCLUSIVE also fences the previous binary's ordinary ROW EXCLUSIVE insert during
+  // a rolling deployment, so the protection does not depend on every process changing at once.
+  await client.query("LOCK TABLE referral_attributions IN SHARE ROW EXCLUSIVE MODE");
+  await client.query(`
+    INSERT INTO referral_attributions (user_id, code)
+    VALUES ($1, $2)
+    ON CONFLICT (user_id) DO NOTHING
+  `, [userId, code]);
+}
+
+/** Идемпотентно записывает атрибуцию к реф-коду отдельной атомарной транзакцией. */
 export async function recordReferralAttribution(database: Database, userId: string, code: string): Promise<void> {
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
-    // bigserial is allocated before COMMIT. Serializing all inserts prevents a later id from
-    // becoming visible first and moving the sales cursor past an older in-flight attribution.
-    // SHARE ROW EXCLUSIVE also fences the previous binary's ordinary ROW EXCLUSIVE insert during
-    // a rolling deployment, so the protection does not depend on every process changing at once.
-    await client.query("LOCK TABLE referral_attributions IN SHARE ROW EXCLUSIVE MODE");
-    await client.query(`
-      INSERT INTO referral_attributions (user_id, code)
-      VALUES ($1, $2)
-      ON CONFLICT (user_id) DO NOTHING
-    `, [userId, code]);
+    await recordReferralAttributionTx(client, userId, code);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -230,8 +244,10 @@ export async function listPaidTopupsAfter(
 
 /**
  * Additive successor to the timestamp-cursor feed. The source page is ordered and limited by the
- * commit-ordered payments.feed_seq before referral/status filtering, so every source row advances
- * the watermark and equal provider paid_at timestamps remain independently resumable.
+ * commit-ordered payments.feed_seq before referral filtering, so every source row advances the
+ * watermark and equal provider paid_at timestamps remain independently resumable. A payments row
+ * is created only from a verified paid event; a later refund changes its status but not the fact
+ * that this deposit occurred, so status is intentionally not a replay filter.
  */
 export async function listPaidTopupsV2After(
   database: Database,
@@ -245,7 +261,6 @@ export async function listPaidTopupsV2After(
       paymentId: payments.id,
       userId: payments.userId,
       amountNano: payments.amountNano,
-      status: payments.status,
       paidAt: payments.paidAt,
       attributedUserId: referralAttributions.userId,
     })
@@ -259,9 +274,8 @@ export async function listPaidTopupsV2After(
     .limit(limit);
 
   const items = rows.flatMap((row): TopupV2FeedRow[] => {
-    if (row.status !== "paid") return [];
     if (row.paidAt === null) {
-      throw new Error(`paid payment ${row.paymentId} has no paid_at`);
+      throw new Error(`verified payment ${row.paymentId} has no paid_at`);
     }
     if (row.attributedUserId === null) return [];
     return [{

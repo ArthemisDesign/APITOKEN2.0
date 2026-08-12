@@ -222,6 +222,18 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
     });
   });
 
+  it("keeps a verified deposit replayable after its payment is refunded", async () => {
+    const referred = await insertUser(true);
+    const paidAt = new Date(Date.now() - 120_000);
+    const paymentId = await insertPaidTopup(referred, "v2-refunded", paidAt);
+    await database.pool.query("UPDATE payments SET status = 'refunded' WHERE id = $1", [paymentId]);
+
+    await expect(listPaidTopupsV2After(database, 0n, 100)).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: 1n, paymentId, userId: referred, paidAt })],
+      nextCursor: 1n,
+    });
+  });
+
   it("advances topups-v2 over every source row before referral filtering", async () => {
     const ordinaryBefore = await insertUser(false);
     const referred = await insertUser(true);

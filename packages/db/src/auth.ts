@@ -3,6 +3,7 @@ import { displayNameSchema } from "@claude-api/contracts";
 import type { Database } from "./client.js";
 import { insertAuthEmail } from "./email.js";
 import { lockBusinessInvite, utcMonthStart } from "./pricing.js";
+import { recordReferralAttributionTx } from "./sales-feed.js";
 
 export interface AuthUser {
   id: string;
@@ -63,6 +64,7 @@ export async function createEmailUser(
   passwordHash: string,
   businessInviteTokenHash?: string,
   verification?: { tokenHash: string; encryptedToken: string; expiresAt: Date },
+  referralCode?: string,
 ): Promise<RegisteredAuthUser> {
   const client = await database.pool.connect();
   const userId = randomUUID();
@@ -108,6 +110,9 @@ export async function createEmailUser(
         purpose: "verify_email",
         ...verification,
       });
+    }
+    if (referralCode) {
+      await recordReferralAttributionTx(client, userId, referralCode);
     }
     await client.query("COMMIT");
     return {
