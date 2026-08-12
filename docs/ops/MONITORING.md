@@ -95,6 +95,10 @@ off-host outage detector and durable incident-delivery path, but not a replaceme
 metric-level alerts. It also inherits GitHub Actions availability and the repository's notification
 preferences.
 
+The repository reserves issue `#1` for this singleton incident. This explicit lookup avoids the
+repository issue-list cache returning a stale empty collection immediately after the Actions bot
+creates the first issue; creation remains the fallback only while `#1` does not exist.
+
 Use `workflow_dispatch` with `simulate_failure=true` for a delivery drill. It does not touch
 production; it opens the same synthetic incident after all real probes run. Dispatch a normal run
 afterward and require it to close the issue. The shell regression suite is

@@ -42,12 +42,9 @@ cat >"$TEMP/bin/gh" <<'MOCK'
 set -euo pipefail
 printf '%q ' "$@" >>"$GH_LOG"
 printf '\n' >>"$GH_LOG"
-if [[ " $* " == *' --method GET '* ]]; then
+if [[ " $* " == *' --method GET '* && " $* " == *' repos/test/repository/issues/1 '* ]]; then
   if [[ -n ${MOCK_OPEN_ISSUE:-} ]]; then
-    printf '[[{"number":%s,"title":"[uptime] Production public readiness is failing"}]]\n' \
-      "$MOCK_OPEN_ISSUE"
-  else
-    printf '[[]]\n'
+    printf '%s\n' "$MOCK_OPEN_ISSUE"
   fi
 fi
 MOCK
