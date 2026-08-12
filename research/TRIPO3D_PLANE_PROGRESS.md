@@ -11,7 +11,23 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 | Step | Commit SHA | Notes |
 |---|---|---|
 | Ledger skeleton | e9b0494e | scope, plan, open seams |
-| Pre-flight + wiring maps | (this commit) | baseline `cargo build --locked` green (1m12s, warnings only); `git push -u origin HEAD` works; engine wiring map and authbot/admin wiring map collected (KIMI/GLM as templates); reference manifests studied: KIMI, GLM |
+| Pre-flight + wiring maps | 1e15c793 | baseline `cargo build --locked` green (1m12s, warnings only); `git push -u origin HEAD` works; engine wiring map and authbot/admin wiring map collected (KIMI/GLM as templates); reference manifests studied: KIMI, GLM |
+| Research + capability manifest | (this commit) | `docs/engine/TRIPO3D_PROVIDER.md`; full official docs + ToS + SDK research 2026-08-12; key facts below |
+
+## Key research facts (review date 2026-08-12)
+
+- Two billing systems: Studio subscriptions (web) vs API platform (prepaid credits). Provider =
+  **API platform only**: `api.tripo3d.ai/v2/openapi` (global) / `api.tripo3d.com` (CN), Bearer
+  `tsk_` keys from `platform.tripo3d.ai/api-keys`.
+- Money: $0.01/credit prepaid; per-task credit costs official (billing.md); per-turn authoritative
+  `consumed_credit`; failed/expired tasks refund. Balance endpoint `/user/balance` is SDK-verified
+  only (unit unknown → raw evidence).
+- Tasks are per-key isolated; polling-only (no webhooks); result URLs ≤60 s (conservative).
+- ToS forbids resale/pooling/multi-account without written consent → backend-only, dormant.
+- Serving: own ProviderMode plane (blue-green pair, KIMI deploy pattern), task lifecycle
+  create→poll→download-to-our-storage→settle.
+- Open admission-budget question: cheapest paid task costs 5 credits = $0.05 > default $0.0001
+  admission cap — needs explicit operator budget or a confirmed free probe.
 
 ## Key wiring facts (from the mapping pass)
 
@@ -37,12 +53,13 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 
 ## Open seams
 
-Everything. Research not started.
+- Metering tariff `crates/metering/src/tripo3d.rs` — next code step.
+- Everything downstream of the manifest (see Queue).
 
 ## Next action (exactly one)
 
-Research Tripo3D: official API surface, model/task catalog, subscription plans, credit/pricing
-schedule, authentication mechanism. Record into the capability manifest.
+Write `crates/metering/src/tripo3d.rs` (official per-task credit rate card from manifest §5.1,
+nanoUSD conversion at $0.01/credit, checked math, fail-closed catalog) + full metering tests.
 
 ## Queue
 

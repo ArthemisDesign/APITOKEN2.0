@@ -11,17 +11,36 @@ storefront, public docs) is OUT of scope for this task — dormant implementatio
 | Step | Commit SHA | Notes |
 |---|---|---|
 | Ledger skeleton | e9b0494e | scope, plan, open seams |
-| Pre-flight + wiring maps | (this commit) | baseline `cargo build --locked` green; push works; engine + authbot/admin wiring maps collected (KIMI/GLM templates). See TRIPO3D_PLANE_PROGRESS.md "Key wiring facts" — shared with this plane |
+| Pre-flight + wiring maps | 1e15c793 | baseline `cargo build --locked` green; push works; engine + authbot/admin wiring maps collected (KIMI/GLM templates). See TRIPO3D_PLANE_PROGRESS.md "Key wiring facts" — shared with this plane |
+| Research + capability manifest | (this commit) | `docs/engine/SUNO_PROVIDER.md`; official pricing/ToS/blog + OSS wire blueprint research 2026-08-12; key facts below |
+
+## Key research facts (review date 2026-08-12)
+
+- **No public official API** (`platform.suno.com` is partner-gated). Only path: session-cookie
+  pooling on internal web endpoints (`auth.suno.com` Clerk `__client` → JWT mint;
+  `studio-api.prod.suno.com` business host) — gcui-art/suno-api blueprint, `oss-hypothesis`.
+- Plans: Free (50 cr/day, `v4.5-all`, excluded) / Pro $10 (2 500 cr/mo) / Premier $30
+  (10 000 cr/mo); paid models v4/v4.5/v4.5+/v5/v5.5; **all models retire** when partnership
+  models launch (new ToS 2026-09-03).
+- Money: 5 credits/song (only published per-op price for generation); no official API rate card →
+  reviewed derived schedule $0.004/credit (Pro economics, conservative) = $0.02/song.
+- Quota: `/api/billing/info/` → `total_credits_left/monthly_limit/monthly_usage` (oss); monthly
+  window, published per-plan limits (GLM-style, no capacity estimation needed).
+- ToS prohibits resale/automation/scraping/proxy-circumvention → backend-only, dormant.
+- hCaptcha may gate generation (`/api/c/check`); no CAPTCHA solving is built — fail closed.
+- Serving: own ProviderMode plane (blue-green pair), create→poll→download→settle.
+- Open admission-budget question: one admission song = 5 credits = $0.02 derived > default
+  $0.0001 cap — needs explicit operator budget or admission stops at the free probe.
 
 ## Open seams
 
-Everything. Research not started. Key unknown: official API availability vs subscription-web
-surface; auth mechanism (OAuth, session, API key) determines credential crate and Auth Bot flow.
+- Metering tariff `crates/metering/src/suno.rs` — next code step.
+- Everything downstream of the manifest (see Queue).
 
 ## Next action (exactly one)
 
-Research Suno: subscription plans (all tiers), model versions, credit accounting, available API
-surface and auth mechanism. Record into the capability manifest.
+Write `crates/metering/src/suno.rs` (reviewed derived schedule: $0.004/credit, 5 credits/song,
+dated schedule id, paid model catalog, checked math, fail-closed on unknown ids) + full tests.
 
 ## Queue
 

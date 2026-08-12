@@ -20,6 +20,8 @@ document, update this index.
 - [GEMINI_PROVIDER.md](engine/GEMINI_PROVIDER.md) — Gemini OAuth subscription provider.
 - [GLM_PROVIDER.md](engine/GLM_PROVIDER.md) — GLM (Zhipu / Z.ai) Coding Plan subscription provider: capability manifest, backend-only, not published.
 - [KIMI_PROVIDER.md](engine/KIMI_PROVIDER.md) — KIMI (Moonshot) Kimi Code subscription provider: capability manifest, backend-only, not published.
+- [TRIPO3D_PROVIDER.md](engine/TRIPO3D_PROVIDER.md) — Tripo3D (VAST / Holymolly) 3D generation API provider: capability manifest, backend-only, not published.
+- [SUNO_PROVIDER.md](engine/SUNO_PROVIDER.md) — Suno music generation subscription provider: capability manifest, backend-only, not published.
 - [PROVIDER_WIRING_CHECKLIST.md](engine/PROVIDER_WIRING_CHECKLIST.md) — mechanical provider wiring map: exact files, symbols, order, and pitfalls.
 - [PROVIDER_ONBOARDING.md](engine/PROVIDER_ONBOARDING.md) — full playbook for adding a new subscription provider through production GA.
 - [STAGE2_POSTGRES_AUTHORITY.md](engine/STAGE2_POSTGRES_AUTHORITY.md) — PostgreSQL authority model and Stage 2 fencing.
