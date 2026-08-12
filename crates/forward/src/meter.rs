@@ -536,9 +536,10 @@ impl TeeMeter {
                         calibration.quota_snapshots.clone(),
                     );
                     if queued {
-                        // Queue the immutable spend evidence before waking the free count-tokens
-                        // probe. `AnthropicObserveWindow` also flushes the pending turn FIFO first,
-                        // so writer backpressure cannot invert spend and quota observations.
+                        // Queue the immutable spend evidence before waking the quota probe
+                        // (messages with max_tokens=0). `AnthropicObserveWindow` also flushes the
+                        // pending turn FIFO first, so writer backpressure cannot invert spend and
+                        // quota observations.
                         subscription.pool.request_probe(&subscription.email);
                         if let Some(poke) = &calibration.probe_poke {
                             poke.notify_one();

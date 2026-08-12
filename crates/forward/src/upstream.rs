@@ -481,8 +481,19 @@ fn plan_from_profile(v: &serde_json::Value) -> PlanDetect {
     ))
 }
 
-/// Free count-tokens request used only to read liveness/rate-limit headers. It exercises the same
-/// OAuth scope and request shape without creating synthetic model output or spending quota.
+/// Liveness/квотный пробник: боевой `/v1/messages` с `max_tokens: 0`.
+///
+/// До этого пробник ходил на бесплатный `count_tokens`, но живые проверки (2026-08-12, все
+/// подписки флота, с billing-блоком и без) показали: `count_tokens` и `/v1/models` НЕ возвращают
+/// `anthropic-ratelimit-unified-*` заголовки — их отдаёт только `/v1/messages` (stream и
+/// non-stream, с billing-блоком и без). А без этих заголовков `set_quota_snapshots` получал
+/// `None` и свежесть квот целиком зависела от боевого трафика — ровно это и давало серии
+/// `AnthropicQuotaSnapshotStale`. Пробник-сообщение восстанавливает заложенную в алерт
+/// гарантию «свежесть при нулевом трафике» (900с = два худших цикла 300с+джиттер).
+///
+/// Стоимость — только input-токены тривиального промпта (`max_tokens: 0` ничего не генерирует);
+/// расчётно ~$0.00001 на пробу. Тот же OAuth scope и персонный отпечаток, что и бой, поэтому
+/// 429/401/403-вердикт для auth-health/cooling продолжает работать как раньше.
 pub async fn poll_sub(
     client: &Client,
     cfg: &ProxyConfig,
@@ -502,15 +513,8 @@ pub async fn poll_sub(
         "Are you there?",
     ];
     let content = PROMPTS[(seed % PROMPTS.len() as u64) as usize];
-    let body = serde_json::json!({
-        "model": "claude-haiku-4-5-20251001",
-        "system": [{"type": "text", "text": cfg.identity, "cache_control": {"type": "ephemeral"}}],
-        "messages": [{"role": "user", "content": content}]
-    });
-    let url = format!(
-        "{}/v1/messages/count_tokens",
-        cfg.upstream.trim_end_matches('/')
-    );
+    let (path, body) = quota_probe_request(&cfg.identity, content);
+    let url = format!("{}{path}", cfg.upstream.trim_end_matches('/'));
     let mut rb = client
         .post(&url)
         .header("authorization", format!("Bearer {token}"))
@@ -545,9 +549,36 @@ pub async fn poll_sub(
     })
 }
 
+/// Путь и тело квотного пробника. Отдельная функция ради юнит-теста: форма запроса — это и есть
+/// контракт (endpoint обязан нести unified-заголовки, `max_tokens: 0` — не тратить output-квоту).
+fn quota_probe_request(identity: &str, content: &str) -> (String, serde_json::Value) {
+    let body = serde_json::json!({
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 0,
+        "system": [{"type": "text", "text": identity, "cache_control": {"type": "ephemeral"}}],
+        "messages": [{"role": "user", "content": content}]
+    });
+    ("/v1/messages".to_string(), body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quota_probe_targets_messages_with_zero_max_tokens() {
+        // Контракт пробника: только /v1/messages несёт unified-ratelimit заголовки,
+        // max_tokens=0 не генерирует output (оплачивается лишь input тривиального промпта).
+        let (path, body) = quota_probe_request("identity", "Hi");
+        assert_eq!(path, "/v1/messages");
+        assert_eq!(body["model"], "claude-haiku-4-5-20251001");
+        assert_eq!(body["max_tokens"], 0);
+        assert_eq!(body["system"][0]["type"], "text");
+        assert_eq!(body["system"][0]["text"], "identity");
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][0]["content"], "Hi");
+    }
 
     #[test]
     fn persona_user_id_is_cc_json() {

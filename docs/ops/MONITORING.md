@@ -538,8 +538,11 @@ read `обновляем` and each window falls back to its last-known percentag
 reset, to an exact zero for healthy subscriptions.
 
 This is a diagnosis alert, not an outage: customer traffic keeps routing and money stays
-fail-closed rather than wrong. Idle healthy subscriptions are probed every 5–7.5 minutes by the free
-count-tokens poller, so exceeding 900 seconds means that path stopped. Check, in order: the
+fail-closed rather than wrong. Idle healthy subscriptions are probed every 5–7.5 minutes by a
+`/v1/messages` probe with `max_tokens: 0` (only input tokens of a trivial prompt are billed, no
+output is generated), so exceeding 900 seconds means that path stopped. Live verification
+(2026-08-12) showed that `count_tokens` and `/v1/models` do not carry the unified ratelimit
+headers at all — `/v1/messages` is the only endpoint that returns them. Check, in order: the
 PostgreSQL `subscription-poller` leader lease (only the elected slot probes, so a lost or flapping
 lease silently suspends the sweep for the whole fleet), the Anthropic slot journal for `poll_sub
 transport failure` (a wedged persona proxy makes probes fail while `polled_ts` still advances, so

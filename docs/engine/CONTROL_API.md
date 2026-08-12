@@ -160,7 +160,8 @@ Claude capacity is the exact realized API-dollar equivalent of the actually serv
 Max/Pro price and not a promise of a fixed number of tokens. Every successful turn (customer or admin)
 persists an immutable model/tier/geo/tariff event with separate token and API nanoUSD legs; a free
 poll persists only a quota observation. After authoritative usage the backend itself enqueues the spend event
-into a durable FIFO and wakes a free post-turn count-tokens probe of the serving subscription; opening
+into a durable FIFO and wakes a post-turn quota probe (messages with `max_tokens: 0`, input-only
+billing) of the serving subscription; opening
 the admin panel and a follow-up user request are not needed to accumulate evidence. A forced probe
 is debounced to once per 15 seconds per subscription, and a poll observation always drains the pending
 turn FIFO before reading cumulative spend. An empty plan is restored by the backend probe via the official
