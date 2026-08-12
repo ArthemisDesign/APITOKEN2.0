@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import {
   getEngineAccountMapping,
   recordReferralAttribution,
+  ReferralAttributionConflictError,
   setReferralFloor,
   type Database,
 } from "@claude-api/db";
@@ -64,7 +65,10 @@ export class PromoService {
       try {
         await recordReferralAttribution(this.database, userId, redeemed.referralCode);
         attributionStored = true;
-      } catch {
+      } catch (error) {
+        if (error instanceof ReferralAttributionConflictError) {
+          throw new PromoError(409, "your account is already attributed to another partner");
+        }
         // Exact user/code replay is idempotent; retry a transient PostgreSQL failure locally.
       }
     }

@@ -11,13 +11,15 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-import BusinessPage from "./page";
+import BusinessPage, { CLIENTS_HEAD, ClientRow } from "./page";
 import {
   deliveryPill,
   discountFromMultiplierBp,
+  engineStatusPresentation,
   inviteState,
   isInviteActive,
   parseBoundedInteger,
+  pricingSyncPresentation,
   reuseIdempotencyKey,
   type BusinessInvite,
 } from "./utils";
@@ -48,6 +50,29 @@ describe("B2B (business page)", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
+  });
+
+  it("показывает понятные договорные условия без policy-терминологии и дублей", async () => {
+    const html = renderToString(
+      <table>{CLIENTS_HEAD}<tbody><ClientRow
+        user={{
+          id: "user-1",
+          email: "buyer@example.com",
+          multiplier_bp: 3700,
+          balance_usd: "10.00",
+          engine_account_status: "active",
+          pricing_sync_status: "confirmed",
+        }}
+        busy={false}
+        onPricing={() => undefined}
+      /></tbody></table>,
+    );
+
+    expect(html).toContain("63%");
+    expect(html).toContain("доставлено");
+    expect(html).toContain("Настроить скидки");
+    expect(html).not.toContain("provider / model");
+    expect(html.match(/buyer@example\.com/g)).toHaveLength(1);
   });
 });
 
@@ -107,6 +132,21 @@ describe("business utils", () => {
       expect(deliveryPill({ id: "i1", email: "a@b.c", delivery_status: "sent" }).kind).toBe("ok");
       expect(deliveryPill({ id: "i1", email: "a@b.c", delivery_status: "failed" }).kind).toBe("bad");
       expect(deliveryPill({ id: "i1", email: "a@b.c", delivery_status: "queued" }).kind).toBe("warn");
+    });
+  });
+
+  describe("operator status presentation", () => {
+    it("переводит engine enum и fail-closed показывает неизвестное", () => {
+      expect(engineStatusPresentation("active")).toEqual({ label: "активен", kind: "ok" });
+      expect(engineStatusPresentation("pending")).toEqual({ label: "создаётся", kind: "warn" });
+      expect(engineStatusPresentation("future-state")).toEqual({ label: "неизвестно", kind: "bad" });
+    });
+
+    it("объясняет доставку всей связки скидок", () => {
+      expect(pricingSyncPresentation("confirmed")).toEqual({ label: "доставлено", kind: "ok" });
+      expect(pricingSyncPresentation("processing")).toEqual({ label: "доставляется", kind: "warn" });
+      expect(pricingSyncPresentation("retry")).toEqual({ label: "нужен повтор", kind: "bad" });
+      expect(pricingSyncPresentation(null)).toEqual({ label: "нет задания", kind: "info" });
     });
   });
 

@@ -493,8 +493,11 @@ for drift_metric in \
   apitoken_pricing_mirror_drift \
   apitoken_pricing_job_stale_confirmed \
   apitoken_sales_feed_head \
+  apitoken_sales_attribution_feed_head \
   apitoken_sales_topups_feed_head \
   apitoken_sales_cursor_age_seconds \
+  apitoken_sales_sync_errors_recent \
+  apitoken_sales_sync_journal_up \
   apitoken_engine_accounts_below_floor \
   apitoken_pricing_authority_drift \
   apitoken_business_reconciliation_up \
@@ -518,7 +521,8 @@ for drift_operand in \
   grep -Fq "$drift_operand" "$ROOT/deploy/collect-monitoring-metrics.sh" \
     || { printf 'drift collector is missing %s\n' "$drift_operand" >&2; exit 1; }
 done
-for drift_alert in SalesSyncCursorStalled SalesTopupSyncCursorStalled PricingMirrorDrift PricingJobStaleConfirmed \
+for drift_alert in SalesSyncCursorStalled SalesAttributionSyncCursorStalled SalesTopupSyncCursorStalled \
+  SalesSyncIterationFailing PricingMirrorDrift PricingJobStaleConfirmed \
   EngineAccountsBelowFloor BusinessReconciliationUnavailable PricingAuthorityDrift \
   UsageProviderAttributionMissing OpenKeysPricingDrift PositiveBalancePaymentRequired; do
   grep -Fq "alert: $drift_alert" "$ROOT/observability/prometheus/rules/application.yml" \
@@ -542,6 +546,26 @@ grep -Fq 'severity: critical' \
 grep -Fq 'severity: critical' \
   <(grep -F 'alert: SalesTopupSyncCursorStalled' -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
   || { printf 'sales-topup-sync stall alert is not critical\n' >&2; exit 1; }
+for partner_cursor_alert in SalesSyncCursorStalled SalesAttributionSyncCursorStalled SalesTopupSyncCursorStalled; do
+  alert_block=$(grep -F "alert: $partner_cursor_alert" -A 12 "$ROOT/observability/prometheus/rules/application.yml")
+  grep -Fq '> 300' <<<"$alert_block" \
+    || { printf '%s does not use the five-minute cursor age\n' "$partner_cursor_alert" >&2; exit 1; }
+  grep -Fq 'for: 5m' <<<"$alert_block" \
+    || { printf '%s does not alert after a five-minute hold\n' "$partner_cursor_alert" >&2; exit 1; }
+done
+grep -Fq "journalctl -q -u apitoken-sales-api.service --since '5 minutes ago' -n 1000" \
+  "$ROOT/deploy/collect-monitoring-metrics.sh" \
+  || { printf 'sales sync journal query is not bounded to five minutes\n' >&2; exit 1; }
+grep -Fxq 'SupplementaryGroups=systemd-journal' "$collector_unit" \
+  || { printf 'monitoring collector cannot read the sales service journal\n' >&2; exit 1; }
+grep -Fq 'Partner sync intervention' "$ROOT/observability/grafana/dashboards/production-overview.json" \
+  || { printf 'production dashboard omits the partner sync intervention panel\n' >&2; exit 1; }
+for partner_dashboard_metric in apitoken_sales_pending_referral_events apitoken_sales_sync_errors_recent \
+  apitoken_sales_sync_journal_up apitoken_sales_attribution_feed_head apitoken_sales_feed_head \
+  apitoken_sales_topups_feed_head; do
+  grep -Fq "$partner_dashboard_metric" "$ROOT/observability/grafana/dashboards/production-overview.json" \
+    || { printf 'partner sync dashboard omits %s\n' "$partner_dashboard_metric" >&2; exit 1; }
+done
 grep -Fq 'severity: critical' \
   <(grep -F 'alert: PricingMirrorDrift' -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
   || { printf 'pricing mirror drift alert is not critical\n' >&2; exit 1; }

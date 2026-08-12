@@ -335,7 +335,28 @@ export async function listAdminUserOverview(
     FROM users u
     LEFT JOIN customer_profiles cp ON cp.user_id = u.id
     LEFT JOIN engine_accounts ea ON ea.user_id = u.id
-    LEFT JOIN engine_pricing_jobs pj ON pj.user_id = u.id
+    LEFT JOIN LATERAL (
+      -- A B2B price is delivered as one default job plus zero or more provider jobs. Pick one
+      -- deterministic bundle status instead of joining every target (which duplicated users in
+      -- the admin table). Any unfinished target keeps the bundle unfinished; retry is surfaced
+      -- before processing/pending, and a confirmed bundle is dated by its last confirmation.
+      SELECT ranked.status, ranked.attempts, ranked.last_error,
+             CASE WHEN ranked.unfinished_count = 0 THEN ranked.bundle_confirmed_at END AS confirmed_at
+      FROM (
+        SELECT job.status::text AS status, job.attempts, job.last_error,
+               count(*) FILTER (WHERE job.status <> 'confirmed') OVER () AS unfinished_count,
+               max(job.confirmed_at) OVER () AS bundle_confirmed_at
+        FROM engine_pricing_jobs job
+        WHERE job.user_id = u.id
+        ORDER BY CASE job.status
+          WHEN 'retry' THEN 1
+          WHEN 'processing' THEN 2
+          WHEN 'pending' THEN 3
+          WHEN 'confirmed' THEN 4
+        END, job.last_error IS NULL, job.provider_id NULLS FIRST, job.id
+      ) ranked
+      LIMIT 1
+    ) pj ON TRUE
     LEFT JOIN LATERAL (
       SELECT array_agg(provider ORDER BY provider) AS providers
       FROM auth_identities WHERE user_id = u.id

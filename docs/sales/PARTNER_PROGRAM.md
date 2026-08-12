@@ -81,7 +81,9 @@ the customer-funded basis, so a later discount change does not recompute history
   credit is zero.
 - The source is the commerce usage feed (charges), where live `amountNano` is already the
   `real_funded_nano` result of free-first bucketing over the amount actually collected from the
-  customer. Pool-funded settlement shortfall is excluded before the feed.
+  customer. This live scalar rule is identical for referred B2C and B2B accounts: negotiated B2B
+  pricing changes the amount charged, not whether externally funded collected spend earns
+  commission. Pool-funded settlement shortfall is excluded before the feed.
 - Commission = `commission_bps × real_funded_nano` (integer, floor). `commission_bps` is the partner's
   rate (`1000 bps = 10%`), set by the operator.
 

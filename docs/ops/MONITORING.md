@@ -990,13 +990,26 @@ mismatch, fix the two ends together (`tests/contracts/sales-usage-feed.golden.js
 shape) and deploy; the source rows are never consumed, so the backlog replays on its own once the
 page parses. If instead the sync is erroring on the network or the commerce feed is returning 5xx,
 treat it as an ordinary outage of that dependency. Never advance the cursor by hand to "unstick"
-it: every row it skips is commission that is never paid. Recovery is confirmed when
-`apitoken_sales_cursor{feed="usage_events"}` climbs back to `apitoken_sales_feed_head`.
+it: every row it skips is commission that is never paid. The alert starts after a five-minute
+cursor age plus five minutes `for`, so a real backlog is
+reported in about ten minutes rather than the former forty-minute window. Recovery is confirmed
+when `apitoken_sales_cursor{feed="usage_events"}` climbs back to `apitoken_sales_feed_head`.
+
+## SalesAttributionSyncCursorStalled
+
+The `attributions` cursor is behind Commerce's `referral_attributions.id` head and has not moved for
+five minutes. Until it catches up, new referred users do not exist in Sales and their later usage or
+deposits cannot be assigned. Read `journalctl -u apitoken-sales-api` for the first rejected row or
+dependency error, then compare `apitoken_sales_cursor{feed="attributions"}` with
+`apitoken_sales_attribution_feed_head`. Attribution inserts are commit-ordered and immutable; never
+copy the head into the cursor. Fix the consumer and let the feed replay. Recovery requires equal
+head/cursor and zero pending referral buffers.
 
 ## SalesTopupSyncCursorStalled
 
-The canonical `topups_v2` cursor is behind `payments.feed_seq` and has not moved for thirty
-minutes. Unlike usage sync this does not create commission, but partner deposit history and
+The canonical `topups_v2` cursor is behind `payments.feed_seq` and has not moved for five minutes;
+with the alert's five-minute `for`, notification arrives in about ten minutes. Unlike usage sync
+this does not create commission, but partner deposit history and
 conversion analytics are incomplete. The legacy `topups` timestamp cursor is rollback evidence and
 must not be used as the health signal after the sequence consumer is active.
 
@@ -1008,6 +1021,17 @@ must still advance `nextCursor`. Never copy the head into `sync_cursors` by hand
 consumer and let its idempotent `commerce_payment_id` writer replay from the stored cursor.
 Recovery is complete only when the cursor reaches the head, the legacy cursor is unchanged, and
 referred-topup count/sum/canonical hash still match the eligible Commerce source.
+
+## SalesSyncIterationFailing
+
+The last five minutes of `apitoken-sales-api.service` contain `sync iteration failed` or
+`sync loop terminated unexpectedly`, or the monitoring collector cannot read that bounded journal.
+This is the earliest partner-sync signal and may fire before a cursor has aged. Inspect the journal
+and the first underlying parser, HTTP or PostgreSQL error; do not restart repeatedly and do not move
+any cursor by hand. `apitoken_sales_sync_journal_up=0` means an observability permission/query
+failure, not proof that Sales is healthy. The collector is in the narrow `systemd-journal` group;
+restore that access without granting broad capabilities. Recovery requires a readable journal with
+zero recent sync errors and all three canonical cursors closing their source gaps.
 
 ## PricingMirrorDrift
 

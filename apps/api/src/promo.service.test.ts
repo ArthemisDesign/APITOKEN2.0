@@ -124,4 +124,25 @@ describe.runIf(Boolean(connectionString))("promo referral durability", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(creditAccount).toHaveBeenCalledOnce();
   });
+
+  it("fails closed after a promo reservation when first-touch belongs to another partner", async () => {
+    await database.pool.query(
+      "INSERT INTO referral_attributions (user_id, code) VALUES ($1, 'first-owner')",
+      [userId],
+    );
+    const creditAccount = vi.fn();
+
+    await expect(service({ creditAccount } as unknown as EngineClient).redeem(userId, "PROMO"))
+      .rejects.toMatchObject({
+        status: 409,
+        message: "your account is already attributed to another partner",
+      });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(creditAccount).not.toHaveBeenCalled();
+    const stored = await database.pool.query<{ code: string }>(
+      "SELECT code FROM referral_attributions WHERE user_id = $1",
+      [userId],
+    );
+    expect(stored.rows).toEqual([{ code: "first-owner" }]);
+  });
 });

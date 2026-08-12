@@ -156,6 +156,40 @@ nav{display:flex;margin:0 0 0 14px;overflow-x:auto;align-items:center}
 main{padding:18px 14px 50px}.page-head h1{font-size:19px}.form{grid-template-columns:1fr 1fr}}
 @media(max-width:620px){.cards,.form,.domain-grid{grid-template-columns:1fr}.card .value{font-size:23px}}
 
+/* ── B2B terms ──────────────────────────────────────────── */
+.business-invite-form{display:grid;grid-template-columns:minmax(260px,2fr) 150px 160px auto;gap:12px;align-items:end}
+.business-invite-form .field{min-width:0}.business-invite-submit{min-height:36px;justify-content:center}
+.business-input-unit,.business-percent-control{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;border:1px solid var(--line);
+border-radius:8px;background:var(--panel);overflow:hidden}.business-input-unit:focus-within,.business-percent-control:focus-within{outline:2px solid var(--accent);outline-offset:1px;border-color:transparent}
+.business-input-unit input,.business-percent-control input{min-width:0;width:100%;border:0;border-radius:0;background:transparent;text-align:right;font-variant-numeric:tabular-nums}
+.business-input-unit input:focus,.business-percent-control input:focus{outline:0}.business-input-unit>span,.business-percent-control>span{padding:0 11px 0 5px;color:var(--faint);font:650 11.5px/1 var(--sans)}
+.business-client-table{min-width:900px}.business-client-table th:first-child,.business-client-table td:first-child{width:31%}
+.business-client-table th:last-child,.business-client-table td:last-child{width:1%;padding-left:8px}
+.business-client-table td{padding-top:12px;padding-bottom:12px}.business-discount-value{font:730 15px/1.2 var(--sans);letter-spacing:-.01em}
+.business-balance{font-weight:650}.business-client-action .btn{min-width:145px;justify-content:center}
+.business-sync-error{max-width:210px;white-space:normal;line-height:1.35;color:var(--bad)}
+.business-invite-table{min-width:850px}
+.business-discount-error{margin:12px 0;padding:10px 12px;border:1px solid color-mix(in srgb,var(--bad) 38%,transparent);border-radius:9px;background:var(--bad-soft);color:var(--bad);font-size:12.5px}
+.business-discount-editor{display:grid;gap:14px;margin-top:16px}.business-default-discount{display:grid;grid-template-columns:minmax(0,1fr) 118px;gap:24px;align-items:center;padding:17px 18px;
+border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));border-radius:11px;background:color-mix(in srgb,var(--accent-soft) 55%,var(--panel))}
+.business-default-discount b{display:block;margin-top:3px;font-size:15px}.business-default-discount p{margin:3px 0 0;color:var(--muted);font-size:12px}
+.business-discount-kicker{color:var(--accent-text);font:700 9.5px/1.3 var(--sans);letter-spacing:.1em;text-transform:uppercase}
+.business-percent-control{background:var(--panel)}.business-percent-control input{padding:9px 4px 9px 11px;font-weight:700;font-size:15px}
+.business-percent-control.provider{width:102px;justify-self:end}.business-percent-control.provider input{padding-top:7px;padding-bottom:7px;font-size:13px}
+.business-provider-rail{overflow:hidden;border:1px solid var(--line);border-radius:11px;background:var(--panel)}
+.business-provider-head,.business-provider-row{display:grid;grid-template-columns:minmax(190px,1.4fr) minmax(180px,1fr) 112px;gap:18px;align-items:center;padding:10px 14px}
+.business-provider-head{border-bottom:1px solid var(--line);background:var(--panel2);color:var(--faint);font:650 9.5px/1.3 var(--sans);letter-spacing:.09em;text-transform:uppercase}
+.business-provider-head span:last-child{text-align:right}.business-provider-row+.business-provider-row{border-top:1px solid var(--line2)}
+.business-provider-identity{display:flex;align-items:center;gap:10px;min-width:0}.business-provider-identity b{overflow:hidden;text-overflow:ellipsis;font-size:13px}
+.business-provider-mark{display:grid;place-items:center;width:28px;height:28px;flex:0 0 28px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--muted);font:750 11px/1 var(--mono)}
+.business-provider-state{justify-self:start;padding:3px 8px;border-radius:99px;font:600 11px/1.5 var(--sans);white-space:nowrap}
+.business-provider-state.inherited{background:var(--panel2);color:var(--muted)}.business-provider-state.override{background:var(--accent-soft);color:var(--accent-text)}
+.business-discount-hint{margin:0;color:var(--faint);font-size:11.5px}
+@media(max-width:880px){.business-invite-form{grid-template-columns:1fr 1fr}.business-invite-email{grid-column:1/-1}.business-invite-submit{justify-self:end}}
+@media(max-width:620px){.business-invite-form{grid-template-columns:1fr}.business-invite-email{grid-column:auto}.business-invite-submit{width:100%;justify-self:stretch}
+.business-default-discount{grid-template-columns:1fr;gap:12px}.business-default-discount .business-percent-control{width:118px}
+.business-provider-head{display:none}.business-provider-row{grid-template-columns:minmax(0,1fr) 102px;gap:8px 12px;padding:12px}.business-provider-state{grid-column:1;grid-row:2}.business-percent-control.provider{grid-column:2;grid-row:1/3}}
+
 /* ── Paying customer control room ───────────────────────── */
 .paying-page{--paid-claude:#d97757;--paid-claude-soft:#faece6;--paid-gpt:#0f9488;--paid-gpt-soft:#e3f6f2;
 --paid-gemini:#3579e8;--paid-gemini-soft:#e8f0ff;--paid-kimi:#b8348c;--paid-kimi-soft:#fae6f4;

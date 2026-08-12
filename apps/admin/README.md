@@ -52,6 +52,10 @@ No secrets, and there never will be: the browser uses same-origin relative paths
   `{spendStatsModal}` — at the end of the page. The `SpendStatsResponse`, `SpendPeriod`
   types and the `isOpenkeys` helper are exported.
 - `src/app/page.tsx` — Overview (the reference page; port the others following it).
+- `src/app/business` — B2B invitations and scalar commercial terms. The client table shows one
+  row per customer, the default discount, engine-account state and the aggregate delivery state of
+  the complete default-plus-provider bundle. The editor presents the default separately from
+  provider overrides; an empty provider value means inheritance, not a zero discount.
 - `src/app/paying-users/page.tsx` — one read-only control room with independently filtered
   `Клиенты` and `OpenKeys` cohorts. Only the active cohort mounts its 30-second poller. Commerce
   defaults to `funding=spenders`, retains the selected funding filter and always sends

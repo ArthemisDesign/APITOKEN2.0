@@ -1824,8 +1824,8 @@
         "textMode": "auto",
         "wideLayout": true
       },
-      "targets": [{ "expr": "apitoken_sales_pending_referral_events or vector(0)", "refId": "A" }],
-      "title": "Pending referral events",
+      "targets": [{ "expr": "(apitoken_sales_pending_referral_events or vector(0)) + (apitoken_sales_sync_errors_recent or vector(0)) + (1 - (apitoken_sales_sync_journal_up or vector(0))) + clamp_min(apitoken_sales_attribution_feed_head - on() apitoken_sales_cursor{feed=\"attributions\"}, 0) + clamp_min(apitoken_sales_feed_head - on() apitoken_sales_cursor{feed=\"usage_events\"}, 0) + clamp_min(apitoken_sales_topups_feed_head - on() apitoken_sales_cursor{feed=\"topups_v2\"}, 0)", "refId": "A" }],
+      "title": "Partner sync intervention",
       "type": "stat"
     },
     {

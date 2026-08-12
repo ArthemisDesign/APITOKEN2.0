@@ -4,7 +4,7 @@
 // (строки 892-938): B2B-клиенты с индивидуальными скидками и инвайты с идемпотентным
 // созданием, переотправкой письма, отзывом и копированием ссылки.
 // Автоопроса у вкладки нет (как в легаси) — только фокус/кнопка ↻.
-import { memo, useCallback, useState, type FormEvent } from "react";
+import { memo, useCallback, useState, type FormEvent, type ReactElement } from "react";
 import { api, send } from "@/lib/api";
 import { usePoll } from "@/lib/usePoll";
 import { count, formatDate, money } from "@/lib/format";
@@ -15,9 +15,12 @@ import { DiscountDialog, type DiscountDialogTarget } from "./discount-dialog";
 import {
   copyText,
   deliveryPill,
+  discountFromMultiplierBp,
+  engineStatusPresentation,
   inviteState,
   isInviteActive,
   parseBoundedInteger,
+  pricingSyncPresentation,
   reuseIdempotencyKey,
   INVITE_PENDING_KEY,
   PANEL_REASON,
@@ -67,42 +70,46 @@ function forgetPending(storageKey: string): void {
   }
 }
 
-// Форма создания инвайта — разметка дословно из легаси (form-card form).
 const InviteForm = memo(function InviteForm(props: {
   submitting: boolean;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   return (
-    <form className="form-card form" onSubmit={props.onSubmit}>
-      <div className="field">
-        <label>Email (необязательно)</label>
-        <input name="email" type="email" placeholder="client@company.com" autoComplete="off" />
-        <div className="sub">Есть email — письмо уйдёт автоматически. Нет email — ссылка скопируется.</div>
+    <form className="form-card business-invite-form" onSubmit={props.onSubmit}>
+      <div className="field business-invite-email">
+        <label htmlFor="business-invite-email">Email клиента</label>
+        <input id="business-invite-email" name="email" type="email" placeholder="client@company.com" autoComplete="off" />
+        <div className="sub">Не укажете email — готовая ссылка сразу скопируется.</div>
       </div>
       <div className="field">
-        <label>Срок, дней</label>
-        <input name="days" type="number" min={1} max={30} defaultValue={7} required />
+        <label htmlFor="business-invite-days">Срок действия</label>
+        <div className="business-input-unit">
+          <input id="business-invite-days" name="days" type="number" min={1} max={30} defaultValue={7} required />
+          <span>дней</span>
+        </div>
       </div>
       <div className="field">
-        <label>Скидка, %</label>
-        <input name="discount" type="number" min={0} max={100} defaultValue={0} required />
-        <div className="sub">Скидка по умолчанию. Отдельные скидки по провайдерам — в карточке клиента.</div>
+        <label htmlFor="business-invite-discount">Базовая скидка</label>
+        <div className="business-input-unit">
+          <input id="business-invite-discount" name="discount" type="number" min={0} max={100} defaultValue={0} required />
+          <span>%</span>
+        </div>
       </div>
-      <button className="btn" type="submit" disabled={props.submitting}>
-        создать инвайт
+      <button className="btn business-invite-submit" type="submit" disabled={props.submitting}>
+        {props.submitting ? "Создаём…" : "Создать инвайт"}
       </button>
     </form>
   );
 });
 
-const CLIENTS_HEAD = (
+export const CLIENTS_HEAD = (
   <thead>
     <tr>
       <th className="left">клиент</th>
-      <th>политика</th>
+      <th>базовая скидка</th>
       <th>баланс</th>
-      <th>engine</th>
-      <th>синхронизация цены</th>
+      <th>аккаунт</th>
+      <th>доставка цены</th>
       <th />
     </tr>
   </thead>
@@ -112,7 +119,7 @@ const INVITES_HEAD = (
   <thead>
     <tr>
       <th className="left">получатель</th>
-      <th>политика</th>
+      <th>базовая скидка</th>
       <th>статус</th>
       <th>доставка</th>
       <th>истекает</th>
@@ -121,13 +128,15 @@ const INVITES_HEAD = (
   </thead>
 );
 
-const ClientRow = memo(function ClientRow(props: {
+export function ClientRow(props: {
   user: BusinessUser;
   busy: boolean;
   onPricing: (user: BusinessUser) => void;
-}) {
+}): ReactElement {
   const { user } = props;
-  const syncStatus = user.pricing_sync_status ?? "—";
+  const discount = discountFromMultiplierBp(user.multiplier_bp);
+  const engine = engineStatusPresentation(user.engine_account_status);
+  const pricing = pricingSyncPresentation(user.pricing_sync_status);
   return (
     <tr>
       <td className="left">
@@ -135,27 +144,27 @@ const ClientRow = memo(function ClientRow(props: {
         <div className="sub mono">{user.id}</div>
       </td>
       <td>
-        <b>provider / model</b>
-        <div className="sub">открыть точную версию</div>
+        <div className="business-discount-value">{discount == null ? "—" : `${discount}%`}</div>
+        <div className="sub">для всех провайдеров</div>
       </td>
-      <td>{money(user.balance_usd)}</td>
+      <td className="business-balance">{money(user.balance_usd)}</td>
       <td>
-        <Pill kind={user.engine_account_status === "active" ? "ok" : "warn"}>
-          {user.engine_account_status ?? "—"}
-        </Pill>
+        <Pill kind={engine.kind}>{engine.label}</Pill>
       </td>
       <td>
-        <Pill kind={syncStatus === "confirmed" ? "ok" : syncStatus === "failed" ? "bad" : "warn"}>{syncStatus}</Pill>
-        {user.pricing_sync_error ? <div className="sub">{user.pricing_sync_error}</div> : null}
+        <Pill kind={pricing.kind}>{pricing.label}</Pill>
+        {user.pricing_sync_error ? <div className="sub business-sync-error">{user.pricing_sync_error}</div> : null}
       </td>
-      <td>
+      <td className="business-client-action">
         <button className="btn" disabled={props.busy} onClick={() => props.onPricing(user)}>
-          открыть политику
+          Настроить скидки
         </button>
       </td>
     </tr>
   );
-});
+}
+
+const MemoClientRow = memo(ClientRow);
 
 const InviteRow = memo(function InviteRow(props: {
   invite: BusinessInvite;
@@ -365,10 +374,11 @@ export default function BusinessPage() {
   );
 
   const openClientDiscounts = useCallback((user: BusinessUser) => {
+    const currentDiscount = discountFromMultiplierBp(user.multiplier_bp);
     setDiscountTarget({
       userId: user.id,
       title: `Скидки · ${user.email}`,
-      defaultPercent: Math.round(100 - (user.multiplier_bp ?? 10_000) / 100),
+      defaultPercent: currentDiscount == null ? 0 : Math.round(currentDiscount),
     });
   }, []);
 
@@ -387,7 +397,7 @@ export default function BusinessPage() {
     <>
       <PageHead
         title="B2B"
-        sub="полные provider/model policies, invitation snapshots и exact engine ACK"
+        sub="Договорные скидки B2B-клиентов и приглашения"
         badge={<Pill kind="ok">{count(clientTotal, "клиент", "клиента", "клиентов")}</Pill>}
       />
 
@@ -396,12 +406,12 @@ export default function BusinessPage() {
 
       <SectionHeader title="B2B-клиенты" sub={String(clientTotal)} />
       <TableCard>
-        <table>
+        <table className="business-client-table">
           {CLIENTS_HEAD}
           <tbody>
             {clients.length ? (
               clients.map((user) => (
-                <ClientRow
+                <MemoClientRow
                   key={user.id}
                   user={user}
                   busy={busyIds.has(`pricing:${user.id}`)}
@@ -417,7 +427,7 @@ export default function BusinessPage() {
 
       <SectionHeader title="Последние инвайты" sub={String(invites.length)} />
       <TableCard>
-        <table>
+        <table className="business-invite-table">
           {INVITES_HEAD}
           <tbody>
             {invites.length ? (

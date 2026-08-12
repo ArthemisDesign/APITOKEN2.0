@@ -73,6 +73,41 @@ export function isInviteActive(invite: BusinessInvite, now: Date = new Date()): 
 
 export type DeliveryPill = { label: string; kind: "ok" | "warn" | "bad" | "info" };
 
+export type BusinessStatusPresentation = {
+  label: string;
+  kind: "ok" | "warn" | "bad" | "info";
+};
+
+// Операторские подписи вместо внутренних enum движка. Неизвестное значение не маскируется
+// зелёным: это новый/сломанный контракт, который требует внимания.
+export function engineStatusPresentation(status: string | null | undefined): BusinessStatusPresentation {
+  switch (status) {
+    case "active": return { label: "активен", kind: "ok" };
+    case "pending": return { label: "создаётся", kind: "warn" };
+    case "disabled": return { label: "отключён", kind: "bad" };
+    case "error": return { label: "ошибка", kind: "bad" };
+    case null:
+    case undefined:
+    case "": return { label: "нет аккаунта", kind: "info" };
+    default: return { label: "неизвестно", kind: "bad" };
+  }
+}
+
+// Статус относится ко всей связке default + provider overrides: backend возвращает confirmed
+// только когда доставлены все существующие цели, а иначе — самый важный незавершённый job.
+export function pricingSyncPresentation(status: string | null | undefined): BusinessStatusPresentation {
+  switch (status) {
+    case "confirmed": return { label: "доставлено", kind: "ok" };
+    case "processing": return { label: "доставляется", kind: "warn" };
+    case "pending": return { label: "в очереди", kind: "warn" };
+    case "retry": return { label: "нужен повтор", kind: "bad" };
+    case null:
+    case undefined:
+    case "": return { label: "нет задания", kind: "info" };
+    default: return { label: "неизвестно", kind: "bad" };
+  }
+}
+
 // Доставка письма: sent → ok, failed → bad, остальное → warn;
 // инвайт без email — «copy only» (info), статус доставки не показывается.
 export function deliveryPill(invite: BusinessInvite): DeliveryPill {

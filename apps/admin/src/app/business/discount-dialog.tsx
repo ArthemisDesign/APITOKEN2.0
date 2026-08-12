@@ -110,43 +110,87 @@ export function DiscountDialog(props: {
   }, [defaultPercent, draft, props, target]);
 
   return (
-    <Modal open={target !== null} title={target?.title ?? "Скидки"} onClose={props.onClose}>
+    <Modal
+      open={target !== null}
+      title={target?.title ?? "Скидки"}
+      message="Базовая скидка действует для всех провайдеров. Отдельное значение заменяет её только для выбранного провайдера."
+      wide
+      onClose={props.onClose}
+    >
       {loading ? <LoadingGrid count={2} /> : null}
-      {error ? <div className="policy-rule-count bad">{error}</div> : null}
+      {error ? <div className="business-discount-error" role="alert">{error}</div> : null}
       {target && !loading ? (
-        <div className="discount-editor">
-          <label className="discount-row">
-            <span>По умолчанию</span>
-            <input
-              inputMode="numeric"
-              value={defaultPercent}
-              disabled={saving}
-              onChange={(event) => setDefaultPercent(event.target.value)}
-            />
-            <span className="discount-unit">%</span>
-          </label>
-          {DISCOUNT_PROVIDERS.map((provider) => (
-            <label className="discount-row" key={provider.id}>
-              <span>{provider.label}</span>
+        <div className="business-discount-editor">
+          <section className="business-default-discount" aria-labelledby="business-default-discount-label">
+            <div>
+              <span className="business-discount-kicker">Основные условия</span>
+              <b id="business-default-discount-label">Базовая скидка</b>
+              <p>Применяется ко всем провайдерам без собственного исключения.</p>
+            </div>
+            <label className="business-percent-control">
+              <span className="sr-only">Базовая скидка, процентов</span>
               <input
+                type="number"
                 inputMode="numeric"
-                placeholder={`по умолчанию (${defaultPercent || target.defaultPercent}%)`}
-                value={draft[provider.id] ?? ""}
+                min={0}
+                max={100}
+                step={1}
+                value={defaultPercent}
                 disabled={saving}
-                onChange={(event) => setDraft((current) => ({ ...current, [provider.id]: event.target.value }))}
+                aria-label="Базовая скидка, процентов"
+                onChange={(event) => setDefaultPercent(event.target.value)}
               />
-              <span className="discount-unit">%</span>
+              <span>%</span>
             </label>
-          ))}
-          <p className="discount-hint">
-            Пустое поле — у провайдера нет своей скидки, действует скидка по умолчанию.
+          </section>
+
+          <div className="business-provider-rail">
+            <div className="business-provider-head" aria-hidden="true">
+              <span>Провайдер</span>
+              <span>Условие</span>
+              <span>Скидка</span>
+            </div>
+            {DISCOUNT_PROVIDERS.map((provider) => {
+              const value = draft[provider.id] ?? "";
+              const inherited = value.trim() === "";
+              return (
+                <div className="business-provider-row" key={provider.id}>
+                  <div className="business-provider-identity">
+                    <span className="business-provider-mark" aria-hidden="true">{provider.label.slice(0, 1)}</span>
+                    <b>{provider.label}</b>
+                  </div>
+                  <span className={inherited ? "business-provider-state inherited" : "business-provider-state override"}>
+                    {inherited ? `по умолчанию ${defaultPercent || target.defaultPercent}%` : "своя скидка"}
+                  </span>
+                  <label className="business-percent-control provider">
+                    <span className="sr-only">Скидка {provider.label}, процентов; оставьте пустой для базовой</span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      max={100}
+                      step={1}
+                      placeholder="—"
+                      value={value}
+                      disabled={saving}
+                      aria-label={`Скидка ${provider.label}, процентов; пусто — базовая`}
+                      onChange={(event) => setDraft((current) => ({ ...current, [provider.id]: event.target.value }))}
+                    />
+                    <span>%</span>
+                  </label>
+                </div>
+              );
+            })}
+          </div>
+          <p className="business-discount-hint">
+            Очистите поле провайдера, чтобы снова применять базовую скидку.
           </p>
         </div>
       ) : null}
       <div className="dlg-actions">
-        <button type="button" className="btn ghost" onClick={props.onClose}>Закрыть</button>
+        <button type="button" className="btn ghost" onClick={props.onClose}>Отмена</button>
         <button type="button" className="btn" disabled={!target || loading || saving} onClick={() => void save()}>
-          {saving ? "сохраняем…" : "сохранить скидки"}
+          {saving ? "Сохраняем…" : "Сохранить условия"}
         </button>
       </div>
     </Modal>

@@ -58,8 +58,9 @@ of reaching SQL as an out-of-range value.
   Password and new-account OAuth registration insert this row inside the same PostgreSQL
   transaction as the user/profile/engine mapping, so a successful signup cannot lose its partner
   attribution after a transient second write. Promo redemption commits the same row before issuing
-  its idempotent engine credit; a storage failure leaves the request retryable instead of returning
-  a credited-but-unattributed success.
+  its idempotent engine credit; an exact owner replay is idempotent, while a different existing
+  first-touch owner returns 409 without credit. A storage failure leaves the request retryable
+  instead of returning a credited-but-unattributed success.
   Response `{items:[{id,userId,code,createdAt}]}`; there is no `nextCursor` — the reader's cursor
   is the page's max `id` (rows come in ascending `id` order).
 - `GET /v1/internal/sales/usage-events?after_id&limit` (default 1000, max 2000) — from
@@ -215,7 +216,9 @@ Commerce calls sales-api at `SALES_API_URL` with the same `SALES_CONTROL_KEY`.
   `{code, commerceUserId}` → `{valueNano, partnerId, referralCode, redemptionRef, discountBps,
   pricingAffected:false, alreadyRedeemed}`. Atomic and idempotent by (code, user): a repeat redemption by the same user
   returns the same `redemptionRef`, so the engine credit on the commerce side is idempotent by ref
-  (retries are safe). One-time code; one promo per user (409); the code is unavailable if the
+  (retries are safe). One-time code; one promo per user (409); promo credit is available only to an
+  unassigned account or as an exact-owner replay, and a different permanent first-touch attribution
+  fails closed before engine credit. The code is unavailable if the
   partner is not active or the promo is disabled. Commerce continues on its own: credits the engine
   (up to 3 attempts), after durably attributing an unassigned user to the code's owner, and with
   a nonzero legacy `discountBps` stores only its audit marker with local retries. It never changes

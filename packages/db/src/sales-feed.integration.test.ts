@@ -7,6 +7,7 @@ import {
   listPaidTopupsV2After,
   listUsageEventsAfter,
   recordReferralAttribution,
+  ReferralAttributionConflictError,
 } from "./sales-feed.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -23,7 +24,7 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
   beforeEach(async () => {
     await database.pool.query(`
       TRUNCATE
-        pricing_usage_events, referral_attributions,
+        pricing_usage_events, referral_attributions, customer_profiles,
         payments, checkout_sessions, engine_accounts, users
       RESTART IDENTITY CASCADE
     `);
@@ -126,6 +127,41 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
     });
     expect("officialNano" in page.items[0]!).toBe(false);
     expect("releaseDigest" in page.items[0]!).toBe(false);
+  });
+
+  it("emits externally funded referred B2B usage through the same scalar commission contract", async () => {
+    const referred = await insertUser(true);
+    await database.pool.query(`
+      INSERT INTO customer_profiles
+        (user_id, customer_type, current_tier, multiplier_bp, pricing_month_start)
+      VALUES ($1, 'b2b', NULL, 3700, date_trunc('month', now()))
+    `, [referred]);
+    await insertUsage(referred, 31, new Date(Date.now() - 60_000), 606_000_000n);
+
+    const page = await listUsageEventsAfter(database, 0n, 100);
+    expect(page.items).toEqual([expect.objectContaining({
+      userId: referred,
+      amountNano: 606_000_000n,
+      accountClass: null,
+      pricingMode: null,
+      paidFundedNano: null,
+      commissionEligible: null,
+      snapshotDigest: null,
+    })]);
+  });
+
+  it("treats an exact attribution replay as idempotent and rejects a different first-touch owner", async () => {
+    const referred = await insertUser(false);
+    await recordReferralAttribution(database, referred, "first-owner");
+    await expect(recordReferralAttribution(database, referred, "first-owner")).resolves.toBeUndefined();
+    await expect(recordReferralAttribution(database, referred, "other-owner"))
+      .rejects.toBeInstanceOf(ReferralAttributionConflictError);
+
+    const stored = await database.pool.query<{ code: string }>(
+      "SELECT code FROM referral_attributions WHERE user_id = $1",
+      [referred],
+    );
+    expect(stored.rows).toEqual([{ code: "first-owner" }]);
   });
 
   it("never attributes spend that occurred before the referral was recorded", async () => {

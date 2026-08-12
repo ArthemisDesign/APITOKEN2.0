@@ -44,6 +44,15 @@ describe("listAdminUserOverview sorting", () => {
     expect(queries[0]!.params).toEqual(["", "", "", "", 10, 0]);
   });
 
+  it("collapses default and provider pricing jobs into one deterministic bundle status", async () => {
+    const { database, queries } = fakeDatabase();
+    await listAdminUserOverview(database, { customerType: "b2b" });
+    expect(queries[0]!.text).not.toContain("LEFT JOIN engine_pricing_jobs pj");
+    expect(queries[0]!.text).toContain("LEFT JOIN LATERAL");
+    expect(queries[0]!.text).toContain("count(*) FILTER (WHERE job.status <> 'confirmed') OVER ()");
+    expect(queries[0]!.text).toContain("WHEN 'retry' THEN 1");
+  });
+
   it("maps every whitelisted sort to its aggregate expression, never the raw input", async () => {
     const cases: Array<[AdminUserSort, AdminSortDir, string]> = [
       ["paid_total", "desc", "ORDER BY COALESCE(p.paid_total, 0) DESC NULLS LAST, u.id ASC"],

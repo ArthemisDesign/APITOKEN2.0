@@ -83,12 +83,18 @@ cat >"$temporary" <<'METRICS'
 # TYPE apitoken_pricing_job_stale_confirmed gauge
 # HELP apitoken_sales_feed_head Highest usage-event sequence commerce has published to the partner feed.
 # TYPE apitoken_sales_feed_head gauge
+# HELP apitoken_sales_attribution_feed_head Highest referral-attribution sequence commerce has published to the partner feed.
+# TYPE apitoken_sales_attribution_feed_head gauge
 # HELP apitoken_sales_topups_feed_head Highest payment sequence commerce has published to the partner feed.
 # TYPE apitoken_sales_topups_feed_head gauge
 # HELP apitoken_sales_cursor Partner-portal sync cursor per feed; a gap to its feed head that stops closing means partner data is stale.
 # TYPE apitoken_sales_cursor gauge
 # HELP apitoken_sales_cursor_age_seconds Time since the partner-portal sync cursor last advanced.
 # TYPE apitoken_sales_cursor_age_seconds gauge
+# HELP apitoken_sales_sync_errors_recent Partner sync iterations that failed or terminated unexpectedly in the last five minutes.
+# TYPE apitoken_sales_sync_errors_recent gauge
+# HELP apitoken_sales_sync_journal_up Whether the bounded partner sync journal query completed.
+# TYPE apitoken_sales_sync_journal_up gauge
 # HELP apitoken_engine_accounts_below_floor Accounts whose balance is below the $1 overdraft floor.
 # TYPE apitoken_engine_accounts_below_floor gauge
 # HELP apitoken_pricing_charge_mismatch Settled full billed amounts whose value does not match the reserve-time provider multiplier.
@@ -146,6 +152,7 @@ WHERE j.status = 'confirmed'
 -- partner sync falling behind or refusing pages, which is exactly how five hours of commission
 -- went unaccrued on 2026-08-10 without a single alert.
 SELECT 'apitoken_sales_feed_head ' || COALESCE(max(feed_seq), 0) FROM pricing_usage_events;
+SELECT 'apitoken_sales_attribution_feed_head ' || COALESCE(max(id), 0) FROM referral_attributions;
 SELECT 'apitoken_sales_topups_feed_head ' || COALESCE(max(feed_seq), 0) FROM payments;
 SELECT 'apitoken_usage_provider_unresolved{window="all"} ' || count(*)
 FROM pricing_usage_events
@@ -279,6 +286,19 @@ SELECT 'apitoken_sales_cursor_age_seconds{feed="' || feeds.feed || '"} '
 FROM feeds LEFT JOIN sync_cursors cursor USING (feed);
 SQL
 fi
+
+# Cursor gaps detect a stalled feed once backlog exists. This bounded journal signal catches the
+# first rejected page/network/DB iteration without waiting for a gap to age. Journal access is
+# observational and failure-local: losing it must not suppress the SQL money metrics.
+sales_sync_journal_up=0
+sales_sync_errors_recent=0
+sales_sync_journal=$(journalctl -q -u apitoken-sales-api.service --since '5 minutes ago' -n 1000 --no-pager -o cat 2>/dev/null) && sales_sync_journal_up=1 || true
+if (( sales_sync_journal_up == 1 )); then
+  sales_sync_errors_recent=$(printf '%s\n' "$sales_sync_journal" \
+    | awk '/sync iteration failed|sync loop terminated unexpectedly/ { count += 1 } END { print count + 0 }')
+fi
+printf 'apitoken_sales_sync_errors_recent %s\n' "$sales_sync_errors_recent" >>"$temporary"
+printf 'apitoken_sales_sync_journal_up %s\n' "$sales_sync_journal_up" >>"$temporary"
 
 # Compare the actual engine authority to commerce's durable mapped intent without exporting a
 # customer/account/provider identifier. PostgreSQL cannot join databases directly and enabling

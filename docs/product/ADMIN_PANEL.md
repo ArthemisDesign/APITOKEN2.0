@@ -203,6 +203,10 @@ The `/business` page owns B2B invitations and existing B2B terms:
 - one save is one commerce transaction. It records the default and all provider rows together and
   enqueues a separately fenced delivery job for each changed target, so a partial editor save
   cannot become a permanent half-deal;
+- the customer table is one row per B2B user even though delivery has several target jobs. Its
+  delivery badge summarizes the complete bundle: `confirmed` is shown only when every existing
+  default/provider target is confirmed; otherwise retry, processing and pending are surfaced in
+  that priority order with the relevant error;
 - the `/users` B2C→B2B action records the negotiated scalar and its delivery job. A new account is
   usable once its idempotent engine account exists with that scalar; no policy ACK or release head
   is involved.

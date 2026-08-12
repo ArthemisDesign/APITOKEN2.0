@@ -21,6 +21,13 @@ export class AmbiguousTopupCursorBoundaryError extends Error {
   }
 }
 
+export class ReferralAttributionConflictError extends Error {
+  constructor(readonly userId: string) {
+    super(`user ${userId} is already attributed to another partner`);
+    this.name = "ReferralAttributionConflictError";
+  }
+}
+
 export interface ReferralAttributionFeedRow {
   id: bigint;
   userId: string;
@@ -88,6 +95,12 @@ export async function recordReferralAttributionTx(
     VALUES ($1, $2)
     ON CONFLICT (user_id) DO NOTHING
   `, [userId, code]);
+  const stored = await client.query<{ code: string }>(`
+    SELECT code FROM referral_attributions WHERE user_id = $1
+  `, [userId]);
+  if (stored.rows[0]?.code !== code) {
+    throw new ReferralAttributionConflictError(userId);
+  }
 }
 
 /** Идемпотентно записывает атрибуцию к реф-коду отдельной атомарной транзакцией. */
