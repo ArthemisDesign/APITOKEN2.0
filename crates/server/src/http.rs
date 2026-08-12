@@ -494,6 +494,12 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             )
             .fallback(tripo3d_not_found)
             .method_not_allowed_fallback(tripo3d_not_found),
+        // Backend-only Suno session-pool plane (default-off, dedicated delivery). Nothing here
+        // may fall into `forward`: this process deliberately operates no Claude pool. The real
+        // plane endpoints land with the server wiring; until then every path is a bounded 404.
+        forward::ProviderMode::Suno => common
+            .fallback(suno_not_found)
+            .method_not_allowed_fallback(suno_not_found),
     };
     router
         .with_state(state.clone())
@@ -567,6 +573,16 @@ async fn fixed_openai_not_found() -> Response {
 /// The dedicated Tripo3D plane answers every unrouted path with the same bounded 404: it is
 /// default-off, internal-only, and must never leak which paths exist.
 async fn tripo3d_not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({"error": {"type": "not_found", "message": "Not Found"}})),
+    )
+        .into_response()
+}
+
+/// The dedicated Suno plane answers every unrouted path with the same bounded 404: it is
+/// default-off, internal-only, and must never leak which paths exist.
+async fn suno_not_found() -> Response {
     (
         StatusCode::NOT_FOUND,
         Json(json!({"error": {"type": "not_found", "message": "Not Found"}})),

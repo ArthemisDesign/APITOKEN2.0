@@ -38,6 +38,7 @@ mod state;
 // consumed only by its own tests so far.
 #[allow(dead_code)]
 mod suno_calibration;
+pub mod suno;
 pub mod tripo3d;
 // Dormant until the plane's runtime writer lands (docs/engine/TRIPO3D_PROVIDER.md §8):
 // consumed only by its own tests so far.

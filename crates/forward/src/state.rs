@@ -68,6 +68,9 @@ pub enum ProviderMode {
     /// The dedicated backend-only Tripo3D task-media plane (default-off; composes only under
     /// `CLAUDE_API_TRIPO3D_ENABLED=1`). It never shares the Anthropic Messages surface.
     Tripo3d,
+    /// The dedicated backend-only Suno subscription session-pool plane (default-off; composes
+    /// only under `CLAUDE_API_SUNO_ENABLED=1`). It never shares the Anthropic Messages surface.
+    Suno,
 }
 
 impl ProviderMode {
@@ -96,6 +99,12 @@ impl ProviderMode {
         matches!(self, Self::Tripo3d)
     }
 
+    /// The dedicated Suno plane. Same shape as Tripo3D: a task-based media API cannot ride the
+    /// Anthropic Messages surface, so only `Suno` composes it.
+    pub fn serves_suno(self) -> bool {
+        matches!(self, Self::Suno)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Combined => "combined",
@@ -104,6 +113,7 @@ impl ProviderMode {
             Self::Gemini => "gemini",
             Self::Kimi => "kimi",
             Self::Tripo3d => "tripo3d",
+            Self::Suno => "suno",
         }
     }
 }
