@@ -1821,7 +1821,7 @@ async fn settlement_replays_the_pinned_override_version() {
 }
 
 /// A pinned version the book cannot produce is an integrity error: the turn fails closed to the
-/// documented conservative hold, never a silent compiled reprice.
+/// fleet unknown-usage policy, never a silent compiled reprice.
 #[tokio::test]
 async fn a_missing_pinned_override_version_fails_closed() {
     let _lock = crate::pricing::tariff_book::GLOBAL_BOOK_TEST_LOCK
@@ -1843,6 +1843,77 @@ async fn a_missing_pinned_override_version_fails_closed() {
     let missing = price_turn_settlement(None, &usage, "kimi-k3", 1, Some(&pin)).await;
     crate::pricing::tariff_book::clear_global_book_for_test();
     assert!(missing.is_err());
+}
+
+#[test]
+fn settlement_class_distinguishes_exact_measured_and_unknown() {
+    let usage = Some(KimiUsage {
+        input_tokens: 10,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 5,
+        reasoning_output_tokens: 0,
+    });
+    let served = Some("kimi-k3".to_string());
+    // The terminal frame with authoritative usage prices exactly.
+    assert_eq!(
+        settlement_class(&ParsedAccounting {
+            usage: usage.clone(),
+            served_model: served.clone(),
+            terminal: true,
+        }),
+        SettlementClass::Exact
+    );
+    // Delivery without the terminal frame settles from provider-reported counters, not the hold.
+    assert_eq!(
+        settlement_class(&ParsedAccounting {
+            usage,
+            served_model: served.clone(),
+            terminal: false,
+        }),
+        SettlementClass::Measured
+    );
+    // Nothing measured stays unknown for every combination of the other two signals.
+    assert_eq!(
+        settlement_class(&ParsedAccounting {
+            usage: None,
+            served_model: served,
+            terminal: true,
+        }),
+        SettlementClass::Unknown
+    );
+    assert_eq!(
+        settlement_class(&ParsedAccounting {
+            usage: None,
+            served_model: None,
+            terminal: false,
+        }),
+        SettlementClass::Unknown
+    );
+}
+
+#[test]
+fn measured_sync_pricing_uses_the_compiled_reviewed_card_and_refuses_unknowns() {
+    let _lock = crate::pricing::tariff_book::GLOBAL_BOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    crate::pricing::tariff_book::clear_global_book_for_test();
+    let usage = KimiUsage {
+        input_tokens: 1_000,
+        cache_read_tokens: 500,
+        cache_write_tokens: 50,
+        output_tokens: 100,
+        reasoning_output_tokens: 40,
+    };
+    let (_, compiled) = metering::kimi::kimi_matched_tariff_at("kimi-k3", 1).unwrap();
+    assert_eq!(
+        price_measured_sync(&usage, "kimi-k3", 1, None),
+        cost_nanodollars(&usage, &compiled).ok()
+    );
+    // An annotation-only frame parses as zero and must never become a checkpoint.
+    assert_eq!(price_measured_sync(&KimiUsage::default(), "kimi-k3", 1, None), None);
+    // An unpriced served model is unknown, never a guess at another family's card.
+    assert_eq!(price_measured_sync(&usage, "kimi-invented", 1, None), None);
 }
 
 /// The router advertises `kimi/<alias>`, and this plane strips only its own `anthropic/` prefix.

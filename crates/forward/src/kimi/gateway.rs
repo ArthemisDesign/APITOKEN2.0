@@ -2035,6 +2035,7 @@ impl KimiGateway {
         tokio::spawn(async move {
             let _background = background;
             let _lease = lease;
+            let mut checkpoint = reservation.as_ref().map(MeasuredCheckpoint::from_reservation);
             let mut deliver = deliver;
             let mut clean = true;
             let mut total = initial_len;
@@ -2054,6 +2055,9 @@ impl KimiGateway {
                         if total > RESPONSE_BODY_LIMIT || parsed.push(&chunk).is_err() {
                             clean = false;
                             break;
+                        }
+                        if let Some(checkpoint) = checkpoint.as_mut() {
+                            checkpoint.maybe_publish(&gateway, &parsed);
                         }
                         if deliver {
                             let sent = tokio::select! {
@@ -2138,30 +2142,32 @@ impl KimiGateway {
         reservation: Option<Reservation>,
         parsed: ParsedAccounting,
     ) {
+        let class = settlement_class(&parsed);
         let pinned_tariff = reservation
             .as_ref()
             .and_then(|reservation| reservation.pinned_tariff.clone());
-        let priced = match (
-            parsed.terminal,
-            parsed.usage.as_ref(),
-            parsed.served_model.as_deref(),
-        ) {
-            (true, Some(usage), Some(served)) => price_turn_settlement(
-                self.billing.as_deref(),
-                usage,
-                served,
-                context.priced_ts,
-                pinned_tariff.as_ref(),
-            )
-            .await
-            .ok(),
-            _ => None,
+        let evidence = match class {
+            SettlementClass::Unknown => None,
+            SettlementClass::Exact | SettlementClass::Measured => {
+                match (parsed.usage.as_ref(), parsed.served_model.as_deref()) {
+                    (Some(usage), Some(served)) => price_turn_settlement(
+                        self.billing.as_deref(),
+                        usage,
+                        served,
+                        context.priced_ts,
+                        pinned_tariff.as_ref(),
+                    )
+                    .await
+                    .ok(),
+                    _ => None,
+                }
+            }
         };
 
         if let Some(reservation) = reservation {
             if let Some(billing) = &self.billing {
-                match &priced {
-                    Some(priced) => {
+                match (class, &evidence) {
+                    (SettlementClass::Exact, Some(priced)) => {
                         let actual = customer_actual(priced.total, reservation.mult_bp);
                         let usage_event = Some(priced.usage_event(
                             parsed.served_model.as_deref().unwrap_or_default(),
@@ -2185,23 +2191,53 @@ impl KimiGateway {
                             );
                         }
                     }
-                    None => {
-                        // Delivery occurred but authoritative terminal usage did not. Preserve the
-                        // conservative hold and create no immutable provider event.
+                    (SettlementClass::Measured, Some(measured)) => {
+                        // Delivery occurred; the terminal frame did not. What the provider did
+                        // report is fact: those cumulative counters price at the served card and
+                        // nothing is invented beyond them.
+                        let actual = customer_actual(measured.total, reservation.mult_bp);
+                        let usage_event = Some(measured.usage_event(
+                            parsed.served_model.as_deref().unwrap_or_default(),
+                            reservation.priced_ts,
+                        ));
+                        if let Err(error) = billing
+                            .settle_request_with_usage(
+                                &reservation.request_id,
+                                &reservation.account_id,
+                                &reservation.key,
+                                reservation.hold,
+                                actual,
+                                Some("kimi-measured-partial"),
+                                usage_event,
+                            )
+                            .await
+                        {
+                            elog::error(
+                                "kimi",
+                                format!("KIMI measured settlement deferred: {error:#}"),
+                            );
+                        }
+                    }
+                    _ => {
+                        // Nothing measured — or the evidence failed pricing. The fleet policy
+                        // decides (default: no charge): the hold is an admission device, not a
+                        // price, and settling it bills 19x-250x the measured cost of a turn.
+                        let charge =
+                            crate::settlement_policy::unknown_usage_charge(reservation.hold);
                         if let Err(error) = billing
                             .settle_request(
                                 &reservation.request_id,
                                 &reservation.account_id,
                                 &reservation.key,
                                 reservation.hold,
-                                reservation.hold,
+                                charge,
                                 Some("kimi-terminal-usage-missing"),
                             )
                             .await
                         {
                             elog::error(
                                 "kimi",
-                                format!("KIMI conservative settlement deferred: {error:#}"),
+                                format!("KIMI unmeasured settlement deferred: {error:#}"),
                             );
                         }
                     }
@@ -2209,8 +2245,13 @@ impl KimiGateway {
             }
         }
 
+        if class != SettlementClass::Exact {
+            // The immutable calibration event stays terminal-only: a partial turn is customer
+            // settlement fact, never provider-window evidence.
+            return;
+        }
         let (Some(priced), Some(usage), Some(served_model)) =
-            (priced, parsed.usage, parsed.served_model)
+            (evidence, parsed.usage, parsed.served_model)
         else {
             return;
         };
@@ -2459,6 +2500,110 @@ struct ParsedAccounting {
     terminal: bool,
 }
 
+/// Which settlement evidence a finished turn carries. `Exact` — the terminal frame arrived with
+/// authoritative usage. `Measured` — delivery happened and the terminal frame did not, but the
+/// provider did report cumulative counters that price by fact at the served card. `Unknown` —
+/// nothing was measured, so any charge would be a hardcode rather than a fact; the fleet policy
+/// (`settlement_policy::unknown_usage_charge`) decides, and its default is no charge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SettlementClass {
+    Exact,
+    Measured,
+    Unknown,
+}
+
+fn settlement_class(parsed: &ParsedAccounting) -> SettlementClass {
+    match (
+        parsed.terminal,
+        parsed.usage.as_ref(),
+        parsed.served_model.as_deref(),
+    ) {
+        (true, Some(_), Some(_)) => SettlementClass::Exact,
+        (_, Some(_), Some(_)) => SettlementClass::Measured,
+        _ => SettlementClass::Unknown,
+    }
+}
+
+/// Hot-path measured pricing for mid-stream checkpoints: the pinned payload from the local book
+/// or the compiled reviewed card, never the async refresh. A checkpoint is a lower bound on a
+/// turn that must also die before it is used, so it must never stall the answer on bookkeeping.
+fn price_measured_sync(
+    usage: &KimiUsage,
+    served_model: &str,
+    priced_ts: i64,
+    pinned: Option<&PinnedTariff>,
+) -> Option<i128> {
+    if usage.is_zero() {
+        return None;
+    }
+    let (family, compiled) = kimi_matched_tariff_at(served_model, priced_ts)?;
+    let book = tariff_book::snapshot();
+    let prices = match pinned.filter(|pin| pin.family == family) {
+        Some(pin) => book
+            .version_payload(&pin.family, pin.version)
+            .and_then(|payload| tariff_book::as_kimi(&payload))
+            .unwrap_or(compiled),
+        None => match book.resolve(family, priced_ts) {
+            Some((_, payload)) => tariff_book::as_kimi(&payload).unwrap_or(compiled),
+            None => compiled,
+        },
+    };
+    cost_nanodollars(usage, &prices).ok()
+}
+
+/// How often a streaming turn republishes its measured cost. Writes are detached and monotonic
+/// (GREATEST in PostgreSQL), so the interval bounds write amplification, never correctness.
+const MEASURED_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Durable "this turn has cost at least X so far" for a live stream: if the owning process dies
+/// mid-answer, the reconciler settles the checkpoint instead of writing the turn off to zero.
+struct MeasuredCheckpoint {
+    request_id: String,
+    mult_bp: i64,
+    priced_ts: i64,
+    pinned_tariff: Option<PinnedTariff>,
+    last_value: i64,
+    last_at: std::time::Instant,
+}
+
+impl MeasuredCheckpoint {
+    fn from_reservation(reservation: &Reservation) -> Self {
+        Self {
+            request_id: reservation.request_id.clone(),
+            mult_bp: reservation.mult_bp,
+            priced_ts: reservation.priced_ts,
+            pinned_tariff: reservation.pinned_tariff.clone(),
+            last_value: 0,
+            // Backdated so the first provider usage snapshot publishes immediately.
+            last_at: std::time::Instant::now() - MEASURED_CHECKPOINT_INTERVAL,
+        }
+    }
+
+    fn maybe_publish(&mut self, gateway: &KimiGateway, parsed: &SseAccounting) {
+        if !parsed.usage_seen || self.last_at.elapsed() < MEASURED_CHECKPOINT_INTERVAL {
+            return;
+        }
+        let Some(served) = parsed.served_model.as_deref() else {
+            return;
+        };
+        let Some(total) =
+            price_measured_sync(&parsed.usage, served, self.priced_ts, self.pinned_tariff.as_ref())
+        else {
+            return;
+        };
+        let measured = customer_actual(total, self.mult_bp);
+        if measured <= self.last_value {
+            return;
+        }
+        let Some(billing) = &gateway.billing else {
+            return;
+        };
+        billing.checkpoint_measured_detached(&self.request_id, measured);
+        self.last_value = measured;
+        self.last_at = std::time::Instant::now();
+    }
+}
+
 fn non_stream_accounting(body: &[u8]) -> ParsedAccounting {
     let parsed = serde_json::from_slice::<Value>(body).ok();
     ParsedAccounting {
@@ -2513,8 +2658,9 @@ fn price_turn_with_prices(
 /// Settlement-time pricing through the hot tariff book: the exact version pinned at admission
 /// (with one bounded refresh retry on a cache miss — this path is async), or the served family's
 /// override at the pinned priced timestamp after a cross-family serve, or the compiled constants.
-/// A pinned version that even the refresh cannot produce is an integrity error: the caller
-/// settles the documented conservative hold, never a silent compiled reprice.
+/// A pinned version that even the refresh cannot produce is an integrity error: the caller then
+/// has no trustworthy evidence and falls to the fleet unknown-usage policy, never to a silent
+/// compiled reprice.
 async fn price_turn_settlement(
     billing: Option<&AsyncBilling>,
     usage: &KimiUsage,

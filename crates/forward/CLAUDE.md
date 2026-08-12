@@ -91,8 +91,9 @@ contract at the money paths:
   looked up exactly (never the newest), a cross-family serve reprices by the SERVED family's
   override at the pinned priced ts, and no pin (or `<…>/v1`) is byte-identical compiled behavior.
   A pinned version missing from the book is a hard integrity error (elog::error + the local
-  failure semantics: Anthropic/Codex/Gemini leave the reservation to the reconciler, GLM/KIMI
-  settle their documented conservative hold) — never a silent reprice at compiled, because the
+  failure semantics: Anthropic/Codex/Gemini leave the reservation to the reconciler, KIMI falls
+  to the fleet unknown-usage policy, GLM settles its documented conservative hold) — never a
+  silent reprice at compiled, because the
   table is append-only and the pinning reserve read the row from this process. The async GLM/KIMI
   paths get one bounded refresh retry (`version_payload_refreshed`); the sync Anthropic/Codex/
   Gemini settle paths read the cache only. Calibration/capacity events price from the same

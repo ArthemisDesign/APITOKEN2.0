@@ -274,7 +274,8 @@ configurable alternative; the choice is pinned by the very first live run.
 
 `unknown` The form of terminal usage on the Anthropic route (the `usage` fields, presence of
 `cache_read_input_tokens` / `cache_creation_input_tokens`) is not confirmed. Without authoritative
-usage, billing fails closed — settlement against the conservative hold.
+usage, billing charges only what the provider measurably reported — partial counters settle by
+fact, and an entirely unmeasured turn follows the fleet policy (default: no charge).
 
 ### 4.1 Implemented backend gateway
 
@@ -288,11 +289,16 @@ fail-closed response, not a fallback.
 invariants on mocks, but does not clear the provider-owned `unknown`s of §6:
 
 - non-stream responses and SSE bytes pass through with no protocol translation; the usage extractor
-  can assemble split SSE frames, but settlement accepts only the terminal event as authoritative;
+  can assemble split SSE frames; the immutable calibration event accepts only the terminal event as
+  authoritative, while customer settlement also prices partial provider-reported counters by fact;
 - retry/rotation are permitted only before the first public byte; after it, the upstream is drained
   even on downstream disconnect, and shutdown waits for the stream finalizer;
 - a metered turn passes customer reserve → durable delivering marker → terminal settlement;
-  the actual charge is taken by **served model**, and missing terminal usage preserves the full hold;
+  the actual charge is taken by **served model**. A turn whose terminal frame never arrived
+  settles from the provider-reported cumulative counters it did produce (`kimi-measured-partial`),
+  a live stream checkpoints its measured cost durably every 2s so an owner death settles fact
+  rather than zero, and a turn with nothing measured follows the fleet unknown-usage policy
+  (default: no charge — the hold is admission, not a price);
 - immutable turn evidence is delivered through a bounded FIFO; `/usages` is not executed with a pending
   head, and after the HTTP snapshot the writer drains the FIFO again, reads the durable cumulative
   spend, and completes the immutable observation/CAS before publishing quota steering;
