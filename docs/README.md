@@ -93,6 +93,7 @@ document, update this index.
 - [2026-08-06-MULTI-DISCOUNT-PRICES-AUDIT.md](audits/2026-08-06-MULTI-DISCOUNT-PRICES-AUDIT.md) — full contract audit of the live multi-discount pricing update: post-cutover B2B conversion and welcome-bonus gaps, settlement rounding, progressive UI leftovers, and the verified release-v2 economics.
 - [2026-08-06-MULTI-DISCOUNT-DEEPSEEK-AUDIT.md](audits/2026-08-06-MULTI-DISCOUNT-DEEPSEEK-AUDIT.md) — full DeepSeek audit of the prices update: live release-v2 authority, B2C/B2B/OpenKeys/service economics, funding, welcome bonus, referral, progressive cleanup, and read-only production verification of the Definition of Done.
 - [2026-08-12-PRICING-ROLLBACK-REMEDIATION-CLOSEOUT.md](audits/2026-08-12-PRICING-ROLLBACK-REMEDIATION-CLOSEOUT.md) — resumable finding→SHA→production-evidence closeout for pricing rollback remediation, with the exact retention, payout-funding, debt-decision and external failure-domain gates still preventing final completion.
+- [2026-08-12-PRICING-ROLLBACK-EXTERNAL-GATES-CLOSEOUT.md](audits/2026-08-12-PRICING-ROLLBACK-EXTERNAL-GATES-CLOSEOUT.md) — append-only continuation with exact debt causality, payout funding requirement, Borg contents, live off-host incident/recovery evidence and the four remaining external/retention gates.
 
 ## Next to the code (do not move here)
 
