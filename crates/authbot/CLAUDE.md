@@ -660,3 +660,68 @@ key again, while the proxy and the platform selection survive the restart.
 with GLM, intake is gated only on the AEAD keyring.
 
 Verification: `cargo test -p authbot tripo3d`.
+
+## SUNO (suno.com) — subscription session cookie
+
+`suno_session.rs` — a pure protocol module for validating a Suno subscription session. It does
+NOT own the Telegram state, the seller job, the payout or the roster publication: the seller
+wizard in `bot.rs` calls it step by step. Evidence facts and labels —
+`docs/engine/SUNO_PROVIDER.md` §2 (credential/identity), §4 (wire), §5.2 (native quota),
+§7 (acquisition flow). Every wire fact is `oss-hypothesis` (gcui-art/suno-api, read
+2026-08-12): every parser fails closed on any schema deviation.
+
+- **Credential — the browser session cookie string**, whose critical entry is the Clerk
+  `__client` cookie. This is a sanctioned one-time artifact of the same class as the Claude
+  `sk-ant-oat01` setup-token and a recorded deviation from the generic "seller never sends a
+  cookie" default (manifest §2): there is no other credential surface. The bot never asks for
+  the account password, 2FA or card data. The seller activates exactly the declared plan
+  (Pro/Premier per the offer product) and copies the cookie from their own browser.
+- **Validation chain, all free and all through the seller's pinned proxy**: Clerk session
+  discovery (`GET auth.suno.com/v1/client`, `Authorization: <__client value>`, pinned Clerk
+  query versions) → JWT mint (`POST /v1/client/sessions/{sid}/tokens`) → free quota probe
+  (`GET studio-api.prod.suno.com/api/billing/info/`, Bearer JWT + full cookie). HTTP 401/403
+  at any step is the typed `InvalidKeyReason::Auth` verdict; anything unreadable (missing
+  `last_active_session_id`, missing `jwt`, a float where an integer counter was reviewed) is
+  a schema deviation and fails closed. All three calls are free and idempotent (JWT minting
+  is session keep-alive), so transport failures retry with bounded backoff.
+- **The plan is corroborated by the published monthly window**: observed `monthly_limit`
+  2 500/10 000 must match the declared plan exactly (reviewed 2026-08-12). A contradiction is
+  `PlanMismatch`; an absent or unreadable limit is `Unreadable`, fail closed without
+  guessing. `total_credits_left`/`monthly_usage` are kept raw and nullable — semantics
+  unproven (manifest §5.2), nothing is derived at intake.
+- **No paid admission song exists at all.** One admission song costs 5 credits = $0.02
+  derived, which exceeds the default $0.0001 admission micro-smoke cap (manifest §7 records
+  the open admission-budget question, fail closed). Validation stops at the free probes;
+  there is deliberately no generation code path to stub or forget.
+- **Envelope sealing — only BEFORE completing the payout**: a failed, dead-session or
+  wrong-plan flow leaves neither a credential file nor a roster row. The sealed cookie is
+  exactly the seller's string; merging a rotated `set-cookie` back is the runtime's
+  single-flight concern (manifest §2), not the intake's.
+
+`suno_roster.rs` — the file contract of publication, a mirror of `glm_roster.rs`.
+
+- **Order — envelope, then roster**, both atomic + parent fsync (files 0600, directories
+  0700): the engine never reads a roster row whose credential file does not exist yet.
+- **The Clerk session id is the quota identity** (a `/me`-class endpoint is unproven,
+  manifest §2). Dedup runs on opened envelopes inside the safe zone; the cookie and the
+  session id never leave it. Re-publication of a known session **replaces** the profile in
+  place, preserving the profile id (affinity, health and calibration history survive); a new
+  session with an already occupied profile id is rejected. A credential without a discovered
+  session id cannot be deduplicated, so publication refuses it — the intake flow always
+  discovers the session before sealing.
+- **Fail closed:** a roster row must point exactly at the canonical path of its own id; a
+  symlink, a world-readable file and an unreadable envelope stop publication rather than
+  dropping the profile; an invalid credential does not touch the roster at all. The roster
+  holds only the opaque id and path — no cookie, no session id, no plan, no proxy.
+
+**Seller wizard.** Steps `su_proxy → su_ready → su_wait`, button `su:ready`; one platform
+(`suno.com`), no region fork. The wizard in `bot.rs` arrives as the dependent follow-up
+change (same split as KIMI/GLM/Tripo3D), so that the provider contract is not mixed with
+seller state-machine edits in one diff; the modules above are dormant until it lands.
+
+**Env:** `AUTH_BOT_SUNO_DIR` (root of `credentials/` + `profiles.json`, default
+`/srv/claude-api/data/suno`), `AUTH_BOT_SUNO_CREDENTIAL_KEYS`,
+`AUTH_BOT_SUNO_CREDENTIAL_ACTIVE_KID`. Without a keyring the branch publishes nothing — as
+with GLM, intake is gated only on the AEAD keyring.
+
+Verification: `cargo test -p authbot suno`.

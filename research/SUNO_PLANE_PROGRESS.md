@@ -18,6 +18,7 @@ storefront, public docs) is OUT of scope for this task — dormant implementatio
 | Migration 0052 (pricing provider admission) | (this commit) | `crates/registry/migrations_pg/0052_suno_pricing_provider.sql` widens the two closed provider CHECK sets (`account_provider_discounts_provider_id_check`, `reservations_scalar_pricing_shape`) with `'suno'` exactly as 0051 did for tripo3d (drop/re-add NOT VALID + VALIDATE, `engine_schema_migrations` 52); `DISCOUNT_PROVIDER_IDS` 6→7, SQLite mirror texts, `CURRENT_SCHEMA_VERSION` 51→52 with registration/content tests; lands alone before any code reserving under `provider = 'suno'` |
 | Credential crate | (this commit) | `crates/suno-credential`; GLM-pattern AEAD envelope for the Clerk session cookie (`__client=` entry enforced at seal) + optional rediscoverable session id + declared plan `Pro`/`Premier` (labels match the 0050 CHECK; `SUNO_REVIEWED_PLANS` pins 2 500/10 000 credits, reviewed 2026-08-12); fixed-host constants, no base-url override by design; JWT mint / `set-cookie` re-seal single-flight documented as the runtime's concern; 18 tests green |
 | Calibration estimator | (this commit) | `crates/forward/src/suno_calibration.rs`; GLM dual-path monthly-window state machine per manifest §5.2/§5.3 (quota-endpoint fraction when carried, else native-ledger fraction against `suno_credential::reviewed_plan_credits`; cutover re-anchors without erasing history, exact-duration keying, unattributed counter, version rebuild from immutable history, checked i64/i128 only); §10.6 cohort pooling by exact plan+duration; 33 deterministic tests |
+| Auth Bot protocol + roster | (this commit) | `crates/authbot/src/{suno_session,suno_roster}.rs` + `main.rs` env (`AUTH_BOT_SUNO_{DIR,CREDENTIAL_KEYS,CREDENTIAL_ACTIVE_KID}`) + `suno-credential` dep; GLM-pattern intake per manifest §7 over the `__client` cookie artifact (sanctioned one-time artifact, manifest §2 deviation): Clerk session discovery → JWT mint → free billing probe (401/403 → typed Auth verdict, any schema deviation fails closed, raw nullable counters), plan corroboration against the published monthly ladder (2 500/10 000 exact match, mismatch/unreadable fail closed), **no paid admission song at all** ($0.02 > $0.0001 cap, §7 open question); roster = glm_roster mirror with session-id-as-identity replace-in-place (no session id → publication refused); modules dormant (`#![allow(dead_code)]`) until the wizard commit; 24 new tests |
 
 ## Key research facts (review date 2026-08-12)
 
@@ -46,12 +47,12 @@ storefront, public docs) is OUT of scope for this task — dormant implementatio
 
 ## Next action (exactly one)
 
-Auth Bot protocol + wizard (`crates/authbot`, separate commit) — `HandoffKind::Suno` with the
-`su_proxy → su_ready → su_wait` steps per manifest §7: proxy canonicalization via
-`suno_credential::normalize_proxy_url`, seller newcomer guide (plan activation + `__client`
-cookie extraction), intake, validation stub (Clerk session discovery → JWT mint → free quota
-probe → plan corroboration → admission micro-smoke → seal → atomic roster publish), payout
-completion.
+Auth Bot seller wizard (`crates/authbot/src/bot.rs`, separate commit) — `HandoffKind::Suno`
+with the `su_proxy → su_ready → su_wait` steps per manifest §7: proxy canonicalization via
+`suno_credential::normalize_proxy_url`, seller newcomer guide (exact plan activation +
+`__client` cookie extraction), cookie intake, validation (session discovery → JWT mint →
+billing probe → plan corroboration → seal → atomic roster publish — no paid admission song
+while the $0.0001 cap stands), payout completion.
 
 ## Queue
 

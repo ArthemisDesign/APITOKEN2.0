@@ -28,6 +28,7 @@ codex-credential = { path = "../codex-credential" }
 kimi-credential = { path = "../kimi-credential" }
 glm-credential = { path = "../glm-credential" }
 tripo3d-credential = { path = "../tripo3d-credential" }
+suno-credential = { path = "../suno-credential" }
 getrandom = "0.3"
 portable-pty = "0.8"                 # Фаза 3: гоним `claude setup-token` в PTY
 registry = { path = "../registry" }  # мост: запись подписки в пул напрямую

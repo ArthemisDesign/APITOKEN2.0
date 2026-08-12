@@ -18,6 +18,8 @@ mod kimi_oauth;
 mod kimi_roster;
 mod proxy_admin;
 mod setup_token;
+mod suno_roster;
+mod suno_session;
 mod tg;
 mod tripo3d_key;
 mod tripo3d_roster;
@@ -52,6 +54,7 @@ pub struct Config {
     pub kimi_roster: Option<kimi_roster::RosterConfig>,
     pub glm_roster: Option<glm_roster::RosterConfig>,
     pub tripo3d_roster: Option<tripo3d_roster::RosterConfig>,
+    pub suno_roster: Option<suno_roster::RosterConfig>,
 }
 
 fn env_opt(k: &str) -> Option<String> {
@@ -203,6 +206,31 @@ fn tripo3d_roster_config() -> Result<Option<tripo3d_roster::RosterConfig>> {
         return Err(anyhow!("AUTH_BOT_TRIPO3D_DIR должен быть абсолютным путём"));
     }
     Ok(Some(tripo3d_roster::RosterConfig {
+        dir,
+        keyring,
+        active_key_id: active,
+    }))
+}
+
+/// Encrypted roster of the Suno plane. Gated on the AEAD keyring exactly like GLM: with no
+/// keys the branch publishes nothing instead of starting half-configured.
+fn suno_roster_config() -> Result<Option<suno_roster::RosterConfig>> {
+    let keys = env_opt("AUTH_BOT_SUNO_CREDENTIAL_KEYS");
+    let active = env_opt("AUTH_BOT_SUNO_CREDENTIAL_ACTIVE_KID");
+    if keys.is_none() && active.is_none() {
+        return Ok(None);
+    }
+    let keyring = suno_credential::CredentialKeyring::parse(
+        &keys.ok_or_else(|| anyhow!("AUTH_BOT_SUNO_CREDENTIAL_KEYS не задан"))?,
+    )?;
+    let active = active.ok_or_else(|| anyhow!("AUTH_BOT_SUNO_CREDENTIAL_ACTIVE_KID не задан"))?;
+    let dir = std::path::PathBuf::from(
+        env_opt("AUTH_BOT_SUNO_DIR").unwrap_or_else(|| "/srv/claude-api/data/suno".into()),
+    );
+    if dir.is_relative() {
+        return Err(anyhow!("AUTH_BOT_SUNO_DIR должен быть абсолютным путём"));
+    }
+    Ok(Some(suno_roster::RosterConfig {
         dir,
         keyring,
         active_key_id: active,
@@ -444,6 +472,7 @@ async fn main() -> Result<()> {
         kimi_roster: kimi_roster_config()?,
         glm_roster: glm_roster_config()?,
         tripo3d_roster: tripo3d_roster_config()?,
+        suno_roster: suno_roster_config()?,
     });
     let store = Arc::new(Store::open(&state_db())?);
     let recovered = store.recover_interrupted_handoffs()?;
