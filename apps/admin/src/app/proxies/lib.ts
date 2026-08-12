@@ -22,6 +22,7 @@ export interface ProxyInventoryItem {
   proxy_expires_at: number | null;
   binding_status: ProxyBinding;
   renewable: boolean;
+  operator_renewable: boolean;
   renew_block_code: string | null;
 }
 
@@ -35,6 +36,7 @@ export interface ProxyInventoryResponse {
 export interface ProxyRenewRequest {
   idempotency_key: string;
   inventory_ids: string[];
+  allow_inactive_subscription: true;
 }
 
 export interface ProxyRenewResult {
@@ -194,6 +196,7 @@ export function projectProxyInventory(payload: unknown): ProxyInventoryResponse 
         proxy_expires_at: nullableEpoch(item.proxy_expires_at),
         binding_status: "bound",
         renewable: item.renewable === true,
+        operator_renewable: item.operator_renewable === true,
         renew_block_code: typeof item.renew_block_code === "string" ? safeString(item.renew_block_code, "") || null : null,
       }];
     }),
@@ -236,7 +239,7 @@ export function filterProxyInventory(items: ProxyInventoryItem[], filters: Proxy
 }
 
 export function selectableProxyIds(items: ProxyInventoryItem[]): string[] {
-  return items.filter((item) => item.renewable).map((item) => item.inventory_id).sort();
+  return items.filter((item) => item.operator_renewable).map((item) => item.inventory_id).sort();
 }
 
 export function createProxyRenewRequest(ids: Iterable<string>, idempotencyKey: string): ProxyRenewRequest {
@@ -247,7 +250,11 @@ export function createProxyRenewRequest(ids: Iterable<string>, idempotencyKey: s
   if (!inventoryIds.length || inventoryIds.length > 100 || inventoryIds.some((id) => !id || id.length > 160)) {
     throw new Error("Для продления нужно от 1 до 100 opaque inventory IDs");
   }
-  return { idempotency_key: idempotencyKey, inventory_ids: inventoryIds };
+  return {
+    idempotency_key: idempotencyKey,
+    inventory_ids: inventoryIds,
+    allow_inactive_subscription: true,
+  };
 }
 
 export function proxyRenewSummary(response: ProxyRenewResponse): string {

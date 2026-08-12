@@ -33,6 +33,7 @@ const ITEMS: ProxyInventoryItem[] = [
     proxy_expires_at: 1_800_086_400,
     binding_status: "bound",
     renewable: true,
+    operator_renewable: true,
     renew_block_code: null,
   },
   {
@@ -47,6 +48,7 @@ const ITEMS: ProxyInventoryItem[] = [
     proxy_expires_at: null,
     binding_status: "bound",
     renewable: false,
+    operator_renewable: false,
     renew_block_code: "liveness_degraded",
   },
 ];
@@ -83,6 +85,8 @@ describe("Прокси (page)", () => {
     expect(source).toContain("<EmptyRow columns={11}");
     expect(source).not.toContain('aria-label="Binding"');
     expect(source).not.toContain('<option value="dead">');
+    expect(source).toContain("item.operator_renewable");
+    expect(source).not.toContain("disabled={busy || !item.renewable}");
     const styles = readFileSync(new URL("../globals.css", import.meta.url), "utf8");
     expect(styles).toContain(".proxy-expiry-warning.subscription");
     expect(styles).toContain(".proxy-expiry-warning.proxy");
@@ -177,6 +181,26 @@ describe("proxy inventory", () => {
     expect(filterProxyInventory(ITEMS, { query: "", provider: "other", plan: "google_ai_ultra" })).toEqual([ITEMS[1]]);
     expect(selectableProxyIds(ITEMS)).toEqual([ITEMS[0].inventory_id]);
   });
+
+  it("разрешает ручной выбор истёкшей подписки только по operator_renewable", () => {
+    const expired = projectProxyInventory(inventoryPayload([inventoryItem({
+      subscription_expires_at: 1_799_999_999,
+      renewable: false,
+      operator_renewable: true,
+      renew_block_code: "local_profile_inactive",
+    })])).items[0];
+    expect(expired.renewable).toBe(false);
+    expect(expired.operator_renewable).toBe(true);
+    expect(selectableProxyIds([expired])).toEqual([expired.inventory_id]);
+  });
+
+  it("fail-closed не включает ручное продление без точного true", () => {
+    for (const operator_renewable of [undefined, false, "true", 1]) {
+      const item = projectProxyInventory(inventoryPayload([inventoryItem({ operator_renewable })])).items[0];
+      expect(item.operator_renewable).toBe(false);
+      expect(selectableProxyIds([item])).toEqual([]);
+    }
+  });
 });
 
 describe("proxy expiry warnings", () => {
@@ -200,12 +224,15 @@ describe("proxy expiry warnings", () => {
 });
 
 describe("proxy renew", () => {
-  it("single и bulk используют UUID idempotency key и sorted unique IDs", () => {
+  it("single и bulk используют UUID, sorted unique IDs и явный inactive override", () => {
     const key = "33333333-3333-4333-8333-333333333333";
-    expect(createProxyRenewRequest([ITEMS[1].inventory_id, ITEMS[0].inventory_id, ITEMS[1].inventory_id], key)).toEqual({
+    const request = createProxyRenewRequest([ITEMS[1].inventory_id, ITEMS[0].inventory_id, ITEMS[1].inventory_id], key);
+    expect(request).toEqual({
       idempotency_key: key,
       inventory_ids: [ITEMS[0].inventory_id, ITEMS[1].inventory_id],
+      allow_inactive_subscription: true,
     });
+    expect(JSON.parse(JSON.stringify(request))).toEqual(request);
     expect(createProxyRenewRequest([ITEMS[0].inventory_id], key).inventory_ids).toHaveLength(1);
     expect(() => createProxyRenewRequest([], key)).toThrow("от 1 до 100");
     expect(() => createProxyRenewRequest([ITEMS[0].inventory_id], "not-a-uuid")).toThrow("должен быть UUID");

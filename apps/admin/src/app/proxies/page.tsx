@@ -106,8 +106,8 @@ export default function ProxiesPage() {
       const values = await dialog({
         title: retryRequest ? "Проверить неопределённое продление" : ids.length === 1 ? "Продлить прокси" : `Продлить прокси: ${ids.length}`,
         message: retryRequest
-          ? "Будет повторён тот же запрос с тем же idempotency UUID. Новый расход создаваться не должен."
-          : "Действие расходует баланс провайдера. Будет продлён тот же proxy order; отменить операцию после отправки нельзя.",
+          ? "Будет повторён тот же платный запрос с тем же idempotency UUID, включая разрешение продлить прокси при истёкшей локальной подписке. Новый расход создаваться не должен."
+          : "Это платное действие расходует баланс провайдера. Выбранный proxy order будет продлён даже при истёкшей локальной подписке; отменить операцию после отправки нельзя.",
         confirmLabel: retryRequest ? "Повторить безопасно" : "Продлить",
         danger: true,
       });
@@ -161,7 +161,7 @@ export default function ProxiesPage() {
   }
 
   const autoExtendProviders = inventory.providers.filter((provider) => provider.auto_extend_enabled);
-  const renewableCount = items.filter((item) => item.renewable).length;
+  const renewableCount = items.filter((item) => item.operator_renewable).length;
 
   return (
     <>
@@ -244,13 +244,13 @@ export default function ProxiesPage() {
               const proxyWarning = classifyExpiryWarning(item.proxy_expires_at, inventory.observed_at) === "warning";
               return (
                 <tr key={item.inventory_id} className={selected.has(item.inventory_id) ? "selected" : ""}>
-                  <td><input className="proxy-select" type="checkbox" checked={selected.has(item.inventory_id)} onChange={() => toggle(item.inventory_id)} disabled={busy || !item.renewable} aria-label={`Выбрать ${item.proxy_hint}`} /></td>
+                  <td><input className="proxy-select" type="checkbox" checked={selected.has(item.inventory_id)} onChange={() => toggle(item.inventory_id)} disabled={busy || !item.operator_renewable} aria-label={`Выбрать ${item.proxy_hint}`} /></td>
                   <td className="left"><b>{item.proxy_hint}</b></td><td className="left mono proxy-account-email">{item.account_email}</td><td className="left mono">{item.order_hint}</td><td className="left">{item.provider}</td><td className="left">{item.subscription_plan}</td>
                   <td><Pill kind={stateTone(item.liveness)}>{LIVENESS_LABELS[item.liveness]}</Pill></td>
                   <td className={subscriptionWarning ? "proxy-expiry-warning subscription" : undefined}>{expiryCell(item.subscription_expires_at)}</td>
                   <td className={proxyWarning ? "proxy-expiry-warning proxy" : undefined}>{expiryCell(item.proxy_expires_at)}</td>
                   <td><Pill kind={stateTone(item.binding_status)}>{BINDING_LABELS[item.binding_status]}</Pill></td>
-                  <td><button type="button" className="btn ghost" onClick={() => void renew([item.inventory_id])} disabled={busy || !item.renewable} title={item.renew_block_code ?? undefined}>Продлить</button></td>
+                  <td><button type="button" className="btn ghost" onClick={() => void renew([item.inventory_id])} disabled={busy || !item.operator_renewable} title={item.operator_renewable ? undefined : item.renew_block_code ?? undefined}>Продлить</button></td>
                 </tr>
               );
             }) : <EmptyRow columns={11} text="прокси по фильтрам не найдены" />}

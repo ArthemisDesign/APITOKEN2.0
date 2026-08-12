@@ -199,11 +199,14 @@ nonrenewable rather than dead. The overrides
 provider path and no credentials/query/fragment/external origin.
 
 Renewal is never automatic. New IPRoyal purchases set `auto_extend=false`, and authbot's free
-background guard disables unexpected auto-extend on every ISP order. A paid extension happens only
-after an operator submits an authenticated request with a fresh UUID idempotency key to
-`POST /proxy-admin/renew`. Authbot repeats the exact durable-binding, authoritative-liveness and
-local subscription-expiry checks before spending; an expiry at or before the recheck time is
-`local_profile_inactive` and makes no provider call. It snapshots exact allocation IPs privately,
+background guard disables unexpected auto-extend on every ISP order. The admin UI uses the additive
+`operator_renewable` decision for its count, bulk selection, checkbox and row action, so local
+subscription expiry alone never disables manual renewal. Every new paid request carries
+`allow_inactive_subscription=true`; an uncertain replay retains that exact flag with the original
+UUID. The confirmation explicitly warns that the provider balance will be spent and the same proxy
+order will be extended even when the local subscription is expired. Authbot still repeats exact
+durable-binding, authoritative-liveness and provider-order checks before spending; only the local
+expiry check is bypassed by this explicit operator flag. It snapshots exact allocation IPs privately,
 groups selected allocations by order and performs one selective extend call per order. After exact
 same-key replay handling, a different UUID overlapping a queued or active inventory ID or exact
 order/allocation gets safe `409 renewal_selection_busy` before insertion and cannot later be claimed
