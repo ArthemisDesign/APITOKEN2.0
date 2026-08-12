@@ -695,6 +695,52 @@ groups:
           description: 'The commit-ordered topups_v2 cursor has remained behind Commerce for more than five minutes. Partner deposit history and conversion analytics are incomplete until the durable source rows replay.'
           runbook: 'docs/ops/MONITORING.md#salestopupsynccursorstalled'
 
+      - alert: SalesFundingSyncCursorStalled
+        expr: (apitoken_sales_topups_feed_head - on() apitoken_sales_cursor{feed="topup_funding_lots"}) > 0
+          and on() apitoken_sales_cursor_age_seconds{feed="topup_funding_lots"} > 300
+        for: 5m
+        labels:
+          severity: critical
+          component: sales-api
+        annotations:
+          summary: 'Partner funding evidence has stopped advancing'
+          description: 'The funding-lot cursor has remained behind committed Commerce payments. Refund accounting and safe payout preparation are incomplete until the immutable top-up stream replays.'
+          runbook: 'docs/ops/MONITORING.md#salesfundingsynccursorstalled'
+
+      - alert: SalesReversalSyncCursorStalled
+        expr: (apitoken_sales_reversal_feed_head - on() apitoken_sales_cursor{feed="payment_reversals"}) > 0
+          and on() apitoken_sales_cursor_age_seconds{feed="payment_reversals"} > 300
+        for: 5m
+        labels:
+          severity: critical
+          component: sales-api
+        annotations:
+          summary: 'Partner refund accounting has stopped advancing'
+          description: 'The payment-reversal cursor has remained behind Commerce. Partner net earnings, debt and payable balances may be overstated; payout preparation remains fail-closed.'
+          runbook: 'docs/ops/MONITORING.md#salesreversalsynccursorstalled'
+
+      - alert: SalesPartnerAccountingIncomplete
+        expr: apitoken_sales_accounting_incomplete > 0
+        for: 2m
+        labels:
+          severity: critical
+          component: sales-api
+        annotations:
+          summary: 'Partner refund accounting evidence is incomplete'
+          description: '{{ $labels.invariant }} has {{ $value }} incomplete durable rows. Payout preparation must remain blocked until the source cursors and exact allocation/adjustment evidence converge.'
+          runbook: 'docs/ops/MONITORING.md#salespartneraccountingincomplete'
+
+      - alert: SalesPartnerDebtPresent
+        expr: apitoken_sales_partner_debt_nano > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: sales-api
+        annotations:
+          summary: 'A partner has commission debt after a reversal'
+          description: 'Commission already committed for payout exceeds signed net earnings by {{ $value | humanize }} nanoUSD. This is durable debt, not a payout; future commission repays it automatically.'
+          runbook: 'docs/ops/MONITORING.md#salespartnerdebtpresent'
+
       - alert: SalesSyncIterationFailing
         expr: apitoken_sales_sync_errors_recent > 0 or apitoken_sales_sync_journal_up == 0
         for: 2m

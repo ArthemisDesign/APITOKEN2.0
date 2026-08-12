@@ -82,11 +82,13 @@ describe("clampedOffset", () => {
 
 describe("tierLabel", () => {
   it("B2B по customer_type", () => {
-    expect(tierLabel({ customer_type: "b2b" })).toBe("B2B");
+    expect(tierLabel({ customer_type: "b2b", multiplier_bp: 3700 })).toBe("B2B −63%");
   });
 
-  it("B2C — единый flat-тариф без тир-лестницы", () => {
-    expect(tierLabel({ customer_type: "b2c" })).toBe("B2C −50%");
+  it("B2C показывает сохранённый flat-множитель, включая dormant 4000 bp", () => {
+    expect(tierLabel({ customer_type: "b2c", multiplier_bp: 5000 })).toBe("B2C −50%");
+    expect(tierLabel({ customer_type: "b2c", multiplier_bp: 4000 })).toBe("B2C −60%");
+    expect(tierLabel({ customer_type: "b2c" })).toBe("B2C");
   });
 });
 
@@ -99,6 +101,7 @@ describe("buildUsersCsvRows", () => {
         display_name: "Ivan",
         status: "active",
         customer_type: "b2c",
+        multiplier_bp: 4000,
         tier: 1,
         balance_usd: 12.5,
         spent_usd: 100,
@@ -115,7 +118,7 @@ describe("buildUsersCsvRows", () => {
       "a@b.c",
       "Ivan",
       "active",
-      "B2C −50%",
+      "B2C −60%",
       12.5,
       100,
       7,

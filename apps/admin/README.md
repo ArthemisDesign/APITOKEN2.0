@@ -58,6 +58,9 @@ No secrets, and there never will be: the browser uses same-origin relative paths
   provider overrides; an empty provider value means inheritance, not a zero discount. The clients
   and invitations are separate operator sections, while conversion from the Users page uses a
   dedicated B2B dialog that explains the new base term before submission.
+- `src/app/users` — the general customer table renders the exact persisted scalar for both B2C and
+  B2B. B2C is still one flat price, but historical/dormant `4000` rows must remain visible as a 60%
+  discount; the UI and CSV never substitute today's common `5000` value for a stored condition.
 - `src/app/paying-users/page.tsx` — one read-only control room with independently filtered
   `Клиенты` and `OpenKeys` cohorts. Only the active cohort mounts its 30-second poller. Commerce
   defaults to `funding=spenders`, retains the selected funding filter and always sends

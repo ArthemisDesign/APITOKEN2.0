@@ -87,6 +87,8 @@ cat >"$temporary" <<'METRICS'
 # TYPE apitoken_sales_attribution_feed_head gauge
 # HELP apitoken_sales_topups_feed_head Highest payment sequence commerce has published to the partner feed.
 # TYPE apitoken_sales_topups_feed_head gauge
+# HELP apitoken_sales_reversal_feed_head Highest terminal payment-reversal audit sequence commerce has published to Sales.
+# TYPE apitoken_sales_reversal_feed_head gauge
 # HELP apitoken_sales_cursor Partner-portal sync cursor per feed; a gap to its feed head that stops closing means partner data is stale.
 # TYPE apitoken_sales_cursor gauge
 # HELP apitoken_sales_cursor_age_seconds Time since the partner-portal sync cursor last advanced.
@@ -95,6 +97,10 @@ cat >"$temporary" <<'METRICS'
 # TYPE apitoken_sales_sync_errors_recent gauge
 # HELP apitoken_sales_sync_journal_up Whether the bounded partner sync journal query completed.
 # TYPE apitoken_sales_sync_journal_up gauge
+# HELP apitoken_sales_accounting_incomplete Durable partner accounting facts that are incomplete, by fixed invariant.
+# TYPE apitoken_sales_accounting_incomplete gauge
+# HELP apitoken_sales_partner_debt_nano Partner commission committed for payout beyond signed net earnings.
+# TYPE apitoken_sales_partner_debt_nano gauge
 # HELP apitoken_engine_accounts_below_floor Accounts whose balance is below the $1 overdraft floor.
 # TYPE apitoken_engine_accounts_below_floor gauge
 # HELP apitoken_pricing_charge_mismatch Settled full billed amounts whose value does not match the reserve-time provider multiplier.
@@ -154,6 +160,8 @@ WHERE j.status = 'confirmed'
 SELECT 'apitoken_sales_feed_head ' || COALESCE(max(feed_seq), 0) FROM pricing_usage_events;
 SELECT 'apitoken_sales_attribution_feed_head ' || COALESCE(max(id), 0) FROM referral_attributions;
 SELECT 'apitoken_sales_topups_feed_head ' || COALESCE(max(feed_seq), 0) FROM payments;
+SELECT 'apitoken_sales_reversal_feed_head ' || COALESCE(max(id), 0)
+FROM audit_log WHERE action = 'payment.reversed';
 SELECT 'apitoken_usage_provider_unresolved{window="all"} ' || count(*)
 FROM pricing_usage_events
 WHERE provider_id IS NULL OR provider_id IN ('unattributed', 'unavailable');
@@ -273,13 +281,114 @@ LEFT JOIN payout_batches b ON b.id = p.batch_id
 WHERE p.status = 'requested'
   AND p.chain_status = 'broadcast'
   AND COALESCE(b.sent_at, p.requested_at) < now() - interval '10 minutes';
+-- Payout preparation uses these exact predicates under the partner-accounting lock. Monitoring
+-- evaluates the same durable proof continuously so a replay/completeness regression pages before
+-- the next payout window. Fixed invariant labels keep customer/payment identities out of metrics.
+WITH all_usage AS (
+  SELECT 1::int AS source_schema, usage.id, usage.amount_nano AS basis_nano
+  FROM partner_usage_events usage
+  UNION ALL
+  SELECT 2::int AS source_schema, usage.id, usage.paid_funded_nano AS basis_nano
+  FROM partner_usage_events_v2 usage
+), accounting_health AS (
+  SELECT
+    (SELECT count(*)
+     FROM all_usage usage
+     WHERE COALESCE((
+       SELECT sum(allocation.allocated_paid_nano)
+       FROM partner_usage_funding_allocations allocation
+       WHERE (usage.source_schema = 1 AND allocation.usage_event_id = usage.id)
+          OR (usage.source_schema = 2 AND allocation.usage_event_v2_id = usage.id)
+     ), 0) <> usage.basis_nano) AS usage_funding,
+    (SELECT count(*) FROM (
+       SELECT 1
+       FROM partner_usage_funding_allocations usage_allocation
+       JOIN commission_entries entry ON entry.usage_event_id = usage_allocation.usage_event_id
+       WHERE NOT EXISTS (
+         SELECT 1 FROM partner_commission_funding_allocations commission_allocation
+         WHERE commission_allocation.usage_funding_allocation_id = usage_allocation.id
+           AND commission_allocation.commission_entry_id = entry.id
+       )
+       UNION ALL
+       SELECT 1
+       FROM partner_usage_funding_allocations usage_allocation
+       JOIN commission_entries_v2 entry ON entry.usage_event_id = usage_allocation.usage_event_v2_id
+       WHERE NOT EXISTS (
+         SELECT 1 FROM partner_commission_funding_allocations commission_allocation
+         WHERE commission_allocation.usage_funding_allocation_id = usage_allocation.id
+           AND commission_allocation.commission_entry_v2_id = entry.id
+       )
+     ) missing) AS commission_funding,
+    (SELECT count(*)
+     FROM partner_payment_reversals reversal
+     WHERE EXISTS (
+       SELECT 1
+       FROM partner_commission_funding_allocations commission_allocation
+       JOIN partner_usage_funding_allocations usage_allocation
+         ON usage_allocation.id = commission_allocation.usage_funding_allocation_id
+       WHERE usage_allocation.funding_lot_id = reversal.funding_lot_id
+         AND commission_allocation.allocated_commission_nano > 0
+         AND NOT EXISTS (
+           SELECT 1 FROM partner_commission_adjustments adjustment
+           WHERE adjustment.reversal_id = reversal.id
+             AND adjustment.commission_funding_allocation_id = commission_allocation.id
+             AND adjustment.amount_nano = -commission_allocation.allocated_commission_nano
+         )
+     )) AS reversal_adjustments,
+    (SELECT count(*)
+     FROM payout_batches
+     WHERE status IN ('preparing', 'prepared', 'sending') AND earned_before IS NULL)
+      AS payout_boundary
+)
+SELECT 'apitoken_sales_accounting_incomplete{invariant="usage_funding"} ' || usage_funding
+FROM accounting_health
+UNION ALL
+SELECT 'apitoken_sales_accounting_incomplete{invariant="commission_funding"} ' || commission_funding
+FROM accounting_health
+UNION ALL
+SELECT 'apitoken_sales_accounting_incomplete{invariant="reversal_adjustments"} ' || reversal_adjustments
+FROM accounting_health
+UNION ALL
+SELECT 'apitoken_sales_accounting_incomplete{invariant="payout_boundary"} ' || payout_boundary
+FROM accounting_health;
+WITH gross AS (
+  SELECT partner_id, sum(amount_nano)::bigint AS amount_nano
+  FROM (
+    SELECT partner_id, amount_nano FROM commission_entries
+    UNION ALL
+    SELECT partner_id, amount_nano FROM commission_entries_v2
+  ) commission
+  GROUP BY partner_id
+), adjustments AS (
+  SELECT partner_id, sum(amount_nano)::bigint AS amount_nano
+  FROM partner_commission_adjustments
+  GROUP BY partner_id
+), committed AS (
+  SELECT partner_id, sum(amount_nano)::bigint AS amount_nano
+  FROM payouts WHERE status IN ('requested', 'approved', 'paid')
+  GROUP BY partner_id
+)
+SELECT 'apitoken_sales_partner_debt_nano ' || COALESCE(sum(GREATEST(
+  COALESCE(committed.amount_nano, 0) - COALESCE(gross.amount_nano, 0)
+    - COALESCE(adjustments.amount_nano, 0), 0
+)), 0)
+FROM partners partner
+LEFT JOIN gross ON gross.partner_id = partner.id
+LEFT JOIN adjustments ON adjustments.partner_id = partner.id
+LEFT JOIN committed ON committed.partner_id = partner.id;
 -- Where the partner sync actually stands. Compared against apitoken_sales_feed_head from commerce,
 -- a gap that stops closing is the whole signal: on 2026-08-10 this cursor stood still for five
 -- hours while every service was up and healthy, and no commission accrued.
-WITH feeds(feed) AS (VALUES ('attributions'), ('usage_events'), ('topups_v2'))
+WITH feeds(feed) AS (VALUES
+  ('attributions'), ('usage_events'), ('topups_v2'),
+  ('topup_funding_lots'), ('payment_reversals')
+)
 SELECT 'apitoken_sales_cursor{feed="' || feeds.feed || '"} ' || COALESCE(cursor.last_id, 0)
 FROM feeds LEFT JOIN sync_cursors cursor USING (feed);
-WITH feeds(feed) AS (VALUES ('attributions'), ('usage_events'), ('topups_v2'))
+WITH feeds(feed) AS (VALUES
+  ('attributions'), ('usage_events'), ('topups_v2'),
+  ('topup_funding_lots'), ('payment_reversals')
+)
 SELECT 'apitoken_sales_cursor_age_seconds{feed="' || feeds.feed || '"} '
        || CASE WHEN cursor.updated_at IS NULL THEN 86400
                ELSE GREATEST(0, EXTRACT(EPOCH FROM now() - cursor.updated_at))::bigint END

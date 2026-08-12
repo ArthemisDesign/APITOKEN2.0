@@ -1022,6 +1022,57 @@ consumer and let its idempotent `commerce_payment_id` writer replay from the sto
 Recovery is complete only when the cursor reaches the head, the legacy cursor is unchanged, and
 referred-topup count/sum/canonical hash still match the eligible Commerce source.
 
+## SalesFundingSyncCursorStalled
+
+The `topup_funding_lots` cursor is behind the committed `payments.feed_seq` head. Unlike the
+analytics-only `topups_v2` reader, this replay creates the immutable payment lots used to allocate
+every paid-funded usage slice and later reverse its exact commission. Until it catches up, payout
+preparation is intentionally unavailable even when all ordinary referral charts look current.
+
+Inspect `apitoken-sales-api` for the first replay conflict or a payment whose referred top-up is not
+yet locally visible. Compare `apitoken_sales_cursor{feed="topup_funding_lots"}` with
+`apitoken_sales_topups_feed_head`; never copy the head into `sync_cursors`. Recovery requires equal
+head/cursor plus zero `usage_funding` and `commission_funding` incompleteness. Preserve the
+immutable lot/allocation rows and let the idempotent consumer replay.
+
+## SalesReversalSyncCursorStalled
+
+The `payment_reversals` cursor is behind Commerce's committed terminal-reversal audit head. During
+this gap the displayed partner net, debt and payable amount can omit a refund or dispute, so every
+payout prepare/send path must stay fail-closed. Read the Sales journal for the first missing funding
+lot, completeness failure or feed error, then compare `apitoken_sales_cursor{feed="payment_reversals"}`
+with `apitoken_sales_reversal_feed_head`.
+
+Never advance this cursor manually and never insert a synthetic adjustment. The consumer must append
+one immutable reversal plus every exact negative commission slice in a SERIALIZABLE transaction.
+Recovery requires equal head/cursor and `reversal_adjustments=0`.
+
+## SalesPartnerAccountingIncomplete
+
+At least one durable partner-money invariant is incomplete. The fixed `invariant` label identifies
+the failing proof: `usage_funding` means usage is not fully assigned to paid lots;
+`commission_funding` means an allocated usage slice lacks its deterministic commission slice;
+`reversal_adjustments` means a reversal lacks an exact signed negative entry; `payout_boundary`
+means an active legacy batch has no persisted earnings cutoff.
+
+Freeze payout preparation and sending. First close all three source-head gaps, then inspect the exact
+Sales rows using the same bounded health query as `packages/sales-db/src/reversal-accounting.ts`.
+Do not update allocations, adjustments or `earned_before` by hand: these facts are immutable or must
+be recreated by cancel-and-reprepare. Recovery is all four fixed series at zero.
+
+## SalesPartnerDebtPresent
+
+Signed partner net earnings are below commission already committed (`requested`, `approved` or
+`paid`), normally because a later refund or dispute reversed commission after payout preparation or
+completion. This alert is informationally actionable, not evidence of accounting corruption: the
+negative adjustment remains immutable, `payable` stays zero, and later positive commission repays
+the debt automatically.
+
+Confirm that every debt amount is backed by a terminal reversal and exact adjustment set. Do not
+delete or offset the debt manually and do not send a compensating payout. Escalate only when no
+matching reversal exists or the debt disagrees with
+`max(committed - (gross + adjustments), 0)`.
+
 ## SalesSyncIterationFailing
 
 The last five minutes of `apitoken-sales-api.service` contain `sync iteration failed` or

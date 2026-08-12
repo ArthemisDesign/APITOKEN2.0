@@ -1824,7 +1824,7 @@
         "textMode": "auto",
         "wideLayout": true
       },
-      "targets": [{ "expr": "(apitoken_sales_pending_referral_events or vector(0)) + (apitoken_sales_sync_errors_recent or vector(0)) + (1 - (apitoken_sales_sync_journal_up or vector(0))) + clamp_min(apitoken_sales_attribution_feed_head - on() apitoken_sales_cursor{feed=\"attributions\"}, 0) + clamp_min(apitoken_sales_feed_head - on() apitoken_sales_cursor{feed=\"usage_events\"}, 0) + clamp_min(apitoken_sales_topups_feed_head - on() apitoken_sales_cursor{feed=\"topups_v2\"}, 0)", "refId": "A" }],
+      "targets": [{ "expr": "(apitoken_sales_pending_referral_events or vector(0)) + (apitoken_sales_sync_errors_recent or vector(0)) + (1 - (apitoken_sales_sync_journal_up or vector(0))) + clamp_min(apitoken_sales_attribution_feed_head - on() apitoken_sales_cursor{feed=\"attributions\"}, 0) + clamp_min(apitoken_sales_feed_head - on() apitoken_sales_cursor{feed=\"usage_events\"}, 0) + clamp_min(apitoken_sales_topups_feed_head - on() apitoken_sales_cursor{feed=\"topups_v2\"}, 0) + clamp_min(apitoken_sales_topups_feed_head - on() apitoken_sales_cursor{feed=\"topup_funding_lots\"}, 0) + clamp_min(apitoken_sales_reversal_feed_head - on() apitoken_sales_cursor{feed=\"payment_reversals\"}, 0) + sum(apitoken_sales_accounting_incomplete)", "refId": "A" }],
       "title": "Partner sync intervention",
       "type": "stat"
     },
@@ -1850,7 +1850,7 @@
         "textMode": "auto",
         "wideLayout": true
       },
-      "targets": [{ "expr": "clamp_max(apitoken_sales_failed_payout_batches + apitoken_sales_failed_payout_rows + apitoken_sales_stale_broadcast_payouts, 1)", "refId": "A" }],
+      "targets": [{ "expr": "clamp_max(apitoken_sales_failed_payout_batches + apitoken_sales_failed_payout_rows + apitoken_sales_stale_broadcast_payouts, 1) + (apitoken_sales_partner_debt_nano / 1e9)", "refId": "A" }],
       "title": "Payout intervention",
       "type": "stat"
     },

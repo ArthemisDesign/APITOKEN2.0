@@ -210,6 +210,10 @@ The `/business` page owns B2B invitations and existing B2B terms:
 - the `/users` B2C→B2B action records the negotiated scalar and its delivery job. A new account is
   usable once its idempotent engine account exists with that scalar; no policy ACK or release head
   is involved.
+- the `/users` table and its CSV derive both B2C and B2B labels from the persisted
+  `multiplier_bp`. B2C has no tier ladder, but a dormant/historical `4000` row is displayed as a
+  60% discount rather than being hidden behind the common `5000`/50% value; absent evidence is
+  shown as absent, not replaced by a default.
 
 Pipeline delivery/drift status is shown through `GET /admin/pipeline-health` on the dashboard and
 finance surfaces. Official provider tariff changes are an engine operator action, not a browser
