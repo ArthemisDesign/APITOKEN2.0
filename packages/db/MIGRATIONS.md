@@ -59,6 +59,15 @@ immutable funding-lot, allocation, reversal and negative-adjustment tables. No S
 backfill, earnings reader or payout behavior may depend on them until the exact migration SHA has
 green `deploy/migration` and `deploy/watchdog` statuses.
 
+Migrations `packages/db/migrations/0048_admin_change_notify.sql`,
+`packages/sales-db/migrations/0020_admin_change_notify.sql`, and
+`packages/openkeys-db/migrations/0008_admin_change_notify.sql` add transaction-bound, statement-level
+admin invalidation notifications to the three PostgreSQL contexts. They create no application
+consumer and do not change a row: notifications are delivered only after a successful commit and
+carry an allowlisted table name. Existing writers remain unchanged. The LISTEN/SSE consumers and
+the central admin client must ship only after this migration SHA is green in production; until then
+the triggers are harmless because PostgreSQL discards notifications when nobody is listening.
+
 ## Historical pricing release v2 migrations (non-executable)
 
 The entries through migration 0044 below describe what each immutable migration did when it was

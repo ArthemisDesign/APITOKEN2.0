@@ -57,6 +57,13 @@
       "when": 1785628800000,
       "tag": "0007_openkeys_pricing_contract_expand",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786527002000,
+      "tag": "0008_admin_change_notify",
+      "breakpoints": true
     }
   ]
 }

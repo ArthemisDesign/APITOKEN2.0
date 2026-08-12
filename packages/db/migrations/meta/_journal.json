@@ -337,6 +337,13 @@
       "when": 1786430000000,
       "tag": "0047_pricing_usage_uncollected",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1786527000000,
+      "tag": "0048_admin_change_notify",
+      "breakpoints": true
     }
   ]
 }

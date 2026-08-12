@@ -141,6 +141,13 @@
       "when": 1786514400000,
       "tag": "0019_payout_earned_boundary",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1786527001000,
+      "tag": "0020_admin_change_notify",
+      "breakpoints": true
     }
   ]
 }
