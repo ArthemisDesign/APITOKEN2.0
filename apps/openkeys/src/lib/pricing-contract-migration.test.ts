@@ -113,16 +113,16 @@ async function createTemporaryDatabase(): Promise<TemporaryDatabase> {
   };
 }
 
-async function createMigrationsThrough0006(): Promise<string> {
-  const folder = await mkdtemp(join(tmpdir(), "openkeys-migrations-0006-"));
+async function createMigrationsThrough(lastIndex: number, expectedTag: string): Promise<string> {
+  const folder = await mkdtemp(join(tmpdir(), `openkeys-migrations-${lastIndex}-`));
   const metadataFolder = join(folder, "meta");
   await mkdir(metadataFolder);
 
   const journal = JSON.parse(
     await readFile(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
   ) as Journal;
-  const selectedEntries = journal.entries.filter((entry) => entry.idx <= 6);
-  expect(selectedEntries.at(-1)?.tag).toBe("0006_openkeys_api_type");
+  const selectedEntries = journal.entries.filter((entry) => entry.idx <= lastIndex);
+  expect(selectedEntries.at(-1)?.tag).toBe(expectedTag);
 
   await Promise.all(selectedEntries.map((entry) =>
     copyFile(
@@ -228,13 +228,15 @@ describe("OpenKeys pricing-contract migration declaration", () => {
       await readFile(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
     ) as Journal;
 
-    expect(journal.entries.at(-1)).toMatchObject({
+    const migrationEntry = journal.entries.find((entry) => entry.idx === 7);
+    expect(journal.entries.filter((entry) => entry.idx === 7)).toHaveLength(1);
+    expect(migrationEntry).toMatchObject({
       idx: 7,
       version: "7",
       tag: "0007_openkeys_pricing_contract_expand",
       breakpoints: true,
     });
-    expect(journal.entries.at(-1)!.when).toBeGreaterThan(journal.entries.at(-2)!.when);
+    expect(migrationEntry!.when).toBeGreaterThan(journal.entries.find((entry) => entry.idx === 6)!.when);
     expect(migrationSql).toContain(
       'ADD COLUMN "pricing_contract" text DEFAULT \'legacy\' NOT NULL',
     );
@@ -252,7 +254,8 @@ describe("OpenKeys pricing-contract migration declaration", () => {
 
 describe.runIf(Boolean(connectionString))("OpenKeys pricing-contract migration", () => {
   it("preserves legacy rows and enforces 1:1 without breaking the old writer", async () => {
-    const legacyMigrations = await createMigrationsThrough0006();
+    const legacyMigrations = await createMigrationsThrough(6, "0006_openkeys_api_type");
+    const pricingMigrations = await createMigrationsThrough(7, "0007_openkeys_pricing_contract_expand");
     const database = await createTemporaryDatabase();
     try {
       await migrate(drizzle(database.client), { migrationsFolder: legacyMigrations });
@@ -280,7 +283,7 @@ describe.runIf(Boolean(connectionString))("OpenKeys pricing-contract migration",
       `);
       const migrationsBefore = await migrationCount(database.client);
 
-      await migrate(drizzle(database.client), { migrationsFolder: MIGRATIONS_FOLDER });
+      await migrate(drizzle(database.client), { migrationsFolder: pricingMigrations });
       expect(await migrationCount(database.client)).toBe(migrationsBefore + 1);
 
       const liveContract = await database.client.query<OpenKeysDatabaseContractRow>(
@@ -377,11 +380,12 @@ describe.runIf(Boolean(connectionString))("OpenKeys pricing-contract migration",
         constraint: "openkeys_keys_official_1_to_1",
       });
 
-      await migrate(drizzle(database.client), { migrationsFolder: MIGRATIONS_FOLDER });
+      await migrate(drizzle(database.client), { migrationsFolder: pricingMigrations });
       expect(await migrationCount(database.client)).toBe(migrationsBefore + 1);
     } finally {
       await database.close();
       await rm(legacyMigrations, { recursive: true, force: true });
+      await rm(pricingMigrations, { recursive: true, force: true });
     }
   }, TEST_TIMEOUT_MS);
 });
