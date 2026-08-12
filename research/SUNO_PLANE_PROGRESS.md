@@ -16,6 +16,7 @@ storefront, public docs) is OUT of scope for this task — dormant implementatio
 | Metering tariff | (this commit) | `crates/metering/src/suno.rs`; reviewed derived schedule §5.1 ($0.004/credit, 5 cr/song = $0.02), fail-closed paid model catalog; 7 exact-vector tests |
 | Migration 0050 + registry observation types | (this commit) | `crates/registry/migrations_pg/0050_suno_window_calibration.sql` + `crates/registry/src/suno_calibration.rs`; GLM-style monthly-window authority per manifest §5.2/§5.3 (millicredits + derived fixed-rate nanoUSD legs with the `native_schedule_derived` flag, verbatim raw quota counters with NULL derived fields, exact-duration window keying with no synthetic constant, Pro/Premier-only CHECK, cold/measured split); `suno_*` PG family mirrors `glm_*`; real-PG replay/CAS matrix green on a scratch DB |
 | Migration 0052 (pricing provider admission) | (this commit) | `crates/registry/migrations_pg/0052_suno_pricing_provider.sql` widens the two closed provider CHECK sets (`account_provider_discounts_provider_id_check`, `reservations_scalar_pricing_shape`) with `'suno'` exactly as 0051 did for tripo3d (drop/re-add NOT VALID + VALIDATE, `engine_schema_migrations` 52); `DISCOUNT_PROVIDER_IDS` 6→7, SQLite mirror texts, `CURRENT_SCHEMA_VERSION` 51→52 with registration/content tests; lands alone before any code reserving under `provider = 'suno'` |
+| Credential crate | (this commit) | `crates/suno-credential`; GLM-pattern AEAD envelope for the Clerk session cookie (`__client=` entry enforced at seal) + optional rediscoverable session id + declared plan `Pro`/`Premier` (labels match the 0050 CHECK; `SUNO_REVIEWED_PLANS` pins 2 500/10 000 credits, reviewed 2026-08-12); fixed-host constants, no base-url override by design; JWT mint / `set-cookie` re-seal single-flight documented as the runtime's concern; 18 tests green |
 
 ## Key research facts (review date 2026-08-12)
 
@@ -44,9 +45,11 @@ storefront, public docs) is OUT of scope for this task — dormant implementatio
 
 ## Next action (exactly one)
 
-Credential crate `crates/suno-credential` (expand-only, separate commit) — encrypted AEAD
-envelope for the Clerk session cookie material (`__client`) plus the discovered session id,
-modeled on `crates/kimi-credential`'s rotating-family re-seal discipline; no network, no HTTP.
+Calibration estimator `crates/forward/src/suno_calibration.rs` (expand-only, separate
+commit) — the monthly-window state machine per manifest §5.2/§5.3 (published per-plan native
+limits, §10.5 fraction formula over the dual cumulative ledgers, exact-duration window keying,
+`native_schedule_derived` handling), interval coverage per
+`docs/engine/PROVIDER_WIRING_CHECKLIST.md` §7.
 
 ## Queue
 

@@ -285,7 +285,7 @@ Each `unknown` fails closed and is cleared only by a controlled live run on our 
 | calibration authority (schema 0050) | `crates/registry/migrations_pg/0050_suno_window_calibration.sql` | done (this commit) |
 | pricing provider admission (schema 0052) | `crates/registry/migrations_pg/0052_suno_pricing_provider.sql` | done (this commit) |
 | observation types | `crates/registry/src/suno_calibration.rs` | done (this commit) |
-| credential | `crates/suno-credential` | pending |
+| credential | `crates/suno-credential` | done (this commit) |
 | calibration estimator | `crates/forward/src/suno_calibration.rs` | pending |
 | Auth Bot protocol + wizard | `crates/authbot/src/{suno_session,suno_roster}.rs`, `bot.rs` | pending |
 | runtime primitives + gateway | `crates/forward/src/suno/**` | pending |

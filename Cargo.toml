@@ -11,6 +11,7 @@ members = [
     "crates/glm-credential",
     "crates/kimi-credential",
     "crates/tripo3d-credential",
+    "crates/suno-credential",
     "crates/elog",
     "crates/registry",
     "crates/pool",
