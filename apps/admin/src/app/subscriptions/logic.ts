@@ -1,10 +1,10 @@
 // Чистая логика страницы «Подписки» — порт вычислений из subscriptions()
 // (crates/server/src/admin-panel.js): баннер флота, статусы Claude/GPT/Gemini/KIMI/GLM/
-// Tripo3D, пороговые бары. Вынесена из JSX ради юнит-тестов.
+// Tripo3D/Suno, пороговые бары. Вынесена из JSX ради юнит-тестов.
 import { count, duration } from "@/lib/format";
 import type { Tone } from "@/components/ui";
 import { providerInteger } from "./provider-calibration";
-import type { CodexHome, GeminiProfile, GlmProfile, KimiProfile, Tripo3dProfile } from "./types";
+import type { CodexHome, GeminiProfile, GlmProfile, KimiProfile, SunoProfile, Tripo3dProfile } from "./types";
 
 // deadLabel: причина смерти Claude-токена → русская подпись пилюли.
 export function deadLabel(reason: string | null | undefined): string {
@@ -558,6 +558,175 @@ export function tripo3dMeasuredCoverage(
   return { measured, observed: profiles.length };
 }
 
+/* ── Suno ──────────────────────────────────────────────── */
+
+// Возраст evidence, после которого snapshot считается протухшим (как snapshot_age_secs у GPT).
+const SUNO_STALE_SECS = 600;
+
+// sunoWindowLabel: exact window_duration_secs → короткая подпись окна. Ежемесячный цикл
+// подписывается реальной длиной конкретного месяца (2_592_000 → "30д", 2_678_400 → "31д");
+// фиктивных 5ч/7д эквивалентов не существует.
+export function sunoWindowLabel(durationSecs: number | null | undefined): string {
+  const secs = Number(durationSecs) || 0;
+  if (secs <= 0) return "окно";
+  if (secs % 86_400 === 0) return `${secs / 86_400}д`;
+  if (secs % 3_600 === 0) return `${secs / 3_600}ч`;
+  if (secs % 60 === 0) return `${secs / 60}м`;
+  return `${secs}с`;
+}
+
+// sunoWindowDurations: отсортированный набор реальных окон флота — union
+// window_duration_secs из calibration записей всех профилей.
+export function sunoWindowDurations(profiles: SunoProfile[]): number[] {
+  const found = new Set<number>();
+  for (const profile of profiles) {
+    for (const row of profile.calibration ?? []) {
+      const secs = Number(row.window_duration_secs);
+      if (secs > 0) found.add(secs);
+    }
+  }
+  return [...found].sort((a, b) => a - b);
+}
+
+export interface SunoCoolingAxis {
+  name: string;
+  until: number;
+}
+
+// sunoActiveCoolingAxes: активные cooling-оси (rate-limit/auth/captcha/transport) с их
+// until. Quota wall — отдельный HARD verdict, а не timed ось, поэтому здесь его нет:
+// он обрабатывается в sunoProfileStatus отдельно.
+export function sunoActiveCoolingAxes(profile: SunoProfile, nowSec: number): SunoCoolingAxis[] {
+  const cooling = profile.cooling;
+  return [
+    { name: "rate-limit", until: Number(cooling?.rate_limit_until ?? 0) },
+    { name: "auth", until: Number(cooling?.auth_until ?? 0) },
+    { name: "captcha", until: Number(cooling?.captcha_until ?? 0) },
+    { name: "транспорт", until: Number(cooling?.transport_until ?? 0) },
+  ].filter((axis) => axis.until > nowSec);
+}
+
+// sunoLastObservedAt: свежайшая метка evidence профиля (billing-probe или замер
+// калибровки); null — наблюдений ещё не было.
+export function sunoLastObservedAt(profile: SunoProfile): number | null {
+  const stamps = [
+    Number(profile.quota?.observed_at ?? 0),
+    ...(profile.calibration ?? []).map((row) => Number(row.last_measured_at ?? 0)),
+  ].filter((value) => value > 0);
+  return stamps.length ? Math.max(...stamps) : null;
+}
+
+export type SunoEvidenceState = "fresh" | "stale" | "empty";
+
+export function sunoEvidenceState(profile: SunoProfile, nowSec: number): SunoEvidenceState {
+  const observed = sunoLastObservedAt(profile);
+  if (observed == null) return "empty";
+  return nowSec - observed > SUNO_STALE_SECS ? "stale" : "fresh";
+}
+
+// sunoProfileStatus: состояние профиля целиком, оси — ровно допуск runtime (candidate()):
+// снятие с ротации подтверждённым Clerk verdict (routable:false) → «вне ротации»;
+// quota_walled (HARD provider verdict) → «квота исчерпана»; активные cooling-оси — с
+// отсчётом до последнего until; сессия без прошедшего probe (live:false) и полное
+// отсутствие наблюдений → «ждём данные»; протухшие данные → «обновляем»
+// (null не превращается в 0).
+export function sunoProfileStatus(profile: SunoProfile, nowSec: number): StatusPill {
+  if (profile.routable === false) return { label: "вне ротации", kind: "bad" };
+  if (profile.quota_walled === true) return { label: "квота исчерпана", kind: "warn" };
+  const axes = sunoActiveCoolingAxes(profile, nowSec);
+  if (axes.length > 0) {
+    const last = Math.max(...axes.map((axis) => axis.until));
+    const names = axes.map((axis) => axis.name).join("+");
+    return { label: `cooling ${names} ${duration(last - nowSec)}`, kind: "warn" };
+  }
+  if (profile.live !== true) return { label: "ждём данные", kind: "warn" };
+  const evidence = sunoEvidenceState(profile, nowSec);
+  if (evidence === "empty") return { label: "ждём данные", kind: "warn" };
+  if (evidence === "stale") return { label: "обновляем", kind: "warn" };
+  return { label: "active", kind: "ok" };
+}
+
+// sunoUsedPercent: использованная доля месячного окна из verbatim counters
+// (monthly_usage / monthly_limit) — точный процент с шагом 0.1 (BigInt, округление
+// half-up, как usedPercentFromNano у остальных флотов). Null остаётся «—».
+export function sunoUsedPercent(
+  usageValue: number | string | bigint | null | undefined,
+  limitValue: number | string | bigint | null | undefined,
+): { value: number | null; label: string } {
+  const usage = providerInteger(usageValue);
+  const limit = providerInteger(limitValue);
+  if (usage == null || limit == null || limit <= 0n) return { value: null, label: "—" };
+  const bounded = usage < 0n ? 0n : usage > limit ? limit : usage;
+  const tenths = (bounded * 1_000n + limit / 2n) / limit;
+  return {
+    value: Number(tenths) / 10,
+    label: `${tenths / 10n}${tenths % 10n ? `.${tenths % 10n}` : ""}%`,
+  };
+}
+
+// sunoFleetUsedPercent: использованная доля месяца по флоту — Σusage / Σlimit по
+// профилям с обоими verbatim counters (BigInt). Quota одна на профиль и относится к
+// текущему месячному окну независимо от того, сколько прошлых durations хранит
+// калибровка, поэтому параметра окна здесь нет.
+export function sunoFleetUsedPercent(profiles: SunoProfile[]): { value: number | null; label: string } {
+  let usage = 0n;
+  let limit = 0n;
+  for (const profile of profiles) {
+    const used = providerInteger(profile.quota?.monthly_usage ?? null);
+    const cap = providerInteger(profile.quota?.monthly_limit ?? null);
+    if (used == null || cap == null || cap <= 0n) continue;
+    usage += used;
+    limit += cap;
+  }
+  if (limit <= 0n) return { value: null, label: "—" };
+  return sunoUsedPercent(usage, limit);
+}
+
+// sunoFleetWindowMoney: сумма calibrated remaining/capacity окна только по профилям,
+// чьи деньги продаваемы прямо сейчас (probe подтверждён, в ротации, нет quota wall,
+// без активной cooling-оси, без протухшего snapshot) — ровно тем, чья строка показывает
+// реальные API-$. Fail-closed: пустой набор или null у любого такого профиля делает
+// итог неизвестным — никогда не частичная сумма и никогда не $0 вместо неизвестного.
+export function sunoFleetWindowMoney(
+  profiles: SunoProfile[],
+  durationSecs: number,
+  nowSec: number,
+): { capacity: string | null; remaining: string | null } {
+  const contributing = profiles.filter(
+    (profile) =>
+      profile.live === true
+      && profile.routable === true
+      && profile.quota_walled !== true
+      && sunoActiveCoolingAxes(profile, nowSec).length === 0
+      && sunoEvidenceState(profile, nowSec) !== "stale",
+  );
+  if (!contributing.length) return { capacity: null, remaining: null };
+  let capacity = 0n;
+  let remaining = 0n;
+  for (const profile of contributing) {
+    const row = (profile.calibration ?? []).find((item) => Number(item.window_duration_secs) === durationSecs);
+    const current = providerInteger(row?.capacity?.current_nano ?? null);
+    const api = providerInteger(row?.remaining ?? null);
+    if (current == null || api == null) return { capacity: null, remaining: null };
+    capacity += current;
+    remaining += api;
+  }
+  return { capacity: capacity.toString(), remaining: remaining.toString() };
+}
+
+// sunoMeasuredCoverage: доля профилей с реальными замерами (samples > 0) в окне.
+export function sunoMeasuredCoverage(
+  profiles: SunoProfile[],
+  durationSecs: number,
+): { measured: number; observed: number } {
+  const measured = profiles.filter((profile) =>
+    (profile.calibration ?? []).some(
+      (row) => Number(row.window_duration_secs) === durationSecs && Number(row.samples ?? 0) > 0,
+    ),
+  ).length;
+  return { measured, observed: profiles.length };
+}
+
 export interface FleetBanner {
   kind: "ok" | "warn" | "bad";
   title: string;
@@ -585,6 +754,9 @@ export interface FleetBannerInput {
   tripo3dDown: boolean;
   tripo3dEmpty: boolean;
   tripo3dUnavailable: boolean;
+  sunoDown: boolean;
+  sunoEmpty: boolean;
+  sunoUnavailable: boolean;
   claudeCount: number;
   /** homes.length или «выкл.» при отключённом контуре. */
   gptSummary: number | string;
@@ -596,6 +768,8 @@ export interface FleetBannerInput {
   glmSummary: number | string;
   /** profiles.length или «выкл.». */
   tripo3dSummary: number | string;
+  /** profiles.length или «выкл.». */
+  sunoSummary: number | string;
   /** Уже отформатированная метка обновления (formatDate(Date.now(), true)). */
   updatedAt: string;
 }
@@ -720,6 +894,24 @@ export function resolveBanner(input: FleetBannerInput): FleetBanner {
       title: "Tripo3D: нет доступных профилей",
       sub: "все профили balance-walled, cooling по одной из осей или вне ротации — ёмкость временно не продаётся",
     };
+  if (input.sunoDown)
+    return {
+      kind: "warn",
+      title: "Suno-контур не отвечает",
+      sub: "/suno-subs недоступен — плоскость пока dormant: production origin не настроен, данные появятся после активации",
+    };
+  if (input.sunoEmpty)
+    return {
+      kind: "warn",
+      title: "В Suno-пуле нет профилей",
+      sub: "плоскость включена, но roster ещё пуст — ни одной подписки не опубликовано",
+    };
+  if (input.sunoUnavailable)
+    return {
+      kind: "warn",
+      title: "Suno: нет доступных профилей",
+      sub: "все профили quota-walled, вне ротации или cooling по одной из осей — ёмкость временно не продаётся",
+    };
   if (input.suspect)
     return {
       kind: "warn",
@@ -730,7 +922,7 @@ export function resolveBanner(input: FleetBannerInput): FleetBanner {
     };
   return {
     kind: "ok",
-    title: "Все шесть флотов подписок в ротации",
-    sub: `Claude ${input.claudeCount} · GPT ${input.gptSummary} · Gemini ${input.geminiSummary} · KIMI ${input.kimiSummary} · GLM ${input.glmSummary} · Tripo3D ${input.tripo3dSummary} · обновлено ${input.updatedAt}`,
+    title: "Все семь флотов подписок в ротации",
+    sub: `Claude ${input.claudeCount} · GPT ${input.gptSummary} · Gemini ${input.geminiSummary} · KIMI ${input.kimiSummary} · GLM ${input.glmSummary} · Tripo3D ${input.tripo3dSummary} · Suno ${input.sunoSummary} · обновлено ${input.updatedAt}`,
   };
 }

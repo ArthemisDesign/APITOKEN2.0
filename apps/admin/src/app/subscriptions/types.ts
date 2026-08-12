@@ -857,3 +857,95 @@ export interface Tripo3dSubsResponse {
   fleet?: Tripo3dFleet | null;
   profiles?: Tripo3dProfile[];
 }
+
+// GET /suno-subs — Suno профили (dedicated dormant plane `ProviderMode::Suno`).
+// Окно — ежемесячный кредитный цикл плана (Pro/Premier); его identity — exact
+// window_duration_secs из evidence (длина конкретного месяца, docs/engine/SUNO_PROVIDER.md
+// §5.2/§5.3), а не синтетическая константа. Деньги — decimal nano strings (BigInt);
+// raw quota counters — plain integers либо null; неизвестное — null, никогда не 0.
+// Subject (session-id digest), cookie, session id, proxy и credential path не
+// сериализуются никогда: идентичность — opaque roster id + bounded plan label.
+export interface SunoQuotaEvidence {
+  /** epoch-секунды последнего billing-probe; null — наблюдений ещё не было. */
+  observed_at?: number | null;
+  /** Verbatim counters провайдера; unknown — null, никогда не zero-filled (§5.2). */
+  monthly_limit?: number | null;
+  monthly_usage?: number | null;
+  total_credits_left?: number | null;
+}
+
+export interface SunoCalibrationWindow {
+  window_duration_secs?: number;
+  samples?: number;
+  confidence_bp?: number;
+  capacity?: {
+    current_nano?: string | null;
+    low_nano?: string | null;
+    high_nano?: string | null;
+  } | null;
+  /** Текущий API-$ остаток окна — decimal nano string либо null, пока capacity или
+   *  точная доля неизвестны (проекция registry `current_remaining_nano`). */
+  remaining?: string | null;
+  observed_spend_nano?: string;
+  observed_spend_native_millicredits?: number;
+  unattributed_fraction_units?: number;
+  last_measured_at?: number | null;
+  estimator_version?: number;
+}
+
+export interface SunoProfile {
+  /** Opaque roster id; subject/cookie/session/proxy не покидают runtime. */
+  id?: string;
+  /** Bounded label тарифа: Pro/Premier, подтверждённый на intake. */
+  plan?: string;
+  /** Не снят с ротации подтверждённым Clerk verdict (auth_dead). */
+  routable?: boolean;
+  /** Billing-probe прошёл на этом поколении runtime. Не ось допуска: допуск решают
+   *  routable + hard (rate-limit/quota wall/shortfall) и soft (auth/captcha/transport) оси. */
+  live?: boolean;
+  /** HARD quota verdict: resting, пока billing-probe не покажет кредиты. */
+  quota_walled?: boolean;
+  /** Четыре cooling-оси; epoch-секунды окончания либо null. */
+  cooling?: {
+    rate_limit_until?: number | null;
+    auth_until?: number | null;
+    captcha_until?: number | null;
+    transport_until?: number | null;
+  } | null;
+  inflight?: number;
+  quota?: SunoQuotaEvidence | null;
+  calibration?: SunoCalibrationWindow[] | null;
+}
+
+export interface SunoDelivery {
+  pending_events?: number;
+  dropped_events?: number;
+  persistence_ok?: boolean;
+}
+
+export interface SunoFleet {
+  profiles?: number;
+  live_profiles?: number;
+  available_profiles?: number;
+  inflight_requests?: number;
+  inflight_drains?: number;
+  tracked_generations?: number;
+  rate_limited_profiles?: number;
+  quota_walled_profiles?: number;
+  auth_cooling_profiles?: number;
+  captcha_cooling_profiles?: number;
+  transport_cooling_profiles?: number;
+  unattributed_settlements?: number;
+  tariff_anomaly?: number;
+  artifact_failures?: number;
+}
+
+export interface SunoSubsResponse {
+  /** epoch-секунды «сейчас» по часам runtime (сбросы считаются от него). */
+  now?: number;
+  enabled?: boolean;
+  delivery?: SunoDelivery | null;
+  calibration_authority_available?: boolean;
+  fleet?: SunoFleet | null;
+  profiles?: SunoProfile[];
+}

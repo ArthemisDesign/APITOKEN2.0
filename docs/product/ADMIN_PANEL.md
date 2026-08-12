@@ -118,9 +118,10 @@ domain grants. Caddy same-origin proxies the depersonalized `/capacity`, `/codex
 plane with its own stable loopback origin `127.0.0.1:8803`; GLM remains a backend inside the
 Anthropic runtime. Caddy adds
 the server keys; the browser never receives control keys, OAuth, Google project, KIMI/GLM
-subject, keys or proxy. `/tripo3d-subs` is fetched the same way but intentionally has no
-Caddy origin yet — the Tripo3D plane is dormant, and the subscriptions page degrades to its
-null state until the plane is activated. Full account email has one narrow exception
+subject, keys or proxy. `/tripo3d-subs` and `/suno-subs` are fetched the same way but
+intentionally have no Caddy origin yet — the Tripo3D and Suno planes are dormant, and the
+subscriptions page degrades to its null state until the planes are activated. Full account
+email has one narrow exception
 described below for the
 closed managed-admin `/proxies` response; the other subscription routes remain masked. The
 protection applies to all pages, including `/sales/calculator`.
@@ -376,7 +377,7 @@ backend `/codex-subs` without any money authority of its own:
   movement appears the UI shows the short `ждём Δquota` ("waiting for Δquota"), never
   substituting zero or a prior.
 
-## Claude, Gemini, KIMI, GLM and Tripo3D capacity boards
+## Claude, Gemini, KIMI, GLM, Tripo3D and Suno capacity boards
 
 The Claude block of `/subscriptions` deliberately keeps only one compact accounts table:
 bounded email hint, routing/auth state, quota+reset and exact available/full API-$
@@ -388,17 +389,19 @@ table; the separate local summary strip, model-quota and profitability tables ha
 removed. The old StatCard sets, proxy/transport details and long calibration explanations
 are not surfaced on the main screen. In all pools the identity on the left is bounded: for
 Claude/GPT/Gemini — an email hint (first four characters of the local part without the
-domain), for KIMI, GLM and Tripo3D — an opaque roster id (email/subject/key are absent from
-the wire entirely).
+domain), for KIMI, GLM, Tripo3D and Suno — an opaque roster id (email/subject/key/cookie/
+session are absent from the wire entirely).
 
-Above the details sits a unified control room of six Claude/GPT/Gemini/KIMI/GLM/Tripo3D
-cards.
+Above the details sits a unified control room of seven
+Claude/GPT/Gemini/KIMI/GLM/Tripo3D/Suno cards.
 Each card shows the provider's real rails: `5ч` ("5h") and `7д` ("7d") for the pools that
 have them (KIMI and GLM label
 the rails with the real `duration_secs`: 18000 → `5ч`, 604800 → `7д`, without fictitious
 equivalents; Tripo3D has no windows — prepaid balance never resets — so its single rail is
 `баланс`, the fail-closed remaining/full of the balance track, and a used share is not
-invented for it), current remaining / full-window API-$, used share, the number of routable
+invented for it; Suno labels its rail with the real length of the current monthly credit
+window from `window_duration_secs` — 2 592 000 → `30д`, never a synthetic constant),
+current remaining / full-window API-$, used share, the number of routable
 identities and coverage. This is the main screen for comparing the capacity being sold;
 per-account details follow below without additional cache/model/token matrices. Instead of
 false money the Claude card immediately shows `N сохраняется` ("N being saved"), `N
@@ -406,7 +409,8 @@ false money the Claude card immediately shows `N сохраняется` ("N bei
 same fail-closed contract and does not show stale API-$ under pending/degraded exact
 authority. Its fresh provider quota/reset remains visible, while the money cell compactly
 says `обновляем` ("refreshing"): a dollar-evidence failure must not blind the operator to
-the real quota wall. KIMI, GLM and Tripo3D hold the same contract on their delivery FIFOs.
+the real quota wall. KIMI, GLM, Tripo3D and Suno hold the same contract on their delivery
+FIFOs.
 
 Claude is built from `/capacity`:
 
@@ -550,6 +554,32 @@ compact column as exact integers, null stays `—`. Saleable API-$ is only the c
 `ждём данные` ("waiting for data") and never `$0`. A HARD balance verdict
 (`balance_walled`) says `баланс исчерпан` ("balance exhausted"), cooling on any of the
 three axes (rate-limit/auth/transport) counts down, a key without a passed probe
+(`live:false`) and missing evidence say `ждём данные`, a stale snapshot (>10 minutes) says
+`обновляем` ("refreshing"); pending/dropped delivery and a persistence error hide saleable
+money behind `сохраняется`/`обновляем`. Fleet sums are computed only over profiles whose
+row shows real money, and null on any of them makes the total unknown rather than a
+partial sum.
+
+Suno is built from `/suno-subs` (an `enabled:false` envelope is shown as "Suno-контур
+выключен" — "Suno plane disabled"; like Tripo3D, the plane is dormant and has no
+production Caddy origin yet, so until activation the fetch fails and the board shows the
+null state `нет связи` — "no connection" — by design) and repeats the same compact
+contract on the monthly credit window of the paid plans (Pro/Premier —
+`docs/engine/SUNO_PROVIDER.md` §5.2/§5.3). The profile identity is only an opaque roster
+id and the bounded plan label; subject (session-id digest), the cookie, session id, proxy
+and credential path are never serialized or displayed. Window identity is the exact
+`window_duration_secs` of the evidence-derived `YYYY-MM` period — the UI labels the real
+length of the concrete month (2 592 000 → `30д`) and keeps past months as their own
+columns without ever multiplying rows: one identity is one row. The used share is computed
+only from the provider's verbatim counters (`monthly_usage`/`monthly_limit`) in BigInt,
+the reset is shown as `—` because the producer does not publish it, and the native
+remainder (`total_credits_left` against `monthly_limit`) stays in a separate compact
+column as exact integers — null stays `—`, never 0. Saleable API-$ is only the calibrated
+`remaining`/`current_nano` decimal strings; the unknown stays `ждём данные` ("waiting for
+data") and never `$0`. Removal from routable on a corroborated Clerk verdict
+(`routable:false`) says `вне ротации` ("out of rotation"), a HARD quota verdict
+(`quota_walled`) says `квота исчерпана` ("quota exhausted"), cooling on any of the four
+axes (rate-limit/auth/captcha/transport) counts down, a session without a passed probe
 (`live:false`) and missing evidence say `ждём данные`, a stale snapshot (>10 minutes) says
 `обновляем` ("refreshing"); pending/dropped delivery and a persistence error hide saleable
 money behind `сохраняется`/`обновляем`. Fleet sums are computed only over profiles whose

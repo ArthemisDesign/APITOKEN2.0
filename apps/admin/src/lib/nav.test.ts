@@ -5,10 +5,11 @@ import { NAV, isNavItemActive, navLabelForPath } from "./nav";
 // (deploy/Caddyfile, блок admin.apitoken.sale): data-роуты движка и
 // префиксы других backend'ов. Роут страницы приложения НЕ может совпасть
 // с ними — запрос уйдёт в backend раньше Next.js (регрессия: страница
-// «Подписки» жила на /subs и отдавала сырой JSON движка). /tripo3d-subs
-// пока не имеет production origin (плоскость dormant), но зарезервирован
-// под data-роут движка заранее — страница с таким путём запрещена уже сейчас.
-const RESERVED_EXACT = ["/overview", "/capacity", "/metrics", "/subs", "/spend-stats", "/codex-subs", "/gemini-subs", "/kimi-subs", "/glm-subs", "/tripo3d-subs"];
+// «Подписки» жила на /subs и отдавала сырой JSON движка). /tripo3d-subs и
+// /suno-subs пока не имеют production origin (плоскости dormant), но
+// зарезервированы под data-роуты движка заранее — страница с таким путём
+// запрещена уже сейчас.
+const RESERVED_EXACT = ["/overview", "/capacity", "/metrics", "/subs", "/spend-stats", "/codex-subs", "/gemini-subs", "/kimi-subs", "/glm-subs", "/tripo3d-subs", "/suno-subs"];
 const RESERVED_PREFIXES = ["/admin/", "/openkeys-admin/", "/partner-admin/", "/proxy-admin/"];
 
 describe("NAV", () => {
