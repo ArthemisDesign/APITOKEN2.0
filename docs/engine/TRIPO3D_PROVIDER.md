@@ -291,6 +291,7 @@ Each `unknown` fails closed and is cleared only by a controlled live run on our 
 | research / capability manifest | this file | done |
 | official rate card | `crates/metering/src/tripo3d.rs` | done (2f80d806) |
 | calibration authority (schema 0049) | `crates/registry/migrations_pg/0049_tripo3d_calibration.sql` | done (this commit) |
+| priced reservation provider set (schema 0051) | `crates/registry/migrations_pg/0051_tripo3d_pricing_provider.sql` + `DISCOUNT_PROVIDER_IDS` | done (this commit) |
 | observation types | `crates/registry/src/tripo3d_calibration.rs` | done (this commit) |
 | credential | `crates/tripo3d-credential` | pending |
 | calibration estimator | `crates/forward/src/tripo3d_calibration.rs` | pending |

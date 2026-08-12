@@ -356,7 +356,7 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 50);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 51);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
@@ -460,7 +460,7 @@ fn tripo3d_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn tripo3d_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 50);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 51);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 49)
@@ -580,7 +580,7 @@ fn suno_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn suno_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 50);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 51);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 50)
@@ -652,6 +652,57 @@ fn settlement_floor_terminal_fence_migration_blocks_mixed_version_writers() {
     assert!(!normalized.contains(" DROP TABLE "));
     assert!(!normalized.contains(" TRUNCATE "));
     assert!(normalized.contains("INSERT INTO engine_schema_migrations(version) VALUES (48)"));
+}
+
+#[test]
+fn tripo3d_pricing_provider_migration_widens_both_closed_sets() {
+    // Strip `--` comment lines first: the header names the 0046/0047 constraints to explain the
+    // widening, and those mentions must not be mistaken for the statements themselves.
+    let ddl = MIGRATION_0051
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let normalized = ddl.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // Both closed provider sets widen with `tripo3d`, keeping every existing id.
+    assert!(normalized.contains(
+        "CHECK (provider_id IN ('anthropic', 'openai', 'google', 'kimi', 'glm', 'tripo3d'))"
+    ));
+    assert!(normalized.contains(
+        "(provider IS NULL OR provider IN ('anthropic', 'openai', 'google', 'kimi', 'glm', 'tripo3d'))"
+    ));
+    // The multiplier bound survives the re-add unchanged.
+    assert!(normalized
+        .contains("(payable_multiplier_bp IS NULL OR payable_multiplier_bp BETWEEN 0 AND 10000)"));
+    // Expand-only widening: constraints are replaced (the predicate only grows), no table or
+    // data is touched, and both re-added constraints are validated.
+    assert!(!normalized.contains(" DROP TABLE "));
+    assert!(!normalized.contains(" TRUNCATE "));
+    assert!(!normalized.contains(" DELETE "));
+    assert!(!normalized.contains(" UPDATE "));
+    assert!(normalized.contains("VALIDATE CONSTRAINT account_provider_discounts_provider_id_check"));
+    assert!(normalized.contains("VALIDATE CONSTRAINT reservations_scalar_pricing_shape"));
+    // No other provider's authority is mentioned by a statement.
+    assert!(!normalized.contains("suno"));
+
+    assert!(normalized.contains("INSERT INTO engine_schema_migrations(version) VALUES (51)"));
+}
+
+#[test]
+fn tripo3d_pricing_provider_migration_is_registered_at_the_current_schema_version() {
+    assert_eq!(CURRENT_SCHEMA_VERSION, 51);
+    let registered = ENGINE_MIGRATIONS
+        .iter()
+        .find(|(version, _)| *version == 51)
+        .map(|(_, sql)| *sql);
+    // Compare by content, not by identity: two `&str` constants over the same source are not
+    // guaranteed to share an address.
+    assert_eq!(registered, Some(MIGRATION_0051));
+    assert_eq!(
+        ENGINE_MIGRATIONS.last().map(|(version, _)| *version),
+        Some(CURRENT_SCHEMA_VERSION)
+    );
 }
 
 /// Real PostgreSQL proof that migration 0048 rejects an old settlement transaction before it can

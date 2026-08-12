@@ -15,6 +15,7 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 | Research + capability manifest | (this commit) | `docs/engine/TRIPO3D_PROVIDER.md`; full official docs + ToS + SDK research 2026-08-12; key facts below |
 | Metering tariff | (this commit) | `crates/metering/src/tripo3d.rs`; official per-task rate card §5.1, fail-closed catalog §3, checked nanoUSD at $0.01/credit; 16 exact-vector tests |
 | Migration 0049 + registry observation types | (this commit) | `crates/registry/migrations_pg/0049_tripo3d_calibration.sql` + `crates/registry/src/tripo3d_calibration.rs`; windowless dual-ledger authority per manifest §5.3 (millicredits + fixed-rate nanoUSD legs, verbatim raw balance halves with NULL parsed units, subject+cohort state, cold/measured CHECK); `tripo3d_*` PG family mirrors `glm_*`; real-PG replay/CAS matrix green on a scratch DB |
+| Pricing provider set (migration 0051) | (this commit) | `crates/registry/migrations_pg/0051_tripo3d_pricing_provider.sql` (schema 50 → 51): the runtime reserves under `provider = 'tripo3d'`, so both closed sets widen expand-only — `account_provider_discounts_provider_id_check` (0046) and `reservations_scalar_pricing_shape` (0047), drop + re-add strictly wider NOT VALID + VALIDATE; `DISCOUNT_PROVIDER_IDS` 5→6 and the legacy SQLite CHECK texts mirror it; new registration/content tests, the three `CURRENT_SCHEMA_VERSION` pins move 50→51 |
 
 ## Key research facts (review date 2026-08-12)
 

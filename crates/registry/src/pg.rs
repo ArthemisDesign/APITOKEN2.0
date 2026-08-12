@@ -215,9 +215,11 @@ const MIGRATION_0048: &str =
 const MIGRATION_0049: &str = include_str!("../migrations_pg/0049_tripo3d_calibration.sql");
 const MIGRATION_0050: &str =
     include_str!("../migrations_pg/0050_suno_window_calibration.sql");
+const MIGRATION_0051: &str =
+    include_str!("../migrations_pg/0051_tripo3d_pricing_provider.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 50;
+pub const CURRENT_SCHEMA_VERSION: i64 = 51;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -271,6 +273,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (48, MIGRATION_0048),
     (49, MIGRATION_0049),
     (50, MIGRATION_0050),
+    (51, MIGRATION_0051),
 ];
 
 #[cfg(test)]
