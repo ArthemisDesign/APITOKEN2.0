@@ -288,7 +288,7 @@ Each `unknown` fails closed and is cleared only by a controlled live run on our 
 | credential | `crates/suno-credential` | done (this commit) |
 | calibration estimator | `crates/forward/src/suno_calibration.rs` | done (this commit) |
 | Auth Bot: validation protocol + roster | `crates/authbot/src/{suno_session,suno_roster}.rs` (+`main.rs` env) | done (this commit) |
-| Auth Bot: seller wizard | `crates/authbot/src/bot.rs` (+`db.rs` recovery, `main.rs`) | pending |
+| Auth Bot: seller wizard | `crates/authbot/src/bot.rs` (+`db.rs` recovery, `main.rs`) | done (this commit) |
 | runtime primitives + gateway | `crates/forward/src/suno/**` | pending |
 | server wiring | `crates/server/src/{config,main,poller,http}.rs` | pending |
 | observability / admin projection | `observability/**`, `docs/ops/MONITORING.md`, `GET /suno-subs` | pending |

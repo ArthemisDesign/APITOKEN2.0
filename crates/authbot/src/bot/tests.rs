@@ -68,6 +68,8 @@ fn every_product_button_resolves_and_classifies() {
                 HandoffKind::Glm
             } else if label.contains("Tripo3D") {
                 HandoffKind::Tripo3d
+            } else if label.contains("Suno") {
+                HandoffKind::Suno
             } else if label.contains("Kimi") {
                 HandoffKind::Kimi
             } else if label.contains("Gemini")
@@ -150,7 +152,7 @@ fn batch_product_menu_covers_every_subscription_variant() {
             (label, tier_name(code).expect("batch product code"))
         })
         .collect::<Vec<_>>();
-    assert_eq!(labels.len(), 18);
+    assert_eq!(labels.len(), 20);
     for (label, product) in labels {
         assert_eq!(label, product);
         assert!(matches!(
@@ -161,6 +163,7 @@ fn batch_product_menu_covers_every_subscription_variant() {
                 | HandoffKind::Kimi
                 | HandoffKind::Glm
                 | HandoffKind::Tripo3d
+                | HandoffKind::Suno
         ));
     }
 }
@@ -1293,6 +1296,349 @@ fn tripo3d_invalid_key_guidance_is_typed_static_and_never_carries_the_key() {
 }
 
 #[test]
+fn suno_products_are_a_distinct_handoff_and_never_fall_through_to_claude() {
+    // A new product silently classified as Claude would be handed to the setup-token branch
+    // and burn a paid subscription on the wrong flow.
+    for product in ["Suno Pro", "Suno Premier"] {
+        assert_eq!(handoff_kind(product), HandoffKind::Suno, "{product}");
+    }
+    assert_eq!(handoff_kind("suno.com premier аккаунт"), HandoffKind::Suno);
+}
+
+#[test]
+fn suno_plan_words_cannot_be_claimed_without_the_provider_name() {
+    // The plan names are generic tier words — Claude sells a Pro too — so classification
+    // must key on the provider word, never on the bare tier word.
+    for bare in ["Pro", "Premier"] {
+        assert_ne!(
+            handoff_kind(bare),
+            HandoffKind::Suno,
+            "{bare} must not be treated as a Suno product without the provider name"
+        );
+    }
+    assert_eq!(handoff_kind("Suno Premier"), HandoffKind::Suno);
+}
+
+#[test]
+fn suno_offers_route_to_their_own_wizard_steps_and_texts() {
+    assert_eq!(
+        handoff_steps_for_product("Suno Pro"),
+        ("su_proxy", "su_ready")
+    );
+    // Each provider owns distinct steps: a shared step id would let one provider's callback
+    // advance another provider's deal.
+    for other in [
+        "Claude Pro",
+        "ChatGPT Plus",
+        "Google AI Pro",
+        "Kimi Moderato",
+        "GLM Coding Plan Pro",
+        "Tripo3D API $50",
+    ] {
+        assert_ne!(handoff_steps_for_product(other).0, "su_proxy");
+        assert_ne!(handoff_steps_for_product(other).1, "su_ready");
+    }
+    assert_eq!(seller_offer_guide("Suno Premier"), SUNO_OFFER_GUIDE);
+    assert_eq!(account_setup_prompt("su_ready"), SUNO_ACCOUNT_SETUP);
+    assert_eq!(proxy_prompt("su_proxy"), SUNO_PROXY_PROMPT);
+}
+
+#[test]
+fn suno_appears_in_both_operator_menus() {
+    let offer_codes = product_kb()
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, data)| data.strip_prefix("noffer:").map(str::to_string))
+        .filter(|code| code.starts_with("suno_"))
+        .count();
+    assert_eq!(offer_codes, 2);
+    for label in ["📦 Suno Pro", "📦 Suno Premier"] {
+        assert!(admin_quick_tier(label).is_some(), "{label} missing");
+        assert!(
+            admin_home_kb().iter().flatten().any(|b| *b == label),
+            "{label} missing from the persistent keyboard"
+        );
+    }
+}
+
+#[test]
+fn suno_seller_texts_demand_the_exact_plan_and_never_ask_for_account_secrets() {
+    // The declared plan is corroborated against the published monthly limit, so activating
+    // the wrong plan would cost a payout and deliver nothing routable.
+    assert!(SUNO_ACCOUNT_SETUP.contains("Pro или Premier"));
+    assert!(SUNO_ACCOUNT_SETUP.contains("suno.com"));
+    assert!(SUNO_ACCOUNT_SETUP.contains("__client"));
+    // The __client cookie is the sanctioned one-time artifact (manifest §2 deviation): texts
+    // may ask for it, but never for the account password, 2FA or card data.
+    assert!(SUNO_OFFER_GUIDE.contains("бот не просит"));
+    assert!(SUNO_COOKIE_PROMPT.contains("__client"));
+    for text in [
+        SUNO_OFFER_GUIDE,
+        SUNO_ACCOUNT_SETUP,
+        SUNO_PROXY_PROMPT,
+        SUNO_COOKIE_PROMPT,
+    ] {
+        let lowered = text.to_lowercase();
+        for forbidden in [
+            "пришли пароль",
+            "пароль от аккаунта",
+            "пришли код из",
+            "пришли токен",
+            "код 2fa",
+        ] {
+            assert!(
+                !lowered.contains(forbidden),
+                "seller text must never solicit: {forbidden}"
+            );
+        }
+    }
+}
+
+#[test]
+fn suno_proxy_step_accepts_and_reconstructs_seller_input() {
+    let store = store();
+    store.register_user(111, 111, "suno-seller").unwrap();
+    let offer = store.create_offer("Suno Pro", "$20", 999, 111).unwrap();
+    let reference = SellerJobRef {
+        kind: "offer".into(),
+        offer_id: offer,
+        batch_id: 0,
+        item_no: 0,
+        token: "generation".into(),
+    };
+    assert_eq!(
+        select_suno_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080:user:pass"),
+        SunoProxyInput::SellerSupplied("http://user:pass@1.2.3.4:8080".into(), true)
+    );
+    // Пароль с двоеточием обязан пережить реконструкцию.
+    assert_eq!(
+        select_suno_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080:user:pa:ss"),
+        SunoProxyInput::SellerSupplied("http://user:pa%3Ass@1.2.3.4:8080".into(), true)
+    );
+    assert_eq!(
+        select_suno_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080"),
+        SunoProxyInput::SellerSupplied("http://1.2.3.4:8080".into(), false)
+    );
+}
+
+#[test]
+fn suno_proxy_step_rejects_malformed_input_without_leaking_it() {
+    let store = store();
+    store.register_user(111, 111, "suno-seller").unwrap();
+    let offer = store.create_offer("Suno Pro", "$20", 999, 111).unwrap();
+    let reference = SellerJobRef {
+        kind: "offer".into(),
+        offer_id: offer,
+        batch_id: 0,
+        item_no: 0,
+        token: "generation".into(),
+    };
+    for rejected in ["", "не прокси", "1.2.3.4", "1.2.3.4:abc", "1.2.3.4:0"] {
+        assert_eq!(
+            select_suno_proxy_input(&store, &reference, "", 0, rejected),
+            SunoProxyInput::Invalid,
+            "{rejected:?}"
+        );
+    }
+}
+
+#[test]
+fn suno_proxy_step_never_replaces_a_pinned_proxy() {
+    let store = store();
+    store.register_user(111, 111, "suno-seller").unwrap();
+    let offer = store.create_offer("Suno Pro", "$20", 999, 111).unwrap();
+    let reference = SellerJobRef {
+        kind: "offer".into(),
+        offer_id: offer,
+        batch_id: 0,
+        item_no: 0,
+        token: "generation".into(),
+    };
+    // Оплаченный лиз закреплён: валидное сообщение продавца не может его заменить.
+    store.mark_offer_proxy_issued(offer).unwrap();
+    assert_eq!(
+        select_suno_proxy_input(
+            &store,
+            &reference,
+            "http://user:pass@5.6.7.8:8080",
+            0,
+            "1.2.3.4:8080:user:pass"
+        ),
+        SunoProxyInput::Fixed("http://user:pass@5.6.7.8:8080".into(), 0)
+    );
+    // Закреплённый egress потерян: принимать ввод продавца нельзя, остаёмся fail-closed.
+    assert_eq!(
+        select_suno_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080:user:pass"),
+        SunoProxyInput::Invalid
+    );
+}
+
+#[test]
+fn suno_seller_proxy_is_canonicalised_before_it_is_pinned() {
+    let shaped = parse_proxy_input("http://foo bar:8080");
+    assert!(!shaped.url.is_empty());
+    assert!(suno_credential::normalize_proxy_url(&shaped.url).is_err());
+    // Канонический вывод обеих форм ввода одинаково валиден для credential-контракта.
+    for raw in [
+        "1.2.3.4:8080:user:pa:ss",
+        "http://user:pa%3Ass@1.2.3.4:8080",
+    ] {
+        let parsed = parse_proxy_input(raw);
+        assert!(
+            suno_credential::normalize_proxy_url(&parsed.url).is_ok(),
+            "{raw}"
+        );
+    }
+}
+
+#[test]
+fn suno_proxy_step_has_clean_manual_and_retry_prompts() {
+    assert!(!SUNO_PROXY_PROMPT.contains("не получилось"));
+    assert_eq!(
+        manual_proxy_prompt("su_proxy"),
+        format!("{MANUAL_PROXY_WARNING}{SUNO_PROXY_PROMPT}")
+    );
+    assert!(SUNO_STEP_PROXY_RETRY.contains("ip:port:user:pass"));
+    // Подсказка не может содержать сам присланный прокси: только форма, никаких секретов.
+    assert!(!SUNO_STEP_PROXY_RETRY.contains("<code>1"));
+}
+
+#[test]
+fn the_suno_ready_button_carries_its_own_callback_and_no_region_row() {
+    let keyboard = suno_ready_kb(None);
+    assert_eq!(keyboard[0][0].1, "su:ready");
+    // A shared callback would let one provider's button advance another provider's deal.
+    assert_ne!(keyboard[0][0].1, kimi_ready_kb(None)[0][0].1);
+    assert_ne!(keyboard[0][0].1, glm_ready_kb(None)[0][0].1);
+    assert_ne!(keyboard[0][0].1, tripo3d_ready_kb(None)[0][0].1);
+    // Одна площадка (suno.com): строки выбора региона нет.
+    assert_eq!(keyboard.len(), 1);
+}
+
+#[test]
+fn the_suno_ready_gate_requires_both_its_step_and_a_stored_proxy() {
+    let store = store();
+    // Unknown seller, wrong step, or a right step with no stored egress must all leave the
+    // button inert: validating a session without the assigned proxy would authorize from a
+    // different IP than the one the account was opened on.
+    assert!(suno_ready_handoff(&store, 1).is_none());
+    let _ = store.set_want(1, "su_ready");
+    assert!(suno_ready_handoff(&store, 1).is_none());
+}
+
+#[test]
+fn stepping_back_from_su_wait_requires_confirmation_and_invalidates() {
+    // The seller already armed the cookie intake; going back must cancel it, not leave an
+    // in-flight validation racing to publish into a rewound deal.
+    let back = handoff_step_back(HandoffKind::Suno, "su_wait", true, true).expect("edge");
+    assert_eq!(back.target, "su_ready");
+    assert!(back.invalidates_link);
+    assert!(
+        !back.clears_proxy,
+        "the pinned egress must survive a step back"
+    );
+    // Одноразовое ожидание молча не гасим: сначала явное подтверждение.
+    let row = handoff_back_row(&back, back_step_wire("su_wait").unwrap());
+    assert_eq!(row[0].1, "hoback:su_wait:ask");
+}
+
+#[test]
+fn a_suno_step_back_without_a_recoverable_egress_degrades_to_the_proxy_step() {
+    // Landing on su_ready with an empty hproxy would be a dead end: suno_ready_handoff
+    // rejects it and the seller could never continue.
+    let back = handoff_step_back(HandoffKind::Suno, "su_wait", true, false).expect("edge");
+    assert_eq!(back.target, "su_proxy");
+    assert!(back.clears_proxy);
+    // A seller who may not replace the proxy has no such step in their history at all.
+    assert!(handoff_step_back(HandoffKind::Suno, "su_wait", false, false).is_none());
+}
+
+#[test]
+fn suno_ready_steps_back_to_its_own_proxy_step() {
+    let back = handoff_step_back(HandoffKind::Suno, "su_ready", true, true).expect("edge");
+    assert_eq!(back.target, "su_proxy");
+    assert!(
+        !back.invalidates_link,
+        "the cookie intake has not been armed yet"
+    );
+}
+
+#[test]
+fn the_su_wait_confirmation_warns_that_the_cookie_intake_dies() {
+    let text = handoff_back_confirm_text("su_wait");
+    assert!(text.contains("сброшено"));
+    assert!(text.contains("уже прислал"));
+}
+
+#[test]
+fn suno_declared_plan_comes_from_the_offer_product() {
+    assert_eq!(
+        suno_declared_plan("Suno Pro"),
+        Some(suno_credential::SunoPlan::Pro)
+    );
+    assert_eq!(
+        suno_declared_plan("Suno Premier"),
+        Some(suno_credential::SunoPlan::Premier)
+    );
+    // Голое слово тарифа не становится Suno-планом: классификация обязана подтвердить
+    // провайдера, а без тарифа сделка fail-closed.
+    assert_eq!(suno_declared_plan("Claude Pro"), None);
+    assert_eq!(suno_declared_plan("Premier"), None);
+    assert_eq!(suno_declared_plan("Suno"), None);
+}
+
+#[test]
+fn malformed_suno_cookie_text_never_reaches_the_provider() {
+    for rejected in ["", "  ", "multi\nline", "ajs_id=x; __session=y"] {
+        assert_eq!(suno_session::cookie_text(rejected), None, "{rejected:?}");
+    }
+    // Пробелы вокруг значений cookie — нормальная форма: строка не GLM-ключ.
+    assert!(suno_session::cookie_text("__client=tok.abc; ajs_id=x").is_some());
+    // Журнал видит только длину cookie — никогда её саму.
+    let fingerprint = suno_cookie_fingerprint("__client=super-secret-clerk-token");
+    assert!(!fingerprint.contains("super-secret"), "{fingerprint}");
+    assert!(!fingerprint.contains("clerk-token"), "{fingerprint}");
+}
+
+#[test]
+fn suno_invalid_session_guidance_is_typed_static_and_never_carries_the_cookie() {
+    let reasons = [suno_session::InvalidKeyReason::Auth];
+    let texts: std::collections::HashSet<&'static str> = reasons
+        .iter()
+        .map(|reason| suno_invalid_session_guidance(*reason))
+        .collect();
+    assert_eq!(
+        texts.len(),
+        reasons.len(),
+        "each invalid class needs its own guidance"
+    );
+    // Подсказки статические и не содержат ни cookie продавца, ни формулировок-просьб секретов
+    // аккаунта.
+    let submitted_cookie = "__client=super-secret-clerk-token";
+    for text in reasons
+        .iter()
+        .map(|reason| suno_invalid_session_guidance(*reason))
+        .into_iter()
+        .chain([
+            SUNO_PLAN_MISMATCH,
+            SUNO_BILLING_UNREADABLE,
+            SUNO_VALIDATION_TRANSPORT,
+            SUNO_COOKIE_MALFORMED,
+        ])
+    {
+        assert!(
+            !text.contains(submitted_cookie),
+            "guidance must be static, never an echo of the submitted cookie"
+        );
+        let lowered = text.to_lowercase();
+        for forbidden in ["пришли пароль", "пароль от аккаунта", "пришли токен"]
+        {
+            assert!(!lowered.contains(forbidden), "{forbidden}");
+        }
+    }
+}
+
+#[test]
 fn proxy_source_is_visible_and_changes_seller_instructions() {
     let store = store();
     let seller_proxy = store
@@ -1619,7 +1965,7 @@ fn the_three_handovers_never_share_a_step_name() {
 /// ровно её, поэтому любая лишняя или потерянная строка немедленно разводит UI и состояние.
 #[test]
 fn handoff_back_maps_every_seller_step_to_exactly_one_predecessor() {
-    use HandoffKind::{Claude, Codex, Gemini, Tripo3d};
+    use HandoffKind::{Claude, Codex, Gemini, Suno, Tripo3d};
     let reversible = [
         (Claude, "ho_email", "ho_proxy", true, false),
         (Claude, "ho_code", "ho_email", false, true),
@@ -1629,6 +1975,8 @@ fn handoff_back_maps_every_seller_step_to_exactly_one_predecessor() {
         (Gemini, "gm_wait", "gm_ready", false, true),
         (Tripo3d, "t3_ready", "t3_proxy", true, false),
         (Tripo3d, "t3_wait", "t3_ready", false, true),
+        (Suno, "su_ready", "su_proxy", true, false),
+        (Suno, "su_wait", "su_ready", false, true),
     ];
     for (kind, want, target, clears_proxy, invalidates_link) in reversible {
         assert_eq!(
@@ -1650,6 +1998,7 @@ fn handoff_back_maps_every_seller_step_to_exactly_one_predecessor() {
         (Gemini, "gm_gid"),
         (Gemini, "gm_gsecret"),
         (Tripo3d, "t3_proxy"),
+        (Suno, "su_proxy"),
         (Claude, "reg_address"),
         (Claude, ""),
         (Claude, "нет такого шага"),
@@ -1673,6 +2022,10 @@ fn handoff_back_maps_every_seller_step_to_exactly_one_predecessor() {
         (Tripo3d, "cx_wait"),
         (Claude, "t3_wait"),
         (Codex, "t3_ready"),
+        (Suno, "glm_wait"),
+        (Suno, "t3_wait"),
+        (Claude, "su_wait"),
+        (Gemini, "su_ready"),
     ] {
         assert_eq!(
             handoff_step_back(kind, want, true, true),
@@ -1686,12 +2039,13 @@ fn handoff_back_maps_every_seller_step_to_exactly_one_predecessor() {
 /// продавца. Шаги после выдачи ссылки при этом обязаны оставаться обратимыми.
 #[test]
 fn handoff_back_refuses_to_unpin_a_pinned_proxy() {
-    use HandoffKind::{Claude, Codex, Gemini, Tripo3d};
+    use HandoffKind::{Claude, Codex, Gemini, Suno, Tripo3d};
     for (kind, want) in [
         (Claude, "ho_email"),
         (Codex, "cx_email"),
         (Gemini, "gm_ready"),
         (Tripo3d, "t3_ready"),
+        (Suno, "su_ready"),
     ] {
         assert_eq!(handoff_step_back(kind, want, false, true), None, "{kind:?}");
     }
@@ -1700,6 +2054,7 @@ fn handoff_back_refuses_to_unpin_a_pinned_proxy() {
         (Codex, "cx_wait", "cx_email"),
         (Gemini, "gm_wait", "gm_ready"),
         (Tripo3d, "t3_wait", "t3_ready"),
+        (Suno, "su_wait", "su_ready"),
     ] {
         assert_eq!(
             handoff_step_back(kind, want, false, true).map(|step| step.target),
@@ -1745,6 +2100,8 @@ fn handoff_back_callback_data_covers_exactly_the_reversible_steps() {
         "glm_wait",
         "t3_ready",
         "t3_wait",
+        "su_ready",
+        "su_wait",
     ] {
         assert_eq!(back_step_wire(step), Some(step));
     }
@@ -1755,6 +2112,7 @@ fn handoff_back_callback_data_covers_exactly_the_reversible_steps() {
         "km_proxy",
         "glm_proxy",
         "t3_proxy",
+        "su_proxy",
         "reg_address",
         "",
         "gm_wait:go",

@@ -10,6 +10,8 @@ use crate::glm_roster;
 use crate::kimi_oauth;
 use crate::kimi_roster;
 use crate::setup_token::{self, Outcome};
+use crate::suno_roster;
+use crate::suno_session;
 use crate::tg::{Bot, CallbackQuery, Keyboard};
 use crate::tripo3d_key;
 use crate::tripo3d_roster;
@@ -148,12 +150,15 @@ fn product_kb() -> Keyboard {
         vec![("Tripo3D API $25".into(), "noffer:tripo3d_api_25".into())],
         vec![("Tripo3D API $50".into(), "noffer:tripo3d_api_50".into())],
         vec![("Tripo3D API $100".into(), "noffer:tripo3d_api_100".into())],
+        vec![("Suno Pro".into(), "noffer:suno_pro".into())],
+        vec![("Suno Premier".into(), "noffer:suno_premier".into())],
     ]
 }
 
 /// Несовместимые единицы пополнения: Claude token, ChatGPT CODEX_HOME, зашифрованный
 /// Gemini OAuth profile, зашифрованный KIMI (Kimi Code) OAuth profile, статический GLM
-/// (Zhipu AI / Z.ai Coding Plan) API-ключ и статический Tripo3D (VAST / Holymolly) API-ключ.
+/// (Zhipu AI / Z.ai Coding Plan) API-ключ, статический Tripo3D (VAST / Holymolly) API-ключ
+/// и зашифрованная Suno (suno.com) сессия подписки.
 /// Явный enum не даёт новому продукту тихо провалиться в Claude setup-token ветку.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HandoffKind {
@@ -163,6 +168,7 @@ pub(crate) enum HandoffKind {
     Kimi,
     Glm,
     Tripo3d,
+    Suno,
 }
 
 fn handoff_kind(product: &str) -> HandoffKind {
@@ -186,6 +192,11 @@ fn handoff_kind(product: &str) -> HandoffKind {
     // Tripo3D product name contains none of the earlier provider words.
     } else if p.contains("tripo3d") || p.contains("tripo") {
         HandoffKind::Tripo3d
+    // Suno keys on the provider word: its plan names (Pro/Premier) are generic tier words,
+    // so no later substring rule or the Claude fallback must ever be able to claim one of
+    // them. There is a single platform (suno.com) and no region fork.
+    } else if p.contains("suno") {
+        HandoffKind::Suno
     } else if p.contains("gemini")
         || p.contains("google ai")
         || p.contains("code assist")
@@ -230,6 +241,11 @@ fn tier_name(code: &str) -> Option<&'static str> {
         "tripo3d_api_25" => Some("Tripo3D API $25"),
         "tripo3d_api_50" => Some("Tripo3D API $50"),
         "tripo3d_api_100" => Some("Tripo3D API $100"),
+        // Suno paid plans as published by the provider. The Free tier is excluded by design
+        // (no commercial rights, a daily credit drip, an explicit anti-pooling clause —
+        // docs/engine/SUNO_PROVIDER.md §1). Prices are entered per offer and never assumed.
+        "suno_pro" => Some("Suno Pro"),
+        "suno_premier" => Some("Suno Premier"),
         _ => None,
     }
 }
@@ -257,6 +273,8 @@ fn admin_quick_tier(text: &str) -> Option<&'static str> {
         "📦 Tripo3D API $25" => Some("Tripo3D API $25"),
         "📦 Tripo3D API $50" => Some("Tripo3D API $50"),
         "📦 Tripo3D API $100" => Some("Tripo3D API $100"),
+        "📦 Suno Pro" => Some("Suno Pro"),
+        "📦 Suno Premier" => Some("Suno Premier"),
         _ => None,
     }
 }
@@ -276,6 +294,7 @@ fn admin_home_kb() -> Vec<Vec<&'static str>> {
             "📦 GLM Coding Plan Max",
         ],
         vec!["📦 Tripo3D API $25", "📦 Tripo3D API $50", "📦 Tripo3D API $100"],
+        vec!["📦 Suno Pro", "📦 Suno Premier"],
         vec!["🧺 Batch-покупка"],
         vec!["📋 Активные сделки"],
         vec!["🛠 Панель"],
@@ -651,6 +670,52 @@ fn tripo3d_invalid_key_guidance(reason: tripo3d_key::InvalidKeyReason) -> &'stat
     }
 }
 
+const SUNO_OFFER_GUIDE: &str = "🧭 <b>Что нужно будет сделать после принятия</b>\n\
+1. Дождаться выплаты и персонального HTTP-прокси от бота.\n\
+2. Создать <b>новый чистый профиль</b> в антидетект-браузере и подключить к нему этот прокси.\n\
+3. Только через этот профиль самостоятельно зарегистрировать новый аккаунт на <code>suno.com</code> и активировать <b>ровно тот план, что в оффере</b> (Pro или Premier).\n\
+4. В том же профиле скопировать cookie сессии, вернуться в бот, нажать «Аккаунт готов» и прислать cookie одним сообщением.\n\n\
+Если автоматическая выдача прокси временно недоступна, бот отдельно попросит прокси и продолжит только после его проверки.\n\n\
+⚠️ <b>Не регистрируй и не открывай аккаунт до получения прокси.</b> До завершения не меняй профиль, прокси или устройство. Пароль, банковские данные и коды из почты бот не просит — единственное, что нужно прислать, это cookie сессии из твоего собственного браузера.";
+
+const SUNO_ACCOUNT_SETUP: &str = "🧩 <b>Этап 2 из 3 — подготовь аккаунт Suno</b>\n\n\
+1️⃣ Открой антидетект-браузер (например, Dolphin или AdsPower) и создай <b>новый чистый профиль</b>. Не используй обычный браузер, старый профиль или телефон.\n\n\
+2️⃣ В настройках профиля выбери тип прокси <b>HTTP</b> и вставь данные, которые бот прислал выше. Если браузер просит отдельные поля, строка <code>ip:port:user:pass</code> означает: IP — первое поле, порт — второе, логин — третье, пароль — четвёртое. Нажми проверку и продолжай только если прокси работает и IP изменился. Дополнительный VPN не включай.\n\n\
+3️⃣ В этом же профиле открой <code>https://suno.com</code> и самостоятельно зарегистрируй <b>новый</b> аккаунт.\n\n\
+4️⃣ В том же профиле активируй <b>ровно тот план, что указан в оффере — Pro или Premier</b>. Бесплатный тариф не подходит.\n\n\
+5️⃣ Не выходя из аккаунта и не меняя профиль, открой инструменты разработчика браузера (DevTools → Application → Cookies → <code>suno.com</code>) и скопируй значение cookie <code>__client</code> целиком. Это разрешённый одноразовый артефакт сессии — как setup-token у Claude: без него технически нет другого способа передать доступ. Пока никуда не отправляй. Когда аккаунт и план готовы, нажми кнопку <b>«Аккаунт готов — продолжить»</b> ниже.\n\n\
+🔒 Бот никогда не попросит пароль, коды 2FA или банковские данные — только cookie <code>__client</code> из твоего собственного браузера.";
+
+const SUNO_PROXY_PROMPT: &str = "🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта Suno</b>\n\
+Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
+Не регистрируй аккаунт Suno до подтверждения прокси ботом: регистрация и дальнейшая проверка сессии должны пройти с одного IP.";
+
+const SUNO_STEP_PROXY_RETRY: &str = "🤔 Не разобрал прокси. Пришли его как <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code> одним сообщением.";
+
+/// Промпт шага `su_wait`: cookie сессии — единственный credential-артефакт этой ветки, того
+/// же класса, что `sk-ant-oat01-…` у Claude (задокументированное отклонение от общего правила
+/// «продавец не присылает cookie» — другого credential-интерфейса у Suno нет, manifest §2).
+const SUNO_COOKIE_PROMPT: &str = "🔐 <b>Этап 3 из 3 — пришли cookie сессии Suno</b>\n\n\
+В том же профиле браузера открой DevTools → Application → Cookies → <code>suno.com</code>, скопируй значение cookie <code>__client</code> и пришли его сюда <b>одним сообщением</b> в формате <code>__client=значение</code> (можно прислать и всю строку cookie целиком).\n\n\
+Бот проверит сессию бесплатными запросами (вход, токен, баланс подписки) и сразу подключит аккаунт. Cookie нигде не сохраняется в открытом виде и не пересылается дальше.\n\n\
+Больше ничего присылать не нужно: ни пароль, ни коды 2FA, ни банковские данные — только cookie.";
+
+/// Типовые подсказки шага `su_wait`. Все статические: текст продавца (и тем более cookie) в
+/// ответ бота и в журнал не подставляется никогда.
+const SUNO_COOKIE_MALFORMED: &str = "🤔 Это не похоже на cookie сессии. Пришли одну строку с непустым значением <code>__client=…</code> — ровно так, как её показывает браузер, без переносов строк.";
+const SUNO_SESSION_REJECTED: &str = "❌ Сессия отклонена: вход по этой cookie не удался. В том же профиле браузера обнови страницу <code>suno.com</code>, убедись, что выполнен вход в аккаунт с нужным планом, скопируй свежее значение <code>__client</code> и пришли его ещё раз. Доступ не передан и выплата не завершена.";
+const SUNO_PLAN_MISMATCH: &str = "❌ План этого аккаунта не совпадает с оффером: по балансу подписки виден другой тариф. Активируй ровно тот план, что указан в оффере (Pro или Premier), или пришли cookie аккаунта с нужным планом. Доступ не передан и выплата не завершена.";
+const SUNO_BILLING_UNREADABLE: &str = "❌ Не удалось прочитать баланс этого аккаунта: ответ провайдера не похож на обычный месячный лимит подписки. Убедись, что план из оффера активен, и пришли свежую cookie ещё раз. Доступ не передан и выплата не завершена.";
+const SUNO_VALIDATION_TRANSPORT: &str = "⚠️ Не удалось проверить сессию: сервис провайдера временно недоступен. Cookie не отклонена и никуда не отправлена. Нажми «Аккаунт готов — продолжить» и пришли её ещё раз чуть позже.";
+
+/// Подсказка по классу отказа приёма сессии. Чистая функция: покрытие всех классов и их
+/// тексты проверяются тестом без единого сетевого вызова.
+fn suno_invalid_session_guidance(reason: suno_session::InvalidKeyReason) -> &'static str {
+    match reason {
+        suno_session::InvalidKeyReason::Auth => SUNO_SESSION_REJECTED,
+    }
+}
+
 const CODEX_PROXY_PROMPT: &str = "🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта ChatGPT</b>\n\
 Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
 Не регистрируй аккаунт до подтверждения прокси ботом: регистрация и дальнейшая авторизация должны пройти с одного IP.";
@@ -711,6 +776,18 @@ fn tripo3d_ready_kb(back: Option<&HandoffStepBack>) -> Keyboard {
     keyboard
 }
 
+fn suno_ready_kb(back: Option<&HandoffStepBack>) -> Keyboard {
+    // Одна площадка (suno.com), поэтому выбора региона нет.
+    let mut keyboard = vec![vec![(
+        "✅ Аккаунт готов — продолжить".into(),
+        "su:ready".into(),
+    )]];
+    if let Some(step) = back {
+        keyboard.push(handoff_back_row(step, "su_ready"));
+    }
+    keyboard
+}
+
 fn gemini_ready_kb(back: Option<&HandoffStepBack>) -> Keyboard {
     let mut keyboard = vec![vec![(
         "✅ Аккаунт готов — продолжить".into(),
@@ -740,6 +817,7 @@ fn seller_offer_guide(product: &str) -> &'static str {
         HandoffKind::Kimi => KIMI_OFFER_GUIDE,
         HandoffKind::Glm => GLM_OFFER_GUIDE,
         HandoffKind::Tripo3d => TRIPO3D_OFFER_GUIDE,
+        HandoffKind::Suno => SUNO_OFFER_GUIDE,
     }
 }
 
@@ -751,6 +829,7 @@ fn account_setup_prompt(step: &str) -> &'static str {
         "km_ready" => KIMI_ACCOUNT_SETUP,
         "glm_ready" => GLM_ACCOUNT_SETUP,
         "t3_ready" => TRIPO3D_ACCOUNT_SETUP,
+        "su_ready" => SUNO_ACCOUNT_SETUP,
         _ => "",
     }
 }
@@ -763,6 +842,7 @@ fn proxy_prompt(step: &str) -> &'static str {
         "km_proxy" => KIMI_PROXY_PROMPT,
         "glm_proxy" => GLM_PROXY_PROMPT,
         "t3_proxy" => TRIPO3D_PROXY_PROMPT,
+        "su_proxy" => SUNO_PROXY_PROMPT,
         _ => CLAUDE_PROXY_PROMPT,
     }
 }
@@ -784,6 +864,7 @@ fn accepted_next_step(product: &str, proxy_source: &str) -> &'static str {
         HandoffKind::Kimi => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай аккаунт Kimi.</b>",
         HandoffKind::Glm => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай аккаунт Z.ai или bigmodel.cn.</b>",
         HandoffKind::Tripo3d => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай аккаунт Tripo3D.</b>",
+        HandoffKind::Suno => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай аккаунт Suno.</b>",
     }
 }
 
@@ -1903,6 +1984,72 @@ pub async fn on_message(
             }
             "t3_wait" => {
                 handle_tripo3d_key_message(bot, store, cfg, chat, text).await;
+            }
+            "su_proxy" => {
+                let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+                    return;
+                };
+                if !seller_job_matches_handoff(&job, &job.reference, HandoffKind::Suno) {
+                    return;
+                }
+                match select_suno_proxy_input(
+                    store,
+                    &job.reference,
+                    &rec.hproxy,
+                    rec.hproxy_order,
+                    text,
+                ) {
+                    SunoProxyInput::SellerSupplied(proxy, credentials) => {
+                        if !credentials {
+                            // Тот же риск, что и у GLM: обрезанная вставка без userinfo иначе
+                            // проявится только как отказ прокси внутри проверки сессии.
+                            let _ = bot
+                                .send(
+                                    chat,
+                                    "ℹ️ В этом прокси не распознаны логин и пароль — подключение пойдёт с авторизацией по IP. Если у прокси есть логин и пароль, пришли его целиком в формате <code>ip:port:user:pass</code>.",
+                                )
+                                .await;
+                        }
+                        // A manually supplied replacement is unrelated to any prior IPRoyal order.
+                        prepare_suno_account(bot, store, cfg, chat, Some(&proxy), 0).await;
+                    }
+                    SunoProxyInput::Fixed(..) => {
+                        let _ = bot
+                            .send(
+                                chat,
+                                "🔁 Использую закреплённый за этой позицией прокси. В следующем сообщении нажми <b>«Аккаунт готов — продолжить»</b>, чтобы прислать cookie сессии. Сообщением продавца этот прокси заменить нельзя.",
+                            )
+                            .await;
+                        prepare_suno_account(bot, store, cfg, chat, None, rec.hproxy_order).await;
+                    }
+                    SunoProxyInput::Invalid => {
+                        elog::error("authbot", format!("[suno-proxy] chat={} rejected seller proxy input: {}", chat,
+                            proxy_input_fingerprint(text)));
+                        let _ = bot
+                            .send_kb(
+                                chat,
+                                SUNO_STEP_PROXY_RETRY,
+                                handoff_back_kb(store, cfg, chat).as_ref(),
+                            )
+                            .await;
+                    }
+                }
+            }
+            "su_ready" => {
+                if text.to_lowercase() == "готово" {
+                    continue_suno_handoff(bot, store, cfg, chat).await;
+                } else {
+                    let _ = bot
+                        .send_kb(
+                            chat,
+                            "Когда аккаунт Suno создан, план из оффера активен и значение cookie __client скопировано, нажми кнопку ниже. До этого не меняй профиль или прокси.",
+                            Some(&suno_ready_kb(current_handoff_back(store, cfg, chat).as_ref())),
+                        )
+                        .await;
+                }
+            }
+            "su_wait" => {
+                handle_suno_cookie_message(bot, store, cfg, chat, text).await;
             }
             "ho_code" => match extract_code_state(text) {
                 Some(cs) => do_feed_token(bot, store, cfg, chat, &cs).await,
@@ -4253,6 +4400,540 @@ async fn handle_tripo3d_key_message(
     }
 }
 
+/// Put the seller on the Suno "account ready" step and show the button that arms the cookie
+/// intake. Mirrors `prepare_glm_account`: the Suno branch needs no keyring to reach this step —
+/// it is required only once a session is actually sealed. One platform (suno.com), so there is
+/// no region selection to reset.
+async fn prepare_suno_account(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    proxy: Option<&str>,
+    proxy_order_id: i64,
+) {
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        return;
+    };
+    let expected_job = job.job_ref();
+    if !seller_job_matches_handoff(&job, &expected_job, HandoffKind::Suno) {
+        return;
+    }
+    let user = store.get_user(chat).ok().flatten().unwrap_or_default();
+    let effective_proxy = proxy.unwrap_or(&user.hproxy);
+    let effective_order = if proxy.is_some() {
+        proxy_order_id
+    } else {
+        user.hproxy_order
+    };
+    if effective_proxy.is_empty() {
+        // Without an egress the seller must not open the account yet: registration and session
+        // validation have to come from the same IP.
+        if !store
+            .set_handoff_state_for_seller_job(chat, &expected_job, "su_proxy", "", effective_order)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let _ = bot.send(chat, SUNO_PROXY_PROMPT).await;
+        return;
+    }
+    // A proxy that only passed the shape check would strand the seller on su_ready: session
+    // validation would run against an egress that can never work, with no way to fix it in
+    // place. Canonicalise before pinning, exactly like the GLM branch does.
+    let replaceable_proxy = job_accepts_seller_proxy(store, &expected_job, effective_order);
+    let effective_proxy = match suno_credential::normalize_proxy_url(effective_proxy) {
+        Ok(proxy) => proxy,
+        Err(_) => {
+            elog::error("authbot", format!("[suno-proxy] chat={} canonicalisation rejected proxy: {}", chat,
+                proxy_input_fingerprint(effective_proxy)));
+            let (retry_proxy, retry_order) = if replaceable_proxy {
+                ("", 0)
+            } else {
+                (effective_proxy, effective_order)
+            };
+            if !store
+                .set_handoff_state_for_seller_job(
+                    chat,
+                    &expected_job,
+                    "su_proxy",
+                    retry_proxy,
+                    retry_order,
+                )
+                .unwrap_or(false)
+            {
+                return;
+            }
+            let seller_message = if replaceable_proxy {
+                "❌ Не удалось разобрать этот прокси. Приём cookie не начат — пришли прокси заново в указанном формате."
+            } else {
+                "⚠️ Закреплённый за этой позицией прокси имеет неверный формат. Приём cookie не начат; администратор уведомлён."
+            };
+            let _ = bot.send(chat, seller_message).await;
+            notify_admins(
+                bot,
+                cfg,
+                &format!(
+                    "⚠️ Suno proxy не прошёл локальную проверку формата для {}. Сетевых запросов не выполнялось; секреты прокси не логировались.",
+                    seller_job_label(&job),
+                ),
+                None,
+            )
+            .await;
+            return;
+        }
+    };
+    if !store
+        .set_handoff_state_for_seller_job(
+            chat,
+            &expected_job,
+            "su_ready",
+            &effective_proxy,
+            effective_order,
+        )
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let _ = bot
+        .send_kb(
+            chat,
+            SUNO_ACCOUNT_SETUP,
+            Some(&suno_ready_kb(
+                current_handoff_back(store, cfg, chat).as_ref(),
+            )),
+        )
+        .await;
+}
+
+/// Return the proxy only for the explicit Suno readiness state. Callback buttons can be old
+/// or forwarded, so neither the button itself nor a stored proxy alone authorizes a state
+/// transition.
+fn suno_ready_handoff(store: &Store, chat: i64) -> Option<(String, i64)> {
+    let user = store.get_user(chat).ok().flatten()?;
+    if user.want != "su_ready" || user.hproxy.is_empty() {
+        return None;
+    }
+    Some((user.hproxy, user.hproxy_order))
+}
+
+async fn continue_suno_handoff(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, chat: i64) {
+    let Some((proxy, proxy_order_id)) = suno_ready_handoff(store, chat) else {
+        let _ = bot
+            .send(
+                chat,
+                "Эта кнопка уже неактивна. Открой актуальное сообщение бота или отправь /start.",
+            )
+            .await;
+        return;
+    };
+    start_suno_handoff(bot, store, cfg, chat, &proxy, proxy_order_id).await;
+}
+
+/// Arm the Suno cookie intake for the seller's current deal.
+///
+/// Confirming readiness simply moves the deal to `su_wait`, where the seller sends the session
+/// cookie as one text message. The cookie is the only credential artifact — the seller never
+/// sends a password, 2FA or card data (manifest §2 records this sanctioned artifact).
+async fn start_suno_handoff(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    proxy: &str,
+    proxy_order_id: i64,
+) {
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        let _ = bot
+            .send(
+                chat,
+                "Эта кнопка уже не относится к активной сделке. Отправь /start.",
+            )
+            .await;
+        return;
+    };
+    let expected_job = job.job_ref();
+    if !seller_job_matches_handoff(&job, &expected_job, HandoffKind::Suno) {
+        let _ = bot
+            .send(
+                chat,
+                "Текущая сделка не является Suno-сделкой. Открой актуальную карточку через /start.",
+            )
+            .await;
+        return;
+    }
+    if cfg.suno_roster.is_none() {
+        // Without a keyring nothing can be sealed, so the seller must not be sent through a
+        // flow whose result we would have to throw away.
+        let _ = store.set_want_for_seller_job(chat, &expected_job, "su_ready");
+        let _ = bot
+            .send_kb(
+                chat,
+                "⚠️ Подключение Suno сейчас временно недоступно. Доступ не передан; администратор уведомлён. Попробуй ещё раз этой же кнопкой после исправления.",
+                Some(&suno_ready_kb(None)),
+            )
+            .await;
+        notify_admins(
+            bot,
+            cfg,
+            "⚠️ Suno handoff недоступен: не настроен AEAD keyring (AUTH_BOT_SUNO_CREDENTIAL_KEYS / _ACTIVE_KID).",
+            None,
+        )
+        .await;
+        return;
+    }
+    if proxy.is_empty() {
+        // The readiness gate already refuses to arm the intake without an egress; fail closed
+        // rather than validating a session from a different IP than the account was opened on.
+        if store
+            .set_handoff_state_for_seller_job(chat, &expected_job, "su_proxy", "", proxy_order_id)
+            .unwrap_or(false)
+        {
+            let _ = bot.send(chat, SUNO_PROXY_PROMPT).await;
+        }
+        return;
+    }
+    let _ = store.set_want_for_seller_job(chat, &expected_job, "su_wait");
+    let _ = bot
+        .send_kb(
+            chat,
+            SUNO_COOKIE_PROMPT,
+            handoff_back_kb(store, cfg, chat).as_ref(),
+        )
+        .await;
+}
+
+/// Declared план продукта оффера. Классификация обязана подтвердить Suno-провайдера, иначе
+/// голое слово тарифа (Pro/Premier) не имеет права стать Suno-планом.
+fn suno_declared_plan(product: &str) -> Option<suno_credential::SunoPlan> {
+    if handoff_kind(product) != HandoffKind::Suno {
+        return None;
+    }
+    let lowered = product.to_lowercase();
+    // «premier» не содержит «pro», порядок проверки безопасен.
+    for (word, plan) in [
+        ("pro", suno_credential::SunoPlan::Pro),
+        ("premier", suno_credential::SunoPlan::Premier),
+    ] {
+        if lowered.contains(word) {
+            return Some(plan);
+        }
+    }
+    None
+}
+
+/// Единственное, что журнал может узнать о cookie: её длину. Сама cookie не печатается никогда.
+fn suno_cookie_fingerprint(cookie: &str) -> String {
+    format!("cookie_len={}", cookie.len())
+}
+
+/// Вернуть сделку на подтверждение аккаунта после неудачной передачи cookie: ни конверта, ни
+/// строки roster, ни завершения выплаты. Подсказки статические — cookie в них не подставляется.
+async fn suno_back_to_ready(
+    bot: &Bot,
+    store: &Arc<Store>,
+    chat: i64,
+    expected_job: &SellerJobRef,
+    message: &str,
+) {
+    let _ = store.set_want_for_seller_job(chat, expected_job, "su_ready");
+    let _ = bot.send_kb(chat, message, Some(&suno_ready_kb(None))).await;
+}
+
+/// Приём cookie сессии на шаге `su_wait`. Вся цепочка идёт через egress продавца: аккаунт открыт
+/// с этого IP, и проверка с другого адреса — ровно то, что триггерит risk-контроль провайдера.
+/// Cookie — секрет уровня Claude setup-token: не логируется, не возвращается эхом в чат и не
+/// сохраняется в SQLite в открытом виде; валидация живёт только в памяти.
+///
+/// Платной admission-песни здесь намеренно нет: одна песня стоит 5 кредитов = $0.02 производных,
+/// что превышает штатный бюджет admission micro-smoke $0.0001
+/// (`docs/engine/SUNO_PROVIDER.md` §7 — открытый вопрос бюджета, fail closed). Валидация
+/// заканчивается на бесплатных probe (discovery → mint → billing).
+async fn handle_suno_cookie_message(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    text: &str,
+) {
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        return;
+    };
+    if !seller_job_matches_handoff(&job, &job.reference, HandoffKind::Suno) {
+        return;
+    }
+    let expected_job = job.job_ref();
+    let Some(cookie) = suno_session::cookie_text(text) else {
+        let _ = bot
+            .send_kb(
+                chat,
+                SUNO_COOKIE_MALFORMED,
+                handoff_back_kb(store, cfg, chat).as_ref(),
+            )
+            .await;
+        return;
+    };
+    let cookie = zeroize::Zeroizing::new(cookie.to_string());
+    let Some(roster) = cfg.suno_roster.clone() else {
+        suno_back_to_ready(
+            bot,
+            store,
+            chat,
+            &expected_job,
+            "⚠️ Подключение Suno сейчас временно недоступно. Доступ не передан; администратор уведомлён. Попробуй ещё раз после исправления.",
+        )
+        .await;
+        notify_admins(
+            bot,
+            cfg,
+            "⚠️ Suno handoff недоступен: не настроен AEAD keyring (AUTH_BOT_SUNO_CREDENTIAL_KEYS / _ACTIVE_KID).",
+            None,
+        )
+        .await;
+        return;
+    };
+    let Some(plan) = suno_declared_plan(&job.product) else {
+        suno_back_to_ready(
+            bot,
+            store,
+            chat,
+            &expected_job,
+            "⚠️ Продукт оффера не распознан как план Suno. Доступ не передан; администратор уведомлён.",
+        )
+        .await;
+        notify_admins(
+            bot,
+            cfg,
+            &format!(
+                "⚠️ Suno-сделка {} имеет нераспознанный declared plan; запрос к провайдеру не выполнялся.",
+                seller_job_label(&job),
+            ),
+            None,
+        )
+        .await;
+        return;
+    };
+    let user = store.get_user(chat).ok().flatten().unwrap_or_default();
+    let proxy = user.hproxy.clone();
+    if proxy.is_empty() {
+        if store
+            .set_handoff_state_for_seller_job(
+                chat,
+                &expected_job,
+                "su_proxy",
+                "",
+                user.hproxy_order,
+            )
+            .unwrap_or(false)
+        {
+            let _ = bot.send(chat, SUNO_PROXY_PROMPT).await;
+        }
+        return;
+    }
+
+    // Все три шага бесплатны и идемпотентны (mint JWT — keep-alive сессии), поэтому
+    // transport-сбой каждого безопасно повторить с bounded backoff. Отказ 401/403 на любом
+    // шаге — финальный вердикт по сессии. Generation guard перепроверяется перед каждым
+    // сетевым вызовом: отмена/шаг назад обязаны остановить цепочку, а не опубликоваться в
+    // сделку, которая уже ушла дальше.
+    macro_rules! free_probe {
+        ($attempt:ident, $call:expr) => {{
+            loop {
+                if !seller_handoff_is_current(store, chat, Some(&expected_job), HandoffKind::Suno)
+                {
+                    return;
+                }
+                match $call.await {
+                    Ok(ok) => break ok,
+                    Err(_) => {
+                        $attempt += 1;
+                        if $attempt >= 3 {
+                            elog::error("authbot", format!("[suno-session] chat={} validation probe transport failed after {} attempts", chat, $attempt));
+                            suno_back_to_ready(bot, store, chat, &expected_job, SUNO_VALIDATION_TRANSPORT)
+                                .await;
+                            return;
+                        }
+                        tokio::time::sleep(suno_session::probe_retry_backoff($attempt - 1)).await;
+                    }
+                }
+            }
+        }};
+    }
+
+    // 1. Clerk session discovery: без неё нет dedup-идентичности, и sealing невозможен.
+    let mut attempt = 0u32;
+    let session_id = match free_probe!(attempt, suno_session::discover_session(cookie.as_str(), &proxy)) {
+        suno_session::SessionProbe::Active { session_id } => session_id,
+        suno_session::SessionProbe::Invalid => {
+            elog::error("authbot", format!("[suno-session] chat={} session rejected at discovery: {}", chat,
+                suno_cookie_fingerprint(cookie.as_str())));
+            suno_back_to_ready(
+                bot,
+                store,
+                chat,
+                &expected_job,
+                suno_invalid_session_guidance(suno_session::InvalidKeyReason::Auth),
+            )
+            .await;
+            return;
+        }
+    };
+
+    // 2. Mint короткоживущего JWT по обнаруженной сессии. JWT не персистится.
+    let mut attempt = 0u32;
+    let jwt = match free_probe!(attempt, suno_session::mint_jwt(cookie.as_str(), &session_id, &proxy)) {
+        suno_session::JwtMint::Minted { jwt } => zeroize::Zeroizing::new(jwt),
+        suno_session::JwtMint::Invalid => {
+            elog::error("authbot", format!("[suno-session] chat={} session rejected at JWT mint", chat));
+            suno_back_to_ready(
+                bot,
+                store,
+                chat,
+                &expected_job,
+                suno_invalid_session_guidance(suno_session::InvalidKeyReason::Auth),
+            )
+            .await;
+            return;
+        }
+    };
+
+    // 3. Бесплатный probe квоты подписки: declared план обязан совпасть с наблюдаемым
+    // месячным лимитом. Машиночитаемого /me у Suno нет, поэтому corroboration — единственная
+    // проверка «продавец активировал тот план».
+    let mut attempt = 0u32;
+    let snapshot = match free_probe!(attempt, suno_session::probe_billing(jwt.as_str(), cookie.as_str(), &proxy)) {
+        suno_session::BillingProbe::Valid(snapshot) => snapshot,
+        suno_session::BillingProbe::Invalid => {
+            elog::error("authbot", format!("[suno-session] chat={} session rejected at billing probe", chat));
+            suno_back_to_ready(
+                bot,
+                store,
+                chat,
+                &expected_job,
+                suno_invalid_session_guidance(suno_session::InvalidKeyReason::Auth),
+            )
+            .await;
+            return;
+        }
+    };
+    match suno_session::corroborate_plan(&snapshot, plan) {
+        suno_session::PlanVerdict::Confirmed(_) => {}
+        suno_session::PlanVerdict::PlanMismatch { .. } => {
+            elog::error("authbot", format!("[suno-session] chat={} declared plan contradicts the observed monthly limit", chat));
+            suno_back_to_ready(bot, store, chat, &expected_job, SUNO_PLAN_MISMATCH).await;
+            return;
+        }
+        suno_session::PlanVerdict::Unreadable => {
+            elog::error("authbot", format!("[suno-session] chat={} billing snapshot cannot corroborate the declared plan", chat));
+            suno_back_to_ready(bot, store, chat, &expected_job, SUNO_BILLING_UNREADABLE).await;
+            return;
+        }
+    }
+
+    // Платной admission-песни здесь нет намеренно (см. документацию функции): публикация
+    // опирается на бесплатные probe и corroboration, а вопрос бюджета платного допуска
+    // записан в манифесте §7 как открытый.
+
+    // Последний generation guard перед любой долговременной записью. SQLite и roster — не одна
+    // транзакция, поэтому это лишь сужает неизбежное cross-store окно, а не закрывает его.
+    if !seller_handoff_is_current(store, chat, Some(&expected_job), HandoffKind::Suno) {
+        return;
+    }
+    let credential =
+        match suno_session::credential_from(cookie.as_str(), &session_id, plan, &proxy) {
+            Ok(credential) => credential,
+            Err(_) => {
+                suno_back_to_ready(
+                    bot,
+                    store,
+                    chat,
+                    &expected_job,
+                    "⚠️ Сессия не прошла внутреннюю проверку формата. Доступ не передан и выплата не завершена; администратор уведомлён.",
+                )
+                .await;
+                notify_admins(
+                    bot,
+                    cfg,
+                    &format!(
+                        "⚠️ Suno credential_from отклонил уже валидированный материал для {}; секреты не логировались.",
+                        seller_job_label(&job),
+                    ),
+                    None,
+                )
+                .await;
+                return;
+            }
+        };
+
+    let profile_id = format!("suno-{}", &new_profile_suffix());
+    match suno_roster::publish(
+        &roster.dir,
+        &roster.keyring,
+        &roster.active_key_id,
+        &profile_id,
+        &credential,
+    ) {
+        Ok(published) => {
+            let _ = bot
+                .send(
+                    chat,
+                    if published.replaced_existing {
+                        "✅ Аккаунт Suno подключён (обновлён существующий профиль этой подписки)."
+                    } else {
+                        "✅ Аккаунт Suno подключён."
+                    },
+                )
+                .await;
+            complete_seller_job_after_handoff(
+                bot,
+                store,
+                cfg,
+                chat,
+                Some(expected_job),
+                HandoffKind::Suno,
+            )
+            .await;
+        }
+        Err(suno_roster::PublishError::Duplicate) => {
+            suno_back_to_ready(
+                bot,
+                store,
+                chat,
+                &expected_job,
+                "⚠️ Такой идентификатор профиля уже занят другой сессией. Доступ не передан и выплата не завершена; администратор уведомлён.",
+            )
+            .await;
+            notify_admins(
+                bot,
+                cfg,
+                &format!(
+                    "⚠️ Suno publication hit a profile-id collision для {}; секреты не логировались.",
+                    seller_job_label(&job),
+                ),
+                None,
+            )
+            .await;
+        }
+        Err(suno_roster::PublishError::Storage) => {
+            suno_back_to_ready(
+                bot,
+                store,
+                chat,
+                &expected_job,
+                "⚠️ Не удалось сохранить доступ. Доступ не передан и выплата не завершена; администратор уведомлён.",
+            )
+            .await;
+            notify_admins(
+                bot,
+                cfg,
+                "⚠️ Suno publication failed closed. Проверь права AUTH_BOT_SUNO_DIR, profiles.json и совпадение credential keyring; секреты не логировались.",
+                None,
+            )
+            .await;
+        }
+    }
+}
+
 async fn continue_gemini_handoff(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, chat: i64) {
     let Some((proxy, proxy_order_id)) = gemini_ready_handoff(store, chat) else {
         let _ = bot
@@ -4411,6 +5092,7 @@ fn handoff_steps_for_kind(kind: HandoffKind) -> (&'static str, &'static str) {
         HandoffKind::Kimi => ("km_proxy", "km_ready"),
         HandoffKind::Glm => ("glm_proxy", "glm_ready"),
         HandoffKind::Tripo3d => ("t3_proxy", "t3_ready"),
+        HandoffKind::Suno => ("su_proxy", "su_ready"),
     }
 }
 
@@ -4526,6 +5208,27 @@ pub(crate) fn handoff_step_back(
                 None
             }
         }
+        (HandoffKind::Suno, "su_ready") => to_proxy_step("su_proxy", false),
+        // Mirrors the GLM edge: stepping back from the cookie intake must cancel the pending
+        // submission, and without a recoverable egress it degrades to the proxy step rather
+        // than landing on su_ready with an empty hproxy, which suno_ready_handoff rejects.
+        (HandoffKind::Suno, "su_wait") => {
+            if pinned_egress_known {
+                Some(HandoffStepBack {
+                    target: "su_ready",
+                    clears_proxy: false,
+                    invalidates_link: true,
+                })
+            } else if proxy_replaceable {
+                Some(HandoffStepBack {
+                    target: "su_proxy",
+                    clears_proxy: true,
+                    invalidates_link: true,
+                })
+            } else {
+                None
+            }
+        }
         (HandoffKind::Gemini, "gm_ready") => to_proxy_step("gm_gproxy", false),
         // Единственное двухисходное ребро. Без восстановленного egress шаг назад привёл бы на
         // `gm_ready` с пустым `hproxy`, который `gemini_ready_handoff` отвергает — это тупик,
@@ -4566,6 +5269,8 @@ fn back_step_wire(want: &str) -> Option<&'static str> {
         "glm_wait" => Some("glm_wait"),
         "t3_ready" => Some("t3_ready"),
         "t3_wait" => Some("t3_wait"),
+        "su_ready" => Some("su_ready"),
+        "su_wait" => Some("su_wait"),
         _ => None,
     }
 }
@@ -4585,7 +5290,7 @@ fn handoff_back_row(step: &HandoffStepBack, from_wire: &str) -> Vec<(String, Str
         "↩️ Изменить прокси"
     } else if step.target == "gm_ready" {
         "↩️ Назад: новая ссылка"
-    } else if step.target == "glm_ready" || step.target == "t3_ready" {
+    } else if step.target == "glm_ready" || step.target == "t3_ready" || step.target == "su_ready" {
         "↩️ Назад: подтверждение аккаунта"
     } else {
         "↩️ Назад: другой email"
@@ -4690,6 +5395,7 @@ fn handoff_back_confirm_text(want: &str) -> &'static str {
         "km_wait" => "⚠️ Вернуться к подтверждению аккаунта?\n\nВыданный код устройства Kimi перестанет работать, и бот выдаст новый. Если ты <b>уже подтвердил вход</b>, аккаунт может всё равно засчитаться — тогда напиши администратору.",
         "glm_wait" => "⚠️ Вернуться к подтверждению аккаунта?\n\nОжидание API-ключа будет сброшено: чтобы передать ключ, нажми «Аккаунт готов — продолжить» ещё раз. Если ты <b>уже прислал ключ</b> и бот его проверяет, аккаунт может всё равно засчитаться — тогда напиши администратору.",
         "t3_wait" => "⚠️ Вернуться к подтверждению аккаунта?\n\nОжидание API-ключа будет сброшено: чтобы передать ключ, нажми «Аккаунт готов — продолжить» ещё раз. Если ты <b>уже прислал ключ</b> и бот его проверяет, аккаунт может всё равно засчитаться — тогда напиши администратору.",
+        "su_wait" => "⚠️ Вернуться к подтверждению аккаунта?\n\nОжидание cookie будет сброшено: чтобы передать cookie, нажми «Аккаунт готов — продолжить» ещё раз. Если ты <b>уже прислал cookie</b> и бот её проверяет, аккаунт может всё равно засчитаться — тогда напиши администратору.",
         "cx_wait" => "⚠️ Вернуться к вводу email?\n\nВыданный одноразовый код ChatGPT перестанет работать, и бот выдаст новый. Если ты <b>уже подтвердил вход</b>, аккаунт может всё равно засчитаться — тогда напиши администратору.",
         _ => "⚠️ Вернуться на шаг назад?\n\nВыданная ссылка авторизации перестанет работать, и бот выдаст новую с тем же прокси. Если ты <b>уже подтвердил доступ</b> в браузере, аккаунт может всё равно засчитаться — тогда напиши администратору.",
     }
@@ -4834,7 +5540,7 @@ async fn send_handoff_step_card(
         Some(vec![handoff_back_row(back, back_step_wire(&want)?)])
     });
     match step {
-        "ho_proxy" | "cx_proxy" | "gm_gproxy" | "km_proxy" | "glm_proxy" | "t3_proxy" => {
+        "ho_proxy" | "cx_proxy" | "gm_gproxy" | "km_proxy" | "glm_proxy" | "t3_proxy" | "su_proxy" => {
             let _ = bot
                 .send_kb(
                     chat,
@@ -4904,6 +5610,18 @@ async fn send_handoff_step_card(
                         moved("Вернулись на подтверждение аккаунта. Прокси сохранён.")
                     ),
                     Some(&tripo3d_ready_kb(back.as_ref())),
+                )
+                .await;
+        }
+        "su_ready" => {
+            let _ = bot
+                .send_kb(
+                    chat,
+                    &format!(
+                        "{}{SUNO_ACCOUNT_SETUP}",
+                        moved("Вернулись на подтверждение аккаунта. Прокси сохранён.")
+                    ),
+                    Some(&suno_ready_kb(back.as_ref())),
                 )
                 .await;
         }
@@ -5103,6 +5821,41 @@ fn select_tripo3d_proxy_input(
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum SunoProxyInput {
+    /// URL продавца плюс признак того, что в нём распознаны логин и пароль.
+    SellerSupplied(String, bool),
+    /// Закреплённый прокси покупателя/IPRoyal: сообщение продавца его заменить не может.
+    Fixed(String, i64),
+    /// Ввод не похож на прокси, а закреплённого egress подставить нечего.
+    Invalid,
+}
+
+/// Решение шага `su_proxy`. Зеркалит GLM-шаг: приём cookie живёт на более позднем шаге,
+/// поэтому здесь сообщение продавца — это всегда ввод egress. Закреплённый buyer/IPRoyal
+/// прокси сообщение продавца заменить не может никогда.
+fn select_suno_proxy_input(
+    store: &Store,
+    expected: &SellerJobRef,
+    current_proxy: &str,
+    current_proxy_order_id: i64,
+    input: &str,
+) -> SunoProxyInput {
+    if job_accepts_seller_proxy(store, expected, current_proxy_order_id) {
+        let parsed = parse_proxy_input(input);
+        return if parsed.url.is_empty() {
+            SunoProxyInput::Invalid
+        } else {
+            SunoProxyInput::SellerSupplied(parsed.url, parsed.credentials)
+        };
+    }
+    if current_proxy.is_empty() {
+        SunoProxyInput::Invalid
+    } else {
+        SunoProxyInput::Fixed(current_proxy.to_string(), current_proxy_order_id)
+    }
+}
+
 fn seller_job_matches_handoff(
     job: &SellerJob,
     expected: &SellerJobRef,
@@ -5206,7 +5959,7 @@ async fn start_batch_item(
             return;
         }
         let setup =
-            if next_step == "gm_ready" || next_step == "km_ready" || next_step == "glm_ready" || next_step == "t3_ready" {
+            if next_step == "gm_ready" || next_step == "km_ready" || next_step == "glm_ready" || next_step == "t3_ready" || next_step == "su_ready" {
                 ""
             } else {
                 account_setup_prompt(next_step)
@@ -5228,6 +5981,8 @@ async fn start_batch_item(
             prepare_glm_account(bot, store, cfg, seller_chat, None, 0).await;
         } else if next_step == "t3_ready" {
             prepare_tripo3d_account(bot, store, cfg, seller_chat, None, 0).await;
+        } else if next_step == "su_ready" {
+            prepare_suno_account(bot, store, cfg, seller_chat, None, 0).await;
         }
     } else {
         if !store
@@ -5748,7 +6503,7 @@ async fn deliver_issued_proxy(
                 .await;
                 return;
             }
-            let next_prompt = if gemini || next_step == "km_ready" || next_step == "glm_ready" || next_step == "t3_ready" {
+            let next_prompt = if gemini || next_step == "km_ready" || next_step == "glm_ready" || next_step == "t3_ready" || next_step == "su_ready" {
                 "Сохрани эти данные: аккаунт нужно создать и подключить именно через этот прокси. Подробная инструкция придёт следующим сообщением."
             } else {
                 account_setup_prompt(next_step)
@@ -5774,6 +6529,8 @@ async fn deliver_issued_proxy(
                 prepare_glm_account(bot, store, cfg, seller_chat, None, 0).await;
             } else if next_step == "t3_ready" {
                 prepare_tripo3d_account(bot, store, cfg, seller_chat, None, 0).await;
+            } else if next_step == "su_ready" {
+                prepare_suno_account(bot, store, cfg, seller_chat, None, 0).await;
             }
             let _ = bot.send(admin_chat, &format!(
                 "✅ Прокси по офферу #{oid} выпущен (UK · {}, заказ IPRoyal #{}) и отправлен продавцу.",
@@ -5854,7 +6611,7 @@ async fn start_buyer_offer_handoff(
     {
         return;
     }
-    let setup = if next_step == "gm_ready" || next_step == "km_ready" || next_step == "glm_ready" || next_step == "t3_ready" {
+    let setup = if next_step == "gm_ready" || next_step == "km_ready" || next_step == "glm_ready" || next_step == "t3_ready" || next_step == "su_ready" {
         ""
     } else {
         account_setup_prompt(next_step)
@@ -5871,6 +6628,8 @@ async fn start_buyer_offer_handoff(
         prepare_glm_account(bot, store, cfg, seller_chat, None, 0).await;
     } else if next_step == "t3_ready" {
         prepare_tripo3d_account(bot, store, cfg, seller_chat, None, 0).await;
+    } else if next_step == "su_ready" {
+        prepare_suno_account(bot, store, cfg, seller_chat, None, 0).await;
     }
 }
 
@@ -5946,6 +6705,11 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
     // (api.tripo3d.com).
     if let Some(region) = data.strip_prefix("t3:region:") {
         select_tripo3d_region(bot, store, cfg, chat, region).await;
+        return;
+    }
+
+    if data == "su:ready" {
+        continue_suno_handoff(bot, store, cfg, chat).await;
         return;
     }
 

@@ -18,10 +18,6 @@
 //! discovered session id cannot be deduplicated at all, so publication refuses it — the
 //! intake flow always discovers the session before sealing.
 
-// The seller wizard in `bot.rs` arrives as the dependent follow-up commit; until it lands,
-// only `RosterConfig` (wired from `main.rs`) and this module's tests touch `publish`.
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;

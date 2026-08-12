@@ -19,6 +19,7 @@ storefront, public docs) is OUT of scope for this task — dormant implementatio
 | Credential crate | (this commit) | `crates/suno-credential`; GLM-pattern AEAD envelope for the Clerk session cookie (`__client=` entry enforced at seal) + optional rediscoverable session id + declared plan `Pro`/`Premier` (labels match the 0050 CHECK; `SUNO_REVIEWED_PLANS` pins 2 500/10 000 credits, reviewed 2026-08-12); fixed-host constants, no base-url override by design; JWT mint / `set-cookie` re-seal single-flight documented as the runtime's concern; 18 tests green |
 | Calibration estimator | (this commit) | `crates/forward/src/suno_calibration.rs`; GLM dual-path monthly-window state machine per manifest §5.2/§5.3 (quota-endpoint fraction when carried, else native-ledger fraction against `suno_credential::reviewed_plan_credits`; cutover re-anchors without erasing history, exact-duration keying, unattributed counter, version rebuild from immutable history, checked i64/i128 only); §10.6 cohort pooling by exact plan+duration; 33 deterministic tests |
 | Auth Bot protocol + roster | (this commit) | `crates/authbot/src/{suno_session,suno_roster}.rs` + `main.rs` env (`AUTH_BOT_SUNO_{DIR,CREDENTIAL_KEYS,CREDENTIAL_ACTIVE_KID}`) + `suno-credential` dep; GLM-pattern intake per manifest §7 over the `__client` cookie artifact (sanctioned one-time artifact, manifest §2 deviation): Clerk session discovery → JWT mint → free billing probe (401/403 → typed Auth verdict, any schema deviation fails closed, raw nullable counters), plan corroboration against the published monthly ladder (2 500/10 000 exact match, mismatch/unreadable fail closed), **no paid admission song at all** ($0.02 > $0.0001 cap, §7 open question); roster = glm_roster mirror with session-id-as-identity replace-in-place (no session id → publication refused); modules dormant (`#![allow(dead_code)]`) until the wizard commit; 24 new tests |
+| Auth Bot seller wizard | (this commit) | `HandoffKind::Suno` in `crates/authbot/src/bot.rs` per manifest §7: steps `su_proxy → su_ready → su_wait`, button `su:ready`, no region row (single platform); tier codes `suno_pro`/`suno_premier` ("Suno Pro"/"Suno Premier") across `product_kb`/`tier_name`/`admin_quick_tier`/`admin_home_kb`; classification keys on `suno` above the Claude fallback (bare "Pro"/"Premier" never classify); seller texts walk proxy-first setup → exact plan activation → guided `__client` copy from the seller's own browser (sanctioned one-time artifact); full GLM-mirror wizard (`prepare_suno_account`, readiness gate `su:ready` requires step+stored proxy, `handle_suno_cookie_message`: shape preflight → discovery → JWT mint → billing probe (bounded retry each) → plan corroboration → seal → atomic publish → payout, keyring-gated dormant intake, cookie never logged/echoed/persisted); step-back edges incl. the confirm + degrade-to-proxy rule; `db.rs` `recover_interrupted_suno_handoffs` (`su_wait`→`su_ready` on restart) wired in `main.rs`; batch/buyer/IPRoyal start paths extended; 20 new tests, exhaustive menu/step-back tests extended (hard counter 18→20) |
 
 ## Key research facts (review date 2026-08-12)
 
@@ -47,12 +48,11 @@ storefront, public docs) is OUT of scope for this task — dormant implementatio
 
 ## Next action (exactly one)
 
-Auth Bot seller wizard (`crates/authbot/src/bot.rs`, separate commit) — `HandoffKind::Suno`
-with the `su_proxy → su_ready → su_wait` steps per manifest §7: proxy canonicalization via
-`suno_credential::normalize_proxy_url`, seller newcomer guide (exact plan activation +
-`__client` cookie extraction), cookie intake, validation (session discovery → JWT mint →
-billing probe → plan corroboration → seal → atomic roster publish — no paid admission song
-while the $0.0001 cap stands), payout completion.
+Runtime transport/pool/billing (`crates/forward/src/suno/**`, separate commit) — per the
+queue below: config/transport/roster/pool/selection/queue/client + the create → poll →
+download → settle gateway on the fixed-host contract (with the JWT-mint / `set-cookie`
+re-seal single-flight per manifest §2), then server wiring (`crates/server`). The Auth Bot
+branch is delivered and dormant on the `AUTH_BOT_SUNO_*` keyring.
 
 ## Queue
 

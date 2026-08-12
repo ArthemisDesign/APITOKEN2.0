@@ -1314,6 +1314,33 @@ fn restart_returns_a_waiting_tripo3d_seller_to_the_ready_step() {
     let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
 }
 
+/// Та же дисциплина, что и у GLM: валидация сессии Suno живёт только в памяти, а сама cookie
+/// нигде не персистится, поэтому рестарт посреди `su_wait` её теряет. Продавец возвращается
+/// на шаг подтверждения и присылает cookie заново; прокси переживает рестарт.
+#[test]
+fn restart_returns_a_waiting_suno_seller_to_the_ready_step() {
+    let p = tmp();
+    let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    {
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "suno-seller").unwrap();
+        s.set_want(111, "su_wait").unwrap();
+        s.set_hproxy(111, "http://user:pass@1.2.3.4:8080").unwrap();
+        s.register_user(222, 222, "suno-seller-at-ready").unwrap();
+        s.set_want(222, "su_ready").unwrap();
+    }
+    let s = Store::open(&p).unwrap();
+    assert_eq!(s.recover_interrupted_suno_handoffs().unwrap(), 1);
+    let user = s.get_user(111).unwrap().unwrap();
+    assert_eq!(user.want, "su_ready");
+    // Прокси сохраняется: повторная валидация уйдёт с того же egress.
+    assert_eq!(user.hproxy, "http://user:pass@1.2.3.4:8080");
+    // Продавец, уже стоящий на шаге подтверждения, не трогается.
+    assert_eq!(s.get_user(222).unwrap().unwrap().want, "su_ready");
+    assert_eq!(s.recover_interrupted_suno_handoffs().unwrap(), 0);
+    let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+}
+
 #[test]
 fn batch_has_one_proxy_per_item_and_advances_atomically() {
     let p = tmp();

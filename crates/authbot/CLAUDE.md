@@ -715,9 +715,36 @@ wizard in `bot.rs` calls it step by step. Evidence facts and labels —
   holds only the opaque id and path — no cookie, no session id, no plan, no proxy.
 
 **Seller wizard.** Steps `su_proxy → su_ready → su_wait`, button `su:ready`; one platform
-(`suno.com`), no region fork. The wizard in `bot.rs` arrives as the dependent follow-up
-change (same split as KIMI/GLM/Tripo3D), so that the provider contract is not mixed with
-seller state-machine edits in one diff; the modules above are dormant until it lands.
+(`suno.com`), no region fork. A separate callback per provider is deliberate: a shared id would
+let one deal's button advance another deal. Products — the two offers "Suno Pro"/"Suno
+Premier"; the `handoff_kind` rule keys on the provider word (`suno`) and ranks above the
+others, because the bare tier names mean nothing (Claude sells a Pro too). At `su_proxy` the
+bot accepts the proxy as a text message: parsing is the same reversible one as GLM's
+(`parse_proxy_input`, a password with `:` survives reconstruction), and before pinning, the
+proxy passes `suno_credential::normalize_proxy_url` canonization, so garbage never reaches
+`su_ready`. A pinned buyer/IPRoyal proxy cannot be replaced by the seller's message — the
+shared `job_accepts_seller_proxy` decides; invalid input leaves the deal on `su_proxy` with a
+safe re-prompt, and only the keyless form fingerprint goes to the log. A single-offer with the
+buyer's proxy and IPRoyal issuance arrive at `su_ready` through the same
+`prepare_suno_account` as a batch. `su_ready` requires both its own step AND a saved proxy —
+otherwise the button is inert, because validation without an assigned egress would come from
+an IP other than the one the account was opened from. At `su_wait` the seller sends the cookie
+as a single text message, and the bot validates it on the deal's egress: local shape preflight
+(a bounded single line with a non-empty `__client` entry) → session discovery → JWT mint →
+free billing probe (bounded retry each; a 401/403 at any step — typed hint, return to
+`su_ready`) → `corroborate_plan` against the declared product (mismatch/unreadable — return
+with a hint) → `credential_from` → `suno_roster::publish` (same session — replace-in-place;
+occupied id — typed error) → payout completion ONLY after publication. There is deliberately
+no paid admission song: one song costs $0.02 derived against the default $0.0001 admission cap
+(manifest §7 open question), so validation stops at the free probes. All hints are static: the
+cookie is not logged (the log sees only `cookie_len`), is not echoed back to the chat and is
+not stored in SQLite — validation lives only in memory. Stepping back from `su_wait`
+extinguishes the cookie wait and requires confirmation; without a recoverable egress it
+degrades to `su_proxy`, otherwise the seller would land on `su_ready` with an empty `hproxy` —
+a dead end. A dead-session, wrong-plan or transport-broken flow returns to `su_ready`, leaves
+neither an envelope nor a roster row and **does not complete the payout**. After a restart an
+unfinished `su_wait` is restored into `su_ready` (`recover_interrupted_suno_handoffs`) — the
+seller will send the cookie again, while the proxy survives the restart.
 
 **Env:** `AUTH_BOT_SUNO_DIR` (root of `credentials/` + `profiles.json`, default
 `/srv/claude-api/data/suno`), `AUTH_BOT_SUNO_CREDENTIAL_KEYS`,

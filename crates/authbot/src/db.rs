@@ -26,7 +26,7 @@ pub struct UserRow {
     pub status: String,    // new | pending | approved | rejected | pending_admin
     pub role: String,      // "" | admin
     pub address: String,   // BEP-20
-    pub want: String,      // ожидаемый ввод (reg_address | ho_* | cx_* | gm_* | km_* | glm_* | t3_*)
+    pub want: String,      // ожидаемый ввод (reg_address | ho_* | cx_* | gm_* | km_* | glm_* | t3_* | su_*)
     pub hproxy: String,    // прокси аккаунта при передаче доступа (handover)
     pub hproxy_order: i64, // IPRoyal order id за handover-прокси (0 = ручной/внешний)
     // Площадка аккаунта текущей сделки: GLM ("" = int, "cn" = bigmodel.cn) или Tripo3D
@@ -1999,6 +1999,17 @@ impl Store {
     pub fn recover_interrupted_tripo3d_handoffs(&self) -> Result<usize> {
         Ok(self.c.lock().unwrap().execute(
             "UPDATE users SET want='t3_ready' WHERE want='t3_wait'",
+            [],
+        )?)
+    }
+
+    /// Same discipline as the GLM key intake: session validation lives only in memory and the
+    /// cookie itself is never persisted, so a restart mid-validation loses it. Return the
+    /// seller to the readiness step: they press the button again and resend the cookie into a
+    /// fresh validation. The proxy survives, so the retry runs on the same egress.
+    pub fn recover_interrupted_suno_handoffs(&self) -> Result<usize> {
+        Ok(self.c.lock().unwrap().execute(
+            "UPDATE users SET want='su_ready' WHERE want='su_wait'",
             [],
         )?)
     }

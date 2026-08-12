@@ -29,10 +29,6 @@
 //! is the runtime's single-flight concern, not the intake's — the sealed credential carries
 //! exactly the cookie string the seller sent.
 
-// The seller wizard in `bot.rs` arrives as the dependent follow-up commit; until it lands,
-// nothing outside this module's tests calls the intake protocol.
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};

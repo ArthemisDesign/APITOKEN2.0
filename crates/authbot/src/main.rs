@@ -479,6 +479,7 @@ async fn main() -> Result<()> {
     let recovered_codex = store.recover_interrupted_codex_handoffs()?;
     let recovered_glm = store.recover_interrupted_glm_handoffs()?;
     let recovered_tripo3d = store.recover_interrupted_tripo3d_handoffs()?;
+    let recovered_suno = store.recover_interrupted_suno_handoffs()?;
     let recovered_gemini = store.recover_legacy_gemini_handoffs()?;
     let recovered_seller_jobs = store.recover_seller_jobs()?;
     preflight_authority(authority_cfg(&cfg)).await?;
@@ -507,6 +508,9 @@ async fn main() -> Result<()> {
     }
     if recovered_tripo3d > 0 {
         elog::info("authbot", format!("authbot: восстановлено прерванных Tripo3D handoff: {recovered_tripo3d}"));
+    }
+    if recovered_suno > 0 {
+        elog::info("authbot", format!("authbot: восстановлено прерванных Suno handoff: {recovered_suno}"));
     }
     if recovered_gemini > 0 {
         elog::info("authbot", format!("authbot: восстановлено устаревших Gemini handoff: {recovered_gemini}"));
