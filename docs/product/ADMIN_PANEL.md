@@ -476,7 +476,10 @@ quota/calibration. Used share is the exact provider `used_fraction_units`; API-$
 the calibrated `api_nano`/`current_nano` decimal strings, all arithmetic in BigInt. The
 unknown stays `ждём данные` ("waiting for data") and never `$0`; pending/dropped delivery
 and a persistence error show `сохраняется`/`обновляем` ("saving"/"refreshing") and hide
-saleable money, while fresh quota/reset remains visible. Dead (`live:false`), cooling on
+saleable money, while fresh quota/reset remains visible. The same `обновляем` covers the read
+side: when the durable calibration store cannot be read (`calibration_authority_available:false`)
+the fleet card turns bad with the caption `калибровка недоступна` ("calibration unavailable") and
+money cells degrade instead of pretending the windows were never measured. Dead (`live:false`), cooling on
 any of the three axes (auth/transport/quota) and a stale snapshot (>10 minutes) say `вне
 ротации`/`обновляем` ("out of rotation"/"refreshing") and do not enter the fleet API-$:
 fleet sums are computed only over profiles whose row shows real money, and null on any of

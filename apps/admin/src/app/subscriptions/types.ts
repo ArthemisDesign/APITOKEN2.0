@@ -660,6 +660,9 @@ export interface KimiSubsResponse {
   /** epoch-секунды «сейчас» по часам runtime (сбросы считаются от него). */
   now?: number;
   enabled?: boolean;
+  /** false — durable-хранилище калибровки не читается: профили приходят без
+   * calibration-строк, и «ждём данные» означает аварию read-стороны, а не отсутствие замеров. */
+  calibration_authority_available?: boolean;
   delivery?: KimiDelivery | null;
   fleet?: KimiFleet | null;
   profiles?: KimiProfile[];

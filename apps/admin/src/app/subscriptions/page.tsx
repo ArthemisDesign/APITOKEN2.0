@@ -86,6 +86,7 @@ export default function SubsPage() {
     const kimiDeliveryPending = Number(kimi?.delivery?.pending_events ?? 0);
     const kimiDeliveryDropped = Number(kimi?.delivery?.dropped_events ?? 0);
     const kimiDeliveryBad = kimi?.delivery?.persistence_ok === false;
+    const kimiCalibrationStorageBad = kimi?.calibration_authority_available === false || kimiDeliveryBad;
 
     const glmDown = availability.glm === "error";
     const glmOff = Boolean(glm && glm.enabled === false);
@@ -104,7 +105,7 @@ export default function SubsPage() {
         || claudeCalibrationStorageBad || gptDown || geminiDown || geminiEmpty
         || geminiUnavailable || geminiAuthBad || geminiMissing || geminiCalibrationPending
         || geminiCalibrationDropped || geminiCalibrationStorageBad || kimiDown || kimiEmpty
-        || kimiUnavailable || kimiDeliveryPending || kimiDeliveryDropped || kimiDeliveryBad
+        || kimiUnavailable || kimiDeliveryPending || kimiDeliveryDropped || kimiCalibrationStorageBad
         || glmDown || glmEmpty || glmUnavailable || glmDeliveryPending || glmDeliveryDropped
         || glmDeliveryBad,
     );

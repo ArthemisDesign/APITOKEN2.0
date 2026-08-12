@@ -31,8 +31,9 @@ function calibrationFor(profile: KimiProfile, durationSecs: number): KimiCalibra
 }
 
 // Состояние денежной ячейки: saleable API-$ показываются только при здоровой
-// delivery FIFO и свежем evidence; quota/reset остаются видны всегда — это live
-// provider facts, полезные, пока dollar-evidence восстанавливается.
+// delivery FIFO, читаемом durable-хранилище калибровки и свежем evidence; quota/reset
+// остаются видны всегда — это live provider facts, полезные, пока dollar-evidence
+// восстанавливается.
 type KimiMoneyState = "ready" | "pending" | "degraded" | "stale" | "inactive";
 
 function KimiMoney({
@@ -78,12 +79,14 @@ function KimiSubscriptions({
   ready,
   nowSec,
   delivery,
+  authorityAvailable,
 }: {
   profiles: KimiProfile[];
   durations: number[];
   ready: number;
   nowSec: number;
   delivery: KimiSubsResponse["delivery"];
+  authorityAvailable: boolean;
 }) {
   const pending = Number(delivery?.pending_events ?? 0);
   const dropped = Number(delivery?.dropped_events ?? 0);
@@ -117,7 +120,7 @@ function KimiSubscriptions({
               const evidence = kimiEvidenceState(profile, nowSec);
               const moneyState: KimiMoneyState = inactive
                 ? "inactive"
-                : dropped > 0 || !persistenceOk
+                : !authorityAvailable || dropped > 0 || !persistenceOk
                   ? "degraded"
                   : pending > 0
                     ? "pending"
@@ -166,7 +169,10 @@ export function KimiCapacityBoard({
   const pending = Number(response.delivery?.pending_events ?? 0);
   const dropped = Number(response.delivery?.dropped_events ?? 0);
   const persistenceOk = response.delivery?.persistence_ok !== false;
-  const moneyReady = persistenceOk && dropped === 0 && pending === 0;
+  // Без читаемого durable-хранилища калибровки профили приходят с пустым calibration:
+  // «ждём данные» в таком состоянии лгло бы про отсутствие замеров — это авария read-стороны.
+  const authorityAvailable = response.calibration_authority_available === true;
+  const moneyReady = authorityAvailable && persistenceOk && dropped === 0 && pending === 0;
   const durations = kimiWindowDurations(profiles);
 
   const stripItems: ProviderStripItem[] = [];
@@ -216,6 +222,7 @@ export function KimiCapacityBoard({
         ready={ready}
         nowSec={nowSec}
         delivery={response.delivery}
+        authorityAvailable={authorityAvailable}
       />
     </div>
   );

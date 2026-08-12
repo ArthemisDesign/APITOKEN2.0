@@ -191,7 +191,8 @@ function kimiCard(response: KimiSubsResponse | null, nowMs?: number): FleetCardV
   const pending = Number(response.delivery?.pending_events ?? 0);
   const dropped = Number(response.delivery?.dropped_events ?? 0);
   const persistenceOk = response.delivery?.persistence_ok !== false;
-  const moneyReady = persistenceOk && dropped === 0 && pending === 0;
+  const authorityAvailable = response.calibration_authority_available === true;
+  const moneyReady = authorityAvailable && persistenceOk && dropped === 0 && pending === 0;
   const durations = kimiWindowDurations(profiles);
   const rails: FleetRail[] = durations.map((secs) => {
     if (!moneyReady) return { label: kimiWindowLabel(secs) };
@@ -210,16 +211,18 @@ function kimiCard(response: KimiSubsResponse | null, nowMs?: number): FleetCardV
       ? `${pending} сохраняется`
       : !persistenceOk
         ? "ошибка persistence"
-        : primary == null
-          ? "окон нет"
-          : (() => {
-              const { measured, observed } = kimiMeasuredCoverage(profiles, primary);
-              return `${measured}/${observed} измерено`;
-            })();
+        : !authorityAvailable
+          ? "калибровка недоступна"
+          : primary == null
+            ? "окон нет"
+            : (() => {
+                const { measured, observed } = kimiMeasuredCoverage(profiles, primary);
+                return `${measured}/${observed} измерено`;
+              })();
   return {
     id: "kimi",
     label: "KIMI",
-    status: dropped > 0 || !persistenceOk
+    status: dropped > 0 || !persistenceOk || !authorityAvailable
       ? "bad"
       : ready > 0 && pending === 0 && rails.length > 0
           && rails.every((rail) => providerInteger(rail.window?.remaining_nano) != null)

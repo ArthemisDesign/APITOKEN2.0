@@ -1415,6 +1415,7 @@ const KIMI_PROFILE: KimiProfile = {
 const kimiResponse = (overrides: Partial<KimiSubsResponse> = {}): KimiSubsResponse => ({
   now: KIMI_NOW,
   enabled: true,
+  calibration_authority_available: true,
   delivery: { pending_events: 0, dropped_events: 0, persistence_ok: true },
   fleet: {
     profiles: 1,
@@ -1530,6 +1531,28 @@ describe("KIMI capacity board (wire contract /kimi-subs)", () => {
     expect(text).toContain("обновляем");
     expect(text).not.toContain("$45.00");
     expect(text).not.toContain("$176.00");
+    expect(text).toContain("25%");
+  });
+
+  it("KimiCapacityBoard: недоступное хранилище калибровки — «обновляем», а не «ждём данные»", () => {
+    // calibration_authority_available:false — это авария read-стороны: профили приходят
+    // с пустым calibration, и «ещё не измерено» лгло бы оператору о причине.
+    const html = renderToString(
+      <KimiCapacityBoard
+        nowMs={KIMI_NOW * 1000}
+        response={kimiResponse({
+          calibration_authority_available: false,
+          profiles: [{ ...KIMI_PROFILE, calibration: [] }],
+        })}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("обновляем");
+    expect(text).toContain("quota уже доступна");
+    expect(text).not.toContain("ещё не измерено");
+    expect(text).not.toContain("$45.00");
+    expect(text).not.toContain("$176.00");
+    // Quota — live provider fact и не скрывается.
     expect(text).toContain("25%");
   });
 
@@ -1775,6 +1798,24 @@ describe("KIMI capacity board (wire contract /kimi-subs)", () => {
     expect(plain(dropped)).toContain("1 потеряно");
     expect(plain(dropped)).not.toContain("$45.00");
     expect(dropped).toContain("fleet-state bad");
+  });
+
+  it("FleetCapacityOverview: недоступное хранилище калибровки KIMI — bad и честная подпись", () => {
+    const html = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        kimi={kimiResponse({
+          calibration_authority_available: false,
+          profiles: [{ ...KIMI_PROFILE, calibration: [] }],
+        })}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("калибровка недоступна");
+    expect(text).not.toContain("$45.00");
+    expect(html).toContain("fleet-state bad");
   });
 
   it("FleetCapacityOverview: disabled envelope и недоступный KIMI — честные состояния", () => {
