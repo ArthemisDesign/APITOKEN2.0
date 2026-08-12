@@ -311,8 +311,8 @@ Each `unknown` fails closed and is cleared only by a controlled live run on our 
 | Auth Bot: seller wizard | `crates/authbot/src/bot.rs` (+`db.rs` recovery, `main.rs`) | done (this commit) |
 | runtime primitives | `crates/forward/src/tripo3d/{mod,config,transport,roster,client,selection,pool,queue}.rs` + `ProviderMode::Tripo3d` | done (this commit) |
 | task-lifecycle gateway + durable billing | `crates/forward/src/tripo3d/{gateway,upload,artifacts}.rs`, `crates/forward/src/billing.rs` | done (this commit) |
-| server wiring | `crates/server/src/{config,main,poller,http}.rs` | pending |
-| observability / admin projection | `observability/**`, `docs/ops/MONITORING.md`, `GET /tripo3d-subs` | pending |
+| server wiring | `crates/server/src/{config,main,poller,http}.rs` | done (this commit) |
+| observability / admin projection | `observability/**`, `docs/ops/MONITORING.md`, `GET /tripo3d-subs` | done (this commit) |
 | admin UI consumer | `apps/admin` | pending |
 | safe live-runner | `tools/tripo3d_calibration/`, `docs/ops/TRIPO3D_CALIBRATION.md` | pending |
 | production activation boundary | systemd/Caddy — default-off pins only | pending (dormant) |

@@ -463,10 +463,35 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/v1/messages", post(forward))
             .fallback(forward)
             .method_not_allowed_fallback(forward),
-        // Backend-only Tripo3D task-media plane (default-off, dedicated delivery). Nothing here
-        // may fall into `forward`: this process deliberately operates no Claude pool. The real
-        // plane endpoints land with the server wiring; until then every path is a bounded 404.
+        // Backend-only Tripo3D task-media plane (default-off, dedicated delivery). Its own
+        // bounded REST surface only: create → status → artifact, plus uploads through the real
+        // provider mechanisms. Nothing falls into `forward`: this process deliberately operates
+        // no Claude pool, and every unrouted path is the same bounded 404.
         forward::ProviderMode::Tripo3d => common
+            .route("/tripo3d-subs", get(tripo3d_subs))
+            .route(
+                "/v1/3d/generations",
+                post(forward::tripo3d_create_generation)
+                    .layer(axum::extract::DefaultBodyLimit::max(256 * 1024)),
+            )
+            .route(
+                "/v1/3d/uploads/image",
+                post(forward::tripo3d_upload_image)
+                    .layer(axum::extract::DefaultBodyLimit::max(21 * 1024 * 1024)),
+            )
+            .route(
+                "/v1/3d/uploads/model",
+                post(forward::tripo3d_upload_model)
+                    .layer(axum::extract::DefaultBodyLimit::max(67 * 1024 * 1024)),
+            )
+            .route(
+                "/v1/3d/tasks/{task_id}",
+                get(forward::tripo3d_task_status),
+            )
+            .route(
+                "/v1/3d/tasks/{task_id}/artifact/{name}",
+                get(forward::tripo3d_task_artifact),
+            )
             .fallback(tripo3d_not_found)
             .method_not_allowed_fallback(tripo3d_not_found),
     };
@@ -1729,6 +1754,13 @@ async fn metrics(
     write_kimi_operational_metrics(&mut body, app.kimi.is_some(), kimi_status.as_ref(), &app.metrics);
     let glm_status = app.glm.as_ref().map(|glm| glm.operational_status());
     write_glm_operational_metrics(&mut body, app.glm.is_some(), glm_status.as_ref());
+    let tripo3d_status = app.tripo3d.as_ref().map(|tripo3d| tripo3d.operational_status());
+    write_tripo3d_operational_metrics(
+        &mut body,
+        app.tripo3d.is_some(),
+        tripo3d_status.as_ref(),
+        &app.metrics,
+    );
     (
         [(
             axum::http::header::CONTENT_TYPE,
@@ -1888,6 +1920,100 @@ fn write_glm_operational_metrics(
             body,
             "# TYPE claude_api_glm_quota_last_observation_timestamp_seconds gauge\n\
              claude_api_glm_quota_last_observation_timestamp_seconds {observed_at}"
+        );
+    }
+}
+
+/// Tripo3D (VAST prepaid API) is a default-off backend on its own dedicated plane.
+/// Aggregate-only, fixed cardinality: no per-profile series at all — a profile id, cohort,
+/// subject, customer, task id or provider error must never become a label. Zero gauges are
+/// always published so a disabled plane reads as zero rather than absent; the last-observation
+/// timestamp is the one exception — emitting 0 there would masquerade as a real 1970
+/// observation.
+fn write_tripo3d_operational_metrics(
+    body: &mut String,
+    enabled: bool,
+    status: Option<&forward::tripo3d::Tripo3dOperationalStatus>,
+    m: &forward::Metrics,
+) {
+    use std::fmt::Write as _;
+
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_tripo3d_enabled gauge\nclaude_api_tripo3d_enabled {}",
+        u8::from(enabled)
+    );
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_tripo3d_profiles gauge\nclaude_api_tripo3d_profiles {}\n\
+         # TYPE claude_api_tripo3d_live_profiles gauge\nclaude_api_tripo3d_live_profiles {}\n\
+         # TYPE claude_api_tripo3d_available_profiles gauge\nclaude_api_tripo3d_available_profiles {}\n\
+         # TYPE claude_api_tripo3d_inflight_requests gauge\nclaude_api_tripo3d_inflight_requests {}\n\
+         # TYPE claude_api_tripo3d_inflight_drains gauge\nclaude_api_tripo3d_inflight_drains {}\n\
+         # TYPE claude_api_tripo3d_tracked_tasks gauge\nclaude_api_tripo3d_tracked_tasks {}\n\
+         # TYPE claude_api_tripo3d_rate_limited_profiles gauge\n\
+         claude_api_tripo3d_rate_limited_profiles {}\n\
+         # TYPE claude_api_tripo3d_balance_walled_profiles gauge\n\
+         claude_api_tripo3d_balance_walled_profiles {}\n\
+         # TYPE claude_api_tripo3d_auth_cooling_profiles gauge\n\
+         claude_api_tripo3d_auth_cooling_profiles {}\n\
+         # TYPE claude_api_tripo3d_transport_cooling_profiles gauge\n\
+         claude_api_tripo3d_transport_cooling_profiles {}\n\
+         # TYPE claude_api_tripo3d_requests_total counter\n\
+         claude_api_tripo3d_requests_total {}\n\
+         # TYPE claude_api_tripo3d_failures_total counter\n\
+         claude_api_tripo3d_failures_total {}\n\
+         # TYPE claude_api_tripo3d_capacity_exhausted_total counter\n\
+         claude_api_tripo3d_capacity_exhausted_total {}\n\
+         # TYPE claude_api_tripo3d_calibration_pending_events gauge\n\
+         claude_api_tripo3d_calibration_pending_events {}\n\
+         # TYPE claude_api_tripo3d_calibration_dropped_events_total counter\n\
+         claude_api_tripo3d_calibration_dropped_events_total {}\n\
+         # TYPE claude_api_tripo3d_calibration_persistence_ok gauge\n\
+         claude_api_tripo3d_calibration_persistence_ok {}\n\
+         # TYPE claude_api_tripo3d_missing_consumed_credit_total counter\n\
+         claude_api_tripo3d_missing_consumed_credit_total {}\n\
+         # TYPE claude_api_tripo3d_tariff_anomaly_total counter\n\
+         claude_api_tripo3d_tariff_anomaly_total {}\n\
+         # TYPE claude_api_tripo3d_undocumented_final_total counter\n\
+         claude_api_tripo3d_undocumented_final_total {}\n\
+         # TYPE claude_api_tripo3d_artifact_failures_total counter\n\
+         claude_api_tripo3d_artifact_failures_total {}\n\
+         # TYPE claude_api_tripo3d_balance_sweep_milliseconds gauge\n\
+         claude_api_tripo3d_balance_sweep_milliseconds {}",
+        status.map_or(0, |status| status.total_profiles),
+        status.map_or(0, |status| status.live_profiles),
+        status.map_or(0, |status| status.available_profiles),
+        status.map_or(0, |status| status.inflight_requests),
+        status.map_or(0, |status| status.inflight_drains),
+        status.map_or(0, |status| status.tracked_tasks),
+        status.map_or(0, |status| status.rate_limited_profiles),
+        status.map_or(0, |status| status.balance_walled_profiles),
+        status.map_or(0, |status| status.auth_cooling_profiles),
+        status.map_or(0, |status| status.transport_cooling_profiles),
+        Metrics::get(&m.tripo3d_requests),
+        Metrics::get(&m.tripo3d_failures),
+        Metrics::get(&m.tripo3d_capacity_exhausted),
+        status.map_or(0, |status| status.delivery.pending_events),
+        status.map_or(0, |status| status.delivery.dropped_events),
+        status.map_or(0, |status| u8::from(status.delivery.persistence_ok)),
+        status.map_or(0, |status| status.missing_consumed_credit),
+        status.map_or(0, |status| status.tariff_anomaly),
+        status.map_or(0, |status| status.undocumented_final),
+        status.map_or(0, |status| status.artifact_failures),
+        status.map_or(0, |status| status.balance_sweep_ms),
+    );
+    if let Some(observed_at) = status.and_then(|status| {
+        status
+            .profiles
+            .iter()
+            .filter_map(|profile| profile.balance_observed_at)
+            .max()
+    }) {
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_tripo3d_balance_last_observation_timestamp_seconds gauge\n\
+             claude_api_tripo3d_balance_last_observation_timestamp_seconds {observed_at}"
         );
     }
 }
@@ -4713,6 +4839,146 @@ fn glm_calibration_value(row: &registry::GlmCalibrationRow) -> Value {
     })
 }
 
+/// `GET /tripo3d-subs` — the Tripo3D plane's admin projection, registered only on
+/// `ProviderMode::Tripo3d` (the dedicated plane is the only place the gateway composes) and
+/// gated by `control_authed`, exactly like `/glm-subs`.
+async fn tripo3d_subs(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !control_authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+    let Some(tripo3d) = &app.tripo3d else {
+        return Json(json!({"now": pool::now(), "enabled": false, "profiles": []})).into_response();
+    };
+    let status = tripo3d.operational_status();
+    let now = pool::now();
+    let report = match &app.billing {
+        Some(billing) => match billing.tripo3d_calibration_report().await {
+            Ok(report) => Some(report),
+            Err(error) => {
+                elog::error("server", format!("Tripo3D calibration report unavailable: {error:#}"));
+                None
+            }
+        },
+        None => None,
+    };
+    Json(tripo3d_subs_value_with_report(tripo3d, &status, now, report.as_deref()))
+        .into_response()
+}
+
+fn tripo3d_subs_value_with_report(
+    gateway: &forward::tripo3d::Tripo3dGateway,
+    status: &forward::tripo3d::Tripo3dOperationalStatus,
+    now: i64,
+    report: Option<&[registry::Tripo3dCalibrationRow]>,
+) -> Value {
+    // Durable rows are keyed by provider subject (the keyed digest of the API key); the join to
+    // the opaque roster id happens here and the subject itself is never serialized. A row whose
+    // subject left the roster stays durable for audit but is NOT published.
+    let mut calibration_by_profile: std::collections::BTreeMap<String, &registry::Tripo3dCalibrationRow> =
+        std::collections::BTreeMap::new();
+    for row in report.unwrap_or_default() {
+        let Some(id) = gateway.profile_id_for_subject(&row.subject_id) else {
+            continue;
+        };
+        calibration_by_profile.insert(id, row);
+    }
+    json!({
+        "now": now,
+        "enabled": true,
+        "delivery": {
+            "pending_events": status.delivery.pending_events,
+            "dropped_events": status.delivery.dropped_events,
+            "persistence_ok": status.delivery.persistence_ok,
+        },
+        "calibration_authority_available": report.is_some(),
+        "fleet": {
+            "profiles": status.total_profiles,
+            "live_profiles": status.live_profiles,
+            "available_profiles": status.available_profiles,
+            "inflight_requests": status.inflight_requests,
+            "inflight_drains": status.inflight_drains,
+            "tracked_tasks": status.tracked_tasks,
+            "rate_limited_profiles": status.rate_limited_profiles,
+            "balance_walled_profiles": status.balance_walled_profiles,
+            "auth_cooling_profiles": status.auth_cooling_profiles,
+            "transport_cooling_profiles": status.transport_cooling_profiles,
+            "missing_consumed_credit": status.missing_consumed_credit,
+            "tariff_anomaly": status.tariff_anomaly,
+            "undocumented_final": status.undocumented_final,
+            "artifact_failures": status.artifact_failures,
+        },
+        "profiles": status
+            .profiles
+            .iter()
+            .map(|profile| {
+                tripo3d_profile_value(profile, calibration_by_profile.get(profile.id.as_str()).copied())
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn tripo3d_profile_value(
+    profile: &forward::tripo3d::Tripo3dProfileStatus,
+    calibration: Option<&registry::Tripo3dCalibrationRow>,
+) -> Value {
+    // Money serializes as decimal nanoUSD strings (BigInt-safe); the native ledger is exact
+    // millicredits. Unknown stays null — never 0, never an invented nominal. Raw balance halves
+    // are the provider's verbatim text; the parsed halves stay null while the endpoint's unit
+    // is unproven (docs/engine/TRIPO3D_PROVIDER.md §5.2).
+    let nano = |value: Option<i64>| value.map(|value| value.to_string());
+    let calibration = calibration.map(|row| {
+        json!({
+            "cohort": row.cohort,
+            "samples": row.samples,
+            "confidence_bp": row.current_confidence_bp,
+            "capacity": {
+                "current_nano": nano(row.current_capacity_nanousd),
+                "low_nano": nano(row.current_low_nanousd),
+                "high_nano": nano(row.current_high_nanousd),
+            },
+            // Remaining sellable capacity, exact once the balance unit is proven, null until
+            // then — never zero-filled.
+            "remaining": row.native_remaining_micro_units().map(|micro| json!({
+                "native_micro_units": micro,
+                "api_nano": row.current_capacity_nanousd.map(|value| value.to_string()),
+            })),
+            "observed_spend_nano": row.observed_spend_api_nanousd.to_string(),
+            "observed_spend_native_millicredits": row.observed_spend_native_millicredits,
+            "last_measured_at": row.last_measured_at,
+            "estimator_version": row.estimator_version,
+        })
+    });
+    json!({
+        "id": profile.id,
+        "cohort": profile.cohort,
+        "live": profile.live,
+        "balance_walled": profile.balance_walled,
+        "cooling": {
+            "rate_limit_until": profile.rate_limit_cool_until,
+            "auth_until": profile.auth_cool_until,
+            "transport_until": profile.transport_cool_until,
+        },
+        "inflight": profile.inflight,
+        "balance": {
+            "observed_at": profile.balance_observed_at,
+            "balance_raw": profile.balance_raw,
+            "frozen_raw": profile.frozen_raw,
+            "balance_micro_units": profile.balance_micro_units,
+            "frozen_micro_units": profile.frozen_micro_units,
+        },
+        "calibration": calibration,
+    })
+}
+
 fn codex_window_value(c: &forward::codex::CodexWindowCapacityReport) -> Value {
     let round = |x: f64| (x * 100.0).round() / 100.0;
     let round_opt = |x: Option<f64>| x.map(round);
@@ -5489,6 +5755,15 @@ async fn ready(State(state): State<HttpState>) -> Response {
         // before the slot accepts traffic; `kimi=None` (the argv-pinned default-off plane)
         // deliberately stays ready to serve the stable disabled envelope, mirroring `codex=None`.
         state.app.kimi.as_ref().map(|kimi| kimi.readiness().is_ok())
+    } else if state.app.provider == forward::ProviderMode::Tripo3d {
+        // Same contract as KIMI: a present Tripo3D gateway must prove one live profile and
+        // intact delivery persistence; `tripo3d=None` (default-off) stays ready and serves the
+        // stable disabled envelope.
+        state
+            .app
+            .tripo3d
+            .as_ref()
+            .map(|tripo3d| tripo3d.readiness().is_ok())
     } else {
         None
     };

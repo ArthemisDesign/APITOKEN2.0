@@ -1139,6 +1139,9 @@ async fn serve() -> Result<()> {
     if s.glm.is_some() && (!authority.is_postgres() || !s.billing) {
         bail!("GLM backend requires PostgreSQL billing authority");
     }
+    if s.tripo3d.is_some() && (!authority.is_postgres() || !s.billing) {
+        bail!("Tripo3D plane requires PostgreSQL billing authority");
+    }
     if matches!(
         s.provider,
         forward::ProviderMode::OpenAi | forward::ProviderMode::Gemini
@@ -1455,6 +1458,48 @@ async fn serve() -> Result<()> {
     } else {
         None
     };
+    let tripo3d = if let Some(config) = s.tripo3d.clone() {
+        let calibration_store = billing.clone().context(
+            "Tripo3D provider requires the durable billing authority for settlement and calibration",
+        )?;
+        match forward::tripo3d::Tripo3dGateway::new_with_calibration(
+            config.clone(),
+            Some(calibration_store.clone()),
+        ) {
+            Ok(gateway) => {
+                let live = gateway.preflight().await;
+                if live > 0 {
+                    elog::info("server", format!("Tripo3D backend preflight passed: live_profiles={live}"));
+                } else {
+                    // The dedicated plane's cold roster keeps the slot not-ready through the
+                    // gateway readiness check rather than dying here.
+                    elog::warn(
+                        "server",
+                        "Tripo3D backend has no authenticated profile; /v1/3d/* fails closed",
+                    );
+                }
+                tokio::spawn(poller::tripo3d_maintenance_loop(gateway.clone()));
+                Some(gateway)
+            }
+            Err(_) => {
+                // Do not render the error: proxy parsing failures may embed credentialed egress.
+                // Keep the gateway present with zero capacity: the plane's routes must fail
+                // closed, and a later last-good roster reload can recover it.
+                elog::error(
+                    "server",
+                    "Tripo3D backend initialization failed; /v1/3d/* fails closed",
+                );
+                let gateway = Arc::new(forward::tripo3d::Tripo3dGateway::new_degraded(
+                    config,
+                    Some(calibration_store),
+                ));
+                tokio::spawn(poller::tripo3d_maintenance_loop(gateway.clone()));
+                Some(gateway)
+            }
+        }
+    } else {
+        None
+    };
     let app = AppState {
         provider: s.provider,
         cfg: Arc::new(s.proxy.clone()),
@@ -1472,7 +1517,7 @@ async fn serve() -> Result<()> {
         gemini,
         kimi,
         glm,
-        tripo3d: None,
+        tripo3d,
         billing,
         authority_ready: authority_ready.clone(),
         breaker: Arc::new(forward::Breaker::new(fleet_size)),
@@ -1692,6 +1737,13 @@ async fn serve() -> Result<()> {
         // delivery, then the final turn-before-quota pass runs inside the same deadline. The
         // billing writer stays open until every finalizer has crossed this barrier.
         glm.shutdown_until(shutdown_deadline).await;
+    }
+    if let Some(tripo3d) = &flush_app.tripo3d {
+        // A disconnected Tripo3D task keeps draining: poll to final, artifact download, exact
+        // settlement, paired FIFO delivery. On the deadline the drains stop mid-poll and the
+        // reservation stays with its lease and the reconciler — never a settlement from
+        // ignorance. The billing writer stays open until every drain has crossed this barrier.
+        tripo3d.shutdown_until(shutdown_deadline).await;
     }
     elog::info("server", "graceful shutdown: дренирую очередь биллинга + флаш пула");
     // Завершённые/оборванные стримы поставили settle в очередь DB-актора. Даже после deadline ждём

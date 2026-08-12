@@ -978,6 +978,109 @@ seller path; the roster reload admits the replacement only after a passing quota
 delete the profile from the roster to silence the alert, retry the refused key in a loop, or
 lower the plane's admission set; a plan that lapsed needs a paid renewal, not engineering.
 
+Safely diagnose: `GET /glm-subs` shows which opaque profile ids carry `account_dead`, and
+`claude_api_glm_account_dead_profiles` counts them fleet-wide. Confirm the refusal class in the
+unit journal (business code wins over the HTTP class), then rotate the key through the Auth Bot
+seller path; the roster reload admits the replacement only after a passing quota probe. Do NOT
+delete the profile from the roster to silence the alert, retry the refused key in a loop, or
+lower the plane's admission set; a plan that lapsed needs a paid renewal, not engineering.
+
+## Tripo3dNoLiveProfiles
+
+The Tripo3D plane is enabled but no roster profile is authenticated, so the plane's `/v1/3d/*`
+surface fails closed. Tripo3D is default-off on its own dedicated delivery mode: this alert
+stays silent until the first enable, and `CLAUDE_API_TRIPO3D_ENABLED=false` keeps the plane
+dark at any time.
+
+Safely diagnose: read `GET /tripo3d-subs` with the control key (per-profile `live`, the
+`cooling` axes and `balance_walled`), then the unit journal for the bounded Tripo3D failure
+classes. Check that the roster directory still parses, every envelope decrypts under the
+configured keyring, and the free balance probe answers for at least one profile on its own
+platform origin (global and CN keys are not interchangeable). Never decrypt or print an
+envelope, and never put API keys, subject digests or proxy values into logs or argv. Do not
+hammer a refused profile — repeated provider refusals are themselves a risk signal; a key the
+provider keeps refusing is replaced through the Auth Bot, not retried.
+
+## Tripo3dNoAvailableProfiles
+
+Live Tripo3D profiles exist but every one of them is rate-limited (429 + code 2000), resting on
+an insufficient-balance verdict (403 + code 2010), or cooling on a soft axis, so selection has
+nothing eligible and the plane answers an honest 429 with `Retry-After`. Tripo3D is
+default-off: this alert stays silent until the first enable.
+
+Safely diagnose: `GET /tripo3d-subs` shows which axis holds each profile
+(`cooling.rate_limit_until` / `cooling.auth_until` / `cooling.transport_until` /
+`balance_walled`), and the aggregate gauges `claude_api_tripo3d_rate_limited_profiles`,
+`claude_api_tripo3d_balance_walled_profiles`, `claude_api_tripo3d_auth_cooling_profiles` and
+`claude_api_tripo3d_transport_cooling_profiles` say which axis fired fleet-wide. Rate walls
+clear at the provider's own `Retry-After`; a balance wall clears when a balance probe shows
+funds (a top-up); soft axes clear on the next proven success. Do NOT shorten cooling or widen
+admission; if capacity is genuinely exhausted, authorize another distinct account through the
+Auth Bot.
+
+## Tripo3dErrorShareHigh
+
+More than half of the plane's `/v1/3d/*` requests failed over ten minutes at a non-trivial
+rate. Tripo3D is default-off: this alert stays silent until the first enable.
+
+Safely diagnose: break the failures down by class in the unit journal — admission 400s are
+customer request shape, 402 is customer balance, 429 with `tripo3d_capacity_exhausted` is fleet
+capacity (see **Tripo3dNoAvailableProfiles**), and 503 classes are upstream/transport. A
+sustained transport class points at the egress path or the platform; check the provider status
+before touching the plane. Do not restart a healthy plane for customer-side 400s.
+
+## Tripo3dCalibrationPersistenceFailed
+
+The Tripo3D turn FIFO could not persist dual-ledger spend or balance evidence to PostgreSQL.
+Traffic intentionally remains fail-open, but measured capacity may not survive a restart while
+this gauge is zero. Tripo3D is default-off: this alert stays silent until the first enable.
+
+Check PostgreSQL availability, that migration `0049_tripo3d_calibration.sql` is applied, the
+billing writer logs and the owner fencing. Do not seed manual capacity numbers: restore the
+authority and let the next real observations reconcile durable spend and calibration state. Do
+not delete the pending FIFO head from outside — exact replay is idempotent and the retained
+head drains by itself.
+
+## Tripo3dCalibrationBacklog
+
+The bounded Tripo3D turn FIFO has held pending events for ten minutes, and the provider balance
+read is suspended by design until the head drains — balance freshness will degrade next, so
+this alert usually precedes **Tripo3dBalanceStale**. Tripo3D is default-off: this alert stays
+silent until the first enable.
+
+This almost always shares a root cause with **Tripo3dCalibrationPersistenceFailed**: diagnose
+the PostgreSQL authority first. A permanently conflicting head (same request id, different
+payload) is quarantined as poisoned and dropped — check
+`claude_api_tripo3d_calibration_dropped_events_total` and the journal for the exact class;
+never hand-edit durable rows to unblock the queue.
+
+## Tripo3dBalanceStale
+
+The newest Tripo3D balance observation is older than three default poll intervals
+(3 × 300 s = 900 s), so every balance reading reports a frozen value: the fleet can look
+healthy while the refresh path is broken. Tripo3D is default-off: this alert stays silent until
+the first enable.
+
+Safely diagnose: a pending calibration FIFO blocks the balance read by contract — check
+**Tripo3dCalibrationBacklog** first. Otherwise inspect the maintenance loop journal: profiles
+with in-flight customer tasks skip polling legitimately, and a walled or cooling fleet (see
+**Tripo3dNoAvailableProfiles**) stops observing too. Do not treat the last published balance as
+current when selling capacity; the loop resumes on its own once the blocking condition clears.
+
+## Tripo3dBalanceWalled
+
+A Tripo3D account answered task creation with the provider's insufficient-balance verdict
+(HTTP 403, code 2010): the profile is out of rotation until a free balance probe shows funds
+again — a top-up signal, not a transient. Other profiles may still serve, so this is an early
+per-account signal rather than a fleet outage. Tripo3D is default-off: this alert stays silent
+until the first enable.
+
+Safely diagnose: `GET /tripo3d-subs` shows which opaque profile ids carry `balance_walled`, and
+`claude_api_tripo3d_balance_walled_profiles` counts them fleet-wide. The remedy is commercial:
+the seller tops up the declared cohort's account (or the account is replaced through the Auth
+Bot). Do NOT clear the flag by hand or restart the plane to force a probe storm — the probe is
+free and already running on the maintenance cadence.
+
 ## DurableQueueBacklog
 
 Check the owning worker/service, its database lock/lease fields, retry schedule, and downstream

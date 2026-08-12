@@ -829,6 +829,7 @@ fn admin_auth_test_app() -> AppState {
         gemini: None,
         kimi: None,
         glm: None,
+        tripo3d: None,
         billing: None,
         authority_ready: Arc::new(AtomicBool::new(true)),
         breaker: Arc::new(forward::Breaker::new(0)),
@@ -2519,6 +2520,144 @@ async fn kimi_plane_serves_common_surface_and_kimi_subs_lattice() {
             assert_eq!(body["profiles"], json!([]));
         }
     }
+}
+
+#[tokio::test]
+async fn tripo3d_plane_serves_common_surface_and_disabled_envelope() {
+    let service = router(
+        provider_test_app(forward::ProviderMode::Tripo3d),
+        Arc::new(AtomicBool::new(true)),
+    );
+    let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+
+    // The gateway is absent on the argv-pinned default-off plane: readiness stays green so
+    // the slot serving the stable disabled envelope is health-included.
+    let mut request = Request::builder()
+        .uri("/ready")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(peer);
+    let response = service.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body, json!({"ready": true, "active_requests": 0}));
+
+    // /metrics exports the label-free Tripo3D series as zero gauges on this plane as well.
+    let mut request = Request::builder()
+        .uri("/metrics")
+        .header("x-api-key", "panel-key")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(peer);
+    let response = service.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 2 * 1024 * 1024)
+        .await
+        .unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert!(body.contains("claude_api_tripo3d_enabled 0"));
+    assert!(body.contains("claude_api_tripo3d_live_profiles 0"));
+    assert!(body.contains("claude_api_tripo3d_calibration_persistence_ok 0"));
+    assert!(body.contains("claude_api_tripo3d_requests_total 0"));
+    // Fixed cardinality: no profile/task/account labels anywhere in the plane's series.
+    for line in body.lines().filter(|line| line.contains("tripo3d")) {
+        assert!(!line.contains('{') || line.starts_with("# TYPE"), "labelled series: {line}");
+    }
+
+    // /tripo3d-subs is registered on this plane with the same control lattice and answers the
+    // disabled envelope while the gateway is absent.
+    for (credential, expected) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some("panel-key"), StatusCode::UNAUTHORIZED),
+        (Some("control-key"), StatusCode::OK),
+        (Some("admin-key"), StatusCode::OK),
+    ] {
+        let mut request = Request::builder()
+            .uri("/tripo3d-subs")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        if let Some(key) = credential {
+            request
+                .headers_mut()
+                .insert("x-api-key", key.parse().unwrap());
+        }
+        let response = service.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), expected, "credential {credential:?}");
+        if expected == StatusCode::OK {
+            let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["enabled"], false);
+            assert_eq!(body["profiles"], json!([]));
+        }
+    }
+
+    // The plane surface 404s while the gateway is absent, and every unrouted path is the same
+    // bounded 404 — nothing falls through to a Claude pool this process does not run.
+    for (method, uri) in [
+        ("POST", "/v1/3d/generations"),
+        ("POST", "/v1/3d/uploads/image"),
+        ("GET", "/v1/3d/tasks/00000000-0000-0000-0000-000000000000"),
+        ("GET", "/v1/models"),
+        ("POST", "/v1/messages"),
+    ] {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("x-api-key", "admin-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+    }
+}
+
+#[tokio::test]
+async fn tripo3d_plane_readiness_tracks_gateway_liveness() {
+    // One assembled gateway with a cold roster (zero profiles) keeps the slot below its
+    // readiness contract (live >= 1 and intact delivery persistence) → provider_unavailable.
+    let suffix = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(format!("tripo3d-http-{suffix}"));
+    std::fs::create_dir_all(root.join("artifacts")).unwrap();
+    let config = forward::tripo3d::config::build(&forward::tripo3d::config::Tripo3dPlaneInput {
+        enabled: true,
+        roster_dir: root.to_string_lossy().into_owned(),
+        credential_keys: Some(format!("a1:{}", "11".repeat(32))),
+        credential_active_kid: None,
+        balance_poll_secs: 300,
+        artifact_dir: root.join("artifacts").to_string_lossy().into_owned(),
+    })
+    .unwrap()
+    .unwrap();
+    let gateway = forward::tripo3d::Tripo3dGateway::new_with_calibration(config, None).unwrap();
+
+    let mut app = provider_test_app(forward::ProviderMode::Tripo3d);
+    app.tripo3d = Some(gateway);
+    let service = router(app, Arc::new(AtomicBool::new(true)));
+    let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+    let mut request = Request::builder()
+        .uri("/ready")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(peer);
+    let response = service.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        body,
+        json!({"ready": false, "reason": "provider_unavailable", "active_requests": 0})
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[tokio::test]

@@ -459,7 +459,7 @@ for settlement_evidence in \
   apitoken_settlement_uncollected_nano \
   'SUM(uncollected_nano)' \
   'amount_nano::numeric / official_nano' \
-  "VALUES ('anthropic'), ('openai'), ('google'), ('kimi'), ('glm')"; do
+  "VALUES ('anthropic'), ('openai'), ('google'), ('kimi'), ('glm'), ('tripo3d')"; do
   grep -Fq "$settlement_evidence" "$ROOT/deploy/collect-monitoring-metrics.sh" \
     || { printf 'settlement evidence collector is missing %s\n' "$settlement_evidence" >&2; exit 1; }
 done
@@ -744,6 +744,44 @@ for gated_alert in GlmNoLiveProfiles GlmNoAvailableProfiles GlmCalibrationPersis
   GlmCalibrationBacklog GlmQuotaStale GlmAccountDead; do
   grep -F "alert: $gated_alert" -A 2 "$ROOT/observability/prometheus/rules/application.yml" \
     | grep -Fq 'claude_api_glm_enabled == 1' \
+    || { printf '%s is not gated on the provider being enabled\n' "$gated_alert" >&2; exit 1; }
+done
+# The backend-only Tripo3D plane runs on its own dedicated delivery mode: its aggregate series
+# are scraped on the plane's target and deliberately carry no provider label — the
+# claude_api_tripo3d_ name prefix is the discriminator, so the scoping pin here is the enabled
+# gate, not a label selector.
+for tripo3d_metric in \
+  'claude_api_tripo3d_live_profiles' \
+  'claude_api_tripo3d_available_profiles' \
+  'claude_api_tripo3d_calibration_persistence_ok' \
+  'claude_api_tripo3d_calibration_pending_events' \
+  'claude_api_tripo3d_balance_last_observation_timestamp_seconds' \
+  'claude_api_tripo3d_balance_walled_profiles' \
+  'claude_api_tripo3d_requests_total' \
+  'claude_api_tripo3d_failures_total'; do
+  grep -Fq "$tripo3d_metric" "$ROOT/crates/server/src/http.rs" \
+    || { printf 'engine does not export %s\n' "$tripo3d_metric" >&2; exit 1; }
+  grep -Fq "$tripo3d_metric" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'no alert rule consumes %s\n' "$tripo3d_metric" >&2; exit 1; }
+done
+for tripo3d_alert in Tripo3dNoLiveProfiles Tripo3dNoAvailableProfiles Tripo3dErrorShareHigh \
+  Tripo3dCalibrationPersistenceFailed Tripo3dCalibrationBacklog Tripo3dBalanceStale \
+  Tripo3dBalanceWalled; do
+  grep -Fq "alert: $tripo3d_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'missing Tripo3D alert %s\n' "$tripo3d_alert" >&2; exit 1; }
+  anchor=$(printf '%s' "$tripo3d_alert" | tr '[:upper:]' '[:lower:]')
+  grep -Fq "docs/ops/MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'alert %s has no runbook anchor\n' "$tripo3d_alert" >&2; exit 1; }
+  grep -Fqi "## $tripo3d_alert" "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$tripo3d_alert" >&2; exit 1; }
+done
+# Every Tripo3D rule is gated on the default-off plane being enabled, or it would page for a
+# surface nobody is serving.
+for gated_alert in Tripo3dNoLiveProfiles Tripo3dNoAvailableProfiles Tripo3dErrorShareHigh \
+  Tripo3dCalibrationPersistenceFailed Tripo3dCalibrationBacklog Tripo3dBalanceStale \
+  Tripo3dBalanceWalled; do
+  grep -F "alert: $gated_alert" -A 2 "$ROOT/observability/prometheus/rules/application.yml" \
+    | grep -Fq 'claude_api_tripo3d_enabled == 1' \
     || { printf '%s is not gated on the provider being enabled\n' "$gated_alert" >&2; exit 1; }
 done
 for anthropic_metric in claude_api_breaker_open claude_api_subs claude_api_cooling \

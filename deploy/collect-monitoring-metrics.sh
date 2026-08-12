@@ -199,7 +199,7 @@ WHERE kind = 'charge' AND ts > EXTRACT(EPOCH FROM now())::bigint - 3600;
 -- existed to protect. This reads settled money instead of a dry run, so it cannot be skipped.
 -- One basis point of tolerance absorbs integer rounding on sub-cent charges.
 WITH providers(provider) AS (
-  VALUES ('anthropic'), ('openai'), ('google'), ('kimi'), ('glm')
+  VALUES ('anthropic'), ('openai'), ('google'), ('kimi'), ('glm'), ('tripo3d')
 ), settled AS (
   SELECT provider,
          amount_nano::numeric / official_nano AS charged_ratio,
@@ -208,7 +208,7 @@ WITH providers(provider) AS (
   WHERE ts > EXTRACT(EPOCH FROM now())::bigint - 3600
     AND official_nano > 0 AND amount_nano > 0
     AND payable_multiplier_bp IS NOT NULL
-    AND provider IN ('anthropic', 'openai', 'google', 'kimi', 'glm')
+    AND provider IN ('anthropic', 'openai', 'google', 'kimi', 'glm', 'tripo3d')
 )
 SELECT 'apitoken_pricing_charge_mismatch{provider="' || providers.provider || '"} '
        || count(*) FILTER (WHERE ABS(charged_ratio * 10000 - payable_multiplier_bp) > 1)
@@ -221,7 +221,7 @@ WITH settled AS (
   FROM ledger
   WHERE ts > EXTRACT(EPOCH FROM now())::bigint - 3600
     AND official_nano > 0 AND amount_nano > 0
-    AND provider IN ('anthropic', 'openai', 'google', 'kimi', 'glm')
+    AND provider IN ('anthropic', 'openai', 'google', 'kimi', 'glm', 'tripo3d')
 )
 SELECT 'apitoken_pricing_effective_multiplier_bp{provider="' || provider || '"} '
        || round(avg(charged_ratio) * 10000)

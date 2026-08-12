@@ -5,6 +5,7 @@ use forward::{
     glm::config::{GlmPlaneConfig, GlmPlaneInput},
     glm::transport::GlmIdentityHeaders,
     kimi::config::{KimiPlaneConfig, KimiPlaneInput},
+    tripo3d::config::{Tripo3dPlaneConfig, Tripo3dPlaneInput},
     ClaudeStoreFallbackConfig, CodexConfig, CodexModel, GeminiConfig, GeminiModel,
     ProviderMode, ProxyConfig,
     CLAUDE_CODE_IDENTITY,
@@ -69,6 +70,10 @@ pub struct Settings {
     /// switch. There is no fleet base-URL override — the console origin is per-profile inside
     /// the sealed credential.
     pub glm: Option<GlmPlaneConfig>,
+    /// Backend-only Tripo3D (VAST) prepaid API plane on the dedicated `ProviderMode::Tripo3d`
+    /// delivery surface. Same contract shape as GLM's static-key plane: validated default-off
+    /// switch, per-profile platform origin inside the sealed credential, no fleet base URL.
+    pub tripo3d: Option<Tripo3dPlaneConfig>,
     /// Compile-versioned evaluator capability evidence, assembled by trusted server composition.
     pub proxy: ProxyConfig,
 }
@@ -126,8 +131,9 @@ fn parse_provider_mode(value: Option<&str>) -> Result<ProviderMode, String> {
         "openai" => Ok(ProviderMode::OpenAi),
         "gemini" => Ok(ProviderMode::Gemini),
         "kimi" => Ok(ProviderMode::Kimi),
+        "tripo3d" => Ok(ProviderMode::Tripo3d),
         other => Err(format!(
-            "CLAUDE_API_PROVIDER={other:?}: expected combined, anthropic, openai, gemini, or kimi"
+            "CLAUDE_API_PROVIDER={other:?}: expected combined, anthropic, openai, gemini, kimi, or tripo3d"
         )),
     }
 }
@@ -459,6 +465,81 @@ fn glm_config() -> Option<GlmPlaneConfig> {
         .filter_map(|name| ev(name).map(|value| (name.to_owned(), value)))
         .collect::<BTreeMap<_, _>>();
     parse_glm_config(&values).unwrap_or_else(|message| panic!("{message}"))
+}
+
+const TRIPO3D_ENV_KEYS: [&str; 6] = [
+    "CLAUDE_API_TRIPO3D_ENABLED",
+    "CLAUDE_API_TRIPO3D_ROSTER_DIR",
+    "CLAUDE_API_TRIPO3D_CREDENTIAL_KEYS",
+    "CLAUDE_API_TRIPO3D_CREDENTIAL_ACTIVE_KID",
+    "CLAUDE_API_TRIPO3D_BALANCE_POLL_SECS",
+    "CLAUDE_API_TRIPO3D_ARTIFACT_DIR",
+];
+
+/// Keys an operator might carry over from another plane that the Tripo3D plane deliberately
+/// does not have. There is no `base_url` override: the platform origin is per-profile inside
+/// the sealed credential (global and CN keys are not interchangeable,
+/// `docs/engine/TRIPO3D_PROVIDER.md` §2), so a fleet-level override could silently route a key
+/// to a platform that never issued it. Setting one of these is an operator mistake and fails
+/// closed with an explicit unknown-key error rather than being ignored as dormant input.
+const TRIPO3D_REJECTED_ENV_KEYS: [&str; 1] = ["CLAUDE_API_TRIPO3D_BASE_URL"];
+
+fn parse_tripo3d_config(
+    values: &BTreeMap<String, String>,
+) -> Result<Option<Tripo3dPlaneConfig>, String> {
+    for rejected in TRIPO3D_REJECTED_ENV_KEYS {
+        if values.contains_key(rejected) {
+            return Err(format!(
+                "{rejected}: unknown key for the Tripo3D plane; the platform origin is per-profile inside the sealed credential and has no fleet override"
+            ));
+        }
+    }
+    let defaults = Tripo3dPlaneInput::default();
+    let enabled = parse_strict_bool(
+        "CLAUDE_API_TRIPO3D_ENABLED",
+        values.get("CLAUDE_API_TRIPO3D_ENABLED").map(String::as_str),
+        defaults.enabled,
+    )?;
+    if !enabled {
+        return forward::tripo3d::config::build(&Tripo3dPlaneInput::default())
+            .map_err(|error| format!("invalid Tripo3D plane config: {error}"));
+    }
+    let balance_poll_secs = values.get("CLAUDE_API_TRIPO3D_BALANCE_POLL_SECS").map_or(
+        Ok(defaults.balance_poll_secs),
+        |value| {
+            value.parse::<u64>().map_err(|_| {
+                "CLAUDE_API_TRIPO3D_BALANCE_POLL_SECS: expected a non-negative base-10 integer"
+                    .to_string()
+            })
+        },
+    )?;
+    let input = Tripo3dPlaneInput {
+        enabled,
+        roster_dir: values
+            .get("CLAUDE_API_TRIPO3D_ROSTER_DIR")
+            .cloned()
+            .unwrap_or(defaults.roster_dir),
+        credential_keys: values.get("CLAUDE_API_TRIPO3D_CREDENTIAL_KEYS").cloned(),
+        credential_active_kid: values
+            .get("CLAUDE_API_TRIPO3D_CREDENTIAL_ACTIVE_KID")
+            .cloned(),
+        balance_poll_secs,
+        artifact_dir: values
+            .get("CLAUDE_API_TRIPO3D_ARTIFACT_DIR")
+            .cloned()
+            .unwrap_or(defaults.artifact_dir),
+    };
+    forward::tripo3d::config::build(&input)
+        .map_err(|error| format!("invalid Tripo3D plane config: {error}"))
+}
+
+fn tripo3d_config() -> Option<Tripo3dPlaneConfig> {
+    let values = TRIPO3D_ENV_KEYS
+        .into_iter()
+        .chain(TRIPO3D_REJECTED_ENV_KEYS)
+        .filter_map(|name| ev(name).map(|value| (name.to_owned(), value)))
+        .collect::<BTreeMap<_, _>>();
+    parse_tripo3d_config(&values).unwrap_or_else(|message| panic!("{message}"))
 }
 
 
@@ -1100,6 +1181,13 @@ impl Settings {
         } else {
             None
         };
+        // Tripo3D is a dedicated plane with its own task-media surface: the switch is read
+        // only in `ProviderMode::Tripo3d`; every other mode never composes it.
+        let tripo3d = if provider.serves_tripo3d() {
+            tripo3d_config()
+        } else {
+            None
+        };
         Settings {
             provider,
             db_path,
@@ -1173,6 +1261,7 @@ impl Settings {
             gemini,
             kimi,
             glm,
+            tripo3d,
             proxy: ProxyConfig {
                 api_keys,
                 control_keys,
@@ -1605,6 +1694,134 @@ mod tests {
             ),
         ]);
         let error = parse_glm_config(&enabled).unwrap_err();
+        assert!(error.contains("unknown key"), "{error}");
+    }
+
+    #[test]
+    fn tripo3d_provider_mode_parses() {
+        assert_eq!(parse_provider_mode(Some("tripo3d")), Ok(ProviderMode::Tripo3d));
+        assert_eq!(parse_provider_mode(Some(" TRIPO3D ")), Ok(ProviderMode::Tripo3d));
+    }
+
+    #[test]
+    fn tripo3d_server_config_is_strict_default_off_and_ignores_dormant_values() {
+        assert!(parse_tripo3d_config(&BTreeMap::new()).unwrap().is_none());
+        let disabled_with_broken_dormant_values = BTreeMap::from([
+            ("CLAUDE_API_TRIPO3D_ENABLED".to_owned(), "false".to_owned()),
+            (
+                "CLAUDE_API_TRIPO3D_ROSTER_DIR".to_owned(),
+                "relative/roster".to_owned(),
+            ),
+            (
+                "CLAUDE_API_TRIPO3D_ARTIFACT_DIR".to_owned(),
+                "relative/artifacts".to_owned(),
+            ),
+            (
+                "CLAUDE_API_TRIPO3D_BALANCE_POLL_SECS".to_owned(),
+                "not-an-integer".to_owned(),
+            ),
+        ]);
+        assert!(parse_tripo3d_config(&disabled_with_broken_dormant_values)
+            .unwrap()
+            .is_none());
+        for invalid in ["yes", "on", "2", " true "] {
+            let values = BTreeMap::from([(
+                "CLAUDE_API_TRIPO3D_ENABLED".to_owned(),
+                invalid.to_owned(),
+            )]);
+            assert!(parse_tripo3d_config(&values).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn tripo3d_server_config_passes_every_operator_value_to_the_typed_builder() {
+        let values = BTreeMap::from([
+            ("CLAUDE_API_TRIPO3D_ENABLED".to_owned(), "1".to_owned()),
+            (
+                "CLAUDE_API_TRIPO3D_ROSTER_DIR".to_owned(),
+                "/srv/private/tripo3d".to_owned(),
+            ),
+            (
+                "CLAUDE_API_TRIPO3D_CREDENTIAL_KEYS".to_owned(),
+                format!("a1:{}", "11".repeat(32)),
+            ),
+            (
+                "CLAUDE_API_TRIPO3D_CREDENTIAL_ACTIVE_KID".to_owned(),
+                "a1".to_owned(),
+            ),
+            (
+                "CLAUDE_API_TRIPO3D_BALANCE_POLL_SECS".to_owned(),
+                "37".to_owned(),
+            ),
+            (
+                "CLAUDE_API_TRIPO3D_ARTIFACT_DIR".to_owned(),
+                "/srv/private/tripo3d/artifacts".to_owned(),
+            ),
+        ]);
+        let config = parse_tripo3d_config(&values).unwrap().unwrap();
+        assert_eq!(
+            config.roster_dir,
+            std::path::PathBuf::from("/srv/private/tripo3d")
+        );
+        assert_eq!(
+            config.artifact_dir,
+            std::path::PathBuf::from("/srv/private/tripo3d/artifacts")
+        );
+        assert_eq!(
+            config.balance_poll_interval,
+            std::time::Duration::from_secs(37)
+        );
+        // Readiness always probes the free balance route; task creation is never a probe
+        // because it spends prepaid credits.
+        assert_eq!(
+            config.readiness_probe,
+            forward::tripo3d::transport::ProbeRoute::Balance
+        );
+    }
+
+    #[test]
+    fn enabled_tripo3d_server_config_fails_closed_before_runtime_start() {
+        let enabled = BTreeMap::from([("CLAUDE_API_TRIPO3D_ENABLED".to_owned(), "1".to_owned())]);
+        assert!(parse_tripo3d_config(&enabled).is_err());
+
+        // An active kid absent from the keyring is a bot/engine keyring mismatch — fail at boot.
+        let mismatched_kid = BTreeMap::from([
+            ("CLAUDE_API_TRIPO3D_ENABLED".to_owned(), "1".to_owned()),
+            (
+                "CLAUDE_API_TRIPO3D_CREDENTIAL_KEYS".to_owned(),
+                format!("a1:{}", "11".repeat(32)),
+            ),
+            ("CLAUDE_API_TRIPO3D_CREDENTIAL_ACTIVE_KID".to_owned(), "zz".to_owned()),
+        ]);
+        assert!(parse_tripo3d_config(&mismatched_kid).is_err());
+
+        for value in ["0", "garbage", "-1"] {
+            let values = BTreeMap::from([
+                ("CLAUDE_API_TRIPO3D_ENABLED".to_owned(), "1".to_owned()),
+                (
+                    "CLAUDE_API_TRIPO3D_CREDENTIAL_KEYS".to_owned(),
+                    format!("a1:{}", "11".repeat(32)),
+                ),
+                (
+                    "CLAUDE_API_TRIPO3D_BALANCE_POLL_SECS".to_owned(),
+                    value.to_owned(),
+                ),
+            ]);
+            assert!(parse_tripo3d_config(&values).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn tripo3d_server_config_rejects_the_fleet_base_url_override_as_an_unknown_key() {
+        // The platform origin lives inside each sealed credential (global/CN keys are not
+        // interchangeable), so a fleet `BASE_URL` can never be honoured. It fails closed even
+        // while the plane is disabled: silently ignoring it would let the operator believe a
+        // routing override is armed.
+        let dormant = BTreeMap::from([(
+            "CLAUDE_API_TRIPO3D_BASE_URL".to_owned(),
+            "https://api.tripo3d.com".to_owned(),
+        )]);
+        let error = parse_tripo3d_config(&dormant).unwrap_err();
         assert!(error.contains("unknown key"), "{error}");
     }
 

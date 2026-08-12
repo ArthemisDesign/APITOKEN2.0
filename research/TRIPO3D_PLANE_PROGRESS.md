@@ -24,6 +24,8 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 | Full-catalog admission pricing | (this commit) | `crates/metering/src/tripo3d.rs`: owner directive 2026-08-13 supersedes the v1 3D-core subset — the serving boundary admits the FULL reviewed catalog (all §3 task types across their reviewed `model_version` sets; highpoly stays fail-closed on the docs-vs-SDK conflict). New surface: `Tripo3dTaskKind::as_wire`/`from_wire`, `is_per_unit`, `tripo3d_family_max_credits`, `tripo3d_reserve_credits` → `Tripo3dReserve { credits, conservative }` — exact published price when the card has one, otherwise the documented family-max conservative reserve (settlement is always the exact `consumed_credit`, never the reserve); per-unit kinds keep count-priced helpers; unlisted versions and unpriceable counts still fail closed; 6 new tests incl. a grid recomputation of the family maxima from the exact pricer |
 | Runtime gateway + uploads + durable billing | (this commit) | `crates/forward/src/tripo3d/gateway.rs` (+`upload.rs`, `artifacts.rs`, `gateway/tests.rs`) + `billing.rs` paired writer + `state.rs` `AppState.tripo3d` + metrics counters + lib exports. Gateway: reserve → strict-then-relaxed select (upload-token affinity pins) → create (money boundary) → `mark_delivering` → detached drain (2 s cadence, 30 min deadline, disconnect-proof) → artifact download into `ARTIFACT_DIR` (tmp+fsync+chmod 0600+rename+dir fsync, ≤512 MiB bound) → exact settle from `consumed_credit` → paired FIFO (event + post-turn balance read, Codex/Gemini discipline) → registry. Calibration writer: `WriteCmd::Tripo3dRecordTurn` carries `PendingTurn { event, balance }`, one closure records turn → reads spend → writes the `response`-sourced observation + CAS; `Tripo3dObserveBalance` is the FIFO-gated poll path. Uploads: `upload/sts` multipart passthrough (≤20 MB, magic-sniffed format) and the STS token + SigV4 S3 PUT flow for model files (≤64 MiB), tokens pinned to the uploading profile (bounded TTL map). Estimator audited against the codex/gemini writer contract and stands unchanged; SigV4 key chain pinned against two independent implementations (python3 hmac + openssl) after a remembered AWS doc value proved wrong. Mock-based tests: admission matrix over the full catalog, reserve→create→delivering→poll→download→settle happy path with exact money, failed-task refund + zero-pair event, rotation only before create, transport budget = 3, full-soft serves / full-hard 429+Retry-After, tariff anomaly quarantine, pending FIFO blocks balance poll, roster last-good/probe-before-publish, per-account task isolation + privacy projection, both upload flows end to end, shutdown drain; N tests |
 
+| Server wiring + observability + admin projection | (this commit) | `crates/server`: `config.rs` (`CLAUDE_API_TRIPO3D_{ENABLED,ROSTER_DIR,CREDENTIAL_KEYS,CREDENTIAL_ACTIVE_KID,BALANCE_POLL_SECS,ARTIFACT_DIR}` strict default-off, `CLAUDE_API_TRIPO3D_BASE_URL` rejected as unknown — origin is per-profile in the sealed credential; `CLAUDE_API_PROVIDER=tripo3d` → `ProviderMode::Tripo3d`), `main.rs` (compose + PG-billing guard + degraded-gateway fallback + shutdown drain before the billing flush), `poller.rs` `tripo3d_maintenance_loop` (15 s roster discovery + balance sweep cadence only), `http.rs` (Tripo3d router arm: common + `/tripo3d-subs` + `/v1/3d/generations|uploads/image|uploads/model|tasks/{id}|tasks/{id}/artifact/{name}` + bounded 404 fallback; `/ready` tracks gateway readiness; `write_tripo3d_operational_metrics` — 20+ fixed-cardinality `claude_api_tripo3d_*` series, no profile/task labels); admin projection `GET /tripo3d-subs` (control key; disabled envelope without the plane; privacy-safe per-profile status + joined calibration rows via `profile_id_for_subject`, unknown stays null); `observability/prometheus/rules/application.yml` `tripo3d-provider` group (7 alerts, all gated on `claude_api_tripo3d_enabled == 1`) + same-named runbook sections in `docs/ops/MONITORING.md` + `deploy/monitoring-config.test.sh` block + the settlement collector's bounded provider list extended with `tripo3d`; `docs/DEPENDENCIES.md` gains the authbot→plane roster channel row; `crates/server/CLAUDE.md` gains the plane contract |
+
 ## Key research facts (review date 2026-08-12)
 
 - Two billing systems: Studio subscriptions (web) vs API platform (prepaid credits). Provider =
@@ -70,13 +72,12 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 
 ## Next action (exactly one)
 
-Task-lifecycle gateway + durable billing (`crates/forward/src/tripo3d/gateway.rs` +
-`crates/forward/src/billing.rs` Tripo3D writer commands, separate commit): reserve → select →
-create → delivering → detached poll (2s cadence, bounded deadline) → immediate artifact download
-into `ARTIFACT_DIR` (≤60s upstream URL TTL) → settle exact `consumed_credit` → turn FIFO →
-registry authority → balance observations. Then server wiring (`crates/server`). The Auth Bot
-branch is delivered and dormant on the `AUTH_BOT_TRIPO3D_*` keyring; runtime primitives are
-delivered and dormant under `ProviderMode::Tripo3d`.
+Admin control room consumer (`apps/admin`, separate commit) reading `GET /tripo3d-subs`; then the
+safe live-runner (`tools/tripo3d_calibration/`, `docs/ops/TRIPO3D_CALIBRATION.md`). The engine
+chain (primitives → migration 0051 → pricing → gateway/uploads/billing → server/observability)
+is delivered and dormant: nothing in production units, Caddy or the router exposes the plane.
+The runtime gates left for live evidence: the STS signing region, `consumed_credit` precision,
+balance unit semantics, result-URL TTL pin — all fail closed until the owned-account matrix.
 
 ## Queue
 
