@@ -34,6 +34,10 @@ mod openai_responses_stream;
 mod pricing;
 mod proxy;
 mod state;
+// Dormant until the plane's runtime writer lands (docs/engine/TRIPO3D_PROVIDER.md §8):
+// consumed only by its own tests so far.
+#[allow(dead_code)]
+mod tripo3d_calibration;
 mod upstream;
 mod validation;
 

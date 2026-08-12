@@ -17,6 +17,7 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 | Migration 0049 + registry observation types | (this commit) | `crates/registry/migrations_pg/0049_tripo3d_calibration.sql` + `crates/registry/src/tripo3d_calibration.rs`; windowless dual-ledger authority per manifest §5.3 (millicredits + fixed-rate nanoUSD legs, verbatim raw balance halves with NULL parsed units, subject+cohort state, cold/measured CHECK); `tripo3d_*` PG family mirrors `glm_*`; real-PG replay/CAS matrix green on a scratch DB |
 | Pricing provider set (migration 0051) | (this commit) | `crates/registry/migrations_pg/0051_tripo3d_pricing_provider.sql` (schema 50 → 51): the runtime reserves under `provider = 'tripo3d'`, so both closed sets widen expand-only — `account_provider_discounts_provider_id_check` (0046) and `reservations_scalar_pricing_shape` (0047), drop + re-add strictly wider NOT VALID + VALIDATE; `DISCOUNT_PROVIDER_IDS` 5→6 and the legacy SQLite CHECK texts mirror it; new registration/content tests, the three `CURRENT_SCHEMA_VERSION` pins move 50→51 |
 | Credential crate | (this commit) | `crates/tripo3d-credential`; GLM-pattern AEAD envelope for the static `tsk_` key + declared top-up cohort (lowercase-normalized, matches 0049 `cohort`); two-origin base-URL allowlist (global/CN) with the `test-loopback-base-url` escape; no rotate surface; 19 tests green with and without the feature |
+| Calibration estimator | (this commit) | `crates/forward/src/tripo3d_calibration.rs`; windowless balance-track state machine per manifest §5.3 (anchor/cold branch while the unit is unproven, top-up re-anchor, quota-before-settlement hold, repeated balance-only movement excluded via anchor advance — the 0049 state schema has no unattributed column, version rebuild from immutable history, checked i64/i128 only); capacity = remaining × ΣΔapi/ΣΔbalance drawdown with the quantisation envelope from the raw decimal resolution, high stays `None` when unproven; 28 deterministic tests |
 
 ## Key research facts (review date 2026-08-12)
 
@@ -64,10 +65,11 @@ presets, storefront, public docs) is OUT of scope for this task — dormant impl
 
 ## Next action (exactly one)
 
-Calibration estimator `crates/forward/src/tripo3d_calibration.rs` (expand-only, separate
-commit) — the windowless balance-track state machine per manifest §5.3 (capacity = balance −
-frozen once the unit is proven, `null` until then; no window estimator), interval coverage per
-`docs/engine/PROVIDER_WIRING_CHECKLIST.md` §7.
+Auth Bot protocol + wizard (`crates/authbot`, separate commit) — `HandoffKind::Tripo3d` with the
+`t3_proxy → t3_ready → t3_wait` steps per manifest §7: proxy canonicalization via
+`tripo3d_credential::normalize_proxy_url`, platform button (global/CN), seller newcomer guide,
+key intake, validation stub (balance probe → admission micro-smoke → seal → atomic roster
+publish), payout completion.
 
 ## Queue
 
