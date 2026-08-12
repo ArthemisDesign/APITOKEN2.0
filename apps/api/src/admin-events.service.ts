@@ -45,7 +45,6 @@ const TABLE_RESOURCES: Readonly<Record<string, readonly string[]>> = {
   email_outbox: ["/admin/pipeline-health", "/admin/dashboard"],
   pricing_usage_events: ["/admin/dashboard", "/admin/finance", "/admin/users"],
   pricing_usage_topups: ["/admin/dashboard", "/admin/finance", "/admin/users"],
-  pricing_usage_attributions: ["/admin/dashboard", "/admin/finance", "/admin/users"],
   api_keys: ["/admin/users", "/admin/dashboard"],
   audit_log: ["/admin/audit"],
   admin_accounts: ["/admin/admin-accounts"],
