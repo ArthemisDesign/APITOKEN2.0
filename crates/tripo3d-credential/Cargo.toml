@@ -1,0 +1,21 @@
+[package]
+name = "tripo3d-credential"
+version = "0.1.0"
+edition = "2021"
+description = "Encrypted, identity-bound Tripo3D (VAST / Holymolly) API-key credential envelopes"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+test-loopback-base-url = []
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+getrandom = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+zeroize = { version = "1", features = ["derive"] }

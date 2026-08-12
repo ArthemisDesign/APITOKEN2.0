@@ -293,7 +293,7 @@ Each `unknown` fails closed and is cleared only by a controlled live run on our 
 | calibration authority (schema 0049) | `crates/registry/migrations_pg/0049_tripo3d_calibration.sql` | done (this commit) |
 | priced reservation provider set (schema 0051) | `crates/registry/migrations_pg/0051_tripo3d_pricing_provider.sql` + `DISCOUNT_PROVIDER_IDS` | done (this commit) |
 | observation types | `crates/registry/src/tripo3d_calibration.rs` | done (this commit) |
-| credential | `crates/tripo3d-credential` | pending |
+| credential | `crates/tripo3d-credential` | done (this commit) |
 | calibration estimator | `crates/forward/src/tripo3d_calibration.rs` | pending |
 | Auth Bot protocol + wizard | `crates/authbot/src/{tripo3d_key,tripo3d_roster}.rs`, `bot.rs` | pending |
 | runtime primitives + gateway | `crates/forward/src/tripo3d/**` | pending |
