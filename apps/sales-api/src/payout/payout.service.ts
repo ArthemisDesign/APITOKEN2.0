@@ -241,8 +241,10 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
           issue: null,
         },
       };
-    } catch (error) {
-      this.logger.error(`payout engine state read failed: ${error instanceof Error ? error.message : "unknown"}`);
+    } catch {
+      // Provider/RPC errors can embed credential-bearing URLs. The public response already carries
+      // a bounded issue code; keep the journal equally bounded instead of copying the exception.
+      this.logger.error("payout engine state read failed");
       return {
         configured: true,
         window,
