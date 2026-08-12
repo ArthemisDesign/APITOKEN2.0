@@ -68,10 +68,18 @@ browser refetches, so push cannot immediately return a stale cached projection.
 The UI consumer keeps last-good data, deduplicates by actual request URL and revalidates only
 mounted resources whose URL matches an emitted prefix. Multi-source screens subscribe to independent
 URL resources, so a ready section does not wait for the slowest endpoint and one failed source does
-not block its neighbors. A request whose last
+not block its neighbors. A failed revalidation keeps that source's last-good section visible while
+Error Center reports the refresh failure; only an initial failure without data renders the source as
+unavailable. A request whose last
 subscriber unmounts is aborted, while cached successful data survives navigation. Heartbeats never
 enter the invalidation handler. The sidebar reports aggregate feed health and its explicit refresh
-button is limited to resources mounted on the current screen.
+button is limited to resources mounted on the current screen. Timestamps exposed by a resource group
+advance only after a successful response; starting or failing a refresh cannot make stale data look
+newer than it is.
+When more than three mounted sources fail together, Error Center collapses them into one
+expandable alert with per-source retry and dismiss controls; it does not cover the page with an
+unbounded notification stack. Initial failures say that no data exists, while failed revalidation
+explicitly identifies retained last-good data.
 
 ## Release cycle (watchdog lane `admin`)
 
@@ -106,8 +114,9 @@ systemctl enable apitoken-admin.service
 `admin.apitoken.sale` is served by `apps/admin` on `127.0.0.1:3700` and is entirely closed
 behind `managed_admin_auth`: login/password is verified by commerce internal auth with
 domain grants. Caddy same-origin proxies the depersonalized `/capacity`, `/codex-subs`,
-`/gemini-subs`, `/kimi-subs` and `/glm-subs` to the three provider runtimes (KIMI and GLM
-are backend-only planes inside the Anthropic runtime, there is no separate origin) and adds
+`/gemini-subs`, `/kimi-subs` and `/glm-subs` to the provider runtimes. KIMI is a backend-only
+plane with its own stable loopback origin `127.0.0.1:8803`; GLM remains a backend inside the
+Anthropic runtime. Caddy adds
 the server keys; the browser never receives control keys, OAuth, Google project, KIMI/GLM
 subject, keys or proxy. Full account email has one narrow exception described below for the
 closed managed-admin `/proxies` response; the other subscription routes remain masked. The

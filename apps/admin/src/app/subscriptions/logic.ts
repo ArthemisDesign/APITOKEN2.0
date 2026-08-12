@@ -568,7 +568,7 @@ export function resolveBanner(input: FleetBannerInput): FleetBanner {
     return {
       kind: "warn",
       title: "KIMI-контур не отвечает",
-      sub: "/kimi-subs недоступен — проверьте Anthropic runtime: KIMI-плоскость живёт в нём",
+      sub: "/kimi-subs недоступен — проверьте KIMI runtime и stable origin :8803",
     };
   if (input.kimiEmpty)
     return {
@@ -586,7 +586,7 @@ export function resolveBanner(input: FleetBannerInput): FleetBanner {
     return {
       kind: "warn",
       title: "GLM-контур не отвечает",
-      sub: "/glm-subs недоступен — проверьте Anthropic runtime: GLM-плоскость живёт в нём",
+      sub: "/glm-subs недоступен — проверьте GLM backend внутри Anthropic runtime",
     };
   if (input.glmEmpty)
     return {

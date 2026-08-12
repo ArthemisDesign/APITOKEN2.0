@@ -11,7 +11,7 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-import SubsPage from "./page";
+import SubsPage, { SubscriptionsView } from "./page";
 import { ClaudeTable, GeminiModelDetails, GeminiTable, GptTable, TransportDetails } from "./components";
 import { ClaudeCapacityBoard } from "./claude-capacity-board";
 import { CodexCapacityBoard } from "./codex-capacity-board";
@@ -2353,6 +2353,41 @@ describe("Подписки (subs page)", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
+
+  it("не падает, когда /subs готов раньше остальных provider-источников", () => {
+    const html = renderToString(
+      <SubscriptionsView
+        state={{
+          data: {
+            subs: { subs: [] },
+            capacity: undefined,
+            codex: undefined,
+            gemini: undefined,
+            kimi: undefined,
+            glm: undefined,
+          },
+          availability: {
+            subs: "ready",
+            capacity: "loading",
+            codex: "loading",
+            gemini: "loading",
+            kimi: "loading",
+            glm: "loading",
+          },
+          isLoading: false,
+          updatedAt: 1_786_541_400_000,
+        }}
+      />,
+    );
+
+    expect(html).toContain("Ёмкость пулов");
+    expect(plain(html)).toContain("/capacity загружается");
+    expect(plain(html)).toContain("Данные GPT загружаются");
+    expect(plain(html)).toContain("Данные Gemini загружаются");
+    expect(plain(html)).toContain("Данные KIMI загружаются");
+    expect(plain(html)).toContain("Данные GLM загружаются");
+    expect(plain(html)).not.toContain("не отвечает");
+  });
 });
 
 describe("deadLabel", () => {
@@ -2726,8 +2761,10 @@ describe("resolveBanner (приоритеты баннера флота)", () =>
     expect(resolveBanner({ ...OK_BANNER, geminiDown: true, kimiDown: true }).title).toBe("Gemini-контур не отвечает");
     expect(resolveBanner({ ...OK_BANNER, geminiEmpty: true }).title).toBe("В Gemini-пуле нет профилей");
     expect(resolveBanner({ ...OK_BANNER, kimiDown: true, glmDown: true }).title).toBe("KIMI-контур не отвечает");
+    expect(resolveBanner({ ...OK_BANNER, kimiDown: true }).sub).toContain("stable origin :8803");
     expect(resolveBanner({ ...OK_BANNER, kimiEmpty: true }).title).toBe("В KIMI-пуле нет профилей");
     expect(resolveBanner({ ...OK_BANNER, glmDown: true }).title).toBe("GLM-контур не отвечает");
+    expect(resolveBanner({ ...OK_BANNER, glmDown: true }).sub).toContain("GLM backend внутри Anthropic runtime");
     expect(resolveBanner({ ...OK_BANNER, glmEmpty: true }).title).toBe("В GLM-пуле нет профилей");
   });
 

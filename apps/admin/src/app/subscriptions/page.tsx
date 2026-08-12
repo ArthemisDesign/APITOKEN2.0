@@ -34,15 +34,15 @@ interface SubsData {
   glm: GlmSubsResponse;
 }
 
-export default function SubsPage() {
-  const { data: result, availability, isLoading, updatedAt: nowMs } = useResources<SubsData>({
-    subs: "/subs",
-    capacity: "/capacity",
-    codex: "/codex-subs",
-    gemini: "/gemini-subs",
-    kimi: "/kimi-subs",
-    glm: "/glm-subs",
-  });
+interface SubsPageState {
+  data: { [K in keyof SubsData]: SubsData[K] | undefined };
+  availability: { [K in keyof SubsData]: "loading" | "ready" | "error" };
+  isLoading: boolean;
+  updatedAt: number;
+}
+
+export function SubscriptionsView({ state }: { state: SubsPageState }) {
+  const { data: result, availability, isLoading, updatedAt: nowMs } = state;
 
   // Все производные флотов пересчитываются только при смене снимка данных.
   const derived = useMemo(() => {
@@ -52,22 +52,25 @@ export default function SubsPage() {
     const dead = list.filter((item) => item.auth_state === "dead").length;
     const suspect = list.filter((item) => item.auth_state === "suspect").length;
     const subsDown = availability.subs === "error";
+    const claudeCapacityLoading = availability.capacity === "loading";
     const claudeCapacityDown = availability.capacity === "error";
     const claudeCalibrationPending = Number(capacity?.calibration_delivery?.pending_events ?? 0);
     const claudeCalibrationDropped = Number(capacity?.calibration_delivery?.dropped_events ?? 0);
     const claudeCalibrationStorageBad = capacity?.calibration_delivery?.persistence_ok === false
       || capacity?.calibration_authority_available === false;
 
+    const gptLoading = availability.codex === "loading";
     const gptDown = availability.codex === "error";
     const gptOff = Boolean(codex && codex.enabled === false);
     const homes = codex?.homes ?? [];
     const gptAuthBad = homes.filter((h) => !h.auth_ok).length;
     const gptProcDown = homes.filter((h) => !h.process_live).length;
 
+    const geminiLoading = availability.gemini === "loading";
     const geminiDown = availability.gemini === "error";
     const geminiOff = Boolean(gemini && gemini.enabled === false);
     const geminiProfiles = gemini?.profiles ?? [];
-    const geminiEmpty = !geminiDown && !geminiOff && !geminiProfiles.length;
+    const geminiEmpty = availability.gemini === "ready" && !geminiOff && !geminiProfiles.length;
     const geminiUnavailable =
       !geminiDown && !geminiOff && geminiProfiles.length > 0 && Number(gemini?.available || 0) === 0;
     const geminiAuthBad = geminiProfiles.filter((profile) => !profile.authenticated).length;
@@ -77,10 +80,11 @@ export default function SubsPage() {
     const geminiCalibrationStorageBad = gemini?.calibration_authority_available === false
       || gemini?.calibration_delivery?.persistence_ok === false;
 
+    const kimiLoading = availability.kimi === "loading";
     const kimiDown = availability.kimi === "error";
     const kimiOff = Boolean(kimi && kimi.enabled === false);
     const kimiProfiles = kimi?.profiles ?? [];
-    const kimiEmpty = !kimiDown && !kimiOff && !kimiProfiles.length;
+    const kimiEmpty = availability.kimi === "ready" && !kimiOff && !kimiProfiles.length;
     const kimiUnavailable =
       !kimiDown && !kimiOff && kimiProfiles.length > 0 && Number(kimi?.fleet?.available_profiles ?? 0) === 0;
     const kimiDeliveryPending = Number(kimi?.delivery?.pending_events ?? 0);
@@ -88,10 +92,11 @@ export default function SubsPage() {
     const kimiDeliveryBad = kimi?.delivery?.persistence_ok === false;
     const kimiCalibrationStorageBad = kimi?.calibration_authority_available === false || kimiDeliveryBad;
 
+    const glmLoading = availability.glm === "loading";
     const glmDown = availability.glm === "error";
     const glmOff = Boolean(glm && glm.enabled === false);
     const glmProfiles = glm?.profiles ?? [];
-    const glmEmpty = !glmDown && !glmOff && !glmProfiles.length;
+    const glmEmpty = availability.glm === "ready" && !glmOff && !glmProfiles.length;
     const glmUnavailable =
       !glmDown && !glmOff && glmProfiles.length > 0 && Number(glm?.fleet?.available_profiles ?? 0) === 0;
     const glmDeliveryPending = Number(glm?.delivery?.pending_events ?? 0);
@@ -117,17 +122,20 @@ export default function SubsPage() {
       dead,
       suspect,
       subsDown,
+      claudeCapacityLoading,
       claudeCapacityDown,
       claudeCalibrationPending,
       claudeCalibrationDropped,
       claudeCalibrationStorageBad,
       codex,
       homes,
+      gptLoading,
       gptDown,
       gptOff,
       gptAuthBad,
       gptProcDown,
       gemini,
+      geminiLoading,
       geminiDown,
       geminiOff,
       geminiProfiles,
@@ -139,6 +147,7 @@ export default function SubsPage() {
       geminiCalibrationDropped,
       geminiCalibrationStorageBad,
       kimi,
+      kimiLoading,
       kimiDown,
       kimiOff,
       kimiProfiles,
@@ -148,6 +157,7 @@ export default function SubsPage() {
       kimiDeliveryDropped,
       kimiDeliveryBad,
       glm,
+      glmLoading,
       glmDown,
       glmOff,
       glmProfiles,
@@ -209,11 +219,11 @@ export default function SubsPage() {
       />
 
       <FleetCapacityOverview
-        claude={derived.capacity ?? null}
-        gpt={derived.codex ?? null}
-        gemini={derived.gemini ?? null}
-        kimi={derived.kimi ?? null}
-        glm={derived.glm ?? null}
+        claude={derived.claudeCapacityDown ? null : derived.capacity}
+        gpt={derived.gptDown ? null : derived.codex}
+        gemini={derived.geminiDown ? null : derived.gemini}
+        kimi={derived.kimiDown ? null : derived.kimi}
+        glm={derived.glmDown ? null : derived.glm}
         nowMs={nowMs}
       />
 
@@ -229,7 +239,9 @@ export default function SubsPage() {
             <div><span>01 · Claude</span><h2>Аккаунты и окна</h2></div>
             <b>API-$ · 5ч / 7д</b>
           </header>
-          {derived.claudeCapacityDown ? (
+          {derived.claudeCapacityLoading ? (
+            <div className="tcard"><div className="empty">/capacity загружается</div></div>
+          ) : derived.claudeCapacityDown ? (
             <div className="tcard"><div className="empty">/capacity не отвечает</div></div>
           ) : (
             <ClaudeCapacityBoard response={derived.capacity!} />
@@ -241,7 +253,9 @@ export default function SubsPage() {
             <div><span>02 · GPT</span><h2>Аккаунты и окна</h2></div>
             <b>credits · API-$ · модели</b>
           </header>
-          {derived.gptDown || derived.gptOff ? (
+          {derived.gptLoading ? (
+            <div className="tcard"><div className="empty">Данные GPT загружаются</div></div>
+          ) : derived.gptDown || derived.gptOff ? (
             <div className="tcard">
               <div className="empty">
                 {derived.gptDown ? "OpenAI-runtime не отвечает" : "Codex-контур выключен"}
@@ -257,7 +271,9 @@ export default function SubsPage() {
             <div><span>03 · Gemini</span><h2>Аккаунты и окна</h2></div>
             <b>API-$ · quota · модели</b>
           </header>
-          {derived.geminiDown || derived.geminiOff ? (
+          {derived.geminiLoading ? (
+            <div className="tcard"><div className="empty">Данные Gemini загружаются</div></div>
+          ) : derived.geminiDown || derived.geminiOff ? (
             <div className="tcard">
               <div className="empty">
                 {derived.geminiDown ? "Gemini runtime не отвечает" : "Gemini-контур выключен"}
@@ -273,7 +289,9 @@ export default function SubsPage() {
             <div><span>04 · KIMI</span><h2>Аккаунты и окна</h2></div>
             <b>API-$ · quota · окна</b>
           </header>
-          {derived.kimiDown || derived.kimiOff ? (
+          {derived.kimiLoading ? (
+            <div className="tcard"><div className="empty">Данные KIMI загружаются</div></div>
+          ) : derived.kimiDown || derived.kimiOff ? (
             <div className="tcard">
               <div className="empty">
                 {derived.kimiDown ? "KIMI runtime не отвечает" : "KIMI-контур выключен"}
@@ -289,7 +307,9 @@ export default function SubsPage() {
             <div><span>05 · GLM</span><h2>Аккаунты и окна</h2></div>
             <b>API-$ · quota · окна</b>
           </header>
-          {derived.glmDown || derived.glmOff ? (
+          {derived.glmLoading ? (
+            <div className="tcard"><div className="empty">Данные GLM загружаются</div></div>
+          ) : derived.glmDown || derived.glmOff ? (
             <div className="tcard">
               <div className="empty">
                 {derived.glmDown ? "GLM runtime не отвечает" : "GLM-контур выключен"}
@@ -306,4 +326,16 @@ export default function SubsPage() {
       </footer>
     </>
   );
+}
+
+export default function SubsPage() {
+  const state = useResources<SubsData>({
+    subs: "/subs",
+    capacity: "/capacity",
+    codex: "/codex-subs",
+    gemini: "/gemini-subs",
+    kimi: "/kimi-subs",
+    glm: "/glm-subs",
+  });
+  return <SubscriptionsView state={state} />;
 }

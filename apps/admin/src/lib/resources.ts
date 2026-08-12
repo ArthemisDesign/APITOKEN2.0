@@ -15,6 +15,7 @@ export type ResourceError = {
   key: string;
   message: string;
   dismissed: boolean;
+  hasData: boolean;
 };
 
 export type ResourceAvailability = "loading" | "ready" | "error";
@@ -35,6 +36,13 @@ function abortError(cause: unknown): boolean {
   return cause instanceof Error && cause.name === "AbortError";
 }
 
+export function resourceAvailability<T>(snapshot: ResourceSnapshot<T>): ResourceAvailability {
+  // A failed revalidation does not make the already rendered section unavailable: keep the
+  // last-good payload visible while Error Center reports the refresh failure separately.
+  if (snapshot.data !== undefined) return "ready";
+  return snapshot.error ? "error" : "loading";
+}
+
 export { resourceMatches } from "@/lib/invalidation";
 
 export class Resource<T> {
@@ -51,6 +59,7 @@ export class Resource<T> {
   private queued = false;
   private generation = 0;
   lastUsedAt = Date.now();
+  lastSuccessfulAt = 0;
 
   constructor(readonly key: string) {}
 
@@ -116,6 +125,7 @@ export class Resource<T> {
         const data = await api<T>(this.key, { signal: controller.signal });
         if (controller.signal.aborted || generation !== this.generation) return;
         this.stale = false;
+        this.lastSuccessfulAt = Date.now();
         this.snapshot = { data, error: undefined, isLoading: false, isValidating: false };
         clearResourceError(this.key, this.hasSubscribers());
       } catch (cause) {
@@ -134,7 +144,7 @@ export class Resource<T> {
         const error = cause instanceof Error ? cause : new Error(String(cause));
         this.stale = true;
         this.snapshot = { ...this.snapshot, error, isLoading: false, isValidating: false };
-        if (this.hasSubscribers()) trackResourceError(this.key, error);
+        if (this.hasSubscribers()) trackResourceError(this.key, error, this.snapshot.data !== undefined);
       } finally {
         if (this.controller === controller && generation === this.generation) this.controller = null;
       }
@@ -215,7 +225,6 @@ type ResourcePaths<T extends object> = { [K in keyof T]: string };
 class ResourceGroup<T extends object> {
   private readonly entries: Array<[keyof T, Resource<T[keyof T]>]>;
   private snapshot: ResourceGroupSnapshot<T>;
-  private updatedAt = Date.now();
 
   constructor(paths: ResourcePaths<T>) {
     this.entries = (Object.entries(paths) as Array<[keyof T, string]>).map(([name, path]) => [
@@ -228,7 +237,6 @@ class ResourceGroup<T extends object> {
   subscribe = (listener: Listener): (() => void) => {
     const unsubscribers = this.entries.map(([, resource]) =>
       resource.subscribe(() => {
-        this.updatedAt = Date.now();
         this.snapshot = this.buildSnapshot();
         listener();
       }),
@@ -250,14 +258,16 @@ class ResourceGroup<T extends object> {
     const availability = {} as { [K in keyof T]: ResourceAvailability };
     let isLoading = false;
     let isValidating = false;
+    let updatedAt = 0;
     for (const [name, resource] of this.entries) {
       const current = resource.getSnapshot();
       data[name] = current.data;
-      availability[name] = current.error ? "error" : current.data !== undefined ? "ready" : "loading";
+      availability[name] = resourceAvailability(current);
       isLoading ||= current.isLoading;
       isValidating ||= current.isValidating;
+      updatedAt = Math.max(updatedAt, resource.lastSuccessfulAt);
     }
-    return { data, availability, isLoading, isValidating, updatedAt: this.updatedAt };
+    return { data, availability, isLoading, isValidating, updatedAt };
   }
 }
 
@@ -283,17 +293,18 @@ export function useResources<T extends object>(
     group.getSnapshot,
     () => SERVER_GROUP_SNAPSHOT as ResourceGroupSnapshot<T>,
   );
-  const deferredData = useDeferredValue(snapshot.data);
+  const deferredSnapshot = useDeferredValue(snapshot);
   const data = {} as { [K in keyof T]: T[K] | undefined };
   let hasFallback = false;
   for (const name of Object.keys(paths) as Array<keyof T>) {
     const current = snapshot.data[name];
-    data[name] = current ?? deferredData[name];
+    data[name] = current ?? deferredSnapshot.data[name];
     hasFallback ||= current === undefined && data[name] !== undefined;
   }
   return {
     ...snapshot,
     data,
+    updatedAt: snapshot.updatedAt || (hasFallback ? deferredSnapshot.updatedAt : 0),
     isLoading: snapshot.isLoading && Object.values(data).every((value) => value === undefined),
     isValidating: snapshot.isValidating || (snapshot.isLoading && hasFallback),
     refresh: group.refresh,
@@ -350,9 +361,14 @@ export function deactivateResourceError(key: string): void {
   if (errorRegistry.has(key)) emitErrors();
 }
 
-export function trackResourceError(key: string, error: Error): void {
+export function trackResourceError(key: string, error: Error, hasData = false): void {
   const previous = errorRegistry.get(key);
-  errorRegistry.set(key, { key, message: error.message || String(error), dismissed: previous?.dismissed ?? false });
+  errorRegistry.set(key, {
+    key,
+    message: error.message || String(error),
+    dismissed: previous?.dismissed ?? false,
+    hasData,
+  });
   emitErrors();
 }
 

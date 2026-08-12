@@ -585,7 +585,7 @@ export interface GeminiSubsResponse {
   failures?: GeminiFailures;
 }
 
-// GET /kimi-subs — KIMI-профили (backend-only плоскость внутри Anthropic runtime).
+// GET /kimi-subs — KIMI-профили (backend-only плоскость с отдельным stable origin :8803).
 // Деньги — decimal nano strings (BigInt); неизвестное — null, никогда не 0.
 // Идентичность окна — exact duration_secs (18000 = rolling 5ч, 604800 = weekly);
 // длительности — данные, а не фиксированные 5ч/7д слоты. Email/subject не

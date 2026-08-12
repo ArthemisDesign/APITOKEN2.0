@@ -5,6 +5,7 @@ import {
   getResourceSnapshot,
   getErrors,
   invalidateResources,
+  resourceAvailability,
   resourceMatches,
   refreshMountedResources,
 } from "./resources";
@@ -17,6 +18,21 @@ beforeEach(() => {
 });
 
 describe("resource invalidation", () => {
+  it("keeps last-good data available while a failed revalidation is reported separately", () => {
+    expect(resourceAvailability({
+      data: { version: 1 },
+      error: new Error("refresh failed"),
+      isLoading: false,
+      isValidating: false,
+    })).toBe("ready");
+    expect(resourceAvailability({
+      data: undefined,
+      error: new Error("initial load failed"),
+      isLoading: false,
+      isValidating: false,
+    })).toBe("error");
+  });
+
   it("matches path boundaries while ignoring query strings", () => {
     expect(resourceMatches("/admin/users?limit=50", "/admin/users")).toBe(true);
     expect(resourceMatches("/admin/users/42", "/admin/users")).toBe(true);
@@ -149,15 +165,19 @@ describe("resource invalidation", () => {
 
   it("keeps last-good data when a revalidation fails", async () => {
     const originalFetch = globalThis.fetch;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-12T12:00:00Z"));
     globalThis.fetch = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ version: 1 })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ message: "upstream unavailable" }), { status: 503 })) as typeof fetch;
     try {
       const resource = getResource<{ version: number }>("/overview");
       const unsubscribe = resource.subscribe(() => undefined);
-      await flush();
+      await vi.advanceTimersByTimeAsync(0);
+      const lastSuccessfulAt = resource.lastSuccessfulAt;
+      vi.setSystemTime(new Date("2026-08-12T12:05:00Z"));
       resource.refresh();
-      await flush();
+      await vi.advanceTimersByTimeAsync(0);
 
       expect(resource.getSnapshot()).toMatchObject({
         data: { version: 1 },
@@ -165,10 +185,12 @@ describe("resource invalidation", () => {
         isValidating: false,
       });
       expect(resource.getSnapshot().error?.message).toBe("upstream unavailable");
-      expect(getErrors()).toEqual([{ key: "/overview", message: "upstream unavailable", dismissed: false }]);
+      expect(resource.lastSuccessfulAt).toBe(lastSuccessfulAt);
+      expect(getErrors()).toEqual([{ key: "/overview", message: "upstream unavailable", dismissed: false, hasData: true }]);
       unsubscribe();
     } finally {
       globalThis.fetch = originalFetch;
+      vi.useRealTimers();
     }
   });
 

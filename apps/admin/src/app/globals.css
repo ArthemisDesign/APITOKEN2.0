@@ -143,6 +143,10 @@ border-radius:12px;background:var(--panel);box-shadow:0 14px 38px rgba(0,0,0,.24
 .error-note b{display:block;color:var(--bad);font-size:13px}.error-note p{margin:2px 0 0;color:var(--muted);font-size:12px;word-break:break-word}
 .error-note .error-actions{display:flex;gap:6px}.icon-btn{border:0;background:transparent;color:var(--muted);cursor:pointer;padding:4px;border-radius:6px}
 .icon-btn:hover{background:var(--panel2);color:var(--text)}
+.error-note-group{grid-template-columns:auto minmax(0,1fr)}.error-note-group details{margin-top:8px}.error-note-group summary{width:max-content;max-width:100%;color:var(--accent-text);font-size:12px;cursor:pointer}
+.error-note-group ul{list-style:none;margin:8px 0 0;padding:0;max-height:min(50vh,360px);overflow-y:auto;overscroll-behavior:contain;border-top:1px solid var(--line2)}
+.error-note-group li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line2)}
+.error-note-group li strong,.error-note-group li small{display:block;min-width:0;overflow-wrap:anywhere}.error-note-group li strong{font-size:12px}.error-note-group li small{margin-top:2px;color:var(--muted);font-size:11px}
 .loading-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.skeleton{height:104px;border:1px solid var(--line);border-radius:12px;
 background:var(--panel);position:relative;overflow:hidden}.skeleton:after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,var(--panel2),transparent);transform:translateX(-100%);animation:pulse 1.2s ease-in-out infinite}
 .pager{display:flex;align-items:center;justify-content:flex-end;gap:9px;margin-top:12px;color:var(--muted);font-size:12px}
@@ -161,7 +165,7 @@ main{padding:18px 14px 50px}.page-head h1{font-size:19px}.form{grid-template-col
 @media(max-width:620px){.cards,.form,.domain-grid{grid-template-columns:1fr}.card .value{font-size:23px}}
 @media(max-width:620px){aside{grid-template-columns:1fr;height:auto;padding:10px 12px}.side-bar-head{justify-content:space-between}
 nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px;width:100%;margin:10px 0 0;padding-top:9px;border-top:1px solid var(--line2);overflow:visible}
-nav>div{display:contents}.nav-item{min-width:0}.side-foot{display:none}main{padding-top:16px}}
+nav>div{display:contents}.nav-item{min-width:0}.side-foot{display:none}main{padding-top:16px}.error-center{top:8px;right:8px;width:calc(100vw - 16px)}}
 
 /* ── B2B terms ──────────────────────────────────────────── */
 .business-page{display:grid;gap:26px;max-width:1200px}.business-page>.page-head{margin-bottom:0}

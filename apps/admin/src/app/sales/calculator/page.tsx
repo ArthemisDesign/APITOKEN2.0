@@ -168,7 +168,7 @@ export default function SalesCalculatorPage() {
         <div className="calc-hero-copy">
           <div className="calc-kicker">
             <span>Sales intelligence</span>
-            <Pill kind={sourceCount === 3 ? "ok" : "warn"}>live · 5 сек</Pill>
+            <Pill kind={sourceCount === 3 ? "ok" : "warn"}>live · события</Pill>
           </div>
           <h1>Цена подписки — факт. Её API-ёмкость — измерение.</h1>
           <p>

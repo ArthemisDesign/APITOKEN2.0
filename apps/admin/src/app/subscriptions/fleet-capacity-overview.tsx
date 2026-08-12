@@ -53,8 +53,11 @@ function exactWindow<T extends ComparableWindow>(windows: T[] | undefined, minut
   return windows?.find((window) => Number(window.window_minutes) === minutes);
 }
 
-function claudeCard(response: CapacityResponse | null): FleetCardValue {
-  if (!response) {
+function claudeCard(response: CapacityResponse | null | undefined): FleetCardValue {
+  if (response === undefined) {
+    return { id: "claude", label: "Claude", status: "warn", ready: 0, total: 0, coverage: "загрузка", rails: [] };
+  }
+  if (response === null) {
     return { id: "claude", label: "Claude", status: "bad", ready: 0, total: 0, coverage: "нет связи", rails: [] };
   }
   const items = response.per_sub ?? [];
@@ -88,8 +91,11 @@ function claudeCard(response: CapacityResponse | null): FleetCardValue {
   };
 }
 
-function gptCard(response: CodexSubsResponse | null): FleetCardValue {
-  if (!response || response.enabled === false) {
+function gptCard(response: CodexSubsResponse | null | undefined): FleetCardValue {
+  if (response === undefined) {
+    return { id: "gpt", label: "GPT", status: "warn", ready: 0, total: 0, coverage: "загрузка", rails: [] };
+  }
+  if (response === null || response.enabled === false) {
     return {
       id: "gpt",
       label: "GPT",
@@ -120,8 +126,11 @@ function gptCard(response: CodexSubsResponse | null): FleetCardValue {
   };
 }
 
-function geminiCard(response: GeminiSubsResponse | null): FleetCardValue {
-  if (!response || response.enabled === false) {
+function geminiCard(response: GeminiSubsResponse | null | undefined): FleetCardValue {
+  if (response === undefined) {
+    return { id: "gemini", label: "Gemini", status: "warn", ready: 0, total: 0, coverage: "загрузка", rails: [] };
+  }
+  if (response === null || response.enabled === false) {
     return {
       id: "gemini",
       label: "Gemini",
@@ -172,8 +181,11 @@ function geminiCard(response: GeminiSubsResponse | null): FleetCardValue {
 
 // KIMI публикует только per-profile quota/calibration без fleet window_totals:
 // rails агрегируются из реальных duration_secs, а деньги суммируются fail-closed.
-function kimiCard(response: KimiSubsResponse | null, nowMs?: number): FleetCardValue {
-  if (!response || response.enabled === false) {
+function kimiCard(response: KimiSubsResponse | null | undefined, nowMs?: number): FleetCardValue {
+  if (response === undefined) {
+    return { id: "kimi", label: "KIMI", status: "warn", ready: 0, total: 0, coverage: "загрузка", rails: [] };
+  }
+  if (response === null || response.enabled === false) {
     return {
       id: "kimi",
       label: "KIMI",
@@ -239,8 +251,11 @@ function kimiCard(response: KimiSubsResponse | null, nowMs?: number): FleetCardV
 // проекция exact duration_secs 18000/604800) fail-closed суммами: null у любого
 // профиля делает всё окно неизвестным, поэтому rail показывает «ждём данные»,
 // а не $0. Без window_totals карточка деградирует в coverage-only, как KIMI.
-function glmCard(response: GlmSubsResponse | null): FleetCardValue {
-  if (!response || response.enabled === false) {
+function glmCard(response: GlmSubsResponse | null | undefined): FleetCardValue {
+  if (response === undefined) {
+    return { id: "glm", label: "GLM", status: "warn", ready: 0, total: 0, coverage: "загрузка", rails: [] };
+  }
+  if (response === null || response.enabled === false) {
     return {
       id: "glm",
       label: "GLM",
@@ -338,9 +353,9 @@ export function FleetCapacityOverview({
   glm,
   nowMs,
 }: {
-  claude: CapacityResponse | null;
-  gpt: CodexSubsResponse | null;
-  gemini: GeminiSubsResponse | null;
+  claude: CapacityResponse | null | undefined;
+  gpt: CodexSubsResponse | null | undefined;
+  gemini: GeminiSubsResponse | null | undefined;
   kimi?: KimiSubsResponse | null;
   glm?: GlmSubsResponse | null;
   /** Момент снимка (мс); KIMI считает cooling/staleness от response.now, это fallback. */
@@ -350,8 +365,8 @@ export function FleetCapacityOverview({
     claudeCard(claude),
     gptCard(gpt),
     geminiCard(gemini),
-    kimiCard(kimi ?? null, nowMs),
-    glmCard(glm ?? null),
+    kimiCard(kimi, nowMs),
+    glmCard(glm),
   ];
   return (
     <section className="fleet-capacity-overview" aria-label="Доступная API-долларовая ёмкость пулов">
