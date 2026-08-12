@@ -492,6 +492,13 @@ just the ones named individually. This is an exemplary case of a
 closed "code ↔ documentation" relationship — new relationships should be set up on the
 same principle.
 
+`.github/workflows/production-uptime.yml` is an independent, credential-free consumer of the
+public engine/provider/router health routes, Commerce and Sales readiness, OpenKeys readiness and
+the Vercel status surface. It runs outside the production-host failure domain every five minutes;
+`.github/scripts/production-uptime.sh` owns exact response validation and reconciles one GitHub
+incident issue until recovery. The workflow has only `contents: read` and `issues: write`, and the
+controlled `simulate_failure` dispatch proves issue delivery without mutating production.
+
 ### Delivery
 
 `deploy/agent-merge.sh` — the only path into `master`; path-aware gate (classifiers in

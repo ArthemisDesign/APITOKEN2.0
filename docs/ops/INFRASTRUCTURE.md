@@ -309,12 +309,13 @@ origins. The Vercel frontend contains no Control API or payment-provider secrets
 
 ## Work still requiring external configuration
 
-- Add external health monitoring for both public routes and PostgreSQL authority readiness.
 - Configure SMTP on a separate mail host.
 - Add Google and GitHub OAuth application credentials.
 - Add Cryptomus credentials and test its deployed webhook.
 - Import `apps/web` into Vercel, attach `apitoken.sale`, and update the apex DNS using the exact
   records Vercel provides for the project.
-- Add external monitoring/alert delivery and an independent second backup location.
+- Add an independent second backup location. GitHub-hosted public/database-authority uptime and
+  durable incident delivery are active through `.github/workflows/production-uptime.yml`; a second
+  monitoring provider remains optional defense in depth against GitHub failure.
 - Before cross-host active/active, move PostgreSQL to synchronous multi-AZ service and add an external
   health-checked load balancer; never share the retained SQLite snapshot over NFS.

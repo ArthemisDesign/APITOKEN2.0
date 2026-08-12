@@ -78,14 +78,27 @@ Rows are collapsed by default to keep the initial view compact; every stat that 
 is thresholded green/yellow/red. The five PostgreSQL custom-format dumps remain
 the authoritative hourly recovery artifacts and are validated again before database migrations.
 
-## Failure-domain limitation
+## External uptime and failure domains
 
-All monitoring was explicitly requested on the production server. Consequently, a total host,
-power, network, or Docker failure also stops Alertmanager and cannot send outage notifications. The
-synthetic probes detect application, TLS, routing, and dependency failures while the host remains
-able to run. A truly independent host-down notification requires one minimal off-host dead-man or
-external uptime check; this stack does not pretend to provide that guarantee from inside the same
-failure domain.
+The Prometheus, Alertmanager and blackbox stack runs on the production server. Consequently, a
+total host, power, network or Docker failure also stops the internal alert path. The independent
+`.github/workflows/production-uptime.yml` workflow closes that gap from a GitHub-hosted runner every
+five minutes. Without production credentials it checks eight public contracts: the Anthropic,
+OpenAI and Gemini engine origins, the unified router, Commerce database+engine readiness, Sales
+database readiness, OpenKeys database+contract+engine readiness, and the Vercel status surface.
+
+A failure makes the workflow red and opens exactly one GitHub issue titled
+`[uptime] Production public readiness is failing`. Repeated failures keep that issue open without
+comment spam; the first healthy run posts recovery evidence and closes every matching incident.
+Workflow concurrency prevents overlapping runs from creating duplicate incidents. This is an
+off-host outage detector and durable incident-delivery path, but not a replacement for the internal
+metric-level alerts. It also inherits GitHub Actions availability and the repository's notification
+preferences.
+
+Use `workflow_dispatch` with `simulate_failure=true` for a delivery drill. It does not touch
+production; it opens the same synthetic incident after all real probes run. Dispatch a normal run
+afterward and require it to close the issue. The shell regression suite is
+`.github/scripts/production-uptime.test.sh`.
 
 ## Routine operations
 

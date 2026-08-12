@@ -1,0 +1,39 @@
+name: Production external uptime
+
+on:
+  schedule:
+    # GitHub-hosted runner: deliberately outside the production host failure domain.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      simulate_failure:
+        description: Open a synthetic incident to prove delivery; the next healthy run closes it
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: production-external-uptime
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Probe public production authority
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Probe and reconcile the incident
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPTIME_SIMULATE_FAILURE: ${{ inputs.simulate_failure }}
+        run: |
+          set -euo pipefail
+          script=$(mktemp)
+          trap 'rm -f -- "$script"' EXIT
+          gh api "/repos/${GITHUB_REPOSITORY}/contents/.github/scripts/production-uptime.sh?ref=${GITHUB_WORKFLOW_SHA}" \
+            --jq '.content' | base64 --decode >"$script"
+          bash "$script"
