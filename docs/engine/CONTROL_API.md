@@ -116,8 +116,14 @@ defense can protect against such in-process code. Authbot otherwise uses the sha
   the idempotent request. When an operator explicitly sends `true`, local subscription expiry is
   informational and does not restrict renewal while the exact-bound profile is still live. Before
   every paid extension authbot still repeats the durable exact-binding, authoritative-liveness and
-  provider-order checks.
-  It groups allocations by order and reports per-inventory `renewed|failed|uncertain`. After exact
+  provider-order checks. IPRoyal extends a complete order rather than individual allocations, so
+  every canonical IP in a multi-IP order must be selected together or the order fails before the
+  paid call. The provider wire is `POST /orders/{id}/extend` with only the live-catalogue
+  `product_plan_id`; selected allocations still receive individual results.
+  It groups allocations by order and reports per-inventory `renewed|failed|uncertain`. Safe
+  preflight failures and explicit provider 4xx responses are `failed`; transport loss, provider 5xx,
+  or unavailable/invalid post-payment expiry confirmation are `uncertain` and never automatically
+  replayed. After exact
   same-key replay handling, a different UUID overlapping a `pending` or `in_progress` inventory ID
   or exact order/allocation receives `409 renewal_selection_busy` before insertion, so it cannot
   remain queued for later spend; disjoint selections can proceed. Claiming also repairs legacy or

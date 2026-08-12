@@ -4,7 +4,7 @@ use crate::db::{
     RenewalRequestState, RenewalSelection, Store,
 };
 use crate::gemini_oauth;
-use crate::iproyal::{Iproyal, IspOrder};
+use crate::iproyal::{ExtendOrderFailureClass, Iproyal, IspOrder};
 use anyhow::{anyhow, bail, Result};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{DefaultBodyLimit, State};
@@ -1577,6 +1577,9 @@ fn result_from_event(inventory_id: String, exact: &ExactRenewalEvent) -> RenewRe
             (RenewItemStatus::Failed, Some("provider_order_not_found"))
         }
         RenewalEventOutcome::Rejected => (RenewItemStatus::Failed, Some("binding_mismatch")),
+        RenewalEventOutcome::ProviderRejected => {
+            (RenewItemStatus::Failed, Some("provider_renewal_rejected"))
+        }
         RenewalEventOutcome::LocalProfileInactive => {
             (RenewItemStatus::Failed, Some("local_profile_inactive"))
         }
@@ -1705,19 +1708,57 @@ async fn process_request(runtime: &Arc<Runtime>, request: RenewalRequest) {
             .map(|selection| selection.allocation_ip.to_string())
             .collect::<Vec<_>>();
         let expiry = match client.extend_order_ips(order_id, &ips).await {
-            Ok(expiry) => parse_expiry(&expiry).filter(|expiry| *expiry > 0),
-            Err(_) => None,
-        };
-        let Some(expiry) = expiry else {
-            let _ = record_events(
-                &runtime.store,
-                request.id,
-                &group,
-                RenewalEventOutcome::Indeterminate,
-                None,
-            );
-            let _ = runtime.store.indeterminate_renewal_request(request.id);
-            return;
+            Ok(expiry) => match parse_expiry(&expiry).filter(|expiry| *expiry > 0) {
+                Some(expiry) => expiry,
+                None => {
+                    elog::warn(
+                        "authbot",
+                        "[proxy-renewal] outcome=uncertain phase=expiry_projection",
+                    );
+                    let _ = record_events(
+                        &runtime.store,
+                        request.id,
+                        &group,
+                        RenewalEventOutcome::Indeterminate,
+                        None,
+                    );
+                    let _ = runtime.store.indeterminate_renewal_request(request.id);
+                    return;
+                }
+            },
+            Err(error) if error.class() == ExtendOrderFailureClass::Rejected => {
+                elog::warn(
+                    "authbot",
+                    format!("[proxy-renewal] outcome=rejected phase={}", error.phase()),
+                );
+                any_failed = true;
+                if !record_events(
+                    &runtime.store,
+                    request.id,
+                    &group,
+                    RenewalEventOutcome::ProviderRejected,
+                    None,
+                ) {
+                    let _ = runtime.store.indeterminate_renewal_request(request.id);
+                    return;
+                }
+                continue;
+            }
+            Err(error) => {
+                elog::warn(
+                    "authbot",
+                    format!("[proxy-renewal] outcome=uncertain phase={}", error.phase()),
+                );
+                let _ = record_events(
+                    &runtime.store,
+                    request.id,
+                    &group,
+                    RenewalEventOutcome::Indeterminate,
+                    None,
+                );
+                let _ = runtime.store.indeterminate_renewal_request(request.id);
+                return;
+            }
         };
         if !record_events(
             &runtime.store,
@@ -3304,6 +3345,26 @@ mod tests {
         assert_eq!(partial.results[1].status, RenewItemStatus::Failed);
     }
 
+    #[test]
+    fn explicit_provider_rejection_has_its_own_terminal_result_code() {
+        let exact = ExactRenewalEvent {
+            event: crate::db::RenewalEvent {
+                id: 1,
+                request_id: 1,
+                order_id: 42,
+                outcome: RenewalEventOutcome::ProviderRejected,
+                observed_at: 10,
+                new_expiry_at: None,
+            },
+            inventory_id: "inv-a".into(),
+            allocation_ip: "203.0.113.9".parse().unwrap(),
+        };
+        let result = result_from_event("inv-a".into(), &exact);
+
+        assert_eq!(result.status, RenewItemStatus::Failed);
+        assert_eq!(result.result_code, Some("provider_renewal_rejected"));
+    }
+
     #[tokio::test]
     async fn inactive_subscription_override_is_idempotent_and_renews_once() {
         let (client, extend_calls, server) = mock_iproyal().await;
@@ -3335,10 +3396,7 @@ mod tests {
         assert_eq!(request.state, RenewalRequestState::Completed);
         let events = runtime.store.get_exact_renewal_events(request.id).unwrap();
         assert_eq!(events.len(), 1);
-        assert_eq!(
-            events[0].event.outcome,
-            RenewalEventOutcome::Renewed
-        );
+        assert_eq!(events[0].event.outcome, RenewalEventOutcome::Renewed);
         assert_eq!(extend_calls.load(Ordering::SeqCst), 1);
 
         let replay = renew_handler(
@@ -3439,7 +3497,7 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_allocations_same_order_use_one_selective_call_and_exact_events() {
-        let (client, extend_calls, server) = mock_iproyal().await;
+        let (client, extend_calls, server) = mock_iproyal_multi_ip().await;
         let runtime = runtime(Some(client));
         let first = binding_ip(&runtime, "codex", "first-ip", 42, "203.0.113.9");
         let second = binding_ip(&runtime, "codex", "second-ip", 42, "203.0.113.10");
@@ -3494,6 +3552,17 @@ mod tests {
     }
 
     async fn mock_iproyal() -> (Arc<Iproyal>, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        mock_iproyal_with_order(false).await
+    }
+
+    async fn mock_iproyal_multi_ip() -> (Arc<Iproyal>, Arc<AtomicUsize>, tokio::task::JoinHandle<()>)
+    {
+        mock_iproyal_with_order(true).await
+    }
+
+    async fn mock_iproyal_with_order(
+        multi_ip: bool,
+    ) -> (Arc<Iproyal>, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3522,17 +3591,32 @@ mod tests {
                     .next()
                     .unwrap_or_default()
                     .to_string();
+                let before = if multi_ip {
+                    r#"{"id":42,"expire_date":"2099-08-10","status":"confirmed","proxy_data":{"proxies":[{"ip":"203.0.113.9"},{"ip":"203.0.113.10"}]},"auto_extend_settings":null}"#
+                } else {
+                    r#"{"id":42,"expire_date":"2099-08-10","status":"confirmed","proxy_data":{"proxies":[{"ip":"203.0.113.9"}]},"auto_extend_settings":null}"#
+                };
+                let after = if multi_ip {
+                    r#"{"id":42,"expire_date":"2099-09-10","status":"confirmed","proxy_data":{"proxies":[{"ip":"203.0.113.9"},{"ip":"203.0.113.10"}]},"auto_extend_settings":null}"#
+                } else {
+                    r#"{"id":42,"expire_date":"2099-09-10","status":"confirmed","proxy_data":{"proxies":[{"ip":"203.0.113.9"}]},"auto_extend_settings":null}"#
+                };
+                let inventory = if multi_ip {
+                    r#"{"data":[{"id":42,"expire_date":"2099-08-10","status":"confirmed","proxy_data":{"proxies":[{"ip":"203.0.113.9"},{"ip":"203.0.113.10"}]},"auto_extend_settings":null}],"meta":{"last_page":1}}"#
+                } else {
+                    r#"{"data":[{"id":42,"expire_date":"2099-08-10","status":"confirmed","proxy_data":{"proxies":[{"ip":"203.0.113.9"}]},"auto_extend_settings":null}],"meta":{"last_page":1}}"#
+                };
                 let body = if line.starts_with("GET /products ") {
                     r#"{"data":[{"id":7,"name":"ISP","plans":[{"id":9,"name":"30 Days"}],"locations":[]}]}"#
                 } else if line.starts_with("GET /orders?product_id=7") {
-                    r#"{"data":[{"id":42,"expire_date":"2099-08-10","status":"confirmed","proxy_data":{"proxies":[{"ip":"203.0.113.9"},{"ip":"203.0.113.10"}]},"auto_extend_settings":null}],"meta":{"last_page":1}}"#
+                    inventory
                 } else if line.starts_with("POST /orders/toggle-auto-extend ") {
                     r#"{}"#
                 } else if line.starts_with("GET /orders/42 ") {
                     if task_calls.load(Ordering::SeqCst) == 0 {
-                        r#"{"id":42,"expire_date":"2099-08-10","status":"confirmed","proxy_data":{"proxies":[{"ip":"203.0.113.9"},{"ip":"203.0.113.10"}]},"auto_extend_settings":null}"#
+                        before
                     } else {
-                        r#"{"id":42,"expire_date":"2099-09-10","status":"confirmed","proxy_data":{"proxies":[{"ip":"203.0.113.9"},{"ip":"203.0.113.10"}]},"auto_extend_settings":null}"#
+                        after
                     }
                 } else if line.starts_with("POST /orders/42/extend ") {
                     task_calls.fetch_add(1, Ordering::SeqCst);

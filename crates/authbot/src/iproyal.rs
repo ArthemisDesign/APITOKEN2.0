@@ -175,10 +175,61 @@ struct ToggleAutoExtend {
 }
 
 #[derive(Serialize)]
-struct ExtendOrder<'a> {
+struct ExtendOrder {
     product_plan_id: i64,
-    proxies: &'a [String],
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtendOrderFailureClass {
+    Rejected,
+    Uncertain,
+}
+
+#[derive(Debug)]
+pub struct ExtendOrderFailure {
+    class: ExtendOrderFailureClass,
+    phase: &'static str,
+}
+
+impl ExtendOrderFailure {
+    fn rejected(phase: &'static str) -> Self {
+        Self {
+            class: ExtendOrderFailureClass::Rejected,
+            phase,
+        }
+    }
+
+    fn uncertain(phase: &'static str) -> Self {
+        Self {
+            class: ExtendOrderFailureClass::Uncertain,
+            phase,
+        }
+    }
+
+    pub fn class(&self) -> ExtendOrderFailureClass {
+        self.class
+    }
+
+    pub fn phase(&self) -> &'static str {
+        self.phase
+    }
+}
+
+impl std::fmt::Display for ExtendOrderFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "IPRoyal extend {} during {}",
+            match self.class {
+                ExtendOrderFailureClass::Rejected => "rejected",
+                ExtendOrderFailureClass::Uncertain => "uncertain",
+            },
+            self.phase
+        )
+    }
+}
+
+impl std::error::Error for ExtendOrderFailure {}
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct IssuedProxy {
@@ -424,54 +475,108 @@ impl Iproyal {
         Ok(())
     }
 
-    /// Совместимый API текущего lifecycle caller: выбирает все IP из exact order, а selective API
-    /// повторно подтверждает тот же список непосредственно перед платным POST.
-    pub async fn extend_order(&self, order_id: i64) -> Result<String> {
+    /// Совместимый API текущего lifecycle caller: выбирает все IP из exact order, а основной API
+    /// повторно подтверждает полный набор непосредственно перед платным POST.
+    pub async fn extend_order(
+        &self,
+        order_id: i64,
+    ) -> std::result::Result<String, ExtendOrderFailure> {
         if order_id <= 0 {
-            return Err(anyhow!("invalid IPRoyal order id"));
+            return Err(ExtendOrderFailure::rejected("input_validation"));
         }
-        let order = self.exact_order(order_id).await?;
-        let ips = canonical_order_ips(&order)?;
+        let order = self
+            .exact_order(order_id)
+            .await
+            .map_err(|_| ExtendOrderFailure::rejected("order_preflight"))?;
+        let ips = canonical_order_ips(&order)
+            .map_err(|_| ExtendOrderFailure::rejected("order_preflight"))?;
         self.extend_order_ips(order_id, &ips).await
     }
 
-    /// Ручное selective-продление указанного непустого списка IP с reseller balance.
-    pub async fn extend_order_ips(&self, order_id: i64, ips: &[String]) -> Result<String> {
+    /// Ручное продление заказа с подтверждением, что оператор выбрал весь его canonical IP-набор.
+    /// IPRoyal продлевает заказ целиком; платный wire принимает только `product_plan_id`.
+    pub async fn extend_order_ips(
+        &self,
+        order_id: i64,
+        ips: &[String],
+    ) -> std::result::Result<String, ExtendOrderFailure> {
         if order_id <= 0 {
-            return Err(anyhow!("invalid IPRoyal order id"));
+            return Err(ExtendOrderFailure::rejected("input_validation"));
         }
         if ips.is_empty() {
-            return Err(anyhow!("empty IPRoyal proxy IP selection"));
+            return Err(ExtendOrderFailure::rejected("input_validation"));
         }
-        let selected = canonicalize_unique_selection(ips)?;
-        let preflight = self.exact_order(order_id).await?;
-        validate_order_renewable(&preflight)?;
-        prove_exact_selection(&preflight, &selected)?;
-        let product = self.isp_product().await?;
-        let plan_id = thirty_day_plan_id_typed(&product)?;
-        let before = self.disable_auto_extend_and_refetch(order_id).await?;
-        validate_order_renewable(&before)?;
-        prove_exact_selection(&before, &selected)?;
-        let before_expiry = parse_expiry(&before.expire_date)?;
-        let _: Value = self
-            .post(
-                &format!("/orders/{order_id}/extend"),
-                &ExtendOrder {
-                    product_plan_id: plan_id,
-                    proxies: &selected,
-                },
-            )
-            .await?;
-        let after = self.exact_order(order_id).await?;
-        validate_order_renewable(&after)?;
+        let selected = canonicalize_unique_selection(ips)
+            .map_err(|_| ExtendOrderFailure::rejected("input_validation"))?;
+        let preflight = self
+            .exact_order(order_id)
+            .await
+            .map_err(|_| ExtendOrderFailure::rejected("order_preflight"))?;
+        validate_order_renewable(&preflight)
+            .map_err(|_| ExtendOrderFailure::rejected("order_preflight"))?;
+        prove_full_order_selection(&preflight, &selected)
+            .map_err(|_| ExtendOrderFailure::rejected("order_preflight"))?;
+        let product = self
+            .isp_product()
+            .await
+            .map_err(|_| ExtendOrderFailure::rejected("catalog_preflight"))?;
+        let plan_id = thirty_day_plan_id_typed(&product)
+            .map_err(|_| ExtendOrderFailure::rejected("catalog_preflight"))?;
+        let before = self
+            .disable_auto_extend_and_refetch(order_id)
+            .await
+            .map_err(|_| ExtendOrderFailure::rejected("auto_extend_preflight"))?;
+        validate_order_renewable(&before)
+            .map_err(|_| ExtendOrderFailure::rejected("order_recheck"))?;
+        prove_full_order_selection(&before, &selected)
+            .map_err(|_| ExtendOrderFailure::rejected("order_recheck"))?;
+        let before_expiry = parse_expiry(&before.expire_date)
+            .map_err(|_| ExtendOrderFailure::rejected("order_recheck"))?;
+        self.send_paid_extend(order_id, plan_id).await?;
+        let after = self
+            .exact_order(order_id)
+            .await
+            .map_err(|_| ExtendOrderFailure::uncertain("post_payment_confirmation"))?;
+        validate_order_renewable(&after)
+            .map_err(|_| ExtendOrderFailure::uncertain("post_payment_confirmation"))?;
         if !after.auto_extend_settings.present || after.auto_extend_settings.enabled {
-            return Err(anyhow!("IPRoyal post-extend order state is invalid"));
+            return Err(ExtendOrderFailure::uncertain("post_payment_confirmation"));
         }
-        let after_expiry = parse_expiry(&after.expire_date)?;
+        let after_expiry = parse_expiry(&after.expire_date)
+            .map_err(|_| ExtendOrderFailure::uncertain("post_payment_confirmation"))?;
         if after_expiry <= before_expiry {
-            return Err(anyhow!("IPRoyal extend expiry did not advance"));
+            return Err(ExtendOrderFailure::uncertain("post_payment_confirmation"));
         }
         Ok(after.expire_date)
+    }
+
+    async fn send_paid_extend(
+        &self,
+        order_id: i64,
+        plan_id: i64,
+    ) -> std::result::Result<(), ExtendOrderFailure> {
+        let url = self
+            .url(&format!("/orders/{order_id}/extend"))
+            .map_err(|_| ExtendOrderFailure::rejected("paid_request_setup"))?;
+        let response = self
+            .http
+            .post(url)
+            .header("X-Access-Token", self.key.as_str())
+            .header("accept", "application/json")
+            .json(&ExtendOrder {
+                product_plan_id: plan_id,
+            })
+            .send()
+            .await
+            .map_err(|_| ExtendOrderFailure::uncertain("paid_transport"))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        if status.is_client_error() {
+            return Err(ExtendOrderFailure::rejected("paid_response"));
+        }
+        Err(ExtendOrderFailure::uncertain("paid_response"))
     }
 
     /// Выпуск ОДНОГО UK ISP прокси на 30 дней. Город — случайный из доступных.
@@ -657,7 +762,7 @@ fn canonicalize_unique_selection(ips: &[String]) -> Result<Vec<String>> {
     Ok(selected)
 }
 
-fn prove_exact_selection(order: &Order, selected: &[String]) -> Result<()> {
+fn prove_full_order_selection(order: &Order, selected: &[String]) -> Result<()> {
     let order_ips = canonical_order_ips(order)?;
     for ip in selected {
         if order_ips
@@ -670,6 +775,15 @@ fn prove_exact_selection(order: &Order, selected: &[String]) -> Result<()> {
                 "IPRoyal exact order does not contain selected IP exactly once"
             ));
         }
+    }
+    if order_ips.len() != selected.len()
+        || order_ips
+            .iter()
+            .any(|order_ip| !selected.contains(order_ip))
+    {
+        return Err(anyhow!(
+            "IPRoyal renewal selection does not cover the exact order"
+        ));
     }
     Ok(())
 }
@@ -1170,7 +1284,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn selective_extend_canonicalizes_and_posts_exact_selected_body() {
+    async fn full_order_extend_canonicalizes_selection_and_posts_plan_only() {
         let exact = r#"{"id":42,"expire_date":"2026-08-10","status":"confirmed","proxy_data":{"proxies":[{"ip":"2001:db8::1"},{"ip":"203.0.113.9"}]},"auto_extend_settings":null}"#;
         let (base, requests, task) = mock_server(vec![
             (200, exact),
@@ -1189,7 +1303,7 @@ mod tests {
         .await;
         let client = Iproyal::with_base_url("key", &base).unwrap();
         let expiry = client
-            .extend_order_ips(42, &["2001:0db8:0:0:0:0:0:1".into()])
+            .extend_order_ips(42, &["2001:0db8:0:0:0:0:0:1".into(), "203.0.113.9".into()])
             .await
             .unwrap();
         task.await.unwrap();
@@ -1205,8 +1319,7 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(body).unwrap(),
             serde_json::json!({
-                "product_plan_id": 321,
-                "proxies": ["2001:db8::1"]
+                "product_plan_id": 321
             })
         );
         assert!(requests[5].starts_with("GET /orders/42 HTTP/1.1"));
@@ -1216,22 +1329,15 @@ mod tests {
     async fn selective_extend_rejects_empty_and_canonical_duplicates_without_post() {
         let (base, requests, task) = mock_server(vec![]).await;
         let client = Iproyal::with_base_url("key", &base).unwrap();
-        assert_eq!(
-            client
-                .extend_order_ips(42, &[])
-                .await
-                .unwrap_err()
-                .to_string(),
-            "empty IPRoyal proxy IP selection"
-        );
-        assert_eq!(
-            client
-                .extend_order_ips(42, &["2001:db8::1".into(), "2001:0db8:0:0:0:0:0:1".into()])
-                .await
-                .unwrap_err()
-                .to_string(),
-            "duplicate IPRoyal proxy IP selection"
-        );
+        let empty = client.extend_order_ips(42, &[]).await.unwrap_err();
+        assert_eq!(empty.class(), ExtendOrderFailureClass::Rejected);
+        assert_eq!(empty.phase(), "input_validation");
+        let duplicate = client
+            .extend_order_ips(42, &["2001:db8::1".into(), "2001:0db8:0:0:0:0:0:1".into()])
+            .await
+            .unwrap_err();
+        assert_eq!(duplicate.class(), ExtendOrderFailureClass::Rejected);
+        assert_eq!(duplicate.phase(), "input_validation");
         task.await.unwrap();
         assert!(requests.lock().unwrap().is_empty());
     }
@@ -1244,20 +1350,77 @@ mod tests {
         ] {
             let (base, requests, task) = mock_server(vec![(200, exact)]).await;
             let client = Iproyal::with_base_url("key", &base).unwrap();
-            assert_eq!(
-                client
-                    .extend_order_ips(42, &["203.0.113.9".into()])
-                    .await
-                    .unwrap_err()
-                    .to_string(),
-                "IPRoyal exact order does not contain selected IP exactly once"
-            );
+            let error = client
+                .extend_order_ips(42, &["203.0.113.9".into()])
+                .await
+                .unwrap_err();
+            assert_eq!(error.class(), ExtendOrderFailureClass::Rejected);
+            assert_eq!(error.phase(), "order_preflight");
             task.await.unwrap();
             let requests = requests.lock().unwrap();
             assert_eq!(requests.len(), 1);
             assert!(requests[0].starts_with("GET /orders/42 HTTP/1.1"));
             assert!(!requests[0].starts_with("POST "));
         }
+    }
+
+    #[tokio::test]
+    async fn partial_multi_ip_selection_is_rejected_before_paid_post() {
+        let exact = r#"{"id":42,"expire_date":"2026-08-10","status":"confirmed","proxy_data":{"proxies":[{"ip":"203.0.113.9"},{"ip":"203.0.113.10"}]},"auto_extend_settings":null}"#;
+        let (base, requests, task) = mock_server(vec![(200, exact)]).await;
+        let client = Iproyal::with_base_url("key", &base).unwrap();
+        let error = client
+            .extend_order_ips(42, &["203.0.113.9".into()])
+            .await
+            .unwrap_err();
+        task.await.unwrap();
+
+        assert_eq!(error.class(), ExtendOrderFailureClass::Rejected);
+        assert_eq!(error.phase(), "order_preflight");
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests.iter().all(|request| !request.starts_with("POST ")));
+    }
+
+    #[tokio::test]
+    async fn paid_client_error_is_rejected_but_server_error_is_uncertain() {
+        for (status, class) in [
+            (422, ExtendOrderFailureClass::Rejected),
+            (503, ExtendOrderFailureClass::Uncertain),
+        ] {
+            let (base, requests, task) =
+                mock_server(vec![(status, r#"{"secret":"hidden"}"#)]).await;
+            let client = Iproyal::with_base_url("key", &base).unwrap();
+            let error = client.send_paid_extend(42, 321).await.unwrap_err();
+            task.await.unwrap();
+
+            assert_eq!(error.class(), class);
+            assert_eq!(error.phase(), "paid_response");
+            assert!(!error.to_string().contains("hidden"));
+            let requests = requests.lock().unwrap();
+            let body = requests[0].split("\r\n\r\n").nth(1).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(body).unwrap(),
+                serde_json::json!({"product_plan_id": 321})
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn paid_transport_loss_is_uncertain() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = vec![0; 16 * 1024];
+            let _ = stream.read(&mut bytes).await.unwrap();
+        });
+        let client = Iproyal::with_base_url("key", &format!("http://{address}")).unwrap();
+        let error = client.send_paid_extend(42, 321).await.unwrap_err();
+        task.await.unwrap();
+
+        assert_eq!(error.class(), ExtendOrderFailureClass::Uncertain);
+        assert_eq!(error.phase(), "paid_transport");
     }
 
     #[tokio::test]
