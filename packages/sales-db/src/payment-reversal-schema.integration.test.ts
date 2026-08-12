@@ -167,7 +167,10 @@ describe.runIf(Boolean(connectionString))("payment reversal accounting schema", 
     let reversalId: string;
     try {
       await reversalClient.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
-      await reversalClient.query("SET CONSTRAINTS partner_reversal_adjustment_set_guard DEFERRED");
+      await reversalClient.query(`
+        SET CONSTRAINTS partner_reversal_adjustment_set_guard,
+          partner_reversal_insert_complete_guard DEFERRED
+      `);
       const reversal = await reversalClient.query<{ id: string }>(`
         INSERT INTO partner_payment_reversals(
           commerce_reversal_id, funding_lot_id, commerce_payment_id,
@@ -311,7 +314,10 @@ describe.runIf(Boolean(connectionString))("payment reversal accounting schema", 
     const incompleteClient = await db.pool.connect();
     try {
       await incompleteClient.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
-      await incompleteClient.query("SET CONSTRAINTS partner_reversal_adjustment_set_guard DEFERRED");
+      await incompleteClient.query(`
+        SET CONSTRAINTS partner_reversal_adjustment_set_guard,
+          partner_reversal_insert_complete_guard DEFERRED
+      `);
       const reversal = await incompleteClient.query<{ id: string }>(`
         INSERT INTO partner_payment_reversals(
           commerce_reversal_id, funding_lot_id, commerce_payment_id,
@@ -359,12 +365,151 @@ describe.runIf(Boolean(connectionString))("payment reversal accounting schema", 
       incompleteClient.release();
     }
 
+    const mismatch = await db.pool.connect();
+    try {
+      await mismatch.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      await expect(mismatch.query(`
+        INSERT INTO partner_payment_reversals(
+          commerce_reversal_id, funding_lot_id, commerce_payment_id,
+          commerce_user_id, kind, original_amount_nano, reversed_at
+        ) VALUES(7003, $1, 'a-payment-old', $2, 'refund', 701,
+          '2026-08-04T00:00:00.000Z')
+      `, [firstLotId.toString(), referral.userId])).rejects.toMatchObject({ code: "23514" });
+    } finally {
+      await mismatch.query("ROLLBACK").catch(() => undefined);
+      mismatch.release();
+    }
+
     await expect(db.pool.query(`
       INSERT INTO partner_payment_reversals(
         commerce_reversal_id, funding_lot_id, commerce_payment_id,
         commerce_user_id, kind, original_amount_nano, reversed_at
-      ) VALUES(7003, $1, 'a-payment-old', $2, 'refund', 701,
+      ) VALUES(7004, $1, 'a-payment-old', $2, 'refund', 700,
         '2026-08-04T00:00:00.000Z')
-    `, [firstLotId.toString(), referral.userId])).rejects.toMatchObject({ code: "23514" });
+    `, [firstLotId.toString(), referral.userId])).rejects.toMatchObject({ code: "25001" });
+  });
+
+  it("checks a zero-adjustment reversal and fences allocations created behind it", async () => {
+    const referral = await seedReferral();
+    const incompleteLotId = await insertLot({
+      ...referral,
+      commerceTopupId: 30n,
+      paymentId: "payment-incomplete-usage",
+      amountNano: 500n,
+      paidAt: "2026-08-02T00:00:00.000Z",
+    });
+    await insertUsageAndCommission({
+      ...referral,
+      commerceEventId: 70n,
+      amountNano: 500n,
+      occurredAt: "2026-08-03T00:00:00.000Z",
+    });
+
+    // No adjustment INSERT means the old adjustment-row trigger never fired. The new reversal-row
+    // trigger still rejects commit because locally known prior usage is not allocated.
+    const incomplete = await db.pool.connect();
+    try {
+      await incomplete.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      await incomplete.query("SET CONSTRAINTS partner_reversal_insert_complete_guard DEFERRED");
+      await incomplete.query(`
+        INSERT INTO partner_payment_reversals(
+          commerce_reversal_id, funding_lot_id, commerce_payment_id,
+          commerce_user_id, kind, original_amount_nano, reversed_at
+        ) VALUES(7100, $1, 'payment-incomplete-usage', $2, 'refund', 500,
+          '2026-08-04T00:00:00.000Z')
+      `, [incompleteLotId.toString(), referral.userId]);
+      await expect(incomplete.query("COMMIT")).rejects.toMatchObject({ code: "23514" });
+    } finally {
+      await incomplete.query("ROLLBACK").catch(() => undefined);
+      incomplete.release();
+    }
+
+    const cleanReferral = await seedReferral();
+    const cleanLotId = await insertLot({
+      ...cleanReferral,
+      commerceTopupId: 31n,
+      paymentId: "payment-zero-commission",
+      amountNano: 400n,
+      paidAt: "2026-08-02T01:00:00.000Z",
+    });
+    const reversal = await db.pool.connect();
+    let reversalId: string;
+    try {
+      await reversal.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      await reversal.query("SET CONSTRAINTS partner_reversal_insert_complete_guard DEFERRED");
+      const inserted = await reversal.query<{ id: string }>(`
+        INSERT INTO partner_payment_reversals(
+          commerce_reversal_id, funding_lot_id, commerce_payment_id,
+          commerce_user_id, kind, original_amount_nano, reversed_at
+        ) VALUES(7101, $1, 'payment-zero-commission', $2, 'dispute', 400,
+          '2026-08-04T00:00:00.000Z')
+        RETURNING id::text
+      `, [cleanLotId.toString(), cleanReferral.userId]);
+      reversalId = inserted.rows[0]!.id;
+      await reversal.query("COMMIT");
+    } finally {
+      await reversal.query("ROLLBACK").catch(() => undefined);
+      reversal.release();
+    }
+
+    const late = await insertUsageAndCommission({
+      ...cleanReferral,
+      commerceEventId: 71n,
+      amountNano: 400n,
+      occurredAt: "2026-08-03T01:00:00.000Z",
+    });
+    await expect(db.pool.query(`
+      INSERT INTO partner_usage_funding_allocations(
+        funding_lot_id, usage_event_id, allocated_paid_nano
+      ) VALUES($1, $2, 400)
+    `, [cleanLotId.toString(), late.usageId.toString()]))
+      .rejects.toMatchObject({ code: "23514" });
+
+    // A controlled late backfill remains possible, but only in one SERIALIZABLE transaction that
+    // defers both completeness guards and appends the exact negative slice before commit.
+    const repair = await db.pool.connect();
+    try {
+      await repair.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      await repair.query(`
+        SET CONSTRAINTS partner_reversed_usage_complete_guard,
+          partner_reversed_commission_complete_guard,
+          partner_reversal_adjustment_set_guard DEFERRED
+      `);
+      const usageAllocation = await repair.query<{ id: string }>(`
+        INSERT INTO partner_usage_funding_allocations(
+          funding_lot_id, usage_event_id, allocated_paid_nano
+        ) VALUES($1, $2, 400)
+        RETURNING id::text
+      `, [cleanLotId.toString(), late.usageId.toString()]);
+      const commissionAllocation = await repair.query<{ id: string }>(`
+        INSERT INTO partner_commission_funding_allocations(
+          usage_funding_allocation_id, commission_entry_id, allocated_commission_nano
+        ) VALUES($1, $2, 92)
+        RETURNING id::text
+      `, [usageAllocation.rows[0]!.id, late.commissionId.toString()]);
+      await repair.query(`
+        INSERT INTO partner_commission_adjustments(
+          reversal_id, commission_funding_allocation_id, partner_id,
+          amount_nano, effective_at
+        ) VALUES($1, $2, $3, -92, '2026-08-04T00:00:00.000Z')
+      `, [reversalId, commissionAllocation.rows[0]!.id, cleanReferral.partnerId]);
+      await repair.query("COMMIT");
+    } finally {
+      await repair.query("ROLLBACK").catch(() => undefined);
+      repair.release();
+    }
+
+    const evidence = await db.pool.query<{ allocations: string; adjustments: string }>(`
+      SELECT
+        (SELECT count(*)::text
+         FROM partner_commission_funding_allocations commission_allocation
+         JOIN partner_usage_funding_allocations usage_allocation
+           ON usage_allocation.id = commission_allocation.usage_funding_allocation_id
+         WHERE usage_allocation.funding_lot_id = $1) AS allocations,
+        (SELECT COALESCE(sum(amount_nano), 0)::text
+         FROM partner_commission_adjustments
+         WHERE reversal_id = $2) AS adjustments
+    `, [cleanLotId.toString(), reversalId]);
+    expect(evidence.rows[0]).toEqual({ allocations: "1", adjustments: "-92" });
   });
 });

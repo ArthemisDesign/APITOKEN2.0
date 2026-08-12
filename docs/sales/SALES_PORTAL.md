@@ -231,6 +231,15 @@ adjustment-set check and immutable evidence. This checkpoint intentionally
 does not consume the feed, backfill lots, change an earning or unblock/block a payout; the dependent
 consumer and signed readers are delivered only after this migration SHA is green in production.
 
+Migration `packages/sales-db/migrations/0018_reversal_completeness_fence.sql` is the final dormant
+schema fence before that consumer. All writes touching one paid-funding lot serialize on its row;
+reversal creation is `SERIALIZABLE` and fires a deferred completeness check even when it produces
+zero adjustment rows. Deferred checks also reject a usage or commission slice added behind an
+already committed reversal unless the same serializable transaction records every exact negative
+slice. Locally known usage through `reversedAt` must be completely allocated first. The future
+consumer additionally gates reversals on Commerce usage and funding-lot cursor catch-up: the Sales
+database cannot prove absence of a source row that has not arrived over HTTP.
+
 ### Sales → Commerce: promo and registration (`apps/sales-api/src/internal.controller.ts`)
 
 Commerce calls sales-api at `SALES_API_URL` with the same `SALES_CONTROL_KEY`.

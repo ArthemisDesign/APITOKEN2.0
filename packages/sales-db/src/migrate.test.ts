@@ -197,4 +197,34 @@ describe("sales multi-discount migration", () => {
     ].map((match) => match[1]).filter((name): name is string => name !== undefined);
     expect(databaseObjectNames.filter((name) => Buffer.byteLength(name, "utf8") > 63)).toEqual([]);
   });
+
+  it("fences zero-adjustment reversals and late allocations before the consumer", () => {
+    const migration = readFileSync(
+      join(MIGRATIONS_FOLDER, "0018_reversal_completeness_fence.sql"),
+      "utf8",
+    );
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; tag: string; when: number }> };
+    const previous = journal.entries.find((entry) => entry.idx === 17);
+    const current = journal.entries.find((entry) => entry.idx === 18);
+
+    expect(current).toMatchObject({ idx: 18, tag: "0018_reversal_completeness_fence" });
+    expect(current!.when).toBeGreaterThan(previous!.when);
+    expect(migration).not.toMatch(/^(?:UPDATE|DELETE|TRUNCATE|ALTER TABLE|DROP)\b/im);
+    expect(migration).toContain("partner_reversal_insert_complete_guard");
+    expect(migration).toContain("partner_reversed_usage_complete_guard");
+    expect(migration).toContain("partner_reversed_commission_complete_guard");
+    expect(migration).toContain("payment reversal requires complete prior usage funding allocation");
+    expect(migration).toContain("payment reversal requires every exact commission adjustment");
+    expect(migration).toContain("payment reversal accounting requires SERIALIZABLE isolation");
+    expect(migration).toContain('FOR UPDATE;');
+
+    const databaseObjectNames = [
+      ...migration.matchAll(/^CREATE FUNCTION "([^"]+)"/gm),
+      ...migration.matchAll(/^CREATE TRIGGER "([^"]+)"/gm),
+      ...migration.matchAll(/^CREATE CONSTRAINT TRIGGER "([^"]+)"/gm),
+    ].map((match) => match[1]).filter((name): name is string => name !== undefined);
+    expect(databaseObjectNames.filter((name) => Buffer.byteLength(name, "utf8") > 63)).toEqual([]);
+  });
 });

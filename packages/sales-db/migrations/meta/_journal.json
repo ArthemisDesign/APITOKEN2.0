@@ -127,6 +127,13 @@
       "when": 1786492800000,
       "tag": "0017_payment_reversal_accounting",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1786507200000,
+      "tag": "0018_reversal_completeness_fence",
+      "breakpoints": true
     }
   ]
 }

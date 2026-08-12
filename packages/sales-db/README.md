@@ -56,6 +56,15 @@ integer rounding, SERIALIZABLE reversal writes, a deferred complete-adjustment-s
 immutability. This commit creates no consumer, backfill, adjustment or payout
 side effect; those ship only after the production migration is green.
 
+Migration `0018_reversal_completeness_fence.sql` closes the zero-adjustment and late-allocation
+holes before the consumer ships. Reversal creation, usage allocation, commission allocation and
+adjustment insertion serialize on the immutable funding-lot row. A reversal transaction is always
+`SERIALIZABLE` and has its own deferred completeness trigger, so zero inserted adjustments cannot
+bypass validation. Deferred guards on later allocations require the same transaction to append all
+exact negative slices when the lot is already reversed; otherwise the write fails closed. The
+consumer also proves both Commerce source cursors caught up before reversal processing, because a
+Sales-database constraint cannot see a Commerce row that has not crossed the HTTP boundary yet.
+
 ## Commands
 
 ```bash
