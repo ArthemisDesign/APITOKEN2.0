@@ -43,6 +43,19 @@ Migration `0016_topups_v2_cursor.sql` widened the existing `sync_cursors` key ch
 `topups_v2` before the consumer shipped. The live consumer owns this independent sequence cursor;
 the legacy `topups` timestamp cursor remains stored and is never rewritten by v2 replay.
 
+Migration `0017_payment_reversal_accounting.sql` is the migration-first checkpoint for exact
+partner chargeback accounting. It reserves and seeds independent `topup_funding_lots` and
+`payment_reversals` cursors. The former replays the commit-ordered `topups-v2` source from zero
+without resetting the live analytics cursor. The schema
+snapshots referred topups as immutable paid-funding lots, and provides append-only allocation
+tables from each scalar/v2 usage row to those FIFO lots and from each commission entry to its exact
+lot-funded slice. A reversal is unique by Commerce reversal, payment and lot; its adjustment ledger
+accepts only the exact negative commission slice funded by that payment. Database guards enforce
+source identity, causal paid-at/reversed-at order, per-user FIFO, lot/usage bounds, deterministic
+integer rounding, SERIALIZABLE reversal writes, a deferred complete-adjustment-set check and
+immutability. This commit creates no consumer, backfill, adjustment or payout
+side effect; those ship only after the production migration is green.
+
 ## Commands
 
 ```bash

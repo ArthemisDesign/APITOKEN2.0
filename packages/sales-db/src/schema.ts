@@ -226,7 +226,7 @@ export const syncCursors = pgTable("sync_cursors", {
   lastId: bigint("last_id", { mode: "bigint" }).notNull().default(sql`0`),
   updatedAt,
 }, (table) => [
-  check("sync_cursors_feed_v2_check", sql`${table.feed} IN ('attributions', 'usage_events', 'topups', 'topups_v2')`),
+  check("sync_cursors_feed_v3_check", sql`${table.feed} IN ('attributions', 'usage_events', 'topups', 'topups_v2', 'topup_funding_lots', 'payment_reversals')`),
 ]);
 
 export const partnerUsageEvents = pgTable("partner_usage_events", {
@@ -432,6 +432,127 @@ export const commissionEntriesV2 = pgTable("commission_entries_v2", {
     AND ${table.amountNano} > 0
     AND ${table.amountNano} <= ${table.basePaidFundedNano}
   `),
+]);
+
+// Dormant reversal-accounting authority from migration 0017. These declarations expose only the
+// expanded schema; allocation/backfill, the payment-reversals consumer and signed readers ship in
+// a later checkpoint after this migration is green in production.
+export const partnerPaidFundingLots = pgTable("partner_paid_funding_lots", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  referredTopupId: bigint("referred_topup_id", { mode: "bigint" }).notNull()
+    .references(() => referredTopups.id, { onDelete: "restrict" }),
+  commerceTopupId: bigint("commerce_topup_id", { mode: "bigint" }).notNull(),
+  commercePaymentId: text("commerce_payment_id").notNull(),
+  commerceUserId: uuid("commerce_user_id").notNull(),
+  partnerId: uuid("partner_id").notNull().references(() => partners.id, { onDelete: "restrict" }),
+  originalAmountNano: bigint("original_amount_nano", { mode: "bigint" }).notNull(),
+  paidAt: timestamp("paid_at", { withTimezone: true }).notNull(),
+  importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  unique("partner_paid_funding_lots_referred_topup_id_key").on(table.referredTopupId),
+  unique("partner_paid_funding_lots_commerce_topup_id_key").on(table.commerceTopupId),
+  unique("partner_paid_funding_lots_commerce_payment_id_key").on(table.commercePaymentId),
+  index("partner_paid_funding_lots_user_fifo_idx")
+    .on(table.commerceUserId, table.commerceTopupId),
+  check("partner_paid_funding_lots_shape_check", sql`
+    ${table.commerceTopupId} > 0
+    AND ${table.commercePaymentId} <> ''
+    AND ${table.originalAmountNano} > 0
+  `),
+]);
+
+export const partnerUsageFundingAllocations = pgTable("partner_usage_funding_allocations", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  fundingLotId: bigint("funding_lot_id", { mode: "bigint" }).notNull()
+    .references(() => partnerPaidFundingLots.id, { onDelete: "restrict" }),
+  usageEventId: bigint("usage_event_id", { mode: "bigint" })
+    .references(() => partnerUsageEvents.id, { onDelete: "restrict" }),
+  usageEventV2Id: bigint("usage_event_v2_id", { mode: "bigint" })
+    .references(() => partnerUsageEventsV2.id, { onDelete: "restrict" }),
+  allocatedPaidNano: bigint("allocated_paid_nano", { mode: "bigint" }).notNull(),
+  createdAt,
+}, (table) => [
+  uniqueIndex("partner_usage_funding_alloc_v1_uidx")
+    .on(table.fundingLotId, table.usageEventId)
+    .where(sql`${table.usageEventId} IS NOT NULL`),
+  uniqueIndex("partner_usage_funding_alloc_v2_uidx")
+    .on(table.fundingLotId, table.usageEventV2Id)
+    .where(sql`${table.usageEventV2Id} IS NOT NULL`),
+  index("partner_usage_funding_alloc_lot_idx").on(table.fundingLotId),
+  check("partner_usage_funding_alloc_one_source_check", sql`
+    ((${table.usageEventId} IS NOT NULL)::int
+      + (${table.usageEventV2Id} IS NOT NULL)::int) = 1
+  `),
+  check("partner_usage_funding_alloc_amount_check", sql`${table.allocatedPaidNano} > 0`),
+]);
+
+export const partnerCommissionFundingAllocations = pgTable("partner_commission_funding_allocations", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  usageFundingAllocationId: bigint("usage_funding_allocation_id", { mode: "bigint" }).notNull()
+    .references(() => partnerUsageFundingAllocations.id, { onDelete: "restrict" }),
+  commissionEntryId: bigint("commission_entry_id", { mode: "bigint" })
+    .references(() => commissionEntries.id, { onDelete: "restrict" }),
+  commissionEntryV2Id: bigint("commission_entry_v2_id", { mode: "bigint" })
+    .references(() => commissionEntriesV2.id, { onDelete: "restrict" }),
+  allocatedCommissionNano: bigint("allocated_commission_nano", { mode: "bigint" }).notNull(),
+  createdAt,
+}, (table) => [
+  uniqueIndex("partner_commission_funding_v1_uidx")
+    .on(table.usageFundingAllocationId, table.commissionEntryId)
+    .where(sql`${table.commissionEntryId} IS NOT NULL`),
+  uniqueIndex("partner_commission_funding_v2_uidx")
+    .on(table.usageFundingAllocationId, table.commissionEntryV2Id)
+    .where(sql`${table.commissionEntryV2Id} IS NOT NULL`),
+  check("partner_commission_funding_one_source_check", sql`
+    ((${table.commissionEntryId} IS NOT NULL)::int
+      + (${table.commissionEntryV2Id} IS NOT NULL)::int) = 1
+  `),
+  check("partner_commission_funding_amount_check", sql`${table.allocatedCommissionNano} >= 0`),
+]);
+
+export const partnerPaymentReversals = pgTable("partner_payment_reversals", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  commerceReversalId: bigint("commerce_reversal_id", { mode: "bigint" }).notNull(),
+  fundingLotId: bigint("funding_lot_id", { mode: "bigint" }).notNull()
+    .references(() => partnerPaidFundingLots.id, { onDelete: "restrict" }),
+  commercePaymentId: text("commerce_payment_id").notNull(),
+  commerceUserId: uuid("commerce_user_id").notNull(),
+  kind: text("kind").notNull(),
+  originalAmountNano: bigint("original_amount_nano", { mode: "bigint" }).notNull(),
+  reversedAt: timestamp("reversed_at", { withTimezone: true }).notNull(),
+  importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  unique("partner_payment_reversals_commerce_reversal_id_key").on(table.commerceReversalId),
+  unique("partner_payment_reversals_funding_lot_id_key").on(table.fundingLotId),
+  unique("partner_payment_reversals_commerce_payment_id_key").on(table.commercePaymentId),
+  index("partner_payment_reversals_time_idx").on(table.reversedAt, table.commerceReversalId),
+  check("partner_payment_reversals_shape_check", sql`
+    ${table.commerceReversalId} > 0
+    AND ${table.commercePaymentId} <> ''
+    AND ${table.kind} IN ('refund', 'dispute')
+    AND ${table.originalAmountNano} > 0
+  `),
+]);
+
+export const partnerCommissionAdjustments = pgTable("partner_commission_adjustments", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  reversalId: bigint("reversal_id", { mode: "bigint" }).notNull()
+    .references(() => partnerPaymentReversals.id, { onDelete: "restrict" }),
+  commissionFundingAllocationId: bigint("commission_funding_allocation_id", { mode: "bigint" })
+    .notNull()
+    .references(() => partnerCommissionFundingAllocations.id, { onDelete: "restrict" }),
+  partnerId: uuid("partner_id").notNull().references(() => partners.id, { onDelete: "restrict" }),
+  amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
+  effectiveAt: timestamp("effective_at", { withTimezone: true }).notNull(),
+  createdAt,
+}, (table) => [
+  unique("partner_commission_adjustments_funding_allocation_key")
+    .on(table.commissionFundingAllocationId),
+  unique("partner_commission_adjustments_source_unique")
+    .on(table.reversalId, table.commissionFundingAllocationId),
+  index("partner_commission_adjustments_partner_time_idx")
+    .on(table.partnerId, table.effectiveAt),
+  check("partner_commission_adjustments_amount_check", sql`${table.amountNano} < 0`),
 ]);
 
 // Один прогон пакетных on-chain выплат: prepare → (админ смотрит) → send. Отправка возможна ТОЛЬКО

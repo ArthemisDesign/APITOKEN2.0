@@ -217,6 +217,20 @@ readers (partner storefront, periods/payouts, analytics, admin panel) aggregate 
 `UNION ALL`, and the event forms do not overlap. These sales money tables are outside the pricing
 retirement manifest; removing either store requires its own evidence and consumer migration.
 
+Migration `packages/sales-db/migrations/0017_payment_reversal_accounting.sql` is the expand-only
+schema checkpoint for the already deployed `payment-reversals` producer. It reserves and seeds
+separate `topup_funding_lots` and `payment_reversals` cursors. The funding-lot cursor replays the
+commit-ordered `topups-v2` source from zero without resetting its live analytics cursor, then stays
+at the source head. The schema snapshots each referred topup as an immutable paid-funding lot,
+and adds immutable allocation evidence from both usage stores to FIFO lots and from both commission
+stores to exact lot-funded commission slices. One commerce reversal can name only its original
+payment lot; every signed adjustment must be the exact negative slice funded by that lot. Database
+guards enforce matching user/partner/source sums, causal timestamps, FIFO, complete bounded usage
+allocation, deterministic integer rounding, SERIALIZABLE reversal writes, a deferred complete
+adjustment-set check and immutable evidence. This checkpoint intentionally
+does not consume the feed, backfill lots, change an earning or unblock/block a payout; the dependent
+consumer and signed readers are delivered only after this migration SHA is green in production.
+
 ### Sales → Commerce: promo and registration (`apps/sales-api/src/internal.controller.ts`)
 
 Commerce calls sales-api at `SALES_API_URL` with the same `SALES_CONTROL_KEY`.

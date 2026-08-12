@@ -51,6 +51,14 @@ edit, rename, reorder, or delete a committed migration. Destructive contract cha
 later release after backfill and after all old processes no longer depend on the old shape. See the top-level [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and
 [`docs/ops/DEPLOYMENT.md`](../../docs/ops/DEPLOYMENT.md).
 
+The same rule applies to the separate Sales database. Sales migration
+`packages/sales-db/migrations/0017_payment_reversal_accounting.sql` is a schema-only expansion for
+the already deployed Commerce topup/reversal feeds: it reserves independent funding-lot backfill
+and reversal cursors and creates empty
+immutable funding-lot, allocation, reversal and negative-adjustment tables. No Sales consumer,
+backfill, earnings reader or payout behavior may depend on them until the exact migration SHA has
+green `deploy/migration` and `deploy/watchdog` statuses.
+
 ## Historical pricing release v2 migrations (non-executable)
 
 The entries through migration 0044 below describe what each immutable migration did when it was
