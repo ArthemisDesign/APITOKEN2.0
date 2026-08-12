@@ -66,7 +66,9 @@ of reaching SQL as an out-of-range value.
 - `GET /v1/internal/sales/usage-events?after_id&limit` (default 1000, max 2000) — from
   `pricing_usage_events`; the cursor is the `feed_seq bigserial` column (migration 0012). Response
   `{items:[{id,userId,amountNano,providerId,accountClass,pricingMode,paidFundedNano,
-  commissionEligible,snapshotDigest,occurredAt}], nextCursor}`; money fields are decimal strings.
+  commissionEligible,snapshotDigest,occurredAt}], nextCursor,sourceHead}`; money fields are decimal
+  strings. `sourceHead` is the latest committed `pricing_usage_events.feed_seq`, including rows
+  still intentionally hidden by the visibility lag; it never authorizes cursor advancement.
   The current producer returns only this scalar-compatible shape. For rollback and historical
   replay, the consumer also accepts the former optional
   `officialNano`/`chargedNano`/`bonusFundedNano`/`otherFundedNano`/`releaseGeneration`/
@@ -124,7 +126,9 @@ of reaching SQL as an out-of-range value.
   partner history. The producer limits the whole source stream before referral filtering, so
   unreferred rows advance the watermark; referred rows still require
   `paid_at >= attributed created_at`. Equal `paid_at` values are independently resumable. Response remains
-  `{items:[{id,paymentId,userId,amountNano,paidAt}], nextCursor}`. Sales consumes this route under
+  `{items:[{id,paymentId,userId,amountNano,paidAt}], nextCursor,sourceHead}`. `sourceHead` is the
+  latest committed `payments.feed_seq`, including a row still inside the visibility lag. Sales
+  consumes this route under
   the independent `topups_v2` cursor from sequence zero; migration `0016_topups_v2_cursor.sql`
   reserved that key before the consumer shipped. The legacy timestamp cursor and route remain
   unchanged as rollback evidence, but are not the live health authority.
@@ -134,8 +138,11 @@ of reaching SQL as an out-of-range value.
   the same commerce transaction. Its shared audit `bigserial` is fenced against older writers;
   rows younger than 10 seconds stay hidden during rolling deploy. The page is limited before
   referral filtering and returns `{items:[{id,paymentId,userId,kind,amountNano,reversedAt}],
-  nextCursor}`, so an ordinary customer's reversal advances the source watermark but does not
-  cross the boundary. `amountNano` is the exact original verified payment amount. This producer is
+  nextCursor,sourceHead}`, so an ordinary customer's reversal advances the page watermark but does
+  not cross the boundary. `sourceHead` is the latest committed `payment.reversed` audit id even
+  while that row remains inside the visibility lag. Consumers never copy it into their cursor;
+  irreversible work may instead require `nextCursor === sourceHead` and wait for visibility.
+  `amountNano` is the exact original verified payment amount. This producer is
   deliberately deployable before any Sales schema/consumer; a missing consumer has no commerce or
   payout side effect.
 - `POST /v1/internal/sales/referral-discount` — expand-only writer for the historical referral

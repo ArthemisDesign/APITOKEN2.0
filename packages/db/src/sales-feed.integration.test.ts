@@ -105,6 +105,7 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
       snapshotDigest: null,
     });
     expect(page.nextCursor).toBe(3n);
+    expect(page.sourceHead).toBe(3n);
 
     const firstPage = await listUsageEventsAfter(database, 0n, 1);
     expect(firstPage.items).toEqual([]);
@@ -256,6 +257,7 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
     await expect(listPaidTopupsV2After(database, second.nextCursor, 1)).resolves.toEqual({
       items: [],
       nextCursor: 2n,
+      sourceHead: 2n,
     });
   });
 
@@ -289,7 +291,7 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
     `, [ordinaryPaymentId, referredPaymentId, reversedAt]);
 
     const first = await listPaymentReversalsAfter(database, 0n, 1);
-    expect(first).toEqual({ items: [], nextCursor: 1n });
+    expect(first).toEqual({ items: [], nextCursor: 1n, sourceHead: 2n });
     const second = await listPaymentReversalsAfter(database, first.nextCursor, 1);
     expect(second).toEqual({
       items: [{
@@ -301,6 +303,7 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
         reversedAt,
       }],
       nextCursor: 2n,
+      sourceHead: 2n,
     });
   });
 
@@ -328,14 +331,15 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
     await insertPaidTopup(ordinaryAfter, "v2-ordinary-after", paidAt);
 
     const first = await listPaidTopupsV2After(database, 0n, 1);
-    expect(first).toEqual({ items: [], nextCursor: 1n });
+    expect(first).toEqual({ items: [], nextCursor: 1n, sourceHead: 3n });
     const second = await listPaidTopupsV2After(database, first.nextCursor, 1);
     expect(second).toMatchObject({
       items: [expect.objectContaining({ id: 2n, paymentId: referredPaymentId })],
       nextCursor: 2n,
+      sourceHead: 3n,
     });
     const third = await listPaidTopupsV2After(database, second.nextCursor, 1);
-    expect(third).toEqual({ items: [], nextCursor: 3n });
+    expect(third).toEqual({ items: [], nextCursor: 3n, sourceHead: 3n });
   });
 
   it("fails closed instead of advancing past a paid row without paid_at", async () => {
@@ -345,6 +349,30 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
 
     await expect(listPaidTopupsV2After(database, 0n, 100))
       .rejects.toThrow("has no paid_at");
+  });
+
+  it("exposes committed money heads while fresh rows remain inside the visibility lag", async () => {
+    const referred = await insertUser(true);
+    const now = new Date();
+    await insertUsage(referred, 90, now, 123n);
+    await database.pool.query("UPDATE pricing_usage_events SET created_at = now()");
+    const paymentId = await insertPaidTopup(referred, "fresh-head", now);
+    await database.pool.query("UPDATE payments SET created_at = now() WHERE id = $1", [paymentId]);
+    await database.pool.query(`
+      INSERT INTO audit_log(actor_type, action, target_type, target_id, metadata)
+      VALUES ('system', 'payment.reversed', 'payment', $1,
+              '{"kind":"refund","amountNano":"1000000000"}'::jsonb)
+    `, [paymentId]);
+
+    await expect(listUsageEventsAfter(database, 0n, 100)).resolves.toMatchObject({
+      items: [], nextCursor: 0n, sourceHead: 1n,
+    });
+    await expect(listPaidTopupsV2After(database, 0n, 100)).resolves.toMatchObject({
+      items: [], nextCursor: 0n, sourceHead: 1n,
+    });
+    await expect(listPaymentReversalsAfter(database, 0n, 100)).resolves.toMatchObject({
+      items: [], nextCursor: 0n, sourceHead: 1n,
+    });
   });
 
   it("serializes attribution ids against an in-flight legacy insert", async () => {

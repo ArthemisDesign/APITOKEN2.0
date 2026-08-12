@@ -21,5 +21,6 @@
     "snapshotDigest": null,
     "occurredAt": "2026-08-01T13:00:00.000Z"
   },
-  "nextCursor": "45"
+  "nextCursor": "45",
+  "sourceHead": "46"
 }

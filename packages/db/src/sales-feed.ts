@@ -83,6 +83,15 @@ export interface SalesFeedPage<T> {
   // The source watermark advances even when every row in the scanned page belongs to an ordinary
   // customer. Without it, sales would repeatedly scan the same filtered tail forever.
   nextCursor: bigint;
+  /**
+   * Latest committed source id, including rows still inside the visibility lag. A consumer may
+   * advance only through nextCursor; sourceHead exists so irreversible work can fail closed while
+   * a newer committed money event is intentionally withheld from the page.
+   */
+}
+
+export interface HeadedSalesFeedPage<T> extends SalesFeedPage<T> {
+  sourceHead: bigint;
 }
 
 /**
@@ -162,8 +171,11 @@ export async function listUsageEventsAfter(
   database: Database,
   afterId: bigint,
   limit: number,
-): Promise<SalesFeedPage<UsageEventFeedRow>> {
+): Promise<HeadedSalesFeedPage<UsageEventFeedRow>> {
   const lagCutoff = new Date(Date.now() - FEED_VISIBILITY_LAG_MS);
+  const sourceHead = await database.pool.query<{ head: string }>(`
+    SELECT COALESCE(MAX(feed_seq), 0)::text AS head FROM pricing_usage_events
+  `).then((result) => BigInt(result.rows[0]!.head));
   // Limit applies to the source stream before filtering. Every source row therefore advances the
   // watermark, including unreferred and zero-paid rows; otherwise an ineligible tail would be
   // rescanned forever.
@@ -206,6 +218,7 @@ export async function listUsageEventsAfter(
       }];
     }),
     nextCursor: rows.at(-1)?.id ?? afterId,
+    sourceHead,
   };
 }
 
@@ -276,8 +289,11 @@ export async function listPaidTopupsV2After(
   database: Database,
   afterId: bigint,
   limit: number,
-): Promise<SalesFeedPage<TopupV2FeedRow>> {
+): Promise<HeadedSalesFeedPage<TopupV2FeedRow>> {
   const lagCutoff = new Date(Date.now() - FEED_VISIBILITY_LAG_MS);
+  const sourceHead = await database.pool.query<{ head: string }>(`
+    SELECT COALESCE(MAX(feed_seq), 0)::text AS head FROM payments
+  `).then((result) => BigInt(result.rows[0]!.head));
   const rows = await database.db
     .select({
       id: payments.feedSeq,
@@ -309,7 +325,7 @@ export async function listPaidTopupsV2After(
       paidAt: row.paidAt,
     }];
   });
-  return { items, nextCursor: rows.at(-1)?.id ?? afterId };
+  return { items, nextCursor: rows.at(-1)?.id ?? afterId, sourceHead };
 }
 
 /**
@@ -324,8 +340,13 @@ export async function listPaymentReversalsAfter(
   database: Database,
   afterId: bigint,
   limit: number,
-): Promise<SalesFeedPage<PaymentReversalFeedRow>> {
+): Promise<HeadedSalesFeedPage<PaymentReversalFeedRow>> {
   const lagCutoff = new Date(Date.now() - FEED_VISIBILITY_LAG_MS);
+  const sourceHead = await database.pool.query<{ head: string }>(`
+    SELECT COALESCE(MAX(id), 0)::text AS head
+    FROM audit_log
+    WHERE action = 'payment.reversed'
+  `).then((result) => BigInt(result.rows[0]!.head));
   const rows = await database.pool.query<{
     id: string;
     payment_id: string | null;
@@ -376,7 +397,11 @@ export async function listPaymentReversalsAfter(
       reversedAt: row.reversed_at,
     }];
   });
-  return { items, nextCursor: rows.rows.at(-1) === undefined ? afterId : BigInt(rows.rows.at(-1)!.id) };
+  return {
+    items,
+    nextCursor: rows.rows.at(-1) === undefined ? afterId : BigInt(rows.rows.at(-1)!.id),
+    sourceHead,
+  };
 }
 
 // Referral profile for Sales: type, actual scalar discount, legacy marker and engine mapping.

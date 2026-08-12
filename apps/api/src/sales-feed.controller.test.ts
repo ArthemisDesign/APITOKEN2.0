@@ -6,15 +6,15 @@ import { readFileSync } from "node:fs";
 const GOLDEN = JSON.parse(readFileSync(
   new URL("../../../tests/contracts/sales-usage-feed.golden.json", import.meta.url),
   "utf8",
-)) as { row: Record<string, unknown>; nextCursor: string };
+)) as { row: Record<string, unknown>; nextCursor: string; sourceHead: string };
 const TOPUPS_V2_GOLDEN = JSON.parse(readFileSync(
   new URL("../../../tests/contracts/sales-topups-v2-feed.golden.json", import.meta.url),
   "utf8",
-)) as { row: Record<string, unknown>; nextCursor: string };
+)) as { row: Record<string, unknown>; nextCursor: string; sourceHead: string };
 const REVERSALS_GOLDEN = JSON.parse(readFileSync(
   new URL("../../../tests/contracts/sales-payment-reversals-feed.golden.json", import.meta.url),
   "utf8",
-)) as { row: Record<string, unknown>; nextCursor: string };
+)) as { row: Record<string, unknown>; nextCursor: string; sourceHead: string };
 
 const dbMocks = vi.hoisted(() => ({
   listUsageEventsAfter: vi.fn(),
@@ -59,18 +59,20 @@ describe("sales usage feed controller", () => {
         occurredAt,
       }],
       nextCursor: 45n,
+      sourceHead: 46n,
     });
     const controller = new SalesFeedController({} as never, {} as never);
 
     await expect(controller.usageEvents("40", "10")).resolves.toEqual({
       items: [GOLDEN.row],
       nextCursor: GOLDEN.nextCursor,
+      sourceHead: GOLDEN.sourceHead,
     });
     expect(dbMocks.listUsageEventsAfter).toHaveBeenCalledWith({}, 40n, 10);
   });
 
   it("defaults malformed tokens and never sends an out-of-range bigint to PostgreSQL", async () => {
-    dbMocks.listUsageEventsAfter.mockResolvedValue({ items: [], nextCursor: 0n });
+    dbMocks.listUsageEventsAfter.mockResolvedValue({ items: [], nextCursor: 0n, sourceHead: 0n });
     const controller = new SalesFeedController({} as never, {} as never);
 
     await controller.usageEvents("9223372036854775808", "1junk");
@@ -91,12 +93,14 @@ describe("sales usage feed controller", () => {
         paidAt,
       }],
       nextCursor: 13n,
+      sourceHead: 14n,
     });
     const controller = new SalesFeedController({} as never, {} as never);
 
     await expect(controller.topupsV2("10", "25")).resolves.toEqual({
       items: [TOPUPS_V2_GOLDEN.row],
       nextCursor: TOPUPS_V2_GOLDEN.nextCursor,
+      sourceHead: TOPUPS_V2_GOLDEN.sourceHead,
     });
     expect(dbMocks.listPaidTopupsV2After).toHaveBeenCalledWith({}, 10n, 25);
   });
@@ -122,12 +126,14 @@ describe("sales usage feed controller", () => {
         reversedAt: new Date("2026-08-12T02:03:04.567Z"),
       }],
       nextCursor: 78n,
+      sourceHead: 79n,
     });
     const controller = new SalesFeedController({} as never, {} as never);
 
     await expect(controller.paymentReversals("70", "25")).resolves.toEqual({
       items: [REVERSALS_GOLDEN.row],
       nextCursor: REVERSALS_GOLDEN.nextCursor,
+      sourceHead: REVERSALS_GOLDEN.sourceHead,
     });
     expect(dbMocks.listPaymentReversalsAfter).toHaveBeenCalledWith({}, 70n, 25);
   });

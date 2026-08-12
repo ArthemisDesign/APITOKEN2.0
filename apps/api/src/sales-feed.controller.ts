@@ -107,6 +107,7 @@ export class SalesFeedController {
         occurredAt: row.occurredAt.toISOString(),
       })),
       nextCursor: page.nextCursor.toString(),
+      sourceHead: page.sourceHead.toString(),
     };
   }
 
@@ -137,6 +138,7 @@ export class SalesFeedController {
         paidAt: row.paidAt.toISOString(),
       })),
       nextCursor: page.nextCursor.toString(),
+      sourceHead: page.sourceHead.toString(),
     };
   }
 
@@ -157,6 +159,7 @@ export class SalesFeedController {
         reversedAt: row.reversedAt.toISOString(),
       })),
       nextCursor: page.nextCursor.toString(),
+      sourceHead: page.sourceHead.toString(),
     };
   }
 
