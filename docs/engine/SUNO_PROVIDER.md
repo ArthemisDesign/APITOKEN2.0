@@ -319,8 +319,8 @@ Each `unknown` fails closed and is cleared only by a controlled live run on our 
 | Auth Bot: seller wizard | `crates/authbot/src/bot.rs` (+`db.rs` recovery, `main.rs`) | done (this commit) |
 | runtime primitives | `crates/forward/src/suno/{mod,config,transport,roster,client,selection,pool,queue}.rs` | done (this commit) |
 | runtime gateway | `crates/forward/src/suno/{gateway,session,artifacts,upload}.rs` (+ `billing.rs` Suno commands) | done (this commit) |
-| server wiring | `crates/server/src/{config,main,poller,http}.rs` | pending |
-| observability / admin projection | `observability/**`, `docs/ops/MONITORING.md`, `GET /suno-subs` | pending |
+| server wiring | `crates/server/src/{config,main,poller,http}.rs` | done (this commit) |
+| observability / admin projection | `observability/**`, `docs/ops/MONITORING.md`, `GET /suno-subs` | done (this commit) |
 | admin UI consumer | `apps/admin` | pending |
 | safe live-runner | `tools/suno_calibration/`, `docs/ops/SUNO_CALIBRATION.md` | pending |
 | production activation boundary | systemd/Caddy — default-off pins only | pending (dormant) |

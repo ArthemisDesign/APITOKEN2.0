@@ -2662,6 +2662,140 @@ async fn tripo3d_plane_readiness_tracks_gateway_liveness() {
 }
 
 #[tokio::test]
+async fn suno_plane_serves_common_surface_and_disabled_envelope() {
+    let service = router(
+        provider_test_app(forward::ProviderMode::Suno),
+        Arc::new(AtomicBool::new(true)),
+    );
+    let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+
+    // The gateway is absent on the argv-pinned default-off plane: readiness stays green so
+    // the slot serving the stable disabled envelope is health-included.
+    let mut request = Request::builder()
+        .uri("/ready")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(peer);
+    let response = service.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body, json!({"ready": true, "active_requests": 0}));
+
+    // /metrics exports the label-free Suno series as zero gauges on this plane as well.
+    let mut request = Request::builder()
+        .uri("/metrics")
+        .header("x-api-key", "panel-key")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(peer);
+    let response = service.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 2 * 1024 * 1024)
+        .await
+        .unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert!(body.contains("claude_api_suno_enabled 0"));
+    assert!(body.contains("claude_api_suno_live_profiles 0"));
+    assert!(body.contains("claude_api_suno_calibration_persistence_ok 0"));
+    assert!(body.contains("claude_api_suno_requests_total 0"));
+
+    // /suno-subs is registered on this plane with the same control lattice and answers the
+    // disabled envelope while the gateway is absent.
+    for (credential, expected) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some("panel-key"), StatusCode::UNAUTHORIZED),
+        (Some("control-key"), StatusCode::OK),
+        (Some("admin-key"), StatusCode::OK),
+    ] {
+        let mut request = Request::builder()
+            .uri("/suno-subs")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        if let Some(key) = credential {
+            request
+                .headers_mut()
+                .insert("x-api-key", key.parse().unwrap());
+        }
+        let response = service.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), expected, "credential {credential:?}");
+        if expected == StatusCode::OK {
+            let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["enabled"], false);
+            assert_eq!(body["profiles"], json!([]));
+        }
+    }
+
+    // The audio surface exists but fails closed without the gateway: generation creation is a
+    // bounded 404 (no Claude pool to fall into), and every unrouted path is the same 404.
+    for (method, uri) in [
+        (Method::POST, "/v1/audio/generations"),
+        (Method::POST, "/v1/audio/uploads"),
+        (Method::GET, "/v1/audio/generations/gen-1"),
+        (Method::GET, "/v1/audio/generations/gen-1/artifact/audio_url.mp3"),
+        (Method::POST, "/v1/messages"),
+    ] {
+        let mut request = Request::builder()
+            .method(method.clone())
+            .uri(uri)
+            .header("x-api-key", "admin-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+    }
+}
+
+#[tokio::test]
+async fn suno_plane_readiness_tracks_gateway_liveness() {
+    // One assembled gateway with a cold roster (zero profiles) keeps the slot below its
+    // readiness contract (live >= 1 and intact delivery persistence) → provider_unavailable.
+    let suffix = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(format!("suno-http-{suffix}"));
+    std::fs::create_dir_all(root.join("artifacts")).unwrap();
+    let config = forward::suno::config::build(&forward::suno::config::SunoPlaneInput {
+        enabled: true,
+        roster_dir: root.to_string_lossy().into_owned(),
+        credential_keys: Some(format!("a1:{}", "11".repeat(32))),
+        credential_active_kid: None,
+        quota_poll_secs: 300,
+        artifact_dir: root.join("artifacts").to_string_lossy().into_owned(),
+    })
+    .unwrap()
+    .unwrap();
+    let gateway = forward::suno::SunoGateway::new_with_calibration(config, None).unwrap();
+
+    let mut app = provider_test_app(forward::ProviderMode::Suno);
+    app.suno = Some(gateway);
+    let service = router(app, Arc::new(AtomicBool::new(true)));
+    let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+    let mut request = Request::builder()
+        .uri("/ready")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(peer);
+    let response = service.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        body,
+        json!({"ready": false, "reason": "provider_unavailable", "active_requests": 0})
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
 async fn kimi_plane_readiness_tracks_gateway_liveness() {
     // One rostered profile that never authenticated keeps the gateway below its readiness
     // contract (live >= 1 and intact delivery persistence), mapped to provider_unavailable.

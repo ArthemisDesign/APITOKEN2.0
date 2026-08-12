@@ -1081,6 +1081,95 @@ the seller tops up the declared cohort's account (or the account is replaced thr
 Bot). Do NOT clear the flag by hand or restart the plane to force a probe storm — the probe is
 free and already running on the maintenance cadence.
 
+## SunoNoLiveProfiles
+
+The Suno plane is enabled but no roster profile is authenticated, so the plane's
+`/v1/audio/*` surface fails closed. Suno is default-off on its own dedicated delivery mode:
+this alert stays silent until the first enable, and `CLAUDE_API_SUNO_ENABLED=false` keeps the
+plane dark at any time.
+
+Safely diagnose: read `GET /suno-subs` with the control key (per-profile `live`, `routable`,
+the `cooling` axes and `quota_walled`), then the unit journal for the bounded Suno failure
+classes. Check that the roster directory still parses, every envelope decrypts under the
+configured keyring, and the free billing probe (`/api/billing/info/`) answers for at least one
+profile through its pinned egress. Never decrypt or print an envelope, and never put session
+cookies, JWTs, subject digests or proxy values into logs or argv. Do not hammer a refused
+profile — repeated provider refusals are themselves a risk signal; a session the provider keeps
+refusing is replaced through the Auth Bot, not retried.
+
+## SunoNoAvailableProfiles
+
+Live Suno profiles exist but every one of them is rate-limited (429), quota-walled (the billing
+probe shows the account cannot spend), or cooling on a soft axis (post-mint 401/403,
+CAPTCHA-required, transport), so selection has nothing eligible and the plane answers an honest
+429 with `Retry-After`. Suno is default-off: this alert stays silent until the first enable.
+
+Safely diagnose: `GET /suno-subs` shows which axis holds each profile
+(`cooling.rate_limit_until` / `cooling.auth_until` / `cooling.captcha_until` /
+`cooling.transport_until` / `quota_walled`), and the aggregate gauges
+`claude_api_suno_rate_limited_profiles`, `claude_api_suno_quota_walled_profiles`,
+`claude_api_suno_auth_cooling_profiles`, `claude_api_suno_captcha_cooling_profiles` and
+`claude_api_suno_transport_cooling_profiles` say which axis fired fleet-wide. A quota wall
+clears when a billing probe shows credits (the monthly refill or a plan change); soft axes
+clear on the next proven success. Do NOT shorten cooling or widen admission; if capacity is
+genuinely exhausted, authorize another distinct subscription through the Auth Bot.
+
+## SunoErrorShareHigh
+
+More than half of the requests the Suno plane actually answered failed over 10 minutes at a
+non-trivial rate. The plane's customer-visible errors are bounded classes (capacity 429 with
+`Retry-After`, validation 400, upstream 502/503) — a sustained high share means the upstream
+session pool or the egress path is degraded, not that customers suddenly send bad requests.
+
+Safely diagnose: `GET /suno-subs` for the fleet axes, the unit journal for the bounded failure
+classes, and `claude_api_suno_unattributed_settlements_total` /
+`claude_api_suno_tariff_anomaly_total` for money-path anomalies. Do not restart into a probe
+storm; the maintenance loop already probes on its cadence.
+
+## SunoCalibrationPersistenceFailed
+
+Suno turn events or quota observations are not reaching PostgreSQL
+(`claude_api_suno_calibration_persistence_ok == 0`): the calibration authority is PG-only, so
+measured capacity may not survive a restart, and the quota poll is suspended by design while
+the FIFO head is undelivered.
+
+Safely diagnose: check the engine's PostgreSQL reachability and the unit journal for the
+deferred-write lines, then `GET /suno-subs` delivery block (`pending_events`,
+`dropped_events`). A replay conflict quarantines exactly one row and continues; a transient
+failure blocks the head until it drains — the poll resumes on its own once PostgreSQL answers.
+
+## SunoCalibrationBacklog
+
+The bounded turn FIFO holds pending events (`claude_api_suno_calibration_pending_events > 0`).
+While a head is undelivered, the free quota poll is suspended so an observation is never paired
+with a spend total its own generation has not reached — the backlog is the protection working,
+but a persistent one means the writer cannot reach PostgreSQL.
+
+Safely diagnose: same path as SunoCalibrationPersistenceFailed. The queue is bounded (4096);
+overflow drops the NEWEST event, never the head, and `dropped_events` records it.
+
+## SunoQuotaStale
+
+The newest billing-info observation is older than three default poll intervals (900 s): quota
+readings are frozen. Generation admission still runs on the last proven values (stale capacity
+is preferred to invented capacity), but the monthly window may have refilled or drained since.
+
+Safely diagnose: `GET /suno-subs` per-profile `quota.observed_at`, then check the pinned egress
+proxies and the auth host's reachability from the unit journal. A profile whose session died
+shows `live: false` / `routable: false` instead; replace the session through the Auth Bot.
+
+## SunoQuotaWalled
+
+A Suno profile is resting on an explicit quota-exhaustion verdict: the billing probe showed the
+account cannot spend (zeroed remaining credits). The profile stays out of rotation until a
+probe shows credits again — the monthly refill is billing-anchored (manifest §1), so this is a
+calendar signal, not a transient. Other profiles may still serve.
+
+Safely diagnose: `GET /suno-subs` shows which opaque profile ids carry `quota_walled` and their
+raw `quota` counters, and `claude_api_suno_quota_walled_profiles` counts them fleet-wide. The
+remedy is commercial (wait for the refill window or authorize another subscription through the
+Auth Bot). Do NOT clear the flag by hand — only a probe showing credits clears it.
+
 ## DurableQueueBacklog
 
 Check the owning worker/service, its database lock/lease fields, retry schedule, and downstream

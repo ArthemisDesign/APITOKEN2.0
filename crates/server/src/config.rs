@@ -6,6 +6,7 @@ use forward::{
     glm::transport::GlmIdentityHeaders,
     kimi::config::{KimiPlaneConfig, KimiPlaneInput},
     tripo3d::config::{Tripo3dPlaneConfig, Tripo3dPlaneInput},
+    suno::config::{SunoPlaneConfig, SunoPlaneInput},
     ClaudeStoreFallbackConfig, CodexConfig, CodexModel, GeminiConfig, GeminiModel,
     ProviderMode, ProxyConfig,
     CLAUDE_CODE_IDENTITY,
@@ -74,6 +75,10 @@ pub struct Settings {
     /// delivery surface. Same contract shape as GLM's static-key plane: validated default-off
     /// switch, per-profile platform origin inside the sealed credential, no fleet base URL.
     pub tripo3d: Option<Tripo3dPlaneConfig>,
+    /// Backend-only Suno subscription session-pool plane on the dedicated `ProviderMode::Suno`
+    /// delivery surface. Validated default-off switch; the hosts are fixed official constants
+    /// (one platform, `docs/engine/SUNO_PROVIDER.md` §2), so there is no fleet base URL.
+    pub suno: Option<SunoPlaneConfig>,
     /// Compile-versioned evaluator capability evidence, assembled by trusted server composition.
     pub proxy: ProxyConfig,
 }
@@ -132,8 +137,9 @@ fn parse_provider_mode(value: Option<&str>) -> Result<ProviderMode, String> {
         "gemini" => Ok(ProviderMode::Gemini),
         "kimi" => Ok(ProviderMode::Kimi),
         "tripo3d" => Ok(ProviderMode::Tripo3d),
+        "suno" => Ok(ProviderMode::Suno),
         other => Err(format!(
-            "CLAUDE_API_PROVIDER={other:?}: expected combined, anthropic, openai, gemini, kimi, or tripo3d"
+            "CLAUDE_API_PROVIDER={other:?}: expected combined, anthropic, openai, gemini, kimi, tripo3d, or suno"
         )),
     }
 }
@@ -542,6 +548,79 @@ fn tripo3d_config() -> Option<Tripo3dPlaneConfig> {
     parse_tripo3d_config(&values).unwrap_or_else(|message| panic!("{message}"))
 }
 
+const SUNO_ENV_KEYS: [&str; 6] = [
+    "CLAUDE_API_SUNO_ENABLED",
+    "CLAUDE_API_SUNO_ROSTER_DIR",
+    "CLAUDE_API_SUNO_CREDENTIAL_KEYS",
+    "CLAUDE_API_SUNO_CREDENTIAL_ACTIVE_KID",
+    "CLAUDE_API_SUNO_QUOTA_POLL_SECS",
+    "CLAUDE_API_SUNO_ARTIFACT_DIR",
+];
+
+/// Keys an operator might carry over from another plane that the Suno plane deliberately does
+/// not have. There is no `base_url` override: the provider has one platform with fixed official
+/// hosts (`docs/engine/SUNO_PROVIDER.md` §2), so a fleet-level override could only smuggle a
+/// session to a foreign origin. Setting one of these is an operator mistake and fails closed
+/// with an explicit unknown-key error rather than being ignored as dormant input.
+const SUNO_REJECTED_ENV_KEYS: [&str; 1] = ["CLAUDE_API_SUNO_BASE_URL"];
+
+fn parse_suno_config(
+    values: &BTreeMap<String, String>,
+) -> Result<Option<SunoPlaneConfig>, String> {
+    for rejected in SUNO_REJECTED_ENV_KEYS {
+        if values.contains_key(rejected) {
+            return Err(format!(
+                "{rejected}: unknown key for the Suno plane; the official hosts are fixed constants and have no fleet override"
+            ));
+        }
+    }
+    let defaults = SunoPlaneInput::default();
+    let enabled = parse_strict_bool(
+        "CLAUDE_API_SUNO_ENABLED",
+        values.get("CLAUDE_API_SUNO_ENABLED").map(String::as_str),
+        defaults.enabled,
+    )?;
+    if !enabled {
+        return forward::suno::config::build(&SunoPlaneInput::default())
+            .map_err(|error| format!("invalid Suno plane config: {error}"));
+    }
+    let quota_poll_secs = values.get("CLAUDE_API_SUNO_QUOTA_POLL_SECS").map_or(
+        Ok(defaults.quota_poll_secs),
+        |value| {
+            value.parse::<u64>().map_err(|_| {
+                "CLAUDE_API_SUNO_QUOTA_POLL_SECS: expected a non-negative base-10 integer"
+                    .to_string()
+            })
+        },
+    )?;
+    let input = SunoPlaneInput {
+        enabled,
+        roster_dir: values
+            .get("CLAUDE_API_SUNO_ROSTER_DIR")
+            .cloned()
+            .unwrap_or(defaults.roster_dir),
+        credential_keys: values.get("CLAUDE_API_SUNO_CREDENTIAL_KEYS").cloned(),
+        credential_active_kid: values
+            .get("CLAUDE_API_SUNO_CREDENTIAL_ACTIVE_KID")
+            .cloned(),
+        quota_poll_secs,
+        artifact_dir: values
+            .get("CLAUDE_API_SUNO_ARTIFACT_DIR")
+            .cloned()
+            .unwrap_or(defaults.artifact_dir),
+    };
+    forward::suno::config::build(&input)
+        .map_err(|error| format!("invalid Suno plane config: {error}"))
+}
+
+fn suno_config() -> Option<SunoPlaneConfig> {
+    let values = SUNO_ENV_KEYS
+        .into_iter()
+        .chain(SUNO_REJECTED_ENV_KEYS)
+        .filter_map(|name| ev(name).map(|value| (name.to_owned(), value)))
+        .collect::<BTreeMap<_, _>>();
+    parse_suno_config(&values).unwrap_or_else(|message| panic!("{message}"))
+}
 
 
 fn bounded_u64(k: &str, default: u64, min: u64, max: u64) -> u64 {
@@ -1188,6 +1267,12 @@ impl Settings {
         } else {
             None
         };
+        // Suno is likewise a dedicated plane: the switch is read only in `ProviderMode::Suno`.
+        let suno = if provider.serves_suno() {
+            suno_config()
+        } else {
+            None
+        };
         Settings {
             provider,
             db_path,
@@ -1262,6 +1347,7 @@ impl Settings {
             kimi,
             glm,
             tripo3d,
+            suno,
             proxy: ProxyConfig {
                 api_keys,
                 control_keys,
@@ -1822,6 +1908,130 @@ mod tests {
             "https://api.tripo3d.com".to_owned(),
         )]);
         let error = parse_tripo3d_config(&dormant).unwrap_err();
+        assert!(error.contains("unknown key"), "{error}");
+    }
+
+    #[test]
+    fn suno_provider_mode_parses() {
+        assert_eq!(parse_provider_mode(Some("suno")), Ok(ProviderMode::Suno));
+        assert_eq!(parse_provider_mode(Some(" SUNO ")), Ok(ProviderMode::Suno));
+    }
+
+    #[test]
+    fn suno_server_config_is_strict_default_off_and_ignores_dormant_values() {
+        assert!(parse_suno_config(&BTreeMap::new()).unwrap().is_none());
+        let disabled_with_broken_dormant_values = BTreeMap::from([
+            ("CLAUDE_API_SUNO_ENABLED".to_owned(), "false".to_owned()),
+            (
+                "CLAUDE_API_SUNO_ROSTER_DIR".to_owned(),
+                "relative/roster".to_owned(),
+            ),
+            (
+                "CLAUDE_API_SUNO_ARTIFACT_DIR".to_owned(),
+                "relative/artifacts".to_owned(),
+            ),
+            (
+                "CLAUDE_API_SUNO_QUOTA_POLL_SECS".to_owned(),
+                "not-an-integer".to_owned(),
+            ),
+        ]);
+        assert!(parse_suno_config(&disabled_with_broken_dormant_values)
+            .unwrap()
+            .is_none());
+        for invalid in ["yes", "on", "2", " true "] {
+            let values = BTreeMap::from([(
+                "CLAUDE_API_SUNO_ENABLED".to_owned(),
+                invalid.to_owned(),
+            )]);
+            assert!(parse_suno_config(&values).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn suno_server_config_passes_every_operator_value_to_the_typed_builder() {
+        let values = BTreeMap::from([
+            ("CLAUDE_API_SUNO_ENABLED".to_owned(), "1".to_owned()),
+            (
+                "CLAUDE_API_SUNO_ROSTER_DIR".to_owned(),
+                "/srv/private/suno".to_owned(),
+            ),
+            (
+                "CLAUDE_API_SUNO_CREDENTIAL_KEYS".to_owned(),
+                format!("a1:{}", "11".repeat(32)),
+            ),
+            (
+                "CLAUDE_API_SUNO_CREDENTIAL_ACTIVE_KID".to_owned(),
+                "a1".to_owned(),
+            ),
+            ("CLAUDE_API_SUNO_QUOTA_POLL_SECS".to_owned(), "41".to_owned()),
+            (
+                "CLAUDE_API_SUNO_ARTIFACT_DIR".to_owned(),
+                "/srv/private/suno/artifacts".to_owned(),
+            ),
+        ]);
+        let config = parse_suno_config(&values).unwrap().unwrap();
+        assert_eq!(
+            config.roster_dir,
+            std::path::PathBuf::from("/srv/private/suno")
+        );
+        assert_eq!(
+            config.artifact_dir,
+            std::path::PathBuf::from("/srv/private/suno/artifacts")
+        );
+        assert_eq!(
+            config.quota_poll_interval,
+            std::time::Duration::from_secs(41)
+        );
+        // Readiness always probes the free billing route; generation is never a probe because
+        // it spends subscription credits.
+        assert_eq!(
+            config.readiness_probe,
+            forward::suno::transport::ProbeRoute::BillingInfo
+        );
+    }
+
+    #[test]
+    fn enabled_suno_server_config_fails_closed_before_runtime_start() {
+        let enabled = BTreeMap::from([("CLAUDE_API_SUNO_ENABLED".to_owned(), "1".to_owned())]);
+        assert!(parse_suno_config(&enabled).is_err());
+
+        // An active kid absent from the keyring is a bot/engine keyring mismatch — fail at boot.
+        let mismatched_kid = BTreeMap::from([
+            ("CLAUDE_API_SUNO_ENABLED".to_owned(), "1".to_owned()),
+            (
+                "CLAUDE_API_SUNO_CREDENTIAL_KEYS".to_owned(),
+                format!("a1:{}", "11".repeat(32)),
+            ),
+            ("CLAUDE_API_SUNO_CREDENTIAL_ACTIVE_KID".to_owned(), "zz".to_owned()),
+        ]);
+        assert!(parse_suno_config(&mismatched_kid).is_err());
+
+        for value in ["0", "garbage", "-1"] {
+            let values = BTreeMap::from([
+                ("CLAUDE_API_SUNO_ENABLED".to_owned(), "1".to_owned()),
+                (
+                    "CLAUDE_API_SUNO_CREDENTIAL_KEYS".to_owned(),
+                    format!("a1:{}", "11".repeat(32)),
+                ),
+                (
+                    "CLAUDE_API_SUNO_QUOTA_POLL_SECS".to_owned(),
+                    value.to_owned(),
+                ),
+            ]);
+            assert!(parse_suno_config(&values).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn suno_server_config_rejects_the_fleet_base_url_override_as_an_unknown_key() {
+        // The provider has one platform with fixed official hosts, so a fleet `BASE_URL` can
+        // never be honoured. It fails closed even while the plane is disabled: silently
+        // ignoring it would let the operator believe a routing override is armed.
+        let dormant = BTreeMap::from([(
+            "CLAUDE_API_SUNO_BASE_URL".to_owned(),
+            "https://studio-api.prod.suno.com".to_owned(),
+        )]);
+        let error = parse_suno_config(&dormant).unwrap_err();
         assert!(error.contains("unknown key"), "{error}");
     }
 

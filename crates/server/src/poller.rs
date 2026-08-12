@@ -541,6 +541,32 @@ pub async fn tripo3d_maintenance_loop(gateway: Arc<forward::tripo3d::Tripo3dGate
         }
     }}
 
+/// Suno mirror of the Tripo3D maintenance loop (`docs/engine/SUNO_PROVIDER.md` §5.4): discover
+/// atomic Auth Bot roster publications on the independent 15-second tick and run the free quota
+/// sweep on `CLAUDE_API_SUNO_QUOTA_POLL_SECS`. The gateway owns profile-idle exclusion, the
+/// turn-FIFO turn-before-quota ordering and the durable observation/CAS; this server loop owns
+/// only cadence.
+pub async fn suno_maintenance_loop(gateway: Arc<forward::suno::SunoGateway>) {
+    const PROFILE_DISCOVERY_SECS: u64 = 15;
+    let mut discovery = tokio::time::interval(Duration::from_secs(PROFILE_DISCOVERY_SECS));
+    discovery.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The startup preflight just authenticated the roster. Delay discovery's first immediate tick
+    // while allowing quota to anchor immediately without waiting a whole configured interval.
+    discovery.tick().await;
+    let mut quota = tokio::time::interval(gateway.quota_poll_interval());
+    quota.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = discovery.tick() => {
+                gateway.refresh_profiles().await;
+            }
+            _ = quota.tick() => {
+                gateway.poll_quotas().await;
+            }
+        }
+    }
+}
+
 pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64) {
     const SNAP_SECS: u64 = 60;
     let mut ticks: u64 = 0;

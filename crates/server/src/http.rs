@@ -494,10 +494,30 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             )
             .fallback(tripo3d_not_found)
             .method_not_allowed_fallback(tripo3d_not_found),
-        // Backend-only Suno session-pool plane (default-off, dedicated delivery). Nothing here
-        // may fall into `forward`: this process deliberately operates no Claude pool. The real
-        // plane endpoints land with the server wiring; until then every path is a bounded 404.
+        // Backend-only Suno session-pool plane (default-off, dedicated delivery). Its own
+        // bounded REST surface only: create → status → artifact, plus the customer audio
+        // intake. Nothing falls into `forward`: this process deliberately operates no Claude
+        // pool, and every unrouted path is the same bounded 404.
         forward::ProviderMode::Suno => common
+            .route("/suno-subs", get(suno_subs))
+            .route(
+                "/v1/audio/generations",
+                post(forward::suno_create_generation)
+                    .layer(axum::extract::DefaultBodyLimit::max(256 * 1024)),
+            )
+            .route(
+                "/v1/audio/uploads",
+                post(forward::suno_upload_audio)
+                    .layer(axum::extract::DefaultBodyLimit::max(97 * 1024 * 1024)),
+            )
+            .route(
+                "/v1/audio/generations/{generation_id}",
+                get(forward::suno_generation_status),
+            )
+            .route(
+                "/v1/audio/generations/{generation_id}/artifact/{name}",
+                get(forward::suno_generation_artifact),
+            )
             .fallback(suno_not_found)
             .method_not_allowed_fallback(suno_not_found),
     };
@@ -1777,6 +1797,13 @@ async fn metrics(
         tripo3d_status.as_ref(),
         &app.metrics,
     );
+    let suno_status = app.suno.as_ref().map(|suno| suno.operational_status());
+    write_suno_operational_metrics(
+        &mut body,
+        app.suno.is_some(),
+        suno_status.as_ref(),
+        &app.metrics,
+    );
     (
         [(
             axum::http::header::CONTENT_TYPE,
@@ -2030,6 +2057,100 @@ fn write_tripo3d_operational_metrics(
             body,
             "# TYPE claude_api_tripo3d_balance_last_observation_timestamp_seconds gauge\n\
              claude_api_tripo3d_balance_last_observation_timestamp_seconds {observed_at}"
+        );
+    }
+}
+
+/// Suno (subscription session pool) is a default-off backend on its own dedicated plane.
+/// Aggregate-only, fixed cardinality: no per-profile series at all — a profile id, plan,
+/// subject, customer, generation id or provider error must never become a label. Zero gauges
+/// are always published so a disabled plane reads as zero rather than absent; the
+/// last-observation timestamp is the one exception — emitting 0 there would masquerade as a
+/// real 1970 observation.
+fn write_suno_operational_metrics(
+    body: &mut String,
+    enabled: bool,
+    status: Option<&forward::suno::SunoOperationalStatus>,
+    m: &forward::Metrics,
+) {
+    use std::fmt::Write as _;
+
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_suno_enabled gauge\nclaude_api_suno_enabled {}",
+        u8::from(enabled)
+    );
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_suno_profiles gauge\nclaude_api_suno_profiles {}\n\
+         # TYPE claude_api_suno_live_profiles gauge\nclaude_api_suno_live_profiles {}\n\
+         # TYPE claude_api_suno_available_profiles gauge\nclaude_api_suno_available_profiles {}\n\
+         # TYPE claude_api_suno_inflight_requests gauge\nclaude_api_suno_inflight_requests {}\n\
+         # TYPE claude_api_suno_inflight_drains gauge\nclaude_api_suno_inflight_drains {}\n\
+         # TYPE claude_api_suno_tracked_generations gauge\nclaude_api_suno_tracked_generations {}\n\
+         # TYPE claude_api_suno_rate_limited_profiles gauge\n\
+         claude_api_suno_rate_limited_profiles {}\n\
+         # TYPE claude_api_suno_quota_walled_profiles gauge\n\
+         claude_api_suno_quota_walled_profiles {}\n\
+         # TYPE claude_api_suno_auth_cooling_profiles gauge\n\
+         claude_api_suno_auth_cooling_profiles {}\n\
+         # TYPE claude_api_suno_captcha_cooling_profiles gauge\n\
+         claude_api_suno_captcha_cooling_profiles {}\n\
+         # TYPE claude_api_suno_transport_cooling_profiles gauge\n\
+         claude_api_suno_transport_cooling_profiles {}\n\
+         # TYPE claude_api_suno_requests_total counter\n\
+         claude_api_suno_requests_total {}\n\
+         # TYPE claude_api_suno_failures_total counter\n\
+         claude_api_suno_failures_total {}\n\
+         # TYPE claude_api_suno_capacity_exhausted_total counter\n\
+         claude_api_suno_capacity_exhausted_total {}\n\
+         # TYPE claude_api_suno_calibration_pending_events gauge\n\
+         claude_api_suno_calibration_pending_events {}\n\
+         # TYPE claude_api_suno_calibration_dropped_events_total counter\n\
+         claude_api_suno_calibration_dropped_events_total {}\n\
+         # TYPE claude_api_suno_calibration_persistence_ok gauge\n\
+         claude_api_suno_calibration_persistence_ok {}\n\
+         # TYPE claude_api_suno_unattributed_settlements_total counter\n\
+         claude_api_suno_unattributed_settlements_total {}\n\
+         # TYPE claude_api_suno_tariff_anomaly_total counter\n\
+         claude_api_suno_tariff_anomaly_total {}\n\
+         # TYPE claude_api_suno_artifact_failures_total counter\n\
+         claude_api_suno_artifact_failures_total {}\n\
+         # TYPE claude_api_suno_quota_sweep_milliseconds gauge\n\
+         claude_api_suno_quota_sweep_milliseconds {}",
+        status.map_or(0, |status| status.total_profiles),
+        status.map_or(0, |status| status.live_profiles),
+        status.map_or(0, |status| status.available_profiles),
+        status.map_or(0, |status| status.inflight_requests),
+        status.map_or(0, |status| status.inflight_drains),
+        status.map_or(0, |status| status.tracked_generations),
+        status.map_or(0, |status| status.rate_limited_profiles),
+        status.map_or(0, |status| status.quota_walled_profiles),
+        status.map_or(0, |status| status.auth_cooling_profiles),
+        status.map_or(0, |status| status.captcha_cooling_profiles),
+        status.map_or(0, |status| status.transport_cooling_profiles),
+        Metrics::get(&m.suno_requests),
+        Metrics::get(&m.suno_failures),
+        Metrics::get(&m.suno_capacity_exhausted),
+        status.map_or(0, |status| status.delivery.pending_events),
+        status.map_or(0, |status| status.delivery.dropped_events),
+        status.map_or(0, |status| u8::from(status.delivery.persistence_ok)),
+        status.map_or(0, |status| status.unattributed_settlements),
+        status.map_or(0, |status| status.tariff_anomaly),
+        status.map_or(0, |status| status.artifact_failures),
+        status.map_or(0, |status| status.quota_sweep_ms),
+    );
+    if let Some(observed_at) = status.and_then(|status| {
+        status
+            .profiles
+            .iter()
+            .filter_map(|profile| profile.quota_observed_at)
+            .max()
+    }) {
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_suno_quota_last_observation_timestamp_seconds gauge\n\
+             claude_api_suno_quota_last_observation_timestamp_seconds {observed_at}"
         );
     }
 }
@@ -4995,6 +5116,148 @@ fn tripo3d_profile_value(
     })
 }
 
+/// `GET /suno-subs` — the Suno plane's admin projection, registered only on
+/// `ProviderMode::Suno` (the dedicated plane is the only place the gateway composes) and gated
+/// by `control_authed`, exactly like `/tripo3d-subs`.
+async fn suno_subs(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !control_authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+    let Some(suno) = &app.suno else {
+        return Json(json!({"now": pool::now(), "enabled": false, "profiles": []})).into_response();
+    };
+    let status = suno.operational_status();
+    let now = pool::now();
+    let report = match &app.billing {
+        Some(billing) => match billing.suno_calibration_report().await {
+            Ok(report) => Some(report),
+            Err(error) => {
+                elog::error("server", format!("Suno calibration report unavailable: {error:#}"));
+                None
+            }
+        },
+        None => None,
+    };
+    Json(suno_subs_value_with_report(suno, &status, now, report.as_deref())).into_response()
+}
+
+fn suno_subs_value_with_report(
+    gateway: &forward::suno::SunoGateway,
+    status: &forward::suno::SunoOperationalStatus,
+    now: i64,
+    report: Option<&[registry::SunoCalibrationRow]>,
+) -> Value {
+    // Durable rows are keyed by provider subject (the keyed digest of the Clerk session id);
+    // the join to the opaque roster id happens here and the subject itself is never
+    // serialized. A row whose subject left the roster stays durable for audit but is NOT
+    // published. One subject can hold rows for several window durations; the admin surface
+    // publishes them all, keyed by their exact duration.
+    let mut calibration_by_profile: std::collections::BTreeMap<String, Vec<&registry::SunoCalibrationRow>> =
+        std::collections::BTreeMap::new();
+    for row in report.unwrap_or_default() {
+        let Some(id) = gateway.profile_id_for_subject(&row.subject_id) else {
+            continue;
+        };
+        calibration_by_profile.entry(id).or_default().push(row);
+    }
+    json!({
+        "now": now,
+        "enabled": true,
+        "delivery": {
+            "pending_events": status.delivery.pending_events,
+            "dropped_events": status.delivery.dropped_events,
+            "persistence_ok": status.delivery.persistence_ok,
+        },
+        "calibration_authority_available": report.is_some(),
+        "fleet": {
+            "profiles": status.total_profiles,
+            "live_profiles": status.live_profiles,
+            "available_profiles": status.available_profiles,
+            "inflight_requests": status.inflight_requests,
+            "inflight_drains": status.inflight_drains,
+            "tracked_generations": status.tracked_generations,
+            "rate_limited_profiles": status.rate_limited_profiles,
+            "quota_walled_profiles": status.quota_walled_profiles,
+            "auth_cooling_profiles": status.auth_cooling_profiles,
+            "captcha_cooling_profiles": status.captcha_cooling_profiles,
+            "transport_cooling_profiles": status.transport_cooling_profiles,
+            "unattributed_settlements": status.unattributed_settlements,
+            "tariff_anomaly": status.tariff_anomaly,
+            "artifact_failures": status.artifact_failures,
+        },
+        "profiles": status
+            .profiles
+            .iter()
+            .map(|profile| {
+                suno_profile_value(profile, calibration_by_profile.get(profile.id.as_str()))
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn suno_profile_value(
+    profile: &forward::suno::SunoProfileStatus,
+    calibration: Option<&Vec<&registry::SunoCalibrationRow>>,
+) -> Value {
+    // Money serializes as decimal nanoUSD strings (BigInt-safe); the native ledger is exact
+    // millicredits. Unknown stays null — never 0, never an invented nominal. Raw quota counters
+    // are the provider's verbatim values (unknown stays null, manifest §5.2); the bonus-drip
+    // state is not modelled anywhere, so it cannot appear here.
+    let nano = |value: Option<i64>| value.map(|value| value.to_string());
+    let calibration = calibration.map(|rows| {
+        rows.iter()
+            .map(|row| {
+                json!({
+                    "window_duration_secs": row.window_duration_secs,
+                    "samples": row.samples,
+                    "confidence_bp": row.current_confidence_bp,
+                    "capacity": {
+                        "current_nano": nano(row.current_capacity_nanousd),
+                        "low_nano": nano(row.current_low_nanousd),
+                        "high_nano": nano(row.current_high_nanousd),
+                    },
+                    "remaining": row.current_remaining_nano().map(|value| value.to_string()),
+                    "observed_spend_nano": row.observed_spend_api_nanousd.to_string(),
+                    "observed_spend_native_millicredits": row.observed_spend_native_millicredits,
+                    "unattributed_fraction_units": row.unattributed_fraction_units,
+                    "last_measured_at": row.last_measured_at,
+                    "estimator_version": row.estimator_version,
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    json!({
+        "id": profile.id,
+        "plan": profile.plan,
+        "routable": profile.routable,
+        "live": profile.live,
+        "quota_walled": profile.quota_walled,
+        "cooling": {
+            "rate_limit_until": profile.rate_limit_cool_until,
+            "auth_until": profile.auth_cool_until,
+            "captcha_until": profile.captcha_cool_until,
+            "transport_until": profile.transport_cool_until,
+        },
+        "inflight": profile.inflight,
+        "quota": {
+            "observed_at": profile.quota_observed_at,
+            "monthly_limit": profile.monthly_limit,
+            "monthly_usage": profile.monthly_usage,
+            "total_credits_left": profile.total_credits_left,
+        },
+        "calibration": calibration,
+    })
+}
+
 fn codex_window_value(c: &forward::codex::CodexWindowCapacityReport) -> Value {
     let round = |x: f64| (x * 100.0).round() / 100.0;
     let round_opt = |x: Option<f64>| x.map(round);
@@ -5780,6 +6043,11 @@ async fn ready(State(state): State<HttpState>) -> Response {
             .tripo3d
             .as_ref()
             .map(|tripo3d| tripo3d.readiness().is_ok())
+    } else if state.app.provider == forward::ProviderMode::Suno {
+        // Same contract as Tripo3D: a present Suno gateway must prove one live profile and
+        // intact delivery persistence; `suno=None` (default-off) stays ready and serves the
+        // stable disabled envelope.
+        state.app.suno.as_ref().map(|suno| suno.readiness().is_ok())
     } else {
         None
     };

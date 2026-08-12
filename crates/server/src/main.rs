@@ -1142,6 +1142,9 @@ async fn serve() -> Result<()> {
     if s.tripo3d.is_some() && (!authority.is_postgres() || !s.billing) {
         bail!("Tripo3D plane requires PostgreSQL billing authority");
     }
+    if s.suno.is_some() && (!authority.is_postgres() || !s.billing) {
+        bail!("Suno plane requires PostgreSQL billing authority");
+    }
     if matches!(
         s.provider,
         forward::ProviderMode::OpenAi | forward::ProviderMode::Gemini
@@ -1500,6 +1503,48 @@ async fn serve() -> Result<()> {
     } else {
         None
     };
+    let suno = if let Some(config) = s.suno.clone() {
+        let calibration_store = billing.clone().context(
+            "Suno provider requires the durable billing authority for settlement and calibration",
+        )?;
+        match forward::suno::SunoGateway::new_with_calibration(
+            config.clone(),
+            Some(calibration_store.clone()),
+        ) {
+            Ok(gateway) => {
+                let live = gateway.preflight().await;
+                if live > 0 {
+                    elog::info("server", format!("Suno backend preflight passed: live_profiles={live}"));
+                } else {
+                    // The dedicated plane's cold roster keeps the slot not-ready through the
+                    // gateway readiness check rather than dying here.
+                    elog::warn(
+                        "server",
+                        "Suno backend has no authenticated profile; /v1/audio/* fails closed",
+                    );
+                }
+                tokio::spawn(poller::suno_maintenance_loop(gateway.clone()));
+                Some(gateway)
+            }
+            Err(_) => {
+                // Do not render the error: proxy parsing failures may embed credentialed egress.
+                // Keep the gateway present with zero capacity: the plane's routes must fail
+                // closed, and a later last-good roster reload can recover it.
+                elog::error(
+                    "server",
+                    "Suno backend initialization failed; /v1/audio/* fails closed",
+                );
+                let gateway = Arc::new(forward::suno::SunoGateway::new_degraded(
+                    config,
+                    Some(calibration_store),
+                ));
+                tokio::spawn(poller::suno_maintenance_loop(gateway.clone()));
+                Some(gateway)
+            }
+        }
+    } else {
+        None
+    };
     let app = AppState {
         provider: s.provider,
         cfg: Arc::new(s.proxy.clone()),
@@ -1518,8 +1563,7 @@ async fn serve() -> Result<()> {
         kimi,
         glm,
         tripo3d,
-        // The Suno plane composes with its server wiring; until then it is simply absent.
-        suno: None,
+        suno,
         billing,
         authority_ready: authority_ready.clone(),
         breaker: Arc::new(forward::Breaker::new(fleet_size)),
@@ -1746,6 +1790,14 @@ async fn serve() -> Result<()> {
         // reservation stays with its lease and the reconciler — never a settlement from
         // ignorance. The billing writer stays open until every drain has crossed this barrier.
         tripo3d.shutdown_until(shutdown_deadline).await;
+    }
+    if let Some(suno) = &flush_app.suno {
+        // A disconnected Suno generation keeps draining: poll to final, artifact download,
+        // settlement (attributed delta, else the documented reserve), paired FIFO delivery. On
+        // the deadline the drains stop mid-poll and the reservation stays with its lease and
+        // the reconciler — never a settlement from ignorance. The billing writer stays open
+        // until every drain has crossed this barrier.
+        suno.shutdown_until(shutdown_deadline).await;
     }
     elog::info("server", "graceful shutdown: дренирую очередь биллинга + флаш пула");
     // Завершённые/оборванные стримы поставили settle в очередь DB-актора. Даже после deadline ждём

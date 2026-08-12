@@ -459,7 +459,7 @@ for settlement_evidence in \
   apitoken_settlement_uncollected_nano \
   'SUM(uncollected_nano)' \
   'amount_nano::numeric / official_nano' \
-  "VALUES ('anthropic'), ('openai'), ('google'), ('kimi'), ('glm'), ('tripo3d')"; do
+  "VALUES ('anthropic'), ('openai'), ('google'), ('kimi'), ('glm'), ('tripo3d'), ('suno')"; do
   grep -Fq "$settlement_evidence" "$ROOT/deploy/collect-monitoring-metrics.sh" \
     || { printf 'settlement evidence collector is missing %s\n' "$settlement_evidence" >&2; exit 1; }
 done
@@ -782,6 +782,44 @@ for gated_alert in Tripo3dNoLiveProfiles Tripo3dNoAvailableProfiles Tripo3dError
   Tripo3dBalanceWalled; do
   grep -F "alert: $gated_alert" -A 2 "$ROOT/observability/prometheus/rules/application.yml" \
     | grep -Fq 'claude_api_tripo3d_enabled == 1' \
+    || { printf '%s is not gated on the provider being enabled\n' "$gated_alert" >&2; exit 1; }
+done
+# The backend-only Suno plane runs on its own dedicated delivery mode: its aggregate series
+# are scraped on the plane's target and deliberately carry no provider label — the
+# claude_api_suno_ name prefix is the discriminator, so the scoping pin here is the enabled
+# gate, not a label selector.
+for suno_metric in \
+  'claude_api_suno_live_profiles' \
+  'claude_api_suno_available_profiles' \
+  'claude_api_suno_calibration_persistence_ok' \
+  'claude_api_suno_calibration_pending_events' \
+  'claude_api_suno_quota_last_observation_timestamp_seconds' \
+  'claude_api_suno_quota_walled_profiles' \
+  'claude_api_suno_requests_total' \
+  'claude_api_suno_failures_total'; do
+  grep -Fq "$suno_metric" "$ROOT/crates/server/src/http.rs" \
+    || { printf 'engine does not export %s\n' "$suno_metric" >&2; exit 1; }
+  grep -Fq "$suno_metric" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'no alert rule consumes %s\n' "$suno_metric" >&2; exit 1; }
+done
+for suno_alert in SunoNoLiveProfiles SunoNoAvailableProfiles SunoErrorShareHigh \
+  SunoCalibrationPersistenceFailed SunoCalibrationBacklog SunoQuotaStale \
+  SunoQuotaWalled; do
+  grep -Fq "alert: $suno_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'missing Suno alert %s\n' "$suno_alert" >&2; exit 1; }
+  anchor=$(printf '%s' "$suno_alert" | tr '[:upper:]' '[:lower:]')
+  grep -Fq "docs/ops/MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'alert %s has no runbook anchor\n' "$suno_alert" >&2; exit 1; }
+  grep -Fqi "## $suno_alert" "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$suno_alert" >&2; exit 1; }
+done
+# Every Suno rule is gated on the default-off plane being enabled, or it would page for a
+# surface nobody is serving.
+for gated_alert in SunoNoLiveProfiles SunoNoAvailableProfiles SunoErrorShareHigh \
+  SunoCalibrationPersistenceFailed SunoCalibrationBacklog SunoQuotaStale \
+  SunoQuotaWalled; do
+  grep -F "alert: $gated_alert" -A 2 "$ROOT/observability/prometheus/rules/application.yml" \
+    | grep -Fq 'claude_api_suno_enabled == 1' \
     || { printf '%s is not gated on the provider being enabled\n' "$gated_alert" >&2; exit 1; }
 done
 for anthropic_metric in claude_api_breaker_open claude_api_subs claude_api_cooling \

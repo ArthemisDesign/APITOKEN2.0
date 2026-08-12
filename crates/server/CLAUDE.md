@@ -218,7 +218,7 @@ background loops and the HTTP router. Here — and only here — everything is w
   key/account identity and does not reserve/settle. The endpoint is identical on all fixed planes and
   loopback-only; `crates/router` calls it before materializing each universal request body.
 - The control endpoints (`/health`, `/pool`, `/capacity`, `/fleet-history`, `/settlement-health`,
-  `/codex-subs`, `/gemini-subs`, `/kimi-subs`, `/glm-subs`, `/tripo3d-subs`, `/admin/*`) live here; everything else → forwarding. `/capacity`,
+  `/codex-subs`, `/gemini-subs`, `/kimi-subs`, `/glm-subs`, `/tripo3d-subs`, `/suno-subs`, `/admin/*`) live here; everything else → forwarding. `/capacity`,
   `/codex-subs` and `/gemini-subs` serialize a safe paid-plan identity for the protected
   `admin.apitoken.sale/sales/calculator`; this classifier is not a credential. `/codex-subs`
   is gated by `control_authed` and returns only an opaque home id plus a bounded email hint (the first four
@@ -360,6 +360,26 @@ background loops and the HTTP router. Here — and only here — everything is w
   artifact directory, an encrypted keyring (the active kid, when set, must exist in it) and a
   positive poll interval. No production units or Caddy routes exist for this plane yet — the
   activation boundary is dormant by design (manifest §8).
+- Suno shutdown follows the same task-lifecycle shape as Tripo3D: closes admission and steady
+  maintenance, waits for the detached generation drains (poll → artifact download → settlement
+  from the attributed credit delta, else the documented reserve → paired FIFO), and on the
+  deadline stops the drains mid-poll — the reservation stays with its lease and the reconciler,
+  never a settlement from ignorance — then runs the final turn-before-quota pass under the same
+  deadline, inside the shared billing flush.
+- The backend-only Suno switch is read here as a strict default-off set
+  `CLAUDE_API_SUNO_{ENABLED,ROSTER_DIR,CREDENTIAL_KEYS,CREDENTIAL_ACTIVE_KID,QUOTA_POLL_SECS,ARTIFACT_DIR}`
+  and is passed whole to `forward::suno::config::build`; it composes only in
+  `ProviderMode::Suno` (`CLAUDE_API_PROVIDER=suno`), which mounts `/suno-subs` and the bounded
+  audio surface (`POST /v1/audio/generations`, `POST /v1/audio/uploads`,
+  `GET /v1/audio/generations/{id}[ /artifact/{name}]`) and answers every other path with a
+  bounded 404 — there is no Claude pool to fall into. The absence of a fleet base-URL override
+  is intentional: the provider has one platform with fixed official hosts
+  (`docs/engine/SUNO_PROVIDER.md` §2), so `CLAUDE_API_SUNO_BASE_URL` is rejected fail-closed as
+  an unknown key rather than ignored as dormant junk. A disabled plane does not validate dormant
+  values; an enabled plane fail-closed requires an absolute roster and artifact directory, an
+  encrypted keyring (the active kid, when set, must exist in it) and a positive poll interval.
+  No production units or Caddy routes exist for this plane yet — the activation boundary is
+  dormant by design (manifest §8).
 - Claude shutdown, after the stream drain, calls the shared billing FIFO barrier: a pending calibration head
   is retried until the outbox reconcile; the process does not declare the flush successful while exact evidence remains
   unapplied.

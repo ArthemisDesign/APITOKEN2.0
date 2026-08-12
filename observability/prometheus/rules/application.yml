@@ -716,6 +716,90 @@ groups:
           description: 'The provider refused task creation with 403 code 2010; the profile stays out of rotation until a balance probe shows funds — a top-up signal, not a transient.'
           runbook: 'docs/ops/MONITORING.md#tripo3dbalancewalled'
 
+  # The backend-only Suno (subscription session pool) plane is optional and fail-closed on its
+  # own dedicated delivery mode. Every rule below is gated on claude_api_suno_enabled so a
+  # deployment with the provider switched off stays silent. Suno series are scraped on the
+  # plane's own target and deliberately carry no per-profile label; the suno_ name prefix is
+  # the discriminator.
+  - name: suno-provider
+    rules:
+      - alert: SunoNoLiveProfiles
+        expr: claude_api_suno_enabled == 1 and claude_api_suno_live_profiles == 0
+        for: 10m
+        labels:
+          severity: warning
+          component: suno-provider
+        annotations:
+          summary: 'Suno provider has no live profile'
+          description: 'The plane is enabled but no roster profile is authenticated; /v1/audio/* fails closed.'
+          runbook: 'docs/ops/MONITORING.md#sunonoliveprofiles'
+
+      - alert: SunoNoAvailableProfiles
+        expr: claude_api_suno_enabled == 1 and claude_api_suno_live_profiles > 0 and claude_api_suno_available_profiles == 0
+        for: 15m
+        labels:
+          severity: warning
+          component: suno-provider
+        annotations:
+          summary: 'Every Suno profile is rate-limited, quota-walled or cooling'
+          description: 'Live profiles exist but none is eligible for selection; Suno requests fail closed with an honest 429 until an axis clears.'
+          runbook: 'docs/ops/MONITORING.md#sunonoavailableprofiles'
+
+      - alert: SunoErrorShareHigh
+        expr: claude_api_suno_enabled == 1 and rate(claude_api_suno_requests_total[10m]) > 0.05 and rate(claude_api_suno_failures_total[10m]) / rate(claude_api_suno_requests_total[10m]) > 0.5
+        for: 15m
+        labels:
+          severity: warning
+          component: suno-provider
+        annotations:
+          summary: 'More than half of Suno plane requests are failing'
+          description: 'The error share of /v1/audio/* exceeded 50% over 10 minutes at a non-trivial request rate.'
+          runbook: 'docs/ops/MONITORING.md#sunoerrorsharehigh'
+
+      - alert: SunoCalibrationPersistenceFailed
+        expr: claude_api_suno_enabled == 1 and claude_api_suno_calibration_persistence_ok == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: suno-provider
+        annotations:
+          summary: 'Suno cannot persist calibration evidence'
+          description: 'Turn events or quota observations are not reaching PostgreSQL; measured capacity may not survive restart.'
+          runbook: 'docs/ops/MONITORING.md#sunocalibrationpersistencefailed'
+
+      - alert: SunoCalibrationBacklog
+        expr: claude_api_suno_enabled == 1 and claude_api_suno_calibration_pending_events > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: suno-provider
+        annotations:
+          summary: 'Suno calibration evidence is queued behind an undelivered head'
+          description: 'The bounded turn FIFO holds pending events, and the provider quota read is suspended by design until the head drains.'
+          runbook: 'docs/ops/MONITORING.md#sunocalibrationbacklog'
+
+      - alert: SunoQuotaStale
+        expr: claude_api_suno_enabled == 1 and claude_api_suno_live_profiles > 0 and time() - claude_api_suno_quota_last_observation_timestamp_seconds > 900
+        for: 15m
+        labels:
+          severity: warning
+          component: suno-provider
+        annotations:
+          summary: 'Suno quota observations have stopped refreshing'
+          description: 'The newest billing-info observation is older than three default poll intervals (3 x 300s = 900s); every quota reading now reports a frozen value.'
+          runbook: 'docs/ops/MONITORING.md#sunoquotastale'
+
+      - alert: SunoQuotaWalled
+        expr: claude_api_suno_enabled == 1 and claude_api_suno_quota_walled_profiles > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: suno-provider
+        annotations:
+          summary: 'A Suno account is resting on a quota-exhaustion verdict'
+          description: 'The billing probe shows the profile cannot spend; it stays out of rotation until a probe shows credits again — a monthly-refill or plan signal, not a transient.'
+          runbook: 'docs/ops/MONITORING.md#sunoquotawalled'
+
   - name: durable-business-state
     rules:
       - alert: DurableQueueBacklog
