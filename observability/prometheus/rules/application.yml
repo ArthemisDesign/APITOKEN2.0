@@ -120,7 +120,7 @@ groups:
 
       - alert: AnthropicQuotaSnapshotStale
         expr: claude_api_anthropic_quota_snapshot_subscriptions{provider="anthropic"} > 0 and time() - claude_api_anthropic_quota_last_observation_timestamp_seconds{provider="anthropic"} > 900
-        for: 5m
+        for: 15m
         labels:
           severity: warning
           component: claude-engine

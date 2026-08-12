@@ -548,6 +548,11 @@ serving slot. A blue-green cutover or restart clears the in-memory snapshots by 
 resolves itself within a few minutes as the new leader probes the fleet; a value that keeps growing
 past that does not.
 
+The alert requires 15 minutes of staleness (`for: 15m`, aligned with `KimiQuotaStale` and
+`GlmQuotaStale`), so the brief 10–20 minute freezes a busy small fleet produces while a
+header-carrying response or post-turn probe lands again do not page. Only stalls sustained past a
+quarter hour do; those are the ones worth an operator look.
+
 Distinguish this from **AnthropicCalibrationPersistenceFailed**: that alert means the money
 authority is undelivered while the provider quota is still fresh and visible. This alert means the
 provider quota itself is frozen. They fire independently and have different causes.
