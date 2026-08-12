@@ -317,8 +317,11 @@ Only an authenticated `POST /proxy-admin/renew` may manually extend selected dur
 inventory IDs, after the idempotency request has been committed to private SQLite. The exact
 allocation IP is snapshotted privately; selected allocations sharing an order are sent in one
 selective extension call and receive separate per-inventory events. Before the paid extend, renewal
-repeats the durable exact binding, authoritative liveness and local subscription-expiry checks;
-`expires_at <= now` is `local_profile_inactive` and performs no provider extend. Queued and active requests are selection-exclusive: after same-key exact replay handling, a new UUID
+repeats the durable exact binding, authoritative liveness and provider-order checks. The additive
+`operator_renewable` inventory field ignores only local subscription expiry. An authenticated renew
+request may explicitly set `allow_inactive_subscription=true`; the default remains false, and the
+choice is snapshotted inside the idempotent request. The override does not bypass liveness, binding,
+provider-order, overlap or uncertainty safeguards. Queued and active requests are selection-exclusive: after same-key exact replay handling, a new UUID
 whose inventory or exact order/allocation overlaps a `pending` or `in_progress` request receives safe
 `409 renewal_selection_busy` before insertion, while disjoint requests may proceed. At claim time,
 an explicitly requested pending row wins; the background claimant chooses the oldest `(created_at,

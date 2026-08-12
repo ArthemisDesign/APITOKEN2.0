@@ -198,6 +198,8 @@ pub struct RenewalSelection {
     pub inventory_id: String,
     pub order_id: i64,
     pub allocation_ip: IpAddr,
+    #[serde(default)]
+    pub allow_inactive_subscription: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -4143,6 +4145,7 @@ impl Store {
                     allocation_ip: binding
                         .allocation_ip
                         .context("renewal selection allocation is unresolved")?,
+                    allow_inactive_subscription: false,
                 })
             })
             .collect::<Result<Vec<_>>>()?;

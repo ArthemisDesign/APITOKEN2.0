@@ -80,7 +80,10 @@ defense can protect against such in-process code. Authbot otherwise uses the sha
   decimal nanoUSD string, an aggregate auto-extend warning, and sanitized rows. The item key set is
   `inventory_id`, `account_email`, `proxy_hint`, `order_hint`, `provider`, `subscription_plan`,
   `liveness`, `subscription_expires_at`, `proxy_expires_at`, `binding_status`, `renewable`,
-  `renew_block_code`. `account_email` is restricted to an ASCII local part using alphanumerics plus
+  additive `operator_renewable`, `renew_block_code`. `renewable` remains the legacy decision for a
+  request without an operator override; `operator_renewable` reports whether the same row can be
+  explicitly renewed when local subscription expiry alone would otherwise block it. `account_email`
+  is restricted to an ASCII local part using alphanumerics plus
   ``.!#$%&'*+/=?^_`{|}~-`` (no edge/consecutive dots, at most 64 bytes), followed by DNS-style
   domain labels (alphanumeric/hyphen, no edge hyphen, at most 63 bytes each and 254 bytes total). Full
   `account_email` is the sole managed-admin identity exception: it is
@@ -107,10 +110,13 @@ defense can protect against such in-process code. Authbot otherwise uses the sha
   `http://127.0.0.1:8792/codex-subs` and `http://127.0.0.1:8794/gemini-subs`. They accept only HTTP
   with a literal loopback host, the exact provider path, and no credentials, query, fragment or
   external origin.
-- `POST /proxy-admin/renew` accepts only `{idempotency_key: UUID, inventory_ids: string[1..100]}`
-  and additionally requires the verified `X-Admin-Actor`. Before a paid extension it repeats the
-  durable exact-binding, authoritative-liveness and local subscription-expiry checks;
-  `subscription_expires_at <= now` fails as `local_profile_inactive` without calling the provider.
+- `POST /proxy-admin/renew` accepts `{idempotency_key: UUID, inventory_ids: string[1..100],
+  allow_inactive_subscription?: boolean}` and additionally requires the verified `X-Admin-Actor`.
+  The optional flag defaults to `false` for mixed-version compatibility and is snapshotted inside
+  the idempotent request. When an operator explicitly sends `true`, local subscription expiry is
+  informational and does not restrict renewal while the exact-bound profile is still live. Before
+  every paid extension authbot still repeats the durable exact-binding, authoritative-liveness and
+  provider-order checks.
   It groups allocations by order and reports per-inventory `renewed|failed|uncertain`. After exact
   same-key replay handling, a different UUID overlapping a `pending` or `in_progress` inventory ID
   or exact order/allocation receives `409 renewal_selection_busy` before insertion, so it cannot

@@ -26,6 +26,7 @@ fn selection(marker: char, order_id: i64, allocation_ip: &str) -> RenewalSelecti
         inventory_id: inventory_id(marker),
         order_id,
         allocation_ip: allocation_ip.parse().unwrap(),
+        allow_inactive_subscription: false,
     }
 }
 
@@ -347,6 +348,7 @@ fn renewal_creation_rejects_pending_and_in_progress_overlap_without_queueing() {
                 inventory_id: queued_selection.inventory_id.clone(),
                 order_id: 82,
                 allocation_ip: "198.51.100.82".parse().unwrap(),
+                allow_inactive_subscription: false,
             }],
             "admin",
         )
@@ -368,6 +370,7 @@ fn renewal_creation_rejects_pending_and_in_progress_overlap_without_queueing() {
                 inventory_id: inventory_id('b'),
                 order_id: queued_selection.order_id,
                 allocation_ip: queued_selection.allocation_ip,
+                allow_inactive_subscription: false,
             }],
             "admin",
         )
@@ -395,6 +398,7 @@ fn direct_claim_terminalizes_legacy_overlap_sibling_and_preserves_disjoint() {
         inventory_id: inventory_id('d'),
         order_id: winner_selection.order_id,
         allocation_ip: winner_selection.allocation_ip,
+        allow_inactive_subscription: false,
     };
     let disjoint_selection = selection('e', 84, "198.51.100.84");
     let winner_id = insert_legacy_pending_request(&s, "legacy-direct-winner", &winner_selection);
@@ -455,6 +459,7 @@ fn background_claim_chooses_oldest_legacy_winner_and_terminalizes_overlap() {
         inventory_id: inventory_id('g'),
         order_id: winner_selection.order_id,
         allocation_ip: winner_selection.allocation_ip,
+        allow_inactive_subscription: false,
     };
     let disjoint_selection = selection('h', 102, "192.0.2.102");
     let winner_id = insert_legacy_pending_request(&s, "background-winner", &winner_selection);

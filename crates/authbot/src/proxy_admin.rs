@@ -442,6 +442,7 @@ struct InventoryItem {
     proxy_expires_at: Option<i64>,
     binding_status: BindingStatus,
     renewable: bool,
+    operator_renewable: bool,
     renew_block_code: Option<&'static str>,
 }
 
@@ -678,6 +679,7 @@ fn renewable_guard(
     binding: &ProxyBinding,
     provider: &ProviderSnapshot,
     local: &LocalProjection,
+    allow_inactive_subscription: bool,
 ) -> std::result::Result<i64, &'static str> {
     if !provider.inventory_ok || !local.source_ok {
         return Err("source_unavailable");
@@ -704,7 +706,7 @@ fn renewable_guard(
     if !matches!(binding.provider.as_str(), "claude" | "codex" | "gemini") {
         return Err("binding_mismatch");
     }
-    if state.expires_at <= unix_now()
+    if (!allow_inactive_subscription && state.expires_at <= unix_now())
         || !state.renewable_eligible
         || !matches!(state.liveness, Liveness::Live | Liveness::Degraded)
     {
@@ -745,7 +747,8 @@ fn project_subscription_item(
         .collect(),
         source_ok: true,
     };
-    let guard = renewable_guard(binding, provider, &local);
+    let guard = renewable_guard(binding, provider, &local, false);
+    let operator_guard = renewable_guard(binding, provider, &local, true);
     InventoryItem {
         inventory_id: binding.inventory_id.clone(),
         account_email: subscription.account_email.clone(),
@@ -758,6 +761,7 @@ fn project_subscription_item(
         proxy_expires_at,
         binding_status: BindingStatus::Bound,
         renewable: guard.is_ok(),
+        operator_renewable: operator_guard.is_ok(),
         renew_block_code: guard.err(),
     }
 }
@@ -1224,6 +1228,8 @@ fn opaque_claude_local_id(email: &str) -> String {
 struct RenewBody {
     idempotency_key: String,
     inventory_ids: Vec<String>,
+    #[serde(default)]
+    allow_inactive_subscription: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1341,7 +1347,21 @@ async fn renew_handler(
                     .store
                     .get_proxy_binding_by_inventory_id(inventory_id)
                 {
-                    Ok(Some(binding)) => selections.push((inventory_id.clone(), binding.order_id)),
+                    Ok(Some(binding)) => {
+                        let Some(allocation_ip) = binding.allocation_ip else {
+                            return error_response(
+                                StatusCode::BAD_REQUEST,
+                                "unknown_inventory_id",
+                                "inventory selection contains an unknown id",
+                            );
+                        };
+                        selections.push(RenewalSelection {
+                            inventory_id: inventory_id.clone(),
+                            order_id: binding.order_id,
+                            allocation_ip,
+                            allow_inactive_subscription: body.allow_inactive_subscription,
+                        });
+                    }
                     Ok(None) | Err(_) => {
                         return error_response(
                             StatusCode::BAD_REQUEST,
@@ -1352,7 +1372,7 @@ async fn renew_handler(
                 }
             }
             let request =
-                match runtime.store.create_or_get_renewal_request(
+                match runtime.store.create_or_get_renewal_request_exact(
                     &body.idempotency_key,
                     &selections,
                     actor,
@@ -1654,7 +1674,12 @@ async fn process_request(runtime: &Arc<Runtime>, request: RenewalRequest) {
                 }
             };
             let local = load_binding_projection(runtime.clone(), &binding).await;
-            if let Err(code) = renewable_guard(&binding, &provider, &local) {
+            if let Err(code) = renewable_guard(
+                &binding,
+                &provider,
+                &local,
+                selection.allow_inactive_subscription,
+            ) {
                 outcome = Some(match code {
                     "source_unavailable" => RenewalEventOutcome::ProviderUnavailable,
                     "local_profile_inactive" => RenewalEventOutcome::LocalProfileInactive,
@@ -2135,7 +2160,7 @@ mod tests {
             Some("203.0.113.9"),
             Some(123456),
         )]);
-        assert!(renewable_guard(&binding, &complete_provider(123456), &local).is_ok());
+        assert!(renewable_guard(&binding, &complete_provider(123456), &local, false).is_ok());
         let inventory = inventory_response(
             complete_provider(123456),
             vec![binding.clone()],
@@ -2180,6 +2205,7 @@ mod tests {
                 "proxy_expires_at",
                 "binding_status",
                 "renewable",
+                "operator_renewable",
                 "renew_block_code",
             ]
             .into_iter()
@@ -2336,43 +2362,44 @@ mod tests {
             Some("203.0.113.9"),
             None,
         )]);
-        assert!(renewable_guard(&bound, &complete_provider(42), &live).is_ok());
+        assert!(renewable_guard(&bound, &complete_provider(42), &live, false).is_ok());
 
         let absent = local_projection(&[]);
         assert_eq!(
-            renewable_guard(&bound, &complete_provider(42), &absent),
+            renewable_guard(&bound, &complete_provider(42), &absent, false),
             Err("binding_mismatch")
         );
         let missing_ip =
             exact_local_projection(&[("claude-local", Liveness::Live, true, None, None)]);
         assert_eq!(
-            renewable_guard(&bound, &complete_provider(42), &missing_ip),
+            renewable_guard(&bound, &complete_provider(42), &missing_ip, false),
             Err("binding_mismatch")
         );
 
         let mut partial = complete_provider(42);
         partial.inventory_ok = false;
         assert_eq!(
-            renewable_guard(&bound, &partial, &live),
+            renewable_guard(&bound, &partial, &live, false),
             Err("source_unavailable")
         );
 
         let unknown_claude = local_projection(&[("claude-local", Liveness::Unknown, false)]);
         assert_eq!(
-            renewable_guard(&bound, &complete_provider(42), &unknown_claude),
+            renewable_guard(&bound, &complete_provider(42), &unknown_claude, false),
             Err("local_profile_inactive")
         );
         let mut expired = live.clone();
         expired.states.get_mut("claude-local").unwrap().expires_at = unix_now();
         assert_eq!(
-            renewable_guard(&bound, &complete_provider(42), &expired),
+            renewable_guard(&bound, &complete_provider(42), &expired, false),
             Err("local_profile_inactive")
         );
+        assert!(renewable_guard(&bound, &complete_provider(42), &expired, true).is_ok());
 
         let mut wrong_ip = complete_provider(42);
         wrong_ip.orders.get_mut(&42).unwrap().ips = vec!["203.0.113.10".into()];
         assert_eq!(
-            renewable_guard(&bound, &wrong_ip, &live),
+            renewable_guard(&bound, &wrong_ip, &live, false),
             Err("binding_mismatch")
         );
     }
@@ -2453,6 +2480,24 @@ mod tests {
         assert_eq!(response.items[0].liveness, Liveness::Degraded);
         assert_eq!(response.items[0].binding_status, BindingStatus::Bound);
         assert!(!response.items[0].renewable);
+        assert!(!response.items[0].operator_renewable);
+        assert_eq!(
+            response.items[0].renew_block_code,
+            Some("local_profile_inactive")
+        );
+    }
+
+    #[test]
+    fn inventory_exposes_operator_renewal_when_only_subscription_expired() {
+        let runtime = runtime(None);
+        let binding = binding(&runtime, "codex", "expired", 42);
+        let mut expired = subscription("gpt", "expired", Some(42), "203.0.113.9");
+        expired.expires_at = unix_now();
+
+        let response = inventory_response(complete_provider(42), vec![binding], vec![expired]);
+        assert_eq!(response.items.len(), 1);
+        assert!(!response.items[0].renewable);
+        assert!(response.items[0].operator_renewable);
         assert_eq!(
             response.items[0].renew_block_code,
             Some("local_profile_inactive")
@@ -2475,6 +2520,7 @@ mod tests {
         assert_eq!(available.items.len(), 1);
         assert_eq!(available.items[0].liveness, Liveness::Unknown);
         assert!(!available.items[0].renewable);
+        assert!(!available.items[0].operator_renewable);
 
         let unavailable = inventory_response(
             ProviderSnapshot::unavailable(),
@@ -2871,6 +2917,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec!["unknown".to_string()],
+                allow_inactive_subscription: false,
             }),
         )
         .await;
@@ -2898,6 +2945,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec!["unknown".to_string()],
+                allow_inactive_subscription: false,
             }),
         )
         .await;
@@ -2965,6 +3013,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec!["same".into(), "same".into()],
+                allow_inactive_subscription: false,
             }),
         )
         .await;
@@ -2979,6 +3028,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec!["unknown".into()],
+                allow_inactive_subscription: false,
             }),
         )
         .await;
@@ -3001,6 +3051,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![first_binding.inventory_id.clone()],
+                allow_inactive_subscription: false,
             }),
         )
         .await;
@@ -3015,6 +3066,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![first_binding.inventory_id],
+                allow_inactive_subscription: false,
             }),
         )
         .await;
@@ -3039,6 +3091,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![second_binding.inventory_id],
+                allow_inactive_subscription: false,
             }),
         )
         .await;
@@ -3069,6 +3122,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_B.to_string(),
                 inventory_ids: vec![first.inventory_id],
+                allow_inactive_subscription: false,
             }),
         )
         .await;
@@ -3089,6 +3143,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_C.to_string(),
                 inventory_ids: vec![second.inventory_id],
+                allow_inactive_subscription: false,
             }),
         )
         .await;
@@ -3114,6 +3169,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: pending.inventory_ids,
+                allow_inactive_subscription: false,
             }),
         )
         .await;
@@ -3138,6 +3194,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_B.to_string(),
                 inventory_ids: in_progress.inventory_ids,
+                allow_inactive_subscription: false,
             }),
         )
         .await;
@@ -3179,6 +3236,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![binding.inventory_id],
+                allow_inactive_subscription: false,
             }),
         )
         .await;
@@ -3247,7 +3305,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_local_profile_fails_before_paid_extend() {
+    async fn inactive_subscription_override_is_idempotent_and_renews_once() {
         let (client, extend_calls, server) = mock_iproyal().await;
         let runtime = runtime(Some(client));
         let binding = binding(&runtime, "codex", "expired", 42);
@@ -3261,26 +3319,27 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![binding.inventory_id.clone()],
+                allow_inactive_subscription: true,
             }),
         )
         .await;
         let value = response_json(response).await;
-        assert_eq!(value["status"], "failed");
+        assert_eq!(value["status"], "succeeded");
         assert_eq!(value["idempotent_replay"], false);
-        assert_eq!(value["results"][0]["result_code"], "local_profile_inactive");
+        assert_eq!(value["results"][0]["status"], "renewed");
         let request = runtime
             .store
             .get_renewal_request_by_key(UUID_A)
             .unwrap()
             .unwrap();
-        assert_eq!(request.state, RenewalRequestState::Failed);
+        assert_eq!(request.state, RenewalRequestState::Completed);
         let events = runtime.store.get_exact_renewal_events(request.id).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0].event.outcome,
-            RenewalEventOutcome::LocalProfileInactive
+            RenewalEventOutcome::Renewed
         );
-        assert_eq!(extend_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(extend_calls.load(Ordering::SeqCst), 1);
 
         let replay = renew_handler(
             State(runtime),
@@ -3288,18 +3347,16 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![binding.inventory_id],
+                allow_inactive_subscription: true,
             }),
         )
         .await;
         let replay = response_json(replay).await;
-        assert_eq!(replay["status"], "failed");
+        assert_eq!(replay["status"], "succeeded");
         assert_eq!(replay["idempotent_replay"], true);
-        assert_eq!(
-            replay["results"][0]["result_code"],
-            "local_profile_inactive"
-        );
+        assert_eq!(replay["results"][0]["status"], "renewed");
         assert_eq!(replay["results"], value["results"]);
-        assert_eq!(extend_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(extend_calls.load(Ordering::SeqCst), 1);
         server.abort();
     }
 
@@ -3322,6 +3379,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![binding.inventory_id.clone()],
+                allow_inactive_subscription: false,
             }),
         )
         .await;
@@ -3343,6 +3401,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_B.to_string(),
                 inventory_ids: vec![binding.inventory_id],
+                allow_inactive_subscription: false,
             }),
         )
         .await;
@@ -3366,6 +3425,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![binding.inventory_id],
+                allow_inactive_subscription: false,
             }),
         )
         .await;
@@ -3405,6 +3465,7 @@ mod tests {
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![first.inventory_id.clone(), second.inventory_id.clone()],
+                allow_inactive_subscription: false,
             }),
         )
         .await;
