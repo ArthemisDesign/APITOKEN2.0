@@ -13,8 +13,11 @@ export function Sidebar() {
   const pathname = usePathname();
   return (
     <aside>
-      <div className="brand">
-        api<i>Token</i>.sale<small>admin</small>
+      <div className="side-bar-head">
+        <div className="brand">
+          api<i>Token</i>.sale<small>admin</small>
+        </div>
+        <a className="skip-link" href="#main-content">К содержанию</a>
       </div>
       <nav aria-label="Разделы админ-панели">
         {NAV.map((group) => (

@@ -23,6 +23,7 @@ import { ago, count, formatDate, money } from "@/lib/format";
 import type { CommerceDashboard, EngineOverview } from "@/lib/types";
 import { CardGrid, Dot, EmptyRow, LoadingGrid, PageHead, Pill, SectionHeader, StatCard, TableCard } from "@/components/ui";
 import { useSpendStatsModal } from "@/components/spend-stats-modal";
+import { BusinessConversionDialog, type BusinessConversionTarget } from "./business-conversion-dialog";
 import {
   clampedOffset,
   buildUsersCsvRows,
@@ -184,6 +185,7 @@ export default function UsersPage() {
   // выборе (в легаси sort.onchange/dir.onchange вызывают общий apply формы).
   const [draft, setDraft] = useState({ q: "", status: "", auth: "", sort: "created_at" as UserSortKey, dir: "desc" as "asc" | "desc" });
   const [busy, setBusy] = useState<{ userId: string; action: string } | null>(null);
+  const [businessTarget, setBusinessTarget] = useState<BusinessConversionTarget | null>(null);
 
   const query = usersQuery(page);
   const { data: result, refresh } = usePoll(`/admin/users?${query}`, () => loadUsers(page));
@@ -284,31 +286,22 @@ export default function UsersPage() {
 
   const userAction = useCallback(
     async (user: AdminUser, action: UserAction) => {
+      if (action === "business") {
+        const currentDiscount = user.multiplier_bp == null ? 50 : Math.round(100 - user.multiplier_bp / 100);
+        setBusinessTarget({ user, initialDiscount: Math.min(95, Math.max(0, currentDiscount)) });
+        return;
+      }
       const values = await dialog({
         title: USER_ACTION_LABELS[action],
         message: user.email ?? undefined,
         confirmLabel: "Выполнить",
-        fields:
-          action === "business"
-            ? [
-                {
-                  name: "discount",
-                  label: "Договорная скидка, % (целое 0–95)",
-                  value: String(100 - (user.multiplier_bp ?? 0) / 100),
-                },
-              ]
-            : [],
+        fields: [],
         danger: action === "disable" || action === "bonus",
       });
       if (!values) return;
       const userId = String(user.id ?? "");
       setBusy({ userId, action });
       try {
-        const discount = action === "business" ? Number(values.discount) : null;
-        if (action === "business" && (discount == null || !Number.isInteger(discount) || discount < 0 || discount > 95)) {
-          toast("Нужно целое число от 0 до 95.", "bad");
-          return;
-        }
         let result: UserActionResult = {};
         if (action === "disable" || action === "enable") {
           result = await send<UserActionResult>(`/admin/users/${userId}/status`, "PATCH", {
@@ -321,12 +314,6 @@ export default function UsersPage() {
         }
         if (action === "totp") {
           result = await send<UserActionResult>(`/admin/users/${userId}/totp/reset`, "POST", { reason: PANEL_REASON });
-        }
-        if (action === "business") {
-          result = await send<UserActionResult>(`/admin/users/${userId}/convert-to-business`, "POST", {
-            reason: PANEL_REASON,
-            discountPercent: discount,
-          });
         }
         if (action === "bonus") {
           result = await send<UserActionResult>(`/admin/users/${userId}/bonus/revoke`, "POST", { reason: PANEL_REASON });
@@ -347,6 +334,29 @@ export default function UsersPage() {
       }
     },
     [refresh],
+  );
+
+  const convertToBusiness = useCallback(
+    async (discountPercent: number) => {
+      const target = businessTarget;
+      if (!target) return;
+      const userId = String(target.user.id ?? "");
+      setBusy({ userId, action: "business" });
+      try {
+        const result = await send<UserActionResult>(`/admin/users/${userId}/convert-to-business`, "POST", {
+          reason: PANEL_REASON,
+          discountPercent,
+        });
+        setBusinessTarget(null);
+        toast(`Готово · B2B, базовая скидка ${result.discount_percent ?? discountPercent}%`);
+        refresh();
+      } catch (cause) {
+        toast(cause instanceof Error ? cause.message : String(cause), "bad");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [businessTarget, refresh],
   );
 
   if (!result) {
@@ -525,6 +535,12 @@ export default function UsersPage() {
       <footer>Отключение синхронно блокирует engine-аккаунт и отзывает все сессии. Каждое действие аудируется.</footer>
 
       {spendStatsModal}
+      <BusinessConversionDialog
+        target={businessTarget}
+        submitting={busy?.action === "business"}
+        onClose={() => setBusinessTarget(null)}
+        onConfirm={(discountPercent) => void convertToBusiness(discountPercent)}
+      />
     </>
   );
 }

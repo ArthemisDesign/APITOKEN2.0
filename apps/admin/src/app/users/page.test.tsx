@@ -12,6 +12,7 @@ vi.mock("next/link", () => ({
 }));
 
 import UsersPage, { GIFT_CREDIT_REASON } from "./page";
+import { parseBusinessDiscount } from "./business-conversion-dialog";
 import { buildUsersCsvRows, clampedOffset, tierLabel, usersQuery, INITIAL_USER_PAGE } from "./users-lib";
 
 describe("Пользователи (users page)", () => {
@@ -31,6 +32,17 @@ describe("Пользователи (users page)", () => {
 
   it("names admin credit as a gift rather than external payment evidence", () => {
     expect(GIFT_CREDIT_REASON).toBe("admin panel gift credit (not an external payment)");
+  });
+});
+
+describe("B2B conversion", () => {
+  it("принимает только целую скидку в операторском диапазоне", () => {
+    expect(parseBusinessDiscount("0")).toBe(0);
+    expect(parseBusinessDiscount(" 63 ")).toBe(63);
+    expect(parseBusinessDiscount("95")).toBe(95);
+    expect(parseBusinessDiscount("96")).toBeNull();
+    expect(parseBusinessDiscount("10.5")).toBeNull();
+    expect(parseBusinessDiscount("")).toBeNull();
   });
 });
 

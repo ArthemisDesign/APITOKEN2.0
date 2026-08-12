@@ -10,7 +10,7 @@ import { usePoll } from "@/lib/usePoll";
 import { count, formatDate, money } from "@/lib/format";
 import { dialog } from "@/lib/dialog";
 import { toast } from "@/lib/toast";
-import { EmptyRow, LoadingGrid, Modal, PageHead, Pill, SectionHeader, TableCard } from "@/components/ui";
+import { EmptyRow, LoadingGrid, PageHead, Pill, TableCard } from "@/components/ui";
 import { DiscountDialog, type DiscountDialogTarget } from "./discount-dialog";
 import {
   copyText,
@@ -78,7 +78,7 @@ const InviteForm = memo(function InviteForm(props: {
     <form className="form-card business-invite-form" onSubmit={props.onSubmit}>
       <div className="field business-invite-email">
         <label htmlFor="business-invite-email">Email клиента</label>
-        <input id="business-invite-email" name="email" type="email" placeholder="client@company.com" autoComplete="off" />
+        <input id="business-invite-email" name="email" type="email" placeholder="client@company.com…" autoComplete="off" spellCheck={false} />
         <div className="sub">Не укажете email — готовая ссылка сразу скопируется.</div>
       </div>
       <div className="field">
@@ -106,10 +106,10 @@ export const CLIENTS_HEAD = (
   <thead>
     <tr>
       <th className="left">клиент</th>
-      <th>базовая скидка</th>
-      <th>баланс</th>
-      <th>аккаунт</th>
-      <th>доставка цены</th>
+      <th className="business-col-discount">базовая скидка</th>
+      <th className="business-col-balance">баланс</th>
+      <th className="business-col-status">аккаунт</th>
+      <th className="business-col-status">доставка цены</th>
       <th />
     </tr>
   </thead>
@@ -143,15 +143,15 @@ export function ClientRow(props: {
         <b>{user.email}</b>
         <div className="sub mono">{user.id}</div>
       </td>
-      <td>
+      <td className="business-col-discount">
         <div className="business-discount-value">{discount == null ? "—" : `${discount}%`}</div>
         <div className="sub">для всех провайдеров</div>
       </td>
-      <td className="business-balance">{money(user.balance_usd)}</td>
-      <td>
+      <td className="business-balance business-col-balance">{money(user.balance_usd)}</td>
+      <td className="business-col-status">
         <Pill kind={engine.kind}>{engine.label}</Pill>
       </td>
-      <td>
+      <td className="business-col-status">
         <Pill kind={pricing.kind}>{pricing.label}</Pill>
         {user.pricing_sync_error ? <div className="sub business-sync-error">{user.pricing_sync_error}</div> : null}
       </td>
@@ -394,69 +394,62 @@ export default function BusinessPage() {
   const invites = result.invites?.invites ?? [];
 
   return (
-    <>
+    <div className="business-page">
       <PageHead
         title="B2B"
         sub="Договорные скидки B2B-клиентов и приглашения"
         badge={<Pill kind="ok">{count(clientTotal, "клиент", "клиента", "клиентов")}</Pill>}
       />
 
-      <SectionHeader title="Новый B2B-инвайт" />
-      <InviteForm submitting={busyIds.has("submit")} onSubmit={submitInvite} />
+      <section className="business-section" aria-labelledby="business-clients-title">
+        <div className="business-section-head">
+          <div>
+            <h2 id="business-clients-title">B2B-клиенты</h2>
+            <p>Текущие условия и состояние их доставки в engine.</p>
+          </div>
+          <Pill>{count(clientTotal, "клиент", "клиента", "клиентов")}</Pill>
+        </div>
+        <TableCard>
+          <table className="business-client-table">
+            {CLIENTS_HEAD}
+            <tbody>
+              {clients.length ? clients.map((user) => (
+                <MemoClientRow key={user.id} user={user} busy={busyIds.has(`pricing:${user.id}`)} onPricing={openClientDiscounts} />
+              )) : <EmptyRow columns={6} />}
+            </tbody>
+          </table>
+        </TableCard>
+        <Pager offset={offset} limit={CLIENT_LIMIT} total={clientTotal} onPage={setOffset} />
+      </section>
 
-      <SectionHeader title="B2B-клиенты" sub={String(clientTotal)} />
-      <TableCard>
-        <table className="business-client-table">
-          {CLIENTS_HEAD}
-          <tbody>
-            {clients.length ? (
-              clients.map((user) => (
-                <MemoClientRow
-                  key={user.id}
-                  user={user}
-                  busy={busyIds.has(`pricing:${user.id}`)}
-                  onPricing={openClientDiscounts}
-                />
-              ))
-            ) : (
-              <EmptyRow columns={6} />
-            )}
-          </tbody>
-        </table>
-      </TableCard>
+      <section className="business-section" aria-labelledby="business-invite-title">
+        <div className="business-section-head">
+          <div>
+            <h2 id="business-invite-title">Приглашения</h2>
+            <p>Создайте доступ и отслеживайте доставку приглашения.</p>
+          </div>
+          <Pill>{count(invites.length, "инвайт", "инвайта", "инвайтов")}</Pill>
+        </div>
+        <InviteForm submitting={busyIds.has("submit")} onSubmit={submitInvite} />
+        <div className="business-invite-list-head">Последние приглашения</div>
+        <TableCard>
+          <table className="business-invite-table">
+            {INVITES_HEAD}
+            <tbody>
+              {invites.length ? invites.map((invite) => (
+                <InviteRow key={invite.id} invite={invite} busyCopy={busyIds.has(`copy:${invite.id}`)} busyResend={busyIds.has(`resend:${invite.id}`)} busyRevoke={busyIds.has(`revoke:${invite.id}`)} onCopy={copyInviteLink} onResend={resendInvite} onRevoke={revokeInvite} />
+              )) : <EmptyRow columns={6} />}
+            </tbody>
+          </table>
+        </TableCard>
+      </section>
 
-      <SectionHeader title="Последние инвайты" sub={String(invites.length)} />
-      <TableCard>
-        <table className="business-invite-table">
-          {INVITES_HEAD}
-          <tbody>
-            {invites.length ? (
-              invites.map((invite) => (
-                <InviteRow
-                  key={invite.id}
-                  invite={invite}
-                  busyCopy={busyIds.has(`copy:${invite.id}`)}
-                  busyResend={busyIds.has(`resend:${invite.id}`)}
-                  busyRevoke={busyIds.has(`revoke:${invite.id}`)}
-                  onCopy={copyInviteLink}
-                  onResend={resendInvite}
-                  onRevoke={revokeInvite}
-                />
-              ))
-            ) : (
-              <EmptyRow columns={6} />
-            )}
-          </tbody>
-        </table>
-      </TableCard>
-
-      <Pager offset={offset} limit={CLIENT_LIMIT} total={clientTotal} onPage={setOffset} />
       <DiscountDialog
         target={discountTarget}
         reason={PANEL_REASON}
         onClose={() => setDiscountTarget(null)}
         onSaved={refresh}
       />
-    </>
+    </div>
   );
 }

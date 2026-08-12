@@ -55,7 +55,9 @@ No secrets, and there never will be: the browser uses same-origin relative paths
 - `src/app/business` — B2B invitations and scalar commercial terms. The client table shows one
   row per customer, the default discount, engine-account state and the aggregate delivery state of
   the complete default-plus-provider bundle. The editor presents the default separately from
-  provider overrides; an empty provider value means inheritance, not a zero discount.
+  provider overrides; an empty provider value means inheritance, not a zero discount. The clients
+  and invitations are separate operator sections, while conversion from the Users page uses a
+  dedicated B2B dialog that explains the new base term before submission.
 - `src/app/paying-users/page.tsx` — one read-only control room with independently filtered
   `Клиенты` and `OpenKeys` cohorts. Only the active cohort mounts its 30-second poller. Commerce
   defaults to `funding=spenders`, retains the selected funding filter and always sends
