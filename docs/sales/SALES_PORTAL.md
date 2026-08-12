@@ -240,6 +240,20 @@ slice. Locally known usage through `reversedAt` must be completely allocated fir
 consumer additionally gates reversals on Commerce usage and funding-lot cursor catch-up: the Sales
 database cannot prove absence of a source row that has not arrived over HTTP.
 
+The deployed consumer now owns both reserved cursors. `topup_funding_lots` independently replays
+the canonical `topups-v2` stream from zero and snapshots each already recorded referred topup;
+analytics `topups_v2` remains untouched. A bounded reconciler walks scalar/v2 usage in immutable
+event order, consumes causally available payment lots by `commerce_topup_id` FIFO, and creates every
+commission slice with cumulative integer-floor rounding. A later source page cannot overtake an
+incomplete earlier usage for the same user. After reading a non-empty reversal page and before
+committing it, the consumer makes fresh usage and funding-lot requests; both must return no-advance
+pages, proving they reached a visibility cutoff no earlier than the one that exposed the reversal.
+Feed ids are independent sequences and are never compared.
+`payment-reversals` then commits the reversal, every exact negative adjustment and its cursor in one
+`SERIALIZABLE` transaction. Exact crash replay is a no-op; missing source evidence or any immutable
+field conflict leaves the cursor behind. This stage writes signed evidence but payout/earnings
+readers remain gross-only until their separate fail-closed net/debt rollout.
+
 ### Sales → Commerce: promo and registration (`apps/sales-api/src/internal.controller.ts`)
 
 Commerce calls sales-api at `SALES_API_URL` with the same `SALES_CONTROL_KEY`.

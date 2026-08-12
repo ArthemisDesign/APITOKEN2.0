@@ -65,6 +65,15 @@ exact negative slices when the lot is already reversed; otherwise the write fail
 consumer also proves both Commerce source cursors caught up before reversal processing, because a
 Sales-database constraint cannot see a Commerce row that has not crossed the HTTP boundary yet.
 
+`src/reversal-accounting.ts` implements the consumer-side writer after both schema migrations are
+green. It snapshots the independent commit-ordered funding-lot replay, allocates scalar/v2 usage by
+causal FIFO, allocates every commission row with the schema's cumulative integer-floor rule, and
+commits each reversal plus all exact negative entries and its source cursor in one `SERIALIZABLE`
+transaction. Every immutable replay is compared field-for-field. Missing lots, incomplete funding
+evidence and conflicts fail closed before cursor advance. The Sales sync loop additionally proves
+fresh usage and funding-lot requests made after a non-empty reversal page both return no-advance
+pages before admitting that reversal; their unrelated sequence values are never compared.
+
 ## Commands
 
 ```bash

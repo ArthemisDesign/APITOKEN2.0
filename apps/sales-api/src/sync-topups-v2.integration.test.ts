@@ -54,7 +54,8 @@ describe.runIf(Boolean(connectionString))("topups-v2 sync replay", () => {
 
   async function truncate(): Promise<void> {
     await database?.pool.query(`
-      TRUNCATE sync_cursors, pending_referral_events, referred_topups,
+      TRUNCATE sync_cursors, partner_paid_funding_lots,
+        pending_referral_events, referred_topups,
         referred_users, partners RESTART IDENTITY CASCADE
     `);
   }
@@ -111,5 +112,38 @@ describe.runIf(Boolean(connectionString))("topups-v2 sync replay", () => {
         (SELECT last_id::text FROM sync_cursors WHERE feed='topups_v2') AS cursor
     `);
     expect(replay.rows[0]).toEqual({ row_count: "1", cursor: golden.nextCursor });
+  });
+
+  it("replays the independent funding-lot cursor without moving analytics history", async () => {
+    serveGolden();
+    const sync = service();
+    await (sync as never as { syncTopups(): Promise<void> }).syncTopups();
+    await (sync as never as { syncFundingLots(): Promise<void> }).syncFundingLots();
+
+    const first = await database.pool.query<{
+      lots: string;
+      funding_cursor: string;
+      analytics_cursor: string;
+    }>(`
+      SELECT
+        (SELECT count(*)::text FROM partner_paid_funding_lots) AS lots,
+        (SELECT last_id::text FROM sync_cursors WHERE feed='topup_funding_lots') AS funding_cursor,
+        (SELECT last_id::text FROM sync_cursors WHERE feed='topups_v2') AS analytics_cursor
+    `);
+    expect(first.rows[0]).toEqual({
+      lots: "1",
+      funding_cursor: golden.nextCursor,
+      analytics_cursor: golden.nextCursor,
+    });
+
+    // Crash after immutable lot commit but before the independent cursor write.
+    await database.pool.query("UPDATE sync_cursors SET last_id=0 WHERE feed='topup_funding_lots'");
+    await (sync as never as { syncFundingLots(): Promise<void> }).syncFundingLots();
+    const replay = await database.pool.query<{ lots: string; cursor: string }>(`
+      SELECT
+        (SELECT count(*)::text FROM partner_paid_funding_lots) AS lots,
+        (SELECT last_id::text FROM sync_cursors WHERE feed='topup_funding_lots') AS cursor
+    `);
+    expect(replay.rows[0]).toEqual({ lots: "1", cursor: golden.nextCursor });
   });
 });

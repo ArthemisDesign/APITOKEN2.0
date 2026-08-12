@@ -434,9 +434,8 @@ export const commissionEntriesV2 = pgTable("commission_entries_v2", {
   `),
 ]);
 
-// Dormant reversal-accounting authority from migration 0017. These declarations expose only the
-// expanded schema; allocation/backfill, the payment-reversals consumer and signed readers ship in
-// a later checkpoint after this migration is green in production.
+// Reversal-accounting authority from migrations 0017/0018. The consumer/backfill writes this
+// immutable evidence; signed earnings and payout readers ship in the next explicit checkpoint.
 export const partnerPaidFundingLots = pgTable("partner_paid_funding_lots", {
   id: bigserial("id", { mode: "bigint" }).primaryKey(),
   referredTopupId: bigint("referred_topup_id", { mode: "bigint" }).notNull()

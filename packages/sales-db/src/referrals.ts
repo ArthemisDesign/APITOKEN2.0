@@ -1,6 +1,7 @@
 import type { SalesDatabase } from "./client.js";
 
-export type SyncFeed = "attributions" | "usage_events" | "topups" | "topups_v2";
+export type SyncFeed = "attributions" | "usage_events" | "topups" | "topups_v2"
+  | "topup_funding_lots" | "payment_reversals";
 
 export interface ReferredUserSummary {
   commerceUserId: string;

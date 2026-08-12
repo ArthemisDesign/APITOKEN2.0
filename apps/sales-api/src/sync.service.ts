@@ -5,6 +5,10 @@ import {
   advanceSyncCursor,
   claimReferralDiscount,
   getSyncCursor,
+  hasIncompletePartnerFundingEvidence,
+  reconcilePartnerFundingEvidence,
+  recordPaidFundingLot,
+  recordPaymentReversalPage,
   recordReferredDeposit,
   recordReferredSpend,
   recordReferredSpendV2,
@@ -46,6 +50,21 @@ export const topupV2Schema = z.object({
   userId: z.string().uuid(),
   amountNano: nanoStringSchema.refine((value) => value > 0n, "topup amount must be positive"),
   paidAt: z.string().datetime({ offset: true }).transform((value) => new Date(value)),
+});
+
+export const paymentReversalSchema = z.object({
+  id: canonicalPostgresBigintStringSchema.refine(
+    (value) => value > 0n,
+    "payment reversal id must be positive",
+  ),
+  paymentId: z.string().uuid(),
+  userId: z.string().uuid(),
+  kind: z.enum(["refund", "dispute"]),
+  amountNano: nanoStringSchema.refine(
+    (value) => value > 0n,
+    "payment reversal amount must be positive",
+  ),
+  reversedAt: z.string().datetime({ offset: true }).transform((value) => new Date(value)),
 });
 
 const nullableProviderIdSchema = z.string().min(1).nullable().optional()
@@ -179,15 +198,7 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
     while (!this.stopped) {
       // The loop itself is the overlap guard: the next tick starts only after this one ends.
       try {
-        await this.syncAttributions();
-        await this.syncTopups();
-        await this.syncUsageEvents();
-        // Догоняем события, пришедшие раньше атрибуции их юзера (буферы pending_referral_events
-        // для v1 и pending_referral_usage_events_v2 для release_v2).
-        const replayed = await reconcilePendingReferralEvents(this.database);
-        if (replayed > 0) this.logger.log(`reconciled ${replayed} buffered referral events`);
-        const replayedV2 = await reconcilePendingReferralUsageEventsV2(this.database);
-        if (replayedV2 > 0) this.logger.log(`reconciled ${replayedV2} buffered release-v2 usage events`);
+        await this.syncOnce();
       } catch (error) {
         this.logger.error(`sync iteration failed: ${message(error)}`);
       }
@@ -233,6 +244,23 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
     } finally {
       if (lastOk !== after) await advanceSyncCursor(this.database, "attributions", lastOk);
     }
+  }
+
+  /** Testable single-iteration boundary; production run() uses the same ordered pipeline. */
+  async syncOnce(): Promise<void> {
+    await this.syncAttributions();
+    await this.syncTopups();
+    await this.syncUsageEvents();
+    const replayed = await reconcilePendingReferralEvents(this.database);
+    if (replayed > 0) this.logger.log(`reconciled ${replayed} buffered referral events`);
+    const replayedV2 = await reconcilePendingReferralUsageEventsV2(this.database);
+    if (replayedV2 > 0) this.logger.log(`reconciled ${replayedV2} buffered release-v2 usage events`);
+    await this.syncFundingLots();
+    const funding = await reconcilePartnerFundingEvidence(this.database);
+    if (funding.completed > 0) {
+      this.logger.log(`completed funding evidence for ${funding.completed} usage events`);
+    }
+    await this.syncPaymentReversals();
   }
 
   /** Replays the legacy B2C referral marker into Commerce. It does not change pricing. */
@@ -281,16 +309,82 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
   }
 
   /**
+   * Independent replay of the same commit-ordered topup stream. It starts at zero and snapshots
+   * immutable funding lots without resetting or coupling the partner-visible topups-v2 cursor.
+   */
+  private async syncFundingLots(): Promise<boolean | undefined> {
+    const after = await getSyncCursor(this.database, "topup_funding_lots");
+    const page = await this.fetchFeed(
+      "topup_funding_lots",
+      `topups-v2?after_id=${after}&limit=500`,
+      topupV2Schema,
+      after,
+    );
+    if (!page) return undefined;
+    for (const row of page.items) {
+      await recordPaidFundingLot(this.database, {
+        commerceTopupId: row.id,
+        commercePaymentId: row.paymentId,
+        commerceUserId: row.userId,
+        amountNano: row.amountNano,
+        paidAt: row.paidAt,
+      });
+    }
+    if (page.nextCursor > after) {
+      await advanceSyncCursor(this.database, "topup_funding_lots", page.nextCursor);
+    }
+    return page.nextCursor === after;
+  }
+
+  /**
+   * Reversals are admitted only after both causal source feeds have reached the reversal page and
+   * every locally stored usage/commission row has complete funding evidence. The page writer owns
+   * the cursor transaction; no generic post-write cursor advance is allowed here.
+   */
+  private async syncPaymentReversals(): Promise<void> {
+    const after = await getSyncCursor(this.database, "payment_reversals");
+    const page = await this.fetchFeed(
+      "payment_reversals",
+      `payment-reversals?after_id=${after}&limit=500`,
+      paymentReversalSchema,
+      after,
+    );
+    if (!page || page.nextCursor === after) return;
+    // Feed identifiers live in independent PostgreSQL sequences and must never be compared. These
+    // post-page requests prove both older causal streams are drained through a visibility cutoff
+    // no earlier than the one that exposed this reversal.
+    const usageAtHead = await this.syncUsageEvents();
+    const fundingLotsAtHead = await this.syncFundingLots();
+    if (usageAtHead !== true || fundingLotsAtHead !== true) {
+      this.logger.warn(`payment reversal page ${page.nextCursor} waits for causal source feed heads`);
+      return;
+    }
+    await reconcilePartnerFundingEvidence(this.database);
+    if (await hasIncompletePartnerFundingEvidence(this.database)) {
+      this.logger.warn(`payment reversal page ${page.nextCursor} waits for complete funding evidence`);
+      return;
+    }
+    await recordPaymentReversalPage(this.database, page.items.map((row) => ({
+      commerceReversalId: row.id,
+      commercePaymentId: row.paymentId,
+      commerceUserId: row.userId,
+      kind: row.kind,
+      amountNano: row.amountNano,
+      reversedAt: row.reversedAt,
+    })), page.nextCursor);
+  }
+
+  /**
    * Маршрутизация по форме строки: schema v2 (release_v2, pricingMode null + полная lineage) —
    * в recordReferredSpendV2 (basis = exact paidFundedNano; bonus-funded часть НИКОГДА не
    * комиссионируется); schema v1 (B2C track) и legacy all-null — в recordReferredSpend.
    * Одно событие обрабатывается ровно одним writer'ом; курсор продвигается только когда вся
    * страница обработана (at-least-once).
    */
-  private async syncUsageEvents(): Promise<void> {
+  private async syncUsageEvents(): Promise<boolean | undefined> {
     const after = await getSyncCursor(this.database, "usage_events");
     const page = await this.fetchFeed("usage_events", `usage-events?after_id=${after}&limit=1000`, usageEventSchema);
-    if (!page) return;
+    if (!page) return undefined;
     for (const row of page.items) {
       if (row.form === "v2") {
         await recordReferredSpendV2(this.database, toReferredSpendV2Event(row));
@@ -306,6 +400,7 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
       });
     }
     if (page.nextCursor > after) await advanceSyncCursor(this.database, "usage_events", page.nextCursor);
+    return page.nextCursor === after;
   }
 
   private async fetchFeed<T extends { id: bigint }>(

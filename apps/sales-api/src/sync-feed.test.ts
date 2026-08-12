@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   parseCanonicalFeedPage,
   parseFeedPage,
+  paymentReversalSchema,
   SyncService,
   topupV2Schema,
   usageEventSchema,
@@ -14,6 +15,10 @@ import {
   recordReferredDeposit,
   recordReferredSpend,
   recordReferredSpendV2,
+  recordPaidFundingLot,
+  recordPaymentReversalPage,
+  hasIncompletePartnerFundingEvidence,
+  reconcilePartnerFundingEvidence,
 } from "@claude-api/sales-db";
 
 vi.mock("@claude-api/sales-db", async (importOriginal) => {
@@ -25,6 +30,10 @@ vi.mock("@claude-api/sales-db", async (importOriginal) => {
     recordReferredDeposit: vi.fn(async () => "recorded"),
     recordReferredSpend: vi.fn(async () => "recorded"),
     recordReferredSpendV2: vi.fn(async () => "recorded"),
+    recordPaidFundingLot: vi.fn(async () => "recorded"),
+    recordPaymentReversalPage: vi.fn(async () => undefined),
+    hasIncompletePartnerFundingEvidence: vi.fn(async () => false),
+    reconcilePartnerFundingEvidence: vi.fn(async () => ({ examined: 0, completed: 0 })),
   };
 });
 
@@ -189,6 +198,91 @@ describe("commit-ordered topups-v2 feed", () => {
     }), { status: 200 })));
     await expect((service() as never as { syncTopups(): Promise<void> }).syncTopups())
       .rejects.toThrow("db down");
+    expect(advanceSyncCursor).not.toHaveBeenCalled();
+  });
+});
+
+describe("payment reversal feed", () => {
+  const golden = JSON.parse(readFileSync(
+    new URL("../../../tests/contracts/sales-payment-reversals-feed.golden.json", import.meta.url),
+    "utf8",
+  )) as { row: Record<string, unknown>; nextCursor: string };
+
+  function service(): SyncService {
+    const config = {
+      get: (key: string) => ({
+        COMMERCE_BASE_URL: "http://127.0.0.1:8791",
+        SALES_CONTROL_KEY: "test-key",
+        SYNC_INTERVAL_MS: 60_000,
+      })[key],
+    };
+    return new SyncService({ pool: {} } as never, config as never);
+  }
+
+  function serveReversalWithCausalPages(input: {
+    usageCursor?: string;
+    fundingCursor?: string;
+  } = {}): ReturnType<typeof vi.fn> {
+    return vi.fn(async (request: Parameters<typeof fetch>[0]) => {
+      const url = request instanceof URL ? request : new URL(String(request));
+      if (url.pathname.endsWith("/payment-reversals")) {
+        return new Response(JSON.stringify({
+          items: [golden.row],
+          nextCursor: golden.nextCursor,
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        items: [],
+        nextCursor: url.pathname.endsWith("/usage-events")
+          ? (input.usageCursor ?? "0")
+          : (input.fundingCursor ?? "0"),
+      }), { status: 200 });
+    });
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("parses the exact producer golden and rejects unsafe variants", () => {
+    expect(paymentReversalSchema.parse(golden.row)).toMatchObject({
+      id: 77n,
+      kind: "refund",
+      amountNano: 9_007_199_254_740_993n,
+    });
+    expect(() => paymentReversalSchema.parse({ ...golden.row, id: 77 })).toThrow();
+    expect(() => paymentReversalSchema.parse({ ...golden.row, id: "077" })).toThrow();
+    expect(() => paymentReversalSchema.parse({ ...golden.row, kind: "cancel" })).toThrow();
+    expect(() => paymentReversalSchema.parse({ ...golden.row, amountNano: "0" })).toThrow();
+    expect(() => paymentReversalSchema.parse({ ...golden.row, reversedAt: 1_786_464_896_789 })).toThrow();
+  });
+
+  it("passes the canonical page to the atomic writer without a separate cursor advance", async () => {
+    vi.mocked(getSyncCursor).mockResolvedValueOnce(0n);
+    vi.stubGlobal("fetch", serveReversalWithCausalPages());
+
+    await (service() as never as { syncPaymentReversals(): Promise<void> }).syncPaymentReversals();
+
+    expect(recordPaymentReversalPage).toHaveBeenCalledWith(expect.anything(), [expect.objectContaining({
+      commerceReversalId: 77n,
+      amountNano: 9_007_199_254_740_993n,
+    })], 78n);
+    expect(advanceSyncCursor).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "payment_reversals",
+      expect.anything(),
+    );
+  });
+
+  it("keeps the reversal cursor behind while funding evidence is incomplete", async () => {
+    vi.mocked(getSyncCursor).mockResolvedValueOnce(0n);
+    vi.mocked(hasIncompletePartnerFundingEvidence).mockResolvedValueOnce(true);
+    vi.stubGlobal("fetch", serveReversalWithCausalPages());
+
+    await (service() as never as { syncPaymentReversals(): Promise<void> }).syncPaymentReversals();
+
+    expect(recordPaymentReversalPage).not.toHaveBeenCalled();
     expect(advanceSyncCursor).not.toHaveBeenCalled();
   });
 });
