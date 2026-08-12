@@ -1369,8 +1369,8 @@ const KIMI_PROFILE: KimiProfile = {
   quota: [
     {
       duration_secs: 18_000,
-      used_units: "25",
-      limit_units: "100",
+      used_units: 25,
+      limit_units: 100,
       used_fraction_units: 25_000_000,
       measurement_resolution_fraction_units: 1_000_000,
       resets_at: KIMI_NOW + 5_593,
@@ -1378,8 +1378,8 @@ const KIMI_PROFILE: KimiProfile = {
     },
     {
       duration_secs: 604_800,
-      used_units: "120",
-      limit_units: "1000",
+      used_units: 120,
+      limit_units: 1000,
       used_fraction_units: 12_000_000,
       measurement_resolution_fraction_units: 1_000_000,
       resets_at: KIMI_NOW + 600_000,
@@ -1624,8 +1624,8 @@ describe("KIMI capacity board (wire contract /kimi-subs)", () => {
               ...(KIMI_PROFILE.quota ?? []),
               {
                 duration_secs: 3_600,
-                used_units: "5",
-                limit_units: "20",
+                used_units: 5,
+                limit_units: 20,
                 used_fraction_units: 25_000_000,
                 measurement_resolution_fraction_units: 1_000_000,
                 resets_at: KIMI_NOW + 900,
@@ -1656,8 +1656,8 @@ describe("KIMI capacity board (wire contract /kimi-subs)", () => {
       plan: "kimi_for_coding",
       quota: [{
         duration_secs: 18_000,
-        used_units: "150",
-        limit_units: "300",
+        used_units: 150,
+        limit_units: 300,
         used_fraction_units: 50_000_000,
         measurement_resolution_fraction_units: 1_000_000,
         resets_at: KIMI_NOW + 3_000,
@@ -2559,8 +2559,8 @@ describe("kimiUsedPercent / kimiFleetUsedPercent (BigInt, без float)", () => 
 
   it("fleet-доля взвешивается по limit_units окон", () => {
     const profiles: KimiProfile[] = [
-      { live: true, quota: [{ duration_secs: 18_000, used_fraction_units: 25_000_000, limit_units: "100" }] },
-      { live: true, quota: [{ duration_secs: 18_000, used_fraction_units: 50_000_000, limit_units: "300" }] },
+      { live: true, quota: [{ duration_secs: 18_000, used_fraction_units: 25_000_000, limit_units: 100 }] },
+      { live: true, quota: [{ duration_secs: 18_000, used_fraction_units: 50_000_000, limit_units: 300 }] },
     ];
     // (25e6·100 + 50e6·300) / 400 = 43_750_000 → 43.8%.
     expect(kimiFleetUsedPercent(profiles, 18_000)).toEqual({ value: 43.8, label: "43.8%" });

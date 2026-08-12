@@ -1081,6 +1081,20 @@ impl KimiGateway {
             .map(|profile| profile.id.clone())
     }
 
+    /// Resolve a durable calibration subject to its opaque roster id and the raw provider plan
+    /// the profile currently carries. Calibration rows are keyed subject+plan+duration, so after
+    /// a plan change the subject holds rows of both cohorts and only the current one is this
+    /// profile's money. The raw plan is used only for that selection — like the subject, it is
+    /// never serialized.
+    pub fn profile_id_and_plan_for_subject(&self, subject_id: &str) -> Option<(String, String)> {
+        self.profiles
+            .read()
+            .expect("KIMI profiles lock")
+            .iter()
+            .find(|profile| profile.subject_id == subject_id)
+            .map(|profile| (profile.id.clone(), profile.plan.clone()))
+    }
+
     pub fn readiness(&self) -> Result<(), NotReady> {
         let status = self.operational_status();
         readiness(status.live_profiles, status.delivery.persistence_ok)

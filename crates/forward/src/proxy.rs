@@ -1059,6 +1059,12 @@ pub async fn forward(
         .and_then(|value| value.get("model"))
         .and_then(Value::as_str)
         .and_then(crate::kimi::KimiGateway::resolve_public_model);
+    if !billable && kimi_model.is_some() {
+        // A KIMI alias exists only on POST /v1/messages: the subscription route has no
+        // count_tokens sibling. Refuse here rather than forward the internal alias to the
+        // Claude upstream, whose unknown-model error would name neither the alias nor the cause.
+        return local_err(LocalErr::NotFound, None);
+    }
     if billable {
         if let Some(kimi_model) = kimi_model {
             let Some(gateway) = app.kimi.as_ref() else {

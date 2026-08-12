@@ -2689,6 +2689,32 @@ fn kimi_subs_value_joins_calibration_through_the_opaque_id_and_drops_unknown_sub
 }
 
 #[test]
+fn kimi_subs_value_publishes_only_the_current_plan_cohort() {
+    let fixture = KimiHttpFixture::new();
+    let gateway = fixture.gateway();
+    let mut current = kimi_calibration_row("subject-1");
+    current.samples = 2;
+    let mut stale = kimi_calibration_row("subject-1");
+    stale.plan = "Vivace".into();
+    stale.samples = 99;
+    let report = vec![stale, current];
+    let value = kimi_subs_value_with_report(
+        &gateway,
+        &unknown_kimi_status(),
+        1_800_000_100,
+        Some(&report),
+        None,
+    );
+    let calibration = &value["profiles"][0]["calibration"];
+    // Both rows share the subject and the window, but a plan change made "Vivace" a different
+    // cohort: only the profile's current plan is its money. The stale cohort stays durable for
+    // audit and is never published — without this filter the admin picked whichever row sorted
+    // first for the window.
+    assert_eq!(calibration.as_array().unwrap().len(), 1);
+    assert_eq!(calibration[0]["samples"], 2);
+}
+
+#[test]
 fn kimi_subs_value_keeps_unknown_capacity_and_remaining_null_never_zero() {
     let fixture = KimiHttpFixture::new();
     let gateway = fixture.gateway();
@@ -3213,6 +3239,31 @@ fn glm_subs_value_joins_calibration_through_the_opaque_id_and_drops_unknown_subj
     let wire = value.to_string();
     assert!(!wire.contains("subject"), "leaked subject digest");
     assert!(!wire.contains(&subject), "leaked subject digest value");
+}
+
+#[test]
+fn glm_subs_value_publishes_only_the_current_plan_cohort() {
+    let fixture = GlmHttpFixture::new();
+    let gateway = fixture.gateway();
+    let subject = forward::glm::roster::subject_id_of("zai-test-key-1");
+    let mut current = glm_calibration_row(&subject);
+    current.samples = 2;
+    let mut stale = glm_calibration_row(&subject);
+    stale.plan = "Max".into();
+    stale.samples = 99;
+    let report = vec![stale, current];
+    let value = glm_subs_value_with_report(
+        &gateway,
+        &unknown_glm_status(),
+        1_800_000_100,
+        Some(&report),
+    );
+    let calibration = &value["profiles"][0]["calibration"];
+    // Both rows share the subject and the window, but a plan change made "Max" a different
+    // cohort: only the profile's current plan is its money. The stale cohort stays durable for
+    // audit and is never published.
+    assert_eq!(calibration.as_array().unwrap().len(), 1);
+    assert_eq!(calibration[0]["samples"], 2);
 }
 
 #[test]

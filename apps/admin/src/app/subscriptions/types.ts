@@ -592,9 +592,9 @@ export interface GeminiSubsResponse {
 // сериализуются никогда: идентичность — opaque roster id + bounded plan label.
 export interface KimiQuotaWindow {
   duration_secs?: number;
-  /** Provider authority: used/limit — decimal native-unit строки. */
-  used_units?: string;
-  limit_units?: string;
+  /** Provider authority: used/limit — сырые native-unit счётчики (JSON numbers, i64). */
+  used_units?: number;
+  limit_units?: number;
   /** Доля использования в единицах 1e-8 (100% = 100_000_000), как у остальных флотов. */
   used_fraction_units?: number;
   measurement_resolution_fraction_units?: number;

@@ -312,7 +312,10 @@ disabled envelope `{"now": <unix>, "enabled": false, "profiles": []}`. An enable
 profiles, inflight, three cooling axes) and per-profile objects with cooling-until timestamps, the last
 quota snapshot per window (`used`/`limit` — provider authority, with the fraction and the real measurement
 resolution alongside) and per-window calibration from durable PostgreSQL evidence (samples, confidence,
-capacity/remaining as decimal nano strings, estimator version). For a safe live runner
+capacity/remaining as decimal nano strings, estimator version). Calibration rows are keyed
+subject+plan+duration, so after a plan change the subject carries rows of both cohorts: only the
+profile's **current** plan cohort is published — the stale one stays durable for audit, exactly
+like rows of a subject that left the roster. For a safe live runner
 the envelope additionally publishes `calibration_authority_available`,
 `calibration_recent_turn_limit` and `calibration_recent_turns` — immutable turn events
 (engine request id, opaque profile id, bounded plan label, served/requested model, full usage
@@ -342,7 +345,10 @@ a value for the window — a partial sum is never published) and per-profile obj
 account flags, cooling-until timestamps, the last quota snapshot per window (raw counters
 `null` while their unit semantics are unproven) and per-window calibration from durable PostgreSQL
 evidence (samples, confidence, capacity/remaining as decimal nano strings + exact native
-microcredits, estimator version). Redaction contract: only opaque profile ids and
+microcredits, estimator version). Calibration rows are keyed subject+plan+duration, so after a
+plan change the subject carries rows of both cohorts: only the profile's **current** plan cohort
+is published — the stale one stays durable for audit, exactly like rows of a subject that left
+the roster. Redaction contract: only opaque profile ids and
 bounded plan labels are serialized (the roster is limited to three reviewed individual plans anyway); the key's
 subject-digest, the key itself, proxy, base_url, credential path, customer/request id and raw provider errors
 are never serialized; the unknown is `null`, not 0. The plane is default-off: while GLM is not

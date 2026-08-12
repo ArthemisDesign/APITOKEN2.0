@@ -4297,9 +4297,15 @@ fn kimi_subs_value_with_report(
         Vec<&registry::KimiCalibrationRow>,
     > = std::collections::BTreeMap::new();
     for row in report.unwrap_or_default() {
-        let Some(id) = gateway.profile_id_for_subject(&row.subject_id) else {
+        let Some((id, plan)) = gateway.profile_id_and_plan_for_subject(&row.subject_id) else {
             continue;
         };
+        // Rows are keyed subject+plan+duration: after a plan change the subject carries rows of
+        // both cohorts, and only the current cohort is this profile's money. The stale cohort
+        // stays durable for audit but is NOT published — the same rule as roster-less subjects.
+        if row.plan != plan {
+            continue;
+        }
         calibration_by_profile.entry(id).or_default().push(row);
     }
     // The recent-turn attribution surface for the admin-only calibration runner: the same join,
@@ -4518,9 +4524,15 @@ fn glm_subs_value_with_report(
         Vec<&registry::GlmCalibrationRow>,
     > = std::collections::BTreeMap::new();
     for row in report.unwrap_or_default() {
-        let Some(id) = gateway.profile_id_for_subject(&row.subject_id) else {
+        let Some((id, plan)) = gateway.profile_id_and_plan_for_subject(&row.subject_id) else {
             continue;
         };
+        // Rows are keyed subject+plan+duration: after a plan change the subject carries rows of
+        // both cohorts, and only the current cohort is this profile's money. The stale cohort
+        // stays durable for audit but is NOT published — the same rule as roster-less subjects.
+        if row.plan != plan {
+            continue;
+        }
         calibration_by_profile.entry(id).or_default().push(row);
     }
     json!({
