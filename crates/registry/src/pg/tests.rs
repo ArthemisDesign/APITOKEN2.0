@@ -356,7 +356,7 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 49);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 50);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
@@ -460,7 +460,7 @@ fn tripo3d_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn tripo3d_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 49);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 50);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 49)
@@ -468,6 +468,126 @@ fn tripo3d_calibration_migration_is_registered_at_the_current_schema_version() {
     // Compare by content, not by identity: two `&str` constants over the same source are not
     // guaranteed to share an address.
     assert_eq!(registered, Some(MIGRATION_0049));
+    assert_eq!(
+        ENGINE_MIGRATIONS.last().map(|(version, _)| *version),
+        Some(CURRENT_SCHEMA_VERSION)
+    );
+}
+
+#[test]
+fn suno_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
+    // Strip `--` comment lines first: the header prose deliberately names the 0019, 0027,
+    // 0029 and 0049 authorities to explain why this migration stands beside them, and those
+    // mentions must not be mistaken for statements touching them.
+    let ddl = MIGRATION_0050
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let normalized = ddl.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for table in [
+        "suno_turn_calibration_events",
+        "suno_calibration_subject_spend",
+        "suno_window_observations",
+        "suno_window_calibrations",
+    ] {
+        assert!(
+            normalized.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")),
+            "missing Suno calibration table {table}",
+        );
+    }
+
+    // Expand-only: nothing is dropped, truncated or altered.
+    assert!(!normalized.contains(" DROP TABLE "));
+    assert!(!normalized.contains(" TRUNCATE "));
+    assert!(!normalized.contains(" DROP CONSTRAINT "));
+    assert!(!normalized.contains(" ALTER TABLE "));
+
+    // The shared 0019 authority, the KIMI 0027 authority, the GLM 0029 authority and the
+    // Tripo3D 0049 authority must all be left completely untouched: none of their durable
+    // identities can carry a schedule-derived per-turn native credit total on a monthly
+    // subscription window.
+    assert!(!normalized.contains("provider_turn_calibration_events"));
+    assert!(!normalized.contains("provider_calibration_subject_spend"));
+    assert!(!normalized.contains("kimi_turn_calibration_events"));
+    assert!(!normalized.contains("kimi_calibration_subject_spend"));
+    assert!(!normalized.contains("kimi_window_observations"));
+    assert!(!normalized.contains("kimi_window_calibrations"));
+    assert!(!normalized.contains("glm_turn_calibration_events"));
+    assert!(!normalized.contains("glm_calibration_subject_spend"));
+    assert!(!normalized.contains("glm_window_observations"));
+    assert!(!normalized.contains("glm_window_calibrations"));
+    assert!(!normalized.contains("tripo3d_turn_calibration_events"));
+    assert!(!normalized.contains("tripo3d_calibration_subject_spend"));
+    assert!(!normalized.contains("tripo3d_balance_observations"));
+    assert!(!normalized.contains("tripo3d_calibration_state"));
+
+    // Only the paid plans are admitted; Free is excluded by design.
+    assert!(normalized.contains("plan text NOT NULL CHECK (plan IN ('Pro', 'Premier'))"));
+
+    // The served model stays nullable until the live matrix pins the wire id spellings; the
+    // requested model is always known.
+    assert!(normalized.contains("requested_model text NOT NULL"));
+    assert!(normalized.contains("served_model text CHECK (served_model IS NULL"));
+    assert!(!normalized.contains("served_model text NOT NULL"));
+
+    // The upstream clip id is audit metadata, never the money identity: request_id is the PK.
+    assert!(normalized.contains("PRIMARY KEY (request_id)"));
+    assert!(normalized.contains("upstream_clip_id text NOT NULL"));
+
+    // Dual ledger at the reviewed derived fixed rate: the API nanoUSD leg is the exact
+    // fixed-rate image of the native millicredit leg, which also makes a partial zero
+    // impossible. A zero pair stays legal for a refunded failed generation.
+    assert!(normalized
+        .contains("native_total_millicredits bigint NOT NULL CHECK (native_total_millicredits >= 0)"));
+    assert!(normalized.contains("api_total_nanousd bigint NOT NULL CHECK (api_total_nanousd >= 0)"));
+    assert!(normalized.contains("CHECK (api_total_nanousd = native_total_millicredits * 4000)"));
+    assert!(normalized.contains("spent_api_nanousd bigint NOT NULL"));
+    assert!(normalized.contains("spent_native_millicredits bigint NOT NULL"));
+
+    // A schedule-derived native leg is flagged as such, never presented as provider truth.
+    assert!(normalized.contains("native_schedule_derived boolean NOT NULL"));
+
+    // The window dimension is present in full: paid plan and the exact native window duration
+    // are part of the durable identity, with the reset anchor stored only when `period`
+    // supplies it.
+    assert!(normalized.contains("PRIMARY KEY (subject_id, plan, window_duration_secs)"));
+    assert!(normalized.contains("reset_at bigint CHECK (reset_at IS NULL OR reset_at > 0)"));
+
+    // Raw quota counters are verbatim and nullable: unknown stays NULL, never 0. The raw
+    // `period` text is preserved. The derived fraction pair exists only when the field
+    // semantics allow it.
+    assert!(normalized.contains(
+        "native_used_units bigint CHECK (native_used_units IS NULL OR native_used_units >= 0)"
+    ));
+    assert!(normalized.contains("period_raw text CHECK (period_raw IS NULL OR period_raw <> '')"));
+    assert!(normalized.contains(
+        "used_fraction_units bigint CHECK (used_fraction_units IS NULL OR used_fraction_units BETWEEN 0 AND 100000000)"
+    ));
+    assert!(normalized.contains(
+        "(used_fraction_units IS NULL) = (measurement_resolution_fraction_units IS NULL)"
+    ));
+
+    // Quota arrives by poll and on responses; a response names its request, a poll invents
+    // none, and the dedup key treats NULL raw counters as equal.
+    assert!(normalized.contains("observation_source IN ('poll', 'response')"));
+    assert!(normalized.contains("source_request_id"));
+    assert!(normalized.contains("UNIQUE NULLS NOT DISTINCT"));
+
+    assert!(normalized.contains("INSERT INTO engine_schema_migrations(version) VALUES (50)"));
+}
+
+#[test]
+fn suno_calibration_migration_is_registered_at_the_current_schema_version() {
+    assert_eq!(CURRENT_SCHEMA_VERSION, 50);
+    let registered = ENGINE_MIGRATIONS
+        .iter()
+        .find(|(version, _)| *version == 50)
+        .map(|(_, sql)| *sql);
+    // Compare by content, not by identity: two `&str` constants over the same source are not
+    // guaranteed to share an address.
+    assert_eq!(registered, Some(MIGRATION_0050));
     assert_eq!(
         ENGINE_MIGRATIONS.last().map(|(version, _)| *version),
         Some(CURRENT_SCHEMA_VERSION)
@@ -1662,6 +1782,250 @@ fn tripo3d_calibration_postgres_matrix() {
         .batch_execute(
             "TRUNCATE tripo3d_calibration_state,tripo3d_balance_observations,\
              tripo3d_calibration_subject_spend,tripo3d_turn_calibration_events \
+             RESTART IDENTITY CASCADE",
+        )
+        .unwrap();
+    lock_holder
+        .client
+        .query_one(
+            "SELECT pg_advisory_unlock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+}
+
+/// Real PostgreSQL proof for immutable turn replay, cumulative dual-ledger spend, quota
+/// observation history and estimator-state CAS on the monthly-window Suno track. Skipped
+/// unless the dedicated destructive test database is supplied:
+/// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+/// pg::tests::suno_calibration_postgres_matrix`
+#[test]
+fn suno_calibration_postgres_matrix() {
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping Suno PostgreSQL calibration matrix: test URL is unset");
+        return;
+    };
+    let mut lock_holder = PgStore::connect(&url).unwrap();
+    lock_holder
+        .client
+        .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+        .unwrap();
+    lock_holder
+        .client
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    lock_holder
+        .client
+        .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+        .unwrap();
+
+    let mut pg = PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    pg.client
+        .batch_execute(
+            "TRUNCATE suno_window_calibrations,suno_window_observations,\
+             suno_calibration_subject_spend,suno_turn_calibration_events \
+             RESTART IDENTITY CASCADE",
+        )
+        .unwrap();
+
+    let event = SunoTurnCalibrationEvent {
+        request_id: "suno-pg-replay".into(),
+        subject_id: "suno-pg-subject".into(),
+        plan: "Pro".into(),
+        requested_model: "v5.5".into(),
+        served_model: None,
+        tariff_schedule_id: "suno/derived-subscription/2026-08-12".into(),
+        priced_ts: 190,
+        completed_at: 200,
+        upstream_clip_id: "clip_pg_1".into(),
+        native_total_millicredits: 5_000,
+        api_total_nanousd: 20_000_000,
+        native_schedule_derived: true,
+    };
+
+    // Two ambiguous replies may race from active and candidate blue-green generations. The
+    // immutable key must pick one insert while the loser observes an exact replay, not a
+    // unique-violation and never a second spend advance on either ledger.
+    let barrier = Arc::new(Barrier::new(2));
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        let url = url.clone();
+        let event = event.clone();
+        let barrier = Arc::clone(&barrier);
+        handles.push(std::thread::spawn(move || {
+            let mut pg = PgStore::connect(&url).unwrap();
+            barrier.wait();
+            pg.record_suno_turn(&event).unwrap()
+        }));
+    }
+    let mut insert_outcomes = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    insert_outcomes.sort_unstable();
+    assert_eq!(insert_outcomes, vec![false, true]);
+    assert_eq!(
+        pg.suno_subject_spend(&event.subject_id).unwrap(),
+        SunoSubjectSpend {
+            spent_api_nanousd: 20_000_000,
+            spent_native_millicredits: 5_000,
+        }
+    );
+
+    // Re-grading the same turn from schedule-derived to provider-reported under the same
+    // request id is a semantic conflict, never a silent update.
+    let mut conflict = event.clone();
+    conflict.native_schedule_derived = false;
+    let error = pg.record_suno_turn(&conflict).unwrap_err().to_string();
+    assert!(
+        error.contains("replay conflict"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        pg.suno_subject_spend(&event.subject_id).unwrap(),
+        SunoSubjectSpend {
+            spent_api_nanousd: 20_000_000,
+            spent_native_millicredits: 5_000,
+        }
+    );
+
+    // A finalized-but-failed generation with zero credit movement settles at the legal zero
+    // pair; out-of-order finalizers still retain the earliest tracking start and latest
+    // update.
+    let refunded = SunoTurnCalibrationEvent {
+        request_id: "suno-pg-refunded".into(),
+        priced_ts: 90,
+        completed_at: 100,
+        upstream_clip_id: "clip_pg_0".into(),
+        native_total_millicredits: 0,
+        api_total_nanousd: 0,
+        ..event.clone()
+    };
+    assert!(pg.record_suno_turn(&refunded).unwrap());
+    assert_eq!(
+        pg.suno_subject_spend(&event.subject_id).unwrap(),
+        SunoSubjectSpend {
+            spent_api_nanousd: 20_000_000,
+            spent_native_millicredits: 5_000,
+        }
+    );
+    let spend_times = pg
+        .client
+        .query_one(
+            "SELECT tracking_started_ts,updated_ts FROM suno_calibration_subject_spend \
+             WHERE subject_id=$1",
+            &[&event.subject_id],
+        )
+        .unwrap();
+    assert_eq!(
+        (spend_times.get::<_, i64>(0), spend_times.get::<_, i64>(1)),
+        (100, 200)
+    );
+
+    let observation = SunoWindowObservation {
+        subject_id: event.subject_id.clone(),
+        plan: event.plan.clone(),
+        window_duration_secs: 2_592_000,
+        reset_at: None,
+        observed_at: 300,
+        // Unproven field semantics: the raw counters stay NULL, never 0.
+        native_limit_units: None,
+        native_used_units: None,
+        native_remaining_units: None,
+        period_raw: Some("monthly".into()),
+        used_fraction_units: None,
+        measurement_resolution_fraction_units: None,
+        cumulative_api_nanousd: 20_000_000,
+        cumulative_native_millicredits: 5_000,
+        observation_source: "poll".into(),
+        source_request_id: None,
+    };
+    let state = SunoCalibrationRow {
+        subject_id: observation.subject_id.clone(),
+        plan: observation.plan.clone(),
+        window_duration_secs: observation.window_duration_secs,
+        reset_at: None,
+        anchor_used_fraction_units: None,
+        anchor_resolution_fraction_units: None,
+        anchor_spend_api_nanousd: observation.cumulative_api_nanousd,
+        anchor_spend_native_millicredits: observation.cumulative_native_millicredits,
+        used_fraction_units: None,
+        measurement_resolution_fraction_units: None,
+        observed_at: observation.observed_at,
+        native_limit_millicredits: None,
+        native_used_millicredits: None,
+        observed_fraction_units: 0,
+        observed_spend_api_nanousd: 0,
+        observed_spend_native_millicredits: 0,
+        samples: 0,
+        unattributed_fraction_units: 0,
+        current_capacity_nanousd: None,
+        current_low_nanousd: None,
+        current_high_nanousd: None,
+        current_confidence_bp: 0,
+        last_measured_at: None,
+        estimator_version: 1,
+        version: 0,
+        updated_ts: observation.observed_at,
+    };
+    assert_eq!(
+        pg.save_suno_calibration(&state, &observation).unwrap(),
+        Some(1)
+    );
+
+    let mut second_observation = observation.clone();
+    second_observation.observed_at = 301;
+    let mut second_state = pg
+        .load_suno_calibration(
+            &state.subject_id,
+            &state.plan,
+            state.window_duration_secs,
+        )
+        .unwrap()
+        .unwrap();
+    second_state.observed_at = second_observation.observed_at;
+    second_state.updated_ts = second_observation.observed_at;
+    assert_eq!(
+        pg.save_suno_calibration(&second_state, &second_observation)
+            .unwrap(),
+        Some(2)
+    );
+
+    // A stale writer loses the CAS and rolls its observation back. Raw history remains exact,
+    // oldest-first and contains only the two winning transitions.
+    assert_eq!(
+        pg.save_suno_calibration(&state, &observation).unwrap(),
+        None
+    );
+    let history = pg
+        .load_suno_window_observations(&state.subject_id, &state.plan, state.window_duration_secs)
+        .unwrap();
+    assert_eq!(
+        history
+            .iter()
+            .map(|row| row.observed_at)
+            .collect::<Vec<_>>(),
+        vec![300, 301]
+    );
+    let stored = pg
+        .load_suno_calibration(
+            &state.subject_id,
+            &state.plan,
+            state.window_duration_secs,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.version, 2);
+    assert_eq!(stored.native_remaining_units(), None);
+
+    pg.client
+        .batch_execute(
+            "TRUNCATE suno_window_calibrations,suno_window_observations,\
+             suno_calibration_subject_spend,suno_turn_calibration_events \
              RESTART IDENTITY CASCADE",
         )
         .unwrap();

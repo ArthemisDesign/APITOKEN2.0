@@ -13,10 +13,12 @@ mod kimi_calibration;
 pub mod pg;
 pub mod pricing;
 mod provider_calibration;
+mod suno_calibration;
 mod tripo3d_calibration;
 
 pub use glm_calibration::*;
 pub use kimi_calibration::*;
+pub use suno_calibration::*;
 pub use tripo3d_calibration::*;
 
 /// Column order shared by every KIMI calibration read. One list keeps SELECT and the row mapper
@@ -234,6 +236,89 @@ pub fn validate_tripo3d_calibration_pair(
     validate_tripo3d_calibration_row(state)?;
     if state.subject_id != observation.subject_id || state.cohort != observation.cohort {
         bail!("Tripo3D calibration state and observation describe different balance tracks");
+    }
+    Ok(())
+}
+
+/// Column order shared by every Suno calibration read. One list keeps SELECT and the row
+/// mapper from drifting apart, which is the classic source of silently shifted columns.
+pub const SUNO_CALIBRATION_COLUMNS: &str = "subject_id,plan,window_duration_secs,reset_at,\
+anchor_used_fraction_units,anchor_resolution_fraction_units,anchor_spend_api_nanousd,\
+anchor_spend_native_millicredits,used_fraction_units,measurement_resolution_fraction_units,\
+observed_at,native_limit_millicredits,native_used_millicredits,observed_fraction_units,\
+observed_spend_api_nanousd,observed_spend_native_millicredits,samples,\
+unattributed_fraction_units,current_capacity_nanousd,current_low_nanousd,current_high_nanousd,\
+current_confidence_bp,last_measured_at,estimator_version,version,updated_ts";
+
+/// Validate a Suno calibration row read back from the authority.
+///
+/// A stored row that violates its own invariants is refused rather than served: publishing a
+/// capacity built on an impossible row would be worse than publishing nothing. Fraction legs
+/// and the native window halves are nullable because the quota endpoint's field semantics are
+/// unproven — but a present half must be sane, and the fraction/resolution pair must move
+/// together.
+pub fn validate_suno_calibration_row(row: &SunoCalibrationRow) -> Result<()> {
+    if row.subject_id.is_empty() || row.plan.is_empty() {
+        bail!("Suno calibration row has no identity");
+    }
+    if !matches!(row.plan.as_str(), "Pro" | "Premier") {
+        bail!("Suno calibration row has an unsupported plan");
+    }
+    if row.window_duration_secs <= 0 {
+        bail!("Suno calibration row has an invalid window duration");
+    }
+    if row.native_limit_millicredits.is_some_and(|limit| limit <= 0)
+        || row.native_used_millicredits.is_some_and(|used| used < 0)
+        || match (row.native_used_millicredits, row.native_limit_millicredits) {
+            (Some(used), Some(limit)) => used > limit,
+            _ => false,
+        }
+    {
+        bail!("Suno calibration row has an invalid quota window");
+    }
+    if let Some(fraction) = row.used_fraction_units {
+        if !(0..=SUNO_FRACTION_SCALE).contains(&fraction) {
+            bail!("Suno calibration row fraction is out of range");
+        }
+    }
+    if let Some(resolution) = row.measurement_resolution_fraction_units {
+        if !(1..=SUNO_FRACTION_SCALE).contains(&resolution) {
+            bail!("Suno calibration row resolution is out of range");
+        }
+    }
+    if row.used_fraction_units.is_some() != row.measurement_resolution_fraction_units.is_some() {
+        bail!("Suno calibration row fraction and resolution must move together");
+    }
+    if row.anchor_used_fraction_units.is_some() != row.anchor_resolution_fraction_units.is_some() {
+        bail!("Suno calibration row anchor fraction and resolution must move together");
+    }
+    match (
+        row.current_low_nanousd,
+        row.current_high_nanousd,
+        row.current_capacity_nanousd,
+    ) {
+        (Some(_), _, None) | (_, Some(_), None) => {
+            bail!("Suno calibration row has bounds without a capacity")
+        }
+        (Some(low), Some(high), _) if low > high => {
+            bail!("Suno calibration row bounds are inverted")
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Validate that a state row and the observation about to advance it describe the same window.
+pub fn validate_suno_calibration_pair(
+    state: &SunoCalibrationRow,
+    observation: &SunoWindowObservation,
+) -> Result<()> {
+    validate_suno_calibration_row(state)?;
+    if state.subject_id != observation.subject_id
+        || state.plan != observation.plan
+        || state.window_duration_secs != observation.window_duration_secs
+    {
+        bail!("Suno calibration state and observation describe different windows");
     }
     Ok(())
 }
@@ -2721,6 +2806,11 @@ pub const PROVIDER_GLM: &str = "glm";
 /// Not part of the priced discount/reservation provider sets yet — those CHECK extensions are
 /// a separate expand-only decision tied to the runtime plane.
 pub const PROVIDER_TRIPO3D: &str = "tripo3d";
+/// Backend-only Suno (suno.com) subscription session pool. A task-based media plane with its
+/// own serving surface and a monthly credit window; the distinct attribution keeps Suno credit
+/// economics unblendable. Not part of the priced discount/reservation provider sets yet —
+/// those CHECK extensions are a separate expand-only decision tied to the runtime plane.
+pub const PROVIDER_SUNO: &str = "suno";
 
 /// Immutable scalar-pricing decision pinned when a request reserves money.
 ///

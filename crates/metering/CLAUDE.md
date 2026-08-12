@@ -34,6 +34,14 @@
   `import_model`) return an explicit documented `Some(0)`; unknown kinds, versions, option
   combinations and the manifest's conflicted version spellings return `None` and fail closed.
   Tariff identity `tripo3d/openapi-billing/2026-08-12`, hot-override family `tripo3d/openapi`.
+- The Suno credit schedule lives in `suno`: a REVIEWED DERIVED schedule (no official API rate
+  card exists) at $0.004/credit (`SUNO_NANOUSD_PER_CREDIT`, the worst subscription unit
+  economics), 5 credits per song flat with no published per-model differentiation, plus the
+  published per-operation costs for stems and Studio MIDI. Operations with unpublished costs
+  are not represented and fail closed before reserve; the closed paid model catalog is
+  v4/v4.5/v4.5+/v5/v5.5 (`SUNO_PAID_MODELS`). Tariff identity
+  `suno/derived-subscription/2026-08-12`, hot-override family `suno/credits`; a future official
+  money anchor becomes a new dated epoch, never a rewrite.
 - Versioned model/tariff identity is capability only, not product access. The exact canonical map,
   alias generation, immutable schedule ID/epoch and typed reserve modifiers live here; access still
   requires a separate product catalog and account policy. An unknown/historical ID is not turned into

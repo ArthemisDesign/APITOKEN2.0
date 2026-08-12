@@ -13,7 +13,8 @@ use crate::{
     KimiTurnCalibrationEvent, KimiWindowObservation, LedgerConsumerLag, LedgerRow, PoolStateRow,
     ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
     ProviderTurnCalibrationEvent, SettlementFailure, SettlementHealth, SpendAccountAgg,
-    SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, Tripo3dBalanceObservation,
+    SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, SunoCalibrationRow,
+    SunoSubjectSpend, SunoTurnCalibrationEvent, SunoWindowObservation, Tripo3dBalanceObservation,
     Tripo3dCalibrationRow, Tripo3dSubjectSpend, Tripo3dTurnCalibrationEvent, UsageDailyAgg,
     UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
     ACCOUNT_OVERDRAFT_NANO,
@@ -212,9 +213,11 @@ const MIGRATION_0047: &str =
 const MIGRATION_0048: &str =
     include_str!("../migrations_pg/0048_settlement_floor_terminal_fence.sql");
 const MIGRATION_0049: &str = include_str!("../migrations_pg/0049_tripo3d_calibration.sql");
+const MIGRATION_0050: &str =
+    include_str!("../migrations_pg/0050_suno_window_calibration.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 49;
+pub const CURRENT_SCHEMA_VERSION: i64 = 50;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -267,6 +270,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (47, MIGRATION_0047),
     (48, MIGRATION_0048),
     (49, MIGRATION_0049),
+    (50, MIGRATION_0050),
 ];
 
 #[cfg(test)]
@@ -4133,6 +4137,344 @@ impl PgStore {
         if updated == 0 {
             // Another writer advanced this balance track first. Rolling back keeps the
             // observation and the state consistent; the caller re-reads and folds again.
+            tx.rollback()?;
+            return Ok(None);
+        }
+        tx.commit()?;
+        Ok(Some(next_version))
+    }
+
+    fn suno_calibration_row(row: &Row) -> SunoCalibrationRow {
+        SunoCalibrationRow {
+            subject_id: row.get(0),
+            plan: row.get(1),
+            window_duration_secs: row.get(2),
+            reset_at: row.get(3),
+            anchor_used_fraction_units: row.get(4),
+            anchor_resolution_fraction_units: row.get(5),
+            anchor_spend_api_nanousd: row.get(6),
+            anchor_spend_native_millicredits: row.get(7),
+            used_fraction_units: row.get(8),
+            measurement_resolution_fraction_units: row.get(9),
+            observed_at: row.get(10),
+            native_limit_millicredits: row.get(11),
+            native_used_millicredits: row.get(12),
+            observed_fraction_units: row.get(13),
+            observed_spend_api_nanousd: row.get(14),
+            observed_spend_native_millicredits: row.get(15),
+            samples: row.get(16),
+            unattributed_fraction_units: row.get(17),
+            current_capacity_nanousd: row.get(18),
+            current_low_nanousd: row.get(19),
+            current_high_nanousd: row.get(20),
+            current_confidence_bp: row.get(21),
+            last_measured_at: row.get(22),
+            estimator_version: row.get(23),
+            version: row.get(24),
+            updated_ts: row.get(25),
+        }
+    }
+
+    pub fn load_suno_calibration(
+        &mut self,
+        subject_id: &str,
+        plan: &str,
+        window_duration_secs: i64,
+    ) -> Result<Option<SunoCalibrationRow>> {
+        let row = self.client.query_opt(
+            &format!(
+                "SELECT {} FROM suno_window_calibrations \
+                 WHERE subject_id=$1 AND plan=$2 AND window_duration_secs=$3",
+                crate::SUNO_CALIBRATION_COLUMNS
+            ),
+            &[&subject_id, &plan, &window_duration_secs],
+        )?;
+        let row = row.as_ref().map(Self::suno_calibration_row);
+        if let Some(row) = &row {
+            crate::validate_suno_calibration_row(row)?;
+        }
+        Ok(row)
+    }
+
+    pub fn list_suno_calibrations(&mut self) -> Result<Vec<SunoCalibrationRow>> {
+        let rows = self.client.query(
+            &format!(
+                "SELECT {} FROM suno_window_calibrations \
+                 ORDER BY plan, window_duration_secs, subject_id",
+                crate::SUNO_CALIBRATION_COLUMNS
+            ),
+            &[],
+        )?;
+        let rows: Vec<SunoCalibrationRow> = rows.iter().map(Self::suno_calibration_row).collect();
+        for row in &rows {
+            crate::validate_suno_calibration_row(row)?;
+        }
+        Ok(rows)
+    }
+
+    /// Immutable observation history for one window, oldest first.
+    ///
+    /// This is what an estimator-version change rebuilds from: a stored derived value is never
+    /// authority, so the raw rows must remain readable in order.
+    pub fn load_suno_window_observations(
+        &mut self,
+        subject_id: &str,
+        plan: &str,
+        window_duration_secs: i64,
+    ) -> Result<Vec<SunoWindowObservation>> {
+        let rows = self.client.query(
+            "SELECT subject_id,plan,window_duration_secs,reset_at,observed_at,\
+             native_limit_units,native_used_units,native_remaining_units,period_raw,\
+             used_fraction_units,measurement_resolution_fraction_units,cumulative_api_nanousd,\
+             cumulative_native_millicredits,observation_source,source_request_id \
+             FROM suno_window_observations \
+             WHERE subject_id=$1 AND plan=$2 AND window_duration_secs=$3 \
+             ORDER BY observed_at, id",
+            &[&subject_id, &plan, &window_duration_secs],
+        )?;
+        Ok(rows
+            .iter()
+            .map(|row| SunoWindowObservation {
+                subject_id: row.get(0),
+                plan: row.get(1),
+                window_duration_secs: row.get(2),
+                reset_at: row.get(3),
+                observed_at: row.get(4),
+                native_limit_units: row.get(5),
+                native_used_units: row.get(6),
+                native_remaining_units: row.get(7),
+                period_raw: row.get(8),
+                used_fraction_units: row.get(9),
+                measurement_resolution_fraction_units: row.get(10),
+                cumulative_api_nanousd: row.get(11),
+                cumulative_native_millicredits: row.get(12),
+                observation_source: row.get(13),
+                source_request_id: row.get(14),
+            })
+            .collect())
+    }
+
+    /// Persist one priced turn and advance the subject's cumulative dual ledgers in the same
+    /// transaction.
+    ///
+    /// The pairing is the whole point: a quota observation read afterwards must never see a
+    /// window total that its own traffic has not yet been added to, or the estimator would
+    /// attribute our spend to somebody else's movement. The API nanoUSD leg is the fixed-rate
+    /// image of the native millicredit leg (the schema enforces the equality), but both
+    /// advance here as exact sums over immutable events.
+    ///
+    /// Returns `Ok(true)` for a fresh insert and `Ok(false)` when the exact same payload was
+    /// already stored — the internal request id survives every pre-byte retry, so replay must
+    /// be a no-op. A *different* payload under that id is an error, never an update:
+    /// overwriting would silently rewrite priced history.
+    pub fn record_suno_turn(&mut self, event: &SunoTurnCalibrationEvent) -> Result<bool> {
+        event.validate()?;
+        let mut tx = self.client.transaction()?;
+        let inserted = tx.execute(
+            "INSERT INTO suno_turn_calibration_events(request_id,subject_id,plan,requested_model,\
+             served_model,tariff_schedule_id,priced_ts,completed_at,upstream_clip_id,\
+             native_total_millicredits,api_total_nanousd,native_schedule_derived) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
+             ON CONFLICT(request_id) DO NOTHING",
+            &[
+                &event.request_id,
+                &event.subject_id,
+                &event.plan,
+                &event.requested_model,
+                &event.served_model,
+                &event.tariff_schedule_id,
+                &event.priced_ts,
+                &event.completed_at,
+                &event.upstream_clip_id,
+                &event.native_total_millicredits,
+                &event.api_total_nanousd,
+                &event.native_schedule_derived,
+            ],
+        )? == 1;
+        if !inserted {
+            // `ON CONFLICT` serializes two simultaneous ambiguous replies on the immutable key.
+            // Once the winner commits, the loser reads its row and can distinguish an exact
+            // replay from a semantic conflict without ever advancing spend twice.
+            let row = tx.query_one(
+                "SELECT subject_id,plan,requested_model,served_model,tariff_schedule_id,\
+                 priced_ts,completed_at,upstream_clip_id,native_total_millicredits,\
+                 api_total_nanousd,native_schedule_derived \
+                 FROM suno_turn_calibration_events WHERE request_id=$1",
+                &[&event.request_id],
+            )?;
+            let stored = SunoTurnCalibrationEvent {
+                request_id: event.request_id.clone(),
+                subject_id: row.get(0),
+                plan: row.get(1),
+                requested_model: row.get(2),
+                served_model: row.get(3),
+                tariff_schedule_id: row.get(4),
+                priced_ts: row.get(5),
+                completed_at: row.get(6),
+                upstream_clip_id: row.get(7),
+                native_total_millicredits: row.get(8),
+                api_total_nanousd: row.get(9),
+                native_schedule_derived: row.get(10),
+            };
+            if !event.is_exact_replay_of(&stored) {
+                return Err(crate::SunoTurnReplayConflict.into());
+            }
+            tx.commit()?;
+            return Ok(false);
+        }
+
+        tx.execute(
+            "INSERT INTO suno_calibration_subject_spend(subject_id,spent_api_nanousd,\
+             spent_native_millicredits,tracking_started_ts,updated_ts) VALUES($1,$2,$3,$4,$4) \
+             ON CONFLICT(subject_id) DO UPDATE SET \
+             spent_api_nanousd=suno_calibration_subject_spend.spent_api_nanousd\
+                 +EXCLUDED.spent_api_nanousd, \
+             spent_native_millicredits=suno_calibration_subject_spend.spent_native_millicredits\
+                 +EXCLUDED.spent_native_millicredits, \
+             tracking_started_ts=LEAST(\
+                 suno_calibration_subject_spend.tracking_started_ts,EXCLUDED.tracking_started_ts), \
+             updated_ts=GREATEST(\
+                 suno_calibration_subject_spend.updated_ts,EXCLUDED.updated_ts)",
+            &[
+                &event.subject_id,
+                &event.api_total_nanousd,
+                &event.native_total_millicredits,
+                &event.completed_at,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Cumulative dual ledgers for a subject, or zeroes when nothing is tracked.
+    pub fn suno_subject_spend(&mut self, subject_id: &str) -> Result<SunoSubjectSpend> {
+        let row = self.client.query_opt(
+            "SELECT spent_api_nanousd,spent_native_millicredits \
+             FROM suno_calibration_subject_spend WHERE subject_id=$1",
+            &[&subject_id],
+        )?;
+        Ok(row
+            .map(|row| SunoSubjectSpend {
+                spent_api_nanousd: row.get(0),
+                spent_native_millicredits: row.get(1),
+            })
+            .unwrap_or_default())
+    }
+
+    /// Store an immutable quota observation and the estimator state it produced, under a CAS on
+    /// `version`.
+    ///
+    /// The observation row is inserted first and is idempotent by its own unique constraint,
+    /// so a duplicate poll adds no sample. Returns the new version, or `None` when the CAS
+    /// lost — a lost CAS means another writer advanced the same window and this caller must
+    /// re-read rather than overwrite.
+    pub fn save_suno_calibration(
+        &mut self,
+        state: &SunoCalibrationRow,
+        observation: &SunoWindowObservation,
+    ) -> Result<Option<i64>> {
+        crate::validate_suno_calibration_pair(state, observation)?;
+        let mut tx = self.client.transaction()?;
+        tx.execute(
+            "INSERT INTO suno_window_observations(subject_id,plan,window_duration_secs,reset_at,\
+             observed_at,native_limit_units,native_used_units,native_remaining_units,period_raw,\
+             used_fraction_units,measurement_resolution_fraction_units,cumulative_api_nanousd,\
+             cumulative_native_millicredits,observation_source,source_request_id,\
+             estimator_version) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) \
+             ON CONFLICT DO NOTHING",
+            &[
+                &observation.subject_id,
+                &observation.plan,
+                &observation.window_duration_secs,
+                &observation.reset_at,
+                &observation.observed_at,
+                &observation.native_limit_units,
+                &observation.native_used_units,
+                &observation.native_remaining_units,
+                &observation.period_raw,
+                &observation.used_fraction_units,
+                &observation.measurement_resolution_fraction_units,
+                &observation.cumulative_api_nanousd,
+                &observation.cumulative_native_millicredits,
+                &observation.observation_source,
+                &observation.source_request_id,
+                &state.estimator_version,
+            ],
+        )?;
+        let next_version = state
+            .version
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("Suno calibration version overflow"))?;
+        let updated = tx.execute(
+            "INSERT INTO suno_window_calibrations(subject_id,plan,window_duration_secs,reset_at,\
+             anchor_used_fraction_units,anchor_resolution_fraction_units,anchor_spend_api_nanousd,\
+             anchor_spend_native_millicredits,used_fraction_units,\
+             measurement_resolution_fraction_units,observed_at,native_limit_millicredits,\
+             native_used_millicredits,observed_fraction_units,observed_spend_api_nanousd,\
+             observed_spend_native_millicredits,samples,unattributed_fraction_units,\
+             current_capacity_nanousd,current_low_nanousd,current_high_nanousd,\
+             current_confidence_bp,last_measured_at,estimator_version,version,updated_ts) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,\
+             $22,$23,$24,$25,$26) \
+             ON CONFLICT(subject_id,plan,window_duration_secs) DO UPDATE SET \
+             reset_at=EXCLUDED.reset_at,\
+             anchor_used_fraction_units=EXCLUDED.anchor_used_fraction_units,\
+             anchor_resolution_fraction_units=EXCLUDED.anchor_resolution_fraction_units,\
+             anchor_spend_api_nanousd=EXCLUDED.anchor_spend_api_nanousd,\
+             anchor_spend_native_millicredits=EXCLUDED.anchor_spend_native_millicredits,\
+             used_fraction_units=EXCLUDED.used_fraction_units,\
+             measurement_resolution_fraction_units=\
+             EXCLUDED.measurement_resolution_fraction_units,\
+             observed_at=EXCLUDED.observed_at,\
+             native_limit_millicredits=EXCLUDED.native_limit_millicredits,\
+             native_used_millicredits=EXCLUDED.native_used_millicredits,\
+             observed_fraction_units=EXCLUDED.observed_fraction_units,\
+             observed_spend_api_nanousd=EXCLUDED.observed_spend_api_nanousd,\
+             observed_spend_native_millicredits=EXCLUDED.observed_spend_native_millicredits,\
+             samples=EXCLUDED.samples,\
+             unattributed_fraction_units=EXCLUDED.unattributed_fraction_units,\
+             current_capacity_nanousd=EXCLUDED.current_capacity_nanousd,\
+             current_low_nanousd=EXCLUDED.current_low_nanousd,\
+             current_high_nanousd=EXCLUDED.current_high_nanousd,\
+             current_confidence_bp=EXCLUDED.current_confidence_bp,\
+             last_measured_at=EXCLUDED.last_measured_at,\
+             estimator_version=EXCLUDED.estimator_version,version=EXCLUDED.version,\
+             updated_ts=EXCLUDED.updated_ts \
+             WHERE suno_window_calibrations.version=$27",
+            &[
+                &state.subject_id,
+                &state.plan,
+                &state.window_duration_secs,
+                &state.reset_at,
+                &state.anchor_used_fraction_units,
+                &state.anchor_resolution_fraction_units,
+                &state.anchor_spend_api_nanousd,
+                &state.anchor_spend_native_millicredits,
+                &state.used_fraction_units,
+                &state.measurement_resolution_fraction_units,
+                &state.observed_at,
+                &state.native_limit_millicredits,
+                &state.native_used_millicredits,
+                &state.observed_fraction_units,
+                &state.observed_spend_api_nanousd,
+                &state.observed_spend_native_millicredits,
+                &state.samples,
+                &state.unattributed_fraction_units,
+                &state.current_capacity_nanousd,
+                &state.current_low_nanousd,
+                &state.current_high_nanousd,
+                &state.current_confidence_bp,
+                &state.last_measured_at,
+                &state.estimator_version,
+                &next_version,
+                &state.updated_ts,
+                &state.version,
+            ],
+        )?;
+        if updated == 0 {
+            // Another writer advanced this window first. Rolling back keeps the observation and
+            // the state consistent; the caller re-reads and folds again.
             tx.rollback()?;
             return Ok(None);
         }

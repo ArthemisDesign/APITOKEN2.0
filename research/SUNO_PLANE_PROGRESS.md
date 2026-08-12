@@ -14,6 +14,7 @@ storefront, public docs) is OUT of scope for this task — dormant implementatio
 | Pre-flight + wiring maps | 1e15c793 | baseline `cargo build --locked` green; push works; engine + authbot/admin wiring maps collected (KIMI/GLM templates). See TRIPO3D_PLANE_PROGRESS.md "Key wiring facts" — shared with this plane |
 | Research + capability manifest | (this commit) | `docs/engine/SUNO_PROVIDER.md`; official pricing/ToS/blog + OSS wire blueprint research 2026-08-12; key facts below |
 | Metering tariff | (this commit) | `crates/metering/src/suno.rs`; reviewed derived schedule §5.1 ($0.004/credit, 5 cr/song = $0.02), fail-closed paid model catalog; 7 exact-vector tests |
+| Migration 0050 + registry observation types | (this commit) | `crates/registry/migrations_pg/0050_suno_window_calibration.sql` + `crates/registry/src/suno_calibration.rs`; GLM-style monthly-window authority per manifest §5.2/§5.3 (millicredits + derived fixed-rate nanoUSD legs with the `native_schedule_derived` flag, verbatim raw quota counters with NULL derived fields, exact-duration window keying with no synthetic constant, Pro/Premier-only CHECK, cold/measured split); `suno_*` PG family mirrors `glm_*`; real-PG replay/CAS matrix green on a scratch DB |
 
 ## Key research facts (review date 2026-08-12)
 
@@ -42,9 +43,9 @@ storefront, public docs) is OUT of scope for this task — dormant implementatio
 
 ## Next action (exactly one)
 
-Migration `crates/registry/migrations_pg/0050_suno_window_calibration.sql` (expand-only,
-separate commit) — monthly-window calibration schema sized to the manifest §5.2/§5.3 quota
-facts (published per-plan limits 2 500 / 10 000 credits, GLM-style, no capacity estimation).
+Credential crate `crates/suno-credential` (expand-only, separate commit) — encrypted AEAD
+envelope for the Clerk session cookie material (`__client`) plus the discovered session id,
+modeled on `crates/kimi-credential`'s rotating-family re-seal discipline; no network, no HTTP.
 
 ## Queue
 
