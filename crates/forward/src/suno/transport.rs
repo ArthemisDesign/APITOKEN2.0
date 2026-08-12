@@ -158,6 +158,85 @@ pub struct SunoTransportConfig {
     pub request_timeout: Duration,
 }
 
+/// The host pair a profile talks to. Production constructs exactly one value — the fixed
+/// official hosts — via [`SunoHosts::official`]; the gateway's tests inject a loopback mock
+/// through the crate-internal constructor. This is NOT an operator knob: no env or config path
+/// reaches it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SunoHosts {
+    pub auth_base: String,
+    pub api_base: String,
+}
+
+impl SunoHosts {
+    pub(crate) fn official() -> Self {
+        Self {
+            auth_base: SUNO_AUTH_BASE_URL.to_string(),
+            api_base: SUNO_API_BASE_URL.to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn loopback(auth_base: String, api_base: String) -> Self {
+        Self { auth_base, api_base }
+    }
+
+    fn auth(&self, path: &str) -> String {
+        format!("{}{}", self.auth_base.trim_end_matches('/'), path)
+    }
+
+    fn api(&self, path: &str) -> String {
+        format!("{}{}", self.api_base.trim_end_matches('/'), path)
+    }
+
+    pub(crate) fn session_discovery_url(&self) -> String {
+        format!("{}?{CLERK_QUERY}", self.auth(SUNO_CLIENT_PATH))
+    }
+
+    pub(crate) fn jwt_mint_url(&self, session_id: &str) -> String {
+        format!(
+            "{}?{CLERK_QUERY}",
+            self.auth(&SUNO_SESSION_TOKENS_PATH.replace("{sid}", session_id))
+        )
+    }
+
+    pub(crate) fn captcha_check_url(&self) -> String {
+        self.api(SUNO_CAPTCHA_CHECK_PATH)
+    }
+
+    pub(crate) fn generate_song_url(&self) -> String {
+        self.api(SUNO_GENERATE_PATH)
+    }
+
+    pub(crate) fn generate_concat_url(&self) -> String {
+        self.api(SUNO_CONCAT_PATH)
+    }
+
+    pub(crate) fn lyrics_create_url(&self) -> String {
+        self.api(SUNO_LYRICS_PATH)
+    }
+
+    pub(crate) fn lyrics_status_url(&self, lyrics_id: &str) -> String {
+        self.api(&format!("{SUNO_LYRICS_PATH}{lyrics_id}"))
+    }
+
+    pub(crate) fn stems_url(&self, song_id: &str) -> String {
+        self.api(&format!("{SUNO_STEMS_PATH}/{song_id}"))
+    }
+
+    pub(crate) fn feed_url(&self, clip_ids: &[&str]) -> String {
+        self.api(&format!("{SUNO_FEED_PATH}?ids={}", clip_ids.join(",")))
+    }
+
+    pub(crate) fn clip_url(&self, clip_id: &str) -> String {
+        self.api(&format!("{SUNO_CLIP_PATH}/{clip_id}"))
+    }
+
+    pub(crate) fn billing_info_url(&self) -> String {
+        self.api(SUNO_BILLING_INFO_PATH)
+    }
+}
+
 impl Default for SunoTransportConfig {
     fn default() -> Self {
         Self {

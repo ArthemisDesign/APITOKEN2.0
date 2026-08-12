@@ -148,6 +148,11 @@ pub struct AppState {
     /// `ProviderMode::Tripo3d` plane: a task-based media surface (create → poll → artifact
     /// download → exact settle from `consumed_credit`), never the Anthropic Messages wire.
     pub tripo3d: Option<Arc<crate::tripo3d::Tripo3dGateway>>,
+    /// Optional backend-only Suno subscription session-pool on the dedicated
+    /// `ProviderMode::Suno` plane: a task-based media surface (create → poll → artifact
+    /// download → settle from the attributed credit delta, else the documented conservative
+    /// reserve), never the Anthropic Messages wire.
+    pub suno: Option<Arc<crate::suno::SunoGateway>>,
     /// Биллинг клиентов (async DB-актор — синхронный SQLite не блокирует воркеры).
     /// `None` → биллинг выключен (только env-ключи/localhost).
     pub billing: Option<Arc<AsyncBilling>>,

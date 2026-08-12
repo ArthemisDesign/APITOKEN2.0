@@ -1518,6 +1518,8 @@ async fn serve() -> Result<()> {
         kimi,
         glm,
         tripo3d,
+        // The Suno plane composes with its server wiring; until then it is simply absent.
+        suno: None,
         billing,
         authority_ready: authority_ready.clone(),
         breaker: Arc::new(forward::Breaker::new(fleet_size)),

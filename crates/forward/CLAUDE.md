@@ -1127,6 +1127,60 @@ subject (keyed digest) stays private in `RuntimeProfile`; durable calibration ro
 through `profile_id_for_subject`, and the read model (`Tripo3dTaskView`) never carries the
 upstream task id or signed URLs.
 
+**Suno backend preview runtime — default-off, dedicated plane, no public catalog:**
+`suno_calibration.rs` holds the monthly-window estimator (migration 0050), and `suno/` — a
+strict loader of the encrypted roster (the Clerk session id is the dedup identity), last-good
+atomic reload, the Clerk/billing/generation wire, hard/soft selection, a create-bounded attempt
+loop, the bounded paired-turn FIFO, the artifact store, the customer upload intake and the
+generation-lifecycle gateway. Contract and facts — `docs/engine/SUNO_PROVIDER.md`, schema —
+migration `0050_suno_window_calibration.sql`, types and PostgreSQL authority —
+`registry::suno_calibration`/`PgStore::{record_suno_turn,save_suno_calibration}`.
+
+The differences from Tripo3D that must not be "unified":
+
+1. **The credential is a session, not a static key.** Short-lived JWTs are minted on demand
+   through the profile's pinned egress and never persisted (30 s in-memory reuse, the TTL is an
+   open unknown). A mint — and any business-host call — may rotate the Clerk `__client`
+   material via `set-cookie`, so `session.rs` holds a per-profile single-flight from mint/merge
+   through envelope re-seal: the winner merges the rotation and atomically re-seals the roster
+   credential file (tmp → fsync → 0600 → rename → dir fsync) BEFORE releasing the lock; the
+   loser re-reads. A failed re-seal keeps serving the last durably sealed material.
+2. **No documented business codes and no per-turn consumption field.** Classification is
+   conservative HTTP-only (manifest §4.1): 401/403 post-mint is SOFT auth (streak+elapsed
+   corroboration before removal from routable), 429 is the HARD rate wall, 5xx/timeouts are
+   bounded transport. `QuotaExhausted` and `CaptchaRequired` are never status-classified: only
+   the billing probe zeroing (hard) and the `/api/c/check` pre-check (soft, never solved)
+   construct them.
+3. **Settlement is the attributed credit delta, not a `consumed_credit` field.** The drain
+   reads the free `/api/billing/info/` immediately before creation (baseline, valid only while
+   the profile has no other in-flight lease) and again in the generation's wake; the delta
+   (`total_credits_left` drawdown, else `monthly_usage` advance) settles the customer exactly
+   when the turn epoch proves the window exclusive. Ambiguous attribution settles the reserve
+   (published 5 credits for a song; the documented conservative 50-credit bound for
+   extend/lyrics/stems) with `native_schedule_derived = true` and an unattributed-movement
+   counter; a delta above the reserve bound is a typed tariff anomaly; a finalized-but-failed
+   generation with zero attributed movement refunds the hold.
+4. **Operations: the whole §4 wire table, fail-closed elsewhere.** `song` (custom mode when
+   tags/title are given, else the description form), `extend` (concat wire: clip id + position
+   only), `lyrics`, `stems` (no documented split-kind selector — conservative reserve). MIDI is
+   tariff-priced but has no wire-table entry and stays unadmitted; unknown operations get a 400
+   naming the admitted set. Attachments: the blueprint documents no upstream upload endpoint,
+   so the plane persists customer audio itself (≤96 MiB, magic-sniffed, tmp→fsync→rename) and
+   any attachment-carrying generation fails closed with `suno_attachment_upstream_unknown`.
+5. **Window identity is evidence-derived.** Quota observations are keyed by the exact month the
+   raw `period` field names (strict `YYYY-MM` → the month's own reset anchor and duration); an
+   absent or unparseable `period` writes NO observation (turn events still persist) — an
+   unknown duration fails closed, and no synthetic 30/31-day constant exists anywhere.
+
+`SunoGateway::operational_status` publishes a `SunoOperationalStatus` for readiness, `/metrics`
+and admin-only `GET /suno-subs`: fleet counts, per-profile hard/soft cooling with resets, raw
+quota counters (unknown stays `None`; the bonus drip is not modelled), the unattributed/tariff
+anomaly counters, tracked-generation count and the FIFO `DeliveryHealth`. Privacy by
+construction: subject/cookie/session id/proxy stay private in `RuntimeProfile`; durable
+calibration rows (`AsyncBilling::suno_calibration_report`, PostgreSQL-only) join to the opaque
+id only through `profile_id_for_subject`, and the read model (`SunoGenerationView`) never
+carries upstream clip ids or media URLs.
+
 **GPT Image 2 native wire and producer-first Images API:** `codex::images` owns the strict native
 Codex OAuth generation/edit wire. It posts JSON to `{CodexConfig.base_url}/images/generations|edits`
 through one existing sealed Codex home, with the existing bearer/account/originator/UA/version headers

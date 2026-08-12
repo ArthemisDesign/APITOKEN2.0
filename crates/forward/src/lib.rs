@@ -78,6 +78,11 @@ pub use gemini::{
     GEMINI_NODE_FETCH_TRANSPORT_PROFILE, GEMINI_NODE_TRANSPORT_PROFILE,
 };
 pub use kimi::{KimiGateway, KimiOperationalStatus, KimiProfileStatus, KimiQuotaWindowStatus};
+pub use suno::{
+    create_generation as suno_create_generation, generation_artifact as suno_generation_artifact,
+    generation_status as suno_generation_status, upload_audio as suno_upload_audio, SunoGateway,
+    SunoGenerationView, SunoOperationalStatus, SunoProfileStatus,
+};
 pub use tripo3d::{
     create_generation as tripo3d_create_generation, task_artifact as tripo3d_task_artifact,
     task_status as tripo3d_task_status, upload_image as tripo3d_upload_image,

@@ -22,14 +22,20 @@
 //! ToS prohibits resale and there is no partner agreement, so until that changes the plane is
 //! internal capacity and calibration only, with no public catalog, router namespace or
 //! storefront.
-//!
-//! Dormant until the gateway commit lands: consumed only by its own tests so far.
-#![allow(dead_code)]
 
+pub mod artifacts;
 pub mod client;
 pub mod config;
+mod gateway;
 pub mod pool;
 pub mod queue;
 pub mod roster;
 pub mod selection;
+pub mod session;
 pub mod transport;
+pub mod upload;
+
+pub use gateway::{
+    create_generation, generation_artifact, generation_status, upload_audio, SunoGateway,
+    SunoGenerationView, SunoOperationalStatus, SunoProfileStatus,
+};

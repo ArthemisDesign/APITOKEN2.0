@@ -125,11 +125,26 @@ endpoint discovered live replaces it (recorded in §6).
 | `v4.5-all` | Free | free-tier only | not onboarded (Free excluded) |
 | v2/v3/v3.5 | deprecated | deprecated for free users; paid availability `unknown` | fail closed |
 
-`decision` v1 admits **song generation only** (`POST /api/generate/v2/`) across the paid model
-list. Extend, Covers, Stems, Remaster, Add Vocals/Instrumental, MIDI, video/image, Studio
-operations are recorded in the manifest and tariff where priced, but are **not admitted** at the
-serving boundary: their per-operation credit costs are mostly unpublished (§5.1), and an unknown
-price fails closed before reserve.
+`decision` The v1 song-only restriction is superseded (owner directive, 2026-08-12): the plane
+admits **every operation of the §4 wire table** — song generation, extend/concat, lyrics,
+stems — across the paid model list. Pricing at admission: published prices where they exist
+(song 5 credits); operations without a published price (extend, lyrics, stems — the wire
+carries no documented split-kind selector) reserve the **documented conservative bound: the
+highest published per-operation price, 50 credits**, and settle from the attributed post-turn
+credit delta observed on `/api/billing/info/`. When attribution is ambiguous (concurrent
+traffic on the same profile, an unreadable snapshot), settlement falls to the reserve per the
+engine's missing-usage policy and the movement is recorded as unattributed (the estimator's
+`unattributed_fraction_units` already supports this). Operations outside the wire table
+(Covers, Remaster, MIDI, video/image, Studio) stay unadmitted: unknown operation → 400 naming
+the admitted set.
+
+`decision` **Attachments fail closed.** The real API takes audio uploads (up to 30 min on paid
+tiers) for covers/extend-type operations, but the OSS blueprint documents **no upstream upload
+endpoint**. The plane implements the customer-facing half — bounded multipart intake (≤96 MiB,
+reviewed audio magic bytes only) with tmp→fsync→mode-0600→rename durability returning an opaque
+upload id — and any generation carrying `attachments` fails closed with a clear 400
+(`suno_attachment_upstream_unknown`). No upstream endpoint is ever invented; when a live run
+proves the upload path, admission of attachment-carrying operations opens deliberately.
 
 `official` The exact wire model id spelling (e.g. the `mv` field value `chirp-v3-5` in the OSS
 client is a stale default) is `unknown` for the current picker — the reviewed id list above lives
@@ -161,6 +176,19 @@ upstream media URLs are never exposed to the customer.
 `/api/c/check` answers `required: true`, the profile is soft-cooled and the attempt rotates; a
 persistent gate is an operational state, not a customer error. This keeps us inside "no bypassing
 access control" (`PROVIDER_ONBOARDING.md` §3.2).
+
+`decision` **Settlement from attributed movement (owner directive, 2026-08-12).** The drain reads
+`/api/billing/info/` immediately before creation (attribution baseline, valid only while the
+profile has no other in-flight lease) and again in the completed generation's wake. The credit
+delta — `total_credits_left` drawdown, else `monthly_usage` advance; a refill is never
+consumption evidence — is attributed to the turn when the profile's turn epoch proves no other
+lease overlapped the window, and settles the customer exactly (native leg provider-observed,
+`native_schedule_derived = false`). Otherwise the reservation settles at its reserve (the
+published price or the conservative 50-credit bound), the native leg is flagged
+schedule-derived, and the unattributed movement surfaces through the estimator's
+unattributed counter. A delta above the reserve bound is a typed tariff anomaly (quarantine,
+never silent acceptance). A finalized-but-failed generation with zero attributed movement
+refunds the hold (§4.1).
 
 ### 4.1 Error classes
 
@@ -290,7 +318,7 @@ Each `unknown` fails closed and is cleared only by a controlled live run on our 
 | Auth Bot: validation protocol + roster | `crates/authbot/src/{suno_session,suno_roster}.rs` (+`main.rs` env) | done (this commit) |
 | Auth Bot: seller wizard | `crates/authbot/src/bot.rs` (+`db.rs` recovery, `main.rs`) | done (this commit) |
 | runtime primitives | `crates/forward/src/suno/{mod,config,transport,roster,client,selection,pool,queue}.rs` | done (this commit) |
-| runtime gateway | `crates/forward/src/suno/{gateway,session,artifacts,upload}.rs` | pending |
+| runtime gateway | `crates/forward/src/suno/{gateway,session,artifacts,upload}.rs` (+ `billing.rs` Suno commands) | done (this commit) |
 | server wiring | `crates/server/src/{config,main,poller,http}.rs` | pending |
 | observability / admin projection | `observability/**`, `docs/ops/MONITORING.md`, `GET /suno-subs` | pending |
 | admin UI consumer | `apps/admin` | pending |

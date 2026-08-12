@@ -79,9 +79,14 @@ pub fn merge_set_cookie(cookie: &str, set_cookie: &[&str]) -> Result<String> {
         if name.is_empty() || name.len() > 256 || value.len() > MAX_COOKIE_LEN {
             bail!("Suno set-cookie entry is malformed or oversized");
         }
-        entries.retain(|(existing, _)| existing != name);
-        // An empty value is the deletion form; it must not resurrect a dead entry.
-        if !value.is_empty() {
+        // Replace in place (the cookie string's entry order is preserved, so a rotation that
+        // changes nothing compares equal and re-seals nothing); an empty value deletes.
+        if let Some(position) = entries.iter().position(|(existing, _)| existing == name) {
+            entries.remove(position);
+            if !value.is_empty() {
+                entries.insert(position, (name.to_string(), value.to_string()));
+            }
+        } else if !value.is_empty() {
             entries.push((name.to_string(), value.to_string()));
         }
     }

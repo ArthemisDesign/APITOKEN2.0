@@ -945,6 +945,7 @@ mod tests {
             kimi: None,
             glm: None,
             tripo3d: None,
+            suno: None,
             billing: Some(billing),
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(Breaker::new(1)),

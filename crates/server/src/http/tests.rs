@@ -830,6 +830,7 @@ fn admin_auth_test_app() -> AppState {
         kimi: None,
         glm: None,
         tripo3d: None,
+        suno: None,
         billing: None,
         authority_ready: Arc::new(AtomicBool::new(true)),
         breaker: Arc::new(forward::Breaker::new(0)),

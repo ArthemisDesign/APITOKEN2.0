@@ -24,7 +24,8 @@ use registry::{
     GeminiExactWindowObservation, GlmCalibrationRow, GlmSubjectSpend, GlmTurnCalibrationEvent,
     GlmWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow, KimiCalibrationRow,
     KimiTurnCalibrationEvent, KimiWindowObservation, ProviderCalibrationSubjectSpend,
-    ProviderTurnCalibrationAggregate, ProviderTurnCalibrationEvent, Tripo3dBalanceObservation,
+    ProviderTurnCalibrationAggregate, ProviderTurnCalibrationEvent, SunoCalibrationRow,
+    SunoSubjectSpend, SunoWindowObservation, Tripo3dBalanceObservation,
     Tripo3dCalibrationRow, Tripo3dSubjectSpend,
 };
 use std::collections::VecDeque;
@@ -236,6 +237,127 @@ fn observe_tripo3d_postgres(
         )?;
         // The save validates the state/observation pair and applies the estimator CAS.
         if let Some(version) = pg.save_tripo3d_calibration(&state, observation)? {
+            state.version = version;
+            return Ok(state);
+        }
+    }
+}
+
+/// One parsed Suno billing-endpoint snapshot before the writer pairs it with the subject's
+/// durable cumulative dual-ledger spend (same single-writer hop as GLM/Tripo3D). The counters
+/// are raw provider evidence — semantics unproven (`docs/engine/SUNO_PROVIDER.md` §5.2/§6), so
+/// they are preserved verbatim and unknown stays `None`, never `0`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SunoQuotaSnapshot {
+    pub observed_at: i64,
+    pub total_credits_left: Option<i64>,
+    pub monthly_limit: Option<i64>,
+    pub monthly_usage: Option<i64>,
+    pub period_raw: Option<String>,
+}
+
+/// Derive the exact window identity from the raw `period` field: a strict `YYYY-MM` calendar
+/// month names its own reset anchor (the month's first instant) and its own exact duration in
+/// seconds — evidence-derived, never a synthetic 30/31-day constant (migration 0050). Any
+/// other shape is unproven semantics and fails closed (`None`): the observation is then not
+/// writable at all, because the schema keys windows by their exact observed duration.
+fn suno_month_window_from_period(period_raw: &str) -> Option<(i64, i64)> {
+    let bytes = period_raw.as_bytes();
+    if bytes.len() != 7 || bytes[4] != b'-' {
+        return None;
+    }
+    let year: i64 = period_raw.get(..4)?.parse().ok()?;
+    let month: i64 = period_raw.get(5..7)?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1970..=9999).contains(&year) {
+        return None;
+    }
+    let start = days_from_civil(year, month, 1)?.checked_mul(86_400)?;
+    let (next_year, next_month) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    let end = days_from_civil(next_year, next_month, 1)?.checked_mul(86_400)?;
+    Some((start, end - start))
+}
+
+/// Days since the unix epoch for a civil date (Howard Hinnant's algorithm), checked.
+fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
+    let shifted_year = if month <= 2 { year - 1 } else { year };
+    let era = shifted_year.div_euclid(400);
+    let year_of_era = shifted_year.rem_euclid(400);
+    let month_prime = if month > 2 { month - 3 } else { month + 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = 365 * year_of_era + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era.checked_mul(146_097)?
+        .checked_add(day_of_era)?
+        .checked_sub(719_468)
+}
+
+/// Build the immutable Suno window observation: provider-side raw counters from the snapshot
+/// plus the subject's exact durable cumulative dual ledgers, which only this serial writer may
+/// read. The observation is source-tagged: a free poll invents no request id, a
+/// response-carried read names the turn that carried it. The derived quota-path fraction stays
+/// `None` until the endpoint's field semantics are proven live; the estimator's native-ledger
+/// path drives until then.
+fn suno_observation(
+    subject_id: &str,
+    plan: &str,
+    snapshot: &SunoQuotaSnapshot,
+    spend: SunoSubjectSpend,
+    source: &str,
+    source_request_id: Option<&str>,
+) -> Option<SunoWindowObservation> {
+    let (reset_at, window_duration_secs) =
+        suno_month_window_from_period(snapshot.period_raw.as_deref()?)?;
+    Some(SunoWindowObservation {
+        subject_id: subject_id.to_owned(),
+        plan: plan.to_owned(),
+        window_duration_secs,
+        reset_at: Some(reset_at),
+        observed_at: snapshot.observed_at,
+        native_limit_units: snapshot.monthly_limit,
+        native_used_units: snapshot.monthly_usage,
+        native_remaining_units: snapshot.total_credits_left,
+        period_raw: snapshot.period_raw.clone(),
+        used_fraction_units: None,
+        measurement_resolution_fraction_units: None,
+        cumulative_api_nanousd: spend.spent_api_nanousd,
+        cumulative_native_millicredits: spend.spent_native_millicredits,
+        observation_source: source.to_owned(),
+        source_request_id: source_request_id.map(str::to_owned),
+    })
+}
+
+fn observe_suno_postgres(
+    pg: &mut registry::pg::PgStore,
+    observation: &SunoWindowObservation,
+) -> anyhow::Result<SunoCalibrationRow> {
+    loop {
+        let existing = pg.load_suno_calibration(
+            &observation.subject_id,
+            &observation.plan,
+            observation.window_duration_secs,
+        )?;
+        let history = if existing
+            .as_ref()
+            .is_some_and(|row| row.estimator_version != crate::suno_calibration::ESTIMATOR_VERSION)
+        {
+            pg.load_suno_window_observations(
+                &observation.subject_id,
+                &observation.plan,
+                observation.window_duration_secs,
+            )?
+        } else {
+            Vec::new()
+        };
+        let mut state = crate::suno_calibration::apply_observation_with_history(
+            existing,
+            &history,
+            observation,
+        )?;
+        // The save validates the state/observation pair and applies the estimator CAS.
+        if let Some(version) = pg.save_suno_calibration(&state, observation)? {
             state.version = version;
             return Ok(state);
         }
@@ -1173,6 +1295,16 @@ enum WriteCmd {
         snapshot: Tripo3dBalanceSnapshot,
         reply: oneshot::Sender<anyhow::Result<Tripo3dCalibrationRow>>,
     },
+    SunoRecordTurn {
+        turn: crate::suno::queue::PendingTurn,
+        reply: oneshot::Sender<anyhow::Result<bool>>,
+    },
+    SunoObserveQuota {
+        subject_id: String,
+        plan: String,
+        snapshot: SunoQuotaSnapshot,
+        reply: oneshot::Sender<anyhow::Result<Option<SunoCalibrationRow>>>,
+    },
     CodexRecordTurn {
         event: CodexTurnCalibrationEvent,
         reply: oneshot::Sender<anyhow::Result<CodexHomeCalibrationSpend>>,
@@ -1371,6 +1503,7 @@ enum ReadCmd {
     ),
     GlmCalibrationReport(oneshot::Sender<anyhow::Result<Vec<GlmCalibrationRow>>>),
     Tripo3dCalibrationReport(oneshot::Sender<anyhow::Result<Vec<Tripo3dCalibrationRow>>>),
+    SunoCalibrationReport(oneshot::Sender<anyhow::Result<Vec<SunoCalibrationRow>>>),
     KeyAuth(String, oneshot::Sender<anyhow::Result<Option<KeyAuth>>>),
     KeyGet(String, oneshot::Sender<anyhow::Result<Option<KeyRow>>>),
     Account(String, oneshot::Sender<anyhow::Result<Option<AccountRow>>>),
@@ -2081,6 +2214,80 @@ impl AsyncBilling {
             .await
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
+
+    /// Read every durable Suno monthly-window calibration row for the admin operational
+    /// projection.
+    ///
+    /// Rows are keyed by provider subject; joining them to opaque roster ids is the caller's
+    /// concern (the gateway owns that mapping). Suno calibration is PostgreSQL-only, so a
+    /// SQLite authority reports an empty fleet rather than an error.
+    pub async fn suno_calibration_report(&self) -> anyhow::Result<Vec<SunoCalibrationRow>> {
+        let (reply, result) = oneshot::channel();
+        let reader = &self.readers[self.rr.fetch_add(1, Ordering::Relaxed) % self.readers.len()];
+        reader
+            .send(ReadCmd::SunoCalibrationReport(reply))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    /// Persist one immutable Suno turn (a finalized upstream generation) and advance the
+    /// subject's exact dual ledgers (native millicredits AND the fixed-rate API nanoUSD image).
+    ///
+    /// Codex/Gemini pairing discipline: the entry carries the post-turn billing read taken in
+    /// the generation's wake — the observation that attributes (or fails to attribute) the
+    /// credit delta — and this single writer command records the turn FIRST, then pairs the
+    /// quota observation with the cumulative ledgers that already include it (`response`
+    /// source naming the turn's request id). The gateway owns the bounded FIFO because it must
+    /// gate quota polling on a fully drained queue; exact request-id replay is a no-op and a
+    /// different payload is a permanent typed conflict.
+    pub(crate) async fn record_suno_turn(
+        &self,
+        turn: crate::suno::queue::PendingTurn,
+    ) -> anyhow::Result<bool> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::SunoRecordTurn { turn, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    /// Pair one Suno quota snapshot with exact durable subject dual-ledger spend and advance
+    /// the monthly-window track through immutable observation + estimator CAS.
+    ///
+    /// The caller has already drained the gateway's bounded turn FIFO and keeps that drain
+    /// barrier held until this command returns. The writer still owns the spend read so no
+    /// async caller can accidentally construct an observation from a stale total. Returns
+    /// `Ok(None)` when the snapshot's raw `period` names no exact window identity: an unknown
+    /// duration fails closed and nothing is written (migration 0050 discipline).
+    pub(crate) async fn observe_suno_quota(
+        &self,
+        subject_id: &str,
+        plan: &str,
+        snapshot: SunoQuotaSnapshot,
+    ) -> anyhow::Result<Option<SunoCalibrationRow>> {
+        if subject_id.is_empty() || plan.is_empty() {
+            anyhow::bail!("invalid Suno quota observation command");
+        }
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::SunoObserveQuota {
+                subject_id: subject_id.to_owned(),
+                plan: plan.to_owned(),
+                snapshot,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
     /// Persist exact official-price spend for one Codex home and return its durable cumulative
     /// total. This is provider-capacity evidence, independent of whether the customer turn was
     /// billable (admin turns consume the same subscription window).
@@ -2645,6 +2852,16 @@ impl AsyncBilling {
                             "Tripo3D calibration authority requires PostgreSQL"
                         )));
                     }
+                    WriteCmd::SunoRecordTurn { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "Suno calibration authority requires PostgreSQL"
+                        )));
+                    }
+                    WriteCmd::SunoObserveQuota { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "Suno calibration authority requires PostgreSQL"
+                        )));
+                    }
                     WriteCmd::CodexRecordTurn { event, reply } => {
                         let result = registry::record_codex_turn_calibration_event(
                             &conn, &event,
@@ -2948,6 +3165,11 @@ impl AsyncBilling {
                             }
                             ReadCmd::Tripo3dCalibrationReport(reply) => {
                                 // Tripo3D calibration authority is PostgreSQL-only; a SQLite
+                                // authority simply has no rows to report.
+                                let _ = reply.send(Ok(Vec::new()));
+                            }
+                            ReadCmd::SunoCalibrationReport(reply) => {
+                                // Suno calibration authority is PostgreSQL-only; a SQLite
                                 // authority simply has no rows to report.
                                 let _ = reply.send(Ok(Vec::new()));
                             }
@@ -3422,6 +3644,73 @@ impl AsyncBilling {
                                         None,
                                     );
                                     observe_tripo3d_postgres(pg, &observation)
+                                },
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::SunoRecordTurn { turn, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "Suno turn calibration event",
+                                |pg| {
+                                    let event = &turn.event;
+                                    // The turn lands FIRST so its spend is inside the cumulative
+                                    // ledgers the paired quota observation then reads.
+                                    let recorded = pg.record_suno_turn(event)?;
+                                    if let Some(snapshot) = &turn.billing {
+                                        let spend = pg.suno_subject_spend(&event.subject_id)?;
+                                        // No derivable window identity (an absent/unparseable
+                                        // `period`) fails closed: the turn event still
+                                        // persists, but no observation is keyed on an unknown
+                                        // duration.
+                                        if let Some(observation) = suno_observation(
+                                            &event.subject_id,
+                                            &event.plan,
+                                            snapshot,
+                                            spend,
+                                            "response",
+                                            Some(&event.request_id),
+                                        ) {
+                                            observe_suno_postgres(pg, &observation)?;
+                                        }
+                                    }
+                                    Ok(recorded)
+                                },
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::SunoObserveQuota {
+                            subject_id,
+                            plan,
+                            snapshot,
+                            reply,
+                        } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "Suno quota observation",
+                                |pg| {
+                                    // Durable dual-ledger spend is read FIRST; only then may a
+                                    // quota observation/CAS pair itself with it. Reversing the
+                                    // order would let an observation see quota that an earlier
+                                    // settled generation has not yet reached.
+                                    let spend = pg.suno_subject_spend(&subject_id)?;
+                                    let Some(observation) = suno_observation(
+                                        &subject_id,
+                                        &plan,
+                                        &snapshot,
+                                        spend,
+                                        "poll",
+                                        None,
+                                    ) else {
+                                        // No derivable window identity: fail closed, write
+                                        // nothing, and tell the caller honestly.
+                                        return Ok(None);
+                                    };
+                                    observe_suno_postgres(pg, &observation).map(Some)
                                 },
                             );
                             let _ = reply.send(result);
@@ -3963,6 +4252,9 @@ impl AsyncBilling {
                             }
                             ReadCmd::Tripo3dCalibrationReport(reply) => {
                                 answer!(reply, pg.list_tripo3d_calibrations())
+                            }
+                            ReadCmd::SunoCalibrationReport(reply) => {
+                                answer!(reply, pg.list_suno_calibrations())
                             }
                             ReadCmd::KeyAuth(k, r) => answer!(r, pg.key_account(&k)),
                             ReadCmd::KeyGet(k, r) => answer!(r, pg.key_get(&k)),

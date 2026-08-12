@@ -78,6 +78,13 @@ pub struct Metrics {
     pub tripo3d_failures: AtomicU64,
     /// The subset of failures that are our own capacity refusal rather than a provider verdict.
     pub tripo3d_capacity_exhausted: AtomicU64,
+    /// Suno plane request outcomes — the same three fixed counters as Tripo3D, with no
+    /// operation, account, profile or upstream-error labels.
+    pub suno_requests: AtomicU64,
+    /// Non-2xx responses the plane actually returned to a caller.
+    pub suno_failures: AtomicU64,
+    /// The subset of failures that are our own capacity refusal rather than a provider verdict.
+    pub suno_capacity_exhausted: AtomicU64,
     /// Successful Gemini generations that ended without authoritative usage. Metered non-stream
     /// delivery is withheld; a stream already delivered settles its conservative hold.
     pub gemini_usage_missing: AtomicU64,

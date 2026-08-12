@@ -23,7 +23,7 @@ use std::collections::VecDeque;
 
 use registry::SunoTurnCalibrationEvent;
 
-use super::client::BillingSnapshot;
+use crate::billing::SunoQuotaSnapshot;
 
 /// One FIFO entry: the immutable turn event plus the post-turn billing read taken in its wake
 /// (Codex/Gemini pairing). A missing snapshot means the post-turn read failed; the periodic
@@ -31,7 +31,7 @@ use super::client::BillingSnapshot;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PendingTurn {
     pub event: SunoTurnCalibrationEvent,
-    pub billing: Option<BillingSnapshot>,
+    pub billing: Option<SunoQuotaSnapshot>,
 }
 
 /// What the authority reported for one attempted write.
