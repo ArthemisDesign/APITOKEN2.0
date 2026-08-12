@@ -75,10 +75,7 @@ export class PayoutController {
   @Get("engine")
   @Header("Cache-Control", "no-store")
   async engine(): Promise<unknown> {
-    return {
-      configured: this.payouts.isConfigured(),
-      window: this.payouts.windowInfo(),
-    };
+    return this.payouts.engineState();
   }
 
   @Get("batches")

@@ -78,6 +78,19 @@ export interface PayoutReport {
   accounting: ReturnType<typeof serializeAccountingProof> | null;
 }
 
+export interface PayoutEngineState {
+  configured: boolean;
+  window: { open: boolean; opensAt: string | null; closesAt: string | null; enforced: boolean };
+  chain: {
+    ready: boolean;
+    hotWalletAddress: string | null;
+    usdtBalanceNano: string | null;
+    bnbBalanceWei: string | null;
+    gasCostPerTransferWei: string | null;
+    issue: "not_configured" | "read_unavailable" | null;
+  };
+}
+
 function serializeAccountingProof(proof: PartnerPayoutAccountingProof) {
   return {
     ready: proof.ready,
@@ -188,6 +201,61 @@ export class PayoutService implements OnModuleInit, OnApplicationShutdown {
 
   isConfigured(): boolean {
     return Boolean(this.config.get("PAYOUT_HOT_WALLET_KEY", { infer: true }) && this.config.get("PAYOUT_SEND_RPC_URL", { infer: true }));
+  }
+
+  /**
+   * Read-only operator projection for payout readiness. It exposes the public wallet address and
+   * balances, never the key or RPC configuration. A read failure stays explicit instead of
+   * presenting fabricated zeroes; the detailed provider error remains server-side.
+   */
+  async engineState(): Promise<PayoutEngineState> {
+    const window = this.windowInfo();
+    if (!this.isConfigured()) {
+      return {
+        configured: false,
+        window,
+        chain: {
+          ready: false,
+          hotWalletAddress: null,
+          usdtBalanceNano: null,
+          bnbBalanceWei: null,
+          gasCostPerTransferWei: null,
+          issue: "not_configured",
+        },
+      };
+    }
+
+    try {
+      const chain = this.getChain();
+      await chain.assertReady();
+      const { usdtWei, bnbWei } = await chain.balances();
+      return {
+        configured: true,
+        window,
+        chain: {
+          ready: true,
+          hotWalletAddress: chain.hotAddress,
+          usdtBalanceNano: (usdtWei / NANO).toString(),
+          bnbBalanceWei: bnbWei.toString(),
+          gasCostPerTransferWei: chain.gasCostPerTransferWei().toString(),
+          issue: null,
+        },
+      };
+    } catch (error) {
+      this.logger.error(`payout engine state read failed: ${error instanceof Error ? error.message : "unknown"}`);
+      return {
+        configured: true,
+        window,
+        chain: {
+          ready: false,
+          hotWalletAddress: null,
+          usdtBalanceNano: null,
+          bnbBalanceWei: null,
+          gasCostPerTransferWei: null,
+          issue: "read_unavailable",
+        },
+      };
+    }
   }
 
   protected createChain(): PayoutChain {

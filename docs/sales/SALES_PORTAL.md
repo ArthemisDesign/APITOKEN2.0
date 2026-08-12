@@ -336,6 +336,12 @@ the current hot wallet must match the batch-pinned wallet, and no row may remain
 Malformed money is rendered unavailable rather than as a false `$0.00`. The backend remains the
 authority and repeats all irreversible checks under the cross-process send lock.
 
+The additive read-only `GET /v1/admin/payouts/engine` projection reports configuration/window plus
+`chain{ready,hotWalletAddress,usdtBalanceNano,bnbBalanceWei,gasCostPerTransferWei,issue}`. Balances
+are canonical integer strings (`nanoUSD` for USDT and wei for BNB); a chain/RPC/token proof failure
+returns null balances with `issue=read_unavailable`, never a fabricated zero or a provider error.
+The private key and RPC endpoints never cross this boundary. Older consumers may ignore `chain`.
+
 ## Commission math (sales-db)
 
 For the live scalar usage event, `A` is `amountNano`, already narrowed by commerce to the
