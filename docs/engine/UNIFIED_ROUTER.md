@@ -528,6 +528,12 @@ neither the producer nor `/internal/router/catalog/pricing` resolves them. Every
 `kimi/*` and served: the strict-policy concept that used to exclude KIMI was removed with the
 retired pricing design on 2026-08-10.
 
+KIMI entries carry the same normalized capability block as the other planes. Input modalities
+follow the producer's `image_input`: a proven `true` adds `image`, while `null` (unproven) keeps
+the entry text-only — an unproven capability is advertised neither as present nor as absent by
+fiat. Until the media capability probe of `tools/kimi_calibration` has run live, every `kimi/*`
+entry is therefore `input_modalities:["text"]`.
+
 A namespaced `kimi/<alias>` is resolved by the Anthropic plane's admission back to the bare
 alias before dispatch (`KimiGateway::resolve_public_model`). The plane strips only its own
 `anthropic/` prefix, so without that resolution a published `kimi/*` id matched no alias and went

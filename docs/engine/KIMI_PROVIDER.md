@@ -201,6 +201,16 @@ exhausted rotation surfaced it as a capacity `429` naming neither the model nor 
 rewrite happens once before anything reads the body, so selection, pricing, the immutable turn
 event and attribution all continue to use the requested alias.
 
+`official` **Multimodal input is declared per subscription id** (Kimi Code docs, models page,
+reviewed 2026-08-12): `k3` and `kimi-for-coding`/`kimi-for-coding-highspeed` — image and video
+input; `k3-256k` — image only, no video. `decision` → the declaration is necessary but not
+sufficient for our catalog: the unified router advertises the `image` input modality only after
+the producer's `image_input` is proven live on the subscription route by the media capability
+probe of `tools/kimi_calibration` (video is outside the router's `text|image|audio` modality
+vocabulary and stays unadvertised regardless). Until that run the producer publishes
+`image_input: null` and every `kimi/*` entry stays text-only, while the gateway itself already
+accepts inline media, priced as body tokens under the existing hold.
+
 `official` **Reasoning controls differ by family:**
 
 - `k3`: always reasons, `reasoning_effort` ∈ {`low`, `high`, `max`}, default `high`.

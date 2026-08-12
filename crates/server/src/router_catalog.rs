@@ -78,8 +78,12 @@ pub(crate) async fn kimi(
                     "max_input_tokens": model.input_token_limit,
                     "reasoning_efforts": REASONING_EFFORTS,
                     // Thinking is on by default and switched off through `thinking.type`, so the
-                    // capability is proven. Image input and structured outputs are not proven on
-                    // the subscription endpoint; `null` keeps them unknown instead of promising or
+                    // capability is proven. Image input is declared by the official Kimi Code
+                    // models page for every published subscription id (reviewed 2026-08-12:
+                    // k3/kimi-for-coding(-highspeed) image+video, k3-256k image-only), but it has
+                    // not been exercised live on the subscription route — that is what the media
+                    // capability probe in tools/kimi_calibration exists for. Structured outputs
+                    // are likewise unproven. `null` keeps both unknown instead of promising or
                     // denying a capability we have not tested.
                     "reasoning": true,
                     "image_input": Value::Null,

@@ -1000,7 +1000,8 @@ fn parse_gemini(body: &Value) -> ParseResult {
 /// contract we own: exactly the fields a catalog entry needs, with `null` for a capability the
 /// plane has not proved. Everything else is fixed by what the gateway actually accepts —
 /// streaming and tool calling are exercised on every served turn, and the only output modality is
-/// text.
+/// text. Input modalities follow the producer's `image_input`: only a proven `true` adds `image`;
+/// `null`/`false` keep the entry text-only, so an unproven capability is never advertised.
 fn parse_kimi(body: &Value) -> ParseResult {
     let models = body.get("data").and_then(Value::as_array).ok_or(())?;
     if models.len() > MAX_MODELS_PER_PLANE {
@@ -1043,6 +1044,7 @@ fn parse_kimi(body: &Value) -> ParseResult {
                     Ok(value) => value,
                     Err(()) => return Some(Err(())),
                 };
+                let image_input = model.get("image_input").and_then(Value::as_bool);
                 Some(Ok(CatalogEntry {
                     id: namespaced_id,
                     native_id: id.clone(),
@@ -1055,7 +1057,11 @@ fn parse_kimi(body: &Value) -> ParseResult {
                     }),
                     reasoning_efforts,
                     service_tiers: Some(vec!["standard".to_string()]),
-                    input_modalities: Some(vec!["text".to_string()]),
+                    input_modalities: Some(if image_input == Some(true) {
+                        vec!["text".to_string(), "image".to_string()]
+                    } else {
+                        vec!["text".to_string()]
+                    }),
                     output_modalities: Some(vec!["text".to_string()]),
                     tool_calling: Some(true),
                     structured_outputs: model
@@ -1215,8 +1221,38 @@ mod tests {
         assert_eq!(limits.context, Some(1_000_000));
         assert_eq!(limits.output, None);
         assert_eq!(entry.reasoning, Some(true));
-        // Unproved capabilities stay unknown rather than becoming a false `false`.
+        // Unproved capabilities stay unknown rather than becoming a false `false`, and an
+        // unproven `image_input` keeps the entry text-only instead of advertising vision.
         assert_eq!(entry.structured_outputs, None);
+        assert_eq!(
+            entry.input_modalities.as_deref(),
+            Some(["text".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn kimi_producer_proven_image_input_adds_the_image_modality() {
+        let body = serde_json::json!({"schema_version": 1, "data": [
+            {
+                "id": "k3-256k",
+                "display_name": "Kimi K3 (256K)",
+                "max_input_tokens": 256_000,
+                "reasoning_efforts": ["none", "low", "high", "max"],
+                "reasoning": true,
+                "image_input": true,
+                "structured_outputs": null,
+            }
+        ]});
+        let entries = parse_kimi(&body).expect("producer envelope parses");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].input_modalities.as_deref(),
+            Some(["text".to_string(), "image".to_string()].as_slice())
+        );
+        assert_eq!(
+            entries[0].output_modalities.as_deref(),
+            Some(["text".to_string()].as_slice())
+        );
     }
 
     #[test]
