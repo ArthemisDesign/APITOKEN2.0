@@ -126,6 +126,11 @@ status and exact unpaid balance are recomputed at the same period end, and every
 becomes committed. Preparation first verifies BSC mainnet, deployed canonical USDT with 18 decimals,
 and pins the current hot-wallet address.
 
+The batch schema also has a nullable `earned_before` checkpoint for that exact period end. This is
+an expand-only prerequisite: existing batches remain readable with `NULL`; a later consumer release
+will populate the cutoff and reuse it for the final pre-transfer signed-balance proof. Adding the
+column alone does not change payout eligibility, the Sales API, or the Commerce→Sales feed.
+
 `send()` and per-row retry share one PostgreSQL advisory lock across all API processes. Under that
 lock the service re-reads batch state, checks that the configured hot wallet still matches the pin,
 simulates, signs offline, stores hash + nonce + raw transaction before broadcast, and waits for the

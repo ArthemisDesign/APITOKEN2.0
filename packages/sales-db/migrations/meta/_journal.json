@@ -134,6 +134,13 @@
       "when": 1786507200000,
       "tag": "0018_reversal_completeness_fence",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1786514400000,
+      "tag": "0019_payout_earned_boundary",
+      "breakpoints": true
     }
   ]
 }

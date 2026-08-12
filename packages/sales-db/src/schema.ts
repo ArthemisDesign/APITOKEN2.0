@@ -565,6 +565,7 @@ export const payoutBatches = pgTable("payout_batches", {
   recipientCount: integer("recipient_count").notNull().default(0),
   gasPriceGwei: text("gas_price_gwei"),
   minNano: bigint("min_nano", { mode: "bigint" }).notNull().default(0n),
+  earnedBefore: timestamp("earned_before", { withTimezone: true }),
   note: text("note"),
   createdBy: text("created_by"),
   error: text("error"),

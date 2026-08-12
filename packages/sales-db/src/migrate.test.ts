@@ -133,6 +133,23 @@ describe("sales multi-discount migration", () => {
     );
   });
 
+  it("expands payout batches with their immutable earnings cutoff", () => {
+    const migration = readFileSync(
+      join(MIGRATIONS_FOLDER, "0019_payout_earned_boundary.sql"),
+      "utf8",
+    );
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; tag: string; when: number }> };
+    const previous = journal.entries.find((entry) => entry.idx === 18);
+    const current = journal.entries.find((entry) => entry.idx === 19);
+
+    expect(current).toMatchObject({ idx: 19, tag: "0019_payout_earned_boundary" });
+    expect(current!.when).toBeGreaterThan(previous!.when);
+    expect(migration).toContain('ALTER TABLE "payout_batches" ADD COLUMN "earned_before"');
+    expect(migration).not.toMatch(/^(?:UPDATE|DELETE|TRUNCATE|DROP)\b/im);
+  });
+
   it("expands exact immutable reversal accounting before its consumer", () => {
     const migration = readFileSync(
       join(MIGRATIONS_FOLDER, "0017_payment_reversal_accounting.sql"),
