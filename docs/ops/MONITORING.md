@@ -1002,11 +1002,12 @@ must not be used as the health signal after the sequence consumer is active.
 
 Read `journalctl -u apitoken-sales-api` for parser, database, or Commerce dependency errors. Compare
 `apitoken_sales_cursor{feed="topups_v2"}` with `apitoken_sales_topups_feed_head`; the producer pages
-over every payment row before referral/status filtering, so an empty `items` page can and must still
-advance `nextCursor`. Never copy the head into `sync_cursors` by hand. Fix the failing consumer and
-let its idempotent `commerce_payment_id` writer replay from the stored cursor. Recovery is complete
-only when the cursor reaches the head, the legacy cursor is unchanged, and referred-topup
-count/sum/canonical hash still match the eligible Commerce source.
+over every payment row before referral filtering. A row exists only after a verified paid event,
+and a later refund does not erase that historical deposit from replay. An empty `items` page can and
+must still advance `nextCursor`. Never copy the head into `sync_cursors` by hand. Fix the failing
+consumer and let its idempotent `commerce_payment_id` writer replay from the stored cursor.
+Recovery is complete only when the cursor reaches the head, the legacy cursor is unchanged, and
+referred-topup count/sum/canonical hash still match the eligible Commerce source.
 
 ## PricingMirrorDrift
 
