@@ -12,7 +12,15 @@ vi.mock("next/link", () => ({
 }));
 
 import PartnersPage from "./page";
-import { clampOffset, eligibleSumNano, partnerName, payoutReasonText, shortWallet } from "./helpers";
+import {
+  bnbMoney,
+  clampOffset,
+  eligibleSumNano,
+  partnerName,
+  payoutReasonText,
+  payoutWalletReadiness,
+  shortWallet,
+} from "./helpers";
 
 describe("Партнёры (partners page)", () => {
   it("рендерится без падения: начальное состояние — скелетон загрузки", () => {
@@ -47,6 +55,66 @@ describe("partners helpers", () => {
       ]),
     ).toBe("3500000000");
     expect(eligibleSumNano([])).toBe("0");
+  });
+
+  it("bnbMoney: форматирует integer wei без float и сохраняет малый gas", () => {
+    expect(bnbMoney("0")).toBe("0 BNB");
+    expect(bnbMoney("10000000000000")).toBe("0.00001 BNB");
+    expect(bnbMoney("2500000000000000")).toBe("0.0025 BNB");
+    expect(bnbMoney("broken")).toBe("—");
+  });
+
+  it("payoutWalletReadiness: пустой кошелёк виден даже без текущих переводов", () => {
+    expect(payoutWalletReadiness({
+      configured: true,
+      chain: {
+        ready: true,
+        hotWalletAddress: "0x1234567890abcdef",
+        usdtBalanceNano: "0",
+        bnbBalanceWei: "0",
+        gasCostPerTransferWei: "10000000000000",
+      },
+    }, [])).toMatchObject({ kind: "warn", title: "Hot wallet пуст", requiredUsdtNano: "0", requiredBnbWei: "0" });
+  });
+
+  it("payoutWalletReadiness: считает exact покрытие USDT и BNB текущего списка", () => {
+    const items = [
+      { eligible: true, payableNano: "12000000000" },
+      { eligible: true, payableNano: "5953884700" },
+      { eligible: false, payableNano: "999000000000" },
+    ];
+    const base = {
+      configured: true,
+      chain: {
+        ready: true,
+        hotWalletAddress: "0x1234567890abcdef",
+        usdtBalanceNano: "17953884700",
+        bnbBalanceWei: "20000000000000",
+        gasCostPerTransferWei: "10000000000000",
+      },
+    };
+
+    expect(payoutWalletReadiness(base, items)).toMatchObject({
+      kind: "ok",
+      requiredUsdtNano: "17953884700",
+      requiredBnbWei: "20000000000000",
+      eligibleCount: 2,
+    });
+    expect(payoutWalletReadiness({
+      ...base,
+      chain: { ...base.chain, bnbBalanceWei: "19999999999999" },
+    }, items)).toMatchObject({ kind: "bad", title: "Не хватает BNB" });
+  });
+
+  it("payoutWalletReadiness: неполный или недоступный ответ не превращает в нулевой баланс", () => {
+    expect(payoutWalletReadiness({ configured: true }, [])).toMatchObject({
+      kind: "bad",
+      title: "Состояние кошелька не получено",
+    });
+    expect(payoutWalletReadiness({
+      configured: true,
+      chain: { ready: false, issue: "read_unavailable" },
+    }, [])).toMatchObject({ kind: "bad", title: "Кошелёк не удалось проверить" });
   });
 
   it("payoutReasonText: eligible / ждёт окна / ярлыки причин / fallback", () => {

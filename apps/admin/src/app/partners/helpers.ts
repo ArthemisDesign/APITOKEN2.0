@@ -69,6 +69,14 @@ export interface PayoutEngine {
     closesAt?: string;
     enforced?: boolean;
   };
+  chain?: {
+    ready?: boolean;
+    hotWalletAddress?: string | null;
+    usdtBalanceNano?: string | null;
+    bnbBalanceWei?: string | null;
+    gasCostPerTransferWei?: string | null;
+    issue?: "not_configured" | "read_unavailable" | null;
+  };
 }
 
 export interface PayoutDueItem {
@@ -166,6 +174,126 @@ export function eligibleSumNano(items: PayoutDueItem[]): string {
     .filter((item) => item.eligible)
     .reduce((sum, item) => sum + BigInt(item.payableNano || "0"), 0n)
     .toString();
+}
+
+const WEI_PER_BNB = 1_000_000_000_000_000_000n;
+
+function canonicalUnsigned(value: string | null | undefined): bigint | null {
+  if (!value || !/^(0|[1-9]\d*)$/.test(value)) return null;
+  try {
+    return BigInt(value);
+  } catch {
+    return null;
+  }
+}
+
+// BNB gas balance: integer wei only. Keep up to eight fractional digits so the current
+// 0.00001-BNB per-transfer requirement remains visible without float rounding.
+export function bnbMoney(value: string | null | undefined): string {
+  const amount = canonicalUnsigned(value);
+  if (amount == null) return "—";
+  const whole = amount / WEI_PER_BNB;
+  const fraction = ((amount % WEI_PER_BNB) / 10_000_000_000n)
+    .toString()
+    .padStart(8, "0")
+    .replace(/0+$/, "");
+  return `${whole.toLocaleString("en-US")}${fraction ? `.${fraction}` : ""} BNB`;
+}
+
+export interface PayoutWalletReadiness {
+  kind: "ok" | "warn" | "bad";
+  title: string;
+  detail: string;
+  eligibleCount: number;
+  requiredUsdtNano: string;
+  requiredBnbWei: string | null;
+}
+
+/**
+ * One operator verdict from the additive read-only chain proof and the exact current payout list.
+ * Absence/malformed money is unavailable, never a false zero. An empty wallet remains visible even
+ * between payout windows, while an actual current shortfall is a hard blocker.
+ */
+export function payoutWalletReadiness(
+  engine: PayoutEngine,
+  items: PayoutDueItem[],
+): PayoutWalletReadiness {
+  const eligible = items.filter((item) => item.eligible && canonicalUnsigned(item.payableNano) != null);
+  const requiredUsdt = eligible.reduce((sum, item) => sum + BigInt(item.payableNano!), 0n);
+  const base = {
+    eligibleCount: eligible.length,
+    requiredUsdtNano: requiredUsdt.toString(),
+  };
+
+  if (!engine.configured) {
+    return {
+      ...base,
+      kind: "bad",
+      title: "Payout-движок не настроен",
+      detail: "Нет hot-wallet ключа или send RPC — on-chain отправки недоступны.",
+      requiredBnbWei: null,
+    };
+  }
+
+  const chain = engine.chain;
+  if (!chain || !chain.ready) {
+    return {
+      ...base,
+      kind: "bad",
+      title: chain?.issue === "read_unavailable" ? "Кошелёк не удалось проверить" : "Состояние кошелька не получено",
+      detail: "Баланс не считается нулевым: проверьте BSC RPC и контракт USDT, затем обновите страницу.",
+      requiredBnbWei: null,
+    };
+  }
+
+  const usdt = canonicalUnsigned(chain.usdtBalanceNano);
+  const bnb = canonicalUnsigned(chain.bnbBalanceWei);
+  const gasPerTransfer = canonicalUnsigned(chain.gasCostPerTransferWei);
+  if (usdt == null || bnb == null || gasPerTransfer == null || !chain.hotWalletAddress) {
+    return {
+      ...base,
+      kind: "bad",
+      title: "Ответ кошелька неполный",
+      detail: "Адрес или целочисленные балансы отсутствуют; отправка должна оставаться заблокированной.",
+      requiredBnbWei: null,
+    };
+  }
+
+  const requiredBnb = gasPerTransfer * BigInt(eligible.length);
+  const requirement = { ...base, requiredBnbWei: requiredBnb.toString() };
+  if (requiredUsdt > usdt || requiredBnb > bnb) {
+    const assets = [requiredUsdt > usdt ? "USDT" : null, requiredBnb > bnb ? "BNB" : null]
+      .filter(Boolean)
+      .join(" и ");
+    return {
+      ...requirement,
+      kind: "bad",
+      title: `Не хватает ${assets}`,
+      detail: `Текущий список: ${eligible.length} переводов. Пополните hot wallet до подготовки батча.`,
+    };
+  }
+  if (usdt === 0n || bnb === 0n) {
+    return {
+      ...requirement,
+      kind: "warn",
+      title: "Hot wallet пуст",
+      detail: "Сейчас eligible-переводов нет, но до следующего окна нужны и USDT, и BNB для gas.",
+    };
+  }
+  if (eligible.length === 0) {
+    return {
+      ...requirement,
+      kind: "ok",
+      title: "Кошелёк доступен",
+      detail: "BSC и USDT проверены; в текущем периоде eligible-переводов нет.",
+    };
+  }
+  return {
+    ...requirement,
+    kind: "ok",
+    title: "Средств хватает на текущий список",
+    detail: `${eligible.length} переводов обеспечены USDT и BNB gas; перед отправкой backend проверит балансы ещё раз.`,
+  };
 }
 
 // Текст eligible-ячейки: eligible → «eligible», reason 'ok' → «ждёт окна»,

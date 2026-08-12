@@ -219,6 +219,17 @@ Pipeline delivery/drift status is shown through `GET /admin/pipeline-health` on 
 finance surfaces. Official provider tariff changes are an engine operator action, not a browser
 pricing editor (`docs/engine/CONTROL_API.md`).
 
+## Partner payout readiness
+
+The read-only `/partners` page combines the current payout list with the additive
+`/partner-admin/payouts/engine` chain proof. Operators see the public hot-wallet address, exact USDT
+balance in nanoUSD, exact BNB balance in wei, USDT required by eligible rows, BNB required at the
+backend's pinned gas-per-transfer bound, and the send window. Integer strings stay integer through
+all comparisons and formatting. Unavailable or malformed chain evidence is rendered as unavailable
+and blocks the readiness verdict; it is never coerced to `$0.00`. The backend rechecks all balances
+and accounting fences before any irreversible send, so this projection is operational guidance,
+not an authorization to transfer.
+
 ## Gift credits
 
 The `/users` action labelled `+ подарок` creates `admin-credit:*` funding. Its confirmation states

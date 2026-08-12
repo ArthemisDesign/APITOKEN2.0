@@ -61,6 +61,10 @@ No secrets, and there never will be: the browser uses same-origin relative paths
 - `src/app/users` — the general customer table renders the exact persisted scalar for both B2C and
   B2B. B2C is still one flat price, but historical/dormant `4000` rows must remain visible as a 60%
   discount; the UI and CSV never substitute today's common `5000` value for a stored condition.
+- `src/app/partners` — partner accounting and payout operations. The readiness block consumes the
+  additive Sales chain proof and shows the public hot-wallet address, exact USDT nanoUSD and BNB
+  wei balances, current eligible requirements and payout window. Missing/malformed chain evidence
+  is unavailable, never a fabricated zero; the page remains read-only.
 - `src/app/paying-users/page.tsx` — one read-only control room with independently filtered
   `Клиенты` and `OpenKeys` cohorts. Only the active cohort mounts its 30-second poller. Commerce
   defaults to `funding=spenders`, retains the selected funding filter and always sends

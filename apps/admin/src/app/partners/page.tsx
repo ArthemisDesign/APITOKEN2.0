@@ -16,7 +16,9 @@ import {
   PAYOUT_STATUS_KIND,
   clampOffset,
   eligibleSumNano,
+  bnbMoney,
   partnerName,
+  payoutWalletReadiness,
   payoutReasonText,
   shortWallet,
   type PartnerAnalytics,
@@ -332,13 +334,12 @@ export default function PartnersPage() {
     startTransition(() => setPageParams((prev) => ({ ...prev, ...patch })));
   };
 
-  // Окно выплат payout-движка: configured + window{open,opensAt,closesAt,enforced}.
-  // Адрес hot wallet этот endpoint не отдаёт — он виден только в батчах.
   const win = engine?.window ?? {};
-  const windowKind: "ok" | "warn" = engine?.configured && win.open ? "ok" : "warn";
 
   const period = due?.period ?? {};
   const dueItems = due?.items ?? [];
+  const wallet = engine ? payoutWalletReadiness(engine, dueItems) : null;
+  const chain = engine?.chain;
   const payoutItems = payouts?.items ?? [];
   const payoutsShown = payoutItems.slice(0, PAGE_LIMIT);
   const batchItems = batches?.items ?? [];
@@ -371,27 +372,48 @@ export default function PartnersPage() {
         </Banner>
       )}
 
-      <SectionHeader title="Окно выплат" sub="payout-движок sales-api" />
+      <SectionHeader title="Готовность выплат" sub="BSC mainnet · USDT BEP-20 · read-only проверка hot wallet" />
       {!engine ? (
-        <Banner kind="warn" title="Состояние окна выплат недоступно">
+        <Banner kind="warn" title="Состояние payout-движка недоступно">
           /partner-admin/payouts/engine не отвечает
         </Banner>
       ) : (
-        <Banner
-          kind={windowKind}
-          dot={windowKind === "ok" ? "" : "warn"}
-          title={!engine.configured ? "Payout-движок не настроен" : win.open ? "Окно выплат открыто" : "Окно выплат закрыто"}
-        >
-          {!engine.configured
-            ? "нет hot-wallet ключа или send RPC — on-chain отправки недоступны"
-            : win.enforced === false
-              ? "гейт окна выключен — отправка разрешена в любое время"
-              : win.open
-                ? "закроется " + formatDate(win.closesAt, true)
-                : win.opensAt
-                  ? "откроется " + formatDate(win.opensAt, true)
-                  : "ближайшее окно не запланировано"}
-        </Banner>
+        <>
+          <Banner kind={wallet?.kind ?? "warn"} title={wallet?.title ?? "Состояние кошелька неизвестно"}>
+            {wallet?.detail}
+          </Banner>
+          <CardGrid>
+            <StatCard
+              label="hot wallet"
+              value={chain?.hotWalletAddress ? shortWallet(chain.hotWalletAddress) : "—"}
+              hint={chain?.hotWalletAddress || "адрес не получен"}
+              title={chain?.hotWalletAddress || undefined}
+            />
+            <StatCard
+              label="USDT BEP-20"
+              value={chain?.usdtBalanceNano == null ? "—" : nanoMoney(chain.usdtBalanceNano)}
+              hint={`текущий список требует ${nanoMoney(wallet?.requiredUsdtNano)}`}
+            />
+            <StatCard
+              label="BNB для gas"
+              value={bnbMoney(chain?.bnbBalanceWei)}
+              hint={`текущий список требует ${bnbMoney(wallet?.requiredBnbWei)}`}
+            />
+            <StatCard
+              label="окно отправки"
+              value={win.open ? "открыто" : "закрыто"}
+              hint={
+                win.enforced === false
+                  ? "гейт окна выключен"
+                  : win.open
+                    ? `до ${formatDate(win.closesAt, true)}`
+                    : win.opensAt
+                      ? `с ${formatDate(win.opensAt, true)}`
+                      : "ближайшее не запланировано"
+              }
+            />
+          </CardGrid>
+        </>
       )}
 
       {!due ? (
