@@ -3551,6 +3551,58 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn one_selected_allocation_does_not_require_its_same_order_sibling() {
+        let (client, extend_calls, server) = mock_iproyal_multi_ip().await;
+        let runtime = runtime(Some(client));
+        let first = binding_ip(&runtime, "codex", "first-ip", 42, "203.0.113.9");
+        let second = binding_ip(&runtime, "codex", "second-ip", 42, "203.0.113.10");
+        *runtime.test_local_projection.write().unwrap() = Some(exact_local_projection(&[
+            (
+                "first-ip",
+                Liveness::Live,
+                true,
+                Some("203.0.113.9"),
+                Some(42),
+            ),
+            (
+                "second-ip",
+                Liveness::Live,
+                true,
+                Some("203.0.113.10"),
+                Some(42),
+            ),
+        ]));
+
+        let response = renew_handler(
+            State(runtime.clone()),
+            headers(Some("test-admin-key"), Some("admin")),
+            accepted_json(RenewBody {
+                idempotency_key: UUID_A.to_string(),
+                inventory_ids: vec![first.inventory_id.clone()],
+                allow_inactive_subscription: false,
+            }),
+        )
+        .await;
+        let value = response_json(response).await;
+
+        assert_eq!(value["status"], "succeeded");
+        assert_eq!(value["results"].as_array().unwrap().len(), 1);
+        assert_eq!(value["results"][0]["inventory_id"], first.inventory_id);
+        assert_ne!(value["results"][0]["inventory_id"], second.inventory_id);
+        assert_eq!(value["results"][0]["status"], "renewed");
+        assert_eq!(extend_calls.load(Ordering::SeqCst), 1);
+        let request = runtime
+            .store
+            .get_renewal_request_by_key(UUID_A)
+            .unwrap()
+            .unwrap();
+        let events = runtime.store.get_exact_renewal_events(request.id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].inventory_id, first.inventory_id);
+        server.abort();
+    }
+
     async fn mock_iproyal() -> (Arc<Iproyal>, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
         mock_iproyal_with_order(false).await
     }
@@ -3619,6 +3671,14 @@ mod tests {
                         after
                     }
                 } else if line.starts_with("POST /orders/42/extend ") {
+                    let body = String::from_utf8_lossy(&bytes);
+                    let body = body.split("\r\n\r\n").nth(1).unwrap_or_default();
+                    let value: Value = serde_json::from_str(body).unwrap();
+                    let proxies = value["proxies"].as_array().unwrap();
+                    assert!(!proxies.is_empty());
+                    assert!(proxies.iter().all(|proxy| {
+                        proxy == "203.0.113.9" || (multi_ip && proxy == "203.0.113.10")
+                    }));
                     task_calls.fetch_add(1, Ordering::SeqCst);
                     r#"{}"#
                 } else if line.starts_with("GET /balance ") {

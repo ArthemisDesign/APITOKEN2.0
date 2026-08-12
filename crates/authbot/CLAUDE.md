@@ -315,10 +315,14 @@ unexpected IPRoyal auto-extend setting, but it never extends a lease or spends r
 `GET /proxy-admin/inventory`, refresh and guard paths are read-only with respect to paid renewal.
 Only an authenticated `POST /proxy-admin/renew` may manually extend selected durable opaque
 inventory IDs, after the idempotency request has been committed to private SQLite. The exact
-allocation IP is snapshotted privately. IPRoyal extends an order as a whole, so all canonical IPs of
-one order must be selected together; a partial multi-IP selection fails before the paid request.
-The paid `POST /orders/{id}/extend` body contains only the live-catalogue `product_plan_id`, and all
-selected allocations receive separate per-inventory events. Before that POST, renewal repeats the
+allocation IP is snapshotted privately. IPRoyal accepts selected IPs in `proxies`; authbot always
+sends that non-empty snapshotted selection, so an operator may renew one allocation from a multi-IP
+order without extending its siblings. Before the paid request, authbot exact-fetches the order and
+skips the auto-extend mutation when it is already disabled. Only an enabled setting is toggled off
+and confirmed by another exact fetch because IPRoyal does not document repeated disable as
+idempotent. The paid `POST /orders/{id}/extend` body contains the live-catalogue
+`product_plan_id` plus the selected canonical `proxies`, and all selected allocations receive
+separate per-inventory events. Before that POST, renewal repeats the
 durable exact binding, authoritative liveness and provider-order checks. Preflight failures and an
 explicit upstream 4xx are terminal failures; transport loss, upstream 5xx, or missing/invalid expiry
 confirmation after the paid POST remain `indeterminate` and are never retried automatically. Safe

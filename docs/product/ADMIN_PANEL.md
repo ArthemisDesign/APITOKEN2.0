@@ -207,10 +207,12 @@ UUID. The confirmation explicitly warns that the provider balance will be spent 
 order will be extended even when the local subscription is expired. Authbot still repeats exact
 durable-binding, authoritative-liveness and provider-order checks before spending; only the local
 expiry check is bypassed by this explicit operator flag. It snapshots exact allocation IPs privately
-and groups selected allocations by order. IPRoyal extends the complete order: a multi-IP order must
-be selected in full, then authbot sends one paid request containing only the live-catalogue plan ID
-and maps the result back to every selected allocation. Partial multi-IP selection, another preflight
-failure, or explicit provider 4xx is reported as failed; ambiguous transport, provider 5xx, or a
+and groups selected allocations by order. For each group authbot validates every selected IP against
+the exact IPRoyal order and sends it in the paid request's `proxies` list, so a selected allocation
+can be renewed without forcing its unselected siblings. Already-disabled auto-extend is not toggled
+again; only an enabled setting is disabled and exact-refetched before payment. A selection absent
+from the exact order, another preflight failure, or explicit provider 4xx is reported as failed;
+ambiguous transport, provider 5xx, or a
 missing/invalid expiry confirmation after dispatch stays uncertain. After exact
 same-key replay handling, a different UUID overlapping a queued or active inventory ID or exact
 order/allocation gets safe `409 renewal_selection_busy` before insertion and cannot later be claimed

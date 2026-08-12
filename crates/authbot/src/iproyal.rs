@@ -175,8 +175,9 @@ struct ToggleAutoExtend {
 }
 
 #[derive(Serialize)]
-struct ExtendOrder {
+struct ExtendOrder<'a> {
     product_plan_id: i64,
+    proxies: &'a [String],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -449,9 +450,15 @@ impl Iproyal {
         Ok(order)
     }
 
-    async fn disable_auto_extend_and_refetch(&self, order_id: i64) -> Result<Order> {
+    async fn disable_auto_extend_if_enabled(&self, order_id: i64, current: Order) -> Result<Order> {
         if order_id <= 0 {
             return Err(anyhow!("invalid IPRoyal order id"));
+        }
+        if !current.auto_extend_settings.present {
+            return Err(anyhow!("IPRoyal order has no auto-extend state"));
+        }
+        if !current.auto_extend_settings.enabled {
+            return Ok(current);
         }
         let _: Value = self
             .post(
@@ -469,9 +476,15 @@ impl Iproyal {
         Ok(confirmed)
     }
 
-    /// Выключить auto-extend заказа и подтвердить результат обязательным exact refetch.
+    /// Выключить включённый auto-extend заказа и подтвердить результат exact refetch. Уже
+    /// выключенное состояние не мутируется: IPRoyal не документирует toggle как идемпотентный.
     pub async fn ensure_auto_extend_disabled(&self, order_id: i64) -> Result<()> {
-        self.disable_auto_extend_and_refetch(order_id).await?;
+        if order_id <= 0 {
+            return Err(anyhow!("invalid IPRoyal order id"));
+        }
+        let current = self.exact_order(order_id).await?;
+        self.disable_auto_extend_if_enabled(order_id, current)
+            .await?;
         Ok(())
     }
 
@@ -493,8 +506,8 @@ impl Iproyal {
         self.extend_order_ips(order_id, &ips).await
     }
 
-    /// Ручное продление заказа с подтверждением, что оператор выбрал весь его canonical IP-набор.
-    /// IPRoyal продлевает заказ целиком; платный wire принимает только `product_plan_id`.
+    /// Ручное продление выбранных canonical IP заказа. IPRoyal принимает `proxies`; отсутствие или
+    /// пустой список означало бы весь заказ, поэтому непустой операторский выбор передаётся явно.
     pub async fn extend_order_ips(
         &self,
         order_id: i64,
@@ -514,7 +527,7 @@ impl Iproyal {
             .map_err(|_| ExtendOrderFailure::rejected("order_preflight"))?;
         validate_order_renewable(&preflight)
             .map_err(|_| ExtendOrderFailure::rejected("order_preflight"))?;
-        prove_full_order_selection(&preflight, &selected)
+        prove_order_selection(&preflight, &selected)
             .map_err(|_| ExtendOrderFailure::rejected("order_preflight"))?;
         let product = self
             .isp_product()
@@ -523,21 +536,23 @@ impl Iproyal {
         let plan_id = thirty_day_plan_id_typed(&product)
             .map_err(|_| ExtendOrderFailure::rejected("catalog_preflight"))?;
         let before = self
-            .disable_auto_extend_and_refetch(order_id)
+            .disable_auto_extend_if_enabled(order_id, preflight)
             .await
             .map_err(|_| ExtendOrderFailure::rejected("auto_extend_preflight"))?;
         validate_order_renewable(&before)
             .map_err(|_| ExtendOrderFailure::rejected("order_recheck"))?;
-        prove_full_order_selection(&before, &selected)
+        prove_order_selection(&before, &selected)
             .map_err(|_| ExtendOrderFailure::rejected("order_recheck"))?;
         let before_expiry = parse_expiry(&before.expire_date)
             .map_err(|_| ExtendOrderFailure::rejected("order_recheck"))?;
-        self.send_paid_extend(order_id, plan_id).await?;
+        self.send_paid_extend(order_id, plan_id, &selected).await?;
         let after = self
             .exact_order(order_id)
             .await
             .map_err(|_| ExtendOrderFailure::uncertain("post_payment_confirmation"))?;
         validate_order_renewable(&after)
+            .map_err(|_| ExtendOrderFailure::uncertain("post_payment_confirmation"))?;
+        prove_order_selection(&after, &selected)
             .map_err(|_| ExtendOrderFailure::uncertain("post_payment_confirmation"))?;
         if !after.auto_extend_settings.present || after.auto_extend_settings.enabled {
             return Err(ExtendOrderFailure::uncertain("post_payment_confirmation"));
@@ -554,6 +569,7 @@ impl Iproyal {
         &self,
         order_id: i64,
         plan_id: i64,
+        proxies: &[String],
     ) -> std::result::Result<(), ExtendOrderFailure> {
         let url = self
             .url(&format!("/orders/{order_id}/extend"))
@@ -565,6 +581,7 @@ impl Iproyal {
             .header("accept", "application/json")
             .json(&ExtendOrder {
                 product_plan_id: plan_id,
+                proxies,
             })
             .send()
             .await
@@ -762,7 +779,7 @@ fn canonicalize_unique_selection(ips: &[String]) -> Result<Vec<String>> {
     Ok(selected)
 }
 
-fn prove_full_order_selection(order: &Order, selected: &[String]) -> Result<()> {
+fn prove_order_selection(order: &Order, selected: &[String]) -> Result<()> {
     let order_ips = canonical_order_ips(order)?;
     for ip in selected {
         if order_ips
@@ -775,15 +792,6 @@ fn prove_full_order_selection(order: &Order, selected: &[String]) -> Result<()> 
                 "IPRoyal exact order does not contain selected IP exactly once"
             ));
         }
-    }
-    if order_ips.len() != selected.len()
-        || order_ips
-            .iter()
-            .any(|order_ip| !selected.contains(order_ip))
-    {
-        return Err(anyhow!(
-            "IPRoyal renewal selection does not cover the exact order"
-        ));
     }
     Ok(())
 }
@@ -1254,9 +1262,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn standalone_auto_extend_guard_validates_toggles_and_refetches() {
+    async fn standalone_auto_extend_guard_skips_already_disabled_order() {
         let (base, requests, task) = mock_server(vec![
-            (200, "{}"),
             (
                 200,
                 r#"{"id":42,"expire_date":"2026-08-10","status":"confirmed","proxy_data":{"proxies":[]},"auto_extend_settings":null}"#,
@@ -1276,15 +1283,40 @@ mod tests {
         task.await.unwrap();
 
         let requests = requests.lock().unwrap();
-        assert_eq!(requests.len(), 2);
-        assert!(requests[0].starts_with("POST /orders/toggle-auto-extend HTTP/1.1"));
-        assert!(requests[0].contains(r#""order_id":42"#));
-        assert!(requests[0].contains(r#""is_enabled":false"#));
-        assert!(requests[1].starts_with("GET /orders/42 HTTP/1.1"));
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("GET /orders/42 HTTP/1.1"));
+        assert!(requests.iter().all(|request| !request.starts_with("POST ")));
     }
 
     #[tokio::test]
-    async fn full_order_extend_canonicalizes_selection_and_posts_plan_only() {
+    async fn standalone_auto_extend_guard_toggles_enabled_order_and_refetches() {
+        let (base, requests, task) = mock_server(vec![
+            (
+                200,
+                r#"{"id":42,"expire_date":"2026-08-10","status":"confirmed","proxy_data":{"proxies":[]},"auto_extend_settings":{"is_enabled":true}}"#,
+            ),
+            (200, "{}"),
+            (
+                200,
+                r#"{"id":42,"expire_date":"2026-08-10","status":"confirmed","proxy_data":{"proxies":[]},"auto_extend_settings":null}"#,
+            ),
+        ])
+        .await;
+        let client = Iproyal::with_base_url("key", &base).unwrap();
+        client.ensure_auto_extend_disabled(42).await.unwrap();
+        task.await.unwrap();
+
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[0].starts_with("GET /orders/42 HTTP/1.1"));
+        assert!(requests[1].starts_with("POST /orders/toggle-auto-extend HTTP/1.1"));
+        assert!(requests[1].contains(r#""order_id":42"#));
+        assert!(requests[1].contains(r#""is_enabled":false"#));
+        assert!(requests[2].starts_with("GET /orders/42 HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn selective_extend_skips_disabled_toggle_and_posts_selected_ips() {
         let exact = r#"{"id":42,"expire_date":"2026-08-10","status":"confirmed","proxy_data":{"proxies":[{"ip":"2001:db8::1"},{"ip":"203.0.113.9"}]},"auto_extend_settings":null}"#;
         let (base, requests, task) = mock_server(vec![
             (200, exact),
@@ -1292,8 +1324,6 @@ mod tests {
                 200,
                 r#"{"data":[{"id":77,"name":"Dedicated ISP Proxies","plans":[{"id":321,"name":"30 Days"}],"locations":[]}]}"#,
             ),
-            (200, "{}"),
-            (200, exact),
             (200, r#"{"accepted":true}"#),
             (
                 200,
@@ -1303,7 +1333,7 @@ mod tests {
         .await;
         let client = Iproyal::with_base_url("key", &base).unwrap();
         let expiry = client
-            .extend_order_ips(42, &["2001:0db8:0:0:0:0:0:1".into(), "203.0.113.9".into()])
+            .extend_order_ips(42, &["2001:0db8:0:0:0:0:0:1".into()])
             .await
             .unwrap();
         task.await.unwrap();
@@ -1312,17 +1342,19 @@ mod tests {
         let requests = requests.lock().unwrap();
         assert!(requests[0].starts_with("GET /orders/42 HTTP/1.1"));
         assert!(requests[1].starts_with("GET /products HTTP/1.1"));
-        assert!(requests[2].starts_with("POST /orders/toggle-auto-extend HTTP/1.1"));
-        assert!(requests[3].starts_with("GET /orders/42 HTTP/1.1"));
-        assert!(requests[4].starts_with("POST /orders/42/extend HTTP/1.1"));
-        let body = requests[4].split("\r\n\r\n").nth(1).unwrap();
+        assert!(requests[2].starts_with("POST /orders/42/extend HTTP/1.1"));
+        assert!(requests
+            .iter()
+            .all(|request| { !request.starts_with("POST /orders/toggle-auto-extend ") }));
+        let body = requests[2].split("\r\n\r\n").nth(1).unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(body).unwrap(),
             serde_json::json!({
-                "product_plan_id": 321
+                "product_plan_id": 321,
+                "proxies": ["2001:db8::1"]
             })
         );
-        assert!(requests[5].starts_with("GET /orders/42 HTTP/1.1"));
+        assert!(requests[3].starts_with("GET /orders/42 HTTP/1.1"));
     }
 
     #[tokio::test]
@@ -1365,12 +1397,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn partial_multi_ip_selection_is_rejected_before_paid_post() {
+    async fn selection_missing_from_exact_order_is_rejected_before_paid_post() {
         let exact = r#"{"id":42,"expire_date":"2026-08-10","status":"confirmed","proxy_data":{"proxies":[{"ip":"203.0.113.9"},{"ip":"203.0.113.10"}]},"auto_extend_settings":null}"#;
         let (base, requests, task) = mock_server(vec![(200, exact)]).await;
         let client = Iproyal::with_base_url("key", &base).unwrap();
         let error = client
-            .extend_order_ips(42, &["203.0.113.9".into()])
+            .extend_order_ips(42, &["203.0.113.11".into()])
             .await
             .unwrap_err();
         task.await.unwrap();
@@ -1391,7 +1423,10 @@ mod tests {
             let (base, requests, task) =
                 mock_server(vec![(status, r#"{"secret":"hidden"}"#)]).await;
             let client = Iproyal::with_base_url("key", &base).unwrap();
-            let error = client.send_paid_extend(42, 321).await.unwrap_err();
+            let error = client
+                .send_paid_extend(42, 321, &["203.0.113.9".into()])
+                .await
+                .unwrap_err();
             task.await.unwrap();
 
             assert_eq!(error.class(), class);
@@ -1401,7 +1436,10 @@ mod tests {
             let body = requests[0].split("\r\n\r\n").nth(1).unwrap();
             assert_eq!(
                 serde_json::from_str::<Value>(body).unwrap(),
-                serde_json::json!({"product_plan_id": 321})
+                serde_json::json!({
+                    "product_plan_id": 321,
+                    "proxies": ["203.0.113.9"]
+                })
             );
         }
     }
@@ -1416,7 +1454,10 @@ mod tests {
             let _ = stream.read(&mut bytes).await.unwrap();
         });
         let client = Iproyal::with_base_url("key", &format!("http://{address}")).unwrap();
-        let error = client.send_paid_extend(42, 321).await.unwrap_err();
+        let error = client
+            .send_paid_extend(42, 321, &["203.0.113.9".into()])
+            .await
+            .unwrap_err();
         task.await.unwrap();
 
         assert_eq!(error.class(), ExtendOrderFailureClass::Uncertain);

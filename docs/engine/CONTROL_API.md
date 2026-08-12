@@ -116,10 +116,13 @@ defense can protect against such in-process code. Authbot otherwise uses the sha
   the idempotent request. When an operator explicitly sends `true`, local subscription expiry is
   informational and does not restrict renewal while the exact-bound profile is still live. Before
   every paid extension authbot still repeats the durable exact-binding, authoritative-liveness and
-  provider-order checks. IPRoyal extends a complete order rather than individual allocations, so
-  every canonical IP in a multi-IP order must be selected together or the order fails before the
-  paid call. The provider wire is `POST /orders/{id}/extend` with only the live-catalogue
-  `product_plan_id`; selected allocations still receive individual results.
+  provider-order checks. IPRoyal accepts a selected IP list, so each requested allocation is
+  matched against the exact order and sent in `proxies`; unselected siblings in a multi-IP order
+  are not renewed. An order whose auto-extend is already disabled goes directly to the paid call;
+  only an enabled setting is toggled off and exact-refetched first because repeated disable is not
+  documented as idempotent. The provider wire is `POST /orders/{id}/extend` with the live-catalogue
+  `product_plan_id` and the non-empty canonical `proxies`; selected allocations still receive
+  individual results.
   It groups allocations by order and reports per-inventory `renewed|failed|uncertain`. Safe
   preflight failures and explicit provider 4xx responses are `failed`; transport loss, provider 5xx,
   or unavailable/invalid post-payment expiry confirmation are `uncertain` and never automatically
