@@ -1483,9 +1483,12 @@ impl Tripo3dGateway {
         state: TaskState,
     ) {
         let completed_at = now_unix();
+        // The terminal record publishes LAST — after artifacts are in our store and the
+        // settlement/FIFO work is done: a reader must never see `success` whose money or
+        // artifacts are still in flight.
+        let mut stored: Vec<String> = Vec::new();
         if lifecycle == TaskLifecycle::Success {
             // Artifacts first: the signed URLs live ≤60 s, settlement can wait a moment.
-            let mut stored = Vec::with_capacity(state.artifacts.len());
             for (field, url) in &state.artifacts {
                 match store_artifact(
                     &context.profile.client,
@@ -1509,20 +1512,22 @@ impl Tripo3dGateway {
                     }
                 }
             }
-            self.update_task(&context.request_id, |record| {
+        }
+        let terminal_error = match lifecycle {
+            TaskLifecycle::Banned | TaskLifecycle::Cancelled | TaskLifecycle::Unknown => {
+                Some("tripo3d_task_undocumented_final")
+            }
+            _ => None,
+        };
+        // Single publication point for the terminal read model.
+        let publish = |gateway: &Self, context: &DrainContext, stored: Vec<String>| {
+            gateway.update_task(&context.request_id, |record| {
                 record.artifacts = stored;
                 record.finalized = true;
                 record.status = lifecycle.as_str();
+                record.error = terminal_error;
             });
-        } else {
-            self.update_task(&context.request_id, |record| {
-                record.finalized = true;
-                record.status = lifecycle.as_str();
-                if lifecycle != TaskLifecycle::Failed && lifecycle != TaskLifecycle::Expired {
-                    record.error = Some("tripo3d_task_undocumented_final");
-                }
-            });
-        }
+        };
 
         let consumed_milli = state
             .consumed_credit_raw
@@ -1572,6 +1577,7 @@ impl Tripo3dGateway {
                     self.tariff_anomaly.fetch_add(1, Ordering::Relaxed);
                     self.settle_conservative_hold(context, "tripo3d-money-overflow")
                         .await;
+                    publish(self, context, stored);
                     return;
                 };
                 (milli, api)
@@ -1579,6 +1585,7 @@ impl Tripo3dGateway {
             Money::Refund => (0, 0),
             Money::Conservative(reason) => {
                 self.settle_conservative_hold(context, reason).await;
+                publish(self, context, stored);
                 return;
             }
         };
@@ -1651,6 +1658,7 @@ impl Tripo3dGateway {
                 "tripo3d",
                 format!("Tripo3D calibration event rejected before FIFO: {error:#}"),
             );
+            publish(self, context, stored);
             return;
         }
         // Codex/Gemini pairing: the free balance read taken in the turn's wake rides the same
@@ -1668,6 +1676,7 @@ impl Tripo3dGateway {
             })
             .ok();
         self.enqueue_turn(PendingTurn { event, balance }).await;
+        publish(self, context, stored);
     }
 
     /// The documented-conservative settle: delivery occurred (or the task state moved) but the
