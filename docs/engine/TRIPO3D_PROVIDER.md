@@ -111,11 +111,16 @@ not by conversation.
 | `text_to_image`, `generate_image` | `flux.1_kontext_pro` (default), `flux.1_dev`, `gpt_4o`, `gpt_image_1.5`, `gpt_image_2`, `midjourney`, `gemini_2.5_flash_image_preview`, `gemini_3_pro_image_preview`, `gemini_3.1_flash_image_preview` | |
 | `generate_multiview_image`, `edit_multiview_image` | — | concurrency 1 |
 
-`decision` v1 of the plane admits the 3D core only: `text_to_model`, `image_to_model`,
-`multiview_to_model`, `texture_model` — across the reviewed `model_version` sets above. Image
-generation (`text_to_image`/`generate_image`), animation, segmentation/completion, convert/import
-are recorded in the tariff (they have official prices) but are **not admitted** at the serving
-boundary until their live gates run; unknown or unlisted `model_version` fails closed at reserve.
+`decision` The plane admits the FULL reviewed catalog — every task type above across its
+reviewed `model_version` sets, including legacy `refine_model` and the free/import kinds. (This
+supersedes the 2026-08-12 v1 decision that admitted only the 3D core; the product owner
+directed full-catalog admission on 2026-08-13.) Two bounds stay fail-closed: an unknown or
+unlisted `model_version` is rejected at reserve, and `highpoly_to_lowpoly` keeps failing closed
+on the documented docs-vs-SDK version conflict (§6.6) — neither spelling is accepted until a
+live probe pins it. The `style` surcharge on generation tasks has no proven wire field (the
+rate card prices it, the SDK exposes no such parameter on `*_to_model`), so a `style` request
+on those kinds is rejected locally with the limitation named; on `texture_model` the style
+reference rides the documented `texture_prompt.style_image` and is admitted.
 
 `decision` Served-vs-requested: Tripo3D does not silently re-route models (no evidence of it), but
 the immutable turn event still records the requested `model_version` and the task's resolved
@@ -196,9 +201,15 @@ pricing) that are not confirmed billable via the public API — not admitted, fa
 
 `decision` The per-turn money authority is the provider-reported **`consumed_credit`** of the
 finished task — an authoritative native consumption per turn. The tariff table above prices the
-**reserve** (conservative hold = worst case of base + selected surcharges) and cross-checks
-settlement: a `consumed_credit` that exceeds the tariff's maximum for the admitted task shape is a
-typed anomaly (quarantine), never silent acceptance.
+**reserve** and cross-checks settlement: a `consumed_credit` that exceeds the reserve computed
+for the admitted task shape is a typed anomaly (quarantine), never silent acceptance. The
+reserve rule has two tiers (product-owner directive 2026-08-13, superseding the pure
+worst-case-of-options rule): the exact published price of the combination when the card has
+one, otherwise — for a reviewed kind + `model_version` whose exact option combination has no
+published price — the documented conservative reserve equal to the family's highest published
+price (`crates/metering/src/tripo3d.rs::tripo3d_reserve_credits`). Settlement is never the
+reserve: it is exactly the authoritative `consumed_credit`, and no price is ever fabricated for
+a shape the card does not price.
 
 ### 5.2 Native quota — the balance endpoint
 
@@ -290,6 +301,7 @@ Each `unknown` fails closed and is cleared only by a controlled live run on our 
 |---|---|---|
 | research / capability manifest | this file | done |
 | official rate card | `crates/metering/src/tripo3d.rs` | done (2f80d806) |
+| full-catalog admission reserve | `crates/metering/src/tripo3d.rs` (`as_wire`/`from_wire`, `tripo3d_reserve_credits`, `tripo3d_family_max_credits`) | done (this commit) |
 | calibration authority (schema 0049) | `crates/registry/migrations_pg/0049_tripo3d_calibration.sql` | done (this commit) |
 | priced reservation provider set (schema 0051) | `crates/registry/migrations_pg/0051_tripo3d_pricing_provider.sql` + `DISCOUNT_PROVIDER_IDS` | done (this commit) |
 | observation types | `crates/registry/src/tripo3d_calibration.rs` | done (this commit) |

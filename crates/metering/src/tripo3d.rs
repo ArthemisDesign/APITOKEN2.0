@@ -3,15 +3,25 @@
 //! Authority: `docs/engine/TRIPO3D_PROVIDER.md` §5.1 (official `billing.md` rate card) and §3
 //! (per-task `model_version` admission sets), reviewed 2026-08-12. Tripo3D publishes a fixed
 //! dollar link for its native credit unit — **$0.01 per credit** — so the API-dollar leg is
-//! exact, not estimated. This module prices the **reserve** (conservative hold = worst case of
-//! base + selected surcharges); the per-turn settlement authority is the provider-reported
-//! `consumed_credit`, and a settled amount above this tariff's maximum for the admitted task
-//! shape is a typed anomaly, never silent acceptance.
+//! exact, not estimated. This module prices the **reserve**; the per-turn settlement authority
+//! is the provider-reported `consumed_credit`, and a settled amount above the reserved maximum
+//! for the admitted task shape is a typed anomaly, never silent acceptance.
 //!
-//! Every lookup fails closed: an unknown task kind, an unlisted `model_version`, or an option
-//! combination the rate card does not admit returns `None` — never a guessed price. Free tasks
-//! (`animate_prerigcheck`, `import_model`) return `Some(0)`: an explicit, documented official
-//! zero, distinct from a missing price. All arithmetic is checked integer math.
+//! Reserve rule (two tiers, both honest):
+//!
+//! 1. **Exact** — [`tripo3d_task_credits`]: the published price of the exact
+//!    task/version/option combination. A documented free task (`animate_prerigcheck`,
+//!    `import_model`) returns `Some(0)`: an explicit, documented official zero.
+//! 2. **Conservative** — [`tripo3d_reserve_credits`]: when the task kind and the
+//!    `model_version` are reviewed but the exact option combination has no published price, the
+//!    reserve is the highest published price of the task's family
+//!    ([`tripo3d_family_max_credits`]), flagged `conservative`. Settlement never follows the
+//!    reserve: it is exactly the authoritative `consumed_credit`.
+//!
+//! Fail-closed stays fail-closed: an unknown task kind, an unlisted `model_version`, the
+//! conflicted `highpoly_to_lowpoly` (docs-vs-SDK version conflict, manifest §3/§6.6) and an
+//! unpriceable per-unit count return `None` — never a guessed price. All arithmetic is checked
+//! integer math.
 
 use crate::TariffScheduleId;
 
@@ -454,6 +464,173 @@ pub fn tripo3d_convert_model_credits(mode: Tripo3dConvertMode) -> i64 {
         Tripo3dConvertMode::Basic => 5,
         Tripo3dConvertMode::Advanced => 10,
     }
+}
+
+// ── full-catalog admission: wire names, conservative family reserves ────────
+
+impl Tripo3dTaskKind {
+    /// The provider's exact wire discriminator (manifest §3 catalog, reviewed 2026-08-12).
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::TextToModel => "text_to_model",
+            Self::ImageToModel => "image_to_model",
+            Self::MultiviewToModel => "multiview_to_model",
+            Self::TextureModel => "texture_model",
+            Self::MeshSegmentation => "mesh_segmentation",
+            Self::MeshCompletion => "mesh_completion",
+            Self::HighpolyToLowpoly => "highpoly_to_lowpoly",
+            Self::AnimatePrerigcheck => "animate_prerigcheck",
+            Self::AnimateRig => "animate_rig",
+            Self::AnimateRetarget => "animate_retarget",
+            Self::ConvertModel => "convert_model",
+            Self::ImportModel => "import_model",
+            Self::TextToImage => "text_to_image",
+            Self::GenerateImage => "generate_image",
+            Self::GenerateMultiviewImage => "generate_multiview_image",
+            Self::EditMultiviewImage => "edit_multiview_image",
+            Self::RefineModel => "refine_model",
+        }
+    }
+
+    /// The task kind for a wire discriminator. An unknown `type` names nothing — the caller
+    /// fails closed with the admitted set, never a guess.
+    pub fn from_wire(wire: &str) -> Option<Self> {
+        Some(match wire {
+            "text_to_model" => Self::TextToModel,
+            "image_to_model" => Self::ImageToModel,
+            "multiview_to_model" => Self::MultiviewToModel,
+            "texture_model" => Self::TextureModel,
+            "mesh_segmentation" => Self::MeshSegmentation,
+            "mesh_completion" => Self::MeshCompletion,
+            "highpoly_to_lowpoly" => Self::HighpolyToLowpoly,
+            "animate_prerigcheck" => Self::AnimatePrerigcheck,
+            "animate_rig" => Self::AnimateRig,
+            "animate_retarget" => Self::AnimateRetarget,
+            "convert_model" => Self::ConvertModel,
+            "import_model" => Self::ImportModel,
+            "text_to_image" => Self::TextToImage,
+            "generate_image" => Self::GenerateImage,
+            "generate_multiview_image" => Self::GenerateMultiviewImage,
+            "edit_multiview_image" => Self::EditMultiviewImage,
+            "refine_model" => Self::RefineModel,
+            _ => return None,
+        })
+    }
+
+    /// Per-unit kinds price by count (credits per animation / per edited image / per mode), so
+    /// the flat reserve helper cannot price them — the caller uses the counted helpers with the
+    /// request's actual count.
+    pub fn is_per_unit(self) -> bool {
+        matches!(
+            self,
+            Self::AnimateRetarget | Self::ConvertModel | Self::EditMultiviewImage
+        )
+    }
+}
+
+/// Whether a supplied `model_version` sits in the kind's reviewed admission set (manifest §3).
+/// Version-independent kinds admit no version at all. An omitted version is the provider's
+/// documented default and is always admitted.
+fn version_admitted(kind: Tripo3dTaskKind, model_version: Option<&str>) -> bool {
+    let Some(version) = model_version else {
+        return true;
+    };
+    match kind {
+        Tripo3dTaskKind::TextToModel | Tripo3dTaskKind::ImageToModel => {
+            VERSIONS_TO_MODEL.contains(&version)
+        }
+        Tripo3dTaskKind::MultiviewToModel => VERSIONS_MULTIVIEW.contains(&version),
+        Tripo3dTaskKind::TextureModel => VERSIONS_TEXTURE_MODEL.contains(&version),
+        Tripo3dTaskKind::MeshSegmentation => VERSIONS_MESH_SEGMENTATION.contains(&version),
+        Tripo3dTaskKind::MeshCompletion => VERSIONS_MESH_COMPLETION.contains(&version),
+        Tripo3dTaskKind::AnimatePrerigcheck => VERSIONS_ANIMATE_PRERIGCHECK.contains(&version),
+        Tripo3dTaskKind::AnimateRig => VERSIONS_ANIMATE_RIG.contains(&version),
+        Tripo3dTaskKind::RefineModel => version == "v1.4-20240625",
+        Tripo3dTaskKind::TextToImage | Tripo3dTaskKind::GenerateImage => {
+            VERSIONS_IMAGE.contains(&version)
+        }
+        // Version-independent kinds: a supplied version fails closed, exactly as the exact
+        // pricer treats it.
+        Tripo3dTaskKind::HighpolyToLowpoly
+        | Tripo3dTaskKind::AnimateRetarget
+        | Tripo3dTaskKind::ConvertModel
+        | Tripo3dTaskKind::ImportModel
+        | Tripo3dTaskKind::GenerateMultiviewImage
+        | Tripo3dTaskKind::EditMultiviewImage => false,
+    }
+}
+
+/// The highest published price in a task kind's family (§5.1), for the conservative reserve of
+/// a reviewed-but-unpriced option combination. `None` only where no honest bound exists:
+/// `highpoly_to_lowpoly` (conflicted, fail closed) and the per-unit kinds (their bound is
+/// count-derived, so a flat maximum would be a fabrication).
+///
+/// The generation maxima are the standard tier with every published surcharge stacked:
+/// base + extreme texture (30) + smart_low_poly (10) + generate_parts (20) + quad (5) +
+/// style (5) + detailed geometry (20) — P1 (all-in, max 50) and legacy v1.4 (flat) never
+/// exceed the stacked standard tier. A regression test recomputes these from the exact pricer.
+pub fn tripo3d_family_max_credits(kind: Tripo3dTaskKind) -> Option<i64> {
+    Some(match kind {
+        Tripo3dTaskKind::TextToModel => 100,
+        Tripo3dTaskKind::ImageToModel | Tripo3dTaskKind::MultiviewToModel => 110,
+        Tripo3dTaskKind::TextureModel => 35,
+        Tripo3dTaskKind::MeshSegmentation => 40,
+        Tripo3dTaskKind::MeshCompletion => 50,
+        Tripo3dTaskKind::AnimatePrerigcheck => 0,
+        Tripo3dTaskKind::AnimateRig => 25,
+        Tripo3dTaskKind::ImportModel => 0,
+        Tripo3dTaskKind::TextToImage => 5,
+        Tripo3dTaskKind::GenerateImage => 10,
+        Tripo3dTaskKind::GenerateMultiviewImage => 10,
+        Tripo3dTaskKind::RefineModel => 30,
+        Tripo3dTaskKind::HighpolyToLowpoly
+        | Tripo3dTaskKind::AnimateRetarget
+        | Tripo3dTaskKind::ConvertModel
+        | Tripo3dTaskKind::EditMultiviewImage => return None,
+    })
+}
+
+/// The reserve for one admitted request.
+///
+/// `conservative: false` — the exact published price of the combination. `conservative: true` —
+/// the combination is reviewed (kind + `model_version` admitted) but has no published price, so
+/// the reserve is the family's highest published price; settlement is still exactly the
+/// authoritative `consumed_credit`, and the reserved value is also the anomaly cross-check
+/// bound (a settlement above it is quarantined, never silently accepted).
+///
+/// `None` — fail closed: per-unit kind (price by count via the dedicated helpers), conflicted
+/// `highpoly_to_lowpoly`, or a supplied `model_version` outside the reviewed set.
+pub fn tripo3d_reserve_credits(
+    kind: Tripo3dTaskKind,
+    model_version: Option<&str>,
+    options: &Tripo3dOptions,
+) -> Option<Tripo3dReserve> {
+    if let Some(credits) = tripo3d_task_credits(kind, model_version, options) {
+        return Some(Tripo3dReserve {
+            credits,
+            conservative: false,
+        });
+    }
+    if kind.is_per_unit() || kind == Tripo3dTaskKind::HighpolyToLowpoly {
+        return None;
+    }
+    if !version_admitted(kind, model_version) {
+        return None;
+    }
+    let credits = tripo3d_family_max_credits(kind)?;
+    Some(Tripo3dReserve {
+        credits,
+        conservative: true,
+    })
+}
+
+/// The reserve decision for one admitted flat-priced request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tripo3dReserve {
+    pub credits: i64,
+    /// True when the price is the family's published maximum rather than the exact combination's
+    /// published price. Settlement never follows the reserve either way.
+    pub conservative: bool,
 }
 
 /// Convert exact credits to nanoUSD at the official fixed rate ($0.01/credit). Checked integer
@@ -919,6 +1096,222 @@ mod tests {
         assert_eq!(
             tripo3d_tariff_schedule_id().as_str(),
             TRIPO3D_TARIFF_SCHEDULE_ID
+        );
+    }
+
+    // ── full-catalog admission (reserve rule) ───────────────────────────────
+
+    const ALL_KINDS: [Tripo3dTaskKind; 17] = [
+        Tripo3dTaskKind::TextToModel,
+        Tripo3dTaskKind::ImageToModel,
+        Tripo3dTaskKind::MultiviewToModel,
+        Tripo3dTaskKind::TextureModel,
+        Tripo3dTaskKind::MeshSegmentation,
+        Tripo3dTaskKind::MeshCompletion,
+        Tripo3dTaskKind::HighpolyToLowpoly,
+        Tripo3dTaskKind::AnimatePrerigcheck,
+        Tripo3dTaskKind::AnimateRig,
+        Tripo3dTaskKind::AnimateRetarget,
+        Tripo3dTaskKind::ConvertModel,
+        Tripo3dTaskKind::ImportModel,
+        Tripo3dTaskKind::TextToImage,
+        Tripo3dTaskKind::GenerateImage,
+        Tripo3dTaskKind::GenerateMultiviewImage,
+        Tripo3dTaskKind::EditMultiviewImage,
+        Tripo3dTaskKind::RefineModel,
+    ];
+
+    #[test]
+    fn wire_names_roundtrip_the_whole_catalog() {
+        for kind in ALL_KINDS {
+            assert_eq!(Tripo3dTaskKind::from_wire(kind.as_wire()), Some(kind));
+        }
+        assert_eq!(Tripo3dTaskKind::from_wire("text_to_3d"), None);
+        assert_eq!(Tripo3dTaskKind::from_wire(""), None);
+        assert_eq!(Tripo3dTaskKind::from_wire("TEXT_TO_MODEL"), None);
+    }
+
+    #[test]
+    fn family_max_is_the_grid_maximum_for_generation_kinds() {
+        // Recompute the constant from the exact pricer: every admitted version x the full
+        // surcharge grid (texture qualities incl. extreme x every boolean flag combination).
+        let qualities = [
+            Tripo3dTextureQuality::Standard,
+            Tripo3dTextureQuality::Detailed,
+            Tripo3dTextureQuality::Extreme,
+        ];
+        for (kind, versions, expected) in [
+            (Tripo3dTaskKind::TextToModel, VERSIONS_TO_MODEL.to_vec(), 100),
+            (Tripo3dTaskKind::ImageToModel, VERSIONS_TO_MODEL.to_vec(), 110),
+            (Tripo3dTaskKind::MultiviewToModel, VERSIONS_MULTIVIEW.to_vec(), 110),
+        ] {
+            let mut grid_max = 0;
+            for version in &versions {
+                for texture in [false, true] {
+                    for quality in qualities {
+                        for bits in 0..32u8 {
+                            let options = Tripo3dOptions {
+                                texture,
+                                pbr: bits & 1 != 0,
+                                smart_low_poly: bits & 2 != 0,
+                                generate_parts: bits & 4 != 0,
+                                quad: bits & 8 != 0,
+                                style: bits & 16 != 0,
+                                texture_quality: quality,
+                                geometry_quality: if bits & 1 != 0 {
+                                    Tripo3dGeometryQuality::Detailed
+                                } else {
+                                    Tripo3dGeometryQuality::Standard
+                                },
+                            };
+                            if let Some(credits) = price(kind, Some(version), options) {
+                                grid_max = grid_max.max(credits);
+                            }
+                        }
+                    }
+                }
+            }
+            assert_eq!(tripo3d_family_max_credits(kind), Some(expected), "{kind:?}");
+            assert_eq!(grid_max, expected, "{kind:?} grid maximum moved");
+        }
+    }
+
+    #[test]
+    fn family_max_covers_every_priced_combination() {
+        // The conservative reserve must never under-hold: for every admitted kind/version the
+        // family maximum is at least the exact price of any priced option grid cell.
+        let versions: Vec<Option<&str>> = vec![
+            None,
+            Some("v3.1-20260211"),
+            Some("P1-20260311"),
+            Some("v2.5-20250123"),
+            Some("v1.4-20240625"),
+        ];
+        let all_options = Tripo3dOptions {
+            texture: true,
+            pbr: true,
+            smart_low_poly: true,
+            generate_parts: true,
+            quad: true,
+            style: true,
+            texture_quality: Tripo3dTextureQuality::Extreme,
+            geometry_quality: Tripo3dGeometryQuality::Detailed,
+        };
+        for kind in ALL_KINDS {
+            let Some(max) = tripo3d_family_max_credits(kind) else {
+                continue;
+            };
+            for version in &versions {
+                for options in [OPTS, all_options] {
+                    if let Some(exact) = price(kind, *version, options) {
+                        assert!(exact <= max, "{kind:?} {version:?} exact {exact} > max {max}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reserve_is_exact_when_the_card_prices_the_combination() {
+        let reserve = tripo3d_reserve_credits(
+            Tripo3dTaskKind::TextToModel,
+            Some("v3.1-20260211"),
+            &OPTS,
+        )
+        .unwrap();
+        assert_eq!(
+            reserve,
+            Tripo3dReserve {
+                credits: 10,
+                conservative: false
+            }
+        );
+        // Documented free tasks reserve exactly zero, not a conservative bound.
+        let free = tripo3d_reserve_credits(Tripo3dTaskKind::AnimatePrerigcheck, None, &OPTS)
+            .unwrap();
+        assert_eq!(
+            free,
+            Tripo3dReserve {
+                credits: 0,
+                conservative: false
+            }
+        );
+    }
+
+    #[test]
+    fn reserve_falls_back_to_the_family_max_for_unpriced_reviewed_combinations() {
+        // P1 takes no surcharges on the card: reviewed kind + version, unpriced combination.
+        let p1_surcharged = Tripo3dOptions {
+            smart_low_poly: true,
+            ..OPTS
+        };
+        let reserve = tripo3d_reserve_credits(
+            Tripo3dTaskKind::TextToModel,
+            Some("P1-20260311"),
+            &p1_surcharged,
+        )
+        .unwrap();
+        assert_eq!(
+            reserve,
+            Tripo3dReserve {
+                credits: 100,
+                conservative: true
+            }
+        );
+        // Legacy v1.4 with any option: same conservative fallback at the family max.
+        let reserve = tripo3d_reserve_credits(
+            Tripo3dTaskKind::ImageToModel,
+            Some("v1.4-20240625"),
+            &Tripo3dOptions {
+                texture: true,
+                ..OPTS
+            },
+        )
+        .unwrap();
+        assert_eq!(reserve.credits, 110);
+        assert!(reserve.conservative);
+        // A texture quality tier without the texture flag: unpriced combination, family max.
+        let reserve = tripo3d_reserve_credits(
+            Tripo3dTaskKind::MultiviewToModel,
+            Some("v3.0-20250812"),
+            &Tripo3dOptions {
+                texture_quality: Tripo3dTextureQuality::Detailed,
+                ..OPTS
+            },
+        )
+        .unwrap();
+        assert_eq!(reserve.credits, 110);
+        assert!(reserve.conservative);
+    }
+
+    #[test]
+    fn reserve_fails_closed_where_no_honest_bound_exists() {
+        // The conflicted highpoly task: neither spelling, no fallback.
+        assert_eq!(
+            tripo3d_reserve_credits(Tripo3dTaskKind::HighpolyToLowpoly, None, &OPTS),
+            None
+        );
+        // Per-unit kinds price by count, never by a flat family bound.
+        for kind in [
+            Tripo3dTaskKind::AnimateRetarget,
+            Tripo3dTaskKind::ConvertModel,
+            Tripo3dTaskKind::EditMultiviewImage,
+        ] {
+            assert_eq!(tripo3d_reserve_credits(kind, None, &OPTS), None, "{kind:?}");
+        }
+        // An unlisted version stays fail-closed — the conservative fallback must not launder it.
+        assert_eq!(
+            tripo3d_reserve_credits(Tripo3dTaskKind::TextToModel, Some("v4.0-20270101"), &OPTS),
+            None
+        );
+        // A version supplied to a version-independent kind stays fail-closed.
+        assert_eq!(
+            tripo3d_reserve_credits(
+                Tripo3dTaskKind::ImportModel,
+                Some("v1.0-20240301"),
+                &OPTS
+            ),
+            None
         );
     }
 }
