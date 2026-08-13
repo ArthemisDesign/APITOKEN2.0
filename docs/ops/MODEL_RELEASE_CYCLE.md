@@ -39,8 +39,10 @@ implementation SHA.
 
 ## Phase B — pricing the new model (hot, no release advance)
 
-The compiled `crates/metering` tariff from Phase A is the price authority. Bridge it into the
-hot tariff table from the compiled constants — never operator-typed numbers:
+The compiled `crates/metering` tariff from Phase A is the price authority. First read
+`GET /admin/pricing/tariffs/compiled`: `seed_safe=true` means the family has one complete compiled
+epoch and may be bridged into the hot tariff table from compiled constants — never
+operator-typed numbers:
 
 ```bash
 curl -X POST -H "x-api-key: $CONTROL_KEY" -H 'content-type: application/json' \
@@ -53,6 +55,15 @@ settlement replays it. A later correction is a new version through
 `POST /admin/pricing/tariffs/override`. Verify the serving plane prices the model: its
 `/internal/router/catalog/pricing` producer must resolve a rate card for it — the router drops
 any catalog entry it cannot price.
+
+Never seed a family with `seed_safe=false`. The route returns an atomic 400 before authority access
+for both a targeted and an all-family request: one `effective_from=0` row cannot preserve a
+multi-epoch schedule. For an effective-dated correction, read the existing head, append the current
+payload at the rollout timestamp, then append the next payload at its exact future cutoff. Verify
+readback after each POST. If a response is uncertain, GET the rows before retrying because POST
+allocates another `head + 1` version. If a current correction is appended after a future row, append
+a fresh higher-version future row as well or the current version will win after the cutoff. The
+full append-only recovery procedure is in `docs/engine/CONTROL_API.md`.
 
 ## Phase C — publication
 

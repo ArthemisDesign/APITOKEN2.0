@@ -578,9 +578,14 @@ PostgreSQL-only, so an engine on the SQLite fallback answers `503 billing author
 - `GET /admin/pricing/tariffs` → `{"overrides": [...]}` — every row ordered by
   `(tariff_family, version)`; each stored digest is recomputed on read and a mismatch fails closed.
 - `GET /admin/pricing/tariffs/compiled` → `{"compiled_ts": <unix>, "families": [{"tariff_family",
-  "payload"}, ...]}` — the compiled catalog dump in the exact canonical payload shape the table
-  stores, sorted by family, so an auditor can diff DB rows against the code. Read-only and
-  authority-free: the answer is built from `metering` alone.
+  "payload", "has_future_epoch", "seed_safe"}, ...]}` — the compiled catalog dump in the exact
+  canonical payload shape the table stores, sorted by family, so an auditor can diff DB rows
+  against the code. `has_future_epoch` says whether that family has a compiled epoch strictly
+  after `compiled_ts`; `seed_safe` is the stronger whole-schedule invariant and is true only when
+  an effective-from-zero seed cannot collapse multiple epochs. The two fields are intentionally
+  independent: after the last cutoff a multi-epoch family has `has_future_epoch=false` but remains
+  `seed_safe=false`, because a new zero-time row could reprice an older in-flight request. Read-only
+  and authority-free: the answer is built from `metering` alone.
 - `POST /admin/pricing/tariffs/override` — publish the next version of one family. Body:
   `{tariff_family, effective_from, payload, created_by, reason}` — **no version field**: the server
   computes `head + 1` (2 when the family has no rows) and retries exactly once on a sequence race
@@ -596,7 +601,10 @@ PostgreSQL-only, so an engine on the SQLite fallback answers `503 billing author
   Exact replay returns `unchanged`, so re-seeding is idempotent. A family whose head is already
   past version 2 is **refused** (per-family `refused` outcome, overall HTTP 409): seeding is only
   the bridge from compiled to data, never an overwrite of operator versions. A family name unknown
-  to the compiled catalog is a 400. The response is `{"outcomes": [{"tariff_family", "result":
+  to the compiled catalog is a 400. A selected family with `seed_safe=false` makes the **entire**
+  request fail with 400 before the PostgreSQL authority is opened; an all-family seed never writes
+  the safe subset and then discovers a multi-epoch family. Publish explicit effective-dated
+  override rows instead. The response is `{"outcomes": [{"tariff_family", "result":
   "inserted"|"unchanged"|"refused"|"rejected", ...}]}`; 200 when every target seeded cleanly,
   409 when at least one was refused/rejected (the remaining families still seed).
 
@@ -604,6 +612,20 @@ The time-bounded `anthropic/standard/sonnet-5-intro` family is published by the 
 (and therefore seeded) only while the compiled epoch has not flipped (`now < 2026-09-01T00:00:00Z`);
 after the flip the intro family is dead — the matcher never emits it again — and the scheduled
 epoch change is published as a normal new override version of `anthropic/standard/sonnet-current`.
+`google/gemini/gemini-3.6-flash` instead has two epochs in one family (promo through 2026-12-31,
+standard from `2027-01-01T00:00:00Z`) and is therefore never seed-safe.
+
+For a multi-epoch price correction, use an append-only pair because the schema deliberately has no
+`effective_until`: first publish the current payload with `effective_from` at the current rollout
+time, then immediately publish the post-cutoff payload with the exact future Unix timestamp. The
+second row receives the higher version, is inapplicable before its timestamp, and wins from the
+cutoff onward. Read `GET /admin/pricing/tariffs` before the pair and after **each** POST, verify the
+returned version, timestamp, digest and payload, and never blindly retry after an uncertain HTTP
+response — the server allocates `head + 1`, so a retry is another append, not a client-idempotency
+key. If the current row must be corrected after the future row already exists, append both a
+corrected current row and a new higher-version copy of the future row; otherwise the corrected
+current row would shadow the older future version after the cutoff. A wrong future row alone is
+repaired by a higher version at the same future timestamp. Rows are never edited or deleted.
 
 ### Error codes
 `400` invalid body (explicit handler validation) · `401` missing/incorrect control key · `404`

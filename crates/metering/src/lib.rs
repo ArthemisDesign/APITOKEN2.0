@@ -22,30 +22,31 @@ pub mod tripo3d;
 pub use codex::{
     codex_catalog_at, codex_compiled_credit_rates, codex_compiled_tariffs_at,
     codex_credit_cost_nano, codex_credit_cost_nano_with_rates, codex_credit_rates,
-    codex_credit_rates_family,
-    codex_matched_credit_rates_at, codex_matched_tariff_at, codex_prices_at,
-    codex_subscription_fast_multiplier_basis_points, codex_tariff_capability_at,
-    CodexAdmissionTariffIdentity, CodexContextTier, CodexCreditRates, CodexCreditUsage,
-    CodexModelSpec, CodexPriceEpoch, CodexPrices, CodexServiceTier, CodexTariffModifiers,
-    CODEX_ALIAS_GENERATION, CODEX_CREDIT_FAMILY, CODEX_CREDIT_SCHEDULE_ID,
+    codex_credit_rates_family, codex_matched_credit_rates_at, codex_matched_tariff_at,
+    codex_prices_at, codex_subscription_fast_multiplier_basis_points, codex_tariff_capability_at,
+    codex_tariff_has_future_epoch_at, codex_tariff_seed_safe, CodexAdmissionTariffIdentity,
+    CodexContextTier, CodexCreditRates, CodexCreditUsage, CodexModelSpec, CodexPriceEpoch,
+    CodexPrices, CodexServiceTier, CodexTariffModifiers, CODEX_ALIAS_GENERATION,
+    CODEX_CREDIT_FAMILY, CODEX_CREDIT_SCHEDULE_ID,
 };
 pub use gemini::{
     gemini_catalog_at, gemini_compiled_tariffs_at, gemini_matched_tariff_at, gemini_prices_at,
-    GeminiModelSpec, GeminiPriceEpoch, GeminiPrices, GeminiSearchBilling, GeminiUsage,
+    gemini_tariff_has_future_epoch_at, gemini_tariff_seed_safe, GeminiModelSpec, GeminiPriceEpoch,
+    GeminiPrices, GeminiSearchBilling, GeminiUsage,
 };
 pub use glm::{
     glm_catalog_at, glm_compiled_credit_rates, glm_compiled_tariffs_at, glm_credit_cost_micro,
     glm_credit_rates_for_served_model, glm_credits_at, glm_is_peak_utc,
-    glm_matched_credit_rates_at, glm_matched_tariff_at, glm_prices_at,
-    glm_prices_for_served_model, glm_resolve_subscription_model, glm_subscription_models,
-    GlmCreditRates, GlmModelSpec, GlmPriceEpoch, GlmPrices, GlmSubscriptionModel, GlmUsage,
-    GlmUsageError, GLM_CREDIT_SCHEDULE_ID, GLM_TARIFF_SCHEDULE_ID,
+    glm_matched_credit_rates_at, glm_matched_tariff_at, glm_prices_at, glm_prices_for_served_model,
+    glm_resolve_subscription_model, glm_subscription_models, glm_tariff_has_future_epoch_at,
+    glm_tariff_seed_safe, GlmCreditRates, GlmModelSpec, GlmPriceEpoch, GlmPrices,
+    GlmSubscriptionModel, GlmUsage, GlmUsageError, GLM_CREDIT_SCHEDULE_ID, GLM_TARIFF_SCHEDULE_ID,
 };
 pub use kimi::{
     kimi_catalog_at, kimi_compiled_tariffs_at, kimi_matched_tariff_at, kimi_prices_at,
     kimi_prices_for_served_model, kimi_resolve_subscription_model, kimi_subscription_models,
-    KimiModelSpec, KimiPriceEpoch, KimiPrices, KimiSubscriptionModel, KimiUsage, KimiUsageError,
-    KIMI_TARIFF_SCHEDULE_ID,
+    kimi_tariff_has_future_epoch_at, kimi_tariff_seed_safe, KimiModelSpec, KimiPriceEpoch,
+    KimiPrices, KimiSubscriptionModel, KimiUsage, KimiUsageError, KIMI_TARIFF_SCHEDULE_ID,
 };
 pub use openai_image::{
     openai_image_compiled_tariff, openai_image_cost_nanodollars, openai_image_tariff,
@@ -1301,9 +1302,12 @@ mod tests {
                         AnthropicInferenceGeo::Global
                     },
                 };
-                let bare =
-                    anthropic_tariff_capability_at("claude-haiku-4-5", SONNET5_STD_START, modifiers)
-                        .unwrap();
+                let bare = anthropic_tariff_capability_at(
+                    "claude-haiku-4-5",
+                    SONNET5_STD_START,
+                    modifiers,
+                )
+                .unwrap();
                 let dated = anthropic_tariff_capability_at(
                     "claude-haiku-4-5-20251001",
                     SONNET5_STD_START,
@@ -1483,10 +1487,10 @@ mod tests {
         assert_eq!(apply_multiplier_floor(0, 5000), 0);
         // Контрактный floor: charged_nano = floor(official_nano * payable_multiplier_bp / 10000).
         assert_eq!(apply_multiplier_floor(3, 15000), 4); // 3*1.5=4.5→4 (half-up дал бы 5)
-        // Граница half-up: остаток ровно 5000 не округляется вверх.
+                                                         // Граница half-up: остаток ровно 5000 не округляется вверх.
         assert_eq!(apply_multiplier_floor(5_000, 5_001), 2_500); // 25_005_000/10_000 = 2500.5→2500
         assert_eq!(apply_multiplier(5_000, 5_001), 2_501); // legacy half-up остаётся 2501
-        // Максимальный payable-диапазон release-v2.
+                                                           // Максимальный payable-диапазон release-v2.
         assert_eq!(apply_multiplier_floor(9_999, 10_000), 9_999);
         assert_eq!(apply_multiplier_floor(9_999, 1), 0);
     }
@@ -1656,7 +1660,10 @@ data: {{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{{\"type\":\"text
             ("claude-3-opus-20240229", "anthropic/standard/opus-legacy"),
             ("claude-sonnet-4-6", "anthropic/standard/sonnet-current"),
             ("claude-sonnet-4-5", "anthropic/standard/sonnet-current"),
-            ("claude-3-5-sonnet-20241022", "anthropic/standard/sonnet-current"),
+            (
+                "claude-3-5-sonnet-20241022",
+                "anthropic/standard/sonnet-current",
+            ),
             ("claude-haiku-4-5-20251001", "anthropic/standard/haiku-4-5"),
             ("claude-haiku-4-5", "anthropic/standard/haiku-4-5"),
             ("claude-haiku-3-5", "anthropic/standard/haiku-3-5"),
@@ -1671,7 +1678,11 @@ data: {{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{{\"type\":\"text
                 assert_eq!(helper.1, matched, "{model} prices");
                 // The reserve/charge functions keep returning identical values.
                 assert_eq!(model_prices_at(model, ts), matched, "{model} charge");
-                assert_eq!(model_prices_reserve_at(model, ts), matched, "{model} reserve");
+                assert_eq!(
+                    model_prices_reserve_at(model, ts),
+                    matched,
+                    "{model} reserve"
+                );
                 assert_eq!(
                     model_prices_for_speed_at(model, ts, false),
                     matched,
@@ -1679,7 +1690,8 @@ data: {{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{{\"type\":\"text
                 );
             }
             // Sonnet 5 is the only time-gated family.
-            let (family, prices) = anthropic_matched_tariff_at("claude-sonnet-5", ts, false).unwrap();
+            let (family, prices) =
+                anthropic_matched_tariff_at("claude-sonnet-5", ts, false).unwrap();
             assert_eq!(prices, model_prices_at("claude-sonnet-5", ts));
             assert_eq!(
                 family,

@@ -360,7 +360,10 @@ pub fn codex_prices_at(model_id: &str, now_unix: i64) -> Option<CodexPrices> {
 /// Same lookup as `codex_prices_at`, additionally reporting WHICH family the resolution used so a
 /// hot override row can target it. The family is keyed by the canonical upstream identity, so the
 /// `gpt-5.6` alias and `gpt-5.6-sol` share `openai/codex/gpt-5.6-sol`.
-pub fn codex_matched_tariff_at(model_id: &str, now_unix: i64) -> Option<(&'static str, CodexPrices)> {
+pub fn codex_matched_tariff_at(
+    model_id: &str,
+    now_unix: i64,
+) -> Option<(&'static str, CodexPrices)> {
     CATALOG
         .iter()
         .find(|entry| entry.id == model_id)
@@ -400,7 +403,10 @@ pub fn codex_matched_credit_rates_at(model_id: &str) -> Option<(&'static str, Co
 pub fn codex_compiled_tariffs_at(now_unix: i64) -> Vec<(&'static str, CodexPrices)> {
     let mut tariffs: Vec<(&'static str, CodexPrices)> = Vec::new();
     for entry in CATALOG {
-        if tariffs.iter().any(|(family, _)| *family == entry.tariff_family) {
+        if tariffs
+            .iter()
+            .any(|(family, _)| *family == entry.tariff_family)
+        {
             continue;
         }
         tariffs.push((entry.tariff_family, prices_at(entry.schedule, now_unix)));
@@ -408,12 +414,37 @@ pub fn codex_compiled_tariffs_at(now_unix: i64) -> Vec<(&'static str, CodexPrice
     tariffs
 }
 
+/// Whether one compiled API tariff family contains an epoch strictly after `now_unix`.
+pub fn codex_tariff_has_future_epoch_at(tariff_family: &str, now_unix: i64) -> bool {
+    CATALOG
+        .iter()
+        .find(|entry| entry.tariff_family == tariff_family)
+        .is_some_and(|entry| {
+            entry
+                .schedule
+                .iter()
+                .any(|epoch| epoch.epoch.effective_from > now_unix)
+        })
+}
+
+/// Whether a zero-effective-time seed can reproduce the family's complete compiled API tariff
+/// schedule. Credit families are separate single-card inventories and are not accepted here.
+pub fn codex_tariff_seed_safe(tariff_family: &str) -> bool {
+    CATALOG
+        .iter()
+        .find(|entry| entry.tariff_family == tariff_family)
+        .is_some_and(|entry| entry.schedule.len() == 1)
+}
+
 /// Every compiled per-model native credit family (`chatgpt/codex-credits/<upstream>`) with its
 /// compiled rates. Same shared-family dedupe as `codex_compiled_tariffs_at`.
 pub fn codex_compiled_credit_rates() -> Vec<(&'static str, CodexCreditRates)> {
     let mut families: Vec<(&'static str, CodexCreditRates)> = Vec::new();
     for entry in CATALOG {
-        if families.iter().any(|(family, _)| *family == entry.credit_family) {
+        if families
+            .iter()
+            .any(|(family, _)| *family == entry.credit_family)
+        {
             continue;
         }
         families.push((entry.credit_family, entry.credit_rates));
@@ -971,7 +1002,8 @@ mod tests {
                 } else {
                     10_000
                 };
-                for (input, cached, output) in [(1_000, 400, 20), (0, 0, 1), (272_001, 0, 128_000)] {
+                for (input, cached, output) in [(1_000, 400, 20), (0, 0, 1), (272_001, 0, 128_000)]
+                {
                     assert_eq!(
                         codex_credit_cost_nano(model, input, cached, output, fast),
                         Some(codex_credit_cost_nano_with_rates(
@@ -1011,7 +1043,11 @@ mod tests {
                 family.replacen("openai/codex/", "chatgpt/codex-credits/", 1),
                 "{model} credit family"
             );
-            assert_eq!(Some(rates), codex_credit_rates(model), "{model} credit rates");
+            assert_eq!(
+                Some(rates),
+                codex_credit_rates(model),
+                "{model} credit rates"
+            );
         }
         // The default alias and its concrete model share one override family, exactly as they
         // share one schedule; an unknown id has neither prices nor a family.
@@ -1031,7 +1067,11 @@ mod tests {
             let enumerated: std::collections::BTreeMap<&'static str, CodexPrices> =
                 codex_compiled_tariffs_at(ts).into_iter().collect();
             // The default alias and its concrete model share one family: one entry per upstream.
-            assert_eq!(enumerated.len(), 5, "one family per canonical upstream at {ts}");
+            assert_eq!(
+                enumerated.len(),
+                5,
+                "one family per canonical upstream at {ts}"
+            );
             for model in &catalog_models {
                 let (family, prices) = codex_matched_tariff_at(model, ts).expect("priced");
                 assert_eq!(
@@ -1043,7 +1083,11 @@ mod tests {
         }
         let credit_families: std::collections::BTreeMap<&'static str, CodexCreditRates> =
             codex_compiled_credit_rates().into_iter().collect();
-        assert_eq!(credit_families.len(), 5, "one credit family per canonical upstream");
+        assert_eq!(
+            credit_families.len(),
+            5,
+            "one credit family per canonical upstream"
+        );
         for model in &catalog_models {
             let (family, rates) = codex_matched_credit_rates_at(model).expect("credit card");
             assert_eq!(
@@ -1052,5 +1096,29 @@ mod tests {
                 "{model} credit family {family} must enumerate identical rates"
             );
         }
+    }
+
+    #[test]
+    fn compiled_schedule_metadata_keeps_past_multi_epoch_families_seed_unsafe() {
+        for multi in [
+            "openai/codex/gpt-5.6-sol",
+            "openai/codex/gpt-5.6-terra",
+            "openai/codex/gpt-5.6-luna",
+        ] {
+            assert!(codex_tariff_has_future_epoch_at(
+                multi,
+                PRICE_CUT_2026_07_30 - 1
+            ));
+            assert!(!codex_tariff_has_future_epoch_at(
+                multi,
+                PRICE_CUT_2026_07_30
+            ));
+            assert!(!codex_tariff_seed_safe(multi));
+        }
+
+        let single = "openai/codex/gpt-5.5";
+        assert!(!codex_tariff_has_future_epoch_at(single, 0));
+        assert!(codex_tariff_seed_safe(single));
+        assert!(!codex_tariff_seed_safe("unknown/family"));
     }
 }

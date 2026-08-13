@@ -40,6 +40,17 @@ Stage 5 now materializes the main product on generation 5; the contemporaneous O
 deliberately remains Anthropic/OpenAI until a separate reviewed 1:1 OpenKeys generation enables
 Gemini.
 
+Gemini 3.6 Flash has an official effective-dated exception to the otherwise static text cards.
+Through `2026-12-31T23:59:59Z`, input/audio input is `750 nanoUSD/token` ($0.75/M), cached
+input/audio input is `75 nanoUSD/token` ($0.075/M), and candidate+thinking output is
+`3,750 nanoUSD/token` ($3.75/M). At `2027-01-01T00:00:00Z` (`1798761600`) the compiled schedule
+switches atomically to `1,500 / 150 / 7,500 nanoUSD/token` ($1.50 / $0.15 / $7.50 per M). Gemini 3
+Search remains `14,000,000 nanoUSD` per provider-reported query on both sides of the cutoff; the
+shared free-query allowance is not treated as guaranteed per-request customer pricing. The family
+`google/gemini/gemini-3.6-flash` is permanently `seed_safe=false`: a zero-time hot row would
+collapse its two epochs. A live correction must use the append-only current+future override pair
+and readback procedure in `docs/engine/CONTROL_API.md`.
+
 ## Accepted subscriptions
 
 Authbot asks Google for the actual tier and accepts only known Code Assist-compatible paid plans:

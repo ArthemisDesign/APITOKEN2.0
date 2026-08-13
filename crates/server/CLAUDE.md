@@ -57,9 +57,11 @@ background loops and the HTTP router. Here — and only here — everything is w
   funding summary. Ledger rows add stored immutable attribution and normalized funding allocations;
   old rows remain null/empty and are never reclassified at the HTTP boundary.
   Hot tariff overrides are exposed under `/admin/pricing/tariffs*`: list, a read-only compiled
-  catalog dump built from `metering` (authority-free), next-version publish (server computes
-  `head + 1`, one sequence-race retry) and idempotent version-2 seeding that never overwrites a
-  family whose head is past version 2. The metering→registry payload converters live in
+  catalog dump built from `metering` (authority-free) with time-relative `has_future_epoch` and
+  whole-schedule `seed_safe`, next-version publish (server computes `head + 1`, one sequence-race
+  retry) and idempotent version-2 seeding that never overwrites a family whose head is past version
+  2. Any selected multi-epoch family makes seed fail atomically with 400 before authority access;
+  it must use explicit effective-dated override rows. The metering→registry payload converters live in
   `tariff_admin.rs`; writes go through the billing writer actor, reads through the reader pool,
   and the authority is PostgreSQL-only (SQLite answers 503). Contract — the hot tariff overrides
   section of `docs/engine/CONTROL_API.md`. The runtime consumption of the table lives in

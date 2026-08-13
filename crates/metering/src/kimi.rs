@@ -305,7 +305,9 @@ pub fn kimi_matched_tariff_at(model_id: &str, now_unix: i64) -> Option<(&'static
         return Some((entry.tariff_family, prices_at(entry.schedule, now_unix)));
     }
     let resolved = kimi_resolve_subscription_model(model_id)?;
-    let entry = CATALOG.iter().find(|entry| entry.id == resolved.official_model)?;
+    let entry = CATALOG
+        .iter()
+        .find(|entry| entry.id == resolved.official_model)?;
     Some((entry.tariff_family, prices_at(entry.schedule, now_unix)))
 }
 
@@ -318,6 +320,27 @@ pub fn kimi_compiled_tariffs_at(now_unix: i64) -> Vec<(&'static str, KimiPrices)
         .iter()
         .map(|entry| (entry.tariff_family, prices_at(entry.schedule, now_unix)))
         .collect()
+}
+
+/// Whether one compiled tariff family contains an epoch strictly after `now_unix`.
+pub fn kimi_tariff_has_future_epoch_at(tariff_family: &str, now_unix: i64) -> bool {
+    CATALOG
+        .iter()
+        .find(|entry| entry.tariff_family == tariff_family)
+        .is_some_and(|entry| {
+            entry
+                .schedule
+                .iter()
+                .any(|epoch| epoch.effective_from > now_unix)
+        })
+}
+
+/// Whether a zero-effective-time seed can reproduce the family's complete compiled schedule.
+pub fn kimi_tariff_seed_safe(tariff_family: &str) -> bool {
+    CATALOG
+        .iter()
+        .find(|entry| entry.tariff_family == tariff_family)
+        .is_some_and(|entry| entry.schedule.len() == 1)
 }
 
 // ── usage parsing ────────────────────────────────────────────────────────────
@@ -527,11 +550,19 @@ mod tests {
         // is its own wire id; `k3[1m]` is our convention alone and must be sent as plain `k3`,
         // otherwise the endpoint rejects an unknown model and the failure reads as capacity.
         for entry in kimi_subscription_models() {
-            assert!(!entry.wire_model.is_empty(), "{} has no wire id", entry.alias);
+            assert!(
+                !entry.wire_model.is_empty(),
+                "{} has no wire id",
+                entry.alias
+            );
             if entry.alias == "k3[1m]" {
                 assert_eq!(entry.wire_model, "k3");
             } else {
-                assert_eq!(entry.wire_model, entry.alias, "{} must go out verbatim", entry.alias);
+                assert_eq!(
+                    entry.wire_model, entry.alias,
+                    "{} must go out verbatim",
+                    entry.alias
+                );
             }
         }
     }
@@ -724,7 +755,11 @@ mod tests {
         // Aliases resolve to their official model's family, so one override covers both.
         for alias in ["k3", "k3[1m]", "k3-256k", "kimi-for-coding"] {
             let (family, prices) = kimi_matched_tariff_at(alias, NOW).expect("alias priced");
-            assert_eq!(Some(prices), kimi_prices_for_served_model(alias, NOW), "{alias}");
+            assert_eq!(
+                Some(prices),
+                kimi_prices_for_served_model(alias, NOW),
+                "{alias}"
+            );
             assert!(
                 family.starts_with("moonshot/kimi/"),
                 "{alias} resolved family {family}"
@@ -742,7 +777,11 @@ mod tests {
         for ts in [0, NOW, i64::MAX] {
             let enumerated: std::collections::BTreeMap<&'static str, KimiPrices> =
                 kimi_compiled_tariffs_at(ts).into_iter().collect();
-            assert_eq!(enumerated.len(), CATALOG.len(), "one family per catalog model");
+            assert_eq!(
+                enumerated.len(),
+                CATALOG.len(),
+                "one family per catalog model"
+            );
             for entry in CATALOG {
                 let (family, prices) = kimi_matched_tariff_at(entry.id, ts).expect("priced");
                 assert_eq!(

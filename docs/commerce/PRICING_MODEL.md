@@ -33,8 +33,12 @@ Every model of every provider is available to every key. Availability is a runti
    account's provider overrides (`KeyAuth::provider_mult_bp`).
 2. The provider plane asks `Authz::mult_for(provider_id)` — the override if the account has one,
    otherwise the default.
-3. Admission caps the reserve to the balance (`cap_to_balance`) and reserves atomically.
-4. Settlement charges the real usage at the same multiplier the reserve pinned, against the same
+3. The provider plane resolves and pins the official effective-dated tariff for the request's
+   priced timestamp. Gemini 3.6 Flash, for example, pins the $0.75 / $0.075 / $3.75 per-1M promo
+   through 2026-12-31 and $1.50 / $0.15 / $7.50 from 2027-01-01T00:00:00Z; Search stays on its
+   separate per-query leg. This provider tariff is not an account discount.
+4. Admission caps the reserve to the balance (`cap_to_balance`) and reserves atomically.
+5. Settlement charges the real usage at the same tariff and multiplier the reserve pinned, against the same
    balance.
 
 A discount write is live on the next request. There is no version to activate, nothing to

@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::tariff_admin::{compiled_tariff_catalog_at, family_head_version};
+use crate::tariff_admin::{compiled_tariff_catalog_at, ensure_seed_safe, family_head_version};
 
 /// Биллинг обязателен для control-операций (аккаунты/деньги живут в нём). Нет → 503.
 /// (Err-вариант — axum `Response`, намеренно «большой»: это ранний ответ ошибки, не горячий путь.)
@@ -35,7 +35,10 @@ fn billing(app: &AppState) -> Result<&std::sync::Arc<forward::AsyncBilling>, Res
 }
 
 fn authority_unavailable(context: &str, error: anyhow::Error) -> Response {
-    elog::error("server-admin", format!("billing authority {context} failed: {error:#}"));
+    elog::error(
+        "server-admin",
+        format!("billing authority {context} failed: {error:#}"),
+    );
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(json!({"error": "billing authority unavailable"})),
@@ -89,7 +92,7 @@ pub async fn create_account(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": e.to_string()})),
             )
-                .into_response()
+                .into_response();
         }
     };
     let mult = req.mult_bp.unwrap_or(app.cfg.default_mult_bp);
@@ -654,7 +657,7 @@ pub async fn issue_key(State(app): State<AppState>, Json(req): Json<IssueKeyReq>
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": e.to_string()})),
             )
-                .into_response()
+                .into_response();
         }
     };
     match b
@@ -682,7 +685,7 @@ pub async fn issue_key(State(app): State<AppState>, Json(req): Json<IssueKeyReq>
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({"error": "issued key could not be read"})),
                 )
-                    .into_response()
+                    .into_response();
             }
             Err(error) => authority_unavailable("issued key lookup", error),
         },
@@ -1074,7 +1077,10 @@ fn valid_attribution(value: &str) -> bool {
     !value.is_empty() && value.trim() == value
 }
 
-fn tariff_override_outcome_response(outcome: TariffOverrideInsertOutcome, identity: Value) -> Response {
+fn tariff_override_outcome_response(
+    outcome: TariffOverrideInsertOutcome,
+    identity: Value,
+) -> Response {
     match outcome {
         TariffOverrideInsertOutcome::Inserted(row) => Json(json!({
             "result": "inserted",
@@ -1134,6 +1140,8 @@ pub async fn compiled_tariff_catalog(State(app): State<AppState>) -> Response {
             json!({
                 "tariff_family": entry.tariff_family,
                 "payload": entry.payload,
+                "has_future_epoch": entry.has_future_epoch,
+                "seed_safe": entry.seed_safe,
             })
         })
         .collect();
@@ -1230,10 +1238,12 @@ pub struct TariffSeedReq {
 
 /// POST /admin/pricing/tariffs/seed — bridge one compiled family (or every compiled family)
 /// into the table as version 2 with `effective_from = 0`, built only from the compiled
-/// `metering` constants. Exact replay is `unchanged`, so re-seeding is idempotent. A family
-/// whose head already advanced past version 2 is refused: seeding never overwrites operator
-/// versions. Per-family outcomes are always reported; any refused/rejected family makes the
-/// overall status 409 while the remaining families still seed.
+/// `metering` constants. A selected multi-epoch family makes the whole request fail with 400
+/// before authority access because one zero-time row cannot preserve its schedule. Exact replay
+/// is `unchanged`, so re-seeding is idempotent. A family whose head already advanced past version
+/// 2 is refused: seeding never overwrites operator versions. For seed-safe targets, per-family
+/// outcomes are reported; any refused/rejected family makes the overall status 409 while the
+/// remaining seed-safe families still seed.
 pub async fn seed_tariff_overrides(
     State(app): State<AppState>,
     Json(req): Json<TariffSeedReq>,
@@ -1262,6 +1272,9 @@ pub async fn seed_tariff_overrides(
         },
         None => catalog.iter().collect(),
     };
+    if let Err(error) = ensure_seed_safe(&targets) {
+        return invalid_pricing_request(error, identity);
+    }
     let b = match billing(&app) {
         Ok(b) => b,
         Err(response) => return response,

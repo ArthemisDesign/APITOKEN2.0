@@ -371,7 +371,9 @@ pub fn glm_matched_tariff_at(model_id: &str, now_unix: i64) -> Option<(&'static 
         return Some((entry.tariff_family, prices_at(entry.schedule, now_unix)));
     }
     let resolved = glm_resolve_subscription_model(model_id)?;
-    let entry = CATALOG.iter().find(|entry| entry.id == resolved.official_model)?;
+    let entry = CATALOG
+        .iter()
+        .find(|entry| entry.id == resolved.official_model)?;
     Some((entry.tariff_family, prices_at(entry.schedule, now_unix)))
 }
 
@@ -388,9 +390,7 @@ pub fn glm_credit_rates_for_served_model(model_id: &str) -> Option<GlmCreditRate
 /// the hot-override family of the credit card that matched: `zhipu/glm-credits/<official_id>`.
 pub fn glm_matched_credit_rates_at(model_id: &str) -> Option<(&'static str, GlmCreditRates)> {
     if let Some(entry) = CATALOG.iter().find(|entry| entry.id == model_id) {
-        return entry
-            .credit_family
-            .zip(entry.credit_rates.copied());
+        return entry.credit_family.zip(entry.credit_rates.copied());
     }
     let resolved = glm_resolve_subscription_model(model_id)?;
     let entry = CATALOG
@@ -408,6 +408,27 @@ pub fn glm_compiled_tariffs_at(now_unix: i64) -> Vec<(&'static str, GlmPrices)> 
         .iter()
         .map(|entry| (entry.tariff_family, prices_at(entry.schedule, now_unix)))
         .collect()
+}
+
+/// Whether one compiled dollar-tariff family contains an epoch strictly after `now_unix`.
+pub fn glm_tariff_has_future_epoch_at(tariff_family: &str, now_unix: i64) -> bool {
+    CATALOG
+        .iter()
+        .find(|entry| entry.tariff_family == tariff_family)
+        .is_some_and(|entry| {
+            entry
+                .schedule
+                .iter()
+                .any(|epoch| epoch.effective_from > now_unix)
+        })
+}
+
+/// Whether a zero-effective-time seed can reproduce the family's complete compiled dollar card.
+pub fn glm_tariff_seed_safe(tariff_family: &str) -> bool {
+    CATALOG
+        .iter()
+        .find(|entry| entry.tariff_family == tariff_family)
+        .is_some_and(|entry| entry.schedule.len() == 1)
 }
 
 /// Every compiled native credit family (`zhipu/glm-credits/<official_id>`) with its compiled
@@ -1201,7 +1222,11 @@ mod tests {
         for ts in [0, NOW, i64::MAX] {
             let enumerated: std::collections::BTreeMap<&'static str, GlmPrices> =
                 glm_compiled_tariffs_at(ts).into_iter().collect();
-            assert_eq!(enumerated.len(), CATALOG.len(), "one family per catalog model");
+            assert_eq!(
+                enumerated.len(),
+                CATALOG.len(),
+                "one family per catalog model"
+            );
             for entry in CATALOG {
                 let (family, prices) = glm_matched_tariff_at(entry.id, ts).expect("priced");
                 assert_eq!(

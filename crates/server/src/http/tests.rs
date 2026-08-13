@@ -1090,6 +1090,43 @@ async fn tariff_override_route_validates_before_touching_the_authority() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["error"], "billing authority unavailable");
 
+    // A multi-epoch compiled family fails before the authority. A zero-time v2 seed cannot
+    // represent its history even after the final cutoff has passed.
+    let (status, body) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/seed",
+        json!({
+            "created_by": "operator-test",
+            "reason": "route test",
+            "tariff_family": "google/gemini/gemini-3.6-flash"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "invalid");
+    assert!(body["reason"]
+        .as_str()
+        .unwrap()
+        .contains("multi-epoch compiled schedules"));
+
+    let (status, body) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/seed",
+        json!({
+            "created_by": "operator-test",
+            "reason": "all-family route test"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "invalid");
+    assert!(body["reason"]
+        .as_str()
+        .unwrap()
+        .contains("google/gemini/gemini-3.6-flash"));
+
     drop(service);
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1140,13 +1177,8 @@ async fn tariff_seed_rejects_unknown_families_and_requires_the_pg_authority() {
     assert_eq!(body["error"], "billing authority unavailable");
 
     // Listing overrides likewise requires the PostgreSQL authority.
-    let (status, body) = control_json_request(
-        &service,
-        Method::GET,
-        "/admin/pricing/tariffs",
-        Value::Null,
-    )
-    .await;
+    let (status, body) =
+        control_json_request(&service, Method::GET, "/admin/pricing/tariffs", Value::Null).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["error"], "billing authority unavailable");
 
@@ -1167,12 +1199,20 @@ async fn compiled_tariff_catalog_is_read_only_and_built_from_metering() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let families = body["families"].as_array().expect("families array");
-    assert!(families.len() >= 30, "compiled families: {}", families.len());
+    assert!(
+        families.len() >= 30,
+        "compiled families: {}",
+        families.len()
+    );
     let by_family: std::collections::BTreeMap<&str, &Value> = families
         .iter()
         .map(|entry| (entry["tariff_family"].as_str().unwrap(), entry))
         .collect();
-    assert_eq!(by_family.len(), families.len(), "families are unique and sorted");
+    assert_eq!(
+        by_family.len(),
+        families.len(),
+        "families are unique and sorted"
+    );
 
     // Representative families from every provider, with i128 legs as canonical decimal strings.
     for family in [
@@ -1193,6 +1233,8 @@ async fn compiled_tariff_catalog_is_read_only_and_built_from_metering() {
             entry["payload"].is_object(),
             "{family} payload must be an object"
         );
+        assert!(entry["has_future_epoch"].is_boolean());
+        assert!(entry["seed_safe"].is_boolean());
     }
     let opus = &by_family["anthropic/standard/opus-current"]["payload"];
     assert_eq!(opus["input"], "5000");
@@ -1205,9 +1247,27 @@ async fn compiled_tariff_catalog_is_read_only_and_built_from_metering() {
     let gemini = &by_family["google/gemini/gemini-2.5-pro"]["payload"];
     assert_eq!(gemini["search"]["kind"], "per_grounded_prompt");
 
+    let compiled_ts = body["compiled_ts"].as_i64().expect("compiled_ts");
+    let gemini_36 = by_family["google/gemini/gemini-3.6-flash"];
+    let promo_active = compiled_ts < 1_798_761_600;
+    assert_eq!(gemini_36["has_future_epoch"], promo_active);
+    assert_eq!(gemini_36["seed_safe"], false);
+    assert_eq!(
+        gemini_36["payload"]["input"],
+        if promo_active { "750" } else { "1500" }
+    );
+    assert_eq!(
+        gemini_36["payload"]["cached_input"],
+        if promo_active { "75" } else { "150" }
+    );
+    assert_eq!(
+        gemini_36["payload"]["output"],
+        if promo_active { "3750" } else { "7500" }
+    );
+    assert_eq!(gemini_36["payload"]["search"]["nano"], "14000000");
+
     // Sonnet 5 intro pricing is time-bounded: the family is published only while the compiled
     // epoch has not flipped (2026-09-01T00:00:00Z = 1788220800).
-    let compiled_ts = body["compiled_ts"].as_i64().expect("compiled_ts");
     assert_eq!(
         by_family.contains_key("anthropic/standard/sonnet-5-intro"),
         compiled_ts < 1_788_220_800,
@@ -1310,8 +1370,6 @@ async fn account_and_ledger_control_reads_expose_balance_and_provider_evidence()
 
     let _ = std::fs::remove_file(path);
 }
-
-
 
 fn capacity(email: &str, available: f64, routable: bool, calibrated: bool) -> pool::Cap {
     pool::Cap {
@@ -1653,7 +1711,10 @@ fn claude_stale_runtime_quota_does_not_reopen_current_supply() {
     let expired = &after_reset["per_sub"][0]["windows"][0];
     assert_eq!(expired["used_fraction_units"], 0);
     assert_eq!(expired["quota_state"], "window_rolled_over");
-    assert_eq!(expired["displayed_quota_source"], "provider_window_rollover");
+    assert_eq!(
+        expired["displayed_quota_source"],
+        "provider_window_rollover"
+    );
     assert!(expired["resets_at"].is_null());
     assert!(expired["remaining_nano"].is_null());
     assert!(expired["last_known_remaining_nano"].is_null());
@@ -2150,7 +2211,6 @@ async fn exact_not_started_responses_increment_only_the_serving_plane_counter() 
     assert!(body.contains("claude_api_positive_balance_402_total 1"));
 }
 
-
 #[tokio::test]
 async fn gemini_fleet_status_is_readonly_key_protected_and_runtime_scoped() {
     let service = router(
@@ -2563,7 +2623,10 @@ async fn tripo3d_plane_serves_common_surface_and_disabled_envelope() {
     assert!(body.contains("claude_api_tripo3d_requests_total 0"));
     // Fixed cardinality: no profile/task/account labels anywhere in the plane's series.
     for line in body.lines().filter(|line| line.contains("tripo3d")) {
-        assert!(!line.contains('{') || line.starts_with("# TYPE"), "labelled series: {line}");
+        assert!(
+            !line.contains('{') || line.starts_with("# TYPE"),
+            "labelled series: {line}"
+        );
     }
 
     // /tripo3d-subs is registered on this plane with the same control lattice and answers the
@@ -2734,7 +2797,10 @@ async fn suno_plane_serves_common_surface_and_disabled_envelope() {
         (Method::POST, "/v1/audio/generations"),
         (Method::POST, "/v1/audio/uploads"),
         (Method::GET, "/v1/audio/generations/gen-1"),
-        (Method::GET, "/v1/audio/generations/gen-1/artifact/audio_url.mp3"),
+        (
+            Method::GET,
+            "/v1/audio/generations/gen-1/artifact/audio_url.mp3",
+        ),
         (Method::POST, "/v1/messages"),
     ] {
         let mut request = Request::builder()
@@ -3942,7 +4008,10 @@ fn positive_balance_402_counter_predicate_requires_both_facts() {
         StatusCode::PAYMENT_REQUIRED,
         Some(&account),
     ));
-    assert!(!is_positive_balance_402(StatusCode::BAD_REQUEST, Some(&account)));
+    assert!(!is_positive_balance_402(
+        StatusCode::BAD_REQUEST,
+        Some(&account)
+    ));
     account.balance_nano = 0;
     assert!(!is_positive_balance_402(
         StatusCode::PAYMENT_REQUIRED,
@@ -4396,7 +4465,7 @@ async fn router_catalog_pricing_is_key_scoped_integer_only_and_present_on_every_
     assert_eq!(body["entries"][0]["standard"]["input"], "1500000000");
     assert_eq!(body["entries"][1]["standard"]["output"], "15000000000");
     assert_eq!(body["entries"][1]["priority"]["output"], "30000000000");
-    assert_eq!(body["entries"][2]["standard"]["input"], "750000000");
+    assert_eq!(body["entries"][2]["standard"]["input"], "375000000");
     assert!(!body.to_string().contains("discount-account"));
 
     let (status, body) =
@@ -4406,8 +4475,6 @@ async fn router_catalog_pricing_is_key_scoped_integer_only_and_present_on_every_
     drop(service);
     let _ = std::fs::remove_dir_all(&dir);
 }
-
-
 
 /// /spend-stats кэширует periods в процессном static, а cargo test гоняет тесты параллельно:
 /// без сериализации соседний тест получил бы periods чужого tempdir-биллинга. Гард держится
@@ -4779,7 +4846,6 @@ fn claude_pending_delivery_keeps_quota_visible_while_money_stays_closed() {
     }
 }
 
-
 /// A frozen quota snapshot keeps reporting its last value, so every Anthropic window gauge can look
 /// healthy while the refresh path is dead. Only this observation timestamp separates the two, which
 /// is what `AnthropicQuotaSnapshotStale` alerts on.
@@ -4839,9 +4905,9 @@ async fn anthropic_quota_snapshot_freshness_is_published_for_alerting() {
     );
     let body = read_metrics(app).await;
     assert!(body.contains("claude_api_anthropic_quota_snapshot_subscriptions 1"));
-    assert!(body.contains(
-        "claude_api_anthropic_quota_last_observation_timestamp_seconds 1800000000"
-    ));
+    assert!(
+        body.contains("claude_api_anthropic_quota_last_observation_timestamp_seconds 1800000000")
+    );
 }
 
 /// The deploy stops a slot when this gauge reaches zero, so it must not fall to zero while the

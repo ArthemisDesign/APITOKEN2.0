@@ -10,7 +10,7 @@ use serde_json::Value;
 
 /// Reviewed identity of the effective-dated Developer API replacement-cost catalogue below.
 /// Change this identity whenever any epoch/rate semantics change.
-pub const TARIFF_SCHEDULE_ID: &str = "google/gemini-developer-api/2026-08-02";
+pub const TARIFF_SCHEDULE_ID: &str = "google/gemini-developer-api/2026-08-14";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeminiSearchBilling {
@@ -136,12 +136,20 @@ const GEMINI_3_FLASH_PREVIEW: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
     effective_from: 0,
     prices: flat_prices(500, 1_000, 50, 100, 3_000, SEARCH_GEMINI_3),
 }];
-// Official standard paid-tier rates, rechecked 2026-07-31:
+// Official promotional paid-tier rates through 2026-12-31, followed by the standard rates at
+// 2027-01-01T00:00:00Z. Rechecked 2026-08-14:
 // https://ai.google.dev/gemini-api/docs/pricing#gemini-3.6-flash
-const GEMINI_36_FLASH: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
-    effective_from: 0,
-    prices: flat_prices(1_500, 1_500, 150, 150, 7_500, SEARCH_GEMINI_3),
-}];
+const GEMINI_36_STANDARD_START: i64 = 1_798_761_600;
+const GEMINI_36_FLASH: &[GeminiPriceEpoch] = &[
+    GeminiPriceEpoch {
+        effective_from: 0,
+        prices: flat_prices(750, 750, 75, 75, 3_750, SEARCH_GEMINI_3),
+    },
+    GeminiPriceEpoch {
+        effective_from: GEMINI_36_STANDARD_START,
+        prices: flat_prices(1_500, 1_500, 150, 150, 7_500, SEARCH_GEMINI_3),
+    },
+];
 // https://ai.google.dev/gemini-api/docs/pricing#gemini-3.5-flash
 const GEMINI_35_FLASH: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
     effective_from: 0,
@@ -352,6 +360,30 @@ pub fn gemini_compiled_tariffs_at(now_unix: i64) -> Vec<(&'static str, GeminiPri
         .iter()
         .map(|entry| (entry.tariff_family, prices_at(entry.schedule, now_unix)))
         .collect()
+}
+
+/// Whether the compiled schedule for `tariff_family` contains an epoch strictly after
+/// `now_unix`. This is time-relative operator metadata; seed eligibility is the separate
+/// whole-schedule invariant returned by `gemini_tariff_seed_safe`.
+pub fn gemini_tariff_has_future_epoch_at(tariff_family: &str, now_unix: i64) -> bool {
+    CATALOG
+        .iter()
+        .find(|entry| entry.tariff_family == tariff_family)
+        .is_some_and(|entry| {
+            entry
+                .schedule
+                .iter()
+                .any(|epoch| epoch.effective_from > now_unix)
+        })
+}
+
+/// Whether a zero-effective-time seed can reproduce the whole compiled schedule without
+/// collapsing historical or future epochs into one payload. Only single-epoch families are safe.
+pub fn gemini_tariff_seed_safe(tariff_family: &str) -> bool {
+    CATALOG
+        .iter()
+        .find(|entry| entry.tariff_family == tariff_family)
+        .is_some_and(|entry| entry.schedule.len() == 1)
 }
 
 fn count_modality(details: &Value, modality: &str) -> u64 {
@@ -609,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn standard_paid_catalog_matches_the_official_rates() {
+    fn current_paid_catalog_matches_the_official_rates() {
         let cases = [
             (
                 "gemini-3.1-flash-image",
@@ -632,18 +664,18 @@ mod tests {
             (
                 "gemini-3.6-flash",
                 GeminiPrices {
-                    input: 1_500,
-                    audio_input: 1_500,
-                    cached_input: 150,
-                    cached_audio_input: 150,
-                    output: 7_500,
+                    input: 750,
+                    audio_input: 750,
+                    cached_input: 75,
+                    cached_audio_input: 75,
+                    output: 3_750,
                     image_output: 0,
                     long_context_threshold: u64::MAX,
-                    long_input: 1_500,
-                    long_audio_input: 1_500,
-                    long_cached_input: 150,
-                    long_cached_audio_input: 150,
-                    long_output: 7_500,
+                    long_input: 750,
+                    long_audio_input: 750,
+                    long_cached_input: 75,
+                    long_cached_audio_input: 75,
+                    long_output: 3_750,
                     search: GeminiSearchBilling::PerQuery { nano: 14_000_000 },
                 },
             ),
@@ -793,6 +825,52 @@ mod tests {
                 "{model} output limit"
             );
         }
+    }
+
+    #[test]
+    fn gemini_36_promo_flips_exactly_at_2027_utc_without_changing_search() {
+        let promo = gemini_prices_at("gemini-3.6-flash", GEMINI_36_STANDARD_START - 1).unwrap();
+        assert_eq!(promo.input, 750);
+        assert_eq!(promo.audio_input, 750);
+        assert_eq!(promo.cached_input, 75);
+        assert_eq!(promo.cached_audio_input, 75);
+        assert_eq!(promo.output, 3_750);
+        assert_eq!(promo.long_input, 750);
+        assert_eq!(promo.long_cached_input, 75);
+        assert_eq!(promo.long_output, 3_750);
+        assert_eq!(
+            promo.search,
+            GeminiSearchBilling::PerQuery { nano: 14_000_000 }
+        );
+
+        let standard = gemini_prices_at("gemini-3.6-flash", GEMINI_36_STANDARD_START).unwrap();
+        assert_eq!(standard.input, 1_500);
+        assert_eq!(standard.audio_input, 1_500);
+        assert_eq!(standard.cached_input, 150);
+        assert_eq!(standard.cached_audio_input, 150);
+        assert_eq!(standard.output, 7_500);
+        assert_eq!(standard.long_input, 1_500);
+        assert_eq!(standard.long_cached_input, 150);
+        assert_eq!(standard.long_output, 7_500);
+        assert_eq!(standard.search, promo.search);
+
+        let family = "google/gemini/gemini-3.6-flash";
+        assert!(gemini_tariff_has_future_epoch_at(
+            family,
+            GEMINI_36_STANDARD_START - 1
+        ));
+        assert!(!gemini_tariff_has_future_epoch_at(
+            family,
+            GEMINI_36_STANDARD_START
+        ));
+        assert!(!gemini_tariff_seed_safe(family));
+        assert!(gemini_tariff_seed_safe("google/gemini/gemini-3.5-flash"));
+        assert!(!gemini_tariff_has_future_epoch_at(
+            "google/gemini/gemini-3.5-flash",
+            0
+        ));
+        assert!(!gemini_tariff_has_future_epoch_at("unknown/family", 0));
+        assert!(!gemini_tariff_seed_safe("unknown/family"));
     }
 
     #[test]
@@ -952,7 +1030,7 @@ data: {\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":7,\"t
         let flash = gemini_prices_at("gemini-3.6-flash", 0).unwrap();
         assert_eq!(
             cost_nanodollars(&usage, &flash),
-            200_001 * 1_500 + 10 * 7_500 + 9 * 14_000_000
+            200_001 * 750 + 10 * 3_750 + 9 * 14_000_000
         );
 
         let flash_preview = gemini_prices_at("gemini-3-flash-preview", 0).unwrap();
@@ -991,7 +1069,13 @@ data: {\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":7,\"t
     #[test]
     fn matched_tariff_reports_the_per_model_family_and_identical_prices() {
         for spec in gemini_catalog_at(0) {
-            for ts in [0, 1, i64::MAX] {
+            for ts in [
+                0,
+                1,
+                GEMINI_36_STANDARD_START - 1,
+                GEMINI_36_STANDARD_START,
+                i64::MAX,
+            ] {
                 let (family, prices) =
                     gemini_matched_tariff_at(spec.id, ts).expect("catalog model priced");
                 assert_eq!(
@@ -1013,10 +1097,20 @@ data: {\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":7,\"t
 
     #[test]
     fn compiled_tariff_enumeration_covers_every_matcher_family_with_identical_prices() {
-        for ts in [0, 1, i64::MAX] {
+        for ts in [
+            0,
+            1,
+            GEMINI_36_STANDARD_START - 1,
+            GEMINI_36_STANDARD_START,
+            i64::MAX,
+        ] {
             let enumerated: std::collections::BTreeMap<&'static str, GeminiPrices> =
                 gemini_compiled_tariffs_at(ts).into_iter().collect();
-            assert_eq!(enumerated.len(), CATALOG.len(), "one family per catalog model");
+            assert_eq!(
+                enumerated.len(),
+                CATALOG.len(),
+                "one family per catalog model"
+            );
             for entry in CATALOG {
                 let (family, prices) = gemini_matched_tariff_at(entry.id, ts).expect("priced");
                 assert_eq!(

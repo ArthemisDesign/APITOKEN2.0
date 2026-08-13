@@ -14,7 +14,11 @@
   A missing `toolUsePromptTokenCount` is not subtracted from the authoritative `promptTokenCount`
   and not invented: the subset is not metered a second time. Gemini 2.5 Search is counted per grounded
   prompt, Gemini 3 — per query. A new model/price epoch may be added only with an official link and
-  an exact-rate test; a separately metered server tool must not slip through for free.
+  an exact-rate test; a separately metered server tool must not slip through for free. Every
+  provider catalog with schedules must expose whether a family has a future epoch and whether its
+  whole schedule is seed-safe: `seed_safe` means exactly one epoch, not merely no future epoch at
+  the current clock. The Control API uses this metadata to prevent a zero-time override from
+  collapsing historical or future prices.
 - The Codex catalog and the ChatGPT Fast credit multiplier also live only here. Fast is a tier of an
   existing model, not a separate model id: GPT-5.6/5.5 = 2.5x, GPT-5.4 = 2x. Change it only per the
   published OpenAI table with an exact-multiplier test. `codex_credit_cost_nano_with_rates` prices
