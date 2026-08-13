@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authenticator } from "otplib";
 import { TotpService } from "./totp.service.js";
 
@@ -25,7 +25,21 @@ function makeService() {
   return { service: new TotpService(db, config), store };
 }
 
+function invalidCodeFor(secret: string): string {
+  return authenticator.generate(secret) === "000000" ? "000001" : "000000";
+}
+
 describe("TotpService", () => {
+  beforeEach(() => {
+    // A generated TOTP becomes invalid at the next 30-second boundary. Pin Date.now() halfway
+    // through a step so setup/enable assertions cannot cross that boundary under a loaded gate.
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2025-01-01T00:00:15.000Z"));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("setup → enable → verify accepts real codes, rejects wrong ones", async () => {
     const { service, store } = makeService();
     const setup = await service.setup("u1", "alice@example.com");
@@ -38,13 +52,13 @@ describe("TotpService", () => {
     expect(store.enabled).toBe(true);
 
     expect(await service.verify("u1", authenticator.generate(setup.secret))).toBe(true);
-    expect(await service.verify("u1", "000000")).toBe(false);
+    expect(await service.verify("u1", invalidCodeFor(setup.secret))).toBe(false);
   });
 
   it("enable rejects an invalid code and does not enable", async () => {
     const { service, store } = makeService();
-    await service.setup("u1", "bob@example.com");
-    await expect(service.enable("u1", "123456")).rejects.toThrow();
+    const setup = await service.setup("u1", "bob@example.com");
+    await expect(service.enable("u1", invalidCodeFor(setup.secret))).rejects.toThrow();
     expect(store.enabled).toBe(false);
   });
 
