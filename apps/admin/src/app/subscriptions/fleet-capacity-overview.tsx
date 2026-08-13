@@ -12,6 +12,13 @@ import {
   kimiMeasuredCoverage,
   kimiWindowDurations,
   kimiWindowLabel,
+  sunoFleetUsedPercent,
+  sunoFleetWindowMoney,
+  sunoMeasuredCoverage,
+  sunoWindowDurations,
+  sunoWindowLabel,
+  tripo3dFleetMoney,
+  tripo3dMeasuredCoverage,
 } from "./logic";
 import type {
   CapacityResponse,
@@ -22,6 +29,8 @@ import type {
   GeminiWindowTotal,
   GlmSubsResponse,
   KimiSubsResponse,
+  SunoSubsResponse,
+  Tripo3dSubsResponse,
 } from "./types";
 
 interface ComparableWindow {
@@ -40,7 +49,7 @@ interface FleetRail {
 }
 
 interface FleetCardValue {
-  id: "claude" | "gpt" | "gemini" | "kimi" | "glm";
+  id: "claude" | "gpt" | "gemini" | "kimi" | "glm" | "tripo3d" | "suno";
   label: string;
   status: "ok" | "warn" | "bad";
   ready: number;
@@ -309,6 +318,145 @@ function glmCard(response: GlmSubsResponse | null | undefined): FleetCardValue {
   };
 }
 
+// Tripo3D публикует только per-profile balance/calibration без fleet window_totals, как
+// KIMI. Окон нет: prepaid баланс не сбрасывается, поэтому единственный rail — «баланс»
+// с fail-closed суммой remaining/full; used-доли у prepaid трека не существует («—»).
+function tripo3dCard(response: Tripo3dSubsResponse | null | undefined, nowMs?: number): FleetCardValue {
+  if (response === undefined) {
+    return { id: "tripo3d", label: "Tripo3D", status: "warn", ready: 0, total: 0, coverage: "загрузка", rails: [] };
+  }
+  if (response === null || response.enabled === false) {
+    return {
+      id: "tripo3d",
+      label: "Tripo3D",
+      status: "bad",
+      ready: 0,
+      total: 0,
+      coverage: response ? "выключен" : "нет связи",
+      rails: [],
+    };
+  }
+  const profiles = response.profiles ?? [];
+  const nowSec = Number(response.now || Math.floor((nowMs ?? Date.now()) / 1000));
+  const ready = Number(response.fleet?.available_profiles ?? 0);
+  const total = Number(response.fleet?.profiles ?? profiles.length);
+  const pending = Number(response.delivery?.pending_events ?? 0);
+  const dropped = Number(response.delivery?.dropped_events ?? 0);
+  const persistenceOk = response.delivery?.persistence_ok !== false;
+  const authorityAvailable = response.calibration_authority_available === true;
+  const moneyReady = authorityAvailable && persistenceOk && dropped === 0 && pending === 0;
+  const rails: FleetRail[] = profiles.length === 0
+    ? []
+    : [(() => {
+        if (!moneyReady) return { label: "баланс", used: { value: null, label: "—" } };
+        const money = tripo3dFleetMoney(profiles, nowSec);
+        return {
+          label: "баланс",
+          window: { capacity_nano: money.capacity, remaining_nano: money.remaining },
+          used: { value: null, label: "—" },
+          unknownMoney: "ждём данные",
+        };
+      })()];
+  const coverage = dropped > 0
+    ? `${dropped} потеряно`
+    : pending > 0
+      ? `${pending} сохраняется`
+      : !persistenceOk
+        ? "ошибка persistence"
+        : !authorityAvailable
+          ? "калибровка недоступна"
+          : profiles.length === 0
+            ? "профилей нет"
+            : (() => {
+                const { measured, observed } = tripo3dMeasuredCoverage(profiles);
+                return `${measured}/${observed} измерено`;
+              })();
+  return {
+    id: "tripo3d",
+    label: "Tripo3D",
+    status: dropped > 0 || !persistenceOk || !authorityAvailable
+      ? "bad"
+      : ready > 0 && pending === 0 && rails.length > 0
+          && rails.every((rail) => providerInteger(rail.window?.remaining_nano) != null)
+        ? "ok"
+        : "warn",
+    ready,
+    total,
+    coverage,
+    rails,
+  };
+}
+
+// Suno публикует только per-profile quota/calibration без fleet window_totals, как
+// KIMI: rails агрегируются из реальных window_duration_secs (ежемесячный цикл плана),
+// деньги суммируются fail-closed, а used-доля — Σusage/Σlimit по verbatim counters.
+function sunoCard(response: SunoSubsResponse | null | undefined, nowMs?: number): FleetCardValue {
+  if (response === undefined) {
+    return { id: "suno", label: "Suno", status: "warn", ready: 0, total: 0, coverage: "загрузка", rails: [] };
+  }
+  if (response === null || response.enabled === false) {
+    return {
+      id: "suno",
+      label: "Suno",
+      status: "bad",
+      ready: 0,
+      total: 0,
+      coverage: response ? "выключен" : "нет связи",
+      rails: [],
+    };
+  }
+  const profiles = response.profiles ?? [];
+  const nowSec = Number(response.now || Math.floor((nowMs ?? Date.now()) / 1000));
+  const ready = Number(response.fleet?.available_profiles ?? 0);
+  const total = Number(response.fleet?.profiles ?? profiles.length);
+  const pending = Number(response.delivery?.pending_events ?? 0);
+  const dropped = Number(response.delivery?.dropped_events ?? 0);
+  const persistenceOk = response.delivery?.persistence_ok !== false;
+  const authorityAvailable = response.calibration_authority_available === true;
+  const moneyReady = authorityAvailable && persistenceOk && dropped === 0 && pending === 0;
+  const durations = sunoWindowDurations(profiles);
+  const used = sunoFleetUsedPercent(profiles);
+  const rails: FleetRail[] = durations.map((secs) => {
+    if (!moneyReady) return { label: sunoWindowLabel(secs), used };
+    const money = sunoFleetWindowMoney(profiles, secs, nowSec);
+    return {
+      label: sunoWindowLabel(secs),
+      window: { capacity_nano: money.capacity, remaining_nano: money.remaining },
+      used,
+      unknownMoney: "ждём данные",
+    };
+  });
+  const primary = durations[0];
+  const coverage = dropped > 0
+    ? `${dropped} потеряно`
+    : pending > 0
+      ? `${pending} сохраняется`
+      : !persistenceOk
+        ? "ошибка persistence"
+        : !authorityAvailable
+          ? "калибровка недоступна"
+          : primary == null
+            ? "окон нет"
+            : (() => {
+                const { measured, observed } = sunoMeasuredCoverage(profiles, primary);
+                return `${measured}/${observed} измерено`;
+              })();
+  return {
+    id: "suno",
+    label: "Suno",
+    status: dropped > 0 || !persistenceOk || !authorityAvailable
+      ? "bad"
+      : ready > 0 && pending === 0 && rails.length > 0
+          && rails.every((rail) => providerInteger(rail.window?.remaining_nano) != null)
+        ? "ok"
+        : "warn",
+    ready,
+    total,
+    coverage,
+    rails,
+  };
+}
+
 function FleetWindowRail({ rail }: { rail: FleetRail }): ReactElement {
   const used = rail.used ?? usedPercentFromNano(rail.window?.capacity_nano, rail.window?.remaining_nano);
   const percent = used.value ?? 0;
@@ -351,6 +499,8 @@ export function FleetCapacityOverview({
   gemini,
   kimi,
   glm,
+  tripo3d,
+  suno,
   nowMs,
 }: {
   claude: CapacityResponse | null | undefined;
@@ -358,7 +508,9 @@ export function FleetCapacityOverview({
   gemini: GeminiSubsResponse | null | undefined;
   kimi?: KimiSubsResponse | null;
   glm?: GlmSubsResponse | null;
-  /** Момент снимка (мс); KIMI считает cooling/staleness от response.now, это fallback. */
+  tripo3d?: Tripo3dSubsResponse | null;
+  suno?: SunoSubsResponse | null;
+  /** Момент снимка (мс); KIMI/Tripo3D/Suno считают cooling/staleness от response.now, это fallback. */
   nowMs?: number;
 }): ReactElement {
   const cards = [
@@ -367,6 +519,8 @@ export function FleetCapacityOverview({
     geminiCard(gemini),
     kimiCard(kimi, nowMs),
     glmCard(glm),
+    tripo3dCard(tripo3d, nowMs),
+    sunoCard(suno, nowMs),
   ];
   return (
     <section className="fleet-capacity-overview" aria-label="Доступная API-долларовая ёмкость пулов">

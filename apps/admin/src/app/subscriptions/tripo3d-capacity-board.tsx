@@ -19,8 +19,9 @@ function moneyOrDash(value: string | null | undefined): string {
 }
 
 // Состояние денежной ячейки: saleable API-$ показываются только при здоровой
-// delivery FIFO и свежем evidence; сырые половины баланса остаются видны всегда —
-// это live provider facts, полезные, пока dollar-evidence восстанавливается.
+// delivery FIFO, читаемом durable-хранилище калибровки и свежем evidence; сырые
+// половины баланса остаются видны всегда — это live provider facts, полезные,
+// пока dollar-evidence восстанавливается.
 type Tripo3dMoneyState = "ready" | "pending" | "degraded" | "stale" | "inactive";
 
 function Tripo3dMoney({
@@ -75,11 +76,13 @@ function Tripo3dSubscriptions({
   ready,
   nowSec,
   delivery,
+  authorityAvailable,
 }: {
   profiles: Tripo3dProfile[];
   ready: number;
   nowSec: number;
   delivery: Tripo3dSubsResponse["delivery"];
+  authorityAvailable: boolean;
 }) {
   const pending = Number(delivery?.pending_events ?? 0);
   const dropped = Number(delivery?.dropped_events ?? 0);
@@ -110,7 +113,7 @@ function Tripo3dSubscriptions({
               const evidence = tripo3dEvidenceState(profile, nowSec);
               const moneyState: Tripo3dMoneyState = inactive
                 ? "inactive"
-                : dropped > 0 || !persistenceOk
+                : !authorityAvailable || dropped > 0 || !persistenceOk
                   ? "degraded"
                   : pending > 0
                     ? "pending"
@@ -152,7 +155,8 @@ export function Tripo3dCapacityBoard({
   const pending = Number(response.delivery?.pending_events ?? 0);
   const dropped = Number(response.delivery?.dropped_events ?? 0);
   const persistenceOk = response.delivery?.persistence_ok !== false;
-  const moneyReady = persistenceOk && dropped === 0 && pending === 0;
+  const authorityAvailable = response.calibration_authority_available === true;
+  const moneyReady = authorityAvailable && persistenceOk && dropped === 0 && pending === 0;
   const money = tripo3dFleetMoney(profiles, nowSec);
   const { measured, observed } = tripo3dMeasuredCoverage(profiles);
 
@@ -191,6 +195,7 @@ export function Tripo3dCapacityBoard({
         ready={ready}
         nowSec={nowSec}
         delivery={response.delivery}
+        authorityAvailable={authorityAvailable}
       />
     </div>
   );

@@ -19,6 +19,8 @@ import { FleetCapacityOverview } from "./fleet-capacity-overview";
 import { GeminiCapacityBoard } from "./gemini-capacity-board";
 import { GlmCapacityBoard } from "./glm-capacity-board";
 import { KimiCapacityBoard } from "./kimi-capacity-board";
+import { SunoCapacityBoard } from "./suno-capacity-board";
+import { Tripo3dCapacityBoard } from "./tripo3d-capacity-board";
 import {
   barFromPercent,
   barFromRemaining,
@@ -40,8 +42,26 @@ import {
   kimiWindowLabel,
   resolveBanner,
   stripProxyPort,
+  sunoFleetUsedPercent,
+  sunoFleetWindowMoney,
+  sunoMeasuredCoverage,
+  sunoProfileStatus,
+  sunoUsedPercent,
+  sunoWindowLabel,
+  tripo3dFleetMoney,
+  tripo3dMeasuredCoverage,
+  tripo3dProfileStatus,
 } from "./logic";
-import type { GlmProfile, GlmSubsResponse, KimiProfile, KimiSubsResponse } from "./types";
+import type {
+  GlmProfile,
+  GlmSubsResponse,
+  KimiProfile,
+  KimiSubsResponse,
+  SunoProfile,
+  SunoSubsResponse,
+  Tripo3dProfile,
+  Tripo3dSubsResponse,
+} from "./types";
 
 const OK_BANNER = {
   dead: 0,
@@ -61,11 +81,19 @@ const OK_BANNER = {
   glmDown: false,
   glmEmpty: false,
   glmUnavailable: false,
+  tripo3dDown: false,
+  tripo3dEmpty: false,
+  tripo3dUnavailable: false,
+  sunoDown: false,
+  sunoEmpty: false,
+  sunoUnavailable: false,
   claudeCount: 3,
   gptSummary: 2,
   geminiSummary: 1,
   kimiSummary: 1,
   glmSummary: 1,
+  tripo3dSummary: 1,
+  sunoSummary: 1,
   updatedAt: "31.07.2026, 19:00",
 };
 
@@ -2339,6 +2367,913 @@ describe("GLM capacity board (wire contract /glm-subs)", () => {
   });
 });
 
+// Детерминированные фикстуры Tripo3D — точная форма wire contract GET /tripo3d-subs.
+// Окон нет: prepaid баланс не сбрасывается; единственный трек — balance remaining/full.
+const TRIPO3D_NOW = 1_785_820_912;
+
+const TRIPO3D_PROFILE: Tripo3dProfile = {
+  id: "tripo3d-9f8e7d6c5b4a3210",
+  cohort: "tripo3d-api-50",
+  live: true,
+  balance_walled: false,
+  cooling: { rate_limit_until: null, auth_until: null, transport_until: null },
+  inflight: 0,
+  balance: {
+    observed_at: TRIPO3D_NOW - 29,
+    balance_raw: "5000.000",
+    frozen_raw: "0.000",
+    balance_micro_units: 5_000_000,
+    frozen_micro_units: 0,
+  },
+  calibration: {
+    cohort: "tripo3d-api-50",
+    samples: 4,
+    confidence_bp: 8_000,
+    capacity: { current_nano: "45000000000", low_nano: "44000000000", high_nano: "46000000000" },
+    remaining: { native_micro_units: 4_500_000, api_nano: "45000000000" },
+    observed_spend_nano: "5000000000",
+    observed_spend_native_millicredits: 500_000,
+    last_measured_at: TRIPO3D_NOW - 60,
+    estimator_version: 1,
+  },
+};
+
+const tripo3dResponse = (overrides: Partial<Tripo3dSubsResponse> = {}): Tripo3dSubsResponse => ({
+  now: TRIPO3D_NOW,
+  enabled: true,
+  calibration_authority_available: true,
+  delivery: { pending_events: 0, dropped_events: 0, persistence_ok: true },
+  fleet: {
+    profiles: 1,
+    live_profiles: 1,
+    available_profiles: 1,
+    inflight_requests: 0,
+    inflight_drains: 0,
+    tracked_tasks: 0,
+    rate_limited_profiles: 0,
+    balance_walled_profiles: 0,
+    auth_cooling_profiles: 0,
+    transport_cooling_profiles: 0,
+    missing_consumed_credit: 0,
+    tariff_anomaly: 0,
+    undocumented_final: 0,
+    artifact_failures: 0,
+  },
+  profiles: [TRIPO3D_PROFILE],
+  ...overrides,
+});
+
+describe("Tripo3D capacity board (wire contract /tripo3d-subs)", () => {
+  it("Tripo3dCapacityBoard: баланс-трек, exact деньги из decimal nano strings, одна строка на профиль", () => {
+    const html = renderToString(<Tripo3dCapacityBoard nowMs={TRIPO3D_NOW * 1000} response={tripo3dResponse()} />);
+    const text = plain(html);
+    expect(text).toContain("Баланс по аккаунтам");
+    expect(text).toContain("tripo3d-9f8e7d6c5b4a3210");
+    expect(text).toContain("tripo3d-api-50");
+    expect(text).toContain(">active</span>");
+    // Баланс-трек вместо окон: никаких фиктивных 5ч/7д колонок.
+    expect(text).toContain("Баланс провайдера");
+    expect(text).toContain("Доступно $ · баланс");
+    expect(text).not.toContain("Quota 5ч");
+    expect(text).not.toContain("Доступно $ · 5ч");
+    // Verbatim половины баланса провайдера, без пересчёта.
+    expect(text).toContain("5000.000");
+    expect(text).toContain("заморожено 0.000");
+    // Exact remaining/full API-$ из decimal nano strings.
+    expect(text).toContain('provider-usd-ink provider-five-hour-money"><b>$45.00</b><small>из $45.00</small>');
+    // Native остаток (micro-units прованной единицы) — отдельная колонка, exact integer.
+    expect(text).toContain("Native · остаток");
+    expect(text).toContain("4,500,000");
+    expect(text).toContain("микроюниты");
+    // Summary strip: те же exact значения и measured coverage.
+    expect(text).toContain("Баланс · доступно");
+    expect(text).toContain("Профили в ротации");
+    expect(text).toContain("1/1");
+    expect(text).toContain("1/1 измерено");
+    // Одна identity = одна строка: header + 1 профиль.
+    expect(html.match(/<tr/g)).toHaveLength(2);
+    // Wide-table контракт: sticky identity колонка + горизонтальный скролл карточки.
+    expect(html).toContain("provider-home-capacity-table provider-tripo3d-home-table");
+    expect(html).toContain("tscroll");
+    // Privacy: никакого subject/key/proxy-shaped контента — только opaque roster id + cohort.
+    expect(html).not.toMatch(/@/);
+    expect(html).not.toContain("subject");
+    expect(html).not.toContain("email");
+    expect(html).not.toContain("Почта");
+    expect(html).not.toContain("api_key");
+    expect(html).not.toContain("proxy");
+    expect(html).not.toContain("credential");
+    expect(html).not.toContain("base_url");
+    // Удалённой аналитики нет.
+    expect(html).not.toContain("Выгодность по убыванию");
+    expect(html).not.toContain("Сколько токенов доступно");
+    expect(html).not.toContain("estimator_version");
+  });
+
+  it("Tripo3dCapacityBoard: null-деньги → «ждём данные», никогда не $0", () => {
+    const html = renderToString(
+      <Tripo3dCapacityBoard
+        nowMs={TRIPO3D_NOW * 1000}
+        response={tripo3dResponse({
+          profiles: [{
+            ...TRIPO3D_PROFILE,
+            calibration: {
+              cohort: "tripo3d-api-50",
+              samples: 0,
+              confidence_bp: 0,
+              capacity: { current_nano: null, low_nano: null, high_nano: null },
+              remaining: null,
+              observed_spend_nano: "0",
+              observed_spend_native_millicredits: 0,
+              last_measured_at: null,
+              estimator_version: 1,
+            },
+          }],
+        })}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("ждём данные");
+    expect(text).toContain("ещё не измерено");
+    expect(text).toContain("0/1 измерено");
+    // Свежий verbatim баланс остаётся виден даже без calibrated денег.
+    expect(text).toContain("5000.000");
+    expect(text).not.toContain("$0.00");
+    expect(text).not.toContain("$45.00");
+    // Native-колонка без замера — «—», а не 0.
+    expect(text).not.toContain("4,500,000");
+  });
+
+  it("Tripo3dCapacityBoard: pending delivery скрывает saleable деньги за «сохраняется»", () => {
+    const html = renderToString(
+      <Tripo3dCapacityBoard
+        nowMs={TRIPO3D_NOW * 1000}
+        response={tripo3dResponse({ delivery: { pending_events: 2, dropped_events: 0, persistence_ok: true } })}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("сохраняется");
+    expect(text).not.toContain("$45.00");
+    // Баланс — live provider fact и не скрывается.
+    expect(text).toContain("5000.000");
+    expect(text).toContain("баланс уже доступен");
+  });
+
+  it("Tripo3dCapacityBoard: dropped/persistence-сбой и недоступный authority скрывают stale API-$ за «обновляем»", () => {
+    const dropped = renderToString(
+      <Tripo3dCapacityBoard
+        nowMs={TRIPO3D_NOW * 1000}
+        response={tripo3dResponse({ delivery: { pending_events: 0, dropped_events: 1, persistence_ok: false } })}
+      />,
+    );
+    const droppedText = plain(dropped);
+    expect(droppedText).toContain("обновляем");
+    expect(droppedText).not.toContain("$45.00");
+    expect(droppedText).toContain("5000.000");
+
+    // Durable-хранилище калибровки не читается — деньги degraded, баланс остаётся.
+    const noAuthority = renderToString(
+      <Tripo3dCapacityBoard
+        nowMs={TRIPO3D_NOW * 1000}
+        response={tripo3dResponse({ calibration_authority_available: false })}
+      />,
+    );
+    const noAuthorityText = plain(noAuthority);
+    expect(noAuthorityText).toContain("обновляем");
+    expect(noAuthorityText).not.toContain("$45.00");
+    expect(noAuthorityText).toContain("5000.000");
+  });
+
+  it("Tripo3dCapacityBoard: balance wall и cooling профили — без saleable денег", () => {
+    const walled = renderToString(
+      <Tripo3dCapacityBoard
+        nowMs={TRIPO3D_NOW * 1000}
+        response={tripo3dResponse({
+          fleet: { ...tripo3dResponse().fleet, available_profiles: 0, balance_walled_profiles: 1 },
+          profiles: [{ ...TRIPO3D_PROFILE, balance_walled: true }],
+        })}
+      />,
+    );
+    const walledText = plain(walled);
+    expect(walledText).toContain(">баланс исчерпан</span>");
+    expect(walledText).toContain("вне ротации");
+    expect(walledText).toContain("не входит в ёмкость");
+    expect(walledText).not.toContain("$45.00");
+    // Verbatim баланс остаётся диагностикой, как quota у Gemini/KIMI/GLM.
+    expect(walledText).toContain("5000.000");
+
+    const cooling = renderToString(
+      <Tripo3dCapacityBoard
+        nowMs={TRIPO3D_NOW * 1000}
+        response={tripo3dResponse({
+          fleet: { ...tripo3dResponse().fleet, available_profiles: 0, rate_limited_profiles: 1 },
+          profiles: [{
+            ...TRIPO3D_PROFILE,
+            cooling: { rate_limit_until: TRIPO3D_NOW + 300, auth_until: null, transport_until: null },
+          }],
+        })}
+      />,
+    );
+    const coolingText = plain(cooling);
+    expect(coolingText).toContain("cooling rate-limit 5м");
+    expect(coolingText).toContain("вне ротации");
+    expect(coolingText).not.toContain("$45.00");
+  });
+
+  it("Tripo3dCapacityBoard: протухший snapshot → «обновляем» и без денег", () => {
+    const stale = TRIPO3D_NOW - 1_200;
+    const html = renderToString(
+      <Tripo3dCapacityBoard
+        nowMs={TRIPO3D_NOW * 1000}
+        response={tripo3dResponse({
+          profiles: [{
+            ...TRIPO3D_PROFILE,
+            balance: { ...TRIPO3D_PROFILE.balance, observed_at: stale },
+            calibration: { ...TRIPO3D_PROFILE.calibration!, last_measured_at: stale },
+          }],
+        })}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain(">обновляем</span>");
+    expect(text).toContain("ждём свежий баланс");
+    expect(text).not.toContain("$45.00");
+    expect(text).toContain("5000.000");
+  });
+
+  it("Tripo3dCapacityBoard: BigInt-суммы пула в strip — никакой float-математики", () => {
+    const second: Tripo3dProfile = {
+      ...TRIPO3D_PROFILE,
+      id: "tripo3d-0011223344556677",
+      cohort: "tripo3d-api-25",
+      calibration: {
+        cohort: "tripo3d-api-25",
+        samples: 2,
+        confidence_bp: 7_000,
+        capacity: { current_nano: "15000000000", low_nano: null, high_nano: null },
+        remaining: { native_micro_units: 1_500_000, api_nano: "15000000000" },
+        observed_spend_nano: "10000000000",
+        observed_spend_native_millicredits: 1_000_000,
+        last_measured_at: TRIPO3D_NOW - 30,
+        estimator_version: 1,
+      },
+    };
+    const html = renderToString(
+      <Tripo3dCapacityBoard
+        nowMs={TRIPO3D_NOW * 1000}
+        response={tripo3dResponse({
+          fleet: { ...tripo3dResponse().fleet, profiles: 2, live_profiles: 2, available_profiles: 2 },
+          profiles: [TRIPO3D_PROFILE, second],
+        })}
+      />,
+    );
+    const text = plain(html);
+    // 45e9 + 15e9 = $60.00 из 45e9 + 15e9 = $60.00 — BigInt-сумма decimal strings.
+    expect(text).toContain("$60.00");
+    expect(text).toContain("из $60.00");
+    expect(text).toContain("2/2");
+    expect(text).toContain("2/2 измерено");
+    // header + две identity.
+    expect(html.match(/<tr/g)).toHaveLength(3);
+  });
+
+  it("FleetCapacityOverview: Tripo3D-карточка с баланс-rail рядом с остальными флотами", () => {
+    const html = renderToString(
+      <FleetCapacityOverview
+        claude={{
+          calibrated: true,
+          per_sub: [{ routable: true }],
+          window_totals: [
+            { window_minutes: 300, capacity_nano: "60000000000", remaining_nano: "45000000000", routable_subs: 1, calibrated_subs: 1 },
+            { window_minutes: 10_080, capacity_nano: "200000000000", remaining_nano: "120000000000" },
+          ],
+        }}
+        gpt={{
+          enabled: true,
+          available: 1,
+          homes: [{ process_live: true, admitted: true }],
+          window_totals: [
+            { window_minutes: 300, capacity_nano: "80000000000", remaining_nano: "40000000000", measured_homes: 1, observed_homes: 1 },
+            { window_minutes: 10_080, capacity_nano: "300000000000", remaining_nano: "210000000000" },
+          ],
+        }}
+        gemini={{
+          enabled: true,
+          available: 1,
+          calibration_authority_available: true,
+          calibration_delivery: { pending_events: 0, dropped_events: 0, persistence_ok: true },
+          profiles: [{ authenticated: true }],
+          window_totals: [
+            { window_minutes: 300, capacity_nano: "50000000000", remaining_nano: "30000000000", measured_profiles: 1, observed_profiles: 1 },
+            { window_minutes: 10_080, capacity_nano: "250000000000", remaining_nano: "150000000000" },
+          ],
+        }}
+        kimi={kimiResponse()}
+        glm={glmResponse()}
+        tripo3d={tripo3dResponse()}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("Tripo3D");
+    expect(html).toContain("fleet-tripo3d");
+    // 5 флотов × 2 rail + баланс-трек Tripo3D одним rail.
+    expect(html.match(/fleet-window-rail/g)).toHaveLength(11);
+    expect(text).toContain("баланс");
+    expect(text).toContain("$45.00");
+    expect(text).toContain("1/1 измерено");
+    expect(html).toContain("fleet-state ok");
+  });
+
+  it("FleetCapacityOverview: Tripo3D без калибровки — «ждём данные» вместо $0", () => {
+    const html = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        tripo3d={tripo3dResponse({
+          profiles: [{
+            ...TRIPO3D_PROFILE,
+            calibration: {
+              cohort: "tripo3d-api-50",
+              samples: 0,
+              confidence_bp: 0,
+              capacity: { current_nano: null, low_nano: null, high_nano: null },
+              remaining: null,
+              observed_spend_nano: "0",
+              observed_spend_native_millicredits: 0,
+              last_measured_at: null,
+              estimator_version: 1,
+            },
+          }],
+        })}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("ждём данные");
+    expect(text).not.toContain("$0.00");
+    expect(text).not.toContain("$45.00");
+    expect(text).toContain("0/1 измерено");
+    expect(html).toContain("fleet-state warn");
+  });
+
+  it("FleetCapacityOverview: очередь, потеря и недоступный authority Tripo3D скрывают деньги флота", () => {
+    const pending = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        tripo3d={tripo3dResponse({ delivery: { pending_events: 2, dropped_events: 0, persistence_ok: true } })}
+      />,
+    );
+    expect(plain(pending)).toContain("2 сохраняется");
+    expect(plain(pending)).not.toContain("$45.00");
+
+    const dropped = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        tripo3d={tripo3dResponse({ delivery: { pending_events: 0, dropped_events: 1, persistence_ok: false } })}
+      />,
+    );
+    expect(plain(dropped)).toContain("1 потеряно");
+    expect(plain(dropped)).not.toContain("$45.00");
+    expect(dropped).toContain("fleet-state bad");
+
+    const noAuthority = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        tripo3d={tripo3dResponse({ calibration_authority_available: false })}
+      />,
+    );
+    expect(plain(noAuthority)).toContain("калибровка недоступна");
+    expect(plain(noAuthority)).not.toContain("$45.00");
+    expect(noAuthority).toContain("fleet-state bad");
+  });
+
+  it("FleetCapacityOverview: disabled envelope, загрузка и недоступный Tripo3D — честные состояния", () => {
+    const off = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        tripo3d={{ now: TRIPO3D_NOW, enabled: false, profiles: [] }}
+      />,
+    );
+    expect(plain(off)).toContain("выключен");
+    expect(off).toContain("fleet-tripo3d");
+    expect(off).toContain("fleet-state bad");
+
+    const down = renderToString(
+      <FleetCapacityOverview claude={null} gpt={null} gemini={null} tripo3d={null} />,
+    );
+    expect(plain(down)).toContain("нет связи");
+    expect(down).toContain("fleet-tripo3d");
+
+    const loading = renderToString(
+      <FleetCapacityOverview claude={null} gpt={null} gemini={null} tripo3d={undefined} />,
+    );
+    expect(plain(loading)).toContain("загрузка");
+    expect(loading).toContain("fleet-tripo3d");
+  });
+});
+
+// Детерминированные фикстуры Suno — точная форма wire contract GET /suno-subs.
+// Окно — ежемесячный кредитный цикл плана; identity — exact window_duration_secs.
+const SUNO_NOW = 1_785_820_912;
+
+const SUNO_PROFILE: SunoProfile = {
+  id: "suno-1a2b3c4d5e6f7080",
+  plan: "Pro",
+  routable: true,
+  live: true,
+  quota_walled: false,
+  cooling: { rate_limit_until: null, auth_until: null, captcha_until: null, transport_until: null },
+  inflight: 0,
+  quota: {
+    observed_at: SUNO_NOW - 29,
+    monthly_limit: 2_500,
+    monthly_usage: 625,
+    total_credits_left: 1_875,
+  },
+  calibration: [
+    {
+      window_duration_secs: 2_592_000,
+      samples: 4,
+      confidence_bp: 8_000,
+      capacity: { current_nano: "10000000000", low_nano: null, high_nano: null },
+      remaining: "7500000000",
+      observed_spend_nano: "2500000000",
+      observed_spend_native_millicredits: 625_000,
+      unattributed_fraction_units: 0,
+      last_measured_at: SUNO_NOW - 60,
+      estimator_version: 1,
+    },
+  ],
+};
+
+const sunoResponse = (overrides: Partial<SunoSubsResponse> = {}): SunoSubsResponse => ({
+  now: SUNO_NOW,
+  enabled: true,
+  calibration_authority_available: true,
+  delivery: { pending_events: 0, dropped_events: 0, persistence_ok: true },
+  fleet: {
+    profiles: 1,
+    live_profiles: 1,
+    available_profiles: 1,
+    inflight_requests: 0,
+    inflight_drains: 0,
+    tracked_generations: 0,
+    rate_limited_profiles: 0,
+    quota_walled_profiles: 0,
+    auth_cooling_profiles: 0,
+    captcha_cooling_profiles: 0,
+    transport_cooling_profiles: 0,
+    unattributed_settlements: 0,
+    tariff_anomaly: 0,
+    artifact_failures: 0,
+  },
+  profiles: [SUNO_PROFILE],
+  ...overrides,
+});
+
+describe("Suno capacity board (wire contract /suno-subs)", () => {
+  it("SunoCapacityBoard: месячное окно из window_duration_secs, exact деньги и проценты, одна строка на профиль", () => {
+    const html = renderToString(<SunoCapacityBoard nowMs={SUNO_NOW * 1000} response={sunoResponse()} />);
+    const text = plain(html);
+    expect(text).toContain("Окна по аккаунтам");
+    expect(text).toContain("suno-1a2b3c4d5e6f7080");
+    expect(text).toContain("Pro");
+    expect(text).toContain(">active</span>");
+    // Окно подписано реальной длительностью месяца: 2_592_000 → 30д.
+    expect(text).toContain("Quota 30д / reset");
+    expect(text).toContain("Доступно $ · 30д");
+    // Reset не изобретается: producer его не публикует — честное «—».
+    expect(text).toContain("сброс —");
+    // Exact remaining/full API-$ из decimal nano strings.
+    expect(text).toContain('provider-usd-ink provider-five-hour-money"><b>$7.50</b><small>из $10.00</small>');
+    // Used share из verbatim counters (625/2500) → 25%.
+    expect(text).toContain("25%");
+    // Native остаток (credits) — отдельная компактная колонка, exact integer.
+    expect(text).toContain("Native · остаток");
+    expect(text).toContain("1,875");
+    expect(text).toContain("из 2,500 · кредиты");
+    // Summary strip: те же exact значения и measured coverage.
+    expect(text).toContain("30д · доступно");
+    expect(text).toContain("30д · использовано");
+    expect(text).toContain("Профили в ротации");
+    expect(text).toContain("1/1");
+    expect(text).toContain("1/1 измерено");
+    expect(html.match(/provider-quota-meter/g)).toHaveLength(1);
+    // Одна identity = одна строка независимо от количества окон: header + 1 профиль.
+    expect(html.match(/<tr/g)).toHaveLength(2);
+    // Wide-table контракт: sticky identity колонка + горизонтальный скролл карточки.
+    expect(html).toContain("provider-home-capacity-table provider-suno-home-table");
+    expect(html).toContain("tscroll");
+    // Privacy: никакого subject/cookie/session-shaped контента — только opaque roster id + plan.
+    expect(html).not.toMatch(/@/);
+    expect(html).not.toContain("subject");
+    expect(html).not.toContain("email");
+    expect(html).not.toContain("Почта");
+    expect(html).not.toContain("cookie");
+    expect(html).not.toContain("session");
+    expect(html).not.toContain("proxy");
+    expect(html).not.toContain("credential");
+    // Удалённой аналитики нет.
+    expect(html).not.toContain("Выгодность по убыванию");
+    expect(html).not.toContain("Сколько токенов доступно");
+    expect(html).not.toContain("estimator_version");
+  });
+
+  it("SunoCapacityBoard: null-деньги → «ждём данные», никогда не $0", () => {
+    const html = renderToString(
+      <SunoCapacityBoard
+        nowMs={SUNO_NOW * 1000}
+        response={sunoResponse({
+          profiles: [{
+            ...SUNO_PROFILE,
+            calibration: [{
+              window_duration_secs: 2_592_000,
+              samples: 0,
+              confidence_bp: 0,
+              capacity: { current_nano: null, low_nano: null, high_nano: null },
+              remaining: null,
+              observed_spend_nano: "0",
+              observed_spend_native_millicredits: 0,
+              unattributed_fraction_units: 0,
+              last_measured_at: null,
+              estimator_version: 1,
+            }],
+          }],
+        })}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("ждём данные");
+    expect(text).toContain("ещё не измерено");
+    expect(text).toContain("0/1 измерено");
+    // Свежая provider quota и native counters остаются видны даже без calibrated денег.
+    expect(text).toContain("25%");
+    expect(text).toContain("1,875");
+    expect(text).not.toContain("$0.00");
+    expect(text).not.toContain("$7.50");
+  });
+
+  it("SunoCapacityBoard: pending delivery скрывает saleable деньги за «сохраняется»", () => {
+    const html = renderToString(
+      <SunoCapacityBoard
+        nowMs={SUNO_NOW * 1000}
+        response={sunoResponse({ delivery: { pending_events: 2, dropped_events: 0, persistence_ok: true } })}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("сохраняется");
+    expect(text).not.toContain("$7.50");
+    // Quota — live provider fact и не скрывается.
+    expect(text).toContain("25%");
+    expect(text).toContain("quota уже доступна");
+  });
+
+  it("SunoCapacityBoard: dropped/persistence-сбой и недоступный authority скрывают stale API-$ за «обновляем»", () => {
+    const dropped = renderToString(
+      <SunoCapacityBoard
+        nowMs={SUNO_NOW * 1000}
+        response={sunoResponse({ delivery: { pending_events: 0, dropped_events: 1, persistence_ok: false } })}
+      />,
+    );
+    const droppedText = plain(dropped);
+    expect(droppedText).toContain("обновляем");
+    expect(droppedText).not.toContain("$7.50");
+    expect(droppedText).toContain("25%");
+
+    const noAuthority = renderToString(
+      <SunoCapacityBoard
+        nowMs={SUNO_NOW * 1000}
+        response={sunoResponse({ calibration_authority_available: false })}
+      />,
+    );
+    const noAuthorityText = plain(noAuthority);
+    expect(noAuthorityText).toContain("обновляем");
+    expect(noAuthorityText).not.toContain("$7.50");
+    expect(noAuthorityText).toContain("25%");
+  });
+
+  it("SunoCapacityBoard: вне ротации / quota wall / cooling профили — без saleable денег", () => {
+    const dead = renderToString(
+      <SunoCapacityBoard
+        nowMs={SUNO_NOW * 1000}
+        response={sunoResponse({
+          fleet: { ...sunoResponse().fleet, live_profiles: 0, available_profiles: 0 },
+          profiles: [{ ...SUNO_PROFILE, routable: false }],
+        })}
+      />,
+    );
+    const deadText = plain(dead);
+    expect(deadText).toContain(">вне ротации</span>");
+    expect(deadText).toContain("не входит в ёмкость");
+    expect(deadText).not.toContain("$7.50");
+    // Quota остаётся диагностикой, как у Gemini/KIMI/GLM/Tripo3D.
+    expect(deadText).toContain("25%");
+
+    const walled = renderToString(
+      <SunoCapacityBoard
+        nowMs={SUNO_NOW * 1000}
+        response={sunoResponse({
+          fleet: { ...sunoResponse().fleet, available_profiles: 0, quota_walled_profiles: 1 },
+          profiles: [{ ...SUNO_PROFILE, quota_walled: true }],
+        })}
+      />,
+    );
+    const walledText = plain(walled);
+    expect(walledText).toContain(">квота исчерпана</span>");
+    expect(walledText).toContain("вне ротации");
+    expect(walledText).not.toContain("$7.50");
+
+    const cooling = renderToString(
+      <SunoCapacityBoard
+        nowMs={SUNO_NOW * 1000}
+        response={sunoResponse({
+          fleet: { ...sunoResponse().fleet, available_profiles: 0, captcha_cooling_profiles: 1 },
+          profiles: [{
+            ...SUNO_PROFILE,
+            cooling: { rate_limit_until: null, auth_until: null, captcha_until: SUNO_NOW + 300, transport_until: null },
+          }],
+        })}
+      />,
+    );
+    const coolingText = plain(cooling);
+    expect(coolingText).toContain("cooling captcha 5м");
+    expect(coolingText).toContain("вне ротации");
+    expect(coolingText).not.toContain("$7.50");
+  });
+
+  it("SunoCapacityBoard: протухший snapshot → «обновляем» и без денег", () => {
+    const stale = SUNO_NOW - 1_200;
+    const html = renderToString(
+      <SunoCapacityBoard
+        nowMs={SUNO_NOW * 1000}
+        response={sunoResponse({
+          profiles: [{
+            ...SUNO_PROFILE,
+            quota: { ...SUNO_PROFILE.quota, observed_at: stale },
+            calibration: SUNO_PROFILE.calibration?.map((row) => ({ ...row, last_measured_at: stale })),
+          }],
+        })}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain(">обновляем</span>");
+    expect(text).toContain("ждём свежую квоту");
+    expect(text).not.toContain("$7.50");
+    expect(text).toContain("25%");
+  });
+
+  it("SunoCapacityBoard: несколько окон не плодят строки; прошлый месяц подписан честно", () => {
+    const html = renderToString(
+      <SunoCapacityBoard
+        nowMs={SUNO_NOW * 1000}
+        response={sunoResponse({
+          profiles: [{
+            ...SUNO_PROFILE,
+            calibration: [
+              ...(SUNO_PROFILE.calibration ?? []),
+              {
+                window_duration_secs: 2_678_400,
+                samples: 9,
+                confidence_bp: 9_000,
+                capacity: { current_nano: "10000000000", low_nano: null, high_nano: null },
+                remaining: "2500000000",
+                observed_spend_nano: "7500000000",
+                observed_spend_native_millicredits: 1_875_000,
+                unattributed_fraction_units: 0,
+                last_measured_at: SUNO_NOW - 90,
+                estimator_version: 1,
+              },
+            ],
+          }],
+        })}
+      />,
+    );
+    const text = plain(html);
+    // 2_678_400 секунд — это «31д», реальная длина прошлого месяца, не константа.
+    expect(text).toContain("Доступно $ · 31д");
+    expect(text).toContain("$2.50");
+    // header + ровно одна строка профиля при двух окнах; quota meter один — quota
+    // относится к текущему месяцу, а не к каждой хранимой duration.
+    expect(html.match(/<tr/g)).toHaveLength(2);
+    expect(html.match(/provider-quota-meter/g)).toHaveLength(1);
+    expect(text).toContain("$7.50");
+  });
+
+  it("SunoCapacityBoard: BigInt-суммы пула и взвешенная used-доля месяца в strip", () => {
+    const second: SunoProfile = {
+      ...SUNO_PROFILE,
+      id: "suno-aa20ff0011223344",
+      plan: "Premier",
+      quota: {
+        observed_at: SUNO_NOW - 10,
+        monthly_limit: 10_000,
+        monthly_usage: 5_000,
+        total_credits_left: 5_000,
+      },
+      calibration: [{
+        window_duration_secs: 2_592_000,
+        samples: 2,
+        confidence_bp: 7_000,
+        capacity: { current_nano: "20000000000", low_nano: null, high_nano: null },
+        remaining: "15000000000",
+        observed_spend_nano: "5000000000",
+        observed_spend_native_millicredits: 5_000_000,
+        unattributed_fraction_units: 0,
+        last_measured_at: SUNO_NOW - 30,
+        estimator_version: 1,
+      }],
+    };
+    const html = renderToString(
+      <SunoCapacityBoard
+        nowMs={SUNO_NOW * 1000}
+        response={sunoResponse({
+          fleet: { ...sunoResponse().fleet, profiles: 2, live_profiles: 2, available_profiles: 2 },
+          profiles: [SUNO_PROFILE, second],
+        })}
+      />,
+    );
+    const text = plain(html);
+    // 7.5e9 + 15e9 = $22.50 из 10e9 + 20e9 = $30.00 — никакой float-математики.
+    expect(text).toContain("$22.50");
+    expect(text).toContain("из $30.00");
+    // (625 + 5000) / (2500 + 10000) = 45% — Σusage/Σlimit по verbatim counters.
+    expect(text).toContain("45%");
+    expect(text).toContain("2/2");
+    expect(text).toContain("2/2 измерено");
+    // header + две identity.
+    expect(html.match(/<tr/g)).toHaveLength(3);
+  });
+
+  it("FleetCapacityOverview: Suno-карточка с месячным окном рядом с остальными флотами", () => {
+    const html = renderToString(
+      <FleetCapacityOverview
+        claude={{
+          calibrated: true,
+          per_sub: [{ routable: true }],
+          window_totals: [
+            { window_minutes: 300, capacity_nano: "60000000000", remaining_nano: "45000000000", routable_subs: 1, calibrated_subs: 1 },
+            { window_minutes: 10_080, capacity_nano: "200000000000", remaining_nano: "120000000000" },
+          ],
+        }}
+        gpt={{
+          enabled: true,
+          available: 1,
+          homes: [{ process_live: true, admitted: true }],
+          window_totals: [
+            { window_minutes: 300, capacity_nano: "80000000000", remaining_nano: "40000000000", measured_homes: 1, observed_homes: 1 },
+            { window_minutes: 10_080, capacity_nano: "300000000000", remaining_nano: "210000000000" },
+          ],
+        }}
+        gemini={{
+          enabled: true,
+          available: 1,
+          calibration_authority_available: true,
+          calibration_delivery: { pending_events: 0, dropped_events: 0, persistence_ok: true },
+          profiles: [{ authenticated: true }],
+          window_totals: [
+            { window_minutes: 300, capacity_nano: "50000000000", remaining_nano: "30000000000", measured_profiles: 1, observed_profiles: 1 },
+            { window_minutes: 10_080, capacity_nano: "250000000000", remaining_nano: "150000000000" },
+          ],
+        }}
+        kimi={kimiResponse()}
+        glm={glmResponse()}
+        tripo3d={tripo3dResponse()}
+        suno={sunoResponse()}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("Suno");
+    expect(html).toContain("fleet-suno");
+    // 5 флотов × 2 rail + баланс-трек Tripo3D + месячное окно Suno.
+    expect(html.match(/fleet-window-rail/g)).toHaveLength(12);
+    expect(text).toContain("30д");
+    expect(text).toContain("$7.50");
+    expect(text).toContain("1/1 измерено");
+    expect(html).toContain("fleet-state ok");
+  });
+
+  it("FleetCapacityOverview: Suno без калибровки — «ждём данные» вместо $0", () => {
+    const html = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        suno={sunoResponse({
+          profiles: [{
+            ...SUNO_PROFILE,
+            calibration: [{
+              window_duration_secs: 2_592_000,
+              samples: 0,
+              confidence_bp: 0,
+              capacity: { current_nano: null, low_nano: null, high_nano: null },
+              remaining: null,
+              observed_spend_nano: "0",
+              observed_spend_native_millicredits: 0,
+              unattributed_fraction_units: 0,
+              last_measured_at: null,
+              estimator_version: 1,
+            }],
+          }],
+        })}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("ждём данные");
+    expect(text).not.toContain("$0.00");
+    expect(text).not.toContain("$7.50");
+    expect(text).toContain("0/1 измерено");
+    expect(html).toContain("fleet-state warn");
+  });
+
+  it("FleetCapacityOverview: Suno без calibration-окон деградирует в coverage-only, как KIMI", () => {
+    const html = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        suno={sunoResponse({ profiles: [{ ...SUNO_PROFILE, calibration: null }] })}
+      />,
+    );
+    const text = plain(html);
+    // Ни одного rail без окон; карточка честно сообщает об отсутствии окон.
+    expect(html).not.toContain("fleet-window-rail");
+    expect(html).toContain("fleet-suno");
+    expect(text).toContain("окон нет");
+    expect(text).not.toContain("$7.50");
+  });
+
+  it("FleetCapacityOverview: очередь, потеря и недоступный authority Suno скрывают деньги флота", () => {
+    const pending = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        suno={sunoResponse({ delivery: { pending_events: 2, dropped_events: 0, persistence_ok: true } })}
+      />,
+    );
+    expect(plain(pending)).toContain("2 сохраняется");
+    expect(plain(pending)).not.toContain("$7.50");
+
+    const dropped = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        suno={sunoResponse({ delivery: { pending_events: 0, dropped_events: 1, persistence_ok: false } })}
+      />,
+    );
+    expect(plain(dropped)).toContain("1 потеряно");
+    expect(plain(dropped)).not.toContain("$7.50");
+    expect(dropped).toContain("fleet-state bad");
+
+    const noAuthority = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        suno={sunoResponse({ calibration_authority_available: false })}
+      />,
+    );
+    expect(plain(noAuthority)).toContain("калибровка недоступна");
+    expect(plain(noAuthority)).not.toContain("$7.50");
+    expect(noAuthority).toContain("fleet-state bad");
+  });
+
+  it("FleetCapacityOverview: disabled envelope, загрузка и недоступный Suno — честные состояния", () => {
+    const off = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        suno={{ now: SUNO_NOW, enabled: false, profiles: [] }}
+      />,
+    );
+    expect(plain(off)).toContain("выключен");
+    expect(off).toContain("fleet-suno");
+    expect(off).toContain("fleet-state bad");
+
+    const down = renderToString(
+      <FleetCapacityOverview claude={null} gpt={null} gemini={null} suno={null} />,
+    );
+    expect(plain(down)).toContain("нет связи");
+    expect(down).toContain("fleet-suno");
+
+    const loading = renderToString(
+      <FleetCapacityOverview claude={null} gpt={null} gemini={null} suno={undefined} />,
+    );
+    expect(plain(loading)).toContain("загрузка");
+    expect(loading).toContain("fleet-suno");
+  });
+});
+
 describe("Подписки (subs page)", () => {
   it("рендерится без падения: начальное состояние — скелетон загрузки", () => {
     // fetch на всякий случай замокан: при SSR-рендере эффекты не исполняются,
@@ -2365,6 +3300,8 @@ describe("Подписки (subs page)", () => {
             gemini: undefined,
             kimi: undefined,
             glm: undefined,
+            tripo3d: undefined,
+            suno: undefined,
           },
           availability: {
             subs: "ready",
@@ -2373,6 +3310,8 @@ describe("Подписки (subs page)", () => {
             gemini: "loading",
             kimi: "loading",
             glm: "loading",
+            tripo3d: "loading",
+            suno: "loading",
           },
           isLoading: false,
           updatedAt: 1_786_541_400_000,
@@ -2386,6 +3325,8 @@ describe("Подписки (subs page)", () => {
     expect(plain(html)).toContain("Данные Gemini загружаются");
     expect(plain(html)).toContain("Данные KIMI загружаются");
     expect(plain(html)).toContain("Данные GLM загружаются");
+    expect(plain(html)).toContain("Данные Tripo3D загружаются");
+    expect(plain(html)).toContain("Данные Suno загружаются");
     expect(plain(html)).not.toContain("не отвечает");
   });
 });
@@ -2735,12 +3676,321 @@ describe("glmMeasuredCoverage", () => {
   });
 });
 
+describe("tripo3dProfileStatus (balance wall / cooling-оси / stale / пусто / active)", () => {
+  const now = TRIPO3D_NOW;
+
+  it("balance_walled — «баланс исчерпан» warn (HARD verdict, снимается только probe)", () => {
+    expect(tripo3dProfileStatus({ live: true, balance_walled: true }, now)).toEqual({
+      label: "баланс исчерпан",
+      kind: "warn",
+    });
+  });
+
+  it("cooling-оси показывают имя оси и отсчёт до последнего until", () => {
+    expect(
+      tripo3dProfileStatus({ live: true, cooling: { rate_limit_until: now + 300 } }, now),
+    ).toEqual({ label: "cooling rate-limit 5м", kind: "warn" });
+    expect(
+      tripo3dProfileStatus({ live: true, cooling: { auth_until: now + 600, transport_until: now + 300 } }, now).label,
+    ).toBe("cooling auth+транспорт 10м");
+    expect(
+      tripo3dProfileStatus({ live: true, cooling: { transport_until: now + 90 } }, now).label,
+    ).toBe("cooling транспорт 1м");
+  });
+
+  it("баланс wall важнее cooling-осей", () => {
+    expect(
+      tripo3dProfileStatus(
+        { live: true, balance_walled: true, cooling: { rate_limit_until: now + 300 } },
+        now,
+      ),
+    ).toEqual({ label: "баланс исчерпан", kind: "warn" });
+  });
+
+  it("ключ без прошедшего probe (live:false) — «ждём данные», не «вне ротации»", () => {
+    expect(tripo3dProfileStatus({ live: false, balance: { observed_at: now - 30 } }, now)).toEqual({
+      label: "ждём данные",
+      kind: "warn",
+    });
+  });
+
+  it("без наблюдений — «ждём данные», протухшие — «обновляем», свежие — active", () => {
+    expect(tripo3dProfileStatus({ live: true }, now)).toEqual({ label: "ждём данные", kind: "warn" });
+    expect(tripo3dProfileStatus({ live: true, balance: { observed_at: now - 601 } }, now)).toEqual({
+      label: "обновляем",
+      kind: "warn",
+    });
+    expect(tripo3dProfileStatus({ live: true, balance: { observed_at: now - 30 } }, now)).toEqual({
+      label: "active",
+      kind: "ok",
+    });
+    // Замер калибровки — тоже свежесть evidence.
+    expect(tripo3dProfileStatus({ live: true, calibration: { last_measured_at: now - 30 } }, now)).toEqual({
+      label: "active",
+      kind: "ok",
+    });
+  });
+});
+
+describe("tripo3dFleetMoney (fail-closed суммы по баланс-треку)", () => {
+  it("суммирует decimal strings по продаваемым профилям", () => {
+    const profiles: Tripo3dProfile[] = [
+      {
+        live: true,
+        balance: { observed_at: TRIPO3D_NOW - 10 },
+        calibration: { capacity: { current_nano: "45000000000" }, remaining: { api_nano: "45000000000" } },
+      },
+      {
+        live: true,
+        balance: { observed_at: TRIPO3D_NOW - 10 },
+        calibration: { capacity: { current_nano: "15000000000" }, remaining: { api_nano: "15000000000" } },
+      },
+    ];
+    expect(tripo3dFleetMoney(profiles, TRIPO3D_NOW)).toEqual({ capacity: "60000000000", remaining: "60000000000" });
+  });
+
+  it("null у любого продаваемого профиля делает итог неизвестным", () => {
+    const profiles: Tripo3dProfile[] = [
+      {
+        live: true,
+        balance: { observed_at: TRIPO3D_NOW - 10 },
+        calibration: { capacity: { current_nano: "45000000000" }, remaining: { api_nano: "45000000000" } },
+      },
+      {
+        live: true,
+        balance: { observed_at: TRIPO3D_NOW - 10 },
+        calibration: { capacity: { current_nano: null }, remaining: null },
+      },
+    ];
+    expect(tripo3dFleetMoney(profiles, TRIPO3D_NOW)).toEqual({ capacity: null, remaining: null });
+    expect(tripo3dFleetMoney([], TRIPO3D_NOW)).toEqual({ capacity: null, remaining: null });
+  });
+
+  it("balance-walled, cooling, stale и неподтверждённые профили не продаются", () => {
+    const good: Tripo3dProfile = {
+      live: true,
+      balance: { observed_at: TRIPO3D_NOW - 10 },
+      calibration: { capacity: { current_nano: "45000000000" }, remaining: { api_nano: "45000000000" } },
+    };
+    const rich = { capacity: { current_nano: "99000000000" }, remaining: { api_nano: "99000000000" } };
+    const walled: Tripo3dProfile = { live: true, balance_walled: true, calibration: rich };
+    const cooling: Tripo3dProfile = {
+      live: true,
+      cooling: { rate_limit_until: TRIPO3D_NOW + 300 },
+      calibration: rich,
+    };
+    const stale: Tripo3dProfile = { live: true, balance: { observed_at: TRIPO3D_NOW - 1_200 }, calibration: rich };
+    const unprobed: Tripo3dProfile = { live: false, calibration: rich };
+    for (const excluded of [walled, cooling, stale, unprobed]) {
+      expect(tripo3dFleetMoney([good, excluded], TRIPO3D_NOW)).toEqual({
+        capacity: "45000000000",
+        remaining: "45000000000",
+      });
+    }
+  });
+});
+
+describe("tripo3dMeasuredCoverage", () => {
+  it("считает только профили с samples > 0 на баланс-треке", () => {
+    const profiles: Tripo3dProfile[] = [
+      { live: true, calibration: { samples: 4 } },
+      { live: true, calibration: { samples: 0 } },
+      { live: true, calibration: null },
+    ];
+    expect(tripo3dMeasuredCoverage(profiles)).toEqual({ measured: 1, observed: 3 });
+    expect(tripo3dMeasuredCoverage([])).toEqual({ measured: 0, observed: 0 });
+  });
+});
+
+describe("sunoWindowLabel (окна подписаны реальной длительностью)", () => {
+  it("месячный цикл подписан длиной конкретного месяца, остальные — по факту", () => {
+    expect(sunoWindowLabel(2_592_000)).toBe("30д");
+    expect(sunoWindowLabel(2_678_400)).toBe("31д");
+    expect(sunoWindowLabel(18_000)).toBe("5ч");
+    expect(sunoWindowLabel(900)).toBe("15м");
+    expect(sunoWindowLabel(0)).toBe("окно");
+    expect(sunoWindowLabel(undefined)).toBe("окно");
+  });
+});
+
+describe("sunoProfileStatus (вне ротации / quota wall / cooling-оси / stale / пусто / active)", () => {
+  const now = SUNO_NOW;
+
+  it("routable:false — «вне ротации» bad (подтверждённый Clerk verdict)", () => {
+    expect(sunoProfileStatus({ routable: false }, now)).toEqual({ label: "вне ротации", kind: "bad" });
+  });
+
+  it("quota_walled — «квота исчерпана» warn (HARD verdict, снимается только probe)", () => {
+    expect(sunoProfileStatus({ routable: true, live: true, quota_walled: true }, now)).toEqual({
+      label: "квота исчерпана",
+      kind: "warn",
+    });
+  });
+
+  it("снятие с ротации и quota wall важнее cooling-осей", () => {
+    expect(
+      sunoProfileStatus({ routable: false, cooling: { rate_limit_until: now + 300 } }, now),
+    ).toEqual({ label: "вне ротации", kind: "bad" });
+    expect(
+      sunoProfileStatus({ routable: true, quota_walled: true, cooling: { captcha_until: now + 300 } }, now),
+    ).toEqual({ label: "квота исчерпана", kind: "warn" });
+  });
+
+  it("cooling-оси показывают имя оси и отсчёт до последнего until", () => {
+    expect(
+      sunoProfileStatus({ routable: true, live: true, cooling: { captcha_until: now + 300 } }, now),
+    ).toEqual({ label: "cooling captcha 5м", kind: "warn" });
+    expect(
+      sunoProfileStatus(
+        { routable: true, live: true, cooling: { auth_until: now + 600, transport_until: now + 300 } },
+        now,
+      ).label,
+    ).toBe("cooling auth+транспорт 10м");
+    expect(
+      sunoProfileStatus({ routable: true, live: true, cooling: { rate_limit_until: now + 90 } }, now).label,
+    ).toBe("cooling rate-limit 1м");
+  });
+
+  it("сессия без прошедшего probe (live:false) — «ждём данные», не «вне ротации»", () => {
+    expect(sunoProfileStatus({ routable: true, live: false, quota: { observed_at: now - 30 } }, now)).toEqual({
+      label: "ждём данные",
+      kind: "warn",
+    });
+  });
+
+  it("без наблюдений — «ждём данные», протухшие — «обновляем», свежие — active", () => {
+    expect(sunoProfileStatus({ routable: true, live: true }, now)).toEqual({ label: "ждём данные", kind: "warn" });
+    expect(sunoProfileStatus({ routable: true, live: true, quota: { observed_at: now - 601 } }, now)).toEqual({
+      label: "обновляем",
+      kind: "warn",
+    });
+    expect(sunoProfileStatus({ routable: true, live: true, quota: { observed_at: now - 30 } }, now)).toEqual({
+      label: "active",
+      kind: "ok",
+    });
+    // Замер калибровки — тоже свежесть evidence.
+    expect(
+      sunoProfileStatus({ routable: true, live: true, calibration: [{ last_measured_at: now - 30 }] }, now),
+    ).toEqual({ label: "active", kind: "ok" });
+  });
+});
+
+describe("sunoUsedPercent / sunoFleetUsedPercent (BigInt из verbatim counters, без float)", () => {
+  it("exact процент с шагом 0.1 и clamp к 0..100", () => {
+    expect(sunoUsedPercent(625, 2_500)).toEqual({ value: 25, label: "25%" });
+    expect(sunoUsedPercent(333, 1_000)).toEqual({ value: 33.3, label: "33.3%" });
+    expect(sunoUsedPercent(10_000, 10_000)).toEqual({ value: 100, label: "100%" });
+    expect(sunoUsedPercent(15_000, 10_000)).toEqual({ value: 100, label: "100%" });
+    expect(sunoUsedPercent(0, 2_500)).toEqual({ value: 0, label: "0%" });
+    expect(sunoUsedPercent(null, 2_500)).toEqual({ value: null, label: "—" });
+    expect(sunoUsedPercent(625, null)).toEqual({ value: null, label: "—" });
+    expect(sunoUsedPercent(625, 0)).toEqual({ value: null, label: "—" });
+  });
+
+  it("fleet-доля месяца — Σusage/Σlimit по профилям с обоими counters", () => {
+    const profiles: SunoProfile[] = [
+      { live: true, quota: { monthly_usage: 625, monthly_limit: 2_500 } },
+      { live: true, quota: { monthly_usage: 5_000, monthly_limit: 10_000 } },
+    ];
+    // (625 + 5000) / (2500 + 10000) = 5625/12500 = 45%.
+    expect(sunoFleetUsedPercent(profiles)).toEqual({ value: 45, label: "45%" });
+    expect(sunoFleetUsedPercent([{ live: true, quota: { monthly_usage: 625 } }])).toEqual({
+      value: null,
+      label: "—",
+    });
+    expect(sunoFleetUsedPercent([])).toEqual({ value: null, label: "—" });
+  });
+});
+
+describe("sunoFleetWindowMoney (fail-closed суммы)", () => {
+  const observed = { observed_at: SUNO_NOW - 10 };
+
+  it("суммирует decimal strings по продаваемым профилям окна", () => {
+    const profiles: SunoProfile[] = [
+      {
+        routable: true,
+        live: true,
+        quota: observed,
+        calibration: [{ window_duration_secs: 2_592_000, capacity: { current_nano: "10000000000" }, remaining: "7500000000" }],
+      },
+      {
+        routable: true,
+        live: true,
+        quota: observed,
+        calibration: [{ window_duration_secs: 2_592_000, capacity: { current_nano: "20000000000" }, remaining: "15000000000" }],
+      },
+    ];
+    expect(sunoFleetWindowMoney(profiles, 2_592_000, SUNO_NOW)).toEqual({
+      capacity: "30000000000",
+      remaining: "22500000000",
+    });
+  });
+
+  it("null у любого продаваемого профиля делает итог неизвестным", () => {
+    const profiles: SunoProfile[] = [
+      {
+        routable: true,
+        live: true,
+        quota: observed,
+        calibration: [{ window_duration_secs: 2_592_000, capacity: { current_nano: "10000000000" }, remaining: "7500000000" }],
+      },
+      {
+        routable: true,
+        live: true,
+        quota: observed,
+        calibration: [{ window_duration_secs: 2_592_000, capacity: { current_nano: null }, remaining: null }],
+      },
+    ];
+    expect(sunoFleetWindowMoney(profiles, 2_592_000, SUNO_NOW)).toEqual({ capacity: null, remaining: null });
+    expect(sunoFleetWindowMoney([], 2_592_000, SUNO_NOW)).toEqual({ capacity: null, remaining: null });
+  });
+
+  it("вне ротации, quota-walled, cooling, stale и неподтверждённые профили не продаются", () => {
+    const good: SunoProfile = {
+      routable: true,
+      live: true,
+      quota: observed,
+      calibration: [{ window_duration_secs: 2_592_000, capacity: { current_nano: "10000000000" }, remaining: "7500000000" }],
+    };
+    const rich = [{ window_duration_secs: 2_592_000, capacity: { current_nano: "99000000000" }, remaining: "99000000000" }];
+    const dead: SunoProfile = { routable: false, live: true, quota: observed, calibration: rich };
+    const walled: SunoProfile = { routable: true, live: true, quota_walled: true, quota: observed, calibration: rich };
+    const cooling: SunoProfile = {
+      routable: true,
+      live: true,
+      quota: observed,
+      cooling: { captcha_until: SUNO_NOW + 300 },
+      calibration: rich,
+    };
+    const stale: SunoProfile = { routable: true, live: true, quota: { observed_at: SUNO_NOW - 1_200 }, calibration: rich };
+    const unprobed: SunoProfile = { routable: true, live: false, calibration: rich };
+    for (const excluded of [dead, walled, cooling, stale, unprobed]) {
+      expect(sunoFleetWindowMoney([good, excluded], 2_592_000, SUNO_NOW)).toEqual({
+        capacity: "10000000000",
+        remaining: "7500000000",
+      });
+    }
+  });
+});
+
+describe("sunoMeasuredCoverage", () => {
+  it("считает только профили с samples > 0 в конкретном окне", () => {
+    const profiles: SunoProfile[] = [
+      { live: true, calibration: [{ window_duration_secs: 2_592_000, samples: 4 }] },
+      { live: true, calibration: [{ window_duration_secs: 2_592_000, samples: 0 }, { window_duration_secs: 2_678_400, samples: 1 }] },
+    ];
+    expect(sunoMeasuredCoverage(profiles, 2_592_000)).toEqual({ measured: 1, observed: 2 });
+    expect(sunoMeasuredCoverage(profiles, 2_678_400)).toEqual({ measured: 1, observed: 2 });
+    expect(sunoMeasuredCoverage([], 2_592_000)).toEqual({ measured: 0, observed: 0 });
+  });
+});
+
 describe("resolveBanner (приоритеты баннера флота)", () => {
   it("всё здорово → ok-баннер со сводкой флота", () => {
     expect(resolveBanner(OK_BANNER)).toEqual({
       kind: "ok",
-      title: "Все пять флотов подписок в ротации",
-      sub: "Claude 3 · GPT 2 · Gemini 1 · KIMI 1 · GLM 1 · обновлено 31.07.2026, 19:00",
+      title: "Все семь флотов подписок в ротации",
+      sub: "Claude 3 · GPT 2 · Gemini 1 · KIMI 1 · GLM 1 · Tripo3D 1 · Suno 1 · обновлено 31.07.2026, 19:00",
     });
   });
 
@@ -2751,7 +4001,7 @@ describe("resolveBanner (приоритеты баннера флота)", () =>
     expect(banner.sub).toContain("1 под наблюдением");
   });
 
-  it("падения источников идут в порядке Claude → GPT → Gemini → KIMI → GLM", () => {
+  it("падения источников идут в порядке Claude → GPT → Gemini → KIMI → GLM → Tripo3D → Suno", () => {
     expect(resolveBanner({ ...OK_BANNER, subsDown: true, gptDown: true }).title).toBe(
       "Claude lifecycle-источник недоступен",
     );
@@ -2763,9 +4013,15 @@ describe("resolveBanner (приоритеты баннера флота)", () =>
     expect(resolveBanner({ ...OK_BANNER, kimiDown: true, glmDown: true }).title).toBe("KIMI-контур не отвечает");
     expect(resolveBanner({ ...OK_BANNER, kimiDown: true }).sub).toContain("stable origin :8803");
     expect(resolveBanner({ ...OK_BANNER, kimiEmpty: true }).title).toBe("В KIMI-пуле нет профилей");
-    expect(resolveBanner({ ...OK_BANNER, glmDown: true }).title).toBe("GLM-контур не отвечает");
+    expect(resolveBanner({ ...OK_BANNER, glmDown: true, tripo3dDown: true }).title).toBe("GLM-контур не отвечает");
     expect(resolveBanner({ ...OK_BANNER, glmDown: true }).sub).toContain("GLM backend внутри Anthropic runtime");
     expect(resolveBanner({ ...OK_BANNER, glmEmpty: true }).title).toBe("В GLM-пуле нет профилей");
+    expect(resolveBanner({ ...OK_BANNER, tripo3dDown: true, sunoDown: true }).title).toBe("Tripo3D-контур не отвечает");
+    expect(resolveBanner({ ...OK_BANNER, tripo3dDown: true }).sub).toContain("dormant");
+    expect(resolveBanner({ ...OK_BANNER, tripo3dEmpty: true }).title).toBe("В Tripo3D-пуле нет профилей");
+    expect(resolveBanner({ ...OK_BANNER, sunoDown: true }).title).toBe("Suno-контур не отвечает");
+    expect(resolveBanner({ ...OK_BANNER, sunoDown: true }).sub).toContain("dormant");
+    expect(resolveBanner({ ...OK_BANNER, sunoEmpty: true }).title).toBe("В Suno-пуле нет профилей");
   });
 
   it("KIMI-сбои: недоступность пула идёт после диагностики Gemini и до suspect", () => {
@@ -2783,6 +4039,30 @@ describe("resolveBanner (приоритеты баннера флота)", () =>
     expect(banner.title).toBe("GLM: нет доступных профилей");
     expect(resolveBanner({ ...OK_BANNER, glmUnavailable: true, suspect: 1 }).title).toBe(
       "GLM: нет доступных профилей",
+    );
+  });
+
+  it("Tripo3D-сбои: недоступность пула идёт после диагностики GLM и до Suno", () => {
+    const banner = resolveBanner({ ...OK_BANNER, tripo3dUnavailable: true });
+    expect(banner.kind).toBe("warn");
+    expect(banner.title).toBe("Tripo3D: нет доступных профилей");
+    expect(resolveBanner({ ...OK_BANNER, tripo3dUnavailable: true, suspect: 1 }).title).toBe(
+      "Tripo3D: нет доступных профилей",
+    );
+    expect(resolveBanner({ ...OK_BANNER, glmUnavailable: true, tripo3dUnavailable: true }).title).toBe(
+      "GLM: нет доступных профилей",
+    );
+    expect(resolveBanner({ ...OK_BANNER, tripo3dUnavailable: true, sunoUnavailable: true }).title).toBe(
+      "Tripo3D: нет доступных профилей",
+    );
+  });
+
+  it("Suno-сбои: недоступность пула идёт после диагностики Tripo3D и до suspect", () => {
+    const banner = resolveBanner({ ...OK_BANNER, sunoUnavailable: true });
+    expect(banner.kind).toBe("warn");
+    expect(banner.title).toBe("Suno: нет доступных профилей");
+    expect(resolveBanner({ ...OK_BANNER, sunoUnavailable: true, suspect: 1 }).title).toBe(
+      "Suno: нет доступных профилей",
     );
   });
 

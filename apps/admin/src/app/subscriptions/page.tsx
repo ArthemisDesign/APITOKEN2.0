@@ -1,9 +1,10 @@
 "use client";
 
 // Подписки — порт 1:1 функции subscriptions() из crates/server/src/admin-panel.js.
-// Пять флотов на одной странице: Claude OAuth (/subs + live-ёмкость /capacity),
+// Семь флотов на одной странице: Claude OAuth (/subs + live-ёмкость /capacity),
 // GPT/Codex homes (/codex-subs), Gemini-профили (/gemini-subs), KIMI-профили
-// (/kimi-subs) и GLM-профили (/glm-subs). Каждый provider-feed инвалидирует только
+// (/kimi-subs), GLM-профили (/glm-subs), Tripo3D-профили (/tripo3d-subs) и
+// Suno-профили (/suno-subs). Каждый provider-feed инвалидирует только
 // затронутые URL; интервальных запросов нет.
 import { useMemo } from "react";
 import { useResources } from "@/lib/resources";
@@ -15,6 +16,8 @@ import { FleetCapacityOverview } from "./fleet-capacity-overview";
 import { GeminiCapacityBoard } from "./gemini-capacity-board";
 import { GlmCapacityBoard } from "./glm-capacity-board";
 import { KimiCapacityBoard } from "./kimi-capacity-board";
+import { SunoCapacityBoard } from "./suno-capacity-board";
+import { Tripo3dCapacityBoard } from "./tripo3d-capacity-board";
 import { resolveBanner } from "./logic";
 import type {
   CapacityResponse,
@@ -23,6 +26,8 @@ import type {
   GlmSubsResponse,
   KimiSubsResponse,
   SubsResponse,
+  SunoSubsResponse,
+  Tripo3dSubsResponse,
 } from "./types";
 
 interface SubsData {
@@ -32,6 +37,8 @@ interface SubsData {
   gemini: GeminiSubsResponse;
   kimi: KimiSubsResponse;
   glm: GlmSubsResponse;
+  tripo3d: Tripo3dSubsResponse;
+  suno: SunoSubsResponse;
 }
 
 interface SubsPageState {
@@ -47,7 +54,7 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
   // Все производные флотов пересчитываются только при смене снимка данных.
   const derived = useMemo(() => {
     if (isLoading && Object.values(result).every((value) => value === undefined)) return null;
-    const { subs, capacity, codex, gemini, kimi, glm } = result;
+    const { subs, capacity, codex, gemini, kimi, glm, tripo3d, suno } = result;
     const list = subs?.subs ?? [];
     const dead = list.filter((item) => item.auth_state === "dead").length;
     const suspect = list.filter((item) => item.auth_state === "suspect").length;
@@ -103,8 +110,33 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
     const glmDeliveryDropped = Number(glm?.delivery?.dropped_events ?? 0);
     const glmDeliveryBad = glm?.delivery?.persistence_ok === false;
 
+    const tripo3dLoading = availability.tripo3d === "loading";
+    const tripo3dDown = availability.tripo3d === "error";
+    const tripo3dOff = Boolean(tripo3d && tripo3d.enabled === false);
+    const tripo3dProfiles = tripo3d?.profiles ?? [];
+    const tripo3dEmpty = availability.tripo3d === "ready" && !tripo3dOff && !tripo3dProfiles.length;
+    const tripo3dUnavailable =
+      !tripo3dDown && !tripo3dOff && tripo3dProfiles.length > 0 && Number(tripo3d?.fleet?.available_profiles ?? 0) === 0;
+    const tripo3dDeliveryPending = Number(tripo3d?.delivery?.pending_events ?? 0);
+    const tripo3dDeliveryDropped = Number(tripo3d?.delivery?.dropped_events ?? 0);
+    const tripo3dDeliveryBad = tripo3d?.delivery?.persistence_ok === false;
+    const tripo3dCalibrationStorageBad = tripo3d?.calibration_authority_available === false || tripo3dDeliveryBad;
+
+    const sunoLoading = availability.suno === "loading";
+    const sunoDown = availability.suno === "error";
+    const sunoOff = Boolean(suno && suno.enabled === false);
+    const sunoProfiles = suno?.profiles ?? [];
+    const sunoEmpty = availability.suno === "ready" && !sunoOff && !sunoProfiles.length;
+    const sunoUnavailable =
+      !sunoDown && !sunoOff && sunoProfiles.length > 0 && Number(suno?.fleet?.available_profiles ?? 0) === 0;
+    const sunoDeliveryPending = Number(suno?.delivery?.pending_events ?? 0);
+    const sunoDeliveryDropped = Number(suno?.delivery?.dropped_events ?? 0);
+    const sunoDeliveryBad = suno?.delivery?.persistence_ok === false;
+    const sunoCalibrationStorageBad = suno?.calibration_authority_available === false || sunoDeliveryBad;
+
     const fleetTotal = list.length + (gptOff ? 0 : homes.length) + (geminiOff ? 0 : geminiProfiles.length)
-      + (kimiOff ? 0 : kimiProfiles.length) + (glmOff ? 0 : glmProfiles.length);
+      + (kimiOff ? 0 : kimiProfiles.length) + (glmOff ? 0 : glmProfiles.length)
+      + (tripo3dOff ? 0 : tripo3dProfiles.length) + (sunoOff ? 0 : sunoProfiles.length);
     const fleetWarn = Boolean(
       dead || claudeCapacityDown || claudeCalibrationPending || claudeCalibrationDropped
         || claudeCalibrationStorageBad || gptDown || geminiDown || geminiEmpty
@@ -112,7 +144,11 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
         || geminiCalibrationDropped || geminiCalibrationStorageBad || kimiDown || kimiEmpty
         || kimiUnavailable || kimiDeliveryPending || kimiDeliveryDropped || kimiCalibrationStorageBad
         || glmDown || glmEmpty || glmUnavailable || glmDeliveryPending || glmDeliveryDropped
-        || glmDeliveryBad,
+        || glmDeliveryBad
+        || tripo3dDown || tripo3dEmpty || tripo3dUnavailable || tripo3dDeliveryPending
+        || tripo3dDeliveryDropped || tripo3dCalibrationStorageBad
+        || sunoDown || sunoEmpty || sunoUnavailable || sunoDeliveryPending
+        || sunoDeliveryDropped || sunoCalibrationStorageBad,
     );
 
     return {
@@ -166,6 +202,28 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
       glmDeliveryPending,
       glmDeliveryDropped,
       glmDeliveryBad,
+      tripo3d,
+      tripo3dLoading,
+      tripo3dDown,
+      tripo3dOff,
+      tripo3dProfiles,
+      tripo3dEmpty,
+      tripo3dUnavailable,
+      tripo3dDeliveryPending,
+      tripo3dDeliveryDropped,
+      tripo3dDeliveryBad,
+      tripo3dCalibrationStorageBad,
+      suno,
+      sunoLoading,
+      sunoDown,
+      sunoOff,
+      sunoProfiles,
+      sunoEmpty,
+      sunoUnavailable,
+      sunoDeliveryPending,
+      sunoDeliveryDropped,
+      sunoDeliveryBad,
+      sunoCalibrationStorageBad,
       fleetTotal,
       fleetWarn,
     };
@@ -198,11 +256,19 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
     glmDown: derived.glmDown,
     glmEmpty: derived.glmEmpty,
     glmUnavailable: derived.glmUnavailable,
+    tripo3dDown: derived.tripo3dDown,
+    tripo3dEmpty: derived.tripo3dEmpty,
+    tripo3dUnavailable: derived.tripo3dUnavailable,
+    sunoDown: derived.sunoDown,
+    sunoEmpty: derived.sunoEmpty,
+    sunoUnavailable: derived.sunoUnavailable,
     claudeCount: derived.list.length,
     gptSummary: derived.gptOff ? "выкл." : derived.homes.length,
     geminiSummary: derived.geminiOff ? "выкл." : derived.geminiProfiles.length,
     kimiSummary: derived.kimiOff ? "выкл." : derived.kimiProfiles.length,
     glmSummary: derived.glmOff ? "выкл." : derived.glmProfiles.length,
+    tripo3dSummary: derived.tripo3dOff ? "выкл." : derived.tripo3dProfiles.length,
+    sunoSummary: derived.sunoOff ? "выкл." : derived.sunoProfiles.length,
     updatedAt: formatDate(nowMs, true),
   });
 
@@ -210,7 +276,7 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
     <>
       <PageHead
         title="Подписки"
-        sub="остаток API-$, окна и экономика пяти пулов"
+        sub="остаток API-$, окна и экономика семи пулов"
         badge={
           <Pill kind={derived.fleetWarn ? "warn" : "ok"}>
             {count(derived.fleetTotal, "подписка", "подписки", "подписок")}
@@ -224,6 +290,8 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
         gemini={derived.geminiDown ? null : derived.gemini}
         kimi={derived.kimiDown ? null : derived.kimi}
         glm={derived.glmDown ? null : derived.glm}
+        tripo3d={derived.tripo3dDown ? null : derived.tripo3d}
+        suno={derived.sunoDown ? null : derived.suno}
         nowMs={nowMs}
       />
 
@@ -319,6 +387,42 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
             <GlmCapacityBoard response={derived.glm!} nowMs={nowMs} showSummary={false} />
           )}
         </section>
+
+        <section className="subscription-provider-group provider-group-tripo3d">
+          <header className="subscription-provider-head">
+            <div><span>06 · Tripo3D</span><h2>Аккаунты и баланс</h2></div>
+            <b>API-$ · баланс · prepaid</b>
+          </header>
+          {derived.tripo3dLoading ? (
+            <div className="tcard"><div className="empty">Данные Tripo3D загружаются</div></div>
+          ) : derived.tripo3dDown || derived.tripo3dOff ? (
+            <div className="tcard">
+              <div className="empty">
+                {derived.tripo3dDown ? "Tripo3D runtime не отвечает" : "Tripo3D-контур выключен"}
+              </div>
+            </div>
+          ) : (
+            <Tripo3dCapacityBoard response={derived.tripo3d!} nowMs={nowMs} showSummary={false} />
+          )}
+        </section>
+
+        <section className="subscription-provider-group provider-group-suno">
+          <header className="subscription-provider-head">
+            <div><span>07 · Suno</span><h2>Аккаунты и окна</h2></div>
+            <b>API-$ · кредиты · месяц</b>
+          </header>
+          {derived.sunoLoading ? (
+            <div className="tcard"><div className="empty">Данные Suno загружаются</div></div>
+          ) : derived.sunoDown || derived.sunoOff ? (
+            <div className="tcard">
+              <div className="empty">
+                {derived.sunoDown ? "Suno runtime не отвечает" : "Suno-контур выключен"}
+              </div>
+            </div>
+          ) : (
+            <SunoCapacityBoard response={derived.suno!} nowMs={nowMs} showSummary={false} />
+          )}
+        </section>
       </div>
 
       <footer>
@@ -336,6 +440,8 @@ export default function SubsPage() {
     gemini: "/gemini-subs",
     kimi: "/kimi-subs",
     glm: "/glm-subs",
+    tripo3d: "/tripo3d-subs",
+    suno: "/suno-subs",
   });
   return <SubscriptionsView state={state} />;
 }
