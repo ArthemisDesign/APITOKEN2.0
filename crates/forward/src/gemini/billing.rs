@@ -22,13 +22,7 @@ pub(crate) enum AdmissionError {
 /// Which pricing authority produced the admission hold; selects the settlement rounding
 /// contract. Release-v2 settles with the exact contract floor (matching its reserve); the
 /// legacy scalar keeps its immutable half-up arithmetic. Legacy strict Gemini is rejected at
-type GeminiReserveResult = (
-    u64,
-    i64,
-    i64,
-    Option<i64>,
-    Option<tariff_book::PinnedTariff>,
-);
+type GeminiReserveResult = (u64, i64, i64, i64, Option<tariff_book::PinnedTariff>);
 
 struct Reservation {
     billing: std::sync::Arc<crate::billing::AsyncBilling>,
@@ -36,7 +30,9 @@ struct Reservation {
     key: String,
     mult_bp: i64,
     hold: i64,
-    tariff_priced_ts: Option<i64>,
+    /// Admission-time instant used for both compiled and hot-override tariff resolution.
+    /// Settlement must not replace it with completion time across an effective-date boundary.
+    tariff_priced_ts: i64,
     /// The hot tariff override version admission priced the hold with; settlement replays exactly
     /// this version. `None` is the compiled constants, byte-identical to before.
     pinned_tariff: Option<tariff_book::PinnedTariff>,
@@ -226,14 +222,23 @@ impl GeminiAdmission {
     /// Settle customer money when present and return one exact immutable provider event. Admin
     /// admissions have no reservation but keep the same request identity and calibration vector.
     pub(crate) fn settle(
-        mut self,
+        self,
         model: &GeminiModel,
         usage: Option<&metering::GeminiUsage>,
         profile_id: &str,
     ) -> Option<registry::ProviderTurnCalibrationEvent> {
-        let now = pool::now();
+        self.settle_at(model, usage, profile_id, pool::now())
+    }
+
+    fn settle_at(
+        mut self,
+        model: &GeminiModel,
+        usage: Option<&metering::GeminiUsage>,
+        profile_id: &str,
+        completed_at: i64,
+    ) -> Option<registry::ProviderTurnCalibrationEvent> {
         if let Some(mut reservation) = self.reservation.take() {
-            let priced_ts = reservation.tariff_priced_ts.unwrap_or(now);
+            let priced_ts = reservation.tariff_priced_ts;
             // Hot tariff override: replay the exact version pinned at admission; a cross-family
             // serve reprices by the served model's family at the pinned priced timestamp; an empty
             // book is byte-identical to the compiled constants. A pinned version missing from the
@@ -269,15 +274,10 @@ impl GeminiAdmission {
                         ),
                     );
                     reservation.guard.disarm();
-                    return usage.filter(|usage| !usage.is_zero()).and_then(|usage| {
-                        gemini_calibration_event(
-                            &self.calibration_request_id,
-                            profile_id,
-                            model,
-                            usage,
-                            now,
-                        )
-                    });
+                    // The exact override rate is part of the admitted economic fact. If its
+                    // pinned version vanished, neither customer money nor provider-capacity
+                    // calibration may silently fall back to a compiled rate from another epoch.
+                    return None;
                 }
             };
             let (charge, event) = settled_charge_or_hold_with_prices(
@@ -314,7 +314,8 @@ impl GeminiAdmission {
                     profile_id,
                     model,
                     usage,
-                    now,
+                    priced_ts,
+                    completed_at,
                     prices,
                     override_schedule_id,
                 )
@@ -323,23 +324,28 @@ impl GeminiAdmission {
         // Admin/unmetered turns carry no pin; capacity evidence still prices the official
         // replacement cost from the book's current override, exactly like a cross-family reprice.
         usage.filter(|usage| !usage.is_zero()).and_then(|usage| {
-            let compiled = metering::gemini_prices_at(&model.id, now).unwrap_or(model.prices);
-            let (prices, schedule_id) = match metering::gemini_matched_tariff_at(&model.id, now) {
-                Some((family, compiled)) => match tariff_book::snapshot().resolve(family, now) {
-                    Some((pin, payload)) => match tariff_book::as_gemini(&payload) {
-                        Some(prices) => (prices, Some(pin.schedule_id)),
-                        None => (compiled, None),
-                    },
+            let compiled =
+                metering::gemini_prices_at(&model.id, completed_at).unwrap_or(model.prices);
+            let (prices, schedule_id) =
+                match metering::gemini_matched_tariff_at(&model.id, completed_at) {
+                    Some((family, compiled)) => {
+                        match tariff_book::snapshot().resolve(family, completed_at) {
+                            Some((pin, payload)) => match tariff_book::as_gemini(&payload) {
+                                Some(prices) => (prices, Some(pin.schedule_id)),
+                                None => (compiled, None),
+                            },
+                            None => (compiled, None),
+                        }
+                    }
                     None => (compiled, None),
-                },
-                None => (compiled, None),
-            };
+                };
             gemini_calibration_event_with_prices(
                 &self.calibration_request_id,
                 profile_id,
                 model,
                 usage,
-                now,
+                completed_at,
+                completed_at,
                 prices,
                 schedule_id,
             )
@@ -347,6 +353,7 @@ impl GeminiAdmission {
     }
 }
 
+#[cfg(test)]
 fn gemini_calibration_event(
     request_id: &str,
     profile_id: &str,
@@ -355,7 +362,9 @@ fn gemini_calibration_event(
     now: i64,
 ) -> Option<registry::ProviderTurnCalibrationEvent> {
     let prices = metering::gemini_prices_at(&model.id, now).unwrap_or(model.prices);
-    gemini_calibration_event_with_prices(request_id, profile_id, model, usage, now, prices, None)
+    gemini_calibration_event_with_prices(
+        request_id, profile_id, model, usage, now, now, prices, None,
+    )
 }
 
 /// The calibration event under one explicit rate card and tariff identity: the hot override
@@ -367,7 +376,8 @@ fn gemini_calibration_event_with_prices(
     profile_id: &str,
     model: &GeminiModel,
     usage: &metering::GeminiUsage,
-    now: i64,
+    priced_ts: i64,
+    completed_at: i64,
     prices: metering::GeminiPrices,
     override_schedule_id: Option<String>,
 ) -> Option<registry::ProviderTurnCalibrationEvent> {
@@ -436,8 +446,8 @@ fn gemini_calibration_event_with_prices(
         inference_geo: "global".to_owned(),
         tariff_schedule_id: override_schedule_id
             .unwrap_or_else(|| metering::gemini::TARIFF_SCHEDULE_ID.to_owned()),
-        priced_ts: now,
-        completed_at: now,
+        priced_ts,
+        completed_at,
         input_tokens: i64::try_from(usage.input_tokens).ok()?,
         audio_input_tokens: i64::try_from(usage.audio_input_tokens).ok()?,
         cache_read_tokens: i64::try_from(
@@ -727,16 +737,51 @@ async fn reserve_gemini_legacy(
     request_id: &str,
     execution: &registry::ExecutionAttempt,
 ) -> Result<GeminiReserveResult, AdmissionError> {
-    let now = pool::now();
+    reserve_gemini_legacy_at(
+        billing,
+        account_id,
+        key,
+        model,
+        estimated_input_tokens,
+        requested_output_tokens,
+        image_output_tokens,
+        grounding_enabled,
+        allow_output_cap,
+        mult_bp,
+        available_nano,
+        request_id,
+        execution,
+        pool::now(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn reserve_gemini_legacy_at(
+    billing: &crate::billing::AsyncBilling,
+    account_id: &str,
+    key: &str,
+    model: &GeminiModel,
+    estimated_input_tokens: u64,
+    requested_output_tokens: u64,
+    image_output_tokens: u64,
+    grounding_enabled: bool,
+    allow_output_cap: bool,
+    mult_bp: i64,
+    available_nano: i64,
+    request_id: &str,
+    execution: &registry::ExecutionAttempt,
+    priced_ts: i64,
+) -> Result<GeminiReserveResult, AdmissionError> {
     // Hot tariff override: the matched catalog family resolves against the process-wide book; an
     // override replaces only the base vector (the conservative maximum/long-context selection
     // stays code-applied on top) and pins `<family>/v<version>` for settlement.
-    let compiled = metering::gemini_prices_at(&model.id, now).unwrap_or(model.prices);
-    let resolved = match metering::gemini_matched_tariff_at(&model.id, now) {
+    let compiled = metering::gemini_prices_at(&model.id, priced_ts).unwrap_or(model.prices);
+    let resolved = match metering::gemini_matched_tariff_at(&model.id, priced_ts) {
         Some((family, _)) => tariff_book::reserve_base(
             &tariff_book::snapshot(),
             family,
-            now,
+            priced_ts,
             compiled,
             tariff_book::as_gemini,
         ),
@@ -769,7 +814,13 @@ async fn reserve_gemini_legacy(
         )
         .await
     {
-        Ok(Some(_)) => Ok((effective_output_tokens, hold, mult_bp, None, resolved.pin)),
+        Ok(Some(_)) => Ok((
+            effective_output_tokens,
+            hold,
+            mult_bp,
+            priced_ts,
+            resolved.pin,
+        )),
         Ok(None) => Err(AdmissionError::LowBalance),
         Err(error) => {
             elog::error(
@@ -980,6 +1031,20 @@ mod tests {
         let spec = metering::gemini_catalog_at(0)
             .into_iter()
             .find(|spec| spec.id == "gemini-3.1-flash-image")
+            .unwrap();
+        GeminiModel {
+            id: spec.id.to_string(),
+            display_name: spec.display_name.to_string(),
+            input_token_limit: spec.input_token_limit,
+            output_token_limit: spec.output_token_limit,
+            prices: spec.prices,
+        }
+    }
+
+    fn gemini_36_model_at(at: i64) -> GeminiModel {
+        let spec = metering::gemini_catalog_at(at)
+            .into_iter()
+            .find(|spec| spec.id == "gemini-3.6-flash")
             .unwrap();
         GeminiModel {
             id: spec.id.to_string(),
@@ -1244,6 +1309,99 @@ mod tests {
         assert_eq!(event.real_nano as i128, expected);
     }
 
+    #[tokio::test]
+    async fn compiled_tariff_stays_on_the_admission_epoch_across_the_cutoff() {
+        const CUTOFF: i64 = 1_798_761_600;
+        const ACCOUNT: &str = "gemini-epoch-boundary";
+        const KEY: &str = "gemini-epoch-boundary-key";
+        const REQUEST_ID: &str = "gemini-epoch-boundary-request";
+        const TOPUP: i64 = 20_000_000;
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-gemini-epoch-boundary-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let billing = Arc::new(
+            crate::billing::AsyncBilling::start(path.to_string_lossy().into_owned(), 1).unwrap(),
+        );
+        billing.create_account(ACCOUNT, None, 10_000).await.unwrap();
+        billing.topup(ACCOUNT, TOPUP, Some("seed")).await.unwrap();
+        billing
+            .issue_key(KEY, ACCOUNT, None, None, None)
+            .await
+            .unwrap();
+        let model = gemini_36_model_at(CUTOFF - 1);
+        let usage = metering::GeminiUsage {
+            input_tokens: 1_000,
+            output_tokens: 100,
+            ..metering::GeminiUsage::default()
+        };
+        let priced_ts = CUTOFF - 1;
+        let completion_ts = CUTOFF;
+        let (_, hold, mult_bp, reserved_priced_ts, pinned_tariff) = reserve_gemini_legacy_at(
+            &billing,
+            ACCOUNT,
+            KEY,
+            &model,
+            usage.input_tokens,
+            usage.output_tokens,
+            0,
+            false,
+            false,
+            10_000,
+            TOPUP,
+            REQUEST_ID,
+            &registry::ExecutionAttempt::direct(),
+            priced_ts,
+        )
+        .await
+        .unwrap();
+        let promo_hold = 1_000 * 750 + 100 * 3_750;
+        assert_eq!(hold, promo_hold);
+        assert_eq!(mult_bp, 10_000);
+        assert_eq!(reserved_priced_ts, priced_ts);
+        assert!(pinned_tariff.is_none());
+        let admission = GeminiAdmission {
+            reservation: Some(Reservation {
+                billing: Arc::clone(&billing),
+                account_id: ACCOUNT.to_owned(),
+                key: KEY.to_owned(),
+                mult_bp,
+                hold,
+                tariff_priced_ts: reserved_priced_ts,
+                pinned_tariff,
+                request_id: REQUEST_ID.to_owned(),
+                guard: HoldGuard::new(
+                    Some(Arc::clone(&billing)),
+                    ACCOUNT.to_owned(),
+                    KEY.to_owned(),
+                    hold,
+                    REQUEST_ID.to_owned(),
+                ),
+            }),
+            calibration_request_id: REQUEST_ID.to_owned(),
+            exact_calibration_target: false,
+        };
+        let calibration_event = admission
+            .settle_at(&model, Some(&usage), "profile-1", completion_ts)
+            .unwrap();
+        billing.flush().await.unwrap();
+        let account = billing.account(ACCOUNT).await.unwrap().unwrap();
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+
+        let promo_cost = promo_hold;
+        assert_eq!(account.spent_nano, promo_cost);
+        assert_eq!(account.reserved_nano, 0);
+        assert_eq!(calibration_event.priced_ts, priced_ts);
+        assert_eq!(calibration_event.completed_at, completion_ts);
+        assert_eq!(calibration_event.api_total_nanousd, promo_cost);
+        assert_ne!(promo_cost, 1_000 * 1_500 + 100 * 7_500);
+    }
+
     /// Settlement replays the exact override version pinned at admission, never the compiled
     /// card.
     #[tokio::test]
@@ -1310,7 +1468,7 @@ mod tests {
                 key: KEY.to_owned(),
                 mult_bp: 10_000,
                 hold: HOLD,
-                tariff_priced_ts: None,
+                tariff_priced_ts: 0,
                 pinned_tariff: Some(tariff_book::PinnedTariff {
                     family: "google/gemini/gemini-2.5-flash".to_owned(),
                     version: 2,
@@ -1342,6 +1500,84 @@ mod tests {
         let expected = 1_000 * (compiled.input * 2) + 100 * (compiled.output * 2);
         assert_eq!(account.spent_nano, i64::try_from(expected).unwrap());
         assert_eq!(account.reserved_nano, 0);
+    }
+
+    /// A missing append-only override version is an integrity error. In particular, it must not
+    /// create a compiled-price calibration event after leaving customer money reserved for the
+    /// durable reconciler.
+    #[tokio::test]
+    async fn missing_pinned_override_publishes_neither_charge_nor_calibration() {
+        const ACCOUNT: &str = "gemini-missing-pinned-override";
+        const KEY: &str = "gemini-missing-pinned-override-key";
+        const REQUEST_ID: &str = "gemini-missing-pinned-override-request";
+        const TOPUP: i64 = 1_000_000_000;
+        const HOLD: i64 = 400_000_000;
+        let _lock = tariff_book::GLOBAL_BOOK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        tariff_book::clear_global_book_for_test();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-gemini-missing-pinned-override-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let billing = Arc::new(
+            crate::billing::AsyncBilling::start(path.to_string_lossy().into_owned(), 1).unwrap(),
+        );
+        billing.create_account(ACCOUNT, None, 10_000).await.unwrap();
+        billing.topup(ACCOUNT, TOPUP, Some("seed")).await.unwrap();
+        billing
+            .issue_key(KEY, ACCOUNT, None, None, None)
+            .await
+            .unwrap();
+        billing
+            .reserve_request(REQUEST_ID, ACCOUNT, KEY, HOLD)
+            .await
+            .unwrap();
+
+        let admission = GeminiAdmission {
+            reservation: Some(Reservation {
+                billing: Arc::clone(&billing),
+                account_id: ACCOUNT.to_owned(),
+                key: KEY.to_owned(),
+                mult_bp: 10_000,
+                hold: HOLD,
+                tariff_priced_ts: 0,
+                pinned_tariff: Some(tariff_book::PinnedTariff {
+                    family: "google/gemini/gemini-2.5-flash".to_owned(),
+                    version: 7,
+                    schedule_id: "google/gemini/gemini-2.5-flash/v7".to_owned(),
+                }),
+                request_id: REQUEST_ID.to_owned(),
+                guard: HoldGuard::new(
+                    Some(Arc::clone(&billing)),
+                    ACCOUNT.to_owned(),
+                    KEY.to_owned(),
+                    HOLD,
+                    REQUEST_ID.to_owned(),
+                ),
+            }),
+            calibration_request_id: REQUEST_ID.to_owned(),
+            exact_calibration_target: false,
+        };
+        let usage = metering::GeminiUsage {
+            input_tokens: 1_000,
+            output_tokens: 100,
+            ..metering::GeminiUsage::default()
+        };
+        let event = admission.settle_at(&model(), Some(&usage), "profile-1", 1);
+        billing.flush().await.unwrap();
+        let account = billing.account(ACCOUNT).await.unwrap().unwrap();
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+        tariff_book::clear_global_book_for_test();
+
+        assert!(event.is_none());
+        assert_eq!(account.spent_nano, 0);
+        assert_eq!(account.reserved_nano, HOLD);
     }
 
     #[test]
