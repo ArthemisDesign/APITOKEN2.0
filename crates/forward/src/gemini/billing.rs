@@ -58,6 +58,12 @@ pub(crate) struct PendingGeminiAdmission {
 }
 
 impl PendingGeminiAdmission {
+    /// Request-scoped diagnostic identity created before routing or reserve. It contains no
+    /// customer/profile/provider identity and stays stable across every pre-byte rotation attempt.
+    pub(crate) fn request_id(&self) -> &str {
+        &self.calibration_request_id
+    }
+
     pub(crate) fn affinity_scope(&self) -> Option<&str> {
         self.authz.affinity_scope()
     }

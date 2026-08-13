@@ -2713,6 +2713,41 @@ async fn antigravity_health_fetches_model_quotas_and_cools_explicit_zero() {
 }
 
 #[tokio::test]
+async fn probe_429_applies_existing_global_cooling_before_diagnostic_drain() {
+    let server = start_mock(MockState::with_replies([(
+        PROFILE_A_KEY,
+        vec![MockReply::Json {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            body: json!({
+                "error": {
+                    "code": 429,
+                    "status": "RESOURCE_EXHAUSTED",
+                    "message": "private backend temporarily unavailable"
+                }
+            }),
+            retry_after: Some("2"),
+        }],
+    )]))
+    .await;
+    let fixture =
+        gateway_fixture_with_oauth_kind(&server.upstream, &[None], 1, None, OAuthKind::Antigravity);
+    fixture.gateway.probe_health().await;
+
+    let status = fixture.gateway.operational_status().await;
+    assert!(status.profiles[0].cooling_until > pool::now());
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if fixture.gateway.active_background_tasks() == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("detached diagnostic drain must finish");
+}
+
+#[tokio::test]
 async fn affinity_keeps_a_growing_conversation_on_the_same_subscription() {
     let success = MockReply::json(
         StatusCode::OK,

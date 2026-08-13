@@ -238,7 +238,7 @@ impl ActiveTaskTracker {
     }
 
     #[cfg(test)]
-    fn active(&self) -> usize {
+    pub(crate) fn active(&self) -> usize {
         self.state.load(Ordering::Acquire) & TASK_TRACKER_COUNT
     }
 

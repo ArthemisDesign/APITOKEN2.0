@@ -749,10 +749,37 @@ rollback procedure in `docs/engine/GEMINI_PROVIDER.md` before replacing the subs
 
 ## GeminiUpstreamRateLimited
 
-Use the per-profile cooling gauges to identify the constrained opaque profile, then wait for the
-advertised reset or add a distinct authorized paid subject. Do not shorten cooling or duplicate one
-account. A sustained increase without exhausted profiles can indicate disproportionate affinity or
-load; compare profile in-flight gauges before changing capacity.
+Start with `gemini-rate-limit` journal lines and group generation attempts by `request_id`:
+
+- one profile plus `google.rpc.QuotaFailure`, a quota-specific `error_reason` or a distinct
+  `quota_subject_hash` is evidence for a profile/model quota wall;
+- the same `error_fingerprint`/machine fields on several `profile` values under one request,
+  followed by `gemini 429 rotation exhausted`, proves that one customer request fanned out across
+  the fleet;
+- repeated matching hashes across unrelated request ids/profiles, especially for
+  `gemini-3.1-flash-image`, while official catalogue quota remains positive, supports a shared
+  Google model/backend or hidden global-limit hypothesis rather than independent profile quotas;
+- `catalog_state=fresh`, `catalog_zero_buckets=0` and positive `catalog_min_remaining_bp` captures
+  that contradiction at the instant of the 429; stale/missing catalogue evidence cannot prove it;
+- `retry_hint_source=none` means Google supplied neither a valid `Retry-After` nor `RetryInfo`; compare
+  `applied_cool_secs` with the event duration to see whether fallback cooling outlived recovery;
+- `phase=load_code_assist` is a free control-plane/probe 429, not a paid generation rejection;
+  `stream_midflight` happened after public delivery and therefore did not rotate.
+- `diagnostic_body=missing|malformed|oversized` means the machine fields could not be extracted;
+  never treat their `none` values as a provider statement.
+
+Join the summary's `rate_limit_attempts`, `routing_attempts` and `distinct_profiles` with per-model
+availability and cooling gauges, then compare the protected `/gemini-subs` quota snapshot. The log
+deliberately omits Google message text, metadata values, project/email/token/proxy and customer
+content; do not enable raw-body logging to fill those gaps. `message_class` is a closed classifier (`quota`, `rate_limit`,
+`backend_unavailable`, `capacity`, `resource_exhausted`, `other`), not the source prose.
+Fingerprints are process-keyed correlation keys, comparable only within one process lifetime and
+never proof of root cause: record the bounded machine fields, quota snapshot and timestamps before
+deciding between quota, hidden rate wall and shared backend failure. If all machine fields/classes
+are unknown, the evidence proves that Google did not supply a safely attributable reason; it cannot
+manufacture one. Do not shorten cooling or duplicate an account while collecting evidence. A
+sustained increase without exhausted profiles can also indicate disproportionate affinity or load;
+compare profile in-flight gauges before changing capacity.
 
 ## KimiNoLiveProfiles
 

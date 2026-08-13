@@ -796,7 +796,12 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    First 401 → one refresh+retry of the same profile; a repeated 401/403 → soft auth backoff per 1b,
    never de-authentication. 429 →
    model-specific profile cooling by Retry-After/RetryInfo/quota reset and rotation without
-   transport budget; a health probe never erases generation cooling. Antigravity
+   transport budget; a health probe never erases generation cooling. Every generation/probe 429
+   emits only bounded machine evidence under `gemini-rate-limit`: one request id joins pre-byte
+   rotation attempts and a terminal summary, while process-keyed fingerprints correlate an
+   identical provider shape within one process lifetime without logging Google prose, metadata
+   values, project/email, token, proxy or customer content. Diagnostics never alter classification,
+   retry or cooling. Antigravity
    `fetchAvailableModels` publishes a sanitized model catalogue: explicit zero blocks a model until
    reset, a stale/missing bucket fails open. Legacy profiles continue `retrieveUserQuota`.
    Network/token refresh/408/409/425 → short global-profile cooling. Generation 5xx/malformed

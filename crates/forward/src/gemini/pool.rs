@@ -2,6 +2,7 @@
 
 use super::calibration::{self, WindowCalibration, FRACTION_SCALE};
 use super::config::{GeminiConfig, GeminiProfileSpec, GeminiProfilesFile};
+use super::rate_limit::RateLimitDiagnostic;
 use super::transport::{attest_node_binary, ProfileTransport, TransportRequest, TransportResponse};
 use crate::billing::AsyncBilling;
 use crate::state::{ActiveTaskGuard, ActiveTaskTracker};
@@ -208,6 +209,37 @@ pub(crate) struct GeminiProfile {
     auxiliary_idle: Duration,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GeminiRateLimitQuotaEvidence {
+    snapshot_state: &'static str,
+    age_secs: i64,
+    matching_buckets: usize,
+    zero_buckets: usize,
+    positive_buckets: usize,
+    unknown_buckets: usize,
+    min_remaining_bp: Option<i64>,
+    latest_reset_in_secs: Option<i64>,
+}
+
+impl std::fmt::Display for GeminiRateLimitQuotaEvidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "catalog_state={} catalog_age_secs={} catalog_matching_buckets={} catalog_zero_buckets={} catalog_positive_buckets={} catalog_unknown_buckets={} catalog_min_remaining_bp={} catalog_latest_reset_in_secs={}",
+            self.snapshot_state,
+            self.age_secs,
+            self.matching_buckets,
+            self.zero_buckets,
+            self.positive_buckets,
+            self.unknown_buckets,
+            self.min_remaining_bp
+                .map_or_else(|| "none".to_string(), |value| value.to_string()),
+            self.latest_reset_in_secs
+                .map_or_else(|| "none".to_string(), |value| value.to_string()),
+        )
+    }
+}
+
 #[derive(Clone, Default)]
 struct GeminiModelHealthState {
     cooling_until: i64,
@@ -235,6 +267,27 @@ struct GeminiSummaryBucket {
 struct GeminiQuotaSummarySnapshot {
     updated_at: i64,
     buckets: Vec<GeminiSummaryBucket>,
+}
+
+fn emit_probe_rate_limit_diagnostic(
+    profile_id: &str,
+    oauth_kind: OAuthKind,
+    applied_cool_secs: i64,
+    headers: &axum::http::HeaderMap,
+    body: &[u8],
+) {
+    let oauth_kind = match oauth_kind {
+        OAuthKind::Antigravity => "antigravity",
+        OAuthKind::LegacyGeminiCli => "legacy_gemini_cli",
+    };
+    let diagnostic = RateLimitDiagnostic::from_body(Some(headers), body);
+    elog::warn(
+        "gemini-rate-limit",
+        format!(
+            "gemini probe 429: operation=health_probe phase=load_code_assist profile={profile_id} oauth_kind={oauth_kind} {}",
+            diagnostic.fields(applied_cool_secs),
+        ),
+    );
 }
 
 impl GeminiProfile {
@@ -293,6 +346,78 @@ impl GeminiProfile {
 
     pub(crate) fn oauth_kind(&self) -> OAuthKind {
         self.oauth_kind
+    }
+
+    /// Snapshot the already-sanitized model catalogue at the exact time a generation 429 arrives.
+    /// This is read-only evidence: it cannot change quota classification, selection or cooling.
+    pub(crate) fn rate_limit_quota_evidence(
+        &self,
+        model_id: &str,
+        cfg: &GeminiConfig,
+        now: i64,
+    ) -> GeminiRateLimitQuotaEvidence {
+        let quota = self
+            .quota
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stale_secs = cfg
+            .health_probe_interval_secs
+            .saturating_mul(2)
+            .clamp(60, 3_600) as i64;
+        let snapshot_state = if quota.updated_at <= 0 {
+            "missing"
+        } else if quota.updated_at.saturating_add(stale_secs) <= now {
+            "stale"
+        } else {
+            "fresh"
+        };
+        let matching = quota
+            .buckets
+            .iter()
+            .filter(|bucket| {
+                cfg.quota_model_id_matches_wire(self.oauth_kind, model_id, &bucket.model_id)
+            })
+            .collect::<Vec<_>>();
+        let mut zero_buckets = 0usize;
+        let mut positive_buckets = 0usize;
+        let mut unknown_buckets = 0usize;
+        for bucket in &matching {
+            if bucket.remaining_amount == Some(0) || bucket.remaining_fraction == Some(0.0) {
+                zero_buckets = zero_buckets.saturating_add(1);
+            } else if bucket.remaining_amount.is_some_and(|value| value > 0)
+                || bucket.remaining_fraction.is_some_and(|value| value > 0.0)
+            {
+                positive_buckets = positive_buckets.saturating_add(1);
+            } else {
+                unknown_buckets = unknown_buckets.saturating_add(1);
+            }
+        }
+        let min_remaining_bp = matching
+            .iter()
+            .filter_map(|bucket| bucket.remaining_fraction)
+            .filter(|fraction| fraction.is_finite())
+            .map(|fraction| (fraction.clamp(0.0, 1.0) * 10_000.0).floor() as i64)
+            .min();
+        let latest_reset_in_secs = matching
+            .iter()
+            .filter_map(|bucket| bucket.reset_time.as_deref())
+            .filter_map(parse_rfc3339_seconds)
+            .map(|reset| reset.saturating_sub(now).max(0))
+            .max();
+        GeminiRateLimitQuotaEvidence {
+            snapshot_state,
+            age_secs: if quota.updated_at > 0 {
+                now.saturating_sub(quota.updated_at).max(0)
+            } else {
+                -1
+            },
+            matching_buckets: matching.len(),
+            zero_buckets,
+            positive_buckets,
+            unknown_buckets,
+            min_remaining_bp,
+            latest_reset_in_secs,
+        }
     }
 
     fn matches(&self, loaded: &LoadedProfile) -> bool {
@@ -1061,7 +1186,8 @@ impl GeminiProfile {
                     return ProbeResult::Healthy;
                 }
                 Ok(response) if response.status().as_u16() == 429 => {
-                    return ProbeResult::RateLimited
+                    let headers = response.headers().clone();
+                    return ProbeResult::RateLimited { headers, response };
                 }
                 Ok(response) if response.status().as_u16() == 401 && attempt == 0 => {
                     token = match self.access_token(true).await {
@@ -1566,10 +1692,12 @@ fn classify_refresh_failure(status: u16, google_error: Option<&str>) -> TokenErr
     }
 }
 
-#[derive(Clone, Copy)]
 enum ProbeResult {
     Healthy,
-    RateLimited,
+    RateLimited {
+        headers: axum::http::HeaderMap,
+        response: TransportResponse,
+    },
     /// Google отозвал grant — профиль действительно нельзя использовать.
     Invalid,
     /// Запрос отклонён окружением (401/403): grant цел, путь временно недоступен.
@@ -2391,6 +2519,11 @@ impl GeminiGateway {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn active_background_tasks(&self) -> usize {
+        self.background_tasks.active()
+    }
+
     pub async fn refresh_profiles(&self) -> bool {
         if self.shutting_down.load(Ordering::Acquire) {
             return false;
@@ -2434,11 +2567,30 @@ impl GeminiGateway {
                     profile.mark_authenticated();
                     healthy += 1;
                 }
-                ProbeResult::RateLimited => {
+                ProbeResult::RateLimited { headers, response } => {
                     // Google itself reported exhaustion: the hard axis, which may deny a request.
                     profile.authenticated.store(true, Ordering::Release);
                     profile.cool_quota_until(now + self.cfg.default_rate_limit_cool_secs);
                     healthy += 1;
+                    let profile_id = profile.id().to_string();
+                    let oauth_kind = profile.oauth_kind();
+                    let applied_cool_secs = self.cfg.default_rate_limit_cool_secs;
+                    let background = self.background_tasks.track();
+                    // Cooling above is synchronous and unchanged. Diagnostic body collection runs
+                    // afterwards under the normal shutdown barrier and auxiliary transport timeout.
+                    if let Some(background) = background {
+                        tokio::spawn(async move {
+                            let _background = background;
+                            let body = response.bytes_limited(64 * 1024).await.ok();
+                            emit_probe_rate_limit_diagnostic(
+                                &profile_id,
+                                oauth_kind,
+                                applied_cool_secs,
+                                &headers,
+                                body.as_deref().unwrap_or_default(),
+                            );
+                        });
+                    }
                 }
                 ProbeResult::Invalid => {
                     profile.mark_auth_failed(now + self.cfg.auth_quarantine_secs);
@@ -3769,6 +3921,39 @@ mod tests {
         let missing = dir.join("profiles.json");
         let gateway = GeminiGateway::new(config(&missing, ring)).unwrap();
         assert!(gateway.profiles_snapshot().is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn generation_rate_limit_evidence_captures_positive_catalogue_without_mutation() {
+        let (dir, ring) = fixture();
+        let credential = write_antigravity_credential(&dir, &ring, "profile_a", "subject-a");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &credential)]);
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        let profile = gateway.profiles_snapshot().pop().unwrap();
+        let now = pool::now();
+        *profile
+            .quota
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = GeminiQuotaSnapshot {
+            updated_at: now - 3,
+            buckets: vec![GeminiQuotaBucketStatus {
+                model_id: "gemini-integration-model".to_string(),
+                remaining_amount: None,
+                remaining_fraction: Some(0.9687),
+                reset_time: None,
+                token_type: None,
+            }],
+        };
+        let before = profile.quota.read().unwrap().updated_at;
+        let evidence =
+            profile.rate_limit_quota_evidence("gemini-integration-model", gateway.config(), now);
+        assert_eq!(
+            evidence.to_string(),
+            "catalog_state=fresh catalog_age_secs=3 catalog_matching_buckets=1 catalog_zero_buckets=0 catalog_positive_buckets=1 catalog_unknown_buckets=0 catalog_min_remaining_bp=9687 catalog_latest_reset_in_secs=none"
+        );
+        assert_eq!(profile.quota.read().unwrap().updated_at, before);
         let _ = fs::remove_dir_all(dir);
     }
 }

@@ -3,6 +3,7 @@
 use super::billing::{begin_admission, AdmissionError, GeminiAdmission};
 use super::config::GeminiModel;
 use super::pool::{GeminiGateway, GeminiLease, GeminiProfile, TokenError};
+use super::rate_limit::{self, RateLimitDiagnostic};
 use super::transport::{TransportError, TransportResponse};
 use super::REPLAYED_FUNCTION_CALL_THOUGHT_SIGNATURE;
 use crate::metrics::Metrics;
@@ -265,6 +266,18 @@ enum Operation {
     Generate,
     StreamGenerate,
     CountTokens,
+}
+
+impl Operation {
+    fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::Models => "list_models",
+            Self::Model => "get_model",
+            Self::Generate => "generate",
+            Self::StreamGenerate => "stream_generate",
+            Self::CountTokens => "count_tokens",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -702,41 +715,58 @@ fn hex_value(byte: u8) -> Option<u8> {
 }
 
 fn retry_after(headers: &HeaderMap, body: &[u8], default_secs: i64) -> i64 {
-    if let Some(seconds) = headers
-        .get("retry-after")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<i64>().ok())
-    {
-        return seconds.clamp(1, 86_400);
+    if let Some(seconds) = rate_limit::retry_after_header_delay(Some(headers)) {
+        return seconds;
     }
     if let Ok(value) = serde_json::from_slice::<Value>(body) {
-        if let Some(delay) = retry_info_delay(&value) {
+        if let Some(delay) = rate_limit::retry_info_delay(&value) {
             return delay;
         }
     }
     default_secs.clamp(1, 86_400)
 }
 
-fn retry_info_delay(value: &Value) -> Option<i64> {
-    let delay = value
-        .pointer("/error/details")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .find(|detail| {
-            detail
-                .get("@type")
-                .and_then(Value::as_str)
-                .is_some_and(|kind| kind.ends_with("google.rpc.RetryInfo"))
-        })?
-        .get("retryDelay")?
-        .as_str()?
-        .strip_suffix('s')?
-        .parse::<f64>()
-        .ok()?;
-    delay
-        .is_finite()
-        .then(|| (delay.ceil() as i64).clamp(1, 86_400))
+fn log_rate_limit_attempt(
+    request_id: &str,
+    operation: &'static str,
+    phase: &'static str,
+    routing_attempt: usize,
+    public_model_id: &str,
+    wire_model_id: &str,
+    profile_id: &str,
+    oauth_kind: OAuthKind,
+    diagnostic: &RateLimitDiagnostic,
+    applied_cool_secs: i64,
+    quota_evidence: &super::pool::GeminiRateLimitQuotaEvidence,
+) {
+    let oauth_kind = match oauth_kind {
+        OAuthKind::Antigravity => "antigravity",
+        OAuthKind::LegacyGeminiCli => "legacy_gemini_cli",
+    };
+    elog::warn(
+        "gemini-rate-limit",
+        format!(
+            "gemini upstream 429: request_id={request_id} operation={operation} phase={phase} routing_attempt={routing_attempt} public_model={public_model_id} wire_model={wire_model_id} profile={profile_id} oauth_kind={oauth_kind} {} {quota_evidence}",
+            diagnostic.fields(applied_cool_secs),
+        ),
+    );
+}
+
+fn log_rate_limit_exhausted(
+    request_id: &str,
+    public_model_id: &str,
+    wire_model_id: &str,
+    rate_limit_attempts: usize,
+    routing_attempts: usize,
+    distinct_profiles: usize,
+    retry_after_secs: u64,
+) {
+    elog::warn(
+        "gemini-rate-limit",
+        format!(
+            "gemini 429 rotation exhausted: request_id={request_id} public_model={public_model_id} wire_model={wire_model_id} rate_limit_attempts={rate_limit_attempts} routing_attempts={routing_attempts} distinct_profiles={distinct_profiles} retry_after_secs={retry_after_secs}"
+        ),
+    );
 }
 
 fn generation_controls(
@@ -1943,6 +1973,7 @@ struct SseTranslator {
     usage: metering::GeminiUsage,
     provider_error: Option<u16>,
     provider_retry_after: Option<i64>,
+    provider_rate_limit_diagnostic: Option<RateLimitDiagnostic>,
     response_id: String,
     public_model: String,
     framing: StreamFraming,
@@ -1994,6 +2025,7 @@ impl SseTranslator {
             usage: metering::GeminiUsage::default(),
             provider_error: None,
             provider_retry_after: None,
+            provider_rate_limit_diagnostic: None,
             response_id: fresh_response_id(),
             public_model: public_model.to_string(),
             framing,
@@ -2109,11 +2141,16 @@ impl SseTranslator {
             // than a clean truncation that looks like success. Genuinely private credit/accounting
             // events carry no `error` and have no public representation, so they stay consumed.
             if let Some(error) = native_stream_error_value(&wrapper) {
-                self.provider_retry_after = retry_info_delay(&wrapper);
+                self.provider_retry_after = rate_limit::retry_info_delay(&wrapper);
                 self.provider_error = error
                     .pointer("/error/code")
                     .and_then(Value::as_u64)
                     .and_then(|code| u16::try_from(code).ok());
+                if self.provider_error == Some(429) {
+                    self.provider_rate_limit_diagnostic = Some(
+                        RateLimitDiagnostic::from_bounded_value(None, Some(&wrapper), data.len()),
+                    );
+                }
                 return Ok(Some(self.frame(&error)?));
             }
             return Ok(None);
@@ -2268,6 +2305,8 @@ async fn stream_response(
     admission: GeminiAdmission,
     model: GeminiModel,
     wire_model_id: String,
+    rate_limit_request_id: String,
+    attempt: usize,
     status: StatusCode,
     headers: HeaderMap,
     mut translator: SseTranslator,
@@ -2425,13 +2464,31 @@ async fn stream_response(
                 }
                 Some(429) => {
                     Metrics::inc(&metrics.upstream_429);
-                    profile.cool_model_until(
+                    let delay = translator
+                        .provider_retry_after
+                        .unwrap_or(gateway.config().default_rate_limit_cool_secs);
+                    let diagnostic = translator
+                        .provider_rate_limit_diagnostic
+                        .clone()
+                        .unwrap_or_else(|| RateLimitDiagnostic::from_value(None, None));
+                    log_rate_limit_attempt(
+                        &rate_limit_request_id,
+                        "stream_generate",
+                        "stream_midflight",
+                        attempt,
+                        &model.id,
                         &wire_model_id,
-                        pool::now()
-                            + translator
-                                .provider_retry_after
-                                .unwrap_or(gateway.config().default_rate_limit_cool_secs),
+                        profile.id(),
+                        profile.oauth_kind(),
+                        &diagnostic,
+                        delay,
+                        &profile.rate_limit_quota_evidence(
+                            &wire_model_id,
+                            gateway.config(),
+                            pool::now(),
+                        ),
                     );
+                    profile.cool_model_until(&wire_model_id, pool::now() + delay);
                 }
                 Some(408 | 409 | 425) => {
                     Metrics::inc(&metrics.upstream_5xx);
@@ -2657,6 +2714,7 @@ async fn api_inner(
         let _admission = pending.without_reserve();
         return Ok((StatusCode::OK, axum::Json(model_value(&model))).into_response());
     }
+    let rate_limit_request_id = pending.request_id().to_string();
 
     // Only the upstream-bound operations carry an alt query; validate it here rather than for the
     // model-metadata routes, which do not reach Code Assist. `framing` decides the downstream wire
@@ -2760,8 +2818,11 @@ async fn api_inner(
         Operation::Models | Operation::Model => unreachable!(),
     };
     let mut excluded = HashSet::new();
+    let mut attempted_profiles = HashSet::new();
+    let mut routing_attempts = 0usize;
     let mut retry_failures = 0usize;
     let mut saw_quota = false;
+    let mut rate_limit_attempts = 0usize;
     let mut saw_auth = false;
     // A 403 is a verdict about the *request*, not the credential, and is tracked apart from 401.
     let mut saw_permission_denied = false;
@@ -2854,6 +2915,15 @@ async fn api_inner(
             return if !gateway.has_authenticated_profiles() {
                 Err(ApiError::unavailable("gemini_profiles_unauthenticated"))
             } else if saw_quota {
+                log_rate_limit_exhausted(
+                    &rate_limit_request_id,
+                    &model.id,
+                    &wire_model_id,
+                    rate_limit_attempts,
+                    routing_attempts,
+                    attempted_profiles.len(),
+                    retry.unwrap_or(gateway.config().default_rate_limit_cool_secs.max(1) as u64),
+                );
                 Err(ApiError::rate_limited(retry))
             } else if saw_auth || saw_backend || retry_failures > 0 {
                 Err(ApiError::unavailable("gemini_profiles_unavailable"))
@@ -2889,6 +2959,9 @@ async fn api_inner(
             admission = Some(ready);
         }
         let profile = lease.profile().clone();
+        attempted_profiles.insert(profile.id().to_string());
+        routing_attempts = routing_attempts.saturating_add(1);
+        let attempt = routing_attempts;
         let oauth_kind = profile.oauth_kind();
         let upstream_user_agent = gateway.config().user_agent(oauth_kind, &wire_model_id);
         // The owned private-route probe served Preview without the older IDE metadata tuple. Keep
@@ -3085,14 +3158,34 @@ async fn api_inner(
                     429 => {
                         Metrics::inc(&app.metrics.upstream_429);
                         saw_quota = true;
+                        rate_limit_attempts = rate_limit_attempts.saturating_add(1);
                         excluded.insert(profile.id().to_string());
-                        profile.cool_model_until(
+                        let delay = translator
+                            .provider_retry_after
+                            .unwrap_or(gateway.config().default_rate_limit_cool_secs);
+                        let diagnostic = translator
+                            .provider_rate_limit_diagnostic
+                            .as_ref()
+                            .cloned()
+                            .unwrap_or_else(|| RateLimitDiagnostic::from_value(None, None));
+                        log_rate_limit_attempt(
+                            &rate_limit_request_id,
+                            route.operation.diagnostic_name(),
+                            "stream_start",
+                            attempt,
+                            &model.id,
                             &wire_model_id,
-                            pool::now()
-                                + translator
-                                    .provider_retry_after
-                                    .unwrap_or(gateway.config().default_rate_limit_cool_secs),
+                            profile.id(),
+                            oauth_kind,
+                            &diagnostic,
+                            delay,
+                            &profile.rate_limit_quota_evidence(
+                                &wire_model_id,
+                                gateway.config(),
+                                pool::now(),
+                            ),
                         );
+                        profile.cool_model_until(&wire_model_id, pool::now() + delay);
                         continue;
                     }
                     408 | 409 | 425 => {
@@ -3159,6 +3252,8 @@ async fn api_inner(
                 admission,
                 model,
                 wire_model_id,
+                rate_limit_request_id.clone(),
+                attempt,
                 status,
                 response_headers,
                 translator,
@@ -3212,11 +3307,31 @@ async fn api_inner(
             429 => {
                 Metrics::inc(&app.metrics.upstream_429);
                 saw_quota = true;
+                rate_limit_attempts = rate_limit_attempts.saturating_add(1);
                 excluded.insert(profile.id().to_string());
                 let delay = retry_after(
                     &response_headers,
                     &response_body,
                     gateway.config().default_rate_limit_cool_secs,
+                );
+                let diagnostic =
+                    RateLimitDiagnostic::from_body(Some(&response_headers), &response_body);
+                log_rate_limit_attempt(
+                    &rate_limit_request_id,
+                    route.operation.diagnostic_name(),
+                    "http_response",
+                    attempt,
+                    &model.id,
+                    &wire_model_id,
+                    profile.id(),
+                    oauth_kind,
+                    &diagnostic,
+                    delay,
+                    &profile.rate_limit_quota_evidence(
+                        &wire_model_id,
+                        gateway.config(),
+                        pool::now(),
+                    ),
                 );
                 profile.cool_model_until(&wire_model_id, pool::now() + delay);
                 continue;

@@ -6,6 +6,7 @@ mod calibration;
 mod chat;
 mod config;
 mod pool;
+mod rate_limit;
 mod responses;
 mod skin;
 mod transport;

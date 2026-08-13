@@ -845,6 +845,25 @@ and
 Private error bodies are never returned verbatim. They may contain account, project, tier or private
 endpoint details. Public errors retain only a generic Google-shaped status.
 
+Every upstream `429` additionally emits one privacy-bounded `gemini-rate-limit` journal line without
+changing rotation or cooling. Generation lines carry an internal `request_id`, operation and phase
+(`http_response`, `stream_start` or `stream_midflight`), routing-attempt ordinal, public/wire model, opaque
+profile id, OAuth kind, known `google.rpc` status, allowlisted `ErrorInfo` reason/domain class plus
+a keyed fingerprint for unknown reason/domain values, detail type and metadata-key sets, closed
+message class, retry hint, actual applied cooldown, process-keyed correlation fingerprints and
+the exact already-sanitized model-catalogue state (fresh/stale/missing, age, matching/zero/positive/
+unknown bucket counts, minimum remaining basis points and reset distance) observed before cooling.
+`diagnostic_body` distinguishes parsed, malformed, oversized and unavailable provider evidence.
+An exhausted pre-byte rotation emits a second summary with the same request id and the counts of
+429s/routing attempts/distinct profiles. `loadCodeAssist` 429s use `phase=load_code_assist` and the
+same bounded machine evidence; its existing profile-wide cooling is applied before the bounded
+diagnostic body is drained. Google prose, arbitrary `ErrorInfo.metadata`, quota descriptions,
+project/email, tokens, proxy and customer request content are never logged. Correlation fingerprints
+are comparable only inside one process lifetime and reset on restart; this prevents offline
+enumeration of low-entropy account/quota strings. Identical fingerprints across distinct profiles
+identify the same provider error shape but are diagnostic evidence only — they do not change the
+existing quota classification.
+
 Streaming retry is allowed only before the first translated native SSE event. Startup is bounded by
 time, bytes and chunk count; after delivery begins, consecutive private/accounting-only events are
 also bounded, so an upstream that never produces another public event cannot hold a request forever.
