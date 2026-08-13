@@ -516,6 +516,8 @@ fn glm_admin_fingerprint(gateway: &forward::glm::GlmGateway) -> String {
             ))
             .collect::<Vec<_>>()
     )
+}
+
 /// Tripo3D mirror of the GLM maintenance loop (`docs/engine/TRIPO3D_PROVIDER.md` §5.4):
 /// discover atomic Auth Bot roster publications on the independent 15-second tick and run the
 /// free balance sweep on `CLAUDE_API_TRIPO3D_BALANCE_POLL_SECS`. The gateway owns profile-idle
