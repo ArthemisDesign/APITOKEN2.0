@@ -1,5 +1,23 @@
-import { describe, expect, it } from "vitest";
-import { mutationResources } from "./api";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { api, mutationResources } from "./api";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("api", () => {
+  it("always bypasses the browser cache for operational reads", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api<{ ok: boolean }>("/capacity");
+
+    expect(fetchMock).toHaveBeenCalledWith("/capacity", expect.objectContaining({
+      method: "GET",
+      cache: "no-store",
+    }));
+  });
+});
 
 describe("mutationResources", () => {
   it("maps row actions back to the list resource invalidated by the producer", () => {

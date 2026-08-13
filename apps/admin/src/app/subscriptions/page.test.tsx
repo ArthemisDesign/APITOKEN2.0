@@ -3320,6 +3320,7 @@ describe("Подписки (subs page)", () => {
     );
 
     expect(html).toContain("Ёмкость пулов");
+    expect(plain(html)).toContain("обновлено");
     expect(plain(html)).toContain("/capacity загружается");
     expect(plain(html)).toContain("Данные GPT загружаются");
     expect(plain(html)).toContain("Данные Gemini загружаются");

@@ -41,6 +41,9 @@ export function apiErrorMessage(payload: unknown, status: number): string {
 export async function api<T>(path: string, options: ApiOptions = {}): Promise<T> {
   const response = await fetch(path, {
     method: options.method ?? "GET",
+    // Admin projections are operational state, not static assets. Revalidation must reach the
+    // same-origin producer instead of reusing a browser HTTP-cache entry.
+    cache: "no-store",
     headers: { "content-type": "application/json", ...(options.headers ?? {}) },
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     signal: options.signal,

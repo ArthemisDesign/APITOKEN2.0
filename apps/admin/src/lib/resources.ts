@@ -1,6 +1,6 @@
 "use client";
 
-import { useDeferredValue, useMemo, useSyncExternalStore } from "react";
+import { useDeferredValue, useEffect, useMemo, useSyncExternalStore } from "react";
 import { api } from "@/lib/api";
 import { resourceMatches, subscribeInvalidations } from "@/lib/invalidation";
 
@@ -31,6 +31,7 @@ export type ResourceGroupSnapshot<T extends object> = {
 type Listener = () => void;
 
 const MAX_IDLE_RESOURCES = 250;
+export const RESOURCE_FALLBACK_INTERVAL_MS = 30_000;
 
 function abortError(cause: unknown): boolean {
   return cause instanceof Error && cause.name === "AbortError";
@@ -326,6 +327,29 @@ export function refreshMountedResources(): void {
   for (const resource of registry.values()) {
     if (resource.hasSubscribers()) resource.refresh();
   }
+}
+
+/**
+ * SSE remains the fast path, while this bridge bounds staleness if an invalidation was lost or a
+ * browser suspended the stream. Only the visible screen is refreshed; background tabs and
+ * unmounted URL cohorts do no work. Returning online or to a visible tab refreshes immediately.
+ */
+export function ResourceFreshnessBridge(): null {
+  useEffect(() => {
+    const refreshWhenActive = () => {
+      if (document.visibilityState !== "visible" || !navigator.onLine) return;
+      refreshMountedResources();
+    };
+    const timer = window.setInterval(refreshWhenActive, RESOURCE_FALLBACK_INTERVAL_MS);
+    document.addEventListener("visibilitychange", refreshWhenActive);
+    window.addEventListener("online", refreshWhenActive);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshWhenActive);
+      window.removeEventListener("online", refreshWhenActive);
+    };
+  }, []);
+  return null;
 }
 
 export function getResourceSnapshot<T>(key: string): ResourceSnapshot<T> {

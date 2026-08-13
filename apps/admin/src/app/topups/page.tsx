@@ -3,7 +3,7 @@
 // Пополнения — порт 1:1 функции topups() из crates/server/src/admin-panel.js
 // (строки 732-766): платежи + checkout-воронка одним экраном, общий offset
 // листает оба списка, один status-фильтр применяется к платежам и чекаутам
-// одновременно. Автоматическое обновление приходит только из commerce SSE.
+// одновременно. Commerce SSE — быстрый путь, общий freshness-bridge — страховочный.
 import { memo, startTransition, useCallback, useEffect, useState, type FormEvent } from "react";
 import { useResource } from "@/lib/resources";
 import { count, formatDate, money } from "@/lib/format";

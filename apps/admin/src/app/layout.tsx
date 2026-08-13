@@ -6,6 +6,7 @@ import { ErrorCenter } from "@/components/error-center";
 import { DialogHost } from "@/lib/dialog";
 import { Toaster } from "@/lib/toast";
 import { RealtimeBridge } from "@/lib/realtime";
+import { ResourceFreshnessBridge } from "@/lib/resources";
 
 export const metadata: Metadata = {
   title: "apiToken.sale · admin",
@@ -38,6 +39,7 @@ export default function RootLayout({
       </head>
       <body>
         <RealtimeBridge />
+        <ResourceFreshnessBridge />
         <div className="shell">
           <Sidebar />
           <main id="main-content">{children}</main>

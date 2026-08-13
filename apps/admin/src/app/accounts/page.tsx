@@ -5,7 +5,7 @@
 // Источники: /overview (engine), /admin/dashboard (счётчик commerce),
 // /partner-admin/partner-analytics?sort=created_at&dir=desc (пейджер по 50),
 // /openkeys-admin/lookup (подписи OpenKeys, ленивый кэш на сессию).
-// Источники обновляются по их SSE-prefixes, без интервала и focus-запросов.
+// Источники обновляются по SSE-prefixes; общий freshness-bridge страхует потерянные события.
 //
 // POST /admin/accounts/query здесь не вызывается: в легаси его из браузера
 // дергает не панель, а коммерческий бэкенд (packages/engine-client) для

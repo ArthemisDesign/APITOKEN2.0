@@ -3,7 +3,7 @@
 // B2B — порт 1:1 функций business()/bindBusiness() из crates/server/src/admin-panel.js
 // (строки 892-938): B2B-клиенты с индивидуальными скидками и инвайты с идемпотентным
 // созданием, переотправкой письма, отзывом и копированием ссылки.
-// Автоматические обновления приходят из commerce SSE, polling отсутствует.
+// Автоматические обновления приходят из commerce SSE с общим контролем свежести как fallback.
 import { memo, startTransition, useCallback, useEffect, useState, type FormEvent, type ReactElement } from "react";
 import { api, send } from "@/lib/api";
 import { useResources } from "@/lib/resources";

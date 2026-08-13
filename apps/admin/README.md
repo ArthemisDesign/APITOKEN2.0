@@ -17,7 +17,10 @@ No secrets, and there never will be: the browser uses same-origin relative paths
   for same-origin JSON, `ApiError` with the status and the message from the body.
 - `src/lib/resources.ts` — URL-keyed external request cache: exact-URL in-flight deduplication,
   retained last-good data (also while a filter/window URL changes), orphan request cancellation
-  and targeted mounted-only revalidation.
+  and targeted mounted-only revalidation. SSE is the immediate path; one app-level freshness
+  bridge revalidates the visible screen every 30 seconds and immediately after the browser returns
+  online or the tab becomes visible, bounding staleness when a stream event is lost. Admin fetches
+  use `cache: no-store`, so a revalidation cannot reuse a browser HTTP-cache entry.
   `src/lib/realtime.ts` owns one `EventSource` per producer feed and applies only `change`/`resync`
   resource prefixes; heartbeat cannot initiate a request. Multi-source screens use independent
   URL resources, so their ready sections render without waiting for the slowest endpoint. The sidebar ↻ explicitly
@@ -103,9 +106,9 @@ No secrets, and there never will be: the browser uses same-origin relative paths
 
 1. A page is `'use client'`; one source uses `useResource<T>(actualUrl)`, while a multi-source
    screen uses `useResources<T>({ section: actualUrl, … })`. Do not join independent page reads
-   behind `Promise.all`: each section must become visible and degradable on its own. Never add
-   `setInterval`, focus/visibility revalidation or a
-   heartbeat handler: producer `change`/`resync` events are the automatic update authority.
+   behind `Promise.all`: each section must become visible and degradable on its own. Do not add
+   page-local timers, focus/visibility listeners or a heartbeat handler: producer `change`/`resync`
+   events are the fast path and the shared freshness bridge is the single fallback owner.
 2. Russian labels — verbatim from `admin-panel.js`.
 3. Money — only `nanoMoney` over integer strings; JS number for amounts is forbidden.
 4. While there is no data (`data === undefined`) — `PageHead` + `LoadingGrid`.

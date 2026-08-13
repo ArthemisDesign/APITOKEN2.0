@@ -76,6 +76,30 @@ describe("resource invalidation", () => {
     }
   });
 
+  it("lets the shared freshness bridge revalidate every mounted URL and nothing else", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (url: string | URL | Request) =>
+      new Response(JSON.stringify({ url: String(url) }))) as typeof fetch;
+    try {
+      const first = getResource<unknown>("/capacity");
+      const second = getResource<unknown>("/codex-subs");
+      getResourceSnapshot("/unmounted");
+      const unsubscribeFirst = first.subscribe(() => undefined);
+      const unsubscribeSecond = second.subscribe(() => undefined);
+      await flush();
+
+      refreshMountedResources();
+      await flush();
+
+      expect(globalThis.fetch).toHaveBeenCalledTimes(4);
+      expect(globalThis.fetch).not.toHaveBeenCalledWith("/unmounted", expect.anything());
+      unsubscribeFirst();
+      unsubscribeSecond();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("deduplicates an exact URL across concurrent subscribers", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ value: 7 }))) as typeof fetch;

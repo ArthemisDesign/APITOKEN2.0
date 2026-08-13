@@ -65,6 +65,11 @@ Every connection begins with `resync`; listener lag or database reconnect produc
 because event delivery is an invalidation hint, not durable state. Heartbeats are transport-only.
 Engine resync/change delivery evicts the matching short-lived server response cache before the
 browser refetches, so push cannot immediately return a stale cached projection.
+Because invalidation delivery is deliberately not durable, the app also revalidates only the
+currently mounted URL resources every 30 seconds while the tab is visible and online. Returning to
+a visible tab or restoring network access triggers the same mounted-only refresh immediately.
+Every admin request uses browser `cache: no-store`. This fallback bounds staleness after a lost or
+suspended event without polling hidden pages or unmounted cohorts; SSE remains the immediate path.
 The UI consumer keeps last-good data, deduplicates by actual request URL and revalidates only
 mounted resources whose URL matches an emitted prefix. Multi-source screens subscribe to independent
 URL resources, so a ready section does not wait for the slowest endpoint and one failed source does

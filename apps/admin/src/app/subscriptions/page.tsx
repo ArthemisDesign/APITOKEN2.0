@@ -5,7 +5,7 @@
 // GPT/Codex homes (/codex-subs), Gemini-профили (/gemini-subs), KIMI-профили
 // (/kimi-subs), GLM-профили (/glm-subs), Tripo3D-профили (/tripo3d-subs) и
 // Suno-профили (/suno-subs). Каждый provider-feed инвалидирует только
-// затронутые URL; интервальных запросов нет.
+// затронутые URL; общий freshness-bridge страхует потерянное событие и возврат во вкладку.
 import { useMemo } from "react";
 import { useResources } from "@/lib/resources";
 import { count, formatDate } from "@/lib/format";
@@ -276,7 +276,7 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
     <>
       <PageHead
         title="Подписки"
-        sub="остаток API-$, окна и экономика семи пулов"
+        sub={`остаток API-$, окна и экономика семи пулов · обновлено ${formatDate(nowMs, true)}`}
         badge={
           <Pill kind={derived.fleetWarn ? "warn" : "ok"}>
             {count(derived.fleetTotal, "подписка", "подписки", "подписок")}
@@ -426,7 +426,7 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
       </div>
 
       <footer>
-        Realtime по изменениям провайдеров · nanoUSD · почта маскирована
+        Realtime по изменениям провайдеров + контроль свежести каждые 30 с · nanoUSD · почта маскирована
       </footer>
     </>
   );
