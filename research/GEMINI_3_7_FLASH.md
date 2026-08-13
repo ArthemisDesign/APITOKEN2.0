@@ -243,8 +243,11 @@ Forbidden in Stage 1:
 Publication may begin only after all of the following are true:
 
 1. The exact dormant implementation commit SHA is recorded.
-2. A free exact-ID `countTokens` call passes with a response bound to the immutable canonical
-   request UUID, digest, profile, and model.
+2. A free exact-ID `countTokens` call is atomically claimed once immediately before the final cutoff
+   check and connection open, then passes with a response bound to the immutable canonical request
+   UUID, digest, profile, model, HTTP status and execution state. The exact-profile engine path and
+   controller both forbid helper restart, OAuth resend, profile rotation, redirect and reconnect;
+   any failure or crash after the claim permanently withdraws this admission candidate.
 3. Minimal generation is armed, then atomically claimed exactly once immediately before the final
    cutoff check and network open. It is dispatched before the immutable promo cutoff
    `2027-01-01T00:00:00Z`, then returns 2xx with real output and terminal authoritative usage within

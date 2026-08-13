@@ -31,9 +31,9 @@ except ImportError:  # Direct `python3 tools/gemini_calibration/admission.py ...
 
 
 MODEL = "gemini-3.7-flash"
-SCHEMA = "gemini-3.7-admission/v2"
-SUMMARY_SCHEMA = "gemini-3.7-admission-summary/v2"
-COUNT_OBSERVATION_SCHEMA = "gemini-3.7-admission-count-observation/v2"
+SCHEMA = "gemini-3.7-admission/v3"
+SUMMARY_SCHEMA = "gemini-3.7-admission-summary/v3"
+COUNT_OBSERVATION_SCHEMA = "gemini-3.7-admission-count-observation/v3"
 OBSERVATION_SCHEMA = "gemini-3.7-admission-observation/v2"
 DEFAULT_BUDGET_NANOUSD = 100_000
 DEFAULT_MAX_OUTPUT_TOKENS = 16
@@ -58,7 +58,9 @@ PAID_PLANS = {
 JOURNAL = "journal.json"
 CONTRACT_FENCE = "contract.fence"
 COUNT_REQUEST = "count-request.json"
+COUNT_DISPATCH_CLAIM = "count.dispatch.claim"
 COUNT_RECEIPT = "count.receipt"
+COUNT_OUTCOME_RECEIPT = "count.outcome.receipt"
 GENERATION_REQUEST = "generation-request.json"
 DISPATCH_FENCE = "dispatch.fence"
 DISPATCH_CLAIM = "dispatch.claim"
@@ -67,7 +69,9 @@ KNOWN_ENTRIES = {
     JOURNAL,
     CONTRACT_FENCE,
     COUNT_REQUEST,
+    COUNT_DISPATCH_CLAIM,
     COUNT_RECEIPT,
+    COUNT_OUTCOME_RECEIPT,
     GENERATION_REQUEST,
     DISPATCH_FENCE,
     DISPATCH_CLAIM,
@@ -189,7 +193,7 @@ def _exclusive_json(path: Path, value: dict[str, Any]) -> None:
     try:
         descriptor = os.open(path, flags, 0o600)
     except FileExistsError as error:
-        raise AdmissionError("paid dispatch is already permanently fenced") from error
+        raise AdmissionError("network dispatch is already permanently fenced") from error
     try:
         with os.fdopen(descriptor, "wb", closefd=True) as output:
             output.write(data)
@@ -454,7 +458,7 @@ def _contract_digest(journal: dict[str, Any]) -> str:
 
 def _contract_fence(journal: dict[str, Any]) -> dict[str, Any]:
     return {
-        "schema": "gemini-3.7-admission-contract-fence/v2",
+        "schema": "gemini-3.7-admission-contract-fence/v3",
         "contract_sha256": journal["contract_sha256"],
         "implementation_sha": journal["implementation_sha"],
         "release_sha": journal["release_sha"],
@@ -584,6 +588,7 @@ def _load_journal(directory: Path) -> dict[str, Any]:
         raise AdmissionError("free and paid request identities must differ")
     allowed_states = {
         "awaiting_count_tokens",
+        "count_tokens_claimed",
         "counted",
         "generation_armed",
         "generation_claimed",
@@ -657,7 +662,7 @@ def _load_journal(directory: Path) -> dict[str, Any]:
 def _validate_count_receipt(directory: Path, journal: dict[str, Any]) -> None:
     receipt = _read_json(directory / COUNT_RECEIPT, required_mode=0o600)
     expected = {
-        "schema": "gemini-3.7-admission-count-receipt/v2",
+        "schema": "gemini-3.7-admission-count-receipt/v3",
         "request_id": journal["count_request_id"],
         "request_sha256": journal["count_request_sha256"],
         "target_profile": journal["profile_id"],
@@ -666,6 +671,24 @@ def _validate_count_receipt(directory: Path, journal: dict[str, Any]) -> None:
     }
     if receipt != expected:
         raise AdmissionError("immutable countTokens receipt does not match the contract")
+
+
+def _count_outcome_receipt(journal: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": "gemini-3.7-admission-count-outcome-receipt/v1",
+        "state": journal["state"],
+        "request_id": journal["count_request_id"],
+        "request_sha256": journal["count_request_sha256"],
+        "failure_class": journal["failure_class"],
+        "http_status": journal["http_status"],
+        "execution_state": journal["execution_state"],
+    }
+
+
+def _validate_count_outcome_receipt(directory: Path, journal: dict[str, Any]) -> None:
+    receipt = _read_json(directory / COUNT_OUTCOME_RECEIPT, required_mode=0o600)
+    if receipt != _count_outcome_receipt(journal):
+        raise AdmissionError("immutable countTokens terminal receipt does not match the journal")
 
 
 def _outcome_receipt(journal: dict[str, Any]) -> dict[str, Any]:
@@ -714,6 +737,8 @@ def _terminalize(
         "withdrawn_evidence",
     }:
         _exclusive_json(directory / OUTCOME_RECEIPT, _outcome_receipt(journal))
+    elif state == "withdrawn_count_tokens":
+        _exclusive_json(directory / COUNT_OUTCOME_RECEIPT, _count_outcome_receipt(journal))
 
 
 def _expire_before_dispatch(directory: Path, journal: dict[str, Any]) -> None:
@@ -874,9 +899,9 @@ def record_count(directory: Path, response_path: Path) -> dict[str, Any]:
 
 def _record_count_locked(directory: Path, response_path: Path) -> dict[str, Any]:
     journal = _load_journal(directory)
-    if journal["state"] != "awaiting_count_tokens":
+    if journal["state"] != "count_tokens_claimed":
         raise AdmissionError("free countTokens outcome is already terminal or recorded")
-    _expire_before_dispatch(directory, journal)
+    _validate_count_claim(directory, journal)
     try:
         response = _read_json(response_path)
         if set(response) != {
@@ -885,6 +910,8 @@ def _record_count_locked(directory: Path, response_path: Path) -> dict[str, Any]
             "request_sha256",
             "target_profile",
             "model",
+            "http_status",
+            "execution_state",
             "response",
         }:
             raise AdmissionError("countTokens observation has an unexpected schema")
@@ -894,9 +921,46 @@ def _record_count_locked(directory: Path, response_path: Path) -> dict[str, Any]
             "request_sha256": journal["count_request_sha256"],
             "target_profile": journal["profile_id"],
             "model": MODEL,
+            "http_status": response.get("http_status"),
+            "execution_state": response.get("execution_state"),
             "response": response.get("response"),
         }:
             raise AdmissionError("countTokens observation is not bound to the immutable request")
+        status = response["http_status"]
+        execution_state = response["execution_state"]
+        if (
+            isinstance(status, bool)
+            or not isinstance(status, int)
+            or not 0 <= status <= 599
+            or execution_state not in {
+                None,
+                "not_started",
+                "started",
+                "completed",
+                "unknown",
+            }
+        ):
+            raise AdmissionError("countTokens transport outcome is invalid")
+        if status != 200:
+            if execution_state == "completed":
+                raise AdmissionError(
+                    "failed countTokens contradicts completed execution evidence"
+                )
+            _terminalize(
+                directory,
+                journal,
+                "withdrawn_count_tokens",
+                "count_tokens_failed_no_retry",
+                http_status=status,
+                execution_state=execution_state,
+            )
+            raise AdmissionError(
+                "free countTokens failed; the exact attempt is permanently withdrawn"
+            )
+        if execution_state != "completed":
+            raise AdmissionError(
+                "successful countTokens has no completed execution evidence"
+            )
         raw_response = response["response"]
         if not isinstance(raw_response, dict):
             raise AdmissionError("countTokens observation has no response object")
@@ -913,7 +977,14 @@ def _record_count_locked(directory: Path, response_path: Path) -> dict[str, Any]
             "fresh",
         )
     except (AdmissionError, run_live.CalibrationError, run_live.UnboundedCostError, TypeError):
-        _terminalize(directory, journal, "withdrawn_count_tokens", "count_tokens_invalid")
+        refreshed = _load_journal(directory)
+        if refreshed["state"] == "count_tokens_claimed":
+            _terminalize(
+                directory,
+                refreshed,
+                "withdrawn_count_tokens",
+                "count_tokens_invalid",
+            )
         raise AdmissionError("free countTokens evidence was rejected; paid dispatch remains closed")
     journal["counted_input_tokens"] = total_tokens
     journal["upper_bound_nanousd"] = str(upper)
@@ -924,7 +995,7 @@ def _record_count_locked(directory: Path, response_path: Path) -> dict[str, Any]
             "worst-case Gemini cost bound exceeds the immutable aggregate ceiling; no paid dispatch"
         )
     receipt = {
-        "schema": "gemini-3.7-admission-count-receipt/v2",
+        "schema": "gemini-3.7-admission-count-receipt/v3",
         "request_id": journal["count_request_id"],
         "request_sha256": journal["count_request_sha256"],
         "target_profile": journal["profile_id"],
@@ -936,6 +1007,63 @@ def _record_count_locked(directory: Path, response_path: Path) -> dict[str, Any]
     _write_journal(directory, journal)
     _exclusive_json(directory / COUNT_RECEIPT, receipt)
     return _inspect_locked(directory)
+
+
+def claim_count(directory: Path) -> dict[str, Any]:
+    """Irreversibly consume the one free countTokens dispatch before transport opens."""
+
+    with _state_lock(directory, exclusive=True):
+        journal = _load_journal(directory)
+        if (directory / COUNT_DISPATCH_CLAIM).exists() or (
+            directory / COUNT_DISPATCH_CLAIM
+        ).is_symlink():
+            raise AdmissionError("countTokens dispatch was already permanently claimed")
+        if journal["state"] != "awaiting_count_tokens":
+            raise AdmissionError("countTokens cannot be claimed from the current state")
+        _expire_before_dispatch(directory, journal)
+        _validate_canonical_request(
+            directory / COUNT_REQUEST,
+            _count_request(journal),
+            journal["count_request_sha256"],
+            "countTokens",
+        )
+        claim = {
+            "schema": "gemini-3.7-admission-count-dispatch-claim/v1",
+            "model": MODEL,
+            "implementation_sha": journal["implementation_sha"],
+            "release_sha": journal["release_sha"],
+            "contract_sha256": journal["contract_sha256"],
+            "request_sha256": journal["count_request_sha256"],
+            "request_id": journal["count_request_id"],
+            "target_profile": journal["profile_id"],
+            "plan": journal["plan"],
+            "not_after": journal["not_after"],
+        }
+        _exclusive_json(directory / COUNT_DISPATCH_CLAIM, claim)
+        # Persisting the claim is the irreversible dispatch boundary. A transport must perform its
+        # own final UTC comparison immediately after this call, then open exactly one connection.
+        # A crash or cutoff crossed after this fsync remains a consumed, ambiguous one-shot.
+        journal["state"] = "count_tokens_claimed"
+        _write_journal(directory, journal)
+        return _inspect_locked(directory)
+
+
+def _validate_count_claim(directory: Path, journal: dict[str, Any]) -> None:
+    claim = _read_json(directory / COUNT_DISPATCH_CLAIM, required_mode=0o600)
+    expected = {
+        "schema": "gemini-3.7-admission-count-dispatch-claim/v1",
+        "model": MODEL,
+        "implementation_sha": journal["implementation_sha"],
+        "release_sha": journal["release_sha"],
+        "contract_sha256": journal["contract_sha256"],
+        "request_sha256": journal["count_request_sha256"],
+        "request_id": journal["count_request_id"],
+        "target_profile": journal["profile_id"],
+        "plan": journal["plan"],
+        "not_after": journal["not_after"],
+    }
+    if claim != expected:
+        raise AdmissionError("countTokens dispatch claim does not match the contract")
 
 
 def arm_generation(directory: Path) -> dict[str, Any]:
@@ -1307,6 +1435,34 @@ def inspect(directory: Path, *, require_success: bool = False) -> dict[str, Any]
 
 def _inspect_locked(directory: Path, *, require_success: bool = False) -> dict[str, Any]:
     journal = _load_journal(directory)
+    count_claimed = (directory / COUNT_DISPATCH_CLAIM).exists()
+    if count_claimed:
+        _validate_count_claim(directory, journal)
+        if journal["state"] == "awaiting_count_tokens":
+            raise AdmissionError(
+                "countTokens claim exists without a completed journal transition"
+            )
+    if journal["state"] in {
+        "count_tokens_claimed",
+        "counted",
+        "generation_armed",
+        "generation_claimed",
+        "success",
+        "withdrawn_count_tokens",
+        "withdrawn_budget",
+        "withdrawn_generation_not_started",
+        "withdrawn_generation_ambiguous",
+        "withdrawn_evidence",
+    } and not count_claimed:
+        raise AdmissionError("post-count state has no permanent countTokens claim")
+    count_terminal = journal["state"] == "withdrawn_count_tokens"
+    has_count_outcome = (directory / COUNT_OUTCOME_RECEIPT).exists()
+    if has_count_outcome:
+        _validate_count_outcome_receipt(directory, journal)
+    if count_terminal != has_count_outcome:
+        raise AdmissionError(
+            "terminal countTokens state and immutable outcome receipt differ"
+        )
     counted = journal["counted_input_tokens"] is not None
     has_count_receipt = (directory / COUNT_RECEIPT).exists()
     if has_count_receipt:
@@ -1380,6 +1536,7 @@ def _inspect_locked(directory: Path, *, require_success: bool = False) -> dict[s
         "model": MODEL,
         "implementation_sha": journal["implementation_sha"],
         "release_sha": journal["release_sha"],
+        "count_tokens_claimed": count_claimed,
         "count_tokens_recorded": counted,
         "upper_bound_nanousd": journal["upper_bound_nanousd"],
         "budget_nanousd": journal["budget_nanousd"],
@@ -1426,6 +1583,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     count = commands.add_parser("record-count")
     count.add_argument("--evidence-dir", type=Path, required=True)
     count.add_argument("--response-file", type=Path, required=True)
+    claim_count_parser = commands.add_parser("claim-count")
+    claim_count_parser.add_argument("--evidence-dir", type=Path, required=True)
     arm = commands.add_parser("arm-generation")
     arm.add_argument("--evidence-dir", type=Path, required=True)
     claim = commands.add_parser("claim-generation")
@@ -1455,6 +1614,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "record-count":
         summary = record_count(args.evidence_dir, args.response_file)
+    elif args.command == "claim-count":
+        summary = claim_count(args.evidence_dir)
     elif args.command == "arm-generation":
         summary = arm_generation(args.evidence_dir)
     elif args.command == "claim-generation":

@@ -20,6 +20,31 @@ const ACCOUNT_ID: &str = "gemini-integration-account";
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
+fn crashing_node_helper() -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "gemini-api-crashing-helper-{}-{unique}-{sequence}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&directory).unwrap();
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let helper = directory.join("node");
+    let spawns = directory.join("spawns");
+    let attempts = directory.join("attempts");
+    let script = format!(
+        "#!/bin/sh\nprintf 'spawn\\n' >> '{}'\nIFS= read -r _configure || exit 1\nprintf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"node\":\"v24.18.0\",\"platform\":\"linux\",\"arch\":\"x64\",\"undici\":\"node-internal\"}}'\nIFS= read -r _request || exit 1\nprintf 'attempt\\n' >> '{}'\nprintf '%s\\n' '{{\"type\":\"error\",\"id\":1,\"kind\":\"protocol\"}}'\nexit 1\n",
+        spawns.display(),
+        attempts.display()
+    );
+    fs::write(&helper, script).unwrap();
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+    (directory, helper, spawns, attempts)
+}
+
 fn pcm16_wav_base64(sample_rate: u32, frames: u32, channels: u16) -> String {
     let data_len = frames
         .checked_mul(u32::from(channels))
@@ -381,6 +406,31 @@ fn gateway_fixture_with_models_and_calibration(
     model_ids: &[&str],
     calibration_store: Option<Arc<AsyncBilling>>,
 ) -> GatewayFixture {
+    gateway_fixture_with_models_calibration_and_node(
+        upstream,
+        proxies,
+        max_transport_retries,
+        token_uri,
+        oauth_kind,
+        output_token_limit,
+        model_ids,
+        calibration_store,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gateway_fixture_with_models_calibration_and_node(
+    upstream: &str,
+    proxies: &[Option<&str>],
+    max_transport_retries: usize,
+    token_uri: Option<&str>,
+    oauth_kind: OAuthKind,
+    output_token_limit: u64,
+    model_ids: &[&str],
+    calibration_store: Option<Arc<AsyncBilling>>,
+    node_runtime: Option<(&str, &str, &str)>,
+) -> GatewayFixture {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -470,6 +520,13 @@ fn gateway_fixture_with_models_and_calibration(
             },
         })
         .collect();
+    let (node_binary, node_version, node_sha256) =
+        node_runtime.unwrap_or(("/usr/bin/node", "v24.18.0", ""));
+    let node_sha256 = if node_sha256.is_empty() {
+        "0".repeat(64)
+    } else {
+        node_sha256.to_string()
+    };
     let gateway = GeminiGateway::new_with_calibration(
         super::super::config::GeminiConfig {
             enabled: true,
@@ -493,9 +550,9 @@ fn gateway_fixture_with_models_and_calibration(
             health_probe_interval_secs: 60,
             reserve_overhead_tokens: 10,
             antigravity_version: gemini_credential::ANTIGRAVITY_VERSION.to_string(),
-            node_binary: "/usr/bin/node".to_string(),
-            node_version: "v24.18.0".to_string(),
-            node_sha256: "0".repeat(64),
+            node_binary: node_binary.to_string(),
+            node_version: node_version.to_string(),
+            node_sha256,
         },
         calibration_store,
     )
@@ -629,6 +686,22 @@ async fn invoke_exact_calibration(
         Ok(response) => response,
         Err(error) => error.into_response(),
     }
+}
+
+async fn invoke_exact_count_tokens(
+    app: AppState,
+    model: &str,
+    profile_id: &str,
+    request_id: &str,
+) -> Response {
+    invoke_exact_uri(
+        app,
+        &format!("/v1beta/models/{model}:countTokens"),
+        json!({"contents": [{"role": "user", "parts": [{"text": "count me"}]}]}),
+        profile_id,
+        request_id,
+    )
+    .await
 }
 
 async fn invoke_uri(app: AppState, uri: &str, body: Value) -> Response {
@@ -2049,6 +2122,174 @@ async fn dormant_37_exact_generation_does_not_refresh_or_replay_after_401() {
         .get(crate::proxy::EXECUTION_STATE_HEADER)
         .is_none());
     assert_eq!(server.state.seen().len(), 1);
+}
+
+#[tokio::test]
+async fn dormant_37_exact_count_tokens_does_not_refresh_or_replay_after_401() {
+    let refreshed = "gemini-profile-a-count-refreshed-access-token";
+    let server = start_mock(MockState::with_replies([
+        (
+            PROFILE_A_KEY,
+            vec![MockReply::json(
+                StatusCode::UNAUTHORIZED,
+                json!({"error": {"message": "rejected exact count"}}),
+            )],
+        ),
+        (
+            "",
+            vec![MockReply::Json {
+                status: StatusCode::OK,
+                body: json!({"access_token": refreshed, "expires_in": 3600}),
+                retry_after: None,
+            }],
+        ),
+        (
+            refreshed,
+            vec![MockReply::json(StatusCode::OK, json!({"totalTokens": 9}))],
+        ),
+    ]))
+    .await;
+    let token_uri = format!("{}/token", server.upstream);
+    let fixture = gateway_fixture_with_models(
+        &server.upstream,
+        &[None],
+        2,
+        Some(&token_uri),
+        OAuthKind::Antigravity,
+        65_536,
+        &["gemini-3.7-flash"],
+    );
+
+    let response = invoke_exact_count_tokens(
+        app_state(fixture.gateway.clone(), None),
+        "gemini-3.7-flash",
+        "profile_a",
+        "123e4567-e89b-42d3-a456-426614174021",
+    )
+    .await;
+
+    assert!(!response.status().is_success());
+    assert!(response
+        .headers()
+        .get(crate::proxy::EXECUTION_STATE_HEADER)
+        .is_none());
+    let seen = server.state.seen();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].uri, "/v1internal:countTokens");
+    assert!(seen.iter().all(|request| request.uri != "/token"));
+}
+
+#[tokio::test]
+async fn ordinary_count_tokens_retains_401_refresh_and_same_profile_retry() {
+    let refreshed = "gemini-profile-a-ordinary-count-refreshed-access-token";
+    let server = start_mock(MockState::with_replies([
+        (
+            PROFILE_A_KEY,
+            vec![MockReply::json(
+                StatusCode::UNAUTHORIZED,
+                json!({"error": {"message": "expired ordinary count token"}}),
+            )],
+        ),
+        (
+            "",
+            vec![MockReply::Json {
+                status: StatusCode::OK,
+                body: json!({"access_token": refreshed, "expires_in": 3600}),
+                retry_after: None,
+            }],
+        ),
+        (
+            refreshed,
+            vec![MockReply::json(StatusCode::OK, json!({"totalTokens": 11}))],
+        ),
+    ]))
+    .await;
+    let token_uri = format!("{}/token", server.upstream);
+    let fixture = gateway_fixture_with_token_uri(&server.upstream, &[None], 2, Some(&token_uri));
+
+    let response = invoke_uri(
+        app_state(fixture.gateway.clone(), None),
+        "/v1beta/models/gemini-integration-model:countTokens",
+        json!({"contents": [{"role": "user", "parts": [{"text": "count me"}]}]}),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response_json(response).await, json!({"totalTokens": 11}));
+    let seen = server.state.seen();
+    assert_eq!(seen.len(), 3);
+    assert_eq!(
+        seen.iter()
+            .filter(|request| request.uri == "/v1internal:countTokens")
+            .count(),
+        2
+    );
+    assert_eq!(
+        seen.iter()
+            .filter(|request| request.uri == "/token")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn exact_count_tokens_helper_crash_is_attempted_once() {
+    let (helper_directory, helper, spawns, attempts) = crashing_node_helper();
+    let fixture = gateway_fixture_with_models_calibration_and_node(
+        // A non-loopback, non-production test scheme selects the Node helper without weakening
+        // the production binary/host attestation contract or opening a real network connection.
+        "node-test://cloudcode-pa.googleapis.com",
+        &[Some("http://127.0.0.1:18080")],
+        2,
+        None,
+        OAuthKind::Antigravity,
+        65_536,
+        &["gemini-3.7-flash"],
+        None,
+        Some((
+            helper.to_str().unwrap(),
+            gemini_credential::GEMINI_NODE_VERSION,
+            gemini_credential::GEMINI_NODE_SHA256,
+        )),
+    );
+
+    let response = invoke_exact_count_tokens(
+        app_state(fixture.gateway.clone(), None),
+        "gemini-3.7-flash",
+        "profile_a",
+        "123e4567-e89b-42d3-a456-426614174022",
+    )
+    .await;
+
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = to_bytes(response.into_body(), GEMINI_BODY_LIMIT)
+        .await
+        .unwrap();
+    assert!(!status.is_success());
+    assert!(headers
+        .get(crate::proxy::EXECUTION_STATE_HEADER)
+        .is_none());
+    assert_eq!(
+        fs::read_to_string(&spawns).unwrap_or_else(|error| panic!(
+            "helper did not spawn: status={status} headers={headers:?} body={} error={error}",
+            String::from_utf8_lossy(&body)
+        ))
+        .lines()
+        .count(),
+        1
+    );
+    assert_eq!(
+        fs::read_to_string(&attempts).unwrap_or_else(|error| panic!(
+            "helper did not receive request: status={status} headers={headers:?} body={} error={error}",
+            String::from_utf8_lossy(&body)
+        ))
+        .lines()
+        .count(),
+        1
+    );
+    drop(fixture);
+    let _ = fs::remove_dir_all(helper_directory);
 }
 
 #[tokio::test]

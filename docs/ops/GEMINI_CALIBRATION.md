@@ -55,8 +55,10 @@ does not exceed measurement uncertainty.
   records such Search as unavailable and does not send the paid request. Image uses the
   forcibly bounded 1K/2K/4K SKUs (1,120/1,680/2,520 tokens) plus the requested text-output
   ceiling.
-- A paid request after transport ambiguity is never retried. GET and `countTokens` may be
-  safely retried, but generation gets exactly one attempt.
+- A paid request after transport ambiguity is never retried. The general matrix runner may safely
+  retry GET and a pre-claim `countTokens`; generation gets exactly one attempt. The narrower
+  Gemini 3.7 admission contract below makes its exact-profile `countTokens` a permanently claimed
+  one-shot too, because it is the gate for the sole paid turn.
 - `429`/`503` stops only the target profile, not the remaining matrix of healthy profiles,
   exclusively when the stable Gemini plane returned the authoritative
   `x-apitoken-execution-state: not_started`. `RetryInfo` and a sanitized body are not
@@ -211,15 +213,22 @@ and is absent from the sanitized summary.
 
 The fixed sequence is:
 
-1. `init` writes only a free `countTokens` request and an append-only contract fence. The v2
+1. `init` writes only a free `countTokens` request and an append-only contract fence. The v3
    contract pins canonical byte digests for both exact request bodies, their distinct UUIDv4
    identities, exact profile/plan/rate/SHA identity, and `not_after=1798761600`
    (`2027-01-01T00:00:00Z`). Every mutating command holds the same retained sibling-file
    cross-process lock across load, validation, transition, durable artifact creation, and atomic
    journal replacement, so a terminal transition cannot race back to success;
-2. `record-count` accepts only a v2 observation naming the exact count request UUID, request digest,
-   profile, and model. It reconstructs the immutable request, records an append-only receipt, and
-   applies the conservative Code Assist bound, including the model's complete input context for
+2. after canary readiness and secret acquisition, `claim-count` reconstructs the canonical request,
+   checks the promotional cutoff, and fsyncs an append-only dispatch claim. The fixed transport must
+   invoke it exactly once immediately before its final UTC cutoff check and the one connection open.
+   The exact-profile engine path uses `NeverReplay`: it neither restarts the helper, refreshes and
+   resends after a 401, rotates to another profile, nor smooth-retries the selected profile. A crash
+   after the claim is permanently ambiguous. `record-count` then accepts only a v3 observation naming
+   the exact count request UUID, digest, profile, model, HTTP status and execution state. A non-200,
+   transport failure or malformed response writes a terminal receipt and permanently withdraws the
+   admission. A valid 200 reconstructs the immutable request, records an append-only success receipt,
+   and applies the conservative Code Assist bound, including the model's complete input context for
    provider-owned hidden instructions;
 3. only when that worst-case bound fits the immutable aggregate ceiling does it write the generation
    request with that same `not_after`; `arm-generation` fully reconstructs and compares it, then
@@ -229,9 +238,9 @@ The fixed sequence is:
    claim is never reacquirable; a crash after claim is permanently ambiguous. The CLI
    default remains `100000` nanoUSD. For this exact promo
    contract, an operator may explicitly authorize at most `786492000` nanoUSD (`$0.786492`) with
-   `maxOutputTokens <= 16`; this is exactly `1048576 * 750 + 16 * 3750`. Both `record-count` and
+   `maxOutputTokens <= 16`; this is exactly `1048576 * 750 + 16 * 3750`. `claim-count`,
    `arm-generation` and `claim-generation` terminally withdraw if the promo contract has expired.
-   The future root transport must validate the journal, requests, fences, claim, and their digests,
+   The future root transport must validate the journal, requests, fences, claims, and their digests,
    then compare its current UTC epoch with the bound `not_after` immediately before the network
    dispatch. A check before
    process startup, canary readiness, token acquisition, or request arming is not sufficient; at or
@@ -254,8 +263,8 @@ The fixed sequence is:
 The current official Gemini 3.7 Flash rate and 1,048,576-token context make the conservative hidden-
 prompt bound larger than the default `100000` nanoUSD even for the smallest useful generation, so
 the default correctly stops at `withdrawn_budget`. The explicitly authorized `786492000` ceiling
-allows one `maxOutputTokens=16` request to be prepared after free `countTokens`; it is a worst-case
-pre-dispatch bound, not a prediction or promise of actual spend. The implementation must not weaken
+allows one `maxOutputTokens=16` request to be prepared after the single claimed free `countTokens`;
+it is a worst-case pre-dispatch bound, not a prediction or promise of actual spend. The implementation must not weaken
 the full-context bound or infer a smaller hidden prompt. Once claimed, every failure is terminal and
 the paid generation is never retried.
 
@@ -264,8 +273,9 @@ Stage 1 core. After its producer commit is merged and its exact implementation S
 `deploy/watchdog` GREEN, a separate delivery commit must pin a fixed root-owned controller and its
 literal sudo rule to that SHA. That controller must own transport and shutdown: verify the exact
 release binary, start only a non-public loopback canary, prove the canary port closed on every exit,
-prove stable Gemini `127.0.0.1:8794/ready` healthy before the overall verdict, invoke the
-single-use `claim-generation` transition only after all preparation is complete, and enforce the
+prove stable Gemini `127.0.0.1:8794/ready` healthy before the overall verdict, invoke both the
+single-use `claim-count` and `claim-generation` transitions only after their respective preparation
+is complete, and enforce the
 digest-bound `not_after` in its final check immediately before network dispatch. It may feed
 private files into this state machine, but secrets and the opaque profile value must remain out of
 argv and output. Until that SHA-pinned bridge exists and the budget bound passes, publication
@@ -288,7 +298,8 @@ restoration, including the non-replay reclassification of a proven `minimal` tur
 zero thinking token count and the fail-closed rejection of substituted evidence. The admission
 tests separately cover exact SHA/profile/plan binding, exact effective-dated official rates and
 pre-2027 epoch binding, rejection of a substituted cheap tariff before any evidence/request,
-free-count-first ordering, default-budget withdrawal, the exact `786492000` promo ceiling and its
+free-count-first ordering, atomic single-use count claiming and terminal no-replay failures,
+default-budget withdrawal, the exact `786492000` promo ceiling and its
 `maxOutputTokens=16` guard, digest-bound request arming, exact `not_after` propagation through the
 contract/requests/fences/claim, cutoff withdrawal before counting, arming, or claiming, a canonical
 in-epoch `priced_ts` and rate reselection at that timestamp, single-use dispatch claiming,

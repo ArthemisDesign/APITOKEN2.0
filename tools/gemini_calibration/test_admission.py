@@ -213,6 +213,8 @@ def count_observation(evidence, *, total_tokens=2, **overrides):
         "request_sha256": journal["count_request_sha256"],
         "target_profile": PROFILE,
         "model": admission.MODEL,
+        "http_status": 200,
+        "execution_state": "completed",
         "response": {"totalTokens": total_tokens},
     }
     value.update(overrides)
@@ -249,6 +251,16 @@ def claim_worker(evidence, start, results):
     start.wait()
     try:
         admission.claim_generation(Path(evidence))
+    except admission.AdmissionError:
+        results.put("closed")
+    else:
+        results.put("claimed")
+
+
+def count_claim_worker(evidence, start, results):
+    start.wait()
+    try:
+        admission.claim_count(Path(evidence))
     except admission.AdmissionError:
         results.put("closed")
     else:
@@ -318,6 +330,7 @@ class AdmissionFixture(unittest.TestCase):
         self.initialize()
         count = self.root / "count.json"
         self.write_json(count, count_observation(self.evidence))
+        admission.claim_count(self.evidence)
         admission.record_count(self.evidence, count)
         admission.arm_generation(self.evidence)
         return admission.claim_generation(self.evidence)
@@ -332,6 +345,7 @@ class AdmissionContractTests(AdmissionFixture):
         urlopen.assert_not_called()
         subprocess_run.assert_not_called()
         self.assertEqual(summary["state"], "awaiting_count_tokens")
+        self.assertFalse(summary["count_tokens_claimed"])
         self.assertFalse(summary["generation_dispatched"])
         self.assertEqual(summary["not_after"], admission.PROMO_END_EPOCH)
         self.assertNotIn(PROFILE, json.dumps(summary))
@@ -404,6 +418,7 @@ class AdmissionContractTests(AdmissionFixture):
         self.initialize()
         count = self.root / "count.json"
         self.write_json(count, count_observation(self.evidence))
+        admission.claim_count(self.evidence)
         summary = admission.record_count(self.evidence, count)
         self.assertEqual(summary["state"], "counted")
         self.assertFalse(summary["generation_dispatched"])
@@ -443,6 +458,7 @@ class AdmissionContractTests(AdmissionFixture):
         )
         count = self.root / "generation-count.json"
         self.write_json(count, count_observation(other))
+        admission.claim_count(other)
         admission.record_count(other, count)
         request_path = other / admission.GENERATION_REQUEST
         request = json.loads(request_path.read_text())
@@ -474,14 +490,128 @@ class AdmissionContractTests(AdmissionFixture):
                 admission.initialize(evidence, capacity_file, profile, PLAN, SHA, SHA)
                 count = root / "count.json"
                 self.write_json(count, count_observation(evidence, **{field: value}))
+                admission.claim_count(evidence)
                 with self.assertRaises(admission.AdmissionError):
                     admission.record_count(evidence, count)
                 self.assertEqual(admission.inspect(evidence)["state"], "withdrawn_count_tokens")
+
+    def test_count_claim_is_atomic_and_single_use_across_processes(self):
+        self.initialize()
+        context = multiprocessing.get_context("fork")
+        start = context.Event()
+        results = context.Queue()
+        workers = [
+            context.Process(
+                target=count_claim_worker,
+                args=(self.evidence, start, results),
+            )
+            for _ in range(2)
+        ]
+        for worker in workers:
+            worker.start()
+        start.set()
+        for worker in workers:
+            worker.join(10)
+            self.assertEqual(worker.exitcode, 0)
+        self.assertCountEqual(
+            [results.get(timeout=2) for _ in workers],
+            ["claimed", "closed"],
+        )
+        summary = admission.inspect(self.evidence)
+        self.assertEqual(summary["state"], "count_tokens_claimed")
+        self.assertTrue(summary["count_tokens_claimed"])
+        self.assertFalse(summary["count_tokens_recorded"])
+        with self.assertRaises(admission.AdmissionError):
+            admission.claim_count(self.evidence)
+
+    def test_count_claim_crash_before_journal_replace_is_permanent_ambiguity(self):
+        self.initialize()
+        with mock.patch.object(admission, "_write_journal", side_effect=OSError("crash")):
+            with self.assertRaises(OSError):
+                admission.claim_count(self.evidence)
+        self.assertTrue((self.evidence / admission.COUNT_DISPATCH_CLAIM).exists())
+        with self.assertRaises(admission.AdmissionError):
+            admission.claim_count(self.evidence)
+        with self.assertRaises(admission.AdmissionError):
+            admission.inspect(self.evidence)
+
+    def test_count_failure_is_terminal_and_cannot_be_recorded_or_claimed_again(self):
+        self.initialize()
+        admission.claim_count(self.evidence)
+        failed = self.root / "count-failed.json"
+        self.write_json(
+            failed,
+            count_observation(
+                self.evidence,
+                http_status=401,
+                execution_state="unknown",
+                response=None,
+            ),
+        )
+        with self.assertRaises(admission.AdmissionError):
+            admission.record_count(self.evidence, failed)
+        summary = admission.inspect(self.evidence)
+        self.assertEqual(summary["state"], "withdrawn_count_tokens")
+        self.assertTrue(summary["count_tokens_claimed"])
+        self.assertFalse(summary["count_tokens_recorded"])
+        self.assertEqual(summary["http_status"], 401)
+        self.assertEqual(summary["failure_class"], "count_tokens_failed_no_retry")
+        self.assertTrue((self.evidence / admission.COUNT_OUTCOME_RECEIPT).exists())
+        with self.assertRaises(admission.AdmissionError):
+            admission.record_count(self.evidence, failed)
+        with self.assertRaises(admission.AdmissionError):
+            admission.claim_count(self.evidence)
+
+    def test_count_success_requires_completed_execution_evidence(self):
+        for execution_state in (None, "not_started", "started", "unknown"):
+            with (
+                self.subTest(execution_state=execution_state),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                evidence = root / "evidence"
+                capacity_file = root / "capacity.json"
+                profile_file = root / "profile.txt"
+                self.write_json(capacity_file, capacity())
+                profile_file.write_text(PROFILE + "\n")
+                profile_file.chmod(0o600)
+                admission.initialize(evidence, capacity_file, profile_file, PLAN, SHA, SHA)
+                observation = root / "count.json"
+                self.write_json(
+                    observation,
+                    count_observation(evidence, execution_state=execution_state),
+                )
+                admission.claim_count(evidence)
+                with self.assertRaises(admission.AdmissionError):
+                    admission.record_count(evidence, observation)
+                summary = admission.inspect(evidence)
+                self.assertEqual(summary["state"], "withdrawn_count_tokens")
+                self.assertEqual(summary["failure_class"], "count_tokens_invalid")
+
+    def test_count_failure_rejects_contradictory_completed_execution_evidence(self):
+        self.initialize()
+        failed = self.root / "count-failed-completed.json"
+        self.write_json(
+            failed,
+            count_observation(
+                self.evidence,
+                http_status=503,
+                execution_state="completed",
+                response=None,
+            ),
+        )
+        admission.claim_count(self.evidence)
+        with self.assertRaises(admission.AdmissionError):
+            admission.record_count(self.evidence, failed)
+        summary = admission.inspect(self.evidence)
+        self.assertEqual(summary["state"], "withdrawn_count_tokens")
+        self.assertEqual(summary["failure_class"], "count_tokens_invalid")
 
     def test_single_use_claim_is_atomic_across_processes(self):
         self.initialize()
         count = self.root / "count.json"
         self.write_json(count, count_observation(self.evidence))
+        admission.claim_count(self.evidence)
         admission.record_count(self.evidence, count)
         admission.arm_generation(self.evidence)
         context = multiprocessing.get_context("fork")
@@ -508,6 +638,7 @@ class AdmissionContractTests(AdmissionFixture):
         self.initialize()
         count = self.root / "count.json"
         self.write_json(count, count_observation(self.evidence))
+        admission.claim_count(self.evidence)
         admission.record_count(self.evidence, count)
         admission.arm_generation(self.evidence)
         with mock.patch.object(admission, "_write_journal", side_effect=OSError("crash")):
@@ -528,6 +659,7 @@ class AdmissionContractTests(AdmissionFixture):
             invalid,
             count_observation(self.evidence, request_sha256="0" * 64),
         )
+        admission.claim_count(self.evidence)
         barrier = threading.Barrier(2)
         results = []
 
@@ -555,6 +687,7 @@ class AdmissionContractTests(AdmissionFixture):
         self.initialize()
         count = self.root / "count.json"
         self.write_json(count, count_observation(self.evidence))
+        admission.claim_count(self.evidence)
         admission.record_count(self.evidence, count)
         journal = json.loads((self.evidence / admission.JOURNAL).read_text())
         fence = {
@@ -630,6 +763,7 @@ class AdmissionContractTests(AdmissionFixture):
         self.initialize()
         count = self.root / "count.json"
         self.write_json(count, count_observation(self.evidence))
+        admission.claim_count(self.evidence)
         admission.record_count(self.evidence, count)
         request_path = self.evidence / admission.GENERATION_REQUEST
         request = json.loads(request_path.read_text())
@@ -778,6 +912,7 @@ class AdmissionContractTests(AdmissionFixture):
                 admission.initialize(evidence, capacity_file, profile_file, PLAN, SHA, SHA)
                 count = root / "count.json"
                 self.write_json(count, count_observation(evidence))
+                admission.claim_count(evidence)
                 admission.record_count(evidence, count)
                 admission.arm_generation(evidence)
                 admission.claim_generation(evidence)
@@ -864,6 +999,7 @@ class AdmissionContractTests(AdmissionFixture):
                 )
                 count = root / "count.json"
                 self.write_json(count, count_observation(evidence))
+                admission.claim_count(evidence)
                 admission.record_count(evidence, count)
                 admission.arm_generation(evidence)
                 admission.claim_generation(evidence)
@@ -932,6 +1068,7 @@ class AdmissionContractTests(AdmissionFixture):
         self.initialize(stream=True, max_output_tokens=2)
         count = self.root / "count.json"
         self.write_json(count, count_observation(self.evidence))
+        admission.claim_count(self.evidence)
         admission.record_count(self.evidence, count)
         admission.arm_generation(self.evidence)
         admission.claim_generation(self.evidence)
@@ -991,6 +1128,7 @@ class AdmissionContractTests(AdmissionFixture):
                 )
                 count = root / "count.json"
                 self.write_json(count, count_observation(evidence))
+                admission.claim_count(evidence)
                 admission.record_count(evidence, count)
                 admission.arm_generation(evidence)
                 admission.claim_generation(evidence)
@@ -1048,6 +1186,7 @@ class OfficialRateContractTests(unittest.TestCase):
         response_file = self.root / "count.json"
         self.write_json(response_file, count_observation(self.evidence))
         with mock.patch.object(admission.time, "time", return_value=PROMO_TEST_EPOCH):
+            admission.claim_count(self.evidence)
             return admission.record_count(self.evidence, response_file)
 
     def test_official_rate_changes_exactly_at_2027_cutoff(self):
@@ -1172,9 +1311,10 @@ class OfficialRateContractTests(unittest.TestCase):
             return_value=admission.PROMO_END_EPOCH,
         ):
             with self.assertRaises(admission.AdmissionError):
-                admission.record_count(self.evidence, response_file)
+                admission.claim_count(self.evidence)
         summary = admission.inspect(self.evidence)
         self.assertEqual(summary["state"], "withdrawn_contract_expired")
+        self.assertFalse(summary["count_tokens_claimed"])
         self.assertFalse((self.evidence / admission.GENERATION_REQUEST).exists())
         self.assertFalse((self.evidence / admission.DISPATCH_FENCE).exists())
 

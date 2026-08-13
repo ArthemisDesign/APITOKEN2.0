@@ -2899,11 +2899,13 @@ async fn api_inner(
         route.operation,
         Operation::Generate | Operation::StreamGenerate
     );
-    // Every paid exact-profile calibration generation is intentionally non-replayable. Once its
-    // first transport attempt starts, every ambiguous/provider/startup/protocol outcome is terminal;
-    // pre-send token acquisition failures retain a not-started proof, and free countTokens probes
-    // retain the normal refresh/rotation behavior.
-    let one_shot_generation = generation && calibration_target.is_some();
+    // Every exact-profile calibration operation is intentionally non-replayable. `countTokens` is
+    // free, but it is the admission fence for the paid turn and therefore must prove exactly one
+    // upstream attempt too: no helper restart, OAuth 401 resend, profile rotation or smooth retry.
+    // Pre-send token acquisition failures still retain a not-started proof. Paid generation keeps
+    // its stricter post-dispatch billing/delivery semantics through `one_shot_generation` below.
+    let one_shot_upstream = calibration_target.is_some();
+    let one_shot_generation = generation && one_shot_upstream;
     let requested_image_output_tokens = if generation && model.is_image_generation() {
         image_output_tokens(&value)
     } else {
@@ -3136,7 +3138,7 @@ async fn api_inner(
             None,
             &upstream_user_agent,
             include_antigravity_metadata,
-            if one_shot_generation {
+            if one_shot_upstream {
                 TransportRetryPolicy::NeverReplay
             } else {
                 TransportRetryPolicy::RestartHelperOnce
@@ -3147,7 +3149,7 @@ async fn api_inner(
             Ok(response) => response,
             Err(SendError::Token(TokenError::Invalid)) => {
                 Metrics::inc(&app.metrics.upstream_auth);
-                if one_shot_generation {
+                if one_shot_upstream {
                     return Err(ApiError::unavailable("gemini_calibration_attempt_failed"));
                 }
                 saw_auth = true;
@@ -3158,7 +3160,7 @@ async fn api_inner(
             Err(SendError::Token(TokenError::Temporary | TokenError::Blocked)) => {
                 Metrics::inc(&app.metrics.upstream_5xx);
                 Metrics::inc(&app.metrics.gemini_transport_failures);
-                if one_shot_generation {
+                if one_shot_upstream {
                     return Err(ApiError::unavailable("gemini_calibration_attempt_failed"));
                 }
                 excluded.insert(profile.id().to_string());
@@ -3173,7 +3175,7 @@ async fn api_inner(
             Err(SendError::Transport) => {
                 Metrics::inc(&app.metrics.upstream_5xx);
                 Metrics::inc(&app.metrics.gemini_transport_failures);
-                if one_shot_generation {
+                if one_shot_upstream {
                     return Err(
                         ApiError::unavailable("gemini_calibration_attempt_failed").after_dispatch()
                     );
@@ -3193,7 +3195,7 @@ async fn api_inner(
         // A bearer can be revoked before its local expiry. Refresh once on the same profile. The
         // rejected-token compare in the profile mutex ensures a concurrent 401 burst performs one
         // refresh rather than one refresh per request.
-        if status == StatusCode::UNAUTHORIZED && !one_shot_generation {
+        if status == StatusCode::UNAUTHORIZED && !one_shot_upstream {
             Metrics::inc(&app.metrics.upstream_auth);
             match send_upstream(
                 &profile,
@@ -3411,7 +3413,7 @@ async fn api_inner(
                 Metrics::inc(&app.metrics.gemini_stream_start_failures);
                 excluded.insert(profile.id().to_string());
                 profile.mark_model_failure(&wire_model_id, "stream_start", gateway.config());
-                if one_shot_generation {
+                if one_shot_upstream {
                     return Err(
                         ApiError::unavailable("gemini_calibration_attempt_failed").after_dispatch()
                     );
@@ -3463,7 +3465,7 @@ async fn api_inner(
                 Metrics::inc(&app.metrics.gemini_transport_failures);
                 excluded.insert(profile.id().to_string());
                 profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
-                if one_shot_generation {
+                if one_shot_upstream {
                     return Err(
                         ApiError::unavailable("gemini_calibration_attempt_failed").after_dispatch()
                     );
@@ -3476,7 +3478,7 @@ async fn api_inner(
                 continue;
             }
         };
-        if one_shot_generation && !status.is_success() && status != StatusCode::TOO_MANY_REQUESTS {
+        if one_shot_upstream && !status.is_success() && status != StatusCode::TOO_MANY_REQUESTS {
             return Err((if status.is_client_error() {
                 ApiError::provider_rejected(status)
             } else {
@@ -3540,7 +3542,7 @@ async fn api_inner(
                     ),
                 );
                 profile.cool_model_until(&wire_model_id, pool::now() + delay);
-                if one_shot_generation {
+                if one_shot_upstream {
                     return Err(
                         ApiError::rate_limited(Some(u64::try_from(delay).unwrap_or(1)))
                             .after_dispatch(),
@@ -3613,7 +3615,7 @@ async fn api_inner(
                             );
                         }
                         saw_backend = true;
-                        if one_shot_generation {
+                        if one_shot_upstream {
                             return Err(ApiError::unavailable("gemini_calibration_attempt_failed")
                                 .after_dispatch());
                         }
@@ -3715,7 +3717,7 @@ async fn api_inner(
                     profile.mark_model_failure(&wire_model_id, "protocol", gateway.config());
                 }
                 saw_backend = true;
-                if one_shot_generation {
+                if one_shot_upstream {
                     return Err(
                         ApiError::unavailable("gemini_calibration_attempt_failed").after_dispatch()
                     );
