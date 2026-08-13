@@ -73,6 +73,7 @@ document, update this index.
 - [KIMI_CALIBRATION.md](ops/KIMI_CALIBRATION.md) — dry-run-by-default live calibration run of KIMI: exact request-id attribution, $0.0001 aggregate cap, paid only with explicit permission.
 - [GLM_CALIBRATION.md](ops/GLM_CALIBRATION.md) — fail-closed live calibration run of GLM Coding Plan directly against the provider: quota anchor, 3 models × stream/non-stream matrix, hard cap $0.05.
 - [TRIPO3D_CALIBRATION.md](ops/TRIPO3D_CALIBRATION.md) — dry-run-by-default live calibration run of the Tripo3D plane: single-profile no-spill attribution, version/option/refund matrix, explicit budget with a $5.00 hard cap.
+- [SUNO_CALIBRATION.md](ops/SUNO_CALIBRATION.md) — dry-run-by-default live calibration run of the Suno plane: single-profile no-spill attribution, song/extend/lyrics/stems matrix with reserve-fallback settlement recording, explicit budget with a $1.00 hard cap.
 - [GPT_IMAGE_2_CANARY.md](ops/GPT_IMAGE_2_CANARY.md) — GPT Image 2 canary and publication journal: private exact-profile generation/edit proofs, the fenced public preflight/paid-smoke gate chain, and the GREEN one-shot that authorized publication (the model is now published).
 - [DEVBOT.md](ops/DEVBOT.md) — design of the Telegram dev bot (`apps/devbot`): topics, notifications, event sources (stages 1–3 implemented; stage 4 — business events — ahead).
 - [FRONTEND_VISUAL_QA.md](ops/FRONTEND_VISUAL_QA.md) — frontend visual QA.

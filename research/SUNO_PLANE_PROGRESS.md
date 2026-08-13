@@ -26,6 +26,8 @@ storefront, public docs) is OUT of scope for this task — dormant implementatio
 | Server wiring + admin projection + observability | (this commit) | `crates/server/src/{config,main,poller,http}.rs`: `CLAUDE_API_SUNO_*` strict default-off config (BASE_URL rejected as unknown key, even dormant), `CLAUDE_API_PROVIDER=suno` composition requiring the PG billing authority (degraded zero-capacity gateway on a broken initial roster), 15 s discovery + quota sweep loop, shutdown drain contract; routes `/suno-subs` + `POST /v1/audio/generations` + `POST /v1/audio/uploads` + `GET /v1/audio/generations/{id}[/artifact/{name}]` with per-route body limits and a bounded-404 fallback; `/ready` tracks gateway readiness; 23 fixed-cardinality `claude_api_suno_*` series (zero-label pins by test); `suno-provider` alert group (7 alerts, all gated on `claude_api_suno_enabled == 1`) + same-named MONITORING.md sections + monitoring-config.test.sh pins; charge-mismatch collector provider list gains `suno`; `docs/DEPENDENCIES.md` roster row (engine re-seals on rotation); `crates/server/CLAUDE.md` switch/routes/shutdown contract; 7 new server tests |
 | Admin control room consumer | (this commit) | `apps/admin` subscriptions control room reads `GET /suno-subs` (same-origin fetch, `.catch(() => null)` degradation): `types.ts` `SunoSubsResponse` block mirrored from the serialized producer fields, `logic.ts` `suno*` helper family (status axes = runtime admission: `routable:false` Clerk verdict → `вне ротации`, HARD `quota_walled` → `квота исчерпана`, rate-limit/auth/captcha/transport cooling, probe-less `live:false` → `ждём данные`, stale → `обновляем`; fail-closed BigInt fleet window money; used share from verbatim `monthly_usage`/`monthly_limit` counters only, BigInt Σusage/Σlimit), `suno-capacity-board.tsx` (real monthly window labelled by exact `window_duration_secs`, quota meter with honest `—` reset — the producer publishes none, exact remaining/full API-$, native credits column, one row per identity across multiple stored durations), fleet card `suno` with per-duration rails, banner/`fleetWarn`/`fleetTotal` wiring, `sources.ts` name, `RESERVED_EXACT` reservation, CSS accents; SSR tests for exact money, privacy mask, null/stale/wall/cooling/pending, BigInt sums, one-row-per-identity; NO Caddy route or systemd unit — dormant plane, the page degrades to `нет связи` by design |
 
+| Safe live-runner | (this commit) | `tools/suno_calibration/{run_live.py,test_run_live.py}` + `docs/ops/SUNO_CALIBRATION.md` + docs/README.md index line + manifest §8 row. Through-the-plane runner (never direct): paid creates on `POST /v1/audio/generations` via the forwarding-admin (unmetered) key, evidence from `GET /suno-subs` only. Attribution WITHOUT admin-only calibration headers (the gateway has none — deliberate): structural single-profile roster guard (`fleet.profiles == 1` + exact id), exact internal `generation_id` per create, fleet-counter concurrency proof (`tracked_generations` +1, zero foreign `inflight` at settle) else `attribution: "ambiguous"` + fail-closed stop; per-window rows must agree on one common delta (changed/disagreeing/missing row sets fail closed). Explicit `--budget-usd` REQUIRED with `--execute` (no default — one song = $0.02 derived > $0.0001 admission cap, §7 open question), hard CLI ceiling $1.00; per-leg worst case = published 5 credits (song) or the conservative 50-credit reserve (extend/lyrics/stems) × $0.004; settlement path recorded per leg (`attributed` vs `reserve-fallback` via the `unattributed_settlements` counter); typed non-2xx create = pre-money-boundary (nothing held), transport ambiguity = held-ambiguous, never re-sent even on resume; atomic checkpoint + identity-checked resume; matrix = song × 5 paid models + lyrics, extend/stems conditional on operator-supplied upstream ids and otherwise recorded unavailable; 51 offline tests green (`python3 -m unittest tools.suno_calibration.test_run_live`) |
+
 ## Key research facts (review date 2026-08-12)
 
 - **No public official API** (`platform.suno.com` is partner-gated). Only path: session-cookie
@@ -53,10 +55,13 @@ storefront, public docs) is OUT of scope for this task — dormant implementatio
 
 ## Next action (exactly one)
 
-Safe live-runner (`tools/suno_calibration/`, `docs/ops/SUNO_CALIBRATION.md`). The engine plane
-is fully wired — runtime (forward), server composition, admin projection, metrics and alerts —
-and the admin control room consumer is delivered; everything stays dormant, so the admin board
-renders its null state by design. The live matrix stays blocked on a human-owned subscription.
+Merge chain of the delivered dormant plane (producer-first: migrations 0050/0052 already landed
+first, code follows), then the controlled live matrix with
+`tools/suno_calibration/run_live.py` — BLOCKED on a human-owned Suno Pro/Premier subscription.
+The live matrix must pin: the wire spellings of the paid model ids, the semantics of
+`total_credits_left`/`monthly_usage`/`period`, per-operation costs of extend/lyrics/stems, and
+the CAPTCHA gate frequency. The runner is delivered and offline-tested; nothing else can advance
+without the subscription.
 
 ## Queue
 

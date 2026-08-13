@@ -322,7 +322,7 @@ Each `unknown` fails closed and is cleared only by a controlled live run on our 
 | server wiring | `crates/server/src/{config,main,poller,http}.rs` | done (this commit) |
 | observability / admin projection | `observability/**`, `docs/ops/MONITORING.md`, `GET /suno-subs` | done (this commit) |
 | admin UI consumer | `apps/admin` | done (this commit) — capacity board + fleet card reading `GET /suno-subs`; no Caddy route/systemd unit by design (dormant plane → the page shows the null state) |
-| safe live-runner | `tools/suno_calibration/`, `docs/ops/SUNO_CALIBRATION.md` | pending |
+| safe live-runner | `tools/suno_calibration/`, `docs/ops/SUNO_CALIBRATION.md` | done (this commit) |
 | production activation boundary | systemd/Caddy — default-off pins only | pending (dormant) |
 | live matrix on our subscription | — | **subscription needed (blocked on a human)** |
 
