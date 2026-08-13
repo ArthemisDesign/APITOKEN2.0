@@ -50,13 +50,25 @@ impl GeminiModel {
         self.id == "gemini-3.1-flash-image"
     }
 
+    /// Whether this configured model may appear in the native public model catalogue.
+    ///
+    /// Gemini 3.7 Flash is intentionally configuration-addressable for an isolated exact-SHA
+    /// canary, but stays undiscoverable until owned generation, usage and streaming evidence
+    /// authorizes the separate publication change.
+    pub fn is_publicly_discoverable(&self) -> bool {
+        self.id != "gemini-3.7-flash"
+    }
+
     /// Public effort values accepted by every universal Gemini adapter for this exact model.
     /// The list is provider-owned because private bucket routing is model-specific; clients must
     /// not infer it from a model-name prefix.
     pub fn reasoning_efforts(&self) -> &'static [&'static str] {
         if self.is_image_generation() {
             &[]
-        } else if self.id == "gemini-3.1-pro-preview" {
+        } else if matches!(
+            self.id.as_str(),
+            "gemini-3.7-flash" | "gemini-3.1-pro-preview"
+        ) {
             &["low", "medium", "high"]
         } else {
             &["minimal", "low", "medium", "high"]
@@ -71,6 +83,10 @@ impl GeminiModel {
     pub fn input_modalities(&self) -> &'static [&'static str] {
         if self.id == "gemini-3-flash-preview" {
             &["text", "image", "audio"]
+        } else if self.id == "gemini-3.7-flash" {
+            // Stage 1 admits only the minimal text canary. Official multimodal support does not
+            // become a product capability until its exact subscription wire is proved live.
+            &["text"]
         } else {
             &["text", "image"]
         }
@@ -85,16 +101,16 @@ impl GeminiModel {
     }
 
     pub fn tool_calling(&self) -> bool {
-        !self.is_image_generation()
+        !self.is_image_generation() && self.id != "gemini-3.7-flash"
     }
 
     pub fn structured_outputs(&self) -> bool {
-        !self.is_image_generation()
+        !self.is_image_generation() && self.id != "gemini-3.7-flash"
     }
 
-    /// Resolve the public Developer API model to the exact private Antigravity quota/generation
-    /// bucket. The authenticated Code Assist catalogue encodes Gemini 3 reasoning effort in the
-    /// model id; sending the public family id itself returns `INVALID_ARGUMENT`/`UNAVAILABLE`.
+    /// Resolve the public Developer API model to the private Antigravity quota/generation bucket.
+    /// Reviewed model families use owned generation evidence; a dormant candidate may retain the
+    /// exact public id until live admission proves whether Code Assist exposes a different alias.
     ///
     /// Keep this mapping deliberately closed. A quota row is only availability evidence, not proof
     /// that an arbitrary private id has the public model's semantics or price.
@@ -104,6 +120,20 @@ impl GeminiModel {
             .filter(|level| !level.is_empty())
             .unwrap_or("thinking_level_unspecified");
         match self.id.as_str() {
+            "gemini-3.7-flash" => {
+                if level.eq_ignore_ascii_case("low")
+                    || level.eq_ignore_ascii_case("medium")
+                    || level.eq_ignore_ascii_case("high")
+                    || level.eq_ignore_ascii_case("thinking_level_unspecified")
+                {
+                    // No private Antigravity alias has been observed for this newly released
+                    // family. Keep the dormant route on Google's exact public id until owned live
+                    // generation proves a different wire identity.
+                    Ok("gemini-3.7-flash")
+                } else {
+                    Err("Gemini 3.7 Flash supports low, medium, or high thinking levels.")
+                }
+            }
             "gemini-3-flash-preview" => {
                 if level.eq_ignore_ascii_case("minimal")
                     || level.eq_ignore_ascii_case("low")
@@ -170,13 +200,13 @@ impl GeminiModel {
 
     pub fn default_wire_model_id(&self) -> &str {
         self.wire_model_id(None)
-            .expect("every configured Gemini model must have a reviewed default wire route")
+            .expect("every configured Gemini model must have a closed default wire candidate")
     }
 
-    /// Exact private quota buckets that can serve this public model. Antigravity encodes
-    /// reasoning effort in the bucket id for a few model families, while billing and the public
-    /// API deliberately retain one canonical model id. The control plane publishes this bounded
-    /// mapping so the admin UI can join official quota rows without guessing private aliases.
+    /// Closed quota identities used for this public model. Reviewed Antigravity families encode
+    /// reasoning effort in private bucket ids, while a dormant exact-id candidate retains its
+    /// public id until owned catalogue/generation evidence proves otherwise. Billing and the public
+    /// API deliberately retain one canonical model id.
     pub fn quota_model_ids(&self) -> Vec<&str> {
         match self.id.as_str() {
             "gemini-3-flash-preview" => {
@@ -197,11 +227,13 @@ impl GeminiModel {
 }
 
 /// Product access is intentionally narrower than the global Developer API price catalogue. These
-/// are the only models whose Antigravity wire identity and modality contract have a reviewed
-/// mapping; live generation remains an additional deployment gate before a model enters systemd's
-/// public allowlist.
-const SUBSCRIPTION_MODELS: [&str; 8] = [
+/// are the only models whose Antigravity wire candidate and modality contract have a closed
+/// mapping. A newly released family may be present here only as a dormant exact-id candidate; live
+/// generation remains an additional deployment gate before any model enters systemd's public
+/// allowlist.
+const SUBSCRIPTION_MODELS: [&str; 9] = [
     "gemini-3.1-flash-image",
+    "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3-flash-preview",
@@ -389,6 +421,10 @@ mod tests {
             ["minimal", "low", "medium", "high"]
         );
         assert_eq!(
+            model("gemini-3.7-flash").reasoning_efforts(),
+            ["low", "medium", "high"]
+        );
+        assert_eq!(
             model("gemini-3.1-pro-preview").reasoning_efforts(),
             ["low", "medium", "high"]
         );
@@ -404,6 +440,12 @@ mod tests {
         assert_eq!(model("gemini-3.6-flash").output_modalities(), ["text"]);
         assert!(model("gemini-3.6-flash").tool_calling());
         assert!(model("gemini-3.6-flash").structured_outputs());
+        let flash_37 = model("gemini-3.7-flash");
+        assert_eq!(flash_37.input_modalities(), ["text"]);
+        assert_eq!(flash_37.output_modalities(), ["text"]);
+        assert_eq!(flash_37.reasoning_efforts(), ["low", "medium", "high"]);
+        assert!(!flash_37.tool_calling());
+        assert!(!flash_37.structured_outputs());
         assert_eq!(
             model("gemini-3-flash-preview").input_modalities(),
             ["text", "image", "audio"]
@@ -416,6 +458,7 @@ mod tests {
             SUBSCRIPTION_MODELS,
             [
                 "gemini-3.1-flash-image",
+                "gemini-3.7-flash",
                 "gemini-3.6-flash",
                 "gemini-3.5-flash",
                 "gemini-3-flash-preview",

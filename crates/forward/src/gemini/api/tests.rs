@@ -645,6 +645,28 @@ async fn invoke_uri(app: AppState, uri: &str, body: Value) -> Response {
     }
 }
 
+async fn invoke_exact_uri(
+    app: AppState,
+    uri: &str,
+    body: Value,
+    profile_id: &str,
+    request_id: &str,
+) -> Response {
+    let request = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .header("x-apitoken-calibration-profile", profile_id)
+        .header("x-apitoken-calibration-request-id", request_id)
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    match api_inner(app, "198.51.100.10:12345".parse().unwrap(), request).await {
+        Ok(response) => response,
+        Err(error) => error.into_response(),
+    }
+}
+
 async fn response_json(response: Response) -> Value {
     serde_json::from_slice(
         &to_bytes(response.into_body(), GEMINI_BODY_LIMIT)
@@ -730,7 +752,21 @@ fn camel_case_wins_over_snake_case_duplicate() {
 }
 
 #[test]
-fn public_thinking_levels_select_reviewed_private_wire_buckets() {
+fn public_thinking_levels_select_closed_wire_candidates() {
+    let flash_37 = catalog_model("gemini-3.7-flash");
+    for level in [
+        None,
+        Some("low"),
+        Some("medium"),
+        Some("high"),
+        Some("HIGH"),
+    ] {
+        assert_eq!(flash_37.wire_model_id(level), Ok("gemini-3.7-flash"));
+    }
+    assert!(flash_37.wire_model_id(Some("minimal")).is_err());
+    assert!(flash_37.wire_model_id(Some("future")).is_err());
+    assert_eq!(flash_37.quota_model_ids(), vec!["gemini-3.7-flash"]);
+
     let flash_preview = catalog_model("gemini-3-flash-preview");
     for level in [
         None,
@@ -1359,6 +1395,12 @@ fn model_value_is_native_shaped() {
         audio["apitoken"]["capabilities"]["input_modalities"],
         json!(["text", "image", "audio"])
     );
+
+    model.id = "gemini-3.7-flash".to_string();
+    let dormant = model_value(&model);
+    for removed in ["temperature", "topP", "topK", "maxTemperature"] {
+        assert!(dormant.get(removed).is_none());
+    }
 }
 
 #[test]
@@ -1677,6 +1719,554 @@ async fn tiered_public_model_uses_one_wire_id_for_generate_stream_and_count_toke
             .unwrap();
         assert!(wire.ends_with("gemini-3.6-flash-high"));
     }
+}
+
+#[tokio::test]
+async fn dormant_37_uses_exact_public_wire_for_generate_stream_and_count_tokens() {
+    let non_stream = MockReply::json(
+        StatusCode::OK,
+        json!({
+            "response": {
+                "candidates": [{"content": {"role": "model", "parts": [{"text": "ok"}]}}],
+                "usageMetadata": {"promptTokenCount": 2, "candidatesTokenCount": 1},
+                "modelVersion": "gemini-3.7-flash"
+            }
+        }),
+    );
+    let (stream, _drained) = MockReply::stream(vec![MockChunk::Data(Bytes::from_static(
+        b"data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":2,\"candidatesTokenCount\":1},\"modelVersion\":\"gemini-3.7-flash\"}}\n\n",
+    ))]);
+    let count = MockReply::json(StatusCode::OK, json!({"totalTokens": 2}));
+    let server = start_mock(MockState::with_replies([(
+        PROFILE_A_KEY,
+        vec![non_stream, stream, count],
+    )]))
+    .await;
+    let fixture = gateway_fixture_with_models(
+        &server.upstream,
+        &[None],
+        0,
+        None,
+        OAuthKind::Antigravity,
+        65_536,
+        &["gemini-3.7-flash"],
+    );
+    let app = app_state(fixture.gateway.clone(), None);
+    let ordinary_generation = json!({
+        "contents": [{"role": "user", "parts": [{"text": "reply ok"}]}]
+    });
+    for (uri, body) in [
+        (
+            "/v1beta/models/gemini-3.7-flash:generateContent",
+            ordinary_generation.clone(),
+        ),
+        (
+            "/v1beta/models/gemini-3.7-flash:streamGenerateContent?alt=sse",
+            ordinary_generation,
+        ),
+        (
+            "/v1beta/models/gemini-3.7-flash:countTokens",
+            json!({
+                "generateContentRequest": {
+                    "contents": [{"role": "user", "parts": [{"text": "hello"}]}]
+                }
+            }),
+        ),
+    ] {
+        let response = invoke_uri(app.clone(), uri, body).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+    assert!(server.state.seen().is_empty());
+
+    let generation = json!({
+        "contents": [{"role": "user", "parts": [{"text": "reply ok"}]}],
+        "generationConfig": {"thinkingConfig": {"thinkingLevel": "high"}}
+    });
+
+    for (uri, request_id) in [
+        (
+            "/v1beta/models/gemini-3.7-flash:generateContent",
+            "123e4567-e89b-42d3-a456-426614174001",
+        ),
+        (
+            "/v1beta/models/gemini-3.7-flash:streamGenerateContent?alt=sse",
+            "123e4567-e89b-42d3-a456-426614174002",
+        ),
+    ] {
+        let response = invoke_exact_uri(
+            app.clone(),
+            uri,
+            generation.clone(),
+            "profile_a",
+            request_id,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), GEMINI_BODY_LIMIT)
+            .await
+            .unwrap();
+        assert!(std::str::from_utf8(&body)
+            .unwrap()
+            .contains("gemini-3.7-flash"));
+    }
+
+    let response = invoke_exact_uri(
+        app,
+        "/v1beta/models/gemini-3.7-flash:countTokens",
+        json!({
+            "generateContentRequest": {
+                "model": "models/caller-model",
+                "contents": [{"role": "user", "parts": [{"text": "reply ok"}]}],
+                "generationConfig": {"thinkingConfig": {"thinkingLevel": "high"}}
+            }
+        }),
+        "profile_a",
+        "123e4567-e89b-42d3-a456-426614174003",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response_json(response).await["totalTokens"], 2);
+
+    let seen = server.state.seen();
+    assert_eq!(seen.len(), 3);
+    for request in &seen {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        let wire = body
+            .get("model")
+            .and_then(Value::as_str)
+            .or_else(|| body.pointer("/request/model").and_then(Value::as_str))
+            .unwrap();
+        assert!(wire.ends_with("gemini-3.7-flash"));
+    }
+}
+
+#[tokio::test]
+async fn dormant_37_metered_customer_is_denied_before_upstream_or_reserve() {
+    let server = start_mock(MockState::default()).await;
+    let fixture = gateway_fixture_with_models(
+        &server.upstream,
+        &[None],
+        1,
+        None,
+        OAuthKind::Antigravity,
+        65_536,
+        &["gemini-3.7-flash"],
+    );
+    let (app, billing, path) = billed_app(fixture.gateway.clone()).await;
+    let before = billing.totals().await.unwrap();
+
+    let response = invoke_uri(
+        app,
+        "/v1beta/models/gemini-3.7-flash:generateContent",
+        json!({"contents": [{"role": "user", "parts": [{"text": "reply ok"}]}]}),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(server.state.seen().is_empty());
+    assert_eq!(
+        billing.totals().await.unwrap().reserved_nano,
+        before.reserved_nano
+    );
+    drop(billing);
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn dormant_37_rejects_removed_controls_and_prefill_before_upstream() {
+    let server = start_mock(MockState::with_replies([(
+        PROFILE_A_KEY,
+        vec![MockReply::json(StatusCode::OK, json!({"totalTokens": 2}))],
+    )]))
+    .await;
+    let fixture = gateway_fixture_with_models(
+        &server.upstream,
+        &[None],
+        0,
+        None,
+        OAuthKind::Antigravity,
+        65_536,
+        &["gemini-3.7-flash", "gemini-3.6-flash"],
+    );
+    let app = app_state(fixture.gateway.clone(), None);
+
+    for generation_config in [
+        json!({"temperature": 0.5}),
+        json!({"topP": 0.9}),
+        json!({"top_k": 20}),
+        json!({"candidate_count": 1}),
+        json!({"thinkingConfig": {"thinkingBudget": 64}}),
+        json!({"thinking_config": {"thinking_budget": 64}}),
+    ] {
+        let response = invoke_exact_uri(
+            app.clone(),
+            "/v1beta/models/gemini-3.7-flash:generateContent",
+            json!({
+                "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+                "generationConfig": generation_config
+            }),
+            "profile_a",
+            "123e4567-e89b-42d3-a456-426614174010",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    let response = invoke_exact_uri(
+        app.clone(),
+        "/v1beta/models/gemini-3.7-flash:generateContent",
+        json!({
+            "contents": [
+                {"role": "user", "parts": [{"text": "hello"}]},
+                {"role": "model", "parts": [{"text": "prefilled"}]}
+            ]
+        }),
+        "profile_a",
+        "123e4567-e89b-42d3-a456-426614174011",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // Role inference must match the Antigravity wire normalizer: after an explicit user turn an
+    // omitted role becomes `model`, so this is a forbidden prefill rather than a second user turn.
+    let response = invoke_exact_uri(
+        app.clone(),
+        "/v1beta/models/gemini-3.7-flash:generateContent",
+        json!({
+            "contents": [
+                {"role": "user", "parts": [{"text": "hello"}]},
+                {"parts": [{"text": "prefilled through omitted role"}]}
+            ]
+        }),
+        "profile_a",
+        "123e4567-e89b-42d3-a456-426614174012",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(server.state.seen().is_empty());
+
+    for final_turn in [
+        json!({"role": "user", "parts": []}),
+        json!({"role": "user", "parts": [{"text": "   "}]}),
+        json!({"role": "user", "parts": [{"inlineData": {"mimeType": "image/png", "data": "AA=="}}]}),
+        json!({"role": "user", "parts": [{"functionResponse": {"name": "lookup", "response": {"ok": true}}}]}),
+    ] {
+        let response = invoke_exact_uri(
+            app.clone(),
+            "/v1beta/models/gemini-3.7-flash:generateContent",
+            json!({
+                "contents": [
+                    {"role": "user", "parts": [{"text": "hello"}]},
+                    {"role": "model", "parts": [{"text": "prefilled"}]},
+                    final_turn
+                ]
+            }),
+            "profile_a",
+            "123e4567-e89b-42d3-a456-426614174013",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    let response = invoke_exact_uri(
+        app.clone(),
+        "/v1beta/models/gemini-3.7-flash:countTokens",
+        json!({
+            "generate_content_request": {
+                "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+                "generation_config": {"top_p": 0.9}
+            }
+        }),
+        "profile_a",
+        "123e4567-e89b-42d3-a456-426614174014",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(server.state.seen().is_empty());
+
+    // The removal is model-specific: the existing 3.6 route retains its current sampling and
+    // historical-model-turn behavior.
+    let response = invoke_uri(
+        app,
+        "/v1beta/models/gemini-3.6-flash:countTokens",
+        json!({
+            "generateContentRequest": {
+                "contents": [
+                    {"role": "user", "parts": [{"text": "hello"}]},
+                    {"role": "model", "parts": [{"text": "prefilled"}]}
+                ],
+                "generationConfig": {"topP": 0.9}
+            }
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response_json(response).await["totalTokens"], 2);
+    assert_eq!(server.state.seen().len(), 1);
+}
+
+#[tokio::test]
+async fn dormant_37_exact_generation_does_not_refresh_or_replay_after_401() {
+    let server = start_mock(MockState::with_replies([(
+        PROFILE_A_KEY,
+        vec![
+            MockReply::json(
+                StatusCode::UNAUTHORIZED,
+                json!({"error": {"message": "rejected exact attempt"}}),
+            ),
+            MockReply::json(
+                StatusCode::OK,
+                json!({
+                    "candidates": [{"content": {"role": "model", "parts": [{"text": "must not be used"}]}}],
+                    "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+                }),
+            ),
+        ],
+    )]))
+    .await;
+    let fixture = gateway_fixture_with_models(
+        &server.upstream,
+        &[None],
+        2,
+        None,
+        OAuthKind::Antigravity,
+        65_536,
+        &["gemini-3.7-flash"],
+    );
+
+    let response = invoke_exact_uri(
+        app_state(fixture.gateway.clone(), None),
+        "/v1beta/models/gemini-3.7-flash:generateContent",
+        json!({"contents": [{"role": "user", "parts": [{"text": "reply ok"}]}]}),
+        "profile_a",
+        "123e4567-e89b-42d3-a456-426614174020",
+    )
+    .await;
+
+    assert!(!response.status().is_success());
+    assert!(response
+        .headers()
+        .get(crate::proxy::EXECUTION_STATE_HEADER)
+        .is_none());
+    assert_eq!(server.state.seen().len(), 1);
+}
+
+#[tokio::test]
+async fn every_exact_target_generation_is_one_shot_after_provider_dispatch() {
+    for (index, reply) in [
+        MockReply::json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error": {"status": "UNAVAILABLE"}}),
+        ),
+        MockReply::json(StatusCode::OK, json!({"response": []})),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![
+                reply,
+                MockReply::json(
+                    StatusCode::OK,
+                    json!({
+                        "candidates": [{"content": {"role": "model", "parts": [{"text": "must not be used"}]}}],
+                        "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+                    }),
+                ),
+            ],
+        )]))
+        .await;
+        let fixture = gateway_fixture(&server.upstream, &[None], 2);
+        let request_id = format!("123e4567-e89b-42d3-a456-4266141741{index:02}");
+
+        let response = invoke_exact_calibration(
+            app_state(fixture.gateway.clone(), None),
+            json!({"contents": [{"role": "user", "parts": [{"text": "reply ok"}]}]}),
+            "profile_a",
+            &request_id,
+        )
+        .await;
+
+        assert!(!response.status().is_success());
+        assert!(response
+            .headers()
+            .get(crate::proxy::EXECUTION_STATE_HEADER)
+            .is_none());
+        assert_eq!(server.state.seen().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn exact_target_429_records_bounded_diagnostic_and_cooling_without_replay() {
+    let server = start_mock(MockState::with_replies([(
+        PROFILE_A_KEY,
+        vec![
+            MockReply::Json {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                body: json!({
+                    "error": {
+                        "code": 429,
+                        "status": "RESOURCE_EXHAUSTED",
+                        "message": "private project customer@example.test hit quota",
+                        "details": [
+                            {
+                                "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                                "retryDelay": "7s"
+                            },
+                            {
+                                "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                                "violations": [{
+                                    "subject": "projects/private-project/locations/global",
+                                    "description": "private quota description"
+                                }]
+                            }
+                        ]
+                    }
+                }),
+                retry_after: Some("7"),
+            },
+            MockReply::json(
+                StatusCode::OK,
+                json!({
+                    "candidates": [{
+                        "content": {"role": "model", "parts": [{"text": "must not be used"}]}
+                    }],
+                    "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+                }),
+            ),
+        ],
+    )]))
+    .await;
+    let fixture = gateway_fixture_with_models(
+        &server.upstream,
+        &[None],
+        2,
+        None,
+        OAuthKind::Antigravity,
+        65_536,
+        &["gemini-3.7-flash"],
+    );
+    let app = app_state(fixture.gateway.clone(), None);
+
+    let response = invoke_exact_uri(
+        app.clone(),
+        "/v1beta/models/gemini-3.7-flash:generateContent",
+        json!({"contents": [{"role": "user", "parts": [{"text": "reply ok"}]}]}),
+        "profile_a",
+        "123e4567-e89b-42d3-a456-426614174030",
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok()),
+        Some("7")
+    );
+    assert!(response
+        .headers()
+        .get(crate::proxy::EXECUTION_STATE_HEADER)
+        .is_none());
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["code"], 429);
+    assert_eq!(body["error"]["status"], "RESOURCE_EXHAUSTED");
+    let public_body = body.to_string();
+    assert!(!public_body.contains("customer@example.test"));
+    assert!(!public_body.contains("private-project"));
+    assert!(!public_body.contains("private quota description"));
+    assert_eq!(server.state.seen().len(), 1);
+    assert_eq!(Metrics::get(&app.metrics.upstream_429), 1);
+
+    let now = pool::now();
+    let status = fixture.gateway.operational_status().await;
+    let profile = status
+        .profiles
+        .iter()
+        .find(|profile| profile.id == "profile_a")
+        .expect("exact target profile remains visible in the private operator projection");
+    assert!(profile.model_cooling.iter().any(|cooling| {
+        cooling.model_id == "gemini-3.7-flash" && cooling.cooling_until >= now + 6
+    }));
+}
+
+#[tokio::test]
+async fn exact_target_stream_start_provider_error_is_terminal_and_execution_ambiguous() {
+    let (provider_error, _drained) = MockReply::stream(vec![MockChunk::Data(Bytes::from_static(
+        b"data: {\"error\":{\"code\":429,\"message\":\"quota\"}}\n\n",
+    ))]);
+    let server = start_mock(MockState::with_replies([(
+        PROFILE_A_KEY,
+        vec![
+            provider_error,
+            MockReply::json(StatusCode::OK, json!({"must": "not be used"})),
+        ],
+    )]))
+    .await;
+    let fixture = gateway_fixture(&server.upstream, &[None], 2);
+
+    let response = invoke_exact_uri(
+        app_state(fixture.gateway.clone(), None),
+        "/v1beta/models/gemini-integration-model:streamGenerateContent?alt=sse",
+        json!({"contents": [{"role": "user", "parts": [{"text": "reply ok"}]}]}),
+        "profile_a",
+        "123e4567-e89b-42d3-a456-426614174120",
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(response
+        .headers()
+        .get(crate::proxy::EXECUTION_STATE_HEADER)
+        .is_none());
+    assert_eq!(server.state.seen().len(), 1);
+}
+
+#[tokio::test]
+async fn dormant_37_is_addressable_by_canary_but_absent_from_native_discovery() {
+    let server = start_mock(MockState::with_replies([(
+        PROFILE_A_KEY,
+        Vec::<MockReply>::new(),
+    )]))
+    .await;
+    let fixture = gateway_fixture_with_models(
+        &server.upstream,
+        &[None],
+        0,
+        None,
+        OAuthKind::Antigravity,
+        65_536,
+        &["gemini-3.7-flash", "gemini-3.6-flash"],
+    );
+    let app = app_state(fixture.gateway.clone(), None);
+
+    let list = axum::extract::Request::builder()
+        .method(Method::GET)
+        .uri("/v1beta/models")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .body(Body::empty())
+        .unwrap();
+    let response = api_inner(app.clone(), "198.51.100.10:12345".parse().unwrap(), list)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["models"].as_array().unwrap().len(), 1);
+    assert_eq!(body["models"][0]["name"], "models/gemini-3.6-flash");
+
+    let get = axum::extract::Request::builder()
+        .method(Method::GET)
+        .uri("/v1beta/models/gemini-3.7-flash")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .body(Body::empty())
+        .unwrap();
+    let response = api_inner(app, "198.51.100.10:12345".parse().unwrap(), get)
+        .await
+        .unwrap_err()
+        .into_response();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

@@ -192,10 +192,91 @@ are validated before SSH; the default remains `apitokensale:8794`. The canary mu
 immutable calibration evidence: an isolated process without them is not publication
 evidence.
 
+## Gemini 3.7 Flash admission core
+
+`tools/gemini_calibration/admission.py` is the dormant model's offline, fail-closed one-shot state
+machine. It is not a production transport and cannot launch a canary. It accepts only the exact
+`gemini-3.7-flash` rate row effective at its captured UTC epoch, two equal lowercase 40-hex
+implementation/release SHAs, one explicitly named opaque profile read from a mode-0600 file, and
+that profile's exact paid plan from a healthy `/gemini-subs` snapshot. The current admission
+contract is promo-only and requires an epoch before `2027-01-01T00:00:00Z`, schedule
+`google/gemini-developer-api/2026-08-14`, limits `1048576/65536`, text/audio/cache/output rates
+`750/750/75/75/3750`, zero image rate, `u64::MAX` long-context threshold with identical long rates,
+and per-query Search at `14000000` nanoUSD. The epoch and complete rate row are digest-bound with
+the exact SHAs. A stale or cheaper substituted row is rejected before the evidence directory or
+even the free request is created. Although the effective-rate helper also specifies the official
+post-promo `1500/1500/150/150/7500` row, this contract rejects a 2027-or-later initialization and
+requires a new explicit admission contract. Profile identity stays in the private evidence root
+and is absent from the sanitized summary.
+
+The fixed sequence is:
+
+1. `init` writes only a free `countTokens` request and an append-only contract fence. The v2
+   contract pins canonical byte digests for both exact request bodies, their distinct UUIDv4
+   identities, exact profile/plan/rate/SHA identity, and `not_after=1798761600`
+   (`2027-01-01T00:00:00Z`). Every mutating command holds the same retained sibling-file
+   cross-process lock across load, validation, transition, durable artifact creation, and atomic
+   journal replacement, so a terminal transition cannot race back to success;
+2. `record-count` accepts only a v2 observation naming the exact count request UUID, request digest,
+   profile, and model. It reconstructs the immutable request, records an append-only receipt, and
+   applies the conservative Code Assist bound, including the model's complete input context for
+   provider-owned hidden instructions;
+3. only when that worst-case bound fits the immutable aggregate ceiling does it write the generation
+   request with that same `not_after`; `arm-generation` fully reconstructs and compares it, then
+   persists and fsyncs a permanent preparation fence. Arming does not mean sending. After canary
+   readiness and secret acquisition, the future root transport must invoke `claim-generation`
+   exactly once immediately before its final UTC cutoff check and network open. The append-only
+   claim is never reacquirable; a crash after claim is permanently ambiguous. The CLI
+   default remains `100000` nanoUSD. For this exact promo
+   contract, an operator may explicitly authorize at most `786492000` nanoUSD (`$0.786492`) with
+   `maxOutputTokens <= 16`; this is exactly `1048576 * 750 + 16 * 3750`. Both `record-count` and
+   `arm-generation` and `claim-generation` terminally withdraw if the promo contract has expired.
+   The future root transport must validate the journal, requests, fences, claim, and their digests,
+   then compare its current UTC epoch with the bound `not_after` immediately before the network
+   dispatch. A check before
+   process startup, canary readiness, token acquisition, or request arming is not sufficient; at or
+   after the cutoff it must close without opening the provider connection;
+4. `record-outcome` accepts exactly one v2 terminal observation bound to the claimed request digest,
+   UUID, profile, and plan, and never makes or retries a request. Terminal success also requires
+   exactly one matching profile with the same plan in the contemporaneous healthy authority
+   snapshot and the outcome's explicit immutable-event request/plan binding. Missing, changed, or
+   stale plan proof withdraws the candidate. An append-only terminal receipt preserves the single
+   winner against concurrent observations.
+   A failed HTTP/transport outcome, including authoritative `not_started`, permanently withdraws
+   that exact one-shot. Success requires visible non-thought output, public `modelVersion`, terminal
+   finish and usage, exact response/immutable-event token parity, a valid immutable cost vector and
+   tariff identity, and actual cost within both the preflight bound and aggregate ceiling. The
+   immutable event must carry a canonical positive `priced_ts` satisfying
+   `rate_epoch <= priced_ts < not_after`; the pinned official rate row is reselected and compared at
+   that exact timestamp, and `completed_at` cannot precede it. Stream
+   mode additionally requires at least two candidate-bearing frames.
+
+The current official Gemini 3.7 Flash rate and 1,048,576-token context make the conservative hidden-
+prompt bound larger than the default `100000` nanoUSD even for the smallest useful generation, so
+the default correctly stops at `withdrawn_budget`. The explicitly authorized `786492000` ceiling
+allows one `maxOutputTokens=16` request to be prepared after free `countTokens`; it is a worst-case
+pre-dispatch bound, not a prediction or promise of actual spend. The implementation must not weaken
+the full-context bound or infer a smaller hidden prompt. Once claimed, every failure is terminal and
+the paid generation is never retried.
+
+There is deliberately no root bridge, sudo grant, production trigger, or canary service in this
+Stage 1 core. After its producer commit is merged and its exact implementation SHA is
+`deploy/watchdog` GREEN, a separate delivery commit must pin a fixed root-owned controller and its
+literal sudo rule to that SHA. That controller must own transport and shutdown: verify the exact
+release binary, start only a non-public loopback canary, prove the canary port closed on every exit,
+prove stable Gemini `127.0.0.1:8794/ready` healthy before the overall verdict, invoke the
+single-use `claim-generation` transition only after all preparation is complete, and enforce the
+digest-bound `not_after` in its final check immediately before network dispatch. It may feed
+private files into this state machine, but secrets and the opaque profile value must remain out of
+argv and output. Until that SHA-pinned bridge exists and the budget bound passes, publication
+remains blocked.
+
 ## Offline verification
 
 ```bash
-python3 -m unittest tools.gemini_calibration.test_run_live
+python3 -m unittest \
+  tools.gemini_calibration.test_run_live \
+  tools.gemini_calibration.test_admission
 ```
 
 The tests cover the dry-run, the hard `$40` guard, the authority/FIFO baseline, exact
@@ -204,7 +285,16 @@ long-context/search/image bounds, the full capabilities matrix, byte-identical c
 replay, the forced tool call, public model identity, real non-thought output, terminal
 response/event usage parity, incremental SSE, and fail-closed resume with exact spend
 restoration, including the non-replay reclassification of a proven `minimal` turn with a
-zero thinking token count and the fail-closed rejection of substituted evidence.
+zero thinking token count and the fail-closed rejection of substituted evidence. The admission
+tests separately cover exact SHA/profile/plan binding, exact effective-dated official rates and
+pre-2027 epoch binding, rejection of a substituted cheap tariff before any evidence/request,
+free-count-first ordering, default-budget withdrawal, the exact `786492000` promo ceiling and its
+`maxOutputTokens=16` guard, digest-bound request arming, exact `not_after` propagation through the
+contract/requests/fences/claim, cutoff withdrawal before counting, arming, or claiming, a canonical
+in-epoch `priced_ts` and rate reselection at that timestamp, single-use dispatch claiming,
+concurrent terminal winner behavior, contemporaneous plan proof, terminal failure semantics,
+sanitized inspection, public identity/usage/cost parity, and the multi-frame SSE requirement
+without opening a network connection.
 
 ## Result
 

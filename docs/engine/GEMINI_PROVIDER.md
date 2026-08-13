@@ -686,6 +686,7 @@ text-generation check. A quota row by itself is never admission evidence.
 
 | Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
 |---|---|---|---|
+| `gemini-3.7-flash` | no owned private alias; dormant canary retains the exact public id only | Google announced the Developer API model GA on 2026-08-13, but the 2026-08-14 owned catalogue observation found no 3.7 quota/wire row and no live request has passed on this implementation SHA | Stage 1 dormant only; omitted from production defaults, customer discovery, router presets and storefronts until exact-SHA `countTokens`, generation, incremental SSE, advertised controls and each claimed plan pass. An explicitly configured loopback canary retains its protected `/gemini-subs` conversion row solely for tariff/plan-bound admission evidence |
 | `gemini-3-flash-preview` | public → `gemini-3-flash`; quota admission joins `gemini-3-flash` + `gemini-3-flash-agent`; configured Antigravity origin, 2.2.1 UA, minimal headers; bounded inline PCM WAV fallback uses exact integral `duration × 32` AUDIO tokens and fails closed on ambiguous cache | fresh runner SHA `cc7e5beb…` / byte-identical runtime implementation completed 22 paid turns on Pro+Ultra: minimal/low/medium/high, incremental SSE, final cache reads with 8,170 cached tokens, fresh/replayed 8-token PCM audio and forced function calls; public identity and terminal response/event usage matched | published; generation 5 main catalog, production defaults, router manifest and public web/docs |
 | `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
 | `gemini-3.5-flash` | minimal → `gemini-3.5-flash-extra-low`; low/medium/high/default → `gemini-3.5-flash-low`, with the requested native thinking level preserved | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; default and `alt=json` JSON streams 200; canonical modelVersion and non-zero usage verified on Google AI Pro on 2026-07-31 | published |
@@ -717,8 +718,14 @@ enabled because their exact private routes generated and streamed successfully o
 AI Pro profile. They do not require Ultra. Availability on another profile type must be established
 by that profile's own live calibration rather than inferred from the Developer API catalogue.
 
-Official evidence reviewed on 2026-07-31:
+Official evidence (review date stated per item where newer than the baseline 2026-07-31 review):
 
+- Gemini 3.7 Flash GA identity, 1M/64K limits, `low`/`medium`/`high`, migration rules and
+  introductory-to-standard price boundary:
+  <https://ai.google.dev/gemini-api/docs/latest-model> and
+  <https://ai.google.dev/gemini-api/docs/pricing> (reviewed 2026-08-14); the hosted Gemini Managed
+  Agents “Antigravity agent” described there is not evidence for this gateway's OAuth-backed
+  Antigravity/Code Assist route;
 - model catalogue and lifecycle: <https://ai.google.dev/gemini-api/docs/models>;
 - Gemini 3 Flash Preview shape (1,048,576 input / 65,536 output, text output) and paid rates:
   <https://ai.google.dev/gemini-api/docs/models/gemini-3-flash-preview> and

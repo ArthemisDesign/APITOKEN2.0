@@ -150,6 +150,21 @@ const GEMINI_36_FLASH: &[GeminiPriceEpoch] = &[
         prices: flat_prices(1_500, 1_500, 150, 150, 7_500, SEARCH_GEMINI_3),
     },
 ];
+/// 2027-01-01 00:00:00 UTC, when the official Gemini 3.7 Flash promotional rates end.
+const GEMINI_37_FLASH_STANDARD_RATES_START: i64 = 1_798_761_600;
+
+// Official standard paid-tier promotional and post-promotion rates, rechecked 2026-08-14:
+// https://ai.google.dev/gemini-api/docs/pricing#gemini-3.7-flash
+const GEMINI_37_FLASH: &[GeminiPriceEpoch] = &[
+    GeminiPriceEpoch {
+        effective_from: 0,
+        prices: flat_prices(750, 750, 75, 75, 3_750, SEARCH_GEMINI_3),
+    },
+    GeminiPriceEpoch {
+        effective_from: GEMINI_37_FLASH_STANDARD_RATES_START,
+        prices: flat_prices(1_500, 1_500, 150, 150, 7_500, SEARCH_GEMINI_3),
+    },
+];
 // https://ai.google.dev/gemini-api/docs/pricing#gemini-3.5-flash
 const GEMINI_35_FLASH: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
     effective_from: 0,
@@ -236,6 +251,14 @@ const CATALOG: &[CatalogEntry] = &[
         output_token_limit: 32_768,
         tariff_family: "google/gemini/gemini-3.1-flash-image",
         schedule: GEMINI_31_FLASH_IMAGE,
+    },
+    CatalogEntry {
+        id: "gemini-3.7-flash",
+        display_name: "Gemini 3.7 Flash",
+        input_token_limit: 1_048_576,
+        output_token_limit: 65_536,
+        tariff_family: "google/gemini/gemini-3.7-flash",
+        schedule: GEMINI_37_FLASH,
     },
     CatalogEntry {
         id: "gemini-3.6-flash",
@@ -644,6 +667,24 @@ mod tests {
     fn current_paid_catalog_matches_the_official_rates() {
         let cases = [
             (
+                "gemini-3.7-flash",
+                GeminiPrices {
+                    input: 750,
+                    audio_input: 750,
+                    cached_input: 75,
+                    cached_audio_input: 75,
+                    output: 3_750,
+                    image_output: 0,
+                    long_context_threshold: u64::MAX,
+                    long_input: 750,
+                    long_audio_input: 750,
+                    long_cached_input: 75,
+                    long_cached_audio_input: 75,
+                    long_output: 3_750,
+                    search: GeminiSearchBilling::PerQuery { nano: 14_000_000 },
+                },
+            ),
+            (
                 "gemini-3.1-flash-image",
                 GeminiPrices {
                     input: 500,
@@ -871,6 +912,53 @@ mod tests {
         ));
         assert!(!gemini_tariff_has_future_epoch_at("unknown/family", 0));
         assert!(!gemini_tariff_seed_safe("unknown/family"));
+    }
+
+    #[test]
+    fn gemini_37_flash_promotion_flips_at_the_exact_utc_epoch() {
+        assert_eq!(GEMINI_37_FLASH_STANDARD_RATES_START, 1_798_761_600);
+        assert_eq!(TARIFF_SCHEDULE_ID, "google/gemini-developer-api/2026-08-14");
+
+        let promotional =
+            gemini_prices_at("gemini-3.7-flash", GEMINI_37_FLASH_STANDARD_RATES_START - 1).unwrap();
+        assert_eq!(promotional.input, 750);
+        assert_eq!(promotional.audio_input, 750);
+        assert_eq!(promotional.cached_input, 75);
+        assert_eq!(promotional.cached_audio_input, 75);
+        assert_eq!(promotional.output, 3_750);
+        assert_eq!(
+            promotional.search,
+            GeminiSearchBilling::PerQuery { nano: 14_000_000 }
+        );
+
+        let standard =
+            gemini_prices_at("gemini-3.7-flash", GEMINI_37_FLASH_STANDARD_RATES_START).unwrap();
+        assert_eq!(standard.input, 1_500);
+        assert_eq!(standard.audio_input, 1_500);
+        assert_eq!(standard.cached_input, 150);
+        assert_eq!(standard.cached_audio_input, 150);
+        assert_eq!(standard.output, 7_500);
+        assert_eq!(standard.search, promotional.search);
+        assert_eq!(
+            gemini_prices_at("gemini-3.7-flash", i64::MAX),
+            Some(standard)
+        );
+
+        let family = "google/gemini/gemini-3.7-flash";
+        assert!(gemini_tariff_has_future_epoch_at(
+            family,
+            GEMINI_37_FLASH_STANDARD_RATES_START - 1
+        ));
+        assert!(!gemini_tariff_has_future_epoch_at(
+            family,
+            GEMINI_37_FLASH_STANDARD_RATES_START
+        ));
+        assert!(!gemini_tariff_seed_safe(family));
+        let (matched_family, matched) =
+            gemini_matched_tariff_at("gemini-3.7-flash", GEMINI_37_FLASH_STANDARD_RATES_START)
+                .expect("Gemini 3.7 Flash must have an exact tariff family");
+        assert_eq!(matched_family, family);
+        assert_eq!(matched, standard);
     }
 
     #[test]

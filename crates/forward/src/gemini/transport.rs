@@ -167,6 +167,30 @@ pub(crate) struct TransportRequest<'a> {
     /// request has been running. Any wall-clock value here would be a bet on how long a model is
     /// allowed to think, and some customer's task always eventually exceeds the bet.
     pub(crate) idle_timeout: Option<Duration>,
+    /// Whether a helper failure before response headers may restart the helper and submit the same
+    /// POST again. Exact-target generation is a paid one-shot: helper closure/protocol failure is
+    /// ambiguous after the IPC frame is flushed, so that path must never replay. Auxiliary reads,
+    /// OAuth refresh and ordinary traffic retain the established single helper restart.
+    pub(crate) retry_policy: TransportRetryPolicy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TransportRetryPolicy {
+    RestartHelperOnce,
+    NeverReplay,
+}
+
+impl TransportRetryPolicy {
+    fn max_helper_attempts(self) -> usize {
+        match self {
+            Self::RestartHelperOnce => 2,
+            Self::NeverReplay => 1,
+        }
+    }
+
+    fn may_restart_helper(self, attempt: usize, error: TransportError) -> bool {
+        self == Self::RestartHelperOnce && attempt == 0 && error.helper_restartable()
+    }
 }
 
 pub(crate) enum ProfileTransport {
@@ -347,11 +371,11 @@ impl NodeTransport {
         request: TransportRequest<'_>,
     ) -> Result<TransportResponse, TransportError> {
         let id = self.next_request.fetch_add(1, Ordering::Relaxed).max(1);
-        for attempt in 0..=1 {
+        for attempt in 0..request.retry_policy.max_helper_attempts() {
             let process = self.process().await?;
             match process.request(id, &request).await {
                 Ok(response) => return Ok(response),
-                Err(error) if attempt == 0 && error.helper_restartable() => {
+                Err(error) if request.retry_policy.may_restart_helper(attempt, error) => {
                     self.invalidate(&process).await;
                 }
                 Err(error) => return Err(error),
@@ -1078,6 +1102,37 @@ mod tests {
         })
         .expect("frame serializes");
         assert!(without_bound.get("readTimeoutMs").is_none());
+    }
+
+    #[test]
+    fn exact_one_shot_policy_never_restarts_the_helper() {
+        assert_eq!(TransportRetryPolicy::NeverReplay.max_helper_attempts(), 1);
+        assert_eq!(
+            TransportRetryPolicy::RestartHelperOnce.max_helper_attempts(),
+            2
+        );
+        for error in [
+            TransportError::Spawn,
+            TransportError::Closed,
+            TransportError::Protocol,
+            TransportError::Timeout,
+            TransportError::Network,
+        ] {
+            assert!(!TransportRetryPolicy::NeverReplay.may_restart_helper(0, error));
+            assert!(!TransportRetryPolicy::NeverReplay.may_restart_helper(1, error));
+        }
+
+        for error in [
+            TransportError::Spawn,
+            TransportError::Closed,
+            TransportError::Protocol,
+        ] {
+            assert!(TransportRetryPolicy::RestartHelperOnce.may_restart_helper(0, error));
+            assert!(!TransportRetryPolicy::RestartHelperOnce.may_restart_helper(1, error));
+        }
+        for error in [TransportError::Timeout, TransportError::Network] {
+            assert!(!TransportRetryPolicy::RestartHelperOnce.may_restart_helper(0, error));
+        }
     }
 
     #[test]

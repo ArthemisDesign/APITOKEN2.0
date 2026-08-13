@@ -640,6 +640,23 @@ fn gemini_conversion_catalogue_keeps_long_context_media_and_quota_aliases() {
         values[0]["quota_model_ids"],
         json!(["gemini-3-flash", "gemini-3-flash-agent"])
     );
+
+    let flash_37 = metering::gemini_catalog_at(1_788_220_800)
+        .into_iter()
+        .find(|model| model.id == "gemini-3.7-flash")
+        .unwrap();
+    let flash_37 = forward::GeminiModel {
+        id: flash_37.id.into(),
+        display_name: flash_37.display_name.into(),
+        input_token_limit: flash_37.input_token_limit,
+        output_token_limit: flash_37.output_token_limit,
+        prices: flash_37.prices,
+    };
+    let values = gemini_conversion_models(&[flash_37], 1_788_220_800);
+    assert_eq!(values[0]["rates"]["input_nanousd_per_token"], "750");
+    assert_eq!(values[0]["rates"]["cached_input_nanousd_per_token"], "75");
+    assert_eq!(values[0]["rates"]["output_nanousd_per_token"], "3750");
+    assert_eq!(values[0]["quota_model_ids"], json!(["gemini-3.7-flash"]));
 }
 
 #[test]
@@ -1127,6 +1144,24 @@ async fn tariff_override_route_validates_before_touching_the_authority() {
         .unwrap()
         .contains("google/gemini/gemini-3.6-flash"));
 
+    let (status, body) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/seed",
+        json!({
+            "created_by": "operator-test",
+            "reason": "3.7 route test",
+            "tariff_family": "google/gemini/gemini-3.7-flash"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "invalid");
+    assert!(body["reason"]
+        .as_str()
+        .unwrap()
+        .contains("multi-epoch compiled schedules"));
+
     drop(service);
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1265,6 +1300,23 @@ async fn compiled_tariff_catalog_is_read_only_and_built_from_metering() {
         if promo_active { "3750" } else { "7500" }
     );
     assert_eq!(gemini_36["payload"]["search"]["nano"], "14000000");
+
+    let gemini_37 = by_family["google/gemini/gemini-3.7-flash"];
+    assert_eq!(gemini_37["has_future_epoch"], promo_active);
+    assert_eq!(gemini_37["seed_safe"], false);
+    assert_eq!(
+        gemini_37["payload"]["input"],
+        if promo_active { "750" } else { "1500" }
+    );
+    assert_eq!(
+        gemini_37["payload"]["cached_input"],
+        if promo_active { "75" } else { "150" }
+    );
+    assert_eq!(
+        gemini_37["payload"]["output"],
+        if promo_active { "3750" } else { "7500" }
+    );
+    assert_eq!(gemini_37["payload"]["search"]["nano"], "14000000");
 
     // Sonnet 5 intro pricing is time-bounded: the family is published only while the compiled
     // epoch has not flipped (2026-09-01T00:00:00Z = 1788220800).

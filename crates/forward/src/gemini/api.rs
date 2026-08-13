@@ -4,7 +4,7 @@ use super::billing::{begin_admission, AdmissionError, GeminiAdmission};
 use super::config::GeminiModel;
 use super::pool::{GeminiGateway, GeminiLease, GeminiProfile, TokenError};
 use super::rate_limit::{self, RateLimitDiagnostic};
-use super::transport::{TransportError, TransportResponse};
+use super::transport::{TransportError, TransportResponse, TransportRetryPolicy};
 use super::REPLAYED_FUNCTION_CALL_THOUGHT_SIGNATURE;
 use crate::metrics::Metrics;
 use crate::proxy::{with_not_started, TerminalErrorReason};
@@ -305,6 +305,10 @@ struct ApiError {
     /// Public google.rpc.ErrorInfo.reason echoed in `error.details`. None omits the detail, which
     /// matches Google for generic malformed-request errors.
     error_info_reason: Option<&'static str>,
+    /// True only while the plane can authoritatively prove that provider execution never started.
+    /// Exact-target transport/status/body failures after the first send are ambiguous even though
+    /// no public response byte was emitted and an optional customer reserve will be refunded.
+    execution_not_started: bool,
 }
 
 impl ApiError {
@@ -316,6 +320,7 @@ impl ApiError {
             retry_after: None,
             reason: "invalid_request",
             error_info_reason: None,
+            execution_not_started: true,
         }
     }
 
@@ -340,6 +345,7 @@ impl ApiError {
             retry_after: None,
             reason: "resource_not_found",
             error_info_reason: None,
+            execution_not_started: true,
         }
     }
 
@@ -351,6 +357,7 @@ impl ApiError {
             retry_after: Some(2),
             reason,
             error_info_reason: None,
+            execution_not_started: true,
         }
     }
 
@@ -362,6 +369,7 @@ impl ApiError {
             retry_after: retry_after.or(Some(60)),
             reason: "gemini_capacity_exhausted",
             error_info_reason: Some("RATE_LIMIT_EXCEEDED"),
+            execution_not_started: true,
         }
     }
 
@@ -403,7 +411,13 @@ impl ApiError {
             retry_after: None,
             reason: "gemini_request_rejected",
             error_info_reason: None,
+            execution_not_started: true,
         }
+    }
+
+    fn after_dispatch(mut self) -> Self {
+        self.execution_not_started = false;
+        self
     }
 
     fn into_response(self) -> Response {
@@ -447,10 +461,14 @@ impl ApiError {
         response
             .extensions_mut()
             .insert(TerminalErrorReason(self.reason));
-        // Все Err-ветки api_inner — отказ ДО первого публичного байта: admission ещё в Option и
-        // при дропе закрывает reserve через HoldGuard (refund), mark_delivering на Err-путях
-        // не выполнялся. Конструкторы ApiError всегда не-2xx → контракт not_started выполнен.
-        with_not_started(response)
+        // Local/pre-send errors satisfy the internal retry proof. A one-shot exact generation
+        // switches this flag off immediately after entering the transport: helper failure, HTTP
+        // status and response decoding can no longer prove that Google did not execute the POST.
+        if self.execution_not_started {
+            with_not_started(response)
+        } else {
+            response
+        }
     }
 }
 
@@ -466,6 +484,7 @@ impl From<AdmissionError> for ApiError {
                 retry_after: None,
                 reason: "invalid_key",
                 error_info_reason: Some("API_KEY_INVALID"),
+                execution_not_started: true,
             },
             AdmissionError::Unavailable => Self::unavailable("gemini_admission_unavailable"),
             // Reseller balance is a documented account state the customer must be able to detect and
@@ -477,6 +496,7 @@ impl From<AdmissionError> for ApiError {
                 retry_after: None,
                 reason: "billing_limit",
                 error_info_reason: None,
+                execution_not_started: true,
             },
         }
     }
@@ -547,7 +567,7 @@ fn model_version(id: &str) -> String {
 fn model_value(model: &GeminiModel) -> Value {
     // Mirror the native ListModels/GetModel resource shape, including the sampling defaults Google
     // publishes for the Gemini families, so the catalogue is not a thin, obviously-synthetic subset.
-    json!({
+    let mut value = json!({
         "name": format!("models/{}", model.id),
         "version": model_version(&model.id),
         "displayName": model.display_name,
@@ -557,10 +577,6 @@ fn model_value(model: &GeminiModel) -> Value {
         "supportedGenerationMethods": [
             "generateContent", "streamGenerateContent", "countTokens"
         ],
-        "temperature": 1.0,
-        "topP": 0.95,
-        "topK": 64,
-        "maxTemperature": 2.0,
         "apitoken": {
             "limits": {
                 "context": model.input_token_limit,
@@ -577,7 +593,17 @@ fn model_value(model: &GeminiModel) -> Value {
                 "streaming": true
             }
         }
-    })
+    });
+    if model.id != "gemini-3.7-flash" {
+        let object = value
+            .as_object_mut()
+            .expect("the native Gemini model resource is always an object");
+        object.insert("temperature".to_string(), json!(1.0));
+        object.insert("topP".to_string(), json!(0.95));
+        object.insert("topK".to_string(), json!(64));
+        object.insert("maxTemperature".to_string(), json!(2.0));
+    }
+    value
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1400,6 +1426,9 @@ fn validate_generation_request(body: &Value, model: &GeminiModel) -> Result<(), 
             "CACHED_CONTENT_UNSUPPORTED",
         ));
     }
+    if model.id == "gemini-3.7-flash" {
+        validate_gemini_37_request(body)?;
+    }
     let Some(tools) = body.get("tools").and_then(Value::as_array) else {
         return Ok(());
     };
@@ -1434,6 +1463,70 @@ fn validate_generation_request(body: &Value, model: &GeminiModel) -> Result<(), 
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// Gemini 3.7 removed legacy sampling and numeric thinking-budget controls. The private Code
+/// Assist wrapper would otherwise accept and silently discard some of them, which would make the
+/// public request appear honored when it was not. The same release also removed prefilled model
+/// turns: a transcript may contain historical model content, but its final turn must be user input
+/// with non-empty text. Image-only and tool-result continuations remain fail-closed until the live
+/// capability gate proves their exact 3.7 wire contract.
+fn validate_gemini_37_request(body: &Value) -> Result<(), ApiError> {
+    if let Some(generation_config) = body.get("generationConfig") {
+        let generation_config = generation_config.as_object().ok_or_else(|| {
+            ApiError::invalid("The generationConfig field must be a JSON object.")
+        })?;
+        for field in ["temperature", "topP", "topK", "candidateCount"] {
+            if generation_config.contains_key(field) {
+                return Err(ApiError::invalid(
+                    "Gemini 3.7 Flash does not support legacy sampling or candidateCount controls.",
+                ));
+            }
+        }
+        if let Some(thinking_config) = generation_config.get("thinkingConfig") {
+            let thinking_config = thinking_config.as_object().ok_or_else(|| {
+                ApiError::invalid("The generationConfig.thinkingConfig field must be an object.")
+            })?;
+            if thinking_config.contains_key("thinkingBudget") {
+                return Err(ApiError::invalid(
+                    "Gemini 3.7 Flash supports thinkingLevel, not thinkingBudget.",
+                ));
+            }
+        }
+    }
+    // Validate the same effective transcript that the Antigravity wrapper will dispatch. Merely
+    // treating an omitted final role as `user` is unsafe after an explicit user turn: the private
+    // normalizer infers that omitted role as `model`, which would otherwise reopen model prefill.
+    let mut normalized = body
+        .as_object()
+        .cloned()
+        .ok_or_else(|| ApiError::invalid("The request body must be a JSON object."))?;
+    normalize_private_content_roles(&mut normalized);
+    let final_content = normalized
+        .get("contents")
+        .and_then(Value::as_array)
+        .and_then(|contents| contents.last())
+        .ok_or_else(|| {
+            ApiError::invalid("Gemini 3.7 Flash requires a final user turn with non-empty text.")
+        })?;
+    let final_role = final_content.get("role").and_then(Value::as_str);
+    let has_non_empty_text = final_content
+        .get("parts")
+        .and_then(Value::as_array)
+        .is_some_and(|parts| {
+            parts.iter().any(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.trim().is_empty())
+            })
+        });
+    if final_role != Some("user") || !has_non_empty_text {
+        return Err(ApiError::invalid(
+            "Gemini 3.7 Flash requires a final user turn with non-empty text; prefilled model, \
+             image-only, and tool-result-only final turns are not admitted.",
+        ));
     }
     Ok(())
 }
@@ -2246,6 +2339,7 @@ async fn send_upstream(
     rejected_token: Option<&str>,
     user_agent: &str,
     include_antigravity_metadata: bool,
+    retry_policy: TransportRetryPolicy,
 ) -> Result<(TransportResponse, gemini_credential::SecretString), SendError> {
     let access_token = match rejected_token {
         Some(rejected) => profile.access_token_after_rejection(rejected).await,
@@ -2278,6 +2372,7 @@ async fn send_upstream(
             "application/json",
             body,
             profile.generation_idle(),
+            retry_policy,
         )
         .await
         .map_err(|_| SendError::Transport)?;
@@ -2315,6 +2410,7 @@ async fn stream_response(
         + Send
         + Unpin
         + 'static,
+    post_dispatch_ambiguous: bool,
 ) -> Result<Response, ApiError> {
     let framing = translator.framing;
     // Register with the shutdown barrier before the durable delivery transition. Otherwise a
@@ -2322,8 +2418,25 @@ async fn stream_response(
     // this narrow await window. No downstream byte is exposed until both steps have succeeded.
     let background = gateway
         .track_background_task()
-        .map_err(|_| ApiError::unavailable("gemini_shutdown"))?;
-    admission.mark_delivering().await?;
+        .map_err(|_| ApiError::unavailable("gemini_shutdown"))
+        .map_err(|error| {
+            if post_dispatch_ambiguous {
+                error.after_dispatch()
+            } else {
+                error
+            }
+        })?;
+    admission
+        .mark_delivering()
+        .await
+        .map_err(ApiError::from)
+        .map_err(|error| {
+            if post_dispatch_ambiguous {
+                error.after_dispatch()
+            } else {
+                error
+            }
+        })?;
     let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
     tokio::spawn(async move {
         let _background = background;
@@ -2691,10 +2804,19 @@ async fn api_inner(
 
     if route.operation == Operation::Models {
         let page = parse_list_models_query(request.uri().query())?;
-        let all = &gateway.config().models;
+        let all = gateway
+            .config()
+            .models
+            .iter()
+            .filter(|model| model.is_publicly_discoverable())
+            .collect::<Vec<_>>();
         let start = page.start.min(all.len());
         let end = start.saturating_add(page.size).min(all.len());
-        let models = all[start..end].iter().map(model_value).collect::<Vec<_>>();
+        let models = all[start..end]
+            .iter()
+            .copied()
+            .map(model_value)
+            .collect::<Vec<_>>();
         let mut body = serde_json::Map::new();
         body.insert("models".to_string(), json!(models));
         if end < all.len() {
@@ -2710,9 +2832,18 @@ async fn api_inner(
         .cloned()
         .ok_or_else(ApiError::not_found)?;
     if route.operation == Operation::Model {
+        if !model.is_publicly_discoverable() {
+            return Err(ApiError::not_found());
+        }
         // A native GetModel ignores query parameters entirely.
         let _admission = pending.without_reserve();
         return Ok((StatusCode::OK, axum::Json(model_value(&model))).into_response());
+    }
+    // Stage 1 keeps 3.7 dormant even when an operator has added it to this process's explicit
+    // model configuration. The admin-only exact target is the sole upstream-bound canary lane;
+    // ordinary admin/customer calls fail before body buffering, reserve, profile selection or IO.
+    if model.id == "gemini-3.7-flash" && calibration_target.is_none() {
+        return Err(ApiError::not_found());
     }
     let rate_limit_request_id = pending.request_id().to_string();
 
@@ -2768,6 +2899,11 @@ async fn api_inner(
         route.operation,
         Operation::Generate | Operation::StreamGenerate
     );
+    // Every paid exact-profile calibration generation is intentionally non-replayable. Once its
+    // first transport attempt starts, every ambiguous/provider/startup/protocol outcome is terminal;
+    // pre-send token acquisition failures retain a not-started proof, and free countTokens probes
+    // retain the normal refresh/rotation behavior.
+    let one_shot_generation = generation && calibration_target.is_some();
     let requested_image_output_tokens = if generation && model.is_image_generation() {
         image_output_tokens(&value)
     } else {
@@ -3000,23 +3136,48 @@ async fn api_inner(
             None,
             &upstream_user_agent,
             include_antigravity_metadata,
+            if one_shot_generation {
+                TransportRetryPolicy::NeverReplay
+            } else {
+                TransportRetryPolicy::RestartHelperOnce
+            },
         )
         .await
         {
             Ok(response) => response,
             Err(SendError::Token(TokenError::Invalid)) => {
                 Metrics::inc(&app.metrics.upstream_auth);
+                if one_shot_generation {
+                    return Err(ApiError::unavailable("gemini_calibration_attempt_failed"));
+                }
                 saw_auth = true;
                 excluded.insert(profile.id().to_string());
                 profile.mark_auth_failed(pool::now() + gateway.config().auth_quarantine_secs);
                 continue;
             }
-            Err(
-                SendError::Token(TokenError::Temporary | TokenError::Blocked)
-                | SendError::Transport,
-            ) => {
+            Err(SendError::Token(TokenError::Temporary | TokenError::Blocked)) => {
                 Metrics::inc(&app.metrics.upstream_5xx);
                 Metrics::inc(&app.metrics.gemini_transport_failures);
+                if one_shot_generation {
+                    return Err(ApiError::unavailable("gemini_calibration_attempt_failed"));
+                }
+                excluded.insert(profile.id().to_string());
+                profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+                retry_failures += 1;
+                if retry_failures > gateway.config().max_transport_retries {
+                    elog::error("gemini", "gemini request failed: transport unavailable");
+                    return Err(ApiError::unavailable("gemini_transport_unavailable"));
+                }
+                continue;
+            }
+            Err(SendError::Transport) => {
+                Metrics::inc(&app.metrics.upstream_5xx);
+                Metrics::inc(&app.metrics.gemini_transport_failures);
+                if one_shot_generation {
+                    return Err(
+                        ApiError::unavailable("gemini_calibration_attempt_failed").after_dispatch()
+                    );
+                }
                 excluded.insert(profile.id().to_string());
                 profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
                 retry_failures += 1;
@@ -3032,7 +3193,7 @@ async fn api_inner(
         // A bearer can be revoked before its local expiry. Refresh once on the same profile. The
         // rejected-token compare in the profile mutex ensures a concurrent 401 burst performs one
         // refresh rather than one refresh per request.
-        if status == StatusCode::UNAUTHORIZED {
+        if status == StatusCode::UNAUTHORIZED && !one_shot_generation {
             Metrics::inc(&app.metrics.upstream_auth);
             match send_upstream(
                 &profile,
@@ -3042,6 +3203,7 @@ async fn api_inner(
                 Some(&rejected_token),
                 &upstream_user_agent,
                 include_antigravity_metadata,
+                TransportRetryPolicy::RestartHelperOnce,
             )
             .await
             {
@@ -3130,13 +3292,22 @@ async fn api_inner(
                         "gemini",
                         "gemini request failed: audio usage metadata missing",
                     );
-                    return Err(ApiError::unavailable("gemini_audio_usage_metadata_missing"));
+                    let error = ApiError::unavailable("gemini_audio_usage_metadata_missing");
+                    return Err(if one_shot_generation {
+                        error.after_dispatch()
+                    } else {
+                        error
+                    });
                 }
                 Ok(Err(())) | Err(_) => {
                     Metrics::inc(&app.metrics.upstream_5xx);
                     Metrics::inc(&app.metrics.gemini_stream_start_failures);
                     excluded.insert(profile.id().to_string());
                     profile.mark_model_failure(&wire_model_id, "stream_start", gateway.config());
+                    if one_shot_generation {
+                        return Err(ApiError::unavailable("gemini_calibration_attempt_failed")
+                            .after_dispatch());
+                    }
                     saw_backend = true;
                     retry_failures += 1;
                     if retry_failures > gateway.config().max_transport_retries {
@@ -3147,6 +3318,16 @@ async fn api_inner(
                 }
             };
             if let Some(code) = translator.provider_error {
+                if one_shot_generation && code != 429 {
+                    return Err((if (400..500).contains(&code) {
+                        ApiError::provider_rejected(
+                            StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST),
+                        )
+                    } else {
+                        ApiError::unavailable("gemini_calibration_attempt_failed")
+                    })
+                    .after_dispatch());
+                }
                 match code {
                     401 | 403 => {
                         Metrics::inc(&app.metrics.upstream_auth);
@@ -3186,6 +3367,12 @@ async fn api_inner(
                             ),
                         );
                         profile.cool_model_until(&wire_model_id, pool::now() + delay);
+                        if one_shot_generation {
+                            return Err(ApiError::rate_limited(Some(
+                                u64::try_from(delay).unwrap_or(1),
+                            ))
+                            .after_dispatch());
+                        }
                         continue;
                     }
                     408 | 409 | 425 => {
@@ -3224,6 +3411,11 @@ async fn api_inner(
                 Metrics::inc(&app.metrics.gemini_stream_start_failures);
                 excluded.insert(profile.id().to_string());
                 profile.mark_model_failure(&wire_model_id, "stream_start", gateway.config());
+                if one_shot_generation {
+                    return Err(
+                        ApiError::unavailable("gemini_calibration_attempt_failed").after_dispatch()
+                    );
+                }
                 saw_backend = true;
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
@@ -3259,6 +3451,7 @@ async fn api_inner(
                 translator,
                 initial,
                 stream,
+                one_shot_generation,
             )
             .await;
         }
@@ -3270,6 +3463,11 @@ async fn api_inner(
                 Metrics::inc(&app.metrics.gemini_transport_failures);
                 excluded.insert(profile.id().to_string());
                 profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+                if one_shot_generation {
+                    return Err(
+                        ApiError::unavailable("gemini_calibration_attempt_failed").after_dispatch()
+                    );
+                }
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
                     elog::error("gemini", "gemini request failed: response read failed");
@@ -3278,6 +3476,14 @@ async fn api_inner(
                 continue;
             }
         };
+        if one_shot_generation && !status.is_success() && status != StatusCode::TOO_MANY_REQUESTS {
+            return Err((if status.is_client_error() {
+                ApiError::provider_rejected(status)
+            } else {
+                ApiError::unavailable("gemini_calibration_attempt_failed")
+            })
+            .after_dispatch());
+        }
         match status.as_u16() {
             401 => {
                 Metrics::inc(&app.metrics.upstream_auth);
@@ -3334,6 +3540,12 @@ async fn api_inner(
                     ),
                 );
                 profile.cool_model_until(&wire_model_id, pool::now() + delay);
+                if one_shot_generation {
+                    return Err(
+                        ApiError::rate_limited(Some(u64::try_from(delay).unwrap_or(1)))
+                            .after_dispatch(),
+                    );
+                }
                 continue;
             }
             408 | 409 | 425 => {
@@ -3382,7 +3594,12 @@ async fn api_inner(
                             "gemini",
                             "gemini request failed: audio usage metadata missing",
                         );
-                        return Err(ApiError::unavailable("gemini_audio_usage_metadata_missing"));
+                        let error = ApiError::unavailable("gemini_audio_usage_metadata_missing");
+                        return Err(if one_shot_generation {
+                            error.after_dispatch()
+                        } else {
+                            error
+                        });
                     }
                     Err(ResponseDecodeError::Malformed) => {
                         Metrics::inc(&app.metrics.upstream_5xx);
@@ -3396,6 +3613,10 @@ async fn api_inner(
                             );
                         }
                         saw_backend = true;
+                        if one_shot_generation {
+                            return Err(ApiError::unavailable("gemini_calibration_attempt_failed")
+                                .after_dispatch());
+                        }
                         retry_failures += 1;
                         if retry_failures > gateway.config().max_transport_retries {
                             elog::error("gemini", "gemini request failed: malformed response");
@@ -3450,12 +3671,27 @@ async fn api_inner(
                     Metrics::inc(&app.metrics.gemini_malformed_responses);
                     profile.mark_model_failure(&wire_model_id, "usage_metadata", gateway.config());
                     elog::error("gemini", "gemini request failed: usage metadata missing");
-                    return Err(ApiError::unavailable("gemini_usage_metadata_missing"));
+                    let error = ApiError::unavailable("gemini_usage_metadata_missing");
+                    return Err(if one_shot_generation {
+                        error.after_dispatch()
+                    } else {
+                        error
+                    });
                 }
                 let admission = admission
                     .take()
                     .expect("Gemini admission exists after upstream selection");
-                admission.mark_delivering().await?;
+                admission
+                    .mark_delivering()
+                    .await
+                    .map_err(ApiError::from)
+                    .map_err(|error| {
+                        if one_shot_generation {
+                            error.after_dispatch()
+                        } else {
+                            error
+                        }
+                    })?;
                 let request_probe = admission.requests_post_turn_probe();
                 if let Some(event) = admission.settle(&model, usage.as_ref(), profile.id()) {
                     profile.record_turn(event);
@@ -3479,6 +3715,11 @@ async fn api_inner(
                     profile.mark_model_failure(&wire_model_id, "protocol", gateway.config());
                 }
                 saw_backend = true;
+                if one_shot_generation {
+                    return Err(
+                        ApiError::unavailable("gemini_calibration_attempt_failed").after_dispatch()
+                    );
+                }
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
                     elog::error("gemini", "gemini request failed: backend protocol error");

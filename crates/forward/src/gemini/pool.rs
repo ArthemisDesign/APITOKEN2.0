@@ -3,7 +3,9 @@
 use super::calibration::{self, WindowCalibration, FRACTION_SCALE};
 use super::config::{GeminiConfig, GeminiProfileSpec, GeminiProfilesFile};
 use super::rate_limit::RateLimitDiagnostic;
-use super::transport::{attest_node_binary, ProfileTransport, TransportRequest, TransportResponse};
+use super::transport::{
+    attest_node_binary, ProfileTransport, TransportRequest, TransportResponse, TransportRetryPolicy,
+};
 use crate::billing::AsyncBilling;
 use crate::state::{ActiveTaskGuard, ActiveTaskTracker};
 use anyhow::{bail, Context};
@@ -434,6 +436,7 @@ impl GeminiProfile {
         content_type: &'static str,
         body: bytes::Bytes,
         idle_timeout: Option<Duration>,
+        retry_policy: TransportRetryPolicy,
     ) -> Result<TransportResponse, super::transport::TransportError> {
         let mut headers = vec![
             (
@@ -476,6 +479,7 @@ impl GeminiProfile {
                 headers,
                 body,
                 idle_timeout,
+                retry_policy,
             })
             .await
     }
@@ -556,6 +560,7 @@ impl GeminiProfile {
                 headers,
                 body: bytes::Bytes::copy_from_slice(form.as_bytes()),
                 idle_timeout: Some(self.auxiliary_idle),
+                retry_policy: TransportRetryPolicy::RestartHelperOnce,
             })
             .await
             .map_err(|_| TokenError::Temporary)?;
@@ -730,7 +735,7 @@ impl GeminiProfile {
         now: i64,
         generation: bool,
     ) -> i64 {
-        self.cooling_until_inner(model_id, cfg, now, generation, false)
+        self.cooling_until_inner(model_id, cfg, now, generation, false, true)
     }
 
     /// Cooling that may legitimately deny a request: only what Google itself reported as exhausted
@@ -743,7 +748,21 @@ impl GeminiProfile {
         now: i64,
         generation: bool,
     ) -> i64 {
-        self.cooling_until_inner(model_id, cfg, now, generation, true)
+        self.cooling_until_inner(model_id, cfg, now, generation, true, true)
+    }
+
+    /// Exact-profile admission may probe a newly dormant model before Google's quota catalogue
+    /// publishes a matching row. It still honors every ordinary profile/model cooling axis and an
+    /// explicit matching zero; only the absence of that model from an otherwise fresh catalogue is
+    /// neutral. Normal customer routing retains the stricter availability-catalogue gate above.
+    fn operator_cooling_until_for(
+        &self,
+        model_id: &str,
+        cfg: &GeminiConfig,
+        now: i64,
+        generation: bool,
+    ) -> i64 {
+        self.cooling_until_inner(model_id, cfg, now, generation, false, false)
     }
 
     fn cooling_until_inner(
@@ -753,6 +772,7 @@ impl GeminiProfile {
         now: i64,
         generation: bool,
         hard_only: bool,
+        missing_quota_blocks: bool,
     ) -> i64 {
         let env = if hard_only {
             0
@@ -780,6 +800,7 @@ impl GeminiProfile {
                 cfg.health_probe_interval_secs
                     .saturating_mul(2)
                     .clamp(60, 3_600) as i64,
+                missing_quota_blocks,
             ),
         )
     }
@@ -844,6 +865,7 @@ impl GeminiProfile {
         cfg: &GeminiConfig,
         now: i64,
         stale_secs: i64,
+        missing_quota_blocks: bool,
     ) -> i64 {
         let quota = self
             .quota
@@ -863,7 +885,13 @@ impl GeminiProfile {
         if matching.is_empty() {
             // A fresh official quota catalogue is also a per-profile availability catalogue. Once
             // it becomes stale, fail open and let the generation endpoint provide fresh evidence.
-            return if stale_at > now { stale_at } else { 0 };
+            // The exact-profile operator canary is the one narrower exception: it needs one
+            // generation attempt to establish a newly dormant model before a quota row exists.
+            return if missing_quota_blocks && stale_at > now {
+                stale_at
+            } else {
+                0
+            };
         }
         let explicitly_zero = matching.iter().filter(|bucket| {
             bucket.remaining_amount == Some(0) || bucket.remaining_fraction == Some(0.0)
@@ -1178,6 +1206,7 @@ impl GeminiProfile {
                     "application/json",
                     bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
                     Some(self.auxiliary_idle),
+                    TransportRetryPolicy::RestartHelperOnce,
                 )
                 .await;
             match response {
@@ -1245,6 +1274,7 @@ impl GeminiProfile {
                 "application/json",
                 bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
                 Some(self.auxiliary_idle),
+                TransportRetryPolicy::RestartHelperOnce,
             )
             .await;
         let Ok(response) = response else {
@@ -1310,6 +1340,7 @@ impl GeminiProfile {
                 "application/json",
                 bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
                 Some(self.auxiliary_idle),
+                TransportRetryPolicy::RestartHelperOnce,
             )
             .await;
         let Ok(response) = response else {
@@ -2291,7 +2322,7 @@ impl GeminiGateway {
         let profile = matches.next()?;
         if matches.next().is_some()
             || !profile.authenticated.load(Ordering::Acquire)
-            || profile.cooling_until_for(model_id, &self.cfg, now, generation) > now
+            || profile.operator_cooling_until_for(model_id, &self.cfg, now, generation) > now
         {
             return None;
         }
@@ -3124,7 +3155,7 @@ mod tests {
             .select("gemini-test", &HashSet::new(), None, true)
             .is_none());
         assert_eq!(
-            profile.quota_blocked_until("gemini-test", gateway.config(), pool::now(), 600),
+            profile.quota_blocked_until("gemini-test", gateway.config(), pool::now(), 600, true),
             parse_rfc3339_seconds("2099-01-01T00:00:00Z").unwrap(),
         );
         let _ = fs::remove_dir_all(dir);
@@ -3573,6 +3604,60 @@ mod tests {
             .is_none());
         assert!(gateway
             .select_operator_target("gemini-test", "missing", &HashSet::new(), true)
+            .is_none());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn operator_target_may_probe_a_catalogue_missing_model_but_not_an_explicit_zero() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first)]);
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        let profile = &gateway.profiles_snapshot()[0];
+        *profile
+            .quota
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = GeminiQuotaSnapshot {
+            updated_at: pool::now(),
+            buckets: vec![GeminiQuotaBucketStatus {
+                model_id: "gemini-neighbor".to_string(),
+                remaining_amount: Some(10),
+                remaining_fraction: Some(0.5),
+                reset_time: None,
+                token_type: Some("REQUESTS".to_string()),
+            }],
+        };
+
+        // Customer rotation treats a fresh missing row as negative availability evidence. The
+        // exact operator target gets one profile-bound chance to establish the dormant model.
+        assert!(gateway
+            .select("gemini-test", &HashSet::new(), None, true)
+            .is_none());
+        let canary = gateway
+            .select_operator_target("gemini-test", "profile_a", &HashSet::new(), true)
+            .expect("missing quota identity must not make a new-model canary impossible");
+        assert_eq!(canary.profile().id(), "profile_a");
+        drop(canary);
+
+        profile
+            .quota
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .buckets
+            .push(GeminiQuotaBucketStatus {
+                model_id: "gemini-test".to_string(),
+                remaining_amount: Some(0),
+                remaining_fraction: Some(0.0),
+                reset_time: Some("2099-01-01T00:00:00Z".to_string()),
+                token_type: Some("REQUESTS".to_string()),
+            });
+        assert!(gateway
+            .select("gemini-test", &HashSet::new(), None, true)
+            .is_none());
+        assert!(gateway
+            .select_operator_target("gemini-test", "profile_a", &HashSet::new(), true)
             .is_none());
         let _ = fs::remove_dir_all(dir);
     }

@@ -835,6 +835,18 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    provable cache separation (`cached=0`, `cached=prompt` or an explicit cached AUDIO). 3.6 Flash selects
    `gemini-3.6-flash-{low,medium,high}`, 3.1 Pro Preview —
    `gemini-3.1-pro-low`/`gemini-pro-agent`.
+   Gemini 3.7 Flash is a dormant exact-public-id candidate only: no owned Antigravity catalogue or
+   generation evidence currently establishes a private alias, so explicit canaries may configure
+   `gemini-3.7-flash` but production defaults and native discovery must omit it even when that
+   canary configuration is loaded. The canary's protected loopback `/gemini-subs` deliberately
+   retains its conversion row: the admission controller needs that exact tariff and plan-bound
+   evidence, and it is not customer discovery. Its thinking allowlist is exactly
+   `low|medium|high` (omission
+   means medium); `minimal`, `thinkingBudget`, `candidateCount`, deprecated sampling controls and
+   any final turn without non-empty user text fail locally. Image-only and tool-result-only final
+   turns remain closed until their wire contract is proved live. Any different wire/quota identity
+   requires fresh authenticated discovery plus exact-SHA generation evidence, never a guess from
+   neighboring model families.
    The thinking level is selected before admission; quota/cooling are keyed by the private bucket, while affinity,
    billing and the client catalog use the canonical public id. Response/SSE rewrites the private
    `modelVersion` back to the public id and returns only `.response` (+ responseId), never the

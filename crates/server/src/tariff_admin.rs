@@ -304,6 +304,7 @@ mod tests {
             unsafe_families,
             std::collections::BTreeSet::from([
                 "google/gemini/gemini-3.6-flash",
+                "google/gemini/gemini-3.7-flash",
                 "openai/codex/gpt-5.6-luna",
                 "openai/codex/gpt-5.6-sol",
                 "openai/codex/gpt-5.6-terra",

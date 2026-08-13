@@ -138,7 +138,8 @@ use crate::codex::new_id;
 use crate::gemini_schema;
 use crate::gemini_stream::GeminiStreamState;
 use crate::proxy::{
-    read_body_limited, with_not_started, without_not_started, BodyReadError, TerminalErrorReason,
+    read_body_limited, with_not_started, without_not_started, BodyReadError,
+    TerminalErrorReason, EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
 };
 use crate::state::AppState;
 use crate::validation::optional_bool;
@@ -168,11 +169,10 @@ fn skin_error(
     response
         .extensions_mut()
         .insert(TerminalErrorReason(reason));
-    // Все прямые вызовы skin_error происходят до границы доставки: локальная валидация
-    // ещё не запускала native request, а convert_error_response получает только не-2xx
-    // gemini_api, чей admission гарантированно refund/cancel. Ошибки разбора уже успешного
-    // 2xx и fallback сборки SSE снимают заголовок через without_not_started ниже: там
-    // request уже мог стать billable.
+    // Прямые вызовы skin_error происходят до границы доставки: локальная валидация
+    // ещё не запускала native request. convert_error_response ниже снимает этот
+    // заголовок, если native плоскость не передала доказательство not_started; ошибки
+    // разбора уже успешного 2xx и fallback сборки SSE делают то же самойстоятельно.
     with_not_started(response)
 }
 
@@ -230,6 +230,11 @@ fn anthropic_error_parts(
 /// chat.rs: нативный `400 API_KEY_INVALID` (reason `invalid_key`) → `401 authentication_error`.
 async fn convert_error_response(upstream: Response) -> Response {
     let status = upstream.status();
+    let not_started = !status.is_success()
+        && upstream
+            .headers()
+            .get(EXECUTION_STATE_HEADER)
+            .is_some_and(|value| value == EXECUTION_STATE_NOT_STARTED);
     let reason = upstream
         .extensions()
         .get::<TerminalErrorReason>()
@@ -257,7 +262,12 @@ async fn convert_error_response(upstream: Response) -> Response {
         (status, reason)
     };
     let (status, kind, message) = anthropic_error_parts(status, message);
-    skin_error(status, kind, message, reason, retry_after)
+    let response = skin_error(status, kind, message, reason, retry_after);
+    if not_started {
+        response
+    } else {
+        without_not_started(response)
+    }
 }
 
 // ---------- перевод запроса (Messages → GenerateContentRequest) ----------
@@ -1905,8 +1915,8 @@ mod tests {
 
     #[tokio::test]
     async fn skin_errors_mark_execution_not_started_but_post_success_rebuilds_do_not() {
-        // Локальная валидация и конвертация не-2xx gemini_api происходят до delivery:
-        // reserve refund/cancel, поэтому Anthropic skin сохраняет внутренний контракт.
+        // Локальная валидация и native-ошибка с явным доказательством not_started
+        // сохраняют внутренний контракт при переводе в Anthropic-конверт.
         for response in [
             skin_error(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1916,11 +1926,11 @@ mod tests {
                 Some(2),
             ),
             invalid_request("bad request"),
-            convert_error_response(upstream_error(
+            convert_error_response(with_not_started(upstream_error(
                 StatusCode::TOO_MANY_REQUESTS,
                 r#"{"error":{"code":429,"message":"quota","status":"RESOURCE_EXHAUSTED"}}"#,
                 "quota_exhausted",
-            ))
+            )))
             .await,
             translate_messages_request(json!({"model": "google/gemini-2.5-flash"}), true)
                 .unwrap_err(),
@@ -1934,6 +1944,17 @@ mod tests {
                 crate::proxy::EXECUTION_STATE_NOT_STARTED
             );
         }
+
+        // Если exact-target POST уже ушёл в транспорт, native плоскость не может
+        // доказать, что provider не начал execution. Messages skin не должен заново
+        // синтезировать ложный retry-proof при пересборке конверта.
+        let response = convert_error_response(upstream_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":{"code":503,"message":"unavailable","status":"UNAVAILABLE"}}"#,
+            "gemini_profiles_unavailable",
+        ))
+        .await;
+        assert!(response.headers().get(EXECUTION_STATE_HEADER).is_none());
 
         // После 2xx native request уже мог стать billable. Ошибка адаптера при разборе
         // такого ответа обязана fail closed: без not_started, значит router не ретраит.
