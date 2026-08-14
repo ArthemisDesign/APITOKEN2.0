@@ -39,6 +39,9 @@ DEFAULT_PRODUCTION_API_PORT = 8794
 GEMINI_37_ADMISSION_MODEL = "gemini-3.7-flash"
 GEMINI_37_ADMISSION_OUTPUT_TOKENS = 256
 GEMINI_37_ADMISSION_DEADLINE_SECONDS = 600
+GEMINI_37_WITHDRAWN_IMPLEMENTATION_SHAS = frozenset({
+    "20d945ce59e9dea749ec7c74b7d322525bc29a05",
+})
 GEMINI_37_ADMISSION_PROMPT = (
     "Output the integers 1 through 64, separated by single spaces, and nothing else."
 )
@@ -1722,6 +1725,15 @@ class Runner:
                 count_attempt["outcome"] = "attested_response"
                 count_attempt["dispatch_ms"] = str(count_dispatch_ms)
         input_tokens = as_int(counted.get("totalTokens"), f"{leg.name}.countTokens")
+        if self.admission is not None:
+            if input_tokens <= 0:
+                if count_attempt is not None:
+                    count_attempt["outcome"] = "terminal_failure"
+                raise CalibrationError(
+                    "Gemini 3.7 countTokens returned a non-positive totalTokens value"
+                )
+            if count_attempt is not None:
+                count_attempt["input_tokens"] = str(input_tokens)
         rates = self.rates[leg.model]
         if leg.kind == "long" and input_tokens <= rates.long_threshold:
             raise UnboundedCostError(
@@ -1993,6 +2005,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     except CalibrationError as error:
         parser.error(str(error))
     if args.gemini_37_admission:
+        if args.implementation_sha in GEMINI_37_WITHDRAWN_IMPLEMENTATION_SHAS:
+            parser.error(
+                "Gemini 3.7 admission implementation "
+                f"{args.implementation_sha} is withdrawn after its terminal one-shot result "
+                "and must not be retried"
+            )
         if args.resume_report:
             parser.error("Gemini 3.7 admission cannot resume or replay a prior report")
         if args.models:

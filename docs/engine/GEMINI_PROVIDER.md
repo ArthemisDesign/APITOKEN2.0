@@ -465,8 +465,13 @@ as dormant exact-profile runtime capability; ordinary traffic still fails before
 closed `--gemini-37-admission` mode of the existing generic calibration runner is its sole reviewed
 consumer: it targets an operator-launched exact-SHA non-public canary, disables retry even for the
 one free count, requires the exact current compiled-tariff ceiling and permits at most one paid SSE
-generation. No live call, production default, public catalogue, router preset or storefront exposure
-is enabled until that exact report is GREEN.
+generation. The 2026-08-15 attempt on runtime `20d945ce59e9dea749ec7c74b7d322525bc29a05`
+completed its one free count transport with a valid dispatch attestation, then its sole paid transport received upstream 404
+`NOT_FOUND` for the exact public id. It produced no model output, terminal usage, immutable turn or
+streaming proof. That implementation is withdrawn and rejected by the runner before network I/O;
+it must not be retried. Production defaults, public catalogue, router presets and storefronts stay
+unchanged. A future attempt requires materially new implementation evidence and a different exact
+runtime SHA.
 
 ## Runtime behavior
 
@@ -732,7 +737,7 @@ text-generation check. A quota row by itself is never admission evidence.
 
 | Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
 |---|---|---|---|
-| `gemini-3.7-flash` | no owned private alias; a future dormant canary must retain the exact public id only | Google announced the Developer API model GA on 2026-08-13, but the 2026-08-14 owned catalogue observation found no 3.7 quota/wire row and no live request has passed on this implementation SHA. The producer preserves raw upstream identity behind its admin-only deadline/dispatch attestation; this is capability, not admission evidence | Stage 1 dormant only; omitted from production defaults, customer discovery, router presets and storefronts until exact-SHA no-replay `countTokens`, generation, incremental SSE, advertised controls and each claimed plan pass. The retired root consumer supplied no live evidence and is not part of the remaining implementation |
+| `gemini-3.7-flash` | no owned private alias; a future dormant canary must retain the exact public id only | Google announced the Developer API model GA on 2026-08-13; the 2026-08-14 owned catalogue observation found no 3.7 quota/wire row. On 2026-08-15 runtime `20d945ce…` completed one exact-ID count transport with valid dispatch attestation, but its sole paid SSE transport returned upstream 404 `NOT_FOUND` with no output, usage, immutable turn or streaming proof. The exact SHA is withdrawn and cannot be retried | Stage 1 dormant and unpublished. Production defaults, customer discovery, router presets and storefronts omit it. Any future admission requires new implementation evidence, a different exact runtime SHA, and then exact-SHA no-replay generation, incremental SSE, advertised controls and each claimed plan |
 | `gemini-3-flash-preview` | public → `gemini-3-flash`; quota admission joins `gemini-3-flash` + `gemini-3-flash-agent`; configured Antigravity origin, 2.2.1 UA, minimal headers; bounded inline PCM WAV fallback uses exact integral `duration × 32` AUDIO tokens and fails closed on ambiguous cache | fresh runner SHA `cc7e5beb…` / byte-identical runtime implementation completed 22 paid turns on Pro+Ultra: minimal/low/medium/high, incremental SSE, final cache reads with 8,170 cached tokens, fresh/replayed 8-token PCM audio and forced function calls; public identity and terminal response/event usage matched | published; generation 5 main catalog, production defaults, router manifest and public web/docs |
 | `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
 | `gemini-3.5-flash` | minimal → `gemini-3.5-flash-extra-low`; low/medium/high/default → `gemini-3.5-flash-low`, with the requested native thinking level preserved | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; default and `alt=json` JSON streams 200; canonical modelVersion and non-zero usage verified on Google AI Pro on 2026-07-31 | published |

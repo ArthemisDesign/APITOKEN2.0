@@ -250,8 +250,29 @@ larger value stops after the free count. The user authorized raising the default
 this minimum proved current-epoch ceiling. A future tariff epoch therefore requires a new explicit
 numeric contract rather than inheriting an older larger authorization.
 
-After the exact canary is running and its opaque profile has been selected from the read-only status
-surface, inspect the no-network plan first, then execute it once:
+### Withdrawn exact-SHA attempt — 2026-08-15
+
+The one permitted live attempt used GREEN production runtime
+`20d945ce59e9dea749ec7c74b7d322525bc29a05`, transient loopback port `18895`, and one healthy
+`google_ai_ultra` profile. The canary used the production PostgreSQL authority and sealed roster,
+disabled tariff overrides, had no Caddy route, and kept ordinary model discovery closed.
+
+The free exact-ID `countTokens` request completed once with a valid pre-deadline dispatch
+attestation. The distinct paid SSE transport was invoked once and returned upstream HTTP 404
+`NOT_FOUND` for `gemini-3.7-flash`. It produced no output, `modelVersion`, terminal usage, SSE proof,
+or immutable turn. The report's local spent total is `0 nanoUSD`, but
+`admission_spend_reconciled=false` because no authoritative terminal event exists; that zero must
+not be presented as provider-reconciled spend.
+
+This result withdraws that exact implementation candidate. It must not be resumed or retried, and
+the runner rejects its SHA before network I/O. The transient unit was stopped and collected, port
+`18895` was confirmed closed, the normal Gemini plane remained healthy, and 3.7 remained absent
+from ordinary discovery. Publication is forbidden. Any future attempt requires new implementation
+evidence, a different exact runtime SHA, and a fresh explicit numeric budget contract.
+
+For a future, materially new implementation candidate only, after its exact canary is running and
+its opaque profile has been selected from the read-only status surface, inspect the no-network plan
+first, then execute it once:
 
 ```bash
 python3 tools/gemini_calibration/run_live.py \

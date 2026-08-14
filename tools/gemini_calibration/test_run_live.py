@@ -212,6 +212,22 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
                     *extra,
                 ])
 
+    def test_gemini_37_withdrawn_implementation_cannot_be_retried(self):
+        with self.assertRaises(SystemExit):
+            run_live.parse_args([
+                "--gemini-37-admission",
+                "--admission-profile",
+                "profile-a",
+                "--implementation-sha",
+                next(iter(run_live.GEMINI_37_WITHDRAWN_IMPLEMENTATION_SHAS)),
+                "--production-capacity-port",
+                "18895",
+                "--production-api-port",
+                "18895",
+                "--budget-usd",
+                "0.787392",
+            ])
+
     def test_integer_contract_accepts_only_json_int_or_canonical_decimal_string(self):
         for raw, expected in ((0, 0), (12, 12), ("0", 0), ("12", 12)):
             with self.subTest(raw=raw):
@@ -1955,6 +1971,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             [attempt["kind"] for attempt in runner.admission_attempts],
             ["countTokens", "paid_generation"],
         )
+        self.assertEqual(runner.admission_attempts[0]["input_tokens"], "10")
         self.assertEqual(
             runner.admission_attempts[1]["outcome"],
             "immutable_event_reconciled",
@@ -2017,6 +2034,77 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         self.assertIn("must equal the exact current-tariff ceiling", str(caught.exception))
         self.assertEqual(api.calls, 1)
         self.assertTrue(api.assert_count)
+
+    def test_gemini_37_non_positive_count_stops_before_generation(self):
+        model = run_live.GEMINI_37_ADMISSION_MODEL
+
+        class ZeroCountApi:
+            def __init__(self):
+                self.calls = 0
+
+            def request(self, path, method="GET", body=None, target_profile=None, **options):
+                self.calls += 1
+                return run_live.JsonResponse({"totalTokens": 0}, 1_000_100)
+
+        class StaticCapacity:
+            def read(self):
+                payload = capacity()
+                payload["profiles"] = [{
+                    "id": "profile-a",
+                    "plan": "google_ai_pro",
+                    "authenticated": True,
+                    "cooling_until": 0,
+                    "calibration_persistence_ok": True,
+                    "windows": [],
+                }]
+                return payload
+
+        rates = run_live.ModelRates(
+            tariff_schedule_id="google/test/v1",
+            input_token_limit=1_000,
+            input=10,
+            audio_input=10,
+            cached_input=1,
+            cached_audio_input=1,
+            output=10,
+            image_output=0,
+            long_threshold=1_000,
+            long_input=10,
+            long_audio_input=10,
+            long_cached_input=1,
+            long_cached_audio_input=1,
+            long_output=10,
+            search_unit="prompt",
+            search=1,
+            max_output_tokens=1_000,
+        )
+        api = ZeroCountApi()
+        runner = run_live.Runner(
+            api,
+            StaticCapacity(),
+            {model: rates},
+            run_live.Budget(12_560),
+            timeout=1,
+            delay=0,
+            run_id="run",
+            cache_scopes={"profile-a": "profile-1"},
+            admission=run_live.Gemini37Admission("profile-a", "a" * 40),
+        )
+        leg = run_live.Leg(
+            f"admission:{model}:default-sse",
+            model,
+            "fresh",
+            stream=True,
+            max_output_tokens=run_live.GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+        )
+        with mock.patch.object(run_live.time, "time", return_value=1_000), self.assertRaisesRegex(
+            run_live.CalibrationError,
+            "non-positive totalTokens",
+        ):
+            runner.execute_leg(leg, "profile-a")
+
+        self.assertEqual(api.calls, 1)
+        self.assertEqual(runner.admission_attempts[0]["outcome"], "terminal_failure")
 
 
 if __name__ == "__main__":

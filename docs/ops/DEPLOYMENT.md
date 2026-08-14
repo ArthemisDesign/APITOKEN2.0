@@ -61,6 +61,14 @@ must not be retried. Gemini 3.7 remains dormant and unpublished; any future cont
 reviewed extension of the generic calibration runner and an explicitly operator-launched exact-SHA
 non-public canary, not a repository trigger or permanent root helper.
 
+The later operator-launched attempt on GREEN runtime
+`20d945ce59e9dea749ec7c74b7d322525bc29a05` completed its single free count transport with a valid dispatch attestation, then the sole
+paid SSE transport returned upstream 404 `NOT_FOUND` for `gemini-3.7-flash`. It yielded no output,
+terminal usage or immutable turn, so the report records local spend `0 nanoUSD` but correctly leaves
+spend unreconciled. The transient canary was collected and its loopback port closed. This exact
+runtime is withdrawn and must not be retried; the model remains unpublished. Any future attempt
+requires materially new implementation evidence and a different exact runtime SHA.
+
 Alongside the serialized production watchdog, a low-priority candidate-validator service may run
 two transient `candidate-validation` deployments concurrently for exact SHAs reachable from pushed
 feature branches. The merge client first rebases onto the latest committed `master`, then creates

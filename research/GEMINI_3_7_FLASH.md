@@ -177,16 +177,16 @@ is known before dispatch or the person explicitly authorizes a larger bounded bu
 
 ## Admission and live-acceptance matrix
 
-No live row below was executed as part of this research document. Status is **PENDING** unless marked
-as an observation. The exact implementation commit SHA must be recorded before any request is treated
-as acceptance evidence.
+The one-shot live on 2026-08-15 is **WITHDRAWN**: the free count transport returned an attested
+response, but the sole generation returned upstream 404 `NOT_FOUND`. The exact implementation
+commit SHA is recorded below. No row is acceptance evidence unless explicitly marked GREEN.
 
 | Check | Exact evidence required | Budget rule | Publication meaning |
 |---|---|---|---|
 | Owned catalogue discovery | Sanitized 3.7 quota and wire rows bound to the credential/plan | Free | **OBSERVED ABSENT** on 2026-08-14; never generation proof |
-| `countTokens` preflight | 2xx for exact `gemini-3.7-flash` and a positive authoritative token count | Free; always first | Reachability/tokenization only; never generation proof |
-| Minimal generation | One 2xx incremental SSE request with byte-exact real text, terminal authoritative usage, and raw upstream model identity from the exact candidate SHA | Default `$0.0001`; the person explicitly authorized the post-promo Standard worst-case ceiling `$1.574784` for one no-retry attempt | Mandatory; failure means withdrawal |
-| Incremental SSE | The same paid generation must contain at least two visible non-thinking text frames, including one before the terminal event, then finish cleanly with authoritative usage; candidate-only frames are insufficient | Included in the single admission request; no second stream request | Mandatory before any streaming claim |
+| `countTokens` preflight | 2xx for exact `gemini-3.7-flash` and a positive authoritative token count | Free; always first | **PARTIAL 2026-08-15** on `20d945ce…`: one response with valid dispatch attestation, but report v1 did not retain `totalTokens`; it is not full acceptance evidence |
+| Minimal generation | One 2xx incremental SSE request with byte-exact real text, terminal authoritative usage, and raw upstream model identity from the exact candidate SHA | Default `$0.0001`; increased only to the current minimal proved ceiling `$0.787392` for one no-retry attempt | **RED 2026-08-15** on `20d945ce…`: sole transport returned upstream 404 `NOT_FOUND`; candidate withdrawn |
+| Incremental SSE | The same paid generation must contain at least two visible non-thinking text frames, including one before the terminal event, then finish cleanly with authoritative usage; candidate-only frames are insufficient | Included in the single admission request; no second stream request | **NOT PROVED**: the withdrawn generation returned no output frames or terminal usage |
 | Thinking `low` | Real output and authoritative usage with `thinkingLevel=low` | Separately bounded | Required before advertising `low` |
 | Thinking default | Omitted `thinkingLevel` returns the admitted exact output and usage | Included in the single admission request | Proves only the omitted/default path |
 | Thinking explicit `medium` | Explicit `thinkingLevel=medium` follows documented semantics | Separately bounded | Required before advertising explicit `medium`; omission is not this proof |
@@ -277,8 +277,40 @@ installed production-head guard before trigger discovery, any protected authorit
 `countTokens`, generation, or spend. It is not a model acceptance attempt and must not be retried.
 Its descendant removed the trigger and restored a GREEN production head. The later cleanup retires
 the unused helper assets and the paid branch-protection dependency. The live matrix remains
-**PENDING**, spend remains `0 nanoUSD`, and all public surfaces remain forbidden until a distinct
-controlled attempt succeeds.
+At that point the live matrix remained **PENDING**, spend was `0 nanoUSD`, and all public surfaces
+remained forbidden until a distinct controlled attempt succeeded.
+
+### Withdrawn controlled live — 2026-08-15
+
+The controlled live used the production-GREEN runtime
+`20d945ce59e9dea749ec7c74b7d322525bc29a05` and generic-runner commit
+`19516258a948f91bc0c13365ad9f24c65489530c`. A root-launched transient systemd unit ran the exact
+binary as `deploy` on loopback port `18895`, with the production PostgreSQL authority, sealed roster,
+pinned Antigravity/Node identity, `CLAUDE_API_TARIFF_OVERRIDES=0`, no Caddy route, and 30-minute
+automatic lifetime. Ordinary discovery remained closed. The selected opaque profile reported the
+authoritative `google_ai_ultra` plan and healthy persistence; delivery began and ended with zero
+pending or dropped events.
+
+The runner calculated and required exactly `787392000 nanoUSD` (`$0.787392`). It invoked the free
+count once under request `d685cabe-d878-4940-a8d6-09870d5378f5`; the response had a valid positive
+dispatch timestamp before the shared deadline. That report version did not retain the returned
+`totalTokens`, so this historical row proves the response/dispatch boundary but is not claimed as a
+positive-count acceptance row. The runner now requires and records a positive count for any future
+candidate. It then invoked the paid SSE transport once under a
+different UUID, `6d9e4bb1-b7ce-4020-a091-d9835f567cf8`. Google returned HTTP 404 with status
+`NOT_FOUND` and message `The requested model resource was not found.` No output, raw model version,
+terminal usage, incremental frame, or immutable billing event was produced.
+
+The sanitized report records `spent_nanousd_total=0`, but also
+`admission_spend_reconciled=false`; without terminal authoritative usage/event, zero is a local
+ledger observation rather than provider-reconciled spend. The command is terminal and cannot be
+resumed. The canary was stopped and collected, port `18895` was confirmed closed, and the normal
+Gemini production plane remained healthy and continued to omit 3.7 from discovery.
+
+This exact implementation candidate is withdrawn. The runner rejects its SHA before network I/O,
+all Stage 2 surfaces remain forbidden, and no second request may be sent for it. A future attempt is
+permitted only after materially new implementation evidence produces a different runtime SHA and a
+new explicit numeric budget contract.
 
 ### Gate to Stage 2 — separate follow-up commit
 
@@ -330,7 +362,7 @@ research, official tariff, evidence boundary, dormant-name decision, and canary 
 | Official identity and behavior research | Applicable; recorded here |
 | Official tariff and effective epochs | Applicable; recorded here in exact nanoUSD units |
 | Dormant implementation and tests | Applicable; owned by the implementation change, not this research file |
-| Exact-SHA controlled live | Applicable but pending; the retired root bridge produced no count, generation or spend |
+| Exact-SHA controlled live | Applicable and RED; `20d945ce…` completed one attested count transport, then its sole generation returned upstream 404 and the candidate was withdrawn |
 | Public catalogue, defaults, router, site, and public docs | Not applicable to Stage 1; explicitly deferred and forbidden |
 | New provider checklist | Not applicable; Gemini is an existing provider |
 | Customer price or multiplier change | Not applicable; this records upstream cost only and changes no customer multiplier |
