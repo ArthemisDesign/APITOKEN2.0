@@ -1,0 +1,70 @@
+# Static one-shot native Gemini surface for the production admission proof. It is never enabled,
+# routed through Caddy, or used for customer traffic; the root-owned admission gate starts and
+# stops it around one permanently fenced countTokens + streaming generation sequence.
+[Unit]
+Description=claude-api Gemini 3.7 Flash one-shot admission surface
+After=network-online.target apitoken-affinity-redis.service
+Wants=network-online.target apitoken-affinity-redis.service
+
+[Service]
+Type=simple
+# A transient identity prevents the proof process from inspecting or signalling the stable Gemini
+# slot through deploy's same-UID /proc permissions. PID 1 reads EnvironmentFile and imports the
+# root-staged credentials before exec, so the canary needs no persistent filesystem ownership.
+DynamicUser=yes
+# The exact producer has legacy error branches that include the opaque calibration profile in its
+# diagnostic text. The root gate receives all authoritative evidence over private loopback HTTP;
+# this one-shot process must never copy that profile into the system journal.
+StandardOutput=null
+StandardError=null
+Environment=SUB_CFG_DIR=/srv/claude-api/data
+EnvironmentFile=-/srv/claude-api/data/config.env
+EnvironmentFile=-/srv/claude-api/data/server.env
+EnvironmentFile=/srv/claude-api/data/engine-postgres.env
+# The root gate snapshots the exact loaded production roster generation plus only its referenced
+# encrypted envelopes. systemd copies both sources into one private read-only credential mount;
+# the explicit directory import produces gemini-credential_<opaque-id>.json beside the roster.
+LoadCredential=gemini-profiles:/run/apitoken-gemini-3-7-admission/profiles.json
+LoadCredential=gemini-credential:/run/apitoken-gemini-3-7-admission/credentials
+# Environment files supply credentials and database endpoints, but may not inject code into the
+# attested Rust/Node runtime or redirect the exact upstream through a caller-controlled proxy/CA.
+# UnsetEnvironment is applied after every EnvironmentFile; fixed ExecStart assignments below are
+# argv to /usr/bin/env and therefore remain authoritative.
+UnsetEnvironment=LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH GCONV_PATH GLIBC_TUNABLES LOCPATH NODE_OPTIONS NODE_PATH NODE_EXTRA_CA_CERTS NODE_TLS_REJECT_UNAUTHORIZED OPENSSL_CONF OPENSSL_MODULES SSL_CERT_FILE SSL_CERT_DIR SSLKEYLOGFILE HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+# The live proof belongs to this already watchdog-green producer and no later/current release.
+ExecCondition=/usr/bin/test -f /srv/claude-api/releases/264363f7838ddd2d156b14668a320047ad33b6ee/.release-sha
+ExecCondition=/usr/bin/test ! -L /srv/claude-api/releases/264363f7838ddd2d156b14668a320047ad33b6ee/.release-sha
+ExecCondition=/usr/bin/grep -Fxq 264363f7838ddd2d156b14668a320047ad33b6ee /srv/claude-api/releases/264363f7838ddd2d156b14668a320047ad33b6ee/.release-sha
+ExecCondition=/usr/bin/test -x /srv/claude-api/releases/264363f7838ddd2d156b14668a320047ad33b6ee/claude-api
+ExecCondition=/usr/bin/test ! -L /srv/claude-api/releases/264363f7838ddd2d156b14668a320047ad33b6ee/claude-api
+ExecCondition=/usr/bin/test -x /usr/local/lib/apitoken-watchdog/producers/264363f7838ddd2d156b14668a320047ad33b6ee/claude-api
+ExecCondition=/usr/bin/test ! -L /usr/local/lib/apitoken-watchdog/producers/264363f7838ddd2d156b14668a320047ad33b6ee/claude-api
+# Argv-level assignments override shared production env and keep the canary on one exact model,
+# fixed numeric loopback port, compiled official tariffs with hot overrides disabled, official
+# upstream, attested Node runtime, no fallback plane, and no provider-level reconnect/rotation
+# behind the transport's single claimed local POST.
+ExecStart=/usr/bin/env CLAUDE_API_PRICING_BRIDGE_ENABLED=1 CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP=10000 CLAUDE_API_TARIFF_OVERRIDES=0 CLAUDE_API_PROVIDER=gemini CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8807 CLAUDE_API_INSTANCE_ID=%H:engine:gemini:admission CLAUDE_API_MAX_TRIES=1 CLAUDE_API_GEMINI_MAX_TRANSPORT_RETRIES=0 CLAUDE_API_GEMINI_PROFILES_FILE=%d/gemini-profiles CLAUDE_API_GEMINI_CREDENTIAL_LAYOUT=systemd-flat CLAUDE_API_GEMINI_MODELS=gemini-3.7-flash CLAUDE_API_GEMINI_UPSTREAM=https://daily-cloudcode-pa.sandbox.googleapis.com CLAUDE_API_GEMINI_ALLOW_INSECURE_LOOPBACK_UPSTREAM=0 CLAUDE_API_GEMINI_ANTIGRAVITY_VERSION=2.2.1 CLAUDE_API_GEMINI_NODE_BINARY=/usr/bin/node CLAUDE_API_GEMINI_NODE_VERSION=v24.18.0 CLAUDE_API_GEMINI_NODE_SHA256=41a74efb34cbde5c7632cdac0cf8bd1a14d0b8d73dc1e82755014d9a9ce70f5c /usr/local/lib/apitoken-watchdog/producers/264363f7838ddd2d156b14668a320047ad33b6ee/claude-api serve
+Restart=no
+RuntimeMaxSec=10min
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=90
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+# Shared environment files are read by PID 1 before exec. The canary itself receives only the
+# root-staged credential generation and cannot reopen the mutable production roster tree.
+InaccessiblePaths=/srv/claude-api/data/gemini
+MemoryMax=2G

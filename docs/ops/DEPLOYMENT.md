@@ -40,6 +40,34 @@ Affected stages also appear as GitHub deployment records in the `production-data
 environments. This is reporting only: builds and deployments run on the existing production host,
 so no paid GitHub runner is used.
 
+### Dormant Gemini 3.7 one-shot admission
+
+The Gemini 3.7 bridge delivery is inert: it pins the GREEN engine producer
+`264363f7838ddd2d156b14668a320047ad33b6ee`, installs a sealed private canary and fixed root-owned
+gate artifacts, and argv-pins hot tariff overrides off so its bound and immutable event use only the
+compiled official schedule. It contains no firing trigger and therefore performs no provider call.
+There is no sudo grant for this gate. This bridge SHA **must** first reach GREEN `deploy/watchdog` in production;
+the trigger must not be merged before that verdict, because the previously installed runner does not
+know this admission contract. Only then may a separate commit fire it by adding the regular Git mode-`100644`
+file `deploy/gemini-3-7-admission-trigger` with exact bytes
+`gemini-3.7-flash-admission-v1\n` and no other delta.
+
+The already-installed `watchdog-infrastructure` root runner, not candidate code or the unprivileged
+watchdog, owns admission. It verifies the candidate is the exact protected `master` head, finds the
+unique trigger over the full uninstalled `infrastructure.sha..candidate` range, checks its direct
+parent/delta/mode/blob and every pinned bridge artifact, installs the unchanged controller
+definitions, then calls the gate directly before advancing the infrastructure baseline. The gate
+creates its permanent SHA-keyed firing fence before protected authority reads; it permits one free
+`countTokens` call followed by at most one paid incremental SSE generation and has no redirect,
+reconnect, profile rotation, resend, or retry path.
+
+Terminal evidence, operational definitions, rejection, and the infrastructure baseline are flushed
+in that order. A failure before the firing fence leaves the old baseline retryable. Once the fence
+exists, every re-entry is offline-only and cannot load credentials, start the canary, or open
+transport. The same attempted delivery remains quarantined; only a strictly newer fix-forward commit
+may close a retained withdrawal without another provider call, and the model remains dormant. See
+[`GEMINI_CALIBRATION.md`](GEMINI_CALIBRATION.md) for the exact request, budget, and evidence contract.
+
 Alongside the serialized production watchdog, a low-priority candidate-validator service may run
 two transient `candidate-validation` deployments concurrently for exact SHAs reachable from pushed
 feature branches. The merge client first rebases onto the latest committed `master`, then creates

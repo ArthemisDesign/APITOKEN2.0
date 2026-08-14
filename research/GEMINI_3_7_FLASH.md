@@ -185,10 +185,11 @@ as acceptance evidence.
 |---|---|---|---|
 | Owned catalogue discovery | Sanitized 3.7 quota and wire rows bound to the credential/plan | Free | **OBSERVED ABSENT** on 2026-08-14; never generation proof |
 | `countTokens` preflight | 2xx for exact `gemini-3.7-flash` and a positive authoritative token count | Free; always first | Reachability/tokenization only; never generation proof |
-| Minimal unary generation | 2xx, non-empty real text output, terminal authoritative usage, and terminal model identity from the exact candidate SHA | Default `$0.0001`; the person explicitly authorized the exact promo worst-case ceiling `$0.786492` for one no-retry attempt | Mandatory; failure means withdrawal |
-| Incremental SSE | More than a buffered terminal-only event, visible incremental output, clean terminal completion, and authoritative terminal usage | Separately bounded after admission | Mandatory before any streaming claim |
+| Minimal generation | One 2xx incremental SSE request with byte-exact real text, terminal authoritative usage, and raw upstream model identity from the exact candidate SHA | Default `$0.0001`; the person explicitly authorized the post-promo Standard worst-case ceiling `$1.574784` for one no-retry attempt | Mandatory; failure means withdrawal |
+| Incremental SSE | The same paid generation must contain at least two visible non-thinking text frames, including one before the terminal event, then finish cleanly with authoritative usage; candidate-only frames are insufficient | Included in the single admission request; no second stream request | Mandatory before any streaming claim |
 | Thinking `low` | Real output and authoritative usage with `thinkingLevel=low` | Separately bounded | Required before advertising `low` |
-| Thinking default/`medium` | Omitted level and explicit `medium` both follow documented semantics | Separately bounded | Required before advertising default `medium` |
+| Thinking default | Omitted `thinkingLevel` returns the admitted exact output and usage | Included in the single admission request | Proves only the omitted/default path |
+| Thinking explicit `medium` | Explicit `thinkingLevel=medium` follows documented semantics | Separately bounded | Required before advertising explicit `medium`; omission is not this proof |
 | Thinking `high` | Real output and authoritative usage with `thinkingLevel=high` | Separately bounded | Required before advertising `high` |
 | Unsupported controls | Product rejects sampling controls and `candidateCount`; `minimal` is rejected locally or never offered | Unit/contract test; no paid request required | Prevents false controls from entering the public schema |
 | Structured output | Valid response matching the requested schema plus terminal usage | Separately bounded | Required only if published for this model |
@@ -204,17 +205,25 @@ as acceptance evidence.
 The default aggregate admission ceiling remains `100,000 nanoUSD`. First call `countTokens`, which
 is free. The private Code Assist route can prepend provider-owned instructions that are absent from
 that count, so the proved input ceiling is the complete 1,048,576-token context, not the observed
-short prompt. With `maxOutputTokens=16`, the person explicitly authorized exactly this current-promo
-worst-case ceiling for one request and no retry:
+short prompt. With `maxOutputTokens=256`, the person explicitly authorized the more conservative
+post-promo Standard worst-case ceiling for one request and no retry, even though the one-shot may be
+dispatched and accepted only inside the promotional epoch:
 
 ```text
-1,048,576 * 750 + 16 * 3,750 = 786,492,000 nanoUSD = $0.786492
+1,048,576 * 1,500 + 256 * 7,500 = 1,574,784,000 nanoUSD = $1.574784
 ```
 
-This authorization expires with the promotional epoch at `2027-01-01T00:00:00Z`; it is not a general
-calibration budget. The request must use a short prompt, explicit 16-token maximum, no grounding, no
-paid tool, and no automatic retry. Actual terminal usage must be reconciled against the bound; the
+The larger bound is authorization, not intended spend and not permission to cross the immutable
+`2027-01-01T00:00:00Z` dispatch cutoff. The exact prompt remains `Output the integers 1 through 64,
+separated by single spaces, and nothing else.`; the request has a 256-token maximum, omits
+`thinkingLevel`, and uses no grounding, paid tool, redirect, reconnect, rotation, resend, or
+automatic retry. Success requires the exact concatenated integers `1` through `64`, single-space
+separated, and at least two visible non-thinking SSE text frames including one preterminal frame.
+Actual promotional-epoch terminal usage—not the ceiling—is charged and reconciled; the
 ceiling is a fail-closed reserve, not an expected spend or acceptance evidence by itself.
+The private canary pins `CLAUDE_API_TARIFF_OVERRIDES=0` in its fixed `ExecStart`, binding both
+preflight and immutable settlement to the compiled official schedule; a mutable hot override can
+neither authorize the request nor raise its event above this ceiling.
 
 ## Two-stage delivery decision
 
@@ -238,25 +247,46 @@ Forbidden in Stage 1:
 - claims for Search, Maps, tools, modalities, streaming, or subscription plans without their matching
   live acceptance rows.
 
+The Stage 1 bridge is deliberately inert. It pins the GREEN producer
+`264363f7838ddd2d156b14668a320047ad33b6ee` and the direct-root gate artifacts, but this delivery
+contains no `deploy/gemini-3-7-admission-trigger`, opens no provider connection, and spends
+`0 nanoUSD`. A later firing commit must consist only of a regular mode-`100644` trigger with bytes
+`gemini-3.7-flash-admission-v1\n`. The already-installed root runner verifies that unique commit over
+the full uninstalled protected-`master` range and invokes the gate before its durable infrastructure
+baseline. No sudo grant or candidate-selected dispatcher is part of the authority path.
+The trigger must not be merged until this bridge's exact SHA is production `deploy/watchdog` GREEN;
+the previous installed runner does not understand the trigger and cannot provide admission proof.
+
 ### Gate to Stage 2 — separate follow-up commit
 
 Publication may begin only after all of the following are true:
 
 1. The exact dormant implementation commit SHA is recorded.
-2. A free exact-ID `countTokens` call is atomically claimed once immediately before the final cutoff
-   check and connection open, then passes with a response bound to the immutable canonical request
-   UUID, digest, profile, model, HTTP status and execution state. The exact-profile engine path and
-   controller both forbid helper restart, OAuth resend, profile rotation, redirect and reconnect;
-   any failure or crash after the claim permanently withdraws this admission candidate.
+2. A free exact-ID `countTokens` call is atomically claimed once before the sole loopback POST. The
+   immutable request sends the exact profile, canonical UUIDv4, and promotional `not_after`; the
+   response is bound to its UUID, digest, profile, model, HTTP status and execution state. Success
+   additionally requires exactly one canonical positive producer
+   `x-apitoken-calibration-dispatch-ms` strictly below `not_after * 1000`. The producer may perform
+   at most one non-replayable pre-POST token refresh, then the engine path and controller forbid
+   helper restart, OAuth resend, profile rotation, redirect and reconnect; any failure or crash
+   after the claim permanently withdraws this admission candidate.
 3. Minimal generation is armed, then atomically claimed exactly once immediately before the final
-   cutoff check and network open. It is dispatched before the immutable promo cutoff
+   local cutoff check and sole loopback POST. It uses an already-fresh cached bearer and the same
+   exact profile/UUIDv4/not-after contract, with no post-claim refresh or replay. The pinned producer
+   records the authoritative dispatch timestamp after target TLS in Node's synchronous pre-`_flush()`
+   socket listener, before any upstream HTTP bytes; missing, duplicate, malformed, equal-cutoff, or
+   later evidence is terminal. It is dispatched before the immutable promo cutoff
    `2027-01-01T00:00:00Z`, then returns 2xx with real output and terminal authoritative usage within
-   the aggregate admission cap. The immutable `priced_ts` must remain in that promo epoch and
+   the aggregate admission cap. This single request is the incremental SSE proof: it must produce at
+   least two visible non-thinking text frames, including a preterminal frame, and the byte-exact 64-number
+   output. The immutable `priced_ts` must remain in that promo epoch and
    reproduce the exact official rate; arming before the cutoff is not permission to dispatch after
    it, and a crash after the single-use claim is permanently ambiguous rather than retryable. The
-   terminal authority snapshot and outcome/event binding must reproduce the exact admitted profile
+   response must preserve raw upstream `modelVersion` exactly as `gemini-3.7-flash`, and the terminal
+   authority snapshot and outcome/event binding must reproduce the exact admitted profile
    and paid plan; missing or changed plan proof is not acceptance.
-4. Incremental SSE passes with terminal authoritative usage.
+4. The omitted/default thinking path is the only thinking behavior admitted by this one-shot;
+   explicit `low`, `medium`, and `high` remain unpublished until separately proved.
 5. Every control, modality, and credential plan proposed for publication passes its matching matrix
    row; untested features remain absent from the claim.
 6. Metering reconciles input, output/thinking, cached-input reads, and any grounding query counts
@@ -280,12 +310,12 @@ research, official tariff, evidence boundary, dormant-name decision, and canary 
 | Official identity and behavior research | Applicable; recorded here |
 | Official tariff and effective epochs | Applicable; recorded here in exact nanoUSD units |
 | Dormant implementation and tests | Applicable; owned by the implementation change, not this research file |
-| Exact-SHA controlled live | Applicable but pending; no success is claimed here |
+| Exact-SHA controlled live | Applicable but pending; the direct-root bridge carries no trigger, opens no provider connection, and spends `0 nanoUSD` |
 | Public catalogue, defaults, router, site, and public docs | Not applicable to Stage 1; explicitly deferred and forbidden |
 | New provider checklist | Not applicable; Gemini is an existing provider |
 | Customer price or multiplier change | Not applicable; this records upstream cost only and changes no customer multiplier |
 | Database migration | Not applicable; no schema change is introduced by this document |
-| Cross-context contract / `docs/DEPENDENCIES.md` | Existing model/price map was corrected in the same commit because it still named deleted release-generation and OpenKeys-policy surfaces; no new public link is added |
+| Cross-context contract / `docs/DEPENDENCIES.md` | Applicable; the fixed producer/status → root admission chain is recorded there; no public link is added |
 | Commerce, sales, OpenKeys, and admin publication | Not applicable to Stage 1; deferred until proven Stage 2 publication scope exists |
 
 ## Secret hygiene

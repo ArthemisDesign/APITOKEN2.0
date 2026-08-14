@@ -14,6 +14,7 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 PROFILE = "profile-opaque-a"
 PLAN = "google_ai_pro"
 PROMO_TEST_EPOCH = 1_786_665_600
+DISPATCH_MS = PROMO_TEST_EPOCH * 1000 + 123
 
 
 def rate_row(*, input_limit=10, input_rate=1, output_rate=1):
@@ -178,6 +179,33 @@ def response(*, output_tokens=1, model=admission.MODEL):
     }
 
 
+def stream_response(*, output_tokens=1, model=admission.MODEL):
+    split = len(admission.EXPECTED_OUTPUT) // 2
+    return [
+        {
+            "modelVersion": model,
+            "candidates": [
+                {"content": {"parts": [{"text": admission.EXPECTED_OUTPUT[:split]}]}}
+            ],
+        },
+        {
+            "modelVersion": model,
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": admission.EXPECTED_OUTPUT[split:]}]
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 2,
+                "candidatesTokenCount": output_tokens,
+            },
+        },
+    ]
+
+
 def immutable_capacity(event, *, plan=PLAN, include_profile=True):
     return {
         "calibration_authority_available": True,
@@ -215,9 +243,12 @@ def count_observation(evidence, *, total_tokens=2, **overrides):
         "model": admission.MODEL,
         "http_status": 200,
         "execution_state": "completed",
+        "dispatch_ms": DISPATCH_MS,
         "response": {"totalTokens": total_tokens},
     }
     value.update(overrides)
+    if "dispatch_ms" not in overrides and value["http_status"] != 200:
+        value["dispatch_ms"] = None
     return value
 
 
@@ -231,7 +262,10 @@ def outcome_observation(evidence, event, *, observed_response=None, capacity_val
         "plan": PLAN,
         "http_status": 200,
         "execution_state": "completed",
-        "response": response() if observed_response is None else observed_response,
+        "dispatch_ms": DISPATCH_MS,
+        "response": (
+            stream_response() if journal["stream"] else response()
+        ) if observed_response is None else observed_response,
         "immutable_capacity": (
             immutable_capacity(event) if capacity_value is None else capacity_value
         ),
@@ -239,6 +273,8 @@ def outcome_observation(evidence, event, *, observed_response=None, capacity_val
         "event_plan": PLAN,
     }
     value.update(overrides)
+    if "dispatch_ms" not in overrides and value["http_status"] != 200:
+        value["dispatch_ms"] = None
     return value
 
 
@@ -313,7 +349,13 @@ class AdmissionFixture(unittest.TestCase):
         path.write_text(json.dumps(value) + "\n", encoding="utf-8")
         os.chmod(path, 0o600)
 
-    def initialize(self, *, stream=False, budget=100_000, max_output_tokens=1):
+    def initialize(
+        self,
+        *,
+        stream=True,
+        budget=admission.AUTHORIZED_STANDARD_CEILING_NANOUSD,
+        max_output_tokens=admission.AUTHORIZED_MAX_OUTPUT_TOKENS,
+    ):
         return admission.initialize(
             self.evidence,
             self.capacity_file,
@@ -359,7 +401,85 @@ class AdmissionContractTests(AdmissionFixture):
         )
         self.assertEqual(request["target_profile"], PROFILE)
         self.assertEqual(request["request_id"].count("-"), 4)
+        self.assertEqual(request["not_after"], admission.PROMO_END_EPOCH)
+        self.assertEqual(
+            request["body"]["contents"][0]["parts"][0]["text"],
+            admission.PROMPT,
+        )
         self.assertNotIn("calibration_request_id", request)
+
+    def test_nonstream_contract_is_rejected_before_evidence(self):
+        with self.assertRaises(admission.AdmissionError):
+            self.initialize(stream=False)
+        self.assertFalse(self.evidence.exists())
+
+    def test_count_tokens_accepts_canonical_decimal_string(self):
+        self.initialize()
+        count = self.root / "count.json"
+        self.write_json(count, count_observation(self.evidence, total_tokens="2"))
+        admission.claim_count(self.evidence)
+        summary = admission.record_count(self.evidence, count)
+        self.assertEqual(summary["state"], "counted")
+        self.assertEqual(summary["count_dispatch_ms"], DISPATCH_MS)
+
+    def test_count_tokens_rejects_float_negative_and_noncanonical_values(self):
+        invalid_values = (2.0, -2, "-2", "02", "+2", " 2", "2 ", "2.0", True)
+        for index, total_tokens in enumerate(invalid_values):
+            with self.subTest(total_tokens=total_tokens):
+                evidence = self.root / f"invalid-count-{index}"
+                admission.initialize(
+                    evidence,
+                    self.capacity_file,
+                    self.profile_file,
+                    PLAN,
+                    SHA,
+                    SHA,
+                )
+                count = self.root / f"invalid-count-{index}.json"
+                self.write_json(
+                    count,
+                    count_observation(evidence, total_tokens=total_tokens),
+                )
+                admission.claim_count(evidence)
+                with self.assertRaises(admission.AdmissionError):
+                    admission.record_count(evidence, count)
+                self.assertEqual(
+                    admission.inspect(evidence)["state"],
+                    "withdrawn_count_tokens",
+                )
+
+    def test_count_tokens_requires_pre_cutoff_dispatch_attestation(self):
+        invalid_values = (
+            None,
+            True,
+            0,
+            "1",
+            admission.PROMO_END_EPOCH * 1000,
+            admission.PROMO_END_EPOCH * 1000 + 1,
+        )
+        for index, dispatch_ms in enumerate(invalid_values):
+            with self.subTest(dispatch_ms=dispatch_ms):
+                evidence = self.root / f"invalid-count-dispatch-{index}"
+                admission.initialize(
+                    evidence,
+                    self.capacity_file,
+                    self.profile_file,
+                    PLAN,
+                    SHA,
+                    SHA,
+                )
+                observation = self.root / f"invalid-count-dispatch-{index}.json"
+                self.write_json(
+                    observation,
+                    count_observation(evidence, dispatch_ms=dispatch_ms),
+                )
+                admission.claim_count(evidence)
+                with self.assertRaises(admission.AdmissionError):
+                    admission.record_count(evidence, observation)
+                self.assertEqual(
+                    admission.inspect(evidence)["state"],
+                    "withdrawn_count_tokens",
+                )
 
     def test_init_rejects_non_exact_shas_plan_budget_and_replay(self):
         with self.assertRaises(admission.AdmissionError):
@@ -397,7 +517,7 @@ class AdmissionContractTests(AdmissionFixture):
                 PLAN,
                 SHA,
                 SHA,
-                admission.AUTHORIZED_PROMO_BUDGET_NANOUSD + 1,
+                admission.AUTHORIZED_STANDARD_CEILING_NANOUSD + 1,
             )
         self.initialize()
         with self.assertRaises(admission.AdmissionError):
@@ -455,6 +575,8 @@ class AdmissionContractTests(AdmissionFixture):
             PLAN,
             SHA,
             SHA,
+            admission.AUTHORIZED_STANDARD_CEILING_NANOUSD,
+            admission.AUTHORIZED_MAX_OUTPUT_TOKENS,
         )
         count = self.root / "generation-count.json"
         self.write_json(count, count_observation(other))
@@ -710,7 +832,9 @@ class AdmissionContractTests(AdmissionFixture):
         self.initialize()
         journal_path = self.evidence / admission.JOURNAL
         journal = json.loads(journal_path.read_text())
-        journal["budget_nanousd"] = str(admission.AUTHORIZED_PROMO_BUDGET_NANOUSD + 1)
+        journal["budget_nanousd"] = str(
+            admission.AUTHORIZED_STANDARD_CEILING_NANOUSD + 1
+        )
         journal["contract_sha256"] = admission._contract_digest(journal)
         self.write_json(journal_path, journal)
         with self.assertRaises(admission.AdmissionError):
@@ -845,7 +969,25 @@ class AdmissionContractTests(AdmissionFixture):
         with self.assertRaises(admission.AdmissionError):
             admission.record_outcome(self.evidence, observation)
 
-    def test_nonstream_success_requires_visible_output_model_usage_and_cost_parity(self):
+    def test_generation_success_requires_completed_execution_evidence(self):
+        self.count_and_arm()
+        journal = json.loads((self.evidence / admission.JOURNAL).read_text())
+        observation = self.root / "observation.json"
+        self.write_json(
+            observation,
+            outcome_observation(
+                self.evidence,
+                immutable_event(journal["request_id"]),
+                execution_state="unknown",
+            ),
+        )
+        with self.assertRaises(admission.AdmissionError):
+            admission.record_outcome(self.evidence, observation)
+        summary = admission.inspect(self.evidence)
+        self.assertEqual(summary["state"], "withdrawn_evidence")
+        self.assertEqual(summary["failure_class"], "generation_evidence_rejected")
+
+    def test_stream_success_requires_visible_output_model_usage_and_cost_parity(self):
         self.count_and_arm()
         journal = json.loads((self.evidence / admission.JOURNAL).read_text())
         observation = self.root / "observation.json"
@@ -859,12 +1001,117 @@ class AdmissionContractTests(AdmissionFixture):
         self.assertTrue(summary["response_evidence"]["terminal_finish"])
         self.assertTrue(summary["response_evidence"]["terminal_usage"])
         self.assertTrue(summary["response_evidence"]["usage_matches_immutable_event"])
+        self.assertTrue(summary["response_evidence"]["exact_fixed_output"])
         self.assertEqual(summary["response_evidence"]["model_version"], admission.MODEL)
+        self.assertTrue(summary["response_evidence"]["raw_upstream_model_version"])
+        self.assertEqual(summary["generation_dispatch_ms"], DISPATCH_MS)
         journal = json.loads((self.evidence / admission.JOURNAL).read_text())
         self.assertEqual(journal["evidence"]["priced_ts"], str(PROMO_TEST_EPOCH))
+        self.assertEqual(journal["evidence"]["calibration_dispatch_ms"], str(DISPATCH_MS))
         admission.inspect(self.evidence, require_success=True)
         with self.assertRaises(admission.AdmissionError):
             admission.record_outcome(self.evidence, observation)
+
+    def test_generation_requires_pre_cutoff_dispatch_attestation(self):
+        invalid_values = (
+            None,
+            False,
+            0,
+            "1",
+            admission.PROMO_END_EPOCH * 1000,
+            admission.PROMO_END_EPOCH * 1000 + 1,
+        )
+        for index, dispatch_ms in enumerate(invalid_values):
+            with self.subTest(dispatch_ms=dispatch_ms):
+                evidence = self.root / f"invalid-generation-dispatch-{index}"
+                admission.initialize(
+                    evidence,
+                    self.capacity_file,
+                    self.profile_file,
+                    PLAN,
+                    SHA,
+                    SHA,
+                    admission.AUTHORIZED_STANDARD_CEILING_NANOUSD,
+                    admission.AUTHORIZED_MAX_OUTPUT_TOKENS,
+                )
+                count = self.root / f"invalid-generation-count-{index}.json"
+                self.write_json(count, count_observation(evidence))
+                admission.claim_count(evidence)
+                admission.record_count(evidence, count)
+                admission.arm_generation(evidence)
+                admission.claim_generation(evidence)
+                journal = json.loads((evidence / admission.JOURNAL).read_text())
+                observation = self.root / f"invalid-generation-dispatch-{index}.json"
+                self.write_json(
+                    observation,
+                    outcome_observation(
+                        evidence,
+                        immutable_event(journal["request_id"]),
+                        dispatch_ms=dispatch_ms,
+                    ),
+                )
+                with self.assertRaises(admission.AdmissionError):
+                    admission.record_outcome(evidence, observation)
+                self.assertEqual(
+                    admission.inspect(evidence)["state"],
+                    "withdrawn_evidence",
+                )
+
+    def test_stream_success_requires_exact_fixed_output(self):
+        self.count_and_arm()
+        journal = json.loads((self.evidence / admission.JOURNAL).read_text())
+        frames = stream_response()
+        frames[1]["candidates"][0]["content"]["parts"][0]["text"] += " 65"
+        observation = self.root / "wrong-output.json"
+        self.write_json(
+            observation,
+            outcome_observation(
+                self.evidence,
+                immutable_event(journal["request_id"]),
+                observed_response=frames,
+            ),
+        )
+        with self.assertRaises(admission.AdmissionError):
+            admission.record_outcome(self.evidence, observation)
+        self.assertEqual(admission.inspect(self.evidence)["state"], "withdrawn_evidence")
+
+    def test_stream_success_rejects_extra_output_whitespace(self):
+        self.count_and_arm()
+        journal = json.loads((self.evidence / admission.JOURNAL).read_text())
+        frames = stream_response()
+        frames[1]["candidates"][0]["content"]["parts"][0]["text"] += "\n"
+        observation = self.root / "extra-whitespace.json"
+        self.write_json(
+            observation,
+            outcome_observation(
+                self.evidence,
+                immutable_event(journal["request_id"]),
+                observed_response=frames,
+            ),
+        )
+        with self.assertRaises(admission.AdmissionError):
+            admission.record_outcome(self.evidence, observation)
+        self.assertEqual(admission.inspect(self.evidence)["state"], "withdrawn_evidence")
+
+    def test_malformed_stream_is_terminally_withdrawn(self):
+        self.count_and_arm()
+        journal = json.loads((self.evidence / admission.JOURNAL).read_text())
+        observation = self.root / "malformed-stream.json"
+        frames = stream_response()
+        frames[0]["candidates"] = [1]
+        self.write_json(
+            observation,
+            outcome_observation(
+                self.evidence,
+                immutable_event(journal["request_id"]),
+                observed_response=frames,
+            ),
+        )
+        with self.assertRaises(admission.AdmissionError):
+            admission.record_outcome(self.evidence, observation)
+        summary = admission.inspect(self.evidence)
+        self.assertEqual(summary["state"], "withdrawn_evidence")
+        self.assertEqual(summary["failure_class"], "generation_evidence_rejected")
 
     def test_exact_event_cost_must_reproduce_from_pinned_rate_card(self):
         self.count_and_arm()
@@ -909,7 +1156,16 @@ class AdmissionContractTests(AdmissionFixture):
                 self.write_json(capacity_file, capacity())
                 profile_file.write_text(PROFILE + "\n", encoding="utf-8")
                 os.chmod(profile_file, 0o600)
-                admission.initialize(evidence, capacity_file, profile_file, PLAN, SHA, SHA)
+                admission.initialize(
+                    evidence,
+                    capacity_file,
+                    profile_file,
+                    PLAN,
+                    SHA,
+                    SHA,
+                    admission.AUTHORIZED_STANDARD_CEILING_NANOUSD,
+                    admission.AUTHORIZED_MAX_OUTPUT_TOKENS,
+                )
                 count = root / "count.json"
                 self.write_json(count, count_observation(evidence))
                 admission.claim_count(evidence)
@@ -994,8 +1250,8 @@ class AdmissionContractTests(AdmissionFixture):
                     PLAN,
                     SHA,
                     SHA,
-                    100_000,
-                    1,
+                    admission.AUTHORIZED_STANDARD_CEILING_NANOUSD,
+                    admission.AUTHORIZED_MAX_OUTPUT_TOKENS,
                 )
                 count = root / "count.json"
                 self.write_json(count, count_observation(evidence))
@@ -1064,8 +1320,8 @@ class AdmissionContractTests(AdmissionFixture):
                 admission.record_outcome(self.evidence, observation)
         self.assertEqual(admission.inspect(self.evidence)["state"], "withdrawn_evidence")
 
-    def test_stream_success_requires_two_candidate_frames(self):
-        self.initialize(stream=True, max_output_tokens=2)
+    def test_stream_success_requires_two_visible_text_frames(self):
+        self.initialize()
         count = self.root / "count.json"
         self.write_json(count, count_observation(self.evidence))
         admission.claim_count(self.evidence)
@@ -1074,22 +1330,7 @@ class AdmissionContractTests(AdmissionFixture):
         admission.claim_generation(self.evidence)
         journal = json.loads((self.evidence / admission.JOURNAL).read_text())
         observation = self.root / "observation.json"
-        frames = [
-            {
-                "modelVersion": admission.MODEL,
-                "candidates": [{"content": {"parts": [{"text": "O"}]}}],
-            },
-            {
-                "modelVersion": admission.MODEL,
-                "candidates": [
-                    {
-                        "content": {"parts": [{"text": "K"}]},
-                        "finishReason": "STOP",
-                    }
-                ],
-                "usageMetadata": {"promptTokenCount": 2, "candidatesTokenCount": 2},
-            },
-        ]
+        frames = stream_response(output_tokens=2)
         self.write_json(
             observation,
             outcome_observation(
@@ -1101,11 +1342,114 @@ class AdmissionContractTests(AdmissionFixture):
         summary = admission.record_outcome(self.evidence, observation)
         self.assertTrue(summary["response_evidence"]["incremental_sse"])
         self.assertEqual(summary["response_evidence"]["candidate_frames"], 2)
+        self.assertEqual(summary["response_evidence"]["visible_text_frames"], 2)
+        self.assertTrue(summary["response_evidence"]["exact_fixed_output"])
+
+    def test_two_candidate_frames_without_preterminal_visible_text_are_rejected(self):
+        self.count_and_arm()
+        journal = json.loads((self.evidence / admission.JOURNAL).read_text())
+        frames = stream_response(output_tokens=2)
+        frames[0]["candidates"][0]["content"]["parts"] = [{"text": ""}]
+        frames[1]["candidates"][0]["content"]["parts"] = [
+            {"text": admission.EXPECTED_OUTPUT}
+        ]
+        observation = self.root / "buffered-candidate-frames.json"
+        self.write_json(
+            observation,
+            outcome_observation(
+                self.evidence,
+                immutable_event(journal["request_id"], output_tokens=2, total=4),
+                observed_response=frames,
+            ),
+        )
+        with self.assertRaises(admission.AdmissionError):
+            admission.record_outcome(self.evidence, observation)
+        summary = admission.inspect(self.evidence)
+        self.assertEqual(summary["state"], "withdrawn_evidence")
+        self.assertTrue(summary["generation_claimed"])
+
+    def test_admission_withdraws_non_stop_or_nonterminal_stop_without_replay(self):
+        cases = (
+            ("safety", "SAFETY", False),
+            ("max-tokens", "MAX_TOKENS", False),
+            ("malformed-call", "MALFORMED_FUNCTION_CALL", False),
+            ("missing", None, False),
+            ("stop-before-final", "STOP", True),
+        )
+        for name, reason, stop_before_final in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                capacity_file = root / "capacity.json"
+                profile_file = root / "profile"
+                evidence = root / "evidence"
+                self.write_json(capacity_file, capacity())
+                profile_file.write_text(PROFILE + "\n", encoding="utf-8")
+                os.chmod(profile_file, 0o600)
+                admission.initialize(
+                    evidence,
+                    capacity_file,
+                    profile_file,
+                    PLAN,
+                    SHA,
+                    SHA,
+                    admission.AUTHORIZED_STANDARD_CEILING_NANOUSD,
+                    admission.AUTHORIZED_MAX_OUTPUT_TOKENS,
+                    True,
+                )
+                count = root / "count.json"
+                self.write_json(count, count_observation(evidence))
+                admission.claim_count(evidence)
+                admission.record_count(evidence, count)
+                admission.arm_generation(evidence)
+                admission.claim_generation(evidence)
+                journal = json.loads((evidence / admission.JOURNAL).read_text())
+                first_candidate = {"content": {"parts": [{"text": "O"}]}}
+                terminal_candidate = {"content": {"parts": [{"text": "K"}]}}
+                if stop_before_final:
+                    first_candidate["finishReason"] = "STOP"
+                elif reason is not None:
+                    terminal_candidate["finishReason"] = reason
+                frames = [
+                    {
+                        "modelVersion": admission.MODEL,
+                        "candidates": [first_candidate],
+                    },
+                    {
+                        "modelVersion": admission.MODEL,
+                        "candidates": [terminal_candidate],
+                        "usageMetadata": {
+                            "promptTokenCount": "2",
+                            "candidatesTokenCount": "2",
+                        },
+                    },
+                ]
+                observation = root / "observation.json"
+                self.write_json(
+                    observation,
+                    outcome_observation(
+                        evidence,
+                        immutable_event(
+                            journal["request_id"], output_tokens=2, total=4
+                        ),
+                        observed_response=frames,
+                    ),
+                )
+                with self.assertRaises(admission.AdmissionError):
+                    admission.record_outcome(evidence, observation)
+                self.assertEqual(
+                    admission.inspect(evidence)["state"], "withdrawn_evidence"
+                )
+                with self.assertRaises(admission.AdmissionError):
+                    admission.record_outcome(evidence, observation)
 
     def test_buffered_stream_or_wrong_public_model_withdraws_without_replay(self):
         for name, stream, observed_response in (
             ("buffered", True, [response()]),
-            ("private-model", False, response(model="private-gemini-3.7-flash")),
+            (
+                "private-model",
+                True,
+                stream_response(model="private-gemini-3.7-flash"),
+            ),
         ):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -1122,8 +1466,8 @@ class AdmissionContractTests(AdmissionFixture):
                     PLAN,
                     SHA,
                     SHA,
-                    100_000,
-                    1,
+                    admission.AUTHORIZED_STANDARD_CEILING_NANOUSD,
+                    admission.AUTHORIZED_MAX_OUTPUT_TOKENS,
                     stream,
                 )
                 count = root / "count.json"
@@ -1169,7 +1513,11 @@ class OfficialRateContractTests(unittest.TestCase):
         path.write_text(json.dumps(value) + "\n", encoding="utf-8")
         os.chmod(path, 0o600)
 
-    def initialize(self, budget=admission.DEFAULT_BUDGET_NANOUSD, max_output_tokens=16):
+    def initialize(
+        self,
+        budget=admission.DEFAULT_BUDGET_NANOUSD,
+        max_output_tokens=admission.AUTHORIZED_MAX_OUTPUT_TOKENS,
+    ):
         with mock.patch.object(admission.time, "time", return_value=PROMO_TEST_EPOCH):
             return admission.initialize(
                 self.evidence,
@@ -1235,6 +1583,21 @@ class OfficialRateContractTests(unittest.TestCase):
             ),
             (1_500, 1_500, 150, 150, 7_500),
         )
+        self.assertEqual(
+            admission.AUTHORIZED_STANDARD_CEILING_NANOUSD,
+            1_048_576 * 1_500 + 256 * 7_500,
+        )
+        self.assertEqual(
+            promo.upper_bound(2, admission.AUTHORIZED_MAX_OUTPUT_TOKENS, "fresh"),
+            787_392_000,
+        )
+        self.assertEqual(
+            admission._authorized_pre_dispatch_upper_bound(
+                2,
+                admission.AUTHORIZED_MAX_OUTPUT_TOKENS,
+            ),
+            1_574_784_000,
+        )
 
     def test_tampered_low_rate_rejected_before_any_evidence_or_request(self):
         tampered = official_rate_row(PROMO_TEST_EPOCH)
@@ -1255,32 +1618,42 @@ class OfficialRateContractTests(unittest.TestCase):
         self.assertEqual(summary["state"], "withdrawn_budget")
         self.assertEqual(
             int(summary["upper_bound_nanousd"]),
-            admission.AUTHORIZED_PROMO_BUDGET_NANOUSD,
+            admission.AUTHORIZED_STANDARD_CEILING_NANOUSD,
         )
         self.assertFalse((self.evidence / admission.GENERATION_REQUEST).exists())
         self.assertFalse((self.evidence / admission.DISPATCH_FENCE).exists())
 
     def test_exact_authorized_ceiling_permits_request_after_free_count(self):
         self.write_json(self.capacity_file, capacity(official_rate_row(PROMO_TEST_EPOCH)))
-        summary = self.initialize(admission.AUTHORIZED_PROMO_BUDGET_NANOUSD)
+        summary = self.initialize(admission.AUTHORIZED_STANDARD_CEILING_NANOUSD)
         self.assertEqual(summary["state"], "awaiting_count_tokens")
         summary = self.record_count()
         self.assertEqual(summary["state"], "counted")
         self.assertEqual(
             int(summary["upper_bound_nanousd"]),
-            admission.AUTHORIZED_PROMO_BUDGET_NANOUSD,
+            admission.AUTHORIZED_STANDARD_CEILING_NANOUSD,
         )
         self.assertTrue((self.evidence / admission.GENERATION_REQUEST).exists())
         self.assertFalse((self.evidence / admission.DISPATCH_FENCE).exists())
 
-    def test_ceiling_plus_one_and_output_above_sixteen_are_rejected(self):
+    def test_budget_or_output_different_from_authorized_contract_are_rejected(self):
         self.write_json(self.capacity_file, capacity(official_rate_row(PROMO_TEST_EPOCH)))
         with self.assertRaises(admission.AdmissionError):
-            self.initialize(admission.AUTHORIZED_PROMO_BUDGET_NANOUSD + 1)
+            self.initialize(admission.AUTHORIZED_STANDARD_CEILING_NANOUSD + 1)
         self.assertFalse(self.evidence.exists())
 
         with self.assertRaises(admission.AdmissionError):
-            self.initialize(admission.AUTHORIZED_PROMO_BUDGET_NANOUSD, 17)
+            self.initialize(
+                admission.AUTHORIZED_STANDARD_CEILING_NANOUSD,
+                admission.AUTHORIZED_MAX_OUTPUT_TOKENS + 1,
+            )
+        self.assertFalse(self.evidence.exists())
+
+        with self.assertRaises(admission.AdmissionError):
+            self.initialize(
+                admission.AUTHORIZED_STANDARD_CEILING_NANOUSD,
+                admission.AUTHORIZED_MAX_OUTPUT_TOKENS - 1,
+            )
         self.assertFalse(self.evidence.exists())
 
     def test_post_2027_contract_is_fail_closed_even_with_exact_standard_rate(self):
@@ -1295,14 +1668,14 @@ class OfficialRateContractTests(unittest.TestCase):
                     PLAN,
                     SHA,
                     SHA,
-                    admission.AUTHORIZED_PROMO_BUDGET_NANOUSD,
-                    16,
+                    admission.AUTHORIZED_STANDARD_CEILING_NANOUSD,
+                    admission.AUTHORIZED_MAX_OUTPUT_TOKENS,
                 )
         self.assertFalse(self.evidence.exists())
 
     def test_promo_contract_expiring_after_init_withdraws_before_dispatch(self):
         self.write_json(self.capacity_file, capacity(official_rate_row(PROMO_TEST_EPOCH)))
-        self.initialize(admission.AUTHORIZED_PROMO_BUDGET_NANOUSD)
+        self.initialize(admission.AUTHORIZED_STANDARD_CEILING_NANOUSD)
         response_file = self.root / "count.json"
         self.write_json(response_file, count_observation(self.evidence))
         with mock.patch.object(
@@ -1320,7 +1693,7 @@ class OfficialRateContractTests(unittest.TestCase):
 
     def test_promo_contract_expiring_after_count_withdraws_before_arm(self):
         self.write_json(self.capacity_file, capacity(official_rate_row(PROMO_TEST_EPOCH)))
-        self.initialize(admission.AUTHORIZED_PROMO_BUDGET_NANOUSD)
+        self.initialize(admission.AUTHORIZED_STANDARD_CEILING_NANOUSD)
         self.record_count()
         with mock.patch.object(
             admission.time,
@@ -1333,6 +1706,24 @@ class OfficialRateContractTests(unittest.TestCase):
         self.assertEqual(summary["state"], "withdrawn_contract_expired")
         self.assertTrue((self.evidence / admission.GENERATION_REQUEST).exists())
         self.assertFalse((self.evidence / admission.DISPATCH_FENCE).exists())
+
+    def test_promo_contract_expiring_after_arm_withdraws_before_claim(self):
+        self.write_json(self.capacity_file, capacity(official_rate_row(PROMO_TEST_EPOCH)))
+        self.initialize(admission.AUTHORIZED_STANDARD_CEILING_NANOUSD)
+        self.record_count()
+        admission.arm_generation(self.evidence)
+        with mock.patch.object(
+            admission.time,
+            "time",
+            return_value=admission.PROMO_END_EPOCH,
+        ):
+            with self.assertRaises(admission.AdmissionError):
+                admission.claim_generation(self.evidence)
+        summary = admission.inspect(self.evidence)
+        self.assertEqual(summary["state"], "withdrawn_contract_expired")
+        self.assertTrue(summary["generation_armed"])
+        self.assertFalse(summary["generation_claimed"])
+        self.assertFalse((self.evidence / admission.OUTCOME_RECEIPT).exists())
 
 
 if __name__ == "__main__":

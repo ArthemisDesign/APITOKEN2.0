@@ -1314,6 +1314,7 @@ wd_path_is_systemd_definition systemd/claude-api.service
 wd_path_is_systemd_definition systemd/claude-api-openai.service
 wd_path_is_systemd_definition systemd/claude-api-gemini.service
 wd_path_is_systemd_definition systemd/claude-api-gemini@.service
+wd_path_is_systemd_definition systemd/claude-api-gemini-3-7-admission.service
 wd_path_is_systemd_definition systemd/claude-api-kimi.service
 wd_path_is_systemd_definition systemd/claude-api-kimi@.service
 wd_path_is_systemd_definition systemd/apitoken-admin.service \
@@ -1340,6 +1341,12 @@ for controller_definition in \
   deploy/gpt-image-2-public-paid-smoke-v3-gate.sh \
   deploy/gpt-image-2-public-paid-inspect-gate.sh \
   deploy/gpt-image-2-surface-probe-gate.sh \
+  deploy/gemini-3-7-admission-gate.sh \
+  deploy/gemini-3-7-admission-transport.py \
+  deploy/gemini-3-7-admission-trigger \
+  tools/gemini_calibration/__init__.py \
+  tools/gemini_calibration/admission.py \
+  tools/gemini_calibration/run_live.py \
   deploy/watchdog-infrastructure.sh \
   deploy/deploy.sh \
   deploy/authbot-runtime-state.sh \
@@ -1360,6 +1367,14 @@ for controller_definition in \
   deploy/admin-deploy.sh; do
   wd_path_is_controller_definition "$controller_definition" \
     || wd_die "fixed controller definition escaped the narrow installer: $controller_definition"
+done
+for local_only_admission_test in \
+  deploy/gemini-3-7-admission.test.sh \
+  deploy/gemini-3-7-admission-gate.test.py \
+  deploy/gemini-3-7-admission-transport.test.py; do
+  if wd_path_requires_infrastructure_install "$local_only_admission_test"; then
+    wd_die "Gemini 3.7 regression artifact entered production installation: $local_only_admission_test"
+  fi
 done
 for full_definition in \
   deploy/install-watchdog.sh \
@@ -1410,11 +1425,18 @@ git -C "$infrastructure_repo" commit --quiet -m validation-only
 infrastructure_validation=$(git -C "$infrastructure_repo" rev-parse HEAD)
 assert_infrastructure_scope none "$infrastructure_controller" "$infrastructure_validation"
 
+printf 'gemini-3.7-flash-admission-v1\n' \
+  >"$infrastructure_repo/deploy/gemini-3-7-admission-trigger"
+git -C "$infrastructure_repo" add deploy/gemini-3-7-admission-trigger
+git -C "$infrastructure_repo" commit --quiet -m admission-trigger
+infrastructure_trigger=$(git -C "$infrastructure_repo" rev-parse HEAD)
+assert_infrastructure_scope controller "$infrastructure_validation" "$infrastructure_trigger"
+
 printf 'edit\n' >>"$infrastructure_repo/deploy/Caddyfile"
 git -C "$infrastructure_repo" add deploy/Caddyfile
 git -C "$infrastructure_repo" commit --quiet -m caddy
 infrastructure_caddy=$(git -C "$infrastructure_repo" rev-parse HEAD)
-assert_infrastructure_scope caddy "$infrastructure_validation" "$infrastructure_caddy"
+assert_infrastructure_scope caddy "$infrastructure_trigger" "$infrastructure_caddy"
 
 printf 'mixed\n' >>"$infrastructure_repo/deploy/watchdog.sh"
 printf 'mixed\n' >>"$infrastructure_repo/deploy/Caddyfile"
@@ -1462,6 +1484,220 @@ git -C "$infrastructure_repo" add deploy/future-runtime.sh
 git -C "$infrastructure_repo" commit --quiet -m unknown
 infrastructure_unknown=$(git -C "$infrastructure_repo" rev-parse HEAD)
 assert_infrastructure_scope full "$infrastructure_deletion" "$infrastructure_unknown"
+
+# The direct-admission marker is interpreted by the fixed root bridge over the whole uninstalled
+# first-parent range. Exercise the exact implementation function so a poll that observes T through
+# later U cannot skip the one-shot, while mixed/modified/renamed/wrong-mode markers fail closed.
+direct_trigger_function=$(sed -n \
+  '/# DIRECT_ADMISSION_TRIGGER_FUNCTION_BEGIN/,/# DIRECT_ADMISSION_TRIGGER_FUNCTION_END/p' \
+  "$ROOT/deploy/watchdog-infrastructure.sh")
+[[ -n $direct_trigger_function ]] || wd_die "direct-admission trigger validator is missing"
+eval "$direct_trigger_function"
+DIRECT_ADMISSION_TRIGGER=deploy/gemini-3-7-admission-trigger
+DIRECT_ADMISSION_TRIGGER_BLOB=9b8e56096ace94bbc0daf90f1914647518c4b55b
+
+init_direct_trigger_repo() {
+  local repo=$1
+  git init --quiet "$repo"
+  git -C "$repo" config user.name test
+  git -C "$repo" config user.email test@example.invalid
+  git -C "$repo" config core.filemode true
+  mkdir -p "$repo/deploy"
+  printf 'base\n' >"$repo/ordinary"
+  git -C "$repo" add ordinary
+  git -C "$repo" commit --quiet -m base
+}
+
+direct_repo=$TEMP/direct-trigger-exact
+init_direct_trigger_repo "$direct_repo"
+direct_base=$(git -C "$direct_repo" rev-parse HEAD)
+printf 'gemini-3.7-flash-admission-v1\n' >"$direct_repo/$DIRECT_ADMISSION_TRIGGER"
+chmod 0644 "$direct_repo/$DIRECT_ADMISSION_TRIGGER"
+git -C "$direct_repo" add "$DIRECT_ADMISSION_TRIGGER"
+git -C "$direct_repo" commit --quiet -m trigger
+direct_trigger_sha=$(git -C "$direct_repo" rev-parse HEAD)
+[[ $(direct_admission_trigger_required "$direct_repo" "$direct_base" "$direct_trigger_sha") \
+    == "$direct_trigger_sha" ]] || wd_die "exact direct-admission trigger was not selected"
+printf 'later\n' >>"$direct_repo/ordinary"
+git -C "$direct_repo" add ordinary
+git -C "$direct_repo" commit --quiet -m later
+direct_later_sha=$(git -C "$direct_repo" rev-parse HEAD)
+[[ $(direct_admission_trigger_required "$direct_repo" "$direct_base" "$direct_later_sha") \
+    == "$direct_trigger_sha" ]] || wd_die "overtaken T-to-U trigger was skipped"
+[[ $(direct_admission_trigger_required "$direct_repo" "$direct_trigger_sha" "$direct_later_sha") \
+    == none ]] || wd_die "already-baselined trigger fired twice"
+
+direct_repo=$TEMP/direct-trigger-mixed
+init_direct_trigger_repo "$direct_repo"
+direct_base=$(git -C "$direct_repo" rev-parse HEAD)
+printf 'gemini-3.7-flash-admission-v1\n' >"$direct_repo/$DIRECT_ADMISSION_TRIGGER"
+printf 'mixed\n' >"$direct_repo/mixed"
+git -C "$direct_repo" add "$DIRECT_ADMISSION_TRIGGER" mixed
+git -C "$direct_repo" commit --quiet -m mixed
+direct_bad=$(git -C "$direct_repo" rev-parse HEAD)
+if (direct_admission_trigger_required "$direct_repo" "$direct_base" "$direct_bad" >/dev/null 2>&1); then
+  wd_die "mixed direct-admission trigger commit was accepted"
+fi
+
+direct_repo=$TEMP/direct-trigger-modified
+init_direct_trigger_repo "$direct_repo"
+printf 'gemini-3.7-flash-admission-v1\n' >"$direct_repo/$DIRECT_ADMISSION_TRIGGER"
+git -C "$direct_repo" add "$DIRECT_ADMISSION_TRIGGER"
+git -C "$direct_repo" commit --quiet -m prior-trigger
+direct_base=$(git -C "$direct_repo" rev-parse HEAD)
+printf 'modified\n' >"$direct_repo/$DIRECT_ADMISSION_TRIGGER"
+git -C "$direct_repo" add "$DIRECT_ADMISSION_TRIGGER"
+git -C "$direct_repo" commit --quiet -m modified
+direct_bad=$(git -C "$direct_repo" rev-parse HEAD)
+if (direct_admission_trigger_required "$direct_repo" "$direct_base" "$direct_bad" >/dev/null 2>&1); then
+  wd_die "modified direct-admission trigger was accepted"
+fi
+
+direct_repo=$TEMP/direct-trigger-renamed
+init_direct_trigger_repo "$direct_repo"
+printf 'gemini-3.7-flash-admission-v1\n' >"$direct_repo/source-marker"
+git -C "$direct_repo" add source-marker
+git -C "$direct_repo" commit --quiet -m source
+direct_base=$(git -C "$direct_repo" rev-parse HEAD)
+git -C "$direct_repo" mv source-marker "$DIRECT_ADMISSION_TRIGGER"
+git -C "$direct_repo" commit --quiet -m renamed
+direct_bad=$(git -C "$direct_repo" rev-parse HEAD)
+if (direct_admission_trigger_required "$direct_repo" "$direct_base" "$direct_bad" >/dev/null 2>&1); then
+  wd_die "renamed direct-admission trigger was accepted"
+fi
+
+direct_repo=$TEMP/direct-trigger-mode
+init_direct_trigger_repo "$direct_repo"
+direct_base=$(git -C "$direct_repo" rev-parse HEAD)
+printf 'gemini-3.7-flash-admission-v1\n' >"$direct_repo/$DIRECT_ADMISSION_TRIGGER"
+chmod 0755 "$direct_repo/$DIRECT_ADMISSION_TRIGGER"
+git -C "$direct_repo" add "$DIRECT_ADMISSION_TRIGGER"
+git -C "$direct_repo" commit --quiet -m executable
+direct_bad=$(git -C "$direct_repo" rev-parse HEAD)
+if (direct_admission_trigger_required "$direct_repo" "$direct_base" "$direct_bad" >/dev/null 2>&1); then
+  wd_die "executable direct-admission trigger was accepted"
+fi
+
+# Execute the exact finalizer with only its external effects stubbed. This proves gate failure never
+# reaches the baseline without a permanent firing fence, rejection precedes durability/baseline,
+# an already-spent descendant closes offline, and a failed durability barrier cannot commit.
+direct_finalize_function=$(sed -n \
+  '/# DIRECT_ADMISSION_FINALIZE_FUNCTION_BEGIN/,/# DIRECT_ADMISSION_FINALIZE_FUNCTION_END/p' \
+  "$ROOT/deploy/watchdog-infrastructure.sh")
+[[ -n $direct_finalize_function ]] || wd_die "direct-admission finalizer is missing"
+eval "$direct_finalize_function"
+direct_harness=$TEMP/direct-finalizer
+mkdir -p "$direct_harness"
+DIRECT_ADMISSION_GATE=$direct_harness/gate
+DIRECT_ADMISSION_PRODUCER_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+DIRECT_ADMISSION_EVIDENCE_ROOT=$direct_harness/evidence
+DIRECT_ADMISSION_TRIGGER_SHA=1111111111111111111111111111111111111111
+DIRECT_EVENTS=$direct_harness/events
+DIRECT_TRANSPORTS=$direct_harness/transports
+DIRECT_GATE_MODE=$direct_harness/mode
+DIRECT_ATTEMPT_SHA=
+export DIRECT_ADMISSION_EVIDENCE_ROOT DIRECT_EVENTS DIRECT_TRANSPORTS DIRECT_GATE_MODE
+cat >"$DIRECT_ADMISSION_GATE" <<'SH'
+#!/usr/bin/env bash
+printf 'gate\n' >>"$DIRECT_EVENTS"
+case "$(<"$DIRECT_GATE_MODE")" in
+  fail-no-fence) exit 1 ;;
+  fail)
+    if [[ ! -d $DIRECT_ADMISSION_EVIDENCE_ROOT ]]; then
+      mkdir "$DIRECT_ADMISSION_EVIDENCE_ROOT"
+      printf 'transport\n' >>"$DIRECT_TRANSPORTS"
+    fi
+    exit 1
+    ;;
+  success)
+    if [[ ! -d $DIRECT_ADMISSION_EVIDENCE_ROOT ]]; then
+      mkdir "$DIRECT_ADMISSION_EVIDENCE_ROOT"
+      printf 'transport\n' >>"$DIRECT_TRANSPORTS"
+    fi
+    exit 0
+    ;;
+esac
+exit 2
+SH
+chmod 0755 "$DIRECT_ADMISSION_GATE"
+
+validate_direct_admission_implementation() { printf 'validate\n' >>"$DIRECT_EVENTS"; }
+direct_admission_evidence_root_is_safe() { [[ -d $DIRECT_ADMISSION_EVIDENCE_ROOT ]]; }
+bind_direct_admission_delivery() {
+  printf 'bind\n' >>"$DIRECT_EVENTS"
+  printf '%s\n' "$DIRECT_ATTEMPT_SHA"
+}
+reject_infrastructure_candidate() { printf 'reject\n' >>"$DIRECT_EVENTS"; }
+infrastructure_durability_barrier() {
+  printf 'durability\n' >>"$DIRECT_EVENTS"
+  [[ ${DIRECT_DURABILITY_OK:-1} == 1 ]]
+}
+record_infrastructure_baseline() { printf 'baseline\n' >>"$DIRECT_EVENTS"; }
+wd_warn() { :; }
+
+run_direct_finalize() {
+  local mode=$1 sha=$2 attempt=${3:-$2} durability=${4:-1} rc
+  printf '%s\n' "$mode" >"$DIRECT_GATE_MODE"
+  : >"$DIRECT_EVENTS"
+  SHA=$sha
+  DIRECT_ATTEMPT_SHA=$attempt
+  export DIRECT_DURABILITY_OK=$durability
+  set +e
+  ( set -e; complete_infrastructure_transaction ) >/dev/null 2>&1
+  rc=$?
+  set -e
+  printf '%s\n' "$rc"
+}
+
+rm -rf -- "$DIRECT_ADMISSION_EVIDENCE_ROOT"
+rc=$(run_direct_finalize fail-no-fence "$DIRECT_ADMISSION_TRIGGER_SHA")
+[[ $rc -ne 0 && $(<"$DIRECT_EVENTS") == $'bind\nvalidate\ngate' ]] \
+  || wd_die "pre-fence gate failure advanced direct-admission state"
+
+rm -rf -- "$DIRECT_ADMISSION_EVIDENCE_ROOT"
+: >"$DIRECT_TRANSPORTS"
+rc=$(run_direct_finalize fail "$DIRECT_ADMISSION_TRIGGER_SHA")
+[[ $rc -ne 0 && $(<"$DIRECT_EVENTS") == $'bind\nvalidate\ngate\nreject\ndurability\nbaseline' \
+   && $(wc -l <"$DIRECT_TRANSPORTS" | tr -d ' ') == 1 ]] \
+  || wd_die "terminal trigger withdrawal was not rejected durably before its baseline"
+
+descendant_sha=2222222222222222222222222222222222222222
+rc=$(run_direct_finalize fail "$descendant_sha" "$DIRECT_ADMISSION_TRIGGER_SHA")
+[[ $rc -eq 0 && $(<"$DIRECT_EVENTS") == $'bind\nvalidate\ngate\ndurability\nbaseline' \
+   && $(wc -l <"$DIRECT_TRANSPORTS" | tr -d ' ') == 1 ]] \
+  || wd_die "withdrawn trigger descendant did not close offline without another transport"
+
+# If the first observed production head is already descendant U, a crash after the terminal gate
+# result leaves both its evidence and its durable delivery binding. Retrying the same U must remain
+# RED; only a strictly later first-parent V may close that spent attempt offline.
+rm -rf -- "$DIRECT_ADMISSION_EVIDENCE_ROOT"
+: >"$DIRECT_TRANSPORTS"
+rc=$(run_direct_finalize fail "$descendant_sha" "$descendant_sha")
+[[ $rc -ne 0 && $(<"$DIRECT_EVENTS") == $'bind\nvalidate\ngate\nreject\ndurability\nbaseline' \
+   && $(wc -l <"$DIRECT_TRANSPORTS" | tr -d ' ') == 1 ]] \
+  || wd_die "first descendant admission failure was not rejected"
+rc=$(run_direct_finalize fail "$descendant_sha" "$descendant_sha")
+[[ $rc -ne 0 && $(<"$DIRECT_EVENTS") == $'bind\nvalidate\ngate\nreject\ndurability\nbaseline' \
+   && $(wc -l <"$DIRECT_TRANSPORTS" | tr -d ' ') == 1 ]] \
+  || wd_die "same-descendant crash recovery incorrectly closed a withdrawn admission"
+later_descendant_sha=3333333333333333333333333333333333333333
+rc=$(run_direct_finalize fail "$later_descendant_sha" "$descendant_sha")
+[[ $rc -eq 0 && $(<"$DIRECT_EVENTS") == $'bind\nvalidate\ngate\ndurability\nbaseline' \
+   && $(wc -l <"$DIRECT_TRANSPORTS" | tr -d ' ') == 1 ]] \
+  || wd_die "strictly later descendant did not close the spent admission offline"
+
+rm -rf -- "$DIRECT_ADMISSION_EVIDENCE_ROOT"
+: >"$DIRECT_TRANSPORTS"
+rc=$(run_direct_finalize success "$DIRECT_ADMISSION_TRIGGER_SHA")
+[[ $rc -eq 0 && $(<"$DIRECT_EVENTS") == $'bind\nvalidate\ngate\ndurability\nbaseline' \
+   && $(wc -l <"$DIRECT_TRANSPORTS" | tr -d ' ') == 1 ]] \
+  || wd_die "successful direct admission did not commit after durability"
+
+rm -rf -- "$DIRECT_ADMISSION_EVIDENCE_ROOT"
+rc=$(run_direct_finalize success "$DIRECT_ADMISSION_TRIGGER_SHA" \
+  "$DIRECT_ADMISSION_TRIGGER_SHA" 0)
+[[ $rc -ne 0 && $(<"$DIRECT_EVENTS") == $'bind\nvalidate\ngate\ndurability' ]] \
+  || wd_die "failed durability barrier still committed the infrastructure baseline"
 
 # Documentation-only ranges stay cheap, but any new unclassified area fails safe into the complete
 # validation set until its owner adds an explicit classifier.
@@ -3636,6 +3872,80 @@ subshell_result=$(trap_case_output subshell)
 [[ $subshell_result == $'RECOVERED\nCONTINUED' ]] \
   || wd_die "a wd_die inside a condition subshell must not quarantine (got: $subshell_result)"
 
+# A privileged admission withdrawal records rejected.sha durably before infrastructure.sha. The
+# outer unprivileged failure handler must preserve that exact safe inode, while ordinary or unsafe
+# rejection state is still atomically replaced and fsynced before failure reporting continues.
+rejection_functions=$(sed -n \
+  '/# WATCHDOG_REJECTION_FUNCTIONS_BEGIN/,/# WATCHDOG_REJECTION_FUNCTIONS_END/p' \
+  "$ROOT/deploy/watchdog.sh")
+watchdog_fail_function=$(sed -n '/^fail()/,/^}/p' "$ROOT/deploy/watchdog.sh")
+[[ -n $rejection_functions && -n $watchdog_fail_function ]] \
+  || wd_die 'watchdog durable rejection functions are missing'
+rejection_candidate=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+rejection_file=$TEMP/rejected.sha
+rejection_events=$TEMP/rejection.events
+
+rejection_inode() {
+  /usr/bin/python3 -I -B -S - "$1" <<'PY'
+import os
+import sys
+
+info = os.lstat(sys.argv[1])
+print(f"{info.st_dev}:{info.st_ino}")
+PY
+}
+
+run_watchdog_fail_rejection_harness() (
+  eval "$rejection_functions"
+  eval "$watchdog_fail_function"
+  wd_atomic_write() {
+    local path=$1 value=$2 mode=${3:-0640}
+    printf 'write\n' >>"$rejection_events"
+    printf '%s\n' "$value" >"$path.next"
+    chmod "$mode" "$path.next"
+    mv -f -- "$path.next" "$path"
+  }
+  watchdog_fsync_file_and_parent() { printf 'fsync\n' >>"$rejection_events"; }
+  status() { printf 'status\n' >>"$rejection_events"; }
+  github_phase_failure() { :; }
+  wd_warn() { :; }
+  wd_die() { exit 1; }
+  REJECTED_FILE=$rejection_file
+  CANDIDATE_SHA=$rejection_candidate
+  CURRENT_PHASE=installing-infrastructure
+  TEST_DB_STARTED=0
+  GITHUB_HELPER=$TEMP/nonexistent-github-helper
+  false
+  fail
+)
+
+printf '%s\n' "$rejection_candidate" >"$rejection_file"
+chmod 0644 "$rejection_file"
+rejection_inode_before=$(rejection_inode "$rejection_file")
+: >"$rejection_events"
+set +e
+run_watchdog_fail_rejection_harness >/dev/null 2>&1
+rejection_rc=$?
+set -e
+rejection_inode_after=$(rejection_inode "$rejection_file")
+[[ $rejection_rc -ne 0 && $rejection_inode_after == "$rejection_inode_before" \
+   && $(<"$rejection_events") == $'fsync\nstatus' ]] \
+  || wd_die 'failure handler replaced an exact safe durable rejection inode'
+
+printf 'stale\n' >"$rejection_file"
+chmod 0644 "$rejection_file"
+rejection_inode_before=$(rejection_inode "$rejection_file")
+: >"$rejection_events"
+set +e
+run_watchdog_fail_rejection_harness >/dev/null 2>&1
+rejection_rc=$?
+set -e
+rejection_inode_after=$(rejection_inode "$rejection_file")
+[[ $rejection_rc -ne 0 && $rejection_inode_after != "$rejection_inode_before" \
+   && $(<"$rejection_file") == "$rejection_candidate" \
+   && $(<"$rejection_events") == $'write\nfsync\nstatus' ]] \
+  || wd_die 'failure handler did not replace and fsync unsafe rejection state before reporting'
+
 
 # Operator visibility: independent controller and application baselines must appear in status.
 grep -Fq 'for entry in processed infrastructure engine backend sales openkeys admin rejected pending-migration' \
@@ -3824,6 +4134,23 @@ watchdog_publish_line=$(grep -nF 'mv -f -- "$watchdog_staged" "$watchdog_target"
 [[ -n $helper_publish_line && -n $sudoers_start_line && -n $watchdog_publish_line \
     && $helper_publish_line -lt $sudoers_start_line && $sudoers_start_line -lt $watchdog_publish_line ]] \
   || wd_die 'helper and sudo policy are not verified before atomic watchdog publication'
+infrastructure_runner_publish_line=$(grep -nF \
+  '/usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+github_helper_publish_line=$(grep -nF '/usr/local/lib/apitoken-watchdog/watchdog-github' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+admission_gate_publish_line=$(grep -nF \
+  '/usr/local/lib/apitoken-watchdog/controller/gemini-3-7-admission-gate.sh' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+watchdog_lib_publish_line=$(grep -nF '/usr/local/lib/apitoken-watchdog/watchdog-lib.sh' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+[[ -n $infrastructure_runner_publish_line && -n $github_helper_publish_line \
+    && -n $admission_gate_publish_line && -n $watchdog_lib_publish_line \
+    && $watchdog_lib_publish_line -lt $infrastructure_runner_publish_line \
+    && $github_helper_publish_line -lt $infrastructure_runner_publish_line \
+    && $admission_gate_publish_line -lt $infrastructure_runner_publish_line \
+    && $infrastructure_runner_publish_line -lt $watchdog_publish_line ]] \
+  || wd_die 'privileged infrastructure runner is published before its retry dependencies'
 grep -Fq 'mv -f -- "$authbot_backup" "$authbot_helper"' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'failed sudo policy installation does not restore the prior authbot helper'
 # Bash expands every assignment word in one `local` command before applying any of them. Keep the
@@ -4236,6 +4563,58 @@ for narrow_option in --controller-only --systemd-only --monitoring-only; do
   grep -Fq -- "$narrow_option" "$ROOT/deploy/watchdog-infrastructure.sh" \
     || wd_die "root infrastructure bridge never selects narrow option $narrow_option"
 done
+# The candidate installer itself is the bootstrap durability fence: the previously installed root
+# bridge may not yet contain the newer transaction barrier, so every successful install mode must
+# sync all operational roots before it can return and let that old bridge advance its baseline.
+install_barrier_calls=$(grep -nE '^[[:space:]]*install_watchdog_durability_barrier$' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+[[ $(wc -l <<<"$install_barrier_calls" | tr -d ' ') == 4 ]] \
+  || wd_die 'watchdog installer does not fence all three narrow modes and full bootstrap'
+controller_install_line=$(grep -nE '^[[:space:]]+install_controller_definitions$' \
+  "$ROOT/deploy/install-watchdog.sh" | head -n 1 | cut -d: -f1)
+systemd_install_line=$(grep -nE '^[[:space:]]+install_systemd_definitions$' \
+  "$ROOT/deploy/install-watchdog.sh" | head -n 1 | cut -d: -f1)
+monitoring_install_line=$(grep -nE '^[[:space:]]+install_monitoring_definitions$' \
+  "$ROOT/deploy/install-watchdog.sh" | head -n 1 | cut -d: -f1)
+full_install_line=$(grep -nF 'systemctl enable --now apitoken-deploy-watchdog.timer' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+controller_barrier_line=$(sed -n '1p' <<<"$install_barrier_calls")
+systemd_barrier_line=$(sed -n '2p' <<<"$install_barrier_calls")
+monitoring_barrier_line=$(sed -n '3p' <<<"$install_barrier_calls")
+full_barrier_line=$(sed -n '4p' <<<"$install_barrier_calls")
+[[ $controller_install_line -lt $controller_barrier_line \
+   && $systemd_install_line -lt $systemd_barrier_line \
+   && $monitoring_install_line -lt $monitoring_barrier_line \
+   && $full_install_line -lt $full_barrier_line ]] \
+  || wd_die 'watchdog installer durability barrier runs before a successful install completes'
+grep -Fq '/usr/bin/sync -f "${roots[@]}"' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'watchdog installer durability fence is not a Linux syncfs barrier'
+
+# A systemd-only bootstrap can complete before the later controller-only phase. The admission
+# ReadWritePaths source and empty gate lock therefore must be durably provisioned before either
+# narrow systemd publication, and full install must preserve the same state→unit order.
+admission_state_calls=$(grep -nE \
+  '^[[:space:]]*provision_gemini_3_7_admission_state$' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+[[ $(wc -l <<<"$admission_state_calls" | tr -d ' ') == 3 ]] \
+  || wd_die 'admission state is not provisioned in controller, systemd, and full install modes'
+controller_state_line=$(sed -n '1p' <<<"$admission_state_calls")
+systemd_state_line=$(sed -n '2p' <<<"$admission_state_calls")
+full_state_line=$(sed -n '3p' <<<"$admission_state_calls")
+full_controller_line=$(grep -nE '^[[:space:]]*install_controller_definitions$' \
+  "$ROOT/deploy/install-watchdog.sh" | tail -n 1 | cut -d: -f1)
+full_systemd_line=$(grep -nE '^[[:space:]]*install_systemd_definitions$' \
+  "$ROOT/deploy/install-watchdog.sh" | tail -n 1 | cut -d: -f1)
+[[ $controller_state_line -lt $controller_install_line \
+   && $controller_install_line -lt $controller_barrier_line \
+   && $systemd_state_line -lt $systemd_install_line \
+   && $systemd_install_line -lt $systemd_barrier_line \
+   && $full_state_line -lt $full_controller_line \
+   && $full_controller_line -lt $full_systemd_line \
+   && $full_systemd_line -lt $full_barrier_line ]] \
+  || wd_die 'admission state is not fenced before a durable systemd unit can be published'
+grep -Fq '/usr/bin/sync -f "$lock"' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'admission state is not durable before its systemd ReadWritePaths dependency'
 grep -Fq 'INSTALL_SCOPE=$(wd_infrastructure_install_scope "$CANDIDATE" "$BASE" "$SHA")' \
   "$ROOT/deploy/watchdog-infrastructure.sh" \
   || wd_die 'fixed root bridge does not derive the exact candidate scope itself'

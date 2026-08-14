@@ -258,6 +258,23 @@ initialization.
 The Cherry backup volume is tied to the Cherry server lifecycle. Do not terminate the server before
 copying required archives to independent storage.
 
+### Gemini 3.7 private admission assets
+
+The dormant Gemini 3.7 admission state is root-only under
+`/var/lib/apitoken/gemini-3-7-admission`; its producer-keyed child is a permanent one-shot firing
+fence and is included in the normal `/var/lib/apitoken` backup scope. The fixed controller assets
+live below `/usr/local/lib/apitoken-watchdog/controller`, and the immutable producer copy is sealed
+below `/usr/local/lib/apitoken-watchdog/producers/264363f7838ddd2d156b14668a320047ad33b6ee`.
+`claude-api-gemini-3-7-admission.service` is a non-public loopback canary with no enablement target,
+no Caddy route, one request attempt, no restart policy, and an argv-level
+`CLAUDE_API_TARIFF_OVERRIDES=0` pin; the gate must attest that its port is closed on every exit.
+
+Only the already-installed root infrastructure runner may invoke this gate, and it does so directly
+before recording `infrastructure.sha`. There is intentionally no sudoers capability for an
+unprivileged caller. The bridge delivery has no trigger and therefore no live request. The later
+one-file trigger contract, durability ordering, and offline recovery rules are authoritative in
+`docs/ops/DEPLOYMENT.md` and `docs/ops/GEMINI_CALIBRATION.md`.
+
 ## Deployment procedure
 
 [`docs/ops/DEPLOYMENT.md`](DEPLOYMENT.md) is the authoritative operator runbook and

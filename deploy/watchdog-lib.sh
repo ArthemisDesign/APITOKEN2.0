@@ -779,7 +779,9 @@ wd_path_is_devbot() {
 
 wd_path_is_infrastructure() {
   case "$1" in
-    deploy/*|systemd/*|observability/*|compose.yaml)
+    deploy/*|systemd/*|observability/*|compose.yaml|\
+    tools/gemini_calibration/__init__.py|tools/gemini_calibration/admission.py|\
+    tools/gemini_calibration/run_live.py)
       return 0
       ;;
     *) return 1 ;;
@@ -791,14 +793,16 @@ wd_path_is_infrastructure() {
 # files fail safe into installation until they are explicitly proven local-only here.
 wd_path_requires_infrastructure_install() {
   case "$1" in
-    deploy/*.md|deploy/*.test.sh|deploy/agent-merge.sh|deploy/agent-merge.suite.sh|\
+    deploy/*.md|deploy/*.test.sh|deploy/*.test.py|deploy/agent-merge.sh|deploy/agent-merge.suite.sh|\
     deploy/test-stage2-e2e.sh|deploy/sccache-cargo.sh|deploy/agent-worktree.sh|\
     deploy/DELETE_WORKTREE.sh|deploy/prune-merged.sh|deploy/next-cache.sh|\
     deploy/typescript-scope.mjs|deploy/typescript-build-contexts.sh|\
     deploy/typescript-test-groups.sh|compose.yaml)
       return 1
       ;;
-    deploy/*|systemd/*|observability/*|compose.yaml)
+    deploy/*|systemd/*|observability/*|compose.yaml|\
+    tools/gemini_calibration/__init__.py|tools/gemini_calibration/admission.py|\
+    tools/gemini_calibration/run_live.py)
       return 0
       ;;
     *) return 1 ;;
@@ -825,6 +829,7 @@ wd_path_is_systemd_definition() {
     systemd/apitoken-worker.service|systemd/apitoken-content-studio.service|\
     systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-openai@.service|\
     systemd/claude-api-gemini.service|systemd/claude-api-gemini@.service|\
+    systemd/claude-api-gemini-3-7-admission.service|\
     systemd/claude-api-kimi.service|systemd/claude-api-kimi@.service|\
     systemd/claude-api-backup.service|\
     systemd/claude-api-backup.timer|systemd/claude-api-fingerprint.service|\
@@ -865,6 +870,10 @@ wd_path_is_controller_definition() {
     deploy/gpt-image-2-public-paid-smoke-v2-gate.sh|deploy/gpt-image-2-public-paid-smoke-v3-gate.sh|\
     deploy/gpt-image-2-public-paid-inspect-gate.sh|\
     deploy/gpt-image-2-surface-probe-gate.sh|\
+    deploy/gemini-3-7-admission-gate.sh|deploy/gemini-3-7-admission-transport.py|\
+    deploy/gemini-3-7-admission-trigger|\
+    tools/gemini_calibration/__init__.py|tools/gemini_calibration/admission.py|\
+    tools/gemini_calibration/run_live.py|\
     deploy/watchdog-test-db.sh|deploy/watchdog-backup.sh|deploy/pricing-retirement-admission.sh|\
     deploy/pricing-retirement-postdrop.sh|deploy/pricing-retired-schema-manifest.sh|deploy/watchdog-migrate.sh|\
     deploy/watchdog-infrastructure.sh|deploy/watchdog-retention.sh|\

@@ -36,9 +36,11 @@ SUMMARY_SCHEMA = "gemini-3.7-admission-summary/v3"
 COUNT_OBSERVATION_SCHEMA = "gemini-3.7-admission-count-observation/v3"
 OBSERVATION_SCHEMA = "gemini-3.7-admission-observation/v2"
 DEFAULT_BUDGET_NANOUSD = 100_000
-DEFAULT_MAX_OUTPUT_TOKENS = 16
-AUTHORIZED_PROMO_BUDGET_NANOUSD = 786_492_000
-AUTHORIZED_MAX_OUTPUT_TOKENS = 16
+DEFAULT_MAX_OUTPUT_TOKENS = 256
+AUTHORIZED_MAX_OUTPUT_TOKENS = 256
+AUTHORIZED_STANDARD_CEILING_NANOUSD = 1_048_576 * 1_500 + 256 * 7_500
+PROMPT = "Output the integers 1 through 64, separated by single spaces, and nothing else."
+EXPECTED_OUTPUT = " ".join(str(value) for value in range(1, 65))
 OFFICIAL_TARIFF_SCHEDULE_ID = "google/gemini-developer-api/2026-08-14"
 OFFICIAL_INPUT_TOKEN_LIMIT = 1_048_576
 OFFICIAL_OUTPUT_TOKEN_LIMIT = 65_536
@@ -355,6 +357,24 @@ def _require_exact_official_rate(
     return rate
 
 
+def _authorized_pre_dispatch_upper_bound(
+    input_tokens: int,
+    max_output_tokens: int,
+) -> int:
+    # Authorization is deliberately independent of the cheaper promotional dispatch tariff. Use
+    # the full post-promo Standard card so a delayed settlement or boundary interpretation can
+    # never exceed the amount the person explicitly approved. Dispatch and success remain
+    # promo-only elsewhere in this state machine.
+    if input_tokens > OFFICIAL_INPUT_TOKEN_LIMIT:
+        raise run_live.UnboundedCostError(
+            f"countTokens returned {input_tokens}, above model input limit "
+            f"{OFFICIAL_INPUT_TOKEN_LIMIT}"
+        )
+    if max_output_tokens != AUTHORIZED_MAX_OUTPUT_TOKENS:
+        raise AdmissionError("Gemini 3.7 authorization output allowance differs from the contract")
+    return AUTHORIZED_STANDARD_CEILING_NANOUSD
+
+
 def _validate_admission_controls(
     rate_epoch: int,
     budget_nanousd: Any,
@@ -368,13 +388,15 @@ def _validate_admission_controls(
     budget = _positive_int(
         budget_nanousd,
         "budget",
-        AUTHORIZED_PROMO_BUDGET_NANOUSD,
+        AUTHORIZED_STANDARD_CEILING_NANOUSD,
     )
     output = _positive_int(
         max_output_tokens,
         "max output tokens",
         AUTHORIZED_MAX_OUTPUT_TOKENS,
     )
+    if output != AUTHORIZED_MAX_OUTPUT_TOKENS:
+        raise AdmissionError("Gemini 3.7 Flash admission requires the exact output allowance")
     return budget, output
 
 
@@ -394,15 +416,16 @@ def _profile_from_file(path: Path) -> str:
 
 def _count_request(journal: dict[str, Any]) -> dict[str, Any]:
     return {
-        "schema": "gemini-3.7-admission-request/v2",
+        "schema": "gemini-3.7-admission-request/v3",
         "kind": "count_tokens",
         "method": "POST",
         "path": f"/v1beta/models/{MODEL}:countTokens",
         "target_profile": journal["profile_id"],
         "request_id": journal["count_request_id"],
+        "not_after": journal["not_after"],
         "body": {
             "contents": [
-                {"role": "user", "parts": [{"text": "Reply with exactly OK."}]}
+                {"role": "user", "parts": [{"text": PROMPT}]}
             ]
         },
     }
@@ -411,7 +434,7 @@ def _count_request(journal: dict[str, Any]) -> dict[str, Any]:
 def _generation_request(journal: dict[str, Any]) -> dict[str, Any]:
     suffix = "streamGenerateContent?alt=sse" if journal["stream"] else "generateContent"
     return {
-        "schema": "gemini-3.7-admission-request/v2",
+        "schema": "gemini-3.7-admission-request/v3",
         "kind": "generation",
         "method": "POST",
         "path": f"/v1beta/models/{MODEL}:{suffix}",
@@ -485,6 +508,27 @@ def _validate_canonical_request(
         raise AdmissionError(f"private {label} request does not match the immutable contract")
 
 
+def _calibration_dispatch_ms(value: Any, not_after: int, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise AdmissionError(f"{field} must be a canonical positive integer")
+    if value >= not_after * 1000:
+        raise AdmissionError(f"{field} is outside the immutable dispatch window")
+    return value
+
+
+def _successful_dispatch_ms(
+    value: Any,
+    status: int,
+    not_after: int,
+    field: str,
+) -> int | None:
+    if status == 200:
+        return _calibration_dispatch_ms(value, not_after, field)
+    if value is not None:
+        raise AdmissionError(f"{field} is present on a non-success response")
+    return None
+
+
 def _rates_from_dict(value: Any) -> run_live.ModelRates:
     expected = {field.name for field in dataclasses.fields(run_live.ModelRates)}
     if not isinstance(value, dict) or set(value) != expected:
@@ -539,8 +583,10 @@ def _load_journal(directory: Path) -> dict[str, Any]:
         "request_id",
         "rate",
         "counted_input_tokens",
+        "count_dispatch_ms",
         "upper_bound_nanousd",
         "generation_request_sha256",
+        "generation_dispatch_ms",
         "actual_nanousd",
         "failure_class",
         "http_status",
@@ -551,6 +597,8 @@ def _load_journal(directory: Path) -> dict[str, Any]:
         raise AdmissionError("private journal has an unexpected schema")
     if journal["schema"] != SCHEMA or journal["model"] != MODEL:
         raise AdmissionError("private journal is not the exact Gemini 3.7 admission contract")
+    if journal["stream"] is not True:
+        raise AdmissionError("private journal is not the exact incremental SSE contract")
     implementation = _sha(journal["implementation_sha"], "implementation SHA")
     release = _sha(journal["release_sha"], "release SHA")
     if implementation != release:
@@ -610,6 +658,10 @@ def _load_journal(directory: Path) -> dict[str, Any]:
             or not str(value).isdigit()
         ):
             raise AdmissionError(f"private journal {field} is invalid")
+    for field in ("count_dispatch_ms", "generation_dispatch_ms"):
+        value = journal[field]
+        if value is not None:
+            _calibration_dispatch_ms(value, not_after, f"private journal {field}")
     for field in (
         "count_request_sha256",
         "generation_request_sha256",
@@ -668,6 +720,7 @@ def _validate_count_receipt(directory: Path, journal: dict[str, Any]) -> None:
         "target_profile": journal["profile_id"],
         "model": MODEL,
         "total_tokens": int(journal["counted_input_tokens"]),
+        "dispatch_ms": journal["count_dispatch_ms"],
     }
     if receipt != expected:
         raise AdmissionError("immutable countTokens receipt does not match the contract")
@@ -682,6 +735,7 @@ def _count_outcome_receipt(journal: dict[str, Any]) -> dict[str, Any]:
         "failure_class": journal["failure_class"],
         "http_status": journal["http_status"],
         "execution_state": journal["execution_state"],
+        "dispatch_ms": journal["count_dispatch_ms"],
     }
 
 
@@ -703,6 +757,7 @@ def _outcome_receipt(journal: dict[str, Any]) -> dict[str, Any]:
         "failure_class": journal["failure_class"],
         "http_status": journal["http_status"],
         "execution_state": journal["execution_state"],
+        "dispatch_ms": journal["generation_dispatch_ms"],
     }
 
 
@@ -764,7 +819,7 @@ def initialize(
     release_sha: str,
     budget_nanousd: int = DEFAULT_BUDGET_NANOUSD,
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
-    stream: bool = False,
+    stream: bool = True,
 ) -> dict[str, Any]:
     with _state_lock(directory, exclusive=True):
         return _initialize_locked(
@@ -795,6 +850,8 @@ def _initialize_locked(
     release_sha = _sha(release_sha, "release SHA")
     if implementation_sha != release_sha:
         raise AdmissionError("implementation and immutable release SHA must match")
+    if stream is not True:
+        raise AdmissionError("Gemini 3.7 Flash admission requires incremental SSE")
     rate_epoch = int(time.time())
     budget_nanousd, max_output_tokens = _validate_admission_controls(
         rate_epoch,
@@ -870,8 +927,10 @@ def _initialize_locked(
         "request_id": request_id,
         "rate": dataclasses.asdict(rate),
         "counted_input_tokens": None,
+        "count_dispatch_ms": None,
         "upper_bound_nanousd": None,
         "generation_request_sha256": "",
+        "generation_dispatch_ms": None,
         "actual_nanousd": None,
         "failure_class": None,
         "http_status": None,
@@ -902,6 +961,7 @@ def _record_count_locked(directory: Path, response_path: Path) -> dict[str, Any]
     if journal["state"] != "count_tokens_claimed":
         raise AdmissionError("free countTokens outcome is already terminal or recorded")
     _validate_count_claim(directory, journal)
+    dispatch_ms: int | None = None
     try:
         response = _read_json(response_path)
         if set(response) != {
@@ -912,6 +972,7 @@ def _record_count_locked(directory: Path, response_path: Path) -> dict[str, Any]
             "model",
             "http_status",
             "execution_state",
+            "dispatch_ms",
             "response",
         }:
             raise AdmissionError("countTokens observation has an unexpected schema")
@@ -923,6 +984,7 @@ def _record_count_locked(directory: Path, response_path: Path) -> dict[str, Any]
             "model": MODEL,
             "http_status": response.get("http_status"),
             "execution_state": response.get("execution_state"),
+            "dispatch_ms": response.get("dispatch_ms"),
             "response": response.get("response"),
         }:
             raise AdmissionError("countTokens observation is not bound to the immutable request")
@@ -941,6 +1003,13 @@ def _record_count_locked(directory: Path, response_path: Path) -> dict[str, Any]
             }
         ):
             raise AdmissionError("countTokens transport outcome is invalid")
+        dispatch_ms = _successful_dispatch_ms(
+            response["dispatch_ms"],
+            status,
+            journal["not_after"],
+            "countTokens calibration dispatch timestamp",
+        )
+        journal["count_dispatch_ms"] = dispatch_ms
         if status != 200:
             if execution_state == "completed":
                 raise AdmissionError(
@@ -970,15 +1039,14 @@ def _record_count_locked(directory: Path, response_path: Path) -> dict[str, Any]
         )
         if total_tokens <= 0:
             raise run_live.CalibrationError("countTokens returned no positive input")
-        rate = _rates_from_dict(journal["rate"])
-        upper = rate.upper_bound(
+        upper = _authorized_pre_dispatch_upper_bound(
             total_tokens,
             journal["max_output_tokens"],
-            "fresh",
         )
     except (AdmissionError, run_live.CalibrationError, run_live.UnboundedCostError, TypeError):
         refreshed = _load_journal(directory)
         if refreshed["state"] == "count_tokens_claimed":
+            refreshed["count_dispatch_ms"] = dispatch_ms
             _terminalize(
                 directory,
                 refreshed,
@@ -1001,6 +1069,7 @@ def _record_count_locked(directory: Path, response_path: Path) -> dict[str, Any]
         "target_profile": journal["profile_id"],
         "model": MODEL,
         "total_tokens": total_tokens,
+        "dispatch_ms": dispatch_ms,
     }
     _atomic_json(directory / GENERATION_REQUEST, _generation_request(journal), replace=False)
     journal["state"] = "counted"
@@ -1219,6 +1288,29 @@ def _response(observation: dict[str, Any], stream: bool) -> run_live.GenerationR
     return run_live.GenerationResponse((raw,), stream=False)
 
 
+def _visible_plain_text(response: run_live.GenerationResponse) -> str:
+    fragments: list[str] = []
+    for frame in response.frames:
+        candidates = frame.get("candidates", [])
+        if not isinstance(candidates, list):
+            raise AdmissionError("generation response candidates are not an array")
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                raise AdmissionError("generation response has a non-object candidate")
+            content = candidate.get("content", {})
+            if not isinstance(content, dict):
+                raise AdmissionError("generation response content is not an object")
+            parts = content.get("parts", [])
+            if not isinstance(parts, list):
+                raise AdmissionError("generation response parts are not an array")
+            for part in parts:
+                if not isinstance(part, dict):
+                    raise AdmissionError("generation response has a non-object part")
+                if part.get("thought") is not True and isinstance(part.get("text"), str):
+                    fragments.append(part["text"])
+    return "".join(fragments)
+
+
 def _verify_fresh_event_cost(
     event: dict[str, Any],
     rate: run_live.ModelRates,
@@ -1275,6 +1367,7 @@ def _record_outcome_locked(directory: Path, observation_path: Path) -> dict[str,
         raise AdmissionError("paid generation outcome is already terminal or was never dispatched")
     _validate_fence(directory, journal)
     _validate_claim(directory, journal)
+    dispatch_ms: int | None = None
     try:
         observation = _read_json(observation_path)
         if observation.get("schema") != OBSERVATION_SCHEMA:
@@ -1287,6 +1380,7 @@ def _record_outcome_locked(directory: Path, observation_path: Path) -> dict[str,
             "plan",
             "http_status",
             "execution_state",
+            "dispatch_ms",
             "response",
             "immutable_capacity",
             "event_request_id",
@@ -1306,6 +1400,13 @@ def _record_outcome_locked(directory: Path, observation_path: Path) -> dict[str,
         execution_state = observation.get("execution_state")
         if execution_state not in {None, "not_started", "started", "completed", "unknown"}:
             raise AdmissionError("generation execution state is invalid")
+        dispatch_ms = _successful_dispatch_ms(
+            observation.get("dispatch_ms"),
+            status,
+            journal["not_after"],
+            "generation calibration dispatch timestamp",
+        )
+        journal["generation_dispatch_ms"] = dispatch_ms
         if status != 200:
             state = (
                 "withdrawn_generation_not_started"
@@ -1323,8 +1424,8 @@ def _record_outcome_locked(directory: Path, observation_path: Path) -> dict[str,
             raise AdmissionError(
                 "generation failed; the exact paid attempt is permanently withdrawn"
             )
-        if execution_state == "not_started":
-            raise AdmissionError("successful generation contradicts not_started execution evidence")
+        if execution_state != "completed":
+            raise AdmissionError("successful generation has no completed execution evidence")
         event_payload = observation.get("immutable_capacity")
         if not isinstance(event_payload, dict):
             raise AdmissionError("generation has no immutable authority snapshot")
@@ -1382,13 +1483,22 @@ def _record_outcome_locked(directory: Path, observation_path: Path) -> dict[str,
             stream=journal["stream"],
             max_output_tokens=journal["max_output_tokens"],
         )
+        generation_response = _response(observation, journal["stream"])
         response_evidence, response_error = run_live.verify_generation_response(
             leg,
-            _response(observation, journal["stream"]),
+            generation_response,
             event,
         )
         usage_error = run_live.verify_leg_usage(leg, event)
-        if response_error or usage_error:
+        exact_output = (
+            response_error is None
+            and _visible_plain_text(generation_response) == EXPECTED_OUTPUT
+        )
+        response_evidence["exact_fixed_output"] = exact_output
+        response_evidence["raw_upstream_model_version"] = (
+            response_evidence.get("model_version") == MODEL
+        )
+        if response_error or usage_error or not exact_output:
             raise AdmissionError("generation response and immutable event do not match")
         journal["state"] = "success"
         journal["actual_nanousd"] = str(actual)
@@ -1402,6 +1512,7 @@ def _record_outcome_locked(directory: Path, observation_path: Path) -> dict[str,
             "tariff_schedule_id": event["tariff_schedule_id"],
             "priced_ts": str(priced_ts),
             "completed_at": str(completed_at),
+            "calibration_dispatch_ms": str(dispatch_ms),
         }
         _write_journal(directory, journal)
         _exclusive_json(directory / OUTCOME_RECEIPT, _outcome_receipt(journal))
@@ -1409,6 +1520,7 @@ def _record_outcome_locked(directory: Path, observation_path: Path) -> dict[str,
     except AdmissionError:
         refreshed = _load_journal(directory)
         if refreshed["state"] == "generation_claimed":
+            refreshed["generation_dispatch_ms"] = dispatch_ms
             _terminalize(
                 directory,
                 refreshed,
@@ -1419,6 +1531,7 @@ def _record_outcome_locked(directory: Path, observation_path: Path) -> dict[str,
     except (run_live.CalibrationError, TypeError, ValueError, KeyError):
         refreshed = _load_journal(directory)
         if refreshed["state"] == "generation_claimed":
+            refreshed["generation_dispatch_ms"] = dispatch_ms
             _terminalize(
                 directory,
                 refreshed,
@@ -1464,6 +1577,10 @@ def _inspect_locked(directory: Path, *, require_success: bool = False) -> dict[s
             "terminal countTokens state and immutable outcome receipt differ"
         )
     counted = journal["counted_input_tokens"] is not None
+    if counted and journal["count_dispatch_ms"] is None:
+        raise AdmissionError("post-count state has no producer dispatch attestation")
+    if journal["state"] == "success" and journal["generation_dispatch_ms"] is None:
+        raise AdmissionError("terminal success has no generation dispatch attestation")
     has_count_receipt = (directory / COUNT_RECEIPT).exists()
     if has_count_receipt:
         _validate_count_receipt(directory, journal)
@@ -1487,6 +1604,7 @@ def _inspect_locked(directory: Path, *, require_success: bool = False) -> dict[s
             "generation_armed",
             "generation_claimed",
             "success",
+            "withdrawn_contract_expired",
             "withdrawn_generation_not_started",
             "withdrawn_generation_ambiguous",
             "withdrawn_evidence",
@@ -1538,6 +1656,7 @@ def _inspect_locked(directory: Path, *, require_success: bool = False) -> dict[s
         "release_sha": journal["release_sha"],
         "count_tokens_claimed": count_claimed,
         "count_tokens_recorded": counted,
+        "count_dispatch_ms": journal["count_dispatch_ms"],
         "upper_bound_nanousd": journal["upper_bound_nanousd"],
         "budget_nanousd": journal["budget_nanousd"],
         "max_output_tokens": journal["max_output_tokens"],
@@ -1548,6 +1667,7 @@ def _inspect_locked(directory: Path, *, require_success: bool = False) -> dict[s
         # Backward-compatible summary field: a claim is the only offline proof that transport was
         # authorized to make its exactly-once attempt; this state machine cannot observe socket I/O.
         "generation_dispatched": claimed,
+        "generation_dispatch_ms": journal["generation_dispatch_ms"],
         "actual_nanousd": journal["actual_nanousd"],
         "http_status": journal["http_status"],
         "execution_state": journal["execution_state"],

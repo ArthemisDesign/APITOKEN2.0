@@ -855,8 +855,10 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    that event before `_flush`; a listener-side destroy therefore writes no HTTP bytes. Exact
    `countTokens` may refresh once with `NeverReplay`; paid generation requires an already-fresh
    cached bearer. Every deadline-bound upstream POST is one-shot, with no helper restart, 401
-   resend, profile rotation or smooth retry. This producer is dormant: the root trigger/consumer,
-   defaults, public catalog and live calls remain deferred until a GREEN exact producer SHA.
+   resend, profile rotation or smooth retry. The dormant root consumer is wired and digest-pinned;
+   its private canary fixes `CLAUDE_API_TARIFF_OVERRIDES=0` at argv level so the admitted bound and
+   immutable event use only the compiled official schedule. Its exact trigger, live proof, defaults,
+   public catalog and storefront publication remain deferred.
    Its thinking allowlist is exactly
    `low|medium|high` (omission
    means medium); `minimal`, `thinkingBudget`, `candidateCount`, deprecated sampling controls and

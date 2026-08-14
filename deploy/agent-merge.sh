@@ -134,6 +134,7 @@ am_gate_deployment() (
   bash "$ROOT/deploy/typescript-artifact-cache.test.sh"
   bash "$ROOT/deploy/typescript-test-groups.test.sh"
   bash "$ROOT/deploy/commerce-release-bundle.test.sh"
+  bash "$ROOT/deploy/gemini-3-7-admission.test.sh"
   # The merge path tests itself on every merge, strictly. It is deliberately not enforced in the
   # production gate: the watchdog installed on the host still calls deploy/agent-merge.test.sh, now a
   # report-only shim, so a host-environment difference cannot quarantine a SHA and trap its own fix.
@@ -162,6 +163,7 @@ am_range_changes_local_gate() {
   while IFS= read -r path; do
     case "$path" in
       deploy/agent-merge.sh|deploy/agent-merge.suite.sh|deploy/watchdog-lib.sh|\
+      deploy/gemini-3-7-admission.test.sh|\
       deploy/sccache-cargo.sh|deploy/sccache-cargo.test.sh|\
       deploy/agent-worktree.sh|deploy/agent-worktree.test.sh|\
       deploy/next-cache.sh|deploy/next-cache.test.sh|\

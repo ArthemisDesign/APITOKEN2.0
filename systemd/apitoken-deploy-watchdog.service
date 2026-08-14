@@ -30,4 +30,4 @@ ProtectSystem=full
 # create /etc/systemd/journald.conf.d without this. The unit directory already listed here is the
 # far more powerful grant, so widening to the parent adds little. A path must exist to be bind
 # mounted read-write, which is why this names /etc/systemd and not the drop-in directory itself.
-ReadWritePaths=/var/lib/apitoken/watchdog /var/lib/apitoken/monitoring /opt/apitoken /srv/claude-api/releases /srv/claude-api/data /run/lock /usr/local/lib/apitoken-watchdog /usr/local/bin /etc/systemd /etc/systemd/system /etc/caddy /etc/apitoken
+ReadWritePaths=/var/lib/apitoken/watchdog /var/lib/apitoken/monitoring /var/lib/apitoken/gemini-3-7-admission /opt/apitoken /srv/claude-api/releases /srv/claude-api/data /run/lock /usr/local/lib/apitoken-watchdog /usr/local/bin /etc/systemd /etc/systemd/system /etc/caddy /etc/apitoken

@@ -144,6 +144,189 @@ provision_authbot_proxy_admin_key() {
   fi
 }
 
+validate_gemini_3_7_producer_anchor() {
+  local root=$1 sha=$2 binary=$root/claude-api digest_file=$root/claude-api.sha256
+  local marker=$root/.release-sha expected actual
+  local digest_lines=() marker_lines=()
+  [[ -d $root && ! -L $root && $(stat -c '%u:%g:%a' -- "$root") == 0:0:555 ]] \
+    || return 1
+  [[ -f $binary && ! -L $binary \
+     && $(stat -c '%u:%g:%a:%h' -- "$binary") == 0:0:555:1 ]] || return 1
+  [[ -f $digest_file && ! -L $digest_file \
+     && $(stat -c '%u:%g:%a:%h' -- "$digest_file") == 0:0:444:1 ]] || return 1
+  [[ -f $marker && ! -L $marker \
+     && $(stat -c '%u:%g:%a:%h' -- "$marker") == 0:0:444:1 ]] || return 1
+  mapfile -t digest_lines <"$digest_file" || return 1
+  mapfile -t marker_lines <"$marker" || return 1
+  [[ ${#digest_lines[@]} -eq 1 && ${digest_lines[0]} =~ ^[0-9a-f]{64}$ \
+     && ${#marker_lines[@]} -eq 1 && ${marker_lines[0]} == "$sha" ]] || return 1
+  expected=${digest_lines[0]}
+  actual=$(sha256sum -- "$binary") || return 1
+  [[ ${actual%% *} == "$expected" ]]
+}
+
+provision_gemini_3_7_producer_anchor() {
+  local sha=264363f7838ddd2d156b14668a320047ad33b6ee
+  local parent=/usr/local/lib/apitoken-watchdog/producers
+  local target=$parent/$sha release=/srv/claude-api/releases/$sha
+  local source=$release/claude-api stage marker release_identity deploy_identity
+  local marker_lines=()
+
+  install -d -o root -g root -m 0755 "$parent"
+  [[ -d $parent && ! -L $parent && $(stat -c '%u:%g:%a' -- "$parent") == 0:0:755 ]] \
+    || { echo 'Gemini 3.7 producer anchor parent is invalid' >&2; return 1; }
+  if [[ -e $target || -L $target ]]; then
+    validate_gemini_3_7_producer_anchor "$target" "$sha" \
+      || { echo 'Gemini 3.7 sealed producer anchor is invalid' >&2; return 1; }
+    return 0
+  fi
+
+  marker=$release/.release-sha
+  deploy_identity=$(id -u deploy):$(id -g deploy) \
+    || { echo 'deploy account identity is unavailable' >&2; return 1; }
+  [[ -d $release && ! -L $release ]] \
+    || { echo 'Gemini 3.7 exact producer release is unavailable' >&2; return 1; }
+  release_identity=$(stat -c '%u:%g' -- "$release") || return 1
+  [[ $release_identity == 0:0 || $release_identity == "$deploy_identity" ]] \
+    || { echo 'Gemini 3.7 producer release owner is invalid' >&2; return 1; }
+  [[ $(stat -c '%u:%g:%a' -- "$release") == "$release_identity:555" \
+     && -f $marker && ! -L $marker \
+     && $(stat -c '%u:%g:%a:%h' -- "$marker") == "$release_identity:444:1" \
+     && -f $source && ! -L $source && -x $source \
+     && $(stat -c '%u:%g:%a:%h' -- "$source") == "$release_identity:555:1" ]] \
+    || { echo 'Gemini 3.7 exact producer release is unavailable' >&2; return 1; }
+  mapfile -t marker_lines <"$marker" || return 1
+  [[ ${#marker_lines[@]} -eq 1 && ${marker_lines[0]} == "$sha" ]] \
+    || { echo 'Gemini 3.7 producer release marker drifted' >&2; return 1; }
+
+  stage=$(mktemp -d "$parent/.${sha}.XXXXXX") || return 1
+  chmod 0700 "$stage"
+  if ! /usr/bin/python3 -I -P -B -S - "$source" "$stage" "$sha" \
+    "${release_identity%%:*}" "${release_identity##*:}" <<'PY'
+import hashlib
+import os
+import stat
+import sys
+from pathlib import Path
+
+source, stage, sha = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+source_uid, source_gid = int(sys.argv[4]), int(sys.argv[5])
+before = source.lstat()
+if (
+    not stat.S_ISREG(before.st_mode)
+    or stat.S_ISLNK(before.st_mode)
+    or before.st_uid != source_uid
+    or before.st_gid != source_gid
+    or stat.S_IMODE(before.st_mode) != 0o555
+    or before.st_nlink != 1
+):
+    raise SystemExit(1)
+source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+target_fd = os.open(
+    stage / "claude-api",
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+    0o555,
+)
+digest = hashlib.sha256()
+try:
+    opened = os.fstat(source_fd)
+    if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+        raise SystemExit(1)
+    while True:
+        chunk = os.read(source_fd, 1024 * 1024)
+        if not chunk:
+            break
+        digest.update(chunk)
+        view = memoryview(chunk)
+        while view:
+            written = os.write(target_fd, view)
+            if written <= 0:
+                raise SystemExit(1)
+            view = view[written:]
+    os.fchown(target_fd, 0, 0)
+    os.fchmod(target_fd, 0o555)
+    os.fsync(target_fd)
+finally:
+    os.close(target_fd)
+    os.close(source_fd)
+after = source.lstat()
+if (
+    (after.st_dev, after.st_ino, after.st_ctime_ns, after.st_size)
+    != (before.st_dev, before.st_ino, before.st_ctime_ns, before.st_size)
+):
+    raise SystemExit(1)
+
+for name, value in (("claude-api.sha256", digest.hexdigest()), (".release-sha", sha)):
+    fd = os.open(
+        stage / name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o444,
+    )
+    try:
+        payload = memoryview((value + "\n").encode("ascii"))
+        while payload:
+            written = os.write(fd, payload)
+            if written <= 0:
+                raise SystemExit(1)
+            payload = payload[written:]
+        os.fchown(fd, 0, 0)
+        os.fchmod(fd, 0o444)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+os.chown(stage, 0, 0, follow_symlinks=False)
+os.chmod(stage, 0o555, follow_symlinks=False)
+directory_fd = os.open(stage, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+try:
+    os.fsync(directory_fd)
+finally:
+    os.close(directory_fd)
+PY
+  then
+    rm -rf --one-file-system -- "$stage"
+    echo 'Gemini 3.7 producer release could not be sealed' >&2
+    return 1
+  fi
+  if ! validate_gemini_3_7_producer_anchor "$stage" "$sha"; then
+    chmod 0700 "$stage"
+    rm -rf --one-file-system -- "$stage"
+    echo 'Gemini 3.7 staged producer anchor is invalid' >&2
+    return 1
+  fi
+  mv -- "$stage" "$target" \
+    || { chmod 0700 "$stage"; rm -rf --one-file-system -- "$stage"; return 1; }
+  /usr/bin/python3 -I -P -B -S - "$parent" <<'PY'
+import os
+import sys
+
+descriptor = os.open(sys.argv[1], os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+try:
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+PY
+  validate_gemini_3_7_producer_anchor "$target" "$sha" \
+    || { echo 'Gemini 3.7 sealed producer anchor failed final validation' >&2; return 1; }
+}
+
+provision_gemini_3_7_admission_state() {
+  local state=/var/lib/apitoken/gemini-3-7-admission
+  local lock=$state/gate.lock
+  install -d -o root -g root -m 0700 "$state"
+  if [[ ! -e $lock && ! -L $lock ]]; then
+    install -o root -g root -m 0600 /dev/null "$lock"
+  fi
+  [[ -d $state && ! -L $state && $(stat -c '%u:%g:%a' -- "$state") == 0:0:700 \
+     && -f $lock && ! -L $lock \
+     && $(stat -c '%u:%g:%a:%h:%s' -- "$lock") == 0:0:600:1:0 ]] \
+    || { echo 'Gemini 3.7 admission state and empty lock are unsafe' >&2; return 1; }
+  # The systemd unit names this directory in ReadWritePaths. Make the prerequisite durable before
+  # publishing the unit on /etc, so no power-loss prefix can leave a boot-visible unit whose bind
+  # mount source never reached disk.
+  /usr/bin/sync -f "$lock" \
+    || { echo 'Gemini 3.7 admission state could not be made durable' >&2; return 1; }
+}
+
 # Every transaction that can start the Redis containers must provision their data directories
 # first. Docker creates a missing bind-mount target as root, and redis:7.4-alpine runs as the
 # image's fixed redis uid/gid (999:1000); the container would then lose write access to its own
@@ -241,6 +424,7 @@ install_and_verify_sudo_policy() {
 install_controller_definitions() {
   local watchdog_target=/usr/local/lib/apitoken-watchdog/watchdog.sh
   local watchdog_staged=${watchdog_target}.tmp.$$
+  provision_gemini_3_7_producer_anchor
   install -d -o root -g root -m 0755 \
     /usr/local/lib/apitoken-watchdog/controller /opt/apitoken-watchdog
   publish_authbot_runtime_helper
@@ -268,6 +452,20 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-surface-probe-gate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/gpt-image-2-public-paid-inspect-gate.sh" \
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-paid-inspect-gate.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/gemini-3-7-admission-gate.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/gemini-3-7-admission-gate.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/gemini-3-7-admission-transport.py" \
+    /usr/local/lib/apitoken-watchdog/controller/gemini-3-7-admission-transport.py
+  rm -rf --one-file-system -- \
+    /usr/local/lib/apitoken-watchdog/controller/gemini_calibration/__pycache__
+  install -d -o root -g root -m 0755 \
+    /usr/local/lib/apitoken-watchdog/controller/gemini_calibration
+  install -o root -g root -m 0644 "$ROOT/tools/gemini_calibration/__init__.py" \
+    /usr/local/lib/apitoken-watchdog/controller/gemini_calibration/__init__.py
+  install -o root -g root -m 0644 "$ROOT/tools/gemini_calibration/admission.py" \
+    /usr/local/lib/apitoken-watchdog/controller/gemini_calibration/admission.py
+  install -o root -g root -m 0644 "$ROOT/tools/gemini_calibration/run_live.py" \
+    /usr/local/lib/apitoken-watchdog/controller/gemini_calibration/run_live.py
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-test-db.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-test-db
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-backup.sh" \
@@ -280,8 +478,6 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/pricing-retirement-postdrop.sh
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-migrate.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
-  install -o root -g root -m 0755 "$ROOT/deploy/watchdog-infrastructure.sh" \
-    /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-retention.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-retention.sh
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-github.sh" \
@@ -326,6 +522,11 @@ install_controller_definitions() {
   rm -f -- \
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-diagnostic-gate.sh \
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-v2-diagnostic-gate.sh
+  # The privileged infrastructure runner is a second controller commit point. Publish it only
+  # after every helper and gate it may need on the next retry, so a crash cannot leave a new runner
+  # unable to invoke the candidate installer that would complete or fix the transaction.
+  install -o root -g root -m 0755 "$ROOT/deploy/watchdog-infrastructure.sh" \
+    /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
   # The entrypoint is the controller transaction's commit point: every dependency is present first.
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog.sh" "$watchdog_staged"
   mv -f -- "$watchdog_staged" "$watchdog_target"
@@ -356,7 +557,7 @@ install_systemd_definitions() {
     apitoken-candidate-validator.service apitoken-candidate-validator.timer \
     apitoken-sudoers-install.service apitoken-tmpfiles-install.service \
     apitoken-sysctl-install.service \
-    apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service claude-api-backup.service claude-api-backup.timer \
+    apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-gemini-3-7-admission.service claude-api-kimi.service claude-api-kimi@.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
     claude-router.service claude-router@.service \
@@ -414,24 +615,43 @@ install_monitoring_definitions() {
   "$ROOT/deploy/install-monitoring.sh"
 }
 
+install_watchdog_durability_barrier() {
+  local path
+  local roots=()
+  [[ $(/usr/bin/uname -s) == Linux ]] \
+    || { echo 'watchdog installation durability requires Linux syncfs semantics' >&2; return 1; }
+  for path in /usr/local /etc /var/lib /opt /srv; do
+    [[ -e $path && ! -L $path ]] && roots+=("$path")
+  done
+  (( ${#roots[@]} > 0 )) \
+    || { echo 'watchdog installation has no durability roots' >&2; return 1; }
+  /usr/bin/sync -f "${roots[@]}" \
+    || { echo 'watchdog installation could not be made durable' >&2; return 1; }
+}
+
 # Narrow transactions install only the exact concern selected by the fixed root bridge. They are
 # deliberately fenced before bootstrap provisioning and unrelated service restarts.
 case "$INSTALL_MODE" in
   controller)
+    provision_gemini_3_7_admission_state
     install_and_verify_sudo_policy
     install_controller_definitions
+    install_watchdog_durability_barrier
     echo 'production watchdog controller definitions installed'
     exit 0
     ;;
   systemd)
+    provision_gemini_3_7_admission_state
     install_systemd_definitions
     provision_redis_data_dirs
     activate_redis_definition
+    install_watchdog_durability_barrier
     echo 'production systemd definitions installed'
     exit 0
     ;;
   monitoring)
     install_monitoring_definitions
+    install_watchdog_durability_barrier
     echo 'production monitoring definitions installed'
     exit 0
     ;;
@@ -469,6 +689,7 @@ install -d -o deploy -g deploy -m 0750 \
 # Candidate tests need traverse-only access through these parents. State contents remain unlistable.
 chmod o+x /var/lib/apitoken /var/lib/apitoken/watchdog /var/lib/apitoken/watchdog/candidates
 chown apitoken-ci:apitoken-ci /var/lib/apitoken/watchdog/ci-home
+provision_gemini_3_7_admission_state
 # Publish the backward-compatible authbot helper and verify its required sudo rule before the new
 # watchdog entrypoint can become visible. Policy failure restores both the old policy (inside the
 # sudoers installer) and the prior helper, leaving the old watchdog compatible.
@@ -597,4 +818,5 @@ activate_redis_definition
 install_monitoring_definitions
 systemctl enable --now apitoken-candidate-validator.timer
 systemctl enable --now apitoken-deploy-watchdog.timer
+install_watchdog_durability_barrier
 echo 'production watchdog and parallel candidate validator installed; verify with: sudo apitoken-watchdog status'

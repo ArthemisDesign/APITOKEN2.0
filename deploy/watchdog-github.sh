@@ -27,6 +27,18 @@ EOF
 }
 
 case "${1:-}" in
+  production-head-is)
+    [[ $# -eq 2 ]] || { echo 'usage: production-head-is SHA' >&2; exit 2; }
+    [[ $2 =~ $sha_re ]] || { echo 'invalid SHA' >&2; exit 2; }
+    branch=$(github_curl "$api/branches/master")
+    actual=$(jq -er '
+      select(.name == "master")
+      | select(.protected == true)
+      | .commit.sha
+    ' <<<"$branch") || { echo 'invalid or unprotected production branch response' >&2; exit 1; }
+    [[ $actual =~ $sha_re && $actual == "$2" ]] \
+      || { echo 'requested SHA is not the exact protected production head' >&2; exit 1; }
+    ;;
   commit-status)
     [[ $# -ge 5 && $# -le 6 ]] || { echo 'usage: commit-status SHA STATE CONTEXT DESCRIPTION [URL]' >&2; exit 2; }
     [[ $2 =~ $sha_re ]] || { echo 'invalid SHA' >&2; exit 2; }
@@ -116,7 +128,7 @@ case "${1:-}" in
     done <<<"$entries"
     ;;
   *)
-    echo 'usage: watchdog-github.sh commit-status|deployment-create|deployment-status|validation-next ...' >&2
+    echo 'usage: watchdog-github.sh production-head-is|commit-status|deployment-create|deployment-status|validation-next ...' >&2
     exit 2
     ;;
 esac

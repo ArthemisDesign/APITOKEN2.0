@@ -144,6 +144,30 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         with self.assertRaises(run_live.CalibrationError):
             budget.require(run_live.MAX_BUDGET_NANO)
 
+    def test_integer_contract_accepts_only_json_int_or_canonical_decimal_string(self):
+        for raw, expected in ((0, 0), (12, 12), ("0", 0), ("12", 12)):
+            with self.subTest(raw=raw):
+                self.assertEqual(run_live.as_int(raw, "value"), expected)
+        for raw in (
+            True,
+            False,
+            -1,
+            0.0,
+            1.0,
+            1.5,
+            "-1",
+            "+1",
+            "01",
+            " 1",
+            "1 ",
+            "1.0",
+            "",
+            "１",
+            None,
+        ):
+            with self.subTest(raw=raw), self.assertRaises(run_live.CalibrationError):
+                run_live.as_int(raw, "value")
+
     def test_delivery_baseline_fails_closed_on_pending_dropped_or_missing_authority(self):
         run_live.require_healthy_delivery(capacity())
         pending = capacity()
@@ -200,6 +224,15 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         incomplete.pop("thinking_output_tokens")
         with self.assertRaises(run_live.CalibrationError):
             run_live.recent_turn_events(capacity([incomplete]))
+
+    def test_recent_turn_usage_and_nanousd_reject_noncanonical_numbers(self):
+        for field in ("input_tokens", "api_input_nanousd"):
+            for raw in (1.0, -1, "-1", "01", "+1", " 1", "1 ", "1.0", True):
+                with self.subTest(field=field, raw=raw):
+                    broken = event()
+                    broken[field] = raw
+                    with self.assertRaises(run_live.CalibrationError):
+                        run_live.recent_turn_events(capacity([broken]))
 
     def test_matrix_covers_models_levels_stream_cache_audio_tool_search_long_and_image_sizes(self):
         models = [
@@ -448,9 +481,13 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             "content": {"parts": [{"text": "CALIBRATION_OK"}]},
             "finishReason": "STOP",
         }]
+        visible["usageMetadata"] = {
+            **base["usageMetadata"],
+            "candidatesTokenCount": 1,
+        }
         response = run_live.decode_generation_response(json.dumps(visible).encode(), stream=False)
         mismatched = dict(immutable)
-        mismatched["output_tokens"] = 4
+        mismatched["output_tokens"] = 5
         _evidence, error = run_live.verify_generation_response(leg, response, mismatched)
         self.assertIn("does not match immutable event", error)
 
@@ -485,19 +522,29 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(evidence["response_frames"], 2)
         self.assertEqual(evidence["candidate_frames"], 2)
+        self.assertEqual(evidence["visible_text_frames"], 2)
         self.assertTrue(evidence["incremental_sse"])
         self.assertTrue(evidence["terminal_usage"])
 
         one_frame = run_live.decode_generation_response(
             json.dumps({**terminal, "modelVersion": leg.model}).encode(), stream=True
         )
-        _evidence, error = run_live.verify_generation_response(leg, one_frame, immutable)
-        self.assertIn("multiple incremental candidate frames", error)
+        self.assertIsNotNone(one_frame.parse_error)
+        self.assertIn("SSE", one_frame.parse_error)
 
         usage_before_end = run_live.GenerationResponse(
             frames=(
-                {**terminal, "modelVersion": leg.model},
-                {"candidates": [{"content": {"parts": [{"text": "late"}]}}]},
+                {
+                    "modelVersion": leg.model,
+                    "candidates": [{"content": {"parts": [{"text": "early"}]}}],
+                    "usageMetadata": terminal["usageMetadata"],
+                },
+                {
+                    "candidates": [{
+                        "content": {"parts": [{"text": "late"}]},
+                        "finishReason": "STOP",
+                    }]
+                },
             ),
             stream=True,
         )
@@ -505,6 +552,280 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             leg, usage_before_end, immutable
         )
         self.assertIn("terminal usageMetadata", error)
+
+    def test_plain_text_sse_rejects_nonvisible_preterminal_candidate_frames(self):
+        leg = run_live.Leg(
+            "sse:gemini-3-flash-preview",
+            "gemini-3-flash-preview",
+            "fresh",
+            stream=True,
+            max_output_tokens=256,
+        )
+        terminal = {
+            "candidates": [{
+                "content": {"parts": [{"text": "OK"}]},
+                "finishReason": "STOP",
+            }],
+            "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 2},
+        }
+        immutable = event(model=leg.model)
+        immutable.update({"input_tokens": 10, "output_tokens": 2})
+        immutable = run_live.recent_turn_events(capacity([immutable]))["req-1"]
+
+        preterminal_candidates = {
+            "empty": [{}],
+            "thought-only": [{
+                "content": {
+                    "parts": [{"text": "private reasoning", "thought": True}]
+                }
+            }],
+        }
+        for name, candidates in preterminal_candidates.items():
+            response = run_live.GenerationResponse(
+                frames=(
+                    {"modelVersion": leg.model, "candidates": candidates},
+                    terminal,
+                ),
+                stream=True,
+            )
+            with self.subTest(preterminal=name):
+                evidence, error = run_live.verify_generation_response(
+                    leg, response, immutable
+                )
+                self.assertFalse(evidence["incremental_sse"])
+                self.assertEqual(evidence["candidate_frames"], 2)
+                self.assertEqual(evidence["visible_text_frames"], 1)
+                self.assertIn("visible non-thought text", error)
+
+    def test_plain_text_sse_rejects_blocked_mixed_or_inconsistent_response(self):
+        leg = run_live.Leg(
+            "sse:gemini-3-flash-preview",
+            "gemini-3-flash-preview",
+            "fresh",
+            stream=True,
+            max_output_tokens=256,
+        )
+        immutable = event(model=leg.model)
+        immutable.update({"input_tokens": 10, "output_tokens": 2})
+        immutable = run_live.recent_turn_events(capacity([immutable]))["req-1"]
+
+        def frames():
+            return [
+                {
+                    "responseId": "response-a",
+                    "modelVersion": leg.model,
+                    "candidates": [
+                        {"index": 0, "content": {"parts": [{"text": "CALIBRATION_"}]}}
+                    ],
+                },
+                {
+                    "responseId": "response-a",
+                    "candidates": [
+                        {
+                            "index": 0,
+                            "content": {"parts": [{"text": "OK"}]},
+                            "finishReason": "STOP",
+                        }
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 10,
+                        "candidatesTokenCount": 2,
+                    },
+                },
+            ]
+
+        cases = {}
+        blocked = frames()
+        blocked[1]["promptFeedback"] = {"blockReason": "SAFETY"}
+        cases["blocked"] = blocked
+        tool = frames()
+        tool[1]["candidates"][0]["content"]["parts"].append(
+            {"functionCall": {"name": "unexpected", "args": {}}}
+        )
+        cases["function-call"] = tool
+        image = frames()
+        image[1]["candidates"][0]["content"]["parts"].append(
+            {"inlineData": {"mimeType": "image/png", "data": "AA=="}}
+        )
+        cases["inline-data"] = image
+        for key in (
+            "functionCall",
+            "functionResponse",
+            "inlineData",
+            "fileData",
+            "executableCode",
+            "codeExecutionResult",
+        ):
+            empty_payload = frames()
+            empty_payload[1]["candidates"][0]["content"]["parts"].append({key: {}})
+            cases[f"empty-{key}"] = empty_payload
+        multiple = frames()
+        multiple[0]["candidates"].append({})
+        cases["multiple-candidates"] = multiple
+        wrong_index = frames()
+        wrong_index[0]["candidates"][0]["index"] = 1
+        cases["candidate-index"] = wrong_index
+        changed_id = frames()
+        changed_id[1]["responseId"] = "response-b"
+        cases["response-id"] = changed_id
+
+        for name, response_frames in cases.items():
+            with self.subTest(name=name):
+                _evidence, error = run_live.verify_generation_response(
+                    leg,
+                    run_live.GenerationResponse(tuple(response_frames), stream=True),
+                    immutable,
+                )
+                self.assertIsNotNone(error)
+
+    def test_visible_text_requires_positive_candidate_token_evidence(self):
+        leg = run_live.Leg(
+            "sse:gemini-3-flash-preview",
+            "gemini-3-flash-preview",
+            "fresh",
+            stream=True,
+            max_output_tokens=256,
+        )
+
+        def response(candidates_token_count):
+            usage = {"promptTokenCount": 10, "thoughtsTokenCount": 1}
+            if candidates_token_count is not None:
+                usage["candidatesTokenCount"] = candidates_token_count
+            return run_live.GenerationResponse(
+                frames=(
+                    {
+                        "modelVersion": leg.model,
+                        "candidates": [
+                            {"content": {"parts": [{"text": "CALIBRATION_"}]}}
+                        ],
+                    },
+                    {
+                        "candidates": [
+                            {
+                                "content": {"parts": [{"text": "OK"}]},
+                                "finishReason": "STOP",
+                            }
+                        ],
+                        "usageMetadata": usage,
+                    },
+                ),
+                stream=True,
+            )
+
+        immutable = event(model=leg.model)
+        immutable.update(
+            {"input_tokens": 10, "output_tokens": 1, "thinking_output_tokens": 1}
+        )
+        immutable = run_live.recent_turn_events(capacity([immutable]))["req-1"]
+        for candidate_count in (None, 0):
+            with self.subTest(candidate_count=candidate_count):
+                _evidence, error = run_live.verify_generation_response(
+                    leg,
+                    response(candidate_count),
+                    immutable,
+                )
+                self.assertIn("candidatesTokenCount", error)
+
+        _evidence, error = run_live.verify_generation_response(
+            leg,
+            response(1),
+            immutable,
+        )
+        self.assertIn("no billed non-thinking candidate tokens", error)
+
+    def test_stream_decoder_rejects_raw_json_and_malformed_sse_framing(self):
+        raw_json_values = (
+            b'{"modelVersion":"gemini-3.7-flash"}',
+            b'[{"modelVersion":"gemini-3.7-flash"}]',
+        )
+        for raw in raw_json_values:
+            with self.subTest(raw=raw):
+                decoded = run_live.decode_generation_response(raw, stream=True)
+                self.assertEqual(decoded.frames, ())
+                self.assertIsNotNone(decoded.parse_error)
+
+        malformed = (
+            b'data: {"modelVersion":"gemini-3.7-flash"}\n',
+            b'data: {"modelVersion":"gemini-3.7-flash"}\r\r',
+            b'database: {"modelVersion":"gemini-3.7-flash"}\n\n',
+            b'event: error\ndata: {"modelVersion":"gemini-3.7-flash"}\n\n',
+            b'data: {"modelVersion":"gemini-3.7-flash","modelVersion":"spoof"}\n\n',
+            b'data: {"value":NaN}\n\n',
+            b'data: [1]\n\n',
+        )
+        for raw in malformed:
+            with self.subTest(raw=raw):
+                decoded = run_live.decode_generation_response(raw, stream=True)
+                self.assertEqual(decoded.frames, ())
+                self.assertIsNotNone(decoded.parse_error)
+
+        crlf = run_live.decode_generation_response(
+            b'data: {"modelVersion":"gemini-3.7-flash"}\r\n\r\n',
+            stream=True,
+        )
+        self.assertIsNone(crlf.parse_error)
+        self.assertEqual(len(crlf.frames), 1)
+
+    def test_generation_requires_stop_in_the_final_frame(self):
+        leg = run_live.Leg("fresh", "gemini-3-flash-preview", "fresh")
+        immutable = event(model=leg.model)
+        immutable.update({"input_tokens": "10", "output_tokens": "2"})
+        immutable = run_live.recent_turn_events(capacity([immutable]))["req-1"]
+
+        for reason in ("SAFETY", "MAX_TOKENS", "MALFORMED_FUNCTION_CALL", None):
+            candidate = {"content": {"parts": [{"text": "OK"}]}}
+            if reason is not None:
+                candidate["finishReason"] = reason
+            response = run_live.GenerationResponse(
+                frames=({
+                    "modelVersion": leg.model,
+                    "candidates": [candidate],
+                    "usageMetadata": {
+                        "promptTokenCount": "10",
+                        "candidatesTokenCount": "2",
+                    },
+                },),
+                stream=False,
+            )
+            with self.subTest(reason=reason):
+                evidence, error = run_live.verify_generation_response(
+                    leg, response, immutable
+                )
+                self.assertFalse(evidence["terminal_finish"])
+                self.assertIsNotNone(error)
+                self.assertIn("STOP", error)
+
+        response = run_live.GenerationResponse(
+            frames=(
+                {
+                    "modelVersion": leg.model,
+                    "candidates": [{
+                        "content": {"parts": [{"text": "O"}]},
+                        "finishReason": "STOP",
+                    }],
+                },
+                {
+                    "candidates": [{"content": {"parts": [{"text": "K"}]}}],
+                    "usageMetadata": {
+                        "promptTokenCount": 10,
+                        "candidatesTokenCount": 2,
+                    },
+                },
+            ),
+            stream=True,
+        )
+        stream_leg = dataclasses.replace(leg, stream=True)
+        evidence, error = run_live.verify_generation_response(
+            stream_leg, response, immutable
+        )
+        self.assertFalse(evidence["terminal_finish"])
+        self.assertIn("terminal STOP", error)
+
+    def test_response_usage_accepts_canonical_decimal_strings_but_never_coercions(self):
+        self.assertEqual(run_live._response_int("12", "tokens"), 12)
+        for raw in (12.0, -1, "-1", "01", "+1", " 1", "1.0", True):
+            with self.subTest(raw=raw), self.assertRaises(run_live.CalibrationError):
+                run_live._response_int(raw, "tokens")
 
     def test_tool_response_requires_function_call_and_accepts_optional_subset_usage(self):
         leg = run_live.Leg("tool", "gemini-3-flash-preview", "tool")

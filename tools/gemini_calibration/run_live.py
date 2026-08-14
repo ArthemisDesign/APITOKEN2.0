@@ -112,10 +112,20 @@ class ResumeState:
 def as_int(value: Any, field: str) -> int:
     if isinstance(value, bool):
         raise CalibrationError(f"{field} is boolean, expected integer")
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as error:
-        raise CalibrationError(f"{field} is not an integer: {value!r}") from error
+    if isinstance(value, int):
+        parsed = value
+    elif (
+        isinstance(value, str)
+        and value.isascii()
+        and value.isdigit()
+        and (value == "0" or not value.startswith("0"))
+    ):
+        try:
+            parsed = int(value)
+        except ValueError as error:
+            raise CalibrationError(f"{field} is not an integer: {value!r}") from error
+    else:
+        raise CalibrationError(f"{field} is not an integer: {value!r}")
     if parsed < 0:
         raise CalibrationError(f"{field} is negative")
     return parsed
@@ -897,28 +907,78 @@ def _decode_sse_frames(raw: bytes) -> tuple[dict[str, Any], ...]:
         text = raw.decode("utf-8", "strict")
     except UnicodeDecodeError as error:
         raise CalibrationError("Gemini SSE response is not UTF-8") from error
+    if text.startswith("\ufeff"):
+        raise CalibrationError("Gemini SSE response begins with a UTF-8 BOM")
+    if "\r" in text.replace("\r\n", ""):
+        raise CalibrationError("Gemini SSE response contains a bare carriage return")
+    text = text.replace("\r\n", "\n")
+    if not text.endswith("\n\n"):
+        raise CalibrationError("Gemini SSE response has an unterminated event")
+
+    def strict_object(data: str) -> dict[str, Any]:
+        def reject_constant(value: str) -> None:
+            raise CalibrationError(f"Gemini SSE frame contains invalid constant {value!r}")
+
+        def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in value:
+                    raise CalibrationError("Gemini SSE frame contains a duplicate object key")
+                value[key] = item
+            return value
+
+        try:
+            frame = json.loads(
+                data,
+                parse_constant=reject_constant,
+                object_pairs_hook=unique_object,
+            )
+        except json.JSONDecodeError as error:
+            raise CalibrationError("Gemini SSE frame contains invalid JSON") from error
+        if not isinstance(frame, dict):
+            raise CalibrationError("Gemini SSE frame is not an object")
+        return frame
+
     frames: list[dict[str, Any]] = []
     data_lines: list[str] = []
-    for line in text.splitlines() + [""]:
+    done = False
+    for line in text.split("\n"):
         if not line:
             if not data_lines:
                 continue
             data = "\n".join(data_lines)
             data_lines = []
             if data == "[DONE]":
+                if done:
+                    raise CalibrationError("Gemini SSE response repeats the terminal marker")
+                done = True
                 continue
-            try:
-                frame = json.loads(data)
-            except json.JSONDecodeError as error:
-                raise CalibrationError("Gemini SSE frame contains invalid JSON") from error
-            if not isinstance(frame, dict):
-                raise CalibrationError("Gemini SSE frame is not an object")
-            frames.append(frame)
+            if done:
+                raise CalibrationError("Gemini SSE response contains data after the terminal marker")
+            frames.append(strict_object(data))
             continue
-        if line.startswith("data:"):
-            data_lines.append(line[5:].lstrip())
-        elif line.startswith(("event:", "id:", "retry:", ":")):
+        if done:
+            if line.startswith(":"):
+                continue
+            raise CalibrationError("Gemini SSE response contains a field after the terminal marker")
+        if line.startswith(":"):
             continue
+        if ":" not in line:
+            raise CalibrationError("Gemini SSE response contains an invalid field")
+        field, value = line.split(":", 1)
+        if value.startswith(" "):
+            value = value[1:]
+        if field == "data":
+            data_lines.append(value)
+        elif field == "event":
+            if value not in {"", "message"}:
+                raise CalibrationError("Gemini SSE response uses a non-message event type")
+        elif field == "id":
+            if "\x00" in value:
+                raise CalibrationError("Gemini SSE id field contains NUL")
+        elif field == "retry":
+            if not value.isascii() or not value.isdigit():
+                raise CalibrationError("Gemini SSE retry field is not decimal")
         else:
             raise CalibrationError("Gemini SSE response contains an invalid field")
     if not frames:
@@ -931,21 +991,7 @@ def decode_generation_response(raw: bytes, stream: bool) -> GenerationResponse:
 
     try:
         if stream:
-            try:
-                payload = json.loads(raw)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                frames = _decode_sse_frames(raw)
-            else:
-                if isinstance(payload, list) and payload and all(
-                    isinstance(frame, dict) for frame in payload
-                ):
-                    frames = tuple(payload)
-                elif isinstance(payload, dict):
-                    frames = (payload,)
-                else:
-                    raise CalibrationError(
-                        "Gemini streaming response is not an object or non-empty object array"
-                    )
+            frames = _decode_sse_frames(raw)
         else:
             payload = json.loads(raw)
             if not isinstance(payload, dict):
@@ -963,9 +1009,10 @@ def decode_generation_response(raw: bytes, stream: bool) -> GenerationResponse:
 def _response_int(value: Any, field: str, default: int | None = None) -> int:
     if value is None and default is not None:
         return default
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise CalibrationError(f"response {field} is not a non-negative integer")
-    return value
+    try:
+        return as_int(value, f"response {field}")
+    except CalibrationError as error:
+        raise CalibrationError(f"response {field} is not a non-negative integer") from error
 
 
 def _modality_tokens(metadata: dict[str, Any], field: str, modality: str) -> int:
@@ -1052,9 +1099,11 @@ def verify_generation_response(
     evidence: dict[str, Any] = {
         "response_frames": len(response.frames),
         "candidate_frames": 0,
+        "visible_text_frames": 0,
         "visible_text_chars": 0,
         "function_calls": 0,
         "inline_data_parts": 0,
+        "unexpected_plain_parts": 0,
         "terminal_finish": False,
         "terminal_usage": False,
         "incremental_sse": False,
@@ -1067,12 +1116,29 @@ def verify_generation_response(
         return evidence, "generation response transport does not match the requested mode"
 
     model_versions: set[str] = set()
+    response_ids: set[str] = set()
     usage_indexes: list[int] = []
+    stop_indexes: list[int] = []
+    visible_text_indexes: set[int] = set()
     malformed: str | None = None
     for index, frame in enumerate(response.frames):
         if "error" in frame:
             malformed = "successful generation body contains a provider error frame"
             break
+        prompt_feedback = frame.get("promptFeedback")
+        if prompt_feedback is not None:
+            if not isinstance(prompt_feedback, dict):
+                malformed = "generation response has invalid promptFeedback"
+                break
+            if "blockReason" in prompt_feedback:
+                malformed = "generation response contains blocked prompt feedback"
+                break
+        response_id = frame.get("responseId")
+        if response_id is not None:
+            if not isinstance(response_id, str) or not response_id:
+                malformed = "generation response has an invalid responseId"
+                break
+            response_ids.add(response_id)
         model_version = frame.get("modelVersion")
         if model_version is not None:
             if not isinstance(model_version, str) or not model_version:
@@ -1087,15 +1153,35 @@ def verify_generation_response(
         if not isinstance(candidates, list):
             malformed = "generation response candidates is not an array"
             break
+        if len(candidates) > 1:
+            malformed = "generation response contains multiple candidates"
+            break
         if candidates:
             evidence["candidate_frames"] += 1
         for candidate in candidates:
             if not isinstance(candidate, dict):
                 malformed = "generation response has a non-object candidate"
                 break
-            finish = candidate.get("finishReason")
-            if isinstance(finish, str) and finish:
-                evidence["terminal_finish"] = True
+            candidate_index = candidate.get("index")
+            if candidate_index is not None and (
+                isinstance(candidate_index, bool)
+                or not isinstance(candidate_index, int)
+                or candidate_index != 0
+            ):
+                malformed = "generation response has an unexpected candidate index"
+                break
+            if "finishReason" in candidate:
+                finish = candidate["finishReason"]
+                if not isinstance(finish, str) or not finish:
+                    malformed = "generation response has an invalid finishReason"
+                    break
+                if finish != "STOP":
+                    malformed = (
+                        f"generation response terminated with finishReason {finish!r}, "
+                        "expected 'STOP'"
+                    )
+                    break
+                stop_indexes.append(index)
             content = candidate.get("content", {})
             if content is None:
                 content = {}
@@ -1112,12 +1198,27 @@ def verify_generation_response(
                 if not isinstance(part, dict):
                     malformed = "generation response has a non-object part"
                     break
+                if "text" in part and not isinstance(part["text"], str):
+                    malformed = "generation response has a non-string text part"
+                    break
+                if "thought" in part and not isinstance(part["thought"], bool):
+                    malformed = "generation response has an invalid thought marker"
+                    break
+                plain_part_keys = {
+                    "text",
+                    "thought",
+                    "thoughtSignature",
+                    "thought_signature",
+                }
+                if not set(part).issubset(plain_part_keys):
+                    evidence["unexpected_plain_parts"] += 1
                 text_value = part.get("text")
                 if (
                     isinstance(text_value, str)
                     and text_value.strip()
                     and part.get("thought") is not True
                 ):
+                    visible_text_indexes.add(index)
                     evidence["visible_text_chars"] += len(text_value.strip())
                 function_call = part.get("functionCall")
                 if (
@@ -1139,30 +1240,64 @@ def verify_generation_response(
             break
     if malformed:
         return evidence, malformed
+    if len(response_ids) > 1:
+        return evidence, "generation response changed responseId across frames"
+    evidence["visible_text_frames"] = len(visible_text_indexes)
     if model_versions != {leg.model}:
         return evidence, (
             f"generation modelVersion proof is {sorted(model_versions)!r}, expected {leg.model!r}"
         )
     evidence["model_version"] = leg.model
-    if not evidence["terminal_finish"]:
-        return evidence, "generation response has no terminal finishReason"
+    terminal_index = len(response.frames) - 1
+    if not stop_indexes or any(index != terminal_index for index in stop_indexes):
+        return evidence, "generation response has no terminal STOP finishReason"
+    evidence["terminal_finish"] = True
     if not usage_indexes or usage_indexes[-1] != len(response.frames) - 1:
         return evidence, "generation response has no terminal usageMetadata"
     evidence["terminal_usage"] = True
     if leg.stream:
-        evidence["incremental_sse"] = (
-            len(response.frames) >= 2 and evidence["candidate_frames"] >= 2
-        )
-        if not evidence["incremental_sse"]:
-            return evidence, "SSE response did not contain multiple incremental candidate frames"
+        if leg.kind not in {"tool", "image"}:
+            evidence["incremental_sse"] = (
+                len(response.frames) >= 2
+                and evidence["visible_text_frames"] >= 2
+                and any(index < terminal_index for index in visible_text_indexes)
+            )
+            if not evidence["incremental_sse"]:
+                return evidence, (
+                    "SSE response did not contain visible non-thought text in multiple "
+                    "incremental frames"
+                )
+        else:
+            evidence["incremental_sse"] = (
+                len(response.frames) >= 2 and evidence["candidate_frames"] >= 2
+            )
+            if not evidence["incremental_sse"]:
+                return evidence, "SSE response did not contain multiple incremental candidate frames"
     if leg.kind == "tool":
         if evidence["function_calls"] <= 0:
             return evidence, "tool control returned no functionCall"
     elif leg.kind == "image":
         if evidence["inline_data_parts"] <= 0:
             return evidence, "image control returned no inlineData"
-    elif evidence["visible_text_chars"] <= 0:
-        return evidence, "generation returned no visible non-thought text"
+    else:
+        if evidence["unexpected_plain_parts"]:
+            return evidence, "plain-text generation returned an unrequested non-text part"
+        if evidence["visible_text_chars"] <= 0:
+            return evidence, "generation returned no visible non-thought text"
+        terminal_metadata = response.frames[-1].get("usageMetadata")
+        if not isinstance(terminal_metadata, dict):
+            return evidence, "terminal response has no usageMetadata object"
+        try:
+            visible_candidate_tokens = _response_int(
+                terminal_metadata.get("candidatesTokenCount"),
+                "usageMetadata.candidatesTokenCount",
+            )
+        except CalibrationError as error:
+            return evidence, str(error)
+        if visible_candidate_tokens <= 0:
+            return evidence, "visible text has no positive candidatesTokenCount"
+        if event["output_tokens"] <= event["thinking_output_tokens"]:
+            return evidence, "immutable output has no billed non-thinking candidate tokens"
     try:
         response_usage = _response_usage_vector(
             response.frames[-1].get("usageMetadata"),
@@ -1649,7 +1784,7 @@ def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
             "resume-only-from-not-started-or-completed-turn-proof",
             "public-modelVersion-and-real-output",
             "terminal-response-usage-equals-immutable-event",
-            "multiple-incremental-sse-candidate-frames",
+            "multiple-incremental-sse-visible-text-frames",
             "forced-control-output",
         ],
         "execute_requires": "--execute plus a capacity source and production/admin API access",
