@@ -152,28 +152,12 @@ its one generation-plus-edit attempt only when its own controller path triggers 
 permanently fences replay. Every transaction records its exact tested infrastructure SHA only after every
 selected concern succeeds.
 
-Gemini 3.7 Flash uses a narrower direct-root transaction. The bridge commit installs a sealed copy
-of producer `264363f7838ddd2d156b14668a320047ad33b6ee`, the private canary unit, and digest-pinned
-gate/transport/evidence files. The unit fixes hot tariff overrides off at argv level, keeping its
-preflight and immutable event on the compiled official schedule. The bridge deliberately omits
-`deploy/gemini-3-7-admission-trigger`; that delivery cannot contact Gemini and spends zero. The trigger is a later one-file commit: regular Git
-mode `100644`, exact path `deploy/gemini-3-7-admission-trigger`, exact bytes
-`gemini-3.7-flash-admission-v1\n`, and no companion delta. The fixed root infrastructure runner
-checks the exact protected production head and the complete uninstalled range, then invokes the
-installed gate directly before its durable `infrastructure.sha` handoff. No sudo rule or
-unprivileged watchdog dispatch exists for this admission.
+The retired Gemini 3.7 admission bridge is not part of this controller chain. Its private unit,
+controller, sealed producer and empty one-shot state are removed once by audited operator cleanup;
+the production installer contains no permanent retirement shim. Ordinary Gemini slots,
+credentials, releases, tariff data, and the dormant runtime implementation are outside that
+cleanup scope.
 
-Do not merge that trigger until the bridge SHA itself is production `deploy/watchdog` GREEN. This
-ordering is an authority boundary, not scheduling advice: the older installed runner has no Gemini
-3.7 trigger verifier or gate and could otherwise advance across the trigger without firing it.
-
-The SHA-keyed evidence root is the permanent firing fence. A fresh run may make one free token count
-and one paid SSE generation; redirects, reconnects, profile rotation, resends, and retries are
-disabled. Re-entry after the fence is an offline inspection before systemd, credentials, or
-transport. A terminal failure durably quarantines the attempted delivery before its infrastructure
-baseline can advance; only a strictly newer fix-forward delivery can close the retained withdrawal
-without a second provider call. Exact request and cost limits are in
-`docs/ops/GEMINI_CALIBRATION.md`.
 Installed component runners under `controller/` resolve shared watchdog helpers from the fixed parent
 directory; the repository and extracted-candidate layout resolves the same files beside the runner.
 The deployment regression suite executes both layouts so a controller self-update cannot publish a

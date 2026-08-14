@@ -167,7 +167,7 @@ pub(crate) enum TokenError {
 }
 
 /// Request-local OAuth policy. Ordinary traffic retains the established refresh/retry behaviour;
-/// the deadline-bound private admission lane narrows it without weakening any other caller.
+/// the deadline-bound controlled calibration lane narrows it without weakening any other caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TokenAcquisitionPolicy {
     /// Reuse a fresh token or refresh through the normal single-flight helper policy.

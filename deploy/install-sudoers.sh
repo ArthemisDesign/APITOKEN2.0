@@ -285,9 +285,6 @@ require_permitted 'GPT Image 2 exact-producer surface probe gate' \
 require_permitted 'GPT Image 2 exact-producer public paid inspector' \
   /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-paid-inspect-gate.sh \
   63972f2ddfd5906d7c30a87406053eb3782f4223 --inspect
-require_denied 'direct-root Gemini 3.7 admission gate' \
-  /usr/local/lib/apitoken-watchdog/controller/gemini-3-7-admission-gate.sh \
-  264363f7838ddd2d156b14668a320047ad33b6ee
 require_permitted 'router promotion to slot A' \
   /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8800
 require_permitted 'router promotion to slot B' \

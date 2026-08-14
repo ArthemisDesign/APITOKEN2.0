@@ -378,10 +378,11 @@ CLAUDE_API_GEMINI_QUOTA_RESERVE_JITTER=0.01
 ```
 
 The production units argv-pin `sealed-roster` after their shared environment files. The only
-alternate value is `systemd-flat`, reserved for the one-shot admission service: systemd imports a
-private roster credential plus the source credential directory as read-only files named
-`gemini-credential_<profile-id>.json`, and the loader still requires the exact derived path with no
-fallback to the normal tree.
+alternate value is `systemd-flat`, retained for an explicitly operator-launched, non-public
+exact-SHA calibration process: systemd may import a private roster credential plus the source
+credential directory as read-only files named `gemini-credential_<profile-id>.json`, and the loader
+still requires the exact derived path with no fallback to the normal tree. No production unit uses
+or provisions this alternate layout.
 
 ## Liveness versus duration
 
@@ -458,11 +459,13 @@ paid generation requires an already-fresh cached bearer and never refreshes afte
 Every exact upstream POST uses `NeverReplay`: no helper restart, 401 resend, profile rotation or
 smooth retry. Deadline-bound 3.7 JSON and SSE preserve Google's raw upstream `modelVersion` as
 admission evidence; established ordinary and older exact lanes retain canonical public-id rewriting.
-The reviewed root admission consumer is now wired and digest-pinned, but its exact one-file trigger
-is absent. Its private unit pins `CLAUDE_API_TARIFF_OVERRIDES=0` after the shared environment files,
-keeping preflight and settlement on the compiled official schedule. No live call, production
-default, public catalogue, router preset or storefront exposure is enabled until the separate
-trigger delivery yields terminal GREEN evidence.
+The dedicated root admission consumer, trigger and private unit were retired after their delivery
+guard introduced a dependency on paid GitHub branch protection. The producer remains available only
+as dormant exact-profile runtime capability; ordinary traffic still fails before dispatch. A future
+controlled live must use a reviewed extension of the existing generic calibration runner against an
+operator-launched exact-SHA non-public canary, with the compiled tariff and no-replay constraints
+verified before the one paid request. No live call, production default, public catalogue, router
+preset or storefront exposure is enabled.
 
 ## Runtime behavior
 
@@ -728,7 +731,7 @@ text-generation check. A quota row by itself is never admission evidence.
 
 | Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
 |---|---|---|---|
-| `gemini-3.7-flash` | no owned private alias; dormant canary retains the exact public id only | Google announced the Developer API model GA on 2026-08-13, but the 2026-08-14 owned catalogue observation found no 3.7 quota/wire row and no live request has passed on this implementation SHA. The producer preserves raw upstream identity behind its admin-only deadline/dispatch attestation; this is capability, not admission evidence | Stage 1 dormant only; omitted from production defaults, customer discovery, router presets and storefronts until exact-SHA single-claim/no-replay `countTokens`, generation, incremental SSE, advertised controls and each claimed plan pass. The root admission consumer is wired and digest-pinned, while its exact one-file trigger, live proof and publication remain deferred |
+| `gemini-3.7-flash` | no owned private alias; a future dormant canary must retain the exact public id only | Google announced the Developer API model GA on 2026-08-13, but the 2026-08-14 owned catalogue observation found no 3.7 quota/wire row and no live request has passed on this implementation SHA. The producer preserves raw upstream identity behind its admin-only deadline/dispatch attestation; this is capability, not admission evidence | Stage 1 dormant only; omitted from production defaults, customer discovery, router presets and storefronts until exact-SHA no-replay `countTokens`, generation, incremental SSE, advertised controls and each claimed plan pass. The retired root consumer supplied no live evidence and is not part of the remaining implementation |
 | `gemini-3-flash-preview` | public → `gemini-3-flash`; quota admission joins `gemini-3-flash` + `gemini-3-flash-agent`; configured Antigravity origin, 2.2.1 UA, minimal headers; bounded inline PCM WAV fallback uses exact integral `duration × 32` AUDIO tokens and fails closed on ambiguous cache | fresh runner SHA `cc7e5beb…` / byte-identical runtime implementation completed 22 paid turns on Pro+Ultra: minimal/low/medium/high, incremental SSE, final cache reads with 8,170 cached tokens, fresh/replayed 8-token PCM audio and forced function calls; public identity and terminal response/event usage matched | published; generation 5 main catalog, production defaults, router manifest and public web/docs |
 | `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
 | `gemini-3.5-flash` | minimal → `gemini-3.5-flash-extra-low`; low/medium/high/default → `gemini-3.5-flash-low`, with the requested native thinking level preserved | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; default and `alt=json` JSON streams 200; canonical modelVersion and non-zero usage verified on Google AI Pro on 2026-07-31 | published |

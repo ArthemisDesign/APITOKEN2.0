@@ -247,57 +247,50 @@ Forbidden in Stage 1:
 - claims for Search, Maps, tools, modalities, streaming, or subscription plans without their matching
   live acceptance rows.
 
-The Stage 1 bridge is deliberately inert. It pins the GREEN producer
-`264363f7838ddd2d156b14668a320047ad33b6ee` and the direct-root gate artifacts, but this delivery
-contains no `deploy/gemini-3-7-admission-trigger`, opens no provider connection, and spends
-`0 nanoUSD`. A later firing commit must consist only of a regular mode-`100644` trigger with bytes
-`gemini-3.7-flash-admission-v1\n`. The already-installed root runner verifies that unique commit over
-the full uninstalled protected-`master` range and invokes the gate before its durable infrastructure
-baseline. No sudo grant or candidate-selected dispatcher is part of the authority path.
-The trigger must not be merged until this bridge's exact SHA is production `deploy/watchdog` GREEN;
-the previous installed runner does not understand the trigger and cannot provide admission proof.
+The dedicated Stage 1 root bridge, repository trigger, admission state machine and private canary
+unit were retired. They were delivery automation only: the exact tariff, hidden model definition,
+dormant Rust producer, response evidence checks and no-replay transport safeguards remain. A future
+controlled live must use a reviewed extension of `tools/gemini_calibration/run_live.py` against an
+explicitly operator-launched exact-SHA non-public canary. It must not install another permanent root
+helper or make the model reachable by ordinary traffic.
 
 ### Withdrawn firing attempt — 2026-08-14
 
 The first exact trigger SHA, `f2ced4f9edfb4d42ad5bb1d6ef9f0bc7c7593044`, was rejected by the
-installed production-head guard before trigger discovery, the permanent firing fence, any protected
-authority read, `countTokens`, generation, or spend. It is permanently quarantined and is not a
-model acceptance attempt. Its immediate descendant deletes the trigger and carries only this
-validation-neutral incident record, so the net infrastructure diff from the last GREEN baseline is
-empty and the normal watchdog can restore a GREEN production head without invoking the blocked
-root installer. The live matrix remains **PENDING**, spend remains `0 nanoUSD`, and all public
-surfaces remain forbidden until a distinct controlled attempt succeeds.
+installed production-head guard before trigger discovery, any protected authority read,
+`countTokens`, generation, or spend. It is not a model acceptance attempt and must not be retried.
+Its descendant removed the trigger and restored a GREEN production head. The later cleanup retires
+the unused helper assets and the paid branch-protection dependency. The live matrix remains
+**PENDING**, spend remains `0 nanoUSD`, and all public surfaces remain forbidden until a distinct
+controlled attempt succeeds.
 
 ### Gate to Stage 2 — separate follow-up commit
 
 Publication may begin only after all of the following are true:
 
 1. The exact dormant implementation commit SHA is recorded.
-2. A free exact-ID `countTokens` call is atomically claimed once before the sole loopback POST. The
-   immutable request sends the exact profile, canonical UUIDv4, and promotional `not_after`; the
-   response is bound to its UUID, digest, profile, model, HTTP status and execution state. Success
-   additionally requires exactly one canonical positive producer
+2. A reviewed extension of the generic runner calculates the exact effective tariff bound before
+   transport, then makes one free exact-ID `countTokens` call. The request sends the exact profile,
+   canonical UUIDv4, and bounded `not_after`; the response is bound to its UUID, profile, model, HTTP
+   status and execution state. Success additionally requires exactly one canonical positive producer
    `x-apitoken-calibration-dispatch-ms` strictly below `not_after * 1000`. The producer may perform
-   at most one non-replayable pre-POST token refresh, then the engine path and controller forbid
-   helper restart, OAuth resend, profile rotation, redirect and reconnect; any failure or crash
-   after the claim permanently withdraws this admission candidate.
-3. Minimal generation is armed, then atomically claimed exactly once immediately before the final
-   local cutoff check and sole loopback POST. It uses an already-fresh cached bearer and the same
-   exact profile/UUIDv4/not-after contract, with no post-claim refresh or replay. The pinned producer
+   at most one non-replayable pre-POST token refresh. A failed or ambiguous count aborts before paid
+   generation.
+3. The runner makes at most one paid incremental SSE generation. It uses an already-fresh cached
+   bearer and the same exact profile/UUIDv4/not-after contract, with no post-selection refresh,
+   helper restart, OAuth resend, profile rotation, redirect, reconnect or replay. The pinned producer
    records the authoritative dispatch timestamp after target TLS in Node's synchronous pre-`_flush()`
    socket listener, before any upstream HTTP bytes; missing, duplicate, malformed, equal-cutoff, or
-   later evidence is terminal. It is dispatched before the immutable promo cutoff
-   `2027-01-01T00:00:00Z`, then returns 2xx with real output and terminal authoritative usage within
-   the aggregate admission cap. This single request is the incremental SSE proof: it must produce at
-   least two visible non-thinking text frames, including a preterminal frame, and the byte-exact 64-number
-   output. The immutable `priced_ts` must remain in that promo epoch and
-   reproduce the exact official rate; arming before the cutoff is not permission to dispatch after
-   it, and a crash after the single-use claim is permanently ambiguous rather than retryable. The
+   later evidence is terminal. It returns 2xx with real output and terminal authoritative usage
+   within the explicitly authorized aggregate cap. This single request is the incremental SSE proof:
+   it must produce at least two visible non-thinking text frames, including a preterminal frame. The
+   immutable `priced_ts` must reproduce the official rate effective at dispatch; an earlier plan or
+   count is not permission to dispatch after its cutoff. The
    response must preserve raw upstream `modelVersion` exactly as `gemini-3.7-flash`, and the terminal
    authority snapshot and outcome/event binding must reproduce the exact admitted profile
    and paid plan; missing or changed plan proof is not acceptance.
-4. The omitted/default thinking path is the only thinking behavior admitted by this one-shot;
-   explicit `low`, `medium`, and `high` remain unpublished until separately proved.
+4. Only the exact thinking behavior exercised by the paid request is proved; explicit `low`,
+   `medium`, and `high` remain unpublished until separately tested.
 5. Every control, modality, and credential plan proposed for publication passes its matching matrix
    row; untested features remain absent from the claim.
 6. Metering reconciles input, output/thinking, cached-input reads, and any grounding query counts
@@ -321,12 +314,12 @@ research, official tariff, evidence boundary, dormant-name decision, and canary 
 | Official identity and behavior research | Applicable; recorded here |
 | Official tariff and effective epochs | Applicable; recorded here in exact nanoUSD units |
 | Dormant implementation and tests | Applicable; owned by the implementation change, not this research file |
-| Exact-SHA controlled live | Applicable but pending; the direct-root bridge carries no trigger, opens no provider connection, and spends `0 nanoUSD` |
+| Exact-SHA controlled live | Applicable but pending; the retired root bridge produced no count, generation or spend |
 | Public catalogue, defaults, router, site, and public docs | Not applicable to Stage 1; explicitly deferred and forbidden |
 | New provider checklist | Not applicable; Gemini is an existing provider |
 | Customer price or multiplier change | Not applicable; this records upstream cost only and changes no customer multiplier |
 | Database migration | Not applicable; no schema change is introduced by this document |
-| Cross-context contract / `docs/DEPENDENCIES.md` | Applicable; the fixed producer/status → root admission chain is recorded there; no public link is added |
+| Cross-context contract / `docs/DEPENDENCIES.md` | Applicable; the retained producer/status → generic runner contract is recorded there; no public link is added |
 | Commerce, sales, OpenKeys, and admin publication | Not applicable to Stage 1; deferred until proven Stage 2 publication scope exists |
 
 ## Secret hygiene

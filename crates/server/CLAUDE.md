@@ -334,9 +334,10 @@ background loops and the HTTP router. Here — and only here — everything is w
   The billing FIFO flush is allowed only after that. Gemini health/preflight/network live in `forward`,
   while the env/upstream pin and the startup-fixed service composition live only here. The production unit must
   argv-level pin the sealed credential layout + Antigravity version + Cloud Code host + Node
-  binary/version/SHA after the shared EnvironmentFile. `systemd-flat` is a closed alternate selected
-  only by the one-shot admission unit; its roster and flattened envelopes arrive through systemd
-  credentials and retain exact-path/private-mode checks in `forward`.
+  binary/version/SHA after the shared EnvironmentFile. `systemd-flat` is a closed alternate retained
+  only for an explicitly operator-launched exact-SHA calibration process; no installed production
+  unit selects it. Its roster and flattened envelopes arrive through systemd credentials and retain
+  exact-path/private-mode checks in `forward`.
 - KIMI shutdown closes admission and steady maintenance, cancels a pending quota GET, waits for the detached
   stream drain and the turn FIFO; on the deadline it aborts the stream read, saves the conservative settlement,
   then under the same deadline performs a final turn-before-`/usages` pass. Neither the old poll nor the

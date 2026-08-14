@@ -731,11 +731,12 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
 **Native Gemini gateway invariants:**
 1. Only AEAD envelopes of verified paid Code Assist OAuth identities. The normal sealed roster contains
    opaque ids and strictly `<roster>/credentials/<id>.json`; symlink/different path/duplicate Google
-   subject are forbidden. The explicit admission-only `systemd-flat` layout preserves the same closed
+   subject are forbidden. The explicit calibration-only `systemd-flat` layout preserves the same closed
    path check as `<roster-parent>/gemini-credential_<id>.json`, matching systemd's recursive
-   `LoadCredential` flattening; there is no fallback between layouts. `/gemini-subs` publishes only an
+   `LoadCredential` flattening; there is no fallback between layouts and no installed production
+   unit selects it. `/gemini-subs` publishes only an
    opaque, path-independent BLAKE3 identity of the exact encrypted credential generation already loaded
-   in memory, so a root admission controller can compare its read-only snapshot with a stable runtime
+   in memory, so a reviewed operator calibration can compare its read-only snapshot with a stable runtime
    without exposing credential material.
    The runtime re-verifies the official OAuth client/token endpoint, the exact plan↔tier-label mapping,
    the paid-plan allowlist and canonical proxy uniqueness (including equivalent percent encoding).
@@ -845,7 +846,7 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    generation evidence currently establishes a private alias, so explicit canaries may configure
    `gemini-3.7-flash` but production defaults and native discovery must omit it even when that
    canary configuration is loaded. The canary's protected loopback `/gemini-subs` deliberately
-   retains its conversion row: the admission controller needs that exact tariff and plan-bound
+   retains its conversion row: a controlled live runner needs that exact tariff and plan-bound
    evidence, and it is not customer discovery. Its private producer admits only an admin exact
    profile plus canonical UUIDv4 `x-apitoken-calibration-request-id` and positive Unix-seconds
    `x-apitoken-calibration-not-after`; the half-open fence is `now < not_after`, so equality expires.
@@ -855,10 +856,9 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    that event before `_flush`; a listener-side destroy therefore writes no HTTP bytes. Exact
    `countTokens` may refresh once with `NeverReplay`; paid generation requires an already-fresh
    cached bearer. Every deadline-bound upstream POST is one-shot, with no helper restart, 401
-   resend, profile rotation or smooth retry. The dormant root consumer is wired and digest-pinned;
-   its private canary fixes `CLAUDE_API_TARIFF_OVERRIDES=0` at argv level so the admitted bound and
-   immutable event use only the compiled official schedule. Its exact trigger, live proof, defaults,
-   public catalog and storefront publication remain deferred.
+   resend, profile rotation or smooth retry. This producer is dormant: the retired root
+   trigger/consumer is absent, and defaults, public catalog and live calls remain deferred until a
+   controlled live passes on a GREEN exact producer SHA.
    Its thinking allowlist is exactly
    `low|medium|high` (omission
    means medium); `minimal`, `thinkingBudget`, `candidateCount`, deprecated sampling controls and

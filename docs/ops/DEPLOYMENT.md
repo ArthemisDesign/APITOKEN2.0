@@ -40,42 +40,26 @@ Affected stages also appear as GitHub deployment records in the `production-data
 environments. This is reporting only: builds and deployments run on the existing production host,
 so no paid GitHub runner is used.
 
-### Dormant Gemini 3.7 one-shot admission
+### Retired Gemini 3.7 admission bridge
 
-The Gemini 3.7 bridge delivery is inert: it pins the GREEN engine producer
-`264363f7838ddd2d156b14668a320047ad33b6ee`, installs a sealed private canary and fixed root-owned
-gate artifacts, and argv-pins hot tariff overrides off so its bound and immutable event use only the
-compiled official schedule. It contains no firing trigger and therefore performs no provider call.
-There is no sudo grant for this gate. This bridge SHA **must** first reach GREEN `deploy/watchdog` in production;
-the trigger must not be merged before that verdict, because the previously installed runner does not
-know this admission contract. Only then may a separate commit fire it by adding the regular Git mode-`100644`
-file `deploy/gemini-3-7-admission-trigger` with exact bytes
-`gemini-3.7-flash-admission-v1\n` and no other delta.
+The Gemini 3.7-specific root gate, trigger scanner, sealed producer copy, private canary unit and
+admission state machine are retired. They were added only to automate one controlled live attempt;
+they are not required by the dormant model runtime or its tariff. Their production-head check also
+required GitHub to report `master` as protected, which a private repository exposes only with the
+paid branch-protection feature.
 
-The already-installed `watchdog-infrastructure` root runner, not candidate code or the unprivileged
-watchdog, owns admission. It verifies the candidate is the exact protected `master` head, finds the
-unique trigger over the full uninstalled `infrastructure.sha..candidate` range, checks its direct
-parent/delta/mode/blob and every pinned bridge artifact, installs the unchanged controller
-definitions, then calls the gate directly before advancing the infrastructure baseline. The gate
-creates its permanent SHA-keyed firing fence before protected authority reads; it permits one free
-`countTokens` call followed by at most one paid incremental SSE generation and has no redirect,
-reconnect, profile rotation, resend, or retry path.
+Before that bridge, infrastructure delivery already failed closed on a root-owned tested-candidate
+marker, exact SHA and tree, a clean candidate, and ancestry from the installed baseline. That free
+trust chain is restored; normal host-side polling and deployment statuses still do not use a paid
+GitHub Actions runner or GitHub Pro. The installed unit, controller, sealed producer and empty
+one-shot state are removed once by audited operator cleanup; the production installer carries no
+permanent retirement shim.
 
-Terminal evidence, operational definitions, rejection, and the infrastructure baseline are flushed
-in that order. A failure before the firing fence leaves the old baseline retryable. Once the fence
-exists, every re-entry is offline-only and cannot load credentials, start the canary, or open
-transport. The same attempted delivery remains quarantined; only a strictly newer fix-forward commit
-may close a retained withdrawal without another provider call, and the model remains dormant. See
-[`GEMINI_CALIBRATION.md`](GEMINI_CALIBRATION.md) for the exact request, budget, and evidence contract.
-
-Trigger SHA `f2ced4f9edfb4d42ad5bb1d6ef9f0bc7c7593044` was rejected by the outer
-production-head guard before the infrastructure runner scanned the trigger or created the firing
-fence. It must never be retried. Its immediate recovery is a strictly newer withdrawal descendant
-that deletes the trigger and changes only validation-neutral incident documentation. The resulting
-net infrastructure diff against the installed GREEN baseline is empty, so the normal watchdog can
-process the descendant without invoking the failing root installer. This restores a GREEN
-production head only: it neither installs a replacement helper nor calls Gemini, and a future live
-attempt still requires a new separately reviewed trigger after its delivery authority is proven.
+Failed trigger SHA `f2ced4f9edfb4d42ad5bb1d6ef9f0bc7c7593044` was rejected before trigger
+discovery, any evidence fence, `countTokens`, generation or spend. It supplied no model evidence and
+must not be retried. Gemini 3.7 remains dormant and unpublished; any future controlled live uses a
+reviewed extension of the generic calibration runner and an explicitly operator-launched exact-SHA
+non-public canary, not a repository trigger or permanent root helper.
 
 Alongside the serialized production watchdog, a low-priority candidate-validator service may run
 two transient `candidate-validation` deployments concurrently for exact SHAs reachable from pushed

@@ -283,79 +283,6 @@ github_phase_failure() {
   esac
 }
 
-# WATCHDOG_REJECTION_FUNCTIONS_BEGIN
-watchdog_rejected_file_matches_candidate() {
-  /usr/bin/python3 -I -B -S - "$REJECTED_FILE" "$CANDIDATE_SHA" \
-    "${EUID:-$(id -u)}" "$(id -g)" <<'PY'
-import os
-import stat
-import sys
-
-path, candidate, runtime_uid, runtime_gid = sys.argv[1:]
-try:
-    expected = (candidate + "\n").encode("ascii")
-    before = os.lstat(path)
-    if (
-        not stat.S_ISREG(before.st_mode)
-        or stat.S_ISLNK(before.st_mode)
-        or before.st_nlink != 1
-        or stat.S_IMODE(before.st_mode) != 0o644
-        or before.st_uid not in (0, int(runtime_uid))
-        or before.st_gid != int(runtime_gid)
-        or before.st_size != len(expected)
-    ):
-        raise SystemExit(1)
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    try:
-        opened = os.fstat(descriptor)
-        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-            raise SystemExit(1)
-        if os.read(descriptor, len(expected) + 1) != expected:
-            raise SystemExit(1)
-    finally:
-        os.close(descriptor)
-except (OSError, UnicodeError, ValueError):
-    raise SystemExit(1)
-PY
-}
-
-watchdog_fsync_file_and_parent() {
-  /usr/bin/python3 -I -B -S - "$1" <<'PY'
-import os
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-try:
-    os.fsync(descriptor)
-finally:
-    os.close(descriptor)
-parent = os.open(
-    path.parent,
-    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-)
-try:
-    os.fsync(parent)
-finally:
-    os.close(parent)
-PY
-}
-
-persist_rejected_candidate() {
-  # The privileged infrastructure bridge may already have made this exact rejection durable before
-  # it advanced infrastructure.sha and returned RED. Preserve that inode: replacing it here would
-  # reopen a crash window in which the newer baseline survives but the rejection does not.
-  if ! watchdog_rejected_file_matches_candidate; then
-    wd_atomic_write "$REJECTED_FILE" "$CANDIDATE_SHA" 0644
-    watchdog_rejected_file_matches_candidate \
-      || wd_die "candidate rejection state is unsafe after replacement"
-  fi
-  watchdog_fsync_file_and_parent "$REJECTED_FILE" \
-    || wd_die "candidate rejection state could not be made durable"
-}
-# WATCHDOG_REJECTION_FUNCTIONS_END
-
 fail() {
   local rc=$? line=${BASH_LINENO[0]:-unknown}
   local failed_phase=${CURRENT_PHASE_BEFORE_FAILURE:-$CURRENT_PHASE}
@@ -382,7 +309,7 @@ fail() {
     wd_warn "watchdog cycle failed at line $line before selecting a candidate; retrying next cycle"
     exit "$rc"
   fi
-  persist_rejected_candidate
+  wd_atomic_write "$REJECTED_FILE" "$CANDIDATE_SHA" 0644
   CURRENT_PHASE=failed
   status "command failed at line $line (exit $rc); candidate quarantined"
   diagnostic="phase=$failed_phase; line=$line; exit=$rc; candidate quarantined"
@@ -907,7 +834,6 @@ test_static_lane() {
     run_as_ci bash "$candidate/deploy/typescript-artifact-cache.test.sh"
     run_as_ci bash "$candidate/deploy/typescript-test-groups.test.sh"
     run_as_ci bash "$candidate/deploy/commerce-release-bundle.test.sh"
-    run_as_ci bash "$candidate/deploy/gemini-3-7-admission.test.sh"
     run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"
   fi
 }

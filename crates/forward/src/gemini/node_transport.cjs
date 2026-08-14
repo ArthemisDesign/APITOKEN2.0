@@ -85,7 +85,7 @@ function calibrationAttestation(notAfter) {
   return {notAfterMs: notAfter * 1000, dispatchMs: undefined};
 }
 
-// Equality is expired: the admission controller grants the half-open interval [now, notAfter),
+// Equality is expired: the controlled exact-profile caller grants [now, notAfter),
 // never the boundary itself. Early checks deliberately do not write the attestation; only the
 // pinned ClientRequest `socket` event immediately before `_flush` may create the outward dispatch
 // proof.

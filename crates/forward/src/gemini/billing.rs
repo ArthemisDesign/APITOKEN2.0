@@ -74,7 +74,7 @@ impl PendingGeminiAdmission {
         self.calibration_target.as_deref()
     }
 
-    /// Absolute Unix-seconds dispatch fence supplied by the private admission controller. It is
+    /// Absolute Unix-seconds dispatch fence supplied by a controlled exact-profile runner. It is
     /// present only on the deadline-bound exact profile lane and never becomes a provider header.
     pub(crate) fn calibration_not_after(&self) -> Option<u64> {
         self.calibration_not_after
