@@ -438,6 +438,65 @@ fn responses_system_history_is_preserved_as_backend_supported_developer_history(
     assert_eq!(normalized.turn_input[0]["text"], "hello");
 }
 
+/// Codex multi-agent collaboration (spawn_agent) replays inter-agent messages as
+/// `agent_message` items on the next turn; the upstream Responses backend has no such type, so
+/// the gateway must translate them into plain messages instead of hard-rejecting the turn.
+#[tokio::test]
+async fn codex_agent_message_history_roundtrips_as_plain_messages() {
+    let parsed = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": [
+                {"role": "user", "content": "Audit the relay fallback."},
+                {
+                    "type": "agent_message",
+                    "id": "amsg_1",
+                    "author": "/root/audit_llmsrelay_fallback",
+                    "recipient": "/root",
+                    "content": [{"type": "input_text", "text": "Message Type: FINAL_ANSWER\nPayload: done"}]
+                },
+                {
+                    "type": "agent_message",
+                    "id": "amsg_2",
+                    "author": "/root",
+                    "recipient": "/root/audit_llmsrelay_fallback",
+                    "content": [{"type": "input_text", "text": "Retry the fallback probe."}]
+                },
+                {"role": "user", "content": "Continue."}
+            ]
+        }),
+    )
+    .unwrap();
+    let prepared = prepare_turn(&gateway(), "tenant", parsed).await.unwrap();
+    let inbound = &prepared.turn.injected_items[1];
+    assert_eq!(inbound["type"], "message");
+    assert_eq!(inbound["role"], "user");
+    assert_eq!(inbound["id"], "amsg_1");
+    let text = inbound["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("/root/audit_llmsrelay_fallback"));
+    assert!(text.contains("FINAL_ANSWER"));
+    let outbound = &prepared.turn.injected_items[2];
+    assert_eq!(outbound["type"], "message");
+    assert_eq!(outbound["role"], "assistant");
+    assert!(outbound["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Retry the fallback probe."));
+    // The new turn input stays exactly the final user message.
+    assert_eq!(prepared.turn.turn_input, vec![json!({"type": "text", "text": "Continue."})]);
+}
+
+#[test]
+fn agent_message_without_text_content_is_rejected() {
+    let error = normalize_responses_input(&json!([
+        {"type": "agent_message", "author": "/root/a", "recipient": "/root", "content": "not-an-array"},
+        {"role": "user", "content": "hi"}
+    ]))
+    .unwrap_err();
+    assert_eq!(error.param.as_deref(), Some("input.0.content"));
+}
+
 #[tokio::test]
 async fn responses_instructions_replace_the_upstream_base_prompt() {
     let gateway = gateway();

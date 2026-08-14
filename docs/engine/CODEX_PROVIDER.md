@@ -158,6 +158,11 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   descriptor in every stock config (mode `cached`), so a tool list carrying it is accepted and the
   entry dropped, while a `web_search` nested inside a namespace still fails closed. The model
   simply gets no web search tool.
+  Multi-agent collaboration (spawn_agent) persists inter-agent messages as `agent_message` history
+  items and replays them into `input` on the next turn; the upstream Responses backend has no such
+  item type, so the parser translates each one into a plain message — a message addressed to
+  `/root` becomes a user message, anything else an assistant message — with the `author`/`recipient`
+  agent paths kept in the visible text so the model still knows who addressed whom.
   The upstream request keeps `store:false`, `stream:true`,
   `include:["reasoning.encrypted_content"]`, tenant-scoped
   `prompt_cache_key` and first-party-shaped `client_metadata`. Headers carry the pinned client

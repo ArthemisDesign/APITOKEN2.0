@@ -1871,11 +1871,58 @@ fn normalize_response_item(item: &Value, index: usize) -> Result<Value, ApiError
         | "custom_tool_call_output" => Ok(item.clone()),
         "tool_search_call" => normalize_tool_search_call(object, index),
         "tool_search_output" => normalize_tool_search_output(object, index),
+        "agent_message" => normalize_agent_message_item(object, index),
         _ => Err(ApiError::invalid(
             format!("Input item type {kind:?} is not supported by this endpoint."),
             Some(format!("input.{index}.type")),
         )),
     }
+}
+
+/// Codex's multi-agent collaboration (spawn_agent / InterAgentCommunication) persists inter-agent
+/// messages as `agent_message` history items and replays them into `input` on the next turn.
+/// The Responses backend accepts no such type, so without this translation every turn that
+/// follows an agent-to-agent message dies with `Input item type "agent_message" is not supported`.
+/// An agent message is conversational content: a message addressed to the root agent is a new
+/// user-level instruction, everything else is assistant output the model itself produced. The
+/// private `author`/`recipient` agent paths are kept in the visible text, otherwise the model
+/// loses who addressed whom; the transport only carries messages.
+fn normalize_agent_message_item(
+    object: &Map<String, Value>,
+    index: usize,
+) -> Result<Value, ApiError> {
+    let content = object
+        .get("content")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ApiError::invalid(
+                "agent_message content must be an array of text parts.",
+                Some(format!("input.{index}.content")),
+            )
+        })?;
+    let author = object.get("author").and_then(Value::as_str).unwrap_or("agent");
+    let recipient = object
+        .get("recipient")
+        .and_then(Value::as_str)
+        .unwrap_or("/root");
+    let text = content
+        .iter()
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let role = if recipient == "/root" {
+        "user"
+    } else {
+        "assistant"
+    };
+    let mut message = canonical_message(
+        role,
+        &format!("Agent message from {author} to {recipient}:\n{text}"),
+    );
+    if let Some(id) = object.get("id").filter(|id| id.is_string()) {
+        message["id"] = id.clone();
+    }
+    normalize_message_item(message.as_object().expect("message object"), index)
 }
 
 fn normalize_tool_search_call(
