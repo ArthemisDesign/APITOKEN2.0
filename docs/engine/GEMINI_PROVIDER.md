@@ -338,8 +338,10 @@ systemctl start claude-authbot.service
 ```
 
 After the runtime reloads, require a successful admin-only exact-profile `countTokens` and one
-non-stream generation with non-zero immutable usage/cost evidence. A normal request without
-`x-apitoken-calibration-profile` is not proof because it may spill to another profile. If the exact
+non-stream generation with non-zero immutable usage/cost evidence. The established exact-profile
+lane may omit `x-apitoken-calibration-request-id` and receive a fresh engine UUID; when supplied it
+must be canonical UUIDv4. A normal request without `x-apitoken-calibration-profile` is not proof
+because it may spill to another profile. If the exact
 test succeeds, stop Auth Bot and run `gemini-proxy-commit <profile_id>` under the same sourced env
 and `runuser` boundary; otherwise run `gemini-proxy-rollback <profile_id>`. Start Auth Bot again in
 either case. `stage` refuses a second pending replacement and reuse of another profile's canonical
@@ -431,6 +433,36 @@ Production startup hashes the binary before accepting profiles, and each helper 
 the Node version plus Linux/x64 platform. A Node/OpenSSL upgrade is therefore an explicit reviewed
 fingerprint change, never an ambient package update.
 
+### Dormant Gemini 3.7 exact-admission producer
+
+`gemini-3.7-flash` remains private and dormant, but its engine-side producer is hardened for a
+future root admission controller. The only admitted lane is an admin-authenticated exact-profile
+request carrying exactly one canonical `x-apitoken-calibration-profile`, UUIDv4
+`x-apitoken-calibration-request-id` and positive decimal Unix-seconds
+`x-apitoken-calibration-not-after`. The deadline is mandatory for 3.7 generation and `countTokens`,
+is rejected on other models and ordinary/public requests, and grants the half-open interval
+`now < not_after`; equality is expired. A successful provider response carries exactly one
+canonical positive epoch-millisecond `x-apitoken-calibration-dispatch-ms`, also strictly below
+`not_after * 1000`. That attestation is absent from every ordinary response. On this deadline-bound
+lane, missing, duplicate, malformed or half-paired private headers fail before dispatch.
+
+The deadline is checked after bearer acquisition in Rust and travels as private IPC metadata, never
+as an upstream header. Node checks it before `https.request`, before direct/proxy socket creation,
+after CONNECT and target TLS, then records the sole dispatch timestamp in ClientRequest's `socket`
+listener. This final boundary relies on the SHA-pinned Node v24.18.0 `_http_client` ordering:
+`req.emit('socket', socket)` runs synchronously before `req._flush()`. Destroying the request in that
+listener therefore emits no HTTP bytes. A missing or invalid attestation discovered after provider
+headers is an ambiguous helper protocol failure, not a false `not_started` expiry proof.
+
+OAuth is asymmetric by cost: exact 3.7 `countTokens` may make at most one non-replayable refresh;
+paid generation requires an already-fresh cached bearer and never refreshes after profile claim.
+Every exact upstream POST uses `NeverReplay`: no helper restart, 401 resend, profile rotation or
+smooth retry. Deadline-bound 3.7 JSON and SSE preserve Google's raw upstream `modelVersion` as
+admission evidence; established ordinary and older exact lanes retain canonical public-id rewriting.
+This is producer-first only: no admission trigger/consumer, production default, public catalogue,
+router preset, storefront or paid live call is enabled until the exact producer SHA is GREEN and the
+separate consumer change is reviewed.
+
 ## Runtime behavior
 
 The public surface remains native Gemini-shaped:
@@ -497,8 +529,10 @@ For every request the runtime:
 - wraps the native body for `v1internal:{generateContent,streamGenerateContent,countTokens}`;
 - resolves a canonical Gemini 3 model plus `thinkingConfig.thinkingLevel` to the reviewed private
   Antigravity effort/quota bucket before admission. Quota and model cooling follow that private
-  bucket, while affinity, customer billing, the public catalogue and returned `modelVersion` stay
-  on the canonical Developer API model id;
+  bucket, while affinity, customer billing and the public catalogue stay on the canonical Developer
+  API model id. Ordinary and established exact responses rewrite `modelVersion` to that public id;
+  only the deadline-bound dormant 3.7 lane preserves the raw upstream identity as admission
+  evidence;
 - adapts valid public generation requests to Antigravity's stricter private wire contract: blank or
   omitted `contents[].role` values are inferred as alternating `user`/`model` turns, and the public
   65,536-token model ceiling is clamped to the private endpoint's accepted boundary of 65,535. A
@@ -693,7 +727,7 @@ text-generation check. A quota row by itself is never admission evidence.
 
 | Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
 |---|---|---|---|
-| `gemini-3.7-flash` | no owned private alias; dormant canary retains the exact public id only | Google announced the Developer API model GA on 2026-08-13, but the 2026-08-14 owned catalogue observation found no 3.7 quota/wire row and no live request has passed on this implementation SHA | Stage 1 dormant only; omitted from production defaults, customer discovery, router presets and storefronts until exact-SHA single-claim/no-replay `countTokens`, generation, incremental SSE, advertised controls and each claimed plan pass. An explicitly configured loopback canary retains its protected `/gemini-subs` conversion row solely for tariff/plan-bound admission evidence |
+| `gemini-3.7-flash` | no owned private alias; dormant canary retains the exact public id only | Google announced the Developer API model GA on 2026-08-13, but the 2026-08-14 owned catalogue observation found no 3.7 quota/wire row and no live request has passed on this implementation SHA. The producer now preserves raw upstream identity behind its admin-only deadline/dispatch attestation; this is capability, not admission evidence | Stage 1 dormant only; omitted from production defaults, customer discovery, router presets and storefronts until exact-SHA single-claim/no-replay `countTokens`, generation, incremental SSE, advertised controls and each claimed plan pass. An explicitly configured loopback canary retains its protected `/gemini-subs` conversion row solely for tariff/plan-bound admission evidence; the root admission consumer/trigger remains deferred until the producer SHA is GREEN |
 | `gemini-3-flash-preview` | public → `gemini-3-flash`; quota admission joins `gemini-3-flash` + `gemini-3-flash-agent`; configured Antigravity origin, 2.2.1 UA, minimal headers; bounded inline PCM WAV fallback uses exact integral `duration × 32` AUDIO tokens and fails closed on ambiguous cache | fresh runner SHA `cc7e5beb…` / byte-identical runtime implementation completed 22 paid turns on Pro+Ultra: minimal/low/medium/high, incremental SSE, final cache reads with 8,170 cached tokens, fresh/replayed 8-token PCM audio and forced function calls; public identity and terminal response/event usage matched | published; generation 5 main catalog, production defaults, router manifest and public web/docs |
 | `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
 | `gemini-3.5-flash` | minimal → `gemini-3.5-flash-extra-low`; low/medium/high/default → `gemini-3.5-flash-low`, with the requested native thinking level preserved | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; default and `alt=json` JSON streams 200; canonical modelVersion and non-zero usage verified on Google AI Pro on 2026-07-31 | published |

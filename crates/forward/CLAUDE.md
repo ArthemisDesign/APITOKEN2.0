@@ -846,7 +846,18 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    `gemini-3.7-flash` but production defaults and native discovery must omit it even when that
    canary configuration is loaded. The canary's protected loopback `/gemini-subs` deliberately
    retains its conversion row: the admission controller needs that exact tariff and plan-bound
-   evidence, and it is not customer discovery. Its thinking allowlist is exactly
+   evidence, and it is not customer discovery. Its private producer admits only an admin exact
+   profile plus canonical UUIDv4 `x-apitoken-calibration-request-id` and positive Unix-seconds
+   `x-apitoken-calibration-not-after`; the half-open fence is `now < not_after`, so equality expires.
+   Rust rechecks after token acquisition and Node carries the deadline only in IPC, checks every
+   pre-connect/TLS boundary, and emits `x-apitoken-calibration-dispatch-ms` only from the final
+   pinned ClientRequest `socket` event. SHA-pinned Node v24.18.0 `_http_client` synchronously emits
+   that event before `_flush`; a listener-side destroy therefore writes no HTTP bytes. Exact
+   `countTokens` may refresh once with `NeverReplay`; paid generation requires an already-fresh
+   cached bearer. Every deadline-bound upstream POST is one-shot, with no helper restart, 401
+   resend, profile rotation or smooth retry. This producer is dormant: the root trigger/consumer,
+   defaults, public catalog and live calls remain deferred until a GREEN exact producer SHA.
+   Its thinking allowlist is exactly
    `low|medium|high` (omission
    means medium); `minimal`, `thinkingBudget`, `candidateCount`, deprecated sampling controls and
    any final turn without non-empty user text fail locally. Image-only and tool-result-only final
@@ -854,9 +865,10 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    requires fresh authenticated discovery plus exact-SHA generation evidence, never a guess from
    neighboring model families.
    The thinking level is selected before admission; quota/cooling are keyed by the private bucket, while affinity,
-   billing and the client catalog use the canonical public id. Response/SSE rewrites the private
-   `modelVersion` back to the public id and returns only `.response` (+ responseId), never the
-   wrapper/credits/private headers.
+   billing and the client catalog use the canonical public id. Ordinary and established exact
+   response/SSE paths rewrite private `modelVersion` back to the public id; the deadline-bound
+   dormant 3.7 lane alone preserves raw upstream `modelVersion` as admission evidence. All paths
+   return only `.response` (+ responseId), never the wrapper/credits/private upstream headers.
    An official CountTokensRequest `generateContentRequest` is expanded into a private request, the body model
    is replaced by the route model; ambiguous top-level contents + nested request is rejected. Unsupported
    `serviceTier`/`store` fail closed instead of a silent drop.
@@ -915,7 +927,9 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    rollover/jitter, overflow and estimator rebuild from immutable history fail closed. No prior/EMA/WLS/
    nominal/float money. Admin-only exact targeting accepts the full opaque profile id and an
    optional canonical `x-apitoken-calibration-request-id`; metered traffic can set neither the
-   profile nor the immutable-event identity, and a target never spills/rebinds.
+   profile nor the immutable-event identity, and a target never spills/rebinds. The additional canonical
+   `x-apitoken-calibration-not-after` input and `x-apitoken-calibration-dispatch-ms` response are
+   confined to the dormant 3.7 producer described above.
 8. Full contract/provisioning/runbook — `docs/engine/GEMINI_PROVIDER.md`. Verification includes the mock upstream:
    rotation fault matrix, credential stripping, RetryInfo, chunk-split SSE, no post-byte retry,
    disconnect drain+settlement and the shutdown deadline barrier.

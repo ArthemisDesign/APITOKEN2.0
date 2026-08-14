@@ -31,6 +31,7 @@ const KEEPALIVE_MS = 60000;
 const MAX_READ_TIMEOUT_MS = 3600000;
 let configured = false;
 let proxyAgent;
+let directAgent;
 let connectTimeoutMs = 30000;
 let readTimeoutMs = 120000;
 const active = new Map();
@@ -67,11 +68,44 @@ function requestFailureKind(error) {
   if (message === 'proxy-eof') return 'proxy-eof';
   if (message === 'proxy-protocol') return 'proxy-protocol';
   if (message === 'tls') return 'tls';
+  if (message === 'calibration-expired') return 'calibration-expired';
+  if (message === 'protocol') return 'protocol';
   return 'network';
 }
 
 function boundedInteger(value, minimum, maximum) {
   return Number.isInteger(value) && value >= minimum && value <= maximum;
+}
+
+function calibrationAttestation(notAfter) {
+  if (notAfter === undefined) return undefined;
+  if (!boundedInteger(notAfter, 1, Math.floor(Number.MAX_SAFE_INTEGER / 1000))) {
+    throw new Error('request');
+  }
+  return {notAfterMs: notAfter * 1000, dispatchMs: undefined};
+}
+
+// Equality is expired: the admission controller grants the half-open interval [now, notAfter),
+// never the boundary itself. Early checks deliberately do not write the attestation; only the
+// pinned ClientRequest `socket` event immediately before `_flush` may create the outward dispatch
+// proof.
+function checkCalibrationDeadline(attestation) {
+  if (!attestation) return;
+  const nowMs = Date.now();
+  if (!Number.isSafeInteger(nowMs) || nowMs <= 0 || nowMs >= attestation.notAfterMs) {
+    throw new Error('calibration-expired');
+  }
+}
+
+function recordCalibrationDispatch(attestation) {
+  if (!attestation) return;
+  if (attestation.dispatchMs !== undefined) throw new Error('protocol');
+  checkCalibrationDeadline(attestation);
+  const dispatchMs = Date.now();
+  if (!Number.isSafeInteger(dispatchMs) || dispatchMs <= 0 || dispatchMs >= attestation.notAfterMs) {
+    throw new Error('calibration-expired');
+  }
+  attestation.dispatchMs = dispatchMs;
 }
 
 function proxyOptions(proxy) {
@@ -157,6 +191,14 @@ class GeminiProxyAgent extends https.Agent {
   }
 
   createConnection(options, callback) {
+    try {
+      // A frame can wait behind Rust mutex/spawn/IPC and the Node event loop. Re-check in the
+      // helper synchronously before even opening the proxy socket.
+      checkCalibrationDeadline(options.calibrationAttestation);
+    } catch (error) {
+      callback(error);
+      return undefined;
+    }
     const proxyPort = this.proxy.port ? Number(this.proxy.port) :
       (this.proxy.protocol === 'https:' ? 443 : 80);
     const raw = this.proxy.protocol === 'https:'
@@ -189,6 +231,14 @@ class GeminiProxyAgent extends https.Agent {
           finish(error);
           return;
         }
+        try {
+          // CONNECT established only a tunnel. The provider has not seen the HTTP request yet;
+          // reject an expired calibration before the target TLS socket is created.
+          checkCalibrationDeadline(options.calibrationAttestation);
+        } catch (deadlineError) {
+          finish(deadlineError);
+          return;
+        }
         const socket = tls.connect({
           socket: raw,
           servername: options.servername || (net.isIP(options.host) ? undefined : options.host),
@@ -200,11 +250,72 @@ class GeminiProxyAgent extends https.Agent {
           minVersion: options.minVersion,
           maxVersion: options.maxVersion,
         });
-        socket.once('secureConnect', () => finish(null, socket));
+        socket.once('secureConnect', () => {
+          try {
+            // Keep the half-open fence valid while handing the target TLS socket to ClientRequest.
+            // The pinned Node pre-flush `socket` event below records the later dispatch proof.
+            checkCalibrationDeadline(options.calibrationAttestation);
+            finish(null, socket);
+          } catch (deadlineError) {
+            socket.destroy();
+            finish(deadlineError);
+          }
+        });
         socket.once('error', () => finish(new Error('tls')));
       });
       raw.write(payload);
     });
+    return undefined;
+  }
+}
+
+// Production profiles require a proxy, but literal direct HTTPS remains a reviewed helper mode.
+// Keep it under the same final TLS handoff proof instead of falling back to the global Agent.
+class GeminiDirectAgent extends https.Agent {
+  constructor() {
+    super({keepAlive: false});
+  }
+
+  createConnection(options, callback) {
+    let socket;
+    try {
+      checkCalibrationDeadline(options.calibrationAttestation);
+      socket = tls.connect({
+        host: options.host,
+        port: options.port,
+        servername: options.servername || (net.isIP(options.host) ? undefined : options.host),
+        rejectUnauthorized: options.rejectUnauthorized,
+        ca: options.ca,
+        cert: options.cert,
+        key: options.key,
+        ciphers: options.ciphers,
+        minVersion: options.minVersion,
+        maxVersion: options.maxVersion,
+        ALPNProtocols: ['http/1.1'],
+      });
+    } catch (error) {
+      callback(error);
+      return undefined;
+    }
+    let settled = false;
+    const finish = (error, connected) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) socket.destroy();
+      callback(error, connected);
+    };
+    const timer = setTimeout(() => finish(new Error('timeout')), connectTimeoutMs);
+    timer.unref();
+    socket.once('secureConnect', () => {
+      try {
+        checkCalibrationDeadline(options.calibrationAttestation);
+        finish(null, socket);
+      } catch (deadlineError) {
+        finish(deadlineError);
+      }
+    });
+    socket.once('error', () => finish(new Error('tls')));
     return undefined;
   }
 }
@@ -268,7 +379,8 @@ function exactHeaders(entries) {
 function startUndiciFetch(frame) {
   const id = frame.id;
   try {
-    if (frame.method !== 'GET' || typeof frame.url !== 'string' || frame.url.length > 8192 ||
+    if (frame.calibrationNotAfter !== undefined || frame.method !== 'GET' ||
+        typeof frame.url !== 'string' || frame.url.length > 8192 ||
         typeof frame.body !== 'string') throw new Error('request');
     const url = new URL(frame.url);
     if (url.protocol !== 'https:') throw new Error('scheme');
@@ -345,11 +457,19 @@ function startRequest(frame) {
     }
     if (frame.method === 'GET' && body.length !== 0) throw new Error('body');
     const headers = normalizeHeaders(frame.headers, body.length, frame.method);
+    const calibration = calibrationAttestation(frame.calibrationNotAfter);
+    // Re-check after all synchronous decode/validation work and immediately before https.request.
+    // This catches a frame that expired in the IPC/readline queue without touching any socket.
+    checkCalibrationDeadline(calibration);
     const request = https.request(url, {
       method: frame.method,
       headers,
-      agent: proxyAgent,
+      // Preserve the ordinary direct profile on Node's globalAgent. The private direct agent
+      // exists only to carry deadline metadata through createConnection; proxy traffic already
+      // used the dedicated profile agent before this fence was introduced.
+      agent: proxyAgent || (calibration ? directAgent : undefined),
       maxHeaderSize: 64 * 1024,
+      calibrationAttestation: calibration,
     }, response => {
       if (!active.has(id)) {
         response.destroy();
@@ -366,7 +486,19 @@ function startRequest(frame) {
       responseStreams.add(stream);
       if (stdoutBlocked) stream.pause();
       const rawHeaders = response.rawHeaders.slice(0, 512);
-      emit({type: 'headers', id, status: response.statusCode || 0, headers: rawHeaders});
+      const head = {type: 'headers', id, status: response.statusCode || 0, headers: rawHeaders};
+      if (calibration) {
+        if (!Number.isSafeInteger(calibration.dispatchMs) || calibration.dispatchMs <= 0 ||
+            calibration.dispatchMs >= calibration.notAfterMs) {
+          // Response headers prove the POST started. Missing final attestation here is helper
+          // protocol corruption, never a pre-dispatch expiry/not-started proof.
+          request.destroy(new Error('protocol'));
+          response.destroy();
+          return;
+        }
+        head.calibrationDispatchMs = calibration.dispatchMs;
+      }
+      emit(head);
       stream.on('data', chunk => emit({type: 'data', id, data: Buffer.from(chunk).toString('base64')}));
       stream.once('end', () => {
         responseStreams.delete(stream);
@@ -380,10 +512,21 @@ function startRequest(frame) {
       });
     });
     active.set(id, request);
-    // The socket may already be assigned when the agent had one to hand out, in which case the
-    // 'socket' event has nothing left to deliver.
-    if (request.socket) request.socket.setKeepAlive(true, KEEPALIVE_MS);
-    else request.once('socket', socket => socket.setKeepAlive(true, KEEPALIVE_MS));
+    // Exact pinned Node v24.18.0 `_http_client` runs `req.emit('socket', socket)` synchronously in
+    // `tickOnSocket`, then calls `req._flush()`. Record last in that listener: no helper work sits
+    // between the timestamp and returning to the exact pre-write core boundary. Destroying here
+    // leaves `_flush` a destroyed request and emits no HTTP bytes.
+    const onSocket = socket => {
+      try {
+        socket.setKeepAlive(true, KEEPALIVE_MS);
+        recordCalibrationDispatch(calibration);
+      } catch (error) {
+        request.destroy(error);
+      }
+    };
+    // startRequest stays in one turn and both private agents disable reuse. ClientRequest.onSocket
+    // schedules the pinned onSocketNT on nextTick, so registering now always precedes the event.
+    request.once('socket', onSocket);
     if (idleTimeoutMs !== 0) {
       request.setTimeout(idleTimeoutMs, () => request.destroy(new Error('timeout')));
     }
@@ -392,9 +535,9 @@ function startRequest(frame) {
       fail(id, requestFailureKind(error));
     });
     request.end(body.length ? body : undefined);
-  } catch (_) {
+  } catch (error) {
     active.delete(id);
-    fail(id, 'protocol');
+    fail(id, error && error.message === 'calibration-expired' ? 'calibration-expired' : 'protocol');
   }
 }
 
@@ -409,6 +552,7 @@ lines.on('line', line => {
         !boundedInteger(frame.readTimeoutMs, 1000, 600000)) process.exit(70);
     try {
       proxyAgent = frame.proxy ? new GeminiProxyAgent(frame.proxy) : undefined;
+      directAgent = frame.proxy ? undefined : new GeminiDirectAgent();
       if (frame.proxy) {
         // Exact defaults from Gemini CLI 0.53.0 setGlobalProxy(). env_clear plus an explicit empty
         // noProxy prevent another subscription or host environment from bypassing this profile.

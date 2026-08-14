@@ -5,12 +5,16 @@ use crate::metrics::Metrics;
 use crate::pricing::{tariff_book, EnginePricingRequestId};
 use crate::proxy::{authorize, Authz, HoldGuard};
 use crate::state::AppState;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, HeaderValue};
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 
 const CALIBRATION_PROFILE_HEADER: &str = "x-apitoken-calibration-profile";
 const CALIBRATION_REQUEST_ID_HEADER: &str = "x-apitoken-calibration-request-id";
+const CALIBRATION_NOT_AFTER_HEADER: &str = "x-apitoken-calibration-not-after";
+// JavaScript's Number is the Node helper's IPC integer. Keep the seconds value within the exact
+// range after conversion to milliseconds so the dispatch attestation cannot be rounded.
+const MAX_CALIBRATION_NOT_AFTER: u64 = 9_007_199_254_740;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdmissionError {
@@ -44,6 +48,7 @@ pub(crate) struct GeminiAdmission {
     reservation: Option<Reservation>,
     calibration_request_id: String,
     exact_calibration_target: bool,
+    calibration_not_after: Option<u64>,
 }
 
 pub(crate) struct PendingGeminiAdmission {
@@ -51,6 +56,7 @@ pub(crate) struct PendingGeminiAdmission {
     execution: registry::ExecutionAttempt,
     calibration_request_id: String,
     calibration_target: Option<String>,
+    calibration_not_after: Option<u64>,
 }
 
 impl PendingGeminiAdmission {
@@ -68,11 +74,18 @@ impl PendingGeminiAdmission {
         self.calibration_target.as_deref()
     }
 
+    /// Absolute Unix-seconds dispatch fence supplied by the private admission controller. It is
+    /// present only on the deadline-bound exact profile lane and never becomes a provider header.
+    pub(crate) fn calibration_not_after(&self) -> Option<u64> {
+        self.calibration_not_after
+    }
+
     pub(crate) fn without_reserve(self) -> GeminiAdmission {
         GeminiAdmission {
             reservation: None,
             calibration_request_id: self.calibration_request_id,
             exact_calibration_target: self.calibration_target.is_some(),
+            calibration_not_after: self.calibration_not_after,
         }
     }
 
@@ -146,6 +159,7 @@ impl PendingGeminiAdmission {
                 reservation,
                 calibration_request_id: self.calibration_request_id,
                 exact_calibration_target: self.calibration_target.is_some(),
+                calibration_not_after: self.calibration_not_after,
             },
             effective_output_tokens,
         ))
@@ -203,6 +217,10 @@ impl GeminiAdmission {
 
     pub(crate) fn requests_post_turn_probe(&self) -> bool {
         self.exact_calibration_target
+    }
+
+    pub(crate) fn calibration_not_after(&self) -> Option<u64> {
+        self.calibration_not_after
     }
 
     pub(crate) async fn mark_delivering(&self) -> Result<(), AdmissionError> {
@@ -511,6 +529,34 @@ fn settled_charge_or_hold_with_prices(
     }
 }
 
+fn exactly_one_header<'a>(
+    headers: &'a HeaderMap,
+    name: &str,
+) -> Result<Option<&'a HeaderValue>, AdmissionError> {
+    let mut values = headers.get_all(name).iter();
+    match (values.next(), values.next()) {
+        (None, None) => Ok(None),
+        (Some(value), None) => Ok(Some(value)),
+        (Some(_), Some(_)) => Err(AdmissionError::Unavailable),
+        (None, Some(_)) => unreachable!("HeaderMap iterator cannot skip its first value"),
+    }
+}
+
+fn parse_calibration_not_after(value: &HeaderValue) -> Result<u64, AdmissionError> {
+    let value = value.to_str().map_err(|_| AdmissionError::Unavailable)?;
+    if value.is_empty()
+        || value.starts_with('0')
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(AdmissionError::Unavailable);
+    }
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|value| (1..=MAX_CALIBRATION_NOT_AFTER).contains(value))
+        .ok_or(AdmissionError::Unavailable)
+}
+
 pub(crate) async fn begin_admission(
     app: &AppState,
     headers: &HeaderMap,
@@ -543,36 +589,51 @@ pub(crate) async fn begin_admission(
     }
     Metrics::inc(&app.metrics.requests);
 
-    let calibration_target = if matches!(authz, Authz::Admin { .. }) {
-        match headers.get(CALIBRATION_PROFILE_HEADER) {
-            Some(value) => {
-                let value = value
-                    .to_str()
-                    .map_err(|_| AdmissionError::Unavailable)?
-                    .trim();
-                gemini_credential::validate_profile_id(value)
-                    .map_err(|_| AdmissionError::Unavailable)?;
-                Some(value.to_owned())
-            }
-            None => None,
+    let calibration_profile = exactly_one_header(headers, CALIBRATION_PROFILE_HEADER)?;
+    let calibration_request_id_header = exactly_one_header(headers, CALIBRATION_REQUEST_ID_HEADER)?;
+    let calibration_not_after_header = exactly_one_header(headers, CALIBRATION_NOT_AFTER_HEADER)?;
+    let any_calibration_header = calibration_profile.is_some()
+        || calibration_request_id_header.is_some()
+        || calibration_not_after_header.is_some();
+    if any_calibration_header && !matches!(authz, Authz::Admin { .. }) {
+        return Err(AdmissionError::Unavailable);
+    }
+    let calibration_target = calibration_profile
+        .map(|profile| {
+            let profile = profile.to_str().map_err(|_| AdmissionError::Unavailable)?;
+            gemini_credential::validate_profile_id(profile)
+                .map_err(|_| AdmissionError::Unavailable)?;
+            Ok(profile.to_owned())
+        })
+        .transpose()?;
+    let calibration_request_id = match (calibration_target.as_ref(), calibration_request_id_header)
+    {
+        (None, None) => crate::upstream::fresh_request_id(),
+        // Preserve the established admin exact-profile contract. Only the new deadline-bound lane
+        // requires its caller to supply the canonical request identity explicitly.
+        (Some(_), None) if calibration_not_after_header.is_none() => {
+            crate::upstream::fresh_request_id()
         }
-    } else {
-        None
-    };
-    let calibration_request_id = match (
-        calibration_target.as_ref(),
-        headers.get(CALIBRATION_REQUEST_ID_HEADER),
-    ) {
-        (Some(_), Some(value)) => {
-            let value = value.to_str().map_err(|_| AdmissionError::Unavailable)?;
+        (Some(_), Some(request_id)) => {
+            let value = request_id
+                .to_str()
+                .map_err(|_| AdmissionError::Unavailable)?;
             EnginePricingRequestId::from_engine_uuid_v4(value)
                 .map(|value| value.as_str().to_owned())
                 .ok_or(AdmissionError::Unavailable)?
         }
-        (None, Some(_)) if matches!(authz, Authz::Admin { .. }) => {
-            return Err(AdmissionError::Unavailable);
+        (None, Some(_)) | (Some(_), None) => return Err(AdmissionError::Unavailable),
+    };
+    let calibration_not_after = match calibration_not_after_header {
+        None => None,
+        Some(value)
+            if matches!(authz, Authz::Admin { .. })
+                && calibration_target.is_some()
+                && calibration_request_id_header.is_some() =>
+        {
+            Some(parse_calibration_not_after(value)?)
         }
-        _ => crate::upstream::fresh_request_id(),
+        Some(_) => return Err(AdmissionError::Unavailable),
     };
 
     Ok(PendingGeminiAdmission {
@@ -580,6 +641,7 @@ pub(crate) async fn begin_admission(
         execution,
         calibration_request_id,
         calibration_target,
+        calibration_not_after,
     })
 }
 
@@ -1112,7 +1174,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admin_exact_target_accepts_only_a_canonical_calibration_request_id() {
+    async fn deadline_calibration_requires_a_canonical_pair_without_breaking_legacy_exact() {
         const ADMIN_KEY: &str = "gemini-calibration-admin";
         const REQUEST_ID: &str = "123e4567-e89b-42d3-a456-426614174000";
         let unique = SystemTime::now()
@@ -1133,10 +1195,34 @@ mod tests {
         headers.insert("x-goog-api-key", ADMIN_KEY.parse().unwrap());
         headers.insert(CALIBRATION_PROFILE_HEADER, "profile_a".parse().unwrap());
         headers.insert(CALIBRATION_REQUEST_ID_HEADER, REQUEST_ID.parse().unwrap());
+        let not_after = (pool::now() + 60) as u64;
+        headers.insert(
+            CALIBRATION_NOT_AFTER_HEADER,
+            not_after.to_string().parse().unwrap(),
+        );
 
         let pending = begin_admission(&app, &headers, &peer).await.unwrap();
         assert_eq!(pending.calibration_target(), Some("profile_a"));
         assert_eq!(pending.calibration_request_id, REQUEST_ID);
+        assert_eq!(pending.calibration_not_after(), Some(not_after));
+
+        let mut legacy = HeaderMap::new();
+        legacy.insert("x-goog-api-key", ADMIN_KEY.parse().unwrap());
+        legacy.insert(CALIBRATION_PROFILE_HEADER, "profile_a".parse().unwrap());
+        let pending = begin_admission(&app, &legacy, &peer).await.unwrap();
+        assert_eq!(pending.calibration_target(), Some("profile_a"));
+        assert!(
+            EnginePricingRequestId::from_engine_uuid_v4(&pending.calibration_request_id).is_some()
+        );
+        assert_eq!(pending.calibration_not_after(), None);
+
+        let mut request_without_profile = HeaderMap::new();
+        request_without_profile.insert("x-goog-api-key", ADMIN_KEY.parse().unwrap());
+        request_without_profile.insert(CALIBRATION_REQUEST_ID_HEADER, REQUEST_ID.parse().unwrap());
+        assert!(matches!(
+            begin_admission(&app, &request_without_profile, &peer).await,
+            Err(AdmissionError::Unavailable)
+        ));
 
         headers.insert(
             CALIBRATION_REQUEST_ID_HEADER,
@@ -1144,6 +1230,56 @@ mod tests {
         );
         assert!(matches!(
             begin_admission(&app, &headers, &peer).await,
+            Err(AdmissionError::Unavailable)
+        ));
+
+        headers.insert(CALIBRATION_REQUEST_ID_HEADER, REQUEST_ID.parse().unwrap());
+        for invalid in ["0", "01", "+1", "9007199254741"] {
+            headers.insert(CALIBRATION_NOT_AFTER_HEADER, invalid.parse().unwrap());
+            assert!(matches!(
+                begin_admission(&app, &headers, &peer).await,
+                Err(AdmissionError::Unavailable)
+            ));
+        }
+
+        headers.insert(
+            CALIBRATION_NOT_AFTER_HEADER,
+            (pool::now() + 60).to_string().parse().unwrap(),
+        );
+        for missing in [CALIBRATION_PROFILE_HEADER, CALIBRATION_REQUEST_ID_HEADER] {
+            let mut incomplete = headers.clone();
+            incomplete.remove(missing);
+            assert!(matches!(
+                begin_admission(&app, &incomplete, &peer).await,
+                Err(AdmissionError::Unavailable)
+            ));
+        }
+
+        let mut duplicate = headers.clone();
+        duplicate.append(CALIBRATION_NOT_AFTER_HEADER, "123".parse().unwrap());
+        assert!(matches!(
+            begin_admission(&app, &duplicate, &peer).await,
+            Err(AdmissionError::Unavailable)
+        ));
+
+        const METERED_ACCOUNT: &str = "gemini-calibration-metered";
+        const METERED_KEY: &str = "gemini-calibration-metered-key";
+        billing
+            .create_account(METERED_ACCOUNT, None, 10_000)
+            .await
+            .unwrap();
+        billing
+            .topup(METERED_ACCOUNT, 1_000_000, Some("seed"))
+            .await
+            .unwrap();
+        billing
+            .issue_key(METERED_KEY, METERED_ACCOUNT, None, None, None)
+            .await
+            .unwrap();
+        let mut metered_headers = headers.clone();
+        metered_headers.insert("x-goog-api-key", METERED_KEY.parse().unwrap());
+        assert!(matches!(
+            begin_admission(&app, &metered_headers, &peer).await,
             Err(AdmissionError::Unavailable)
         ));
 
@@ -1384,6 +1520,7 @@ mod tests {
             }),
             calibration_request_id: REQUEST_ID.to_owned(),
             exact_calibration_target: false,
+            calibration_not_after: None,
         };
         let calibration_event = admission
             .settle_at(&model, Some(&usage), "profile-1", completion_ts)
@@ -1485,6 +1622,7 @@ mod tests {
             }),
             calibration_request_id: REQUEST_ID.to_owned(),
             exact_calibration_target: false,
+            calibration_not_after: None,
         };
         let usage = metering::GeminiUsage {
             input_tokens: 1_000,
@@ -1562,6 +1700,7 @@ mod tests {
             }),
             calibration_request_id: REQUEST_ID.to_owned(),
             exact_calibration_target: false,
+            calibration_not_after: None,
         };
         let usage = metering::GeminiUsage {
             input_tokens: 1_000,

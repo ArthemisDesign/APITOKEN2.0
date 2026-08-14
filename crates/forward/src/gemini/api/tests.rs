@@ -80,6 +80,11 @@ enum MockReply {
         body: Value,
         retry_after: Option<&'static str>,
     },
+    DelayedJson {
+        status: StatusCode,
+        body: Value,
+        delay: Duration,
+    },
     Stream {
         chunks: Vec<MockChunk>,
         inter_chunk_delay: Duration,
@@ -241,6 +246,18 @@ async fn mock_upstream(
                 .body(Body::from(serde_json::to_vec(&body).unwrap()))
                 .unwrap()
         }
+        MockReply::DelayedJson {
+            status,
+            body,
+            delay,
+        } => {
+            tokio::time::sleep(delay).await;
+            Response::builder()
+                .status(status)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap()
+        }
         MockReply::Stream {
             chunks,
             inter_chunk_delay,
@@ -396,6 +413,31 @@ fn gateway_fixture_with_models(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn gateway_fixture_with_models_and_expiry(
+    upstream: &str,
+    proxies: &[Option<&str>],
+    max_transport_retries: usize,
+    token_uri: Option<&str>,
+    oauth_kind: OAuthKind,
+    output_token_limit: u64,
+    model_ids: &[&str],
+    credential_expires_at: i64,
+) -> GatewayFixture {
+    gateway_fixture_with_models_calibration_and_node(
+        upstream,
+        proxies,
+        max_transport_retries,
+        token_uri,
+        oauth_kind,
+        output_token_limit,
+        model_ids,
+        None,
+        None,
+        Some(credential_expires_at),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn gateway_fixture_with_models_and_calibration(
     upstream: &str,
     proxies: &[Option<&str>],
@@ -416,6 +458,7 @@ fn gateway_fixture_with_models_and_calibration(
         model_ids,
         calibration_store,
         None,
+        None,
     )
 }
 
@@ -430,6 +473,7 @@ fn gateway_fixture_with_models_calibration_and_node(
     model_ids: &[&str],
     calibration_store: Option<Arc<AsyncBilling>>,
     node_runtime: Option<(&str, &str, &str)>,
+    credential_expires_at: Option<i64>,
 ) -> GatewayFixture {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -465,7 +509,7 @@ fn gateway_fixture_with_models_calibration_and_node(
             version: 1,
             access_token: keys[index].to_string(),
             refresh_token: format!("refresh-token-value-{index}"),
-            expires_at: pool::now() + 3_600,
+            expires_at: credential_expires_at.unwrap_or_else(|| pool::now() + 3_600),
             oauth_client_id: oauth_client_id.to_string(),
             oauth_client_secret: oauth_client_secret.to_string(),
             token_uri: token_uri
@@ -520,6 +564,11 @@ fn gateway_fixture_with_models_calibration_and_node(
             },
         })
         .collect();
+    // A scripted Node helper must first be scheduled, read its configure frame and publish the
+    // ready handshake. One second is too tight under a parallel Rust test/build load and can kill
+    // the child before its first shell instruction (and therefore before the spawn marker). Keep
+    // ordinary loopback mocks fast while giving this bounded process fixture deterministic room.
+    let connect_timeout_secs = if node_runtime.is_some() { 5 } else { 1 };
     let (node_binary, node_version, node_sha256) =
         node_runtime.unwrap_or(("/usr/bin/node", "v24.18.0", ""));
     let node_sha256 = if node_sha256.is_empty() {
@@ -535,7 +584,7 @@ fn gateway_fixture_with_models_calibration_and_node(
             credential_layout: super::super::config::GeminiCredentialLayout::SealedRoster,
             credential_keys: ring,
             models,
-            connect_timeout_secs: 1,
+            connect_timeout_secs,
             read_timeout_secs: 5,
             generation_idle_timeout_secs: 5,
             max_transport_retries,
@@ -726,13 +775,31 @@ async fn invoke_exact_uri(
     profile_id: &str,
     request_id: &str,
 ) -> Response {
-    let request = axum::extract::Request::builder()
+    let not_after = uri
+        .contains("/gemini-3.7-flash:")
+        .then(|| (pool::now() + 60) as u64);
+    invoke_exact_uri_with_deadline(app, uri, body, profile_id, request_id, not_after).await
+}
+
+async fn invoke_exact_uri_with_deadline(
+    app: AppState,
+    uri: &str,
+    body: Value,
+    profile_id: &str,
+    request_id: &str,
+    not_after: Option<u64>,
+) -> Response {
+    let mut builder = axum::extract::Request::builder()
         .method(Method::POST)
         .uri(uri)
         .header("content-type", "application/json")
         .header("x-goog-api-key", CUSTOMER_KEY)
         .header("x-apitoken-calibration-profile", profile_id)
-        .header("x-apitoken-calibration-request-id", request_id)
+        .header("x-apitoken-calibration-request-id", request_id);
+    if let Some(not_after) = not_after {
+        builder = builder.header("x-apitoken-calibration-not-after", not_after.to_string());
+    }
+    let request = builder
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
         .unwrap();
     match api_inner(app, "198.51.100.10:12345".parse().unwrap(), request).await {
@@ -748,6 +815,21 @@ async fn response_json(response: Response) -> Value {
             .unwrap(),
     )
     .unwrap()
+}
+
+fn calibration_dispatch_ms(response: &Response) -> u64 {
+    let mut values = response
+        .headers()
+        .get_all(CALIBRATION_DISPATCH_HEADER)
+        .iter();
+    let value = values.next().expect("deadline-bound response attestation");
+    assert!(values.next().is_none(), "dispatch attestation is singular");
+    let value = value.to_str().expect("ASCII dispatch attestation");
+    assert!(!value.is_empty() && !value.starts_with('0'));
+    assert!(value.bytes().all(|byte| byte.is_ascii_digit()));
+    value
+        .parse::<u64>()
+        .expect("canonical positive milliseconds")
 }
 
 fn catalog_model(id: &str) -> GeminiModel {
@@ -1092,6 +1174,7 @@ fn provider_audio_usage_wins_and_reconstructed_usage_is_public_in_json_and_sse()
         &response,
         "gemini-3-flash-preview",
         hint,
+        false,
     )
     .unwrap();
     let native: Value = serde_json::from_slice(&native).unwrap();
@@ -1137,6 +1220,7 @@ fn private_model_versions_are_rewritten_to_the_public_model() {
         &response,
         "gemini-3.6-flash",
         AudioUsageHint::default(),
+        false,
     )
     .unwrap();
     let native: Value = serde_json::from_slice(&native).unwrap();
@@ -1750,6 +1834,7 @@ async fn tiered_public_model_uses_one_wire_id_for_generate_stream_and_count_toke
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
+    assert!(!response.headers().contains_key(CALIBRATION_DISPATCH_HEADER));
     let response = response_json(response).await;
     assert_eq!(response["modelVersion"], "gemini-3.6-flash");
 
@@ -1760,6 +1845,7 @@ async fn tiered_public_model_uses_one_wire_id_for_generate_stream_and_count_toke
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
+    assert!(!response.headers().contains_key(CALIBRATION_DISPATCH_HEADER));
     let stream_body = to_bytes(response.into_body(), GEMINI_BODY_LIMIT)
         .await
         .unwrap();
@@ -1780,6 +1866,7 @@ async fn tiered_public_model_uses_one_wire_id_for_generate_stream_and_count_toke
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
+    assert!(!response.headers().contains_key(CALIBRATION_DISPATCH_HEADER));
     assert_eq!(response_json(response).await["totalTokens"], 2);
 
     let seen = server.state.seen();
@@ -1803,12 +1890,12 @@ async fn dormant_37_uses_exact_public_wire_for_generate_stream_and_count_tokens(
             "response": {
                 "candidates": [{"content": {"role": "model", "parts": [{"text": "ok"}]}}],
                 "usageMetadata": {"promptTokenCount": 2, "candidatesTokenCount": 1},
-                "modelVersion": "gemini-3.7-flash"
+                "modelVersion": "gemini-3.7-flash-upstream-canary"
             }
         }),
     );
     let (stream, _drained) = MockReply::stream(vec![MockChunk::Data(Bytes::from_static(
-        b"data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":2,\"candidatesTokenCount\":1},\"modelVersion\":\"gemini-3.7-flash\"}}\n\n",
+        b"data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":2,\"candidatesTokenCount\":1},\"modelVersion\":\"gemini-3.7-flash-upstream-canary\"}}\n\n",
     ))]);
     let count = MockReply::json(StatusCode::OK, json!({"totalTokens": 2}));
     let server = start_mock(MockState::with_replies([(
@@ -1852,6 +1939,61 @@ async fn dormant_37_uses_exact_public_wire_for_generate_stream_and_count_tokens(
     }
     assert!(server.state.seen().is_empty());
 
+    let missing_deadline = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri("/v1beta/models/gemini-3.7-flash:generateContent")
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .header("x-apitoken-calibration-profile", "profile_a")
+        .header(
+            "x-apitoken-calibration-request-id",
+            "123e4567-e89b-42d3-a456-426614174000",
+        )
+        .body(Body::from(
+            serde_json::to_vec(&json!({
+                "contents": [{"role": "user", "parts": [{"text": "reply ok"}]}]
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    let missing_deadline = api_inner(
+        app.clone(),
+        "198.51.100.10:12345".parse().unwrap(),
+        missing_deadline,
+    )
+    .await
+    .unwrap_err()
+    .into_response();
+    assert_eq!(missing_deadline.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        missing_deadline
+            .headers()
+            .get(crate::proxy::EXECUTION_STATE_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some("not_started")
+    );
+    assert!(server.state.seen().is_empty());
+
+    let expired = invoke_exact_uri_with_deadline(
+        app.clone(),
+        "/v1beta/models/gemini-3.7-flash:generateContent",
+        json!({"contents": [{"role": "user", "parts": [{"text": "reply ok"}]}]}),
+        "profile_a",
+        "123e4567-e89b-42d3-a456-426614174009",
+        Some(pool::now() as u64),
+    )
+    .await;
+    assert_eq!(expired.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        expired
+            .headers()
+            .get(crate::proxy::EXECUTION_STATE_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some("not_started")
+    );
+    assert!(!expired.headers().contains_key(CALIBRATION_DISPATCH_HEADER));
+    assert!(server.state.seen().is_empty());
+
     let generation = json!({
         "contents": [{"role": "user", "parts": [{"text": "reply ok"}]}],
         "generationConfig": {"thinkingConfig": {"thinkingLevel": "high"}}
@@ -1876,12 +2018,14 @@ async fn dormant_37_uses_exact_public_wire_for_generate_stream_and_count_tokens(
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
+        let dispatch_ms = calibration_dispatch_ms(&response);
+        assert!(dispatch_ms < (pool::now() as u64 + 60) * 1_000);
         let body = to_bytes(response.into_body(), GEMINI_BODY_LIMIT)
             .await
             .unwrap();
-        assert!(std::str::from_utf8(&body)
-            .unwrap()
-            .contains("gemini-3.7-flash"));
+        let body = std::str::from_utf8(&body).unwrap();
+        assert!(body.contains("gemini-3.7-flash-upstream-canary"));
+        assert!(!body.contains("\"modelVersion\":\"gemini-3.7-flash\""));
     }
 
     let response = invoke_exact_uri(
@@ -1899,6 +2043,8 @@ async fn dormant_37_uses_exact_public_wire_for_generate_stream_and_count_tokens(
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
+    let dispatch_ms = calibration_dispatch_ms(&response);
+    assert!(dispatch_ms < (pool::now() as u64 + 60) * 1_000);
     assert_eq!(response_json(response).await["totalTokens"], 2);
 
     let seen = server.state.seen();
@@ -2080,6 +2226,148 @@ async fn dormant_37_rejects_removed_controls_and_prefill_before_upstream() {
 }
 
 #[tokio::test]
+async fn dormant_37_exact_generation_requires_an_already_fresh_cached_bearer() {
+    let server = start_mock(MockState::default()).await;
+    let token_uri = format!("{}/token", server.upstream);
+    let fixture = gateway_fixture_with_models_and_expiry(
+        &server.upstream,
+        &[None],
+        2,
+        Some(&token_uri),
+        OAuthKind::Antigravity,
+        65_536,
+        &["gemini-3.7-flash"],
+        pool::now(),
+    );
+
+    let response = invoke_exact_uri(
+        app_state(fixture.gateway.clone(), None),
+        "/v1beta/models/gemini-3.7-flash:generateContent",
+        json!({"contents": [{"role": "user", "parts": [{"text": "reply ok"}]}]}),
+        "profile_a",
+        "123e4567-e89b-42d3-a456-426614174015",
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response
+            .headers()
+            .get(crate::proxy::EXECUTION_STATE_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some(crate::proxy::EXECUTION_STATE_NOT_STARTED)
+    );
+    assert!(response
+        .headers()
+        .get(CALIBRATION_DISPATCH_HEADER)
+        .is_none());
+    assert!(
+        server.state.seen().is_empty(),
+        "paid generation must not refresh or dispatch with a stale bearer"
+    );
+}
+
+#[tokio::test]
+async fn dormant_37_exact_count_refreshes_once_before_dispatch() {
+    let refreshed = "gemini-profile-a-pre-dispatch-count-token";
+    let server = start_mock(MockState::with_replies([
+        (
+            "",
+            vec![MockReply::Json {
+                status: StatusCode::OK,
+                body: json!({"access_token": refreshed, "expires_in": 3600}),
+                retry_after: None,
+            }],
+        ),
+        (
+            refreshed,
+            vec![MockReply::json(StatusCode::OK, json!({"totalTokens": 7}))],
+        ),
+    ]))
+    .await;
+    let token_uri = format!("{}/token", server.upstream);
+    let fixture = gateway_fixture_with_models_and_expiry(
+        &server.upstream,
+        &[None],
+        2,
+        Some(&token_uri),
+        OAuthKind::Antigravity,
+        65_536,
+        &["gemini-3.7-flash"],
+        pool::now(),
+    );
+
+    let response = invoke_exact_count_tokens(
+        app_state(fixture.gateway.clone(), None),
+        "gemini-3.7-flash",
+        "profile_a",
+        "123e4567-e89b-42d3-a456-426614174016",
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(calibration_dispatch_ms(&response) > 0);
+    assert_eq!(response_json(response).await, json!({"totalTokens": 7}));
+    let seen = server.state.seen();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].uri, "/token");
+    assert_eq!(seen[1].uri, "/v1internal:countTokens");
+    assert_eq!(seen[1].credential, refreshed);
+}
+
+#[tokio::test]
+async fn dormant_37_exact_count_rechecks_deadline_after_refresh() {
+    let refreshed = "gemini-profile-a-too-late-count-token";
+    let server = start_mock(MockState::with_replies([(
+        "",
+        vec![MockReply::DelayedJson {
+            status: StatusCode::OK,
+            body: json!({"access_token": refreshed, "expires_in": 3600}),
+            delay: Duration::from_millis(1_200),
+        }],
+    )]))
+    .await;
+    let token_uri = format!("{}/token", server.upstream);
+    let fixture = gateway_fixture_with_models_and_expiry(
+        &server.upstream,
+        &[None],
+        2,
+        Some(&token_uri),
+        OAuthKind::Antigravity,
+        65_536,
+        &["gemini-3.7-flash"],
+        pool::now(),
+    );
+    let not_after = (pool::now() + 1) as u64;
+
+    let response = invoke_exact_uri_with_deadline(
+        app_state(fixture.gateway.clone(), None),
+        "/v1beta/models/gemini-3.7-flash:countTokens",
+        json!({"contents": [{"role": "user", "parts": [{"text": "count me"}]}]}),
+        "profile_a",
+        "123e4567-e89b-42d3-a456-426614174017",
+        Some(not_after),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response
+            .headers()
+            .get(crate::proxy::EXECUTION_STATE_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some(crate::proxy::EXECUTION_STATE_NOT_STARTED)
+    );
+    assert!(response
+        .headers()
+        .get(CALIBRATION_DISPATCH_HEADER)
+        .is_none());
+    let seen = server.state.seen();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].uri, "/token");
+}
+
+#[tokio::test]
 async fn dormant_37_exact_generation_does_not_refresh_or_replay_after_401() {
     let server = start_mock(MockState::with_replies([(
         PROFILE_A_KEY,
@@ -2234,7 +2522,7 @@ async fn ordinary_count_tokens_retains_401_refresh_and_same_profile_retry() {
 }
 
 #[tokio::test]
-async fn exact_count_tokens_helper_crash_is_attempted_once() {
+async fn exact_count_tokens_refresh_helper_crash_is_attempted_once() {
     let (helper_directory, helper, spawns, attempts) = crashing_node_helper();
     let fixture = gateway_fixture_with_models_calibration_and_node(
         // A non-loopback, non-production test scheme selects the Node helper without weakening
@@ -2252,6 +2540,7 @@ async fn exact_count_tokens_helper_crash_is_attempted_once() {
             gemini_credential::GEMINI_NODE_VERSION,
             gemini_credential::GEMINI_NODE_SHA256,
         )),
+        Some(pool::now()),
     );
 
     let response = invoke_exact_count_tokens(
@@ -2268,16 +2557,20 @@ async fn exact_count_tokens_helper_crash_is_attempted_once() {
         .await
         .unwrap();
     assert!(!status.is_success());
-    assert!(headers
-        .get(crate::proxy::EXECUTION_STATE_HEADER)
-        .is_none());
     assert_eq!(
-        fs::read_to_string(&spawns).unwrap_or_else(|error| panic!(
-            "helper did not spawn: status={status} headers={headers:?} body={} error={error}",
-            String::from_utf8_lossy(&body)
-        ))
-        .lines()
-        .count(),
+        headers
+            .get(crate::proxy::EXECUTION_STATE_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some(crate::proxy::EXECUTION_STATE_NOT_STARTED)
+    );
+    assert_eq!(
+        fs::read_to_string(&spawns)
+            .unwrap_or_else(|error| panic!(
+                "helper did not spawn: status={status} headers={headers:?} body={} error={error}",
+                String::from_utf8_lossy(&body)
+            ))
+            .lines()
+            .count(),
         1
     );
     assert_eq!(

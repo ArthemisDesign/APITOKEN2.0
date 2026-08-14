@@ -166,6 +166,18 @@ pub(crate) enum TokenError {
     Temporary,
 }
 
+/// Request-local OAuth policy. Ordinary traffic retains the established refresh/retry behaviour;
+/// the deadline-bound private admission lane narrows it without weakening any other caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TokenAcquisitionPolicy {
+    /// Reuse a fresh token or refresh through the normal single-flight helper policy.
+    Normal,
+    /// Reuse a fresh token or perform exactly one non-replayable refresh POST.
+    ExactCount,
+    /// Paid exact generation may only claim an already-fresh cached bearer.
+    ExactGenerationCachedOnly,
+}
+
 struct LoadedProfile {
     source: GeminiProfileSpec,
     credential: GeminiCredential,
@@ -440,6 +452,7 @@ impl GeminiProfile {
         body: bytes::Bytes,
         idle_timeout: Option<Duration>,
         retry_policy: TransportRetryPolicy,
+        calibration_not_after: Option<u64>,
     ) -> Result<TransportResponse, super::transport::TransportError> {
         let mut headers = vec![
             (
@@ -483,6 +496,7 @@ impl GeminiProfile {
                 body,
                 idle_timeout,
                 retry_policy,
+                calibration_not_after,
             })
             .await
     }
@@ -505,7 +519,35 @@ impl GeminiProfile {
         {
             return Ok(SecretString::new(credential.access_token.clone()));
         }
-        self.refresh_locked(&mut credential).await
+        self.refresh_locked(&mut credential, TransportRetryPolicy::RestartHelperOnce)
+            .await
+    }
+
+    /// Acquire a bearer under the exact admission policy. The paid path intentionally has no
+    /// refresh branch after profile claim; countTokens may make one helper-level non-replayable
+    /// refresh and no more.
+    pub(crate) async fn access_token_with_policy(
+        &self,
+        policy: TokenAcquisitionPolicy,
+    ) -> Result<SecretString, TokenError> {
+        if policy == TokenAcquisitionPolicy::Normal {
+            return self.access_token(false).await;
+        }
+        let mut credential = self.credential.lock().await;
+        let now = pool::now();
+        if credential.expires_at > now.saturating_add(ACCESS_TOKEN_SKEW_SECS)
+            && !credential.access_token.is_empty()
+        {
+            return Ok(SecretString::new(credential.access_token.clone()));
+        }
+        match policy {
+            TokenAcquisitionPolicy::ExactCount => {
+                self.refresh_locked(&mut credential, TransportRetryPolicy::NeverReplay)
+                    .await
+            }
+            TokenAcquisitionPolicy::ExactGenerationCachedOnly => Err(TokenError::Temporary),
+            TokenAcquisitionPolicy::Normal => unreachable!("normal token policy returned above"),
+        }
     }
 
     /// Refresh after a concrete bearer token was rejected. If another concurrent request already
@@ -523,12 +565,14 @@ impl GeminiProfile {
         {
             return Ok(SecretString::new(credential.access_token.clone()));
         }
-        self.refresh_locked(&mut credential).await
+        self.refresh_locked(&mut credential, TransportRetryPolicy::RestartHelperOnce)
+            .await
     }
 
     async fn refresh_locked(
         &self,
         credential: &mut GeminiCredential,
+        retry_policy: TransportRetryPolicy,
     ) -> Result<SecretString, TokenError> {
         let now = pool::now();
         let form = SecretString::new(
@@ -563,7 +607,8 @@ impl GeminiProfile {
                 headers,
                 body: bytes::Bytes::copy_from_slice(form.as_bytes()),
                 idle_timeout: Some(self.auxiliary_idle),
-                retry_policy: TransportRetryPolicy::RestartHelperOnce,
+                retry_policy,
+                calibration_not_after: None,
             })
             .await
             .map_err(|_| TokenError::Temporary)?;
@@ -1210,6 +1255,7 @@ impl GeminiProfile {
                     bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
                     Some(self.auxiliary_idle),
                     TransportRetryPolicy::RestartHelperOnce,
+                    None,
                 )
                 .await;
             match response {
@@ -1278,6 +1324,7 @@ impl GeminiProfile {
                 bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
                 Some(self.auxiliary_idle),
                 TransportRetryPolicy::RestartHelperOnce,
+                None,
             )
             .await;
         let Ok(response) = response else {
@@ -1344,6 +1391,7 @@ impl GeminiProfile {
                 bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
                 Some(self.auxiliary_idle),
                 TransportRetryPolicy::RestartHelperOnce,
+                None,
             )
             .await;
         let Ok(response) = response else {
@@ -2055,7 +2103,9 @@ impl GeminiGateway {
             Err(error) => {
                 elog::warn(
                     "gemini-pool",
-                    format!("Gemini operator disable set refresh failed, keeping previous: {error:#}"),
+                    format!(
+                        "Gemini operator disable set refresh failed, keeping previous: {error:#}"
+                    ),
                 );
             }
         }
@@ -2536,7 +2586,10 @@ impl GeminiGateway {
 
     pub async fn preflight(&self) -> anyhow::Result<()> {
         if self.profiles_snapshot().is_empty() {
-            elog::warn("gemini-pool", "Gemini OAuth provider starting with an empty encrypted roster");
+            elog::warn(
+                "gemini-pool",
+                "Gemini OAuth provider starting with an empty encrypted roster",
+            );
             return Ok(());
         }
         // Load the operator disables before the first probe, so a revoked credential that was

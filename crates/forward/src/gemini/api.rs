@@ -2,7 +2,7 @@
 
 use super::billing::{begin_admission, AdmissionError, GeminiAdmission};
 use super::config::GeminiModel;
-use super::pool::{GeminiGateway, GeminiLease, GeminiProfile, TokenError};
+use super::pool::{GeminiGateway, GeminiLease, GeminiProfile, TokenAcquisitionPolicy, TokenError};
 use super::rate_limit::{self, RateLimitDiagnostic};
 use super::transport::{TransportError, TransportResponse, TransportRetryPolicy};
 use super::REPLAYED_FUNCTION_CALL_THOUGHT_SIGNATURE;
@@ -48,6 +48,8 @@ const IMAGE_STREAM_START_MAX_CHUNKS: usize = 8192;
 // generation endpoint rejects that exact boundary while accepting 65,535. Keep the public model
 // contract intact and adapt only the private wire request.
 const ANTIGRAVITY_WIRE_OUTPUT_TOKEN_LIMIT: u64 = 65_535;
+const DORMANT_DEADLINE_MODEL: &str = "gemini-3.7-flash";
+const CALIBRATION_DISPATCH_HEADER: &str = "x-apitoken-calibration-dispatch-ms";
 
 /// Native Gemini accepts proto-JSON in either camelCase or snake_case. Code Assist and the public
 /// surface are canonicalized to camelCase so a snake_case client is not silently dropped. Only the
@@ -1622,6 +1624,19 @@ fn translated_response(status: StatusCode, _headers: &HeaderMap, body: Bytes) ->
     response
 }
 
+fn attach_calibration_dispatch_ms(response: &mut Response, dispatch_ms: Option<u64>) {
+    let Some(dispatch_ms) = dispatch_ms else {
+        return;
+    };
+    // `u64::to_string` is the one canonical positive decimal spelling. Transport already proved
+    // the Node/local-mock timestamp is nonzero and strictly before the absolute deadline.
+    let value = HeaderValue::from_str(&dispatch_ms.to_string())
+        .expect("a positive decimal millisecond timestamp is a valid header value");
+    response
+        .headers_mut()
+        .insert(CALIBRATION_DISPATCH_HEADER, value);
+}
+
 fn wrap_code_assist_request(
     operation: Operation,
     oauth_kind: OAuthKind,
@@ -1743,6 +1758,7 @@ fn unwrap_code_assist_response(
     bytes: &[u8],
     public_model: &str,
     audio_hint: AudioUsageHint,
+    preserve_upstream_model_version: bool,
 ) -> Result<Bytes, ResponseDecodeError> {
     let mut value: Value =
         serde_json::from_slice(bytes).map_err(|_| ResponseDecodeError::Malformed)?;
@@ -1791,7 +1807,7 @@ fn unwrap_code_assist_response(
     // Real generateContent responses always carry a responseId. Synthesize a native-shaped one
     // rather than exposing the correlatable Code Assist wrapper traceId.
     if let Some(object) = native.as_object_mut() {
-        if object.contains_key("modelVersion") {
+        if object.contains_key("modelVersion") && !preserve_upstream_model_version {
             // Tiered Antigravity ids are private routing details, not native Gemini model versions.
             object.insert("modelVersion".to_string(), json!(public_model));
         }
@@ -2069,6 +2085,7 @@ struct SseTranslator {
     provider_rate_limit_diagnostic: Option<RateLimitDiagnostic>,
     response_id: String,
     public_model: String,
+    preserve_upstream_model_version: bool,
     framing: StreamFraming,
     started: bool,
     image_output_tokens: u64,
@@ -2121,6 +2138,7 @@ impl SseTranslator {
             provider_rate_limit_diagnostic: None,
             response_id: fresh_response_id(),
             public_model: public_model.to_string(),
+            preserve_upstream_model_version: false,
             framing,
             started: false,
             image_output_tokens,
@@ -2129,6 +2147,11 @@ impl SseTranslator {
             audio_usage_failed: false,
             shape: StreamShape::default(),
         }
+    }
+
+    fn with_upstream_model_version(mut self) -> Self {
+        self.preserve_upstream_model_version = true;
+        self
     }
 
     /// Record the content-free usage shape of one upstream frame. `usageMetadata` present but
@@ -2277,7 +2300,7 @@ impl SseTranslator {
         );
         // Real Gemini SSE chunks carry a stable responseId for the whole response; mirror it.
         if let Some(object) = native.as_object_mut() {
-            if object.contains_key("modelVersion") {
+            if object.contains_key("modelVersion") && !self.preserve_upstream_model_version {
                 object.insert("modelVersion".to_string(), json!(&self.public_model));
             }
             object.insert("responseId".to_string(), json!(self.response_id));
@@ -2329,6 +2352,7 @@ fn account_stream_start_chunk(
 enum SendError {
     Token(TokenError),
     Transport,
+    CalibrationExpired,
 }
 
 async fn send_upstream(
@@ -2340,10 +2364,12 @@ async fn send_upstream(
     user_agent: &str,
     include_antigravity_metadata: bool,
     retry_policy: TransportRetryPolicy,
+    token_policy: TokenAcquisitionPolicy,
+    calibration_not_after: Option<u64>,
 ) -> Result<(TransportResponse, gemini_credential::SecretString), SendError> {
     let access_token = match rejected_token {
         Some(rejected) => profile.access_token_after_rejection(rejected).await,
-        None => profile.access_token(false).await,
+        None => profile.access_token_with_policy(token_policy).await,
     }
     .map_err(SendError::Token)?;
     // No customer header is required by Code Assist. Constructing the complete upstream header
@@ -2362,6 +2388,13 @@ async fn send_upstream(
     } else {
         None
     };
+    if calibration_not_after.is_some_and(|not_after| {
+        u64::try_from(pool::now())
+            .ok()
+            .is_none_or(|now| now >= not_after)
+    }) {
+        return Err(SendError::CalibrationExpired);
+    }
     let response = profile
         .request(
             url,
@@ -2373,9 +2406,13 @@ async fn send_upstream(
             body,
             profile.generation_idle(),
             retry_policy,
+            calibration_not_after,
         )
         .await
-        .map_err(|_| SendError::Transport)?;
+        .map_err(|error| match error {
+            TransportError::CalibrationExpired => SendError::CalibrationExpired,
+            _ => SendError::Transport,
+        })?;
     Ok((response, access_token))
 }
 
@@ -2411,6 +2448,7 @@ async fn stream_response(
         + Unpin
         + 'static,
     post_dispatch_ambiguous: bool,
+    calibration_dispatch_ms: Option<u64>,
 ) -> Result<Response, ApiError> {
     let framing = translator.framing;
     // Register with the shutdown barrier before the durable delivery transition. Otherwise a
@@ -2531,7 +2569,10 @@ async fn stream_response(
                     Metrics::inc(&metrics.upstream_5xx);
                     Metrics::inc(&metrics.gemini_transport_failures);
                     profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
-                    elog::error("gemini", format!("gemini stream failed mid-flight: {error}"));
+                    elog::error(
+                        "gemini",
+                        format!("gemini stream failed mid-flight: {error}"),
+                    );
                     break;
                 }
             }
@@ -2675,6 +2716,7 @@ async fn stream_response(
         StreamFraming::JsonArray => HeaderValue::from_static("application/json"),
     };
     response.headers_mut().insert("content-type", content_type);
+    attach_calibration_dispatch_ms(&mut response, calibration_dispatch_ms);
     Ok(response)
 }
 
@@ -2801,8 +2843,12 @@ async fn api_inner(
     let route = parse_route(request.method(), request.uri().path())?;
     let pending = begin_admission(&app, request.headers(), &peer).await?;
     let calibration_target = pending.calibration_target().map(str::to_owned);
+    let calibration_not_after = pending.calibration_not_after();
 
     if route.operation == Operation::Models {
+        if calibration_not_after.is_some() {
+            return Err(ApiError::unavailable("gemini_calibration_deadline_scope"));
+        }
         let page = parse_list_models_query(request.uri().query())?;
         let all = gateway
             .config()
@@ -2832,6 +2878,9 @@ async fn api_inner(
         .cloned()
         .ok_or_else(ApiError::not_found)?;
     if route.operation == Operation::Model {
+        if calibration_not_after.is_some() {
+            return Err(ApiError::unavailable("gemini_calibration_deadline_scope"));
+        }
         if !model.is_publicly_discoverable() {
             return Err(ApiError::not_found());
         }
@@ -2842,9 +2891,20 @@ async fn api_inner(
     // Stage 1 keeps 3.7 dormant even when an operator has added it to this process's explicit
     // model configuration. The admin-only exact target is the sole upstream-bound canary lane;
     // ordinary admin/customer calls fail before body buffering, reserve, profile selection or IO.
-    if model.id == "gemini-3.7-flash" && calibration_target.is_none() {
+    if model.id == DORMANT_DEADLINE_MODEL && calibration_target.is_none() {
         return Err(ApiError::not_found());
     }
+    if model.id == DORMANT_DEADLINE_MODEL && calibration_not_after.is_none() {
+        return Err(ApiError::unavailable(
+            "gemini_calibration_deadline_required",
+        ));
+    }
+    if model.id != DORMANT_DEADLINE_MODEL && calibration_not_after.is_some() {
+        return Err(ApiError::unavailable("gemini_calibration_deadline_scope"));
+    }
+    let deadline_bound_exact = model.id == DORMANT_DEADLINE_MODEL
+        && calibration_target.is_some()
+        && calibration_not_after.is_some();
     let rate_limit_request_id = pending.request_id().to_string();
 
     // Only the upstream-bound operations carry an alt query; validate it here rather than for the
@@ -2906,6 +2966,15 @@ async fn api_inner(
     // its stricter post-dispatch billing/delivery semantics through `one_shot_generation` below.
     let one_shot_upstream = calibration_target.is_some();
     let one_shot_generation = generation && one_shot_upstream;
+    let token_policy = if deadline_bound_exact {
+        if generation {
+            TokenAcquisitionPolicy::ExactGenerationCachedOnly
+        } else {
+            TokenAcquisitionPolicy::ExactCount
+        }
+    } else {
+        TokenAcquisitionPolicy::Normal
+    };
     let requested_image_output_tokens = if generation && model.is_image_generation() {
         image_output_tokens(&value)
     } else {
@@ -3096,6 +3165,9 @@ async fn api_inner(
             };
             admission = Some(ready);
         }
+        let admitted_not_after = admission
+            .as_ref()
+            .and_then(GeminiAdmission::calibration_not_after);
         let profile = lease.profile().clone();
         attempted_profiles.insert(profile.id().to_string());
         routing_attempts = routing_attempts.saturating_add(1);
@@ -3143,6 +3215,8 @@ async fn api_inner(
             } else {
                 TransportRetryPolicy::RestartHelperOnce
             },
+            token_policy,
+            deadline_bound_exact.then_some(admitted_not_after).flatten(),
         )
         .await
         {
@@ -3189,6 +3263,9 @@ async fn api_inner(
                 }
                 continue;
             }
+            Err(SendError::CalibrationExpired) => {
+                return Err(ApiError::unavailable("gemini_calibration_dispatch_expired"));
+            }
         };
         let mut status = response.status();
 
@@ -3206,6 +3283,8 @@ async fn api_inner(
                 &upstream_user_agent,
                 include_antigravity_metadata,
                 TransportRetryPolicy::RestartHelperOnce,
+                TokenAcquisitionPolicy::Normal,
+                None,
             )
             .await
             {
@@ -3221,7 +3300,8 @@ async fn api_inner(
                 }
                 Err(
                     SendError::Token(TokenError::Temporary | TokenError::Blocked)
-                    | SendError::Transport,
+                    | SendError::Transport
+                    | SendError::CalibrationExpired,
                 ) => {
                     Metrics::inc(&app.metrics.upstream_5xx);
                     Metrics::inc(&app.metrics.gemini_transport_failures);
@@ -3236,6 +3316,13 @@ async fn api_inner(
                 }
             }
         }
+        let calibration_dispatch_ms = response.calibration_dispatch_ms();
+        if deadline_bound_exact && calibration_dispatch_ms.is_none() {
+            return Err(
+                ApiError::unavailable("gemini_calibration_dispatch_attestation_missing")
+                    .after_dispatch(),
+            );
+        }
         let response_headers = response.headers().clone();
 
         if status.is_success() && route.operation == Operation::StreamGenerate {
@@ -3246,6 +3333,9 @@ async fn api_inner(
                 requested_image_output_tokens,
                 requested_audio_usage,
             );
+            if deadline_bound_exact {
+                translator = translator.with_upstream_model_version();
+            }
             let (stream_start_max_bytes, stream_start_max_chunks) = if model.is_image_generation() {
                 (GEMINI_BODY_LIMIT, IMAGE_STREAM_START_MAX_CHUNKS)
             } else {
@@ -3454,6 +3544,7 @@ async fn api_inner(
                 initial,
                 stream,
                 one_shot_generation,
+                calibration_dispatch_ms,
             )
             .await;
         }
@@ -3583,6 +3674,7 @@ async fn api_inner(
                     &response_body,
                     &model.id,
                     requested_audio_usage,
+                    deadline_bound_exact,
                 ) {
                     Ok(body) => body,
                     Err(ResponseDecodeError::AudioUsage) => {
@@ -3701,7 +3793,9 @@ async fn api_inner(
                         gateway.request_probe();
                     }
                 }
-                return Ok(translated_response(status, &response_headers, native_body));
+                let mut response = translated_response(status, &response_headers, native_body);
+                attach_calibration_dispatch_ms(&mut response, calibration_dispatch_ms);
+                return Ok(response);
             }
             _ if status.is_client_error() => {
                 // The private Code Assist error envelope can contain account, project, plan or

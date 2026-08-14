@@ -23,7 +23,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot};
@@ -60,6 +60,10 @@ struct RequestFrame<'a> {
     /// unchanged; an explicit `0` means "no deadline", which is what customer generation sends.
     #[serde(skip_serializing_if = "Option::is_none")]
     read_timeout_ms: Option<u64>,
+    /// Absolute Unix seconds for the private exact-profile dispatch fence. This is IPC metadata,
+    /// never an HTTP header; Node converts it to an exact millisecond boundary at socket handoff.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    calibration_not_after: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -76,6 +80,9 @@ pub(crate) enum TransportError {
     Network,
     Protocol,
     BodyTooLarge,
+    /// The private dispatch fence expired inside Rust or at a Node pre-socket boundary. No
+    /// provider HTTP request was emitted, so callers retain an exact not-started proof.
+    CalibrationExpired,
 }
 
 impl TransportError {
@@ -93,6 +100,7 @@ impl std::fmt::Display for TransportError {
             Self::Network => "Gemini transport network failure",
             Self::Protocol => "Gemini transport protocol failure",
             Self::BodyTooLarge => "Gemini transport response exceeded its limit",
+            Self::CalibrationExpired => "Gemini calibration dispatch window expired",
         })
     }
 }
@@ -103,6 +111,7 @@ pub(crate) struct TransportResponse {
     status: StatusCode,
     headers: HeaderMap,
     body: BoxStream<'static, Result<Bytes, TransportError>>,
+    calibration_dispatch_ms: Option<u64>,
 }
 
 impl TransportResponse {
@@ -119,6 +128,10 @@ impl TransportResponse {
             .get("content-length")
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse().ok())
+    }
+
+    pub(crate) fn calibration_dispatch_ms(&self) -> Option<u64> {
+        self.calibration_dispatch_ms
     }
 
     pub(crate) fn bytes_stream(self) -> BoxStream<'static, Result<Bytes, TransportError>> {
@@ -172,6 +185,9 @@ pub(crate) struct TransportRequest<'a> {
     /// ambiguous after the IPC frame is flushed, so that path must never replay. Auxiliary reads,
     /// OAuth refresh and ordinary traffic retain the established single helper restart.
     pub(crate) retry_policy: TransportRetryPolicy,
+    /// Absolute Unix seconds accepted only on the private exact-profile lane. It is checked once
+    /// more by Rust immediately before this call and then by Node at its final socket boundary.
+    pub(crate) calibration_not_after: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -222,6 +238,11 @@ impl ProfileTransport {
         &self,
         request: TransportRequest<'_>,
     ) -> Result<TransportResponse, TransportError> {
+        if request.calibration_not_after.is_some()
+            && request.retry_policy != TransportRetryPolicy::NeverReplay
+        {
+            return Err(TransportError::Protocol);
+        }
         match self {
             Self::Loopback(client) => {
                 let mut builder = client.post(request.url);
@@ -231,6 +252,12 @@ impl ProfileTransport {
                 for (name, value) in request.headers {
                     builder = builder.header(name, value.as_str());
                 }
+                // Literal loopback is the deterministic mock path and never enters Node. Mirror
+                // the same strict boundary immediately before wreq opens its local socket.
+                let calibration_dispatch_ms = request
+                    .calibration_not_after
+                    .map(calibration_dispatch_ms)
+                    .transpose()?;
                 let response = builder
                     .body(request.body)
                     .send()
@@ -254,6 +281,7 @@ impl ProfileTransport {
                     status,
                     headers,
                     body,
+                    calibration_dispatch_ms,
                 })
             }
             Self::Node(transport) => transport.send(request).await,
@@ -265,6 +293,24 @@ impl ProfileTransport {
             transport.shutdown().await;
         }
     }
+}
+
+fn unix_epoch_millis() -> Result<u64, TransportError> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| TransportError::CalibrationExpired)?
+        .as_millis();
+    u64::try_from(millis).map_err(|_| TransportError::CalibrationExpired)
+}
+
+fn calibration_dispatch_ms(not_after: u64) -> Result<u64, TransportError> {
+    let deadline_ms = not_after
+        .checked_mul(1_000)
+        .ok_or(TransportError::CalibrationExpired)?;
+    let dispatch_ms = unix_epoch_millis()?;
+    (dispatch_ms > 0 && dispatch_ms < deadline_ms)
+        .then_some(dispatch_ms)
+        .ok_or(TransportError::CalibrationExpired)
 }
 
 /// Validate the exact executable before any profile process can join rotation. Version text alone
@@ -400,6 +446,7 @@ fn validate_proxy(proxy: &str) -> anyhow::Result<()> {
 struct PendingRequest {
     headers: Option<oneshot::Sender<Result<ResponseHead, TransportError>>>,
     body: mpsc::Sender<Result<Bytes, TransportError>>,
+    calibration_not_after: Option<u64>,
 }
 
 struct ProcessShared {
@@ -586,6 +633,7 @@ impl NodeProcess {
                     PendingRequest {
                         headers: Some(headers_tx),
                         body: body_tx,
+                        calibration_not_after: request.calibration_not_after,
                     },
                 )
                 .is_some()
@@ -615,6 +663,7 @@ impl NodeProcess {
             read_timeout_ms: Some(request.idle_timeout.map_or(0, |idle| {
                 u64::try_from(idle.as_millis()).unwrap_or(u64::MAX)
             })),
+            calibration_not_after: request.calibration_not_after,
         };
         if let Err(error) = self.write_frame(&frame).await {
             return Err(error);
@@ -629,6 +678,7 @@ impl NodeProcess {
             status: head.status,
             headers: head.headers,
             body,
+            calibration_dispatch_ms: head.calibration_dispatch_ms,
         })
     }
 
@@ -755,6 +805,7 @@ impl Drop for NodeProcess {
 struct ResponseHead {
     status: StatusCode,
     headers: HeaderMap,
+    calibration_dispatch_ms: Option<u64>,
 }
 
 struct ReadyFrame {
@@ -787,6 +838,9 @@ struct InboundFrame {
     #[serde(default)]
     #[zeroize(skip)]
     status: Option<u16>,
+    #[serde(default)]
+    #[zeroize(skip)]
+    calibration_dispatch_ms: Option<u64>,
     #[serde(default)]
     headers: Vec<String>,
     #[serde(default)]
@@ -876,17 +930,24 @@ async fn dispatch_frame(
                     .ok_or(TransportError::Protocol)?;
                 headers.append(name, value);
             }
-            let sender = {
+            let (sender, calibration_not_after) = {
                 let mut pending = shared
                     .pending
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                pending
-                    .get_mut(&id)
-                    .and_then(|request| request.headers.take())
-                    .ok_or(TransportError::Protocol)?
+                let request = pending.get_mut(&id).ok_or(TransportError::Protocol)?;
+                let sender = request.headers.take().ok_or(TransportError::Protocol)?;
+                (sender, request.calibration_not_after)
             };
-            let _ = sender.send(Ok(ResponseHead { status, headers }));
+            let calibration_dispatch_ms = validate_dispatch_attestation(
+                calibration_not_after,
+                value.calibration_dispatch_ms,
+            )?;
+            let _ = sender.send(Ok(ResponseHead {
+                status,
+                headers,
+                calibration_dispatch_ms,
+            }));
         }
         "data" => {
             let encoded = value.data.as_deref().ok_or(TransportError::Protocol)?;
@@ -948,7 +1009,27 @@ fn helper_error_kind(kind: Option<&str>) -> Option<TransportError> {
             | "proxy-connect" | "proxy-eof" | "proxy-protocol" | "tls" | "network",
         ) => Some(TransportError::Network),
         Some("protocol") => Some(TransportError::Protocol),
+        Some("calibration-expired") => Some(TransportError::CalibrationExpired),
         _ => None,
+    }
+}
+
+fn validate_dispatch_attestation(
+    not_after: Option<u64>,
+    dispatch_ms: Option<u64>,
+) -> Result<Option<u64>, TransportError> {
+    match (not_after, dispatch_ms) {
+        (None, None) => Ok(None),
+        (Some(not_after), Some(dispatch_ms)) => {
+            let deadline_ms = not_after
+                .checked_mul(1_000)
+                .ok_or(TransportError::Protocol)?;
+            (dispatch_ms > 0 && dispatch_ms < deadline_ms)
+                .then_some(Some(dispatch_ms))
+                .ok_or(TransportError::Protocol)
+        }
+        // An attestation is mandatory on the deadline-bound lane and forbidden everywhere else.
+        (None, Some(_)) | (Some(_), None) => Err(TransportError::Protocol),
     }
 }
 
@@ -995,7 +1076,10 @@ where
         }
     }
     if observed {
-        elog::warn("gemini", "Gemini Node transport emitted redacted diagnostics");
+        elog::warn(
+            "gemini",
+            "Gemini Node transport emitted redacted diagnostics",
+        );
     }
 }
 
@@ -1086,9 +1170,14 @@ mod tests {
             headers: &headers,
             body: "",
             read_timeout_ms: Some(1_800_000),
+            calibration_not_after: Some(1_800_000_000),
         })
         .expect("frame serializes");
         assert_eq!(with_bound["readTimeoutMs"], serde_json::json!(1_800_000));
+        assert_eq!(
+            with_bound["calibrationNotAfter"],
+            serde_json::json!(1_800_000_000u64)
+        );
         assert_eq!(with_bound["type"], serde_json::json!("request"));
 
         let without_bound = serde_json::to_value(RequestFrame {
@@ -1099,9 +1188,11 @@ mod tests {
             headers: &headers,
             body: "",
             read_timeout_ms: None,
+            calibration_not_after: None,
         })
         .expect("frame serializes");
         assert!(without_bound.get("readTimeoutMs").is_none());
+        assert!(without_bound.get("calibrationNotAfter").is_none());
     }
 
     #[test]
@@ -1117,6 +1208,8 @@ mod tests {
             TransportError::Protocol,
             TransportError::Timeout,
             TransportError::Network,
+            TransportError::BodyTooLarge,
+            TransportError::CalibrationExpired,
         ] {
             assert!(!TransportRetryPolicy::NeverReplay.may_restart_helper(0, error));
             assert!(!TransportRetryPolicy::NeverReplay.may_restart_helper(1, error));
@@ -1130,9 +1223,104 @@ mod tests {
             assert!(TransportRetryPolicy::RestartHelperOnce.may_restart_helper(0, error));
             assert!(!TransportRetryPolicy::RestartHelperOnce.may_restart_helper(1, error));
         }
-        for error in [TransportError::Timeout, TransportError::Network] {
+        for error in [
+            TransportError::Timeout,
+            TransportError::Network,
+            TransportError::BodyTooLarge,
+            TransportError::CalibrationExpired,
+        ] {
             assert!(!TransportRetryPolicy::RestartHelperOnce.may_restart_helper(0, error));
         }
+    }
+
+    #[test]
+    fn dispatch_attestation_is_exactly_paired_and_strictly_before_deadline() {
+        assert_eq!(validate_dispatch_attestation(None, None), Ok(None));
+        assert_eq!(
+            validate_dispatch_attestation(Some(1_800_000_000), Some(1_799_999_999_999)),
+            Ok(Some(1_799_999_999_999))
+        );
+
+        for (not_after, dispatch_ms) in [
+            (Some(1_800_000_000), None),
+            (None, Some(1_799_999_999_999)),
+            (Some(1_800_000_000), Some(0)),
+            // Equality is outside the half-open admission interval.
+            (Some(1_800_000_000), Some(1_800_000_000_000)),
+            (Some(u64::MAX), Some(1)),
+        ] {
+            assert_eq!(
+                validate_dispatch_attestation(not_after, dispatch_ms),
+                Err(TransportError::Protocol)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn helper_header_frame_must_pair_with_the_pending_deadline() {
+        fn shared_with_pending(
+            not_after: Option<u64>,
+        ) -> (
+            Arc<ProcessShared>,
+            oneshot::Receiver<Result<ResponseHead, TransportError>>,
+        ) {
+            let (ready, _ready_rx) = oneshot::channel();
+            let shared = Arc::new(ProcessShared {
+                pending: Mutex::new(HashMap::new()),
+                canceled: Mutex::new(HashMap::new()),
+                ready: Mutex::new(Some(ready)),
+                closed: AtomicBool::new(false),
+            });
+            let (headers, headers_rx) = oneshot::channel();
+            let (body, _body_rx) = mpsc::channel(1);
+            shared
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    7,
+                    PendingRequest {
+                        headers: Some(headers),
+                        body,
+                        calibration_not_after: not_after,
+                    },
+                );
+            (shared, headers_rx)
+        }
+
+        fn header_frame(dispatch_ms: Option<u64>) -> InboundFrame {
+            InboundFrame {
+                frame_type: "headers".to_string(),
+                protocol: None,
+                node: None,
+                platform: None,
+                arch: None,
+                undici: None,
+                id: Some(7),
+                status: Some(200),
+                calibration_dispatch_ms: dispatch_ms,
+                headers: vec!["content-type".to_string(), "application/json".to_string()],
+                data: None,
+                error_kind: None,
+            }
+        }
+
+        let (shared, headers) = shared_with_pending(Some(1_800_000_000));
+        dispatch_frame(&shared, header_frame(Some(1_799_999_999_999)))
+            .await
+            .expect("matching helper attestation");
+        let head = headers.await.expect("header sender").expect("valid head");
+        assert_eq!(head.calibration_dispatch_ms, Some(1_799_999_999_999));
+
+        let (shared, headers) = shared_with_pending(Some(1_800_000_000));
+        assert_eq!(
+            dispatch_frame(&shared, header_frame(None)).await,
+            Err(TransportError::Protocol)
+        );
+        assert!(
+            headers.await.is_err(),
+            "invalid helper head is never published"
+        );
     }
 
     #[test]
@@ -1172,6 +1360,7 @@ mod tests {
                 PendingRequest {
                     headers: Some(headers),
                     body,
+                    calibration_not_after: None,
                 },
             );
         let (cancel, mut canceled) = mpsc::unbounded_channel();
@@ -1204,6 +1393,7 @@ mod tests {
                 PendingRequest {
                     headers: Some(headers),
                     body,
+                    calibration_not_after: None,
                 },
             );
         let (cancel, _canceled) = mpsc::unbounded_channel();
@@ -1218,6 +1408,7 @@ mod tests {
             undici: None,
             id: Some(7),
             status: None,
+            calibration_dispatch_ms: None,
             headers: Vec::new(),
             data: Some("bGF0ZQ==".to_string()),
             error_kind: None,
@@ -1234,6 +1425,7 @@ mod tests {
             undici: None,
             id: Some(7),
             status: None,
+            calibration_dispatch_ms: None,
             headers: Vec::new(),
             data: None,
             error_kind: None,
@@ -1253,6 +1445,11 @@ mod tests {
         }
         assert!(HELPER_SOURCE.contains("tls.connect"));
         assert!(HELPER_SOURCE.contains("gzip, deflate, br"));
+        assert!(
+            HELPER_SOURCE.contains("agent: proxyAgent || (calibration ? directAgent : undefined)")
+        );
+        assert!(HELPER_SOURCE.contains("request.once('socket', onSocket)"));
+        assert!(!HELPER_SOURCE.contains("if (request.socket)"));
     }
 
     #[test]
@@ -1278,6 +1475,10 @@ mod tests {
         assert_eq!(
             helper_error_kind(Some("protocol")),
             Some(TransportError::Protocol)
+        );
+        assert_eq!(
+            helper_error_kind(Some("calibration-expired")),
+            Some(TransportError::CalibrationExpired)
         );
         assert_eq!(helper_error_kind(Some("secret detail")), None);
         assert_eq!(helper_error_kind(None), None);
