@@ -1,7 +1,7 @@
 //! Encrypted multi-account Gemini OAuth pool with single-flight refresh and bounded health probes.
 
 use super::calibration::{self, WindowCalibration, FRACTION_SCALE};
-use super::config::{GeminiConfig, GeminiProfileSpec, GeminiProfilesFile};
+use super::config::{GeminiConfig, GeminiCredentialLayout, GeminiProfileSpec, GeminiProfilesFile};
 use super::rate_limit::RateLimitDiagnostic;
 use super::transport::{
     attest_node_binary, ProfileTransport, TransportRequest, TransportResponse, TransportRetryPolicy,
@@ -137,6 +137,9 @@ pub struct GeminiModelCoolingStatus {
 pub struct GeminiOperationalStatus {
     pub profiles: Vec<GeminiProfileStatus>,
     pub models: Vec<GeminiModelStatus>,
+    /// Opaque identity of the exact encrypted credential set loaded in this process. Filesystem
+    /// paths are excluded so a root-staged systemd view can match the running sealed generation.
+    pub credential_generation_digest: String,
     pub available: usize,
     pub authenticated: usize,
     pub soonest_ready: Option<i64>,
@@ -1785,7 +1788,10 @@ fn load_profiles(cfg: &GeminiConfig) -> anyhow::Result<Vec<LoadedProfile>> {
         .parent()
         .context("Gemini profiles file has no parent")?;
     validate_private_directory(roster_root, "Gemini roster")?;
-    let credential_root = roster_root.join("credentials");
+    let credential_root = match cfg.credential_layout {
+        GeminiCredentialLayout::SealedRoster => roster_root.join("credentials"),
+        GeminiCredentialLayout::SystemdFlat => roster_root.to_path_buf(),
+    };
     validate_private_directory(&credential_root, "Gemini credential")?;
     let mut ids = HashSet::new();
     let mut subjects = HashSet::new();
@@ -1797,7 +1803,14 @@ fn load_profiles(cfg: &GeminiConfig) -> anyhow::Result<Vec<LoadedProfile>> {
         if !ids.insert(source.id.clone()) {
             bail!("duplicate Gemini profile id");
         }
-        let expected = credential_root.join(format!("{}.json", source.id));
+        let expected = match cfg.credential_layout {
+            GeminiCredentialLayout::SealedRoster => {
+                credential_root.join(format!("{}.json", source.id))
+            }
+            GeminiCredentialLayout::SystemdFlat => {
+                credential_root.join(format!("gemini-credential_{}.json", source.id))
+            }
+        };
         if Path::new(&source.credential_file) != expected {
             bail!("Gemini credential path does not match the sealed roster layout");
         }
@@ -1826,6 +1839,24 @@ fn load_profiles(cfg: &GeminiConfig) -> anyhow::Result<Vec<LoadedProfile>> {
         });
     }
     Ok(profiles)
+}
+
+fn credential_generation_digest(profiles: &[Arc<GeminiProfile>]) -> String {
+    let mut identities = profiles
+        .iter()
+        .map(|profile| (profile.id.as_bytes(), &profile.fingerprint))
+        .collect::<Vec<_>>();
+    identities.sort_unstable_by(|left, right| left.0.cmp(right.0));
+
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"apitoken/gemini-credential-generation/v1\0");
+    digest.update(&(identities.len() as u64).to_be_bytes());
+    for (profile_id, fingerprint) in identities {
+        digest.update(&(profile_id.len() as u64).to_be_bytes());
+        digest.update(profile_id);
+        digest.update(fingerprint);
+    }
+    format!("blake3:{}", digest.finalize().to_hex())
 }
 
 pub(crate) struct GeminiLease {
@@ -2412,6 +2443,7 @@ impl GeminiGateway {
         // publication must appear wholly before or wholly after this snapshot, never as profile
         // rows from one generation and model aggregates from another.
         let snapshot = self.profiles_snapshot();
+        let credential_generation_digest = credential_generation_digest(&snapshot);
         let disabled = self.disabled_snapshot();
         let hidden = self
             .hidden
@@ -2476,6 +2508,7 @@ impl GeminiGateway {
             })
             .collect::<Vec<_>>();
         GeminiOperationalStatus {
+            credential_generation_digest,
             available: profiles
                 .iter()
                 .filter(|profile| {
@@ -2816,6 +2849,7 @@ mod tests {
             enabled: true,
             upstream: "http://127.0.0.1:1".to_string(),
             profiles_file: profiles_file.to_string_lossy().into_owned(),
+            credential_layout: GeminiCredentialLayout::SealedRoster,
             credential_keys: ring,
             models: vec![super::super::config::GeminiModel {
                 id: "gemini-test".to_string(),
@@ -2950,6 +2984,88 @@ mod tests {
         assert!(error
             .to_string()
             .contains("directory must be a real non-symlink directory"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn systemd_flat_view_matches_the_loaded_sealed_credential_generation() {
+        let (dir, ring) = fixture();
+        let sealed_credential = write_credential(&dir, &ring, "one", "subject-one");
+        let sealed_roster = dir.join("profiles.json");
+        write_roster(&sealed_roster, &[("one", &sealed_credential)]);
+        let sealed = GeminiGateway::new(config(&sealed_roster, ring.clone())).unwrap();
+
+        let flat_root = dir.join("systemd-credentials");
+        fs::create_dir(&flat_root).unwrap();
+        fs::set_permissions(&flat_root, fs::Permissions::from_mode(0o700)).unwrap();
+        let flat_credential = flat_root.join("gemini-credential_one.json");
+        fs::copy(&sealed_credential, &flat_credential).unwrap();
+        fs::set_permissions(&flat_credential, fs::Permissions::from_mode(0o400)).unwrap();
+        let flat_roster = flat_root.join("gemini-roster");
+        write_roster(&flat_roster, &[("one", &flat_credential)]);
+        fs::set_permissions(&flat_roster, fs::Permissions::from_mode(0o400)).unwrap();
+        let mut flat_config = config(&flat_roster, ring.clone());
+        flat_config.credential_layout = GeminiCredentialLayout::SystemdFlat;
+        let flat = GeminiGateway::new(flat_config).unwrap();
+
+        let sealed_digest = sealed
+            .operational_status()
+            .await
+            .credential_generation_digest;
+        let flat_digest = flat.operational_status().await.credential_generation_digest;
+        assert_eq!(sealed_digest, flat_digest);
+        assert!(sealed_digest.starts_with("blake3:"));
+        assert_eq!(sealed_digest.len(), "blake3:".len() + 64);
+
+        let replacement = write_credential(&dir, &ring, "one", "subject-two");
+        write_roster(&sealed_roster, &[("one", &replacement)]);
+        let replaced = GeminiGateway::new(config(&sealed_roster, ring)).unwrap();
+        assert_ne!(
+            sealed_digest,
+            replaced
+                .operational_status()
+                .await
+                .credential_generation_digest
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn systemd_flat_view_rejects_any_noncanonical_credential_path() {
+        let (dir, ring) = fixture();
+        let sealed_credential = write_credential(&dir, &ring, "one", "subject-one");
+        let flat_root = dir.join("systemd-credentials");
+        fs::create_dir(&flat_root).unwrap();
+        fs::set_permissions(&flat_root, fs::Permissions::from_mode(0o700)).unwrap();
+        let flat_roster = flat_root.join("gemini-roster");
+        write_roster(&flat_roster, &[("one", &sealed_credential)]);
+        let mut cfg = config(&flat_roster, ring);
+        cfg.credential_layout = GeminiCredentialLayout::SystemdFlat;
+        let error = GeminiGateway::new(cfg).err().unwrap();
+        assert!(error
+            .to_string()
+            .contains("credential path does not match the sealed roster layout"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn systemd_flat_view_keeps_private_file_mode_enforcement() {
+        let (dir, ring) = fixture();
+        let sealed_credential = write_credential(&dir, &ring, "one", "subject-one");
+        let flat_root = dir.join("systemd-credentials");
+        fs::create_dir(&flat_root).unwrap();
+        fs::set_permissions(&flat_root, fs::Permissions::from_mode(0o700)).unwrap();
+        let flat_credential = flat_root.join("gemini-credential_one.json");
+        fs::copy(&sealed_credential, &flat_credential).unwrap();
+        fs::set_permissions(&flat_credential, fs::Permissions::from_mode(0o440)).unwrap();
+        let flat_roster = flat_root.join("gemini-roster");
+        write_roster(&flat_roster, &[("one", &flat_credential)]);
+        let mut cfg = config(&flat_roster, ring);
+        cfg.credential_layout = GeminiCredentialLayout::SystemdFlat;
+        let error = GeminiGateway::new(cfg).err().unwrap();
+        assert!(error
+            .to_string()
+            .contains("file must not be accessible by group or other users"));
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -252,6 +252,9 @@ pub struct GeminiConfig {
     pub enabled: bool,
     pub upstream: String,
     pub profiles_file: String,
+    /// Ordinary runtimes use the sibling `credentials/<profile>.json` tree. The one-shot
+    /// admission runtime instead receives systemd's read-only flattened credential namespace.
+    pub credential_layout: GeminiCredentialLayout,
     pub credential_keys: gemini_credential::CredentialKeyring,
     pub models: Vec<GeminiModel>,
     pub connect_timeout_secs: u64,
@@ -292,6 +295,13 @@ pub struct GeminiConfig {
     pub node_binary: String,
     pub node_version: String,
     pub node_sha256: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GeminiCredentialLayout {
+    #[default]
+    SealedRoster,
+    SystemdFlat,
 }
 
 impl GeminiConfig {

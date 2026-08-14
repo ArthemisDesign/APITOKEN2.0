@@ -766,6 +766,18 @@ fn validate_gemini_upstream(v: &str, allow_insecure_loopback: bool) -> Result<St
     Err("CLAUDE_API_GEMINI_UPSTREAM: only official Antigravity Cloud Code hosts are allowed; literal HTTP loopback requires CLAUDE_API_GEMINI_ALLOW_INSECURE_LOOPBACK_UPSTREAM=1".to_string())
 }
 
+fn parse_gemini_credential_layout(
+    value: Option<&str>,
+) -> Result<forward::GeminiCredentialLayout, &'static str> {
+    match value.unwrap_or("sealed-roster") {
+        "sealed-roster" => Ok(forward::GeminiCredentialLayout::SealedRoster),
+        "systemd-flat" => Ok(forward::GeminiCredentialLayout::SystemdFlat),
+        _ => {
+            Err("CLAUDE_API_GEMINI_CREDENTIAL_LAYOUT must be exactly sealed-roster or systemd-flat")
+        }
+    }
+}
+
 fn gemini_config() -> Option<GeminiConfig> {
     // Gemini is on by default. The deploy gates now assert the real enabled-surface envelope
     // (400 API_KEY_INVALID), which holds for an empty pre-onboarding roster, so enabling the
@@ -824,6 +836,9 @@ fn gemini_config() -> Option<GeminiConfig> {
     if !std::path::Path::new(&profiles_file).is_absolute() {
         panic!("CLAUDE_API_GEMINI_PROFILES_FILE must be an absolute path");
     }
+    let credential_layout =
+        parse_gemini_credential_layout(ev("CLAUDE_API_GEMINI_CREDENTIAL_LAYOUT").as_deref())
+            .unwrap_or_else(|message| panic!("{message}"));
     let upstream = validate_gemini_upstream(
         &ev_or(
             "CLAUDE_API_GEMINI_UPSTREAM",
@@ -842,6 +857,7 @@ fn gemini_config() -> Option<GeminiConfig> {
         enabled: true,
         upstream,
         profiles_file,
+        credential_layout,
         credential_keys,
         models,
         connect_timeout_secs: bounded_u64("CLAUDE_API_GEMINI_CONNECT_TIMEOUT_SECS", 30, 1, 120),
@@ -2215,5 +2231,24 @@ mod tests {
         );
         assert!(validate_gemini_upstream("http://127.0.0.1:18081", false).is_err());
         assert!(validate_gemini_upstream("https://example.com", true).is_err());
+    }
+
+    #[test]
+    fn gemini_credential_layout_is_closed_and_defaults_to_the_sealed_shape() {
+        assert_eq!(
+            parse_gemini_credential_layout(None),
+            Ok(forward::GeminiCredentialLayout::SealedRoster)
+        );
+        assert_eq!(
+            parse_gemini_credential_layout(Some("sealed-roster")),
+            Ok(forward::GeminiCredentialLayout::SealedRoster)
+        );
+        assert_eq!(
+            parse_gemini_credential_layout(Some("systemd-flat")),
+            Ok(forward::GeminiCredentialLayout::SystemdFlat)
+        );
+        for rejected in ["", "sealed", "flat", "systemd-flat ", "SYSTEMD-FLAT"] {
+            assert!(parse_gemini_credential_layout(Some(rejected)).is_err());
+        }
     }
 }

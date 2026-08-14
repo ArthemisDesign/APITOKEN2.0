@@ -16,8 +16,8 @@ pub use calibration::WindowCalibration;
 pub(crate) use calibration::{apply_observation_with_history, ESTIMATOR_VERSION};
 pub use chat::gemini_chat_completions;
 pub use config::{
-    subscription_model_supported, GeminiConfig, GeminiModel, GeminiPrices, GeminiProfileSpec,
-    GeminiProfilesFile, GEMINI_NODE_EXPECTED_JA3, GEMINI_NODE_EXPECTED_JA4,
+    subscription_model_supported, GeminiConfig, GeminiCredentialLayout, GeminiModel, GeminiPrices,
+    GeminiProfileSpec, GeminiProfilesFile, GEMINI_NODE_EXPECTED_JA3, GEMINI_NODE_EXPECTED_JA4,
     GEMINI_NODE_FETCH_EXPECTED_JA3, GEMINI_NODE_FETCH_EXPECTED_JA4,
     GEMINI_NODE_FETCH_TRANSPORT_PROFILE, GEMINI_NODE_TRANSPORT_PROFILE,
 };

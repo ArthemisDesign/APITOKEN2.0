@@ -1998,6 +1998,9 @@ grep -Fq 'CLAUDE_API_GEMINI_NODE_SHA256=41a74efb34cbde5c7632cdac0cf8bd1a14d0b8d7
   "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json' \
   "$ROOT/systemd/claude-api-gemini.service"
+grep -Fq 'CLAUDE_API_GEMINI_CREDENTIAL_LAYOUT=sealed-roster' \
+  "$ROOT/systemd/claude-api-gemini.service" \
+  || wd_die 'legacy Gemini unit does not pin the sealed credential layout after env files'
 grep -Fq 'CLAUDE_API_GEMINI_UPSTREAM=https://daily-cloudcode-pa.sandbox.googleapis.com' \
   "$ROOT/systemd/claude-api-gemini.service"
 grep -Fxq 'ReadOnlyPaths=/srv/claude-api/data/gemini' \
@@ -2018,6 +2021,9 @@ grep -Fq 'ExecCondition=/usr/bin/grep -Fxq gemini-bluegreen-v1' \
 grep -Fq 'CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json' \
   "$ROOT/systemd/claude-api-gemini@.service" \
   || wd_die 'Gemini slots do not share the sealed profile roster'
+grep -Fq 'CLAUDE_API_GEMINI_CREDENTIAL_LAYOUT=sealed-roster' \
+  "$ROOT/systemd/claude-api-gemini@.service" \
+  || wd_die 'Gemini slots do not pin the sealed credential layout after env files'
 grep -Fxq 'ReadOnlyPaths=/srv/claude-api/data/gemini' \
   "$ROOT/systemd/claude-api-gemini@.service" \
   || wd_die 'Gemini slots can mutate Auth Bot roster state'

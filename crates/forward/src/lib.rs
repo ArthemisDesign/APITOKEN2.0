@@ -71,9 +71,9 @@ pub use config::{
 };
 pub use gemini::{
     gemini_api, gemini_chat_completions, gemini_messages_count_tokens, gemini_messages_skin,
-    gemini_responses, GeminiConfig, GeminiGateway, GeminiModel, GeminiModelStatus,
-    GeminiOperationalStatus, GeminiPrices, GeminiProfileSpec, GeminiProfileStatus,
-    GeminiProfilesFile, GeminiWindowCapacityReport, GEMINI_NODE_EXPECTED_JA3,
+    gemini_responses, GeminiConfig, GeminiCredentialLayout, GeminiGateway, GeminiModel,
+    GeminiModelStatus, GeminiOperationalStatus, GeminiPrices, GeminiProfileSpec,
+    GeminiProfileStatus, GeminiProfilesFile, GeminiWindowCapacityReport, GEMINI_NODE_EXPECTED_JA3,
     GEMINI_NODE_EXPECTED_JA4, GEMINI_NODE_FETCH_EXPECTED_JA3, GEMINI_NODE_FETCH_EXPECTED_JA4,
     GEMINI_NODE_FETCH_TRANSPORT_PROFILE, GEMINI_NODE_TRANSPORT_PROFILE,
 };

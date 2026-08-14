@@ -137,6 +137,7 @@ fn unknown_gemini_status() -> forward::GeminiOperationalStatus {
             ],
         }],
         models: Vec::new(),
+        credential_generation_digest: format!("blake3:{}", "0".repeat(64)),
         available: 1,
         authenticated: 1,
         soonest_ready: None,

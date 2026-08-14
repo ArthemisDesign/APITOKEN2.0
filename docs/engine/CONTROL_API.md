@@ -294,7 +294,10 @@ rate but is included in fresh input on the credit card.
 
 `GET /gemini-subs` publishes canonical `capacity_nano`/`remaining_nano` fleet totals,
 `conversion_models` from `metering::gemini` and `quota_model_ids` for joining a public model with its
-Antigravity effort buckets. `remaining_amount` is serialized as a decimal string; if Google returns
+Antigravity effort buckets. The additive top-level `credential_generation_digest` is an opaque
+`blake3:<64 lowercase hex>` identity of the encrypted credential generation already loaded by that
+process; consumers may compare it for exact-generation equality but must not infer profile identity
+or persist it as credential material. `remaining_amount` is serialized as a decimal string; if Google returns
 only `remaining_fraction`, the token/unit quantity remains unknown and is not derived from a
 workload-dollar blend. Profiles add the same nullable lifecycle fields from immutable credential `issued_at`:
 canonical `google_ai_pro` expires after 18 Gregorian UTC calendar months (time-of-day preserved and an invalid

@@ -368,11 +368,18 @@ Gemini runtime (`config.env` or `server.env`):
 
 ```text
 CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json
+CLAUDE_API_GEMINI_CREDENTIAL_LAYOUT=sealed-roster
 CLAUDE_API_GEMINI_CREDENTIAL_KEYS=current:<64-hex>[,old:<64-hex>]
 CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite
 CLAUDE_API_GEMINI_QUOTA_RESERVE=0.05
 CLAUDE_API_GEMINI_QUOTA_RESERVE_JITTER=0.01
 ```
+
+The production units argv-pin `sealed-roster` after their shared environment files. The only
+alternate value is `systemd-flat`, reserved for the one-shot admission service: systemd imports a
+private roster credential plus the source credential directory as read-only files named
+`gemini-credential_<profile-id>.json`, and the loader still requires the exact derived path with no
+fallback to the normal tree.
 
 ## Liveness versus duration
 
@@ -992,6 +999,8 @@ accepting new requests; its established SSE requests may finish during bounded a
 
 `/gemini-subs` is read-only-key protected and exposes opaque profile ids plus a bounded operator
 email hint (at most four local-part characters, never the domain), model availability,
+an additive `credential_generation_digest` (`blake3:<64 lowercase hex>`) computed from the exact
+opaque profile ids and encrypted envelope fingerprints already loaded in memory,
 sanitized quota/cooling timestamps, independent 5h/weekly fractions and workload-dependent
 official-API-dollar blend/remaining/envelope/confidence plus the exact spend/fraction evidence,
 exact-authority availability, bounded FIFO pending/dropped/persistence diagnostics and the newest

@@ -729,8 +729,14 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    background permit. Full contract/provisioning/runbook — `docs/engine/CODEX_PROVIDER.md`.
 
 **Native Gemini gateway invariants:**
-1. Only AEAD envelopes of verified paid Code Assist OAuth identities. The roster contains opaque ids and
-   strictly `<roster>/credentials/<id>.json`; symlink/different path/duplicate Google subject are forbidden.
+1. Only AEAD envelopes of verified paid Code Assist OAuth identities. The normal sealed roster contains
+   opaque ids and strictly `<roster>/credentials/<id>.json`; symlink/different path/duplicate Google
+   subject are forbidden. The explicit admission-only `systemd-flat` layout preserves the same closed
+   path check as `<roster-parent>/gemini-credential_<id>.json`, matching systemd's recursive
+   `LoadCredential` flattening; there is no fallback between layouts. `/gemini-subs` publishes only an
+   opaque, path-independent BLAKE3 identity of the exact encrypted credential generation already loaded
+   in memory, so a root admission controller can compare its read-only snapshot with a stable runtime
+   without exposing credential material.
    The runtime re-verifies the official OAuth client/token endpoint, the exact plan↔tier-label mapping,
    the paid-plan allowlist and canonical proxy uniqueness (including equivalent percent encoding).
    Tokens/full email/domain/project/tier/proxy are decrypted only into memory and never reach a

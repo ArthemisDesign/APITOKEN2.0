@@ -532,6 +532,7 @@ fn gateway_fixture_with_models_calibration_and_node(
             enabled: true,
             upstream: upstream.to_string(),
             profiles_file: profiles_file.to_string_lossy().into_owned(),
+            credential_layout: super::super::config::GeminiCredentialLayout::SealedRoster,
             credential_keys: ring,
             models,
             connect_timeout_secs: 1,

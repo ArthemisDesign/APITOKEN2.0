@@ -5740,6 +5740,7 @@ async fn gemini_subs(
         "now": now,
         "enabled": true,
         "profiles_total": status.profiles.len(),
+        "credential_generation_digest": status.credential_generation_digest,
         "authenticated": status.authenticated,
         "available": status.available,
         "inflight": status.profiles.iter().map(|profile| profile.inflight).sum::<usize>(),
