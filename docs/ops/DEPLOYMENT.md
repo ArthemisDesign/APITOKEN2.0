@@ -68,6 +68,15 @@ transport. The same attempted delivery remains quarantined; only a strictly newe
 may close a retained withdrawal without another provider call, and the model remains dormant. See
 [`GEMINI_CALIBRATION.md`](GEMINI_CALIBRATION.md) for the exact request, budget, and evidence contract.
 
+Trigger SHA `f2ced4f9edfb4d42ad5bb1d6ef9f0bc7c7593044` was rejected by the outer
+production-head guard before the infrastructure runner scanned the trigger or created the firing
+fence. It must never be retried. Its immediate recovery is a strictly newer withdrawal descendant
+that deletes the trigger and changes only validation-neutral incident documentation. The resulting
+net infrastructure diff against the installed GREEN baseline is empty, so the normal watchdog can
+process the descendant without invoking the failing root installer. This restores a GREEN
+production head only: it neither installs a replacement helper nor calls Gemini, and a future live
+attempt still requires a new separately reviewed trigger after its delivery authority is proven.
+
 Alongside the serialized production watchdog, a low-priority candidate-validator service may run
 two transient `candidate-validation` deployments concurrently for exact SHAs reachable from pushed
 feature branches. The merge client first rebases onto the latest committed `master`, then creates

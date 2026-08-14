@@ -312,6 +312,15 @@ count and one paid SSE generation with no redirect, reconnect, profile rotation,
 and proves the canary port closed on every exit. Secrets and the opaque profile value remain out of
 argv and output.
 
+The first firing SHA, `f2ced4f9edfb4d42ad5bb1d6ef9f0bc7c7593044`, reached `master` but
+the older installed GitHub helper rejected its unprotected private-branch state before the runner
+scanned the trigger. The failure happened before the firing fence, authority reads, `countTokens`,
+generation, or any spend. That SHA is permanently quarantined and must not be retried. The immediate
+withdrawal descendant removes the trigger again, making the net infrastructure scope relative to
+the last GREEN baseline empty and restoring delivery health without invoking the blocked root
+installer. Live status remains **PENDING**, the model remains dormant, and a later attempt requires
+a new one-file trigger only after the production delivery authority has been proven in advance.
+
 The SHA-keyed evidence directory is created durably before the first protected authority read and is
 the permanent firing fence. Re-entry evaluates a terminal success or withdrawal entirely offline,
 before credentials, systemd, or transport. Operational writes and terminal rejection are flushed

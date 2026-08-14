@@ -257,6 +257,17 @@ baseline. No sudo grant or candidate-selected dispatcher is part of the authorit
 The trigger must not be merged until this bridge's exact SHA is production `deploy/watchdog` GREEN;
 the previous installed runner does not understand the trigger and cannot provide admission proof.
 
+### Withdrawn firing attempt — 2026-08-14
+
+The first exact trigger SHA, `f2ced4f9edfb4d42ad5bb1d6ef9f0bc7c7593044`, was rejected by the
+installed production-head guard before trigger discovery, the permanent firing fence, any protected
+authority read, `countTokens`, generation, or spend. It is permanently quarantined and is not a
+model acceptance attempt. Its immediate descendant deletes the trigger and carries only this
+validation-neutral incident record, so the net infrastructure diff from the last GREEN baseline is
+empty and the normal watchdog can restore a GREEN production head without invoking the blocked
+root installer. The live matrix remains **PENDING**, spend remains `0 nanoUSD`, and all public
+surfaces remain forbidden until a distinct controlled attempt succeeds.
+
 ### Gate to Stage 2 — separate follow-up commit
 
 Publication may begin only after all of the following are true:
