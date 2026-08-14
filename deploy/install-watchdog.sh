@@ -145,9 +145,11 @@ provision_authbot_proxy_admin_key() {
 }
 
 validate_gemini_3_7_producer_anchor() {
-  local root=$1 sha=$2 binary=$root/claude-api digest_file=$root/claude-api.sha256
-  local marker=$root/.release-sha expected actual
+  local root=$1 sha=$2 binary digest_file marker expected actual
   local digest_lines=() marker_lines=()
+  binary=$root/claude-api
+  digest_file=$root/claude-api.sha256
+  marker=$root/.release-sha
   [[ -d $root && ! -L $root && $(stat -c '%u:%g:%a' -- "$root") == 0:0:555 ]] \
     || return 1
   [[ -f $binary && ! -L $binary \

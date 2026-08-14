@@ -3,6 +3,25 @@ set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
+# Execute the production anchor validator under nounset before the Python/test suites. A missing
+# anchor is an ordinary false verdict; deriving child paths inside the same `local` declaration as
+# `root` instead aborts Bash before the installer can report or recover from that verdict.
+if producer_anchor_error=$(
+  {
+    sed -n '/^validate_gemini_3_7_producer_anchor()/,/^}/p' \
+      "$ROOT/deploy/install-watchdog.sh"
+    printf '%s\n' 'validate_gemini_3_7_producer_anchor "$1" "$2"'
+  } | bash -u -s -- /dev/null/gemini-3-7-missing-anchor \
+    264363f7838ddd2d156b14668a320047ad33b6ee 2>&1
+); then
+  printf 'Gemini 3.7 producer validator accepted a missing anchor\n' >&2
+  exit 1
+fi
+if [[ -n $producer_anchor_error ]]; then
+  printf 'Gemini 3.7 producer validator aborted instead of rejecting a missing anchor\n' >&2
+  exit 1
+fi
+
 python3 -I -P -B -S - "$ROOT" <<'PY'
 import hashlib
 import re
