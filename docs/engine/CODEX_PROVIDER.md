@@ -162,7 +162,11 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   items and replays them into `input` on the next turn; the upstream Responses backend has no such
   item type, so the parser translates each one into a plain message — a message addressed to
   `/root` becomes a user message, anything else an assistant message — with the `author`/`recipient`
-  agent paths kept in the visible text so the model still knows who addressed whom.
+  agent paths kept in the visible text so the model still knows who addressed whom. The
+  client-owned `amsg_*` id is never forwarded: the backend resolves an input `agent_message` id as
+  a replay reference and fails the whole turn in-stream (`response.failed` with no code) when it
+  cannot, which then reproduces identically across the client's five retries (verified live
+  2026-08-14 on the exact failing history).
   The upstream request keeps `store:false`, `stream:true`,
   `include:["reasoning.encrypted_content"]`, tenant-scoped
   `prompt_cache_key` and first-party-shaped `client_metadata`. Headers carry the pinned client

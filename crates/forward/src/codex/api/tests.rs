@@ -472,7 +472,9 @@ async fn codex_agent_message_history_roundtrips_as_plain_messages() {
     let inbound = &prepared.turn.injected_items[1];
     assert_eq!(inbound["type"], "message");
     assert_eq!(inbound["role"], "user");
-    assert_eq!(inbound["id"], "amsg_1");
+    // The client-owned amsg_* id must not reach upstream: the backend resolves it as a replay
+    // reference and fails the whole turn in-stream when it cannot (verified live 2026-08-14).
+    assert!(inbound.get("id").is_none());
     let text = inbound["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("/root/audit_llmsrelay_fallback"));
     assert!(text.contains("FINAL_ANSWER"));

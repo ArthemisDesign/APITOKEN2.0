@@ -1887,6 +1887,11 @@ fn normalize_response_item(item: &Value, index: usize) -> Result<Value, ApiError
 /// user-level instruction, everything else is assistant output the model itself produced. The
 /// private `author`/`recipient` agent paths are kept in the visible text, otherwise the model
 /// loses who addressed whom; the transport only carries messages.
+///
+/// The client-owned `amsg_*` id is deliberately NOT carried upstream. Live probe (2026-08-14):
+/// the backend treats an input `agent_message` id as a replay reference, fails the turn with an
+/// in-stream `response.failed` (no code) when it cannot resolve it, and the whole retry loop then
+/// reproduces the same failure five times. Dropping the id serves the same turn successfully.
 fn normalize_agent_message_item(
     object: &Map<String, Value>,
     index: usize,
@@ -1915,13 +1920,10 @@ fn normalize_agent_message_item(
     } else {
         "assistant"
     };
-    let mut message = canonical_message(
+    let message = canonical_message(
         role,
         &format!("Agent message from {author} to {recipient}:\n{text}"),
     );
-    if let Some(id) = object.get("id").filter(|id| id.is_string()) {
-        message["id"] = id.clone();
-    }
     normalize_message_item(message.as_object().expect("message object"), index)
 }
 
