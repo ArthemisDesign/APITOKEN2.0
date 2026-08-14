@@ -842,10 +842,11 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    provable cache separation (`cached=0`, `cached=prompt` or an explicit cached AUDIO). 3.6 Flash selects
    `gemini-3.6-flash-{low,medium,high}`, 3.1 Pro Preview —
    `gemini-3.1-pro-low`/`gemini-pro-agent`.
-   Gemini 3.7 Flash is a dormant exact-public-id candidate only: no owned Antigravity catalogue or
-   generation evidence currently establishes a private alias, so explicit canaries may configure
-   `gemini-3.7-flash` but production defaults and native discovery must omit it even when that
-   canary configuration is loaded. The canary's protected loopback `/gemini-subs` deliberately
+   Gemini 3.7 Flash remains dormant, but a 2026-08-15 owned `fetchAvailableModels` snapshot now
+   establishes the exact private candidate `gemini-3.7-flash-tiered` on Pro and Ultra. Explicit
+   canaries map public `gemini-3.7-flash` to that one row; production defaults and native discovery
+   must omit it even when that canary configuration is loaded, because a quota row is not generation
+   proof. The canary's protected loopback `/gemini-subs` deliberately
    retains its conversion row: a controlled live runner needs that exact tariff and plan-bound
    evidence, and it is not customer discovery. Its private producer admits only an admin exact
    profile plus canonical UUIDv4 `x-apitoken-calibration-request-id` and positive Unix-seconds

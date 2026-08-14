@@ -109,8 +109,9 @@ impl GeminiModel {
     }
 
     /// Resolve the public Developer API model to the private Antigravity quota/generation bucket.
-    /// Reviewed model families use owned generation evidence; a dormant candidate may retain the
-    /// exact public id until live admission proves whether Code Assist exposes a different alias.
+    /// Reviewed model families use owned generation evidence; a dormant candidate may use an exact
+    /// private id observed in the owned `fetchAvailableModels` catalogue while live admission still
+    /// determines whether that candidate actually serves the public model contract.
     ///
     /// Keep this mapping deliberately closed. A quota row is only availability evidence, not proof
     /// that an arbitrary private id has the public model's semantics or price.
@@ -126,10 +127,11 @@ impl GeminiModel {
                     || level.eq_ignore_ascii_case("high")
                     || level.eq_ignore_ascii_case("thinking_level_unspecified")
                 {
-                    // No private Antigravity alias has been observed for this newly released
-                    // family. Keep the dormant route on Google's exact public id until owned live
-                    // generation proves a different wire identity.
-                    Ok("gemini-3.7-flash")
+                    // The 2026-08-15 owned Antigravity catalogue exposed this exact private model
+                    // row on both Pro and Ultra after the public id had failed generation with 404.
+                    // It remains a dormant candidate until exact-SHA live admission proves output,
+                    // raw model identity, terminal usage and incremental SSE.
+                    Ok("gemini-3.7-flash-tiered")
                 } else {
                     Err("Gemini 3.7 Flash supports low, medium, or high thinking levels.")
                 }
@@ -209,6 +211,7 @@ impl GeminiModel {
     /// API deliberately retain one canonical model id.
     pub fn quota_model_ids(&self) -> Vec<&str> {
         match self.id.as_str() {
+            "gemini-3.7-flash" => vec!["gemini-3.7-flash-tiered"],
             "gemini-3-flash-preview" => {
                 vec!["gemini-3-flash", "gemini-3-flash-agent"]
             }

@@ -270,6 +270,14 @@ the runner rejects its SHA before network I/O. The transient unit was stopped an
 from ordinary discovery. Publication is forbidden. Any future attempt requires new implementation
 evidence, a different exact runtime SHA, and a fresh explicit numeric budget contract.
 
+At `2026-08-15T01:31:54+08:00`, the free read-only production catalogue supplied that new
+implementation evidence: the exact private `antigravity_model` row
+`gemini-3.7-flash-tiered` had positive remaining quota on six Pro profiles and one Ultra profile.
+The hidden runtime candidate maps public `gemini-3.7-flash` to that row and uses the same row for
+quota admission. This does not spend quota and is not generation acceptance; it only makes a new
+exact-SHA candidate materially different from the withdrawn exact-public-ID route. Official Code
+Assist/Antigravity public model pages still did not list 3.7 at that observation.
+
 For a future, materially new implementation candidate only, after its exact canary is running and
 its opaque profile has been selected from the read-only status surface, inspect the no-network plan
 first, then execute it once:

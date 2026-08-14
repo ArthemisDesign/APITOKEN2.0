@@ -23,8 +23,10 @@ availability on 2026-08-13 and documents the exact public ID `gemini-3.7-flash`.
 
 The product decision for Stage 1 is deliberately narrower:
 
-1. Use only `gemini-3.7-flash` as the dormant candidate. Do not invent a private wire name,
-   effort-suffixed alias, Code Assist alias, or quota alias.
+1. Keep `gemini-3.7-flash` as the sole public/dormant product identity. The exact private
+   `gemini-3.7-flash-tiered` candidate is permitted only because a later owned
+   `fetchAvailableModels` snapshot exposed that row; do not infer any other private, effort or quota
+   alias.
 2. Record the official Standard tariff with its 2026 promotional and 2027 rates, but do not expose
    the model publicly or make it a default.
 3. Treat official Developer API and Antigravity availability as separate from availability through
@@ -107,25 +109,39 @@ the subset that the exact implementation SHA and every claimed credential plan p
 The word “available” is surface-specific. The following boundaries prevent an official public release
 from being misread as proof for a private subscription transport.
 
-| Surface | Evidence on 2026-08-14 | Stage 1 product conclusion |
+| Surface | Evidence through 2026-08-15 | Stage 1 product conclusion |
 |---|---|---|
-| Gemini Developer API | Officially GA under `gemini-3.7-flash` | Exact public ID may be used for the dormant canary |
+| Gemini Developer API | Officially GA under `gemini-3.7-flash` | The public ID remains the product identity; the canary may map it only to an exact owned private row |
 | Google AI Studio and documented Google product surfaces | Listed by first-party documentation/model card | Confirms Google distribution only |
 | Gemini Managed Agents / Antigravity agent | Official latest-model guidance makes 3.7 Flash the default underlying model for that hosted agent | This is a different surface from the product's OAuth-backed Antigravity/Code Assist transport and does not reveal a private quota or wire alias |
 | Gemini Code Assist | The checked Code Assist model page and release notes did not document 3.7 Flash | Do not claim Code Assist support; absence is a dated observation, not a permanent verdict |
-| Owned subscription catalogue | Sanitized inspection found no 3.7 quota row and no 3.7 private wire row | No private alias may be invented; no subscription plan may be advertised |
+| Owned subscription catalogue | No 3.7 row on 2026-08-14; exact positive `gemini-3.7-flash-tiered` row on Pro and Ultra on 2026-08-15 | The exact row may be a dormant private-wire candidate; no plan may be advertised before live acceptance |
 | This product | No live acceptance exists for the exact implementation SHA | Dormant only; no public catalogue/default/router/web exposure |
 
-### Owned catalogue observation
+### Owned catalogue observations
 
 The owned catalogue observation was sanitized before being recorded here. On 2026-08-14 it contained
-neither a Gemini 3.7 quota row nor a Gemini 3.7 private wire row. Consequently,
-`gemini-3.7-flash` is the only non-invented dormant candidate.
+neither a Gemini 3.7 quota row nor a Gemini 3.7 private wire row. Consequently, the original dormant
+candidate kept `gemini-3.7-flash` on both public and private sides.
 
 This absence does not prove that the model will never appear in the owned catalogue, and a future
 catalogue appearance would still not prove generation. Any later private name must come from fresh,
 credential-bound authoritative evidence and must be recorded as a new dated finding; it must not be
 derived from neighboring Gemini aliases.
+
+At `2026-08-15T01:31:54+08:00`, the production read-only status exposed a materially new owned
+catalogue snapshot. The exact private row `gemini-3.7-flash-tiered` was present with positive
+remaining quota and `antigravity_model` type on six Google AI Pro profiles and one Google AI Ultra
+profile; one additional Pro profile did not contain the row. The public `conversion_models` list
+still omitted 3.7, so ordinary discovery remained closed. No profile identity, token, project or
+proxy was retained in this observation.
+
+The same recheck found no 3.7 entry in the current Code Assist release notes, the Gemini 3 Code
+Assist page, the Antigravity model page or official `google-gemini/gemini-cli` HEAD
+`c0d192452b4e2df7efb6d62a60385f475bfd6779`. Those absences do not override the credential-bound
+catalogue row, but they prevent a broader Code Assist availability claim. The exact row authorizes
+one new dormant private-wire candidate only; live generation must still prove that it serves the
+public 3.7 contract and returns the required raw canonical `modelVersion`.
 
 ## Official rate card
 
@@ -183,7 +199,7 @@ commit SHA is recorded below. No row is acceptance evidence unless explicitly ma
 
 | Check | Exact evidence required | Budget rule | Publication meaning |
 |---|---|---|---|
-| Owned catalogue discovery | Sanitized 3.7 quota and wire rows bound to the credential/plan | Free | **OBSERVED ABSENT** on 2026-08-14; never generation proof |
+| Owned catalogue discovery | Sanitized 3.7 quota and wire rows bound to the credential/plan | Free | **CANDIDATE OBSERVED** on 2026-08-15: `gemini-3.7-flash-tiered` was positive on six Pro and one Ultra profile; never generation proof |
 | `countTokens` preflight | 2xx for exact `gemini-3.7-flash` and a positive authoritative token count | Free; always first | **PARTIAL 2026-08-15** on `20d945ce…`: one response with valid dispatch attestation, but report v1 did not retain `totalTokens`; it is not full acceptance evidence |
 | Minimal generation | One 2xx incremental SSE request with byte-exact real text, terminal authoritative usage, and raw upstream model identity from the exact candidate SHA | Default `$0.0001`; increased only to the current minimal proved ceiling `$0.787392` for one no-retry attempt | **RED 2026-08-15** on `20d945ce…`: sole transport returned upstream 404 `NOT_FOUND`; candidate withdrawn |
 | Incremental SSE | The same paid generation must contain at least two visible non-thinking text frames, including one before the terminal event, then finish cleanly with authoritative usage; candidate-only frames are insufficient | Included in the single admission request; no second stream request | **NOT PROVED**: the withdrawn generation returned no output frames or terminal usage |
@@ -362,7 +378,7 @@ research, official tariff, evidence boundary, dormant-name decision, and canary 
 | Official identity and behavior research | Applicable; recorded here |
 | Official tariff and effective epochs | Applicable; recorded here in exact nanoUSD units |
 | Dormant implementation and tests | Applicable; owned by the implementation change, not this research file |
-| Exact-SHA controlled live | Applicable and RED; `20d945ce…` completed one attested count transport, then its sole generation returned upstream 404 and the candidate was withdrawn |
+| Exact-SHA controlled live | Applicable; the exact-public-ID candidate `20d945ce…` is RED and withdrawn. The materially different tiered candidate remains pending a new GREEN exact SHA and separately authorized one-shot live |
 | Public catalogue, defaults, router, site, and public docs | Not applicable to Stage 1; explicitly deferred and forbidden |
 | New provider checklist | Not applicable; Gemini is an existing provider |
 | Customer price or multiplier change | Not applicable; this records upstream cost only and changes no customer multiplier |
@@ -374,7 +390,8 @@ research, official tariff, evidence boundary, dormant-name decision, and canary 
 
 No raw access token, refresh token, OAuth envelope, API key, authorization header, cookie, account
 email, subject ID, project/organization ID, proxy endpoint, customer prompt, response body, or raw
-catalogue dump is stored in this document. The owned-catalogue finding is limited to the sanitized
-absence of a 3.7 quota/wire row. Future live evidence must record only the exact commit SHA, plan label,
-HTTP/result class, sanitized model identity, token/query usage, cost reconciliation, and pass/fail
-outcome; credentials and payloads remain outside version control.
+catalogue dump is stored in this document. The owned-catalogue findings are limited to dated sanitized
+absence/presence, the exact non-secret model row, plan classes and aggregate profile counts. Future
+live evidence must record only the exact commit SHA, plan label, HTTP/result class, sanitized model
+identity, token/query usage, cost reconciliation, and pass/fail outcome; credentials and payloads
+remain outside version control.

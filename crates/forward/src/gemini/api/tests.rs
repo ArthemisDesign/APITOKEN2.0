@@ -917,11 +917,11 @@ fn public_thinking_levels_select_closed_wire_candidates() {
         Some("high"),
         Some("HIGH"),
     ] {
-        assert_eq!(flash_37.wire_model_id(level), Ok("gemini-3.7-flash"));
+        assert_eq!(flash_37.wire_model_id(level), Ok("gemini-3.7-flash-tiered"));
     }
     assert!(flash_37.wire_model_id(Some("minimal")).is_err());
     assert!(flash_37.wire_model_id(Some("future")).is_err());
-    assert_eq!(flash_37.quota_model_ids(), vec!["gemini-3.7-flash"]);
+    assert_eq!(flash_37.quota_model_ids(), vec!["gemini-3.7-flash-tiered"]);
 
     let flash_preview = catalog_model("gemini-3-flash-preview");
     for level in [
@@ -1883,7 +1883,7 @@ async fn tiered_public_model_uses_one_wire_id_for_generate_stream_and_count_toke
 }
 
 #[tokio::test]
-async fn dormant_37_uses_exact_public_wire_for_generate_stream_and_count_tokens() {
+async fn dormant_37_uses_observed_tiered_wire_for_generate_stream_and_count_tokens() {
     let non_stream = MockReply::json(
         StatusCode::OK,
         json!({
@@ -2056,7 +2056,7 @@ async fn dormant_37_uses_exact_public_wire_for_generate_stream_and_count_tokens(
             .and_then(Value::as_str)
             .or_else(|| body.pointer("/request/model").and_then(Value::as_str))
             .unwrap();
-        assert!(wire.ends_with("gemini-3.7-flash"));
+        assert!(wire.ends_with("gemini-3.7-flash-tiered"));
     }
 }
 

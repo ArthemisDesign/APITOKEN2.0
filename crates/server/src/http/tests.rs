@@ -657,7 +657,10 @@ fn gemini_conversion_catalogue_keeps_long_context_media_and_quota_aliases() {
     assert_eq!(values[0]["rates"]["input_nanousd_per_token"], "750");
     assert_eq!(values[0]["rates"]["cached_input_nanousd_per_token"], "75");
     assert_eq!(values[0]["rates"]["output_nanousd_per_token"], "3750");
-    assert_eq!(values[0]["quota_model_ids"], json!(["gemini-3.7-flash"]));
+    assert_eq!(
+        values[0]["quota_model_ids"],
+        json!(["gemini-3.7-flash-tiered"])
+    );
 }
 
 #[test]
