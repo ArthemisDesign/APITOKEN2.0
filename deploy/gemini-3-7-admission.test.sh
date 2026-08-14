@@ -34,6 +34,29 @@ for name, path in pins.items():
         raise SystemExit(f"{name} does not authenticate {path.relative_to(root)}")
 
 unit = pins["DIRECT_ADMISSION_UNIT_SHA256"]
+gate = pins["DIRECT_ADMISSION_GATE_SHA256"]
+gate_text = gate.read_text(encoding="utf-8")
+unit_stop_values = re.findall(
+    r"^TimeoutStopSec=([0-9]+)$", unit.read_text(encoding="utf-8"), re.MULTILINE
+)
+gate_stop_values = re.findall(
+    r"^CANARY_STOP_TIMEOUT_SEC=([0-9]+)$",
+    gate_text,
+    re.MULTILINE,
+)
+if len(unit_stop_values) != 1 or len(gate_stop_values) != 1:
+    raise SystemExit("Gemini admission shutdown bounds must be singular integer seconds")
+if int(gate_stop_values[0]) < int(unit_stop_values[0]) + 30:
+    raise SystemExit("Gemini admission controller can truncate the systemd shutdown ladder")
+cleanup_stop_calls = re.findall(
+    r'^\s*if ! \$TIMEOUT "\$CANARY_STOP_TIMEOUT_SEC" '
+    r'\$SYSTEMCTL stop "\$UNIT" >/dev/null 2>&1; then$',
+    gate_text,
+    re.MULTILINE,
+)
+if len(cleanup_stop_calls) != 1:
+    raise SystemExit("Gemini admission cleanup does not use its authenticated shutdown bound")
+
 exec_lines = [
     line.removeprefix("ExecStart=")
     for line in unit.read_text(encoding="utf-8").splitlines()

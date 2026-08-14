@@ -48,7 +48,9 @@ Restart=no
 RuntimeMaxSec=10min
 KillSignal=SIGTERM
 KillMode=mixed
-TimeoutStopSec=90
+# Preserve the engine's full readiness + drain + settlement shutdown ladder even when the
+# one-shot RuntimeMaxSec bound expires while terminal provider usage is still being persisted.
+TimeoutStopSec=720
 UMask=0077
 LimitCORE=0
 NoNewPrivileges=true
