@@ -461,11 +461,12 @@ smooth retry. Deadline-bound 3.7 JSON and SSE preserve Google's raw upstream `mo
 admission evidence; established ordinary and older exact lanes retain canonical public-id rewriting.
 The dedicated root admission consumer, trigger and private unit were retired after their delivery
 guard introduced a dependency on paid GitHub branch protection. The producer remains available only
-as dormant exact-profile runtime capability; ordinary traffic still fails before dispatch. A future
-controlled live must use a reviewed extension of the existing generic calibration runner against an
-operator-launched exact-SHA non-public canary, with the compiled tariff and no-replay constraints
-verified before the one paid request. No live call, production default, public catalogue, router
-preset or storefront exposure is enabled.
+as dormant exact-profile runtime capability; ordinary traffic still fails before dispatch. The
+closed `--gemini-37-admission` mode of the existing generic calibration runner is its sole reviewed
+consumer: it targets an operator-launched exact-SHA non-public canary, disables retry even for the
+one free count, requires the exact current compiled-tariff ceiling and permits at most one paid SSE
+generation. No live call, production default, public catalogue, router preset or storefront exposure
+is enabled until that exact report is GREEN.
 
 ## Runtime behavior
 

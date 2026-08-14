@@ -144,6 +144,74 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         with self.assertRaises(run_live.CalibrationError):
             budget.require(run_live.MAX_BUDGET_NANO)
 
+    def test_gemini_37_current_tariff_requires_the_exact_minimal_ceiling(self):
+        rates = run_live.ModelRates(
+            tariff_schedule_id="google/gemini/gemini-3.7-flash/epoch-0/v1",
+            input_token_limit=1_048_576,
+            input=750,
+            audio_input=750,
+            cached_input=75,
+            cached_audio_input=75,
+            output=3_750,
+            image_output=0,
+            long_threshold=(1 << 64) - 1,
+            long_input=750,
+            long_audio_input=750,
+            long_cached_input=75,
+            long_cached_audio_input=75,
+            long_output=3_750,
+            search_unit="query",
+            search=14_000_000,
+            max_output_tokens=65_536,
+        )
+        self.assertEqual(
+            rates.upper_bound(
+                1,
+                run_live.GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+                "fresh",
+            ),
+            787_392_000,
+        )
+
+    def test_gemini_37_admission_cli_is_closed_to_one_canary_contract(self):
+        sha = "a" * 40
+        args = run_live.parse_args([
+            "--gemini-37-admission",
+            "--admission-profile",
+            "profile-a",
+            "--implementation-sha",
+            sha,
+            "--production-capacity-port",
+            "18895",
+            "--production-api-port",
+            "18895",
+            "--budget-usd",
+            "0.787392",
+        ])
+        plan = run_live.dry_run_plan(args, run_live.usd_to_nano(args.budget_usd))
+        self.assertEqual(plan["schema"], "gemini-3.7-admission-plan/v1")
+        self.assertEqual(plan["planned_count_requests"], 1)
+        self.assertEqual(plan["planned_paid_generation_requests"], 1)
+        self.assertEqual(plan["model"], run_live.GEMINI_37_ADMISSION_MODEL)
+        self.assertEqual(plan["implementation_sha"], sha)
+        self.assertIn("no-resume-retry-reconnect-or-replay", plan["guards"])
+
+        invalid_sets = (
+            ["--resume-report", "/tmp/old.json"],
+            ["--models", run_live.GEMINI_37_ADMISSION_MODEL],
+            ["--production-capacity-port", "18895", "--production-api-port", "18896"],
+        )
+        for extra in invalid_sets:
+            with self.subTest(extra=extra), self.assertRaises(SystemExit):
+                run_live.parse_args([
+                    "--gemini-37-admission",
+                    "--admission-profile",
+                    "profile-a",
+                    "--implementation-sha",
+                    sha,
+                    *extra,
+                ])
+
     def test_integer_contract_accepts_only_json_int_or_canonical_decimal_string(self):
         for raw, expected in ((0, 0), (12, 12), ("0", 0), ("12", 12)):
             with self.subTest(raw=raw):
@@ -1155,6 +1223,49 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         self.assertEqual(result, {"totalTokens": 10})
         self.assertEqual(invoked.call_count, 2)
 
+    def test_gemini_37_count_is_attested_and_never_retried(self):
+        client = run_live.ProductionSshJsonHttpClient(timeout=10)
+        failed = subprocess.CompletedProcess([], 255, stdout=b"", stderr=b"ambiguous")
+        with mock.patch.object(run_live.subprocess, "run", return_value=failed) as invoked:
+            with self.assertRaises(run_live.CalibrationError):
+                client.request(
+                    "/v1beta/models/gemini-3.7-flash:countTokens",
+                    "POST",
+                    {"contents": []},
+                    "profile-a",
+                    calibration_request_id="123e4567-e89b-42d3-a456-426614174000",
+                    calibration_not_after=2_000_000_000,
+                    capture_dispatch=True,
+                    allow_safe_retry=False,
+                )
+        self.assertEqual(invoked.call_count, 1)
+
+        succeeded = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=(
+                b'{"totalTokens":10}\n__CALIBRATION_HTTP__200\n\n'
+                b"1999999999000"
+            ),
+            stderr=b"",
+        )
+        with mock.patch.object(run_live.subprocess, "run", return_value=succeeded) as invoked:
+            response = client.request(
+                "/v1beta/models/gemini-3.7-flash:countTokens",
+                "POST",
+                {"contents": []},
+                "profile-a",
+                calibration_request_id="123e4567-e89b-42d3-a456-426614174000",
+                calibration_not_after=2_000_000_000,
+                capture_dispatch=True,
+                allow_safe_retry=False,
+            )
+        self.assertEqual(response.payload, {"totalTokens": 10})
+        self.assertEqual(response.dispatch_ms, 1_999_999_999_000)
+        remote = invoked.call_args.args[0][2]
+        self.assertIn("x-apitoken-calibration-not-after: 2000000000", remote)
+        self.assertIn("x-apitoken-calibration-dispatch-ms", remote)
+
     def test_production_ssh_preserves_authoritative_not_started_header(self):
         client = run_live.ProductionSshJsonHttpClient(timeout=10)
         refused = subprocess.CompletedProcess(
@@ -1705,6 +1816,207 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         self.assertTrue(record["quota_snapshot_resolved"])
         self.assertEqual(budget.total_nano, 100)
         self.assertEqual(budget.by_profile["profile-a"], 100)
+
+    def test_gemini_37_runner_sends_exactly_one_count_and_one_paid_sse(self):
+        model = run_live.GEMINI_37_ADMISSION_MODEL
+
+        class FakeApi:
+            def __init__(self):
+                self.calls = []
+                self.generation_request_id = None
+
+            def request(self, path, method="GET", body=None, target_profile=None, **options):
+                self.calls.append((path, target_profile, dict(options)))
+                if path.endswith(":countTokens"):
+                    return run_live.JsonResponse(
+                        {"totalTokens": 10},
+                        1_000_100,
+                    )
+                self.generation_request_id = options["calibration_request_id"]
+                split = len(run_live.GEMINI_37_ADMISSION_EXPECTED_TEXT) // 2
+                return run_live.GenerationResponse(
+                    frames=(
+                        {
+                            "modelVersion": model,
+                            "candidates": [{
+                                "content": {"parts": [{
+                                    "text": run_live.GEMINI_37_ADMISSION_EXPECTED_TEXT[:split]
+                                }]},
+                            }],
+                        },
+                        {
+                            "candidates": [{
+                                "content": {"parts": [{
+                                    "text": run_live.GEMINI_37_ADMISSION_EXPECTED_TEXT[split:]
+                                }]},
+                                "finishReason": "STOP",
+                            }],
+                            "usageMetadata": {
+                                "promptTokenCount": 10,
+                                "candidatesTokenCount": 2,
+                            },
+                        },
+                    ),
+                    stream=True,
+                    dispatch_ms=1_000_200,
+                )
+
+        class FakeCapacity:
+            def __init__(self, api):
+                self.api = api
+
+            def read(self):
+                events = []
+                if self.api.generation_request_id:
+                    turn = event(
+                        self.api.generation_request_id,
+                        profile="profile-a",
+                        model=model,
+                    )
+                    turn.update({"output_tokens": "2", "completed_at": "100"})
+                    events = [turn]
+                payload = capacity(events)
+                payload["profiles"] = [{
+                    "id": "profile-a",
+                    "plan": "google_ai_pro",
+                    "authenticated": True,
+                    "cooling_until": 0,
+                    "calibration_persistence_ok": True,
+                    "quota_updated_at": 101 if events else 99,
+                    "windows": [],
+                }]
+                return payload
+
+        rates = run_live.ModelRates(
+            tariff_schedule_id="google/test/v1",
+            input_token_limit=1_000,
+            input=10,
+            audio_input=10,
+            cached_input=1,
+            cached_audio_input=1,
+            output=10,
+            image_output=0,
+            long_threshold=1_000,
+            long_input=10,
+            long_audio_input=10,
+            long_cached_input=1,
+            long_cached_audio_input=1,
+            long_output=10,
+            search_unit="prompt",
+            search=1,
+            max_output_tokens=1_000,
+        )
+        upper = rates.upper_bound(
+            10,
+            run_live.GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+            "fresh",
+        )
+        api = FakeApi()
+        budget = run_live.Budget(upper)
+        runner = run_live.Runner(
+            api,
+            FakeCapacity(api),
+            {model: rates},
+            budget,
+            timeout=1,
+            delay=0,
+            run_id="run",
+            cache_scopes={"profile-a": "profile-1"},
+            admission=run_live.Gemini37Admission("profile-a", "a" * 40),
+        )
+        leg = run_live.Leg(
+            f"admission:{model}:default-sse",
+            model,
+            "fresh",
+            stream=True,
+            max_output_tokens=run_live.GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+        )
+        with mock.patch.object(run_live.time, "time", return_value=1_000), mock.patch.object(
+            run_live.time, "sleep", return_value=None
+        ):
+            record = runner.execute_leg(leg, "profile-a")
+
+        self.assertEqual(len(api.calls), 2)
+        count_call, generation_call = api.calls
+        self.assertTrue(count_call[0].endswith(":countTokens"))
+        self.assertFalse(count_call[2]["allow_safe_retry"])
+        self.assertFalse(generation_call[2]["allow_safe_retry"])
+        self.assertEqual(count_call[2]["calibration_not_after"], 1_600)
+        self.assertEqual(generation_call[2]["calibration_not_after"], 1_600)
+        self.assertNotEqual(
+            count_call[2]["calibration_request_id"],
+            generation_call[2]["calibration_request_id"],
+        )
+        self.assertTrue(record["response_evidence"]["incremental_sse"])
+        self.assertEqual(record["admission"]["implementation_sha"], "a" * 40)
+        self.assertEqual(record["admission"]["count_dispatch_ms"], "1000100")
+        self.assertEqual(record["admission"]["generation_dispatch_ms"], "1000200")
+        self.assertEqual(
+            [attempt["kind"] for attempt in runner.admission_attempts],
+            ["countTokens", "paid_generation"],
+        )
+        self.assertEqual(
+            runner.admission_attempts[1]["outcome"],
+            "immutable_event_reconciled",
+        )
+        self.assertEqual(budget.total_nano, 100)
+
+    def test_gemini_37_budget_mismatch_stops_after_the_free_count(self):
+        model = run_live.GEMINI_37_ADMISSION_MODEL
+
+        class CountOnlyApi:
+            def __init__(self):
+                self.calls = 0
+
+            def request(self, path, method="GET", body=None, target_profile=None, **options):
+                self.calls += 1
+                self.assert_count = path.endswith(":countTokens")
+                return run_live.JsonResponse({"totalTokens": 10}, 1_000_100)
+
+        class StaticCapacity:
+            def read(self):
+                payload = capacity()
+                payload["profiles"] = [{
+                    "id": "profile-a",
+                    "plan": "google_ai_pro",
+                    "authenticated": True,
+                    "cooling_until": 0,
+                    "calibration_persistence_ok": True,
+                    "quota_updated_at": 99,
+                    "windows": [],
+                }]
+                return payload
+
+        rates = run_live.ModelRates(
+            "google/test/v1", 1_000, 10, 10, 1, 1, 10, 0,
+            1_000, 10, 10, 1, 1, 10, "prompt", 1, 1_000,
+        )
+        upper = rates.upper_bound(10, 256, "fresh")
+        api = CountOnlyApi()
+        runner = run_live.Runner(
+            api,
+            StaticCapacity(),
+            {model: rates},
+            run_live.Budget(upper + 1),
+            timeout=1,
+            delay=0,
+            run_id="run",
+            cache_scopes={"profile-a": "profile-1"},
+            admission=run_live.Gemini37Admission("profile-a", "a" * 40),
+        )
+        leg = run_live.Leg(
+            f"admission:{model}:default-sse",
+            model,
+            "fresh",
+            stream=True,
+            max_output_tokens=256,
+        )
+        with mock.patch.object(run_live.time, "time", return_value=1_000):
+            with self.assertRaises(run_live.CalibrationError) as caught:
+                runner.execute_leg(leg, "profile-a")
+        self.assertIn("must equal the exact current-tariff ceiling", str(caught.exception))
+        self.assertEqual(api.calls, 1)
+        self.assertTrue(api.assert_count)
 
 
 if __name__ == "__main__":

@@ -202,13 +202,13 @@ producer copy and private systemd unit are retired. They supplied no live
 evidence: the only trigger attempt was rejected before `countTokens`, generation, or spend. The
 model's exact tariff, dormant Rust producer and generic response/evidence safeguards remain.
 
-`tools/gemini_calibration/run_live.py` is the only retained live-runner base. It does not install a
-service, select production credentials by itself, or make a dormant model public. Before any future
-Gemini 3.7 live, a separate reviewed change must add only the smallest model-specific plan needed by
-that generic runner and document the exact implementation SHA, request, controls, tariff epoch and
-aggregate budget. The operator then launches an exact-SHA non-public canary through the established
-server access path, using the production PostgreSQL billing/evidence authority and the normal sealed
-credential roster. No permanent root helper or repository trigger is installed.
+`tools/gemini_calibration/run_live.py` is the only retained live runner. Its
+`--gemini-37-admission` mode is the smallest model-specific plan: it does not install a service,
+select a credential, publish the dormant model, or add another transport implementation. It requires
+an operator-supplied exact profile, implementation SHA and one non-public loopback canary port. The
+operator launches that exact-SHA canary through the established server access path with the production
+PostgreSQL billing/evidence authority and normal sealed credential roster. No permanent root helper,
+repository trigger, admission state machine or private installed unit is permitted.
 
 The controlled sequence remains fail closed:
 
@@ -227,9 +227,58 @@ The controlled sequence remains fail closed:
 5. publish in a separate commit only after that evidence is GREEN. Any failed or ambiguous
    generation leaves the model dormant and unpublished.
 
-The previously designed 64-integer prompt and `maxOutputTokens=256` are research inputs, not an
-active authorization or installed admission contract. They may be reused only if a fresh reviewed
-plan proves they fit the then-current tariff epoch and user-approved budget.
+The admission mode fixes the prompt to `Output the integers 1 through 64, separated by single
+spaces, and nothing else.`, omits `thinkingLevel`, uses `maxOutputTokens=256`, and accepts only the
+exact concatenated `1 … 64` output split over at least two visible non-thinking SSE frames. It sends
+one UUIDv4/deadline-bound free count and one distinct UUIDv4/deadline-bound generation. Both responses
+must carry a canonical positive `x-apitoken-calibration-dispatch-ms` strictly before the shared
+ten-minute `not_after`; the count transport also has retries disabled. `--resume-report`, an explicit
+model list, different capacity/API ports, or the stable Gemini origin are rejected before network IO.
+
+The current promotional Standard ceiling is exactly:
+
+```text
+1,048,576 input tokens * 750 nanoUSD
+  + 256 output tokens * 3,750 nanoUSD
+= 787,392,000 nanoUSD = $0.787392
+```
+
+The complete official input context is reserved because Code Assist can prepend provider-owned input
+that the free count does not see. Before paid dispatch, the runner recalculates this value from the
+canary's effective compiled rate card and requires `--budget-usd` to equal it exactly; a smaller or
+larger value stops after the free count. The user authorized raising the default `$0.0001` only to
+this minimum proved current-epoch ceiling. A future tariff epoch therefore requires a new explicit
+numeric contract rather than inheriting an older larger authorization.
+
+After the exact canary is running and its opaque profile has been selected from the read-only status
+surface, inspect the no-network plan first, then execute it once:
+
+```bash
+python3 tools/gemini_calibration/run_live.py \
+  --gemini-37-admission \
+  --admission-profile '<opaque-profile-id>' \
+  --implementation-sha '<40-lowercase-hex-runtime-sha>' \
+  --production-capacity-port '<non-public-loopback-port>' \
+  --production-api-port '<same-non-public-loopback-port>' \
+  --budget-usd 0.787392
+
+python3 tools/gemini_calibration/run_live.py \
+  --execute \
+  --gemini-37-admission \
+  --admission-profile '<same-opaque-profile-id>' \
+  --implementation-sha '<same-runtime-sha>' \
+  --production-capacity-over-ssh \
+  --production-api-over-ssh \
+  --production-capacity-port '<same-non-public-loopback-port>' \
+  --production-api-port '<same-non-public-loopback-port>' \
+  --budget-usd 0.787392 \
+  --report /tmp/gemini-3.7-admission.json
+```
+
+The execute command is terminal whether it succeeds, fails, or becomes ambiguous. Never invoke it a
+second time for the same candidate. The report records each local transport invocation separately
+from immutable spend reconciliation; an ambiguous paid outcome therefore remains visibly
+unreconciled instead of being misrepresented as confirmed zero spend.
 ## Offline verification
 
 ```bash
@@ -245,8 +294,9 @@ restoration, including the non-replay reclassification of a proven `minimal` tur
 zero thinking token count and the fail-closed rejection of substituted evidence. Decoder coverage
 also rejects malformed or buffered-only SSE, duplicate JSON keys, inconsistent response identity,
 non-terminal usage, non-STOP completion and response/event token mismatches without opening a
-network connection. Any future model-specific Gemini 3.7 plan must add its own exact tariff/budget
-tests before a live is authorized.
+network connection. Gemini 3.7 coverage additionally proves the closed CLI, exact one-leg prompt,
+current `787392000 nanoUSD` ceiling, one-attempt count transport, deadline/header propagation,
+dispatch attestation and one-generation/no-resume contract before a live is authorized.
 
 ## Result
 

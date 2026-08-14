@@ -225,6 +225,22 @@ The private canary pins `CLAUDE_API_TARIFF_OVERRIDES=0` in its fixed `ExecStart`
 preflight and immutable settlement to the compiled official schedule; a mutable hot override can
 neither authorize the request nor raise its event above this ceiling.
 
+### Narrowed execution budget — 2026-08-15
+
+The person subsequently authorized exceeding the default `$0.0001` only when required and only to
+the minimum ceiling proved immediately before dispatch. The reviewed generic-runner admission mode
+therefore does not consume the older post-promotion `$1.574784` envelope while the request is fenced
+inside the current promotional epoch. It recomputes and requires exactly:
+
+```text
+1,048,576 * 750 + 256 * 3,750 = 787,392,000 nanoUSD = $0.787392
+```
+
+This is still a worst-case reserve for one no-retry request, not expected spend. The count is free,
+actual settlement remains authoritative, and any tariff change or dispatch beyond the current epoch
+stops before generation and requires a fresh explicit numeric contract. The older larger
+authorization above remains historical context; it is not the active execution budget.
+
 ## Two-stage delivery decision
 
 ### Stage 1 — current change

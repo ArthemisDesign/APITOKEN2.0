@@ -36,6 +36,13 @@ DEFAULT_PROFILE_DELAY_SECONDS = 16.0
 DEFAULT_PRODUCTION_SSH_TARGET = "apitokensale"
 DEFAULT_PRODUCTION_CAPACITY_PORT = 8794
 DEFAULT_PRODUCTION_API_PORT = 8794
+GEMINI_37_ADMISSION_MODEL = "gemini-3.7-flash"
+GEMINI_37_ADMISSION_OUTPUT_TOKENS = 256
+GEMINI_37_ADMISSION_DEADLINE_SECONDS = 600
+GEMINI_37_ADMISSION_PROMPT = (
+    "Output the integers 1 through 64, separated by single spaces, and nothing else."
+)
+GEMINI_37_ADMISSION_EXPECTED_TEXT = " ".join(str(value) for value in range(1, 65))
 IMAGE_OUTPUT_TOKEN_CEILINGS = {"1K": 1_120, "2K": 1_680, "4K": 2_520}
 EVENT_TOKEN_FIELDS = (
     "input_tokens",
@@ -96,6 +103,24 @@ class GenerationResponse:
     frames: tuple[dict[str, Any], ...]
     stream: bool
     parse_error: str | None = None
+    dispatch_ms: int | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class JsonResponse:
+    """JSON body plus the private dispatch attestation when explicitly requested."""
+
+    payload: dict[str, Any]
+    dispatch_ms: int | None
+
+
+@dataclasses.dataclass(frozen=True)
+class Gemini37Admission:
+    """One exact-profile, one-count, one-generation publication admission."""
+
+    profile_id: str
+    implementation_sha: str
+    deadline_seconds: int = GEMINI_37_ADMISSION_DEADLINE_SECONDS
 
 
 @dataclasses.dataclass(frozen=True)
@@ -140,6 +165,35 @@ def usd_to_nano(value: str) -> int:
     if not whole.isdigit() or (dot and not fractional.isdigit()) or len(fractional) > 9:
         raise CalibrationError(f"invalid exact USD amount: {value!r}")
     return int(whole) * NANO_PER_USD + int((fractional + "000000000")[:9])
+
+
+def validate_implementation_sha(value: str) -> str:
+    if len(value) != 40 or any(char not in "0123456789abcdef" for char in value):
+        raise CalibrationError(
+            "Gemini admission implementation SHA must be 40 lowercase hexadecimal characters"
+        )
+    return value
+
+
+def parse_dispatch_ms(value: str | bytes | None) -> int | None:
+    if value is None or value == "" or value == b"":
+        return None
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("ascii", "strict")
+        except UnicodeDecodeError as error:
+            raise CalibrationError("Gemini dispatch attestation is not ASCII") from error
+    if not value.isascii() or not value.isdigit() or value.startswith("0"):
+        raise CalibrationError("Gemini dispatch attestation is not canonical positive decimal")
+    return int(value)
+
+
+def require_dispatch_before_deadline(dispatch_ms: int | None, not_after: int) -> int:
+    if dispatch_ms is None or dispatch_ms <= 0 or dispatch_ms >= not_after * 1_000:
+        raise CalibrationError(
+            "Gemini admission response has no canonical pre-deadline dispatch attestation"
+        )
+    return dispatch_ms
 
 
 def is_explicit_transient_stop(error: HttpCalibrationError) -> bool:
@@ -872,6 +926,18 @@ def body_for_leg(
     return body
 
 
+def body_for_gemini37_admission() -> dict[str, Any]:
+    return {
+        "contents": [{
+            "role": "user",
+            "parts": [{"text": GEMINI_37_ADMISSION_PROMPT}],
+        }],
+        "generationConfig": {
+            "maxOutputTokens": GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+        },
+    }
+
+
 def count_body(body: dict[str, Any]) -> dict[str, Any]:
     return {key: body[key] for key in ("contents", "systemInstruction", "tools") if key in body}
 
@@ -986,7 +1052,11 @@ def _decode_sse_frames(raw: bytes) -> tuple[dict[str, Any], ...]:
     return tuple(frames)
 
 
-def decode_generation_response(raw: bytes, stream: bool) -> GenerationResponse:
+def decode_generation_response(
+    raw: bytes,
+    stream: bool,
+    dispatch_ms: int | None = None,
+) -> GenerationResponse:
     """Decode native JSON/SSE without retaining raw output in the persisted report."""
 
     try:
@@ -997,12 +1067,13 @@ def decode_generation_response(raw: bytes, stream: bool) -> GenerationResponse:
             if not isinstance(payload, dict):
                 raise CalibrationError("Gemini generation response is not an object")
             frames = (payload,)
-        return GenerationResponse(frames=frames, stream=stream)
+        return GenerationResponse(frames=frames, stream=stream, dispatch_ms=dispatch_ms)
     except (CalibrationError, json.JSONDecodeError, UnicodeDecodeError) as error:
         return GenerationResponse(
             frames=(),
             stream=stream,
             parse_error=str(error) or "Gemini generation response could not be decoded",
+            dispatch_ms=dispatch_ms,
         )
 
 
@@ -1120,6 +1191,7 @@ def verify_generation_response(
     usage_indexes: list[int] = []
     stop_indexes: list[int] = []
     visible_text_indexes: set[int] = set()
+    visible_text_parts: list[str] = []
     malformed: str | None = None
     for index, frame in enumerate(response.frames):
         if "error" in frame:
@@ -1220,6 +1292,7 @@ def verify_generation_response(
                 ):
                     visible_text_indexes.add(index)
                     evidence["visible_text_chars"] += len(text_value.strip())
+                    visible_text_parts.append(text_value)
                 function_call = part.get("functionCall")
                 if (
                     isinstance(function_call, dict)
@@ -1243,6 +1316,11 @@ def verify_generation_response(
     if len(response_ids) > 1:
         return evidence, "generation response changed responseId across frames"
     evidence["visible_text_frames"] = len(visible_text_indexes)
+    if (
+        leg.name == f"admission:{GEMINI_37_ADMISSION_MODEL}:default-sse"
+        and "".join(visible_text_parts) != GEMINI_37_ADMISSION_EXPECTED_TEXT
+    ):
+        return evidence, "Gemini 3.7 admission output did not match the exact 1..64 contract"
     if model_versions != {leg.model}:
         return evidence, (
             f"generation modelVersion proof is {sorted(model_versions)!r}, expected {leg.model!r}"
@@ -1346,17 +1424,27 @@ class JsonHttpClient:
 
     def request(self, path: str, method: str = "GET", body: dict[str, Any] | None = None,
                 target_profile: str | None = None, raw_ok: bool = False,
-                calibration_request_id: str | None = None) -> Any:
+                calibration_request_id: str | None = None,
+                calibration_not_after: int | None = None,
+                capture_dispatch: bool = False,
+                allow_safe_retry: bool = True) -> Any:
         data = None if body is None else json.dumps(body, separators=(",", ":")).encode()
         headers = {"x-goog-api-key": self.api_key, "content-type": "application/json", "accept": "application/json"}
         if target_profile:
             headers["x-apitoken-calibration-profile"] = target_profile
         if calibration_request_id:
             headers["x-apitoken-calibration-request-id"] = calibration_request_id
+        if calibration_not_after is not None:
+            if calibration_not_after <= 0:
+                raise CalibrationError("Gemini calibration deadline must be positive")
+            headers["x-apitoken-calibration-not-after"] = str(calibration_not_after)
         request = urllib.request.Request(f"{self.api_url}{path}", data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 raw = response.read()
+                dispatch_ms = parse_dispatch_ms(
+                    response.headers.get("x-apitoken-calibration-dispatch-ms")
+                )
         except urllib.error.HTTPError as error:
             raise HttpCalibrationError(
                 path,
@@ -1369,14 +1457,18 @@ class JsonHttpClient:
             raise CalibrationError(f"{path} transport failed: {error}") from error
         generation = path.endswith(":generateContent") or ":streamGenerateContent" in path
         if generation:
-            return decode_generation_response(raw, ":streamGenerateContent" in path)
+            return decode_generation_response(
+                raw,
+                ":streamGenerateContent" in path,
+                dispatch_ms,
+            )
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as error:
             raise CalibrationError(f"{path} returned invalid JSON") from error
         if not isinstance(payload, dict):
             raise CalibrationError(f"{path} returned a non-object")
-        return payload
+        return JsonResponse(payload, dispatch_ms) if capture_dispatch else payload
 
 
 def validate_production_ssh_target(value: str) -> str:
@@ -1410,7 +1502,10 @@ class ProductionSshJsonHttpClient:
 
     def request(self, path: str, method: str = "GET", body: dict[str, Any] | None = None,
                 target_profile: str | None = None, raw_ok: bool = False,
-                calibration_request_id: str | None = None) -> Any:
+                calibration_request_id: str | None = None,
+                calibration_not_after: int | None = None,
+                capture_dispatch: bool = False,
+                allow_safe_retry: bool = True) -> Any:
         if method not in {"GET", "POST"} or not path.startswith("/v1beta/"):
             raise CalibrationError(f"unsupported Gemini SSH request: {method} {path}")
         if any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/_-?=&.:" for char in path):
@@ -1430,6 +1525,12 @@ class ProductionSshJsonHttpClient:
                     f"invalid exact Gemini calibration request id: {calibration_request_id!r}"
                 )
             headers.append(f"x-apitoken-calibration-request-id: {calibration_request_id}")
+        if calibration_not_after is not None:
+            if calibration_not_after <= 0:
+                raise CalibrationError("Gemini calibration deadline must be positive")
+            headers.append(
+                f"x-apitoken-calibration-not-after: {calibration_not_after}"
+            )
         header_args = " ".join(f"-H {shlex.quote(header)}" for header in headers)
         data_arg = "--data-binary @-" if body is not None else ""
         remote = (
@@ -1437,14 +1538,15 @@ class ProductionSshJsonHttpClient:
             "calibration_key=${CLAUDE_API_KEYS%%,*} && test -n \"$calibration_key\" && "
             f"curl -sS --max-time {self.timeout} "
             "-w '\\n__CALIBRATION_HTTP__%{http_code}\\n"
-            "%header{x-apitoken-execution-state}' "
+            "%header{x-apitoken-execution-state}\\n"
+            "%header{x-apitoken-calibration-dispatch-ms}' "
             f"-X {method} "
             f"-H \"x-goog-api-key: $calibration_key\" {header_args} {data_arg} "
             f"{shlex.quote(f'http://127.0.0.1:{self.api_port}' + path)}"
         )
         data = b"" if body is None else json.dumps(body, separators=(",", ":")).encode()
         safe = method == "GET" or path.endswith(":countTokens")
-        attempts = SAFE_READ_ATTEMPTS if safe else 1
+        attempts = SAFE_READ_ATTEMPTS if safe and allow_safe_retry else 1
         result = None
         for attempt in range(attempts):
             result = subprocess.run(["ssh", self.ssh_target, remote], input=data, capture_output=True,
@@ -1457,10 +1559,14 @@ class ProductionSshJsonHttpClient:
         if result is None:
             raise CalibrationError(f"{path} produced no SSH result")
         raw, separator, trailer = result.stdout.rpartition(b"\n__CALIBRATION_HTTP__")
-        status_raw, header_separator, execution_state = trailer.partition(b"\n")
-        if not separator or not header_separator or not status_raw.isdigit():
+        trailer_fields = trailer.split(b"\n", 2)
+        if not separator or len(trailer_fields) < 2 or not trailer_fields[0].isdigit():
             raise CalibrationError(f"{path} SSH response has no HTTP status")
-        status = int(status_raw)
+        status = int(trailer_fields[0])
+        execution_state = trailer_fields[1]
+        dispatch_ms = parse_dispatch_ms(
+            trailer_fields[2].strip() if len(trailer_fields) == 3 else None
+        )
         if status >= 400:
             raise HttpCalibrationError(
                 path,
@@ -1470,14 +1576,18 @@ class ProductionSshJsonHttpClient:
             )
         generation = path.endswith(":generateContent") or ":streamGenerateContent" in path
         if generation:
-            return decode_generation_response(raw, ":streamGenerateContent" in path)
+            return decode_generation_response(
+                raw,
+                ":streamGenerateContent" in path,
+                dispatch_ms,
+            )
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as error:
             raise CalibrationError(f"{path} returned invalid JSON") from error
         if not isinstance(payload, dict):
             raise CalibrationError(f"{path} returned a non-object")
-        return payload
+        return JsonResponse(payload, dispatch_ms) if capture_dispatch else payload
 
 
 class CapacityReader:
@@ -1515,7 +1625,8 @@ class CapacityReader:
 
 class Runner:
     def __init__(self, api: Any, capacity: CapacityReader, rates: dict[str, ModelRates], budget: Budget,
-                 timeout: int, delay: float, run_id: str, cache_scopes: dict[str, str]) -> None:
+                 timeout: int, delay: float, run_id: str, cache_scopes: dict[str, str],
+                 admission: Gemini37Admission | None = None) -> None:
         self.api = api
         self.capacity = capacity
         self.rates = rates
@@ -1524,9 +1635,20 @@ class Runner:
         self.delay = delay
         self.run_id = run_id
         self.cache_scopes = cache_scopes
+        self.admission = admission
         self.records: list[dict[str, Any]] = []
+        self.admission_attempts: list[dict[str, Any]] = []
 
     def execute_leg(self, leg: Leg, profile_id: str) -> dict[str, Any]:
+        if self.admission is not None and (
+            profile_id != self.admission.profile_id
+            or leg.model != GEMINI_37_ADMISSION_MODEL
+            or leg.kind != "fresh"
+            or not leg.stream
+            or leg.max_output_tokens != GEMINI_37_ADMISSION_OUTPUT_TOKENS
+            or leg.thinking_level is not None
+        ):
+            raise CalibrationError("Gemini 3.7 admission plan is not the exact one-leg contract")
         before = self.capacity.read()
         require_healthy_delivery(before)
         states = profile_state(before)
@@ -1537,15 +1659,68 @@ class Runner:
         if not cache_scope:
             raise CalibrationError("target Gemini profile has no stable cache scope")
         before_ids = set(recent_turn_events(before))
-        body = body_for_leg(
-            leg,
-            self.run_id,
-            cache_scope,
+        body = (
+            body_for_gemini37_admission()
+            if self.admission is not None
+            else body_for_leg(leg, self.run_id, cache_scope)
         )
         model_path = urllib.parse.quote(leg.model, safe="-._")
-        counted = self.api.request(
-            f"/v1beta/models/{model_path}:countTokens", "POST", count_body(body), profile_id
-        )
+        not_after = None
+        count_request_id = None
+        if self.admission is not None:
+            not_after = int(time.time()) + self.admission.deadline_seconds
+            count_request_id = str(uuid.uuid4())
+            if count_request_id in before_ids:
+                raise CalibrationError("generated Gemini count request id already exists")
+        count_options: dict[str, Any] = {}
+        if self.admission is not None:
+            count_options = {
+                "calibration_request_id": count_request_id,
+                "calibration_not_after": not_after,
+                "capture_dispatch": True,
+                "allow_safe_retry": False,
+            }
+        count_attempt = None
+        if self.admission is not None:
+            count_attempt = {
+                "kind": "countTokens",
+                "request_id": count_request_id,
+                "profile_id": profile_id,
+                "model": leg.model,
+                "not_after": str(not_after),
+                "transport_invocations": 1,
+                "outcome": "invoked",
+            }
+            self.admission_attempts.append(count_attempt)
+        try:
+            counted = self.api.request(
+                f"/v1beta/models/{model_path}:countTokens",
+                "POST",
+                count_body(body),
+                profile_id,
+                **count_options,
+            )
+        except (CalibrationError, subprocess.TimeoutExpired):
+            if count_attempt is not None:
+                count_attempt["outcome"] = "terminal_failure"
+            raise
+        count_dispatch_ms = None
+        if self.admission is not None:
+            if not isinstance(counted, JsonResponse):
+                raise CalibrationError("Gemini 3.7 countTokens returned no attested envelope")
+            try:
+                count_dispatch_ms = require_dispatch_before_deadline(
+                    counted.dispatch_ms,
+                    not_after or 0,
+                )
+            except CalibrationError:
+                if count_attempt is not None:
+                    count_attempt["outcome"] = "terminal_failure"
+                raise
+            counted = counted.payload
+            if count_attempt is not None:
+                count_attempt["outcome"] = "attested_response"
+                count_attempt["dispatch_ms"] = str(count_dispatch_ms)
         input_tokens = as_int(counted.get("totalTokens"), f"{leg.name}.countTokens")
         rates = self.rates[leg.model]
         if leg.kind == "long" and input_tokens <= rates.long_threshold:
@@ -1559,19 +1734,67 @@ class Runner:
             leg.kind,
             leg.image_size,
         )
+        if self.admission is not None and self.budget.limit_nano != upper:
+            raise CalibrationError(
+                "Gemini 3.7 admission budget must equal the exact current-tariff ceiling "
+                f"{upper} nanoUSD, got {self.budget.limit_nano}"
+            )
         self.budget.require(upper)
         suffix = "streamGenerateContent?alt=sse" if leg.stream else "generateContent"
         calibration_request_id = str(uuid.uuid4())
         if calibration_request_id in before_ids:
             raise CalibrationError("generated Gemini calibration request id already exists")
-        generation_response = self.api.request(
-            f"/v1beta/models/{model_path}:{suffix}",
-            "POST",
-            body,
-            profile_id,
-            raw_ok=leg.stream,
-            calibration_request_id=calibration_request_id,
-        )
+        generation_options: dict[str, Any] = {}
+        if self.admission is not None:
+            generation_options = {
+                "calibration_not_after": not_after,
+                "allow_safe_retry": False,
+            }
+        generation_attempt = None
+        if self.admission is not None:
+            generation_attempt = {
+                "kind": "paid_generation",
+                "request_id": calibration_request_id,
+                "profile_id": profile_id,
+                "model": leg.model,
+                "not_after": str(not_after),
+                "upper_bound_nanousd": str(upper),
+                "transport_invocations": 1,
+                "outcome": "invoked",
+            }
+            self.admission_attempts.append(generation_attempt)
+        try:
+            generation_response = self.api.request(
+                f"/v1beta/models/{model_path}:{suffix}",
+                "POST",
+                body,
+                profile_id,
+                raw_ok=leg.stream,
+                calibration_request_id=calibration_request_id,
+                **generation_options,
+            )
+        except (CalibrationError, subprocess.TimeoutExpired):
+            if generation_attempt is not None:
+                generation_attempt["outcome"] = "terminal_failure"
+            raise
+        generation_dispatch_ms = None
+        if self.admission is not None:
+            if not isinstance(generation_response, GenerationResponse):
+                raise CalibrationError(
+                    f"{leg.name}: generation client returned no verifiable response envelope"
+                )
+            try:
+                generation_dispatch_ms = require_dispatch_before_deadline(
+                    generation_response.dispatch_ms,
+                    not_after or 0,
+                )
+            except CalibrationError:
+                if generation_attempt is not None:
+                    generation_attempt["outcome"] = "terminal_failure"
+                raise
+            if generation_attempt is not None:
+                generation_attempt["outcome"] = "attested_response"
+                generation_attempt["dispatch_ms"] = str(generation_dispatch_ms)
         deadline = time.monotonic() + self.timeout
         event = None
         observed = before
@@ -1597,6 +1820,9 @@ class Runner:
             )
         actual = event["api_total_nanousd"]
         self.budget.charge(profile_id, actual, upper)
+        if generation_attempt is not None:
+            generation_attempt["outcome"] = "immutable_event_reconciled"
+            generation_attempt["actual_nanousd"] = str(actual)
         if not isinstance(generation_response, GenerationResponse):
             raise CalibrationError(
                 f"{leg.name}: generation client returned no verifiable response envelope"
@@ -1665,6 +1891,17 @@ class Runner:
             "usage": {field: str(event[field]) for field in EVENT_TOKEN_FIELDS},
             "api_cost": {field: str(event[field]) for field in EVENT_MONEY_FIELDS},
         }
+        if self.admission is not None:
+            record["admission"] = {
+                "implementation_sha": self.admission.implementation_sha,
+                "count_request_id": count_request_id,
+                "not_after": str(not_after),
+                "count_dispatch_ms": str(count_dispatch_ms),
+                "generation_dispatch_ms": str(generation_dispatch_ms),
+                "one_count_attempt": True,
+                "one_paid_generation_attempt": True,
+                "paid_retry_permitted": False,
+            }
         self.records.append(record)
         print(f"{profile_id} {leg.name}: ${actual / NANO_PER_USD:.6f}", flush=True)
         return record
@@ -1734,6 +1971,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--http-timeout", type=int, default=240)
     parser.add_argument("--report", default="/tmp/gemini-calibration-report.json")
     parser.add_argument("--resume-report")
+    parser.add_argument("--gemini-37-admission", action="store_true")
+    parser.add_argument("--admission-profile")
+    parser.add_argument("--implementation-sha")
     parser.add_argument("--production-capacity-over-ssh", action="store_true")
     parser.add_argument("--production-api-over-ssh", action="store_true")
     parser.add_argument("--production-ssh-target", default=DEFAULT_PRODUCTION_SSH_TARGET)
@@ -1748,12 +1988,56 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         validate_production_ssh_target(args.production_ssh_target)
         validate_production_api_port(args.production_capacity_port)
         validate_production_api_port(args.production_api_port)
+        if args.implementation_sha is not None:
+            validate_implementation_sha(args.implementation_sha)
     except CalibrationError as error:
         parser.error(str(error))
+    if args.gemini_37_admission:
+        if args.resume_report:
+            parser.error("Gemini 3.7 admission cannot resume or replay a prior report")
+        if args.models:
+            parser.error("Gemini 3.7 admission fixes the sole model itself")
+        if not args.admission_profile:
+            parser.error("Gemini 3.7 admission requires --admission-profile")
+        if not args.implementation_sha:
+            parser.error("Gemini 3.7 admission requires --implementation-sha")
+        if args.execute and not (
+            args.production_capacity_over_ssh and args.production_api_over_ssh
+        ):
+            parser.error("Gemini 3.7 admission requires both production SSH transports")
+        if args.production_capacity_port != args.production_api_port:
+            parser.error("Gemini 3.7 admission requires one exact canary port")
+        if args.production_api_port == DEFAULT_PRODUCTION_API_PORT:
+            parser.error("Gemini 3.7 admission must target a non-public canary port")
     return args
 
 
 def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
+    if args.gemini_37_admission:
+        return {
+            "schema": "gemini-3.7-admission-plan/v1",
+            "mode": "dry-run",
+            "paid_requests_sent": 0,
+            "planned_count_requests": 1,
+            "planned_paid_generation_requests": 1,
+            "budget_nanousd_total": str(budget_nano),
+            "model": GEMINI_37_ADMISSION_MODEL,
+            "profile_id": args.admission_profile,
+            "implementation_sha": args.implementation_sha,
+            "stream": True,
+            "thinking_level": None,
+            "max_output_tokens": GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+            "deadline_seconds": GEMINI_37_ADMISSION_DEADLINE_SECONDS,
+            "guards": [
+                "one-free-countTokens-attempt",
+                "one-paid-generation-attempt",
+                "no-resume-retry-reconnect-or-replay",
+                "exact-profile-and-uuidv4-attribution",
+                "exact-current-tariff-ceiling",
+                "pre-deadline-count-and-generation-dispatch-attestation",
+                "raw-modelVersion-terminal-usage-and-incremental-sse",
+            ],
+        }
     return {
         "schema": "gemini-live-calibration-plan/v1",
         "mode": "dry-run",
@@ -1835,7 +2119,11 @@ def main(argv: list[str] | None = None) -> int:
         and state["cooling_until"] <= now
         and state["persistence_ok"]
     )
-    profiles = resume.profiles if resume else healthy_profiles
+    profiles = (
+        [args.admission_profile]
+        if args.gemini_37_admission
+        else (resume.profiles if resume else healthy_profiles)
+    )
     if not profiles:
         raise CalibrationError("no healthy exact-target Gemini profiles")
     missing_plan = [
@@ -1844,7 +2132,11 @@ def main(argv: list[str] | None = None) -> int:
     if missing_plan:
         raise CalibrationError("Gemini profiles have no authoritative paid plan: " + ", ".join(missing_plan))
     rates = rate_catalog(baseline)
-    models = resume.models if resume else (args.models or sorted(rates))
+    models = (
+        [GEMINI_37_ADMISSION_MODEL]
+        if args.gemini_37_admission
+        else (resume.models if resume else (args.models or sorted(rates)))
+    )
     unknown = sorted(set(models) - set(rates))
     if unknown:
         raise CalibrationError("models have no authoritative Gemini rate card: " + ", ".join(unknown))
@@ -1878,6 +2170,10 @@ def main(argv: list[str] | None = None) -> int:
         args.profile_delay,
         run_id,
         profile_cache_scopes(profiles),
+        Gemini37Admission(
+            profile_id=args.admission_profile,
+            implementation_sha=args.implementation_sha,
+        ) if args.gemini_37_admission else None,
     )
     runner.records = list(resume.records) if resume else []
     unavailable: list[dict[str, Any]] = list(resume.unavailable) if resume else []
@@ -1886,7 +2182,17 @@ def main(argv: list[str] | None = None) -> int:
         for profile in profiles
         if profile not in healthy_profiles
     }
-    legs = build_coverage_legs(models, run_id, rates)
+    legs = (
+        [Leg(
+            f"admission:{GEMINI_37_ADMISSION_MODEL}:default-sse",
+            GEMINI_37_ADMISSION_MODEL,
+            "fresh",
+            stream=True,
+            max_output_tokens=GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+        )]
+        if args.gemini_37_admission
+        else build_coverage_legs(models, run_id, rates)
+    )
     expected = {(profile, leg.name): leg for leg in legs for profile in profiles}
     completed = {
         (record["profile_id"], record["leg"])
@@ -1935,6 +2241,8 @@ def main(argv: list[str] | None = None) -> int:
                 completed.add(key)
                 continue
             except HttpCalibrationError as error:
+                if args.gemini_37_admission:
+                    raise
                 if error.status in {400, 403, 404}:
                     unavailable.append({
                         "profile_id": profile,
@@ -1971,7 +2279,12 @@ def main(argv: list[str] | None = None) -> int:
     ]
     blocking_unavailable = [item for item in unavailable if item.get("blocking", True)]
     complete = failure is None and not pending and not blocking_unavailable
-    resume_safe = failure is None and bool(pending) and not blocking_unavailable
+    resume_safe = (
+        not args.gemini_37_admission
+        and failure is None
+        and bool(pending)
+        and not blocking_unavailable
+    )
     report = {
         "schema": "gemini-live-calibration/v2",
         "run_id": run_id,
@@ -2003,6 +2316,25 @@ def main(argv: list[str] | None = None) -> int:
         "model_profitability": model_profitability(runner.records),
         "final_capacity": final,
     }
+    if args.gemini_37_admission:
+        report["admission_contract"] = {
+            "schema": "gemini-3.7-admission/v1",
+            "implementation_sha": args.implementation_sha,
+            "profile_id": args.admission_profile,
+            "model": GEMINI_37_ADMISSION_MODEL,
+            "planned_count_requests": 1,
+            "planned_paid_generation_requests": 1,
+            "resume_permitted": False,
+        }
+        report["admission_transport_attempts"] = runner.admission_attempts
+        report["admission_spend_reconciled"] = bool(
+            runner.admission_attempts
+            and all(
+                attempt["kind"] != "paid_generation"
+                or attempt["outcome"] == "immutable_event_reconciled"
+                for attempt in runner.admission_attempts
+            )
+        )
     report_path = Path(args.report)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     print(f"report: {report_path}")
