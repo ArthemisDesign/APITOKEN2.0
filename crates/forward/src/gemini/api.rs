@@ -48,11 +48,7 @@ const IMAGE_STREAM_START_MAX_CHUNKS: usize = 8192;
 // generation endpoint rejects that exact boundary while accepting 65,535. Keep the public model
 // contract intact and adapt only the private wire request.
 const ANTIGRAVITY_WIRE_OUTPUT_TOKEN_LIMIT: u64 = 65_535;
-const DORMANT_DEADLINE_MODEL: &str = "gemini-3.7-flash";
-/// The withdrawn 256-token admission spent 241/252 output tokens on thinking and terminated at
-/// `MAX_TOKENS`. A successor exact-SHA canary must make the reviewed 512-token bound explicit; the
-/// dormant route rejects the old bound before provider dispatch so it cannot be replayed by mistake.
-const DORMANT_37_ADMISSION_OUTPUT_TOKENS: u64 = 512;
+const GEMINI_37_MODEL: &str = "gemini-3.7-flash";
 const CALIBRATION_DISPATCH_HEADER: &str = "x-apitoken-calibration-dispatch-ms";
 
 /// Native Gemini accepts proto-JSON in either camelCase or snake_case. Code Assist and the public
@@ -1491,16 +1487,6 @@ fn validate_gemini_37_request(body: &Value) -> Result<(), ApiError> {
                 ));
             }
         }
-        if let Some(max_output_tokens) = generation_config.get("maxOutputTokens") {
-            let max_output_tokens = max_output_tokens.as_u64().ok_or_else(|| {
-                ApiError::invalid("generationConfig.maxOutputTokens must be an integer.")
-            })?;
-            if max_output_tokens != DORMANT_37_ADMISSION_OUTPUT_TOKENS {
-                return Err(ApiError::invalid(
-                    "The dormant Gemini 3.7 admission requires maxOutputTokens=512.",
-                ));
-            }
-        }
         if let Some(thinking_config) = generation_config.get("thinkingConfig") {
             let thinking_config = thinking_config.as_object().ok_or_else(|| {
                 ApiError::invalid("The generationConfig.thinkingConfig field must be an object.")
@@ -2864,12 +2850,7 @@ async fn api_inner(
             return Err(ApiError::unavailable("gemini_calibration_deadline_scope"));
         }
         let page = parse_list_models_query(request.uri().query())?;
-        let all = gateway
-            .config()
-            .models
-            .iter()
-            .filter(|model| model.is_publicly_discoverable())
-            .collect::<Vec<_>>();
+        let all = gateway.config().models.iter().collect::<Vec<_>>();
         let start = page.start.min(all.len());
         let end = start.saturating_add(page.size).min(all.len());
         let models = all[start..end]
@@ -2895,28 +2876,25 @@ async fn api_inner(
         if calibration_not_after.is_some() {
             return Err(ApiError::unavailable("gemini_calibration_deadline_scope"));
         }
-        if !model.is_publicly_discoverable() {
-            return Err(ApiError::not_found());
-        }
         // A native GetModel ignores query parameters entirely.
         let _admission = pending.without_reserve();
         return Ok((StatusCode::OK, axum::Json(model_value(&model))).into_response());
     }
-    // Stage 1 keeps 3.7 dormant even when an operator has added it to this process's explicit
-    // model configuration. The admin-only exact target is the sole upstream-bound canary lane;
-    // ordinary admin/customer calls fail before body buffering, reserve, profile selection or IO.
-    if model.id == DORMANT_DEADLINE_MODEL && calibration_target.is_none() {
-        return Err(ApiError::not_found());
-    }
-    if model.id == DORMANT_DEADLINE_MODEL && calibration_not_after.is_none() {
+    // A supplied exact-profile calibration for 3.7 retains the one-shot deadline fence used by
+    // the admitted evidence path. Ordinary customer traffic carries neither header and follows
+    // the normal retry/reserve/settlement lifecycle.
+    if model.id == GEMINI_37_MODEL
+        && calibration_target.is_some()
+        && calibration_not_after.is_none()
+    {
         return Err(ApiError::unavailable(
             "gemini_calibration_deadline_required",
         ));
     }
-    if model.id != DORMANT_DEADLINE_MODEL && calibration_not_after.is_some() {
+    if model.id != GEMINI_37_MODEL && calibration_not_after.is_some() {
         return Err(ApiError::unavailable("gemini_calibration_deadline_scope"));
     }
-    let deadline_bound_exact = model.id == DORMANT_DEADLINE_MODEL
+    let deadline_bound_exact = model.id == GEMINI_37_MODEL
         && calibration_target.is_some()
         && calibration_not_after.is_some();
     let rate_limit_request_id = pending.request_id().to_string();

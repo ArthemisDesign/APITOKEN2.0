@@ -1883,8 +1883,8 @@ async fn tiered_public_model_uses_one_wire_id_for_generate_stream_and_count_toke
 }
 
 #[tokio::test]
-async fn dormant_37_uses_observed_tiered_wire_for_generate_stream_and_count_tokens() {
-    let non_stream = MockReply::json(
+async fn published_37_uses_observed_tiered_wire_for_ordinary_and_exact_requests() {
+    let ordinary_non_stream = MockReply::json(
         StatusCode::OK,
         json!({
             "response": {
@@ -1894,13 +1894,34 @@ async fn dormant_37_uses_observed_tiered_wire_for_generate_stream_and_count_toke
             }
         }),
     );
-    let (stream, _drained) = MockReply::stream(vec![MockChunk::Data(Bytes::from_static(
+    let (ordinary_stream, _ordinary_drained) = MockReply::stream(vec![MockChunk::Data(Bytes::from_static(
         b"data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":2,\"candidatesTokenCount\":1},\"modelVersion\":\"gemini-3.7-flash-upstream-canary\"}}\n\n",
     ))]);
-    let count = MockReply::json(StatusCode::OK, json!({"totalTokens": 2}));
+    let ordinary_count = MockReply::json(StatusCode::OK, json!({"totalTokens": 2}));
+    let exact_non_stream = MockReply::json(
+        StatusCode::OK,
+        json!({
+            "response": {
+                "candidates": [{"content": {"role": "model", "parts": [{"text": "ok"}]}}],
+                "usageMetadata": {"promptTokenCount": 2, "candidatesTokenCount": 1},
+                "modelVersion": "gemini-3.7-flash-upstream-canary"
+            }
+        }),
+    );
+    let (exact_stream, _exact_drained) = MockReply::stream(vec![MockChunk::Data(Bytes::from_static(
+        b"data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":2,\"candidatesTokenCount\":1},\"modelVersion\":\"gemini-3.7-flash-upstream-canary\"}}\n\n",
+    ))]);
+    let exact_count = MockReply::json(StatusCode::OK, json!({"totalTokens": 2}));
     let server = start_mock(MockState::with_replies([(
         PROFILE_A_KEY,
-        vec![non_stream, stream, count],
+        vec![
+            ordinary_non_stream,
+            ordinary_stream,
+            ordinary_count,
+            exact_non_stream,
+            exact_stream,
+            exact_count,
+        ],
     )]))
     .await;
     let fixture = gateway_fixture_with_models(
@@ -1935,9 +1956,9 @@ async fn dormant_37_uses_observed_tiered_wire_for_generate_stream_and_count_toke
         ),
     ] {
         let response = invoke_uri(app.clone(), uri, body).await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::OK);
     }
-    assert!(server.state.seen().is_empty());
+    assert_eq!(server.state.seen().len(), 3);
 
     let missing_deadline = axum::extract::Request::builder()
         .method(Method::POST)
@@ -1972,7 +1993,7 @@ async fn dormant_37_uses_observed_tiered_wire_for_generate_stream_and_count_toke
             .and_then(|value| value.to_str().ok()),
         Some("not_started")
     );
-    assert!(server.state.seen().is_empty());
+    assert_eq!(server.state.seen().len(), 3);
 
     let expired = invoke_exact_uri_with_deadline(
         app.clone(),
@@ -1992,7 +2013,7 @@ async fn dormant_37_uses_observed_tiered_wire_for_generate_stream_and_count_toke
         Some("not_started")
     );
     assert!(!expired.headers().contains_key(CALIBRATION_DISPATCH_HEADER));
-    assert!(server.state.seen().is_empty());
+    assert_eq!(server.state.seen().len(), 3);
 
     let generation = json!({
         "contents": [{"role": "user", "parts": [{"text": "reply ok"}]}],
@@ -2048,7 +2069,7 @@ async fn dormant_37_uses_observed_tiered_wire_for_generate_stream_and_count_toke
     assert_eq!(response_json(response).await["totalTokens"], 2);
 
     let seen = server.state.seen();
-    assert_eq!(seen.len(), 3);
+    assert_eq!(seen.len(), 6);
     for request in &seen {
         let body: Value = serde_json::from_slice(&request.body).unwrap();
         let wire = body
@@ -2061,8 +2082,21 @@ async fn dormant_37_uses_observed_tiered_wire_for_generate_stream_and_count_toke
 }
 
 #[tokio::test]
-async fn dormant_37_metered_customer_is_denied_before_upstream_or_reserve() {
-    let server = start_mock(MockState::default()).await;
+async fn published_37_customer_uses_tiered_wire_and_public_response_identity() {
+    let server = start_mock(MockState::with_replies([(
+        PROFILE_A_KEY,
+        vec![MockReply::json(
+            StatusCode::OK,
+            json!({
+                "response": {
+                    "candidates": [{"content": {"role": "model", "parts": [{"text": "ok"}]}}],
+                    "usageMetadata": {"promptTokenCount": 2, "candidatesTokenCount": 1},
+                    "modelVersion": "gemini-3.7-flash-tiered"
+                }
+            }),
+        )],
+    )]))
+    .await;
     let fixture = gateway_fixture_with_models(
         &server.upstream,
         &[None],
@@ -2072,8 +2106,7 @@ async fn dormant_37_metered_customer_is_denied_before_upstream_or_reserve() {
         65_536,
         &["gemini-3.7-flash"],
     );
-    let (app, billing, path) = billed_app(fixture.gateway.clone()).await;
-    let before = billing.totals().await.unwrap();
+    let app = app_state(fixture.gateway.clone(), None);
 
     let response = invoke_uri(
         app,
@@ -2082,14 +2115,17 @@ async fn dormant_37_metered_customer_is_denied_before_upstream_or_reserve() {
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    assert!(server.state.seen().is_empty());
+    assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        billing.totals().await.unwrap().reserved_nano,
-        before.reserved_nano
+        response_json(response).await["modelVersion"],
+        "gemini-3.7-flash"
     );
-    drop(billing);
-    let _ = fs::remove_file(path);
+    let seen = server.state.seen();
+    assert_eq!(seen.len(), 1);
+    let wire: Value = serde_json::from_slice(&seen[0].body).unwrap();
+    assert!(wire["model"]
+        .as_str()
+        .is_some_and(|model| model.ends_with("gemini-3.7-flash-tiered")));
 }
 
 #[tokio::test]
@@ -2226,7 +2262,7 @@ async fn dormant_37_rejects_removed_controls_and_prefill_before_upstream() {
 }
 
 #[test]
-fn dormant_37_rejects_the_withdrawn_output_bound_before_dispatch() {
+fn published_37_accepts_standard_output_bounds() {
     let request = |max_output_tokens| {
         json!({
             "contents": [{"role": "user", "parts": [{"text": "reply ok"}]}],
@@ -2235,9 +2271,9 @@ fn dormant_37_rejects_the_withdrawn_output_bound_before_dispatch() {
     };
     let model = catalog_model("gemini-3.7-flash");
 
-    assert!(validate_generation_request(&request(256), &model).is_err());
+    assert!(validate_generation_request(&request(256), &model).is_ok());
     assert!(validate_generation_request(&request(512), &model).is_ok());
-    assert!(validate_generation_request(&request(513), &model).is_err());
+    assert!(validate_generation_request(&request(513), &model).is_ok());
 }
 
 #[tokio::test]
@@ -2775,7 +2811,7 @@ async fn exact_target_stream_start_provider_error_is_terminal_and_execution_ambi
 }
 
 #[tokio::test]
-async fn dormant_37_is_addressable_by_canary_but_absent_from_native_discovery() {
+async fn published_37_is_listed_and_resolves_by_exact_public_id() {
     let server = start_mock(MockState::with_replies([(
         PROFILE_A_KEY,
         Vec::<MockReply>::new(),
@@ -2803,8 +2839,9 @@ async fn dormant_37_is_addressable_by_canary_but_absent_from_native_discovery() 
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await;
-    assert_eq!(body["models"].as_array().unwrap().len(), 1);
-    assert_eq!(body["models"][0]["name"], "models/gemini-3.6-flash");
+    assert_eq!(body["models"].as_array().unwrap().len(), 2);
+    assert_eq!(body["models"][0]["name"], "models/gemini-3.7-flash");
+    assert_eq!(body["models"][1]["name"], "models/gemini-3.6-flash");
 
     let get = axum::extract::Request::builder()
         .method(Method::GET)
@@ -2814,9 +2851,12 @@ async fn dormant_37_is_addressable_by_canary_but_absent_from_native_discovery() 
         .unwrap();
     let response = api_inner(app, "198.51.100.10:12345".parse().unwrap(), get)
         .await
-        .unwrap_err()
-        .into_response();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(response).await["name"],
+        "models/gemini-3.7-flash"
+    );
 }
 
 #[tokio::test]

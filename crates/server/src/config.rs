@@ -790,12 +790,12 @@ fn gemini_config() -> Option<GeminiConfig> {
     let requested = ev_or(
         "CLAUDE_API_GEMINI_MODELS",
         // Public Gemini 3 ids require reviewed canonical→private tier routing. A model enters this
-        // production default only after generate + native stream + countTokens pass on every
-        // supported thinking level of the current subscription profile. In particular, 2.5 Pro
+        // production default only after generate + native stream + countTokens pass for every
+        // capability and thinking level the product advertises. In particular, 2.5 Pro
         // still advertises quota without a working generation route. Gemini 3 Flash
         // Preview entered this default only after the exact implementation passed generation,
         // terminal usage, incremental SSE, cache, audio and tool controls on Pro and Ultra.
-        "gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite",
+        "gemini-3.1-flash-image,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite",
     )
     .split(',')
     .map(str::trim)

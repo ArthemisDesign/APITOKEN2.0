@@ -372,7 +372,7 @@ Gemini runtime (`config.env` or `server.env`):
 CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json
 CLAUDE_API_GEMINI_CREDENTIAL_LAYOUT=sealed-roster
 CLAUDE_API_GEMINI_CREDENTIAL_KEYS=current:<64-hex>[,old:<64-hex>]
-CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite
+CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-image,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite
 CLAUDE_API_GEMINI_QUOTA_RESERVE=0.05
 CLAUDE_API_GEMINI_QUOTA_RESERVE_JITTER=0.01
 ```
@@ -434,14 +434,16 @@ Production startup hashes the binary before accepting profiles, and each helper 
 the Node version plus Linux/x64 platform. A Node/OpenSSL upgrade is therefore an explicit reviewed
 fingerprint change, never an ambient package update.
 
-### Dormant Gemini 3.7 exact-admission producer
+### Gemini 3.7 admission and public identity
 
-`gemini-3.7-flash` remains private and dormant until the separate publication commit. Its
-engine-side producer accepts only an
+`gemini-3.7-flash` is the sole public identity. Ordinary customer traffic follows the normal
+Gemini reserve, retry, delivery and settlement lifecycle and maps privately to the confirmed
+`gemini-3.7-flash-tiered` Antigravity row; native and universal responses always rewrite that alias
+back to `gemini-3.7-flash`. The historical exact-admission producer accepts only an
 admin-authenticated exact-profile request carrying exactly one canonical
 `x-apitoken-calibration-profile`, UUIDv4 `x-apitoken-calibration-request-id` and positive decimal
-Unix-seconds `x-apitoken-calibration-not-after`. The deadline is mandatory for 3.7 generation and
-`countTokens`, is rejected on other models and ordinary/public requests, and grants the half-open
+Unix-seconds `x-apitoken-calibration-not-after`. The deadline is mandatory only when an exact-profile
+3.7 calibration target is supplied, is rejected on other models, and grants the half-open
 interval `now < not_after`; equality is expired. A successful provider response carries exactly one
 canonical positive epoch-millisecond `x-apitoken-calibration-dispatch-ms`, also strictly below
 `not_after * 1000`. That attestation is absent from every ordinary response. On this deadline-bound
@@ -464,7 +466,7 @@ admission evidence. That closed admission accepts public `gemini-3.7-flash` or t
 canonical public-id rewriting, so a customer never sees the private alias.
 The dedicated root admission consumer, trigger and private unit were retired after their delivery
 guard introduced a dependency on paid GitHub branch protection. The producer remains available only
-as dormant exact-profile runtime capability; ordinary traffic still fails before dispatch. The
+as an exact-profile evidence capability; no permanent canary or helper is installed. The
 closed `--gemini-37-admission` mode of the existing generic calibration runner is its sole reviewed
 consumer: it targets an operator-launched exact-SHA non-public canary, disables retry even for the
 one free count, requires the exact current compiled-tariff ceiling and permits at most one paid SSE
@@ -472,15 +474,13 @@ generation. The 2026-08-15 attempt on runtime `20d945ce59e9dea749ec7c74b7d322525
 completed its one free count transport with a valid dispatch attestation, then its sole paid transport received upstream 404
 `NOT_FOUND` for the exact public id. It produced no model output, terminal usage, immutable turn or
 streaming proof. That implementation is withdrawn and rejected by the runner before network I/O;
-it must not be retried. Production defaults, public catalogue, router presets and storefronts stay
-unchanged. At `2026-08-15T01:31:54+08:00`, a later owned `fetchAvailableModels` snapshot exposed the
+it must not be retried. At `2026-08-15T01:31:54+08:00`, a later owned `fetchAvailableModels` snapshot exposed the
 exact private row `gemini-3.7-flash-tiered` with positive remaining quota on six Pro profiles and one
 Ultra profile. The dormant producer now maps every supported 3.7 thinking level to that exact row and
 uses it as the sole quota identity. Runtime `2c8aca0d…` then completed one positive count and one
 reconciled Ultra-plan generation, but the latter spent 241 of 252 output tokens on thinking and
 terminated with `MAX_TOKENS` at the 256-token bound instead of `STOP`. It is withdrawn and rejected
-before network I/O. The successor producer accepts only an explicit `maxOutputTokens=512`; the old
-256-token payload and any other explicit value fail before dispatch. On 2026-08-15 the person
+before network I/O. The successful successor admission used explicit `maxOutputTokens=512`. On 2026-08-15 the person
 authorized exactly one no-retry paid generation for successor SHA `c4f0773a…`, with an exact
 `$0.788352` ceiling. That SHA was production GREEN and its one-shot live returned the exact `1 … 64`
 text across eight SSE frames (seven visible), terminal `STOP`, authoritative 20 input / 478 output
@@ -488,7 +488,9 @@ tokens including 296 thinking tokens, and raw `gemini-3.7-flash-tiered`. The imm
 reconciled `$0.0018075`; count and generation each had exactly one invocation. Under the person's
 explicit public/private identity contract this is GREEN admission evidence, not a replay: ordinary
 responses still rewrite the private alias to public `gemini-3.7-flash`. The authorization is
-consumed, both earlier SHAs remain withdrawn, and publication proceeds separately.
+consumed, both earlier SHAs remain withdrawn, and the separate publication exposes only the proven
+default text/SSE surface. Explicit thinking levels, tools, structured output and untested input
+modalities are not advertised.
 
 ## Runtime behavior
 
@@ -558,7 +560,7 @@ For every request the runtime:
   Antigravity effort/quota bucket before admission. Quota and model cooling follow that private
   bucket, while affinity, customer billing and the public catalogue stay on the canonical Developer
   API model id. Ordinary and established exact responses rewrite `modelVersion` to that public id;
-  only the deadline-bound dormant 3.7 lane preserves the raw upstream identity as admission
+  only the deadline-bound exact 3.7 evidence lane preserves the raw upstream identity as admission
   evidence;
 - adapts valid public generation requests to Antigravity's stricter private wire contract: blank or
   omitted `contents[].role` values are inferred as alternating `user`/`model` turns, and the public
@@ -646,9 +648,9 @@ move the realized blend, and Google can change quota policy; immutable observati
 upgrades replay the same facts. The controlled procedure is
 `docs/ops/GEMINI_CALIBRATION.md`. Official source: <https://antigravity.google/docs/plans>.
 
-The model allowlist is local and price-catalog pinned. The production default contains seven text
+The model allowlist is local and price-catalog pinned. The production default contains eight text
 models plus the separately routed Nano Banana 2 image model:
-`gemini-3.1-flash-image`, `gemini-3.6-flash`, `gemini-3.5-flash`,
+`gemini-3.1-flash-image`, `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`,
 `gemini-3-flash-preview`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`,
 `gemini-2.5-flash`, and `gemini-2.5-flash-lite`. The original seven were reconfirmed on Google AI
 Pro on 2026-07-31; Flash Preview was admitted on 2026-08-03 only after a fresh exact-implementation
@@ -662,7 +664,7 @@ A Developer API price entry proves only that the gateway can meter a model; it d
 an Antigravity subscription can serve it. Publication additionally requires an official
 Antigravity model contract, an exact canonical-to-private route and live generation evidence.
 A configured id still needs a live smoke test against every tier because Google can change private
-model availability independently. The production systemd argv pins this reviewed eight-model
+model availability independently. The production systemd argv pins this reviewed nine-model
 set after shared env files, so a stale
 `config.env` cannot silently re-enable Developer-API-only models on the subscription runtime.
 
@@ -754,7 +756,7 @@ text-generation check. A quota row by itself is never admission evidence.
 
 | Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
 |---|---|---|---|
-| `gemini-3.7-flash` | public → `gemini-3.7-flash-tiered`; the same exact private row is the sole quota identity; ordinary responses rewrite it to the public id | Google announced the Developer API model GA on 2026-08-13; exact-public-ID runtime `20d945ce…` was withdrawn after an attested count plus paid SSE 404. Tiered runtime `2c8aca0d…` was withdrawn after a positive count and reconciled `MAX_TOKENS`. Production-GREEN successor `c4f0773a…` used explicit 512 and passed one count plus one no-retry paid generation: exact text, 8/7 incremental frames, terminal `STOP`/usage, raw confirmed tiered alias, 20 input + 478 output tokens and reconciled `$0.0018075` | Live admitted for the conservative default text/SSE surface. It remains absent from defaults, discovery, router and storefronts only until the separate publication commit. Explicit thinking levels, tools, structured output and untested modalities remain unclaimed |
+| `gemini-3.7-flash` | public → `gemini-3.7-flash-tiered`; the same exact private row is the sole quota identity; ordinary responses rewrite it to the public id | Google announced the Developer API model GA on 2026-08-13; exact-public-ID runtime `20d945ce…` was withdrawn after an attested count plus paid SSE 404. Tiered runtime `2c8aca0d…` was withdrawn after a positive count and reconciled `MAX_TOKENS`. Production-GREEN successor `c4f0773a…` used explicit 512 and passed one count plus one no-retry paid generation: exact text, 8/7 incremental frames, terminal `STOP`/usage, raw confirmed tiered alias, 20 input + 478 output tokens and reconciled `$0.0018075` | published for conservative default text/SSE; explicit thinking levels, tools, structured output and untested modalities remain unclaimed |
 | `gemini-3-flash-preview` | public → `gemini-3-flash`; quota admission joins `gemini-3-flash` + `gemini-3-flash-agent`; configured Antigravity origin, 2.2.1 UA, minimal headers; bounded inline PCM WAV fallback uses exact integral `duration × 32` AUDIO tokens and fails closed on ambiguous cache | fresh runner SHA `cc7e5beb…` / byte-identical runtime implementation completed 22 paid turns on Pro+Ultra: minimal/low/medium/high, incremental SSE, final cache reads with 8,170 cached tokens, fresh/replayed 8-token PCM audio and forced function calls; public identity and terminal response/event usage matched | published; generation 5 main catalog, production defaults, router manifest and public web/docs |
 | `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
 | `gemini-3.5-flash` | minimal → `gemini-3.5-flash-extra-low`; low/medium/high/default → `gemini-3.5-flash-low`, with the requested native thinking level preserved | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; default and `alt=json` JSON streams 200; canonical modelVersion and non-zero usage verified on Google AI Pro on 2026-07-31 | published |

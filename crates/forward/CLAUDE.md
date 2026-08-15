@@ -846,13 +846,12 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    provable cache separation (`cached=0`, `cached=prompt` or an explicit cached AUDIO). 3.6 Flash selects
    `gemini-3.6-flash-{low,medium,high}`, 3.1 Pro Preview —
    `gemini-3.1-pro-low`/`gemini-pro-agent`.
-   Gemini 3.7 Flash remains dormant, but a 2026-08-15 owned `fetchAvailableModels` snapshot now
-   establishes the exact private candidate `gemini-3.7-flash-tiered` on Pro and Ultra. Explicit
-   canaries map public `gemini-3.7-flash` to that one row; production defaults and native discovery
-   must omit it even when that canary configuration is loaded, because a quota row is not generation
-   proof. The canary's protected loopback `/gemini-subs` deliberately
-   retains its conversion row: a controlled live runner needs that exact tariff and plan-bound
-   evidence, and it is not customer discovery. Its private producer admits only an admin exact
+   Gemini 3.7 Flash is published under the sole client identity `gemini-3.7-flash`, mapped privately
+   to the live-admitted `gemini-3.7-flash-tiered` row. The 2026-08-15 exact-SHA gate proved real
+   output, terminal usage, incremental SSE and authoritative settlement; ordinary JSON/SSE always
+   rewrites the private alias to the public id. Discovery advertises only the conservative text/SSE
+   surface: no explicit thinking levels, tools, structured output or untested modalities. The
+   retained generic evidence producer admits only an admin exact
    profile plus canonical UUIDv4 `x-apitoken-calibration-request-id` and positive Unix-seconds
    `x-apitoken-calibration-not-after`; the half-open fence is `now < not_after`, so equality expires.
    Rust rechecks after token acquisition and Node carries the deadline only in IPC, checks every
@@ -861,23 +860,23 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    that event before `_flush`; a listener-side destroy therefore writes no HTTP bytes. Exact
    `countTokens` may refresh once with `NeverReplay`; paid generation requires an already-fresh
    cached bearer. Every deadline-bound upstream POST is one-shot, with no helper restart, 401
-   resend, profile rotation or smooth retry. This producer is dormant: the retired root
-   trigger/consumer is absent, and defaults, public catalog and live calls remain deferred until a
-   controlled live passes on a GREEN exact producer SHA.
+   resend, profile rotation or smooth retry. The retired root trigger/consumer remains absent and
+   no permanent canary/helper is installed; ordinary customer traffic does not require calibration
+   headers and uses the normal retry/reserve/settlement path.
    Its thinking allowlist is exactly
    `low|medium|high` (omission
    means medium); `minimal`, `thinkingBudget`, `candidateCount`, deprecated sampling controls and
    any final turn without non-empty user text fail locally. Image-only and tool-result-only final
    turns remain closed until their wire contract is proved live. After the withdrawn 256-token
-   canary spent 241 of 252 output tokens on thinking and terminated at `MAX_TOKENS`, an explicit
-   dormant request must use the reviewed successor bound `maxOutputTokens=512`; the old bound and
-   any other explicit value fail before dispatch. Any different wire/quota identity
+   canary spent 241 of 252 output tokens on thinking and terminated at `MAX_TOKENS`; the successful
+   successor evidence used `maxOutputTokens=512`. Public requests use the standard bounded output
+   control. Any different wire/quota identity
    requires fresh authenticated discovery plus exact-SHA generation evidence, never a guess from
    neighboring model families.
    The thinking level is selected before admission; quota/cooling are keyed by the private bucket, while affinity,
    billing and the client catalog use the canonical public id. Ordinary and established exact
    response/SSE paths rewrite private `modelVersion` back to the public id; the deadline-bound
-   dormant 3.7 lane alone preserves raw upstream `modelVersion` as admission evidence. All paths
+   exact 3.7 evidence lane alone preserves raw upstream `modelVersion` as admission evidence. All paths
    return only `.response` (+ responseId), never the wrapper/credits/private upstream headers.
    An official CountTokensRequest `generateContentRequest` is expanded into a private request, the body model
    is replaced by the route model; ambiguous top-level contents + nested request is rejected. Unsupported
@@ -939,7 +938,7 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    optional canonical `x-apitoken-calibration-request-id`; metered traffic can set neither the
    profile nor the immutable-event identity, and a target never spills/rebinds. The additional canonical
    `x-apitoken-calibration-not-after` input and `x-apitoken-calibration-dispatch-ms` response are
-   confined to the dormant 3.7 producer described above.
+   confined to the exact 3.7 evidence producer described above.
 8. Full contract/provisioning/runbook — `docs/engine/GEMINI_PROVIDER.md`. Verification includes the mock upstream:
    rotation fault matrix, credential stripping, RetryInfo, chunk-split SSE, no post-byte retry,
    disconnect drain+settlement and the shutdown deadline barrier.

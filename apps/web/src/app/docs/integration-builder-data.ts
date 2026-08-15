@@ -70,6 +70,7 @@ export const INTEGRATION_MODELS: Record<IntegrationProvider, readonly Integratio
     { id: "gpt-image-2", name: "GPT Image 2" },
   ],
   gemini: [
+    { id: "gemini-3.7-flash", name: "Gemini 3.7 Flash" },
     { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash" },
     { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash" },
     { id: "gemini-3-flash-preview", name: "Gemini 3 Flash Preview" },
@@ -116,6 +117,7 @@ export const MODEL_WINDOWS: Record<string, { context: number; input?: number }> 
   "gpt-5.5": { context: 400_000, input: 272_000 },
   "gpt-5.4": { context: 400_000, input: 272_000 },
   "gpt-image-2": { context: 131_072 },
+  "gemini-3.7-flash": { context: 1_048_576 },
   "gemini-3.6-flash": { context: 1_000_000 },
   "gemini-3.5-flash": { context: 1_000_000 },
   "gemini-3-flash-preview": { context: 1_000_000 },

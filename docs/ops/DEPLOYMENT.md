@@ -57,7 +57,7 @@ permanent retirement shim.
 
 Failed trigger SHA `f2ced4f9edfb4d42ad5bb1d6ef9f0bc7c7593044` was rejected before trigger
 discovery, any evidence fence, `countTokens`, generation or spend. It supplied no model evidence and
-must not be retried. Gemini 3.7 remains dormant and unpublished; any future controlled live uses a
+must not be retried. Gemini 3.7 was still dormant and unpublished at this point; any later controlled live uses a
 reviewed extension of the generic calibration runner and an explicitly operator-launched exact-SHA
 non-public canary, not a repository trigger or permanent root helper.
 
@@ -66,7 +66,7 @@ The later operator-launched attempt on GREEN runtime
 paid SSE transport returned upstream 404 `NOT_FOUND` for `gemini-3.7-flash`. It yielded no output,
 terminal usage or immutable turn, so the report records local spend `0 nanoUSD` but correctly leaves
 spend unreconciled. The transient canary was collected and its loopback port closed. This exact
-runtime is withdrawn and must not be retried; the model remains unpublished. Any future attempt
+runtime is withdrawn and must not be retried; the model remained unpublished at this point. Any later attempt
 requires materially new implementation evidence and a different exact runtime SHA.
 
 The materially different tiered-wire runtime

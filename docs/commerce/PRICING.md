@@ -9,7 +9,7 @@ corresponding checklist in `docs/CHANGE_CHECKLISTS.md`.
 
 - The engine account has one payable default, `accounts.mult_bp`, bounded to `0..10000`.
 - Provider list prices are a separate, effective-dated engine tariff authority. In particular,
-  Gemini 3.6 Flash uses Google's $0.75 / $0.075 / $3.75 per-1M promotion through 2026-12-31 and
+  Gemini 3.6 Flash and Gemini 3.7 Flash use Google's $0.75 / $0.075 / $3.75 per-1M promotion through 2026-12-31 and
   switches to $1.50 / $0.15 / $7.50 at 2027-01-01T00:00:00Z; the account multiplier is applied to
   whichever official epoch the request pins.
 - Optional `account_provider_discounts` rows override that default for one canonical provider.

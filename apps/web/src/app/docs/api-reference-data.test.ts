@@ -58,7 +58,7 @@ describe("API reference guide", () => {
     const gemini = buildApiGuide({ provider: "gemini", apiStyle: "native", apiLanguage: "curl", language: "en" });
     expect(gemini.auth).toBe("x-goog-api-key");
     expect(gemini.steps[1].code).toContain("x-goog-api-key: $APITOKEN_API_KEY");
-    expect(gemini.steps[1].code).toContain(`${ROUTER_BASE_URL}/v1beta/models/gemini-3.6-flash:generateContent`);
+    expect(gemini.steps[1].code).toContain(`${ROUTER_BASE_URL}/v1beta/models/gemini-3.7-flash:generateContent`);
   });
 
   it("serves every provider through the OpenAI-compatible universal route", () => {

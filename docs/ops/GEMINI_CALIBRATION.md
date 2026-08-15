@@ -302,7 +302,7 @@ report records one count invocation, one paid invocation, `admission_spend_recon
 the stable Gemini plane remained ready.
 
 This second exact SHA is withdrawn and is now rejected by the runner before network I/O. It must
-not be resumed or retried, and Gemini 3.7 Flash remains dormant and unpublished. A future attempt
+not be resumed or retried, and Gemini 3.7 Flash remained dormant and unpublished at that stage. A later attempt
 requires a materially new implementation SHA—for example a separately reviewed admission payload
 or output-bound change—plus a fresh exact numeric budget authorization; the failed SHA is never
 repurposed as a publication candidate.
@@ -336,7 +336,9 @@ thinking tokens: `15000` input nanoUSD plus `1792500` output nanoUSD, exactly `1
 (`$0.0018075`). Delivery finished with zero pending or dropped events and healthy persistence. The
 canary was stopped and collected, port `18897` was confirmed closed, and the stable Gemini plane
 remained ready. The consumed authorization and exact SHA must never be replayed; the next permitted
-step is the separate publication commit.
+step was the separate publication commit. That publication adds the public/default/catalog surfaces
+without another admission call; only the final customer-path smoke may generate, under its own
+ordinary billing lifecycle.
 ## Offline verification
 
 ```bash

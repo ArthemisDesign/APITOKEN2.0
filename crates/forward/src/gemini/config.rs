@@ -50,25 +50,18 @@ impl GeminiModel {
         self.id == "gemini-3.1-flash-image"
     }
 
-    /// Whether this configured model may appear in the native public model catalogue.
-    ///
-    /// Gemini 3.7 Flash is intentionally configuration-addressable for an isolated exact-SHA
-    /// canary, but stays undiscoverable until owned generation, usage and streaming evidence
-    /// authorizes the separate publication change.
-    pub fn is_publicly_discoverable(&self) -> bool {
-        self.id != "gemini-3.7-flash"
-    }
-
     /// Public effort values accepted by every universal Gemini adapter for this exact model.
     /// The list is provider-owned because private bucket routing is model-specific; clients must
     /// not infer it from a model-name prefix.
     pub fn reasoning_efforts(&self) -> &'static [&'static str] {
         if self.is_image_generation() {
             &[]
-        } else if matches!(
-            self.id.as_str(),
-            "gemini-3.7-flash" | "gemini-3.1-pro-preview"
-        ) {
+        } else if self.id == "gemini-3.7-flash" {
+            // Only default text/SSE was live-admitted. Explicit thinking levels remain accepted
+            // by the native wire for controlled evidence, but are not advertised as a product
+            // capability until each level has its own terminal usage proof.
+            &[]
+        } else if self.id == "gemini-3.1-pro-preview" {
             &["low", "medium", "high"]
         } else {
             &["minimal", "low", "medium", "high"]
@@ -109,9 +102,8 @@ impl GeminiModel {
     }
 
     /// Resolve the public Developer API model to the private Antigravity quota/generation bucket.
-    /// Reviewed model families use owned generation evidence; a dormant candidate may use an exact
-    /// private id observed in the owned `fetchAvailableModels` catalogue while live admission still
-    /// determines whether that candidate actually serves the public model contract.
+    /// Reviewed model families use owned generation evidence. Gemini 3.7 keeps its confirmed
+    /// private alias strictly behind the public product identity.
     ///
     /// Keep this mapping deliberately closed. A quota row is only availability evidence, not proof
     /// that an arbitrary private id has the public model's semantics or price.
@@ -127,10 +119,8 @@ impl GeminiModel {
                     || level.eq_ignore_ascii_case("high")
                     || level.eq_ignore_ascii_case("thinking_level_unspecified")
                 {
-                    // The 2026-08-15 owned Antigravity catalogue exposed this exact private model
-                    // row on both Pro and Ultra after the public id had failed generation with 404.
-                    // It remains a dormant candidate until exact-SHA live admission proves output,
-                    // raw model identity, terminal usage and incremental SSE.
+                    // The 2026-08-15 exact-SHA live admission proved this private alias with real
+                    // output, terminal usage and incremental SSE. It is never exposed to clients.
                     Ok("gemini-3.7-flash-tiered")
                 } else {
                     Err("Gemini 3.7 Flash supports low, medium, or high thinking levels.")
@@ -205,10 +195,8 @@ impl GeminiModel {
             .expect("every configured Gemini model must have a closed default wire candidate")
     }
 
-    /// Closed quota identities used for this public model. Reviewed Antigravity families encode
-    /// reasoning effort in private bucket ids, while a dormant exact-id candidate retains its
-    /// public id until owned catalogue/generation evidence proves otherwise. Billing and the public
-    /// API deliberately retain one canonical model id.
+    /// Closed quota identities used for this public model. Billing and the public API deliberately
+    /// retain one canonical model id even when the reviewed Antigravity route uses private buckets.
     pub fn quota_model_ids(&self) -> Vec<&str> {
         match self.id.as_str() {
             "gemini-3.7-flash" => vec!["gemini-3.7-flash-tiered"],
@@ -231,9 +219,8 @@ impl GeminiModel {
 
 /// Product access is intentionally narrower than the global Developer API price catalogue. These
 /// are the only models whose Antigravity wire candidate and modality contract have a closed
-/// mapping. A newly released family may be present here only as a dormant exact-id candidate; live
-/// generation remains an additional deployment gate before any model enters systemd's public
-/// allowlist.
+/// mapping. Live generation remains an additional deployment gate before any model enters
+/// systemd's public allowlist.
 const SUBSCRIPTION_MODELS: [&str; 9] = [
     "gemini-3.1-flash-image",
     "gemini-3.7-flash",
@@ -433,10 +420,7 @@ mod tests {
             model("gemini-3.6-flash").reasoning_efforts(),
             ["minimal", "low", "medium", "high"]
         );
-        assert_eq!(
-            model("gemini-3.7-flash").reasoning_efforts(),
-            ["low", "medium", "high"]
-        );
+        assert!(model("gemini-3.7-flash").reasoning_efforts().is_empty());
         assert_eq!(
             model("gemini-3.1-pro-preview").reasoning_efforts(),
             ["low", "medium", "high"]
@@ -456,7 +440,7 @@ mod tests {
         let flash_37 = model("gemini-3.7-flash");
         assert_eq!(flash_37.input_modalities(), ["text"]);
         assert_eq!(flash_37.output_modalities(), ["text"]);
-        assert_eq!(flash_37.reasoning_efforts(), ["low", "medium", "high"]);
+        assert!(flash_37.reasoning_efforts().is_empty());
         assert!(!flash_37.tool_calling());
         assert!(!flash_37.structured_outputs());
         assert_eq!(

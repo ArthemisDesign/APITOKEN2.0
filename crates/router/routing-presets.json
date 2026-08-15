@@ -20,6 +20,7 @@
     { "id": "openai/gpt-image-2-2026-04-21", "price_rank": 55, "latency_rank": 30, "context_tokens": 131072 },
 
     { "id": "google/gemini-3.1-flash-image", "price_rank": 45, "latency_rank": 20, "context_tokens": 131072 },
+    { "id": "google/gemini-3.7-flash", "price_rank": 35, "latency_rank": 20, "context_tokens": 1000000 },
     { "id": "google/gemini-3.6-flash", "price_rank": 55, "latency_rank": 20, "context_tokens": 1000000 },
     { "id": "google/gemini-3.5-flash", "price_rank": 60, "latency_rank": 25, "context_tokens": 1000000 },
     { "id": "google/gemini-3-flash-preview", "price_rank": 30, "latency_rank": 15, "context_tokens": 1000000 },

@@ -462,12 +462,26 @@ research, official tariff, evidence boundary, dormant-name decision, and canary 
 | Official tariff and effective epochs | Applicable; recorded here in exact nanoUSD units |
 | Dormant implementation and tests | Applicable; owned by the implementation change, not this research file |
 | Exact-SHA controlled live | Applicable; `c4f0773a…` is GREEN for default text/SSE with reconciled `$0.0018075`. Historical `20d945ce…` and `2c8aca0d…` remain withdrawn; no request may be replayed |
-| Public catalogue, defaults, router, site, and public docs | Applicable only in the separate Stage 2 publication commit; now unblocked by the GREEN live |
+| Public catalogue, defaults, router, site, and public docs | Completed in the separate Stage 2 publication change after the GREEN live |
 | New provider checklist | Not applicable; Gemini is an existing provider |
 | Customer price or multiplier change | Not applicable; this records upstream cost only and changes no customer multiplier |
 | Database migration | Not applicable; no schema change is introduced by this document |
-| Cross-context contract / `docs/DEPENDENCIES.md` | Applicable; the retained producer/status → generic runner contract is recorded there; no public link is added |
-| Commerce, sales, OpenKeys, and admin publication | Deferred to the separate Stage 2 checklist; only applicable surfaces may expose the conservative tested capability set |
+| Cross-context contract / `docs/DEPENDENCIES.md` | Applicable; both retained exact-evidence and public discovery/router consumers are recorded there |
+| Commerce, sales, OpenKeys, and admin publication | Admin consumes the engine conversion-model feed automatically; OpenKeys execution has no model allowlist, while its issuance display remains scoped to its Anthropic/OpenAI product types; Commerce and sales have no per-model catalog mirror |
+
+## Stage 2 publication — 2026-08-15
+
+The separate publication change exposes `gemini-3.7-flash` in native and unified discovery,
+production Gemini defaults, the router's reviewed model manifest, the customer website and the docs
+builder. The private `gemini-3.7-flash-tiered` identity remains confined to Antigravity dispatch and
+quota matching; ordinary JSON/SSE responses, usage attribution and billing retain only the public
+id. No root helper, trigger, private unit or permanent canary is restored.
+
+The public capability claim is deliberately narrower than the official Developer API page: default
+text generation, free `countTokens`, incremental SSE and terminal authoritative usage. Explicit
+thinking levels, tools, structured output and non-text inputs remain unadvertised until separate
+controlled evidence exists. The 2026-08-15 paid admission authorization is consumed and is not
+replayed by publication.
 
 ## Secret hygiene
 
