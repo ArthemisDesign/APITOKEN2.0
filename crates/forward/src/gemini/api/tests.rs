@@ -595,6 +595,7 @@ fn gateway_fixture_with_models_calibration_and_node(
             model_failure_cool_secs: 15,
             model_failure_max_cool_secs: 900,
             default_rate_limit_cool_secs: 60,
+            rate_limit_rpm_cool_secs: 2,
             quota_reserve_fraction: 0.05,
             quota_reserve_jitter: 0.01,
             health_probe_interval_secs: 60,
@@ -4653,6 +4654,125 @@ async fn retry_info_cools_the_exact_project_and_all_quota_returns_one_native_429
         .all(|profile| profile.model_cooling.iter().any(|cooling| {
             cooling.model_id == "gemini-integration-model" && cooling.cooling_until >= now + 2
         })));
+}
+
+#[tokio::test]
+async fn unhinted_429_with_positive_quota_catalog_cools_briefly_not_for_the_default_window() {
+    // A generation 429 with no RetryInfo/Retry-After while the profile's own fresh quota catalogue
+    // still reports a positive remainder is an RPM/concurrency stall, not exhaustion. The model
+    // must be parked only for the short RPM cool, never for the full default exhaustion window,
+    // so one momentary throttle cannot freeze the model across the fleet for a minute.
+    let quota_document = json!({
+        "models": {
+            "gemini-integration-model": {
+                "displayName": "Gemini Integration Model",
+                "quotaInfo": {
+                    "remainingFraction": 0.99,
+                    "resetTime": "2099-01-01T00:00:00Z"
+                }
+            }
+        },
+        "groups": [{
+            "displayName": "Gemini Models",
+            "buckets": [{
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.99,
+                "resetTime": "2099-01-01T00:00:00Z"
+            }]
+        }]
+    });
+    let stall = MockReply::Json {
+        status: StatusCode::TOO_MANY_REQUESTS,
+        body: json!({
+            "error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}
+        }),
+        retry_after: None,
+    };
+    let server = start_mock(MockState::with_replies([(
+        PROFILE_A_KEY,
+        vec![
+            // probe_health: loadCodeAssist, fetchAvailableModels, retrieveUserQuotaSummary.
+            MockReply::Json {
+                status: StatusCode::OK,
+                body: json!({"cloudaicompanionProject": "paid-project-01"}),
+                retry_after: None,
+            },
+            MockReply::Json {
+                status: StatusCode::OK,
+                body: quota_document.clone(),
+                retry_after: None,
+            },
+            MockReply::Json {
+                status: StatusCode::OK,
+                body: quota_document,
+                retry_after: None,
+            },
+            // generation attempt: RPM stall.
+            stall,
+        ],
+    )]))
+    .await;
+    let fixture =
+        gateway_fixture_with_oauth_kind(&server.upstream, &[None], 1, None, OAuthKind::Antigravity);
+    fixture.gateway.probe_health().await;
+    let response = invoke(
+        app_state(fixture.gateway.clone(), None),
+        json!({"contents": []}),
+        false,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let now = pool::now();
+    let status = fixture.gateway.operational_status().await;
+    let cooling = status.profiles[0]
+        .model_cooling
+        .iter()
+        .find(|cooling| cooling.model_id == "gemini-integration-model")
+        .unwrap();
+    // Short RPM cool: present but far below the 60s default exhaustion window.
+    assert!(cooling.cooling_until >= now + 1, "cooling should be set");
+    assert!(
+        cooling.cooling_until < now + 60,
+        "cooling_until={} must not reach the default exhaustion window",
+        cooling.cooling_until
+    );
+}
+
+#[tokio::test]
+async fn unhinted_429_without_fresh_positive_catalog_keeps_the_default_exhaustion_cool() {
+    // Fail-closed guard: with no positive fresh catalogue evidence the unhinted 429 must keep the
+    // long default exhaustion cool. A missing catalogue can never be read as an RPM stall.
+    let stall = MockReply::Json {
+        status: StatusCode::TOO_MANY_REQUESTS,
+        body: json!({
+            "error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}
+        }),
+        retry_after: None,
+    };
+    let server = start_mock(MockState::with_replies([(PROFILE_A_KEY, vec![stall])])).await;
+    let fixture =
+        gateway_fixture_with_oauth_kind(&server.upstream, &[None], 1, None, OAuthKind::Antigravity);
+    // No probe_health(): the quota catalogue is missing, so quota_reports_remaining is false.
+    let response = invoke(
+        app_state(fixture.gateway.clone(), None),
+        json!({"contents": []}),
+        false,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let now = pool::now();
+    let status = fixture.gateway.operational_status().await;
+    let cooling = status.profiles[0]
+        .model_cooling
+        .iter()
+        .find(|cooling| cooling.model_id == "gemini-integration-model")
+        .unwrap();
+    // Default exhaustion cool (60s in this fixture) is preserved.
+    assert!(
+        cooling.cooling_until >= now + 59,
+        "cooling_until={} must keep the default exhaustion window",
+        cooling.cooling_until
+    );
 }
 
 #[tokio::test]

@@ -437,6 +437,20 @@ impl GeminiProfile {
         }
     }
 
+    /// Whether the profile's own quota catalogue currently reports a positive remainder for the
+    /// model. This is the counter-evidence that turns an unhinted generation 429 into an
+    /// RPM/concurrency stall rather than exhaustion. Fail-closed: a missing/stale catalogue, no
+    /// matching bucket, or any non-positive/unknown remainder returns `false`, so the long
+    /// exhaustion cooling stays the default unless the catalogue positively disproves it.
+    pub(crate) fn quota_reports_remaining(&self, model_id: &str, cfg: &GeminiConfig, now: i64) -> bool {
+        let evidence = self.rate_limit_quota_evidence(model_id, cfg, now);
+        evidence.snapshot_state == "fresh"
+            && evidence.matching_buckets > 0
+            && evidence.zero_buckets == 0
+            && evidence.positive_buckets > 0
+            && evidence.min_remaining_bp.is_some_and(|bp| bp > 0)
+    }
+
     fn matches(&self, loaded: &LoadedProfile) -> bool {
         self.source == loaded.source && self.fingerprint == loaded.fingerprint
     }
@@ -2936,6 +2950,7 @@ mod tests {
             model_failure_cool_secs: 15,
             model_failure_max_cool_secs: 900,
             default_rate_limit_cool_secs: 60,
+            rate_limit_rpm_cool_secs: 2,
             quota_reserve_fraction: 0.05,
             quota_reserve_jitter: 0.01,
             health_probe_interval_secs: 60,

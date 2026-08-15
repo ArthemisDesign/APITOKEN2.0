@@ -905,6 +905,12 @@ fn gemini_config() -> Option<GeminiConfig> {
             1,
             86_400,
         ),
+        rate_limit_rpm_cool_secs: bounded_i64(
+            "CLAUDE_API_GEMINI_RATE_LIMIT_RPM_COOL_SECS",
+            2,
+            1,
+            60,
+        ),
         quota_reserve_fraction: ev_frac("CLAUDE_API_GEMINI_QUOTA_RESERVE", 0.05),
         quota_reserve_jitter: ev_frac("CLAUDE_API_GEMINI_QUOTA_RESERVE_JITTER", 0.01),
         health_probe_interval_secs: bounded_u64(

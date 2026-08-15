@@ -805,9 +805,16 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    exposing status/header/credentials.
 4. A profile owns its separate transport/proxy/inflight/cooling/auth and single-flight token refresh.
    First 401 → one refresh+retry of the same profile; a repeated 401/403 → soft auth backoff per 1b,
-   never de-authentication. 429 →
-   model-specific profile cooling by Retry-After/RetryInfo/quota reset and rotation without
-   transport budget; a health probe never erases generation cooling. Every generation/probe 429
+    never de-authentication. 429 →
+    model-specific profile cooling by Retry-After/RetryInfo/quota reset and rotation without
+    transport budget. When a generation 429 carries NO authoritative retry hint and the profile's
+    own fresh quota catalogue still reports a positive remainder for the model
+    (`quota_reports_remaining`), the verdict is an RPM/concurrency stall, not exhaustion: the model
+    is parked only for the short `rate_limit_rpm_cool_secs`, never the full
+    `default_rate_limit_cool_secs` window — a momentary throttle must not freeze the model across
+    the whole fleet for a minute. Fail-closed: a missing/stale catalogue, no matching bucket or any
+    non-positive/unknown remainder keeps the long exhaustion cool. A health probe never erases
+    generation cooling. Every generation/probe 429
    emits only bounded machine evidence under `gemini-rate-limit`: one request id joins pre-byte
    rotation attempts and a terminal summary, while process-keyed fingerprints correlate an
    identical provider shape within one process lifetime without logging Google prose, metadata

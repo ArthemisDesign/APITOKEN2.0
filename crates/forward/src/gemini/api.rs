@@ -2625,6 +2625,20 @@ async fn stream_response(
                         .provider_rate_limit_diagnostic
                         .clone()
                         .unwrap_or_else(|| RateLimitDiagnostic::from_value(None, None));
+                    // No authoritative retry hint, but the profile's fresh quota catalogue still
+                    // shows a positive remainder: this is an RPM/concurrency stall, not exhaustion.
+                    // Park the model only briefly instead of converting the throttle into a
+                    // minute-long fleet-wide outage via the default exhaustion cool.
+                    let delay = if translator.provider_retry_after.is_none()
+                        && profile.quota_reports_remaining(
+                            &wire_model_id,
+                            gateway.config(),
+                            pool::now(),
+                        ) {
+                        gateway.config().rate_limit_rpm_cool_secs
+                    } else {
+                        delay
+                    };
                     log_rate_limit_attempt(
                         &rate_limit_request_id,
                         "stream_generate",
@@ -3433,6 +3447,18 @@ async fn api_inner(
                             .as_ref()
                             .cloned()
                             .unwrap_or_else(|| RateLimitDiagnostic::from_value(None, None));
+                        // Unhinted 429 with a fresh positive quota remainder is an RPM/concurrency
+                        // stall, not exhaustion: cool briefly, not for the full default window.
+                        let delay = if translator.provider_retry_after.is_none()
+                            && profile.quota_reports_remaining(
+                                &wire_model_id,
+                                gateway.config(),
+                                pool::now(),
+                            ) {
+                            gateway.config().rate_limit_rpm_cool_secs
+                        } else {
+                            delay
+                        };
                         log_rate_limit_attempt(
                             &rate_limit_request_id,
                             route.operation.diagnostic_name(),
@@ -3600,6 +3626,12 @@ async fn api_inner(
                 saw_quota = true;
                 rate_limit_attempts = rate_limit_attempts.saturating_add(1);
                 excluded.insert(profile.id().to_string());
+                let hint_present = rate_limit::retry_after_header_delay(Some(&response_headers))
+                    .is_some()
+                    || serde_json::from_slice::<Value>(&response_body)
+                        .ok()
+                        .and_then(|value| rate_limit::retry_info_delay(&value))
+                        .is_some();
                 let delay = retry_after(
                     &response_headers,
                     &response_body,
@@ -3607,6 +3639,18 @@ async fn api_inner(
                 );
                 let diagnostic =
                     RateLimitDiagnostic::from_body(Some(&response_headers), &response_body);
+                // Unhinted 429 with a fresh positive quota remainder is an RPM/concurrency stall,
+                // not exhaustion: cool briefly, not for the full default window.
+                let delay = if !hint_present
+                    && profile.quota_reports_remaining(
+                        &wire_model_id,
+                        gateway.config(),
+                        pool::now(),
+                    ) {
+                    gateway.config().rate_limit_rpm_cool_secs
+                } else {
+                    delay
+                };
                 log_rate_limit_attempt(
                     &rate_limit_request_id,
                     route.operation.diagnostic_name(),

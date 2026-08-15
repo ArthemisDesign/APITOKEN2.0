@@ -271,6 +271,12 @@ pub struct GeminiConfig {
     pub model_failure_cool_secs: i64,
     pub model_failure_max_cool_secs: i64,
     pub default_rate_limit_cool_secs: i64,
+    /// Short cool applied when a generation 429 carries no authoritative retry hint AND the
+    /// profile's own fresh quota catalogue still reports a positive remainder for the model. Google
+    /// is then reporting an RPM/concurrency stall, not exhaustion, so a long cooling only converts
+    /// a momentary throttle into a minute-long model outage across the fleet. Kept short on
+    /// purpose: it just spaces concurrent retries without parking the model.
+    pub rate_limit_rpm_cool_secs: i64,
     /// Soft reserve used only while another profile has healthier quota headroom. The service floor
     /// is preserved: if every eligible profile is below its reserve, routing fails open to them.
     pub quota_reserve_fraction: f64,
