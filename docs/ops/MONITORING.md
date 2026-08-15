@@ -261,10 +261,31 @@ capacity; do not bypass cooling safeguards.
 Correlate request rate, model mix, cooling state, and upstream resets. Confirm routing is spreading
 requests without defeating sticky-cache behavior.
 
-## EngineUpstreamAuthFailures
+## EngineUpstreamRequestAuthRejected
 
-Treat new upstream 401/403 responses as a credential or account-health incident. Inspect durable
-auth state and remove confirmed-dead subscriptions from service.
+This warning is based on request-path upstream 401/403 responses. One customer request may increment
+the counter twice because the engine tries one other subscription before returning the real upstream
+response. The same rejection on two independent subscriptions strongly indicates a request-dependent
+model, beta header, path, or scope problem; it does not prove either credential is dead. The rule
+therefore ignores isolated responses and warns only when more than ten occur in ten minutes for five
+minutes.
+
+Correlate `customer_http_error` records and the bounded `auth 401/403` warnings by time. If the same
+account repeatedly produces the pattern across different subscriptions, investigate the client
+request contract without logging its body or raw key. Do not cool, remove, or reauthorize a
+subscription from this alert alone. Credential health is owned by **EngineSubscriptionAuthDead**.
+
+## EngineSubscriptionAuthDead
+
+This critical alert is the credential/account-health signal. It fires only after the background
+poller has received at least two 401/403 responses from clean probes, spread over at least five
+minutes. Those probes contain no customer-controlled model, beta header, path, or body, so the
+durable `dead` verdict survives blue-green deployment and excludes the subscription from rotation.
+
+Inspect `/capacity` auth state and the bounded poller journal, then reauthorize or replace the exact
+confirmed-dead subscription through the controlled admin/Auth Bot workflow. A later successful clean
+probe or a replacement token clears the verdict automatically; do not manually edit PostgreSQL or
+revive the subscription without repairing the credential/account condition.
 
 ## EngineUpstreamServerErrors
 

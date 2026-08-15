@@ -823,11 +823,38 @@ for gated_alert in SunoNoLiveProfiles SunoNoAvailableProfiles SunoErrorShareHigh
     || { printf '%s is not gated on the provider being enabled\n' "$gated_alert" >&2; exit 1; }
 done
 for anthropic_metric in claude_api_breaker_open claude_api_subs claude_api_cooling \
-  claude_api_upstream_429_total claude_api_upstream_auth_total claude_api_upstream_5xx_total; do
+  claude_api_upstream_429_total claude_api_upstream_auth_total claude_api_upstream_5xx_total \
+  claude_api_anthropic_auth_dead_subscriptions; do
   grep -Fq "${anthropic_metric}{provider=\"anthropic\"}" \
     "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'Claude alert is not scoped to Anthropic: %s\n' "$anthropic_metric" >&2; exit 1; }
 done
+for auth_health_metric in claude_api_anthropic_auth_suspect_subscriptions \
+  claude_api_anthropic_auth_dead_subscriptions; do
+  grep -Fq "$auth_health_metric" "$ROOT/crates/server/src/http.rs" \
+    || { printf 'engine does not export Claude auth-health metric %s\n' "$auth_health_metric" >&2; exit 1; }
+done
+grep -Fq 'increase(claude_api_upstream_auth_total{provider="anthropic"}[10m]) > 10' \
+  "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'request-path Claude auth rejections are not thresholded separately\n' >&2; exit 1; }
+grep -F 'alert: EngineUpstreamRequestAuthRejected' -A 4 \
+  "$ROOT/observability/prometheus/rules/application.yml" | grep -Fq 'severity: warning' \
+  || { printf 'request-path Claude auth rejections must remain warning severity\n' >&2; exit 1; }
+grep -Fq 'expr: claude_api_anthropic_auth_dead_subscriptions{provider="anthropic"} > 0' \
+  "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'corroborated dead Claude subscriptions do not page\n' >&2; exit 1; }
+grep -F 'alert: EngineSubscriptionAuthDead' -A 3 \
+  "$ROOT/observability/prometheus/rules/application.yml" | grep -Fq 'severity: critical' \
+  || { printf 'corroborated dead Claude subscriptions must remain critical\n' >&2; exit 1; }
+for auth_alert in EngineUpstreamRequestAuthRejected EngineSubscriptionAuthDead; do
+  anchor=$(printf '%s' "$auth_alert" | tr '[:upper:]' '[:lower:]')
+  grep -Fq "docs/ops/MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'alert %s has no runbook anchor\n' "$auth_alert" >&2; exit 1; }
+  grep -Fqi "## $auth_alert" "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$auth_alert" >&2; exit 1; }
+done
+! grep -Fq 'alert: EngineUpstreamAuthFailures' "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'ambiguous EngineUpstreamAuthFailures rule still exists\n' >&2; exit 1; }
 grep -Fq 'claude_api_execution_group_double_winner_total' "$ROOT/crates/server/src/http.rs" \
   || { printf 'engine does not export execution-group winner conflicts\n' >&2; exit 1; }
 grep -Fq 'increase(claude_api_execution_group_double_winner_total[5m]) > 0' \

@@ -488,8 +488,10 @@ The Codex plane has its own in-memory cooling (`codex/health.rs`) and is not par
 - **Fault classification (don't chill a subscription for someone else's fault):**
   - `429` → subscription quota → `mark_cooling(cool_secs_429)`: `Retry-After` → culprit window
     (`util7d≥0.95` → `reset7d`, otherwise `reset5h`) → burst default. We don't chill for 5h when the 7d window was hit.
-  - `401/403` → dead/broken token, NOT transient → `mark_cooling(AUTH_QUARANTINE=900s)` + log
-    "refresh needed". Otherwise we'd hammer a banned account every 10s (ban-signal) and burn the attempt slot.
+  - live request `401/403` may be caused by the customer model/beta/path/scope. It is counted and
+    retried on at most one distinct subscription without cooling either one; a repeated rejection is
+    returned byte-for-byte. Only clean background probes feed the durable healthy → suspect → dead
+    machine (two rejections spread over at least five minutes), and only `dead` excludes a credential.
   - `5xx/408/409/425/network` → UPSTREAM's fault → `mark_done` (slot −1 WITHOUT cooling: the subscription is healthy)
     + `breaker.record_fail`. A broken proxy (build err) → short `mark_cooling(10)` (local).
   - `2xx/4xx` → upstream healthy → `breaker.record_ok` (resets the failure window).
@@ -497,10 +499,10 @@ The Codex plane has its own in-memory cooling (`codex/health.rs`) and is not par
   failed in the window (distinct email, not a raw count) — this signals an api.anthropic.com outage, whereas one
   flaky proxy/poison yields failures of a single email and the breaker is NOT touched. While open — the entrance
   rejects with `503 + Retry-After` (no fan-out across the pool). `record_fail(now, email)`; on 2xx/4xx `record_ok` resets.
-- **Rotation budget (a subscription's error never reaches the client):** 429/401/403 — the specific account's
-  fault (ban/limit), they do NOT spend the `max_tries` budget → we spin across the whole fleet (the pool itself excludes cooling) until
-  we find a healthy one. Only BACKEND failures spend the budget (5xx/network — an outage). The upper iteration bound
-  = "whole fleet + margin".
+- **Rotation budget:** 429 does not spend the backend-failure budget and may rotate across available
+  capacity. A live 401/403 gets at most one alternate subscription as described above; it never fans
+  out across the fleet. Only backend failures spend the budget (5xx/network — an outage). The upper
+  iteration bound remains "whole fleet + margin" for the failure classes that can legitimately rotate.
 - **Outcome when all attempts fail:** hit the backend budget → return the last upstream error
   (an outage; the breaker is about to open); all subscriptions over the limit → `429 + Retry-After = soonest_ready`
   (the client will back off on its own — exactly this, not the error of one banned subscription); pool empty → `503`.

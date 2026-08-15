@@ -88,6 +88,8 @@ background loops and the HTTP router. Here — and only here — everything is w
   a changed verdict is persisted owner-fenced (`save_sub_health`); suspect/dead are probed INDEPENDENTLY
   of cooling (`SUSPECT_INTERVAL`/`DEAD_RESURRECT_INTERVAL`) to gather corroboration/resurrection. At
   startup `serve` seeds the verdict via `pool.import_health` (dead subs are immediately out of rotation and survive a restart).
+  `/metrics` exports aggregate `claude_api_anthropic_auth_{suspect,dead}_subscriptions` gauges:
+  request-path 401/403 remain a separate diagnostic counter and never constitute credential death.
   A separate Gemini health loop every 15 seconds discovers new roster profiles and, on the configured
   cadence, checks health/quota. After a durable-settled admin-only exact-target turn it receives a
   coalesced `Notify` and immediately performs a free probe; ordinary customer turns do not send this wake.

@@ -4946,8 +4946,46 @@ async fn anthropic_quota_snapshot_freshness_is_published_for_alerting() {
     // Never observed: the timestamp is absent rather than zero, so the alert cannot fire on a
     // subscription that simply has not been probed yet.
     let body = read_metrics(app.clone()).await;
+    assert!(body.contains("claude_api_anthropic_auth_suspect_subscriptions 0"));
+    assert!(body.contains("claude_api_anthropic_auth_dead_subscriptions 0"));
     assert!(body.contains("claude_api_anthropic_quota_snapshot_subscriptions 0"));
     assert!(!body.contains("claude_api_anthropic_quota_last_observation_timestamp_seconds"));
+
+    app.pool.import_health(vec![registry::SubHealth {
+        email: "metrics@example.test".to_owned(),
+        auth_state: "suspect".to_owned(),
+        auth_fail_streak: 1,
+        first_auth_fail_ts: 1_799_999_000,
+        last_auth_fail_ts: 1_799_999_000,
+        last_auth_http: 401,
+        auth_token_fp: pool::token_fp("token"),
+        ..registry::SubHealth::default()
+    }]);
+    let body = read_metrics(app.clone()).await;
+    assert!(body.contains("claude_api_anthropic_auth_suspect_subscriptions 1"));
+    assert!(body.contains("claude_api_anthropic_auth_dead_subscriptions 0"));
+
+    app.pool.import_health(vec![registry::SubHealth {
+        email: "metrics@example.test".to_owned(),
+        auth_state: "dead".to_owned(),
+        auth_fail_streak: 2,
+        first_auth_fail_ts: 1_799_999_000,
+        last_auth_fail_ts: 1_799_999_300,
+        last_auth_http: 401,
+        dead_since_ts: 1_799_999_300,
+        dead_reason: "authentication_error".to_owned(),
+        auth_token_fp: pool::token_fp("token"),
+    }]);
+    let body = read_metrics(app.clone()).await;
+    assert!(body.contains("claude_api_anthropic_auth_suspect_subscriptions 0"));
+    assert!(body.contains("claude_api_anthropic_auth_dead_subscriptions 1"));
+
+    app.pool.import_health(vec![registry::SubHealth {
+        email: "metrics@example.test".to_owned(),
+        auth_state: "healthy".to_owned(),
+        auth_token_fp: pool::token_fp("token"),
+        ..registry::SubHealth::default()
+    }]);
 
     app.pool.set_quota_snapshots(
         "metrics@example.test",

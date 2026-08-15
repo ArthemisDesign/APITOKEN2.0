@@ -37,7 +37,7 @@ Three transports deliver events to the bot:
 
 | Transport | What it carries | Integration point |
 |---|---|---|
-| **Alertmanager webhook** | All 43 alert rules (26 critical, 17 warning) | a new `webhook_configs` receiver in `observability/alertmanager/alertmanager.yml.template` pointing at the bot's loopback port |
+| **Alertmanager webhook** | All provisioned critical and warning alert rules | a new `webhook_configs` receiver in `observability/alertmanager/alertmanager.yml.template` pointing at the bot's loopback port |
 | **GitHub API poller** | `deploy/*` commit statuses and `production-*` Deployments | the same contract as `deploy/agent-merge.sh` (`am_status`) and `deploy/watchdog-github.sh`; 30–60 s interval |
 | **Journald tail** (stage 3) | manual interventions and rollbacks not reflected in GitHub | the `[watchdog]`, `[agent-merge]`, `[admin-deploy]`, `[sales-deploy]`, `[openkeys-deploy]` prefixes; read via `journalctl -f` |
 
@@ -60,15 +60,15 @@ timer, polling `origin/master` every ~5 s). Events:
 
 ### 2.2 Prometheus/Alertmanager alerts
 
-The full inventory is 43 rules in two files; each has a runbook anchor
+The full inventory lives in two rule files; each alert has a runbook anchor
 `docs/ops/MONITORING.md#<alertname>` (consistency is gated by
 `deploy/monitoring-config.test.sh`).
 
-`observability/prometheus/rules/application.yml` (25 rules):
+`observability/prometheus/rules/application.yml`:
 
 - **Engine (Anthropic)**: `EngineCircuitBreakerOpen` (critical), `EngineHasNoSubscriptions`
-  (critical), `EngineAllSubscriptionsCooling` (critical), `EngineUpstreamAuthFailures`
-  (critical), `EngineUpstreamRateLimited`/`EngineUpstreamServerErrors`/
+  (critical), `EngineAllSubscriptionsCooling`/`EngineSubscriptionAuthDead` (critical),
+  `EngineUpstreamRequestAuthRejected`/`EngineUpstreamRateLimited`/`EngineUpstreamServerErrors`/
   `EngineAffinityRedisErrors` (warning).
 - **Codex provider**: `CodexProviderDown`, `CodexNoAvailableHomes`, `CodexHomeUnresponsive`,
   `CodexAccountDead` (critical); `CodexHomeUnauthenticated`, `CodexHomeNearRateLimit`,
@@ -85,7 +85,7 @@ The full inventory is 43 rules in two files; each has a runbook anchor
   `SalesReferralReconciliationBacklog` (warning), `SalesPayoutBatchFailed` (critical),
   `CaddyUpstreamFiveXxRateHigh` (warning).
 
-`observability/prometheus/rules/operations.yml` (17 rules): `MonitoringTargetDown`,
+`observability/prometheus/rules/operations.yml`: `MonitoringTargetDown`,
 `PublicEndpointDown`, `ProxyUpstreamPairDown`, `BusinessCollectorStale`,
 `BusinessCollectorMissing`, `SystemdCollectorFailed`, `HostClockSkew`, `HostDiskSpaceCritical`,
 `PostgresUnavailable`, `ProjectSystemdUnitFailed`, `CriticalTimerFailed` (critical);

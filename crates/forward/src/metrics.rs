@@ -28,7 +28,7 @@ pub struct Metrics {
     /// abandoned in `delivering` and later charged the full preflight hold.
     pub active_requests: AtomicU64,
     pub upstream_429: AtomicU64, // ответов апстрима 429 (квота подписки)
-    pub upstream_auth: AtomicU64, // 401/403 (мёртвый токен → карантин)
+    pub upstream_auth: AtomicU64, // request-path upstream 401/403; credential death requires clean probes
     pub upstream_5xx: AtomicU64, // backend-fault (5xx/408/409/425)
     pub breaker_rejects: AtomicU64, // отбито разомкнутым circuit breaker
     pub exhausted: AtomicU64,    // исчерпание пула (все за лимитом) → 429+Retry-After

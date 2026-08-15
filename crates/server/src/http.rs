@@ -1294,6 +1294,20 @@ async fn metrics(
     // Aggregate-only: no per-subscription label, so cardinality stays fixed as the fleet grows.
     {
         let caps = app.pool.capacity();
+        let auth_suspect = caps
+            .iter()
+            .filter(|cap| cap.auth_state == "suspect")
+            .count();
+        let auth_dead = caps.iter().filter(|cap| cap.auth_dead).count();
+        let _ = writeln!(
+            body,
+            "# HELP claude_api_anthropic_auth_suspect_subscriptions Subscriptions with one clean probe authentication rejection awaiting corroboration.\n\
+             # TYPE claude_api_anthropic_auth_suspect_subscriptions gauge\n\
+             claude_api_anthropic_auth_suspect_subscriptions {auth_suspect}\n\
+             # HELP claude_api_anthropic_auth_dead_subscriptions Subscriptions excluded after corroborated clean probe authentication rejections.\n\
+             # TYPE claude_api_anthropic_auth_dead_subscriptions gauge\n\
+             claude_api_anthropic_auth_dead_subscriptions {auth_dead}"
+        );
         let observed_at = caps
             .iter()
             .filter(|cap| cap.routable)

@@ -65,15 +65,26 @@ groups:
           description: 'More than ten upstream 429 responses were recorded in ten minutes.'
           runbook: 'docs/ops/MONITORING.md#engineupstreamratelimited'
 
-      - alert: EngineUpstreamAuthFailures
-        expr: increase(claude_api_upstream_auth_total{provider="anthropic"}[5m]) > 0
+      - alert: EngineUpstreamRequestAuthRejected
+        expr: increase(claude_api_upstream_auth_total{provider="anthropic"}[10m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: claude-engine
+        annotations:
+          summary: 'Claude upstream request authentication rejections are elevated'
+          description: 'More than ten request-path upstream 401/403 responses were recorded in ten minutes; these can be request-dependent and do not prove a dead credential.'
+          runbook: 'docs/ops/MONITORING.md#engineupstreamrequestauthrejected'
+
+      - alert: EngineSubscriptionAuthDead
+        expr: claude_api_anthropic_auth_dead_subscriptions{provider="anthropic"} > 0
         labels:
           severity: critical
           component: claude-engine
         annotations:
-          summary: 'Claude upstream rejected subscription authentication'
-          description: 'At least one new upstream authentication failure was observed.'
-          runbook: 'docs/ops/MONITORING.md#engineupstreamauthfailures'
+          summary: 'Claude subscription authentication is confirmed dead'
+          description: 'At least one subscription was excluded after corroborated clean-probe 401/403 responses.'
+          runbook: 'docs/ops/MONITORING.md#enginesubscriptionauthdead'
 
       - alert: EngineUpstreamServerErrors
         expr: increase(claude_api_upstream_5xx_total{provider="anthropic"}[10m]) > 10
