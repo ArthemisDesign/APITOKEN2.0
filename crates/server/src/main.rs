@@ -1715,6 +1715,7 @@ async fn serve() -> Result<()> {
     // Graceful shutdown: сначала снимаем readiness и даём балансировщику убрать инстанс, затем axum
     // дренирует in-flight стримы. Общий deadline включает propagation-delay, дренаж и billing FIFO-flush.
     let flush_app = app.clone();
+    let flush_metrics = app.metrics.clone();
     let flush_authority = authority.clone();
     let flush_owner = owner.clone();
     let shutdown_accepting = accepting.clone();
@@ -1754,11 +1755,15 @@ async fn serve() -> Result<()> {
         }
     };
     if forced_stream_cut {
+        // The deploy gate waits on exactly this counter (`/ready` → `active_requests`), so a wedged
+        // count blocks the cutover for the whole deadline. Record it here to distinguish a real
+        // long stream (count > 0) from a leaked counter (count already 0) in the journal.
         elog::warn(
             "server",
             format!(
-                "graceful shutdown: deadline {}с исчерпан — принудительно обрываю оставшиеся стримы",
-                s.drain_deadline_secs
+                "graceful shutdown: deadline {}с исчерпан — принудительно обрываю оставшиеся стримы (active_requests={})",
+                s.drain_deadline_secs,
+                forward::Metrics::get(&flush_metrics.active_requests),
             ),
         );
     } else if shutdown_deadline.is_some() {

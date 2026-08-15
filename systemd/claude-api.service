@@ -17,8 +17,9 @@ EnvironmentFile=-/srv/claude-api/data/server.env
 # Activated only by the guarded Stage-2 cutover. Root-owned 0600 because it contains the DB role secret.
 EnvironmentFile=-/srv/claude-api/data/engine-postgres.env
 # The legacy combined rollback anchor reads the shared engine env. Keep the GLM backend preview
-# fail-closed here: it has no live subscription or compliant private serving boundary.
-ExecStart=/usr/bin/env CLAUDE_API_GLM_ENABLED=0 /srv/claude-api/releases/current/claude-api serve
+# fail-closed here: it has no live subscription or compliant private serving boundary. The 180s
+# drain pin keeps the old 540s shared-env default from re-widening the blue-green deploy window.
+ExecStart=/usr/bin/env CLAUDE_API_GLM_ENABLED=0 CLAUDE_API_DRAIN_DEADLINE_SECS=180 /srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
 # Graceful shutdown: сервер по SIGTERM дренирует in-flight стримы (см. serve()). Даём время дотечь

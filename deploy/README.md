@@ -220,6 +220,15 @@ left in `delivering` for the reconciler to charge at the full preflight hold. `E
 means something is wedged. A slot whose count cannot be read — an older binary without the field, an
 unparseable answer — is stopped immediately, so the gate can never wedge a deploy.
 
+The engine's own stream-drain deadline bounds the same window from inside the process:
+`CLAUDE_API_DRAIN_DEADLINE_SECS` defaults to **180 seconds** for Anthropic/Gemini/KIMI and is raised
+to 620 seconds only on OpenAI-serving slots. The Anthropic slot units pin the 180-second value at
+argv level so a stale long value in the shared env cannot silently re-widen the cutover. The old
+540-second default made a cutover with one wedged or very long stream sit through the full deadline
+before the forced cut — measured end to end at 9+ minutes per deploy on 2026-08-12…15. When the
+deadline does expire, the journal line records the live `active_requests` count, distinguishing a
+real long stream (count > 0) from a leaked counter (count already 0).
+
 The systemd side of the same contract is pinned by `deploy/shutdown-ladder.test.sh`, which runs in
 both the merge gate and the watchdog regression suites. It reads the engine's own budget from
 `crates/server/src/config.rs` — the clamp **maxima**, not the defaults, because an env override may

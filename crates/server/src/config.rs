@@ -1327,12 +1327,15 @@ impl Settings {
             reserve7d: ev_frac("CLAUDE_API_RESERVE_7D", 0.03),
             reserve_jitter: ev_frac("CLAUDE_API_RESERVE_JITTER", 0.02),
             // Fail-closed clamps: readiness-delay ≤ 30с; общий drain-deadline в [5, 595]с.
+            // Дефолт дренажа сокращён с 540 до 180 секунд: после SIGUSR1 новый слот уже
+            // обслуживает трафик, а застрявший/длинный стрим раньше держал blue-green
+            // cutover полные 9 минут до принудительного обрыва (деплои 2026-08-12…15).
             // OpenAI-слоты получают полный 620с drain: новый slot уже авторизован и
             // обслуживает трафик, поэтому старый может спокойно закончить десятиминутный turn.
             readiness_delay_secs: bounded_u64("CLAUDE_API_READINESS_DELAY_SECS", 3, 0, 30),
             drain_deadline_secs: provider_drain_deadline(
                 provider,
-                bounded_u64("CLAUDE_API_DRAIN_DEADLINE_SECS", 540, 5, 595),
+                bounded_u64("CLAUDE_API_DRAIN_DEADLINE_SECS", 180, 5, 595),
             ),
             // Мягкий порог spill/балансировки по подпискам. Он не ждёт и не отклоняет запросы:
             // весь флот выше порога обслуживается fail-open по минимальному in-flight.
@@ -2170,11 +2173,11 @@ mod tests {
 
     #[test]
     fn openai_slots_get_the_long_drain_and_other_providers_do_not() {
-        assert_eq!(provider_drain_deadline(ProviderMode::OpenAi, 540), 620);
-        assert_eq!(provider_drain_deadline(ProviderMode::Combined, 540), 620);
+        assert_eq!(provider_drain_deadline(ProviderMode::OpenAi, 180), 620);
+        assert_eq!(provider_drain_deadline(ProviderMode::Combined, 180), 620);
         assert_eq!(provider_drain_deadline(ProviderMode::OpenAi, 12), 620);
-        assert_eq!(provider_drain_deadline(ProviderMode::Anthropic, 540), 540);
-        assert_eq!(provider_drain_deadline(ProviderMode::Gemini, 540), 540);
+        assert_eq!(provider_drain_deadline(ProviderMode::Anthropic, 180), 180);
+        assert_eq!(provider_drain_deadline(ProviderMode::Gemini, 180), 180);
     }
 
     #[test]
