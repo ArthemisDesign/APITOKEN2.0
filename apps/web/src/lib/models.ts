@@ -751,13 +751,13 @@ export const geminiModels: GeminiModel[] = [
       "Cost-sensitive production traffic during the promotional rate period.",
     ],
     notes: [
-      "The published subscription surface is deliberately conservative: default text and SSE are live-proven; explicit thinking levels, tools, structured output and non-text input are not advertised yet.",
+      "Thinking levels low, medium and high are live-proven on the subscription wire and selectable via reasoning_effort; minimal is not supported by this model.",
       "Promotional official rates run through 2026-12-31; the engine automatically switches to $1.50 input, $0.15 cached input and $7.50 output on 2027-01-01.",
     ],
     faq: [
       { q: "What model ID should clients use?", a: "Always use gemini-3.7-flash. apiToken.sale keeps any private upstream routing name internal and returns only this public ID." },
       { q: "How much does Gemini 3.7 Flash cost?", a: "Through 2026 the official promotional rate is $0.75 per 1M input tokens, $0.075 cached input and $3.75 output. The flat 50% apiToken.sale B2C discount makes that $0.375, $0.0375 and $1.875." },
-      { q: "Which capabilities are currently published?", a: "Default text generation, countTokens and incremental SSE streaming. Tools, structured output, explicit thinking levels and non-text input remain unadvertised until separately live-tested." },
+      { q: "Which capabilities are currently published?", a: "Default text generation, countTokens and incremental SSE streaming, plus explicit thinking levels low, medium and high through reasoning_effort. Tools, structured output and non-text input remain unadvertised until separately live-tested." },
     ],
     related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
   },

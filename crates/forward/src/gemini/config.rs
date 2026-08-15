@@ -57,10 +57,12 @@ impl GeminiModel {
         if self.is_image_generation() {
             &[]
         } else if self.id == "gemini-3.7-flash" {
-            // Only default text/SSE was live-admitted. Explicit thinking levels remain accepted
-            // by the native wire for controlled evidence, but are not advertised as a product
-            // capability until each level has its own terminal usage proof.
-            &[]
+            // 2026-08-15 exact-SHA (916dee0d…) live matrix admitted every explicit level on
+            // the Ultra plan: low/medium/high each returned the byte-exact visible output
+            // across incremental SSE frames with terminal STOP, authoritative usage and a
+            // positive thinking token class on the confirmed tiered wire. `minimal` is
+            // rejected by the model itself, so it is not an advertised effort.
+            &["low", "medium", "high"]
         } else if self.id == "gemini-3.1-pro-preview" {
             &["low", "medium", "high"]
         } else {
@@ -426,7 +428,10 @@ mod tests {
             model("gemini-3.6-flash").reasoning_efforts(),
             ["minimal", "low", "medium", "high"]
         );
-        assert!(model("gemini-3.7-flash").reasoning_efforts().is_empty());
+        assert_eq!(
+            model("gemini-3.7-flash").reasoning_efforts(),
+            ["low", "medium", "high"]
+        );
         assert_eq!(
             model("gemini-3.1-pro-preview").reasoning_efforts(),
             ["low", "medium", "high"]
@@ -446,7 +451,7 @@ mod tests {
         let flash_37 = model("gemini-3.7-flash");
         assert_eq!(flash_37.input_modalities(), ["text"]);
         assert_eq!(flash_37.output_modalities(), ["text"]);
-        assert!(flash_37.reasoning_efforts().is_empty());
+        assert_eq!(flash_37.reasoning_efforts(), ["low", "medium", "high"]);
         assert!(!flash_37.tool_calling());
         assert!(!flash_37.structured_outputs());
         assert_eq!(

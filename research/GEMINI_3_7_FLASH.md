@@ -204,10 +204,10 @@ request remains terminal; no failed or successful paid transport may be replayed
 | `countTokens` preflight | 2xx for exact `gemini-3.7-flash` and a positive authoritative token count | Free; always first | **GREEN 2026-08-15** on `c4f0773a…`: one attested `totalTokens=19`; historical partial rows remain non-generation evidence |
 | Minimal generation | One 2xx incremental SSE request with byte-exact real text, terminal authoritative usage, and the confirmed public/private upstream identity from the exact candidate SHA | Default `$0.0001`; the person authorized one no-retry generation for exact SHA `c4f0773a…` at the conservative `$0.788352` ceiling | **GREEN 2026-08-15**: exact `1 … 64`, terminal `STOP`, authoritative 20 input / 478 output tokens, raw `gemini-3.7-flash-tiered`, and reconciled `$0.0018075`; the authorization is consumed |
 | Incremental SSE | The same paid generation must contain at least two visible non-thinking text frames, including one before the terminal event, then finish cleanly with authoritative usage; candidate-only frames are insufficient | Included in the single admission request; no second stream request | **GREEN**: eight SSE/candidate frames and seven visible non-thinking text frames in the same admitted generation |
-| Thinking `low` | Real output and authoritative usage with `thinkingLevel=low` | Separately bounded | Required before advertising `low` |
+| Thinking `low` | Real output and authoritative usage with `thinkingLevel=low` | Separately bounded | **GREEN 2026-08-15** on `916dee0d…`: 470 output incl. 288 thinking, terminal `STOP`, exact `1 … 64` over 7 visible SSE frames, reconciled `$0.001778` |
 | Thinking default | Omitted `thinkingLevel` returns the admitted exact output and usage | Included in the single admission request | **GREEN** for the omitted/default path only; 296 thinking tokens were authoritative |
-| Thinking explicit `medium` | Explicit `thinkingLevel=medium` follows documented semantics | Separately bounded | Required before advertising explicit `medium`; omission is not this proof |
-| Thinking `high` | Real output and authoritative usage with `thinkingLevel=high` | Separately bounded | Required before advertising `high` |
+| Thinking explicit `medium` | Explicit `thinkingLevel=medium` follows documented semantics | Separately bounded | **GREEN 2026-08-15** on `916dee0d…`: 473 output incl. 291 thinking, terminal `STOP`, exact output over 7 visible frames, reconciled `$0.001789` |
+| Thinking `high` | Real output and authoritative usage with `thinkingLevel=high` | Separately bounded | **GREEN 2026-08-15** on `916dee0d…`: 501 output incl. 319 thinking, terminal `STOP`, exact output over 6 visible frames, reconciled `$0.001894` |
 | Unsupported controls | Product rejects sampling controls and `candidateCount`; `minimal` is rejected locally or never offered | Unit/contract test; no paid request required | Prevents false controls from entering the public schema |
 | Structured output | Valid response matching the requested schema plus terminal usage | Separately bounded | Required only if published for this model |
 | Function calling | Forced tool call with preserved `name`, `call_id`, and thought signature; successful follow-up | Separately bounded | Required only if published for this model |
@@ -449,6 +449,35 @@ Publication may begin only after all of the following are true:
 The conditions above are satisfied by exact SHA `c4f0773a…` for the deliberately narrow default
 text/SSE surface. Untested controls and explicit thinking levels remain unclaimed. Any failed
 generation remains withdrawn; a red SHA is never published or retried as if it were green.
+
+### Explicit thinking levels controlled live — 2026-08-15
+
+After the default-surface GREEN, a follow-up exact-SHA matrix on production-GREEN runtime
+`916dee0df5a9b78b0e4f2a00632100d59d4adfbc` admitted all three documented explicit levels on the
+same healthy `google_ai_ultra` profile with positive `gemini-3.7-flash-tiered` quota. The runner's
+`--gemini-37-thinking-levels` mode sent one free attested `countTokens` and exactly one paid
+4096-token incremental SSE generation per level (no retry, replay or rotation), each with the
+byte-exact `1 … 64` output contract, raw `gemini-3.7-flash-tiered` modelVersion proof, terminal
+`STOP`, terminal usage equal to the immutable event, and a positive thinking token class:
+
+| Level | Output tokens | Thinking tokens | Visible SSE text frames | Reconciled spend |
+|---|---|---|---|---|
+| `low` | 470 | 288 | 7 | `$0.001778` |
+| `medium` | 473 | 291 | 7 | `$0.001789` |
+| `high` | 501 | 319 | 6 | `$0.001894` |
+
+Aggregate spend was `5,460,000 nanoUSD` (`$0.00546`) against an authorized `2,405,376,000`
+nanoUSD worst-case ceiling; the report is complete with zero unavailable capabilities. An earlier
+512-token probe of `low` twice showed the level is input-variable (zero thinking once, 338
+thinking and a `MAX_TOKENS` truncation once), so admission uses the 4096-token bound; the level's
+semantics under a small client output cap remain as variable as the provider makes them, which the
+product surface does not hide. `minimal` was never dispatched: the model's own rules reject it and
+the wire-mapping refuses it locally, so it is not and cannot become an advertised effort. The
+transient canary on port `18898` was stopped and collected after the matrix, and the stable Gemini
+production plane stayed ready throughout.
+
+Publication of `reasoning_efforts: ["low", "medium", "high"]` in the native and unified catalogues
+follows in the same change as this evidence, together with the site capability note.
 
 ## Checklist disposition
 

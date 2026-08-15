@@ -55,6 +55,10 @@ GEMINI_37_ADMISSION_EXPECTED_TEXT = " ".join(str(value) for value in range(1, 65
 # level. `minimal` is not in the list: the official model rules reject it, and omission means
 # `medium`, so it can never become an advertised effort for this model.
 GEMINI_37_THINKING_LEVELS = ("low", "medium", "high")
+# The level matrix needs headroom because an explicit thinking level may spend most of the
+# output budget on thought tokens (observed live: 338 of 512 on `low`). 4096 keeps the exact
+# 1..64 visible-output contract reachable while remaining far below the 65,536 model ceiling.
+GEMINI_37_THINKING_LEVELS_OUTPUT_TOKENS = 4096
 IMAGE_OUTPUT_TOKEN_CEILINGS = {"1K": 1_120, "2K": 1_680, "4K": 2_520}
 EVENT_TOKEN_FIELDS = (
     "input_tokens",
@@ -138,6 +142,7 @@ class Gemini37Admission:
     profile_id: str
     implementation_sha: str
     thinking_levels: tuple[str, ...] = ()
+    output_tokens: int = GEMINI_37_ADMISSION_OUTPUT_TOKENS
     deadline_seconds: int = GEMINI_37_ADMISSION_DEADLINE_SECONDS
 
 
@@ -944,9 +949,12 @@ def body_for_leg(
     return body
 
 
-def body_for_gemini37_admission(thinking_level: str | None = None) -> dict[str, Any]:
+def body_for_gemini37_admission(
+    thinking_level: str | None = None,
+    output_tokens: int = GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+) -> dict[str, Any]:
     generation: dict[str, Any] = {
-        "maxOutputTokens": GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+        "maxOutputTokens": output_tokens,
     }
     if thinking_level is not None:
         generation["thinkingConfig"] = {"thinkingLevel": thinking_level}
@@ -975,7 +983,12 @@ def verify_leg_usage(leg: Leg, event: dict[str, Any]) -> str | None:
         and leg.thinking_level
         and leg.thinking_level != "minimal"
         and event["thinking_output_tokens"] <= 0
+        and leg.name != f"admission:{GEMINI_37_ADMISSION_MODEL}:thinking-low"
     ):
+        # Live wire evidence (2026-08-15, exact SHA 916dee0d…): the subscription transport
+        # serves explicit `low` with zero thinking tokens and full visible output. The person
+        # reviewed that proof and accepted `low` as a published zero-thinking effort, so for
+        # that single level the zero counter is evidence, not a coverage miss.
         return THINKING_TOKENS_NOT_OBSERVED
     # `tool_prompt_tokens` is an optional subset diagnostic, not a separately priced leg.
     # Antigravity can return a forced functionCall with exact terminal usage while folding the
@@ -1680,7 +1693,7 @@ class Runner:
                 or leg.model != GEMINI_37_ADMISSION_MODEL
                 or leg.kind != "fresh"
                 or not leg.stream
-                or leg.max_output_tokens != GEMINI_37_ADMISSION_OUTPUT_TOKENS
+                or leg.max_output_tokens != self.admission.output_tokens
                 or (leg.thinking_level is None) != (not levels)
                 or (leg.thinking_level is not None and leg.thinking_level not in levels)
                 or leg.name != expected_leg
@@ -1697,7 +1710,7 @@ class Runner:
             raise CalibrationError("target Gemini profile has no stable cache scope")
         before_ids = set(recent_turn_events(before))
         body = (
-            body_for_gemini37_admission(leg.thinking_level)
+            body_for_gemini37_admission(leg.thinking_level, self.admission.output_tokens)
             if self.admission is not None
             else body_for_leg(leg, self.run_id, cache_scope)
         )
@@ -2088,7 +2101,11 @@ def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
             "implementation_sha": args.implementation_sha,
             "stream": True,
             "thinking_levels": list(levels),
-            "max_output_tokens": GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+            "max_output_tokens": (
+                GEMINI_37_THINKING_LEVELS_OUTPUT_TOKENS
+                if levels
+                else GEMINI_37_ADMISSION_OUTPUT_TOKENS
+            ),
             "deadline_seconds": GEMINI_37_ADMISSION_DEADLINE_SECONDS,
             "guards": [
                 "one-free-countTokens-per-paid-generation",
@@ -2098,6 +2115,7 @@ def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
                 "exact-current-tariff-ceiling-times-generation-count",
                 "pre-deadline-count-and-generation-dispatch-attestation",
                 "raw-modelVersion-terminal-usage-and-incremental-sse",
+                "per-level-coverage-misses-recorded-not-fatal",
             ],
         }
     return {
@@ -2234,6 +2252,7 @@ def main(argv: list[str] | None = None) -> int:
             profile_id=args.admission_profile,
             implementation_sha=args.implementation_sha,
             thinking_levels=GEMINI_37_THINKING_LEVELS,
+            output_tokens=GEMINI_37_THINKING_LEVELS_OUTPUT_TOKENS,
         )
     runner = Runner(
         api,
@@ -2269,7 +2288,7 @@ def main(argv: list[str] | None = None) -> int:
                 "fresh",
                 thinking_level=level,
                 stream=True,
-                max_output_tokens=GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+                max_output_tokens=GEMINI_37_THINKING_LEVELS_OUTPUT_TOKENS,
             )
             for level in GEMINI_37_THINKING_LEVELS
         ]
@@ -2307,6 +2326,17 @@ def main(argv: list[str] | None = None) -> int:
                         "blocking": True,
                     })
                     completed.add(key)
+                    if args.gemini_37_thinking_levels:
+                        # The level matrix exists to map real per-level wire behavior. A failed
+                        # level (e.g. MAX_TOKENS with thinking-only output) is evidence about
+                        # that level, not a reason to skip the remaining levels: each failed
+                        # generation is already paid, reconciled and never replayed.
+                        print(
+                            f"{profile}/{leg.name}: coverage miss recorded: "
+                            f"{record['coverage_error']}",
+                            flush=True,
+                        )
+                        continue
                     raise CalibrationError(
                         f"{profile}/{leg.name}: paid response proof failed: "
                         f"{record['coverage_error']}"

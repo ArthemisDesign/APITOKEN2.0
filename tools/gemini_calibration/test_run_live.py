@@ -2379,10 +2379,10 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
     def test_gemini_37_explicit_level_fails_closed_without_thinking_tokens(self):
         model = run_live.GEMINI_37_ADMISSION_MODEL
         leg = run_live.Leg(
-            f"admission:{model}:thinking-low",
+            f"admission:{model}:thinking-medium",
             model,
             "fresh",
-            thinking_level="low",
+            thinking_level="medium",
             stream=True,
             max_output_tokens=run_live.GEMINI_37_ADMISSION_OUTPUT_TOKENS,
         )
@@ -2397,6 +2397,13 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             run_live.verify_leg_usage(leg, immutable),
             run_live.THINKING_TOKENS_NOT_OBSERVED,
         )
+        # The live-proven low level is the single accepted zero-thinking admission effort.
+        low_leg = dataclasses.replace(
+            leg,
+            name=f"admission:{model}:thinking-low",
+            thinking_level="low",
+        )
+        self.assertIsNone(run_live.verify_leg_usage(low_leg, immutable))
 
 
 if __name__ == "__main__":
