@@ -22,7 +22,8 @@ inference-related calls without storing customer content.
 `usage_events` is the authoritative settled-usage fact. It stores the engine request identity,
 account/key attribution, provider, model, token buckets, web-search usage, and immutable official and
 charged nanoUSD. The Control API aggregates it by model/provider, day, and key for customer and
-operator dashboards.
+operator dashboards. The schema is defined in `crates/registry/migrations_pg/0001_engine_authority.sql:120-137`
+and expanded by `0005_provider_attribution.sql:13-18`.
 
 It is deliberately not a complete request journal. It normally exists only when authoritative usage
 reaches settlement, so it does not cover all validation errors, authorization or balance refusals,
@@ -30,14 +31,19 @@ provider failures, non-billable calls, or every interrupted stream. It also does
 latency, routing attempts, client classification, or general tool-use dimensions.
 
 The HTTP error audit writes one JSON journal event for a terminal non-2xx response to a recognized
-metered key. Prometheus and Grafana intentionally exclude customer, key, request, model, credential,
+metered key; it lives in `crates/server/src/http.rs:667-739` as `audit_customer_error` middleware
+(forward only carries the `TerminalErrorReason` extension at `crates/forward/src/proxy.rs:564,648-649`).
+Prometheus and Grafana intentionally exclude customer, key, request, model, credential,
 and content identities. These operational surfaces remain useful but are not a durable product
 analytics authority.
 
 Request identities are currently fragmented across protocol surfaces. A provider-plane billing ID,
 a public response ID, an upstream request ID, a calibration ID, and a router execution group may be
 different values. The new contract must make these relationships explicit rather than overloading
-one existing ID.
+one existing ID. Note: the symbol `billing_request_id` does not exist in code; the real identifier
+is `engine_request_id` / `request_id` generated inside the provider planes (`crates/forward/src/proxy.rs:1288`,
+`crates/forward/src/codex/billing.rs:171,276`, `crates/forward/src/gemini/billing.rs:611`) and passed
+through `AsyncBilling` (`crates/forward/src/billing.rs:1346-1376`).
 
 ## 3. Core invariants
 
@@ -71,6 +77,7 @@ Four identities have different meanings and must remain separate:
 | `billing_request_id` | One provider-plane money/admission lifecycle, including that plane's internal pre-byte rotation | Provider plane before reserve |
 | `execution_group_id` + `attempt` | A router fallback chain and its one-based model/plane attempt | Router, only for an effective chain longer than one |
 | `upstream_request_id` | Bounded terminal provider reference, when safely available | Provider plane |
+| `calibration_request_id` | Admin-only exact-calibration identity (Gemini and Kimi lanes), canonical UUIDv4 | External admin runbook via `x-apitoken-calibration-request-id` |
 
 The router must create one CSPRNG UUIDv4 `logical_request_id` before the first executable attempt and
 send it to every attempt through a new internal capability header. Caddy removes client-supplied
@@ -86,6 +93,14 @@ response header, but the MVP may keep it operator-only until compatibility is pr
 One logical request can therefore produce several request facts when router fallback executes more
 than one provider-plane attempt. One request fact represents one provider-plane execution attempt,
 not an entire fallback chain and not every internal subscription retry.
+
+**Calibration ID scope.** The separate `calibration_request_id` exists only on the Gemini and Kimi
+exact-calibration lanes, where an external admin runbook must correlate a pre-generated UUID with
+the resulting immutable turn-evidence row (`crates/registry/migrations_pg/0019_provider_turn_calibration.sql:8`).
+On Anthropic and Codex, turn calibration keys on the same plane billing `request_id`
+(`crates/forward/src/billing.rs:928`, `persist_anthropic_turn_postgres`), and Codex window-calibration
+rows carry no request identity at all. The calibration ID is therefore not a uniform fifth identity
+across all planes.
 
 ## 5. Customer and client identity
 
@@ -106,6 +121,13 @@ Client application classification uses a closed, versioned vocabulary such as `c
 - `explicit`: a reviewed integration sent a bounded client-identification header;
 - `heuristic`: the engine classified existing protocol headers using a versioned rule;
 - `unknown`: evidence was absent, contradictory, malformed, or unsupported.
+
+The only existing inbound heuristic today is a Codex-envelope prefix check on `originator`/`user-agent`
+(`crates/forward/src/codex/api.rs:409-416`). There is no `claude_code`, `opencode`, or `cursor`
+detection anywhere in `crates/forward` or `crates/server`; the vocabulary above is new code. The
+engine deliberately strips client `x-stainless*`, `user-agent`, `anthropic-beta`, `x-claude-code-session-id`,
+`x-conversation-id`, and `x-session-id` headers and synthesizes its own Claude-Code fingerprint upstream
+(`crates/forward/src/proxy.rs:193-216`), so inbound classification must run before that strip.
 
 An explicit header is stripped before external upstream dispatch and has bounded ASCII kind/version
 values. Heuristics may inspect headers already required for compatibility, but raw header values are
@@ -159,7 +181,9 @@ Outcomes are independent dimensions rather than one misleading `status`:
   `upstream_error`, `protocol_error`, `unknown`;
 - `billing_outcome`: `winner`, `loser`, `zero_metered`, `canceled`, `reconciled`, `not_applicable`,
   `unknown`;
-- `http_status_class`: exact bounded status or class, according to the API projection being built.
+- `http_status_class`: exact bounded status code (100-599), not a class; the class is a derived
+  projection for reports and dashboards. Storing the exact code preserves diagnostic value
+  (for example, 400 vs 422 vs 413) at no meaningful cardinality cost in the database.
 
 There is intentionally no generic `billing_outcome=settled` client-success label. A router loser,
 downstream disconnect, provider success, and financial cancellation can coexist in combinations
@@ -190,6 +214,13 @@ An already terminal fact is submitted through a separate low-priority bounded in
 `AsyncBilling`. It uses non-blocking `try_send`, drops on full/closed, never enters the money FIFO,
 and is not part of the mandatory billing shutdown flush. The producer captures immutable
 admission-time `account_id` and `key_id`; it must not repeat authorization after the response.
+
+The inbox must be drained by a separate low-priority writer connection or a strictly deferred
+batch-insert path, not by the money writer thread itself. `AsyncBilling` already protects money
+with a single writer thread and a `Flush` barrier (`crates/forward/src/billing.rs:1668-1674`,
+`:1474-1476`); a slow observability insert on that thread would add latency to admission and
+settlement. Post-auth facts are terminal at insert, so they use `INSERT ... ON CONFLICT DO NOTHING`
+without updates.
 
 Dropped events increment a fixed-cardinality counter by a bounded reason. The system must expose
 queue depth, dropped total, and persistence health so data coverage is measurable rather than
@@ -244,7 +275,12 @@ opaque home identity as a related privacy hardening step.
 
 MVP retention is 30 days. Pruning is bounded and independent from reservation/outbox deletion. No
 foreign key may cascade facts away with shorter transient lifecycle storage, and facts must not keep
-reservations alive past their own retention boundary.
+reservations alive past their own retention boundary. Request-fact pruning must respect the existing
+validated 30-day minimum enforced by `validate_request_lifecycle_prune_cutoff`
+(`crates/registry/src/pricing/snapshots.rs:36-50`), which today guards `maintenance_prune`
+deletions of `settlement_outbox`, `reservations`, and `execution_group_winner`. The pruning order
+must finalize or prune facts before their corresponding lifecycle rows, never resurrect a pruned
+reservation, and never extend a fact past the shared retention window.
 
 The migration should start with only query-proven indexes:
 
@@ -262,10 +298,16 @@ pagination.
 - `crates/registry`: additive PostgreSQL migration, SQLite semantic parity where required by the
   rollback/test contract, insert/update/query/prune primitives;
 - `crates/forward`: admission snapshot, provider parsers, tool/capability classification, lifecycle
-  updates, low-priority inbox, stream-safe terminal observations;
-- `crates/server`: composition, private Control API reads, bounded telemetry, request correlation;
+  updates, low-priority inbox, stream-safe terminal observations. `AsyncBilling` is a single-writer +
+  N-reader actor with a bounded 4096-entry FIFO and a `Flush` barrier (`crates/forward/src/billing.rs:39`,
+  `:1668-1681`, `:1474-1476`);
+- `crates/server`: composition, private Control API reads, bounded telemetry, request correlation.
+  The existing Control API aggregates `usage_events` via `GET /admin/account/{id}/usage`,
+  `GET /spend-stats`, and `GET /fleet-history` (`crates/server/src/admin.rs:947-1056`,
+  `crates/server/src/http.rs:341,3947-4039,4383`);
 - `crates/router`: trusted logical request ID production and propagation across fallback attempts;
-- `deploy/Caddyfile`: removal of client-supplied internal correlation capability headers;
+- `deploy/Caddyfile`: removal of client-supplied internal correlation capability headers, following
+  the existing `strip_execution_identity` snippet pattern (`deploy/Caddyfile:76-79`);
 - `packages/contracts` and `packages/engine-client`: typed consumers only after the engine producer
   is deployed GREEN;
 - `apps/api` and `apps/admin`: commerce identity join and operator analytics UI after the producer;
@@ -294,8 +336,8 @@ analytics must not be introduced into the pool layer.
    `packages/engine-client`, `apps/api`, and the operator UI as consumer commits.
 8. Add fixed-cardinality health metrics and their alert/runbook/dashboard changes under the new
    metric checklist.
-9. Run a coverage and load observation period before exposing selected aggregates to customers or
-   increasing retention.
+9. Run a coverage and load observation period with a pre-agreed rollback threshold for admission
+   latency before exposing selected aggregates to customers or increasing retention.
 
 Every migration and cross-context contract remains expand-only and producer-first. This proposal
 does not authorize combining migration, dependent runtime, and consumers into one rollout.
@@ -340,3 +382,96 @@ Implementation is incomplete without tests for:
 
 Until these decisions are resolved, this document is the discussion baseline, not implementation
 authorization.
+
+## 16. Review findings and code confirmations (2026-08)
+
+The following conclusions were verified against `origin/master` at `916dee0d` in read-only worktrees
+and are recorded here as fixed observations.
+
+### 16.1 Confirmed by code
+
+- `usage_events` is the authoritative settled-usage fact: `request_id` (unique), `account_id`, `key`,
+  `model`, five token buckets, `web_search_requests`, `real_nano`, `charge_nano`, `provider`
+  (`crates/registry/migrations_pg/0001_engine_authority.sql:120-137`,
+  `0005_provider_attribution.sql:13-18`). The only runtime write is inside the settlement outbox
+  apply transaction (`crates/registry/src/pg.rs:1436-1451`); losing execution-group attempts and
+  model-less reconciliation charges do not produce a row (`pg.rs:1419`).
+- The HTTP error audit lives in `crates/server/src/http.rs:667-739` as `audit_customer_error`
+  middleware; `crates/forward` only carries the `TerminalErrorReason` response extension
+  (`crates/forward/src/proxy.rs:564,648-649`).
+- Request identities are fragmented: the billing-plane identifier is `engine_request_id`/`request_id`
+  generated in the provider planes (`crates/forward/src/proxy.rs:1288`,
+  `crates/forward/src/codex/billing.rs:171,276`, `crates/forward/src/gemini/billing.rs:611`) and
+  passed through `AsyncBilling`; the public `x-request-id` is the same value
+  (`crates/forward/src/proxy.rs:654`); the upstream reference is `BillCtx.reference`
+  (`crates/forward/src/meter.rs:39-40`).
+- `AsyncBilling` is a single-writer + N-reader actor with a bounded 4096-entry money FIFO and a
+  `Flush` barrier (`crates/forward/src/billing.rs:39`, `:1668-1681`, `:1474-1476`).
+- Settlement outbox enqueue and apply are distinct steps; winner/loser is decided only at apply
+  (`crates/registry/src/pg.rs:1316-1337`).
+- The router creates an execution group only when `attempt_count > 1`
+  (`crates/router/src/routing.rs:532-539`); single-attempt traffic sends no group header.
+- `control_authed` is defined in `crates/forward/src/proxy.rs:348`, not in `crates/server`; existing
+  Control API aggregation endpoints are `GET /admin/account/{id}/usage`, `GET /spend-stats`, and
+  `GET /fleet-history` (`crates/server/src/admin.rs:947-1056`,
+  `crates/server/src/http.rs:341,3947-4039,4383`).
+- Prometheus `/metrics` uses fixed compile-bounded series with no per-request or per-customer labels
+  (`crates/server/src/http.rs:316-1023`, `:1136-1147`).
+- Retention today is 30 days for ledger/usage_events (`LEDGER_RETENTION_DAYS = 30`) and 30 days for
+  reservations/settlement_outbox (`REQUEST_LIFECYCLE_RETENTION_DAYS = 30`), enforced by separate
+  prune loops (`crates/server/src/main.rs:35-39`, `crates/server/src/poller.rs:97-160`) with a
+  validated 30-day minimum (`crates/registry/src/pricing/snapshots.rs:36-50`).
+- SQLite/PostgreSQL semantic parity is a registry contract requirement
+  (`crates/registry/CLAUDE.md:134-136`), with mirrored primitives for reserve, settle, execution-group
+  winner, and exact replay.
+- Client classification is essentially greenfield: the only existing inbound heuristic is the Codex
+  envelope prefix check on `originator`/`user-agent` (`crates/forward/src/codex/api.rs:409-416`).
+  The engine strips client `x-stainless*`/`user-agent`/`x-conversation-id`/`x-session-id` and
+  synthesizes its own upstream fingerprint (`crates/forward/src/proxy.rs:193-216`).
+- The `x-apitoken-*` internal capability header convention already exists
+  (`x-apitoken-execution-group`, `x-apitoken-attempt`, `x-apitoken-execution-state`,
+  `x-apitoken-service-tier`, `x-apitoken-calibration-*`), with Caddy stripping at public ingress
+  (`deploy/Caddyfile:76-79`) and fail-closed validation in the plane.
+- The streaming and pre-byte retry fences described in §3(4-5) are real and tested
+  (`crates/forward/src/meter.rs:124` TeeMeter, `crates/forward/src/proxy.rs:2044-2072`,
+  `docs/engine/ROUTING_FENCING.md`).
+
+### 16.2 Corrections and clarifications to this document
+
+- The HTTP error audit is owned by `crates/server`, not by `crates/forward` (§2, §12).
+- The identifier `billing_request_id` does not exist in code; the actual plane-generated name is
+  `engine_request_id`/`request_id` (§2, §4).
+- A separate `calibration_request_id` exists only on the Gemini and Kimi exact-calibration lanes
+  (`crates/forward/src/gemini/billing.rs:13`, `crates/forward/src/kimi/gateway.rs:100`); on Anthropic
+  and Codex, turn calibration keys on the same plane billing `request_id`, and Codex window
+  calibration rows carry no request identity (§4).
+- `control_authed` is defined in `crates/forward/src/proxy.rs:348` (§9, §12).
+- The router creates an execution group only for chains longer than one attempt; if the logical
+  request ID is sent to every attempt, that is a new convention requiring extension of the existing
+  strip and validation discipline (§4, §13.4).
+- Request-fact pruning must respect the existing validated 30-day minimum enforced by
+  `validate_request_lifecycle_prune_cutoff` and must not resurrect or extend pruned lifecycle rows
+  (§11).
+
+### 16.3 Design risks and recommendations
+
+1. **§8.2 writer contention.** The low-priority observability inbox must not be drained by the
+   `AsyncBilling` money writer thread. A separate writer connection or strictly deferred batch-insert
+   path is required so that a slow observability insert does not add latency to admission and
+   settlement. Post-auth facts are terminal at insert, so they use `INSERT ... ON CONFLICT DO NOTHING`
+   without updates.
+2. **§8.1 write amplification.** Inserting the request fact into the reservation transaction adds
+   bytes to the hottest transaction in the system without a second round trip. A pre-agreed rollback
+   threshold for admission latency is required during the coverage and load observation period (§13.9).
+3. **§7 `http_status_class`.** Store the exact bounded status code (100-599), not a class; the class
+   is a derived projection. Exact codes preserve diagnostic value at no meaningful database
+   cardinality cost.
+4. **§5 client classification.** Explicit identification should start with the first-party
+   `opencode` plugin, followed by `claude_code`. The versioned heuristic v1 should cover the existing
+   Codex envelope check and `anthropic-version`/`openai-beta` presence; all other values remain
+   `unknown`. The header should be a bounded ASCII `x-apitoken-client` kind/version pair, stripped at
+   ingress like other internal capability headers.
+5. **§4 public response header.** The logical request ID should remain operator-only for the MVP.
+   The existing public `x-request-id` is already the billing/reservation identity and is relied on
+   by clients; a second public ID would be confusing. If exposure is later required, it must use a
+   new header name after compatibility is proven.
