@@ -864,7 +864,10 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    `low|medium|high` (omission
    means medium); `minimal`, `thinkingBudget`, `candidateCount`, deprecated sampling controls and
    any final turn without non-empty user text fail locally. Image-only and tool-result-only final
-   turns remain closed until their wire contract is proved live. Any different wire/quota identity
+   turns remain closed until their wire contract is proved live. After the withdrawn 256-token
+   canary spent 241 of 252 output tokens on thinking and terminated at `MAX_TOKENS`, an explicit
+   dormant request must use the reviewed successor bound `maxOutputTokens=512`; the old bound and
+   any other explicit value fail before dispatch. Any different wire/quota identity
    requires fresh authenticated discovery plus exact-SHA generation evidence, never a guess from
    neighboring model families.
    The thinking level is selected before admission; quota/cooling are keyed by the private bucket, while affinity,

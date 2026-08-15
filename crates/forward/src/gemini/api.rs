@@ -49,6 +49,10 @@ const IMAGE_STREAM_START_MAX_CHUNKS: usize = 8192;
 // contract intact and adapt only the private wire request.
 const ANTIGRAVITY_WIRE_OUTPUT_TOKEN_LIMIT: u64 = 65_535;
 const DORMANT_DEADLINE_MODEL: &str = "gemini-3.7-flash";
+/// The withdrawn 256-token admission spent 241/252 output tokens on thinking and terminated at
+/// `MAX_TOKENS`. A successor exact-SHA canary must make the reviewed 512-token bound explicit; the
+/// dormant route rejects the old bound before provider dispatch so it cannot be replayed by mistake.
+const DORMANT_37_ADMISSION_OUTPUT_TOKENS: u64 = 512;
 const CALIBRATION_DISPATCH_HEADER: &str = "x-apitoken-calibration-dispatch-ms";
 
 /// Native Gemini accepts proto-JSON in either camelCase or snake_case. Code Assist and the public
@@ -1484,6 +1488,16 @@ fn validate_gemini_37_request(body: &Value) -> Result<(), ApiError> {
             if generation_config.contains_key(field) {
                 return Err(ApiError::invalid(
                     "Gemini 3.7 Flash does not support legacy sampling or candidateCount controls.",
+                ));
+            }
+        }
+        if let Some(max_output_tokens) = generation_config.get("maxOutputTokens") {
+            let max_output_tokens = max_output_tokens.as_u64().ok_or_else(|| {
+                ApiError::invalid("generationConfig.maxOutputTokens must be an integer.")
+            })?;
+            if max_output_tokens != DORMANT_37_ADMISSION_OUTPUT_TOKENS {
+                return Err(ApiError::invalid(
+                    "The dormant Gemini 3.7 admission requires maxOutputTokens=512.",
                 ));
             }
         }

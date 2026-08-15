@@ -2225,6 +2225,21 @@ async fn dormant_37_rejects_removed_controls_and_prefill_before_upstream() {
     assert_eq!(server.state.seen().len(), 1);
 }
 
+#[test]
+fn dormant_37_rejects_the_withdrawn_output_bound_before_dispatch() {
+    let request = |max_output_tokens| {
+        json!({
+            "contents": [{"role": "user", "parts": [{"text": "reply ok"}]}],
+            "generationConfig": {"maxOutputTokens": max_output_tokens}
+        })
+    };
+    let model = catalog_model("gemini-3.7-flash");
+
+    assert!(validate_generation_request(&request(256), &model).is_err());
+    assert!(validate_generation_request(&request(512), &model).is_ok());
+    assert!(validate_generation_request(&request(513), &model).is_err());
+}
+
 #[tokio::test]
 async fn dormant_37_exact_generation_requires_an_already_fresh_cached_bearer() {
     let server = start_mock(MockState::default()).await;

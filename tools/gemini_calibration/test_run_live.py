@@ -170,7 +170,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
                 run_live.GEMINI_37_ADMISSION_OUTPUT_TOKENS,
                 "fresh",
             ),
-            787_392_000,
+            788_352_000,
         )
 
     def test_gemini_37_admission_cli_is_closed_to_one_canary_contract(self):
@@ -186,7 +186,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             "--production-api-port",
             "18895",
             "--budget-usd",
-            "0.787392",
+            "0.788352",
         ])
         plan = run_live.dry_run_plan(args, run_live.usd_to_nano(args.budget_usd))
         self.assertEqual(plan["schema"], "gemini-3.7-admission-plan/v1")
@@ -236,7 +236,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
                     "--production-api-port",
                     "18895",
                     "--budget-usd",
-                    "0.787392",
+                    "0.788352",
                 ])
 
     def test_integer_contract_accepts_only_json_int_or_canonical_decimal_string(self):
@@ -2019,7 +2019,11 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             "google/test/v1", 1_000, 10, 10, 1, 1, 10, 0,
             1_000, 10, 10, 1, 1, 10, "prompt", 1, 1_000,
         )
-        upper = rates.upper_bound(10, 256, "fresh")
+        upper = rates.upper_bound(
+            10,
+            run_live.GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+            "fresh",
+        )
         api = CountOnlyApi()
         runner = run_live.Runner(
             api,
@@ -2037,7 +2041,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             model,
             "fresh",
             stream=True,
-            max_output_tokens=256,
+            max_output_tokens=run_live.GEMINI_37_ADMISSION_OUTPUT_TOKENS,
         )
         with mock.patch.object(run_live.time, "time", return_value=1_000):
             with self.assertRaises(run_live.CalibrationError) as caught:

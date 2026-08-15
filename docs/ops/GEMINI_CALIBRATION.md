@@ -228,7 +228,7 @@ The controlled sequence remains fail closed:
    generation leaves the model dormant and unpublished.
 
 The admission mode fixes the prompt to `Output the integers 1 through 64, separated by single
-spaces, and nothing else.`, omits `thinkingLevel`, uses `maxOutputTokens=256`, and accepts only the
+spaces, and nothing else.`, omits `thinkingLevel`, uses `maxOutputTokens=512`, and accepts only the
 exact concatenated `1 … 64` output split over at least two visible non-thinking SSE frames. It sends
 one UUIDv4/deadline-bound free count and one distinct UUIDv4/deadline-bound generation. Both responses
 must carry a canonical positive `x-apitoken-calibration-dispatch-ms` strictly before the shared
@@ -239,16 +239,19 @@ The current promotional Standard ceiling is exactly:
 
 ```text
 1,048,576 input tokens * 750 nanoUSD
-  + 256 output tokens * 3,750 nanoUSD
-= 787,392,000 nanoUSD = $0.787392
+  + 512 output tokens * 3,750 nanoUSD
+= 788,352,000 nanoUSD = $0.788352
 ```
 
 The complete official input context is reserved because Code Assist can prepend provider-owned input
 that the free count does not see. Before paid dispatch, the runner recalculates this value from the
 canary's effective compiled rate card and requires `--budget-usd` to equal it exactly; a smaller or
-larger value stops after the free count. The user authorized raising the default `$0.0001` only to
-this minimum proved current-epoch ceiling. A future tariff epoch therefore requires a new explicit
-numeric contract rather than inheriting an older larger authorization.
+larger value stops after the free count. The earlier `$0.787392` authorization applied only to the
+withdrawn 256-token SHA. On 2026-08-15 the person explicitly authorized exactly one paid generation
+for the new 512-token successor SHA at the exact `$0.788352` ceiling. The authorization is valid only
+for the immutable SHA produced by this reviewed successor change, after that SHA is production GREEN;
+it permits no retry or replay. A future SHA or tariff epoch requires a new numeric contract rather
+than inheriting either older authorization.
 
 ### Withdrawn exact-SHA attempt — 2026-08-15
 
@@ -320,7 +323,7 @@ python3 tools/gemini_calibration/run_live.py \
   --implementation-sha '<40-lowercase-hex-runtime-sha>' \
   --production-capacity-port '<non-public-loopback-port>' \
   --production-api-port '<same-non-public-loopback-port>' \
-  --budget-usd 0.787392
+  --budget-usd 0.788352
 
 python3 tools/gemini_calibration/run_live.py \
   --execute \
@@ -331,7 +334,7 @@ python3 tools/gemini_calibration/run_live.py \
   --production-api-over-ssh \
   --production-capacity-port '<same-non-public-loopback-port>' \
   --production-api-port '<same-non-public-loopback-port>' \
-  --budget-usd 0.787392 \
+  --budget-usd 0.788352 \
   --report /tmp/gemini-3.7-admission.json
 ```
 
@@ -355,7 +358,7 @@ zero thinking token count and the fail-closed rejection of substituted evidence.
 also rejects malformed or buffered-only SSE, duplicate JSON keys, inconsistent response identity,
 non-terminal usage, non-STOP completion and response/event token mismatches without opening a
 network connection. Gemini 3.7 coverage additionally proves the closed CLI, exact one-leg prompt,
-current `787392000 nanoUSD` ceiling, one-attempt count transport, deadline/header propagation,
+current `788352000 nanoUSD` ceiling, one-attempt count transport, deadline/header propagation,
 dispatch attestation and one-generation/no-resume contract before a live is authorized.
 
 ## Result

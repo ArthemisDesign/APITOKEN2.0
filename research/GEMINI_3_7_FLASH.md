@@ -202,7 +202,7 @@ No row is acceptance evidence unless explicitly marked GREEN.
 |---|---|---|---|
 | Owned catalogue discovery | Sanitized 3.7 quota and wire rows bound to the credential/plan | Free | **CANDIDATE OBSERVED** on 2026-08-15: `gemini-3.7-flash-tiered` was positive on six Pro and one Ultra profile; never generation proof |
 | `countTokens` preflight | 2xx for exact `gemini-3.7-flash` and a positive authoritative token count | Free; always first | **PARTIAL 2026-08-15**: `20d945ce…` returned one attested response whose old report omitted the count; `2c8aca0d…` returned one attested `totalTokens=19`. Count does not prove generation |
-| Minimal generation | One 2xx incremental SSE request with byte-exact real text, terminal authoritative usage, and raw upstream model identity from the exact candidate SHA | Default `$0.0001`; increased only to the current minimal proved ceiling `$0.787392` for one no-retry attempt | **RED 2026-08-15**: `20d945ce…` returned 404; `2c8aca0d…` settled `$0.000960` but terminated `MAX_TOKENS` instead of `STOP`; both candidates withdrawn |
+| Minimal generation | One 2xx incremental SSE request with byte-exact real text, terminal authoritative usage, and raw upstream model identity from the exact candidate SHA | Default `$0.0001`; exactly one no-retry generation for the new immutable 512-token successor SHA is authorized up to the current minimal proved ceiling `$0.788352` | **RED 2026-08-15** for both historical candidates: `20d945ce…` returned 404; `2c8aca0d…` settled `$0.000960` but terminated `MAX_TOKENS` instead of `STOP`. The 512-token successor remains PENDING until its exact SHA is GREEN and its one-shot live completes |
 | Incremental SSE | The same paid generation must contain at least two visible non-thinking text frames, including one before the terminal event, then finish cleanly with authoritative usage; candidate-only frames are insufficient | Included in the single admission request; no second stream request | **NOT PROVED**: neither withdrawn generation produced the required visible non-thinking frame sequence and clean terminal proof |
 | Thinking `low` | Real output and authoritative usage with `thinkingLevel=low` | Separately bounded | Required before advertising `low` |
 | Thinking default | Omitted `thinkingLevel` returns the admitted exact output and usage | Included in the single admission request | Proves only the omitted/default path |
@@ -257,6 +257,25 @@ This is still a worst-case reserve for one no-retry request, not expected spend.
 actual settlement remains authoritative, and any tariff change or dispatch beyond the current epoch
 stops before generation and requires a fresh explicit numeric contract. The older larger
 authorization above remains historical context; it is not the active execution budget.
+
+### Authorized 512-token successor budget — 2026-08-15
+
+The tiered-wire attempt showed that 256 tokens were not a valid acceptance bound: 241 of 252 output
+tokens were thinking tokens and the response terminated at `MAX_TOKENS`. The smallest reviewed
+successor doubles only the output allowance to an explicit `maxOutputTokens=512`; the dormant
+producer rejects the withdrawn 256-token payload and every other explicit bound before dispatch.
+The current promotional worst-case ceiling is therefore:
+
+```text
+1,048,576 * 750 + 512 * 3,750 = 788,352,000 nanoUSD = $0.788352
+```
+
+On 2026-08-15 the person explicitly authorized exactly one paid generation at that ceiling for the
+new immutable SHA produced by this reviewed successor change, after production `deploy/watchdog` is
+GREEN for that SHA and after the free `countTokens` preflight succeeds. The authorization does not
+apply to either withdrawn SHA, any later implementation SHA, a retry/replay, a later tariff epoch,
+grounding, tools, or another paid control test. It remains a conservative reserve rather than
+expected spend; authoritative terminal usage determines the actual charge.
 
 ## Two-stage delivery decision
 
