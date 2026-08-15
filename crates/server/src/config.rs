@@ -178,7 +178,7 @@ fn parse_claudestore_fallback_config(
         )
     });
     Ok(Some(
-        ClaudeStoreFallbackConfig::production(api_key?)
+        ClaudeStoreFallbackConfig::production_claude(api_key?)
             .map_err(|message| format!("CLAUDE_API_CLAUDESTORE_API_KEY: {message}"))?,
     ))
 }
@@ -217,7 +217,7 @@ fn parse_claudestore_codex_fallback_config(
         )
     })?;
     Ok(Some(
-        ClaudeStoreFallbackConfig::production(api_key)
+        ClaudeStoreFallbackConfig::production_codex(api_key)
             .map_err(|message| format!("CLAUDE_API_CLAUDESTORE_CODEX_API_KEY: {message}"))?,
     ))
 }
@@ -1571,15 +1571,21 @@ mod tests {
                 .is_err()
         );
 
-        let shared = ClaudeStoreFallbackConfig::production(
+        let shared = ClaudeStoreFallbackConfig::production_claude(
             "sk-cs4-shared-secret-12345678901234567890".to_owned(),
         )
         .unwrap();
-        let distinct = ClaudeStoreFallbackConfig::production(
+        let shared_codex = ClaudeStoreFallbackConfig::production_codex(
+            "sk-cs4-shared-secret-12345678901234567890".to_owned(),
+        )
+        .unwrap();
+        let distinct = ClaudeStoreFallbackConfig::production_codex(
             "sk-cs4-distinct-secret-123456789012345678".to_owned(),
         )
         .unwrap();
-        assert!(validate_claudestore_credential_separation(Some(&shared), Some(&shared)).is_err());
+        assert!(
+            validate_claudestore_credential_separation(Some(&shared), Some(&shared_codex)).is_err()
+        );
         assert!(validate_claudestore_credential_separation(Some(&shared), Some(&distinct)).is_ok());
     }
 

@@ -159,12 +159,13 @@ background loops and the HTTP router. Here — and only here — everything is w
   Full contract — `docs/ops/GPT_IMAGE_2_CANARY.md`.
 - ClaudeStore emergency transport: `CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED` strict default-off
   (`0|1|false|true`), the secret `CLAUDE_API_CLAUDESTORE_API_KEY` is required only when enabled and undergoes
-  shape-validation/redacted Debug. Enable is allowed only for `Combined|Anthropic`; the production base
-  URL is compile-fixed in `forward`, with no env override. The secret lives only in the root-owned
+  shape-validation/redacted Debug. Enable is allowed only for `Combined|Anthropic`; its production base
+  URL `https://api.llmsrelay.com` is compile-fixed in `forward`, with no env override. The secret lives only in the root-owned
   `server.env`, and the runtime contract is `docs/engine/CLAUDESTORE_FALLBACK.md`.
 - The GPT transport uses the independent `CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED` and
   `CLAUDE_API_CLAUDESTORE_CODEX_API_KEY`. Enable is allowed only for `Combined|OpenAi`, additionally
-  requires `CLAUDE_API_CODEX_ENABLED=1` and never reuses the Basic/Claude key. The fixed OpenAI
+  requires `CLAUDE_API_CODEX_ENABLED=1`, remains compile-fixed to
+  `https://api3.claudestore.store`, and never reuses the Basic/Claude key. The fixed OpenAI
   systemd unit inherits this switch; the Anthropic/Gemini units must pin `0` at argv level.
   Having a valid config neither closes the authenticated live gate nor permits a production enable.
 - The backend-only KIMI switch is read here as a strict default-off set

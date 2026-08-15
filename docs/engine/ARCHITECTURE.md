@@ -21,13 +21,13 @@ Client (Anthropic SDK / curl)  ──POST /v1/messages (our api-key)──►  c
   on 429/5xx: pool::mark_cooling + next subscription (before stream start)
 
   metered POST /v1/messages: only after terminal of the entire local pre-byte
-  rotation/smooth-wait ── one default-off attempt ──► ClaudeStore API3
+  rotation/smooth-wait ── one default-off attempt ──► api.llmsrelay.com
   (no OAuth/persona headers; same reserve + exact usage settlement)
 
   GPT /v1/responses|chat|skin ──► local Codex home rotation/retry ──► ChatGPT backend
                                   │ terminal before model output, gpt-5.5/5.4 only
                                   └─ one separate-key default-off /v1/responses
-                                                           ──► ClaudeStore API3
+                                                           ──► api3.claudestore.store
 ```
 
 ## Layers (dependency direction — strictly downward)
@@ -109,10 +109,12 @@ subscriptions as AEAD-encrypted profiles. It sits BEFORE `registry` as a produce
 - **Identity injection** — the price of running on a subscription token; it lives in config, tunable without a rebuild.
 - **Rotation before the stream** — the response status is checked before the body is handed out, so switching
   subscriptions on 429/5xx does not break the client stream.
-- **ClaudeStore — not a new provider plane.** These are two compile-pinned default-off emergency transports
-  with different keys. The Claude transport performs one metered `/v1/messages` after the terminal local
+- **ClaudeStore-compatible fallback — not a new provider plane.** These are two compile-pinned
+  default-off emergency transports with different keys and origins. The Claude transport uses
+  `https://api.llmsrelay.com` for one metered `/v1/messages` after the terminal local
   rotation/smooth-wait and does not send local OAuth, identity/billing block, persona, proxy, or
-  subscription identity. The GPT transport likewise permits one `/v1/responses` after the normal Codex
+  subscription identity. The GPT transport remains on `https://api3.claudestore.store` and likewise
+  permits one `/v1/responses` after the normal Codex
   rotation/retry, only for `gpt-5.5`/`gpt-5.4`; the public id replaces the private local slug, and
   `chatgpt-account-id`, originator, OAuth, proxy, and calibration identity never leave. Both
   use the original customer reserve and authoritative terminal usage, without changing local pool

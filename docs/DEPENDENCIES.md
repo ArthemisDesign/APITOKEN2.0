@@ -188,9 +188,11 @@ is only what is needed to walk the relationships when making changes:
   rollback/tests). Consumers of the winner result — money/funding settlement and
   `crates/server` `/metrics`; public APIs do not return group identity. Contract —
   `docs/engine/ROUTING_FENCING.md` §4.
-- **ClaudeStore emergency transport (`crates/server` → `crates/forward` → ClaudeStore API3).**
+- **ClaudeStore-compatible emergency transports (`crates/server` → `crates/forward` → external relay origins).**
   `crates/server/src/config.rs` solely reads the two strict enable/key pairs, and the
-  compile-fixed `https://api3.claudestore.store` cannot be replaced by an env URL.
+  compile-fixed origins cannot be replaced by env URLs: Claude Messages uses
+  `https://api.llmsrelay.com`, while dormant GPT/Codex remains on
+  `https://api3.claudestore.store`.
   `crates/forward/src/proxy.rs` consumes the Claude pair only for metered Anthropic
   `POST /v1/messages`; `crates/forward/src/codex` consumes a separate Codex-tier pair
   only for `gpt-5.5`/`gpt-5.4` via `POST /v1/responses`. After a terminal refusal under

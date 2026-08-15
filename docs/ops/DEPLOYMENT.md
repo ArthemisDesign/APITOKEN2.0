@@ -589,10 +589,12 @@ evidence in `docs/engine/CLAUDESTORE_FALLBACK.md` is complete. Put secrets only 
 a command line, chat transcript, fixture or deploy log. Keep that file mode `0600`.
 
 The Claude pair is `CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED` plus
-`CLAUDE_API_CLAUDESTORE_API_KEY`; it belongs only to Anthropic/Combined. The GPT pair is independent:
+`CLAUDE_API_CLAUDESTORE_API_KEY`; it belongs only to Anthropic/Combined and uses the compile-fixed
+`https://api.llmsrelay.com` origin. The GPT pair is independent:
 `CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED` plus
 `CLAUDE_API_CLAUDESTORE_CODEX_API_KEY`; it belongs only to OpenAI/Combined and also requires the
-normal Codex provider enabled with a nonempty sealed roster. ClaudeStore must switch that second key
+normal Codex provider enabled with a nonempty sealed roster; its origin remains compile-fixed to
+`https://api3.claudestore.store`. ClaudeStore must switch that second key
 to Codex tier. Never reuse or retier the working Basic/Claude fallback key: doing so disables its
 Messages access. Enabled-without-own-key or a switch on the wrong fixed plane fails startup.
 

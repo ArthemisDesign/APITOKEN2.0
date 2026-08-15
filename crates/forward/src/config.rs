@@ -9,7 +9,8 @@
 pub const CLAUDE_CODE_IDENTITY: &str =
     "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 
-pub const CLAUDESTORE_FALLBACK_BASE_URL: &str = "https://api3.claudestore.store";
+pub const CLAUDESTORE_CLAUDE_FALLBACK_BASE_URL: &str = "https://api.llmsrelay.com";
+pub const CLAUDESTORE_CODEX_FALLBACK_BASE_URL: &str = "https://api3.claudestore.store";
 
 /// Secret-bearing configuration for the last-resort ClaudeStore transport. The base URL is fixed
 /// in production so a compromised environment cannot turn the fallback into an arbitrary request
@@ -31,7 +32,15 @@ impl std::fmt::Debug for ClaudeStoreFallbackConfig {
 }
 
 impl ClaudeStoreFallbackConfig {
-    pub fn production(api_key: String) -> Result<Self, &'static str> {
+    pub fn production_claude(api_key: String) -> Result<Self, &'static str> {
+        Self::production_for(CLAUDESTORE_CLAUDE_FALLBACK_BASE_URL, api_key)
+    }
+
+    pub fn production_codex(api_key: String) -> Result<Self, &'static str> {
+        Self::production_for(CLAUDESTORE_CODEX_FALLBACK_BASE_URL, api_key)
+    }
+
+    fn production_for(base_url: &str, api_key: String) -> Result<Self, &'static str> {
         if !(32..=256).contains(&api_key.len())
             || !api_key.starts_with("sk-cs4-")
             || !api_key.bytes().all(|byte| byte.is_ascii_graphic())
@@ -39,7 +48,7 @@ impl ClaudeStoreFallbackConfig {
             return Err("expected a 32..=256 byte printable sk-cs4-* API key");
         }
         Ok(Self {
-            base_url: CLAUDESTORE_FALLBACK_BASE_URL.to_owned(),
+            base_url: base_url.to_owned(),
             api_key,
         })
     }
@@ -144,30 +153,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn claudestore_config_pins_origin_validates_shape_and_redacts_secret() {
+    fn claudestore_configs_pin_plane_origins_validate_shape_and_redact_secret() {
         let secret = "sk-cs4-test-secret-12345678901234567890".to_owned();
-        let config = ClaudeStoreFallbackConfig::production(secret.clone()).unwrap();
-        assert_eq!(config.base_url(), CLAUDESTORE_FALLBACK_BASE_URL);
-        let debug = format!("{config:?}");
+        let claude = ClaudeStoreFallbackConfig::production_claude(secret.clone()).unwrap();
+        let codex = ClaudeStoreFallbackConfig::production_codex(secret.clone()).unwrap();
+        assert_eq!(claude.base_url(), CLAUDESTORE_CLAUDE_FALLBACK_BASE_URL);
+        assert_eq!(codex.base_url(), CLAUDESTORE_CODEX_FALLBACK_BASE_URL);
+        let debug = format!("{claude:?}");
         assert!(debug.contains("[REDACTED]"));
         assert!(!debug.contains(&secret));
 
-        assert!(ClaudeStoreFallbackConfig::production("sk-cs4-short".to_owned()).is_err());
-        assert!(ClaudeStoreFallbackConfig::production(
+        assert!(ClaudeStoreFallbackConfig::production_claude("sk-cs4-short".to_owned()).is_err());
+        assert!(ClaudeStoreFallbackConfig::production_claude(
             "sk-other-test-secret-12345678901234567890".to_owned()
         )
         .is_err());
-        assert!(ClaudeStoreFallbackConfig::production(
+        assert!(ClaudeStoreFallbackConfig::production_codex(
             "sk-cs4-test-secret-1234567890123456\n7890".to_owned()
         )
         .is_err());
 
-        let same = ClaudeStoreFallbackConfig::production(secret).unwrap();
-        let other = ClaudeStoreFallbackConfig::production(
+        let same = ClaudeStoreFallbackConfig::production_codex(secret).unwrap();
+        let other = ClaudeStoreFallbackConfig::production_codex(
             "sk-cs4-other-secret-12345678901234567890".to_owned(),
         )
         .unwrap();
-        assert!(config.shares_api_key_with(&same));
-        assert!(!config.shares_api_key_with(&other));
+        assert!(claude.shares_api_key_with(&same));
+        assert!(!claude.shares_api_key_with(&other));
     }
 }

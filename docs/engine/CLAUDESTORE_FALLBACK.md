@@ -1,6 +1,7 @@
-# ClaudeStore — emergency fallback for the Claude and GPT planes
+# ClaudeStore-compatible emergency fallback for the Claude and GPT planes
 
-Claude transport status: **implemented / default-off / production live pending**. GPT
+Claude transport status: **implemented / default-off in code / production-enabled / partially
+live-verified on 2026-08-15**. GPT
 transport status: **implemented / default-off / blocked until a separate Codex-tier credential and live gate**.
 Neither transport is part of the local subscription pools, is published as a separate
 provider or model, and both are off by default. Their only role is the last compatible attempt
@@ -20,8 +21,9 @@ after a terminal result of the normal local pre-byte rotation of their own provi
 - The external turn creates no local subscription quota/calibration observation, affinity, or health
   attribution for any specific local account/profile.
 - The secret is read only by `crates/server/src/config.rs`, is never returned through API/metrics/logs, and
-  is stored only in the production secret env. The production URL is compile-fixed; an arbitrary upstream cannot
-  be set from the environment.
+  is stored only in the production secret env. Each plane has its own compile-fixed origin: Claude uses
+  `https://api.llmsrelay.com`, while dormant GPT/Codex remains on
+  `https://api3.claudestore.store`. Neither can be replaced by an environment value.
 - Each switch is accepted only as a strict `0|1|false|true`; enabled without its own valid
   `sk-cs4-*` secret, or not on its own fixed provider plane, stops startup. Claude uses
   `CLAUDE_API_CLAUDESTORE_{FALLBACK_ENABLED,API_KEY}`, GPT uses the separate
@@ -34,14 +36,14 @@ after a terminal result of the normal local pre-byte rotation of their own provi
 |---|---|---|
 | Product | `official`, 2026-08-03 | ClaudeStore is an independent pay-as-you-go API gateway, not a Claude subscription provider |
 | Credential | `official`, 2026-08-03 | API key in `x-api-key`; plaintext is permitted only in the secret env |
-| Native endpoint | `official` + unauthenticated live, 2026-08-03 | `POST https://api3.claudestore.store/v1/messages`; unauthenticated `/v1/models` answers with a bounded 401 `Missing API key` |
+| Native endpoint | authenticated live, 2026-08-15 | `POST https://api.llmsrelay.com/v1/messages`; the production Basic/Claude key is accepted. The former `https://api3.claudestore.store` origin aborts TLS and is no longer a usable Claude target |
 | Anthropic version | `official`, 2026-08-03 | `anthropic-version: 2023-06-01` |
-| Non-stream | `official`; authenticated live `unknown` | Anthropic Messages JSON with terminal `usage.input_tokens/output_tokens` |
-| Streaming | `official`; authenticated live `unknown` | SSE `message_start` → deltas → `message_stop`; the mock confirms the absence of post-byte replay, but incrementality and terminal usage of the live service are not yet verified |
+| Non-stream | authenticated live, 2026-08-15 | Eight of the ten production Claude model IDs returned real Anthropic Messages output with terminal `usage.input_tokens/output_tokens` |
+| Streaming | authenticated live, 2026-08-15 | The same eight models returned incremental SSE through `message_stop`, with real output and terminal usage |
 | Tools | `official`; authenticated live `unknown` | Documentation claims standard Anthropic `tools`; fail-closed is preserved by the current wire validation |
-| Models | `official` catalogue; key-scoped live `unknown` | The fallback does not rewrite the model id; an unknown/unavailable model terminates the single external attempt, while externally a sanitized local terminal response remains |
+| Models | authenticated live, 2026-08-15 | Eight of ten production IDs work unchanged. `claude-opus-4-5-20251101` and `claude-sonnet-4-5-20250929` return HTTP 400; their tested `4-5` and `4.5` spelling variants also fail. The fallback does not rewrite IDs, so either model terminates the single external attempt and preserves the sanitized local terminal response |
 | Upstream quota | `official` | 429 + `Retry-After`; not used as Claude subscription quota evidence |
-| Billing | `official`; authenticated live `unknown` | ClaudeStore deducts Anthropic-equivalent credits; customer settlement remains on the local Anthropic rate card and terminal usage |
+| Billing | authenticated live, 2026-08-15 | The relay returned authoritative token usage. It did not honor `max_tokens: 1` and produced 16–82 output tokens in sampled calls; customer settlement continues to use the existing local Anthropic rate card and the returned terminal usage |
 | Data | `official`, policy v3.0 | Prompt/response content is claimed not to be retained after the request cycle; usage metadata is retained for 12 months |
 | Rollback | `decision` | Remove/clear the secret env or disable the strict boolean; the local pool keeps working without the external dependency |
 
@@ -106,7 +108,24 @@ lifts the clause 8.2 blocker for the stated scenario but does not replace the te
 
 ## Evidence and open live gates
 
-Official sources, reviewed 2026-08-03:
+Claude origin migration evidence, collected with the production credential without printing the
+secret on 2026-08-15:
+
+- the former Claude origin `https://api3.claudestore.store` aborts during TLS negotiation;
+- `https://api.llmsrelay.com` accepts that same Basic/Claude key;
+- a bounded ten-model matrix proved non-stream JSON, incremental SSE, real output, and terminal
+  usage on eight models;
+- `claude-opus-4-5-20251101` and `claude-sonnet-4-5-20250929` remain unavailable with HTTP 400,
+  including the tested `4-5` and `4.5` variants;
+- the relay may exceed the requested output cap: sampled `max_tokens: 1` calls returned 16–82
+  output tokens. The operator explicitly accepted both the two-model availability regression and
+  this output-cap regression for the migration because the former Claude origin is unusable;
+- total verification spend was estimated below `$0.03`, inside the explicitly authorized `$1`
+  ceiling.
+
+The older ClaudeStore sources below remain the design evidence for the shared wire and the dormant
+GPT/Codex origin; they are not evidence that the former Claude origin still works. Reviewed
+2026-08-03:
 
 - [LLM-readable service index](https://claudestore.store/llms.txt) and
   [full reference](https://claudestore.store/llms-full.txt) — canonical API3 base URL, the split of
@@ -126,7 +145,7 @@ Official sources, reviewed 2026-08-03:
   `Repository not found`. Therefore there is no independently inspectable implementation SHA: the official docs
   remain the wire authority, and any discrepancy counts as an explicit evidence conflict, not code confirmation.
 
-The following remain mandatory before serving:
+The general activation gates are:
 
 1. plane-specific secret provisioning outside git with confirmed owner/mode and a kill switch; GPT
    requires a new separate key on the Codex tier, which is not present in the current task;
@@ -136,6 +155,12 @@ The following remain mandatory before serving:
    structured output, and Fast or explicitly excludes unproven controls;
 3. a post-deploy smoke on the exact watchdog-green SHA verifying a single settlement and zero
    local subscription calibration attribution.
+
+For the 2026-08-15 Claude origin migration, the operator explicitly accepted partial compatibility
+because the former origin is TLS-dead: the authenticated JSON/SSE/usage matrix above is sufficient
+to deploy despite the two unavailable 4.5 snapshots, the unhonored output cap, and the absence of
+manufactured insufficient-balance/429 conditions. This exception does not close or weaken the
+separate GPT/Codex activation gate.
 
 The Claude mock matrix already pins down: healthy local → 0 external attempts; local retry success → 0;
 empty pool → exactly 1; external 5xx → local terminal + refund; a successful response → customer

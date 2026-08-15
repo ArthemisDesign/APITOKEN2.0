@@ -505,7 +505,8 @@ The Codex plane has its own in-memory cooling (`codex/health.rs`) and is not par
   (an outage; the breaker is about to open); all subscriptions over the limit → `429 + Retry-After = soonest_ready`
   (the client will back off on its own — exactly this, not the error of one banned subscription); pool empty → `503`.
   Every `mark_used` is paired with `InflightGuard`/`end_stream`/`mark_done`.
-- **ClaudeStore emergency fallback:** configured metered `POST /v1/messages` only, without an operator
+- **ClaudeStore-compatible Claude emergency fallback:** compile-fixed to
+  `https://api.llmsrelay.com`, configured for metered `POST /v1/messages` only, without an operator
   calibration target and with an already-created durable reserve. One external attempt is allowed only after the
   terminal state of the entire local pre-byte rotation/smooth-wait. The body is cloned after the namespace strip and before
   identity/persona/billing mutation; outbound goes only `x-api-key`, Anthropic version, client
@@ -514,7 +515,8 @@ The Codex plane has its own in-memory cooling (`codex/health.rs`) and is not par
   settlement is preserved while pool spend/quota/calibration/affinity are unchanged. A non-2xx/network
   fallback is never retried and never disclosed to the client; once the external send has started, the
   `not_started` proof is stripped as execution-ambiguous. Post-byte replay is forbidden.
-- **ClaudeStore GPT emergency fallback:** a separate default-off Codex-tier credential, not a Claude
+- **ClaudeStore GPT emergency fallback:** compile-fixed to
+  `https://api3.claudestore.store`, with a separate default-off Codex-tier credential, not a Claude
   key. After the terminal state of the normal Codex home rotation/retry, at most one external
   `POST /v1/responses` is allowed, only before the first model delta and only for the compile-fixed `gpt-5.5`/`gpt-5.4`.
   The body restores the public model id; `chatgpt-account-id`, originator, client metadata,

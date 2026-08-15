@@ -67,7 +67,8 @@ pub use codex::{
     ImageGenerationRequest, ImageQuality, ImageReference, ImageSize, ImageTurnId, GPT_IMAGE_2,
 };
 pub use config::{
-    ClaudeStoreFallbackConfig, ProxyConfig, CLAUDESTORE_FALLBACK_BASE_URL, CLAUDE_CODE_IDENTITY,
+    ClaudeStoreFallbackConfig, ProxyConfig, CLAUDESTORE_CLAUDE_FALLBACK_BASE_URL,
+    CLAUDESTORE_CODEX_FALLBACK_BASE_URL, CLAUDE_CODE_IDENTITY,
 };
 pub use gemini::{
     gemini_api, gemini_chat_completions, gemini_messages_count_tokens, gemini_messages_skin,
