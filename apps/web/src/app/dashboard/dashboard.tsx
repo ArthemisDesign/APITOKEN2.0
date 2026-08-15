@@ -14,6 +14,7 @@ import { DOCS_URL } from "@/lib/site-links";
 import { trackFirstProductEvent, trackProductEvent } from "@/lib/product-analytics";
 import { modelLabel } from "@/lib/model-label";
 import { withProvisioningRetry } from "@/lib/provisioning-retry";
+import { localeHref } from "@/lib/locale-routes";
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
 import { clearDashboardShellCache, readDashboardShellCache, writeDashboardShellCache } from "./shell-cache";
 import { DashboardLoading } from "./dashboard-loading";
@@ -185,13 +186,13 @@ export function Dashboard() {
     } catch (cause) {
       if (lifecycle !== lifecycleGeneration.current) return;
       // Сессия мертва — снапшот чужих/старых данных не должен мелькнуть при следующем входе.
-      if (cause instanceof ApiError && cause.status === 401) { clearDashboardShellCache(); router.replace("/login"); return; }
+      if (cause instanceof ApiError && cause.status === 401) { clearDashboardShellCache(); router.replace(localeHref("/login", language)); return; }
       setError(cause instanceof Error ? cause.message : dashboardCopy.en.loadError);
       setLoadFailures((current) => current + 1);
     } finally {
       if (lifecycle === lifecycleGeneration.current) setLoading(false);
     }
-  }, [retryOptional, router]);
+  }, [language, retryOptional, router]);
 
   useEffect(() => {
     document.body.classList.add("app-body");
@@ -278,10 +279,10 @@ export function Dashboard() {
   const logout = useCallback(async () => {
     if (loggingOut) return;
     setLoggingOut(true); setLogoutError(null);
-    try { await api.logout(); clearDashboardShellCache(); router.replace("/login"); }
+    try { await api.logout(); clearDashboardShellCache(); router.replace(localeHref("/login", language)); }
     catch { setLogoutError(localCopy.logoutError); }
     finally { setLoggingOut(false); }
-  }, [loggingOut, router, localCopy]);
+  }, [language, loggingOut, router, localCopy]);
 
   const open = useCallback((next: Section) => {
     setSideOpen(false);
@@ -310,7 +311,7 @@ export function Dashboard() {
         <button className="btn btn-primary" onClick={() => void load()}>{copy.retry}</button>
       </div></div>;
     }
-    return <div className="wrap guard ym-hide-content"><div className="auth-card"><p>{copy.loginPrompt}</p><Link className="btn btn-primary" href="/login">{copy.login}</Link></div></div>;
+    return <div className="wrap guard ym-hide-content"><div className="auth-card"><p>{copy.loginPrompt}</p><Link className="btn btn-primary" href={localeHref("/login", language)}>{copy.login}</Link></div></div>;
   }
 
   return <div className="app ym-hide-content">

@@ -494,7 +494,7 @@ async function capturePage(client, [name, route, width, height, theme, language 
     screenHeight: height,
   });
   await client.send("Runtime.evaluate", {
-    expression: `localStorage.setItem('theme:v1', ${JSON.stringify(theme)}); localStorage.setItem('theme', ${JSON.stringify(theme)}); localStorage.setItem('lang', ${JSON.stringify(language)});`,
+    expression: `localStorage.setItem('theme:v1', ${JSON.stringify(theme)}); localStorage.setItem('theme', ${JSON.stringify(theme)}); localStorage.setItem('lang:v1', ${JSON.stringify(language)});`,
   });
   // The site language is URL-owned. Navigate straight to the localized route instead of
   // clicking a language control before React has necessarily hydrated its event handler.
@@ -546,7 +546,7 @@ async function capturePage(client, [name, route, width, height, theme, language 
       const state = await client.send("Runtime.evaluate", {
         expression: `JSON.stringify({
           documentLanguage: document.documentElement.lang,
-          storedLanguage: localStorage.getItem('lang'),
+          storedLanguage: localStorage.getItem('lang:v1'),
           controls: [...document.querySelectorAll('.lang button, .lang a')].map((button) => ({
             label: button.textContent?.trim(),
             active: button.classList.contains('active'),
@@ -812,7 +812,7 @@ async function verifyHeroOfferLayout(client) {
   for (const layoutCase of cases) {
     await setViewport(client, layoutCase.width, layoutCase.height);
     await client.send("Runtime.evaluate", {
-      expression: `localStorage.setItem('theme:v1', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('theme', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('lang', ${JSON.stringify(layoutCase.language)});`,
+      expression: `localStorage.setItem('theme:v1', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('theme', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('lang:v1', ${JSON.stringify(layoutCase.language)});`,
     });
     const url = new URL("/", baseUrl);
     url.searchParams.set("__auditHero", layoutCase.name);
@@ -914,7 +914,7 @@ async function verifyPricingCardsLayout(client) {
   for (const layoutCase of cases) {
     await setViewport(client, layoutCase.width, layoutCase.height);
     await client.send("Runtime.evaluate", {
-      expression: `localStorage.setItem('theme:v1', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('theme', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('lang', ${JSON.stringify(layoutCase.language)});`,
+      expression: `localStorage.setItem('theme:v1', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('theme', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('lang:v1', ${JSON.stringify(layoutCase.language)});`,
     });
     const url = new URL("/plans", baseUrl);
     url.searchParams.set("__auditPricing", layoutCase.name);
@@ -1003,7 +1003,7 @@ async function verifyCreditsLayout(client) {
   for (const layoutCase of cases) {
     await setViewport(client, layoutCase.width, layoutCase.height);
     await client.send("Runtime.evaluate", {
-      expression: `localStorage.setItem('theme:v1', 'light'); localStorage.setItem('theme', 'light'); localStorage.setItem('lang', 'en');`,
+      expression: `localStorage.setItem('theme:v1', 'light'); localStorage.setItem('theme', 'light'); localStorage.setItem('lang:v1', 'en');`,
     });
     const url = new URL("/dashboard?view=credits", baseUrl);
     url.searchParams.set("__auditCredits", layoutCase.name);
@@ -1079,7 +1079,7 @@ async function verifyCreditsLayout(client) {
 async function verifyUsageByKeyTable(client) {
   await setViewport(client, 1440, 1000);
   await client.send("Runtime.evaluate", {
-    expression: `localStorage.setItem('theme:v1', 'light'); localStorage.setItem('theme', 'light'); localStorage.setItem('lang', 'en');`,
+    expression: `localStorage.setItem('theme:v1', 'light'); localStorage.setItem('theme', 'light'); localStorage.setItem('lang:v1', 'en');`,
   });
   const loaded = client.once("Page.loadEventFired");
   await client.send("Page.navigate", { url: new URL("/dashboard?view=usage", baseUrl).href });
@@ -1136,7 +1136,7 @@ async function verifyApiKeysLayout(client) {
   for (const layoutCase of cases) {
     await setViewport(client, layoutCase.width, layoutCase.height);
     await client.send("Runtime.evaluate", {
-      expression: `localStorage.setItem('theme:v1', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('theme', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('lang', ${JSON.stringify(layoutCase.language)});`,
+      expression: `localStorage.setItem('theme:v1', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('theme', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('lang:v1', ${JSON.stringify(layoutCase.language)});`,
     });
     const url = new URL("/dashboard?view=keys", baseUrl);
     url.searchParams.set("__auditKeys", layoutCase.name);
@@ -1178,7 +1178,7 @@ async function verifyApiKeysLayout(client) {
       const diagnostic = await client.send("Runtime.evaluate", {
         expression: `JSON.stringify({
           documentLanguage: document.documentElement.lang,
-          storedLanguage: localStorage.getItem('lang'),
+          storedLanguage: localStorage.getItem('lang:v1'),
           href: location.href,
           title: document.title,
           bodyText: document.body.innerText.slice(0, 500),
@@ -1427,7 +1427,7 @@ async function verifyDocsTheme(client) {
     features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
   });
   await client.send("Runtime.evaluate", {
-    expression: `localStorage.setItem('theme:v1', 'light'); localStorage.setItem('theme', 'light'); localStorage.setItem('lang', 'en');`,
+    expression: `localStorage.setItem('theme:v1', 'light'); localStorage.setItem('theme', 'light'); localStorage.setItem('lang:v1', 'en');`,
   });
   const url = new URL("/docs", baseUrl);
   url.searchParams.set("__auditDocsTheme", "1");
@@ -1524,7 +1524,7 @@ async function verifyDocsTheme(client) {
 }
 
 async function verifyDashboardRouting(client) {
-  await client.send("Runtime.evaluate", { expression: `localStorage.setItem('lang', 'en');` });
+  await client.send("Runtime.evaluate", { expression: `localStorage.setItem('lang:v1', 'en');` });
   for (const removedView of ["refer", "orders"]) {
     const removedLoaded = client.once("Page.loadEventFired");
     await client.send("Page.navigate", { url: new URL(`/dashboard?view=${removedView}`, baseUrl).href });
@@ -1593,7 +1593,7 @@ async function verifyDashboardNavIsolation(client) {
   ];
   const sections = ["keys", "credits", "promos", "usage", "support", "profile", "overview"];
   for (const { language, base, overviewTitle } of passes) {
-    await client.send("Runtime.evaluate", { expression: `localStorage.setItem('lang', ${JSON.stringify(language)});` });
+    await client.send("Runtime.evaluate", { expression: `localStorage.setItem('lang:v1', ${JSON.stringify(language)});` });
     const loaded = client.once("Page.loadEventFired");
     await client.send("Page.navigate", { url: new URL(base, baseUrl).href });
     await loaded;
@@ -1656,7 +1656,7 @@ async function verifyDashboardNavIsolation(client) {
 }
 
 async function verifyProfileBehavior(client) {
-  await client.send("Runtime.evaluate", { expression: `localStorage.setItem('lang', 'en');` });
+  await client.send("Runtime.evaluate", { expression: `localStorage.setItem('lang:v1', 'en');` });
   const loaded = client.once("Page.loadEventFired");
   await client.send("Page.navigate", { url: new URL("/dashboard?view=profile", baseUrl).href });
   await loaded;
@@ -1755,7 +1755,7 @@ async function verifyProfileBehavior(client) {
 
 async function verifyPersistentSiteRouting(client) {
   await client.send("Runtime.evaluate", {
-    expression: `localStorage.setItem('lang', 'en'); localStorage.setItem('theme:v1', 'dark'); localStorage.setItem('theme', 'dark');`,
+    expression: `localStorage.setItem('lang:v1', 'en'); localStorage.setItem('theme:v1', 'dark'); localStorage.setItem('theme', 'dark');`,
   });
   const loaded = client.once("Page.loadEventFired");
   await client.send("Page.navigate", { url: new URL("/", baseUrl).href });
@@ -1828,7 +1828,7 @@ async function verifyPersistentSiteRouting(client) {
 
 async function verifyComplianceRouting(client) {
   await client.send("Runtime.evaluate", {
-    expression: `localStorage.setItem('lang', 'ru'); localStorage.setItem('theme:v1', 'dark'); localStorage.setItem('theme', 'dark');`,
+    expression: `localStorage.setItem('lang:v1', 'ru'); localStorage.setItem('theme:v1', 'dark'); localStorage.setItem('theme', 'dark');`,
   });
   const loaded = client.once("Page.loadEventFired");
   await client.send("Page.navigate", { url: new URL("/ru/privacy", baseUrl).href });
@@ -1878,7 +1878,7 @@ async function verifyComplianceRouting(client) {
       authChecks: window.__complianceAuthChecks,
       sameAuthText: window.__complianceAuthText === document.querySelector('.nav-actions')?.textContent,
       language: document.documentElement.lang,
-      storedLanguage: localStorage.getItem('lang'),
+      storedLanguage: localStorage.getItem('lang:v1'),
       theme: document.documentElement.dataset.theme,
       storedTheme: localStorage.getItem('theme:v1'),
     })`,

@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { localeHref, supportsRussianRoute } from "@/lib/locale-routes";
 import { DOCS_URL, GITHUB_URL } from "@/lib/site-links";
+import { browserStorage, readSavedTheme, saveTheme, type SavedTheme } from "@/lib/user-preferences";
 import { BackendPreconnect } from "./backend-preconnect";
 import { useI18n } from "./i18n-provider";
 import { T } from "./translated";
@@ -102,25 +103,12 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
   </>;
 }
 
-const THEME_STORAGE_KEY = "theme:v1";
-const LEGACY_THEME_STORAGE_KEY = "theme";
-
-function readSavedTheme(): "light" | "dark" {
-  try {
-    const saved = window.localStorage.getItem(THEME_STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_THEME_STORAGE_KEY);
-    return saved === "light" ? "light" : "dark";
-  } catch {
-    // localStorage может быть недоступен (приватный режим) — остаёмся на тёмной теме.
-    return "dark";
-  }
-}
-
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<"light" | "dark">("dark");
+  const [theme, setTheme] = useState<SavedTheme>("dark");
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     // Тема по умолчанию — тёмная; светлая только если пользователь её явно сохранил.
-    const saved = readSavedTheme();
+    const saved = readSavedTheme(browserStorage());
     const timer = window.setTimeout(() => {
       setTheme(saved);
       setMounted(true);
@@ -131,11 +119,7 @@ export function ThemeToggle() {
     if (!mounted) return;
     if (theme === "dark") document.documentElement.dataset.theme = "dark";
     else delete document.documentElement.dataset.theme;
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
-    } catch {
-      // localStorage может быть недоступен (приватный режим) — тема просто не сохранится.
-    }
+    saveTheme(browserStorage(), theme);
   }, [mounted, theme]);
   return <button className="theme-tgl" aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀" : "☾"}</button>;
 }

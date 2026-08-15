@@ -149,7 +149,7 @@ function CtaBand({ locale, strings }: { locale: ToolErrorLocale; strings: ToolEr
       <h2 className="docs-h3">{strings.ctaHeading}</h2>
       <p className="docs-para">{strings.ctaBody}</p>
       <div className="hero-cta page-actions">
-        <Link className="btn btn-primary" href="/register">
+        <Link className="btn btn-primary" href={locale === "ru" ? "/ru/register" : "/register"}>
           {strings.ctaButton}
         </Link>
         <Link className="btn btn-ghost" href={docsPath}>

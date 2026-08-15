@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { claudeModels, openaiModels } from "@/lib/models";
 import { B2C_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
+import { LocalizedLink } from "./translated";
 
 /**
  * Free Claude/GPT API cost calculator — framed around whole real tasks, not single requests.
@@ -338,9 +339,9 @@ export function CostCalculator() {
             <em>≈ ×{scaleMult.toLocaleString("en-US", { maximumFractionDigits: 2 })} more work per $</em>
           </div>
 
-          <Link className="btn btn-primary calc-cta" href="/register">
+          <LocalizedLink className="btn btn-primary calc-cta" href="/register">
             Start free — $5 platform bonus
-          </Link>
+          </LocalizedLink>
           <p className="calc-note">Same {providerInfo.apiDescription}, models and responses. You just pay less per call.</p>
         </div>
       </div>

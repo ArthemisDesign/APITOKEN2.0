@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { documentLanguageForPathname, localeDestination, localeHref, localeRoute, supportsRussianRoute, withoutRussianPrefix } from "./locale-routes";
+import { describe, expect, it, vi } from "vitest";
+import { documentLanguageForPathname, languagePreferenceBootstrapScript, localeDestination, localeHref, localeRoute, supportsRussianRoute, withoutRussianPrefix } from "./locale-routes";
 
 describe("locale routes", () => {
   it("derives the server document language from the locale route prefix", () => {
@@ -10,7 +10,7 @@ describe("locale routes", () => {
   });
 
   it("maps only routes with real Russian mirrors", () => {
-    for (const path of ["/", "/login", "/register", "/docs", "/docs/learn", "/docs/learn/buying-a-key", "/dashboard"]) {
+    for (const path of ["/", "/login", "/register", "/docs", "/docs/learn", "/docs/learn/buying-a-key", "/dashboard", "/int-codex", "/int-opencode"]) {
       expect(supportsRussianRoute(path), path).toBe(true);
       expect(localeRoute(path, "ru"), path).toBe(path === "/" ? "/ru" : `/ru${path}`);
     }
@@ -37,5 +37,25 @@ describe("locale routes", () => {
       "/register?ref=partner-code&invite=invite-token#form",
     );
     expect(localeDestination("/about", "ru", "?ref=partner-code")).toBeNull();
+  });
+
+  it("restores Russian before React while preserving sensitive URL data", () => {
+    const replace = vi.fn();
+    const runBootstrap = new Function("localStorage", "location", languagePreferenceBootstrapScript);
+    runBootstrap(
+      { getItem: () => "ru" },
+      { pathname: "/reset-password", search: "?token=secret", hash: "#step", replace },
+    );
+    expect(replace).toHaveBeenCalledWith("/ru/reset-password?token=secret#step");
+  });
+
+  it("does not restore a saved language over unsupported or already localized URLs", () => {
+    const replace = vi.fn();
+    const runBootstrap = new Function("localStorage", "location", languagePreferenceBootstrapScript);
+    for (const pathname of ["/about", "/auth/callback", "/ru/dashboard"]) {
+      runBootstrap({ getItem: () => "ru" }, { pathname, search: "", hash: "", replace });
+    }
+    runBootstrap({ getItem: () => "en" }, { pathname: "/dashboard", search: "", hash: "", replace });
+    expect(replace).not.toHaveBeenCalled();
   });
 });

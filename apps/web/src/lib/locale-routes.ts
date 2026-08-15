@@ -20,8 +20,10 @@ const russianExactRoutes = new Set([
   "/integrations",
   "/int-claude-code",
   "/int-cline",
+  "/int-codex",
   "/int-continue",
   "/int-cursor",
+  "/int-opencode",
   "/int-sdk",
   "/int-zed",
   "/login",
@@ -77,3 +79,5 @@ export function localeHref(href: string, locale: CoreLocale): string {
   const localized = localeRoute(pathname, locale);
   return localized ? `${localized}${suffix}` : href;
 }
+
+export const languagePreferenceBootstrapScript = `(()=>{try{if(localStorage.getItem('lang:v1')!=='ru')return;const p=location.pathname;if(${JSON.stringify([...russianExactRoutes])}.includes(p)||p==='/docs/learn'||p.startsWith('/docs/learn/')||p==='/errors'||p.startsWith('/errors/'))location.replace('/ru'+(p==='/'?'':p)+location.search+location.hash)}catch{}})()`;

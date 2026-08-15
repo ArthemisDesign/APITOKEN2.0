@@ -7,7 +7,9 @@ import { PersistentRouteShell } from "@/components/persistent-route-shell";
 import { SiteAnalytics, SiteSpeedInsights } from "@/components/site-analytics";
 import { RefCapture } from "@/components/ref-capture";
 import { referralBootstrapScript } from "@/lib/referral";
+import { languagePreferenceBootstrapScript } from "@/lib/locale-routes";
 import { DEFAULT_OG_IMAGE, SITE_ICONS, SITE_NAME, SITE_ORIGIN, seoPages } from "@/lib/seo";
+import { themeBootstrapScript } from "@/lib/user-preferences";
 import { YANDEX_METRIKA_ID, yandexMetrikaBootstrap } from "@/lib/yandex-metrika";
 import { fontVariables } from "./fonts";
 
@@ -62,8 +64,6 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: "#0a0a0a" };
 
-const themeScript = `(()=>{try{const t=localStorage.getItem('theme:v1')||localStorage.getItem('theme')||'dark';document.documentElement.dataset.theme=t}catch{}})()`;
-
 // Язык документа выставляется инлайн-скриптом до первой отрисовки (тот же паттерн,
 // что и тема), поэтому корневой layout не читает headers(): весь сайт — и публичные
 // страницы, и дашборд — рендерится как статический HTML вместо per-request
@@ -75,8 +75,9 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
     <html className={fontVariables} lang="en" suppressHydrationWarning>
       <head>
         <script id="referral-capture" dangerouslySetInnerHTML={{ __html: referralBootstrapScript }} />
+        <script dangerouslySetInnerHTML={{ __html: languagePreferenceBootstrapScript }} />
         <script dangerouslySetInnerHTML={{ __html: documentLanguageScript }} />
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <script dangerouslySetInnerHTML={{ __html: themeBootstrapScript }} />
         <script id="yandex-metrika" dangerouslySetInnerHTML={{ __html: yandexMetrikaBootstrap }} />
         <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM-readable site summary" />
         <link rel="alternate" type="text/plain" href="/llms-full.txt" title="LLM-readable full reference" />

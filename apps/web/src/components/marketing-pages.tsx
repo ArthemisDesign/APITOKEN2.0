@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { CommercialDisclosure } from "./commercial-disclosure";
 import { useI18n, type Language } from "./i18n-provider";
 import { PricingOverview } from "./pricing-overview";
-import { T } from "./translated";
+import { LocalizedLink, T } from "./translated";
 import { DOCS_URL } from "@/lib/site-links";
 
 export function MarketingFrame({ children }: { children: ReactNode }) {
@@ -108,5 +108,5 @@ export function IntegrationGuidePage({ slug }: { slug: string }) {
 }
 
 function PageActions({ primaryOnly = false }: { primaryOnly?: boolean }) {
-  return <div className="hero-cta page-actions"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link>{!primaryOnly && <Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link>}</div>;
+  return <div className="hero-cta page-actions"><LocalizedLink className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></LocalizedLink>{!primaryOnly && <Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link>}</div>;
 }

@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { AuthIntro, Feedback, LocalizedAuthLink } from "@/components/auth-shell";
 import { useI18n } from "@/components/i18n-provider";
+import { localeHref } from "@/lib/locale-routes";
 import { trackProductEvent } from "@/lib/product-analytics";
 
 const copy = {
@@ -91,7 +92,7 @@ export function VerifyEmail() {
       trackProductEvent("Email Verified");
       setMessageKey("verified");
       setSuccess(true);
-      window.setTimeout(() => { router.replace("/dashboard"); }, 500);
+      window.setTimeout(() => { router.replace(localeHref("/dashboard", language)); }, 500);
     }).catch((error) => {
       if (error instanceof ApiError) {
         setErrorMessage(error.message);
@@ -101,7 +102,7 @@ export function VerifyEmail() {
       }
       setSuccess(false);
     });
-  }, [router, search]);
+  }, [language, router, search]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   async function resend() {

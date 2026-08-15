@@ -2,8 +2,10 @@
 
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CostCalculator } from "./cost-calculator";
+
+vi.mock("next/navigation", () => ({ usePathname: () => "/" }));
 
 describe("CostCalculator", () => {
   it("switches the complete comparison between Claude and GPT models", async () => {

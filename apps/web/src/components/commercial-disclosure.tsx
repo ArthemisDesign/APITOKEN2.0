@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { localeHref } from "@/lib/locale-routes";
 import { useI18n, type Language } from "./i18n-provider";
 import { ComplianceNav } from "./compliance-pages";
 
@@ -37,7 +38,7 @@ export function CommercialDisclosure() {
     <div className="commercial-heading"><div><span className="tag">{content.eyebrow}</span><h2>{content.title}</h2></div><p>{content.lead}</p></div>
     <div className="commercial-grid">{content.cards.map((card) => <article key={card.label}><span>{card.label}</span><h3>{card.title}</h3><p>{card.text}</p></article>)}</div>
     <div className="commercial-example"><span>{content.exampleLabel}</span><strong>{content.example}</strong></div>
-    <div className="commercial-policy"><p>{content.policy}</p><Link href="/terms">{language === "ru" ? "Условия оплаты и возврата →" : "Payment and refund terms →"}</Link></div>
+    <div className="commercial-policy"><p>{content.policy}</p><Link href={localeHref("/terms", language)}>{language === "ru" ? "Условия оплаты и возврата →" : "Payment and refund terms →"}</Link></div>
     <ComplianceNav current="pricing" />
   </section>;
 }

@@ -1,9 +1,10 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, type ReactNode } from "react";
 import messages from "@/lib/messages.json";
 import { localeDestination } from "@/lib/locale-routes";
+import { browserStorage, saveLanguage } from "@/lib/user-preferences";
 
 export type Language = "en" | "ru";
 type Dictionary = Record<string, string>;
@@ -26,11 +27,18 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   // Language follows the URL: /ru and /ru/* render Russian, everything else English.
   const language: Language = isRuPath(pathname) ? "ru" : "en";
 
+  useEffect(() => {
+    if (language === "ru") saveLanguage(browserStorage(), language);
+  }, [language]);
+
   const setLanguage = useCallback((next: Language) => {
     const destination = localeDestination(pathname, next, window.location.search, window.location.hash);
     if (!destination) return;
-    try { window.localStorage.setItem("lang:v1", next); } catch { /* ignore */ }
-    if (destination !== `${pathname}${window.location.search}${window.location.hash}`) router.push(destination);
+    saveLanguage(browserStorage(), next);
+    if (destination !== `${pathname}${window.location.search}${window.location.hash}`) {
+      window.dispatchEvent(new Event("apitoken:locale-change"));
+      router.push(destination);
+    }
   }, [pathname, router]);
 
   const t = useCallback((key: string) => {

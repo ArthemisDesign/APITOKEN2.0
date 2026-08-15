@@ -8,6 +8,7 @@ import { AuthIntro, Feedback, LocalizedAuthLink, WelcomeBonusNotice } from "@/co
 import { SocialAuth } from "@/components/social-auth";
 import { useI18n } from "@/components/i18n-provider";
 import { trackProductEvent } from "@/lib/product-analytics";
+import { localeHref } from "@/lib/locale-routes";
 
 export function RegisterForm() {
   const { language, t } = useI18n();
@@ -51,8 +52,8 @@ export function RegisterForm() {
     try {
       const result = await api.register({ email, password, inviteToken, referralCode: storedReferralCode() });
       trackProductEvent("Sign Up Succeeded", { method: "password", verification_required: result.verificationRequired, invited: Boolean(inviteToken), referred: Boolean(storedReferralCode()) });
-      if (result.verificationRequired) router.replace(`/verify-email?email=${encodeURIComponent(email)}`);
-      else router.replace("/dashboard");
+      if (result.verificationRequired) router.replace(localeHref(`/verify-email?email=${encodeURIComponent(email)}`, language));
+      else router.replace(localeHref("/dashboard", language));
     } catch (error) {
       trackProductEvent("Sign Up Failed", { method: "password", status: error instanceof ApiError ? error.status : 0 });
       setMessage(error instanceof ApiError ? error.message : language === "ru" ? "Сейчас не удалось создать аккаунт" : "Unable to create the account right now");

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { B2C_DISCOUNT_PERCENT, B2C_VALUE_MULTIPLIER, officialUsageForTopup } from "@/lib/pricing-tiers";
-import { T } from "./translated";
+import { LocalizedLink, T } from "./translated";
 import { TopUpAmountInput } from "./topup-amount-input";
 
 // Примеры конверсии по плоской модели: пополнение × 2 = официальное использование API.
@@ -18,7 +18,7 @@ export function PricingOverview() {
         <T k="topup_h" as="h3">Choose any whole USD amount</T>
         <TopUpAmountInput className="topup-preview" initialAmount="1000" showReceive />
         <T k="topup_p" as="p">No catalog and no preset amounts. Enter a whole amount and add exactly that much to your balance.</T>
-        <Link className="btn btn-primary" href="/register"><T k="topup_cta">Create account</T></Link>
+        <LocalizedLink className="btn btn-primary" href="/register"><T k="topup_cta">Create account</T></LocalizedLink>
       </div>
       <div className="business-card">
         <T k="b2b_tag" as="span" className="tag">B2B pricing</T>

@@ -7,6 +7,7 @@ import { AuthIntro, Feedback, LocalizedAuthLink, WelcomeBonusNotice } from "@/co
 import { SocialAuth } from "@/components/social-auth";
 import { useI18n } from "@/components/i18n-provider";
 import { trackProductEvent, trackSuccessfulLogin } from "@/lib/product-analytics";
+import { localeHref } from "@/lib/locale-routes";
 
 export function LoginForm() {
   const { language, t } = useI18n();
@@ -23,7 +24,7 @@ export function LoginForm() {
     try {
       await api.login({ email: String(data.get("email") ?? "").trim(), password: String(data.get("password") ?? "") });
       trackSuccessfulLogin("password");
-      router.replace("/dashboard");
+      router.replace(localeHref("/dashboard", language));
     } catch (error) {
       trackProductEvent("Login Failed", { method: "password", status: error instanceof ApiError ? error.status : 0 });
       setMessage(error instanceof ApiError ? error.message : language === "ru" ? "Сейчас не удалось войти" : "Unable to log in right now");

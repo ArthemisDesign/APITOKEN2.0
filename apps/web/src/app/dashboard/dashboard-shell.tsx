@@ -9,6 +9,7 @@ import type { DashboardCopy } from "@/lib/dashboard-copy";
 import { DOCS_URL } from "@/lib/site-links";
 import { dashboardHref, type DashboardLanguage, type DashboardSection } from "./dashboard-route";
 import { formatNanoUsd } from "./sections/shared";
+import { localeHref } from "@/lib/locale-routes";
 
 const NAV_ICONS = {
   grid: <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
@@ -75,7 +76,7 @@ export const DashboardSidebar = memo(function DashboardSidebar({
   }, [onNavigate]);
 
   return <aside className={`side ${sideOpen ? "open" : ""}`} data-lang={language}>
-    <Link className="brand side-brand" href="/"><BrandImages />apiToken.sale</Link>
+    <Link className="brand side-brand" href={localeHref("/", language)}><BrandImages />apiToken.sale</Link>
     <nav className="side-nav">
       {navigation.map((item, index) => <div key={`${item.label}-${index}`} className="side-nav-item">
         {item.group && <span className="side-group">{copy[item.group]}</span>}
@@ -86,10 +87,10 @@ export const DashboardSidebar = memo(function DashboardSidebar({
     <div className="side-foot">
       <div className="side-tools"><div className="lang"><button className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => onLanguageChange("en")}>EN</button><button className={language === "ru" ? "active" : ""} aria-pressed={language === "ru"} onClick={() => onLanguageChange("ru")}>RU</button></div><ThemeToggle /></div>
       <nav className="side-legal" aria-label={language === "ru" ? "Правовая информация" : "Legal information"}>
-        <Link href="/privacy" target="_blank">{language === "ru" ? "Конфиденциальность" : "Privacy"}</Link>
-        <Link href="/terms" target="_blank">{language === "ru" ? "Соглашение" : "Agreement"}</Link>
-        <Link href="/support" target="_blank">{language === "ru" ? "Поддержка" : "Support"}</Link>
-        <Link href="/plans" target="_blank">{language === "ru" ? "Цены" : "Pricing"}</Link>
+        <Link href={localeHref("/privacy", language)} target="_blank">{language === "ru" ? "Конфиденциальность" : "Privacy"}</Link>
+        <Link href={localeHref("/terms", language)} target="_blank">{language === "ru" ? "Соглашение" : "Agreement"}</Link>
+        <Link href={localeHref("/support", language)} target="_blank">{language === "ru" ? "Поддержка" : "Support"}</Link>
+        <Link href={localeHref("/plans", language)} target="_blank">{language === "ru" ? "Цены" : "Pricing"}</Link>
       </nav>
       <div className="side-user"><span className="side-av">{(user.displayName || user.email)[0]?.toUpperCase()}</span><div className="side-uinfo"><b>{user.displayName || user.email.split("@")[0]}</b><span>{user.email}</span></div></div>
       <button className="btn btn-ghost btn-sm side-logout" disabled={loggingOut} onClick={onLogout}>{loggingOut ? logoutLabel : copy.logout}</button>
