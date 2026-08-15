@@ -51,6 +51,10 @@ GEMINI_37_ADMISSION_PROMPT = (
     "Output the integers 1 through 64, separated by single spaces, and nothing else."
 )
 GEMINI_37_ADMISSION_EXPECTED_TEXT = " ".join(str(value) for value in range(1, 65))
+# Publication of explicit thinking levels requires one live-admitted paid SSE generation per
+# level. `minimal` is not in the list: the official model rules reject it, and omission means
+# `medium`, so it can never become an advertised effort for this model.
+GEMINI_37_THINKING_LEVELS = ("low", "medium", "high")
 IMAGE_OUTPUT_TOKEN_CEILINGS = {"1K": 1_120, "2K": 1_680, "4K": 2_520}
 EVENT_TOKEN_FIELDS = (
     "input_tokens",
@@ -124,10 +128,16 @@ class JsonResponse:
 
 @dataclasses.dataclass(frozen=True)
 class Gemini37Admission:
-    """One exact-profile, one-count, one-generation publication admission."""
+    """Exact-profile, exact-SHA publication admission for Gemini 3.7 Flash.
+
+    `thinking_levels=()` is the historical one-count/one-generation default-surface gate.
+    A non-empty tuple admits exactly one paid SSE generation per listed explicit level on
+    the same profile and SHA; each level still has its own free countTokens preflight.
+    """
 
     profile_id: str
     implementation_sha: str
+    thinking_levels: tuple[str, ...] = ()
     deadline_seconds: int = GEMINI_37_ADMISSION_DEADLINE_SECONDS
 
 
@@ -934,15 +944,18 @@ def body_for_leg(
     return body
 
 
-def body_for_gemini37_admission() -> dict[str, Any]:
+def body_for_gemini37_admission(thinking_level: str | None = None) -> dict[str, Any]:
+    generation: dict[str, Any] = {
+        "maxOutputTokens": GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+    }
+    if thinking_level is not None:
+        generation["thinkingConfig"] = {"thinkingLevel": thinking_level}
     return {
         "contents": [{
             "role": "user",
             "parts": [{"text": GEMINI_37_ADMISSION_PROMPT}],
         }],
-        "generationConfig": {
-            "maxOutputTokens": GEMINI_37_ADMISSION_OUTPUT_TOKENS,
-        },
+        "generationConfig": generation,
     }
 
 
@@ -958,7 +971,7 @@ def verify_leg_usage(leg: Leg, event: dict[str, Any]) -> str | None:
     if leg.kind == "cache" and leg.cache_phase == "read" and event["cache_read_tokens"] <= 0:
         return "cached input token class was not observed"
     if (
-        leg.kind == "thinking"
+        (leg.kind == "thinking" or leg.name.startswith(f"admission:{GEMINI_37_ADMISSION_MODEL}:"))
         and leg.thinking_level
         and leg.thinking_level != "minimal"
         and event["thinking_output_tokens"] <= 0
@@ -1326,12 +1339,12 @@ def verify_generation_response(
         return evidence, "generation response changed responseId across frames"
     evidence["visible_text_frames"] = len(visible_text_indexes)
     if (
-        leg.name == f"admission:{GEMINI_37_ADMISSION_MODEL}:default-sse"
+        leg.name.startswith(f"admission:{GEMINI_37_ADMISSION_MODEL}:")
         and "".join(visible_text_parts) != GEMINI_37_ADMISSION_EXPECTED_TEXT
     ):
         return evidence, "Gemini 3.7 admission output did not match the exact 1..64 contract"
     accepted_model_versions = {leg.model}
-    if leg.name == f"admission:{GEMINI_37_ADMISSION_MODEL}:default-sse":
+    if leg.name.startswith(f"admission:{GEMINI_37_ADMISSION_MODEL}:"):
         accepted_model_versions = GEMINI_37_ADMISSION_UPSTREAM_MODEL_VERSIONS
     if len(model_versions) != 1 or not model_versions.issubset(accepted_model_versions):
         return evidence, (
@@ -1654,15 +1667,25 @@ class Runner:
         self.admission_attempts: list[dict[str, Any]] = []
 
     def execute_leg(self, leg: Leg, profile_id: str) -> dict[str, Any]:
-        if self.admission is not None and (
-            profile_id != self.admission.profile_id
-            or leg.model != GEMINI_37_ADMISSION_MODEL
-            or leg.kind != "fresh"
-            or not leg.stream
-            or leg.max_output_tokens != GEMINI_37_ADMISSION_OUTPUT_TOKENS
-            or leg.thinking_level is not None
-        ):
-            raise CalibrationError("Gemini 3.7 admission plan is not the exact one-leg contract")
+        if self.admission is not None:
+            levels = self.admission.thinking_levels
+            if leg.thinking_level is not None:
+                expected_leg = (
+                    f"admission:{GEMINI_37_ADMISSION_MODEL}:thinking-{leg.thinking_level}"
+                )
+            else:
+                expected_leg = f"admission:{GEMINI_37_ADMISSION_MODEL}:default-sse"
+            if (
+                profile_id != self.admission.profile_id
+                or leg.model != GEMINI_37_ADMISSION_MODEL
+                or leg.kind != "fresh"
+                or not leg.stream
+                or leg.max_output_tokens != GEMINI_37_ADMISSION_OUTPUT_TOKENS
+                or (leg.thinking_level is None) != (not levels)
+                or (leg.thinking_level is not None and leg.thinking_level not in levels)
+                or leg.name != expected_leg
+            ):
+                raise CalibrationError("Gemini 3.7 admission plan is not the exact contract")
         before = self.capacity.read()
         require_healthy_delivery(before)
         states = profile_state(before)
@@ -1674,7 +1697,7 @@ class Runner:
             raise CalibrationError("target Gemini profile has no stable cache scope")
         before_ids = set(recent_turn_events(before))
         body = (
-            body_for_gemini37_admission()
+            body_for_gemini37_admission(leg.thinking_level)
             if self.admission is not None
             else body_for_leg(leg, self.run_id, cache_scope)
         )
@@ -1757,10 +1780,14 @@ class Runner:
             leg.kind,
             leg.image_size,
         )
-        if self.admission is not None and self.budget.limit_nano != upper:
+        if self.admission is not None and self.budget.limit_nano != upper * len(
+            self.admission.thinking_levels or (None,)
+        ):
             raise CalibrationError(
                 "Gemini 3.7 admission budget must equal the exact current-tariff ceiling "
-                f"{upper} nanoUSD, got {self.budget.limit_nano}"
+                f"{upper} nanoUSD times the planned generation count "
+                f"{len(self.admission.thinking_levels or (None,))}, "
+                f"got {self.budget.limit_nano}"
             )
         self.budget.require(upper)
         suffix = "streamGenerateContent?alt=sse" if leg.stream else "generateContent"
@@ -1917,6 +1944,7 @@ class Runner:
         if self.admission is not None:
             record["admission"] = {
                 "implementation_sha": self.admission.implementation_sha,
+                "thinking_level": leg.thinking_level,
                 "count_request_id": count_request_id,
                 "not_after": str(not_after),
                 "count_dispatch_ms": str(count_dispatch_ms),
@@ -1995,6 +2023,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--report", default="/tmp/gemini-calibration-report.json")
     parser.add_argument("--resume-report")
     parser.add_argument("--gemini-37-admission", action="store_true")
+    parser.add_argument("--gemini-37-thinking-levels", action="store_true")
     parser.add_argument("--admission-profile")
     parser.add_argument("--implementation-sha")
     parser.add_argument("--production-capacity-over-ssh", action="store_true")
@@ -2015,7 +2044,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             validate_implementation_sha(args.implementation_sha)
     except CalibrationError as error:
         parser.error(str(error))
-    if args.gemini_37_admission:
+    if args.gemini_37_admission or args.gemini_37_thinking_levels:
+        if args.gemini_37_admission and args.gemini_37_thinking_levels:
+            parser.error("Gemini 3.7 admission modes are mutually exclusive")
         if args.implementation_sha in GEMINI_37_WITHDRAWN_IMPLEMENTATION_SHAS:
             parser.error(
                 "Gemini 3.7 admission implementation "
@@ -2042,27 +2073,29 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
-    if args.gemini_37_admission:
+    if args.gemini_37_admission or args.gemini_37_thinking_levels:
+        levels = GEMINI_37_THINKING_LEVELS if args.gemini_37_thinking_levels else ()
+        generations = len(levels) if levels else 1
         return {
             "schema": "gemini-3.7-admission-plan/v1",
             "mode": "dry-run",
             "paid_requests_sent": 0,
-            "planned_count_requests": 1,
-            "planned_paid_generation_requests": 1,
+            "planned_count_requests": generations,
+            "planned_paid_generation_requests": generations,
             "budget_nanousd_total": str(budget_nano),
             "model": GEMINI_37_ADMISSION_MODEL,
             "profile_id": args.admission_profile,
             "implementation_sha": args.implementation_sha,
             "stream": True,
-            "thinking_level": None,
+            "thinking_levels": list(levels),
             "max_output_tokens": GEMINI_37_ADMISSION_OUTPUT_TOKENS,
             "deadline_seconds": GEMINI_37_ADMISSION_DEADLINE_SECONDS,
             "guards": [
-                "one-free-countTokens-attempt",
-                "one-paid-generation-attempt",
+                "one-free-countTokens-per-paid-generation",
+                "one-paid-generation-attempt-per-thinking-level",
                 "no-resume-retry-reconnect-or-replay",
                 "exact-profile-and-uuidv4-attribution",
-                "exact-current-tariff-ceiling",
+                "exact-current-tariff-ceiling-times-generation-count",
                 "pre-deadline-count-and-generation-dispatch-attestation",
                 "raw-modelVersion-terminal-usage-and-incremental-sse",
             ],
@@ -2150,7 +2183,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     profiles = (
         [args.admission_profile]
-        if args.gemini_37_admission
+        if args.gemini_37_admission or args.gemini_37_thinking_levels
         else (resume.profiles if resume else healthy_profiles)
     )
     if not profiles:
@@ -2163,7 +2196,7 @@ def main(argv: list[str] | None = None) -> int:
     rates = rate_catalog(baseline)
     models = (
         [GEMINI_37_ADMISSION_MODEL]
-        if args.gemini_37_admission
+        if args.gemini_37_admission or args.gemini_37_thinking_levels
         else (resume.models if resume else (args.models or sorted(rates)))
     )
     unknown = sorted(set(models) - set(rates))
@@ -2190,6 +2223,18 @@ def main(argv: list[str] | None = None) -> int:
         resume.spent_nano if resume else 0,
         defaultdict(int, resume.spent_by_profile if resume else {}),
     )
+    admission: Gemini37Admission | None = None
+    if args.gemini_37_admission:
+        admission = Gemini37Admission(
+            profile_id=args.admission_profile,
+            implementation_sha=args.implementation_sha,
+        )
+    elif args.gemini_37_thinking_levels:
+        admission = Gemini37Admission(
+            profile_id=args.admission_profile,
+            implementation_sha=args.implementation_sha,
+            thinking_levels=GEMINI_37_THINKING_LEVELS,
+        )
     runner = Runner(
         api,
         capacity,
@@ -2199,10 +2244,7 @@ def main(argv: list[str] | None = None) -> int:
         args.profile_delay,
         run_id,
         profile_cache_scopes(profiles),
-        Gemini37Admission(
-            profile_id=args.admission_profile,
-            implementation_sha=args.implementation_sha,
-        ) if args.gemini_37_admission else None,
+        admission,
     )
     runner.records = list(resume.records) if resume else []
     unavailable: list[dict[str, Any]] = list(resume.unavailable) if resume else []
@@ -2211,17 +2253,28 @@ def main(argv: list[str] | None = None) -> int:
         for profile in profiles
         if profile not in healthy_profiles
     }
-    legs = (
-        [Leg(
+    if args.gemini_37_admission:
+        legs = [Leg(
             f"admission:{GEMINI_37_ADMISSION_MODEL}:default-sse",
             GEMINI_37_ADMISSION_MODEL,
             "fresh",
             stream=True,
             max_output_tokens=GEMINI_37_ADMISSION_OUTPUT_TOKENS,
         )]
-        if args.gemini_37_admission
-        else build_coverage_legs(models, run_id, rates)
-    )
+    elif args.gemini_37_thinking_levels:
+        legs = [
+            Leg(
+                f"admission:{GEMINI_37_ADMISSION_MODEL}:thinking-{level}",
+                GEMINI_37_ADMISSION_MODEL,
+                "fresh",
+                thinking_level=level,
+                stream=True,
+                max_output_tokens=GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+            )
+            for level in GEMINI_37_THINKING_LEVELS
+        ]
+    else:
+        legs = build_coverage_legs(models, run_id, rates)
     expected = {(profile, leg.name): leg for leg in legs for profile in profiles}
     completed = {
         (record["profile_id"], record["leg"])
@@ -2270,7 +2323,7 @@ def main(argv: list[str] | None = None) -> int:
                 completed.add(key)
                 continue
             except HttpCalibrationError as error:
-                if args.gemini_37_admission:
+                if args.gemini_37_admission or args.gemini_37_thinking_levels:
                     raise
                 if error.status in {400, 403, 404}:
                     unavailable.append({
@@ -2309,7 +2362,7 @@ def main(argv: list[str] | None = None) -> int:
     blocking_unavailable = [item for item in unavailable if item.get("blocking", True)]
     complete = failure is None and not pending and not blocking_unavailable
     resume_safe = (
-        not args.gemini_37_admission
+        not (args.gemini_37_admission or args.gemini_37_thinking_levels)
         and failure is None
         and bool(pending)
         and not blocking_unavailable
@@ -2345,14 +2398,18 @@ def main(argv: list[str] | None = None) -> int:
         "model_profitability": model_profitability(runner.records),
         "final_capacity": final,
     }
-    if args.gemini_37_admission:
+    if args.gemini_37_admission or args.gemini_37_thinking_levels:
+        generations = len(GEMINI_37_THINKING_LEVELS) if args.gemini_37_thinking_levels else 1
         report["admission_contract"] = {
             "schema": "gemini-3.7-admission/v1",
             "implementation_sha": args.implementation_sha,
             "profile_id": args.admission_profile,
             "model": GEMINI_37_ADMISSION_MODEL,
-            "planned_count_requests": 1,
-            "planned_paid_generation_requests": 1,
+            "thinking_levels": (
+                list(GEMINI_37_THINKING_LEVELS) if args.gemini_37_thinking_levels else []
+            ),
+            "planned_count_requests": generations,
+            "planned_paid_generation_requests": generations,
             "resume_permitted": False,
         }
         report["admission_transport_attempts"] = runner.admission_attempts

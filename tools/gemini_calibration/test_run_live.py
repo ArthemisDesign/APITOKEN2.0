@@ -212,6 +212,58 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
                     *extra,
                 ])
 
+    def test_gemini_37_thinking_levels_cli_plans_one_paid_generation_per_level(self):
+        sha = "b" * 40
+        args = run_live.parse_args([
+            "--gemini-37-thinking-levels",
+            "--admission-profile",
+            "profile-a",
+            "--implementation-sha",
+            sha,
+            "--production-capacity-port",
+            "18898",
+            "--production-api-port",
+            "18898",
+            "--budget-usd",
+            "2.365056",
+        ])
+        plan = run_live.dry_run_plan(args, run_live.usd_to_nano(args.budget_usd))
+        self.assertEqual(plan["schema"], "gemini-3.7-admission-plan/v1")
+        self.assertEqual(plan["planned_count_requests"], 3)
+        self.assertEqual(plan["planned_paid_generation_requests"], 3)
+        self.assertEqual(
+            plan["thinking_levels"],
+            list(run_live.GEMINI_37_THINKING_LEVELS),
+        )
+        self.assertEqual(plan["implementation_sha"], sha)
+        self.assertIn("no-resume-retry-reconnect-or-replay", plan["guards"])
+        # minimal is never a Gemini 3.7 product effort: the model rejects it and omission
+        # already means medium.
+        self.assertNotIn("minimal", run_live.GEMINI_37_THINKING_LEVELS)
+
+        with self.assertRaises(SystemExit):
+            run_live.parse_args([
+                "--gemini-37-admission",
+                "--gemini-37-thinking-levels",
+                "--admission-profile",
+                "profile-a",
+                "--implementation-sha",
+                sha,
+            ])
+        for extra in (
+            ["--resume-report", "/tmp/old.json"],
+            ["--models", run_live.GEMINI_37_ADMISSION_MODEL],
+        ):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit):
+                run_live.parse_args([
+                    "--gemini-37-thinking-levels",
+                    "--admission-profile",
+                    "profile-a",
+                    "--implementation-sha",
+                    sha,
+                    *extra,
+                ])
+
     def test_gemini_37_withdrawn_implementation_cannot_be_retried(self):
         self.assertEqual(
             run_live.GEMINI_37_WITHDRAWN_IMPLEMENTATION_SHAS,
@@ -2186,6 +2238,165 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
 
         self.assertEqual(api.calls, 1)
         self.assertEqual(runner.admission_attempts[0]["outcome"], "terminal_failure")
+
+    def test_gemini_37_thinking_level_leg_sends_thinking_config_and_requires_thoughts(self):
+        model = run_live.GEMINI_37_ADMISSION_MODEL
+
+        class FakeApi:
+            def __init__(self, case):
+                self.case = case
+                self.calls = []
+                self.generation_request_id = None
+
+            def request(self, path, method="GET", body=None, target_profile=None, **options):
+                self.calls.append((path, body, dict(options)))
+                if path.endswith(":countTokens"):
+                    return run_live.JsonResponse({"totalTokens": 10}, 1_000_100)
+                self.generation_request_id = options["calibration_request_id"]
+                self.case.assertEqual(
+                    body["generationConfig"]["thinkingConfig"],
+                    {"thinkingLevel": "high"},
+                )
+                split = len(run_live.GEMINI_37_ADMISSION_EXPECTED_TEXT) // 2
+                return run_live.GenerationResponse(
+                    frames=(
+                        {
+                            "modelVersion": "gemini-3.7-flash-tiered",
+                            "candidates": [{
+                                "content": {"parts": [{
+                                    "text": run_live.GEMINI_37_ADMISSION_EXPECTED_TEXT[:split]
+                                }]},
+                            }],
+                        },
+                        {
+                            "candidates": [{
+                                "content": {"parts": [{
+                                    "text": run_live.GEMINI_37_ADMISSION_EXPECTED_TEXT[split:]
+                                }]},
+                                "finishReason": "STOP",
+                            }],
+                            "usageMetadata": {
+                                "promptTokenCount": 10,
+                                "candidatesTokenCount": 3,
+                                "thoughtsTokenCount": 7,
+                            },
+                        },
+                    ),
+                    stream=True,
+                    dispatch_ms=1_000_200,
+                )
+
+        class FakeCapacity:
+            def __init__(self, api):
+                self.api = api
+
+            def read(self):
+                events = []
+                if self.api.generation_request_id:
+                    turn = event(
+                        self.api.generation_request_id,
+                        profile="profile-a",
+                        model=model,
+                    )
+                    turn.update({
+                        "input_tokens": "10",
+                        "output_tokens": "10",
+                        "thinking_output_tokens": "7",
+                        "completed_at": "100",
+                    })
+                    events = [turn]
+                payload = capacity(events)
+                payload["profiles"] = [{
+                    "id": "profile-a",
+                    "plan": "google_ai_ultra",
+                    "authenticated": True,
+                    "cooling_until": 0,
+                    "calibration_persistence_ok": True,
+                    "quota_updated_at": 101 if events else 99,
+                    "windows": [],
+                }]
+                return payload
+
+        rates = run_live.ModelRates(
+            "google/test/v1", 1_000, 10, 10, 1, 1, 10, 0,
+            1_000, 10, 10, 1, 1, 10, "prompt", 1, 1_000,
+        )
+        upper = rates.upper_bound(
+            10,
+            run_live.GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+            "fresh",
+        )
+        api = FakeApi(self)
+        runner = run_live.Runner(
+            api,
+            FakeCapacity(api),
+            {model: rates},
+            run_live.Budget(upper * 3),
+            timeout=1,
+            delay=0,
+            run_id="run",
+            cache_scopes={"profile-a": "profile-1"},
+            admission=run_live.Gemini37Admission(
+                "profile-a",
+                "b" * 40,
+                thinking_levels=run_live.GEMINI_37_THINKING_LEVELS,
+            ),
+        )
+        leg = run_live.Leg(
+            f"admission:{model}:thinking-high",
+            model,
+            "fresh",
+            thinking_level="high",
+            stream=True,
+            max_output_tokens=run_live.GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+        )
+        with mock.patch.object(run_live.time, "time", return_value=1_000), mock.patch.object(
+            run_live.time, "sleep", return_value=None
+        ):
+            record = runner.execute_leg(leg, "profile-a")
+
+        self.assertEqual(len(api.calls), 2)
+        self.assertTrue(api.calls[0][0].endswith(":countTokens"))
+        self.assertTrue(record["response_evidence"]["incremental_sse"])
+        self.assertIsNone(record["coverage_error"])
+        self.assertEqual(record["admission"]["thinking_level"], "high")
+        self.assertEqual(
+            [attempt["kind"] for attempt in runner.admission_attempts],
+            ["countTokens", "paid_generation"],
+        )
+
+        wrong_leg = dataclasses.replace(leg, name=f"admission:{model}:default-sse")
+        with self.assertRaisesRegex(run_live.CalibrationError, "exact contract"):
+            runner.execute_leg(wrong_leg, "profile-a")
+        minimal_leg = dataclasses.replace(
+            leg,
+            name=f"admission:{model}:thinking-minimal",
+            thinking_level="minimal",
+        )
+        with self.assertRaisesRegex(run_live.CalibrationError, "exact contract"):
+            runner.execute_leg(minimal_leg, "profile-a")
+
+    def test_gemini_37_explicit_level_fails_closed_without_thinking_tokens(self):
+        model = run_live.GEMINI_37_ADMISSION_MODEL
+        leg = run_live.Leg(
+            f"admission:{model}:thinking-low",
+            model,
+            "fresh",
+            thinking_level="low",
+            stream=True,
+            max_output_tokens=run_live.GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+        )
+        immutable = event(model=model)
+        immutable.update({
+            "input_tokens": 10,
+            "output_tokens": 3,
+            "thinking_output_tokens": 0,
+        })
+        immutable = run_live.recent_turn_events(capacity([immutable]))["req-1"]
+        self.assertEqual(
+            run_live.verify_leg_usage(leg, immutable),
+            run_live.THINKING_TOKENS_NOT_OBSERVED,
+        )
 
 
 if __name__ == "__main__":
