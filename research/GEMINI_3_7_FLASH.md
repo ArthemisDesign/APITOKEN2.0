@@ -193,16 +193,17 @@ is known before dispatch or the person explicitly authorizes a larger bounded bu
 
 ## Admission and live-acceptance matrix
 
-The one-shot live on 2026-08-15 is **WITHDRAWN**: the free count transport returned an attested
-response, but the sole generation returned upstream 404 `NOT_FOUND`. The exact implementation
-commit SHA is recorded below. No row is acceptance evidence unless explicitly marked GREEN.
+Both one-shot lives on 2026-08-15 are **WITHDRAWN**. The exact-public-ID candidate returned upstream
+404 `NOT_FOUND`; the materially different tiered-wire candidate reached reconciled usage but
+terminated with `MAX_TOKENS` rather than `STOP`. Their exact implementation SHAs are recorded below.
+No row is acceptance evidence unless explicitly marked GREEN.
 
 | Check | Exact evidence required | Budget rule | Publication meaning |
 |---|---|---|---|
 | Owned catalogue discovery | Sanitized 3.7 quota and wire rows bound to the credential/plan | Free | **CANDIDATE OBSERVED** on 2026-08-15: `gemini-3.7-flash-tiered` was positive on six Pro and one Ultra profile; never generation proof |
-| `countTokens` preflight | 2xx for exact `gemini-3.7-flash` and a positive authoritative token count | Free; always first | **PARTIAL 2026-08-15** on `20d945ce…`: one response with valid dispatch attestation, but report v1 did not retain `totalTokens`; it is not full acceptance evidence |
-| Minimal generation | One 2xx incremental SSE request with byte-exact real text, terminal authoritative usage, and raw upstream model identity from the exact candidate SHA | Default `$0.0001`; increased only to the current minimal proved ceiling `$0.787392` for one no-retry attempt | **RED 2026-08-15** on `20d945ce…`: sole transport returned upstream 404 `NOT_FOUND`; candidate withdrawn |
-| Incremental SSE | The same paid generation must contain at least two visible non-thinking text frames, including one before the terminal event, then finish cleanly with authoritative usage; candidate-only frames are insufficient | Included in the single admission request; no second stream request | **NOT PROVED**: the withdrawn generation returned no output frames or terminal usage |
+| `countTokens` preflight | 2xx for exact `gemini-3.7-flash` and a positive authoritative token count | Free; always first | **PARTIAL 2026-08-15**: `20d945ce…` returned one attested response whose old report omitted the count; `2c8aca0d…` returned one attested `totalTokens=19`. Count does not prove generation |
+| Minimal generation | One 2xx incremental SSE request with byte-exact real text, terminal authoritative usage, and raw upstream model identity from the exact candidate SHA | Default `$0.0001`; increased only to the current minimal proved ceiling `$0.787392` for one no-retry attempt | **RED 2026-08-15**: `20d945ce…` returned 404; `2c8aca0d…` settled `$0.000960` but terminated `MAX_TOKENS` instead of `STOP`; both candidates withdrawn |
+| Incremental SSE | The same paid generation must contain at least two visible non-thinking text frames, including one before the terminal event, then finish cleanly with authoritative usage; candidate-only frames are insufficient | Included in the single admission request; no second stream request | **NOT PROVED**: neither withdrawn generation produced the required visible non-thinking frame sequence and clean terminal proof |
 | Thinking `low` | Real output and authoritative usage with `thinkingLevel=low` | Separately bounded | Required before advertising `low` |
 | Thinking default | Omitted `thinkingLevel` returns the admitted exact output and usage | Included in the single admission request | Proves only the omitted/default path |
 | Thinking explicit `medium` | Explicit `thinkingLevel=medium` follows documented semantics | Separately bounded | Required before advertising explicit `medium`; omission is not this proof |
@@ -328,6 +329,38 @@ all Stage 2 surfaces remain forbidden, and no second request may be sent for it.
 permitted only after materially new implementation evidence produces a different runtime SHA and a
 new explicit numeric budget contract.
 
+### Withdrawn tiered-wire controlled live — 2026-08-15
+
+The second controlled live used production-GREEN runtime
+`2c8aca0d1230bbf774b7e82ef11d651c4b705864`, whose dormant public identity mapped generation and
+quota admission to the owned `gemini-3.7-flash-tiered` row. A root-launched transient systemd unit
+ran that exact release binary as `deploy` on loopback port `18896`, with production PostgreSQL
+billing/evidence, the sealed roster, pinned transport identity, tariff overrides disabled, transport
+retries disabled, no Caddy route, and a 30-minute maximum lifetime. Native model discovery returned
+zero rows and ordinary exact-model lookup returned 404. The selected opaque profile was a healthy
+`google_ai_ultra` subscription with positive tiered quota; authority delivery began and ended with
+zero pending or dropped events.
+
+The runner recomputed and required the authorized `787392000 nanoUSD` (`$0.787392`) ceiling. It sent
+one free count transport and received an attested `totalTokens=19`. It then sent exactly one paid SSE
+transport under a distinct UUID. The response exhausted `maxOutputTokens=256` with
+`finishReason=MAX_TOKENS`, not the required `STOP`: immutable usage contained 20 input tokens and
+252 output tokens, of which 241 were thinking tokens. The incomplete response did not expose the
+required visible non-thinking frame sequence, raw canonical `modelVersion`, terminal response usage,
+or response/event usage parity.
+
+The immutable event nevertheless reconciled the one billable transport exactly: `15000` input
+nanoUSD plus `945000` output nanoUSD, for `960000 nanoUSD` (`$0.000960`) total on the authoritative
+Ultra plan and compiled tariff schedule. The report therefore records
+`admission_spend_reconciled=true`, but `complete=false` and `resume_safe=false`. Reconciled billing is
+not publication evidence when response identity, output, terminal usage and incremental SSE fail.
+
+The transient canary was stopped and collected, port `18896` was confirmed closed, and the stable
+Gemini production plane remained ready. This exact tiered-wire SHA is withdrawn and the runner now
+rejects it before network I/O. It must not be retried or published. Any later admission requires a
+materially new implementation SHA, a separately reviewed change that addresses the terminal
+output-bound failure, and a fresh explicit numeric budget contract.
+
 ### Gate to Stage 2 — separate follow-up commit
 
 Publication may begin only after all of the following are true:
@@ -378,7 +411,7 @@ research, official tariff, evidence boundary, dormant-name decision, and canary 
 | Official identity and behavior research | Applicable; recorded here |
 | Official tariff and effective epochs | Applicable; recorded here in exact nanoUSD units |
 | Dormant implementation and tests | Applicable; owned by the implementation change, not this research file |
-| Exact-SHA controlled live | Applicable; the exact-public-ID candidate `20d945ce…` is RED and withdrawn. The materially different tiered candidate remains pending a new GREEN exact SHA and separately authorized one-shot live |
+| Exact-SHA controlled live | Applicable; exact-public-ID candidate `20d945ce…` is RED after 404 and tiered-wire candidate `2c8aca0d…` is RED after reconciled `MAX_TOKENS`. Both are withdrawn and blocked from retry; no GREEN candidate exists |
 | Public catalogue, defaults, router, site, and public docs | Not applicable to Stage 1; explicitly deferred and forbidden |
 | New provider checklist | Not applicable; Gemini is an existing provider |
 | Customer price or multiplier change | Not applicable; this records upstream cost only and changes no customer multiplier |

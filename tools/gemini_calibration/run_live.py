@@ -41,6 +41,7 @@ GEMINI_37_ADMISSION_OUTPUT_TOKENS = 256
 GEMINI_37_ADMISSION_DEADLINE_SECONDS = 600
 GEMINI_37_WITHDRAWN_IMPLEMENTATION_SHAS = frozenset({
     "20d945ce59e9dea749ec7c74b7d322525bc29a05",
+    "2c8aca0d1230bbf774b7e82ef11d651c4b705864",
 })
 GEMINI_37_ADMISSION_PROMPT = (
     "Output the integers 1 through 64, separated by single spaces, and nothing else."

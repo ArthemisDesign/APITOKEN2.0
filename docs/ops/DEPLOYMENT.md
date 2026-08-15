@@ -69,6 +69,16 @@ spend unreconciled. The transient canary was collected and its loopback port clo
 runtime is withdrawn and must not be retried; the model remains unpublished. Any future attempt
 requires materially new implementation evidence and a different exact runtime SHA.
 
+The materially different tiered-wire runtime
+`2c8aca0d1230bbf774b7e82ef11d651c4b705864` was subsequently production-GREEN and received its
+own one-shot live on transient loopback port `18896`. Its free count returned `19` tokens; its sole
+paid SSE request reached an immutable Ultra-plan event but terminated at the 256-token bound with
+`MAX_TOKENS`, not `STOP`. Exact settled usage was 20 input and 252 output tokens, including 241
+thinking tokens, for `960000 nanoUSD` (`$0.000960`). The response did not prove canonical model
+identity, terminal response usage, response/event parity, or incremental visible SSE. The canary was
+collected, the port was closed, the stable Gemini plane remained ready, and the runner now rejects
+this SHA before network I/O. It is withdrawn and must not be retried or published.
+
 Alongside the serialized production watchdog, a low-priority candidate-validator service may run
 two transient `candidate-validation` deployments concurrently for exact SHAs reachable from pushed
 feature branches. The merge client first rebases onto the latest committed `master`, then creates

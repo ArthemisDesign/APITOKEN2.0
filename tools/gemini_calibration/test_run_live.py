@@ -213,20 +213,31 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
                 ])
 
     def test_gemini_37_withdrawn_implementation_cannot_be_retried(self):
-        with self.assertRaises(SystemExit):
-            run_live.parse_args([
-                "--gemini-37-admission",
-                "--admission-profile",
-                "profile-a",
-                "--implementation-sha",
-                next(iter(run_live.GEMINI_37_WITHDRAWN_IMPLEMENTATION_SHAS)),
-                "--production-capacity-port",
-                "18895",
-                "--production-api-port",
-                "18895",
-                "--budget-usd",
-                "0.787392",
-            ])
+        self.assertEqual(
+            run_live.GEMINI_37_WITHDRAWN_IMPLEMENTATION_SHAS,
+            {
+                "20d945ce59e9dea749ec7c74b7d322525bc29a05",
+                "2c8aca0d1230bbf774b7e82ef11d651c4b705864",
+            },
+        )
+        for implementation_sha in run_live.GEMINI_37_WITHDRAWN_IMPLEMENTATION_SHAS:
+            with (
+                self.subTest(implementation_sha=implementation_sha),
+                self.assertRaises(SystemExit),
+            ):
+                run_live.parse_args([
+                    "--gemini-37-admission",
+                    "--admission-profile",
+                    "profile-a",
+                    "--implementation-sha",
+                    implementation_sha,
+                    "--production-capacity-port",
+                    "18895",
+                    "--production-api-port",
+                    "18895",
+                    "--budget-usd",
+                    "0.787392",
+                ])
 
     def test_integer_contract_accepts_only_json_int_or_canonical_decimal_string(self):
         for raw, expected in ((0, 0), (12, 12), ("0", 0), ("12", 12)):

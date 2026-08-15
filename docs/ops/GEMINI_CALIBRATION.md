@@ -270,13 +270,44 @@ the runner rejects its SHA before network I/O. The transient unit was stopped an
 from ordinary discovery. Publication is forbidden. Any future attempt requires new implementation
 evidence, a different exact runtime SHA, and a fresh explicit numeric budget contract.
 
-At `2026-08-15T01:31:54+08:00`, the free read-only production catalogue supplied that new
-implementation evidence: the exact private `antigravity_model` row
+### Withdrawn tiered-wire exact-SHA attempt — 2026-08-15
+
+The materially different tiered-wire candidate used production-GREEN runtime
+`2c8aca0d1230bbf774b7e82ef11d651c4b705864`, transient loopback port `18896`, and one healthy
+`google_ai_ultra` profile with positive `gemini-3.7-flash-tiered` quota. The exact release binary
+used the production PostgreSQL authority and sealed roster, disabled tariff overrides and transport
+retries, had no Caddy route, and kept native discovery empty: list-models returned zero rows and an
+ordinary exact-model lookup returned 404.
+
+The authorized ceiling was exactly `787392000 nanoUSD` (`$0.787392`). The free exact-ID
+`countTokens` transport was invoked once, returned `totalTokens=19`, and carried a valid
+pre-deadline dispatch attestation. The distinct paid SSE transport was then invoked once. It reached
+an immutable authoritative event on the selected Ultra profile, but exhausted the 256-token output
+cap with `finishReason=MAX_TOKENS` instead of the required `STOP`. Of 252 output tokens, 241 were
+thinking tokens; the incomplete response exposed no acceptable visible-text frame sequence, raw
+canonical `modelVersion`, terminal response usage, or response/event usage parity. It therefore is
+not generation, streaming, identity, or terminal-usage acceptance evidence.
+
+The immutable event reconciled `20` input tokens and `252` output tokens at the compiled schedule:
+`15000` input nanoUSD plus `945000` output nanoUSD, exactly `960000 nanoUSD` (`$0.000960`). The
+report records one count invocation, one paid invocation, `admission_spend_reconciled=true`, and
+`resume_safe=false`. The canary was stopped and collected, port `18896` was confirmed closed, and
+the stable Gemini plane remained ready.
+
+This second exact SHA is withdrawn and is now rejected by the runner before network I/O. It must
+not be resumed or retried, and Gemini 3.7 Flash remains dormant and unpublished. A future attempt
+requires a materially new implementation SHA—for example a separately reviewed admission payload
+or output-bound change—plus a fresh exact numeric budget authorization; the failed SHA is never
+repurposed as a publication candidate.
+
+At `2026-08-15T01:31:54+08:00`, the free read-only production catalogue supplied the implementation
+evidence: the exact private `antigravity_model` row
 `gemini-3.7-flash-tiered` had positive remaining quota on six Pro profiles and one Ultra profile.
 The hidden runtime candidate maps public `gemini-3.7-flash` to that row and uses the same row for
-quota admission. This does not spend quota and is not generation acceptance; it only makes a new
-exact-SHA candidate materially different from the withdrawn exact-public-ID route. Official Code
-Assist/Antigravity public model pages still did not list 3.7 at that observation.
+quota admission. This did not spend quota and was not generation acceptance; it made
+`2c8aca0d…` materially different from the withdrawn exact-public-ID route, but the controlled live
+above subsequently withdrew that tiered candidate as well. Official Code Assist/Antigravity public
+model pages still did not list 3.7 at that observation.
 
 For a future, materially new implementation candidate only, after its exact canary is running and
 its opaque profile has been selected from the read-only status surface, inspect the no-network plan
