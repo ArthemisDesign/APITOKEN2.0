@@ -856,10 +856,12 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
     Gemini 3.7 Flash is published under the sole client identity `gemini-3.7-flash`, mapped privately
     to the live-admitted `gemini-3.7-flash-tiered` row. The 2026-08-15 exact-SHA gate proved real
     output, terminal usage, incremental SSE and authoritative settlement; ordinary JSON/SSE always
-    rewrites the private alias to the public id. Discovery advertises the text/SSE surface with
+    rewrites the private alias to the public id. Discovery advertises the text+image surface with
     explicit thinking levels `low`/`medium`/`high` (live-admitted per level on `916dee0d…`,
-    `$0.00546` aggregate; `minimal` is rejected locally); tools, structured output and untested
-    modalities remain unclaimed. The
+    `$0.00546` aggregate; `minimal` is rejected locally), function calling, JSON structured output
+    and implicit prompt caching (capability matrix on `35153abe…`, `$0.0190` aggregate, 8,170
+    authoritative cached tokens); search (no provider fanout ceiling) and audio input remain
+    unclaimed. The
    retained generic evidence producer admits only an admin exact
    profile plus canonical UUIDv4 `x-apitoken-calibration-request-id` and positive Unix-seconds
    `x-apitoken-calibration-not-after`; the half-open fence is `now < not_after`, so equality expires.

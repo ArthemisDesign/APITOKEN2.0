@@ -78,10 +78,6 @@ impl GeminiModel {
     pub fn input_modalities(&self) -> &'static [&'static str] {
         if self.id == "gemini-3-flash-preview" {
             &["text", "image", "audio"]
-        } else if self.id == "gemini-3.7-flash" {
-            // Stage 1 admits only the minimal text canary. Official multimodal support does not
-            // become a product capability until its exact subscription wire is proved live.
-            &["text"]
         } else {
             &["text", "image"]
         }
@@ -96,11 +92,11 @@ impl GeminiModel {
     }
 
     pub fn tool_calling(&self) -> bool {
-        !self.is_image_generation() && self.id != "gemini-3.7-flash"
+        !self.is_image_generation()
     }
 
     pub fn structured_outputs(&self) -> bool {
-        !self.is_image_generation() && self.id != "gemini-3.7-flash"
+        !self.is_image_generation()
     }
 
     /// Resolve the public Developer API model to the private Antigravity quota/generation bucket.
@@ -449,11 +445,11 @@ mod tests {
         assert!(model("gemini-3.6-flash").tool_calling());
         assert!(model("gemini-3.6-flash").structured_outputs());
         let flash_37 = model("gemini-3.7-flash");
-        assert_eq!(flash_37.input_modalities(), ["text"]);
+        assert_eq!(flash_37.input_modalities(), ["text", "image"]);
         assert_eq!(flash_37.output_modalities(), ["text"]);
         assert_eq!(flash_37.reasoning_efforts(), ["low", "medium", "high"]);
-        assert!(!flash_37.tool_calling());
-        assert!(!flash_37.structured_outputs());
+        assert!(flash_37.tool_calling());
+        assert!(flash_37.structured_outputs());
         assert_eq!(
             model("gemini-3-flash-preview").input_modalities(),
             ["text", "image", "audio"]

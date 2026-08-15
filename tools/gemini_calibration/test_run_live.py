@@ -264,6 +264,173 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
                     *extra,
                 ])
 
+    def test_gemini_37_capabilities_cli_plans_one_paid_generation_per_control(self):
+        sha = "c" * 40
+        args = run_live.parse_args([
+            "--gemini-37-capabilities",
+            "--admission-profile",
+            "profile-a",
+            "--implementation-sha",
+            sha,
+            "--production-capacity-port",
+            "18898",
+            "--production-api-port",
+            "18898",
+            "--budget-usd",
+            "7",
+        ])
+        plan = run_live.dry_run_plan(args, run_live.usd_to_nano(args.budget_usd))
+        self.assertEqual(plan["schema"], "gemini-3.7-capabilities-plan/v1")
+        self.assertEqual(
+            plan["planned_paid_generation_requests"],
+            len(run_live.GEMINI_37_CAPABILITY_KINDS),
+        )
+        self.assertEqual(
+            plan["capabilities"],
+            list(run_live.GEMINI_37_CAPABILITY_KINDS),
+        )
+        # Search stays undispatched: per-query billing has no hard fanout ceiling.
+        self.assertEqual(plan["skipped"][0]["capability"], "search")
+        for other in ("--gemini-37-admission", "--gemini-37-thinking-levels"):
+            with self.subTest(other=other), self.assertRaises(SystemExit):
+                run_live.parse_args([
+                    "--gemini-37-capabilities",
+                    other,
+                    "--admission-profile",
+                    "profile-a",
+                    "--implementation-sha",
+                    sha,
+                ])
+
+    def test_gemini_37_capability_bodies_match_the_closed_matrix(self):
+        run_live.body_for_gemini37_capability(
+            run_live.Leg("admission:gemini-3.7-flash:sse", "gemini-3.7-flash", "fresh",
+                         stream=True, max_output_tokens=512),
+            "run",
+        )
+        structured = run_live.body_for_gemini37_capability(
+            run_live.Leg("admission:gemini-3.7-flash:structured", "gemini-3.7-flash", "fresh",
+                         max_output_tokens=1024),
+            "run",
+        )
+        self.assertEqual(
+            structured["generationConfig"]["responseMimeType"],
+            "application/json",
+        )
+        tool = run_live.body_for_gemini37_capability(
+            run_live.Leg("admission:gemini-3.7-flash:tool-prompt", "gemini-3.7-flash", "tool",
+                         max_output_tokens=512),
+            "run",
+        )
+        self.assertEqual(
+            tool["tools"][0]["functionDeclarations"][0]["name"],
+            "calibration_probe",
+        )
+        image = run_live.body_for_gemini37_capability(
+            run_live.Leg("admission:gemini-3.7-flash:image-input", "gemini-3.7-flash", "fresh",
+                         max_output_tokens=1024),
+            "run",
+        )
+        self.assertEqual(
+            image["contents"][0]["parts"][0]["inlineData"]["mimeType"],
+            "image/png",
+        )
+        write = run_live.body_for_gemini37_capability(
+            run_live.Leg("admission:gemini-3.7-flash:cache-write", "gemini-3.7-flash", "cache",
+                         max_output_tokens=1024),
+            "run",
+        )
+        read = run_live.body_for_gemini37_capability(
+            run_live.Leg("admission:gemini-3.7-flash:cache-read", "gemini-3.7-flash", "cache",
+                         max_output_tokens=1024),
+            "run",
+        )
+        self.assertEqual(write, read)
+        with self.assertRaises(run_live.CalibrationError):
+            run_live.body_for_gemini37_capability(
+                run_live.Leg("admission:gemini-3.7-flash:other", "gemini-3.7-flash", "fresh"),
+                "run",
+            )
+
+    def test_gemini_37_brief_sse_accepts_a_single_visible_frame(self):
+        model = run_live.GEMINI_37_ADMISSION_MODEL
+        leg = run_live.Leg(
+            f"admission:{model}:sse",
+            model,
+            "fresh",
+            stream=True,
+            max_output_tokens=4096,
+        )
+        response = run_live.GenerationResponse(
+            frames=(
+                {"candidates": [{"content": {"parts": [{"text": "CALIBRATION_OK"}]}}]},
+                {
+                    "responseId": "resp-1",
+                    "modelVersion": "gemini-3.7-flash-tiered",
+                    "candidates": [{
+                        "content": {"parts": [{"text": ""}]},
+                        "finishReason": "STOP",
+                    }],
+                    "usageMetadata": {
+                        "promptTokenCount": 49,
+                        "candidatesTokenCount": 5,
+                        "thoughtsTokenCount": 140,
+                    },
+                },
+            ),
+            stream=True,
+        )
+        immutable = event(model=model)
+        immutable.update({
+            "input_tokens": 49,
+            "output_tokens": 145,
+            "thinking_output_tokens": 140,
+        })
+        immutable = run_live.recent_turn_events(capacity([immutable]))["req-1"]
+        evidence, error = run_live.verify_generation_response(leg, response, immutable)
+        self.assertIsNone(error)
+        self.assertTrue(evidence["incremental_sse"])
+
+    def test_gemini_37_structured_response_requires_valid_schema_json(self):
+        model = run_live.GEMINI_37_ADMISSION_MODEL
+        leg = run_live.Leg(
+            f"admission:{model}:structured",
+            model,
+            "fresh",
+            max_output_tokens=1024,
+        )
+        response = run_live.GenerationResponse(
+            frames=({
+                "modelVersion": "gemini-3.7-flash-tiered",
+                "candidates": [{
+                    "content": {
+                        "parts": [{"text": '{"marker": "CALIBRATION_OK", "answer": 42}'}]
+                    },
+                    "finishReason": "STOP",
+                }],
+                "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 12},
+            },),
+            stream=False,
+        )
+        immutable = event(model=model)
+        immutable.update({"input_tokens": 10, "output_tokens": 12})
+        immutable = run_live.recent_turn_events(capacity([immutable]))["req-1"]
+        _evidence, error = run_live.verify_generation_response(leg, response, immutable)
+        self.assertIsNone(error)
+
+        broken = dataclasses.replace(
+            response,
+            frames=({
+                **response.frames[0],
+                "candidates": [{
+                    "content": {"parts": [{"text": '{"marker": "WRONG", "answer": 42}'}]},
+                    "finishReason": "STOP",
+                }],
+            },),
+        )
+        _evidence, error = run_live.verify_generation_response(leg, broken, immutable)
+        self.assertIn("schema contract", error)
+
     def test_gemini_37_withdrawn_implementation_cannot_be_retried(self):
         self.assertEqual(
             run_live.GEMINI_37_WITHDRAWN_IMPLEMENTATION_SHAS,
@@ -2164,7 +2331,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         with mock.patch.object(run_live.time, "time", return_value=1_000):
             with self.assertRaises(run_live.CalibrationError) as caught:
                 runner.execute_leg(leg, "profile-a")
-        self.assertIn("must equal the exact current-tariff ceiling", str(caught.exception))
+        self.assertIn("must equal the worst-case exact current-tariff ceiling", str(caught.exception))
         self.assertEqual(api.calls, 1)
         self.assertTrue(api.assert_count)
 

@@ -479,6 +479,35 @@ production plane stayed ready throughout.
 Publication of `reasoning_efforts: ["low", "medium", "high"]` in the native and unified catalogues
 follows in the same change as this evidence, together with the site capability note.
 
+### Full-capability controlled live — 2026-08-15
+
+A second follow-up matrix on the same production-GREEN runtime `35153abe5f5157e6044016a8c3b49625de017ed3`
+and the same healthy Ultra profile admitted every remaining text-surface control with one free
+attested `countTokens` plus exactly one paid generation per leg (no retry/replay/rotation,
+per-leg coverage misses recorded, aggregate `$0.0190` against a `$5.518464` worst-case ceiling):
+
+| Capability leg | Evidence | Reconciled spend |
+|---|---|---|
+| `sse` | Terminal `STOP`, terminal usage, response/event parity, incremental multi-frame SSE with visible text | `$0.000557` |
+| `structured` (JSON `responseMimeType` + `responseSchema`) | Schema-valid JSON `{"marker":"CALIBRATION_OK","answer":42}`, terminal STOP/usage/parity | `$0.000337` |
+| `tool-prompt` (forced `functionDeclarations` call) | Invoked `calibration_probe` functionCall, terminal STOP/usage/parity | `$0.000393` |
+| `cache-write` | 12,337 input tokens written, terminal STOP/usage/parity | `$0.010622` |
+| `cache-read` | Same payload replayed with authoritative **8,170 cached input tokens**, terminal STOP/usage/parity | `$0.006101` |
+| `image-input` (inline PNG) | 1,137 input tokens, real one-word color answer, terminal STOP/usage/parity | `$0.000991` |
+
+The `long-context` leg was skipped before dispatch with no spend: the model's flat tariff has no
+long-context tier, so there is no threshold crossing to prove. Search remains undispatched and
+unadvertised for every Gemini 3 model: it is billed per query with no provider-documented fanout
+ceiling, so a paid request cannot be hard-bounded in advance. Audio input stays rejected by the
+native gate for this route. Two earlier same-day probes informed the final bodies: cache legs now
+pin `thinkingLevel=low` because the default level can spend a 1,024-token output entirely on
+thoughts for long contexts, and the brief SSE admission accepts a single visible frame because a
+one-word answer legitimately arrives in one text frame. Both adjustments live in the runner with
+regression tests; no admission rule was weakened for the thinking-level matrix.
+
+Publication of `tool_calling`, `structured_outputs`, image input and implicit caching in the
+native and unified catalogues follows in the same change as this evidence.
+
 ## Checklist disposition
 
 The new-model checklist in
