@@ -9,8 +9,8 @@
 | Delivery stage | Stage 1: research, tariff, dormant implementation, and controlled canary only |
 | Exact official Developer API model ID | `gemini-3.7-flash` |
 | Official release status | Generally available (GA), stable, released 2026-08-13 |
-| Publication decision | **DO NOT PUBLISH** until the exact implementation SHA passes controlled live acceptance |
-| Evidence policy | Official Google sources plus a sanitized observation of the owned catalogue; no inferred private aliases |
+| Publication decision | **READY FOR A SEPARATE PUBLICATION COMMIT** after GREEN live on exact SHA `c4f0773a…` |
+| Evidence policy | Official Google sources plus sanitized owned-catalogue and exact-SHA live evidence; only the confirmed private alias is accepted |
 
 This document is the append-only admission record for Gemini 3.7 Flash. It is not a public
 catalogue entry and it does not claim that any existing Gemini subscription credential, Code Assist
@@ -31,10 +31,11 @@ The product decision for Stage 1 is deliberately narrower:
    the model publicly or make it a default.
 3. Treat official Developer API and Antigravity availability as separate from availability through
    the product's subscription-backed Gemini credential path.
-4. Require a GREEN live run on the exact implementation SHA before a separate publication change.
-   A catalogue row or successful `countTokens` call is discovery evidence, not generation proof.
-5. Withdraw the candidate if a minimal-size generation fails. A failed request is not permission to publish
-   the model “for checking.”
+4. Exact runtime `c4f0773a…` passed the one-shot live under the product identity contract approved
+   by the person: `gemini-3.7-flash-tiered` is a private upstream alias, while
+   `gemini-3.7-flash` is the only customer-visible identity.
+5. Proceed only through a separate publication commit. The two earlier failed candidates remain
+   withdrawn and blocked from retry; the GREEN request is also terminal and must not be replayed.
 
 ## Official evidence
 
@@ -139,9 +140,9 @@ proxy was retained in this observation.
 The same recheck found no 3.7 entry in the current Code Assist release notes, the Gemini 3 Code
 Assist page, the Antigravity model page or official `google-gemini/gemini-cli` HEAD
 `c0d192452b4e2df7efb6d62a60385f475bfd6779`. Those absences do not override the credential-bound
-catalogue row, but they prevent a broader Code Assist availability claim. The exact row authorizes
-one new dormant private-wire candidate only; live generation must still prove that it serves the
-public 3.7 contract and returns the required raw canonical `modelVersion`.
+catalogue row, but they prevent a broader Code Assist availability claim. The exact row authorized
+one new dormant private-wire candidate only; the later exact-SHA live proved that it serves the
+public 3.7 contract while returning the same confirmed private alias.
 
 ## Official rate card
 
@@ -193,19 +194,18 @@ is known before dispatch or the person explicitly authorizes a larger bounded bu
 
 ## Admission and live-acceptance matrix
 
-Both one-shot lives on 2026-08-15 are **WITHDRAWN**. The exact-public-ID candidate returned upstream
-404 `NOT_FOUND`; the materially different tiered-wire candidate reached reconciled usage but
-terminated with `MAX_TOKENS` rather than `STOP`. Their exact implementation SHAs are recorded below.
-No row is acceptance evidence unless explicitly marked GREEN.
+The first two one-shot lives on 2026-08-15 are **WITHDRAWN**. The later 512-token successor
+`c4f0773a…` is **GREEN** under the explicitly approved public/private identity contract. Every
+request remains terminal; no failed or successful paid transport may be replayed.
 
 | Check | Exact evidence required | Budget rule | Publication meaning |
 |---|---|---|---|
 | Owned catalogue discovery | Sanitized 3.7 quota and wire rows bound to the credential/plan | Free | **CANDIDATE OBSERVED** on 2026-08-15: `gemini-3.7-flash-tiered` was positive on six Pro and one Ultra profile; never generation proof |
-| `countTokens` preflight | 2xx for exact `gemini-3.7-flash` and a positive authoritative token count | Free; always first | **PARTIAL 2026-08-15**: `20d945ce…` returned one attested response whose old report omitted the count; `2c8aca0d…` returned one attested `totalTokens=19`. Count does not prove generation |
-| Minimal generation | One 2xx incremental SSE request with byte-exact real text, terminal authoritative usage, and raw upstream model identity from the exact candidate SHA | Default `$0.0001`; exactly one no-retry generation for the new immutable 512-token successor SHA is authorized up to the current minimal proved ceiling `$0.788352` | **RED 2026-08-15** for both historical candidates: `20d945ce…` returned 404; `2c8aca0d…` settled `$0.000960` but terminated `MAX_TOKENS` instead of `STOP`. The 512-token successor remains PENDING until its exact SHA is GREEN and its one-shot live completes |
-| Incremental SSE | The same paid generation must contain at least two visible non-thinking text frames, including one before the terminal event, then finish cleanly with authoritative usage; candidate-only frames are insufficient | Included in the single admission request; no second stream request | **NOT PROVED**: neither withdrawn generation produced the required visible non-thinking frame sequence and clean terminal proof |
+| `countTokens` preflight | 2xx for exact `gemini-3.7-flash` and a positive authoritative token count | Free; always first | **GREEN 2026-08-15** on `c4f0773a…`: one attested `totalTokens=19`; historical partial rows remain non-generation evidence |
+| Minimal generation | One 2xx incremental SSE request with byte-exact real text, terminal authoritative usage, and the confirmed public/private upstream identity from the exact candidate SHA | Default `$0.0001`; the person authorized one no-retry generation for exact SHA `c4f0773a…` at the conservative `$0.788352` ceiling | **GREEN 2026-08-15**: exact `1 … 64`, terminal `STOP`, authoritative 20 input / 478 output tokens, raw `gemini-3.7-flash-tiered`, and reconciled `$0.0018075`; the authorization is consumed |
+| Incremental SSE | The same paid generation must contain at least two visible non-thinking text frames, including one before the terminal event, then finish cleanly with authoritative usage; candidate-only frames are insufficient | Included in the single admission request; no second stream request | **GREEN**: eight SSE/candidate frames and seven visible non-thinking text frames in the same admitted generation |
 | Thinking `low` | Real output and authoritative usage with `thinkingLevel=low` | Separately bounded | Required before advertising `low` |
-| Thinking default | Omitted `thinkingLevel` returns the admitted exact output and usage | Included in the single admission request | Proves only the omitted/default path |
+| Thinking default | Omitted `thinkingLevel` returns the admitted exact output and usage | Included in the single admission request | **GREEN** for the omitted/default path only; 296 thinking tokens were authoritative |
 | Thinking explicit `medium` | Explicit `thinkingLevel=medium` follows documented semantics | Separately bounded | Required before advertising explicit `medium`; omission is not this proof |
 | Thinking `high` | Real output and authoritative usage with `thinkingLevel=high` | Separately bounded | Required before advertising `high` |
 | Unsupported controls | Product rejects sampling controls and `candidateCount`; `minimal` is rejected locally or never offered | Unit/contract test; no paid request required | Prevents false controls from entering the public schema |
@@ -270,12 +270,12 @@ The current promotional worst-case ceiling is therefore:
 1,048,576 * 750 + 512 * 3,750 = 788,352,000 nanoUSD = $0.788352
 ```
 
-On 2026-08-15 the person explicitly authorized exactly one paid generation at that ceiling for the
-new immutable SHA produced by this reviewed successor change, after production `deploy/watchdog` is
-GREEN for that SHA and after the free `countTokens` preflight succeeds. The authorization does not
-apply to either withdrawn SHA, any later implementation SHA, a retry/replay, a later tariff epoch,
-grounding, tools, or another paid control test. It remains a conservative reserve rather than
-expected spend; authoritative terminal usage determines the actual charge.
+On 2026-08-15 the person explicitly authorized exactly one paid generation at that ceiling for exact
+SHA `c4f0773a…`, after production `deploy/watchdog` was GREEN and the free `countTokens` preflight
+succeeded. The authorization was consumed by the GREEN run and does not apply to either withdrawn
+SHA, any later implementation SHA, a retry/replay, a later tariff epoch, grounding, tools, or another
+paid control test. It was a conservative reserve; authoritative terminal usage fixed the actual
+charge at `$0.0018075`.
 
 ## Two-stage delivery decision
 
@@ -301,19 +301,19 @@ Forbidden in Stage 1:
 
 The dedicated Stage 1 root bridge, repository trigger, admission state machine and private canary
 unit were retired. They were delivery automation only: the exact tariff, hidden model definition,
-dormant Rust producer, response evidence checks and no-replay transport safeguards remain. A future
-controlled live must use a reviewed extension of `tools/gemini_calibration/run_live.py` against an
-explicitly operator-launched exact-SHA non-public canary. It must not install another permanent root
-helper or make the model reachable by ordinary traffic.
+dormant Rust producer, response evidence checks and no-replay transport safeguards remain. The
+successful controlled live used `tools/gemini_calibration/run_live.py` against an explicitly
+operator-launched exact-SHA non-public canary without installing another permanent root helper or
+making the model reachable by ordinary traffic.
 
 ### Withdrawn firing attempt — 2026-08-14
 
 The first exact trigger SHA, `f2ced4f9edfb4d42ad5bb1d6ef9f0bc7c7593044`, was rejected by the
 installed production-head guard before trigger discovery, any protected authority read,
 `countTokens`, generation, or spend. It is not a model acceptance attempt and must not be retried.
-Its descendant removed the trigger and restored a GREEN production head. The later cleanup retires
-the unused helper assets and the paid branch-protection dependency. The live matrix remains
-At that point the live matrix remained **PENDING**, spend was `0 nanoUSD`, and all public surfaces
+Its descendant removed the trigger and restored a GREEN production head. The later cleanup retired
+the unused helper assets and the paid branch-protection dependency. At that point the live matrix
+remained **PENDING**, spend was `0 nanoUSD`, and all public surfaces
 remained forbidden until a distinct controlled attempt succeeded.
 
 ### Withdrawn controlled live — 2026-08-15
@@ -380,6 +380,35 @@ rejects it before network I/O. It must not be retried or published. Any later ad
 materially new implementation SHA, a separately reviewed change that addresses the terminal
 output-bound failure, and a fresh explicit numeric budget contract.
 
+### GREEN 512-token controlled live — 2026-08-15
+
+The third and terminal controlled live used production-GREEN runtime
+`c4f0773a6a250fc48d8d8df05d5e14b7f7eeb8cb`. A transient loopback-only canary ran its exact release
+binary on port `18897` with production PostgreSQL billing/evidence, the sealed roster, tariff
+overrides and transport retries disabled, no Caddy route, and no public discovery. The selected
+opaque profile was `google_ai_ultra` with positive `gemini-3.7-flash-tiered` quota; authority
+delivery was healthy with zero pending or dropped events.
+
+One free count transport returned an attested `totalTokens=19`. One distinct paid SSE transport
+then returned 2xx and the byte-exact `1 … 64` response across eight candidate frames, seven of them
+with visible non-thinking text. It ended in terminal `STOP` with usage. The immutable event bound the
+same request to 20 input tokens and 478 output tokens, including 296 thinking tokens, and reconciled
+`15000 + 1792500 = 1807500 nanoUSD` (`$0.0018075`) on the compiled promotional schedule. No retry,
+rotation, replay, grounding, tool, or second paid control was used.
+
+The upstream response named itself `gemini-3.7-flash-tiered`. The report version active during the
+run returned at its older exact-public-ID comparison before assigning the later terminal/SSE/parity
+booleans, even though the response had already passed parsing, exact-output and frame checks and the
+immutable event was reconciled. The person then explicitly approved the product contract that the
+confirmed tiered spelling is a private upstream alias for Gemini 3.7 Flash. The runner regression now
+accepts only public `gemini-3.7-flash` or confirmed `gemini-3.7-flash-tiered` in this closed admission
+leg and rejects the alias on ordinary legs. Ordinary runtime translation always rewrites upstream
+identity to the sole customer-visible `gemini-3.7-flash`.
+
+This makes the exact SHA GREEN without another network call. The canary was stopped and collected,
+port `18897` was confirmed closed, and the stable Gemini production plane stayed ready. The live
+authorization is consumed and cannot be inherited or replayed.
+
 ### Gate to Stage 2 — separate follow-up commit
 
 Publication may begin only after all of the following are true:
@@ -402,9 +431,10 @@ Publication may begin only after all of the following are true:
    it must produce at least two visible non-thinking text frames, including a preterminal frame. The
    immutable `priced_ts` must reproduce the official rate effective at dispatch; an earlier plan or
    count is not permission to dispatch after its cutoff. The
-   response must preserve raw upstream `modelVersion` exactly as `gemini-3.7-flash`, and the terminal
-   authority snapshot and outcome/event binding must reproduce the exact admitted profile
-   and paid plan; missing or changed plan proof is not acceptance.
+   response must preserve one raw upstream `modelVersion`: public `gemini-3.7-flash` or the confirmed
+   private `gemini-3.7-flash-tiered` alias. The terminal authority snapshot and outcome/event binding
+   must reproduce the exact admitted profile and paid plan; missing or changed plan proof is not
+   acceptance. Customer responses still expose only the public spelling.
 4. Only the exact thinking behavior exercised by the paid request is proved; explicit `low`,
    `medium`, and `high` remain unpublished until separately tested.
 5. Every control, modality, and credential plan proposed for publication passes its matching matrix
@@ -416,8 +446,9 @@ Publication may begin only after all of the following are true:
 7. The controlled production live is GREEN on the exact SHA.
 8. Publication surfaces are changed together under the new-model checklist in a separate commit.
 
-Any failed generation withdraws this admission candidate. Recovery requires a new implementation
-commit and a fresh controlled run; a red SHA is not published or retried as if it were green.
+The conditions above are satisfied by exact SHA `c4f0773a…` for the deliberately narrow default
+text/SSE surface. Untested controls and explicit thinking levels remain unclaimed. Any failed
+generation remains withdrawn; a red SHA is never published or retried as if it were green.
 
 ## Checklist disposition
 
@@ -430,13 +461,13 @@ research, official tariff, evidence boundary, dormant-name decision, and canary 
 | Official identity and behavior research | Applicable; recorded here |
 | Official tariff and effective epochs | Applicable; recorded here in exact nanoUSD units |
 | Dormant implementation and tests | Applicable; owned by the implementation change, not this research file |
-| Exact-SHA controlled live | Applicable; exact-public-ID candidate `20d945ce…` is RED after 404 and tiered-wire candidate `2c8aca0d…` is RED after reconciled `MAX_TOKENS`. Both are withdrawn and blocked from retry; no GREEN candidate exists |
-| Public catalogue, defaults, router, site, and public docs | Not applicable to Stage 1; explicitly deferred and forbidden |
+| Exact-SHA controlled live | Applicable; `c4f0773a…` is GREEN for default text/SSE with reconciled `$0.0018075`. Historical `20d945ce…` and `2c8aca0d…` remain withdrawn; no request may be replayed |
+| Public catalogue, defaults, router, site, and public docs | Applicable only in the separate Stage 2 publication commit; now unblocked by the GREEN live |
 | New provider checklist | Not applicable; Gemini is an existing provider |
 | Customer price or multiplier change | Not applicable; this records upstream cost only and changes no customer multiplier |
 | Database migration | Not applicable; no schema change is introduced by this document |
 | Cross-context contract / `docs/DEPENDENCIES.md` | Applicable; the retained producer/status → generic runner contract is recorded there; no public link is added |
-| Commerce, sales, OpenKeys, and admin publication | Not applicable to Stage 1; deferred until proven Stage 2 publication scope exists |
+| Commerce, sales, OpenKeys, and admin publication | Deferred to the separate Stage 2 checklist; only applicable surfaces may expose the conservative tested capability set |
 
 ## Secret hygiene
 

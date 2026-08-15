@@ -37,6 +37,10 @@ DEFAULT_PRODUCTION_SSH_TARGET = "apitokensale"
 DEFAULT_PRODUCTION_CAPACITY_PORT = 8794
 DEFAULT_PRODUCTION_API_PORT = 8794
 GEMINI_37_ADMISSION_MODEL = "gemini-3.7-flash"
+GEMINI_37_ADMISSION_UPSTREAM_MODEL_VERSIONS = frozenset({
+    GEMINI_37_ADMISSION_MODEL,
+    "gemini-3.7-flash-tiered",
+})
 GEMINI_37_ADMISSION_OUTPUT_TOKENS = 512
 GEMINI_37_ADMISSION_DEADLINE_SECONDS = 600
 GEMINI_37_WITHDRAWN_IMPLEMENTATION_SHAS = frozenset({
@@ -1183,6 +1187,7 @@ def verify_generation_response(
         "terminal_usage": False,
         "incremental_sse": False,
         "model_version": None,
+        "upstream_model_version": None,
         "usage_matches_immutable_event": False,
     }
     if response.parse_error:
@@ -1325,10 +1330,15 @@ def verify_generation_response(
         and "".join(visible_text_parts) != GEMINI_37_ADMISSION_EXPECTED_TEXT
     ):
         return evidence, "Gemini 3.7 admission output did not match the exact 1..64 contract"
-    if model_versions != {leg.model}:
+    accepted_model_versions = {leg.model}
+    if leg.name == f"admission:{GEMINI_37_ADMISSION_MODEL}:default-sse":
+        accepted_model_versions = GEMINI_37_ADMISSION_UPSTREAM_MODEL_VERSIONS
+    if len(model_versions) != 1 or not model_versions.issubset(accepted_model_versions):
         return evidence, (
-            f"generation modelVersion proof is {sorted(model_versions)!r}, expected {leg.model!r}"
+            f"generation modelVersion proof is {sorted(model_versions)!r}, expected one of "
+            f"{sorted(accepted_model_versions)!r}"
         )
+    evidence["upstream_model_version"] = next(iter(model_versions))
     evidence["model_version"] = leg.model
     terminal_index = len(response.frames) - 1
     if not stop_indexes or any(index != terminal_index for index in stop_indexes):

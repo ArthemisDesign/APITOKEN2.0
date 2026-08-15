@@ -20,7 +20,8 @@ only an optional subset of regular input: a missing subset is acceptable when th
 `functionCall`, terminal usage, and response/event parity are proven, because the entire
 `promptTokenCount` is metered exactly once.
 After the already-paid generation, the runner also verifies the native response body itself:
-the public `modelVersion`, visible non-thought text (or the mandatory
+the public `modelVersion` (or an explicitly confirmed private wire alias in a closed admission
+mode), visible non-thought text (or the mandatory
 `functionCall`/`inlineData` for the corresponding control), `finishReason`, terminal
 `usageMetadata`, and an exact match of the response token vector with the immutable event.
 SSE counts as incremental only with at least two frames containing visible non-thinking text,
@@ -222,8 +223,11 @@ The controlled sequence remains fail closed:
    `NeverReplay` rules remain mandatory, so transport ambiguity is terminal and cannot rotate,
    reconnect, resend, or retry the paid request;
 4. require real visible non-thought output in multiple incremental frames, raw upstream
-   `modelVersion=gemini-3.7-flash`, terminal `STOP`, authoritative terminal usage, exact response
-   versus immutable-event token parity, plan/profile attribution, and integer nanoUSD reconciliation;
+   `modelVersion` equal to either public `gemini-3.7-flash` or the confirmed private
+   `gemini-3.7-flash-tiered` wire alias, terminal `STOP`, authoritative terminal usage, exact
+   response versus immutable-event token parity, plan/profile attribution, and integer nanoUSD
+   reconciliation. The alias is admission evidence only; ordinary customer responses are rewritten
+   to the sole public identity `gemini-3.7-flash`;
 5. publish in a separate commit only after that evidence is GREEN. Any failed or ambiguous
    generation leaves the model dormant and unpublished.
 
@@ -248,10 +252,10 @@ that the free count does not see. Before paid dispatch, the runner recalculates 
 canary's effective compiled rate card and requires `--budget-usd` to equal it exactly; a smaller or
 larger value stops after the free count. The earlier `$0.787392` authorization applied only to the
 withdrawn 256-token SHA. On 2026-08-15 the person explicitly authorized exactly one paid generation
-for the new 512-token successor SHA at the exact `$0.788352` ceiling. The authorization is valid only
-for the immutable SHA produced by this reviewed successor change, after that SHA is production GREEN;
-it permits no retry or replay. A future SHA or tariff epoch requires a new numeric contract rather
-than inheriting either older authorization.
+for the new 512-token successor SHA at the exact `$0.788352` ceiling. That authorization was consumed
+once by immutable runtime `c4f0773a6a250fc48d8d8df05d5e14b7f7eeb8cb`; it permits no retry or
+replay. A future SHA or tariff epoch requires a new numeric contract rather than inheriting any
+older authorization.
 
 ### Withdrawn exact-SHA attempt — 2026-08-15
 
@@ -303,45 +307,36 @@ requires a materially new implementation SHA—for example a separately reviewed
 or output-bound change—plus a fresh exact numeric budget authorization; the failed SHA is never
 repurposed as a publication candidate.
 
-At `2026-08-15T01:31:54+08:00`, the free read-only production catalogue supplied the implementation
-evidence: the exact private `antigravity_model` row
-`gemini-3.7-flash-tiered` had positive remaining quota on six Pro profiles and one Ultra profile.
-The hidden runtime candidate maps public `gemini-3.7-flash` to that row and uses the same row for
-quota admission. This did not spend quota and was not generation acceptance; it made
-`2c8aca0d…` materially different from the withdrawn exact-public-ID route, but the controlled live
-above subsequently withdrew that tiered candidate as well. Official Code Assist/Antigravity public
-model pages still did not list 3.7 at that observation.
+### GREEN 512-token successor live — 2026-08-15
 
-For a future, materially new implementation candidate only, after its exact canary is running and
-its opaque profile has been selected from the read-only status surface, inspect the no-network plan
-first, then execute it once:
+Production-GREEN runtime `c4f0773a6a250fc48d8d8df05d5e14b7f7eeb8cb` ran once in a transient
+loopback-only canary on port `18897`, using the production PostgreSQL billing/evidence authority,
+sealed roster, disabled tariff overrides and transport retries, and no Caddy route. Native discovery
+returned zero rows and exact public lookup returned 404 throughout the admission. The selected
+opaque profile was an authoritative `google_ai_ultra` subscription with positive
+`gemini-3.7-flash-tiered` quota.
 
-```bash
-python3 tools/gemini_calibration/run_live.py \
-  --gemini-37-admission \
-  --admission-profile '<opaque-profile-id>' \
-  --implementation-sha '<40-lowercase-hex-runtime-sha>' \
-  --production-capacity-port '<non-public-loopback-port>' \
-  --production-api-port '<same-non-public-loopback-port>' \
-  --budget-usd 0.788352
+The free count transport ran once under request `81b75050-a212-4d7d-9cce-ecd98d45965e`, returned
+`totalTokens=19`, and carried a valid pre-deadline dispatch attestation. The distinct paid SSE
+transport ran once under request `73dcdef7-4007-4a62-8e36-b84de3b40fd5`. It returned 2xx with the
+byte-exact `1 … 64` output, eight SSE frames, eight candidate frames, seven visible non-thinking
+text frames and terminal `STOP` plus usage. The raw upstream identity was the confirmed private
+wire alias `gemini-3.7-flash-tiered`.
 
-python3 tools/gemini_calibration/run_live.py \
-  --execute \
-  --gemini-37-admission \
-  --admission-profile '<same-opaque-profile-id>' \
-  --implementation-sha '<same-runtime-sha>' \
-  --production-capacity-over-ssh \
-  --production-api-over-ssh \
-  --production-capacity-port '<same-non-public-loopback-port>' \
-  --production-api-port '<same-non-public-loopback-port>' \
-  --budget-usd 0.788352 \
-  --report /tmp/gemini-3.7-admission.json
-```
+The original report stopped at that identity comparison because its then-current contract required
+the public spelling before assigning the later terminal/SSE/parity booleans. The person subsequently
+set the product identity contract explicitly: the private alias is accepted as upstream evidence,
+while every ordinary customer response exposes only `gemini-3.7-flash`. The runner now encodes that
+closed two-value admission set and keeps every other model and every unconfirmed 3.7 spelling
+fail-closed. The live is therefore GREEN under the approved contract; this is an evidence
+adjudication, not a second network call.
 
-The execute command is terminal whether it succeeds, fails, or becomes ambiguous. Never invoke it a
-second time for the same candidate. The report records each local transport invocation separately
-from immutable spend reconciliation; an ambiguous paid outcome therefore remains visibly
-unreconciled instead of being misrepresented as confirmed zero spend.
+The authoritative immutable event reconciled 20 input tokens and 478 output tokens, including 296
+thinking tokens: `15000` input nanoUSD plus `1792500` output nanoUSD, exactly `1807500 nanoUSD`
+(`$0.0018075`). Delivery finished with zero pending or dropped events and healthy persistence. The
+canary was stopped and collected, port `18897` was confirmed closed, and the stable Gemini plane
+remained ready. The consumed authorization and exact SHA must never be replayed; the next permitted
+step is the separate publication commit.
 ## Offline verification
 
 ```bash
@@ -359,7 +354,9 @@ also rejects malformed or buffered-only SSE, duplicate JSON keys, inconsistent r
 non-terminal usage, non-STOP completion and response/event token mismatches without opening a
 network connection. Gemini 3.7 coverage additionally proves the closed CLI, exact one-leg prompt,
 current `788352000 nanoUSD` ceiling, one-attempt count transport, deadline/header propagation,
-dispatch attestation and one-generation/no-resume contract before a live is authorized.
+dispatch attestation, one-generation/no-resume contract, and the closed public-or-confirmed-tiered
+upstream identity set. A tiered alias on an ordinary leg or any other 3.7-looking spelling remains a
+coverage failure.
 
 ## Result
 
@@ -370,7 +367,8 @@ final backend snapshot, and `model_profitability` sorted by API nanoUSD per 1% o
 corresponding 5h/7d window, separately for each paid plan, model, and token class. A change
 of reset identity is never counted as model-specific fraction delta. Every successful record
 additionally contains only sanitized `response_evidence` (frame/output/control counters, the
-public model id, and terminal/incremental/usage parity booleans), but not the response text.
+public model id, the single observed upstream model version, and terminal/incremental/usage parity
+booleans), but not the response text.
 `blocking_unavailable_capabilities` makes a terminal publication miss explicit; the report
 may have `complete=true` only without such misses and without unfinished legs.
 

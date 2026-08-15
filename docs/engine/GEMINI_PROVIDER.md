@@ -436,7 +436,8 @@ fingerprint change, never an ambient package update.
 
 ### Dormant Gemini 3.7 exact-admission producer
 
-`gemini-3.7-flash` remains private and dormant. Its engine-side producer accepts only an
+`gemini-3.7-flash` remains private and dormant until the separate publication commit. Its
+engine-side producer accepts only an
 admin-authenticated exact-profile request carrying exactly one canonical
 `x-apitoken-calibration-profile`, UUIDv4 `x-apitoken-calibration-request-id` and positive decimal
 Unix-seconds `x-apitoken-calibration-not-after`. The deadline is mandatory for 3.7 generation and
@@ -458,7 +459,9 @@ OAuth is asymmetric by cost: exact 3.7 `countTokens` may make at most one non-re
 paid generation requires an already-fresh cached bearer and never refreshes after profile claim.
 Every exact upstream POST uses `NeverReplay`: no helper restart, 401 resend, profile rotation or
 smooth retry. Deadline-bound 3.7 JSON and SSE preserve Google's raw upstream `modelVersion` as
-admission evidence; established ordinary and older exact lanes retain canonical public-id rewriting.
+admission evidence. That closed admission accepts public `gemini-3.7-flash` or the confirmed private
+`gemini-3.7-flash-tiered` alias; every other spelling fails. Established ordinary lanes retain
+canonical public-id rewriting, so a customer never sees the private alias.
 The dedicated root admission consumer, trigger and private unit were retired after their delivery
 guard introduced a dependency on paid GitHub branch protection. The producer remains available only
 as dormant exact-profile runtime capability; ordinary traffic still fails before dispatch. The
@@ -478,9 +481,14 @@ reconciled Ultra-plan generation, but the latter spent 241 of 252 output tokens 
 terminated with `MAX_TOKENS` at the 256-token bound instead of `STOP`. It is withdrawn and rejected
 before network I/O. The successor producer accepts only an explicit `maxOutputTokens=512`; the old
 256-token payload and any other explicit value fail before dispatch. On 2026-08-15 the person
-authorized exactly one no-retry paid generation for the immutable SHA produced by this reviewed
-successor change, with an exact `$0.788352` ceiling. That SHA must still be production GREEN and the
-one-shot live must be GREEN before publication.
+authorized exactly one no-retry paid generation for successor SHA `c4f0773a…`, with an exact
+`$0.788352` ceiling. That SHA was production GREEN and its one-shot live returned the exact `1 … 64`
+text across eight SSE frames (seven visible), terminal `STOP`, authoritative 20 input / 478 output
+tokens including 296 thinking tokens, and raw `gemini-3.7-flash-tiered`. The immutable event
+reconciled `$0.0018075`; count and generation each had exactly one invocation. Under the person's
+explicit public/private identity contract this is GREEN admission evidence, not a replay: ordinary
+responses still rewrite the private alias to public `gemini-3.7-flash`. The authorization is
+consumed, both earlier SHAs remain withdrawn, and publication proceeds separately.
 
 ## Runtime behavior
 
@@ -746,7 +754,7 @@ text-generation check. A quota row by itself is never admission evidence.
 
 | Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
 |---|---|---|---|
-| `gemini-3.7-flash` | public → `gemini-3.7-flash-tiered`; the same exact private row is the sole quota identity | Google announced the Developer API model GA on 2026-08-13; exact-public-ID runtime `20d945ce…` was withdrawn after an attested count plus paid SSE 404. The owned catalogue then exposed the tiered row on six Pro and one Ultra profile. Tiered runtime `2c8aca0d…` was withdrawn after a positive count and a reconciled `$0.000960` generation terminated with `MAX_TOKENS` at 256 instead of `STOP`. The successor exact SHA rejects the old bound and admits only explicit 512 | Stage 1 dormant and unpublished. Production defaults, customer discovery, router presets and storefronts omit it. One `$0.788352` no-retry generation for the new immutable 512-token successor SHA is explicitly authorized; publication still requires its GREEN proof of real output, raw canonical model identity, terminal usage and incremental SSE |
+| `gemini-3.7-flash` | public → `gemini-3.7-flash-tiered`; the same exact private row is the sole quota identity; ordinary responses rewrite it to the public id | Google announced the Developer API model GA on 2026-08-13; exact-public-ID runtime `20d945ce…` was withdrawn after an attested count plus paid SSE 404. Tiered runtime `2c8aca0d…` was withdrawn after a positive count and reconciled `MAX_TOKENS`. Production-GREEN successor `c4f0773a…` used explicit 512 and passed one count plus one no-retry paid generation: exact text, 8/7 incremental frames, terminal `STOP`/usage, raw confirmed tiered alias, 20 input + 478 output tokens and reconciled `$0.0018075` | Live admitted for the conservative default text/SSE surface. It remains absent from defaults, discovery, router and storefronts only until the separate publication commit. Explicit thinking levels, tools, structured output and untested modalities remain unclaimed |
 | `gemini-3-flash-preview` | public → `gemini-3-flash`; quota admission joins `gemini-3-flash` + `gemini-3-flash-agent`; configured Antigravity origin, 2.2.1 UA, minimal headers; bounded inline PCM WAV fallback uses exact integral `duration × 32` AUDIO tokens and fails closed on ambiguous cache | fresh runner SHA `cc7e5beb…` / byte-identical runtime implementation completed 22 paid turns on Pro+Ultra: minimal/low/medium/high, incremental SSE, final cache reads with 8,170 cached tokens, fresh/replayed 8-token PCM audio and forced function calls; public identity and terminal response/event usage matched | published; generation 5 main catalog, production defaults, router manifest and public web/docs |
 | `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
 | `gemini-3.5-flash` | minimal → `gemini-3.5-flash-extra-low`; low/medium/high/default → `gemini-3.5-flash-low`, with the requested native thinking level preserved | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; default and `alt=json` JSON streams 200; canonical modelVersion and non-zero usage verified on Google AI Pro on 2026-07-31 | published |

@@ -648,6 +648,72 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         )
         self.assertIn("terminal usageMetadata", error)
 
+    def test_gemini_37_admission_accepts_only_the_confirmed_tiered_wire_alias(self):
+        leg = run_live.Leg(
+            "admission:gemini-3.7-flash:default-sse",
+            "gemini-3.7-flash",
+            "fresh",
+            stream=True,
+            max_output_tokens=run_live.GEMINI_37_ADMISSION_OUTPUT_TOKENS,
+        )
+        expected = run_live.GEMINI_37_ADMISSION_EXPECTED_TEXT
+        split_at = expected.index(" 33 ") + 1
+        response = run_live.GenerationResponse(
+            frames=(
+                {
+                    "modelVersion": "gemini-3.7-flash-tiered",
+                    "candidates": [{"content": {"parts": [{"text": expected[:split_at]}]}}],
+                },
+                {
+                    "candidates": [{
+                        "content": {"parts": [{"text": expected[split_at:]}]},
+                        "finishReason": "STOP",
+                    }],
+                    "usageMetadata": {
+                        "promptTokenCount": 20,
+                        "candidatesTokenCount": 182,
+                        "thoughtsTokenCount": 296,
+                    },
+                },
+            ),
+            stream=True,
+        )
+        immutable = event(model=leg.model)
+        immutable.update({
+            "input_tokens": 20,
+            "output_tokens": 478,
+            "thinking_output_tokens": 296,
+        })
+        immutable = run_live.recent_turn_events(capacity([immutable]))["req-1"]
+
+        evidence, error = run_live.verify_generation_response(leg, response, immutable)
+
+        self.assertIsNone(error)
+        self.assertEqual(evidence["model_version"], "gemini-3.7-flash")
+        self.assertEqual(
+            evidence["upstream_model_version"], "gemini-3.7-flash-tiered"
+        )
+        self.assertTrue(evidence["terminal_finish"])
+        self.assertTrue(evidence["terminal_usage"])
+        self.assertTrue(evidence["incremental_sse"])
+        self.assertTrue(evidence["usage_matches_immutable_event"])
+
+        unconfirmed = dataclasses.replace(
+            response,
+            frames=(
+                {**response.frames[0], "modelVersion": "gemini-3.7-flash-preview"},
+                response.frames[1],
+            ),
+        )
+        _evidence, error = run_live.verify_generation_response(leg, unconfirmed, immutable)
+        self.assertIn("modelVersion proof", error)
+
+        ordinary_leg = dataclasses.replace(leg, name="sse:gemini-3.7-flash")
+        _evidence, error = run_live.verify_generation_response(
+            ordinary_leg, response, immutable
+        )
+        self.assertIn("modelVersion proof", error)
+
     def test_plain_text_sse_rejects_nonvisible_preterminal_candidate_frames(self):
         leg = run_live.Leg(
             "sse:gemini-3-flash-preview",
