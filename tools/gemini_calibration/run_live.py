@@ -1804,12 +1804,22 @@ def verify_generation_response(
     accepted_model_versions = {leg.model}
     if leg.name.startswith(f"admission:{GEMINI_37_ADMISSION_MODEL}:"):
         accepted_model_versions = GEMINI_37_ADMISSION_UPSTREAM_MODEL_VERSIONS
-    if len(model_versions) != 1 or not model_versions.issubset(accepted_model_versions):
+    if leg.name.startswith("media:"):
+        # Media-matrix legs run through the plane's reviewed private wire mapping, so the raw
+        # upstream modelVersion is the private bucket id (gemini-3-flash, gemini-pro-default,
+        # gemini-default, …) rather than the public model id. Identity proof for these legs is
+        # the exact immutable event pinned to the request id, profile and public model.
+        accepted_model_versions = None
+    if accepted_model_versions is not None and (
+        len(model_versions) != 1 or not model_versions.issubset(accepted_model_versions)
+    ):
         return evidence, (
             f"generation modelVersion proof is {sorted(model_versions)!r}, expected one of "
             f"{sorted(accepted_model_versions)!r}"
         )
-    evidence["upstream_model_version"] = next(iter(model_versions))
+    evidence["upstream_model_version"] = (
+        next(iter(model_versions)) if len(model_versions) == 1 else sorted(model_versions)
+    )
     evidence["model_version"] = leg.model
     terminal_index = len(response.frames) - 1
     if not stop_indexes or any(index != terminal_index for index in stop_indexes):

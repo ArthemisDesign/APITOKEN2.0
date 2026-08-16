@@ -526,6 +526,32 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         _evidence, error = run_live.verify_generation_response(leg, response, immutable)
         self.assertIsNone(error)
 
+    def test_media_matrix_leg_accepts_the_private_wire_model_version(self):
+        leg = run_live.Leg(
+            "media:gemini-3.5-flash:video-input",
+            "gemini-3.5-flash",
+            "video",
+            max_output_tokens=1024,
+        )
+        response = run_live.GenerationResponse(
+            frames=({
+                "modelVersion": "gemini-default",
+                "candidates": [{
+                    "content": {"parts": [{"text": "red"}]},
+                    "finishReason": "STOP",
+                }],
+                "usageMetadata": {"promptTokenCount": 81, "candidatesTokenCount": 1},
+            },),
+            stream=False,
+        )
+        immutable = event(model=leg.model)
+        immutable.update({"input_tokens": 81, "output_tokens": 1})
+        immutable = run_live.recent_turn_events(capacity([immutable]))["req-1"]
+        evidence, error = run_live.verify_generation_response(leg, response, immutable)
+        self.assertIsNone(error)
+        self.assertEqual(evidence["upstream_model_version"], "gemini-default")
+        self.assertEqual(evidence["model_version"], "gemini-3.5-flash")
+
     def test_gemini_37_brief_sse_accepts_a_single_visible_frame(self):
         model = run_live.GEMINI_37_ADMISSION_MODEL
         leg = run_live.Leg(
