@@ -1,19 +1,19 @@
 # Request observability contract
 
-> **Status: PROPOSED; dormant registry S2 and forward-core S3A are implemented; the security-only
-> Caddy logical-ID perimeter is implemented and dormant; no runtime producer or read surface.**
+> **Status: PROPOSED; dormant registry S2 and forward-core S3A are implemented; the Caddy
+> logical-ID perimeter and provider-plane admission/context consumer are implemented; no router or
+> request-fact producer and no read surface.**
 > This document records the target design and rollout constraints for discussion. Migrations 0053-0054
 > are deployed; `crates/registry` exposes opt-in PostgreSQL write/lifecycle primitives, and
 > `AsyncBilling` now transports those typed facts through the owning money transactions plus a distinct
 > fail-open terminal-at-insert inbox. The Caddy perimeter reserves
 > `X-Apitoken-Logical-Request-Id` by deleting internet copies at all four public provider/router
-> ingresses while leaving stable loopback origins untouched.
-> No provider plane recognizes or consumes that header as trusted logical identity, generates an ID,
-> or returns it; no router produces it; and no read API, metric, or end-to-end coverage guarantee
-> exists yet. All current production callers continue to omit request facts. The perimeter alone does
-> not authorize loopback injection or make generic header forwarding a trusted capability; unmodified
-> forwarding may blindly transport the header and thereby confers no trust.
-> Runtime producer stages require the perimeter-first sequence below.
+> ingresses while leaving stable loopback origins untouched. Anthropic, OpenAI, Gemini, and Combined
+> customer routers now consume at most one canonical trusted value before auth/body/reserve/dispatch,
+> generate one for direct ingress, remove the wire header, and retain only a typed request extension
+> through internal adapters. No router produces it, no fact producer consumes the extension, no ID is
+> returned publicly, and no read API or request-fact metric exists. Provider-plane request-fact
+> callers remain absent.
 
 ## 1. Purpose
 
@@ -52,6 +52,12 @@ it is fail-open and excluded from money `flush`. Existing methods remain fact-fr
 money behavior is unchanged and omits analytics, and no production plane caller exercises the new
 forms yet. `billing_outcome` is never accepted in the outbox envelope: APPLY derives it from the
 authoritative winner, reconciliation, cancellation, and metered-amount state.
+
+Provider-plane logical identity admission is implemented for customer routes in Anthropic, OpenAI,
+Gemini, and the Combined migration bridge. Malformed reserved capabilities fail before auth, body
+handling, reserve, or dispatch; direct ingress gets a fresh canonical UUIDv4; the wire header is
+removed; and only a typed extension survives through synthesized universal leaf requests. Health,
+admin, internal preflight, and backend-only KIMI/Tripo3D/Suno routes stay outside this MVP.
 
 The HTTP error audit writes one JSON journal event for a terminal non-2xx response to a recognized
 metered key; it lives in `crates/server/src/http.rs:667-739` as `audit_customer_error` middleware
@@ -102,17 +108,18 @@ Four identities have different meanings and must remain separate:
 | `upstream_request_id` | Bounded terminal provider reference, when safely available | Provider plane |
 | `calibration_request_id` | Admin-only exact-calibration identity (Gemini and Kimi lanes), canonical UUIDv4 | External admin runbook via `x-apitoken-calibration-request-id` |
 
-The implemented, security-only perimeter reserves `X-Apitoken-Logical-Request-Id`: Caddy removes
-client-supplied copies on every public provider/router ingress while stable loopback origins preserve
-it for a future trusted internal hop. No plane recognizes or consumes the header as trusted logical
-identity, generates an ID, or returns it; no router produces it. Arbitrary loopback injection remains
-unauthorized, generic header forwarding is not capability acceptance, and forwarding that blindly
-carries the value confers no trust. The perimeter's exact SHA must be production GREEN before the
-provider-plane stage; canonical merge satisfies that precondition. The plane must then strictly
-validate an optional trusted value, consume/strip the capability before any external upstream
-dispatch, and give direct traffic a fresh plane-generated logical ID. Only after that consumer's exact
-SHA is GREEN may the router stage create one CSPRNG UUIDv4 before the first executable attempt, remove
-any inbound copy again, and inject the same logical ID into every attempt.
+The implemented perimeter reserves `X-Apitoken-Logical-Request-Id`: Caddy removes client-supplied
+copies on every public provider/router ingress while stable loopback origins preserve the reserved
+capability for the trusted internal hop; loopback access alone is not sender authorization. The
+implemented provider-process consumer accepts zero values (direct ingress: one
+fresh CSPRNG canonical lowercase UUIDv4) or exactly one canonical value, removes the wire header, and
+stores only a typed request extension before auth, body handling, reserve, or provider dispatch.
+Universal adapters preserve that same extension on synthesized leaf requests without recreating the
+wire capability. Malformed identity returns a bounded provider-shaped 400 with `not_started`.
+Backend-only KIMI/Tripo3D/Suno and non-customer routes are outside this MVP. No router produces the
+header yet. Only after this consumer's exact SHA is GREEN may the router stage create one CSPRNG
+UUIDv4 before the first executable attempt, remove inbound copies again, and inject the same logical
+ID into every attempt.
 
 The logical ID is additive correlation metadata. It does not replace a protocol's public response ID,
 an upstream `request-id`, the billing ID, or the existing execution-group contract. Existing public
@@ -370,15 +377,14 @@ analytics must not be introduced into the pool layer.
    all legacy callers and add no wire/read/metric surface. **Implemented; no plane caller yet.**
 5. Reserve the logical-ID trust boundary at Caddy first: strip
    `X-Apitoken-Logical-Request-Id` from all four public provider/router ingresses and preserve stable
-   loopback origins. **Implemented as a completed security-only, dormant perimeter: no plane
-   recognizes or consumes the header as trusted logical identity, generates or returns an ID, and
-   no router produces it; generic forwarding may blindly carry it but confers no trust.** The exact
-   perimeter SHA must be production GREEN before step 6; canonical merge satisfies this prerequisite.
-6. Only after that perimeter prerequisite, deliver the provider-plane strict consumer/direct-ID
-   generator and wire the dormant forward-core forms. The plane accepts at most one canonical
-   trusted internal value, consumes/strips the capability before any external upstream dispatch,
-   and generates a fresh logical ID when direct traffic has none. Update the
-   engine contract documentation in the same commit and wait for its exact GREEN verdict.
+   loopback origins. **Implemented as the completed security perimeter prerequisite.** The provider
+   consumer in step 6 now recognizes and removes the trusted capability; the router still does not
+   produce it.
+6. Deliver the provider-plane strict consumer/direct-ID generator after the perimeter. **Implemented
+   for Anthropic, OpenAI, Gemini, and Combined customer routes:** the plane accepts at most one
+   canonical trusted internal value, consumes/strips the capability before any external upstream
+   dispatch, generates a fresh logical ID when direct traffic has none, and preserves typed context
+   through internal adapters. Fact-aware forward-core forms remain dormant and have no plane caller.
 7. Only after the plane consumer/generator's exact SHA is GREEN, deliver the router producer. It
    removes any inbound copy again, creates one CSPRNG UUIDv4 per logical request, and injects it into
    every provider attempt.

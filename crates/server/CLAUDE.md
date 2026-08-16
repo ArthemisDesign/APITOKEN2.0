@@ -22,6 +22,14 @@ background loops and the HTTP router. Here — and only here — everything is w
   `/admin/*` (control plane,
   see `admin.rs`) + fallback to `forward::forward`. Key issuance returns the non-secret `key_id`,
   and `/admin/key-id/{key_id}/status` allows revoking a key without passing the full secret again.
+  A single provider-process admission layer applies only to customer provider routes for
+  `Combined|Anthropic|OpenAi|Gemini`: it consumes the reserved logical-request-ID header, attaches
+  the typed dormant context, and rejects malformed identity before auth/body/reserve/dispatch. This
+  precedence is deliberate because public Caddy has already removed internet values: malformed
+  identity is a broken trusted internal capability, not customer credential input.
+  Health/admin/internal router preflight and backend-only KIMI/Tripo3D/Suno stay outside this MVP;
+  OPTIONS on a customer provider route is admitted like every other method; the capability is
+  removed before existing method/fallback semantics, so it cannot escape to an external upstream.
   `/metrics` exports the registry incident tripwire
   `claude_api_execution_group_double_winner_total`; the metric must stay at zero, and
   transactional winner correctness does not depend on the process or Prometheus. The fixed-cardinality

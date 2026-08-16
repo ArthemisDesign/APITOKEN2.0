@@ -157,6 +157,7 @@ pub async fn gemini_chat_completions(
         .body(Body::from(body_bytes))
         .expect("static request builder is infallible");
     *inner.headers_mut() = headers;
+    crate::execution::inherit_logical_request_id(&parts.extensions, inner.extensions_mut());
     let upstream = gemini_api(State(app), ConnectInfo(peer), inner).await;
 
     if upstream.status() != StatusCode::OK {

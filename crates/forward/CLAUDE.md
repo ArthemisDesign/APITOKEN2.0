@@ -82,9 +82,10 @@ account ID, execution group, and attempt against the money command before dispat
 A raw secret key cannot be compared with the fact's non-secret `key_id` in forward; PostgreSQL retains
 the authoritative same-transaction key lookup/comparison, while SQLite deliberately omits analytics.
 SQLite keeps the existing money semantics, starts no fact thread, persists no analytics, and reports
-`UnsupportedAuthority` for terminal-at-insert submission. Logical-ID/header parsing, plane
-classification/callers, metric
-exposition, read APIs, and production request coverage remain later stages.
+`UnsupportedAuthority` for terminal-at-insert submission. Provider-process logical-ID admission is
+implemented separately: the reserved header is consumed into a typed dormant request extension, but
+no plane calls the fact-aware forms yet. Plane classification, metric exposition, read APIs, and
+production request-fact coverage remain later stages.
 For policy keys the cap takes the minimum of the account balance and the remaining lifetime limit. Such keys
 bypass the auth TTL cache; expiry and limit are re-checked inside the atomic reserve transaction.
 Every recognized metered 402 is audited after the response against a fresh authority read. The
@@ -159,6 +160,17 @@ both present exactly once → canonical lowercase UUIDv4 + canonical positive de
 partial/duplicate/malformed/noncanonical → fail closed. Anthropic parses in `proxy::forward`,
 Codex/Gemini — in `begin_admission`; identity passes through the reserve in `AsyncBilling`. When sending to the external Anthropic upstream both internal headers
 are removed. A plane never generates or repairs identity on its own.
+
+**Logical request identity admission (request-observability provider stage):**
+`execution.rs` owns the typed `LogicalRequestId` and the reserved lowercase
+`x-apitoken-logical-request-id`. At the central server admission layer, an absent value gets one
+fresh CSPRNG canonical lowercase UUIDv4 through `fresh_request_id`; exactly one canonical trusted
+value is consumed; duplicate, coalesced, non-UTF8, whitespace, uppercase, non-v4/variant, and every
+other noncanonical shape fail closed. Removal happens before either success or error returns. The
+typed value lives only in request extensions, and universal Anthropic/Gemini adapters copy that
+extension to synthesized leaf requests without recreating the wire header. It is dormant context:
+no request fact, metric, public response identity, billing identity, or execution-group semantics
+change in this stage.
 
 **Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** every
 successful Anthropic turn, including unmetered admin traffic, after authoritative usage builds one

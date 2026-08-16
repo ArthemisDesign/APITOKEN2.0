@@ -67,6 +67,9 @@ pub use codex::{
     CodexRateLimits, GptImage2, ImageBackground, ImageEditRequest, ImageErrorContext,
     ImageGenerationRequest, ImageQuality, ImageReference, ImageSize, ImageTurnId, GPT_IMAGE_2,
 };
+pub use execution::{
+    admit_logical_request_id, LogicalRequestId, LogicalRequestIdError, LOGICAL_REQUEST_ID_HEADER,
+};
 pub use config::{
     ClaudeStoreFallbackConfig, ProxyConfig, CLAUDESTORE_CLAUDE_FALLBACK_BASE_URL,
     CLAUDESTORE_CODEX_FALLBACK_BASE_URL, CLAUDE_CODE_IDENTITY,

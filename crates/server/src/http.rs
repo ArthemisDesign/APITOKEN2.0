@@ -304,6 +304,91 @@ async fn require_control_auth(
         .into_response()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LogicalIdErrorEnvelope {
+    Anthropic,
+    OpenAi,
+    Gemini,
+}
+
+fn logical_id_error_envelope(
+    provider: forward::ProviderMode,
+    headers: &HeaderMap,
+) -> LogicalIdErrorEnvelope {
+    match provider {
+        forward::ProviderMode::Combined if is_openai_plane(headers) => {
+            LogicalIdErrorEnvelope::OpenAi
+        }
+        forward::ProviderMode::OpenAi => LogicalIdErrorEnvelope::OpenAi,
+        forward::ProviderMode::Gemini => LogicalIdErrorEnvelope::Gemini,
+        forward::ProviderMode::Combined | forward::ProviderMode::Anthropic => {
+            LogicalIdErrorEnvelope::Anthropic
+        }
+        forward::ProviderMode::Kimi
+        | forward::ProviderMode::Tripo3d
+        | forward::ProviderMode::Suno => LogicalIdErrorEnvelope::Anthropic,
+    }
+}
+
+fn malformed_logical_id_response(envelope: LogicalIdErrorEnvelope) -> Response {
+    let body = match envelope {
+        LogicalIdErrorEnvelope::Anthropic => json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "Invalid request identity."
+            }
+        }),
+        LogicalIdErrorEnvelope::OpenAi => json!({
+            "error": {
+                "message": "Invalid request identity.",
+                "type": "invalid_request_error",
+                "param": Value::Null,
+                "code": Value::Null
+            }
+        }),
+        LogicalIdErrorEnvelope::Gemini => json!({
+            "error": {
+                "code": 400,
+                "message": "Invalid request identity.",
+                "status": "INVALID_ARGUMENT"
+            }
+        }),
+    };
+    let mut response = (StatusCode::BAD_REQUEST, Json(body)).into_response();
+    response.headers_mut().insert(
+        "x-apitoken-execution-state",
+        axum::http::HeaderValue::from_static("not_started"),
+    );
+    response
+}
+
+/// Admit and consume logical identity at the one provider-process boundary. The layer is mounted
+/// only on customer provider routers; health, admin and internal router preflights never enter it.
+/// Public Caddy has already removed internet values, so malformed identity represents a broken
+/// trusted internal capability and deliberately takes precedence over customer authentication.
+async fn admit_logical_request_context(
+    State(provider): State<forward::ProviderMode>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let path = request.uri().path();
+    let is_customer_provider_path = path.starts_with("/v1/")
+        || (provider == forward::ProviderMode::Gemini && path.starts_with("/v1beta/"));
+    if !is_customer_provider_path {
+        return next.run(request).await;
+    }
+
+    let envelope = logical_id_error_envelope(provider, request.headers());
+    match forward::admit_logical_request_id(request.headers_mut()) {
+        Ok(logical_request_id) => {
+            request.extensions_mut().insert(logical_request_id);
+            next.run(request).await
+        }
+        Err(_) => malformed_logical_id_response(envelope),
+    }
+}
+
 pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
     let admin = admin_router(&app);
     let provider = app.provider;
@@ -332,131 +417,154 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             "/internal/router/catalog/kimi",
             get(crate::router_catalog::kimi),
         );
+    let logical_id_layer =
+        || middleware::from_fn_with_state(provider, admit_logical_request_context);
     let router = match provider {
-        forward::ProviderMode::Combined => common
-            .route("/admin-events", get(admin_events))
-            .route("/pool", get(pool_status))
-            .route("/capacity", get(capacity))
-            .route("/overview", get(overview))
-            .route("/spend-stats", get(spend_stats))
-            .route("/settlement-health", get(settlement_health))
-            .route("/subs", get(subs))
-            .route("/fleet-history", get(fleet_history))
-            .route("/codex-subs", get(codex_subs))
-            .route("/kimi-subs", get(kimi_subs))
-            .route("/glm-subs", get(glm_subs))
-            .merge(admin)
-            // Migration bridge: existing Caddy marks the OpenAI hostname until provider-specific
-            // services are installed. Fixed provider modes below never inspect this header.
-            .route("/v1/responses", post(responses_dispatch))
-            .route("/v1/responses/input_tokens", post(input_tokens_dispatch))
-            .route(
-                "/v1/responses/{response_id}",
-                get(get_response_dispatch).delete(delete_response_dispatch),
-            )
-            .route(
-                "/v1/responses/{response_id}/input_items",
-                get(response_input_items_dispatch),
-            )
-            .route("/v1/chat/completions", post(chat_completions_dispatch))
-            .route(
-                "/v1/images/generations",
-                post(image_generations_dispatch)
-                    .layer(axum::extract::DefaultBodyLimit::max(256 * 1024)),
-            )
-            .route(
-                "/v1/images/edits",
-                post(image_edits_dispatch)
-                    .layer(axum::extract::DefaultBodyLimit::max(17 * 1024 * 1024)),
-            )
-            .route("/v1/models", get(models_dispatch))
-            .route("/v1/models/{model_id}", get(model_dispatch))
-            .fallback(provider_fallback_dispatch)
-            .method_not_allowed_fallback(method_not_allowed_dispatch),
-        forward::ProviderMode::Anthropic => common
-            .route("/admin-events", get(admin_events))
-            .route("/pool", get(pool_status))
-            .route("/capacity", get(capacity))
-            .route("/overview", get(overview))
-            .route("/spend-stats", get(spend_stats))
-            .route("/settlement-health", get(settlement_health))
-            .route("/subs", get(subs))
-            .route("/fleet-history", get(fleet_history))
-            .route("/codex-subs", get(codex_subs))
-            .route("/kimi-subs", get(kimi_subs))
-            .route("/glm-subs", get(glm_subs))
-            // Universal lane (этап 3.1 UNIFIED_ROUTER.md): chat→Messages адаптер.
-            .route("/v1/chat/completions", post(anthropic_chat_completions))
-            // Universal Responses (этап 4.1 UNIFIED_ROUTER.md): Responses→Messages
-            // адаптер. Stored endpoints (/v1/responses/*) здесь НЕ регистрируются
-            // и остаются openai-only (решение 5).
-            .route("/v1/responses", post(anthropic_responses))
-            .merge(admin)
-            .fallback(forward),
-        forward::ProviderMode::OpenAi => common
-            .route("/admin-events", get(admin_events))
-            .route("/codex-subs", get(codex_subs))
-            .route("/v1/responses", post(openai_responses))
-            .route("/v1/responses/input_tokens", post(openai_input_tokens))
-            .route(
-                "/v1/responses/{response_id}",
-                get(openai_get_response).delete(openai_delete_response),
-            )
-            .route(
-                "/v1/responses/{response_id}/input_items",
-                get(openai_response_input_items),
-            )
-            .route("/v1/chat/completions", post(openai_chat_completions))
-            .route(
-                "/v1/images/generations",
-                post(openai_image_generations)
-                    .layer(axum::extract::DefaultBodyLimit::max(256 * 1024)),
-            )
-            .route(
-                "/v1/images/edits",
-                post(openai_image_edits)
-                    .layer(axum::extract::DefaultBodyLimit::max(17 * 1024 * 1024)),
-            )
-            // Anthropic Skin (этап 5.1 UNIFIED_ROUTER.md): Messages→Responses адаптер
-            // на Codex-плоскости. Dispatch по модели (`openai/*` сюда, остальное на
-            // Claude-плоскость) выполняет router; сюда попадают только openai-модели.
-            .route("/v1/messages", post(codex_messages_skin))
-            .route(
-                "/v1/messages/count_tokens",
-                post(codex_messages_count_tokens),
-            )
-            .route("/v1/models", get(openai_models))
-            .route("/v1/models/{model_id}", get(openai_model))
-            .fallback(fixed_openai_not_found)
-            .method_not_allowed_fallback(fixed_openai_not_found),
-        forward::ProviderMode::Gemini => common
-            .route("/admin-events", get(admin_events))
-            .route("/gemini-subs", get(gemini_subs))
-            .route(
-                "/gemini-subs/{profile_id}/disabled",
-                post(gemini_sub_set_disabled),
-            )
-            // Universal lane (этап 3.3 UNIFIED_ROUTER.md): chat→generateContent адаптер.
-            .route("/v1/chat/completions", post(gemini_chat_completions))
-            // Universal Responses (этап 4.3 UNIFIED_ROUTER.md): Responses→generateContent
-            // адаптер. Stored endpoints (/v1/responses/*) здесь НЕ регистрируются
-            // и остаются openai-only (решение 5).
-            .route("/v1/responses", post(gemini_responses))
-            // Anthropic Skin (этап 5.2 UNIFIED_ROUTER.md): Messages→generateContent адаптер
-            // на Gemini-плоскости. Dispatch по модели (`google/*` и gemini-alias'ы сюда,
-            // остальное на свои плоскости) выполняет router; сюда попадают только
-            // google-модели. count_tokens — через нативный :countTokens (quota-free).
-            .route("/v1/messages", post(gemini_messages_skin))
-            .route(
-                "/v1/messages/count_tokens",
-                post(gemini_messages_count_tokens),
-            )
-            .fallback(gemini_api)
-            .method_not_allowed_fallback(gemini_api),
+        forward::ProviderMode::Combined => {
+            let control = common
+                .route("/admin-events", get(admin_events))
+                .route("/pool", get(pool_status))
+                .route("/capacity", get(capacity))
+                .route("/overview", get(overview))
+                .route("/spend-stats", get(spend_stats))
+                .route("/settlement-health", get(settlement_health))
+                .route("/subs", get(subs))
+                .route("/fleet-history", get(fleet_history))
+                .route("/codex-subs", get(codex_subs))
+                .route("/kimi-subs", get(kimi_subs))
+                .route("/glm-subs", get(glm_subs))
+                .merge(admin);
+            let customer = Router::new()
+                // Migration bridge: existing Caddy marks the OpenAI hostname until provider-specific
+                // services are installed. Fixed provider modes below never inspect this header.
+                .route("/v1/responses", post(responses_dispatch))
+                .route("/v1/responses/input_tokens", post(input_tokens_dispatch))
+                .route(
+                    "/v1/responses/{response_id}",
+                    get(get_response_dispatch).delete(delete_response_dispatch),
+                )
+                .route(
+                    "/v1/responses/{response_id}/input_items",
+                    get(response_input_items_dispatch),
+                )
+                .route("/v1/chat/completions", post(chat_completions_dispatch))
+                .route(
+                    "/v1/images/generations",
+                    post(image_generations_dispatch)
+                        .layer(axum::extract::DefaultBodyLimit::max(256 * 1024)),
+                )
+                .route(
+                    "/v1/images/edits",
+                    post(image_edits_dispatch)
+                        .layer(axum::extract::DefaultBodyLimit::max(17 * 1024 * 1024)),
+                )
+                .route("/v1/models", get(models_dispatch))
+                .route("/v1/models/{model_id}", get(model_dispatch))
+                .fallback(provider_fallback_dispatch)
+                .method_not_allowed_fallback(method_not_allowed_dispatch)
+                .layer(logical_id_layer());
+            control.merge(customer)
+        }
+        forward::ProviderMode::Anthropic => {
+            let control = common
+                .route("/admin-events", get(admin_events))
+                .route("/pool", get(pool_status))
+                .route("/capacity", get(capacity))
+                .route("/overview", get(overview))
+                .route("/spend-stats", get(spend_stats))
+                .route("/settlement-health", get(settlement_health))
+                .route("/subs", get(subs))
+                .route("/fleet-history", get(fleet_history))
+                .route("/codex-subs", get(codex_subs))
+                .route("/kimi-subs", get(kimi_subs))
+                .route("/glm-subs", get(glm_subs))
+                .merge(admin);
+            let customer = Router::new()
+                // Universal lane (этап 3.1 UNIFIED_ROUTER.md): chat→Messages адаптер.
+                .route("/v1/chat/completions", post(anthropic_chat_completions))
+                // Universal Responses (этап 4.1 UNIFIED_ROUTER.md): Responses→Messages
+                // адаптер. Stored endpoints (/v1/responses/*) здесь НЕ регистрируются
+                // и остаются openai-only (решение 5).
+                .route("/v1/responses", post(anthropic_responses))
+                .fallback(forward)
+                .layer(logical_id_layer());
+            control.merge(customer)
+        }
+        forward::ProviderMode::OpenAi => {
+            let control = common
+                .route("/admin-events", get(admin_events))
+                .route("/codex-subs", get(codex_subs));
+            let customer = Router::new()
+                .route("/v1/responses", post(openai_responses))
+                .route("/v1/responses/input_tokens", post(openai_input_tokens))
+                .route(
+                    "/v1/responses/{response_id}",
+                    get(openai_get_response).delete(openai_delete_response),
+                )
+                .route(
+                    "/v1/responses/{response_id}/input_items",
+                    get(openai_response_input_items),
+                )
+                .route("/v1/chat/completions", post(openai_chat_completions))
+                .route(
+                    "/v1/images/generations",
+                    post(openai_image_generations)
+                        .layer(axum::extract::DefaultBodyLimit::max(256 * 1024)),
+                )
+                .route(
+                    "/v1/images/edits",
+                    post(openai_image_edits)
+                        .layer(axum::extract::DefaultBodyLimit::max(17 * 1024 * 1024)),
+                )
+                // Anthropic Skin (этап 5.1 UNIFIED_ROUTER.md): Messages→Responses адаптер
+                // на Codex-плоскости. Dispatch по модели (`openai/*` сюда, остальное на
+                // Claude-плоскость) выполняет router; сюда попадают только openai-модели.
+                .route("/v1/messages", post(codex_messages_skin))
+                .route(
+                    "/v1/messages/count_tokens",
+                    post(codex_messages_count_tokens),
+                )
+                .route("/v1/models", get(openai_models))
+                .route("/v1/models/{model_id}", get(openai_model))
+                .fallback(fixed_openai_not_found)
+                .method_not_allowed_fallback(fixed_openai_not_found)
+                .layer(logical_id_layer());
+            control.merge(customer)
+        }
+        forward::ProviderMode::Gemini => {
+            let control = common
+                .route("/admin-events", get(admin_events))
+                .route("/gemini-subs", get(gemini_subs))
+                .route(
+                    "/gemini-subs/{profile_id}/disabled",
+                    post(gemini_sub_set_disabled),
+                );
+            let customer = Router::new()
+                // Universal lane (этап 3.3 UNIFIED_ROUTER.md): chat→generateContent адаптер.
+                .route("/v1/chat/completions", post(gemini_chat_completions))
+                // Universal Responses (этап 4.3 UNIFIED_ROUTER.md): Responses→generateContent
+                // адаптер. Stored endpoints (/v1/responses/*) здесь НЕ регистрируются
+                // и остаются openai-only (решение 5).
+                .route("/v1/responses", post(gemini_responses))
+                // Anthropic Skin (этап 5.2 UNIFIED_ROUTER.md): Messages→generateContent адаптер
+                // на Gemini-плоскости. Dispatch по модели (`google/*` и gemini-alias'ы сюда,
+                // остальное на свои плоскости) выполняет router; сюда попадают только
+                // google-модели. count_tokens — через нативный :countTokens (quota-free).
+                .route("/v1/messages", post(gemini_messages_skin))
+                .route(
+                    "/v1/messages/count_tokens",
+                    post(gemini_messages_count_tokens),
+                )
+                .fallback(gemini_api)
+                .method_not_allowed_fallback(gemini_api)
+                .layer(logical_id_layer());
+            control.merge(customer)
+        }
         // Backend-only KIMI plane (default-off delivery): no public hostname, no router namespace,
         // no catalogue. Exact reviewed KIMI aliases dispatch to the KIMI gateway through the same
         // entry the Anthropic path uses; `forward` fails closed with a bounded 404 for every other
         // model or path, so this plane can never fall through into the Claude pool it does not run.
+        // With no approved public provider perimeter, it remains outside logical-ID admission.
         forward::ProviderMode::Kimi => common
             .route("/admin-events", get(admin_events))
             .route("/kimi-subs", get(kimi_subs))
@@ -467,6 +575,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
         // bounded REST surface only: create → status → artifact, plus uploads through the real
         // provider mechanisms. Nothing falls into `forward`: this process deliberately operates
         // no Claude pool, and every unrouted path is the same bounded 404.
+        // With no approved public provider perimeter, it remains outside logical-ID admission.
         forward::ProviderMode::Tripo3d => common
             .route("/tripo3d-subs", get(tripo3d_subs))
             .route(
@@ -484,10 +593,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
                 post(forward::tripo3d_upload_model)
                     .layer(axum::extract::DefaultBodyLimit::max(67 * 1024 * 1024)),
             )
-            .route(
-                "/v1/3d/tasks/{task_id}",
-                get(forward::tripo3d_task_status),
-            )
+            .route("/v1/3d/tasks/{task_id}", get(forward::tripo3d_task_status))
             .route(
                 "/v1/3d/tasks/{task_id}/artifact/{name}",
                 get(forward::tripo3d_task_artifact),
@@ -498,6 +604,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
         // bounded REST surface only: create → status → artifact, plus the customer audio
         // intake. Nothing falls into `forward`: this process deliberately operates no Claude
         // pool, and every unrouted path is the same bounded 404.
+        // With no approved public provider perimeter, it remains outside logical-ID admission.
         forward::ProviderMode::Suno => common
             .route("/suno-subs", get(suno_subs))
             .route(

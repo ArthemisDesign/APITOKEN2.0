@@ -2117,6 +2117,391 @@ fn openai_readiness_preserves_a_single_working_home() {
     assert!(!codex_provider_ready(0));
 }
 
+async fn non_customer_sentinel(request: Request) -> Response {
+    assert!(request
+        .extensions()
+        .get::<forward::LogicalRequestId>()
+        .is_none());
+    assert!(request
+        .headers()
+        .get(forward::LOGICAL_REQUEST_ID_HEADER)
+        .is_some());
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn logical_id_sentinel(request: Request) -> Response {
+    assert!(
+        request
+            .headers()
+            .get(forward::LOGICAL_REQUEST_ID_HEADER)
+            .is_none(),
+        "reserved wire capability reached the next service"
+    );
+    let logical = request
+        .extensions()
+        .get::<forward::LogicalRequestId>()
+        .expect("typed logical identity must be attached exactly once");
+    (
+        StatusCode::OK,
+        Json(json!({"logical_request_id": logical.as_str()})),
+    )
+        .into_response()
+}
+
+fn logical_id_test_service(provider: forward::ProviderMode) -> Router {
+    Router::new()
+        .route("/v1/test", axum::routing::any(logical_id_sentinel))
+        .route("/control-test", axum::routing::any(non_customer_sentinel))
+        .layer(middleware::from_fn_with_state(
+            provider,
+            admit_logical_request_context,
+        ))
+}
+
+fn expected_logical_id_error(envelope: LogicalIdErrorEnvelope) -> Value {
+    match envelope {
+        LogicalIdErrorEnvelope::Anthropic => json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "Invalid request identity."
+            }
+        }),
+        LogicalIdErrorEnvelope::OpenAi => json!({
+            "error": {
+                "message": "Invalid request identity.",
+                "type": "invalid_request_error",
+                "param": Value::Null,
+                "code": Value::Null
+            }
+        }),
+        LogicalIdErrorEnvelope::Gemini => json!({
+            "error": {
+                "code": 400,
+                "message": "Invalid request identity.",
+                "status": "INVALID_ARGUMENT"
+            }
+        }),
+    }
+}
+
+#[tokio::test]
+async fn logical_id_admission_rejects_malformed_and_duplicate_before_next_in_native_envelope() {
+    for (provider, plane_header, envelope) in [
+        (
+            forward::ProviderMode::Anthropic,
+            None,
+            LogicalIdErrorEnvelope::Anthropic,
+        ),
+        (
+            forward::ProviderMode::OpenAi,
+            None,
+            LogicalIdErrorEnvelope::OpenAi,
+        ),
+        (
+            forward::ProviderMode::Gemini,
+            None,
+            LogicalIdErrorEnvelope::Gemini,
+        ),
+        (
+            forward::ProviderMode::Combined,
+            None,
+            LogicalIdErrorEnvelope::Anthropic,
+        ),
+        (
+            forward::ProviderMode::Combined,
+            Some("openai"),
+            LogicalIdErrorEnvelope::OpenAi,
+        ),
+    ] {
+        for duplicate in [false, true] {
+            let mut request = Request::builder()
+                .method(Method::POST)
+                .uri("/v1/test")
+                .body(Body::empty())
+                .unwrap();
+            request.headers_mut().append(
+                forward::LOGICAL_REQUEST_ID_HEADER,
+                "not-a-canonical-id".parse().unwrap(),
+            );
+            if duplicate {
+                request.headers_mut().append(
+                    forward::LOGICAL_REQUEST_ID_HEADER,
+                    "aaaaaaaa-aaaa-4aaa-9aaa-aaaaaaaaaaaa".parse().unwrap(),
+                );
+            }
+            if let Some(plane) = plane_header {
+                request
+                    .headers_mut()
+                    .insert(API_PLANE_HEADER, plane.parse().unwrap());
+            }
+
+            let response = logical_id_test_service(provider)
+                .oneshot(request)
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(
+                response.headers().get("content-type").unwrap(),
+                "application/json"
+            );
+            assert_eq!(
+                response
+                    .headers()
+                    .get("x-apitoken-execution-state")
+                    .unwrap(),
+                "not_started"
+            );
+            let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&body).unwrap(),
+                expected_logical_id_error(envelope),
+                "provider={provider:?} duplicate={duplicate}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn logical_id_admission_consumes_valid_or_generates_one_for_all_public_provider_modes() {
+    const TRUSTED: &str = "018f47a2-9b2d-4dc4-8f11-4d43b7d8b62a";
+    for provider in [
+        forward::ProviderMode::Combined,
+        forward::ProviderMode::Anthropic,
+        forward::ProviderMode::OpenAi,
+        forward::ProviderMode::Gemini,
+    ] {
+        let mut valid = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/test")
+            .body(Body::empty())
+            .unwrap();
+        valid
+            .headers_mut()
+            .insert(forward::LOGICAL_REQUEST_ID_HEADER, TRUSTED.parse().unwrap());
+        let response = logical_id_test_service(provider)
+            .clone()
+            .oneshot(valid)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body, json!({"logical_request_id": TRUSTED}));
+
+        let absent = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/v1/test")
+            .body(Body::empty())
+            .unwrap();
+        let first = logical_id_test_service(provider)
+            .clone()
+            .oneshot(absent)
+            .await
+            .unwrap();
+        let body = to_bytes(first.into_body(), 4_096).await.unwrap();
+        let first: Value = serde_json::from_slice(&body).unwrap();
+        let first = first["logical_request_id"].as_str().unwrap();
+        assert!(registry::request_facts::is_canonical_uuid_v4(first));
+
+        let absent = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/v1/test")
+            .body(Body::empty())
+            .unwrap();
+        let second = logical_id_test_service(provider)
+            .oneshot(absent)
+            .await
+            .unwrap();
+        let body = to_bytes(second.into_body(), 4_096).await.unwrap();
+        let second: Value = serde_json::from_slice(&body).unwrap();
+        let second = second["logical_request_id"].as_str().unwrap();
+        assert!(registry::request_facts::is_canonical_uuid_v4(second));
+        assert_ne!(first, second);
+    }
+}
+
+#[tokio::test]
+async fn logical_id_layer_bypasses_non_customer_paths_even_when_the_router_has_a_fallback() {
+    let request = Request::builder()
+        .uri("/control-test")
+        .header(
+            forward::LOGICAL_REQUEST_ID_HEADER,
+            "malformed-but-out-of-scope",
+        )
+        .body(Body::empty())
+        .unwrap();
+    let response = logical_id_test_service(forward::ProviderMode::Anthropic)
+        .oneshot(request)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn production_customer_routers_reject_logical_identity_before_their_leaf_handler() {
+    let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+    for (provider, path, plane, envelope) in [
+        (
+            forward::ProviderMode::Anthropic,
+            "/v1/chat/completions",
+            None,
+            LogicalIdErrorEnvelope::Anthropic,
+        ),
+        (
+            forward::ProviderMode::OpenAi,
+            "/v1/responses",
+            None,
+            LogicalIdErrorEnvelope::OpenAi,
+        ),
+        (
+            forward::ProviderMode::Gemini,
+            "/v1beta/models/gemini-2.5-flash:generateContent",
+            None,
+            LogicalIdErrorEnvelope::Gemini,
+        ),
+        (
+            forward::ProviderMode::Combined,
+            "/v1/messages",
+            None,
+            LogicalIdErrorEnvelope::Anthropic,
+        ),
+        (
+            forward::ProviderMode::Combined,
+            "/v1/responses",
+            Some("openai"),
+            LogicalIdErrorEnvelope::OpenAi,
+        ),
+    ] {
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header(
+                forward::LOGICAL_REQUEST_ID_HEADER,
+                "not-a-canonical-logical-id",
+            )
+            // If a leaf were reached these deliberately unusable auth/body values would produce
+            // some other response, locking admission ahead of auth and body parsing.
+            .header("x-api-key", "not-a-real-key")
+            .header("content-type", "application/json")
+            .body(Body::from("not-json"))
+            .unwrap();
+        if let Some(plane) = plane {
+            request
+                .headers_mut()
+                .insert(API_PLANE_HEADER, plane.parse().unwrap());
+        }
+        request.extensions_mut().insert(peer);
+        let response = router(provider_test_app(provider), Arc::new(AtomicBool::new(true)))
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-apitoken-execution-state")
+                .unwrap(),
+            "not_started"
+        );
+        let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            expected_logical_id_error(envelope),
+            "provider={provider:?} path={path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn logical_id_admission_is_scoped_away_from_health_and_backend_only_planes() {
+    let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+    for provider in [
+        forward::ProviderMode::Combined,
+        forward::ProviderMode::Anthropic,
+        forward::ProviderMode::OpenAi,
+        forward::ProviderMode::Gemini,
+        forward::ProviderMode::Kimi,
+        forward::ProviderMode::Tripo3d,
+        forward::ProviderMode::Suno,
+    ] {
+        let mut request = Request::builder()
+            .uri("/health")
+            .header(
+                forward::LOGICAL_REQUEST_ID_HEADER,
+                "malformed-and-deliberately-ignored-on-control-routes",
+            )
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = router(provider_test_app(provider), Arc::new(AtomicBool::new(true)))
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "provider={provider:?}");
+        assert!(response
+            .headers()
+            .get("x-apitoken-execution-state")
+            .is_none());
+    }
+
+    for provider in [
+        forward::ProviderMode::Combined,
+        forward::ProviderMode::Anthropic,
+        forward::ProviderMode::OpenAi,
+        forward::ProviderMode::Gemini,
+    ] {
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/internal/router/auth/preflight")
+            .header(
+                forward::LOGICAL_REQUEST_ID_HEADER,
+                "malformed-and-deliberately-ignored-on-internal-preflight",
+            )
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = router(provider_test_app(provider), Arc::new(AtomicBool::new(true)))
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(response
+            .headers()
+            .get("x-apitoken-execution-state")
+            .is_none());
+    }
+
+    // The backend-only KIMI surface has no approved public Caddy trust perimeter, so this stage
+    // deliberately does not recognize its reserved header as a capability.
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/messages")
+        .header("x-api-key", "admin-key")
+        .header("content-type", "application/json")
+        .header(
+            forward::LOGICAL_REQUEST_ID_HEADER,
+            "malformed-but-not-admitted-on-the-backend-only-plane",
+        )
+        .body(Body::from(
+            r#"{"model":"claude-sonnet-5","max_tokens":1,"messages":[]}"#,
+        ))
+        .unwrap();
+    request.extensions_mut().insert(peer);
+    let response = router(
+        provider_test_app(forward::ProviderMode::Kimi),
+        Arc::new(AtomicBool::new(true)),
+    )
+    .oneshot(request)
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
 #[test]
 fn api_plane_is_hostname_selected_and_auth_header_agnostic() {
     let mut headers = HeaderMap::new();

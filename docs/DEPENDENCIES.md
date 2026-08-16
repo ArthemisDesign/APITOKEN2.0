@@ -197,21 +197,20 @@ is only what is needed to walk the relationships when making changes:
   rollback/tests). Consumers of the winner result — money/funding settlement and
   `crates/server` `/metrics`; public APIs do not return group identity. Contract —
   `docs/engine/ROUTING_FENCING.md` §4.
-- **Logical request identity contract (Caddy perimeter → future router/planes).** The
-  implemented ingress perimeter in `deploy/Caddyfile` is security-only and dormant: all four
-  public provider/router vhosts remove the reserved internal
-  `X-Apitoken-Logical-Request-Id`, while stable loopback origins deliberately preserve it for a
-  future trusted router→plane hop. The perimeter's exact SHA must be production GREEN before
-  `crates/forward` becomes the next staged consumer; canonical merge satisfies that precondition.
-  The plane stage will strictly validate an optional trusted router value, consume/strip the
-  capability before external upstream dispatch, and generate a direct-ingress logical ID when none
-  is present. Only after that plane consumer's exact SHA is GREEN may `crates/router` become the
-  producer of one CSPRNG UUIDv4 shared across provider attempts. **No plane recognizes or consumes
-  the header as trusted logical identity, generates an ID, or returns it, and no router produces
-  it**; the perimeter does not authorize arbitrary loopback injection or turn generic upstream
-  forwarding into trust. Unmodified forwarding may blindly transport the header and thereby
-  confers no trust. The ID is not public and does not change `x-request-id`. Contract —
-  `docs/engine/REQUEST_OBSERVABILITY.md` §§4, 13;
+- **Logical request identity contract (Caddy perimeter → provider planes → future router).** All
+  four public provider/router vhosts remove the reserved internal
+  `X-Apitoken-Logical-Request-Id`, while stable loopback origins preserve the reserved capability
+  for the trusted router→plane hop; loopback access alone is not sender authorization.
+  `crates/server` is the implemented consumer for customer routes in Anthropic, OpenAI,
+  Gemini, and Combined modes: before auth/body/reserve/dispatch it accepts zero values (generate
+  one fresh CSPRNG canonical lowercase UUIDv4) or exactly one canonical trusted value, removes the
+  wire capability, and stores a typed `crates/forward` extension. Universal Anthropic/Gemini
+  adapters preserve that extension on synthesized leaf requests without recreating the header.
+  Health/admin/internal preflight and backend-only KIMI/Tripo3D/Suno are outside this MVP. The
+  context is dormant: no plane produces request facts or calls the fact-aware billing APIs, no ID
+  is returned publicly, and `x-request-id` is unchanged. `crates/router` remains absent as producer;
+  only after the provider consumer's exact SHA is GREEN may it inject one ID across provider
+  attempts. Contract — `docs/engine/REQUEST_OBSERVABILITY.md` §§4, 13;
   perimeter details — `deploy/CADDY.md`.
 - **ClaudeStore-compatible emergency transports (`crates/server` → `crates/forward` → external relay origins).**
   `crates/server/src/config.rs` solely reads the two strict enable/key pairs, and the
@@ -503,12 +502,11 @@ The stable provider origins 8790/8792/8794/8803 synthesize the internal
 `X-Apitoken-Execution-State: not_started` only on Caddy `no healthy upstream`; an ordinary
 runtime 503 does not get it. The public provider vhosts strip this header, while the
 loopback router uses it as a safe fencing proof before the next explicit fallback
-attempt. Separately, the implemented security-only logical-ID perimeter makes the four public
-provider/router vhosts remove the reserved internal `X-Apitoken-Logical-Request-Id`; stable loopback
-origins retain it for a future trusted router→plane hop. No plane recognizes or consumes the header
-as trusted logical identity, generates an ID, or returns it, and no router produces it. Until the
-later plane stage strictly validates and consumes/strips the capability before external upstream
-dispatch, generic forwarding may blindly carry it but confers no trust.
+attempt. Separately, the logical-ID perimeter makes the four public provider/router vhosts remove the
+reserved internal `X-Apitoken-Logical-Request-Id`; stable loopback origins retain the reserved
+capability for the trusted router→plane hop; loopback access alone is not sender authorization. Anthropic/OpenAI/Gemini/Combined customer routers now consume that capability or
+generate a direct-ingress ID before dispatch, remove the wire header, and keep only a typed dormant
+extension. No provider fact caller and no router producer exists yet.
 
 ### systemd (`systemd/`) — service → application
 

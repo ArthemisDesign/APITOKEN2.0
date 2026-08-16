@@ -138,8 +138,8 @@ use crate::codex::new_id;
 use crate::gemini_schema;
 use crate::gemini_stream::GeminiStreamState;
 use crate::proxy::{
-    read_body_limited, with_not_started, without_not_started, BodyReadError,
-    TerminalErrorReason, EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
+    read_body_limited, with_not_started, without_not_started, BodyReadError, TerminalErrorReason,
+    EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
 };
 use crate::state::AppState;
 use crate::validation::optional_bool;
@@ -1708,6 +1708,7 @@ async fn run_inner(
     app: AppState,
     peer: SocketAddr,
     headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
     suffix: &str,
     translated: &Translated,
 ) -> Response {
@@ -1735,6 +1736,7 @@ async fn run_inner(
         .body(Body::from(body_bytes))
         .expect("static request builder is infallible");
     *inner.headers_mut() = headers;
+    crate::execution::inherit_logical_request_id(&extensions, inner.extensions_mut());
     gemini_api(State(app), ConnectInfo(peer), inner).await
 }
 
@@ -1759,7 +1761,15 @@ pub async fn gemini_messages_skin(
     } else {
         "generateContent"
     };
-    let upstream = run_inner(app, peer, parts.headers, suffix, &translated).await;
+    let upstream = run_inner(
+        app,
+        peer,
+        parts.headers,
+        parts.extensions,
+        suffix,
+        &translated,
+    )
+    .await;
     if upstream.status() != StatusCode::OK {
         return convert_error_response(upstream).await;
     }
@@ -1789,7 +1799,15 @@ pub async fn gemini_messages_count_tokens(
         Ok(translated) => translated,
         Err(response) => return response,
     };
-    let upstream = run_inner(app, peer, parts.headers, "countTokens", &translated).await;
+    let upstream = run_inner(
+        app,
+        peer,
+        parts.headers,
+        parts.extensions,
+        "countTokens",
+        &translated,
+    )
+    .await;
     if upstream.status() != StatusCode::OK {
         return convert_error_response(upstream).await;
     }
