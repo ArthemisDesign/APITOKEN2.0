@@ -76,7 +76,7 @@ use super::api::{
     normalize_output_item, parse_responses_request, prepare_turn, ApiError, PreparedTurn,
     MAX_INSTRUCTIONS_BYTES, OPENAI_BODY_LIMIT,
 };
-use super::billing::begin_admission;
+use super::billing::{begin_admission, CodexRequestFactSeed};
 use super::chat::{
     enforce_output_limits, output_chars_for, send_chat_bytes, ChatReceiverStream, StopFilter,
 };
@@ -89,6 +89,7 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
+use registry::request_facts::MAX_REQUEST_FACT_MODEL_LEN;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -199,6 +200,7 @@ fn skin_json_response(body: Value, request_id: &str) -> Response {
 #[derive(Debug)]
 struct ParsedSkin {
     responses: Value,
+    requested_model: String,
     stop: Vec<String>,
     max_output_chars: Option<usize>,
 }
@@ -217,7 +219,7 @@ fn translate_messages_request(
     };
     check_capability_matrix(&object)?;
 
-    let model = match object.remove("model") {
+    let requested_model = match object.remove("model") {
         Some(Value::String(model)) => model,
         _ => {
             return Err(invalid_request(
@@ -226,8 +228,12 @@ fn translate_messages_request(
         }
     };
     // The namespaced ID is resolved here, not in the router and not in metering — the mirror
-    // of the `anthropic/` strip in `anthropic_responses.rs`.
-    let model = model.strip_prefix("openai/").unwrap_or(&model).to_string();
+    // of the `anthropic/` strip in `anthropic_responses.rs`. Keep the already validated client
+    // spelling separately for privacy-bounded request facts.
+    let model = requested_model
+        .strip_prefix("openai/")
+        .unwrap_or(&requested_model)
+        .to_string();
     if model.is_empty() {
         return Err(invalid_request(
             "Missing or invalid required parameter: model.",
@@ -330,6 +336,7 @@ fn translate_messages_request(
 
     Ok(ParsedSkin {
         responses: Value::Object(responses),
+        requested_model,
         stop,
         max_output_chars: output_chars_for(Some(max_tokens).filter(|tokens| *tokens > 0)),
     })
@@ -1711,32 +1718,359 @@ pub async fn count_tokens(
         Ok(pending) => pending,
         Err(error) => return anthropic_error(ApiError::from(error)),
     };
+    let admitted_at = pool::now();
+    let fact_seed = pending.request_fact_seed(
+        parts.extensions.get::<crate::execution::LogicalRequestId>(),
+        admitted_at,
+    );
+    let tenant_scope = pending.tenant_scope().to_owned();
+    let (response, requested_model, executable_model) =
+        count_tokens_after_admission(gateway, &tenant_scope, body).await;
+    submit_count_tokens_fact(
+        app.billing.as_deref(),
+        fact_seed,
+        response.status(),
+        requested_model,
+        executable_model,
+    );
+    response
+}
+
+fn bounded_request_fact_model(value: &str) -> Option<String> {
+    (!value.is_empty()
+        && value.len() <= MAX_REQUEST_FACT_MODEL_LEN
+        && value.is_ascii()
+        && !value.bytes().any(|byte| byte.is_ascii_control()))
+    .then(|| value.to_owned())
+}
+
+async fn count_tokens_after_admission(
+    gateway: Arc<CodexGateway>,
+    tenant_scope: &str,
+    body: Body,
+) -> (Response, Option<String>, Option<String>) {
     let value = match read_messages_body(body).await {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(response) => return (response, None, None),
     };
     let translated = match translate_messages_request(value, false) {
         Ok(translated) => translated,
-        Err(response) => return response,
+        Err(response) => return (response, None, None),
     };
+    let requested_model = bounded_request_fact_model(&translated.requested_model);
     let parsed = match parse_responses_request(&gateway, translated.responses) {
         Ok(parsed) => parsed,
-        Err(error) => return anthropic_error(error),
+        Err(error) => return (anthropic_error(error), requested_model, None),
     };
-    let prepared = match prepare_turn(&gateway, pending.tenant_scope(), parsed).await {
+    let executable_model = bounded_request_fact_model(&parsed.public_model.id);
+    let prepared = match prepare_turn(&gateway, tenant_scope, parsed).await {
         Ok(prepared) => prepared,
-        Err(error) => return anthropic_error(error),
+        Err(error) => return (anthropic_error(error), requested_model, executable_model),
     };
-    skin_json_response(
-        json!({"input_tokens": prepared.estimated_input_tokens}),
-        &new_id("req"),
+    (
+        skin_json_response(
+            json!({"input_tokens": prepared.estimated_input_tokens}),
+            &new_id("req"),
+        ),
+        requested_model,
+        executable_model,
     )
+}
+
+fn submit_count_tokens_fact(
+    billing: Option<&crate::billing::AsyncBilling>,
+    fact_seed: Option<CodexRequestFactSeed>,
+    status: StatusCode,
+    requested_model: Option<String>,
+    executable_model: Option<String>,
+) {
+    let (Some(billing), Some(fact_seed)) = (billing, fact_seed) else {
+        return;
+    };
+    let fact = fact_seed.terminal_fact(status, requested_model, executable_model);
+    let _ = billing.try_submit_terminal_request_fact(fact);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codex::ProcessError;
+    use crate::affinity::AffinityStore;
+    use crate::billing::AsyncBilling;
+    use crate::breaker::Breaker;
+    use crate::codex::{CodexConfig, CodexModel, ProcessError};
+    use crate::config::ProxyConfig;
+    use crate::metrics::Metrics;
+    use crate::state::ProviderMode;
+    use crate::upstream::Clients;
+    use pool::{Pool, Reserve};
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::AtomicBool;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::mpsc;
+
+    const RAW_KEY: &str = "sk-pool-count-token-secret-never-a-fact";
+    const ACCOUNT_ID: &str = "count-token-fact-account";
+    const KEY_ID: &str = "key_count_token_nonsecret";
+    const LOGICAL_ID: &str = "11111111-1111-4111-8111-111111111111";
+    const EXECUTION_GROUP: &str = "22222222-2222-4222-8222-222222222222";
+
+    struct CountTokensTestApp {
+        app: AppState,
+        path: PathBuf,
+    }
+
+    impl Drop for CountTokensTestApp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+            let _ = std::fs::remove_file(format!("{}-wal", self.path.display()));
+            let _ = std::fs::remove_file(format!("{}-shm", self.path.display()));
+        }
+    }
+
+    fn unique_path(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "claude-api-codex-{label}-{}-{unique}.sqlite",
+            std::process::id()
+        ))
+    }
+
+    fn test_proxy_config() -> Arc<ProxyConfig> {
+        Arc::new(ProxyConfig {
+            api_keys: Vec::new(),
+            control_keys: Vec::new(),
+            panel_keys: Vec::new(),
+            default_mult_bp: 10_000,
+            trust_loopback: false,
+            upstream: "http://127.0.0.1:1".into(),
+            claudestore_fallback: None,
+            max_tries: 1,
+            util_cap: 1.0,
+            cool_secs: 1,
+            smooth_wait_ms: 0,
+            poll: false,
+            inject_identity: false,
+            identity: String::new(),
+            inject_billing: false,
+            cc_version: String::new(),
+            cc_entrypoint: String::new(),
+            default_beta: String::new(),
+            user_agent: "count-token-test".into(),
+            user_agents: Vec::new(),
+            ua_spread: 0,
+            anthropic_version: String::new(),
+            connect_timeout: 1,
+            read_timeout: 1,
+            nonstream_read_timeout: 1,
+            x_app: String::new(),
+            stainless_lang: String::new(),
+            stainless_runtime: String::new(),
+            stainless_runtime_version: String::new(),
+            stainless_package_version: String::new(),
+            stainless_os: String::new(),
+            stainless_arch: String::new(),
+        })
+    }
+
+    fn test_model() -> CodexModel {
+        let catalog = metering::codex_catalog_at(i64::MAX);
+        let model = catalog
+            .iter()
+            .find(|model| model.id == "gpt-5.4")
+            .expect("gpt-5.4 test tariff");
+        CodexModel {
+            id: model.id.into(),
+            upstream: model.upstream.into(),
+            created: 0,
+            owned_by: "test".into(),
+            max_output_tokens: model.max_output_tokens,
+            reasoning_efforts: model
+                .reasoning_efforts
+                .iter()
+                .map(|effort| (*effort).to_string())
+                .collect(),
+            input_modalities: vec!["text".into()],
+            output_modalities: vec!["text".into()],
+            tool_calling: true,
+            structured_outputs: true,
+            fast_multiplier_basis_points: model.subscription_fast_multiplier_basis_points,
+            prices: model.prices,
+        }
+    }
+
+    fn test_gateway(path: &Path) -> Arc<CodexGateway> {
+        let root = path.with_extension("codex-home");
+        let credential_dir = root.join("credentials");
+        std::fs::create_dir_all(&credential_dir).unwrap();
+        let roster = root.join("profiles.json");
+        let credential_path = credential_dir.join("test-home.json");
+        let keyring =
+            codex_credential::CredentialKeyring::parse(&format!("current:{}", "ab".repeat(32)))
+                .unwrap();
+        let credential = codex_credential::CodexCredential {
+            version: 1,
+            access_token: "test-access".into(),
+            refresh_token: "test-refresh".into(),
+            expires_at: i64::MAX / 2,
+            oauth_client_id: codex_credential::CODEX_OFFICIAL_OAUTH_CLIENT_ID.into(),
+            token_uri: codex_credential::CODEX_OFFICIAL_TOKEN_URI.into(),
+            account_id: "test-provider-account".into(),
+            email: "owner@example.test".into(),
+            plan: "chatgpt_pro".into(),
+            proxy: String::new(),
+            proxy_order_id: 0,
+            issued_at: 1,
+        };
+        let envelope = keyring.seal("current", "test-home", &credential).unwrap();
+        std::fs::write(
+            &credential_path,
+            codex_credential::encode_envelope(&envelope).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            &roster,
+            serde_json::to_vec(&json!({"profiles": [{
+                "id": "test-home",
+                "credential_file": credential_path.to_string_lossy()
+            }]}))
+            .unwrap(),
+        )
+        .unwrap();
+        let gateway = CodexGateway::new(CodexConfig {
+            enabled: true,
+            base_url: "http://127.0.0.1:1".into(),
+            profiles_file: roster.to_string_lossy().into_owned(),
+            credential_keys: keyring,
+            cli_version: codex_credential::CODEX_CLI_VERSION.into(),
+            request_timeout_ms: 100,
+            turn_timeout_ms: 100,
+            smooth_wait_ms: 0,
+            turn_silence_timeout_ms: 100,
+            health_probe_interval_secs: 60,
+            reserve_5h: 0.0,
+            reserve_7d: 0.0,
+            reserve_jitter: 0.0,
+            reserve_overhead_tokens: 0,
+            history_ttl_secs: 60,
+            history_local_cap: 16,
+            history_redis_url: None,
+            history_secret: Some("count-token-test-history".into()),
+            history_redis_timeout_ms: 10,
+            default_proxy_env: BTreeMap::new(),
+            models: vec![test_model()],
+        })
+        .unwrap();
+        let _ = std::fs::remove_dir_all(root);
+        Arc::new(gateway)
+    }
+
+    async fn count_tokens_test_app(
+        metered: bool,
+        fact_sender: Option<mpsc::Sender<registry::request_facts::TerminalRequestFact>>,
+    ) -> CountTokensTestApp {
+        let path = unique_path("facts");
+        if metered {
+            let connection = registry::open(path.to_str().unwrap()).unwrap();
+            registry::account_create(&connection, ACCOUNT_ID, None, 10_000).unwrap();
+            registry::account_topup(&connection, ACCOUNT_ID, 1_000, None).unwrap();
+            registry::key_issue(&connection, RAW_KEY, ACCOUNT_ID, None).unwrap();
+            connection
+                .execute(
+                    "UPDATE api_keys SET key_id=?1 WHERE key=?2",
+                    (KEY_ID, RAW_KEY),
+                )
+                .unwrap();
+        }
+        let mut billing = AsyncBilling::start(path.to_string_lossy().into_owned(), 1).unwrap();
+        if let Some(sender) = fact_sender {
+            billing.replace_request_fact_inbox_for_test(sender);
+        }
+        let billing = Arc::new(billing);
+        let cfg = test_proxy_config();
+        let app = AppState {
+            provider: ProviderMode::OpenAi,
+            authority: Arc::new(registry::authority::AuthorityConfig::new(
+                path.to_string_lossy().into_owned(),
+                None,
+            )),
+            data_db_path: Arc::new(path.to_string_lossy().into_owned()),
+            pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
+            affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
+            clients: Arc::new(Clients::new(&cfg)),
+            codex: Some(test_gateway(&path)),
+            gemini: None,
+            kimi: None,
+            glm: None,
+            tripo3d: None,
+            suno: None,
+            billing: Some(billing),
+            authority_ready: Arc::new(AtomicBool::new(true)),
+            breaker: Arc::new(Breaker::new(1)),
+            metrics: Arc::new(Metrics::new()),
+            probe_poke: None,
+            admin_changes: tokio::sync::broadcast::channel(16).0,
+            cfg,
+        };
+        CountTokensTestApp { app, path }
+    }
+
+    fn count_tokens_request(
+        body: Value,
+        key: Option<&str>,
+        logical_id: Option<&str>,
+        attempt: Option<i32>,
+    ) -> axum::extract::Request {
+        let mut builder = axum::extract::Request::builder();
+        if let Some(key) = key {
+            builder = builder.header("x-api-key", key);
+        }
+        if let Some(attempt) = attempt {
+            builder = builder
+                .header(crate::execution::EXECUTION_GROUP_HEADER, EXECUTION_GROUP)
+                .header(crate::execution::EXECUTION_ATTEMPT_HEADER, attempt);
+        }
+        let mut request = builder
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        if let Some(logical_id) = logical_id {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(
+                crate::execution::LOGICAL_REQUEST_ID_HEADER,
+                logical_id.parse().unwrap(),
+            );
+            let logical_id = crate::execution::admit_logical_request_id(&mut headers).unwrap();
+            request.extensions_mut().insert(logical_id);
+        }
+        request
+    }
+
+    async fn response_snapshot(response: Response) -> (StatusCode, axum::http::HeaderMap, Bytes) {
+        let status = response.status();
+        let mut headers = response.headers().clone();
+        if let Some(request_id) = headers.remove("request-id") {
+            assert!(request_id.to_str().unwrap().starts_with("req_"));
+        } else {
+            assert!(
+                !status.is_success(),
+                "successful count_tokens response lacks request-id"
+            );
+        }
+        let bytes = to_bytes(response.into_body(), OPENAI_BODY_LIMIT)
+            .await
+            .unwrap();
+        (status, headers, bytes)
+    }
+
+    fn valid_count_tokens_body() -> Value {
+        json!({
+            "model": "openai/gpt-5.4",
+            "messages": [{"role": "user", "content": "Hello"}]
+        })
+    }
 
     fn ok_translated(value: Value) -> ParsedSkin {
         translate_messages_request(value, true).expect("translation must succeed")
@@ -1750,6 +2084,420 @@ mod tests {
 
     async fn expect_err(value: Value) -> (StatusCode, Value) {
         err_parts(translate_messages_request(value, true).unwrap_err()).await
+    }
+
+    #[tokio::test]
+    async fn count_tokens_submits_one_metered_terminal_fact_for_success_and_validation_error() {
+        let peer = "192.0.2.1:443".parse().unwrap();
+        for (body, expected_status, expected_requested, expected_executable) in [
+            (
+                valid_count_tokens_body(),
+                StatusCode::OK,
+                Some("openai/gpt-5.4"),
+                Some("gpt-5.4"),
+            ),
+            (
+                json!({"model": "openai/unknown", "messages": [{"role": "user", "content": "x"}]}),
+                StatusCode::NOT_FOUND,
+                Some("openai/unknown"),
+                None,
+            ),
+            (
+                json!({"model": 7, "messages": []}),
+                StatusCode::BAD_REQUEST,
+                None,
+                None,
+            ),
+        ] {
+            let (sender, mut receiver) = mpsc::channel(4);
+            let test = count_tokens_test_app(true, Some(sender)).await;
+            let response = count_tokens(
+                State(test.app.clone()),
+                ConnectInfo(peer),
+                count_tokens_request(body, Some(RAW_KEY), Some(LOGICAL_ID), Some(2)),
+            )
+            .await;
+            assert_eq!(response.status(), expected_status);
+            let fact = receiver.try_recv().expect("one terminal request fact");
+            assert!(receiver.try_recv().is_err(), "exactly one submission");
+            assert_eq!(fact.logical_request_id, LOGICAL_ID);
+            assert_eq!(fact.billing_request_id, None);
+            assert_eq!(fact.execution_group_id.as_deref(), Some(EXECUTION_GROUP));
+            assert_eq!(fact.attempt, 2);
+            assert_eq!(fact.account_id, ACCOUNT_ID);
+            assert_eq!(fact.key_id, KEY_ID);
+            assert_ne!(fact.key_id, RAW_KEY);
+            assert_eq!(fact.provider_plane, "openai");
+            assert_eq!(fact.route_class, "universal");
+            assert_eq!(fact.request_class, "count_tokens");
+            assert_eq!(fact.requested_model.as_deref(), expected_requested);
+            assert_eq!(fact.executable_model.as_deref(), expected_executable);
+            assert!(!fact.stream_flag);
+            assert_eq!(
+                fact.client_kind,
+                registry::request_facts::ClientKind::Unknown
+            );
+            assert_eq!(
+                fact.client_source,
+                registry::request_facts::ClientSource::Unknown
+            );
+            assert_eq!(
+                fact.terminal.http_status_code,
+                Some(i32::from(expected_status.as_u16()))
+            );
+            assert_eq!(fact.terminal.internal_attempt_count, Some(0));
+            assert_eq!(
+                fact.terminal.provider_terminal_class,
+                if expected_status.is_success() {
+                    registry::request_facts::ProviderTerminalClass::Success
+                } else {
+                    registry::request_facts::ProviderTerminalClass::ClientError
+                }
+            );
+            assert_eq!(
+                fact.terminal.delivery_state,
+                if expected_status.is_success() {
+                    registry::request_facts::DeliveryState::Completed
+                } else {
+                    registry::request_facts::DeliveryState::NotStarted
+                }
+            );
+            assert_eq!(fact.tools_declared_count, None);
+            assert_eq!(fact.tool_classes, None);
+            assert_eq!(fact.tool_choice_mode, None);
+            assert_eq!(fact.parallel_tools_requested, None);
+            assert_eq!(fact.tool_results_in_input, None);
+            assert_eq!(fact.structured_output_flag, None);
+            assert_eq!(fact.reasoning_flag, None);
+            assert_eq!(fact.service_tier, None);
+            assert_eq!(fact.input_modalities, None);
+            assert_eq!(fact.output_modalities, None);
+            assert_eq!(fact.terminal.downstream_disconnect, None);
+            assert_eq!(fact.terminal.upstream_request_id, None);
+            assert_eq!(fact.terminal.first_public_byte_at, None);
+            assert_eq!(fact.terminal.failure_class, None);
+            assert_eq!(fact.terminal.tool_calls_in_output, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn count_tokens_excludes_unauthorized_admin_and_missing_logical_context() {
+        let peer = "192.0.2.1:443".parse().unwrap();
+        for (key, logical_id, configure_admin, expected_status) in [
+            (
+                Some("unknown"),
+                Some(LOGICAL_ID),
+                false,
+                StatusCode::UNAUTHORIZED,
+            ),
+            (Some(RAW_KEY), None, false, StatusCode::OK),
+            (Some("admin-key"), Some(LOGICAL_ID), true, StatusCode::OK),
+        ] {
+            let (sender, mut receiver) = mpsc::channel(1);
+            let mut test = count_tokens_test_app(true, Some(sender)).await;
+            if configure_admin {
+                Arc::get_mut(&mut test.app.cfg)
+                    .expect("test owns config")
+                    .api_keys
+                    .push("admin-key".into());
+            }
+            let response = count_tokens(
+                State(test.app.clone()),
+                ConnectInfo(peer),
+                count_tokens_request(valid_count_tokens_body(), key, logical_id, None),
+            )
+            .await;
+            assert_eq!(response.status(), expected_status);
+            assert!(
+                receiver.try_recv().is_err(),
+                "excluded request emitted fact"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn count_tokens_observability_outcomes_do_not_change_response_bytes() {
+        let peer = "192.0.2.1:443".parse().unwrap();
+        for body in [
+            valid_count_tokens_body(),
+            json!({"model": "openai/unknown", "messages": [{"role": "user", "content": "x"}]}),
+        ] {
+            let baseline = count_tokens_test_app(true, None).await;
+            let baseline = count_tokens(
+                State(baseline.app.clone()),
+                ConnectInfo(peer),
+                count_tokens_request(body.clone(), Some(RAW_KEY), Some(LOGICAL_ID), None),
+            )
+            .await;
+            let baseline = response_snapshot(baseline).await;
+
+            let (full_sender, _full_receiver) = mpsc::channel(1);
+            full_sender
+                .try_send(
+                    super::super::billing::CodexRequestFactSeed::for_test(
+                        LOGICAL_ID,
+                        registry::ExecutionAttempt::direct(),
+                        ACCOUNT_ID,
+                        KEY_ID,
+                        pool::now(),
+                    )
+                    .terminal_fact(StatusCode::OK, None, None),
+                )
+                .unwrap();
+            let full = count_tokens_test_app(true, Some(full_sender)).await;
+            let full = count_tokens(
+                State(full.app.clone()),
+                ConnectInfo(peer),
+                count_tokens_request(body.clone(), Some(RAW_KEY), Some(LOGICAL_ID), None),
+            )
+            .await;
+            let full = response_snapshot(full).await;
+
+            let (closed_sender, closed_receiver) = mpsc::channel(1);
+            drop(closed_receiver);
+            let closed = count_tokens_test_app(true, Some(closed_sender)).await;
+            let closed = count_tokens(
+                State(closed.app.clone()),
+                ConnectInfo(peer),
+                count_tokens_request(body, Some(RAW_KEY), Some(LOGICAL_ID), None),
+            )
+            .await;
+            let closed = response_snapshot(closed).await;
+
+            assert_eq!(
+                baseline, full,
+                "queue-full path changed the public response"
+            );
+            assert_eq!(
+                baseline, closed,
+                "writer-closed path changed the public response"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn count_tokens_sqlite_unsupported_does_not_change_response() {
+        let peer = "192.0.2.1:443".parse().unwrap();
+        let test = count_tokens_test_app(true, None).await;
+        let billing = Arc::clone(test.app.billing.as_ref().unwrap());
+        let baseline_test = count_tokens_test_app(true, None).await;
+        let baseline = count_tokens(
+            State(baseline_test.app.clone()),
+            ConnectInfo(peer),
+            count_tokens_request(valid_count_tokens_body(), Some(RAW_KEY), None, None),
+        )
+        .await;
+        let baseline = response_snapshot(baseline).await;
+        let observed = count_tokens(
+            State(test.app.clone()),
+            ConnectInfo(peer),
+            count_tokens_request(
+                valid_count_tokens_body(),
+                Some(RAW_KEY),
+                Some(LOGICAL_ID),
+                None,
+            ),
+        )
+        .await;
+        let observed = response_snapshot(observed).await;
+        assert_eq!(baseline.0, observed.0);
+        assert_eq!(baseline.2, observed.2);
+        assert_eq!(
+            billing.request_fact_delivery_snapshot().dropped_unsupported,
+            1
+        );
+    }
+
+    #[test]
+    fn count_tokens_terminal_fact_persists_privacy_bounded_postgres_row() {
+        const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_441;
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!("skipping Codex count_tokens fact row: test URL is unset");
+            return;
+        };
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let instance_id = format!("codex-count-fact-{}-{unique}", std::process::id());
+        let mut lock_holder = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        lock_holder
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+        pg.migrate().unwrap();
+        lock_holder
+            .batch_execute(
+                "TRUNCATE request_facts,execution_group_winner,settlement_outbox,reservations, \
+                 capacity_leases,leader_leases,engine_instances,usage_events,ledger,api_keys,accounts \
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        pg.account_create(ACCOUNT_ID, None, 10_000).unwrap();
+        pg.account_topup(ACCOUNT_ID, 1_000, Some("count-token-fact-seed"))
+            .unwrap();
+        pg.key_issue(RAW_KEY, ACCOUNT_ID, None).unwrap();
+        let key_id = pg.key_get(RAW_KEY).unwrap().unwrap().key_id;
+        let owner = pg.claim_instance(&instance_id, 600).unwrap();
+        drop(pg);
+
+        let billing = Arc::new(
+            AsyncBilling::start_authority(
+                registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+                Some(owner),
+                1,
+                0,
+            )
+            .unwrap(),
+        );
+        let cfg = test_proxy_config();
+        let gateway_path = unique_path("pg-gateway");
+        let app = AppState {
+            provider: ProviderMode::OpenAi,
+            authority: Arc::new(registry::authority::AuthorityConfig::Postgres {
+                url: url.clone(),
+            }),
+            data_db_path: Arc::new(gateway_path.to_string_lossy().into_owned()),
+            pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
+            affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
+            clients: Arc::new(Clients::new(&cfg)),
+            codex: Some(test_gateway(&gateway_path)),
+            gemini: None,
+            kimi: None,
+            glm: None,
+            tripo3d: None,
+            suno: None,
+            billing: Some(Arc::clone(&billing)),
+            authority_ready: Arc::new(AtomicBool::new(true)),
+            breaker: Arc::new(Breaker::new(1)),
+            metrics: Arc::new(Metrics::new()),
+            probe_poke: None,
+            admin_changes: tokio::sync::broadcast::channel(16).0,
+            cfg,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let response = count_tokens(
+                State(app),
+                ConnectInfo("192.0.2.1:443".parse().unwrap()),
+                count_tokens_request(
+                    valid_count_tokens_body(),
+                    Some(RAW_KEY),
+                    Some(LOGICAL_ID),
+                    Some(2),
+                ),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let row = loop {
+            if let Some(row) = lock_holder
+                .query_opt(
+                    "SELECT logical_request_id,billing_request_id,execution_group_id,attempt, \
+                            account_id,key_id,client_kind,client_source,client_version,provider_plane, \
+                            route_class,request_class,requested_model,executable_model,stream_flag, \
+                            tools_declared_count,tool_classes,tool_choice_mode,parallel_tools_requested, \
+                            tool_results_in_input,structured_output_flag,reasoning_flag,service_tier, \
+                            input_modalities,output_modalities,http_status_code,provider_terminal_class, \
+                            delivery_state,billing_outcome,downstream_disconnect,upstream_request_id, \
+                            first_public_byte_at,internal_attempt_count,failure_class,tool_calls_in_output \
+                       FROM request_facts WHERE logical_request_id=$1",
+                    &[&LOGICAL_ID],
+                )
+                .unwrap()
+            {
+                break row;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "request fact was not persisted"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(row.get::<_, String>(0), LOGICAL_ID);
+        assert_eq!(row.get::<_, Option<String>>(1), None);
+        assert_eq!(
+            row.get::<_, Option<String>>(2).as_deref(),
+            Some(EXECUTION_GROUP)
+        );
+        assert_eq!(row.get::<_, i32>(3), 2);
+        assert_eq!(row.get::<_, String>(4), ACCOUNT_ID);
+        assert_eq!(row.get::<_, String>(5), key_id);
+        assert_ne!(row.get::<_, String>(5), RAW_KEY);
+        assert_eq!(row.get::<_, String>(6), "unknown");
+        assert_eq!(row.get::<_, String>(7), "unknown");
+        assert_eq!(row.get::<_, Option<String>>(8), None);
+        assert_eq!(row.get::<_, String>(9), "openai");
+        assert_eq!(row.get::<_, String>(10), "universal");
+        assert_eq!(row.get::<_, String>(11), "count_tokens");
+        assert_eq!(
+            row.get::<_, Option<String>>(12).as_deref(),
+            Some("openai/gpt-5.4")
+        );
+        assert_eq!(row.get::<_, Option<String>>(13).as_deref(), Some("gpt-5.4"));
+        assert!(!row.get::<_, bool>(14));
+        assert_eq!(row.get::<_, Option<i32>>(15), None);
+        assert_eq!(row.get::<_, Option<i32>>(16), None);
+        assert_eq!(row.get::<_, Option<String>>(17), None);
+        assert_eq!(row.get::<_, Option<bool>>(18), None);
+        assert_eq!(row.get::<_, Option<bool>>(19), None);
+        assert_eq!(row.get::<_, Option<bool>>(20), None);
+        assert_eq!(row.get::<_, Option<bool>>(21), None);
+        assert_eq!(row.get::<_, Option<String>>(22), None);
+        assert_eq!(row.get::<_, Option<i32>>(23), None);
+        assert_eq!(row.get::<_, Option<i32>>(24), None);
+        assert_eq!(row.get::<_, Option<i32>>(25), Some(200));
+        assert_eq!(row.get::<_, String>(26), "success");
+        assert_eq!(row.get::<_, String>(27), "completed");
+        assert_eq!(row.get::<_, String>(28), "not_applicable");
+        assert_eq!(row.get::<_, Option<bool>>(29), None);
+        assert_eq!(row.get::<_, Option<String>>(30), None);
+        assert_eq!(row.get::<_, Option<i64>>(31), None);
+        assert_eq!(row.get::<_, Option<i32>>(32), Some(0));
+        assert_eq!(row.get::<_, Option<String>>(33), None);
+        assert_eq!(row.get::<_, Option<bool>>(34), None);
+        lock_holder
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        drop(billing);
+        let _ = std::fs::remove_file(gateway_path);
+    }
+
+    #[test]
+    fn fallback_attempt_context_reuses_logical_id_and_keeps_attempts_distinct() {
+        let logical = {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(
+                crate::execution::LOGICAL_REQUEST_ID_HEADER,
+                LOGICAL_ID.parse().unwrap(),
+            );
+            crate::execution::admit_logical_request_id(&mut headers).unwrap()
+        };
+        let seed = |attempt| {
+            super::super::billing::CodexRequestFactSeed::for_test(
+                logical.as_str(),
+                registry::ExecutionAttempt::grouped(EXECUTION_GROUP, attempt).unwrap(),
+                ACCOUNT_ID,
+                KEY_ID,
+                10,
+            )
+        };
+        let first = seed(1).terminal_fact(StatusCode::BAD_REQUEST, None, None);
+        let second = seed(2).terminal_fact(StatusCode::OK, None, None);
+        assert_eq!(first.logical_request_id, second.logical_request_id);
+        assert_eq!(first.execution_group_id, second.execution_group_id);
+        assert_eq!((first.attempt, second.attempt), (1, 2));
     }
 
     #[tokio::test]

@@ -210,10 +210,14 @@ is only what is needed to walk the relationships when making changes:
   Anthropic, OpenAI, Gemini, and Combined customer routes, removes the wire capability, and stores a
   typed `crates/forward` extension; direct provider ingress with zero values creates its own ID.
   Universal Anthropic/Gemini adapters preserve the extension on synthesized leaf requests. Health,
-  admin/internal preflight and backend-only KIMI/Tripo3D/Suno remain outside this MVP. The context is
-  dormant: metered authorization carries the authoritative non-secret `key_id` beside the raw billing
-  key as a future attribution prerequisite, but no plane produces request facts or calls fact-aware
-  billing APIs; there is no persistence, read API, metric, or public ID, and `x-request-id` is unchanged.
+  admin/internal preflight and backend-only KIMI/Tripo3D/Suno remain outside this MVP. The first and only
+  production request-fact producer is Codex/OpenAI universal `POST /v1/messages/count_tokens`: after
+  successful metered admission it consumes the typed logical context and authoritative non-secret
+  account/key plus execution identities, then submits exactly one already-terminal nullable-billing-ID
+  fact through the fail-open PostgreSQL inbox. Router fallback reuses the logical ID while each plane
+  attempt keeps its distinct execution attempt. Admin/unauthorized/missing-logical-context traffic is
+  omitted. Billable paths, native Responses token counting, Anthropic/Gemini, read APIs, public metrics,
+  and a public logical-ID header remain absent; `x-request-id` and response availability are unchanged.
   Contract —
   `docs/engine/REQUEST_OBSERVABILITY.md` §§4, 13; perimeter details — `deploy/CADDY.md`.
 - **ClaudeStore-compatible emergency transports (`crates/server` → `crates/forward` → external relay origins).**

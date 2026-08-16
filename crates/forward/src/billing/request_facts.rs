@@ -45,7 +45,7 @@ pub struct RequestFactDeliverySnapshot {
 }
 
 #[derive(Default)]
-struct RequestFactDeliveryState {
+pub(super) struct RequestFactDeliveryState {
     accepted: AtomicU64,
     persisted: AtomicU64,
     deduplicated: AtomicU64,
@@ -147,7 +147,7 @@ impl TerminalRequestFactInbox {
     }
 
     #[cfg(test)]
-    fn enabled_for_test(
+    pub(super) fn enabled_for_test(
         sender: mpsc::Sender<TerminalRequestFact>,
         state: Arc<RequestFactDeliveryState>,
     ) -> Self {

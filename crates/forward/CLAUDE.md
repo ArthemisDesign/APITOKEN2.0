@@ -50,8 +50,9 @@ by the provider quote builders, plus the hot tariff book below.
 the env admin is checked FIRST in memory; otherwise the client key → `key_account` (JOIN key→account)
 → ACCOUNT balance (a non-positive balance rejects only a positive multiplier). The metered auth result
 carries both the raw secret `key` for every existing reserve/settle flow and the authoritative non-secret
-`key_id` as dormant request-fact attribution; no request-fact caller consumes it yet, and the identities
-must never be substituted for one another. A zero multiplier is
+`key_id`. The first request-fact producer consumes only that non-secret identity for metered Codex
+universal `POST /v1/messages/count_tokens`; every money path still receives the raw key, and the two
+identities must never be substituted for one another. A zero multiplier is
 free but metered on every provider: admission holds zero, settlement debits zero and still persists
 the authoritative usage event. Balance/reserve/markup live on the account (shared across all of a user's keys).
 All DB operations go through `AsyncBilling` (DB actors: 1 writer + N readers; sync PostgreSQL/legacy
@@ -66,10 +67,14 @@ fence limits collection to the aggregate −$1 floor; any remainder is explicit 
 `uncollected_nano`, never a silent clamp or a second per-request overdraft. 4xx/errors/rotation are
 NOT metered.
 
-**Dormant request-fact producer plumbing (S3A):** `AsyncBilling` has opt-in typed fact-aware
-reserve, delivery, and terminal settlement commands. On PostgreSQL they stay in the existing single
-money writer and delegate to the registry S2 same-transaction methods; legacy APIs pass no fact, and
-no provider plane calls the opt-in forms yet. A lost fact-aware reserve handoff is canceled with a
+**Request-fact producer plumbing (S3A plus the first narrow producer):** `AsyncBilling` has opt-in
+typed fact-aware reserve, delivery, and terminal settlement commands. On PostgreSQL they stay in the
+existing single money writer and delegate to the registry S2 same-transaction methods; legacy APIs
+pass no fact and every billable path remains dormant. The only production caller is the nonbillable
+Codex/OpenAI universal `POST /v1/messages/count_tokens`: after successful metered admission it captures
+the typed logical ID, authoritative account/key IDs, execution attempt and one admission timestamp,
+then converges every post-auth exit through one nonblocking terminal submission. A lost fact-aware
+reserve handoff is canceled with a
 privacy-empty `unknown`/`not_started` terminal envelope so the admitted fact cannot leak as nonterminal.
 Already-terminal post-auth/nonbillable facts alone use the PostgreSQL-only 4096-slot, nonblocking
 `try_send` inbox and its lazily connected `request-facts-pg-writer` thread. That connection is
@@ -85,10 +90,14 @@ account ID, execution group, and attempt against the money command before dispat
 A raw secret key cannot be compared with the fact's non-secret `key_id` in forward; PostgreSQL retains
 the authoritative same-transaction key lookup/comparison, while SQLite deliberately omits analytics.
 SQLite keeps the existing money semantics, starts no fact thread, persists no analytics, and reports
-`UnsupportedAuthority` for terminal-at-insert submission. Provider-process logical-ID admission is
-implemented separately: the reserved header is consumed into a typed dormant request extension, but
-no plane calls the fact-aware forms yet. Plane classification, metric exposition, read APIs, and
-production request-fact coverage remain later stages.
+`UnsupportedAuthority` for terminal-at-insert submission. Provider-process logical-ID admission is implemented separately: the reserved header is consumed into
+a typed request extension. Codex count_tokens uses that typed value only; its absence after metered
+auth omits analytics rather than generating or guessing an identity. The producer records
+`openai`/`universal`/`count_tokens`, client kind/source `unknown`, no billing ID, no upstream attempt,
+and only bounded requested/canonical executable models; unextracted capability fields remain NULL.
+Admin, unauthorized, all billable paths, native Responses token counting, Anthropic, Gemini, metrics,
+read APIs, and every other production request-fact surface remain absent. Dropped coverage is visible
+only through the existing internal delivery snapshot, not a public metric.
 For policy keys the cap takes the minimum of the account balance and the remaining lifetime limit. Such keys
 bypass the auth TTL cache; expiry and limit are re-checked inside the atomic reserve transaction.
 Every recognized metered 402 is audited after the response against a fresh authority read. The

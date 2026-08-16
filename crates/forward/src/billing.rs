@@ -1769,6 +1769,17 @@ impl AsyncBilling {
         self.terminal_request_facts.snapshot()
     }
 
+    #[cfg(test)]
+    pub(crate) fn replace_request_fact_inbox_for_test(
+        &mut self,
+        sender: mpsc::Sender<TerminalRequestFact>,
+    ) {
+        self.terminal_request_facts = TerminalRequestFactInbox::enabled_for_test(
+            sender,
+            Arc::new(request_facts::RequestFactDeliveryState::default()),
+        );
+    }
+
     pub fn anthropic_calibration_delivery_status(&self) -> AnthropicCalibrationDeliveryStatus {
         AnthropicCalibrationDeliveryStatus {
             pending_events: self

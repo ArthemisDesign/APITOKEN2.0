@@ -4,12 +4,17 @@ use super::openai_image_snapshot::{
     openai_image_quote, OpenAiImageOperation, OpenAiImageQuoteInput,
 };
 use super::{CodexModel, CodexUsage};
+use crate::execution::LogicalRequestId;
 use crate::metrics::Metrics;
 use crate::pricing::{tariff_book, EnginePricingRequestId};
 use crate::proxy::{authorize, Authz, HoldGuard};
 use crate::state::AppState;
 use anyhow::Context as _;
 use axum::http::HeaderMap;
+use registry::request_facts::{
+    ClientKind, ClientSource, DeliveryState, ProviderTerminalClass, RequestFactTerminalEvidence,
+    TerminalRequestFact,
+};
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 
@@ -60,9 +65,122 @@ pub(crate) struct PendingCodexAdmission {
     execution: registry::ExecutionAttempt,
 }
 
+/// Privacy-minimal, immutable attribution captured from one successful metered admission. This
+/// deliberately carries the authoritative non-secret key identity but never the raw credential.
+pub(crate) struct CodexRequestFactSeed {
+    logical_request_id: String,
+    execution: registry::ExecutionAttempt,
+    account_id: String,
+    key_id: String,
+    admitted_at: i64,
+}
+
+impl CodexRequestFactSeed {
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        logical_request_id: &str,
+        execution: registry::ExecutionAttempt,
+        account_id: &str,
+        key_id: &str,
+        admitted_at: i64,
+    ) -> Self {
+        Self {
+            logical_request_id: logical_request_id.into(),
+            execution,
+            account_id: account_id.into(),
+            key_id: key_id.into(),
+            admitted_at,
+        }
+    }
+
+    pub(crate) fn terminal_fact(
+        self,
+        status: axum::http::StatusCode,
+        requested_model: Option<String>,
+        executable_model: Option<String>,
+    ) -> TerminalRequestFact {
+        let provider_terminal_class = match status.as_u16() {
+            200..=299 => ProviderTerminalClass::Success,
+            401 | 403 => ProviderTerminalClass::Auth,
+            429 => ProviderTerminalClass::Quota,
+            400..=499 => ProviderTerminalClass::ClientError,
+            _ => ProviderTerminalClass::Unknown,
+        };
+        let delivery_state = if status.is_success() {
+            DeliveryState::Completed
+        } else {
+            DeliveryState::NotStarted
+        };
+        let terminal_at = pool::now().max(self.admitted_at);
+        TerminalRequestFact {
+            logical_request_id: self.logical_request_id,
+            billing_request_id: None,
+            execution_group_id: self.execution.group_id().map(str::to_owned),
+            attempt: self.execution.attempt(),
+            account_id: self.account_id,
+            key_id: self.key_id,
+            client_kind: ClientKind::Unknown,
+            client_source: ClientSource::Unknown,
+            client_version: None,
+            provider_plane: "openai".into(),
+            route_class: "universal".into(),
+            request_class: "count_tokens".into(),
+            requested_model,
+            executable_model,
+            stream_flag: false,
+            tools_declared_count: None,
+            tool_classes: None,
+            tool_choice_mode: None,
+            parallel_tools_requested: None,
+            tool_results_in_input: None,
+            structured_output_flag: None,
+            reasoning_flag: None,
+            service_tier: None,
+            input_modalities: None,
+            output_modalities: None,
+            admitted_at: self.admitted_at,
+            terminal: RequestFactTerminalEvidence {
+                terminal_at,
+                http_status_code: Some(i32::from(status.as_u16())),
+                provider_terminal_class,
+                delivery_state,
+                downstream_disconnect: None,
+                upstream_request_id: None,
+                first_public_byte_at: None,
+                internal_attempt_count: Some(0),
+                failure_class: None,
+                tool_calls_in_output: None,
+            },
+        }
+    }
+}
+
 impl PendingCodexAdmission {
     pub(crate) fn tenant_scope(&self) -> &str {
         &self.tenant_scope
+    }
+
+    /// Snapshot fact attribution without widening `Authz` or exposing the raw key to a protocol
+    /// adapter. Missing typed logical context is an instrumentation gap and therefore omits the fact.
+    pub(crate) fn request_fact_seed(
+        &self,
+        logical_request_id: Option<&LogicalRequestId>,
+        admitted_at: i64,
+    ) -> Option<CodexRequestFactSeed> {
+        let logical_request_id = logical_request_id?;
+        let Authz::Metered {
+            account_id, key_id, ..
+        } = &self.authz
+        else {
+            return None;
+        };
+        Some(CodexRequestFactSeed {
+            logical_request_id: logical_request_id.as_str().to_owned(),
+            execution: self.execution.clone(),
+            account_id: account_id.clone(),
+            key_id: key_id.clone(),
+            admitted_at,
+        })
     }
 
     pub(crate) async fn reserve(

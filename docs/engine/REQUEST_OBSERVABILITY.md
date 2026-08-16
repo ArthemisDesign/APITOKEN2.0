@@ -1,8 +1,9 @@
 # Request observability contract
 
-> **Status: PROPOSED; dormant registry S2 and forward-core S3A are implemented; the Caddy
-> logical-ID perimeter, provider-plane admission/context consumer, and router logical-ID producer are
-> implemented; no request-fact producer and no read surface.**
+> **Status: PROPOSED; registry S2, forward-core S3A, the Caddy logical-ID perimeter,
+> provider-plane admission/context consumer, and router logical-ID producer are implemented. The first
+> production request-fact producer covers only metered Codex/OpenAI universal
+> `POST /v1/messages/count_tokens`; no read surface exists.**
 > This document records the target design and rollout constraints for discussion. Migrations 0053-0054
 > are deployed; `crates/registry` exposes opt-in PostgreSQL write/lifecycle primitives, and
 > `AsyncBilling` now transports those typed facts through the owning money transactions plus a distinct
@@ -13,8 +14,10 @@
 > generate one for direct ingress, remove the wire header, and retain only a typed request extension
 > through internal adapters. The provider consumer's exact production SHA is GREEN, and the router now
 > creates one canonical UUIDv4 after admission and sends it on every executable attempt, reusing it
-> across fallback. No fact producer consumes the extension, no ID is returned publicly, and no read API
-> or request-fact metric exists. Provider-plane request-fact callers remain absent.
+> across fallback. Codex universal count_tokens now consumes the typed extension only after metered
+> admission and submits one already-terminal nullable-billing-ID fact through the fail-open PostgreSQL
+> inbox. No ID is returned publicly, and no read API or request-fact metric exists. Billable paths,
+> native OpenAI Responses token counting, Anthropic, Gemini, and every other plane caller remain absent.
 
 ## 1. Purpose
 
@@ -51,9 +54,10 @@ fact terminalization when a reserve handoff is lost. A separate 4096-bounded, no
 inbox persists already-terminal post-auth/nonbillable facts on a lazily connected low-priority thread;
 it is fail-open and excluded from money `flush`. Existing methods remain fact-free wrappers, SQLite
 money behavior is unchanged and omits analytics, and no production plane caller exercises the new
-forms yet. As a dormant producer prerequisite, the existing authorization snapshot now also carries
-the authoritative non-secret `key_id` beside the raw credential: registry obtains both in the same
-`key_account` statement/snapshot, while every current money path still uses only the raw key.
+forms for billable lifecycles yet. The existing authorization snapshot carries the authoritative
+non-secret `key_id` beside the raw credential: registry obtains both in the same `key_account`
+statement/snapshot, every money path still uses only the raw key, and the first narrow Codex
+count_tokens producer exposes only the non-secret identity through a privacy-minimal typed seed.
 `billing_outcome` is never accepted in the outbox envelope: APPLY derives it from the authoritative
 winner, reconciliation, cancellation, and metered-amount state.
 
@@ -130,6 +134,21 @@ at the final executable boundary after auth/body/model/routing/policy admission,
 copies again in the common proxy function, and injects the same logical ID into every provider attempt.
 Native and universal single attempts receive it; balance and helper/preflight traffic traversing the
 common proxy passes no typed ID and therefore only strips. The router neither logs nor publishes it.
+
+The first production request-fact producer is deliberately narrower than the target matrix. Only the
+Codex/OpenAI handler for universal `POST /v1/messages/count_tokens` participates, including Combined
+and router universal dispatch that reaches that same handler. Immediately after successful metered
+`begin_admission`, it snapshots `pool::now()`, the typed logical ID from request extensions, the
+retained execution attempt, and authoritative account/key IDs without exposing the raw key to the
+skin. Body/translation/model/prepare/success exits converge through one terminalization call and one
+`try_submit_terminal_request_fact`; submission outcomes never affect response status, headers, or
+body. Facts use `billing_request_id=NULL`, `billing_outcome=not_applicable`,
+`openai`/`universal`/`count_tokens`, stream false, client kind/source unknown, internal attempt count
+zero, bounded client model spelling after Messages validation, and canonical public model ID only
+after Responses parsing. Deliberately unextracted capability and terminal fields remain NULL. Admin,
+unauthorized, missing typed logical context, native OpenAI Responses token counting, billable Messages,
+Anthropic, Gemini, and all other surfaces are omitted. SQLite and inbox drops fail open; coverage is
+visible only through the existing internal delivery snapshot, not public metrics.
 
 The logical ID is additive correlation metadata. It does not replace a protocol's public response ID,
 an upstream `request-id`, the billing ID, or the existing execution-group contract. Existing public
@@ -245,9 +264,10 @@ without adding a second hot-path round trip. Before either backend receives the 
 requires the fact's `billing_request_id`, `account_id`, `execution_group_id`, and `attempt` to match the
 reservation arguments. The forward authorization result now carries both the raw secret key and its
 authoritative non-secret `key_id`, obtained by the existing `key_account` statement in one snapshot.
-This is dormant prerequisite context only: current reserve/settle calls still receive the raw key, and
-no request-fact producer uses `key_id` yet. PostgreSQL keeps the final authoritative same-transaction
-fact key lookup/comparison, while SQLite intentionally persists no request-fact analytics.
+Current reserve/settle calls still receive the raw key, and no billable request-fact producer uses
+`key_id`. The nonbillable Codex count_tokens producer consumes a separate typed seed that contains only
+the authoritative non-secret identity. PostgreSQL keeps the final authoritative same-transaction fact
+key lookup/comparison, while SQLite intentionally persists no request-fact analytics.
 
 `delivery_started_at` is set in the transaction that marks the reservation delivering. Reserve alone
 is admission evidence, not evidence that an upstream execution or public response started.
@@ -278,9 +298,10 @@ error, the connection is discarded; the batch may be replayed only when every ro
 nullable billing identity, commit status is uncertain and the batch is dropped and counted failed
 rather than replayed, preserving at-most-once insertion for rows that have no uniqueness key.
 
-Dropped events increment a fixed-cardinality counter by a bounded reason. The system must expose
-queue depth, dropped total, and persistence health so data coverage is measurable rather than
-silently assumed.
+Dropped events increment the existing fixed internal delivery-snapshot counters by bounded reason.
+For this first producer those counters are not exposed as public metrics or reads; queue depth, dropped
+total, and persistence health remain a later private coverage surface rather than silently inferred
+from request rows.
 
 Unauthenticated requests have no customer identity and are outside the customer analytics MVP.
 Aggregate auth failures remain operational metrics. A later abuse/security design may define a
@@ -387,7 +408,8 @@ analytics must not be introduced into the pool layer.
    producer.**
 4. Deliver dormant forward-core S3A transport: fact-aware money commands remain in the existing
    money actor; terminal-at-insert events use a separate bounded fail-open PostgreSQL inbox. Preserve
-   all legacy callers and add no wire/read/metric surface. **Implemented; no plane caller yet.**
+   all legacy callers and add no wire/read/metric surface. **Implemented; the inbox now has only the
+   narrow step-8 Codex count_tokens caller, while billable forms remain dormant.**
 5. Reserve the logical-ID trust boundary at Caddy first: strip
    `X-Apitoken-Logical-Request-Id` from all four public provider/router ingresses and preserve stable
    loopback origins. **Implemented as the completed security perimeter prerequisite.** The provider
@@ -397,14 +419,17 @@ analytics must not be introduced into the pool layer.
    for Anthropic, OpenAI, Gemini, and Combined customer routes:** the plane accepts at most one
    canonical trusted internal value, consumes/strips the capability before any external upstream
    dispatch, generates a fresh logical ID when direct traffic has none, and preserves typed context
-   through internal adapters. Fact-aware forward-core forms remain dormant and have no plane caller.
+   through internal adapters. Only Codex universal count_tokens consumes it for facts; other
+   fact-aware forms and planes remain dormant.
 7. Only after the plane consumer/generator's exact SHA is GREEN, deliver the router producer.
    **Implemented after that prerequisite reached production GREEN:** the final common proxy removes
    every inbound copy, executable native/universal requests create one CSPRNG UUIDv4 only after final
-   admission, and fallback reuses it on every attempt. No logging, fact caller, metric, persistence,
-   read API, or public response header is part of this stage.
-8. Instrument Anthropic, Codex, and Gemini native and universal surfaces. Keep existing body,
-   response, stream, retry, settlement, and execution-group behavior unchanged.
+   admission, and fallback reuses it on every attempt. That router stage added no fact caller, metric,
+   persistence, read API, logging, or public response header; the later narrow step-8 producer does not
+   change the router wire.
+8. Instrument provider surfaces incrementally while keeping body, response, stream, retry,
+   settlement, and execution-group behavior unchanged. **First slice implemented only for metered
+   Codex/OpenAI universal `POST /v1/messages/count_tokens`; every other surface remains absent.**
 9. Deliver private aggregate and drilldown Control API producers. Update `docs/engine/CONTROL_API.md`
    and `docs/DEPENDENCIES.md` in the same commit.
 10. After the exact producer SHA is GREEN, deliver `packages/contracts`,
@@ -443,8 +468,8 @@ Implementation is incomplete without tests for:
 
 1. Should `logical_request_id` be returned to customers in a new additive response header, or remain
    operator-only for the MVP?
-2. Which non-billable calls belong in request analytics: `count_tokens` only, or also model discovery
-   and stored-response reads?
+2. After the initial Codex universal `count_tokens` slice is validated, which non-billable calls
+   should follow: other provider token counters, model discovery, or stored-response reads?
 3. Which client kinds receive explicit first-party classification in the first version, and which
    header name/schema will integrations send?
 4. Are normalized tool classes sufficient, or is a keyed toolset fingerprint required after the
