@@ -3,6 +3,14 @@
 //! All correctness-sensitive mutations are transactions. Request IDs and lease IDs are the
 //! idempotency boundary; owner epochs fence stale instances. PostgreSQL is the recovery floor.
 
+mod request_facts;
+
+use crate::request_facts::{
+    BillingOutcome, DeliveryState, ProviderTerminalClass, RequestFactAdmission,
+    RequestFactTerminalEvidence, TerminalRequestFact, REQUEST_FACT_TERMINAL_SCHEMA_VERSION,
+};
+#[cfg(test)]
+use crate::PROVIDER_OPENAI;
 use crate::{
     mask_proxy, AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation, BillingTotals,
     ClaudeLifecycleProfile, CodexCalibrationRow, CodexHomeCalibrationSpend,
@@ -19,8 +27,6 @@ use crate::{
     UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
     ACCOUNT_OVERDRAFT_NANO,
 };
-#[cfg(test)]
-use crate::PROVIDER_OPENAI;
 use anyhow::{bail, Context, Result};
 use postgres::config::{Host, SslMode};
 use postgres::{Client, IsolationLevel, Row, Transaction};
@@ -407,6 +413,7 @@ pub struct ReconcileReport {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MaintenanceReport {
     pub usage_events: usize,
+    pub request_facts: usize,
     pub outbox: usize,
     pub reservations: usize,
     pub capacity_leases: usize,
@@ -741,7 +748,7 @@ impl PgStore {
         execution: &crate::ExecutionAttempt,
     ) -> Result<Option<i64>> {
         self.reserve_request_for_execution_with_pricing(
-            owner, request_id, account_id, key, hold_nano, lease_secs, execution, None,
+            owner, request_id, account_id, key, hold_nano, lease_secs, execution, None, None,
         )
     }
 
@@ -767,6 +774,62 @@ impl PgStore {
             lease_secs,
             execution,
             Some(pricing),
+            None,
+        )
+    }
+
+    /// PostgreSQL-only optional analytics admission. The fact is inserted or exact-replay
+    /// validated in the same transaction as the reservation; legacy callers remain fact-free.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reserve_request_for_execution_with_fact(
+        &mut self,
+        owner: &Owner,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold_nano: i64,
+        lease_secs: i64,
+        execution: &crate::ExecutionAttempt,
+        fact: &RequestFactAdmission,
+    ) -> Result<Option<i64>> {
+        self.reserve_request_for_execution_with_pricing(
+            owner,
+            request_id,
+            account_id,
+            key,
+            hold_nano,
+            lease_secs,
+            execution,
+            None,
+            Some(fact),
+        )
+    }
+
+    /// Priced variant of the fact-aware PostgreSQL admission primitive.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reserve_priced_request_for_execution_with_fact(
+        &mut self,
+        owner: &Owner,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold_nano: i64,
+        lease_secs: i64,
+        execution: &crate::ExecutionAttempt,
+        pricing: &crate::ReservationPricing,
+        fact: &RequestFactAdmission,
+    ) -> Result<Option<i64>> {
+        crate::ensure_valid_provider_discount(&pricing.provider, pricing.payable_multiplier_bp)?;
+        self.reserve_request_for_execution_with_pricing(
+            owner,
+            request_id,
+            account_id,
+            key,
+            hold_nano,
+            lease_secs,
+            execution,
+            Some(pricing),
+            Some(fact),
         )
     }
 
@@ -781,7 +844,11 @@ impl PgStore {
         lease_secs: i64,
         execution: &crate::ExecutionAttempt,
         pricing: Option<&crate::ReservationPricing>,
+        fact: Option<&RequestFactAdmission>,
     ) -> Result<Option<i64>> {
+        if let Some(fact) = fact {
+            fact.validate()?;
+        }
         let hold = hold_nano.max(0);
         let preflight_ts = now();
         let mut tx = self.client.transaction()?;
@@ -791,6 +858,23 @@ impl PgStore {
             &[&request_id],
         )?;
         Self::assert_owner_locked(&mut tx, owner, now())?;
+        if let Some(fact) = fact {
+            let key_id: String = tx
+                .query_opt(
+                    "SELECT key_id FROM api_keys WHERE key=$1 AND account_id=$2",
+                    &[&key, &account_id],
+                )?
+                .context("request-fact reservation key does not exist")?
+                .get(0);
+            request_facts::validate_reservation_fact(
+                fact,
+                request_id,
+                account_id,
+                &key_id,
+                execution.group_id(),
+                execution.attempt(),
+            )?;
+        }
         if let Some(row) = tx.query_opt(
             "SELECT account_id,key,hold_nano,balance_after_reserve_nano,owner_instance,owner_epoch, \
                     state,group_id,attempt,provider,payable_multiplier_bp \
@@ -813,6 +897,9 @@ impl PgStore {
                 bail!("reservation request ID belongs to a different or completed operation");
             }
             let balance = row.get(3);
+            if let Some(fact) = fact {
+                request_facts::validate_existing_admission(&mut tx, fact)?;
+            }
             Self::assert_owner_locked(&mut tx, owner, now())?;
             tx.commit()?;
             return Ok(Some(balance));
@@ -862,6 +949,9 @@ impl PgStore {
               &pricing.map(|value| value.provider.as_str()),
               &pricing.map(|value| value.payable_multiplier_bp)],
         )?;
+        if let Some(fact) = fact {
+            request_facts::insert_or_validate_admission(&mut tx, fact)?;
+        }
         Self::assert_owner_locked(&mut tx, owner, now())?;
         tx.commit()?;
         Ok(Some(balance))
@@ -874,6 +964,27 @@ impl PgStore {
         owner: &Owner,
         request_id: &str,
         lease_secs: i64,
+    ) -> Result<bool> {
+        self.mark_delivering_inner(owner, request_id, lease_secs, false)
+    }
+
+    /// Fact-aware delivery transition. A missing fact remains valid legacy coverage; when a fact
+    /// exists, its first delivery instant is recorded atomically with the reservation transition.
+    pub fn mark_delivering_with_request_fact(
+        &mut self,
+        owner: &Owner,
+        request_id: &str,
+        lease_secs: i64,
+    ) -> Result<bool> {
+        self.mark_delivering_inner(owner, request_id, lease_secs, true)
+    }
+
+    fn mark_delivering_inner(
+        &mut self,
+        owner: &Owner,
+        request_id: &str,
+        lease_secs: i64,
+        record_fact: bool,
     ) -> Result<bool> {
         let ts = now();
         let mut tx = self.client.transaction()?;
@@ -889,11 +1000,20 @@ impl PgStore {
                 &owner.epoch,
             ],
         )?;
-        let ok = changed == 1 || tx.query_opt(
-            "SELECT 1 FROM reservations WHERE request_id=$1 AND owner_instance=$2 AND owner_epoch=$3 \
-             AND state IN ('delivering','settlement_pending','settled')",
-            &[&request_id, &owner.instance_id, &owner.epoch],
-        )?.is_some();
+        let existing_state = if changed == 1 {
+            Some("delivering".to_owned())
+        } else {
+            tx.query_opt(
+                "SELECT state FROM reservations WHERE request_id=$1 AND owner_instance=$2 \
+                 AND owner_epoch=$3 AND state IN ('delivering','settlement_pending','settled')",
+                &[&request_id, &owner.instance_id, &owner.epoch],
+            )?
+            .map(|row| row.get::<_, String>(0))
+        };
+        let ok = existing_state.is_some();
+        if record_fact && existing_state.as_deref() == Some("delivering") {
+            request_facts::mark_delivery_started(&mut tx, request_id, ts)?;
+        }
         tx.commit()?;
         Ok(ok)
     }
@@ -977,6 +1097,7 @@ impl PgStore {
         disposition: &str,
         reference: Option<&str>,
         usage: Option<&UsageEventInput>,
+        terminal_evidence: Option<&RequestFactTerminalEvidence>,
     ) -> Result<()> {
         let ts = now();
         let mut tx = self.client.transaction()?;
@@ -1002,6 +1123,16 @@ impl PgStore {
             bail!("settlement reservation account changed while acquiring funding lock");
         }
         let state: String = reservation.get(2);
+        if let Some(evidence) = terminal_evidence {
+            let fact = tx.query_opt(
+                "SELECT admitted_at,delivery_started_at FROM request_facts \
+                 WHERE billing_request_id=$1",
+                &[&request_id],
+            )?;
+            let admitted_at = fact.as_ref().map(|row| row.get(0)).unwrap_or(0);
+            let delivery_started_at = fact.as_ref().and_then(|row| row.get(1));
+            evidence.validate_with_delivery(admitted_at, delivery_started_at)?;
+        }
         let terminal_actual = reservation.get::<_, Option<i64>>(3);
         if matches!(state.as_str(), "settled" | "canceled") {
             let terminal_actual =
@@ -1011,6 +1142,27 @@ impl PgStore {
         let actual = actual_nano.max(0);
         let u = usage.cloned().unwrap_or_default();
         let charge_basis_nano = usage.map(|value| value.charge_basis_nano);
+        let request_fact_terminal_schema_version =
+            terminal_evidence.map(|_| REQUEST_FACT_TERMINAL_SCHEMA_VERSION);
+        let request_fact_terminal_at = terminal_evidence.map(|value| value.terminal_at);
+        let request_fact_http_status_code =
+            terminal_evidence.and_then(|value| value.http_status_code);
+        let request_fact_provider_terminal_class =
+            terminal_evidence.map(|value| value.provider_terminal_class.as_str());
+        let request_fact_delivery_state =
+            terminal_evidence.map(|value| value.delivery_state.as_str());
+        let request_fact_downstream_disconnect =
+            terminal_evidence.and_then(|value| value.downstream_disconnect);
+        let request_fact_upstream_request_id =
+            terminal_evidence.and_then(|value| value.upstream_request_id.as_deref());
+        let request_fact_first_public_byte_at =
+            terminal_evidence.and_then(|value| value.first_public_byte_at);
+        let request_fact_internal_attempt_count =
+            terminal_evidence.and_then(|value| value.internal_attempt_count);
+        let request_fact_failure_class =
+            terminal_evidence.and_then(|value| value.failure_class.as_deref());
+        let request_fact_tool_calls_in_output =
+            terminal_evidence.and_then(|value| value.tool_calls_in_output);
         let (
             release_schema_version,
             release_generation,
@@ -1032,9 +1184,14 @@ impl PgStore {
              real_nano,speed,inference_geo,input_nano,output_nano,cache_read_nano,cache_write_5m_nano, \
              cache_write_1h_nano,web_search_nano,priced_ts,provider,charge_basis_nano,release_schema_version,
              release_generation,release_digest,release_billing_mode,release_funding_generation,
-             release_snapshot_digest,state,created_ts,updated_ts) \
+             release_snapshot_digest,request_fact_terminal_schema_version,request_fact_terminal_at,
+             request_fact_http_status_code,request_fact_provider_terminal_class,request_fact_delivery_state,
+             request_fact_downstream_disconnect,request_fact_upstream_request_id,
+             request_fact_first_public_byte_at,request_fact_internal_attempt_count,
+             request_fact_failure_class,request_fact_tool_calls_in_output,state,created_ts,updated_ts) \
              VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22, \
-                    $23,$24,$25,$26,$27,$28,$29,'pending',$30,$30) \
+                    $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,
+                    'pending',$41,$41) \
              ON CONFLICT(request_id) DO NOTHING",
             &[&request_id, &actual, &disposition, &reference, &u.model, &u.input_tokens,
               &u.output_tokens, &u.cache_read_tokens, &u.cache_write_5m_tokens,
@@ -1043,7 +1200,12 @@ impl PgStore {
               &u.cache_write_5m_nano, &u.cache_write_1h_nano, &u.web_search_nano, &u.priced_ts,
               &u.provider, &charge_basis_nano, &release_schema_version, &release_generation,
               &release_digest, &release_billing_mode, &release_funding_generation,
-              &release_snapshot_digest, &ts],
+              &release_snapshot_digest, &request_fact_terminal_schema_version,
+              &request_fact_terminal_at, &request_fact_http_status_code,
+              &request_fact_provider_terminal_class, &request_fact_delivery_state,
+              &request_fact_downstream_disconnect, &request_fact_upstream_request_id,
+              &request_fact_first_public_byte_at, &request_fact_internal_attempt_count,
+              &request_fact_failure_class, &request_fact_tool_calls_in_output, &ts],
         )?;
         if inserted == 0 {
             let row = tx.query_one(
@@ -1052,7 +1214,13 @@ impl PgStore {
                  inference_geo,input_nano,output_nano,cache_read_nano,cache_write_5m_nano, \
                  cache_write_1h_nano,web_search_nano,priced_ts,provider,charge_basis_nano,
                  release_schema_version,release_generation,release_digest,release_billing_mode,
-                 release_funding_generation,release_snapshot_digest \
+                 release_funding_generation,release_snapshot_digest,
+                 request_fact_terminal_schema_version,request_fact_terminal_at,
+                 request_fact_http_status_code,request_fact_provider_terminal_class,
+                 request_fact_delivery_state,request_fact_downstream_disconnect,
+                 request_fact_upstream_request_id,request_fact_first_public_byte_at,
+                 request_fact_internal_attempt_count,request_fact_failure_class,
+                 request_fact_tool_calls_in_output \
                  FROM settlement_outbox WHERE request_id=$1",
                 &[&request_id],
             )?;
@@ -1083,7 +1251,19 @@ impl PgStore {
                 && row.get::<_, Option<String>>(24) == release_digest
                 && row.get::<_, Option<String>>(25) == release_billing_mode
                 && row.get::<_, Option<i64>>(26) == release_funding_generation
-                && row.get::<_, Option<String>>(27) == release_snapshot_digest;
+                && row.get::<_, Option<String>>(27) == release_snapshot_digest
+                && row.get::<_, Option<i32>>(28) == request_fact_terminal_schema_version
+                && row.get::<_, Option<i64>>(29) == request_fact_terminal_at
+                && row.get::<_, Option<i32>>(30) == request_fact_http_status_code
+                && row.get::<_, Option<String>>(31).as_deref()
+                    == request_fact_provider_terminal_class
+                && row.get::<_, Option<String>>(32).as_deref() == request_fact_delivery_state
+                && row.get::<_, Option<bool>>(33) == request_fact_downstream_disconnect
+                && row.get::<_, Option<String>>(34).as_deref() == request_fact_upstream_request_id
+                && row.get::<_, Option<i64>>(35) == request_fact_first_public_byte_at
+                && row.get::<_, Option<i32>>(36) == request_fact_internal_attempt_count
+                && row.get::<_, Option<String>>(37).as_deref() == request_fact_failure_class
+                && row.get::<_, Option<bool>>(38) == request_fact_tool_calls_in_output;
             if !exact {
                 bail!("settlement request ID conflicts with different outbox payload");
             }
@@ -1208,11 +1388,39 @@ impl PgStore {
         reference: Option<&str>,
         usage: Option<&UsageEventInput>,
     ) -> Result<()> {
-        self.enqueue_outbox(request_id, actual_nano, "settle", reference, usage)
+        self.enqueue_outbox(request_id, actual_nano, "settle", reference, usage, None)
+    }
+
+    /// Persist terminal request evidence together with the settlement intent. The request fact is
+    /// intentionally not terminalized until authoritative outbox apply.
+    pub fn enqueue_settlement_with_request_fact(
+        &mut self,
+        request_id: &str,
+        actual_nano: i64,
+        reference: Option<&str>,
+        usage: Option<&UsageEventInput>,
+        terminal_evidence: &RequestFactTerminalEvidence,
+    ) -> Result<()> {
+        self.enqueue_outbox(
+            request_id,
+            actual_nano,
+            "settle",
+            reference,
+            usage,
+            Some(terminal_evidence),
+        )
     }
 
     pub fn enqueue_cancel(&mut self, request_id: &str) -> Result<()> {
-        self.enqueue_outbox(request_id, 0, "cancel", None, None)
+        self.enqueue_outbox(request_id, 0, "cancel", None, None, None)
+    }
+
+    pub fn enqueue_cancel_with_request_fact(
+        &mut self,
+        request_id: &str,
+        terminal_evidence: &RequestFactTerminalEvidence,
+    ) -> Result<()> {
+        self.enqueue_outbox(request_id, 0, "cancel", None, None, Some(terminal_evidence))
     }
 
     fn process_outbox_request(&mut self, request_id: &str) -> Result<Option<i64>> {
@@ -1241,7 +1449,15 @@ impl PgStore {
              o.cache_write_5m_nano,o.cache_write_1h_nano,o.web_search_nano,o.priced_ts,o.provider, \
              o.charge_basis_nano,o.state,r.account_id,r.key,r.hold_nano,r.state, \
              COALESCE(r.group_id,r.request_id),r.attempt,r.actual_nano,r.collected_nano, \
-             r.uncollected_nano,r.provider,r.payable_multiplier_bp \
+             r.uncollected_nano,r.provider,r.payable_multiplier_bp,
+             o.request_fact_terminal_schema_version,o.request_fact_terminal_at,
+             o.request_fact_http_status_code,o.request_fact_provider_terminal_class,
+             o.request_fact_delivery_state,o.request_fact_downstream_disconnect,
+             o.request_fact_upstream_request_id,o.request_fact_first_public_byte_at,
+             o.request_fact_internal_attempt_count,o.request_fact_failure_class,
+             o.request_fact_tool_calls_in_output,
+             (SELECT fact.admitted_at FROM request_facts fact WHERE fact.billing_request_id=o.request_id),
+             (SELECT fact.delivery_started_at FROM request_facts fact WHERE fact.billing_request_id=o.request_id) \
              FROM settlement_outbox o JOIN reservations r USING(request_id) \
              WHERE o.request_id=$1 FOR UPDATE OF o,r",
             &[&request_id],
@@ -1262,6 +1478,14 @@ impl PgStore {
         let execution_attempt: i32 = row.get(28);
         let reservation_provider: Option<String> = row.get(32);
         let payable_multiplier_bp: Option<i64> = row.get(33);
+        let admitted_at = row.get::<_, Option<i64>>(45).unwrap_or(0);
+        let delivery_started_at = row.get::<_, Option<i64>>(46);
+        let terminal_envelope = request_facts::DurableTerminalEnvelope::from_outbox_row(
+            &row,
+            34,
+            admitted_at,
+            delivery_started_at,
+        )?;
         if outbox_state == "done" || matches!(reservation_state.as_str(), "settled" | "canceled") {
             let winner = if actual > 0 {
                 tx.query_opt(
@@ -1272,11 +1496,8 @@ impl PgStore {
             } else {
                 None
             };
-            let expected_actual = if winner.as_deref().is_some_and(|winner| winner != request_id) {
-                0
-            } else {
-                actual
-            };
+            let is_losing_attempt = winner.as_deref().is_some_and(|winner| winner != request_id);
+            let expected_actual = if is_losing_attempt { 0 } else { actual };
             if row.get::<_, Option<i64>>(29) != Some(expected_actual) {
                 bail!("stored settlement differs from durable execution-group winner");
             }
@@ -1298,6 +1519,21 @@ impl PgStore {
                         && uncollected >= 0
                         && collected.checked_add(uncollected) == Some(expected_actual) => {}
                 _ => bail!("terminal settlement collection evidence is inconsistent"),
+            }
+            if let Some(envelope) = terminal_envelope.as_ref() {
+                let original_disposition: String = row.get(1);
+                let outcome = if is_losing_attempt {
+                    BillingOutcome::Loser
+                } else if original_disposition == "reconcile_full_hold" {
+                    BillingOutcome::Reconciled
+                } else if reservation_state == "canceled" {
+                    BillingOutcome::Canceled
+                } else if expected_actual == 0 {
+                    BillingOutcome::ZeroMetered
+                } else {
+                    BillingOutcome::Winner
+                };
+                request_facts::finalize_terminal(&mut tx, request_id, envelope, outcome)?;
             }
             let balance = tx
                 .query_opt(
@@ -1460,6 +1696,20 @@ impl PgStore {
         } else {
             "settled"
         };
+        if let Some(envelope) = terminal_envelope.as_ref() {
+            let outcome = if losing_attempt.is_some() {
+                BillingOutcome::Loser
+            } else if disposition == "reconcile_full_hold" {
+                BillingOutcome::Reconciled
+            } else if effective_disposition == "cancel" {
+                BillingOutcome::Canceled
+            } else if effective_actual == 0 {
+                BillingOutcome::ZeroMetered
+            } else {
+                BillingOutcome::Winner
+            };
+            request_facts::finalize_terminal(&mut tx, request_id, envelope, outcome)?;
+        }
         tx.execute(
             "UPDATE reservations SET state=$2,actual_nano=$3,collected_nano=$4,uncollected_nano=$5, \
              settled_ts=$6,updated_ts=$6 WHERE request_id=$1",
@@ -1494,9 +1744,54 @@ impl PgStore {
         self.process_outbox_request(request_id)
     }
 
+    pub fn settle_request_with_request_fact(
+        &mut self,
+        request_id: &str,
+        actual_nano: i64,
+        reference: Option<&str>,
+        usage: Option<&UsageEventInput>,
+        terminal_evidence: &RequestFactTerminalEvidence,
+    ) -> Result<Option<i64>> {
+        self.enqueue_settlement_with_request_fact(
+            request_id,
+            actual_nano,
+            reference,
+            usage,
+            terminal_evidence,
+        )?;
+        self.process_outbox_request(request_id)
+    }
+
+    pub fn cancel_request_with_request_fact(
+        &mut self,
+        request_id: &str,
+        terminal_evidence: &RequestFactTerminalEvidence,
+    ) -> Result<Option<i64>> {
+        self.enqueue_cancel_with_request_fact(request_id, terminal_evidence)?;
+        self.process_outbox_request(request_id)
+    }
+
     pub fn cancel_request(&mut self, request_id: &str) -> Result<Option<i64>> {
         self.enqueue_cancel(request_id)?;
         self.process_outbox_request(request_id)
+    }
+
+    /// Persist already-terminal post-auth/non-billable facts on a caller-owned low-priority
+    /// connection. This primitive is deliberately independent from the money actor/FIFO.
+    pub fn insert_terminal_request_facts(
+        &mut self,
+        facts: &[TerminalRequestFact],
+    ) -> Result<usize> {
+        if facts.len() > crate::request_facts::MAX_REQUEST_FACT_BATCH {
+            bail!("request-fact terminal batch exceeds hard cap");
+        }
+        for fact in facts {
+            fact.validate()?;
+        }
+        let mut tx = self.client.transaction()?;
+        let inserted = request_facts::insert_terminal_batch(&mut tx, facts)?;
+        tx.commit()?;
+        Ok(inserted)
     }
 
     pub fn drain_outbox(&mut self, limit: usize) -> Result<usize> {
@@ -1546,7 +1841,10 @@ impl PgStore {
     ) -> Result<ReconcileReport> {
         let ts = now();
         let rows = self.client.query(
-            "SELECT r.request_id,r.state,r.hold_nano,r.measured_nano FROM reservations r \
+            "SELECT r.request_id,r.state,r.hold_nano,r.measured_nano, \
+                    EXISTS(SELECT 1 FROM request_facts fact \
+                           WHERE fact.billing_request_id=r.request_id) \
+               FROM reservations r \
              LEFT JOIN engine_instances i ON i.instance_id=r.owner_instance AND i.owner_epoch=r.owner_epoch \
              WHERE r.state IN ('reserved','delivering','settlement_pending') AND r.lease_until < $1 \
              AND (i.instance_id IS NULL OR i.lease_until < $1) ORDER BY r.created_ts LIMIT $2",
@@ -1558,9 +1856,33 @@ impl PgStore {
             let state: String = row.get(1);
             let hold: i64 = row.get(2);
             let measured: Option<i64> = row.get(3);
+            let has_request_fact: bool = row.get(4);
+            let synthesized_terminal = has_request_fact.then(|| RequestFactTerminalEvidence {
+                terminal_at: ts,
+                http_status_code: None,
+                provider_terminal_class: ProviderTerminalClass::Unknown,
+                delivery_state: if state == "reserved" {
+                    DeliveryState::NotStarted
+                } else {
+                    DeliveryState::Interrupted
+                },
+                downstream_disconnect: None,
+                upstream_request_id: None,
+                first_public_byte_at: None,
+                internal_attempt_count: None,
+                failure_class: None,
+                tool_calls_in_output: None,
+            });
             match state.as_str() {
                 "reserved" => {
-                    self.enqueue_outbox(&request_id, 0, "cancel", None, None)?;
+                    self.enqueue_outbox(
+                        &request_id,
+                        0,
+                        "cancel",
+                        None,
+                        None,
+                        synthesized_terminal.as_ref(),
+                    )?;
                     report.canceled_before_delivery += 1;
                 }
                 "delivering" => {
@@ -1584,6 +1906,7 @@ impl PgStore {
                         reason,
                         Some("expired-delivery"),
                         None,
+                        synthesized_terminal.as_ref(),
                     )?;
                     report.charged_after_delivery += 1;
                 }
@@ -2802,6 +3125,9 @@ impl PgStore {
     pub fn maintenance_prune(&mut self, older_than_ts: i64) -> Result<MaintenanceReport> {
         crate::pricing::validate_request_lifecycle_prune_cutoff(older_than_ts, now())?;
         let mut tx = self.client.transaction()?;
+        // Facts never keep transient billing rows alive. Prune analytics first, within the same
+        // validated retention transaction, before outbox and reservation lifecycle rows.
+        let request_facts = request_facts::prune_first(&mut tx, older_than_ts)?;
         let outbox = tx.execute(
             "DELETE FROM settlement_outbox WHERE request_id IN ( \
                SELECT request_id FROM settlement_outbox \
@@ -2851,6 +3177,7 @@ impl PgStore {
         )? as usize;
         tx.commit()?;
         Ok(MaintenanceReport {
+            request_facts,
             outbox,
             reservations,
             capacity_leases,

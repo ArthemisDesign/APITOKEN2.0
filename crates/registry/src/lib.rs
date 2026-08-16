@@ -13,6 +13,7 @@ mod kimi_calibration;
 pub mod pg;
 pub mod pricing;
 mod provider_calibration;
+pub mod request_facts;
 mod suno_calibration;
 mod tripo3d_calibration;
 

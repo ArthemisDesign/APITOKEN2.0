@@ -421,7 +421,8 @@ fn tripo3d_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
     // Dual ledger at the published fixed rate: the API nanoUSD leg is the exact fixed-rate
     // image of the native millicredit leg, which also makes a partial zero impossible. A zero
     // pair stays legal for the documented free tasks.
-    assert!(normalized.contains("native_total_millicredits bigint NOT NULL CHECK (native_total_millicredits >= 0)"));
+    assert!(normalized
+        .contains("native_total_millicredits bigint NOT NULL CHECK (native_total_millicredits >= 0)"));
     assert!(normalized.contains("api_total_nanousd bigint NOT NULL CHECK (api_total_nanousd >= 0)"));
     assert!(normalized.contains("CHECK (api_total_nanousd = native_total_millicredits * 10000)"));
     assert!(normalized.contains("spent_api_nanousd bigint NOT NULL"));
@@ -2947,6 +2948,689 @@ fn anthropic_initial_calibration_version_is_bound_as_bigint() {
         ANTHROPIC_CALIBRATION_INSERT_SQL.contains("($22::bigint)+1"),
         "an untyped `$22 + 1` makes PostgreSQL infer int4 and reject the Rust i64 version",
     );
+}
+
+fn request_fact_admission(
+    logical: &str,
+    billing: &str,
+    group: Option<&str>,
+    attempt: i32,
+    account_id: &str,
+    key_id: &str,
+    admitted_at: i64,
+) -> crate::request_facts::RequestFactAdmission {
+    crate::request_facts::RequestFactAdmission {
+        logical_request_id: logical.into(),
+        billing_request_id: billing.into(),
+        execution_group_id: group.map(str::to_owned),
+        attempt,
+        account_id: account_id.into(),
+        key_id: key_id.into(),
+        client_kind: crate::request_facts::ClientKind::OpenCode,
+        client_source: crate::request_facts::ClientSource::Explicit,
+        client_version: Some("1.0".into()),
+        provider_plane: "anthropic".into(),
+        route_class: "direct".into(),
+        request_class: "messages".into(),
+        requested_model: Some("claude-test".into()),
+        executable_model: Some("claude-test".into()),
+        stream_flag: true,
+        tools_declared_count: Some(1),
+        tool_classes: Some(crate::request_facts::TOOL_CLASS_CUSTOM_FUNCTION),
+        tool_choice_mode: Some(crate::request_facts::ToolChoiceMode::Auto),
+        parallel_tools_requested: Some(false),
+        tool_results_in_input: Some(false),
+        structured_output_flag: None,
+        reasoning_flag: Some(true),
+        service_tier: Some("standard".into()),
+        input_modalities: Some(crate::request_facts::MODALITY_TEXT),
+        output_modalities: Some(crate::request_facts::MODALITY_TEXT),
+        admitted_at,
+    }
+}
+
+fn request_fact_terminal(
+    terminal_at: i64,
+    delivery_state: crate::request_facts::DeliveryState,
+) -> crate::request_facts::RequestFactTerminalEvidence {
+    crate::request_facts::RequestFactTerminalEvidence {
+        terminal_at,
+        http_status_code: Some(200),
+        provider_terminal_class: crate::request_facts::ProviderTerminalClass::Success,
+        delivery_state,
+        downstream_disconnect: Some(false),
+        upstream_request_id: Some("upstream-safe-id".into()),
+        first_public_byte_at: Some(terminal_at),
+        internal_attempt_count: Some(1),
+        failure_class: None,
+        tool_calls_in_output: Some(false),
+    }
+}
+
+fn lock_request_fact_matrix(url: &str) -> (PgStore, PgStore) {
+    let mut lock_holder = PgStore::connect(url).unwrap();
+    lock_holder
+        .client
+        .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+        .unwrap();
+    lock_holder
+        .client
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    let mut pg = PgStore::connect(url).unwrap();
+    pg.migrate().unwrap();
+    pg.client
+        .batch_execute(
+            "TRUNCATE request_facts,execution_group_winner,settlement_outbox,reservations, \
+             capacity_leases,leader_leases,engine_instances,usage_events,ledger,api_keys,accounts \
+             RESTART IDENTITY CASCADE",
+        )
+        .unwrap();
+    (lock_holder, pg)
+}
+
+fn unlock_request_fact_matrix(lock_holder: &mut PgStore) {
+    lock_holder
+        .client
+        .query_one(
+            "SELECT pg_advisory_unlock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+}
+
+/// Dormant PostgreSQL lifecycle proof: admission exact replay, same-transaction delivery,
+/// crash-safe terminalization, and old-caller compatibility.
+#[test]
+fn request_fact_lifecycle_postgres_matrix() {
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping request-fact lifecycle matrix: test URL is unset");
+        return;
+    };
+    let (mut lock_holder, mut pg) = lock_request_fact_matrix(&url);
+    pg.account_create("rf-account", None, 10_000).unwrap();
+    pg.account_topup("rf-account", 10_000, Some("rf-seed"))
+        .unwrap();
+    pg.key_issue("rf-key", "rf-account", None).unwrap();
+    let key_id = pg.key_get("rf-key").unwrap().unwrap().key_id;
+    let owner = pg.claim_instance("rf-owner", 600).unwrap();
+    let admitted_at = now();
+    const LOGICAL: &str = "11111111-1111-4111-8111-111111111111";
+    const BILLING: &str = "22222222-2222-4222-8222-222222222222";
+    const CONFLICT_BILLING: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    let orphan_fact = request_fact_admission(
+        "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        CONFLICT_BILLING,
+        None,
+        1,
+        "rf-account",
+        &key_id,
+        admitted_at,
+    );
+    {
+        let mut tx = pg.client.transaction().unwrap();
+        super::request_facts::insert_or_validate_admission(&mut tx, &orphan_fact).unwrap();
+        tx.commit().unwrap();
+    }
+    let mut conflicting_orphan = orphan_fact;
+    conflicting_orphan.route_class = "conflict".into();
+    assert!(pg
+        .reserve_request_for_execution_with_fact(
+            &owner,
+            CONFLICT_BILLING,
+            "rf-account",
+            "rf-key",
+            100,
+            600,
+            &crate::ExecutionAttempt::direct(),
+            &conflicting_orphan,
+        )
+        .is_err());
+    let rollback_row = pg
+        .client
+        .query_one(
+            "SELECT account.balance_nano,account.reserved_nano,key.reserved_nano,                     EXISTS(SELECT 1 FROM reservations WHERE request_id=$1)                FROM accounts account JOIN api_keys key ON key.account_id=account.id               WHERE account.id='rf-account' AND key.key='rf-key'",
+            &[&CONFLICT_BILLING],
+        )
+        .unwrap();
+    assert_eq!(rollback_row.get::<_, i64>(0), 10_000);
+    assert_eq!(rollback_row.get::<_, i64>(1), 0);
+    assert_eq!(rollback_row.get::<_, i64>(2), 0);
+    assert!(!rollback_row.get::<_, bool>(3));
+
+    let fact = request_fact_admission(
+        LOGICAL,
+        BILLING,
+        None,
+        1,
+        "rf-account",
+        &key_id,
+        admitted_at,
+    );
+    assert!(pg
+        .reserve_request_for_execution_with_fact(
+            &owner,
+            BILLING,
+            "rf-account",
+            "rf-key",
+            100,
+            600,
+            &crate::ExecutionAttempt::direct(),
+            &fact,
+        )
+        .unwrap()
+        .is_some());
+    assert!(pg
+        .reserve_request_for_execution_with_fact(
+            &owner,
+            BILLING,
+            "rf-account",
+            "rf-key",
+            100,
+            600,
+            &crate::ExecutionAttempt::direct(),
+            &fact,
+        )
+        .unwrap()
+        .is_some());
+    let mut conflict = fact.clone();
+    conflict.route_class = "conflict".into();
+    assert!(pg
+        .reserve_request_for_execution_with_fact(
+            &owner,
+            BILLING,
+            "rf-account",
+            "rf-key",
+            100,
+            600,
+            &crate::ExecutionAttempt::direct(),
+            &conflict,
+        )
+        .is_err());
+    let aggregate_row = pg
+        .client
+        .query_one(
+            "SELECT account.balance_nano,account.reserved_nano,key.reserved_nano \
+               FROM accounts account JOIN api_keys key ON key.account_id=account.id \
+              WHERE account.id='rf-account' AND key.key='rf-key'",
+            &[],
+        )
+        .unwrap();
+    let aggregates: (i64, i64, i64) = (
+        aggregate_row.get(0),
+        aggregate_row.get(1),
+        aggregate_row.get(2),
+    );
+    assert_eq!(aggregates, (9_900, 100, 100));
+
+    // Legacy reservation remains valid and deliberately has no analytics fact.
+    assert!(pg
+        .reserve_request(&owner, "legacy-rf", "rf-account", "rf-key", 10, 600)
+        .unwrap()
+        .is_some());
+    let legacy_fact_count: i64 = pg
+        .client
+        .query_one(
+            "SELECT COUNT(*)::bigint FROM request_facts WHERE billing_request_id='legacy-rf'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(legacy_fact_count, 0);
+
+    pg.client
+        .execute(
+            "UPDATE request_facts SET admitted_at=$2 WHERE billing_request_id=$1",
+            &[&BILLING, &(now() + 100)],
+        )
+        .unwrap();
+    assert!(pg
+        .mark_delivering_with_request_fact(&owner, BILLING, 600)
+        .is_err());
+    let rolled_back_delivery: (String, Option<i64>) = {
+        let row = pg
+            .client
+            .query_one(
+                "SELECT reservation.state,fact.delivery_started_at                    FROM reservations reservation JOIN request_facts fact                      ON fact.billing_request_id=reservation.request_id                   WHERE reservation.request_id=$1",
+                &[&BILLING],
+            )
+            .unwrap();
+        (row.get(0), row.get(1))
+    };
+    assert_eq!(rolled_back_delivery, ("reserved".into(), None));
+    pg.client
+        .execute(
+            "UPDATE request_facts SET admitted_at=$2 WHERE billing_request_id=$1",
+            &[&BILLING, &admitted_at],
+        )
+        .unwrap();
+
+    assert!(pg
+        .mark_delivering_with_request_fact(&owner, BILLING, 600)
+        .unwrap());
+    let first_delivery: Option<i64> = pg
+        .client
+        .query_one(
+            "SELECT delivery_started_at FROM request_facts WHERE billing_request_id=$1",
+            &[&BILLING],
+        )
+        .unwrap()
+        .get(0);
+    assert!(first_delivery.is_some());
+    assert!(pg
+        .mark_delivering_with_request_fact(&owner, BILLING, 600)
+        .unwrap());
+    let second_delivery: Option<i64> = pg
+        .client
+        .query_one(
+            "SELECT delivery_started_at FROM request_facts WHERE billing_request_id=$1",
+            &[&BILLING],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(first_delivery, second_delivery);
+
+    let terminal_at = now().max(admitted_at);
+    let terminal =
+        request_fact_terminal(terminal_at, crate::request_facts::DeliveryState::Completed);
+    pg.enqueue_settlement_with_request_fact(BILLING, 50, None, None, &terminal)
+        .unwrap();
+    let pending_row = pg
+        .client
+        .query_one(
+            "SELECT outbox.state,fact.terminal_at,outbox.request_fact_terminal_schema_version \
+               FROM settlement_outbox outbox JOIN request_facts fact \
+                 ON fact.billing_request_id=outbox.request_id WHERE outbox.request_id=$1",
+            &[&BILLING],
+        )
+        .unwrap();
+    let pending: (String, Option<i64>, Option<i32>) =
+        (pending_row.get(0), pending_row.get(1), pending_row.get(2));
+    assert_eq!(pending, ("pending".into(), None, Some(1)));
+    drop(pg);
+
+    // A new connection has no in-memory evidence. Drain recovers entirely from the durable outbox.
+    let mut recovered = PgStore::connect(&url).unwrap();
+    assert_eq!(recovered.drain_outbox(100).unwrap(), 1);
+    let terminal_db_row = recovered
+        .client
+        .query_one(
+            "SELECT terminal_at,provider_terminal_class,delivery_state,billing_outcome, \
+                    tool_calls_in_output FROM request_facts WHERE billing_request_id=$1",
+            &[&BILLING],
+        )
+        .unwrap();
+    let terminal_row: (i64, String, String, String, Option<bool>) = (
+        terminal_db_row.get(0),
+        terminal_db_row.get(1),
+        terminal_db_row.get(2),
+        terminal_db_row.get(3),
+        terminal_db_row.get(4),
+    );
+    assert_eq!(
+        terminal_row,
+        (
+            terminal_at,
+            "success".into(),
+            "completed".into(),
+            "winner".into(),
+            Some(false),
+        )
+    );
+    assert_eq!(recovered.drain_outbox(100).unwrap(), 0);
+    assert_eq!(
+        recovered
+            .settle_request_with_request_fact(BILLING, 50, None, None, &terminal)
+            .unwrap(),
+        Some(9_940),
+    );
+    let mut conflicting_terminal = terminal;
+    conflicting_terminal.http_status_code = Some(201);
+    assert!(recovered
+        .settle_request_with_request_fact(BILLING, 50, None, None, &conflicting_terminal)
+        .is_err());
+    let legacy_terminal =
+        request_fact_terminal(now(), crate::request_facts::DeliveryState::NotStarted);
+    recovered
+        .cancel_request_with_request_fact("legacy-rf", &legacy_terminal)
+        .unwrap();
+    let legacy_fact_count: i64 = recovered
+        .client
+        .query_one(
+            "SELECT COUNT(*)::bigint FROM request_facts WHERE billing_request_id='legacy-rf'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(legacy_fact_count, 0);
+    unlock_request_fact_matrix(&mut lock_holder);
+}
+
+/// Outcome, reconciliation, terminal batch, and prune proof for the dormant write-only surface.
+#[test]
+fn request_fact_outcomes_batch_and_prune_postgres_matrix() {
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping request-fact outcome/batch/prune matrix: test URL is unset");
+        return;
+    };
+    let (mut lock_holder, mut pg) = lock_request_fact_matrix(&url);
+    pg.account_create("rf2-account", None, 10_000).unwrap();
+    pg.account_topup("rf2-account", 100_000, Some("rf2-seed"))
+        .unwrap();
+    pg.key_issue("rf2-key", "rf2-account", None).unwrap();
+    let key_id = pg.key_get("rf2-key").unwrap().unwrap().key_id;
+    let owner = pg.claim_instance("rf2-owner", 600).unwrap();
+    let admitted_at = now();
+    let terminal =
+        request_fact_terminal(admitted_at, crate::request_facts::DeliveryState::NotStarted);
+    let cases = [
+        (
+            "33333333-3333-4333-8333-333333333331",
+            "33333333-3333-4333-8333-333333333332",
+            0_i64,
+            "zero_metered",
+        ),
+        (
+            "33333333-3333-4333-8333-333333333333",
+            "33333333-3333-4333-8333-333333333334",
+            0_i64,
+            "canceled",
+        ),
+    ];
+    for (logical, billing, actual, outcome) in cases {
+        let fact = request_fact_admission(
+            logical,
+            billing,
+            None,
+            1,
+            "rf2-account",
+            &key_id,
+            admitted_at,
+        );
+        pg.reserve_request_for_execution_with_fact(
+            &owner,
+            billing,
+            "rf2-account",
+            "rf2-key",
+            10,
+            600,
+            &crate::ExecutionAttempt::direct(),
+            &fact,
+        )
+        .unwrap();
+        if outcome == "canceled" {
+            pg.cancel_request_with_request_fact(billing, &terminal)
+                .unwrap();
+        } else {
+            pg.settle_request_with_request_fact(billing, actual, None, None, &terminal)
+                .unwrap();
+        }
+        let stored: String = pg
+            .client
+            .query_one(
+                "SELECT billing_outcome FROM request_facts WHERE billing_request_id=$1",
+                &[&billing],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(stored, outcome);
+    }
+
+    const GROUP: &str = "44444444-4444-4444-8444-444444444444";
+    let first_id = "55555555-5555-4555-8555-555555555551";
+    let second_id = "55555555-5555-4555-8555-555555555552";
+    for (attempt, billing) in [(1, first_id), (2, second_id)] {
+        let execution = crate::ExecutionAttempt::grouped(GROUP, attempt).unwrap();
+        let fact = request_fact_admission(
+            "66666666-6666-4666-8666-666666666666",
+            billing,
+            Some(GROUP),
+            attempt,
+            "rf2-account",
+            &key_id,
+            admitted_at,
+        );
+        pg.reserve_request_for_execution_with_fact(
+            &owner,
+            billing,
+            "rf2-account",
+            "rf2-key",
+            10,
+            600,
+            &execution,
+            &fact,
+        )
+        .unwrap();
+    }
+    pg.settle_request_with_request_fact(first_id, 5, None, None, &terminal)
+        .unwrap();
+    pg.settle_request_with_request_fact(second_id, 5, None, None, &terminal)
+        .unwrap();
+    let outcomes: Vec<String> = pg
+        .client
+        .query(
+            "SELECT billing_outcome FROM request_facts WHERE billing_request_id IN ($1,$2) \
+             ORDER BY billing_request_id",
+            &[&first_id, &second_id],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(outcomes, vec!["winner", "loser"]);
+
+    // Reconciler synthesizes honest unknown evidence only when the optional fact exists.
+    let reserved_id = "77777777-7777-4777-8777-777777777771";
+    let delivering_id = "77777777-7777-4777-8777-777777777772";
+    for (logical, billing) in [
+        ("88888888-8888-4888-8888-888888888881", reserved_id),
+        ("88888888-8888-4888-8888-888888888882", delivering_id),
+    ] {
+        let fact = request_fact_admission(
+            logical,
+            billing,
+            None,
+            1,
+            "rf2-account",
+            &key_id,
+            admitted_at,
+        );
+        pg.reserve_request_for_execution_with_fact(
+            &owner,
+            billing,
+            "rf2-account",
+            "rf2-key",
+            10,
+            1,
+            &crate::ExecutionAttempt::direct(),
+            &fact,
+        )
+        .unwrap();
+    }
+    pg.mark_delivering_with_request_fact(&owner, delivering_id, 1)
+        .unwrap();
+    pg.client
+        .execute(
+            "UPDATE reservations SET lease_until=0 WHERE request_id IN ($1,$2)",
+            &[&reserved_id, &delivering_id],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "UPDATE engine_instances SET lease_until=0 WHERE instance_id=$1",
+            &[&owner.instance_id],
+        )
+        .unwrap();
+    let report = pg.reconcile_expired(100, false).unwrap();
+    assert_eq!(report.canceled_before_delivery, 1);
+    assert_eq!(report.charged_after_delivery, 1);
+    let reconciled: Vec<(String, String)> = pg
+        .client
+        .query(
+            "SELECT billing_request_id,delivery_state FROM request_facts \
+             WHERE billing_request_id IN ($1,$2) ORDER BY billing_request_id",
+            &[&reserved_id, &delivering_id],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(
+        reconciled,
+        vec![
+            (reserved_id.into(), "not_started".into()),
+            (delivering_id.into(), "interrupted".into()),
+        ]
+    );
+    let reconcile_outcome: String = pg
+        .client
+        .query_one(
+            "SELECT billing_outcome FROM request_facts WHERE billing_request_id=$1",
+            &[&delivering_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(reconcile_outcome, "reconciled");
+
+    let make_terminal = |logical: &str, billing: Option<&str>, admitted: i64| {
+        let base = request_fact_admission(
+            logical,
+            billing.unwrap_or("99999999-9999-4999-8999-999999999999"),
+            None,
+            1,
+            "rf2-account",
+            &key_id,
+            admitted,
+        );
+        crate::request_facts::TerminalRequestFact {
+            logical_request_id: base.logical_request_id,
+            billing_request_id: billing.map(str::to_owned),
+            execution_group_id: None,
+            attempt: 1,
+            account_id: base.account_id,
+            key_id: base.key_id,
+            client_kind: base.client_kind,
+            client_source: base.client_source,
+            client_version: base.client_version,
+            provider_plane: base.provider_plane,
+            route_class: base.route_class,
+            request_class: base.request_class,
+            requested_model: base.requested_model,
+            executable_model: base.executable_model,
+            stream_flag: base.stream_flag,
+            tools_declared_count: base.tools_declared_count,
+            tool_classes: base.tool_classes,
+            tool_choice_mode: base.tool_choice_mode,
+            parallel_tools_requested: base.parallel_tools_requested,
+            tool_results_in_input: base.tool_results_in_input,
+            structured_output_flag: base.structured_output_flag,
+            reasoning_flag: base.reasoning_flag,
+            service_tier: base.service_tier,
+            input_modalities: base.input_modalities,
+            output_modalities: base.output_modalities,
+            admitted_at: admitted,
+            terminal: request_fact_terminal(
+                admitted,
+                crate::request_facts::DeliveryState::NotStarted,
+            ),
+        }
+    };
+    let batch_billing = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+    let batch = vec![
+        make_terminal(
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+            Some(batch_billing),
+            admitted_at,
+        ),
+        make_terminal("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3", None, admitted_at),
+    ];
+    assert_eq!(pg.insert_terminal_request_facts(&batch).unwrap(), 2);
+    assert_eq!(pg.insert_terminal_request_facts(&batch).unwrap(), 1);
+    let oversized = vec![batch[0].clone(); crate::request_facts::MAX_REQUEST_FACT_BATCH + 1];
+    assert!(pg.insert_terminal_request_facts(&oversized).is_err());
+
+    // Prune facts first, before their corresponding old lifecycle rows, while retaining young data.
+    let cutoff = now() - crate::pricing::PRICING_REQUEST_LIFECYCLE_MIN_RETENTION_SECS;
+    let old_billing = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3";
+    let old_admission = request_fact_admission(
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb4",
+        old_billing,
+        None,
+        1,
+        "rf2-account",
+        &key_id,
+        cutoff - 1,
+    );
+    let prune_owner = pg.claim_instance("rf2-prune-owner", 600).unwrap();
+    pg.reserve_request_for_execution_with_fact(
+        &prune_owner,
+        old_billing,
+        "rf2-account",
+        "rf2-key",
+        10,
+        600,
+        &crate::ExecutionAttempt::direct(),
+        &old_admission,
+    )
+    .unwrap();
+    let old_terminal =
+        request_fact_terminal(cutoff - 1, crate::request_facts::DeliveryState::NotStarted);
+    pg.settle_request_with_request_fact(old_billing, 1, None, None, &old_terminal)
+        .unwrap();
+    pg.client
+        .execute(
+            "UPDATE settlement_outbox SET committed_ts=$2,updated_ts=$2 WHERE request_id=$1",
+            &[&old_billing, &(cutoff - 1)],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "UPDATE reservations SET settled_ts=$2,updated_ts=$2 WHERE request_id=$1",
+            &[&old_billing, &(cutoff - 1)],
+        )
+        .unwrap();
+    let old_fact = make_terminal("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1", None, cutoff - 1);
+    let young_fact = make_terminal("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2", None, cutoff + 1);
+    pg.insert_terminal_request_facts(&[old_fact, young_fact])
+        .unwrap();
+    let before_illegal: i64 = pg
+        .client
+        .query_one("SELECT COUNT(*)::bigint FROM request_facts", &[])
+        .unwrap()
+        .get(0);
+    assert!(pg.maintenance_prune(now()).is_err());
+    let after_illegal: i64 = pg
+        .client
+        .query_one("SELECT COUNT(*)::bigint FROM request_facts", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(before_illegal, after_illegal);
+    let report = pg.maintenance_prune(cutoff).unwrap();
+    assert_eq!(report.request_facts, 2);
+    assert_eq!(report.outbox, 1);
+    assert_eq!(report.reservations, 1);
+    let related_remaining: i64 = pg
+        .client
+        .query_one(
+            "SELECT (SELECT COUNT(*) FROM request_facts WHERE billing_request_id=$1) +                     (SELECT COUNT(*) FROM settlement_outbox WHERE request_id=$1) +                     (SELECT COUNT(*) FROM reservations WHERE request_id=$1)",
+            &[&old_billing],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(related_remaining, 0);
+    let remaining: i64 = pg
+        .client
+        .query_one(
+            "SELECT COUNT(*)::bigint FROM request_facts WHERE logical_request_id=$1",
+            &[&"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2"],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(remaining, 1);
+    unlock_request_fact_matrix(&mut lock_holder);
 }
 
 /// Run with an isolated database, for example:

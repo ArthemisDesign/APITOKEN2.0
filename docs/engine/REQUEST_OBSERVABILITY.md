@@ -1,9 +1,11 @@
 # Request observability contract
 
-> **Status: PROPOSED, not implemented.** This document records the target design and rollout
-> constraints for discussion. It does not describe a live API, schema, metric, retention guarantee,
-> or deployed behavior. Implementation requires the staged producer-first changes below.
-> Rollout: stage 13.2 dormant storage is merged as migrations 0053-0054 (request_facts plus the crash-safe terminal outbox envelope); producer stages are pending.
+> **Status: PROPOSED; dormant registry S2 primitives implemented, no producer or read surface.**
+> This document records the target design and rollout constraints for discussion. Migrations 0053-0054
+> are deployed, and `crates/registry` now exposes opt-in PostgreSQL write/lifecycle primitives against
+> that dormant schema. No forward/server/router caller, read API, metric, or end-to-end coverage
+> guarantee exists yet; legacy registry callers continue to omit request facts. Producer stages remain
+> pending and require the producer-first changes below.
 
 ## 1. Purpose
 
@@ -30,6 +32,14 @@ It is deliberately not a complete request journal. It normally exists only when 
 reaches settlement, so it does not cover all validation errors, authorization or balance refusals,
 provider failures, non-billable calls, or every interrupted stream. It also does not own request
 latency, routing attempts, client classification, or general tool-use dimensions.
+
+The dormant S2 PostgreSQL layer now provides privacy-bounded typed admission/terminal records,
+exact-replay validation in reservation transactions, delivery tracking in the delivering transaction,
+crash-safe terminalization during authoritative settlement-outbox APPLY, reconciliation synthesis,
+a bounded terminal batch insert, and request-fact-first retention pruning. Existing methods remain
+fact-free wrappers, SQLite money behavior is unchanged, and no production caller exercises these
+primitives yet. `billing_outcome` is never accepted in the outbox envelope: APPLY derives it from the
+authoritative winner, reconciliation, cancellation, and metered-amount state.
 
 The HTTP error audit writes one JSON journal event for a terminal non-2xx response to a recognized
 metered key; it lives in `crates/server/src/http.rs:667-739` as `audit_customer_error` middleware
@@ -324,20 +334,24 @@ analytics must not be introduced into the pool layer.
    MVP provider/surface scope.
 2. Merge an expand-only engine migration first. It introduces dormant storage and pruning support
    without a runtime dependency. Wait for GREEN `deploy/migration` and `deploy/watchdog`.
-3. Deliver the provider-plane producer for the optional trusted logical-ID capability, reservation,
-   delivery, outbox-terminal lifecycle, and low-priority terminal inserts. Update the engine contract
-   documentation in the same commit and wait for GREEN.
-4. Deliver the router consumer/producer after the plane capability is GREEN. Caddy and router both
+3. Deliver the dormant registry S2 runtime primitives: opt-in reservation/delivery lifecycle,
+   outbox-terminal APPLY, reconciliation synthesis, bounded terminal inserts, and retention pruning.
+   Keep all legacy callers fact-free and add no read surface. **Implemented; not yet a production
+   producer.**
+4. Deliver the provider-plane producer for the optional trusted logical-ID capability and wire the
+   dormant registry primitives. Update the engine contract documentation in the same commit and wait
+   for GREEN.
+5. Deliver the router consumer/producer after the plane capability is GREEN. Caddy and router both
    strip client copies before trusted injection.
-5. Instrument Anthropic, Codex, and Gemini native and universal surfaces. Keep existing body,
+6. Instrument Anthropic, Codex, and Gemini native and universal surfaces. Keep existing body,
    response, stream, retry, settlement, and execution-group behavior unchanged.
-6. Deliver private aggregate and drilldown Control API producers. Update `docs/engine/CONTROL_API.md`
+7. Deliver private aggregate and drilldown Control API producers. Update `docs/engine/CONTROL_API.md`
    and `docs/DEPENDENCIES.md` in the same commit.
-7. After the exact producer SHA is GREEN, deliver `packages/contracts`,
+8. After the exact producer SHA is GREEN, deliver `packages/contracts`,
    `packages/engine-client`, `apps/api`, and the operator UI as consumer commits.
-8. Add fixed-cardinality health metrics and their alert/runbook/dashboard changes under the new
+9. Add fixed-cardinality health metrics and their alert/runbook/dashboard changes under the new
    metric checklist.
-9. Run a coverage and load observation period with a pre-agreed rollback threshold for admission
+10. Run a coverage and load observation period with a pre-agreed rollback threshold for admission
    latency before exposing selected aggregates to customers or increasing retention.
 
 Every migration and cross-context contract remains expand-only and producer-first. This proposal
