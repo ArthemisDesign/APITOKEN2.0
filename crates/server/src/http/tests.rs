@@ -664,6 +664,62 @@ fn gemini_conversion_catalogue_keeps_long_context_media_and_quota_aliases() {
 }
 
 #[test]
+fn gemini_conversion_catalogue_projects_the_effective_hot_tariff_identity_and_rates() {
+    let now = 1_785_369_601;
+    let spec = metering::gemini_catalog_at(now)
+        .into_iter()
+        .find(|model| model.id == "gemini-3.1-flash-image")
+        .unwrap();
+    let model = forward::GeminiModel {
+        id: spec.id.into(),
+        display_name: spec.display_name.into(),
+        input_token_limit: spec.input_token_limit,
+        output_token_limit: spec.output_token_limit,
+        prices: spec.prices,
+    };
+    let tariffs = forward::tariff_book::TariffBookSnapshot::from_rows(vec![
+        registry::pricing::TariffOverride {
+            tariff_family: "google/gemini/gemini-3.1-flash-image".into(),
+            version: 2,
+            effective_from: now - 1,
+            payload: json!({
+                "input": "501",
+                "audio_input": "502",
+                "cached_input": "503",
+                "cached_audio_input": "504",
+                "output": "3005",
+                "image_output": "60006",
+                "long_context_threshold": u64::MAX,
+                "long_input": "507",
+                "long_audio_input": "508",
+                "long_cached_input": "509",
+                "long_cached_audio_input": "510",
+                "long_output": "3011",
+                "search": {"kind": "per_query", "nano": "14000012"}
+            }),
+            payload_digest: "sha256:v2:test".into(),
+            created_ts: now - 1,
+            created_by: "test".into(),
+            reason: "test effective projection".into(),
+        },
+    ])
+    .unwrap();
+
+    let values = gemini_conversion_models_with_tariffs(&[model], now, &tariffs);
+    assert_eq!(
+        values[0]["tariff_schedule_id"],
+        "google/gemini/gemini-3.1-flash-image/v2"
+    );
+    assert_eq!(values[0]["rates"]["input_nanousd_per_token"], "501");
+    assert_eq!(
+        values[0]["rates"]["image_output_nanousd_per_token"],
+        "60006"
+    );
+    assert_eq!(values[0]["search"]["billing_unit"], "query");
+    assert_eq!(values[0]["search"]["nanousd_per_unit"], "14000012");
+}
+
+#[test]
 fn prometheus_omits_unmeasured_codex_dollar_series() {
     let home = &unknown_codex_status().homes[0];
     let mut body = String::new();

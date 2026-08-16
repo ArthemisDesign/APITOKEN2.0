@@ -41,7 +41,9 @@ does not exceed measurement uncertainty.
 - `--budget-usd` is parsed into integer nanoUSD and cannot exceed a total of `$40` per run.
 - Before the first turn, `calibration_authority_available=true`, an empty queue, zero
   `dropped_events`, healthy persistence, and a known paid plan for every selected profile
-  are mandatory.
+  are mandatory. The backend `conversion_models` projection resolves the same effective hot
+  tariff override as request admission and publishes its exact `<family>/v<version>` identity;
+  the runner rejects any immutable event whose tariff identity differs from that preflight.
 - The admin-only `x-apitoken-calibration-profile` header contains the full opaque Gemini
   profile ID. The backend selects exactly it, does not spill/rebind, and does not bypass
   auth death, cooling, or provider zero. The header is never forwarded to Google.

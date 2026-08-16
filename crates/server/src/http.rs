@@ -5529,16 +5529,36 @@ fn codex_subs_value_with_report(
 }
 
 fn gemini_conversion_models(models: &[forward::GeminiModel], now: i64) -> Vec<Value> {
+    gemini_conversion_models_with_tariffs(models, now, &forward::tariff_book::snapshot())
+}
+
+fn gemini_conversion_models_with_tariffs(
+    models: &[forward::GeminiModel],
+    now: i64,
+    tariff_snapshot: &forward::tariff_book::TariffBookSnapshot,
+) -> Vec<Value> {
     models
         .iter()
         .filter_map(|model| {
-            let prices = match metering::gemini_prices_at(&model.id, now) {
-                Some(prices) => prices,
+            let (tariff_family, compiled) = match metering::gemini_matched_tariff_at(&model.id, now) {
+                Some(resolved) => resolved,
                 None => {
                     elog::warn("server", "tariff lookup failed; model dropped from catalog");
                     return None;
                 }
             };
+            let resolved = forward::tariff_book::reserve_base(
+                tariff_snapshot,
+                tariff_family,
+                now,
+                compiled,
+                forward::tariff_book::as_gemini,
+            );
+            let tariff_schedule_id = resolved
+                .pin
+                .as_ref()
+                .map_or(metering::gemini::TARIFF_SCHEDULE_ID, |pin| pin.schedule_id.as_str());
+            let prices = resolved.prices;
             let (search_unit, search_nano) = match prices.search {
                 metering::GeminiSearchBilling::PerQuery { nano } => ("query", nano),
                 metering::GeminiSearchBilling::PerGroundedPrompt { nano } => {
@@ -5548,7 +5568,7 @@ fn gemini_conversion_models(models: &[forward::GeminiModel], now: i64) -> Vec<Va
             Some(json!({
                 "id": model.id,
                 "display_name": model.display_name,
-                "tariff_schedule_id": metering::gemini::TARIFF_SCHEDULE_ID,
+                "tariff_schedule_id": tariff_schedule_id,
                 "input_token_limit": model.input_token_limit.to_string(),
                 "output_token_limit": model.output_token_limit.to_string(),
                 "quota_model_ids": model.quota_model_ids(),
