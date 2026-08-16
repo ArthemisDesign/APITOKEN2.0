@@ -544,11 +544,25 @@ def load_resume_report(path: str, budget_nano: int, requested_models: list[str] 
         and payload.get("resume_safe") is True
         and payload.get("resume_proof") == "x-apitoken-execution-state:not_started"
     )
+    # A media-matrix run whose failure is a local transport read (SSH/capacity poll) never
+    # reached a paid dispatch after its recorded outcomes, so its completed legs are safe to
+    # keep and its pending legs were never started.
+    media_matrix_checkpoint = (
+        payload.get("schema") == "gemini-live-calibration/v2"
+        and isinstance(payload.get("media_targets"), dict)
+        and isinstance(failure, str)
+        and (
+            "timed out" in failure
+            or "SSH transport failed" in failure
+            or "capacity command failed" in failure
+        )
+    )
     minimal_reclassification = _minimal_thinking_reclassification(payload)
     if (
         not proved_checkpoint
         and not legacy_explicit_stop
         and not legacy_checkpoint
+        and not media_matrix_checkpoint
         and minimal_reclassification is None
     ):
         raise CalibrationError(
@@ -3326,6 +3340,8 @@ def main(argv: list[str] | None = None) -> int:
         "model_profitability": model_profitability(runner.records),
         "final_capacity": final,
     }
+    if args.gemini_media_matrix:
+        report["media_targets"] = media_targets
     if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search or args.gemini_37_media:
         if args.gemini_37_capabilities:
             generations = len(GEMINI_37_CAPABILITY_KINDS)
