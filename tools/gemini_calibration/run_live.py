@@ -2133,7 +2133,7 @@ class Runner:
         self.admission_attempts: list[dict[str, Any]] = []
 
     def execute_leg(self, leg: Leg, profile_id: str) -> dict[str, Any]:
-        if self.admission is not None or self.media_matrix:
+        if self.admission is not None and not self.media_matrix:
             levels = self.admission.thinking_levels if self.admission else ()
             if self.admission.capability_matrix:
                 if (
@@ -2167,6 +2167,10 @@ class Runner:
                     raise CalibrationError(
                         "Gemini 3.7 admission plan is not the exact contract"
                     )
+        if self.media_matrix and leg.name.rsplit(":", 1)[-1] not in {
+            f"{kind}-input" for kind in ("audio", "video", "pdf")
+        }:
+            raise CalibrationError("Gemini media-matrix plan is not the exact contract")
         before = self.capacity.read()
         require_healthy_delivery(before)
         states = profile_state(before)
@@ -2272,7 +2276,12 @@ class Runner:
         )
         if is_admission_search:
             upper += GEMINI_37_SEARCH_QUERY_RESERVE * rates.search
-        if self.admission is not None or self.media_matrix:
+        if self.media_matrix:
+            # The fleet matrix charges each leg against its own model's rate card; the
+            # aggregate budget is the sum of per-leg worst-case ceilings, recomputed from
+            # the full input-context reserve and verified once up front in main().
+            pass
+        elif self.admission is not None:
             if leg.name == f"admission:{GEMINI_37_ADMISSION_MODEL}:search":
                 capability_legs = ["search"]
             elif leg.name.rsplit(":", 1)[-1] in GEMINI_37_MEDIA_KINDS:
@@ -2920,6 +2929,22 @@ def main(argv: list[str] | None = None) -> int:
         resume.spent_nano if resume else 0,
         defaultdict(int, resume.spent_by_profile if resume else {}),
     )
+    if args.gemini_media_matrix:
+        # The aggregate contract is the exact sum of per-leg worst-case ceilings: every leg
+        # reserves its own model's full official input context at that model's current tariff,
+        # plus its 1024-token output. Any other envelope stops before the first paid request.
+        expected_total = 0
+        for model in models:
+            model_rates = rates[model]
+            per_leg = model_rates.upper_bound(
+                model_rates.input_token_limit, 1024, "fresh"
+            )
+            expected_total += per_leg * len(MEDIA_MATRIX_MODELS[model])
+        if budget_nano != expected_total:
+            raise CalibrationError(
+                "Gemini media-matrix budget must equal the exact aggregate worst-case "
+                f"ceiling {expected_total} nanoUSD, got {budget_nano}"
+            )
     admission: Gemini37Admission | None = None
     if args.gemini_37_admission:
         admission = Gemini37Admission(
