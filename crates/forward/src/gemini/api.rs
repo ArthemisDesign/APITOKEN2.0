@@ -2896,7 +2896,9 @@ async fn api_inner(
     }
     // A supplied exact-profile calibration for 3.7 retains the one-shot deadline fence used by
     // the admitted evidence path. Ordinary customer traffic carries neither header and follows
-    // the normal retry/reserve/settlement lifecycle.
+    // the normal retry/reserve/settlement lifecycle. The fleet media matrix carries the same
+    // fence on every published model, scoped to the admin calibration headers only.
+    let media_matrix_exact = calibration_target.is_some() && calibration_not_after.is_some();
     if model.id == GEMINI_37_MODEL
         && calibration_target.is_some()
         && calibration_not_after.is_none()
@@ -2905,12 +2907,12 @@ async fn api_inner(
             "gemini_calibration_deadline_required",
         ));
     }
-    if model.id != GEMINI_37_MODEL && calibration_not_after.is_some() {
+    if model.id != GEMINI_37_MODEL && calibration_not_after.is_some() && calibration_target.is_none() {
         return Err(ApiError::unavailable("gemini_calibration_deadline_scope"));
     }
-    let deadline_bound_exact = model.id == GEMINI_37_MODEL
+    let deadline_bound_exact = media_matrix_exact || (model.id == GEMINI_37_MODEL
         && calibration_target.is_some()
-        && calibration_not_after.is_some();
+        && calibration_not_after.is_some());
     let rate_limit_request_id = pending.request_id().to_string();
 
     // Only the upstream-bound operations carry an alt query; validate it here rather than for the
