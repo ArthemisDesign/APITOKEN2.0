@@ -12,16 +12,21 @@ object when either required value is unknown instead of rejecting startup or inv
 the encrypted capability cache still preserves every validated partial limit for a later compatible
 client version.
 
-You can install the plugin by copying `apitoken-router.js` to
-`~/.config/opencode/plugin/apitoken-router.js` (or into the auto-load directory
-`~/.config/opencode/plugins/`). For clients, the site offers a one-click installer
-`https://raw.githubusercontent.com/apitokensale-admin/apitoken.sale/main/opencode/install.sh`,
-which downloads the published copy of this file from the
-`apitokensale-admin/apitoken.sale` repository (`opencode/apitoken-router.js`) and adds the
-`apitoken` provider to `~/.config/opencode/opencode.jsonc`. When the plugin changes, the published
-copy must be updated in the same release. The `apitoken` provider in `opencode.jsonc` must
-use `@ai-sdk/openai-compatible`, `https://router.apitoken.sale/v1`, and a literal
-`sk-pool-…` key or the standard OpenCode placeholder `{env:NAME}`.
+Clients install through
+`https://raw.githubusercontent.com/apitokensale-admin/apitoken.sale/main/opencode/install.sh`.
+The installer puts the stable `apitoken-router-loader.js` in OpenCode's global auto-load directory,
+seeds a verified fallback runtime, and adds the `apitoken` provider to
+`~/.config/opencode/opencode.jsonc`. On every later OpenCode start the loader checks the signed
+`opencode/channel-v1.json`, accepts only the pinned GitHub release path and a strictly non-decreasing
+sequence, verifies the release SHA-256, and atomically adopts the self-contained ESM. Network,
+signature, hash, import, or factory failure retains the current/previous verified runtime and finally
+the installer fallback; rollback republishes known-good bytes at a higher channel sequence. The
+Ed25519 private key lives only in the public repository's protected `OPENCODE_RELEASE_SIGNING_KEY`
+GitHub Actions secret, while the public key is pinned in the loader. Publishing order is immutable
+release first, retrievability check second, signed channel last. The `apitoken` provider in
+`opencode.jsonc` must use `@ai-sdk/openai-compatible`,
+`https://router.apitoken.sale/v1`, and a literal `sk-pool-…` key or the standard OpenCode
+placeholder `{env:NAME}`.
 
 The plugin advertises only text output for all models. This is a deliberate OpenCode 1.18.11 limitation:
 its `@ai-sdk/openai-compatible` 2.0.41 does not decode native Gemini `inlineData` and does not accept

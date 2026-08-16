@@ -252,10 +252,15 @@ its native `model.limit` only when both `context` and `output` are present. The 
 keeps validated partial limits in the encrypted capability record while omitting `model.limit` from
 both live and stale OpenCode cards until both required values are authoritative. It never invents an
 output ceiling, and one model with partial metadata cannot prevent OpenCode from starting.
-The plugin entrypoint has exactly one ESM export — a default factory: OpenCode
-1.18.11 interprets every export of the file as a separate plugin and rejects named
-constants/helpers with `Plugin export is not a function`. The exact export shape is
-pinned by a unit test and a client smoke.
+The runtime and its stable auto-update loader each have exactly one ESM export — a default
+factory: OpenCode 1.18.11 interprets every export of a file plugin as a separate factory and rejects
+named constants/helpers with `Plugin export is not a function`. The loader checks a signed public
+channel at startup, pins its release origin/path, enforces a monotonic sequence, verifies SHA-256,
+and adopts releases atomically only after import/factory success. Network or candidate failure falls
+back through verified current, previous, and installer-seeded runtimes. Release rollback therefore
+uses known-good bytes under a higher signed sequence rather than mutating history. Exact export,
+signature, replay, digest, size, candidate-failure, and offline fallback behavior is pinned by tests
+next to the plugin and by a real client smoke.
 
 The generated-image capability is deliberately not advertised in the OpenCode model
 schema. The package provider uses `@ai-sdk/openai-compatible` 2.0.41: its Chat

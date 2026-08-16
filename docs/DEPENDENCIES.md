@@ -380,7 +380,11 @@ is only what is needed to walk the relationships when making changes:
   contains only encrypted capability records without `pricing` and `cost`, is bound to the exact
   credential/base URL, and is limited by
   schema/TTL/max-stale guards. The cached fallback is always explicitly stale and
-  cost-free. The OpenCode transport does not consume Gemini `inlineData`, so the plugin
+  cost-free. The installed integration is a stable loader: a pinned Ed25519 public key,
+  exact GitHub release origin/path, monotonic channel sequence, SHA-256 and atomic writes guard
+  automatic runtime updates; current/previous/installer fallback keeps startup available, and a
+  rollback republishes known-good bytes at a higher signed sequence. The OpenCode transport does not
+  consume Gemini `inlineData`, so the plugin
   does not advertise generated-image output; the native Gemini API remains the supported
   image surface. The router-owned preset publishes live member IDs, conservative
   guarantees, and a variable-price marker, but the plugin deliberately does not turn it
