@@ -1,19 +1,19 @@
 # Request observability contract
 
-> **Status: PROPOSED; dormant registry S2 and forward-core S3A are implemented; the Caddy
-> logical-ID perimeter is a candidate awaiting production GREEN; no runtime producer or read surface.**
+> **Status: PROPOSED; dormant registry S2 and forward-core S3A are implemented; the security-only
+> Caddy logical-ID perimeter is implemented and dormant; no runtime producer or read surface.**
 > This document records the target design and rollout constraints for discussion. Migrations 0053-0054
 > are deployed; `crates/registry` exposes opt-in PostgreSQL write/lifecycle primitives, and
 > `AsyncBilling` now transports those typed facts through the owning money transactions plus a distinct
-> fail-open terminal-at-insert inbox. The Caddy candidate reserves
+> fail-open terminal-at-insert inbox. The Caddy perimeter reserves
 > `X-Apitoken-Logical-Request-Id` by deleting internet copies at all four public provider/router
 > ingresses while leaving stable loopback origins untouched.
 > No provider plane recognizes or consumes that header as trusted logical identity, generates an ID,
 > or returns it; no router produces it; and no read API, metric, or end-to-end coverage guarantee
 > exists yet. All current production callers continue to omit request facts. The perimeter alone does
 > not authorize loopback injection or make generic header forwarding a trusted capability; unmodified
-> forwarding may blindly transport the header until the plane validates and consumes/strips it.
-> Runtime producer stages remain pending and require the perimeter-first sequence below.
+> forwarding may blindly transport the header and thereby confers no trust.
+> Runtime producer stages require the perimeter-first sequence below.
 
 ## 1. Purpose
 
@@ -102,17 +102,17 @@ Four identities have different meanings and must remain separate:
 | `upstream_request_id` | Bounded terminal provider reference, when safely available | Provider plane |
 | `calibration_request_id` | Admin-only exact-calibration identity (Gemini and Kimi lanes), canonical UUIDv4 | External admin runbook via `x-apitoken-calibration-request-id` |
 
-The perimeter candidate reserves `X-Apitoken-Logical-Request-Id`: Caddy removes
+The implemented, security-only perimeter reserves `X-Apitoken-Logical-Request-Id`: Caddy removes
 client-supplied copies on every public provider/router ingress while stable loopback origins preserve
-a future trusted internal value. No runtime recognizes or consumes the header as trusted logical
-identity, generates an ID, or returns it at this stage; arbitrary loopback injection remains
-unauthorized and generic header forwarding is not capability acceptance. Unmodified forwarding may
-blindly transport the header, so after this Caddy change is production GREEN the provider-plane stage
-must strictly validate an optional trusted value, consume/strip the capability before any external
-upstream dispatch, and give direct traffic a fresh plane-generated logical ID. Only after that
-consumer is GREEN may
-the router stage create one CSPRNG UUIDv4 before the first executable attempt, remove any inbound copy
-again, and inject the same logical ID into every attempt.
+it for a future trusted internal hop. No plane recognizes or consumes the header as trusted logical
+identity, generates an ID, or returns it; no router produces it. Arbitrary loopback injection remains
+unauthorized, generic header forwarding is not capability acceptance, and forwarding that blindly
+carries the value confers no trust. The perimeter's exact SHA must be production GREEN before the
+provider-plane stage; canonical merge satisfies that precondition. The plane must then strictly
+validate an optional trusted value, consume/strip the capability before any external upstream
+dispatch, and give direct traffic a fresh plane-generated logical ID. Only after that consumer's exact
+SHA is GREEN may the router stage create one CSPRNG UUIDv4 before the first executable attempt, remove
+any inbound copy again, and inject the same logical ID into every attempt.
 
 The logical ID is additive correlation metadata. It does not replace a protocol's public response ID,
 an upstream `request-id`, the billing ID, or the existing execution-group contract. Existing public
@@ -343,7 +343,7 @@ pagination.
   `GET /spend-stats`, and `GET /fleet-history` (`crates/server/src/admin.rs:947-1056`,
   `crates/server/src/http.rs:341,3947-4039,4383`);
 - `crates/router`: trusted logical request ID production and propagation across fallback attempts;
-- `deploy/Caddyfile`: candidate owner of the perimeter-only stage; the existing
+- `deploy/Caddyfile`: implemented owner of the completed security-only perimeter stage; the
   `strip_execution_identity` snippet removes client-supplied logical identity at all four public
   ingresses without changing stable loopback origins;
 - `packages/contracts` and `packages/engine-client`: typed consumers only after the engine producer
@@ -369,17 +369,19 @@ analytics must not be introduced into the pool layer.
    money actor; terminal-at-insert events use a separate bounded fail-open PostgreSQL inbox. Preserve
    all legacy callers and add no wire/read/metric surface. **Implemented; no plane caller yet.**
 5. Reserve the logical-ID trust boundary at Caddy first: strip
-   `X-Apitoken-Logical-Request-Id` from all four public provider/router ingresses, preserve stable
-   loopback origins, and wait for the exact perimeter SHA to be production GREEN. **Candidate in
-   this perimeter-only commit; not deployed yet, and no plane or router runtime producer exists.**
-6. Only after the perimeter is GREEN, deliver the provider-plane strict consumer/direct-ID
+   `X-Apitoken-Logical-Request-Id` from all four public provider/router ingresses and preserve stable
+   loopback origins. **Implemented as a completed security-only, dormant perimeter: no plane
+   recognizes or consumes the header as trusted logical identity, generates or returns an ID, and
+   no router produces it; generic forwarding may blindly carry it but confers no trust.** The exact
+   perimeter SHA must be production GREEN before step 6; canonical merge satisfies this prerequisite.
+6. Only after that perimeter prerequisite, deliver the provider-plane strict consumer/direct-ID
    generator and wire the dormant forward-core forms. The plane accepts at most one canonical
    trusted internal value, consumes/strips the capability before any external upstream dispatch,
    and generates a fresh logical ID when direct traffic has none. Update the
-   engine contract documentation in the same commit and wait for GREEN.
-7. Only after the plane consumer/generator is GREEN, deliver the router producer. It removes any
-   inbound copy again, creates one CSPRNG UUIDv4 per logical request, and injects it into every
-   provider attempt.
+   engine contract documentation in the same commit and wait for its exact GREEN verdict.
+7. Only after the plane consumer/generator's exact SHA is GREEN, deliver the router producer. It
+   removes any inbound copy again, creates one CSPRNG UUIDv4 per logical request, and injects it into
+   every provider attempt.
 8. Instrument Anthropic, Codex, and Gemini native and universal surfaces. Keep existing body,
    response, stream, retry, settlement, and execution-group behavior unchanged.
 9. Deliver private aggregate and drilldown Control API producers. Update `docs/engine/CONTROL_API.md`

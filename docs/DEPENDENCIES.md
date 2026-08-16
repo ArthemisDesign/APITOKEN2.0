@@ -198,20 +198,19 @@ is only what is needed to walk the relationships when making changes:
   `crates/server` `/metrics`; public APIs do not return group identity. Contract —
   `docs/engine/ROUTING_FENCING.md` §4.
 - **Logical request identity contract (Caddy perimeter → future router/planes).** The
-  current candidate stage is the ingress owner `deploy/Caddyfile`: once deployed, all four
-  public provider/router vhosts will remove the reserved internal
-  `X-Apitoken-Logical-Request-Id`, while stable loopback origins deliberately preserve a future
-  trusted value. After this exact perimeter is production GREEN,
-  `crates/forward` is the next staged consumer: it will strictly validate an optional
-  trusted router value, consume/strip the capability before external upstream dispatch,
-  and generate a direct-ingress logical ID when none is present.
-  Only after that plane consumer is GREEN may `crates/router` become the producer of
-  one CSPRNG UUIDv4 shared across provider attempts. **No plane currently recognizes or
-  consumes the header as trusted logical identity, generates an ID, or returns it, and no router
-  currently injects it**; the perimeter does not authorize arbitrary loopback injection or turn
-  generic upstream forwarding into trust. Unmodified forwarding may blindly transport the header
-  until the plane consumer validates and consumes/strips it. The ID is not public and does not
-  change `x-request-id`. Contract —
+  implemented ingress perimeter in `deploy/Caddyfile` is security-only and dormant: all four
+  public provider/router vhosts remove the reserved internal
+  `X-Apitoken-Logical-Request-Id`, while stable loopback origins deliberately preserve it for a
+  future trusted router→plane hop. The perimeter's exact SHA must be production GREEN before
+  `crates/forward` becomes the next staged consumer; canonical merge satisfies that precondition.
+  The plane stage will strictly validate an optional trusted router value, consume/strip the
+  capability before external upstream dispatch, and generate a direct-ingress logical ID when none
+  is present. Only after that plane consumer's exact SHA is GREEN may `crates/router` become the
+  producer of one CSPRNG UUIDv4 shared across provider attempts. **No plane recognizes or consumes
+  the header as trusted logical identity, generates an ID, or returns it, and no router produces
+  it**; the perimeter does not authorize arbitrary loopback injection or turn generic upstream
+  forwarding into trust. Unmodified forwarding may blindly transport the header and thereby
+  confers no trust. The ID is not public and does not change `x-request-id`. Contract —
   `docs/engine/REQUEST_OBSERVABILITY.md` §§4, 13;
   perimeter details — `deploy/CADDY.md`.
 - **ClaudeStore-compatible emergency transports (`crates/server` → `crates/forward` → external relay origins).**
@@ -504,12 +503,12 @@ The stable provider origins 8790/8792/8794/8803 synthesize the internal
 `X-Apitoken-Execution-State: not_started` only on Caddy `no healthy upstream`; an ordinary
 runtime 503 does not get it. The public provider vhosts strip this header, while the
 loopback router uses it as a safe fencing proof before the next explicit fallback
-attempt. Separately, after deployment the current candidate makes the four public provider/router
-vhosts remove the reserved internal `X-Apitoken-Logical-Request-Id`; stable loopback origins retain
-it for a future trusted router→plane hop. No runtime currently recognizes or consumes the header as
-trusted logical identity, generates an ID, or returns it. Until the later plane stage strictly validates and
-consumes/strips the capability before external upstream dispatch, unmodified generic forwarding
-may still transport it but confers no trust.
+attempt. Separately, the implemented security-only logical-ID perimeter makes the four public
+provider/router vhosts remove the reserved internal `X-Apitoken-Logical-Request-Id`; stable loopback
+origins retain it for a future trusted router→plane hop. No plane recognizes or consumes the header
+as trusted logical identity, generates an ID, or returns it, and no router produces it. Until the
+later plane stage strictly validates and consumes/strips the capability before external upstream
+dispatch, generic forwarding may blindly carry it but confers no trust.
 
 ### systemd (`systemd/`) — service → application
 

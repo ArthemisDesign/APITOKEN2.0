@@ -166,27 +166,27 @@ three provider planes, the aggregated namespaced `/v1/models` catalog with its d
 policy, lane-shaped errors, and explicit off-by-default serial model fallback. Authentication,
 billing, in-plane retry boundaries, and streaming stay inside the planes; cross-plane fallback
 uses only the planes' exact `not_started` fencing signal or proven TCP ConnectionRefused.
-Execution identity is a private router→plane capability. In this candidate, the shared
+Execution identity is a private router→plane capability. The shared
 `strip_execution_identity` snippet removes `X-Apitoken-Execution-Group`,
 `X-Apitoken-Attempt`, and the reserved internal `X-Apitoken-Logical-Request-Id` at all four public
 ingress vhosts (`api`, `openai.api`, `gemini.api`, and `router`). The stable loopback origins do not
-import this snippet: after a later producer stage, trusted router-generated identity must survive the
-internal hop to a provider plane.
+import this snippet and preserve the reserved header for a later trusted router→plane hop.
 The existing router injects group/attempt identity only for an explicit fallback chain; clients can
 neither choose nor replay a group.
 
-Logical request identity follows a Caddy-first rollout. This perimeter is a candidate until its
-exact SHA reaches production and `deploy/watchdog` is GREEN; only then may any provider plane accept
-the header. A later plane stage will strictly validate a trusted value, consume/strip the capability
-before any external upstream dispatch, and generate a fresh logical ID for direct traffic; only after
-that consumer is GREEN may a router stage produce and inject one ID across its attempts.
-At the current perimeter-only stage no plane recognizes or consumes the logical header as trusted
-identity or generates an ID, the router does not produce it, and no runtime returns it. This perimeter
-does not authorize arbitrary loopback senders or turn generic header forwarding into capability
-acceptance. Unmodified runtime forwarding may blindly transport the header, so the later plane stage
-must validate and consume/strip it before external upstream dispatch. The header does not change
-`x-request-id`, and any internet-supplied value is simply erased before traffic reaches a stable
-provider origin or the unified router.
+Logical request identity follows a Caddy-first rollout. The implemented perimeter is security-only
+and dormant: no plane recognizes or consumes the logical header as trusted identity or generates an
+ID, the router does not produce it, and no runtime returns it. It does not authorize arbitrary
+loopback senders or turn generic header forwarding into capability acceptance. Unmodified runtime
+forwarding may blindly transport the header and thereby confers no trust.
+
+The perimeter's exact SHA must be production GREEN before the next provider-plane stage; canonical
+merge enforces that prerequisite. That later plane stage will strictly validate a trusted value,
+consume/strip the capability before any external upstream dispatch, and generate a fresh logical ID
+for direct traffic. Only after that consumer's exact SHA is GREEN may a router stage produce and
+inject one ID across its attempts. The header does not change `x-request-id`, and any
+internet-supplied value is erased before traffic reaches a stable provider origin or the unified
+router.
 `/health` reaches the router as well and stays
 router-local there — unified liveness is deliberately not a conjunction of plane health.
 `router-bluegreen.sh` starts and exact-binary verifies the inactive slot, requires direct `/ready`
