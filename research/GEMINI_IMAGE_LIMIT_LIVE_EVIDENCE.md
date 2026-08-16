@@ -1,5 +1,12 @@
 # Gemini image-generation limit evidence — 2026-08-16
 
+> **Route correction (2026-08-16):** the 429 fleet result below measured the retained gateway's
+> then-pinned `cloudcode-pa.googleapis.com` image origin. Current first-party Antigravity CLI 1.1.10
+> was subsequently observed using `daily-cloudcode-pa.googleapis.com` for the same exact
+> `gemini-3.1-flash-image` model and succeeding after an earlier capacity refusal. The endpoint drift
+> invalidates any fleet-wide statement that the subscriptions themselves could not generate images;
+> this report remains evidence about the old route/error window only.
+
 ## Conclusion
 
 Production evidence strongly supports an image-specific shared Google limit or backend wall that is

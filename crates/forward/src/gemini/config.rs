@@ -15,10 +15,10 @@ pub const GEMINI_NODE_FETCH_EXPECTED_JA4: &str = "t13d5212h1_b262b3658495_8e6e36
 pub const GEMINI_GOOGLE_AUTH_LIBRARY_VERSION: &str =
     gemini_credential::GEMINI_GOOGLE_AUTH_LIBRARY_VERSION;
 pub const LEGACY_GEMINI_UPSTREAM: &str = "https://cloudcode-pa.googleapis.com";
-/// The Antigravity language server sends production generation traffic here. The sandbox host is
-/// useful for the reviewed text surface, but advertises the image quota bucket without serving the
-/// image backend and returns a generic 503 for otherwise valid Nano Banana requests.
-pub const ANTIGRAVITY_MEDIA_UPSTREAM: &str = "https://cloudcode-pa.googleapis.com";
+/// Current first-party Antigravity image-tool traffic uses the daily production origin. Keep image
+/// generation separate from the configured sandbox text origin and from legacy Gemini CLI OAuth:
+/// those are different authenticated transports even though their Code Assist path is the same.
+pub const ANTIGRAVITY_MEDIA_UPSTREAM: &str = "https://daily-cloudcode-pa.googleapis.com";
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -3198,7 +3198,7 @@ mod tests {
         );
         assert_eq!(
             cfg.generation_upstream_for(OAuthKind::Antigravity, true, "gemini-3.1-flash-image"),
-            super::super::config::ANTIGRAVITY_MEDIA_UPSTREAM
+            "https://daily-cloudcode-pa.googleapis.com"
         );
         assert_eq!(
             cfg.generation_upstream_for(OAuthKind::LegacyGeminiCli, true, "gemini-3.1-flash-image"),

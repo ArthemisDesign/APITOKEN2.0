@@ -687,11 +687,12 @@ image-MIME `inlineData` parts to `image_url` content parts (Chat, including stre
 `output_image` items with a data URL (Responses), so a universal-lane caller is billed only for
 images it actually gets; non-image inline media has no OpenAI representation and is not fabricated.
 
-Image requests use `https://cloudcode-pa.googleapis.com`, the production endpoint selected by the
-Antigravity language server and independent working implementations. The configured sandbox host
-continues to serve the live-verified text surface, but its advertised image quota row is not proof
-of an image generation backend: valid image requests there return a generic 503. Explicit literal
-loopback mocks retain their configured origin.
+Image requests use `https://daily-cloudcode-pa.googleapis.com`, the production endpoint selected by
+current first-party Antigravity CLI 1.1.10's `generate_image` tool. The image tool is orchestrated
+by the selected text model but makes its own `gemini-3.1-flash-image` generation call. The configured
+sandbox daily host continues to serve the live-verified text surface; the legacy Gemini CLI OAuth
+transport remains on `cloudcode-pa.googleapis.com`. Explicit literal loopback mocks retain their
+configured origin.
 
 For Antigravity the wrapper uses the complete image identity rather than mixing it with an agent
 turn: `requestType=image_gen`, `requestId=image_gen/<unix-ms>/<uuid>/12`, no private `sessionId`,

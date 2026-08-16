@@ -792,9 +792,9 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    approximate BoringSSL impersonation or ambient proxy/env.
    Antigravity text, including the published `gemini-3-flash-preview`, keeps the live-verified configured
    endpoint; the owned private-wire probe passed on the production-configured sandbox daily origin. Image
-   generation always goes to
-   production `cloudcode-pa.googleapis.com`, like the official LS: the sandbox publishes an image quota row,
-   but answers 503 to generation. Literal loopback mocks are never redirected.
+   generation always goes to the production daily origin `daily-cloudcode-pa.googleapis.com`, matching
+   current first-party Antigravity CLI 1.1.10's separate `generate_image` call. Legacy Gemini CLI OAuth stays
+   on `cloudcode-pa.googleapis.com`; literal loopback mocks are never redirected.
    The helper receives the proxy secret only in the first IPC frame, multiplexes bounded NDJSON, reaps the process
    group and may restart only before upstream headers. Outbound frames, inbound NDJSON/base64
    staging, OAuth response collections and short-lived header/form strings are zeroized. Loopback mocks

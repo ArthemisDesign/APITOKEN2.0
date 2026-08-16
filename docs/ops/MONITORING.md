@@ -780,7 +780,9 @@ Start with `gemini-rate-limit` journal lines and group generation attempts by `r
   the fleet;
 - repeated matching hashes across unrelated request ids/profiles, especially for
   `gemini-3.1-flash-image`, while official catalogue quota remains positive, supports a shared
-  Google model/backend or hidden global-limit hypothesis rather than independent profile quotas;
+  Google model/backend or hidden global-limit hypothesis rather than independent profile quotas,
+  but only after the first-party Antigravity image origin is reconfirmed: a fleet-wide error on a
+  stale endpoint proves route drift, not subscription incapability;
 - `catalog_state=fresh`, `catalog_zero_buckets=0` and positive `catalog_min_remaining_bp` captures
   that contradiction at the instant of the 429; stale/missing catalogue evidence cannot prove it;
 - `retry_hint_source=none` means Google supplied neither a valid `Retry-After` nor `RetryInfo`; compare
