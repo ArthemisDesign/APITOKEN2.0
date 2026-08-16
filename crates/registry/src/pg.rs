@@ -2577,7 +2577,7 @@ impl PgStore {
         // from every authorization, this prevents a concurrent override edit from being paired
         // with account/key fields read from a different PostgreSQL snapshot.
         let rows = self.client.query(
-            "SELECT a.id,a.mult_bp,a.balance_nano,k.spent_nano,k.reserved_nano,
+            "SELECT a.id,k.key_id,a.mult_bp,a.balance_nano,k.spent_nano,k.reserved_nano,
                     k.spend_limit_nano,k.expires_ts,(k.status='active' AND a.status='active'),
                     d.provider_id,d.mult_bp
                FROM api_keys k
@@ -2592,8 +2592,8 @@ impl PgStore {
         let mut provider_mult_bp = Vec::with_capacity(crate::DISCOUNT_PROVIDER_IDS.len());
         for discount in &rows {
             match (
-                discount.get::<_, Option<String>>(8),
-                discount.get::<_, Option<i64>>(9),
+                discount.get::<_, Option<String>>(9),
+                discount.get::<_, Option<i64>>(10),
             ) {
                 (Some(provider), Some(multiplier)) => provider_mult_bp.push((provider, multiplier)),
                 (None, None) => {}
@@ -2602,14 +2602,15 @@ impl PgStore {
         }
         Ok(Some(KeyAuth {
             account_id: row.get(0),
-            mult_bp: row.get(1),
+            key_id: row.get(1),
+            mult_bp: row.get(2),
             provider_mult_bp,
-            balance_nano: row.get(2),
-            spent_nano: row.get(3),
-            reserved_nano: row.get(4),
-            spend_limit_nano: row.get(5),
-            expires_ts: row.get(6),
-            active: row.get(7),
+            balance_nano: row.get(3),
+            spent_nano: row.get(4),
+            reserved_nano: row.get(5),
+            spend_limit_nano: row.get(6),
+            expires_ts: row.get(7),
+            active: row.get(8),
         }))
     }
     pub fn key_get(&mut self, key: &str) -> Result<Option<KeyRow>> {

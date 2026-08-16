@@ -4098,7 +4098,22 @@ fn stage2_fault_matrix() {
 
     pg.add("sub@test", "token", "", "prod").unwrap();
     pg.account_create("acct", Some("handle"), 2000).unwrap();
-    pg.key_issue("key", "acct", Some("primary")).unwrap();
+    const RAW_SECRET_KEY: &str = "sk-pool-postgres-secret-never-use-as-key-id";
+    const NONSECRET_KEY_ID: &str = "key_postgres_nonsecret_identity_91bd";
+    pg.key_issue_with_policy(
+        RAW_SECRET_KEY,
+        "acct",
+        Some("primary"),
+        Some(1_500),
+        Some(now() + 3_600),
+    )
+    .unwrap();
+    pg.client
+        .execute(
+            "UPDATE api_keys SET key_id=$1 WHERE key=$2",
+            &[&NONSECRET_KEY_ID, &RAW_SECRET_KEY],
+        )
+        .unwrap();
     assert_eq!(
         pg.account_topup("acct", 1_000, Some("seed")).unwrap(),
         Some(1_000)
@@ -4112,7 +4127,15 @@ fn stage2_fault_matrix() {
     // The hot authorization statement returns account/key state and the entire bounded pricing
     // override set from one PostgreSQL snapshot. A change is visible on the next call without a
     // TTL cache, and absent overrides preserve the account default.
-    let auth = pg.key_account("key").unwrap().unwrap();
+    let auth = pg.key_account(RAW_SECRET_KEY).unwrap().unwrap();
+    assert_eq!(auth.account_id, "acct");
+    assert_eq!(auth.key_id, NONSECRET_KEY_ID);
+    assert_eq!(auth.mult_bp, 2_000);
+    assert_eq!(auth.balance_nano, 1_000);
+    assert_eq!(auth.spent_nano, 0);
+    assert_eq!(auth.reserved_nano, 0);
+    assert_eq!(auth.spend_limit_nano, Some(1_500));
+    assert!(auth.expires_ts.is_some_and(|expires| expires > now()));
     assert!(auth.active);
     assert!(auth.provider_mult_bp.is_empty());
     assert_eq!(auth.mult_for(PROVIDER_OPENAI), 2_000);
@@ -4120,7 +4143,7 @@ fn stage2_fault_matrix() {
         .unwrap();
     pg.set_account_provider_discount("acct", PROVIDER_GOOGLE, 10_000, now())
         .unwrap();
-    let auth = pg.key_account("key").unwrap().unwrap();
+    let auth = pg.key_account(RAW_SECRET_KEY).unwrap().unwrap();
     assert_eq!(
         auth.provider_mult_bp,
         vec![
@@ -4137,19 +4160,19 @@ fn stage2_fault_matrix() {
         .clear_account_provider_discount("acct", PROVIDER_GOOGLE)
         .unwrap());
     assert!(pg
-        .key_account("key")
+        .key_account(RAW_SECRET_KEY)
         .unwrap()
         .unwrap()
         .provider_mult_bp
         .is_empty());
 
     pg.account_set_status("acct", "disabled").unwrap();
-    assert!(!pg.key_account("key").unwrap().unwrap().active);
+    assert!(!pg.key_account(RAW_SECRET_KEY).unwrap().unwrap().active);
     pg.account_set_status("acct", "active").unwrap();
-    pg.key_set_status("key", "disabled").unwrap();
-    assert!(!pg.key_account("key").unwrap().unwrap().active);
-    pg.key_set_status("key", "active").unwrap();
-    assert!(pg.key_account("key").unwrap().unwrap().active);
+    pg.key_set_status(RAW_SECRET_KEY, "disabled").unwrap();
+    assert!(!pg.key_account(RAW_SECRET_KEY).unwrap().unwrap().active);
+    pg.key_set_status(RAW_SECRET_KEY, "active").unwrap();
+    assert!(pg.key_account(RAW_SECRET_KEY).unwrap().unwrap().active);
 
     let owner = pg.claim_instance("engine-a", 60).unwrap();
     pg.account_create("policy-acct", None, 10_000).unwrap();
@@ -4433,12 +4456,12 @@ fn stage2_fault_matrix() {
     }
 
     assert_eq!(
-        pg.reserve_request(&owner, "req-1", "acct", "key", 600, 60)
+        pg.reserve_request(&owner, "req-1", "acct", RAW_SECRET_KEY, 600, 60)
             .unwrap(),
         Some(400)
     );
     assert_eq!(
-        pg.reserve_request(&owner, "req-1", "acct", "key", 600, 60)
+        pg.reserve_request(&owner, "req-1", "acct", RAW_SECRET_KEY, 600, 60)
             .unwrap(),
         Some(400)
     );
@@ -4636,7 +4659,7 @@ fn stage2_fault_matrix() {
     );
 
     assert_eq!(
-        pg.reserve_request(&owner, "req-2", "acct", "key", 300, 60)
+        pg.reserve_request(&owner, "req-2", "acct", RAW_SECRET_KEY, 300, 60)
             .unwrap(),
         Some(450)
     );
@@ -4646,7 +4669,7 @@ fn stage2_fault_matrix() {
     // Crash boundary: enqueue commits but settlement application has not run. A fresh connection
     // drains the durable row exactly once.
     assert_eq!(
-        pg.reserve_request(&owner, "req-3", "acct", "key", 400, 60)
+        pg.reserve_request(&owner, "req-3", "acct", RAW_SECRET_KEY, 400, 60)
             .unwrap(),
         Some(350)
     );
@@ -5269,10 +5292,10 @@ fn stage2_fault_matrix() {
     let owner2 = pg.claim_instance("engine-a", 60).unwrap();
     assert!(owner2.epoch > owner.epoch);
     assert!(pg
-        .reserve_request(&owner, "stale", "acct", "key", 1, 60)
+        .reserve_request(&owner, "stale", "acct", RAW_SECRET_KEY, 1, 60)
         .is_err());
     assert_eq!(
-        pg.reserve_request(&owner2, "req-4", "acct", "key", 100, 60)
+        pg.reserve_request(&owner2, "req-4", "acct", RAW_SECRET_KEY, 100, 60)
             .unwrap(),
         Some(550)
     );
@@ -5281,9 +5304,9 @@ fn stage2_fault_matrix() {
     // Recovery distinguishes a request never delivered (refund) from a delivered response whose
     // exact usage was lost (conservatively charge the already approved hold).
     let dead = pg.claim_instance("dead-engine", 60).unwrap();
-    pg.reserve_request(&dead, "req-5", "acct", "key", 100, 1)
+    pg.reserve_request(&dead, "req-5", "acct", RAW_SECRET_KEY, 100, 1)
         .unwrap();
-    pg.reserve_request(&dead, "req-6", "acct", "key", 100, 1)
+    pg.reserve_request(&dead, "req-6", "acct", RAW_SECRET_KEY, 100, 1)
         .unwrap();
     pg.mark_delivering(&dead, "req-6", 1).unwrap();
     pg.client

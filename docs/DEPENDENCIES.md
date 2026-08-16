@@ -211,8 +211,10 @@ is only what is needed to walk the relationships when making changes:
   typed `crates/forward` extension; direct provider ingress with zero values creates its own ID.
   Universal Anthropic/Gemini adapters preserve the extension on synthesized leaf requests. Health,
   admin/internal preflight and backend-only KIMI/Tripo3D/Suno remain outside this MVP. The context is
-  dormant: no plane produces request facts or calls fact-aware billing APIs, there is no persistence,
-  read API, metric, or public ID, and `x-request-id` is unchanged. Contract —
+  dormant: metered authorization carries the authoritative non-secret `key_id` beside the raw billing
+  key as a future attribution prerequisite, but no plane produces request facts or calls fact-aware
+  billing APIs; there is no persistence, read API, metric, or public ID, and `x-request-id` is unchanged.
+  Contract —
   `docs/engine/REQUEST_OBSERVABILITY.md` §§4, 13; perimeter details — `deploy/CADDY.md`.
 - **ClaudeStore-compatible emergency transports (`crates/server` → `crates/forward` → external relay origins).**
   `crates/server/src/config.rs` solely reads the two strict enable/key pairs, and the

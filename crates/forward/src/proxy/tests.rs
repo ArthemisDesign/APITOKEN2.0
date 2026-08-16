@@ -22,6 +22,71 @@ fn lim(u5: f64, u7: f64, claim: Option<&str>, r5: i64, r7: i64) -> Limits {
     }
 }
 
+fn proxy_test_config() -> Arc<ProxyConfig> {
+    Arc::new(ProxyConfig {
+        api_keys: Vec::new(),
+        control_keys: Vec::new(),
+        panel_keys: Vec::new(),
+        default_mult_bp: 10_000,
+        trust_loopback: false,
+        upstream: "http://127.0.0.1:1".to_string(),
+        claudestore_fallback: None,
+        max_tries: 1,
+        util_cap: 1.0,
+        cool_secs: 1,
+        smooth_wait_ms: 0,
+        poll: false,
+        inject_identity: false,
+        identity: String::new(),
+        inject_billing: false,
+        cc_version: String::new(),
+        cc_entrypoint: String::new(),
+        default_beta: String::new(),
+        user_agent: "proxy-auth-test".to_string(),
+        user_agents: Vec::new(),
+        ua_spread: 0,
+        anthropic_version: String::new(),
+        connect_timeout: 1,
+        read_timeout: 1,
+        nonstream_read_timeout: 1,
+        x_app: String::new(),
+        stainless_lang: String::new(),
+        stainless_runtime: String::new(),
+        stainless_runtime_version: String::new(),
+        stainless_package_version: String::new(),
+        stainless_os: String::new(),
+        stainless_arch: String::new(),
+    })
+}
+
+fn proxy_test_app(billing: Arc<AsyncBilling>, path: &str) -> AppState {
+    let cfg = proxy_test_config();
+    AppState {
+        provider: crate::ProviderMode::Anthropic,
+        authority: Arc::new(registry::authority::AuthorityConfig::new(
+            path.to_string(),
+            None,
+        )),
+        data_db_path: Arc::new(path.to_string()),
+        pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
+        affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
+        clients: Arc::new(Clients::new(&cfg)),
+        codex: None,
+        gemini: None,
+        kimi: None,
+        glm: None,
+        tripo3d: None,
+        suno: None,
+        billing: Some(billing),
+        authority_ready: Arc::new(AtomicBool::new(true)),
+        breaker: Arc::new(Breaker::new(1)),
+        metrics: Arc::new(Metrics::new()),
+        probe_poke: None,
+        admin_changes: tokio::sync::broadcast::channel(16).0,
+        cfg,
+    }
+}
+
 #[test]
 fn strip_own_namespace_rewrites_prefixed_model_in_body() {
     // Universal dispatch проксирует тело байт-идентично: namespaced id доезжает
@@ -364,6 +429,87 @@ async fn metered_auth_accepts_any_valid_credential_deterministically() {
     assert_eq!(second.0, "a-valid");
     assert_eq!(first.1.account_id, second.1.account_id);
 
+    drop(billing);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn authorize_keeps_nonsecret_key_id_separate_from_raw_billing_key() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const RAW_SECRET_KEY: &str = "sk-pool-forward-secret-used-for-money-only";
+    const NONSECRET_KEY_ID: &str = "key_forward_nonsecret_identity_d42c";
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "claude-api-key-identity-auth-{}-{unique}.sqlite",
+        std::process::id(),
+    ));
+    let path_string = path.to_string_lossy().into_owned();
+    {
+        let connection = registry::open(&path_string).unwrap();
+        registry::account_create(&connection, "key-identity-account", None, 10_000).unwrap();
+        registry::account_topup(&connection, "key-identity-account", 5_000, None).unwrap();
+        registry::key_issue(&connection, RAW_SECRET_KEY, "key-identity-account", None).unwrap();
+        connection
+            .execute(
+                "UPDATE api_keys SET key_id=?1 WHERE key=?2",
+                (NONSECRET_KEY_ID, RAW_SECRET_KEY),
+            )
+            .unwrap();
+    }
+    let billing = Arc::new(AsyncBilling::start(path_string.clone(), 1).unwrap());
+    let app = proxy_test_app(Arc::clone(&billing), &path_string);
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", RAW_SECRET_KEY.parse().unwrap());
+    let peer = "192.0.2.1:443".parse().unwrap();
+
+    let authz = authorize(&app, &headers, &peer).await;
+    let Authz::Metered {
+        account_id,
+        key,
+        key_id,
+        available_nano,
+        ..
+    } = authz
+    else {
+        panic!("raw key should authorize as a metered credential");
+    };
+    assert_eq!(account_id, "key-identity-account");
+    assert_eq!(key, RAW_SECRET_KEY);
+    assert_eq!(key_id, NONSECRET_KEY_ID);
+    assert_ne!(key, key_id);
+    assert_eq!(available_nano, 5_000);
+
+    assert_eq!(
+        billing
+            .reserve_request("raw-key-reserve", &account_id, &key, 400)
+            .await
+            .unwrap(),
+        Some(4_600),
+        "existing billing flows must continue to receive the raw credential",
+    );
+    assert_eq!(
+        billing
+            .reserve_request("key-id-must-not-reserve", &account_id, &key_id, 1)
+            .await
+            .unwrap(),
+        None,
+        "the non-secret identity must never be substituted into raw-key billing calls",
+    );
+    billing
+        .settle_request("raw-key-reserve", &account_id, &key, 400, 300, None)
+        .await
+        .unwrap();
+    let key_row = billing.get(RAW_SECRET_KEY).await.unwrap().unwrap();
+    assert_eq!(key_row.key_id, NONSECRET_KEY_ID);
+    assert_eq!(key_row.spent_nano, 300);
+    assert_eq!(key_row.reserved_nano, 0);
+
+    billing.flush().await.unwrap();
+    drop(app);
     drop(billing);
     let _ = std::fs::remove_file(path);
 }

@@ -370,12 +370,15 @@ pub(crate) enum Authz {
     /// Админ (env-ключ/localhost) — без тарификации.
     Admin { affinity_scope: String },
     /// Ключ клиента → АККАУНТ с балансом. Тарифицируем и списываем с БАЛАНСА АККАУНТА (общего на
-    /// все ключи юзера); `key` — для атрибуции расхода по ключу. `mult_bp` — скидка аккаунта по
-    /// умолчанию, `provider_mult_bp` — её переопределения по провайдерам (B2B).
+    /// все ключи юзера); `key` остаётся raw secret для существующих reserve/settle calls, while
+    /// `key_id` is its authoritative non-secret identity for future request facts. `mult_bp` —
+    /// скидка аккаунта по умолчанию, `provider_mult_bp` — её переопределения по провайдерам (B2B).
     /// `balance_nano` несём из авторизации → резерв-блок НЕ перечитывает баланс из БД (−1 запрос).
     Metered {
         account_id: String,
         key: String,
+        #[allow(dead_code)]
+        key_id: String,
         mult_bp: i64,
         provider_mult_bp: Vec<(String, i64)>,
         available_nano: i64,
@@ -444,6 +447,7 @@ pub(crate) async fn authorize(app: &AppState, headers: &HeaderMap, peer: &Socket
                 return Authz::Metered {
                     account_id: a.account_id,
                     key: k,
+                    key_id: a.key_id,
                     mult_bp: a.mult_bp,
                     provider_mult_bp: a.provider_mult_bp,
                     available_nano,

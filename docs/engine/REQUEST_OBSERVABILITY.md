@@ -51,8 +51,11 @@ fact terminalization when a reserve handoff is lost. A separate 4096-bounded, no
 inbox persists already-terminal post-auth/nonbillable facts on a lazily connected low-priority thread;
 it is fail-open and excluded from money `flush`. Existing methods remain fact-free wrappers, SQLite
 money behavior is unchanged and omits analytics, and no production plane caller exercises the new
-forms yet. `billing_outcome` is never accepted in the outbox envelope: APPLY derives it from the
-authoritative winner, reconciliation, cancellation, and metered-amount state.
+forms yet. As a dormant producer prerequisite, the existing authorization snapshot now also carries
+the authoritative non-secret `key_id` beside the raw credential: registry obtains both in the same
+`key_account` statement/snapshot, while every current money path still uses only the raw key.
+`billing_outcome` is never accepted in the outbox envelope: APPLY derives it from the authoritative
+winner, reconciliation, cancellation, and metered-amount state.
 
 Provider-plane logical identity admission is implemented for customer routes in Anthropic, OpenAI,
 Gemini, and the Combined migration bridge. Malformed reserved capabilities fail before auth, body
@@ -240,9 +243,11 @@ The request fact is inserted or exact-replay-validated in the same authority tra
 creates the reservation. This guarantees that every accepted billable lifecycle has a durable fact
 without adding a second hot-path round trip. Before either backend receives the money command, forward
 requires the fact's `billing_request_id`, `account_id`, `execution_group_id`, and `attempt` to match the
-reservation arguments. The forward layer has only the raw secret key and cannot safely compare it to
-the non-secret fact `key_id`; PostgreSQL therefore keeps the authoritative same-transaction key lookup
-and comparison, while SQLite intentionally persists no request-fact analytics.
+reservation arguments. The forward authorization result now carries both the raw secret key and its
+authoritative non-secret `key_id`, obtained by the existing `key_account` statement in one snapshot.
+This is dormant prerequisite context only: current reserve/settle calls still receive the raw key, and
+no request-fact producer uses `key_id` yet. PostgreSQL keeps the final authoritative same-transaction
+fact key lookup/comparison, while SQLite intentionally persists no request-fact analytics.
 
 `delivery_started_at` is set in the transaction that marks the reservation delivering. Reserve alone
 is admission evidence, not evidence that an upstream execution or public response started.

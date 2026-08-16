@@ -18,7 +18,9 @@ side effect. `serve` may only perform the read-only schema verification before c
   `account_topup` (+ledger), request-keyed `reserve_request`/`settle_request` (atomic: account balance + per-key
   spent + ledger row), `key_issue(account_id,label)/get/list/set_status/set_status_by_id/remove/clear`;
   `api_keys.key_id` — a stable non-secret control-plane ID for revocation without storing the full key,
-  `key_account` (JOIN key→account for authorization), wrapper `Billing` (Mutex<Conn>). Cost computation
+  `key_account` (JOIN key→account for authorization) returns that ID together with the account/key
+  financial and policy state in its existing single SQLite/PostgreSQL statement and snapshot; callers
+  must keep using the raw key for reserve/settle. Wrapper `Billing` (Mutex<Conn>). Cost computation
   (tokens→nano) does NOT belong here — that is `metering`; registry accepts the ready amount. **Money
   invariant (with overdraft buffer):** reserve keeps the balance FLOOR at −$1 (`OVERDRAFT_NANO`, in sync with
   `metering::OVERDRAFT_NANO`) — a funded request is NOT dropped with 402 due to a race of concurrent reserves; below the floor

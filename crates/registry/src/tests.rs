@@ -3087,9 +3087,68 @@ fn ledger_reads_recover_legacy_provider_only_from_strict_settlement_fingerprint(
 fn provider_discount_overrides_the_account_default_and_falls_back_without_a_row() {
     let c = db();
     account_create(&c, "acct-discount", None, 5_000).unwrap();
-    key_issue(&c, "sk-pool-discount", "acct-discount", None).unwrap();
+    account_topup(&c, "acct-discount", 9_000, None).unwrap();
+    key_issue_with_policy(
+        &c,
+        "sk-pool-secret-that-must-remain-the-billing-credential",
+        "acct-discount",
+        None,
+        Some(8_500),
+        Some(now() + 3_600),
+    )
+    .unwrap();
+    const NONSECRET_KEY_ID: &str = "key_nonsecret_authoritative_identity_7f3a";
+    c.execute(
+        "UPDATE api_keys SET key_id=?1 WHERE key=?2",
+        rusqlite::params![
+            NONSECRET_KEY_ID,
+            "sk-pool-secret-that-must-remain-the-billing-credential"
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        account_reserve_for_key(
+            &c,
+            "acct-discount",
+            "sk-pool-secret-that-must-remain-the-billing-credential",
+            500,
+        )
+        .unwrap(),
+        Some(8_500),
+    );
+    account_settle(
+        &c,
+        "acct-discount",
+        "sk-pool-secret-that-must-remain-the-billing-credential",
+        500,
+        300,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        account_reserve_for_key(
+            &c,
+            "acct-discount",
+            "sk-pool-secret-that-must-remain-the-billing-credential",
+            200,
+        )
+        .unwrap(),
+        Some(8_500),
+    );
 
-    let auth = key_account(&c, "sk-pool-discount").unwrap().unwrap();
+    let auth = key_account(&c, "sk-pool-secret-that-must-remain-the-billing-credential")
+        .unwrap()
+        .unwrap();
+    assert_eq!(auth.account_id, "acct-discount");
+    assert_eq!(auth.key_id, NONSECRET_KEY_ID);
+    assert_eq!(auth.mult_bp, 5_000);
+    assert_eq!(auth.balance_nano, 8_500);
+    assert_eq!(auth.spent_nano, 300);
+    assert_eq!(auth.reserved_nano, 200);
+    assert_eq!(auth.spend_limit_nano, Some(8_500));
+    assert!(auth.expires_ts.is_some_and(|expires| expires > now()));
+    assert!(auth.active);
     assert!(auth.provider_mult_bp.is_empty());
     for provider in DISCOUNT_PROVIDER_IDS {
         assert_eq!(auth.mult_for(provider), 5_000, "{provider}");
@@ -3097,7 +3156,9 @@ fn provider_discount_overrides_the_account_default_and_falls_back_without_a_row(
 
     set_account_provider_discount(&c, "acct-discount", PROVIDER_OPENAI, 2_500, 100).unwrap();
     set_account_provider_discount(&c, "acct-discount", PROVIDER_GOOGLE, 10_000, 100).unwrap();
-    let auth = key_account(&c, "sk-pool-discount").unwrap().unwrap();
+    let auth = key_account(&c, "sk-pool-secret-that-must-remain-the-billing-credential")
+        .unwrap()
+        .unwrap();
     assert_eq!(auth.mult_for(PROVIDER_OPENAI), 2_500);
     assert_eq!(auth.mult_for(PROVIDER_GOOGLE), 10_000);
     assert_eq!(auth.mult_for(PROVIDER_ANTHROPIC), 5_000);
@@ -3107,7 +3168,7 @@ fn provider_discount_overrides_the_account_default_and_falls_back_without_a_row(
     // returns the provider to the account default in the same read.
     set_account_provider_discount(&c, "acct-discount", PROVIDER_OPENAI, 1_000, 200).unwrap();
     assert_eq!(
-        key_account(&c, "sk-pool-discount")
+        key_account(&c, "sk-pool-secret-that-must-remain-the-billing-credential")
             .unwrap()
             .unwrap()
             .mult_for(PROVIDER_OPENAI),
@@ -3115,7 +3176,9 @@ fn provider_discount_overrides_the_account_default_and_falls_back_without_a_row(
     );
     assert!(clear_account_provider_discount(&c, "acct-discount", PROVIDER_OPENAI).unwrap());
     assert!(!clear_account_provider_discount(&c, "acct-discount", PROVIDER_OPENAI).unwrap());
-    let auth = key_account(&c, "sk-pool-discount").unwrap().unwrap();
+    let auth = key_account(&c, "sk-pool-secret-that-must-remain-the-billing-credential")
+        .unwrap()
+        .unwrap();
     assert_eq!(auth.mult_for(PROVIDER_OPENAI), 5_000);
     assert_eq!(
         account_provider_discounts(&c, "acct-discount").unwrap(),

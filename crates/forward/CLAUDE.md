@@ -48,7 +48,10 @@ by the provider quote builders, plus the hot tariff book below.
 
 **Billing (async, `billing.rs` + tee-metering `meter.rs`):** authorization (`authorize`, async):
 the env admin is checked FIRST in memory; otherwise the client key → `key_account` (JOIN key→account)
-→ ACCOUNT balance (a non-positive balance rejects only a positive multiplier). A zero multiplier is
+→ ACCOUNT balance (a non-positive balance rejects only a positive multiplier). The metered auth result
+carries both the raw secret `key` for every existing reserve/settle flow and the authoritative non-secret
+`key_id` as dormant request-fact attribution; no request-fact caller consumes it yet, and the identities
+must never be substituted for one another. A zero multiplier is
 free but metered on every provider: admission holds zero, settlement debits zero and still persists
 the authoritative usage event. Balance/reserve/markup live on the account (shared across all of a user's keys).
 All DB operations go through `AsyncBilling` (DB actors: 1 writer + N readers; sync PostgreSQL/legacy

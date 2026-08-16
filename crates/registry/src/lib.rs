@@ -1942,6 +1942,9 @@ pub struct AccountRow {
 #[derive(Clone, Debug)]
 pub struct KeyAuth {
     pub account_id: String,
+    /// Stable non-secret identity of the authenticated key; never substitute it for the raw secret
+    /// in reserve or settlement calls.
+    pub key_id: String,
     /// Account-wide payable multiplier in basis points — the customer's personal discount.
     pub mult_bp: i64,
     /// Per-provider overrides of `mult_bp`, empty when one number prices the whole account.
@@ -2659,7 +2662,7 @@ pub fn ensure_valid_provider_discount(provider_id: &str, mult_bp: i64) -> Result
 /// most five rows; a pricing write is therefore visible atomically on the next authorization.
 pub fn key_account(conn: &Connection, key: &str) -> Result<Option<KeyAuth>> {
     let mut statement = conn.prepare(
-        "SELECT a.id, a.mult_bp, a.balance_nano, k.spent_nano, k.reserved_nano, \
+        "SELECT a.id, k.key_id, a.mult_bp, a.balance_nano, k.spent_nano, k.reserved_nano, \
          k.spend_limit_nano, k.expires_ts, \
          (COALESCE(k.status,'active')='active' AND COALESCE(a.status,'active')='active'), \
          d.provider_id, d.mult_bp \
@@ -2673,17 +2676,18 @@ pub fn key_account(conn: &Connection, key: &str) -> Result<Option<KeyAuth>> {
         return Ok(None);
     };
     let account_id = first.get(0)?;
-    let mult_bp = first.get(1)?;
-    let balance_nano = first.get(2)?;
-    let spent_nano = first.get(3)?;
-    let reserved_nano = first.get(4)?;
-    let spend_limit_nano = first.get(5)?;
-    let expires_ts = first.get(6)?;
-    let active = first.get::<_, i64>(7)? != 0;
+    let key_id = first.get(1)?;
+    let mult_bp = first.get(2)?;
+    let balance_nano = first.get(3)?;
+    let spent_nano = first.get(4)?;
+    let reserved_nano = first.get(5)?;
+    let spend_limit_nano = first.get(6)?;
+    let expires_ts = first.get(7)?;
+    let active = first.get::<_, i64>(8)? != 0;
     let mut provider_mult_bp = Vec::with_capacity(DISCOUNT_PROVIDER_IDS.len());
     match (
-        first.get::<_, Option<String>>(8)?,
-        first.get::<_, Option<i64>>(9)?,
+        first.get::<_, Option<String>>(9)?,
+        first.get::<_, Option<i64>>(10)?,
     ) {
         (Some(provider), Some(multiplier)) => provider_mult_bp.push((provider, multiplier)),
         (None, None) => {}
@@ -2691,8 +2695,8 @@ pub fn key_account(conn: &Connection, key: &str) -> Result<Option<KeyAuth>> {
     }
     while let Some(row) = rows.next()? {
         match (
-            row.get::<_, Option<String>>(8)?,
-            row.get::<_, Option<i64>>(9)?,
+            row.get::<_, Option<String>>(9)?,
+            row.get::<_, Option<i64>>(10)?,
         ) {
             (Some(provider), Some(multiplier)) => provider_mult_bp.push((provider, multiplier)),
             (None, None) => {}
@@ -2701,6 +2705,7 @@ pub fn key_account(conn: &Connection, key: &str) -> Result<Option<KeyAuth>> {
     }
     Ok(Some(KeyAuth {
         account_id,
+        key_id,
         mult_bp,
         provider_mult_bp,
         balance_nano,
