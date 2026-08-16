@@ -116,3 +116,34 @@ generation admission/backend limiting: image can be rejected while text succeeds
 - Treat image health/rate limiting separately from text health and keep the short RPM-style cooling.
 - A future provider change can alter this behavior; retain bounded 429 diagnostics and exact-profile
   canaries rather than hard-coding an undocumented numeric Google limit.
+
+## 2026-08-16 — three distinct 429 shapes and the self-block fix
+
+Load testing on the corrected route (≈$21.60 of image generation, ~350 images) separated three
+provider 429 signals that the gateway previously collapsed into one long cooling:
+
+| `error_reason` | observed hint | catalogue | verdict |
+|---|---|---|---|
+| `RATE_LIMIT_EXCEEDED` | 1–4 s | ~99% | honest per-concurrency throttle; short cool is correct |
+| transient `other` | 1376 s (~23 min) | ~99% | **false**: the same account kept generating via the official Antigravity client while the gateway parked it |
+| `QUOTA_EXHAUSTED` | up to ~14 690 s (~4 h) | 88–99% | **honest**: a direct origin bypass reproduces the refusal immediately |
+
+The catalogue `remainingFraction` never tracks the image allowance that `QUOTA_EXHAUSTED` measures:
+it sat at 88–99% throughout, even as profiles hit genuine exhaustion.
+
+Two production defects were found and fixed:
+
+- **Self-block on transient hinted 429** (`dd78c81c`): the gateway honoured any retry hint
+  verbatim, so a 23-minute `RetryInfo` on a non-exhaustion reason parked a healthy profile. A new
+  `generation_429_cool_secs` now honours a hint in full only for `QUOTA_EXHAUSTED` and caps any
+  other hinted 429 at `rate_limit_unknown_cool_secs` (default 60 s). Live validation: during the
+  final drain the handler applied `QUOTA_EXHAUSTED` hints verbatim while keeping
+  `RATE_LIMIT_EXCEEDED` short.
+- **Cooling lost on blue-green restart** (`c8ad9bbd`): cooling deadlines lived only in process
+  memory, so each slot swap forgot genuine exhaustion and burned a live request rediscovering it.
+  Deadlines now persist to `gemini-cooldown-state.json` in the writable data directory and only
+  still-active ones are restored.
+
+Measured ceilings: the fleet sustains roughly 18 concurrent image requests before
+`RATE_LIMIT_EXCEEDED` appears (≈2–3 per Pro profile); Ultra tolerates about 4–6 concurrent and a
+far larger image allowance than Pro before its own genuine `QUOTA_EXHAUSTED`.
