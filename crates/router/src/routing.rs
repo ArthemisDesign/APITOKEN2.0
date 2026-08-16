@@ -30,10 +30,10 @@ use crate::policy::{
 use crate::{presets, proxy, AppState};
 
 const BODY_LIMIT: usize = 32 * 1024 * 1024;
-const BODY_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+const BODY_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const BODY_READ_MAX_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub const BODY_ADMISSION_UNIT_BYTES: usize = 1024 * 1024;
-pub const BODY_ADMISSION_UNITS: usize = 64;
+pub const BODY_ADMISSION_UNITS: usize = 128;
 const MAX_BODY_ADMISSION_UNITS: u32 = (BODY_LIMIT / BODY_ADMISSION_UNIT_BYTES) as u32;
 
 struct BodyAdmissionPermit {

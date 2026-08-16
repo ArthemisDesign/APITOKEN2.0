@@ -2216,24 +2216,22 @@ async fn universal_body_budget_fails_fast_without_becoming_an_execution_queue() 
         .unwrap();
         (reqwest::Body::wrap_stream(ReceiverStream::new(rx)), tx)
     };
-    let (first_body, first_tx) = held_body();
-    let first_router = router.clone();
-    let first = tokio::spawn(async move {
-        reqwest::Client::new()
-            .post(format!("{first_router}/v1/chat/completions"))
-            .body(first_body)
-            .send()
-            .await
-    });
-    let (second_body, second_tx) = held_body();
-    let second_router = router.clone();
-    let second = tokio::spawn(async move {
-        reqwest::Client::new()
-            .post(format!("{second_router}/v1/chat/completions"))
-            .body(second_body)
-            .send()
-            .await
-    });
+    let mut held_senders = Vec::new();
+    let mut held_tasks = Vec::new();
+    // The 128 MiB budget admits at most four maximal 32 MiB bodies; each is
+    // streamed in one shot so its declared weight is pinned before the next one.
+    for _ in 0..4 {
+        let (body, tx) = held_body();
+        let held_router = router.clone();
+        held_tasks.push(tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!("{held_router}/v1/chat/completions"))
+                .body(body)
+                .send()
+                .await
+        }));
+        held_senders.push(tx);
+    }
     let client = reqwest::Client::new();
     for _ in 0..100 {
         let metrics = client
@@ -2244,7 +2242,7 @@ async fn universal_body_budget_fails_fast_without_becoming_an_execution_queue() 
             .text()
             .await
             .unwrap();
-        if metrics.contains("claude_router_active_body_admission_units 64") {
+        if metrics.contains("claude_router_active_body_admission_units 128") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2261,10 +2259,10 @@ async fn universal_body_budget_fails_fast_without_becoming_an_execution_queue() 
     .await
     .expect("body admission overload must fail without queueing")
     .unwrap();
-    drop(first_tx);
-    drop(second_tx);
-    first.abort();
-    second.abort();
+    held_senders.clear();
+    for task in held_tasks {
+        task.abort();
+    }
 
     assert_eq!(third.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body: serde_json::Value = third.json().await.unwrap();

@@ -28,9 +28,9 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   strips them on the external ingress. The identity is admissible only in internal router→plane requests and
   is never returned to the client.
 - **No execution queues, semaphores, circuit breakers, rate limits** (invariant 3).
-  The only exception is a 64 MiB fail-fast budget in 1 MiB steps on buffered universal request
+  The only exception is a 128 MiB fail-fast budget in 1 MiB steps on buffered universal request
   bodies: a known `Content-Length` is rounded up, an unknown/chunked one starts at 1 MiB and
-  fail-fast adds units as bytes are actually read. Read deadline — 15 seconds without
+  fail-fast adds units as bytes are actually read. Read deadline — 60 seconds without
   progress and 5 minutes of absolute time.
   The ordinary single-model path drops the parsed tree and releases the permit after the outbound upload;
   extended routing holds the permit until terminal response headers, because the parsed template
@@ -83,7 +83,7 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   `x-apitoken-service-tier` is stripped as well.
 - `routing.rs` — shared model dispatch and serial fallback for all universal
   surfaces. It first performs the bodyless auth, then dynamically reserves the actual
-  body size in the shared 64 MiB budget; overload/slow body return lane-shaped 503/408 without a billable call.
+  body size in the shared 128 MiB budget; overload/slow body return lane-shaped 503/408 without a billable call.
   An ordinary request without `models`, `provider` and `preset/*` keeps
   the original bytes and direct namespaced dispatch. The extended planner expands the preset,
   obtains one aggregate catalog snapshot, canonically deduplicates the chain, applies
@@ -174,7 +174,7 @@ cargo build && bash tests/router_fallback_smoke.sh  # concurrent 6.4c mock-load 
 
 The integration tests bring up mock planes on real loopback sockets and
 cover: bodyless early auth ahead of an unfinished large body, terminal 401 and mixed-version,
-dynamic weighted 64 MiB overload without a queue, the slow-body deadline, permit release on parse error,
+dynamic weighted 128 MiB overload without a queue, the slow-body deadline, permit release on parse error,
 outbound EOF with an open SSE,
 absence of a data-plane pre-header deadline and a bounded `/balance` deadline without retry, passthrough
 of body/headers, unbuffered SSE, transitive

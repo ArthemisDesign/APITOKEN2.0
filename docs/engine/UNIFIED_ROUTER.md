@@ -371,12 +371,12 @@ plane — the router only adapts client input.
    see `docs/engine/ARCHITECTURE.md`). The router adds no global limit — otherwise an
    overloaded plane would eat the capacity of the others. Router readiness is never a
    conjunction of all planes' health; there are no synchronous health checks on the
-   request path. The single exception is the fail-fast 64 MiB memory admission for
-   materialized universal request bodies: a known size is rounded up in 1 MiB steps;
-   an unknown/chunked size starts with one unit and fail-fast acquires more units as
-   bytes are actually read. Admission never waits in a queue, is bounded by a
-   15-second idle and a 5-minute absolute body-read deadline, and does not hold the
-   native/SSE response body.
+    request path. The single exception is the fail-fast 128 MiB memory admission for
+    materialized universal request bodies: a known size is rounded up in 1 MiB steps;
+    an unknown/chunked size starts with one unit and fail-fast acquires more units as
+    bytes are actually read. Admission never waits in a queue, is bounded by a
+    60-second idle and a 5-minute absolute body-read deadline, and does not hold the
+    native/SSE response body.
    The single-model path releases the permit after the outbound upload; advanced
    fallback holds it until terminal response headers, while the parsed template is
    still needed for the next attempt. The data plane has no router-owned
@@ -428,11 +428,11 @@ outcome received wins, and actual provider-plane admission re-checks the credent
 before reserve anyway. The deployment-only startup probe remains an eager concurrent
 probe of all three origins.
 
-After auth the consumer makes a fail-fast reservation against the 64 MiB budget in
+After auth the consumer makes a fail-fast reservation against the 128 MiB budget in
 1 MiB steps. A valid `Content-Length` is rounded up; a chunked/unknown size first
 gets 1 MiB and acquires more weight only when crossing the next MiB boundary. On
 exhaustion the router immediately returns a lane-shaped 503 with no queue and no
-billable call; a body without progress for 15 seconds or unfinished after 5 minutes
+billable call; a body without progress for 60 seconds or unfinished after 5 minutes
 gets 408 and releases its units. In the single-model path the parsed JSON is dropped
 before the network, and the permit is handed to the outbound body and released after
 upload/cancellation. Advanced routing keeps one parsed template for subsequent

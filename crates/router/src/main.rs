@@ -6,7 +6,7 @@
 //! loopback origins (8790/8792/8794). Router не резервирует и не списывает
 //! деньги (инвариант 1), не ретраит неоднозначные исходы (инвариант 2), не
 //! имеет execution-очередей, semaphore и breaker (инвариант 3); fail-fast
-//! 64 MiB budget ограничивает только universal request bodies. SSE не
+//! 128 MiB budget ограничивает только universal request bodies. SSE не
 //! буферизуется (инвариант 4).
 //! Universal fallback выключен по умолчанию и разрешён только по fencing-
 //! сигналам из docs/engine/ROUTING_FENCING.md.
@@ -43,7 +43,7 @@ use config::Config;
 use error::Lane;
 use metrics::{PricingFailure, RouterMetrics};
 
-/// Состояние процесса: HTTP-клиент, кэш каталога и fail-fast 64 MiB budget для universal
+/// Состояние процесса: HTTP-клиент, кэш каталога и fail-fast 128 MiB budget для universal
 /// request bodies. Денег, ключей и execution-очередей здесь нет.
 pub struct AppState {
     cfg: Config,

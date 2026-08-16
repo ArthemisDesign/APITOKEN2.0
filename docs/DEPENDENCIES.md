@@ -334,9 +334,9 @@ is only what is needed to walk the relationships when making changes:
   exact schema-v1 success or terminal 401 wins; mixed-version/transport/5xx remain
   inconclusive, and no credential/result is cached. Dropping outstanding request futures
   does not guarantee cancellation of provider DB work already accepted. The deployment
-  startup probe remains concurrent across all three origins. The fail-fast 64 MiB budget
+  startup probe remains concurrent across all three origins. The fail-fast 128 MiB budget
   with a 1 MiB step grows dynamically with the actual chunked
-  bytes, has a 15-second idle and a 5-minute absolute body deadline, and does not create
+  bytes, has a 60-second idle and a 5-minute absolute body deadline, and does not create
   an execution queue.
   Contract —
   `docs/engine/UNIFIED_ROUTER.md` §"Early auth and the request-body memory boundary".

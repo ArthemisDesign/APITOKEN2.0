@@ -473,10 +473,10 @@ safe fallback reasons.
 Compare `claude_router_body_admission_overload_total` and
 `claude_router_body_read_timeout_total`, then inspect
 `claude_router_active_body_admission_units` beside `claude_router_active_universal_requests`.
-Admission is a fixed 64-unit memory guard, not an execution queue: declared bodies reserve their
+Admission is a fixed 128-unit memory guard, not an execution queue: declared bodies reserve their
 rounded MiB weight immediately; unknown/chunked bodies start at one unit and grow as bytes arrive.
-An overload with 64 active units means real buffered pressure. Repeated timeouts with few bytes are
-usually clients that made no byte progress for 15 seconds; steady uploads may run for at most five
+An overload with 128 active units means real buffered pressure. Repeated timeouts with few bytes are
+usually clients that made no byte progress for 60 seconds; steady uploads may run for at most five
 minutes. Confirm Caddy/client upload behavior and abusive source patterns without logging
 credentials or request contents. Do not increase the budget until RSS headroom is measured, and do
 not add a waiting semaphore or provider execution ceiling.
