@@ -121,6 +121,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       faceValue: formatUsd(faceValueNano, 0),
       pricingContract: OFFICIAL_ONE_TO_ONE_CONTRACT,
       apiType,
+      supportedModels: [...OPENKEYS_SUPPORTED_MODELS],
       keys: result.keys,
     });
   } catch (error) {

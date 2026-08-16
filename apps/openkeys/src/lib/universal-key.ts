@@ -1,4 +1,7 @@
+import { OPENKEYS_SUPPORTED_MODELS } from "@claude-api/contracts";
+
 export const OPENKEYS_PUBLIC_ORIGIN = "https://openkeys.apitoken.sale";
+export const APITOKEN_DOCS_URL = "https://apitoken.sale/docs";
 
 export const UNIVERSAL_CONNECTIONS = {
   claude: {
@@ -45,41 +48,35 @@ export interface UniversalKeyHandover {
   faceValue: string;
   secret: string | null;
   viewUrl: string;
+  supportedModels?: readonly string[];
 }
 
-/** Один самодостаточный текст выдачи: тот же ключ сразу готов для всех трёх API. */
+function modelLine(models: readonly string[], prefix: "claude-" | "gpt-"): string {
+  const matching = models.filter((model) => model.startsWith(prefix));
+  return matching.length > 0 ? matching.join(", ") : "актуальные модели — через /v1/models";
+}
+
+/** Один компактный текст выдачи: секрет встречается ровно один раз и готов к отправке клиенту. */
 export function universalKeyHandoverText(key: UniversalKeyHandover): string {
-  const secret = key.secret ?? "";
-  const claude = UNIVERSAL_CONNECTIONS.claude;
-  const openai = UNIVERSAL_CONNECTIONS.openai;
-  const gemini = UNIVERSAL_CONNECTIONS.gemini;
-  const kimi = UNIVERSAL_CONNECTIONS.kimi;
+  const models = key.supportedModels ?? OPENKEYS_SUPPORTED_MODELS;
 
   return [
-    `Баланс ключа: ${key.faceValue} по официальным прайсам используемых моделей`,
-    "Один ключ и общий баланс работают для Claude, GPT, Gemini и Kimi.",
+    `Ваш API-ключ на ${key.faceValue} готов`,
     "",
-    "Claude / Anthropic API",
-    `${claude.baseUrlVariable}=${claude.baseUrl}`,
-    `${claude.apiKeyVariable}=${secret}`,
-    `Инструкция: ${OPENKEYS_PUBLIC_ORIGIN}${claude.docsPath}`,
+    "🔑 Ключ",
+    key.secret ?? "Секрет недоступен",
     "",
-    "GPT / OpenAI-совместимый API",
-    `${openai.baseUrlVariable}=${openai.baseUrl}`,
-    `${openai.apiKeyVariable}=${secret}`,
-    `Инструкция: ${OPENKEYS_PUBLIC_ORIGIN}${openai.docsPath}`,
+    "🤖 Доступные модели",
+    `Claude: ${modelLine(models, "claude-")}`,
+    `GPT: ${modelLine(models, "gpt-")}`,
+    "Также доступны Gemini и Kimi. Полный актуальный каталог — через /v1/models после подключения.",
     "",
-    "Gemini / Google Gemini API",
-    `${gemini.baseUrlVariable}=${gemini.baseUrl}`,
-    `${gemini.apiKeyVariable}=${secret}`,
-    `Инструкция: ${OPENKEYS_PUBLIC_ORIGIN}${gemini.docsPath}`,
+    "📖 Документация",
+    APITOKEN_DOCS_URL,
     "",
-    "Kimi / Anthropic-совместимый API",
-    `${kimi.baseUrlVariable}=${kimi.baseUrl}`,
-    `${kimi.apiKeyVariable}=${secret}`,
-    "Модель указывайте как kimi/k3 — провайдер выбирается идентификатором модели.",
-    `Инструкция: ${OPENKEYS_PUBLIC_ORIGIN}${kimi.docsPath}`,
+    "📊 Профиль ключа — остаток и расход",
+    key.viewUrl,
     "",
-    `Остаток и расход: ${key.viewUrl}`,
+    `Один ключ и общий баланс. Номинал ${key.faceValue}; списание 1:1 по официальной цене модели.`,
   ].join("\n");
 }

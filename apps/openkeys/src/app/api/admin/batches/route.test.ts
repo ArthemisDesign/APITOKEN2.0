@@ -2,9 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EngineClientError } from "@claude-api/engine-client";
 import { getDatabase } from "@/lib/db";
 import { getEngineClient } from "@/lib/engine";
-import { listBatches } from "@/lib/keys";
+import { issueBatch, listBatches } from "@/lib/keys";
 import { currentAdmin } from "@/lib/session";
-import { GET } from "./route";
+import { GET, POST } from "./route";
 
 vi.mock("@/lib/session", () => ({ currentAdmin: vi.fn() }));
 vi.mock("@/lib/db", () => ({ getDatabase: vi.fn() }));
@@ -46,6 +46,7 @@ describe("OpenKeys admin batches route", () => {
     vi.mocked(currentAdmin).mockResolvedValue("admin");
     vi.mocked(listBatches).mockReset();
     vi.mocked(listBatches).mockResolvedValue(batches);
+    vi.mocked(issueBatch).mockReset();
     vi.mocked(getDatabase).mockReset();
     vi.mocked(getDatabase).mockReturnValue({
       pool: { query: vi.fn().mockResolvedValue({ rows: validDatabaseContract }) },
@@ -113,5 +114,29 @@ describe("OpenKeys admin batches route", () => {
     }
   });
 
+  it("returns display models with a newly issued universal batch", async () => {
+    vi.mocked(issueBatch).mockResolvedValue({
+      batchId: "batch-test",
+      keys: [{
+        secret: "sk-pool-test-secret",
+        viewToken: "view-token",
+        viewUrl: "https://openkeys.apitoken.sale/profile/view-token",
+        keyMasked: "sk-pool-test…cret",
+      }],
+    });
+
+    const response = await POST(new Request("http://127.0.0.1:3410/api/admin/batches", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:3410" },
+      body: JSON.stringify({ faceValueUsd: "10", quantity: 1, label: "crm-test" }),
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      batchId: "batch-test",
+      faceValue: "$10",
+      supportedModels: expect.arrayContaining(["claude-opus-5", "gpt-5.6-sol"]),
+    });
+  });
 
 });

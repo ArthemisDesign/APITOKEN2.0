@@ -4,10 +4,10 @@
 marketplaces). The buyer needs no registration, email or card: they receive a key and a
 personal link to the spend page.
 
-The key difference from competitors: **the face value is set in the dollars of the chosen
-API's price list**, not in internal "tokens". The admin issues separate Claude or GPT
-batches; the type determines the Base URL, the instructions and the USAGE labels without
-changing the shared engine contract or the `sk-pool` format.
+The key difference from competitors: **the face value is set in dollars at the official
+price of the model used**, not in internal "tokens". Every newly issued `sk-pool` key is
+universal: it has one shared balance for Claude, GPT, Gemini and Kimi. The historical batch
+type does not limit access and is not presented to the seller as a product choice.
 
 ## Composition
 
@@ -94,6 +94,15 @@ given only the router address as the primary instruction. Balance lookup by key
 (`/balance`) still goes to `ENGINE_PUBLIC_BASE_URL`/`ENGINE_OPENAI_PUBLIC_BASE_URL` — this
 is a server-side call that is not part of the router contract.
 
+The seller hands over one compact customer-ready message. It names the face value, prints the
+full secret exactly once, groups the protected response's current Claude and GPT model hints,
+mentions Gemini and Kimi, and links to `https://apitoken.sale/docs` plus the key's personal
+`/profile/<token>` page.
+The final line states the universal balance and 1:1 official-price economics. The additive
+`supportedModels` field is returned by both `GET /api/admin/batches` (inside
+`issuanceAuthority`) and a successful `POST /api/admin/batches`, so a server-side CRM consumer
+can render the same message from the issuance result without duplicating the catalog.
+
 ## Environment variables (`/etc/apitoken/openkeys.env`, root-only, 0600)
 
 | Variable | Purpose |
@@ -154,6 +163,13 @@ warehouse secrets loaded and decrypted (no more than 100); keys ready for sale a
 issuance history are shown separately. A new batch in the UI requires a label so the
 seller does not get lost among a large number of issuances; historical batches without a
 label remain visible.
+
+Each saleable key card previews the exact customer message and has one primary action:
+`Скопировать сообщение и выдать`. The browser first confirms that the entire message reached
+the clipboard and only then marks the key delivered, which wipes the warehouse ciphertext. A
+clipboard failure leaves the key in stock. If the later delivery request fails, the UI says that
+the message was copied but the status was not changed. Batch-wide copying remains a non-mutating
+operator convenience and is labelled separately; it never silently marks several keys delivered.
 
 If issuance is blocked (`GET /api/admin/batches` could not confirm the issuance contract),
 the warehouse stays available and the response is augmented with the

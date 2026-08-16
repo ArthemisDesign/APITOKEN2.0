@@ -2534,8 +2534,13 @@ body.app-body .bg-decor{display:none!important}
 .openkeys-key-card.is-disabled{border-color:color-mix(in srgb,var(--danger) 30%,var(--line));background:color-mix(in srgb,var(--danger) 3%,var(--bg-card))}
 .openkeys-key-secret{margin:0}.openkeys-key-meta{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--txt-4);font:500 10px/1.4 var(--font-mono)}
 .openkeys-key-meta a{color:var(--accent);text-decoration:none}.openkeys-key-meta a:hover{text-decoration:underline}
+.openkeys-handover{min-width:0;overflow:hidden;border:1px solid var(--line);border-radius:11px;background:var(--bg-soft)}
+.openkeys-handover-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border-bottom:1px solid var(--line)}
+.openkeys-handover-head b{font:700 11px/1.35 var(--font-mono);color:var(--txt)}.openkeys-handover-head span{font:500 9px/1.35 var(--font-mono);color:var(--txt-4);text-align:right}
+.openkeys-handover pre{max-height:240px;margin:0;padding:13px 14px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:500 10px/1.55 var(--font-mono);color:var(--txt-3)}
+.openkeys-handover-error{margin:0;color:var(--danger);font:600 11px/1.5 var(--font-mono)}
 @media(max-width:900px){.openkeys-key-grid{grid-template-columns:1fr}.openkeys-admin-intro,.openkeys-workspace-head{align-items:flex-start;flex-direction:column}}
-@media(max-width:620px){.openkeys-batch-toolbar{grid-template-columns:1fr 1fr}.openkeys-batch-toolbar input{grid-column:1/-1}.openkeys-pagination{justify-content:flex-start;flex-wrap:wrap}.openkeys-admin-intro{padding:22px}.openkeys-batch-detail-cell .openkeys-batch-workspace{padding:22px 16px 26px}.openkeys-key-card{padding:15px}}
+@media(max-width:620px){.openkeys-batch-toolbar{grid-template-columns:1fr 1fr}.openkeys-batch-toolbar input{grid-column:1/-1}.openkeys-pagination{justify-content:flex-start;flex-wrap:wrap}.openkeys-admin-intro{padding:22px}.openkeys-batch-detail-cell .openkeys-batch-workspace{padding:22px 16px 26px}.openkeys-key-card{padding:15px}.openkeys-handover-head{align-items:flex-start;flex-direction:column}.openkeys-handover-head span{text-align:left}}
 
 /* Universal OpenKeys: one credential, two protocol-specific connection paths. */
 .openkeys-universal-banner{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:14px 0 20px}

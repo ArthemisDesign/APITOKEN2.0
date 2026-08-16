@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  APITOKEN_DOCS_URL,
   OPENKEYS_PUBLIC_ORIGIN,
   UNIVERSAL_CONNECTIONS,
   universalKeyHandoverText,
 } from "./universal-key";
+import { OPENKEYS_SUPPORTED_MODELS } from "@claude-api/contracts";
 
 describe("универсальный ключ OpenKeys", () => {
   it("разводит один ключ на отдельные Claude и OpenAI подключения", () => {
@@ -19,27 +21,33 @@ describe("универсальный ключ OpenKeys", () => {
     });
   });
 
-  it("формирует полное сообщение покупателю без второго ключа и второго USAGE", () => {
+  it("формирует компактное готовое сообщение с одним секретом, номиналом и ссылками", () => {
     const text = universalKeyHandoverText({
       faceValue: "$50",
       secret: "sk-pool-test-secret",
       viewUrl: `${OPENKEYS_PUBLIC_ORIGIN}/profile/test-token`,
     });
 
-    // Ровно один раз на каждое подключение: захардкоженное число молча расходится с реестром,
-    // как только появляется новый провайдер, и тогда тест начинает проверять вчерашний текст.
-    const connections = Object.keys(UNIVERSAL_CONNECTIONS).length;
-    expect(text.match(/sk-pool-test-secret/g)).toHaveLength(connections);
-    // Ключ один и баланс общий — второго секрета в выдаче быть не должно.
-    expect(text.match(/sk-pool-/g)).toHaveLength(connections);
-    expect(text).toContain("ANTHROPIC_BASE_URL=https://router.apitoken.sale");
-    expect(text).toContain("OPENAI_BASE_URL=https://router.apitoken.sale/v1");
-    expect(text).toContain("GOOGLE_GEMINI_BASE_URL=https://router.apitoken.sale");
-    expect(text).toContain(`${OPENKEYS_PUBLIC_ORIGIN}/docs/claude`);
-    expect(text).toContain(`${OPENKEYS_PUBLIC_ORIGIN}/docs/openai`);
-    // Kimi выбирается идентификатором модели, а не отдельным base URL — без этой строки
-    // покупатель получил бы переменные Claude и не понял, как обратиться к Kimi.
-    expect(text).toContain("kimi/k3");
-    expect(text.match(/Остаток и расход:/g)).toHaveLength(1);
+    expect(text).toContain("Ваш API-ключ на $50 готов");
+    expect(text.match(/sk-pool-test-secret/g)).toHaveLength(1);
+    expect(text).toContain("🤖 Доступные модели");
+    for (const model of OPENKEYS_SUPPORTED_MODELS) expect(text).toContain(model);
+    expect(text).toContain("Также доступны Gemini и Kimi");
+    expect(text).toContain(APITOKEN_DOCS_URL);
+    expect(text).toContain(`${OPENKEYS_PUBLIC_ORIGIN}/profile/test-token`);
+    expect(text).toContain("Номинал $50; списание 1:1");
+  });
+
+  it("использует список моделей из ответа выпуска, если он передан", () => {
+    const text = universalKeyHandoverText({
+      faceValue: "$10",
+      secret: "sk-pool-custom",
+      viewUrl: `${OPENKEYS_PUBLIC_ORIGIN}/profile/custom`,
+      supportedModels: ["claude-test", "gpt-test"],
+    });
+
+    expect(text).toContain("Claude: claude-test");
+    expect(text).toContain("GPT: gpt-test");
+    expect(text).not.toContain("claude-opus-5");
   });
 });

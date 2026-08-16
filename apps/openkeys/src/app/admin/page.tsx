@@ -84,13 +84,43 @@ function CopyButton({
 function KeyCard({
   keyRow,
   busy,
+  supportedModels,
   onUpdate,
 }: {
   keyRow: StockKey;
   busy: boolean;
-  onUpdate(id: string, action: "deliver" | "remove"): void;
+  supportedModels: readonly string[];
+  onUpdate(id: string, action: "deliver" | "remove"): Promise<boolean>;
 }) {
+  const [handoverState, setHandoverState] = useState<"idle" | "copying" | "delivering" | "copy-failed" | "delivery-failed">("idle");
   const canHandover = keyRow.enabled && keyRow.secret !== null;
+  const handoverBusy = handoverState === "copying" || handoverState === "delivering";
+  const handoverMessage = universalKeyHandoverText({
+    ...keyRow,
+    supportedModels: supportedModels.length > 0 ? supportedModels : undefined,
+  });
+
+  async function copyAndDeliver() {
+    if (handoverBusy) return;
+    setHandoverState("copying");
+    try {
+      await navigator.clipboard.writeText(handoverMessage);
+    } catch {
+      setHandoverState("copy-failed");
+      return;
+    }
+
+    setHandoverState("delivering");
+    const delivered = await onUpdate(keyRow.id, "deliver");
+    if (!delivered) setHandoverState("delivery-failed");
+  }
+
+  const handoverLabel = handoverState === "copying"
+    ? "Копируем…"
+    : handoverState === "delivering"
+      ? "Выдаём…"
+      : "Скопировать сообщение и выдать";
+
   return (
     <article className={`card openkeys-key-card ${keyRow.enabled ? "" : "is-disabled"}`}>
       <div className="openkeys-issued-head">
@@ -105,7 +135,6 @@ function KeyCard({
       </div>
       <div className="secret-key-field openkeys-key-secret">
         <code>{keyRow.secret ?? keyRow.keyMasked}</code>
-        {keyRow.secret ? <CopyButton value={keyRow.secret} label="Ключ" disabled={!keyRow.enabled} /> : null}
       </div>
       <div className="openkeys-key-meta">
         <span>создан {keyRow.createdAt.slice(0, 10)}</span>
@@ -114,26 +143,35 @@ function KeyCard({
       {!keyRow.secret ? (
         <p className="field-hint">Секрет этого старого ключа не сохранился — продавать его нельзя.</p>
       ) : null}
+      {keyRow.secret ? (
+        <div className="openkeys-handover">
+          <div className="openkeys-handover-head">
+            <b>Готовое сообщение клиенту</b>
+            <span>{keyRow.faceValue} · ключ + модели + ссылки</span>
+          </div>
+          <pre>{handoverMessage}</pre>
+        </div>
+      ) : null}
+      {handoverState === "copy-failed" ? (
+        <p className="openkeys-handover-error">Не удалось скопировать сообщение. Ключ остался на складе.</p>
+      ) : null}
+      {handoverState === "delivery-failed" ? (
+        <p className="openkeys-handover-error">Сообщение скопировано, но статус не изменён. Повторите выдачу.</p>
+      ) : null}
       <div className="openkeys-issued-foot">
-        <CopyButton
-          value={universalKeyHandoverText(keyRow)}
-          label="Сообщение покупателю"
-          primary
-          disabled={!canHandover}
-        />
         <button
-          className="btn btn-ghost btn-sm"
+          className="btn btn-primary btn-sm"
           type="button"
-          disabled={busy || !canHandover}
-          onClick={() => onUpdate(keyRow.id, "deliver")}
+          disabled={busy || handoverBusy || !canHandover}
+          onClick={() => void copyAndDeliver()}
         >
-          Отметить выданным
+          {handoverLabel}
         </button>
         <button
           className="btn btn-ghost btn-sm openkeys-danger"
           type="button"
           disabled={busy}
-          onClick={() => onUpdate(keyRow.id, "remove")}
+          onClick={() => void onUpdate(keyRow.id, "remove")}
         >
           Удалить
         </button>
@@ -302,8 +340,8 @@ export default function AdminPage() {
     }
   }
 
-  async function updateKey(id: string, action: "deliver" | "remove") {
-    if (action === "remove" && !window.confirm("Удалить ключ? Он будет отключён и снят со склада.")) return;
+  async function updateKey(id: string, action: "deliver" | "remove"): Promise<boolean> {
+    if (action === "remove" && !window.confirm("Удалить ключ? Он будет отключён и снят со склада.")) return false;
     setBusy(true);
     setError(null);
     try {
@@ -315,11 +353,13 @@ export default function AdminPage() {
       if (!response.ok) {
         const payload = (await response.json()) as { error?: string };
         setError(payload.error ?? "Не удалось изменить статус ключа");
-        return;
+        return false;
       }
       await refresh();
+      return true;
     } catch {
       setError("Нет связи с сервером, попробуйте ещё раз.");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -394,11 +434,11 @@ export default function AdminPage() {
         <div className="dsec-head analytics-heading openkeys-stock-head">
           <div><h2>Ключи на складе · {stock.length}</h2><p>{handoverKeys.length} готовы к продаже; отключённые остаются видимыми. Полная инструкция — в сообщении покупателю.</p></div>
           <div className="openkeys-group-actions">
-            {handoverKeys.length ? <><CopyButton value={handoverKeys.map((key) => universalKeyHandoverText(key)).join("\n\n———\n\n")} label={`Сообщения · ${handoverKeys.length}`} primary /><CopyButton value={handoverKeys.flatMap((key) => key.secret ? [key.secret] : []).join("\n")} label="Только ключи" /></> : null}
+            {handoverKeys.length ? <CopyButton value={handoverKeys.map((key) => universalKeyHandoverText({ ...key, supportedModels: issuanceAuthority.supportedModels.length > 0 ? issuanceAuthority.supportedModels : undefined })).join("\n\n———\n\n")} label={`Скопировать сообщения · ${handoverKeys.length}`} /> : null}
             {stock.length ? <button className="btn btn-ghost btn-sm openkeys-danger" type="button" disabled={busy} onClick={() => void removeBatchStock(stock.length)}>Удалить остаток</button> : null}
           </div>
         </div>
-        {stock.length === 0 ? <div className="empty-box">В этой партии на складе ничего не осталось</div> : <div className="openkeys-key-grid">{stock.map((key) => <KeyCard key={key.id} keyRow={key} busy={busy} onUpdate={updateKey} />)}</div>}
+        {stock.length === 0 ? <div className="empty-box">В этой партии на складе ничего не осталось</div> : <div className="openkeys-key-grid">{stock.map((key) => <KeyCard key={key.id} keyRow={key} busy={busy} supportedModels={issuanceAuthority.supportedModels} onUpdate={updateKey} />)}</div>}
 
         <div className="dsec-head analytics-heading openkeys-history-head"><div><h2>История партии · {history.length}</h2><p>Выданные ключи остаются видимыми по маске, метке и ссылке на профиль.</p></div></div>
         <div className="table-scroll openkeys-history-table" role="region" tabIndex={0} aria-label="История выбранной партии">
