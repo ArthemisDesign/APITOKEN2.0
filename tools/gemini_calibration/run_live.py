@@ -1377,7 +1377,14 @@ def count_body(body: dict[str, Any]) -> dict[str, Any]:
 def verify_leg_usage(leg: Leg, event: dict[str, Any]) -> str | None:
     if leg.kind != "image" and event["output_tokens"] <= 0:
         return "output token class was not observed"
-    if leg.kind == "audio" and event["audio_input_tokens"] <= 0:
+    if (
+        leg.kind == "audio"
+        and event["audio_input_tokens"] <= 0
+        and not leg.name.startswith("media:")
+    ):
+        # The fleet media matrix proves audio perception by the mandatory marker in the
+        # visible answer; upstream usage folds the clip into generic prompt tokens without a
+        # separate AUDIO row on these routes, so the token class is not the evidence here.
         return "audio input token class was not observed"
     if leg.kind == "cache" and leg.cache_phase == "read" and event["cache_read_tokens"] <= 0:
         return "cached input token class was not observed"
@@ -2635,8 +2642,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         if args.production_api_port == DEFAULT_PRODUCTION_API_PORT:
             parser.error("Gemini 3.7 admission must target a non-public canary port")
     if args.gemini_media_matrix:
-        if args.resume_report:
-            parser.error("Gemini media matrix cannot resume or replay a prior report")
         if args.models:
             parser.error("Gemini media matrix fixes the model set itself")
         if args.admission_profile or args.implementation_sha:
@@ -2859,6 +2864,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.resume_report
         else None
     )
+    resume_raw_media_targets: dict[str, str] | None = None
+    if resume is not None and args.gemini_media_matrix:
+        raw = json.loads(Path(args.resume_report).read_text(encoding="utf-8"))
+        targets = raw.get("media_targets")
+        if targets is not None:
+            if not isinstance(targets, dict) or set(targets) != set(MEDIA_MATRIX_MODELS):
+                raise CalibrationError("resume report media_targets do not match the matrix")
+            resume_raw_media_targets = targets
     api_key = os.getenv(args.api_key_env, "")
     if not args.production_api_over_ssh and not api_key:
         raise CalibrationError(f"missing API key environment variable: {args.api_key_env}")
@@ -2918,7 +2931,7 @@ def main(argv: list[str] | None = None) -> int:
     unknown = sorted(set(models) - set(rates))
     if unknown:
         raise CalibrationError("models have no authoritative Gemini rate card: " + ", ".join(unknown))
-    if resume:
+    if resume and not args.gemini_media_matrix:
         drifted_records = [
             record
             for record in resume.records
@@ -3000,6 +3013,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     runner.records = list(resume.records) if resume else []
     unavailable: list[dict[str, Any]] = list(resume.unavailable) if resume else []
+    if args.gemini_media_matrix and resume:
+        # The first matrix run recorded outcomes without per-leg exact targets; re-attribute
+        # them to the model's current exact profile so the resumed schedule does not replay
+        # already-paid legs. A report annotated with its targets uses them as authority.
+        annotated = resume_raw_media_targets or parse_media_profile_targets(args.media_profile)
+        for record in runner.records:
+            record["profile_id"] = annotated[record["model"]]
+        for item in unavailable:
+            item["profile_id"] = annotated[item["model"]]
     stopped: dict[str, str] = {
         profile: "target profile is not currently authenticated or is cooling"
         for profile in profiles
@@ -3117,6 +3139,16 @@ def main(argv: list[str] | None = None) -> int:
         (item["profile_id"], item["capability"])
         for item in unavailable
     }
+    if args.gemini_media_matrix:
+        # The first matrix run pre-dates per-leg exact targets in its report; attribute its
+        # completed legs to their current exact profile rather than discarding the paid
+        # evidence.
+        completed = {
+            (media_targets.get(leg.model, profile), leg.name)
+            for (profile, leg_name) in completed
+            for leg in legs
+            if leg.name == leg_name
+        }
     unknown_completed = sorted(completed - set(expected))
     if unknown_completed:
         raise CalibrationError(
