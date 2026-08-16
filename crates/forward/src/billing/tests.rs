@@ -1575,6 +1575,123 @@ async fn canceled_sqlite_reserve_handoff_releases_key_allowance() {
     let _ = std::fs::remove_file(path);
 }
 
+async fn assert_sqlite_fact_binding_rejected_without_money_mutation(
+    billing: &AsyncBilling,
+    request_id: &str,
+    account_id: &str,
+    execution: registry::ExecutionAttempt,
+    fact: registry::request_facts::RequestFactAdmission,
+) {
+    assert!(billing
+        .reserve_request_for_execution_with_fact(
+            request_id,
+            account_id,
+            "rf-sqlite-key",
+            100,
+            execution,
+            fact,
+        )
+        .await
+        .is_err());
+    let account = billing.account("rf-sqlite-account").await.unwrap().unwrap();
+    let key = billing.get("rf-sqlite-key").await.unwrap().unwrap();
+    assert_eq!(
+        (
+            account.balance_nano,
+            account.spent_nano,
+            account.reserved_nano,
+            key.spent_nano,
+            key.reserved_nano,
+        ),
+        (1_000, 0, 0, 0, 0)
+    );
+}
+
+#[tokio::test]
+async fn sqlite_fact_aware_money_rejects_cross_authority_identity_mismatches() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "claude-api-billing-request-fact-binding-{}-{unique}.sqlite",
+        std::process::id(),
+    ));
+    let billing = AsyncBilling::start(path.to_string_lossy().into_owned(), 1).unwrap();
+    billing
+        .create_account("rf-sqlite-account", None, 10_000)
+        .await
+        .unwrap();
+    billing
+        .topup("rf-sqlite-account", 1_000, Some("seed"))
+        .await
+        .unwrap();
+    billing
+        .issue_key("rf-sqlite-key", "rf-sqlite-account", None, None, None)
+        .await
+        .unwrap();
+    let key_id = billing.get("rf-sqlite-key").await.unwrap().unwrap().key_id;
+    let request_id = "22222222-2222-4222-8222-222222222222";
+    let group_id = "33333333-3333-4333-8333-333333333333";
+    let execution = registry::ExecutionAttempt::grouped(group_id, 2).unwrap();
+    let mut fact = request_fact_admission(
+        "11111111-1111-4111-8111-111111111111",
+        request_id,
+        "rf-sqlite-account",
+        &key_id,
+        pool::now(),
+    );
+    fact.execution_group_id = Some(group_id.into());
+    fact.attempt = 2;
+
+    let mut billing_mismatch = fact.clone();
+    billing_mismatch.billing_request_id = "44444444-4444-4444-8444-444444444444".into();
+    assert_sqlite_fact_binding_rejected_without_money_mutation(
+        &billing,
+        request_id,
+        "rf-sqlite-account",
+        execution.clone(),
+        billing_mismatch,
+    )
+    .await;
+
+    let mut account_mismatch = fact.clone();
+    account_mismatch.account_id = "another-account".into();
+    assert_sqlite_fact_binding_rejected_without_money_mutation(
+        &billing,
+        request_id,
+        "rf-sqlite-account",
+        execution.clone(),
+        account_mismatch,
+    )
+    .await;
+
+    let mut group_mismatch = fact.clone();
+    group_mismatch.execution_group_id = Some("55555555-5555-4555-8555-555555555555".into());
+    assert_sqlite_fact_binding_rejected_without_money_mutation(
+        &billing,
+        request_id,
+        "rf-sqlite-account",
+        execution.clone(),
+        group_mismatch,
+    )
+    .await;
+
+    let mut attempt_mismatch = fact;
+    attempt_mismatch.attempt = 3;
+    assert_sqlite_fact_binding_rejected_without_money_mutation(
+        &billing,
+        request_id,
+        "rf-sqlite-account",
+        execution,
+        attempt_mismatch,
+    )
+    .await;
+
+    drop(billing);
+    let _ = std::fs::remove_file(path);
+}
+
 #[tokio::test]
 async fn sqlite_fact_aware_money_preserves_money_and_omits_analytics() {
     let unique = SystemTime::now()
@@ -1609,19 +1726,14 @@ async fn sqlite_fact_aware_money_preserves_money_and_omits_analytics() {
     );
     let mut invalid_fact = fact.clone();
     invalid_fact.logical_request_id = "not-a-uuid".into();
-    assert!(billing
-        .reserve_request_for_execution_with_fact(
-            "99999999-9999-4999-8999-999999999999",
-            "rf-sqlite-account",
-            "rf-sqlite-key",
-            100,
-            registry::ExecutionAttempt::direct(),
-            invalid_fact,
-        )
-        .await
-        .is_err());
-    let account = billing.account("rf-sqlite-account").await.unwrap().unwrap();
-    assert_eq!((account.balance_nano, account.reserved_nano), (1_000, 0));
+    assert_sqlite_fact_binding_rejected_without_money_mutation(
+        &billing,
+        "22222222-2222-4222-8222-222222222222",
+        "rf-sqlite-account",
+        registry::ExecutionAttempt::direct(),
+        invalid_fact,
+    )
+    .await;
     assert!(billing
         .reserve_request_for_execution_with_fact(
             "22222222-2222-4222-8222-222222222222",

@@ -208,6 +208,10 @@ fn terminal_request_fact_worker(
     }
 }
 
+fn terminal_request_fact_batch_is_replay_safe(batch: &[TerminalRequestFact]) -> bool {
+    batch.iter().all(|fact| fact.billing_request_id.is_some())
+}
+
 fn persist_terminal_request_fact_batch(
     url: &str,
     retry_deadline: Duration,
@@ -215,6 +219,7 @@ fn persist_terminal_request_fact_batch(
     batch: &[TerminalRequestFact],
 ) -> Result<usize, ()> {
     let deadline = Instant::now() + retry_deadline;
+    let replay_safe = terminal_request_fact_batch_is_replay_safe(batch);
     loop {
         if pg.is_none() {
             match registry::pg::PgStore::connect(url) {
@@ -232,15 +237,21 @@ fn persist_terminal_request_fact_batch(
             .insert_terminal_request_facts(batch)
         {
             Ok(inserted) => return Ok(inserted),
-            Err(error)
-                if registry::pg::classify_failure(&error)
-                    == registry::pg::FailureClass::Transient
-                    && Instant::now() < deadline =>
-            {
+            Err(error) => {
+                let failure_class = registry::pg::classify_failure(&error);
+                // An insert may have committed before its acknowledgement was lost. Always discard
+                // the uncertain connection, and replay only when S2's non-null billing identity
+                // makes every row in the batch idempotent. Nullable rows are at-most-once here.
                 *pg = None;
-                std::thread::sleep(Duration::from_millis(100));
+                if failure_class == registry::pg::FailureClass::Transient
+                    && replay_safe
+                    && Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                return Err(());
             }
-            Err(_) => return Err(()),
         }
     }
 }
@@ -293,6 +304,23 @@ mod tests {
                 tool_calls_in_output: None,
             },
         }
+    }
+
+    #[test]
+    fn batch_replay_requires_non_null_billing_ids_for_every_fact() {
+        let all_null = vec![
+            terminal_fact("11111111-1111-4111-8111-111111111111"),
+            terminal_fact("22222222-2222-4222-8222-222222222222"),
+        ];
+        assert!(!terminal_request_fact_batch_is_replay_safe(&all_null));
+
+        let mut mixed = all_null.clone();
+        mixed[0].billing_request_id = Some("33333333-3333-4333-8333-333333333333".into());
+        assert!(!terminal_request_fact_batch_is_replay_safe(&mixed));
+
+        let mut all_non_null = mixed;
+        all_non_null[1].billing_request_id = Some("44444444-4444-4444-8444-444444444444".into());
+        assert!(terminal_request_fact_batch_is_replay_safe(&all_non_null));
     }
 
     #[test]

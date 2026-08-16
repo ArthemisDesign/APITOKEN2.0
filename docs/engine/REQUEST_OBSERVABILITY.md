@@ -211,7 +211,11 @@ that one scalar cannot represent.
 
 The request fact is inserted or exact-replay-validated in the same authority transaction that
 creates the reservation. This guarantees that every accepted billable lifecycle has a durable fact
-without adding a second hot-path round trip.
+without adding a second hot-path round trip. Before either backend receives the money command, forward
+requires the fact's `billing_request_id`, `account_id`, `execution_group_id`, and `attempt` to match the
+reservation arguments. The forward layer has only the raw secret key and cannot safely compare it to
+the non-secret fact `key_id`; PostgreSQL therefore keeps the authoritative same-transaction key lookup
+and comparison, while SQLite intentionally persists no request-fact analytics.
 
 `delivery_started_at` is set in the transaction that marks the reservation delivering. Reserve alone
 is admission evidence, not evidence that an upstream execution or public response started.
@@ -236,7 +240,11 @@ batch-insert path, not by the money writer thread itself. `AsyncBilling` already
 with a single writer thread and a `Flush` barrier (`crates/forward/src/billing.rs:1668-1674`,
 `:1474-1476`); a slow observability insert on that thread would add latency to admission and
 settlement. Post-auth facts are terminal at insert, so they use `INSERT ... ON CONFLICT DO NOTHING`
-without updates.
+without updates. Connection acquisition may retry before any SQL attempt. Once an insert returns an
+error, the connection is discarded; the batch may be replayed only when every row has a non-null
+`billing_request_id`, whose unique constraint makes the whole batch idempotent. If any row has a
+nullable billing identity, commit status is uncertain and the batch is dropped and counted failed
+rather than replayed, preserving at-most-once insertion for rows that have no uniqueness key.
 
 Dropped events increment a fixed-cardinality counter by a bounded reason. The system must expose
 queue depth, dropped total, and persistence health so data coverage is measurable rather than

@@ -70,12 +70,20 @@ no provider plane calls the opt-in forms yet. A lost fact-aware reserve handoff 
 privacy-empty `unknown`/`not_started` terminal envelope so the admitted fact cannot leak as nonterminal.
 Already-terminal post-auth/nonbillable facts alone use the PostgreSQL-only 4096-slot, nonblocking
 `try_send` inbox and its lazily connected `request-facts-pg-writer` thread. That connection is
-analytics-only, retries within a bounded deadline, and drops fail-open with fixed atomic health/drop
-counters. It does not enter the money FIFO or detached-settlement tracker, and `AsyncBilling::flush`
-deliberately neither waits for nor guarantees this inbox; when all senders drop the worker may drain
-buffered facts, but there is no join/durability shutdown gate. SQLite keeps the existing money
-semantics, starts no fact thread, persists no analytics, and reports `UnsupportedAuthority` for
-terminal-at-insert submission. Logical-ID/header parsing, plane classification/callers, metric
+analytics-only and drops fail-open with fixed atomic health/drop counters. Connection acquisition may
+retry within the bounded deadline before SQL. After an uncertain insert error the cached connection
+is always discarded; a batch is replayed only when every fact has a non-null `billing_request_id`,
+whose S2 uniqueness makes the whole batch idempotent. Any nullable fact makes the batch at-most-once:
+the uncertain batch is dropped and counted `persistence_failed` rather than risking duplicate rows.
+It does not enter the money FIFO or detached-settlement tracker, and `AsyncBilling::flush` deliberately
+neither waits for nor guarantees this inbox; when all senders drop the worker may drain buffered facts,
+but there is no join/durability shutdown gate. Fact-aware reservation validates the fact's billing ID,
+account ID, execution group, and attempt against the money command before dispatch on both authorities.
+A raw secret key cannot be compared with the fact's non-secret `key_id` in forward; PostgreSQL retains
+the authoritative same-transaction key lookup/comparison, while SQLite deliberately omits analytics.
+SQLite keeps the existing money semantics, starts no fact thread, persists no analytics, and reports
+`UnsupportedAuthority` for terminal-at-insert submission. Logical-ID/header parsing, plane
+classification/callers, metric
 exposition, read APIs, and production request coverage remain later stages.
 For policy keys the cap takes the minimum of the account balance and the remaining lifetime limit. Such keys
 bypass the auth TTL cache; expiry and limit are re-checked inside the atomic reserve transaction.

@@ -4796,6 +4796,28 @@ impl AsyncBilling {
         .await
     }
 
+    fn validate_request_fact_reservation_binding(
+        fact: &RequestFactAdmission,
+        request_id: &str,
+        account_id: &str,
+        execution: &registry::ExecutionAttempt,
+    ) -> anyhow::Result<()> {
+        fact.validate()?;
+        if fact.billing_request_id != request_id {
+            anyhow::bail!("request fact does not match the billing request identity");
+        }
+        if fact.account_id != account_id {
+            anyhow::bail!("request fact does not match the billing account identity");
+        }
+        if fact.execution_group_id.as_deref() != execution.group_id() {
+            anyhow::bail!("request fact does not match the execution group identity");
+        }
+        if fact.attempt != execution.attempt() {
+            anyhow::bail!("request fact does not match the execution attempt identity");
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn reserve_request_for_execution_with_pricing(
         &self,
@@ -4808,7 +4830,9 @@ impl AsyncBilling {
         request_fact: Option<RequestFactAdmission>,
     ) -> anyhow::Result<Option<i64>> {
         if let Some(fact) = request_fact.as_ref() {
-            fact.validate()?;
+            Self::validate_request_fact_reservation_binding(
+                fact, request_id, account_id, &execution,
+            )?;
         }
         let request_fact_admitted_at = request_fact.as_ref().map(|fact| fact.admitted_at);
         let (reply, result) = oneshot::channel();
