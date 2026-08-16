@@ -23,6 +23,7 @@ use tokio::sync::OwnedSemaphorePermit;
 use crate::auth::{self, AuthError};
 use crate::catalog::{self, NS_ANTHROPIC, NS_GOOGLE, NS_KIMI, NS_OPENAI};
 use crate::error::{self, Lane};
+use crate::identity::{fresh_execution_group_id, LogicalRequestId};
 use crate::metrics::{AuthOutcome, PolicyFailure, RouterMetrics};
 use crate::policy::{
     self, PolicyCandidate, PreflightError, ProviderNamespace, ProviderPreferences, SortMode,
@@ -528,7 +529,14 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
     object.remove("provider");
     let surface_label = surface.label(parts.uri.path());
     let attempt_count = attempts.len();
+    if attempt_count == 0 {
+        return surface.invalid("The fallback chain is empty.", Some("models"));
+    }
     let attempt_lanes: Vec<_> = attempts.iter().map(|attempt| attempt.lane).collect();
+    let logical_request_id = match LogicalRequestId::fresh() {
+        Ok(id) => id,
+        Err(()) => return surface.catalog_unavailable(),
+    };
     let group_id = if attempt_count > 1 {
         match fresh_execution_group_id() {
             Ok(group_id) => Some(group_id),
@@ -567,6 +575,7 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
             attempt.lane,
             surface.error_lane(),
             request,
+            Some(&logical_request_id),
             execution.as_ref(),
             &state.metrics,
         )
@@ -819,6 +828,10 @@ async fn proxy_single(
     // its admission permit into the outbound upload stream.
     drop(value);
     let origin = origin_for_lane(state, lane);
+    let logical_request_id = match LogicalRequestId::fresh() {
+        Ok(id) => id,
+        Err(()) => return surface.catalog_unavailable(),
+    };
     let request = if fast_compat || rewrite_native_model.is_some() {
         request_from_parts(&parts, bytes, Some(body_permit))
     } else {
@@ -830,6 +843,7 @@ async fn proxy_single(
         lane,
         surface.error_lane(),
         request,
+        Some(&logical_request_id),
         None,
         &state.metrics,
     )
@@ -930,35 +944,6 @@ fn normalize_fast_service_tier(
         serde_json::Value::String("priority".to_string()),
     );
     Ok(())
-}
-
-fn fresh_execution_group_id() -> Result<String, ()> {
-    let mut bytes = [0_u8; 16];
-    if let Err(e) = getrandom::fill(&mut bytes) {
-        elog::error("router", format!("getrandom failed for execution group id: {e}"));
-        return Err(());
-    }
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Ok(format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0],
-        bytes[1],
-        bytes[2],
-        bytes[3],
-        bytes[4],
-        bytes[5],
-        bytes[6],
-        bytes[7],
-        bytes[8],
-        bytes[9],
-        bytes[10],
-        bytes[11],
-        bytes[12],
-        bytes[13],
-        bytes[14],
-        bytes[15],
-    ))
 }
 
 fn request_from_parts(parts: &Parts, body: Bytes, permit: Option<BodyAdmissionPermit>) -> Request {

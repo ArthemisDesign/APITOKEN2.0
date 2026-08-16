@@ -17,6 +17,7 @@ mod catalog;
 mod chat;
 mod config;
 mod error;
+mod identity;
 mod messages;
 mod metrics;
 mod policy;
@@ -149,22 +150,29 @@ async fn startup(State(state): State<Arc<AppState>>) -> Response {
 }
 
 async fn proxy_openai(State(state): State<Arc<AppState>>, req: Request) -> Response {
-    proxy::proxy_request(
-        &state.client,
-        &state.cfg.openai_origin,
-        Lane::OpenAi,
-        req,
-        &state.metrics,
-    )
-    .await
+    proxy_native_customer_request(&state, &state.cfg.openai_origin, Lane::OpenAi, req).await
 }
 
 async fn proxy_gemini(State(state): State<Arc<AppState>>, req: Request) -> Response {
+    proxy_native_customer_request(&state, &state.cfg.gemini_origin, Lane::Gemini, req).await
+}
+
+async fn proxy_native_customer_request(
+    state: &AppState,
+    origin: &str,
+    lane: Lane,
+    req: Request,
+) -> Response {
+    let logical_request_id = match identity::LogicalRequestId::fresh() {
+        Ok(id) => id,
+        Err(()) => return error::upstream_unavailable(lane, "Failed to create request identity."),
+    };
     proxy::proxy_request(
         &state.client,
-        &state.cfg.gemini_origin,
-        Lane::Gemini,
+        origin,
+        lane,
         req,
+        &logical_request_id,
         &state.metrics,
     )
     .await

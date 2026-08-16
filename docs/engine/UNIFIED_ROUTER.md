@@ -397,6 +397,16 @@ plane — the router only adapts client input.
    planes only over HTTP, and does not import `pool`/`forward`. The Control API is
    loopback-only account/pricing management; it does not participate in the router's
    data plane.
+8. **Logical request identity is trusted internal metadata.** The router never trusts
+   `x-apitoken-logical-request-id` from a client: its final common proxy function removes every
+   inbound value. After auth, body/model/routing validation and policy/catalog admission, immediately
+   before the first executable attempt, the router creates one canonical lowercase CSPRNG UUIDv4 and
+   explicitly injects it into every attempt. Direct/native and universal single attempts receive it;
+   fallback attempts reuse it byte-for-byte, independently of the multi-attempt execution group.
+   `/balance`, health/catalog/startup, router auth/policy helpers, and 404/405 never receive an ID.
+   Provider response copies are stripped, no public response header is added, and existing request,
+   billing, execution-group, retry, money, and SSE semantics stay unchanged. The provider-plane strict
+   consumer prerequisite is deployed GREEN; request-fact instrumentation remains a later stage.
 
 ### Early auth and the request-body memory boundary
 
@@ -736,6 +746,11 @@ received the response. Hence the gradation:
   with double-winner, balance divergence, and settlement detectors. Mock-load is
   green, but the production unit remains default-off until live canary of the exact
   deployed SHA.
+- **Logical request correlation:** after the strict provider-plane consumer reached production GREEN,
+  the router now creates one private `x-apitoken-logical-request-id` for every executable routed
+  customer request. Single attempts receive it too; a fallback chain reuses it across attempts while
+  keeping execution-group/attempt fencing separate. This stage only produces and propagates the ID:
+  it adds no request-fact caller, persistence/read API, log field, metric, or public response header.
 - **Ambiguous disconnect → no automatic retry on another model.** The client gets an
   honest error and decides for itself; silent retry on timeout is a path to double
   charging.

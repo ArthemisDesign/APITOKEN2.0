@@ -197,21 +197,23 @@ is only what is needed to walk the relationships when making changes:
   rollback/tests). Consumers of the winner result — money/funding settlement and
   `crates/server` `/metrics`; public APIs do not return group identity. Contract —
   `docs/engine/ROUTING_FENCING.md` §4.
-- **Logical request identity contract (Caddy perimeter → provider planes → future router).** All
-  four public provider/router vhosts remove the reserved internal
-  `X-Apitoken-Logical-Request-Id`, while stable loopback origins preserve the reserved capability
-  for the trusted router→plane hop; loopback access alone is not sender authorization.
-  `crates/server` is the implemented consumer for customer routes in Anthropic, OpenAI,
-  Gemini, and Combined modes: before auth/body/reserve/dispatch it accepts zero values (generate
-  one fresh CSPRNG canonical lowercase UUIDv4) or exactly one canonical trusted value, removes the
-  wire capability, and stores a typed `crates/forward` extension. Universal Anthropic/Gemini
-  adapters preserve that extension on synthesized leaf requests without recreating the header.
-  Health/admin/internal preflight and backend-only KIMI/Tripo3D/Suno are outside this MVP. The
-  context is dormant: no plane produces request facts or calls the fact-aware billing APIs, no ID
-  is returned publicly, and `x-request-id` is unchanged. `crates/router` remains absent as producer;
-  only after the provider consumer's exact SHA is GREEN may it inject one ID across provider
-  attempts. Contract — `docs/engine/REQUEST_OBSERVABILITY.md` §§4, 13;
-  perimeter details — `deploy/CADDY.md`.
+- **Logical request identity contract (Caddy perimeter → router → provider planes).** All four
+  public provider/router vhosts remove the reserved internal `X-Apitoken-Logical-Request-Id`, while
+  stable loopback origins preserve the reserved capability for the trusted router→plane hop;
+  loopback access alone is not sender authorization. The provider consumer's exact production SHA is
+  GREEN. `crates/router` is now the routed-traffic producer: its final common proxy removes all inbound
+  copies, and only after auth/body/model/routing/policy admission it creates one canonical lowercase
+  CSPRNG UUIDv4 immediately before the first executable attempt. Native and universal single attempts
+  receive it; fallback reuses it byte-for-byte across attempts while execution group/attempt remains
+  separate. Balance/helper/preflight traffic strips but never injects, and the router strips response
+  copies so the ID stays private. `crates/server` consumes exactly one canonical trusted value on
+  Anthropic, OpenAI, Gemini, and Combined customer routes, removes the wire capability, and stores a
+  typed `crates/forward` extension; direct provider ingress with zero values creates its own ID.
+  Universal Anthropic/Gemini adapters preserve the extension on synthesized leaf requests. Health,
+  admin/internal preflight and backend-only KIMI/Tripo3D/Suno remain outside this MVP. The context is
+  dormant: no plane produces request facts or calls fact-aware billing APIs, there is no persistence,
+  read API, metric, or public ID, and `x-request-id` is unchanged. Contract —
+  `docs/engine/REQUEST_OBSERVABILITY.md` §§4, 13; perimeter details — `deploy/CADDY.md`.
 - **ClaudeStore-compatible emergency transports (`crates/server` → `crates/forward` → external relay origins).**
   `crates/server/src/config.rs` solely reads the two strict enable/key pairs, and the
   compile-fixed origins cannot be replaced by env URLs: Claude Messages uses
@@ -504,9 +506,11 @@ runtime 503 does not get it. The public provider vhosts strip this header, while
 loopback router uses it as a safe fencing proof before the next explicit fallback
 attempt. Separately, the logical-ID perimeter makes the four public provider/router vhosts remove the
 reserved internal `X-Apitoken-Logical-Request-Id`; stable loopback origins retain the reserved
-capability for the trusted router→plane hop; loopback access alone is not sender authorization. Anthropic/OpenAI/Gemini/Combined customer routers now consume that capability or
-generate a direct-ingress ID before dispatch, remove the wire header, and keep only a typed dormant
-extension. No provider fact caller and no router producer exists yet.
+capability for the trusted router→plane hop; loopback access alone is not sender authorization.
+Anthropic/OpenAI/Gemini/Combined customer routers consume that capability or generate a direct-ingress
+ID before dispatch, remove the wire header, and keep only a typed dormant extension. After that strict
+consumer reached production GREEN, the unified router producer began injecting one private canonical ID
+per admitted customer request across every executable attempt. No provider request-fact caller exists.
 
 ### systemd (`systemd/`) — service → application
 

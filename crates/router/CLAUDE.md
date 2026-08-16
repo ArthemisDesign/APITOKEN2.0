@@ -27,6 +27,13 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   removed; the native and universal single-attempt paths send neither header. Caddy independently
   strips them on the external ingress. The identity is admissible only in internal router→plane requests and
   is never returned to the client.
+- **Logical request identity is likewise router-owned.** After auth/body/model/routing/policy admission
+  and immediately before the first executable provider attempt, every customer request gets one canonical
+  lowercase CSPRNG UUIDv4 in `x-apitoken-logical-request-id`. Native and universal single attempts receive
+  it too; a fallback chain reuses the identical value on every attempt. The common proxy function removes
+  all client copies before optional typed injection, so `/balance` and non-executable helper/preflight calls
+  never receive an ID even when a spoofed value arrives. The header is stripped from provider responses,
+  never returned publicly, and does not replace `x-request-id`, billing identity, or execution group/attempt.
 - **No execution queues, semaphores, circuit breakers, rate limits** (invariant 3).
   The only exception is a 128 MiB fail-fast budget in 1 MiB steps on buffered universal request
   bodies: a known `Content-Length` is rounded up, an unknown/chunked one starts at 1 MiB and
@@ -75,11 +82,13 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   verification of the real provider data path.
 - `proxy.rs` — byte-for-byte proxying of native lanes, auth passthrough and classification of
   a single attempt down to the public headers: exact `not_started` / source-chain
-  `ConnectionRefused`. The data plane has no router-owned deadline either before response headers or after
+  `ConnectionRefused`. The final common outbound function always removes inbound logical/execution
+  identity, then injects only explicitly supplied typed router identity; balance/helper traversals pass none.
+  The data plane has no router-owned deadline either before response headers or after
   them: a non-stream plane legitimately responds only after generation completes, and the lifetime
   is bounded by the client disconnect and the plane itself. A separate two-second header deadline
-  remains only on the read-only `/balance` failover. The internal header is stripped before the response is assembled. Before
-  any plane, the public router capability header
+  remains only on the read-only `/balance` failover. Internal execution-state and logical-ID headers are
+  stripped before the response is assembled. Before any plane, the public router capability header
   `x-apitoken-service-tier` is stripped as well.
 - `routing.rs` — shared model dispatch and serial fallback for all universal
   surfaces. It first performs the bodyless auth, then dynamically reserves the actual
@@ -89,9 +98,10 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   obtains one aggregate catalog snapshot, canonically deduplicates the chain, applies
   provider filters/order/reviewed sort and `allow_fallbacks`, then the account-policy preflight.
   Only after that does it remove `models`/`provider`, substitute the chosen `model` and
-  execute the retry matrix. An effective chain longer than one element owns one
-  CSPRNG execution-group UUIDv4 and a monotone attempt per model; after filtering down to one
-  model, capability headers are not injected.
+  execute the retry matrix. Every nonempty final plan owns one logical-request UUIDv4 across all
+  attempts; an effective chain longer than one element separately owns one CSPRNG execution-group UUIDv4
+  and a monotone attempt per model. After filtering down to one model, logical identity is still injected
+  but execution group/attempt are not.
   Attempt logs contain only surface/index, the public catalog ID, lane,
   status and a bounded retry reason — no URLs, headers, credentials or request bodies.
   Compatible Fast selectors are validated here as well: the header for Chat/Responses/Messages and
@@ -132,7 +142,8 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   (stored responses only for `openai/*`, decision 5). The Images API
   (`POST /v1/images/generations`, `/v1/images/edits`) is likewise a native OpenAI lane:
   a byte-faithful proxy to the OpenAI plane, which owns admission, billing, and the proved
-  narrow GPT Image 2 contract.
+  narrow GPT Image 2 contract. These native wrappers and `/v1beta/*` create logical identity immediately
+  before their single proxy attempt; `/balance`, health, catalog, startup, and fallback 404/405 do not.
 - `catalog.rs` — the unified `/v1/models`: aggregation of the three planes, namespaced IDs
   + only globally unambiguous aliases, per-plane singleflight refresh sharing the result of a
   successful or failed in-flight attempt, a deterministically
@@ -187,8 +198,9 @@ alias via the catalog, 400 on an invalid/oversized body, unbuffered
 chat SSE), as well as off-by-default fallback, preflight of the whole chain, the exact
 retry matrix (`not_started`, 429, 4xx/5xx, ConnectionRefused/timeout), rewrite
 of the per-attempt body, provider preferences, preset publication/expansion, mixed-version policy
-failover, terminal `401`, strict subset/empty `403`, Fast after policy filtering and the mandatory
-stripping of the internal header. No live PostgreSQL or subscriptions are needed.
+failover, terminal `401`, strict subset/empty `403`, Fast after policy filtering, and logical-ID spoof
+removal, canonical single/native injection, cross-fallback reuse, distinct external-request values,
+preflight/balance absence, and public-response stripping. No live PostgreSQL or subscriptions are needed.
 The full router→engine→mock upstream chain — `tests/universal_chat_smoke.sh`. The separate
 `tests/router_fallback_smoke.sh` brings up three deterministic TCP planes and proves
 parallel `not_started → success`, provider+strict-policy fencing before attempt 1, terminal unsigned

@@ -17,6 +17,7 @@ struct Recorded {
     anthropic_version: Option<String>,
     execution_group: Option<String>,
     execution_attempt: Option<String>,
+    logical_request_ids: Vec<String>,
     service_tier_header: Option<String>,
     host: Option<String>,
 }
@@ -49,9 +50,29 @@ fn record_of(req: &AxumRequest<Body>) -> Recorded {
         anthropic_version: header("anthropic-version"),
         execution_group: header("x-apitoken-execution-group"),
         execution_attempt: header("x-apitoken-attempt"),
+        logical_request_ids: req
+            .headers()
+            .get_all("x-apitoken-logical-request-id")
+            .iter()
+            .map(|value| value.to_str().unwrap().to_string())
+            .collect(),
         service_tier_header: header("x-apitoken-service-tier"),
         host: header("host"),
     }
+}
+
+fn assert_canonical_uuid_v4(value: &str) {
+    let bytes = value.as_bytes();
+    assert_eq!(bytes.len(), 36);
+    assert_eq!(
+        (bytes[8], bytes[13], bytes[18], bytes[23]),
+        (b'-', b'-', b'-', b'-')
+    );
+    assert_eq!(bytes[14], b'4');
+    assert!(matches!(bytes[19], b'8' | b'9' | b'a' | b'b'));
+    assert!(bytes.iter().enumerate().all(|(index, byte)| {
+        matches!(index, 8 | 13 | 18 | 23) || matches!(byte, b'0'..=b'9' | b'a'..=b'f')
+    }));
 }
 
 /// Запускает axum-приложение на свободном loopback-порту, возвращает origin.
@@ -134,14 +155,17 @@ async fn echo_plane() -> (String, SharedLog) {
                 return authenticated_response();
             }
             let recorded = record_of(&req);
+            let reflected_logical_id = recorded.logical_request_ids.first().cloned();
             log.lock().unwrap().push(recorded);
             let bytes = to_bytes(req.into_body(), 16 * 1024 * 1024).await.unwrap();
-            AxumResponse::builder()
+            let mut response = AxumResponse::builder()
                 .status(StatusCode::OK)
                 .header("content-type", "application/octet-stream")
-                .header("x-plane-marker", "echo")
-                .body(Body::from(bytes))
-                .unwrap()
+                .header("x-plane-marker", "echo");
+            if let Some(logical_id) = reflected_logical_id {
+                response = response.header("x-apitoken-logical-request-id", logical_id);
+            }
+            response.body(Body::from(bytes)).unwrap()
         }
     }));
     (spawn(router).await, log)
@@ -351,6 +375,7 @@ async fn policy_attempt_plane(
         let log = log_state.clone();
         async move {
             if req.uri().path() == "/internal/router/auth/preflight" {
+                log.lock().unwrap().push(record_of(&req));
                 return authenticated_response();
             }
             log.lock().unwrap().push(record_of(&req));
@@ -463,10 +488,15 @@ async fn identity_attempt_plane(
             if req.uri().path() == "/internal/router/policy/preflight" {
                 return unrestricted_policy_response(req).await;
             }
-            log.lock().unwrap().push(record_of(&req));
+            let recorded = record_of(&req);
+            let reflected_logical_id = recorded.logical_request_ids.first().cloned();
+            log.lock().unwrap().push(recorded);
             let mut builder = AxumResponse::builder()
                 .status(attempt_status)
                 .header("content-type", "application/json");
+            if let Some(logical_id) = reflected_logical_id {
+                builder = builder.header("x-apitoken-logical-request-id", logical_id);
+            }
             if let Some(value) = execution_state {
                 builder = builder.header("x-apitoken-execution-state", value);
             }
@@ -543,6 +573,11 @@ async fn native_lane_passes_body_headers_and_response_verbatim() {
         .header("anthropic-version", "2023-06-01")
         .header("x-apitoken-execution-group", "client-spoof")
         .header("x-apitoken-attempt", "99")
+        .header("x-apitoken-logical-request-id", "not-a-uuid")
+        .header(
+            "x-apitoken-logical-request-id",
+            "123e4567-e89b-42d3-a456-426614174000",
+        )
         .header("content-type", "application/json")
         .body(payload)
         .send()
@@ -551,6 +586,10 @@ async fn native_lane_passes_body_headers_and_response_verbatim() {
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers().get("x-plane-marker").unwrap(), "echo");
+    assert!(response
+        .headers()
+        .get("x-apitoken-logical-request-id")
+        .is_none());
     assert_eq!(response.text().await.unwrap(), payload);
 
     let recorded = log.lock().unwrap().pop().expect("plane saw a request");
@@ -564,8 +603,57 @@ async fn native_lane_passes_body_headers_and_response_verbatim() {
     assert_eq!(recorded.anthropic_version.as_deref(), Some("2023-06-01"));
     assert!(recorded.execution_group.is_none());
     assert!(recorded.execution_attempt.is_none());
+    assert_eq!(recorded.logical_request_ids.len(), 1);
+    assert_canonical_uuid_v4(&recorded.logical_request_ids[0]);
+    assert_ne!(recorded.logical_request_ids[0], "not-a-uuid");
+    assert_ne!(
+        recorded.logical_request_ids[0],
+        "123e4567-e89b-42d3-a456-426614174000"
+    );
     // Host переписывается на адрес плоскости, а не прокидывается клиентский.
     assert!(recorded.host.as_deref().unwrap().starts_with("127.0.0.1:"));
+}
+
+#[tokio::test]
+async fn universal_single_requests_get_distinct_private_logical_ids() {
+    let (openai, log) = echo_plane().await;
+    let router = spawn(make_router(
+        "http://127.0.0.1:1",
+        &openai,
+        "http://127.0.0.1:2",
+        Duration::ZERO,
+    ))
+    .await;
+    let client = reqwest::Client::new();
+
+    for _ in 0..2 {
+        let response = client
+            .post(format!("{router}/v1/responses"))
+            .header("x-apitoken-logical-request-id", "spoofed")
+            .body(r#"{"model":"openai/gpt-5.6","input":"hi"}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response
+            .headers()
+            .get("x-apitoken-logical-request-id")
+            .is_none());
+    }
+
+    let recorded = log.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 2);
+    for request in &recorded {
+        assert_eq!(request.logical_request_ids.len(), 1);
+        assert_canonical_uuid_v4(&request.logical_request_ids[0]);
+        assert_ne!(request.logical_request_ids[0], "spoofed");
+        assert!(request.execution_group.is_none());
+        assert!(request.execution_attempt.is_none());
+    }
+    assert_ne!(
+        recorded[0].logical_request_ids[0],
+        recorded[1].logical_request_ids[0]
+    );
 }
 
 #[tokio::test]
@@ -952,7 +1040,7 @@ async fn client_disconnect_tears_down_plane_connection() {
 }
 
 #[tokio::test]
-async fn gemini_and_stored_responses_paths_reach_their_planes() {
+async fn native_wrapper_routes_inject_logical_identity_only_for_executable_proxy_calls() {
     let (anthropic, log_a) = echo_plane().await;
     let (openai, log_o) = echo_plane().await;
     let (gemini, log_g) = echo_plane().await;
@@ -968,11 +1056,15 @@ async fn gemini_and_stored_responses_paths_reach_their_planes() {
         ("GET", "/v1beta/models"),
         ("OPTIONS", "/v1beta/models"),
     ] {
-        client
+        let response = client
             .request(method.parse().unwrap(), format!("{router}{path}"))
             .send()
             .await
             .unwrap();
+        assert!(response
+            .headers()
+            .get("x-apitoken-logical-request-id")
+            .is_none());
     }
     // /v1/responses — universal lane с dispatch по model (этап 4.1):
     // валидный namespaced model обязателен; openai/* остаётся на своей
@@ -991,11 +1083,15 @@ async fn gemini_and_stored_responses_paths_reach_their_planes() {
         ("POST", "/v1/images/generations"),
         ("POST", "/v1/images/edits"),
     ] {
-        client
+        let response = client
             .request(method.parse().unwrap(), format!("{router}{path}"))
             .send()
             .await
             .unwrap();
+        assert!(response
+            .headers()
+            .get("x-apitoken-logical-request-id")
+            .is_none());
     }
     // /v1/chat/completions — universal lane: до плоскости доходит запрос
     // с валидным namespaced model (этап 3.1, chat::proxy_chat).
@@ -1011,8 +1107,24 @@ async fn gemini_and_stored_responses_paths_reach_their_planes() {
         .await
         .unwrap();
 
-    assert_eq!(log_g.lock().unwrap().len(), 4);
-    assert_eq!(log_o.lock().unwrap().len(), 8);
+    let gemini_requests = log_g.lock().unwrap().clone();
+    assert_eq!(gemini_requests.len(), 4);
+    for request in &gemini_requests {
+        assert_eq!(request.logical_request_ids.len(), 1, "{}", request.path);
+        assert_canonical_uuid_v4(&request.logical_request_ids[0]);
+    }
+    let openai_requests = log_o.lock().unwrap().clone();
+    assert_eq!(openai_requests.len(), 8);
+    for request in &openai_requests {
+        assert_eq!(request.logical_request_ids.len(), 1, "{}", request.path);
+        assert_canonical_uuid_v4(&request.logical_request_ids[0]);
+    }
+    let distinct: std::collections::HashSet<_> = gemini_requests
+        .iter()
+        .chain(openai_requests.iter())
+        .map(|request| request.logical_request_ids[0].as_str())
+        .collect();
+    assert_eq!(distinct.len(), 12);
     let anthropic_paths: Vec<String> = log_a
         .lock()
         .unwrap()
@@ -1020,6 +1132,7 @@ async fn gemini_and_stored_responses_paths_reach_their_planes() {
         .map(|r| r.path.clone())
         .collect();
     assert_eq!(anthropic_paths, ["/balance"]);
+    assert!(log_a.lock().unwrap()[0].logical_request_ids.is_empty());
 }
 
 #[tokio::test]
@@ -1095,6 +1208,87 @@ async fn balance_unauthorized_is_terminal_and_never_reaches_another_plane() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(later_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn balance_and_router_preflights_strip_spoofed_logical_identity_without_injection() {
+    let (anthropic, _, log_a) = policy_attempt_plane(
+        ANTHROPIC_ROUTING_MODELS,
+        "/v1/models",
+        PolicyReply::Unrestricted,
+        StatusCode::OK,
+        None,
+    )
+    .await;
+    let (openai, _, log_o) = policy_attempt_plane(
+        OPENAI_ROUTING_MODELS,
+        "/v1/models",
+        PolicyReply::Unrestricted,
+        StatusCode::OK,
+        None,
+    )
+    .await;
+    let (gemini, _, log_g) = policy_attempt_plane(
+        GEMINI_ROUTING_MODELS,
+        "/v1beta/models",
+        PolicyReply::Unrestricted,
+        StatusCode::OK,
+        None,
+    )
+    .await;
+    let router = spawn(make_fallback_router(
+        &anthropic,
+        &openai,
+        &gemini,
+        Duration::ZERO,
+    ))
+    .await;
+    let client = reqwest::Client::new();
+
+    let balance = client
+        .get(format!("{router}/balance"))
+        .header("x-apitoken-logical-request-id", "spoofed-balance")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(balance.status(), StatusCode::OK);
+
+    let response = client
+        .post(format!("{router}/v1/responses"))
+        .header("x-apitoken-logical-request-id", "spoofed-universal")
+        .body(r#"{"model":"anthropic/claude-sonnet-5","models":["openai/gpt-5.6-terra"],"input":"hi"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let logs = [log_a, log_o, log_g];
+    let recorded: Vec<_> = logs
+        .iter()
+        .flat_map(|log| log.lock().unwrap().clone())
+        .collect();
+    for request in recorded.iter().filter(|request| {
+        request.path == "/balance"
+            || request.path == "/internal/router/auth/preflight"
+            || request.path == "/internal/router/policy/preflight"
+    }) {
+        assert!(
+            request.logical_request_ids.is_empty(),
+            "{} unexpectedly received {:?}",
+            request.path,
+            request.logical_request_ids
+        );
+    }
+    assert!(recorded
+        .iter()
+        .any(|request| request.path == "/internal/router/policy/preflight"));
+    let executable: Vec<_> = recorded
+        .iter()
+        .filter(|request| request.path == "/v1/responses")
+        .collect();
+    assert_eq!(executable.len(), 1);
+    assert_eq!(executable[0].logical_request_ids.len(), 1);
+    assert_canonical_uuid_v4(&executable[0].logical_request_ids[0]);
 }
 
 #[tokio::test]
@@ -1237,6 +1431,10 @@ async fn fallback_owns_one_uuid_group_and_monotonic_attempt_headers() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    assert!(response
+        .headers()
+        .get("x-apitoken-logical-request-id")
+        .is_none());
 
     let first = log_a.lock().unwrap().first().cloned().unwrap();
     let second = log_o.lock().unwrap().first().cloned().unwrap();
@@ -1256,6 +1454,9 @@ async fn fallback_owns_one_uuid_group_and_monotonic_attempt_headers() {
     assert_eq!(second.execution_group.as_deref(), Some(group));
     assert_eq!(first.execution_attempt.as_deref(), Some("1"));
     assert_eq!(second.execution_attempt.as_deref(), Some("2"));
+    assert_eq!(first.logical_request_ids.len(), 1);
+    assert_canonical_uuid_v4(&first.logical_request_ids[0]);
+    assert_eq!(second.logical_request_ids, first.logical_request_ids);
 }
 
 #[tokio::test]

@@ -1,8 +1,8 @@
 # Request observability contract
 
 > **Status: PROPOSED; dormant registry S2 and forward-core S3A are implemented; the Caddy
-> logical-ID perimeter and provider-plane admission/context consumer are implemented; no router or
-> request-fact producer and no read surface.**
+> logical-ID perimeter, provider-plane admission/context consumer, and router logical-ID producer are
+> implemented; no request-fact producer and no read surface.**
 > This document records the target design and rollout constraints for discussion. Migrations 0053-0054
 > are deployed; `crates/registry` exposes opt-in PostgreSQL write/lifecycle primitives, and
 > `AsyncBilling` now transports those typed facts through the owning money transactions plus a distinct
@@ -11,9 +11,10 @@
 > ingresses while leaving stable loopback origins untouched. Anthropic, OpenAI, Gemini, and Combined
 > customer routers now consume at most one canonical trusted value before auth/body/reserve/dispatch,
 > generate one for direct ingress, remove the wire header, and retain only a typed request extension
-> through internal adapters. No router produces it, no fact producer consumes the extension, no ID is
-> returned publicly, and no read API or request-fact metric exists. Provider-plane request-fact
-> callers remain absent.
+> through internal adapters. The provider consumer's exact production SHA is GREEN, and the router now
+> creates one canonical UUIDv4 after admission and sends it on every executable attempt, reusing it
+> across fallback. No fact producer consumes the extension, no ID is returned publicly, and no read API
+> or request-fact metric exists. Provider-plane request-fact callers remain absent.
 
 ## 1. Purpose
 
@@ -57,7 +58,11 @@ Provider-plane logical identity admission is implemented for customer routes in 
 Gemini, and the Combined migration bridge. Malformed reserved capabilities fail before auth, body
 handling, reserve, or dispatch; direct ingress gets a fresh canonical UUIDv4; the wire header is
 removed; and only a typed extension survives through synthesized universal leaf requests. Health,
-admin, internal preflight, and backend-only KIMI/Tripo3D/Suno routes stay outside this MVP.
+admin, internal preflight, and backend-only KIMI/Tripo3D/Suno routes stay outside this MVP. After that
+consumer reached production GREEN, the router producer was implemented: client copies are removed,
+one fresh canonical ID is generated immediately before the first executable provider attempt, direct
+and universal single attempts receive it, and every fallback attempt reuses the same value. Balance,
+router preflights/helpers, catalog/health/startup and 404/405 do not receive one.
 
 The HTTP error audit writes one JSON journal event for a terminal non-2xx response to a recognized
 metered key; it lives in `crates/server/src/http.rs:774-846` as `audit_customer_error` middleware
@@ -116,10 +121,12 @@ fresh CSPRNG canonical lowercase UUIDv4) or exactly one canonical value, removes
 stores only a typed request extension before auth, body handling, reserve, or provider dispatch.
 Universal adapters preserve that same extension on synthesized leaf requests without recreating the
 wire capability. Malformed identity returns a bounded provider-shaped 400 with `not_started`.
-Backend-only KIMI/Tripo3D/Suno and non-customer routes are outside this MVP. No router produces the
-header yet. Only after this consumer's exact SHA is GREEN may the router stage create one CSPRNG
-UUIDv4 before the first executable attempt, remove inbound copies again, and inject the same logical
-ID into every attempt.
+Backend-only KIMI/Tripo3D/Suno and non-customer routes are outside this MVP. The provider consumer's
+exact production SHA is GREEN, so the implemented router producer now creates one CSPRNG UUIDv4 only
+at the final executable boundary after auth/body/model/routing/policy admission, removes all inbound
+copies again in the common proxy function, and injects the same logical ID into every provider attempt.
+Native and universal single attempts receive it; balance and helper/preflight traffic traversing the
+common proxy passes no typed ID and therefore only strips. The router neither logs nor publishes it.
 
 The logical ID is additive correlation metadata. It does not replace a protocol's public response ID,
 an upstream `request-id`, the billing ID, or the existing execution-group contract. Existing public
@@ -379,16 +386,18 @@ analytics must not be introduced into the pool layer.
 5. Reserve the logical-ID trust boundary at Caddy first: strip
    `X-Apitoken-Logical-Request-Id` from all four public provider/router ingresses and preserve stable
    loopback origins. **Implemented as the completed security perimeter prerequisite.** The provider
-   consumer in step 6 now recognizes and removes the trusted capability; the router still does not
-   produce it.
+   consumer in step 6 recognizes and removes the trusted capability, and the router producer in step 7
+   now creates it only for executable attempts.
 6. Deliver the provider-plane strict consumer/direct-ID generator after the perimeter. **Implemented
    for Anthropic, OpenAI, Gemini, and Combined customer routes:** the plane accepts at most one
    canonical trusted internal value, consumes/strips the capability before any external upstream
    dispatch, generates a fresh logical ID when direct traffic has none, and preserves typed context
    through internal adapters. Fact-aware forward-core forms remain dormant and have no plane caller.
-7. Only after the plane consumer/generator's exact SHA is GREEN, deliver the router producer. It
-   removes any inbound copy again, creates one CSPRNG UUIDv4 per logical request, and injects it into
-   every provider attempt.
+7. Only after the plane consumer/generator's exact SHA is GREEN, deliver the router producer.
+   **Implemented after that prerequisite reached production GREEN:** the final common proxy removes
+   every inbound copy, executable native/universal requests create one CSPRNG UUIDv4 only after final
+   admission, and fallback reuses it on every attempt. No logging, fact caller, metric, persistence,
+   read API, or public response header is part of this stage.
 8. Instrument Anthropic, Codex, and Gemini native and universal surfaces. Keep existing body,
    response, stream, retry, settlement, and execution-group behavior unchanged.
 9. Deliver private aggregate and drilldown Control API producers. Update `docs/engine/CONTROL_API.md`

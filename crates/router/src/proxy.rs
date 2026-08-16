@@ -24,6 +24,7 @@ use axum::http::{HeaderMap, HeaderName, Request, Response, StatusCode};
 use reqwest::Client;
 
 use crate::error::{self, Lane};
+use crate::identity::LogicalRequestId;
 use crate::metrics::RouterMetrics;
 
 const BALANCE_HEADER_TIMEOUT: Duration = Duration::from_secs(2);
@@ -63,6 +64,8 @@ const EXECUTION_STATE_NOT_STARTED: &[u8] = b"not_started";
 pub const EXECUTION_GROUP_HEADER: HeaderName =
     HeaderName::from_static("x-apitoken-execution-group");
 pub const EXECUTION_ATTEMPT_HEADER: HeaderName = HeaderName::from_static("x-apitoken-attempt");
+pub const LOGICAL_REQUEST_ID_HEADER: HeaderName =
+    HeaderName::from_static("x-apitoken-logical-request-id");
 
 pub struct ExecutionAttemptHeaders {
     pub group_id: String,
@@ -123,6 +126,7 @@ pub async fn proxy_attempt(
     target_lane: Lane,
     error_lane: Lane,
     req: Request<Body>,
+    logical_request_id: Option<&LogicalRequestId>,
     execution: Option<&ExecutionAttemptHeaders>,
     metrics: &RouterMetrics,
 ) -> ProxyAttempt {
@@ -132,6 +136,7 @@ pub async fn proxy_attempt(
         target_lane,
         error_lane,
         req,
+        logical_request_id,
         execution,
         None,
         metrics,
@@ -145,6 +150,7 @@ async fn proxy_attempt_with_optional_header_timeout(
     target_lane: Lane,
     error_lane: Lane,
     req: Request<Body>,
+    logical_request_id: Option<&LogicalRequestId>,
     execution: Option<&ExecutionAttemptHeaders>,
     response_header_timeout: Option<Duration>,
     metrics: &RouterMetrics,
@@ -157,11 +163,21 @@ async fn proxy_attempt_with_optional_header_timeout(
     let url = format!("{origin}{path_query}");
     let method = req.method().clone();
     let mut headers = strip_hop_by_hop(req.headers());
-    // These headers are a router-owned capability. Client copies are always erased, including on
-    // native and universal single-attempt lanes; only the explicit fallback engine can add them.
+    // These headers are router-owned capabilities. Client copies are always erased on every common
+    // proxy traversal; only explicit typed router data can add them back for executable attempts.
     headers.remove(&EXECUTION_GROUP_HEADER);
     headers.remove(&EXECUTION_ATTEMPT_HEADER);
+    headers.remove(&LOGICAL_REQUEST_ID_HEADER);
     headers.remove(&SERVICE_TIER_HEADER);
+    if let Some(logical_request_id) = logical_request_id {
+        headers.insert(
+            LOGICAL_REQUEST_ID_HEADER,
+            logical_request_id
+                .as_str()
+                .parse()
+                .expect("router-generated UUIDv4 is a valid header value"),
+        );
+    }
     if let Some(execution) = execution {
         headers.insert(
             EXECUTION_GROUP_HEADER,
@@ -230,7 +246,7 @@ async fn proxy_attempt_with_optional_header_timeout(
             for (name, value) in filtered.iter() {
                 // Авторитетная семантика исполнения — не транзитный контракт: снимаем
                 // (см. EXECUTION_STATE_HEADER).
-                if name == EXECUTION_STATE_HEADER {
+                if name == EXECUTION_STATE_HEADER || name == LOGICAL_REQUEST_ID_HEADER {
                     continue;
                 }
                 builder = builder.header(name, value);
@@ -290,11 +306,21 @@ pub async fn proxy_request(
     origin: &str,
     lane: Lane,
     req: Request<Body>,
+    logical_request_id: &LogicalRequestId,
     metrics: &RouterMetrics,
 ) -> Response<Body> {
-    proxy_attempt(client, origin, lane, lane, req, None, metrics)
-        .await
-        .response
+    proxy_attempt(
+        client,
+        origin,
+        lane,
+        lane,
+        req,
+        Some(logical_request_id),
+        None,
+        metrics,
+    )
+    .await
+    .response
 }
 
 /// `/balance` is a read-only shared-authority surface. It is safe to continue after transport or
@@ -323,6 +349,7 @@ pub async fn proxy_balance(
             lane,
             Lane::Anthropic,
             request,
+            None,
             None,
             Some(BALANCE_HEADER_TIMEOUT),
             metrics,
@@ -369,6 +396,7 @@ pub fn auth_passthrough(headers: &HeaderMap) -> HeaderMap {
             out.append(&name, value.clone());
         }
     }
+    out.remove(&LOGICAL_REQUEST_ID_HEADER);
     out
 }
 
@@ -466,6 +494,10 @@ mod tests {
         );
         headers.insert("user-agent", HeaderValue::from_static("test"));
         headers.insert("anthropic-beta", HeaderValue::from_static("b"));
+        headers.append(
+            LOGICAL_REQUEST_ID_HEADER,
+            HeaderValue::from_static("spoofed"),
+        );
 
         let auth = auth_passthrough(&headers);
         assert_eq!(auth.len(), 4);
@@ -478,6 +510,7 @@ mod tests {
         assert_eq!(auth.get("x-goog-api-key").unwrap(), "sk-pool-b");
         assert_eq!(auth.get("authorization").unwrap(), "Bearer sk-pool-c");
         assert!(auth.get("user-agent").is_none());
+        assert!(auth.get(&LOGICAL_REQUEST_ID_HEADER).is_none());
     }
 
     #[test]
@@ -517,6 +550,7 @@ mod tests {
             Lane::Anthropic,
             Lane::Anthropic,
             request,
+            None,
             None,
             Some(Duration::from_millis(50)),
             &RouterMetrics::new(),
@@ -560,6 +594,7 @@ mod tests {
                     lane,
                     lane,
                     request,
+                    None,
                     None,
                     &RouterMetrics::new(),
                 ),
