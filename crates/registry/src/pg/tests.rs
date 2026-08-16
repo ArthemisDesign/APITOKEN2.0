@@ -356,7 +356,7 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 52);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 53);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
@@ -460,7 +460,7 @@ fn tripo3d_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn tripo3d_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 52);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 53);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 49)
@@ -580,7 +580,7 @@ fn suno_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn suno_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 52);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 53);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 50)
@@ -691,7 +691,7 @@ fn tripo3d_pricing_provider_migration_widens_both_closed_sets() {
 
 #[test]
 fn tripo3d_pricing_provider_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 52);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 53);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 51)
@@ -740,7 +740,7 @@ fn suno_pricing_provider_migration_widens_both_closed_sets() {
 
 #[test]
 fn suno_pricing_provider_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 52);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 53);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 52)
@@ -752,6 +752,248 @@ fn suno_pricing_provider_migration_is_registered_at_the_current_schema_version()
         ENGINE_MIGRATIONS.last().map(|(version, _)| *version),
         Some(CURRENT_SCHEMA_VERSION)
     );
+}
+
+/// Real PostgreSQL proof for the dormant request-fact storage shape and replay behavior.
+/// Skipped unless an isolated destructive test database is supplied:
+/// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+/// pg::tests::request_facts_migration_postgres_matrix`
+#[test]
+fn request_facts_migration_postgres_matrix() {
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping request-facts migration matrix: test URL is unset");
+        return;
+    };
+
+    let mut lock_holder = PgStore::connect(&url).unwrap();
+    lock_holder
+        .client
+        .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+        .unwrap();
+    lock_holder
+        .client
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+
+    let mut pg = PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    assert_eq!(pg.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
+
+    let table_exists: bool = pg
+        .client
+        .query_one(
+            "SELECT to_regclass('public.request_facts') IS NOT NULL",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert!(table_exists, "migration 0053 must create request_facts");
+
+    let check_definitions: Vec<String> = pg
+        .client
+        .query(
+            "SELECT pg_get_constraintdef(oid) \
+               FROM pg_constraint \
+              WHERE conrelid = 'public.request_facts'::regclass \
+                AND contype = 'c'",
+            &[],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect();
+    let checks = check_definitions.join(" ");
+    for (vocabulary, values) in [
+        (
+            "client_kind",
+            &[
+                "claude_code",
+                "opencode",
+                "codex_cli",
+                "cursor",
+                "sdk",
+                "custom",
+                "unknown",
+            ][..],
+        ),
+        ("client_source", &["explicit", "heuristic", "unknown"][..]),
+        (
+            "tool_choice_mode",
+            &["auto", "required", "none", "named", "unknown"][..],
+        ),
+        (
+            "provider_terminal_class",
+            &[
+                "success",
+                "client_error",
+                "quota",
+                "auth",
+                "timeout",
+                "transport",
+                "upstream_error",
+                "protocol_error",
+                "unknown",
+            ][..],
+        ),
+        (
+            "billing_outcome",
+            &[
+                "winner",
+                "loser",
+                "zero_metered",
+                "canceled",
+                "reconciled",
+                "not_applicable",
+                "unknown",
+            ][..],
+        ),
+    ] {
+        let definition = check_definitions
+            .iter()
+            .find(|definition| definition.contains(vocabulary))
+            .unwrap_or_else(|| panic!("request_facts lacks the {vocabulary} CHECK: {checks}"));
+        for value in values {
+            assert!(
+                definition.contains(&format!("'{value}'::text")),
+                "request_facts {vocabulary} CHECK is missing {value}: {definition}"
+            );
+        }
+    }
+
+    let indexes: Vec<(String, String)> = pg
+        .client
+        .query(
+            "SELECT indexname,indexdef \
+               FROM pg_indexes \
+              WHERE schemaname = 'public' AND tablename = 'request_facts' \
+              ORDER BY indexname",
+            &[],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    for (expected, shape) in [
+        (
+            "request_facts_logical_attempt_idx",
+            "(logical_request_id, attempt)",
+        ),
+        (
+            "request_facts_account_admitted_idx",
+            "(account_id, admitted_at DESC, fact_id)",
+        ),
+        ("request_facts_admitted_idx", "(admitted_at)"),
+    ] {
+        let definition = indexes
+            .iter()
+            .find(|(name, _)| name == expected)
+            .map(|(_, definition)| definition)
+            .unwrap_or_else(|| panic!("missing request_facts index {expected}: {indexes:?}"));
+        assert!(
+            definition.ends_with(shape),
+            "request_facts index {expected} has the wrong shape: {definition}"
+        );
+    }
+    let billing_unique = indexes
+        .iter()
+        .find(|(name, _)| name == "request_facts_billing_request_id_key")
+        .map(|(_, definition)| definition)
+        .expect("billing_request_id UNIQUE must create its constraint index");
+    assert!(billing_unique.contains("CREATE UNIQUE INDEX"));
+    assert!(billing_unique.ends_with("(billing_request_id)"));
+
+    pg.client
+        .execute(
+            "DELETE FROM request_facts \
+              WHERE logical_request_id IN ($1,$2) OR billing_request_id=$3",
+            &[
+                &"request-facts-migration-matrix",
+                &"request-facts-migration-invalid-client",
+                &"request-facts-migration-billing",
+            ],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "INSERT INTO request_facts( \
+                 logical_request_id,billing_request_id,account_id,key_id,client_kind,client_source, \
+                 provider_plane,route_class,request_class,tool_choice_mode, \
+                 provider_terminal_class,billing_outcome,admitted_at \
+             ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+            &[
+                &"request-facts-migration-matrix",
+                &"request-facts-migration-billing",
+                &"request-facts-migration-account",
+                &"request-facts-migration-key",
+                &"opencode",
+                &"explicit",
+                &"anthropic",
+                &"native",
+                &"messages",
+                &"auto",
+                &"success",
+                &"winner",
+                &1_i64,
+            ],
+        )
+        .unwrap();
+
+    let bad_client = pg.client.execute(
+        "INSERT INTO request_facts( \
+             logical_request_id,account_id,key_id,client_kind,client_source, \
+             provider_plane,route_class,request_class,admitted_at \
+         ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+        &[
+            &"request-facts-migration-invalid-client",
+            &"request-facts-migration-account",
+            &"request-facts-migration-key",
+            &"fabricated-client",
+            &"unknown",
+            &"anthropic",
+            &"native",
+            &"messages",
+            &1_i64,
+        ],
+    );
+    let bad_client = bad_client.expect_err("out-of-vocabulary client_kind must fail its CHECK");
+    assert_eq!(
+        bad_client.as_db_error().map(|error| error.code().code()),
+        Some("23514")
+    );
+
+    pg.migrate().unwrap();
+    assert_eq!(pg.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
+    let row_count: i64 = pg
+        .client
+        .query_one(
+            "SELECT COUNT(*)::bigint FROM request_facts WHERE logical_request_id=$1",
+            &[&"request-facts-migration-matrix"],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(row_count, 1, "exact migration replay must preserve the row");
+
+    pg.client
+        .execute(
+            "DELETE FROM request_facts \
+              WHERE logical_request_id IN ($1,$2) OR billing_request_id=$3",
+            &[
+                &"request-facts-migration-matrix",
+                &"request-facts-migration-invalid-client",
+                &"request-facts-migration-billing",
+            ],
+        )
+        .unwrap();
+    lock_holder
+        .client
+        .query_one(
+            "SELECT pg_advisory_unlock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
 }
 
 /// Real PostgreSQL proof that migration 0048 rejects an old settlement transaction before it can

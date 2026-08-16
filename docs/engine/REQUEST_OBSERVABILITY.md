@@ -3,6 +3,7 @@
 > **Status: PROPOSED, not implemented.** This document records the target design and rollout
 > constraints for discussion. It does not describe a live API, schema, metric, retention guarantee,
 > or deployed behavior. Implementation requires the staged producer-first changes below.
+> Rollout: stage 13.2 dormant storage merged as migration 0053 (request_facts); producer stages pending.
 
 ## 1. Purpose
 
