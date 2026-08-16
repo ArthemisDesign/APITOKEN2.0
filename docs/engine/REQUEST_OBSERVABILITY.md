@@ -60,7 +60,7 @@ removed; and only a typed extension survives through synthesized universal leaf 
 admin, internal preflight, and backend-only KIMI/Tripo3D/Suno routes stay outside this MVP.
 
 The HTTP error audit writes one JSON journal event for a terminal non-2xx response to a recognized
-metered key; it lives in `crates/server/src/http.rs:667-739` as `audit_customer_error` middleware
+metered key; it lives in `crates/server/src/http.rs:774-846` as `audit_customer_error` middleware
 (forward only carries the `TerminalErrorReason` extension at `crates/forward/src/proxy.rs:564,648-649`).
 Prometheus and Grafana intentionally exclude customer, key, request, model, credential,
 and content identities. These operational surfaces remain useful but are not a durable product
@@ -348,7 +348,8 @@ pagination.
 - `crates/server`: composition, private Control API reads, bounded telemetry, request correlation.
   The existing Control API aggregates `usage_events` via `GET /admin/account/{id}/usage`,
   `GET /spend-stats`, and `GET /fleet-history` (`crates/server/src/admin.rs:947-1056`,
-  `crates/server/src/http.rs:341,3947-4039,4383`);
+  `crates/server/src/http.rs:392` (`router`), `:3961` (`spend_stats`), `:4058`
+  (`spend_window_json`), and `:4490` (`fleet_history`));
 - `crates/router`: trusted logical request ID production and propagation across fallback attempts;
 - `deploy/Caddyfile`: implemented owner of the completed security-only perimeter stage; the
   `strip_execution_identity` snippet removes client-supplied logical identity at all four public
@@ -457,7 +458,7 @@ and are recorded here as fixed observations.
   `0005_provider_attribution.sql:13-18`). The only runtime write is inside the settlement outbox
   apply transaction (`crates/registry/src/pg.rs:1436-1451`); losing execution-group attempts and
   model-less reconciliation charges do not produce a row (`pg.rs:1419`).
-- The HTTP error audit lives in `crates/server/src/http.rs:667-739` as `audit_customer_error`
+- The HTTP error audit lives in `crates/server/src/http.rs:774-846` as `audit_customer_error`
   middleware; `crates/forward` only carries the `TerminalErrorReason` response extension
   (`crates/forward/src/proxy.rs:564,648-649`).
 - Request identities are fragmented: the billing-plane identifier is `engine_request_id`/`request_id`
@@ -475,9 +476,11 @@ and are recorded here as fixed observations.
 - `control_authed` is defined in `crates/forward/src/proxy.rs:348`, not in `crates/server`; existing
   Control API aggregation endpoints are `GET /admin/account/{id}/usage`, `GET /spend-stats`, and
   `GET /fleet-history` (`crates/server/src/admin.rs:947-1056`,
-  `crates/server/src/http.rs:341,3947-4039,4383`).
+  `crates/server/src/http.rs:392` (`router`), `:3961` (`spend_stats`), `:4058`
+  (`spend_window_json`), and `:4490` (`fleet_history`)).
 - Prometheus `/metrics` uses fixed compile-bounded series with no per-request or per-customer labels
-  (`crates/server/src/http.rs:316-1023`, `:1136-1147`).
+  (`crates/server/src/http.rs:401` and the `metrics` handler at `:1130`, including its billing
+  aggregate block at `:1240-1262`).
 - Retention today is 30 days for ledger/usage_events (`LEDGER_RETENTION_DAYS = 30`) and 30 days for
   reservations/settlement_outbox (`REQUEST_LIFECYCLE_RETENTION_DAYS = 30`), enforced by separate
   prune loops (`crates/server/src/main.rs:35-39`, `crates/server/src/poller.rs:97-160`) with a
