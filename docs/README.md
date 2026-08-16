@@ -68,6 +68,7 @@ document, update this index.
 - [PRICING_RELEASE_BACKFILL.md](ops/PRICING_RELEASE_BACKFILL.md) — retired tombstone; its strict-chain sweep, knobs and endpoint no longer exist and must not be run.
 - [PRICING_RETIREMENT.md](ops/PRICING_RETIREMENT.md) — fail-closed retirement of the dead pricing policy/release/funding schema: exact manifests, retention/rollback gates and staged drop order.
 - [MONITORING.md](ops/MONITORING.md) — monitoring and alert runbook anchors (`docs/ops/MONITORING.md#<alert>`).
+- [STAGING_ENVIRONMENT.md](ops/STAGING_ENVIRONMENT.md) — staging test-bench adoption plan (proposal, not implemented): two twin environments, stage→prod delivery, hotfix bypass, degradation gate.
 - [REDIS.md](ops/REDIS.md) — Redis topology (both instances), standing rules for new consumers, and the ranked map of where Redis pays off next.
 - [DELETE_WORKTREE.md](ops/DELETE_WORKTREE.md) — permanent fail-closed cleanup of merged worktrees and explicitly registered clones on macOS.
 - [CLAUDE_CALIBRATION.md](ops/CLAUDE_CALIBRATION.md) — bounded live calibration run of Claude: models, token classes, sticky subscriptions, and a hard nanoUSD budget.
