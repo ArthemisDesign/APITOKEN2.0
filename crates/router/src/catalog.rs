@@ -107,7 +107,7 @@ impl Plane {
 const REASONING_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 const ANTHROPIC_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 const SERVICE_TIERS: &[&str] = &["standard", "priority"];
-const MODALITIES: &[&str] = &["text", "image", "audio"];
+const MODALITIES: &[&str] = &["text", "image", "audio", "video", "pdf"];
 /// Public token limits are consumed as JavaScript numbers by harnesses. A u32
 /// ceiling is far above every reviewed provider context while keeping hostile
 /// catalog values bounded and exactly representable.
@@ -1517,7 +1517,7 @@ mod tests {
             serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"limits":{"input":10,"context":9}}}]}),
             serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"reasoning_efforts":["ultra"]}}}]}),
             serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"service_tiers":["standard","standard"]}}}]}),
-            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"input_modalities":["text","video"]}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"input_modalities":["text","3d"]}}}]}),
             serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"output_modalities":["text","text"]}}}]}),
             serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"tool_calling":"yes"}}}]}),
             serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"structured_outputs":1}}}]}),
