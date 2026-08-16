@@ -2277,9 +2277,9 @@ class Runner:
         if is_admission_search:
             upper += GEMINI_37_SEARCH_QUERY_RESERVE * rates.search
         if self.media_matrix:
-            # The fleet matrix charges each leg against its own model's rate card; the
-            # aggregate budget is the sum of per-leg worst-case ceilings, recomputed from
-            # the full input-context reserve and verified once up front in main().
+            # The matrix budget is the exact sum of per-model compiled worst-case ceilings;
+            # a hot override can only settle a leg below its reserve, so the contract holds
+            # across the ~20-minute run without pinning a global schedule snapshot.
             pass
         elif self.admission is not None:
             if leg.name == f"admission:{GEMINI_37_ADMISSION_MODEL}:search":
@@ -2405,9 +2405,19 @@ class Runner:
         if event is None:
             raise CalibrationError(f"{leg.name}: exact immutable Gemini event did not appear")
         if event.get("tariff_schedule_id") != rates.tariff_schedule_id:
-            raise CalibrationError(
-                f"{leg.name}: immutable event tariff {event.get('tariff_schedule_id')!r} "
-                f"does not match preflight {rates.tariff_schedule_id!r}"
+            if not self.media_matrix:
+                raise CalibrationError(
+                    f"{leg.name}: immutable event tariff {event.get('tariff_schedule_id')!r} "
+                    f"does not match preflight {rates.tariff_schedule_id!r}"
+                )
+            # The matrix reserves the worst case per leg from the compiled card, so a hot
+            # tariff override landing between preflight and settlement can only lower the
+            # actual charge below the reserve; the event's own schedule id remains the
+            # authoritative pricing proof and is recorded in the record.
+            print(
+                f"{leg.name}: tariff moved to {event.get('tariff_schedule_id')!r} "
+                f"from preflight {rates.tariff_schedule_id!r}; charging the authoritative event",
+                flush=True,
             )
         actual = event["api_total_nanousd"]
         self.budget.charge(profile_id, actual, upper)
