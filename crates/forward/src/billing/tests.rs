@@ -1,6 +1,175 @@
 use super::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn request_fact_admission(
+    logical_request_id: &str,
+    billing_request_id: &str,
+    account_id: &str,
+    key_id: &str,
+    admitted_at: i64,
+) -> registry::request_facts::RequestFactAdmission {
+    registry::request_facts::RequestFactAdmission {
+        logical_request_id: logical_request_id.into(),
+        billing_request_id: billing_request_id.into(),
+        execution_group_id: None,
+        attempt: 1,
+        account_id: account_id.into(),
+        key_id: key_id.into(),
+        client_kind: registry::request_facts::ClientKind::OpenCode,
+        client_source: registry::request_facts::ClientSource::Explicit,
+        client_version: Some("1.0".into()),
+        provider_plane: "anthropic".into(),
+        route_class: "direct".into(),
+        request_class: "messages".into(),
+        requested_model: Some("claude-test".into()),
+        executable_model: Some("claude-test".into()),
+        stream_flag: true,
+        tools_declared_count: Some(1),
+        tool_classes: Some(registry::request_facts::TOOL_CLASS_CUSTOM_FUNCTION),
+        tool_choice_mode: Some(registry::request_facts::ToolChoiceMode::Auto),
+        parallel_tools_requested: Some(false),
+        tool_results_in_input: Some(false),
+        structured_output_flag: None,
+        reasoning_flag: Some(true),
+        service_tier: Some("standard".into()),
+        input_modalities: Some(registry::request_facts::MODALITY_TEXT),
+        output_modalities: Some(registry::request_facts::MODALITY_TEXT),
+        admitted_at,
+    }
+}
+
+fn request_fact_terminal(
+    terminal_at: i64,
+    delivery_state: registry::request_facts::DeliveryState,
+) -> registry::request_facts::RequestFactTerminalEvidence {
+    registry::request_facts::RequestFactTerminalEvidence {
+        terminal_at,
+        http_status_code: Some(200),
+        provider_terminal_class: registry::request_facts::ProviderTerminalClass::Success,
+        delivery_state,
+        downstream_disconnect: Some(false),
+        upstream_request_id: Some("upstream-safe-id".into()),
+        first_public_byte_at: Some(terminal_at),
+        internal_attempt_count: Some(1),
+        failure_class: None,
+        tool_calls_in_output: Some(false),
+    }
+}
+
+fn terminal_request_fact(
+    logical_request_id: &str,
+    billing_request_id: Option<&str>,
+    account_id: &str,
+    key_id: &str,
+    admitted_at: i64,
+) -> registry::request_facts::TerminalRequestFact {
+    registry::request_facts::TerminalRequestFact {
+        logical_request_id: logical_request_id.into(),
+        billing_request_id: billing_request_id.map(str::to_owned),
+        execution_group_id: None,
+        attempt: 1,
+        account_id: account_id.into(),
+        key_id: key_id.into(),
+        client_kind: registry::request_facts::ClientKind::Unknown,
+        client_source: registry::request_facts::ClientSource::Unknown,
+        client_version: None,
+        provider_plane: "anthropic".into(),
+        route_class: "post_auth_reject".into(),
+        request_class: "messages".into(),
+        requested_model: None,
+        executable_model: None,
+        stream_flag: false,
+        tools_declared_count: None,
+        tool_classes: None,
+        tool_choice_mode: None,
+        parallel_tools_requested: None,
+        tool_results_in_input: None,
+        structured_output_flag: None,
+        reasoning_flag: None,
+        service_tier: None,
+        input_modalities: None,
+        output_modalities: None,
+        admitted_at,
+        terminal: registry::request_facts::RequestFactTerminalEvidence {
+            terminal_at: admitted_at,
+            http_status_code: Some(429),
+            provider_terminal_class: registry::request_facts::ProviderTerminalClass::Quota,
+            delivery_state: registry::request_facts::DeliveryState::NotStarted,
+            downstream_disconnect: None,
+            upstream_request_id: None,
+            first_public_byte_at: None,
+            internal_attempt_count: None,
+            failure_class: None,
+            tool_calls_in_output: None,
+        },
+    }
+}
+
+#[test]
+fn reserve_handoff_guard_dispatches_fact_aware_cancel_after_commit() {
+    let (writer, mut receiver) = mpsc::channel(1);
+    let handoff = Arc::new(AtomicU8::new(RESERVE_HANDOFF_COMMITTED));
+    {
+        let _guard = ReserveHandoffGuard {
+            writer: &writer,
+            detached: Arc::new(DetachedDispatchTracker::default()),
+            request_id: "22222222-2222-4222-8222-222222222222".into(),
+            account_id: "account".into(),
+            key: "key".into(),
+            hold: 10,
+            request_fact_admitted_at: Some(i64::MAX),
+            handoff: Arc::clone(&handoff),
+        };
+    }
+    let WriteCmd::CancelReserve {
+        request_id,
+        terminal_evidence: Some(evidence),
+        ..
+    } = receiver.try_recv().expect("guard compensation command")
+    else {
+        panic!("guard must dispatch fact-aware cancellation");
+    };
+    assert_eq!(request_id, "22222222-2222-4222-8222-222222222222");
+    assert_eq!(evidence.terminal_at, i64::MAX);
+    assert_eq!(
+        evidence.provider_terminal_class,
+        registry::request_facts::ProviderTerminalClass::Unknown
+    );
+    assert_eq!(
+        evidence.delivery_state,
+        registry::request_facts::DeliveryState::NotStarted
+    );
+    assert_eq!(handoff.load(Ordering::Acquire), RESERVE_HANDOFF_CANCELED);
+}
+
+#[test]
+fn reserve_handoff_cancel_evidence_is_conservative_and_time_ordered() {
+    assert_eq!(reserve_handoff_cancel_evidence(None, 5), None);
+    let evidence = reserve_handoff_cancel_evidence(Some(10), 5).unwrap();
+    assert_eq!(evidence.terminal_at, 10);
+    assert_eq!(
+        evidence.provider_terminal_class,
+        registry::request_facts::ProviderTerminalClass::Unknown
+    );
+    assert_eq!(
+        evidence.delivery_state,
+        registry::request_facts::DeliveryState::NotStarted
+    );
+    assert_eq!(evidence.http_status_code, None);
+    assert_eq!(evidence.downstream_disconnect, None);
+    assert_eq!(evidence.upstream_request_id, None);
+    assert_eq!(evidence.first_public_byte_at, None);
+    assert_eq!(evidence.internal_attempt_count, None);
+    assert_eq!(evidence.failure_class, None);
+    assert_eq!(evidence.tool_calls_in_output, None);
+    assert_eq!(
+        reserve_handoff_cancel_evidence(Some(10), 12)
+            .unwrap()
+            .terminal_at,
+        12
+    );
+}
+
 #[test]
 fn pg_command_metrics_buckets_are_cumulative_and_per_op() {
     let metrics = PgCommandMetrics::default();
@@ -1387,6 +1556,7 @@ async fn canceled_sqlite_reserve_handoff_releases_key_allowance() {
             hold: 500,
             execution: registry::ExecutionAttempt::direct(),
             pricing: None,
+            request_fact: None,
             handoff: Arc::clone(&handoff),
             reply,
         })
@@ -1403,6 +1573,584 @@ async fn canceled_sqlite_reserve_handoff_releases_key_allowance() {
 
     drop(billing);
     let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn sqlite_fact_aware_money_preserves_money_and_omits_analytics() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "claude-api-billing-request-fact-{}-{unique}.sqlite",
+        std::process::id(),
+    ));
+    let billing = AsyncBilling::start(path.to_string_lossy().into_owned(), 1).unwrap();
+    billing
+        .create_account("rf-sqlite-account", None, 10_000)
+        .await
+        .unwrap();
+    billing
+        .topup("rf-sqlite-account", 1_000, Some("seed"))
+        .await
+        .unwrap();
+    billing
+        .issue_key("rf-sqlite-key", "rf-sqlite-account", None, None, None)
+        .await
+        .unwrap();
+    let key_id = billing.get("rf-sqlite-key").await.unwrap().unwrap().key_id;
+    let admitted_at = pool::now();
+    let fact = request_fact_admission(
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "rf-sqlite-account",
+        &key_id,
+        admitted_at,
+    );
+    let mut invalid_fact = fact.clone();
+    invalid_fact.logical_request_id = "not-a-uuid".into();
+    assert!(billing
+        .reserve_request_for_execution_with_fact(
+            "99999999-9999-4999-8999-999999999999",
+            "rf-sqlite-account",
+            "rf-sqlite-key",
+            100,
+            registry::ExecutionAttempt::direct(),
+            invalid_fact,
+        )
+        .await
+        .is_err());
+    let account = billing.account("rf-sqlite-account").await.unwrap().unwrap();
+    assert_eq!((account.balance_nano, account.reserved_nano), (1_000, 0));
+    assert!(billing
+        .reserve_request_for_execution_with_fact(
+            "22222222-2222-4222-8222-222222222222",
+            "rf-sqlite-account",
+            "rf-sqlite-key",
+            100,
+            registry::ExecutionAttempt::direct(),
+            fact,
+        )
+        .await
+        .unwrap()
+        .is_some());
+    assert!(billing
+        .mark_delivering_with_request_fact("22222222-2222-4222-8222-222222222222", 60)
+        .await
+        .unwrap());
+    let terminal = request_fact_terminal(
+        pool::now().max(admitted_at),
+        registry::request_facts::DeliveryState::Completed,
+    );
+    assert!(billing
+        .settle_request_with_request_fact(
+            "22222222-2222-4222-8222-222222222222",
+            "rf-sqlite-account",
+            "rf-sqlite-key",
+            100,
+            50,
+            None,
+            terminal,
+        )
+        .await
+        .unwrap()
+        .is_some());
+    let unsupported = terminal_request_fact(
+        "33333333-3333-4333-8333-333333333333",
+        None,
+        "rf-sqlite-account",
+        &key_id,
+        admitted_at,
+    );
+    assert_eq!(
+        billing.try_submit_terminal_request_fact(unsupported),
+        TerminalRequestFactSubmission::UnsupportedAuthority
+    );
+    let snapshot = billing.request_fact_delivery_snapshot();
+    assert!(!snapshot.enabled);
+    assert_eq!(snapshot.dropped_unsupported, 1);
+    assert_eq!(
+        snapshot.persistence_health,
+        RequestFactPersistenceHealth::Unknown
+    );
+    let account = billing.account("rf-sqlite-account").await.unwrap().unwrap();
+    assert_eq!((account.balance_nano, account.reserved_nano), (950, 0));
+    drop(billing);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn request_fact_forward_core_postgres_matrix() {
+    const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_441;
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping forward request-fact matrix: test URL is unset");
+        return;
+    };
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let instance_id = format!("request-fact-forward-{}-{unique}", std::process::id());
+    let mut lock_holder = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    lock_holder
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    lock_holder
+        .batch_execute(
+            "TRUNCATE request_facts,execution_group_winner,settlement_outbox,reservations, \
+             capacity_leases,leader_leases,engine_instances,usage_events,ledger,api_keys,accounts \
+             RESTART IDENTITY CASCADE",
+        )
+        .unwrap();
+    pg.account_create("rf-forward-account", None, 10_000)
+        .unwrap();
+    pg.account_topup("rf-forward-account", 10_000, Some("rf-forward-seed"))
+        .unwrap();
+    pg.key_issue("rf-forward-key", "rf-forward-account", None)
+        .unwrap();
+    let key_id = pg.key_get("rf-forward-key").unwrap().unwrap().key_id;
+    let owner = pg.claim_instance(&instance_id, 600).unwrap();
+    drop(pg);
+
+    let billing = AsyncBilling::start_authority(
+        registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+        Some(owner),
+        1,
+        0,
+    )
+    .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    const LOGICAL: &str = "11111111-1111-4111-8111-111111111111";
+    const BILLING: &str = "22222222-2222-4222-8222-222222222222";
+    const CANCEL_LOGICAL: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const CANCEL_BILLING: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const ZERO_USAGE_LOGICAL: &str = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const ZERO_USAGE_BILLING: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    let admitted_at = pool::now();
+    let fact = request_fact_admission(LOGICAL, BILLING, "rf-forward-account", &key_id, admitted_at);
+    runtime.block_on(async {
+        assert!(billing
+            .reserve_request_for_execution_with_fact(
+                BILLING,
+                "rf-forward-account",
+                "rf-forward-key",
+                100,
+                registry::ExecutionAttempt::direct(),
+                fact.clone(),
+            )
+            .await
+            .unwrap()
+            .is_some());
+        // Exact reserve replay uses the same money actor and does not move aggregates again.
+        assert!(billing
+            .reserve_request_for_execution_with_fact(
+                BILLING,
+                "rf-forward-account",
+                "rf-forward-key",
+                100,
+                registry::ExecutionAttempt::direct(),
+                fact,
+            )
+            .await
+            .unwrap()
+            .is_some());
+        assert!(billing
+            .reserve_request_for_execution(
+                "legacy-forward-request",
+                "rf-forward-account",
+                "rf-forward-key",
+                10,
+                registry::ExecutionAttempt::direct(),
+            )
+            .await
+            .unwrap()
+            .is_some());
+        assert!(billing
+            .mark_delivering_with_request_fact(BILLING, 600)
+            .await
+            .unwrap());
+        let terminal_at = pool::now().max(admitted_at);
+        assert!(billing
+            .settle_request_with_request_fact(
+                BILLING,
+                "rf-forward-account",
+                "rf-forward-key",
+                100,
+                50,
+                Some("rf-forward-settlement"),
+                request_fact_terminal(
+                    terminal_at,
+                    registry::request_facts::DeliveryState::Completed,
+                ),
+            )
+            .await
+            .unwrap()
+            .is_some());
+
+        let cancel_admitted_at = pool::now();
+        assert!(billing
+            .reserve_request_for_execution_with_fact(
+                CANCEL_BILLING,
+                "rf-forward-account",
+                "rf-forward-key",
+                10,
+                registry::ExecutionAttempt::direct(),
+                request_fact_admission(
+                    CANCEL_LOGICAL,
+                    CANCEL_BILLING,
+                    "rf-forward-account",
+                    &key_id,
+                    cancel_admitted_at,
+                ),
+            )
+            .await
+            .unwrap()
+            .is_some());
+        assert!(billing
+            .settle_request_with_request_fact(
+                CANCEL_BILLING,
+                "rf-forward-account",
+                "rf-forward-key",
+                10,
+                0,
+                None,
+                reserve_handoff_cancel_evidence(cancel_admitted_at.into(), pool::now()).unwrap(),
+            )
+            .await
+            .unwrap()
+            .is_some());
+
+        let zero_usage_admitted_at = pool::now();
+        assert!(billing
+            .reserve_request_for_execution_with_fact(
+                ZERO_USAGE_BILLING,
+                "rf-forward-account",
+                "rf-forward-key",
+                10,
+                registry::ExecutionAttempt::direct(),
+                request_fact_admission(
+                    ZERO_USAGE_LOGICAL,
+                    ZERO_USAGE_BILLING,
+                    "rf-forward-account",
+                    &key_id,
+                    zero_usage_admitted_at,
+                ),
+            )
+            .await
+            .unwrap()
+            .is_some());
+        assert!(billing
+            .mark_delivering_with_request_fact(ZERO_USAGE_BILLING, 600)
+            .await
+            .unwrap());
+        assert!(billing
+            .settle_request_with_usage_and_request_fact(
+                ZERO_USAGE_BILLING,
+                "rf-forward-account",
+                "rf-forward-key",
+                10,
+                0,
+                None,
+                Some(registry::UsageEventInput::default()),
+                request_fact_terminal(
+                    pool::now().max(zero_usage_admitted_at),
+                    registry::request_facts::DeliveryState::Completed,
+                ),
+            )
+            .await
+            .unwrap()
+            .is_some());
+        billing.flush().await.unwrap();
+    });
+
+    let mut inspect = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let row = inspect
+        .query_one(
+            "SELECT admitted_at,delivery_started_at,terminal_at,http_status_code, \
+                    provider_terminal_class,delivery_state,downstream_disconnect, \
+                    upstream_request_id,first_public_byte_at,internal_attempt_count, \
+                    failure_class,tool_calls_in_output,billing_outcome \
+               FROM request_facts WHERE billing_request_id=$1",
+            &[&BILLING],
+        )
+        .unwrap();
+    assert_eq!(row.get::<_, i64>(0), admitted_at);
+    assert!(row.get::<_, Option<i64>>(1).is_some());
+    assert!(row.get::<_, Option<i64>>(2).is_some());
+    assert_eq!(row.get::<_, Option<i32>>(3), Some(200));
+    assert_eq!(row.get::<_, Option<String>>(4).as_deref(), Some("success"));
+    assert_eq!(
+        row.get::<_, Option<String>>(5).as_deref(),
+        Some("completed")
+    );
+    assert_eq!(row.get::<_, Option<bool>>(6), Some(false));
+    assert_eq!(
+        row.get::<_, Option<String>>(7).as_deref(),
+        Some("upstream-safe-id")
+    );
+    assert!(row.get::<_, Option<i64>>(8).is_some());
+    assert_eq!(row.get::<_, Option<i32>>(9), Some(1));
+    assert_eq!(row.get::<_, Option<String>>(10), None);
+    assert_eq!(row.get::<_, Option<bool>>(11), Some(false));
+    assert_eq!(row.get::<_, Option<String>>(12).as_deref(), Some("winner"));
+    let terminal_branches = inspect
+        .query(
+            "SELECT billing_request_id,billing_outcome FROM request_facts \
+             WHERE billing_request_id IN ($1,$2) ORDER BY billing_request_id",
+            &[&CANCEL_BILLING, &ZERO_USAGE_BILLING],
+        )
+        .unwrap();
+    assert_eq!(terminal_branches.len(), 2);
+    assert_eq!(
+        (
+            terminal_branches[0].get::<_, String>(0),
+            terminal_branches[0].get::<_, Option<String>>(1),
+        ),
+        (CANCEL_BILLING.into(), Some("canceled".into()))
+    );
+    assert_eq!(
+        (
+            terminal_branches[1].get::<_, String>(0),
+            terminal_branches[1].get::<_, Option<String>>(1),
+        ),
+        (ZERO_USAGE_BILLING.into(), Some("zero_metered".into()))
+    );
+    let legacy_count: i64 = inspect
+        .query_one(
+            "SELECT COUNT(*)::bigint FROM request_facts WHERE billing_request_id=$1",
+            &[&"legacy-forward-request"],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(legacy_count, 0);
+
+    // A malformed terminal-at-insert event is rejected before it consumes queue capacity.
+    let mut invalid = terminal_request_fact(
+        "33333333-3333-4333-8333-333333333333",
+        None,
+        "rf-forward-account",
+        &key_id,
+        admitted_at,
+    );
+    invalid.logical_request_id = "not-a-uuid".into();
+    assert_eq!(
+        billing.try_submit_terminal_request_fact(invalid),
+        TerminalRequestFactSubmission::Invalid
+    );
+    const TERMINAL_LOGICAL: &str = "44444444-4444-4444-8444-444444444444";
+    let terminal_insert = terminal_request_fact(
+        TERMINAL_LOGICAL,
+        None,
+        "rf-forward-account",
+        &key_id,
+        admitted_at,
+    );
+    assert_eq!(
+        billing.try_submit_terminal_request_fact(terminal_insert),
+        TerminalRequestFactSubmission::Queued
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let snapshot = billing.request_fact_delivery_snapshot();
+        let persisted: i64 = inspect
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM request_facts WHERE logical_request_id=$1",
+                &[&TERMINAL_LOGICAL],
+            )
+            .unwrap()
+            .get(0);
+        if persisted == 1 && snapshot.persisted == 1 {
+            assert_eq!(snapshot.accepted, 1);
+            assert_eq!(snapshot.deduplicated, 0);
+            assert_eq!(snapshot.dropped_invalid, 1);
+            assert_eq!(
+                snapshot.persistence_health,
+                RequestFactPersistenceHealth::Healthy
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "terminal request-fact writer did not persist before deadline: {snapshot:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    const DEDUP_LOGICAL: &str = "99999999-9999-4999-8999-999999999999";
+    const DEDUP_BILLING: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let deduplicated = terminal_request_fact(
+        DEDUP_LOGICAL,
+        Some(DEDUP_BILLING),
+        "rf-forward-account",
+        &key_id,
+        admitted_at,
+    );
+    assert_eq!(
+        billing.try_submit_terminal_request_fact(deduplicated.clone()),
+        TerminalRequestFactSubmission::Queued
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let snapshot = billing.request_fact_delivery_snapshot();
+        if snapshot.persisted == 2 {
+            assert_eq!(snapshot.accepted, 2);
+            assert_eq!(snapshot.deduplicated, 0);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "terminal request fact with billing ID was not persisted before deadline: {snapshot:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        billing.try_submit_terminal_request_fact(deduplicated),
+        TerminalRequestFactSubmission::Queued
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let snapshot = billing.request_fact_delivery_snapshot();
+        if snapshot.deduplicated == 1 {
+            assert_eq!(snapshot.accepted, 3);
+            assert_eq!(snapshot.persisted, 2);
+            assert_eq!(snapshot.persistence_failed, 0);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "terminal request-fact duplicate was not counted before deadline: {snapshot:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // Direct writer reply-delivery failure must cancel and terminalize the committed fact.
+    const REPLY_FAIL_LOGICAL: &str = "55555555-5555-4555-8555-555555555555";
+    const REPLY_FAIL_BILLING: &str = "66666666-6666-4666-8666-666666666666";
+    let reply_fail_admitted_at = pool::now();
+    let reply_fail_fact = request_fact_admission(
+        REPLY_FAIL_LOGICAL,
+        REPLY_FAIL_BILLING,
+        "rf-forward-account",
+        &key_id,
+        reply_fail_admitted_at,
+    );
+    let reply_fail_handoff = Arc::new(AtomicU8::new(RESERVE_HANDOFF_PENDING));
+    let (reply, response) = oneshot::channel();
+    drop(response);
+    runtime.block_on(async {
+        billing
+            .writer
+            .send(WriteCmd::Reserve {
+                request_id: REPLY_FAIL_BILLING.into(),
+                account_id: "rf-forward-account".into(),
+                key: "rf-forward-key".into(),
+                hold: 20,
+                execution: registry::ExecutionAttempt::direct(),
+                pricing: None,
+                request_fact: Some(reply_fail_fact),
+                handoff: Arc::clone(&reply_fail_handoff),
+                reply,
+            })
+            .await
+            .unwrap();
+        billing.flush().await.unwrap();
+    });
+    assert_eq!(
+        reply_fail_handoff.load(Ordering::Acquire),
+        RESERVE_HANDOFF_REFUNDED
+    );
+    let reply_fail_row = inspect
+        .query_one(
+            "SELECT provider_terminal_class,delivery_state,billing_outcome,terminal_at>=admitted_at \
+               FROM request_facts WHERE billing_request_id=$1",
+            &[&REPLY_FAIL_BILLING],
+        )
+        .unwrap();
+    assert_eq!(
+        reply_fail_row.get::<_, Option<String>>(0).as_deref(),
+        Some("unknown")
+    );
+    assert_eq!(
+        reply_fail_row.get::<_, Option<String>>(1).as_deref(),
+        Some("not_started")
+    );
+    assert_eq!(
+        reply_fail_row.get::<_, Option<String>>(2).as_deref(),
+        Some("canceled")
+    );
+    assert!(reply_fail_row.get::<_, bool>(3));
+
+    // Pre-canceled handoff covers ReserveHandoffGuard's CancelReserve race in the writer.
+    const GUARD_LOGICAL: &str = "77777777-7777-4777-8777-777777777777";
+    const GUARD_BILLING: &str = "88888888-8888-4888-8888-888888888888";
+    let guard_admitted_at = pool::now();
+    let guard_fact = request_fact_admission(
+        GUARD_LOGICAL,
+        GUARD_BILLING,
+        "rf-forward-account",
+        &key_id,
+        guard_admitted_at,
+    );
+    let guard_handoff = Arc::new(AtomicU8::new(RESERVE_HANDOFF_CANCELED));
+    let (reply, response) = oneshot::channel();
+    runtime.block_on(async {
+        billing
+            .writer
+            .send(WriteCmd::Reserve {
+                request_id: GUARD_BILLING.into(),
+                account_id: "rf-forward-account".into(),
+                key: "rf-forward-key".into(),
+                hold: 20,
+                execution: registry::ExecutionAttempt::direct(),
+                pricing: None,
+                request_fact: Some(guard_fact),
+                handoff: Arc::clone(&guard_handoff),
+                reply,
+            })
+            .await
+            .unwrap();
+        assert!(response.await.is_err());
+        billing.flush().await.unwrap();
+    });
+    assert_eq!(
+        guard_handoff.load(Ordering::Acquire),
+        RESERVE_HANDOFF_REFUNDED
+    );
+    let guard_row = inspect
+        .query_one(
+            "SELECT provider_terminal_class,delivery_state,billing_outcome,terminal_at>=admitted_at \
+               FROM request_facts WHERE billing_request_id=$1",
+            &[&GUARD_BILLING],
+        )
+        .unwrap();
+    assert_eq!(
+        guard_row.get::<_, Option<String>>(0).as_deref(),
+        Some("unknown")
+    );
+    assert_eq!(
+        guard_row.get::<_, Option<String>>(1).as_deref(),
+        Some("not_started")
+    );
+    assert_eq!(
+        guard_row.get::<_, Option<String>>(2).as_deref(),
+        Some("canceled")
+    );
+    assert!(guard_row.get::<_, bool>(3));
+
+    drop(billing);
+    lock_holder
+        .query_one(
+            "SELECT pg_advisory_unlock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
 }
 
 #[test]

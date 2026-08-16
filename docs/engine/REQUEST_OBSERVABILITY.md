@@ -1,11 +1,12 @@
 # Request observability contract
 
-> **Status: PROPOSED; dormant registry S2 primitives implemented, no producer or read surface.**
+> **Status: PROPOSED; dormant registry S2 and forward-core S3A plumbing implemented, no plane producer or read surface.**
 > This document records the target design and rollout constraints for discussion. Migrations 0053-0054
-> are deployed, and `crates/registry` now exposes opt-in PostgreSQL write/lifecycle primitives against
-> that dormant schema. No forward/server/router caller, read API, metric, or end-to-end coverage
-> guarantee exists yet; legacy registry callers continue to omit request facts. Producer stages remain
-> pending and require the producer-first changes below.
+> are deployed; `crates/registry` exposes opt-in PostgreSQL write/lifecycle primitives, and
+> `AsyncBilling` now transports those typed facts through the owning money transactions plus a distinct
+> fail-open terminal-at-insert inbox. No provider-plane/server/router caller, logical-ID wire capability,
+> read API, metric, or end-to-end coverage guarantee exists yet; all current production callers continue
+> to omit request facts. Producer stages remain pending and require the producer-first changes below.
 
 ## 1. Purpose
 
@@ -36,9 +37,13 @@ latency, routing attempts, client classification, or general tool-use dimensions
 The dormant S2 PostgreSQL layer now provides privacy-bounded typed admission/terminal records,
 exact-replay validation in reservation transactions, delivery tracking in the delivering transaction,
 crash-safe terminalization during authoritative settlement-outbox APPLY, reconciliation synthesis,
-a bounded terminal batch insert, and request-fact-first retention pruning. Existing methods remain
-fact-free wrappers, SQLite money behavior is unchanged, and no production caller exercises these
-primitives yet. `billing_outcome` is never accepted in the outbox envelope: APPLY derives it from the
+a bounded terminal batch insert, and request-fact-first retention pruning. Dormant S3A forward-core
+plumbing carries opt-in billable facts through the existing single money writer, including crash-safe
+fact terminalization when a reserve handoff is lost. A separate 4096-bounded, nonblocking PostgreSQL
+inbox persists already-terminal post-auth/nonbillable facts on a lazily connected low-priority thread;
+it is fail-open and excluded from money `flush`. Existing methods remain fact-free wrappers, SQLite
+money behavior is unchanged and omits analytics, and no production plane caller exercises the new
+forms yet. `billing_outcome` is never accepted in the outbox envelope: APPLY derives it from the
 authoritative winner, reconciliation, cancellation, and metered-amount state.
 
 The HTTP error audit writes one JSON journal event for a terminal non-2xx response to a recognized
@@ -338,20 +343,23 @@ analytics must not be introduced into the pool layer.
    outbox-terminal APPLY, reconciliation synthesis, bounded terminal inserts, and retention pruning.
    Keep all legacy callers fact-free and add no read surface. **Implemented; not yet a production
    producer.**
-4. Deliver the provider-plane producer for the optional trusted logical-ID capability and wire the
-   dormant registry primitives. Update the engine contract documentation in the same commit and wait
+4. Deliver dormant forward-core S3A transport: fact-aware money commands remain in the existing
+   money actor; terminal-at-insert events use a separate bounded fail-open PostgreSQL inbox. Preserve
+   all legacy callers and add no wire/read/metric surface. **Implemented; no plane caller yet.**
+5. Deliver the provider-plane producer for the optional trusted logical-ID capability and wire the
+   dormant forward-core forms. Update the engine contract documentation in the same commit and wait
    for GREEN.
-5. Deliver the router consumer/producer after the plane capability is GREEN. Caddy and router both
+6. Deliver the router consumer/producer after the plane capability is GREEN. Caddy and router both
    strip client copies before trusted injection.
-6. Instrument Anthropic, Codex, and Gemini native and universal surfaces. Keep existing body,
+7. Instrument Anthropic, Codex, and Gemini native and universal surfaces. Keep existing body,
    response, stream, retry, settlement, and execution-group behavior unchanged.
-7. Deliver private aggregate and drilldown Control API producers. Update `docs/engine/CONTROL_API.md`
+8. Deliver private aggregate and drilldown Control API producers. Update `docs/engine/CONTROL_API.md`
    and `docs/DEPENDENCIES.md` in the same commit.
-8. After the exact producer SHA is GREEN, deliver `packages/contracts`,
+9. After the exact producer SHA is GREEN, deliver `packages/contracts`,
    `packages/engine-client`, `apps/api`, and the operator UI as consumer commits.
-9. Add fixed-cardinality health metrics and their alert/runbook/dashboard changes under the new
+10. Add fixed-cardinality health metrics and their alert/runbook/dashboard changes under the new
    metric checklist.
-10. Run a coverage and load observation period with a pre-agreed rollback threshold for admission
+11. Run a coverage and load observation period with a pre-agreed rollback threshold for admission
    latency before exposing selected aggregates to customers or increasing retention.
 
 Every migration and cross-context contract remains expand-only and producer-first. This proposal

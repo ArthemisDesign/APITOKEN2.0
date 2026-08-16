@@ -16,7 +16,13 @@
 //! рантайма). Гарантия денег: durable reservation/outbox переживает краш, а периодический recovery
 //! закрывает осиротевшую операцию после истечения lease. Ничего не застревает только в памяти.
 
+mod request_facts;
+
 use registry::pricing::{TariffOverride, TariffOverrideInsert, TariffOverrideInsertOutcome};
+use registry::request_facts::{
+    DeliveryState, ProviderTerminalClass, RequestFactAdmission, RequestFactTerminalEvidence,
+    TerminalRequestFact,
+};
 use registry::{
     AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation, BillingTotals,
     CodexCalibrationRow, CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate,
@@ -25,8 +31,12 @@ use registry::{
     GlmWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow, KimiCalibrationRow,
     KimiTurnCalibrationEvent, KimiWindowObservation, ProviderCalibrationSubjectSpend,
     ProviderTurnCalibrationAggregate, ProviderTurnCalibrationEvent, SunoCalibrationRow,
-    SunoSubjectSpend, SunoWindowObservation, Tripo3dBalanceObservation,
-    Tripo3dCalibrationRow, Tripo3dSubjectSpend,
+    SunoSubjectSpend, SunoWindowObservation, Tripo3dBalanceObservation, Tripo3dCalibrationRow,
+    Tripo3dSubjectSpend,
+};
+use request_facts::TerminalRequestFactInbox;
+pub use request_facts::{
+    RequestFactDeliverySnapshot, RequestFactPersistenceHealth, TerminalRequestFactSubmission,
 };
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -653,6 +663,24 @@ const RESERVE_HANDOFF_FAILED: u8 = 6;
 // Закрывает окно отмены, пока `reserve().await` ещё не передал владение резервом вызывающему коду.
 // Компенсация адресует durable request_id, поэтому повторный cancel/settle идемпотентен и не может
 // вернуть резерв другого параллельного запроса того же аккаунта.
+fn reserve_handoff_cancel_evidence(
+    admitted_at: Option<i64>,
+    current_epoch_seconds: i64,
+) -> Option<RequestFactTerminalEvidence> {
+    admitted_at.map(|admitted_at| RequestFactTerminalEvidence {
+        terminal_at: current_epoch_seconds.max(admitted_at),
+        http_status_code: None,
+        provider_terminal_class: ProviderTerminalClass::Unknown,
+        delivery_state: DeliveryState::NotStarted,
+        downstream_disconnect: None,
+        upstream_request_id: None,
+        first_public_byte_at: None,
+        internal_attempt_count: None,
+        failure_class: None,
+        tool_calls_in_output: None,
+    })
+}
+
 struct ReserveHandoffGuard<'a> {
     writer: &'a mpsc::Sender<WriteCmd>,
     detached: Arc<DetachedDispatchTracker>,
@@ -660,6 +688,7 @@ struct ReserveHandoffGuard<'a> {
     account_id: String,
     key: String,
     hold: i64,
+    request_fact_admitted_at: Option<i64>,
     handoff: Arc<AtomicU8>,
 }
 
@@ -713,6 +742,10 @@ impl Drop for ReserveHandoffGuard<'_> {
                                 account_id: self.account_id.clone(),
                                 key: self.key.clone(),
                                 hold: self.hold,
+                                terminal_evidence: reserve_handoff_cancel_evidence(
+                                    self.request_fact_admitted_at,
+                                    pool::now(),
+                                ),
                                 handoff: Arc::clone(&self.handoff),
                             },
                         );
@@ -810,6 +843,17 @@ fn dispatch_detached(
                 "billing writer stopped before a detached command was queued",
             );
         }
+    }
+}
+
+fn cancel_postgres_request(
+    pg: &mut registry::pg::PgStore,
+    request_id: &str,
+    terminal_evidence: Option<&RequestFactTerminalEvidence>,
+) -> anyhow::Result<Option<i64>> {
+    match terminal_evidence {
+        Some(evidence) => pg.cancel_request_with_request_fact(request_id, evidence),
+        None => pg.cancel_request(request_id),
     }
 }
 
@@ -1350,6 +1394,7 @@ enum WriteCmd {
         hold: i64,
         execution: registry::ExecutionAttempt,
         pricing: Option<registry::ReservationPricing>,
+        request_fact: Option<RequestFactAdmission>,
         handoff: Arc<AtomicU8>,
         reply: oneshot::Sender<anyhow::Result<Option<i64>>>,
     },
@@ -1362,6 +1407,7 @@ enum WriteCmd {
         account_id: String,
         key: String,
         hold: i64,
+        terminal_evidence: Option<RequestFactTerminalEvidence>,
         handoff: Arc<AtomicU8>,
     },
     Settle {
@@ -1372,6 +1418,7 @@ enum WriteCmd {
         actual: i64,
         reference: Option<String>,
         usage: Option<registry::UsageEventInput>, // разбивка токенов/модели (аналитика), если есть
+        terminal_evidence: Option<RequestFactTerminalEvidence>,
         reply: Option<oneshot::Sender<anyhow::Result<Option<i64>>>>, // None → fire-and-forget (RAII из Drop)
     },
     Topup {
@@ -1445,6 +1492,7 @@ enum WriteCmd {
     MarkDelivering {
         request_id: String,
         lease_secs: i64,
+        record_request_fact: bool,
         reply: oneshot::Sender<anyhow::Result<bool>>,
     },
     /// Durable "this turn has cost at least X so far", so a death before settlement no longer
@@ -1670,6 +1718,7 @@ pub struct AsyncBilling {
     detached: Arc<DetachedDispatchTracker>,
     anthropic_calibration_delivery: Arc<AnthropicCalibrationDeliveryState>,
     gemini_calibration_delivery: Arc<GeminiCalibrationDeliveryState>,
+    terminal_request_facts: TerminalRequestFactInbox,
     readers: Vec<mpsc::Sender<ReadCmd>>,
     rr: AtomicUsize, // round-robin по читателям
     /// PostgreSQL-only connections reserved for evaluation-time shadow reads. They never share
@@ -1705,6 +1754,19 @@ impl AsyncBilling {
     /// when this facade runs on the SQLite fallback.
     pub fn pg_command_stats(&self) -> Option<PgCommandLatencyStats> {
         self.pg_command.as_deref().map(PgCommandMetrics::snapshot)
+    }
+
+    /// Nonblocking, fail-open submission for already-terminal post-auth/nonbillable facts. This
+    /// queue owns no money command and is intentionally excluded from `flush`.
+    pub fn try_submit_terminal_request_fact(
+        &self,
+        fact: TerminalRequestFact,
+    ) -> TerminalRequestFactSubmission {
+        self.terminal_request_facts.submit(fact)
+    }
+
+    pub fn request_fact_delivery_snapshot(&self) -> RequestFactDeliverySnapshot {
+        self.terminal_request_facts.snapshot()
     }
 
     pub fn anthropic_calibration_delivery_status(&self) -> AnthropicCalibrationDeliveryStatus {
@@ -2958,7 +3020,9 @@ impl AsyncBilling {
                         })();
                         let _ = reply.send(result);
                     }
-                    WriteCmd::Reserve { request_id, account_id, key, hold, execution, pricing, handoff, reply } => {
+                    WriteCmd::Reserve {
+                        request_id, account_id, key, hold, execution, pricing, handoff, reply, ..
+                    } => {
                         let result = match pricing.as_ref() {
                             Some(pricing) => registry::sqlite_reserve_priced_request_for_execution(
                                 &conn, &request_id, &account_id, &key, hold,
@@ -2976,11 +3040,13 @@ impl AsyncBilling {
                             "tariff override authority requires PostgreSQL"
                         )));
                     }
-                    WriteCmd::CancelReserve { request_id, account_id, key, hold, handoff } => {
+                    WriteCmd::CancelReserve {
+                        request_id, account_id, key, hold, handoff, ..
+                    } => {
                         refund_canceled_reserve(&request_id, &account_id, &key, hold, &handoff);
                     }
                     WriteCmd::Settle {
-                        request_id, account_id, key, hold, actual, reference, usage, reply,
+                        request_id, account_id, key, hold, actual, reference, usage, reply, ..
                     } => {
                         let result = if actual == 0 && usage.is_none() {
                             registry::sqlite_cancel_request(
@@ -3050,7 +3116,7 @@ impl AsyncBilling {
                     WriteCmd::LedgerAck { consumer, account_id, last_id, reply } => {
                         let _ = reply.send(registry::ledger_ack(&conn, &consumer, &account_id, last_id));
                     }
-                    WriteCmd::MarkDelivering { request_id, lease_secs, reply } => {
+                    WriteCmd::MarkDelivering { request_id, lease_secs, reply, .. } => {
                         let _ = reply.send(registry::sqlite_mark_delivering(
                             &conn, &request_id, lease_secs,
                         ));
@@ -3258,6 +3324,7 @@ impl AsyncBilling {
             detached: Arc::new(DetachedDispatchTracker::default()),
             anthropic_calibration_delivery,
             gemini_calibration_delivery,
+            terminal_request_facts: TerminalRequestFactInbox::disabled(),
             readers: rtxs,
             rr: AtomicUsize::new(0),
             pg_command: None,
@@ -3278,6 +3345,10 @@ impl AsyncBilling {
         let gemini_calibration_delivery = Arc::new(GeminiCalibrationDeliveryState::default());
         let pg_command = Arc::new(PgCommandMetrics::default());
         let admin_changes = Arc::new(RwLock::new(None));
+        // This analytics-only writer opens its distinct connection lazily on the first submitted
+        // terminal fact. Connection exhaustion can therefore never block money-authority startup.
+        let terminal_request_facts =
+            TerminalRequestFactInbox::start_postgres(url.clone(), PG_OPERATION_RETRY_DEADLINE);
         {
             let mut pg = registry::pg::PgStore::connect(&url)?;
             let writer_url = url.clone();
@@ -3852,7 +3923,17 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
-                        WriteCmd::Reserve { request_id, account_id, key, hold, execution, pricing, handoff, reply } => {
+                        WriteCmd::Reserve {
+                            request_id,
+                            account_id,
+                            key,
+                            hold,
+                            execution,
+                            pricing,
+                            request_fact,
+                            handoff,
+                            reply,
+                        } => {
                             let result = {
                                 let _timer = writer_pg_command.timer(PgCommandOp::Reserve);
                                 run_pg_with_retry(
@@ -3860,14 +3941,49 @@ impl AsyncBilling {
                                     &writer_url,
                                     &writer_owner,
                                     "reserve",
-                                    |pg| match pricing.as_ref() {
-                                        Some(pricing) => pg.reserve_priced_request_for_execution(
-                                            &writer_owner, &request_id, &account_id, &key, hold,
-                                            RESERVATION_LEASE_SECS, &execution, pricing,
-                                        ),
-                                        None => pg.reserve_request_for_execution(
-                                            &writer_owner, &request_id, &account_id, &key, hold,
-                                            RESERVATION_LEASE_SECS, &execution,
+                                    |pg| match (pricing.as_ref(), request_fact.as_ref()) {
+                                        (Some(pricing), Some(fact)) => pg
+                                            .reserve_priced_request_for_execution_with_fact(
+                                                &writer_owner,
+                                                &request_id,
+                                                &account_id,
+                                                &key,
+                                                hold,
+                                                RESERVATION_LEASE_SECS,
+                                                &execution,
+                                                pricing,
+                                                fact,
+                                            ),
+                                        (Some(pricing), None) => pg
+                                            .reserve_priced_request_for_execution(
+                                                &writer_owner,
+                                                &request_id,
+                                                &account_id,
+                                                &key,
+                                                hold,
+                                                RESERVATION_LEASE_SECS,
+                                                &execution,
+                                                pricing,
+                                            ),
+                                        (None, Some(fact)) => pg
+                                            .reserve_request_for_execution_with_fact(
+                                                &writer_owner,
+                                                &request_id,
+                                                &account_id,
+                                                &key,
+                                                hold,
+                                                RESERVATION_LEASE_SECS,
+                                                &execution,
+                                                fact,
+                                            ),
+                                        (None, None) => pg.reserve_request_for_execution(
+                                            &writer_owner,
+                                            &request_id,
+                                            &account_id,
+                                            &key,
+                                            hold,
+                                            RESERVATION_LEASE_SECS,
+                                            &execution,
                                         ),
                                     },
                                 )
@@ -3889,35 +4005,88 @@ impl AsyncBilling {
                                 let _ = reply.send(Ok(None));
                                 continue;
                             }
+                            let request_fact_admitted_at =
+                                request_fact.as_ref().map(|fact| fact.admitted_at);
                             match handoff.compare_exchange(
-                                RESERVE_HANDOFF_PENDING, RESERVE_HANDOFF_COMMITTED,
-                                Ordering::AcqRel, Ordering::Acquire,
+                                RESERVE_HANDOFF_PENDING,
+                                RESERVE_HANDOFF_COMMITTED,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
                             ) {
                                 Ok(_) => {
                                     if reply.send(Ok(result)).is_err() {
                                         let _ = handoff.compare_exchange(
-                                            RESERVE_HANDOFF_COMMITTED, RESERVE_HANDOFF_CANCELED,
-                                            Ordering::AcqRel, Ordering::Acquire,
+                                            RESERVE_HANDOFF_COMMITTED,
+                                            RESERVE_HANDOFF_CANCELED,
+                                            Ordering::AcqRel,
+                                            Ordering::Acquire,
+                                        );
+                                        let terminal_evidence = reserve_handoff_cancel_evidence(
+                                            request_fact_admitted_at,
+                                            pool::now(),
                                         );
                                         match run_pg_with_retry(
-                                            &mut pg, &writer_url, &writer_owner, "canceled reserve",
-                                            |pg| pg.cancel_request(&request_id),
+                                            &mut pg,
+                                            &writer_url,
+                                            &writer_owner,
+                                            "canceled reserve",
+                                            |pg| {
+                                                cancel_postgres_request(
+                                                    pg,
+                                                    &request_id,
+                                                    terminal_evidence.as_ref(),
+                                                )
+                                            },
                                         ) {
-                                            Ok(_) => handoff.store(RESERVE_HANDOFF_REFUNDED, Ordering::Release),
-                                            Err(error) => elog::error("billing", format!("billing PostgreSQL canceled reserve failed: {error:#}")),
+                                            Ok(_) => handoff.store(
+                                                RESERVE_HANDOFF_REFUNDED,
+                                                Ordering::Release,
+                                            ),
+                                            Err(error) => elog::error(
+                                                "billing",
+                                                format!(
+                                                    "billing PostgreSQL canceled reserve failed: {error:#}"
+                                                ),
+                                            ),
                                         }
                                     }
                                 }
                                 Err(RESERVE_HANDOFF_CANCELED) => {
+                                    let terminal_evidence = reserve_handoff_cancel_evidence(
+                                        request_fact_admitted_at,
+                                        pool::now(),
+                                    );
                                     match run_pg_with_retry(
-                                        &mut pg, &writer_url, &writer_owner, "reserve handoff cancel",
-                                        |pg| pg.cancel_request(&request_id),
+                                        &mut pg,
+                                        &writer_url,
+                                        &writer_owner,
+                                        "reserve handoff cancel",
+                                        |pg| {
+                                            cancel_postgres_request(
+                                                pg,
+                                                &request_id,
+                                                terminal_evidence.as_ref(),
+                                            )
+                                        },
                                     ) {
-                                        Ok(_) => handoff.store(RESERVE_HANDOFF_REFUNDED, Ordering::Release),
-                                        Err(error) => elog::error("billing", format!("billing PostgreSQL reserve handoff cancel failed: {error:#}")),
+                                        Ok(_) => handoff.store(
+                                            RESERVE_HANDOFF_REFUNDED,
+                                            Ordering::Release,
+                                        ),
+                                        Err(error) => elog::error(
+                                            "billing",
+                                            format!(
+                                                "billing PostgreSQL reserve handoff cancel failed: {error:#}"
+                                            ),
+                                        ),
                                     }
                                 }
-                                Err(state) => elog::error("billing", format!("billing PostgreSQL reserve handoff unexpected state {state}")),
+                                Err(state) => elog::error(
+                                    "billing",
+                                    format!(
+                                        "billing PostgreSQL reserve handoff unexpected state {state}"
+                                    ),
+                                ),
                             }
                         }
                         WriteCmd::InsertTariffOverride { insert, reply } => {
@@ -3930,14 +4099,35 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
-                        WriteCmd::CancelReserve { request_id, handoff, .. } => {
-                            if handoff.compare_exchange(
-                                RESERVE_HANDOFF_CANCELED, RESERVE_HANDOFF_REFUNDING,
-                                Ordering::AcqRel, Ordering::Acquire,
-                            ).is_err() { continue; }
+                        WriteCmd::CancelReserve {
+                            request_id,
+                            terminal_evidence,
+                            handoff,
+                            ..
+                        } => {
+                            if handoff
+                                .compare_exchange(
+                                    RESERVE_HANDOFF_CANCELED,
+                                    RESERVE_HANDOFF_REFUNDING,
+                                    Ordering::AcqRel,
+                                    Ordering::Acquire,
+                                )
+                                .is_err()
+                            {
+                                continue;
+                            }
                             match run_pg_with_retry(
-                                &mut pg, &writer_url, &writer_owner, "cancellation",
-                                |pg| pg.cancel_request(&request_id),
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "cancellation",
+                                |pg| {
+                                    cancel_postgres_request(
+                                        pg,
+                                        &request_id,
+                                        terminal_evidence.as_ref(),
+                                    )
+                                },
                             ) {
                                 Ok(_) => handoff.store(RESERVE_HANDOFF_REFUNDED, Ordering::Release),
                                 Err(error) => {
@@ -3949,22 +4139,44 @@ impl AsyncBilling {
                                 }
                             }
                         }
-                        WriteCmd::Settle { request_id, actual, reference, usage, reply, .. } => {
+                        WriteCmd::Settle {
+                            request_id,
+                            actual,
+                            reference,
+                            usage,
+                            terminal_evidence,
+                            reply,
+                            ..
+                        } => {
                             let result = {
                                 let _timer = writer_pg_command.timer(PgCommandOp::Settle);
                                 run_pg_with_retry(
-                                    &mut pg, &writer_url, &writer_owner, "settlement",
-                                    |pg| {
-                                        if actual == 0 && usage.is_none() {
-                                            pg.cancel_request(&request_id)
-                                        } else {
-                                            pg.settle_request(
+                                    &mut pg,
+                                    &writer_url,
+                                    &writer_owner,
+                                    "settlement",
+                                    |pg| match terminal_evidence.as_ref() {
+                                        Some(evidence) if actual == 0 && usage.is_none() => pg
+                                            .cancel_request_with_request_fact(
                                                 &request_id,
-                                                actual,
-                                                reference.as_deref(),
-                                                usage.as_ref(),
-                                            )
+                                                evidence,
+                                            ),
+                                        Some(evidence) => pg.settle_request_with_request_fact(
+                                            &request_id,
+                                            actual,
+                                            reference.as_deref(),
+                                            usage.as_ref(),
+                                            evidence,
+                                        ),
+                                        None if actual == 0 && usage.is_none() => {
+                                            pg.cancel_request(&request_id)
                                         }
+                                        None => pg.settle_request(
+                                            &request_id,
+                                            actual,
+                                            reference.as_deref(),
+                                            usage.as_ref(),
+                                        ),
                                     },
                                 )
                             };
@@ -3983,10 +4195,32 @@ impl AsyncBilling {
                             }
                             if let Some(reply) = reply { let _ = reply.send(result); }
                         }
-                        WriteCmd::MarkDelivering { request_id, lease_secs, reply } => {
+                        WriteCmd::MarkDelivering {
+                            request_id,
+                            lease_secs,
+                            record_request_fact,
+                            reply,
+                        } => {
                             let result = run_pg_with_retry(
-                                &mut pg, &writer_url, &writer_owner, "delivery marker",
-                                |pg| pg.mark_delivering(&writer_owner, &request_id, lease_secs),
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "delivery marker",
+                                |pg| {
+                                    if record_request_fact {
+                                        pg.mark_delivering_with_request_fact(
+                                            &writer_owner,
+                                            &request_id,
+                                            lease_secs,
+                                        )
+                                    } else {
+                                        pg.mark_delivering(
+                                            &writer_owner,
+                                            &request_id,
+                                            lease_secs,
+                                        )
+                                    }
+                                },
                             );
                             let _ = reply.send(result);
                         }
@@ -4317,6 +4551,7 @@ impl AsyncBilling {
             detached: Arc::new(DetachedDispatchTracker::default()),
             anthropic_calibration_delivery,
             gemini_calibration_delivery,
+            terminal_request_facts,
             readers: rtxs,
             rr: AtomicUsize::new(0),
             pg_command: Some(pg_command),
@@ -4487,7 +4722,28 @@ impl AsyncBilling {
         execution: registry::ExecutionAttempt,
     ) -> anyhow::Result<Option<i64>> {
         self.reserve_request_for_execution_with_pricing(
-            request_id, account_id, key, hold, execution, None,
+            request_id, account_id, key, hold, execution, None, None,
+        )
+        .await
+    }
+
+    pub async fn reserve_request_for_execution_with_fact(
+        &self,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold: i64,
+        execution: registry::ExecutionAttempt,
+        request_fact: RequestFactAdmission,
+    ) -> anyhow::Result<Option<i64>> {
+        self.reserve_request_for_execution_with_pricing(
+            request_id,
+            account_id,
+            key,
+            hold,
+            execution,
+            None,
+            Some(request_fact),
         )
         .await
     }
@@ -4510,10 +4766,37 @@ impl AsyncBilling {
             hold,
             execution,
             Some(pricing),
+            None,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub async fn reserve_priced_request_for_execution_with_fact(
+        &self,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold: i64,
+        execution: registry::ExecutionAttempt,
+        provider: &str,
+        payable_multiplier_bp: i64,
+        request_fact: RequestFactAdmission,
+    ) -> anyhow::Result<Option<i64>> {
+        let pricing = registry::ReservationPricing::new(provider, payable_multiplier_bp)?;
+        self.reserve_request_for_execution_with_pricing(
+            request_id,
+            account_id,
+            key,
+            hold,
+            execution,
+            Some(pricing),
+            Some(request_fact),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn reserve_request_for_execution_with_pricing(
         &self,
         request_id: &str,
@@ -4522,8 +4805,13 @@ impl AsyncBilling {
         hold: i64,
         execution: registry::ExecutionAttempt,
         pricing: Option<registry::ReservationPricing>,
+        request_fact: Option<RequestFactAdmission>,
     ) -> anyhow::Result<Option<i64>> {
-        let (r, rx) = oneshot::channel();
+        if let Some(fact) = request_fact.as_ref() {
+            fact.validate()?;
+        }
+        let request_fact_admitted_at = request_fact.as_ref().map(|fact| fact.admitted_at);
+        let (reply, result) = oneshot::channel();
         let handoff = Arc::new(AtomicU8::new(RESERVE_HANDOFF_PENDING));
         let guard = ReserveHandoffGuard {
             writer: &self.writer,
@@ -4532,6 +4820,7 @@ impl AsyncBilling {
             account_id: account_id.into(),
             key: key.into(),
             hold,
+            request_fact_admitted_at,
             handoff: Arc::clone(&handoff),
         };
         self.writer
@@ -4542,12 +4831,13 @@ impl AsyncBilling {
                 hold,
                 execution,
                 pricing,
+                request_fact,
                 handoff,
-                reply: r,
+                reply,
             })
             .await
             .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
-        match rx
+        match result
             .await
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))??
         {
@@ -4566,22 +4856,34 @@ impl AsyncBilling {
         actual: i64,
         reference: Option<&str>,
     ) -> anyhow::Result<Option<i64>> {
-        let (r, rx) = oneshot::channel();
-        self.writer
-            .send(WriteCmd::Settle {
-                request_id: request_id.into(),
-                account_id: account_id.into(),
-                key: key.into(),
-                hold,
-                actual,
-                reference: reference.map(|s| s.into()),
-                usage: None,
-                reply: Some(r),
-            })
-            .await
-            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
-        rx.await
-            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+        self.settle_request_inner(
+            request_id, account_id, key, hold, actual, reference, None, None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn settle_request_with_request_fact(
+        &self,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold: i64,
+        actual: i64,
+        reference: Option<&str>,
+        terminal_evidence: RequestFactTerminalEvidence,
+    ) -> anyhow::Result<Option<i64>> {
+        self.settle_request_inner(
+            request_id,
+            account_id,
+            key,
+            hold,
+            actual,
+            reference,
+            None,
+            Some(terminal_evidence),
+        )
+        .await
     }
 
     /// Await one terminal settlement together with its exact provider-usage attribution.
@@ -4598,6 +4900,52 @@ impl AsyncBilling {
         reference: Option<&str>,
         usage: Option<registry::UsageEventInput>,
     ) -> anyhow::Result<Option<i64>> {
+        self.settle_request_inner(
+            request_id, account_id, key, hold, actual, reference, usage, None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments, dead_code)]
+    pub(crate) async fn settle_request_with_usage_and_request_fact(
+        &self,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold: i64,
+        actual: i64,
+        reference: Option<&str>,
+        usage: Option<registry::UsageEventInput>,
+        terminal_evidence: RequestFactTerminalEvidence,
+    ) -> anyhow::Result<Option<i64>> {
+        self.settle_request_inner(
+            request_id,
+            account_id,
+            key,
+            hold,
+            actual,
+            reference,
+            usage,
+            Some(terminal_evidence),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn settle_request_inner(
+        &self,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold: i64,
+        actual: i64,
+        reference: Option<&str>,
+        usage: Option<registry::UsageEventInput>,
+        terminal_evidence: Option<RequestFactTerminalEvidence>,
+    ) -> anyhow::Result<Option<i64>> {
+        if let Some(evidence) = terminal_evidence.as_ref() {
+            evidence.validate(0)?;
+        }
         let (reply, result) = oneshot::channel();
         self.writer
             .send(WriteCmd::Settle {
@@ -4608,6 +4956,7 @@ impl AsyncBilling {
                 actual,
                 reference: reference.map(str::to_string),
                 usage,
+                terminal_evidence,
                 reply: Some(reply),
             })
             .await
@@ -4616,6 +4965,7 @@ impl AsyncBilling {
             .await
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
+
     /// Списание/возврат БЕЗ ожидания — для RAII в синхронном контексте (Drop/finalize). `mpsc::send`
     /// не блокирует и не требует рантайма; writer применит. Осиротевшее при краше вернёт `reconcile`.
     /// `usage` — разбивка токенов/модели (аналитика), пишется рядом с charge, если передана.
@@ -4630,6 +4980,49 @@ impl AsyncBilling {
         reference: Option<&str>,
         usage: Option<registry::UsageEventInput>,
     ) {
+        self.dispatch_settlement(
+            request_id, account_id, key, hold, actual, reference, usage, None,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments, dead_code)]
+    pub(crate) fn settle_detached_with_request_fact(
+        &self,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold: i64,
+        actual: i64,
+        reference: Option<&str>,
+        usage: Option<registry::UsageEventInput>,
+        terminal_evidence: RequestFactTerminalEvidence,
+    ) -> anyhow::Result<()> {
+        terminal_evidence.validate(0)?;
+        self.dispatch_settlement(
+            request_id,
+            account_id,
+            key,
+            hold,
+            actual,
+            reference,
+            usage,
+            Some(terminal_evidence),
+        );
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_settlement(
+        &self,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold: i64,
+        actual: i64,
+        reference: Option<&str>,
+        usage: Option<registry::UsageEventInput>,
+        terminal_evidence: Option<RequestFactTerminalEvidence>,
+    ) {
         dispatch_detached(
             &self.writer,
             &self.detached,
@@ -4639,12 +5032,14 @@ impl AsyncBilling {
                 key: key.into(),
                 hold,
                 actual,
-                reference: reference.map(|s| s.into()),
+                reference: reference.map(str::to_string),
                 usage,
+                terminal_evidence,
                 reply: None,
             },
         );
     }
+
     /// Publish the measured cost of a turn that is still streaming.
     ///
     /// Detached on purpose: this runs on the hot path of a live answer, and a customer must never
@@ -4662,11 +5057,31 @@ impl AsyncBilling {
     }
 
     pub async fn mark_delivering(&self, request_id: &str, lease_secs: i64) -> anyhow::Result<bool> {
+        self.mark_delivering_inner(request_id, lease_secs, false)
+            .await
+    }
+
+    pub async fn mark_delivering_with_request_fact(
+        &self,
+        request_id: &str,
+        lease_secs: i64,
+    ) -> anyhow::Result<bool> {
+        self.mark_delivering_inner(request_id, lease_secs, true)
+            .await
+    }
+
+    async fn mark_delivering_inner(
+        &self,
+        request_id: &str,
+        lease_secs: i64,
+        record_request_fact: bool,
+    ) -> anyhow::Result<bool> {
         let (reply, rx) = oneshot::channel();
         self.writer
             .send(WriteCmd::MarkDelivering {
                 request_id: request_id.into(),
                 lease_secs,
+                record_request_fact,
                 reply,
             })
             .await

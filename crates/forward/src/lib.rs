@@ -54,7 +54,8 @@ pub use anthropic::anthropic_chat_completions;
 pub use anthropic_responses::anthropic_responses;
 pub use billing::{
     AnthropicCalibrationDeliveryStatus, AsyncBilling, GeminiCalibrationDeliveryStatus,
-    PgCommandLatencyStats, PgCommandOp, PG_COMMAND_LATENCY_BUCKETS_MS,
+    PgCommandLatencyStats, PgCommandOp, RequestFactDeliverySnapshot, RequestFactPersistenceHealth,
+    TerminalRequestFactSubmission, PG_COMMAND_LATENCY_BUCKETS_MS,
 };
 pub use breaker::Breaker;
 pub use codex::{

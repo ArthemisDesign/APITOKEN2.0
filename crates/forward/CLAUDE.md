@@ -62,6 +62,21 @@ usage may exceed that estimate. Settlement keeps full billed usage while the sha
 fence limits collection to the aggregate −$1 floor; any remainder is explicit pool-funded
 `uncollected_nano`, never a silent clamp or a second per-request overdraft. 4xx/errors/rotation are
 NOT metered.
+
+**Dormant request-fact producer plumbing (S3A):** `AsyncBilling` has opt-in typed fact-aware
+reserve, delivery, and terminal settlement commands. On PostgreSQL they stay in the existing single
+money writer and delegate to the registry S2 same-transaction methods; legacy APIs pass no fact, and
+no provider plane calls the opt-in forms yet. A lost fact-aware reserve handoff is canceled with a
+privacy-empty `unknown`/`not_started` terminal envelope so the admitted fact cannot leak as nonterminal.
+Already-terminal post-auth/nonbillable facts alone use the PostgreSQL-only 4096-slot, nonblocking
+`try_send` inbox and its lazily connected `request-facts-pg-writer` thread. That connection is
+analytics-only, retries within a bounded deadline, and drops fail-open with fixed atomic health/drop
+counters. It does not enter the money FIFO or detached-settlement tracker, and `AsyncBilling::flush`
+deliberately neither waits for nor guarantees this inbox; when all senders drop the worker may drain
+buffered facts, but there is no join/durability shutdown gate. SQLite keeps the existing money
+semantics, starts no fact thread, persists no analytics, and reports `UnsupportedAuthority` for
+terminal-at-insert submission. Logical-ID/header parsing, plane classification/callers, metric
+exposition, read APIs, and production request coverage remain later stages.
 For policy keys the cap takes the minimum of the account balance and the remaining lifetime limit. Such keys
 bypass the auth TTL cache; expiry and limit are re-checked inside the atomic reserve transaction.
 Every recognized metered 402 is audited after the response against a fresh authority read. The
