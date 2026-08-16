@@ -78,6 +78,11 @@ impl GeminiModel {
     pub fn input_modalities(&self) -> &'static [&'static str] {
         if self.id == "gemini-3-flash-preview" {
             &["text", "image", "audio"]
+        } else if self.id == "gemini-3.7-flash" {
+            // 2026-08-16 exact-SHA (fc556402…) media matrix: audio/wav, video/mp4 and
+            // application/pdf inline inputs each returned the content-perception marker with
+            // terminal usage on the confirmed tiered wire.
+            &["text", "image", "audio", "video", "pdf"]
         } else {
             &["text", "image"]
         }
@@ -445,7 +450,10 @@ mod tests {
         assert!(model("gemini-3.6-flash").tool_calling());
         assert!(model("gemini-3.6-flash").structured_outputs());
         let flash_37 = model("gemini-3.7-flash");
-        assert_eq!(flash_37.input_modalities(), ["text", "image"]);
+        assert_eq!(
+            flash_37.input_modalities(),
+            ["text", "image", "audio", "video", "pdf"]
+        );
         assert_eq!(flash_37.output_modalities(), ["text"]);
         assert_eq!(flash_37.reasoning_efforts(), ["low", "medium", "high"]);
         assert!(flash_37.tool_calling());

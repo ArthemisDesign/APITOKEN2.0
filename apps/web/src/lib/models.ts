@@ -752,13 +752,13 @@ export const geminiModels: GeminiModel[] = [
     ],
     notes: [
       "Thinking levels low, medium and high are live-proven on the subscription wire and selectable via reasoning_effort; minimal is not supported by this model.",
-      "Function calling, JSON structured output, image input, implicit prompt caching and Google Search grounding are live-proven on the same wire; audio input is not available on this route.",
+      "Function calling, JSON structured output, image/audio/video/PDF input, implicit prompt caching and Google Search grounding are live-proven on the same wire.",
       "Promotional official rates run through 2026-12-31; the engine automatically switches to $1.50 input, $0.15 cached input and $7.50 output on 2027-01-01.",
     ],
     faq: [
       { q: "What model ID should clients use?", a: "Always use gemini-3.7-flash. apiToken.sale keeps any private upstream routing name internal and returns only this public ID." },
       { q: "How much does Gemini 3.7 Flash cost?", a: "Through 2026 the official promotional rate is $0.75 per 1M input tokens, $0.075 cached input and $3.75 output. The flat 50% apiToken.sale B2C discount makes that $0.375, $0.0375 and $1.875." },
-      { q: "Which capabilities are currently published?", a: "Text and image input, function calling, JSON structured output, implicit prompt caching, Google Search grounding, countTokens and incremental SSE streaming, plus explicit thinking levels low, medium and high through reasoning_effort." },
+      { q: "Which capabilities are currently published?", a: "Text, image, audio (inline WAV), video (inline MP4) and PDF input, function calling, JSON structured output, implicit prompt caching, Google Search grounding, countTokens and incremental SSE streaming, plus explicit thinking levels low, medium and high through reasoning_effort." },
     ],
     related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
   },

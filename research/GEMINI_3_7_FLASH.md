@@ -212,7 +212,7 @@ request remains terminal; no failed or successful paid transport may be replayed
 | Structured output | Valid response matching the requested schema plus terminal usage | Separately bounded | Required only if published for this model |
 | Function calling | Forced tool call with preserved `name`, `call_id`, and thought signature; successful follow-up | Separately bounded | Required only if published for this model |
 | Caching | Authoritative cache-token usage on a request meeting the 4,096-token minimum | Separately bounded | Required before a cache/billing claim |
-| Image/video/audio/PDF input | One successful bounded request per modality with real text output and usage | Separately bounded | Test every modality the product intends to advertise |
+| Image/video/audio/PDF input | One successful bounded request per modality with real text output and usage | Separately bounded | **GREEN 2026-08-16** on `fc556402…`: image (PNG color answer), audio (inline WAV tone marker `TONE`), video (inline MP4 color answer `red`), PDF (`CALIBRATION-BEACON-7734` extracted); each with terminal STOP/usage/parity, aggregate `$0.00119025` |
 | Search/Maps grounding | Grounding metadata, executed-query count, and authoritative cost evidence | Not permitted under the default cap unless free allowance is proven; otherwise explicit larger budget | **GREEN 2026-08-15** on `35153abe…`-lineage SHA `ed63dc0f…`: one grounded prompt with exactly 1 authoritative `webSearchQueries` count, terminal STOP/usage/parity, `14,000,000` search nanoUSD reconciled inside the explicit 10-query reserve contract |
 | Code execution, File Search, URL context, Computer Use Preview | Surface-specific real result and usage for every claimed control | Separate risk and budget approval where applicable | Not claimed in Stage 1 |
 | Each subscription plan | Repeat required generation/stream/control checks with a credential bound to that exact plan | Per-plan bounded budget | One plan's success proves only that plan |
@@ -523,6 +523,32 @@ reconciled `14,921,000` nanoUSD (`$0.014921`, of which `14,000,000` is the singl
 against the authorized `928,352,000` nanoUSD ceiling. Search grounding is therefore advertised
 for this model from the same change; Maps grounding remains a separately billed SKU and stays
 fail-closed in the request validator.
+
+### Media-input controlled live — 2026-08-16
+
+The official model page declares Text/Image/Video/Audio/PDF inputs. A closed three-leg
+`--gemini-37-media` matrix on production-GREEN-lineage runtime
+`fc556402fab47de814742acec51a8c4ebe4b27ce` and the same Ultra profile admitted each remaining
+modality with one free attested `countTokens` plus exactly one paid generation (no
+retry/replay/rotation; content-perception marker mandatory in the visible answer):
+
+| Modality | Payload | Evidence | Reconciled spend |
+|---|---|---|---|
+| audio | 1s 440Hz 8kHz μ-law inline `audio/wav` | Model answered the tone marker `TONE`; terminal STOP/usage/parity | `$0.000278` |
+| video | 1s solid-red 64×64 inline `video/mp4` | Model named the color `red`; terminal STOP/usage/parity | `$0.000289` |
+| pdf | one-page inline `application/pdf` | Model extracted `CALIBRATION-BEACON-7734`; terminal STOP/usage/parity | `$0.000623` |
+
+Aggregate spend was `1,190,250` nanoUSD (`$0.00119025`) against the authorized `2,370,816,000`
+nanoUSD worst-case ceiling; the report is complete with zero unavailable capabilities. Inline
+audio for this model is therefore admitted in the native gate with the same strict PCM WAV
+verification and exact 32-tokens/second accounting as Flash Preview; video and PDF were never
+gated and price as generic input tokens. The audio admission leg's `audio/wav` payload exercises
+the same bounded fallback path (hound-verified integral duration), and the zero authoritative
+`promptTokensDetails[AUDIO]` split is reconstructed exactly as reviewed. The transient canary on
+port `18898` was stopped and collected; the stable Gemini production plane stayed ready.
+
+Publication of `audio`/`video`/`pdf` in `input_modalities` in the native and unified catalogues
+follows in the same change as this evidence.
 
 ## Checklist disposition
 
