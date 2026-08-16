@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -217,6 +217,9 @@ pub(crate) struct GeminiProfile {
     calibration_persistence_ok: AtomicBool,
     billing: Option<Arc<AsyncBilling>>,
     calibrations: Mutex<BTreeMap<String, WindowCalibration>>,
+    /// Shared handle to the on-disk per-model generation cooling deadlines, so every profile in
+    /// this process writes to the same file. `None` when persistence is disabled.
+    cooldown_state: Option<Arc<Mutex<PathBuf>>>,
     /// Silence allowance for customer generation, or `None` for no deadline — the production
     /// default. Kept here so the send path does not have to thread the config through.
     generation_idle: Option<Duration>,
@@ -312,6 +315,8 @@ impl GeminiProfile {
         mut loaded: LoadedProfile,
         cfg: &GeminiConfig,
         billing: Option<Arc<AsyncBilling>>,
+        restored_model_cooling: HashMap<String, i64>,
+        cooldown_state: Option<Arc<Mutex<PathBuf>>>,
     ) -> anyhow::Result<Self> {
         gemini_credential::validate_profile_id(&loaded.source.id)?;
         let oauth_kind = loaded.credential.oauth_kind()?;
@@ -346,11 +351,25 @@ impl GeminiProfile {
             last_probe_at: AtomicI64::new(0),
             quota: RwLock::new(GeminiQuotaSnapshot::default()),
             quota_summary: RwLock::new(GeminiQuotaSummarySnapshot::default()),
-            model_health: Mutex::new(HashMap::new()),
+            model_health: Mutex::new(
+                restored_model_cooling
+                    .into_iter()
+                    .map(|(model_id, cooling_until)| {
+                        (
+                            model_id,
+                            GeminiModelHealthState {
+                                cooling_until,
+                                ..GeminiModelHealthState::default()
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
             spend_nano_total: AtomicI64::new(0),
             calibration_persistence_ok: AtomicBool::new(billing.is_some()),
             billing,
             calibrations: Mutex::new(BTreeMap::new()),
+            cooldown_state,
             generation_idle: (cfg.generation_idle_timeout_secs > 0)
                 .then(|| Duration::from_secs(cfg.generation_idle_timeout_secs)),
             auxiliary_idle: Duration::from_secs(cfg.read_timeout_secs),
@@ -764,6 +783,35 @@ impl GeminiProfile {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = health.entry(model_id.to_string()).or_default();
         state.cooling_until = state.cooling_until.max(until);
+        let persisted_until = state.cooling_until;
+        drop(health);
+        self.persist_model_cooling(model_id, persisted_until);
+    }
+
+    /// Record a generation cooling deadline on disk so a blue-green slot swap (which restarts the
+    /// process with empty in-memory state) does not forget a genuine quota-exhaustion cooldown and
+    /// immediately spend a live customer request rediscovering it. Best-effort: a write failure is
+    /// logged and never blocks routing, because the in-memory deadline is still the authority for
+    /// the current process.
+    fn persist_model_cooling(&self, model_id: &str, until: i64) {
+        let Some(state) = &self.cooldown_state else {
+            return;
+        };
+        let path = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let mut document = read_cooldown_state(&path).unwrap_or_default();
+        document
+            .entry(self.id.clone())
+            .or_default()
+            .insert(model_id.to_string(), until);
+        if let Err(error) = write_cooldown_state(&path, &document) {
+            elog::warn(
+                "gemini",
+                format!("gemini cooldown state persist failed [{error}]"),
+            );
+        }
     }
 
     pub(crate) fn mark_model_failure(
@@ -1821,6 +1869,55 @@ fn read_private_file(path: &str, description: &str) -> anyhow::Result<Vec<u8>> {
     fs::read(path).with_context(|| format!("read {description} file"))
 }
 
+/// On-disk per-model generation cooling deadlines, keyed by profile id then model id. Only
+/// still-active deadlines are restored on startup; expired entries are dropped when read.
+type CooldownState = BTreeMap<String, BTreeMap<String, i64>>;
+
+fn cooldown_state_path(cfg: &GeminiConfig) -> Option<PathBuf> {
+    if cfg.cooldown_state_file.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(&cfg.cooldown_state_file);
+    if !path.is_absolute() {
+        return None;
+    }
+    Some(path)
+}
+
+fn read_cooldown_state(path: &Path) -> Option<CooldownState> {
+    let raw = fs::read(path).ok()?;
+    serde_json::from_slice::<CooldownState>(&raw).ok()
+}
+
+fn write_cooldown_state(path: &Path, document: &CooldownState) -> anyhow::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec(document)?).with_context(|| "write cooldown state tmp")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+    }
+    fs::rename(&tmp, path).with_context(|| "rename cooldown state into place")?;
+    Ok(())
+}
+
+/// Load the persisted cooling deadlines that are still in the future, keyed by profile id. Expired
+/// entries are ignored so a stale file never resurrects an already-elapsed cooldown.
+fn load_active_cooldowns(path: &Path, now: i64) -> CooldownState {
+    read_cooldown_state(path)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(profile, models)| {
+            let models = models
+                .into_iter()
+                .filter(|(_, until)| *until > now)
+                .collect::<BTreeMap<_, _>>();
+            (profile, models)
+        })
+        .filter(|(_, models)| !models.is_empty())
+        .collect()
+}
+
 fn validate_private_directory(path: &Path, description: &str) -> anyhow::Result<()> {
     let metadata =
         fs::symlink_metadata(path).with_context(|| format!("stat {description} directory"))?;
@@ -2002,10 +2099,29 @@ impl GeminiGateway {
         }
         let loaded = load_profiles(&cfg)?;
         let cfg = Arc::new(cfg);
+        let cooldown_state_path = cooldown_state_path(&cfg);
+        let restored = cooldown_state_path
+            .as_deref()
+            .map(|path| load_active_cooldowns(path, pool::now()))
+            .unwrap_or_default();
+        let cooldown_state = cooldown_state_path.map(|path| Arc::new(Mutex::new(path)));
         let profiles = loaded
             .into_iter()
             .map(|profile| {
-                GeminiProfile::new(profile, &cfg, calibration_store.clone()).map(Arc::new)
+                let profile_cooling = restored
+                    .get(&profile.source.id)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect::<HashMap<_, _>>();
+                GeminiProfile::new(
+                    profile,
+                    &cfg,
+                    calibration_store.clone(),
+                    profile_cooling,
+                    cooldown_state.clone(),
+                )
+                .map(Arc::new)
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(Self {
@@ -2128,6 +2244,12 @@ impl GeminiGateway {
     fn reload_profiles(&self) -> anyhow::Result<bool> {
         let loaded = load_profiles(&self.cfg)?;
         let current = self.profiles_snapshot();
+        let cooldown_state_path = cooldown_state_path(&self.cfg);
+        let restored = cooldown_state_path
+            .as_deref()
+            .map(|path| load_active_cooldowns(path, pool::now()))
+            .unwrap_or_default();
+        let cooldown_state = cooldown_state_path.map(|path| Arc::new(Mutex::new(path)));
         let mut next = Vec::with_capacity(loaded.len());
         for loaded_profile in loaded {
             if let Some(profile) = current
@@ -2136,10 +2258,18 @@ impl GeminiGateway {
             {
                 next.push(profile.clone());
             } else {
+                let profile_cooling = restored
+                    .get(&loaded_profile.source.id)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect::<HashMap<_, _>>();
                 let profile = Arc::new(GeminiProfile::new(
                     loaded_profile,
                     &self.cfg,
                     self.calibration_store.clone(),
+                    profile_cooling,
+                    cooldown_state.clone(),
                 )?);
                 profile.authenticated.store(false, Ordering::Release);
                 profile.cool_until(pool::now() + 1);
@@ -2952,6 +3082,7 @@ mod tests {
             default_rate_limit_cool_secs: 60,
             rate_limit_rpm_cool_secs: 2,
             rate_limit_unknown_cool_secs: 60,
+        cooldown_state_file: String::new(),
             quota_reserve_fraction: 0.05,
             quota_reserve_jitter: 0.01,
             health_probe_interval_secs: 60,
@@ -3173,7 +3304,9 @@ mod tests {
         let mut cfg = config(&roster, ring);
         cfg.upstream = "https://cloudcode-pa.googleapis.com".into();
         let loaded = load_profiles(&cfg).unwrap().pop().unwrap();
-        let error = GeminiProfile::new(loaded, &cfg, None).err().unwrap();
+        let error = GeminiProfile::new(loaded, &cfg, None, HashMap::new(), None)
+            .err()
+            .unwrap();
         assert!(error.to_string().contains("requires a dedicated proxy"));
         let _ = fs::remove_dir_all(dir);
     }
@@ -4225,5 +4358,60 @@ mod tests {
         );
         assert_eq!(profile.quota.read().unwrap().updated_at, before);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cooldown_state_round_trips_only_active_deadlines() {
+        let dir = std::env::temp_dir().join(format!(
+            "gemini-cooldown-state-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cooldown-state.json");
+        let now = pool::now();
+        let mut document: CooldownState = BTreeMap::new();
+        document.insert(
+            "profile_a".to_string(),
+            BTreeMap::from([
+                ("model_x".to_string(), now + 3_600),
+                ("model_expired".to_string(), now - 10),
+            ]),
+        );
+        write_cooldown_state(&path, &document).unwrap();
+        let active = load_active_cooldowns(&path, now);
+        assert_eq!(
+            active.get("profile_a").and_then(|m| m.get("model_x")),
+            Some(&(now + 3_600))
+        );
+        // Expired deadlines are dropped on read, so a stale file never resurrects elapsed cooling.
+        assert!(
+            !active
+                .get("profile_a")
+                .is_some_and(|m| m.contains_key("model_expired"))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_or_malformed_cooldown_state_restores_nothing() {
+        let dir = std::env::temp_dir().join(format!(
+            "gemini-cooldown-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let missing = dir.join("nope.json");
+        assert!(load_active_cooldowns(&missing, pool::now()).is_empty());
+        fs::create_dir_all(&dir).unwrap();
+        let bad = dir.join("bad.json");
+        fs::write(&bad, b"not json").unwrap();
+        assert!(load_active_cooldowns(&bad, pool::now()).is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

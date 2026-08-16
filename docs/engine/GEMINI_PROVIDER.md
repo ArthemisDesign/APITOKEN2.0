@@ -285,6 +285,11 @@ envelope cannot relax those admission rules.
 Start Auth Bot once (or provision the two private directories explicitly) before starting the
 Gemini runtime. Its systemd unit requires `/srv/claude-api/data/gemini` to exist and mounts it
 read-only; it intentionally fails closed instead of skipping protection for an absent path.
+Per-model generation cooling deadlines are persisted to
+`/srv/claude-api/data/gemini-cooldown-state.json` (the writable data directory, since the roster
+itself is read-only) and restored on startup so a blue-green slot swap does not forget a genuine
+quota-exhaustion cooldown; only still-active deadlines are restored and a write failure is logged,
+never routed on.
 
 The envelope contains access/refresh tokens, OAuth client material, Google subject/email, managed
 project, detected plan, authenticated proxy and the opaque IPRoyal order id when Auth Bot issued the

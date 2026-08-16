@@ -841,7 +841,11 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
     the account stayed usable via the official client) is a transient profile stall, so its hint is
     capped at `rate_limit_unknown_cool_secs` and the profile is re-probed instead of parked for
     many minutes. Fail-closed: a missing/stale catalogue, no matching bucket or any
-    non-positive/unknown remainder keeps the long exhaustion cool. A health probe never erases
+    non-positive/unknown remainder keeps the long exhaustion cool. Generation cooling deadlines
+    are also persisted to a small JSON state file (`CLAUDE_API_GEMINI_COOLDOWN_STATE_FILE`) in the writable data directory and restored on startup, so a
+    blue-green slot swap does not forget a genuine exhaustion cooldown and burn a live customer
+    request rediscovering it; only still-active deadlines are restored and a write failure is
+    logged, never routed on. A health probe never erases
     generation cooling. Every generation/probe 429
    emits only bounded machine evidence under `gemini-rate-limit`: one request id joins pre-byte
    rotation attempts and a terminal summary, while process-keyed fingerprints correlate an

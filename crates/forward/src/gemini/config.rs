@@ -300,6 +300,10 @@ pub struct GeminiConfig {
     /// genuine `QUOTA_EXHAUSTED` reason is trusted with the full hint; every other hinted 429 is
     /// cooled for at most this window and re-probed.
     pub rate_limit_unknown_cool_secs: i64,
+    /// Optional path to a small JSON file where per-model generation cooling deadlines are
+    /// persisted so a blue-green slot swap does not forget a genuine quota-exhaustion cooldown and
+    /// immediately burn a live customer request rediscovering it. Empty disables persistence.
+    pub cooldown_state_file: String,
     /// Soft reserve used only while another profile has healthier quota headroom. The service floor
     /// is preserved: if every eligible profile is below its reserve, routing fails open to them.
     pub quota_reserve_fraction: f64,

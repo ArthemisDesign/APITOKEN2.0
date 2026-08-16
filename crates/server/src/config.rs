@@ -836,6 +836,12 @@ fn gemini_config() -> Option<GeminiConfig> {
     if !std::path::Path::new(&profiles_file).is_absolute() {
         panic!("CLAUDE_API_GEMINI_PROFILES_FILE must be an absolute path");
     }
+    // The roster directory is mounted read-only in production (ReadOnlyPaths), while
+    // `/srv/claude-api/data` is writable, so the cooldown state file lives beside it, not inside.
+    let cooldown_state_file = ev_or(
+        "CLAUDE_API_GEMINI_COOLDOWN_STATE_FILE",
+        "/srv/claude-api/data/gemini-cooldown-state.json",
+    );
     let credential_layout =
         parse_gemini_credential_layout(ev("CLAUDE_API_GEMINI_CREDENTIAL_LAYOUT").as_deref())
             .unwrap_or_else(|message| panic!("{message}"));
@@ -917,6 +923,7 @@ fn gemini_config() -> Option<GeminiConfig> {
             1,
             3_600,
         ),
+        cooldown_state_file,
         quota_reserve_fraction: ev_frac("CLAUDE_API_GEMINI_QUOTA_RESERVE", 0.05),
         quota_reserve_jitter: ev_frac("CLAUDE_API_GEMINI_QUOTA_RESERVE_JITTER", 0.01),
         health_probe_interval_secs: bounded_u64(
