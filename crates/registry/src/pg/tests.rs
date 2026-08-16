@@ -356,7 +356,7 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 53);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 54);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
@@ -460,7 +460,7 @@ fn tripo3d_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn tripo3d_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 53);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 54);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 49)
@@ -580,7 +580,7 @@ fn suno_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn suno_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 53);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 54);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 50)
@@ -691,7 +691,7 @@ fn tripo3d_pricing_provider_migration_widens_both_closed_sets() {
 
 #[test]
 fn tripo3d_pricing_provider_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 53);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 54);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 51)
@@ -740,7 +740,7 @@ fn suno_pricing_provider_migration_widens_both_closed_sets() {
 
 #[test]
 fn suno_pricing_provider_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 53);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 54);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 52)
@@ -985,6 +985,567 @@ fn request_facts_migration_postgres_matrix() {
                 &"request-facts-migration-invalid-client",
                 &"request-facts-migration-billing",
             ],
+        )
+        .unwrap();
+    lock_holder
+        .client
+        .query_one(
+            "SELECT pg_advisory_unlock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+}
+
+/// Real PostgreSQL proof for migration 0054's crash-safe terminal envelope and its correction of
+/// unknown request evidence. Skipped unless an isolated destructive test database is supplied:
+/// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+/// pg::tests::request_fact_terminal_envelope_migration_postgres_matrix`
+#[test]
+fn request_fact_terminal_envelope_migration_postgres_matrix() {
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping request-fact terminal-envelope matrix: test URL is unset");
+        return;
+    };
+
+    let mut lock_holder = PgStore::connect(&url).unwrap();
+    lock_holder
+        .client
+        .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+        .unwrap();
+    lock_holder
+        .client
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+
+    let mut pg = PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    assert_eq!(pg.schema_version().unwrap(), 54);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 54);
+    assert_eq!(
+        ENGINE_MIGRATIONS
+            .iter()
+            .find(|(version, _)| *version == 54)
+            .map(|(_, sql)| *sql),
+        Some(MIGRATION_0054),
+    );
+
+    let check_violation = |result: std::result::Result<u64, postgres::Error>, case: &str| {
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.as_db_error().map(|error| error.code().code()),
+            Some("23514"),
+            "{case} did not fail a CHECK: {error}",
+        );
+    };
+
+    let fact_columns: Vec<(String, String, Option<String>)> = pg
+        .client
+        .query(
+            "SELECT column_name,is_nullable,column_default \
+               FROM information_schema.columns \
+              WHERE table_schema='public' AND table_name='request_facts' \
+                AND column_name = ANY($1) \
+              ORDER BY column_name",
+            &[&&[
+                "delivery_state",
+                "stream_flag",
+                "tool_classes",
+                "tool_results_in_input",
+                "tool_calls_in_output",
+                "structured_output_flag",
+                "reasoning_flag",
+                "input_modalities",
+                "output_modalities",
+            ][..]],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2)))
+        .collect();
+    assert_eq!(fact_columns.len(), 9);
+    for evidence in [
+        "delivery_state",
+        "tool_classes",
+        "tool_results_in_input",
+        "tool_calls_in_output",
+        "structured_output_flag",
+        "reasoning_flag",
+        "input_modalities",
+        "output_modalities",
+    ] {
+        let (_, nullable, default) = fact_columns
+            .iter()
+            .find(|(name, _, _)| name == evidence)
+            .unwrap_or_else(|| panic!("request_facts lacks {evidence}: {fact_columns:?}"));
+        assert_eq!(nullable, "YES", "{evidence} must preserve unknown as NULL");
+        assert_eq!(default, &None, "{evidence} must not fabricate a default");
+    }
+    let (_, stream_nullable, stream_default) = fact_columns
+        .iter()
+        .find(|(name, _, _)| name == "stream_flag")
+        .unwrap();
+    assert_eq!(stream_nullable, "NO", "0054 must not alter stream_flag");
+    assert_eq!(stream_default.as_deref(), Some("false"));
+
+    let envelope_columns = [
+        ("request_fact_terminal_schema_version", "integer"),
+        ("request_fact_terminal_at", "bigint"),
+        ("request_fact_http_status_code", "integer"),
+        ("request_fact_provider_terminal_class", "text"),
+        ("request_fact_delivery_state", "text"),
+        ("request_fact_downstream_disconnect", "boolean"),
+        ("request_fact_upstream_request_id", "text"),
+        ("request_fact_first_public_byte_at", "bigint"),
+        ("request_fact_internal_attempt_count", "integer"),
+        ("request_fact_failure_class", "text"),
+        ("request_fact_tool_calls_in_output", "boolean"),
+    ];
+    let outbox_columns: Vec<(String, String, String, Option<String>)> = pg
+        .client
+        .query(
+            "SELECT column_name,data_type,is_nullable,column_default \
+               FROM information_schema.columns \
+              WHERE table_schema='public' AND table_name='settlement_outbox' \
+                AND column_name LIKE 'request_fact_%' \
+              ORDER BY ordinal_position",
+            &[],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3)))
+        .collect();
+    assert_eq!(
+        outbox_columns
+            .iter()
+            .map(|(name, data_type, _, _)| (name.as_str(), data_type.as_str()))
+            .collect::<Vec<_>>(),
+        envelope_columns,
+        "0054 must add exactly the eleven typed terminal-envelope columns",
+    );
+    for (name, _, nullable, default) in &outbox_columns {
+        assert_eq!(nullable, "YES", "old writers require nullable {name}");
+        assert_eq!(default, &None, "old writers require no default for {name}");
+    }
+
+    let constraints: Vec<(String, bool, String)> = pg
+        .client
+        .query(
+            "SELECT conname,convalidated,pg_get_constraintdef(oid) \
+               FROM pg_constraint \
+              WHERE conrelid IN ('request_facts'::regclass,'settlement_outbox'::regclass) \
+                AND conname = ANY($1) \
+              ORDER BY conname",
+            &[&&[
+                "request_facts_delivery_state_valid",
+                "settlement_outbox_fact_schema_version_positive",
+                "settlement_outbox_request_fact_http_status_code_range",
+                "settlement_outbox_fact_provider_terminal_class_valid",
+                "settlement_outbox_request_fact_delivery_state_valid",
+                "settlement_outbox_fact_attempt_count_nonnegative",
+                "settlement_outbox_request_fact_terminal_envelope_shape",
+            ][..]],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2)))
+        .collect();
+    assert_eq!(constraints.len(), 7, "missing 0054 CHECKs: {constraints:?}");
+    assert!(
+        constraints.iter().all(|(_, validated, _)| *validated),
+        "every 0054 CHECK must finish validated: {constraints:?}",
+    );
+    for value in [
+        "not_started",
+        "started",
+        "completed",
+        "interrupted",
+        "unknown",
+    ] {
+        assert!(
+            constraints
+                .iter()
+                .filter(|(name, _, _)| name.contains("delivery_state"))
+                .all(|(_, _, definition)| definition.contains(&format!("'{value}'::text"))),
+            "both delivery-state constraints must admit {value}: {constraints:?}",
+        );
+    }
+    let provider_check = constraints
+        .iter()
+        .find(|(name, _, _)| name.ends_with("provider_terminal_class_valid"))
+        .unwrap();
+    for value in [
+        "success",
+        "client_error",
+        "quota",
+        "auth",
+        "timeout",
+        "transport",
+        "upstream_error",
+        "protocol_error",
+        "unknown",
+    ] {
+        assert!(provider_check.2.contains(&format!("'{value}'::text")));
+    }
+
+    let related_indexes: Vec<String> = pg
+        .client
+        .query(
+            "SELECT indexname FROM pg_indexes \
+              WHERE schemaname='public' \
+                AND ( \
+                    (tablename='settlement_outbox' AND indexdef LIKE '%request_fact_%') \
+                    OR (tablename='request_facts' AND ( \
+                        indexdef LIKE '%delivery_state%' \
+                        OR indexdef LIKE '%terminal_at%' \
+                        OR indexdef LIKE '%http_status_code%' \
+                        OR indexdef LIKE '%provider_terminal_class%' \
+                        OR indexdef LIKE '%billing_outcome%' \
+                        OR indexdef LIKE '%downstream_disconnect%' \
+                        OR indexdef LIKE '%upstream_request_id%' \
+                        OR indexdef LIKE '%first_public_byte_at%' \
+                        OR indexdef LIKE '%internal_attempt_count%' \
+                        OR indexdef LIKE '%failure_class%' \
+                        OR indexdef LIKE '%tool_calls_in_output%' \
+                    )) \
+                )",
+            &[],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert!(
+        related_indexes.is_empty(),
+        "0054 must add no request-fact-related index: {related_indexes:?}",
+    );
+
+    let prefix = "request-fact-terminal-envelope-matrix";
+    pg.client
+        .execute(
+            "DELETE FROM request_facts WHERE logical_request_id LIKE $1",
+            &[&format!("{prefix}%")],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "DELETE FROM settlement_outbox WHERE request_id LIKE $1",
+            &[&format!("{prefix}%")],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "DELETE FROM reservations WHERE request_id LIKE $1",
+            &[&format!("{prefix}%")],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "DELETE FROM api_keys WHERE key=$1",
+            &[&format!("{prefix}-key")],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "DELETE FROM accounts WHERE id=$1",
+            &[&format!("{prefix}-account")],
+        )
+        .unwrap();
+
+    pg.client
+        .execute(
+            "INSERT INTO request_facts( \
+                 logical_request_id,account_id,key_id,client_kind,client_source,provider_plane, \
+                 route_class,request_class,admitted_at,delivery_state \
+             ) VALUES($1,$2,$3,'unknown','unknown','anthropic','native','messages',1,$4)",
+            &[
+                &format!("{prefix}-fact-valid"),
+                &format!("{prefix}-account"),
+                &format!("{prefix}-key-id"),
+                &"interrupted",
+            ],
+        )
+        .unwrap();
+    let unknown_row = pg
+        .client
+        .query_one(
+            "INSERT INTO request_facts( \
+                 logical_request_id,account_id,key_id,client_kind,client_source,provider_plane, \
+                 route_class,request_class,admitted_at \
+             ) VALUES($1,$2,$3,'unknown','unknown','anthropic','native','messages',1) \
+             RETURNING tool_classes,tool_results_in_input,tool_calls_in_output, \
+                       structured_output_flag,reasoning_flag,input_modalities,output_modalities",
+            &[
+                &format!("{prefix}-fact-unknown"),
+                &format!("{prefix}-account"),
+                &format!("{prefix}-key-id"),
+            ],
+        )
+        .unwrap();
+    let unknown_evidence: (
+        Option<i32>,
+        Option<bool>,
+        Option<bool>,
+        Option<bool>,
+        Option<bool>,
+        Option<i32>,
+        Option<i32>,
+    ) = (
+        unknown_row.get(0),
+        unknown_row.get(1),
+        unknown_row.get(2),
+        unknown_row.get(3),
+        unknown_row.get(4),
+        unknown_row.get(5),
+        unknown_row.get(6),
+    );
+    assert_eq!(
+        unknown_evidence,
+        (None, None, None, None, None, None, None),
+        "omitted dormant evidence must remain unknown",
+    );
+    let bad_fact_delivery = pg.client.execute(
+        "INSERT INTO request_facts( \
+             logical_request_id,account_id,key_id,client_kind,client_source,provider_plane, \
+             route_class,request_class,admitted_at,delivery_state \
+         ) VALUES($1,$2,$3,'unknown','unknown','anthropic','native','messages',1,'fabricated')",
+        &[
+            &format!("{prefix}-fact-bad-delivery"),
+            &format!("{prefix}-account"),
+            &format!("{prefix}-key-id"),
+        ],
+    );
+    check_violation(
+        bad_fact_delivery,
+        "request_facts delivery vocabulary accepted fabricated",
+    );
+
+    pg.client
+        .execute(
+            "INSERT INTO accounts(id,balance_nano,spent_nano,mult_bp,status,created_ts,created) \
+             VALUES($1,0,0,10000,'active',1,'')",
+            &[&format!("{prefix}-account")],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "INSERT INTO api_keys(key,key_id,account_id,created_ts,created) \
+             VALUES($1,$2,$3,1,'')",
+            &[
+                &format!("{prefix}-key"),
+                &format!("{prefix}-key-id"),
+                &format!("{prefix}-account"),
+            ],
+        )
+        .unwrap();
+    for suffix in [
+        "old-writer",
+        "valid",
+        "bad-version",
+        "bad-http-low",
+        "bad-http-high",
+        "bad-provider",
+        "bad-delivery",
+        "bad-attempts",
+        "bad-shape",
+    ] {
+        pg.client
+            .execute(
+                "INSERT INTO reservations( \
+                     request_id,account_id,key,hold_nano,balance_after_reserve_nano,owner_instance, \
+                     owner_epoch,lease_until,state,created_ts,updated_ts \
+                 ) VALUES($1,$2,$3,0,0,'terminal-envelope-matrix',1,100,'reserved',1,1)",
+                &[
+                    &format!("{prefix}-{suffix}"),
+                    &format!("{prefix}-account"),
+                    &format!("{prefix}-key"),
+                ],
+            )
+            .unwrap();
+    }
+
+    // A pre-0054 writer omits every new column and must still insert a completely NULL envelope.
+    pg.client
+        .execute(
+            "INSERT INTO settlement_outbox(request_id,actual_nano,disposition,created_ts,updated_ts) \
+             VALUES($1,0,'cancel',1,1)",
+            &[&format!("{prefix}-old-writer")],
+        )
+        .unwrap();
+    let null_count: i64 = pg
+        .client
+        .query_one(
+            "SELECT num_nulls( \
+                 request_fact_terminal_schema_version,request_fact_terminal_at, \
+                 request_fact_http_status_code,request_fact_provider_terminal_class, \
+                 request_fact_delivery_state,request_fact_downstream_disconnect, \
+                 request_fact_upstream_request_id,request_fact_first_public_byte_at, \
+                 request_fact_internal_attempt_count,request_fact_failure_class, \
+                 request_fact_tool_calls_in_output \
+             )::bigint FROM settlement_outbox WHERE request_id=$1",
+            &[&format!("{prefix}-old-writer")],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(null_count, 11);
+
+    pg.client
+        .execute(
+            "INSERT INTO settlement_outbox( \
+                 request_id,actual_nano,disposition,created_ts,updated_ts, \
+                 request_fact_terminal_schema_version,request_fact_terminal_at, \
+                 request_fact_http_status_code,request_fact_provider_terminal_class, \
+                 request_fact_delivery_state,request_fact_downstream_disconnect, \
+                 request_fact_upstream_request_id,request_fact_first_public_byte_at, \
+                 request_fact_internal_attempt_count,request_fact_failure_class, \
+                 request_fact_tool_calls_in_output \
+             ) VALUES($1,0,'cancel',1,1,1,2,499,'transport','interrupted',true,$2,3,0,$3,true)",
+            &[
+                &format!("{prefix}-valid"),
+                &"bounded-upstream-id",
+                &"downstream_closed",
+            ],
+        )
+        .unwrap();
+
+    let cases = [
+        (
+            "bad-version",
+            "request_fact_terminal_schema_version,request_fact_terminal_at,request_fact_provider_terminal_class,request_fact_delivery_state",
+            "0,2,'success','completed'",
+        ),
+        (
+            "bad-http-low",
+            "request_fact_terminal_schema_version,request_fact_terminal_at,request_fact_http_status_code,request_fact_provider_terminal_class,request_fact_delivery_state",
+            "1,2,99,'client_error','not_started'",
+        ),
+        (
+            "bad-http-high",
+            "request_fact_terminal_schema_version,request_fact_terminal_at,request_fact_http_status_code,request_fact_provider_terminal_class,request_fact_delivery_state",
+            "1,2,600,'client_error','not_started'",
+        ),
+        (
+            "bad-provider",
+            "request_fact_terminal_schema_version,request_fact_terminal_at,request_fact_provider_terminal_class,request_fact_delivery_state",
+            "1,2,'fabricated','unknown'",
+        ),
+        (
+            "bad-delivery",
+            "request_fact_terminal_schema_version,request_fact_terminal_at,request_fact_provider_terminal_class,request_fact_delivery_state",
+            "1,2,'success','fabricated'",
+        ),
+        (
+            "bad-attempts",
+            "request_fact_terminal_schema_version,request_fact_terminal_at,request_fact_provider_terminal_class,request_fact_delivery_state,request_fact_internal_attempt_count",
+            "1,2,'success','completed',-1",
+        ),
+        (
+            "bad-shape",
+            "request_fact_http_status_code",
+            "500",
+        ),
+    ];
+    for (suffix, columns, values) in cases {
+        let sql = format!(
+            "INSERT INTO settlement_outbox( \
+                 request_id,actual_nano,disposition,created_ts,updated_ts,{columns} \
+             ) VALUES($1,0,'cancel',1,1,{values})",
+        );
+        let result = pg.client.execute(&sql, &[&format!("{prefix}-{suffix}")]);
+        check_violation(
+            result,
+            &format!("invalid envelope case {suffix} was accepted"),
+        );
+    }
+
+    pg.migrate().unwrap();
+    assert_eq!(pg.schema_version().unwrap(), 54);
+    let replayed_row = pg
+        .client
+        .query_one(
+            "SELECT request_fact_terminal_schema_version,request_fact_terminal_at, \
+                    request_fact_http_status_code,request_fact_provider_terminal_class, \
+                    request_fact_delivery_state,request_fact_downstream_disconnect, \
+                    request_fact_upstream_request_id,request_fact_first_public_byte_at, \
+                    request_fact_internal_attempt_count,request_fact_failure_class, \
+                    request_fact_tool_calls_in_output \
+               FROM settlement_outbox WHERE request_id=$1",
+            &[&format!("{prefix}-valid")],
+        )
+        .unwrap();
+    let replayed: (
+        i32,
+        i64,
+        i32,
+        String,
+        String,
+        bool,
+        String,
+        i64,
+        i32,
+        String,
+        bool,
+    ) = (
+        replayed_row.get(0),
+        replayed_row.get(1),
+        replayed_row.get(2),
+        replayed_row.get(3),
+        replayed_row.get(4),
+        replayed_row.get(5),
+        replayed_row.get(6),
+        replayed_row.get(7),
+        replayed_row.get(8),
+        replayed_row.get(9),
+        replayed_row.get(10),
+    );
+    assert_eq!(
+        replayed,
+        (
+            1,
+            2,
+            499,
+            "transport".to_owned(),
+            "interrupted".to_owned(),
+            true,
+            "bounded-upstream-id".to_owned(),
+            3,
+            0,
+            "downstream_closed".to_owned(),
+            true,
+        ),
+        "migration replay must preserve the full durable terminal envelope",
+    );
+
+    pg.client
+        .execute(
+            "DELETE FROM request_facts WHERE logical_request_id LIKE $1",
+            &[&format!("{prefix}%")],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "DELETE FROM settlement_outbox WHERE request_id LIKE $1",
+            &[&format!("{prefix}%")],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "DELETE FROM reservations WHERE request_id LIKE $1",
+            &[&format!("{prefix}%")],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "DELETE FROM api_keys WHERE key=$1",
+            &[&format!("{prefix}-key")],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "DELETE FROM accounts WHERE id=$1",
+            &[&format!("{prefix}-account")],
         )
         .unwrap();
     lock_holder
