@@ -23,7 +23,7 @@ const PRICING_UNIT = "nano_usd_per_million_tokens"
 const NANO_USD_PER_USD = 1_000_000_000
 const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"])
 const SERVICE_TIERS = new Set(["standard", "priority"])
-const MODALITIES = new Set(["text", "image", "audio"])
+const MODALITIES = new Set(["text", "image", "audio", "video", "pdf"])
 const CACHE_RECORD_KEYS = new Set([
   "id",
   "name",

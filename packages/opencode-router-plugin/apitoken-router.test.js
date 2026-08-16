@@ -67,6 +67,25 @@ function catalog() {
         },
       },
       {
+        id: "google/gemini-3.7-flash",
+        name: "Gemini 3.7 Flash",
+        owned_by: "google",
+        apitoken: {
+          limits: { context: 1048576, input: 1048576, output: 65536 },
+          capabilities: {
+            reasoning_efforts: ["low", "medium", "high"],
+            service_tiers: ["standard"],
+            input_modalities: ["text", "image", "audio", "video", "pdf"],
+            output_modalities: ["text"],
+            tool_calling: true,
+            structured_outputs: true,
+            reasoning: true,
+            streaming: true,
+          },
+          pricing: pricing(),
+        },
+      },
+      {
         id: "kimi/kimi-for-coding",
         name: "Kimi for Coding",
         owned_by: "kimi",
@@ -141,6 +160,10 @@ test("same credential uses explicit stale capability-only models after a transie
   assert.equal(live.models["google/gemini-3.1-flash-image"].reasoning, false)
   assert.equal(live.models["anthropic/claude-opus-5"].structured_output, true)
   assert.deepEqual(live.models["openai/gpt-5.6"].modalities.input, ["text", "image"])
+  assert.deepEqual(
+    live.models["google/gemini-3.7-flash"].modalities.input,
+    ["text", "image", "audio", "video", "pdf"],
+  )
   assert.equal("limit" in live.models["kimi/kimi-for-coding"], false)
   assert.equal(live.models["kimi/kimi-for-coding"].tool_call, true)
   assert.equal(fs.statSync(cachePath).mode & 0o777, 0o600)
