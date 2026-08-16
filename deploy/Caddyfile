@@ -71,11 +71,13 @@ import /etc/caddy/router-active.caddy
 	}
 }
 
-# Execution groups are an internal router→plane capability. Public clients can never choose or
-# replay them: every provider hostname and the unified router erase both headers at first ingress.
+# Execution groups and logical request IDs are reserved internal router→plane capabilities.
+# Public clients can never choose or replay them: every provider hostname and the unified router
+# erase all three headers at first ingress.
 (strip_execution_identity) {
 	request_header -X-Apitoken-Execution-Group
 	request_header -X-Apitoken-Attempt
+	request_header -X-Apitoken-Logical-Request-Id
 }
 
 # Every provider route targets its own stable loopback origin. Only those loopback sites know

@@ -2223,15 +2223,37 @@ grep -Fq 'header_up Host 127.0.0.1:8791' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-Admin-Domain {http.request.host}' "$ROOT/deploy/Caddyfile"
 ! grep -Fqi 'X-Apitoken-Api-Plane' "$ROOT/deploy/Caddyfile"
-grep -Fq '(strip_execution_identity) {' "$ROOT/deploy/Caddyfile"
-grep -Fq 'request_header -X-Apitoken-Execution-Group' "$ROOT/deploy/Caddyfile"
-grep -Fq 'request_header -X-Apitoken-Attempt' "$ROOT/deploy/Caddyfile"
+strip_execution_identity_block=$(sed -n \
+  '/^(strip_execution_identity) {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
+[[ $(grep -Fc 'request_header -X-Apitoken-Execution-Group' \
+  <<<"$strip_execution_identity_block") == 1 ]] \
+  || wd_die 'public ingress strip lost the execution-group header'
+[[ $(grep -Fc 'request_header -X-Apitoken-Attempt' \
+  <<<"$strip_execution_identity_block") == 1 ]] \
+  || wd_die 'public ingress strip lost the execution-attempt header'
+[[ $(grep -Fc 'request_header -X-Apitoken-Logical-Request-Id' \
+  <<<"$strip_execution_identity_block") == 1 ]] \
+  || wd_die 'public ingress strip lost the reserved logical-request header'
 for execution_fenced_vhost in \
   api.apitoken.sale openai.api.apitoken.sale gemini.api.apitoken.sale router.apitoken.sale; do
   execution_fenced_block=$(sed -n "/^${execution_fenced_vhost//./\\.} {$/,/^}$/p" \
     "$ROOT/deploy/Caddyfile")
-  grep -Fq 'import strip_execution_identity' <<<"$execution_fenced_block"
+  [[ $(grep -Fc 'import strip_execution_identity' <<<"$execution_fenced_block") == 1 ]] \
+    || wd_die "$execution_fenced_vhost must import the identity strip exactly once"
 done
+for internal_provider_origin in 8790 8792 8794 8803; do
+  internal_provider_block=$(sed -n "/^http:\/\/127\.0\.0\.1:${internal_provider_origin} {$/,/^}$/p" \
+    "$ROOT/deploy/Caddyfile")
+  [[ -n $internal_provider_block ]] \
+    || wd_die "stable provider origin $internal_provider_origin is missing"
+  ! grep -Fq 'import strip_execution_identity' <<<"$internal_provider_block" \
+    || wd_die "provider loopback origin $internal_provider_origin must preserve trusted internal identity"
+done
+internal_router_block=$(sed -n '/^http:\/\/127\.0\.0\.1:8802 {$/,/^}$/p' \
+  "$ROOT/deploy/Caddyfile")
+[[ -n $internal_router_block ]] || wd_die 'stable router origin 8802 is missing'
+! grep -Fq 'import strip_execution_identity' <<<"$internal_router_block" \
+  || wd_die 'router loopback origin 8802 must not import the public-ingress strip'
 # Each backend snippet is imported exactly once — by its per-provider vhost. Since the stage-1b
 # cutover the unified router.apitoken.sale vhost proxies to the claude-router process instead of
 # importing plane backends (docs/engine/UNIFIED_ROUTER.md).
