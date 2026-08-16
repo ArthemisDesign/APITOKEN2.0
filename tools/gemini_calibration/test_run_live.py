@@ -787,6 +787,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             {leg.image_size for leg in image_legs},
             {"1K", "2K", "4K"},
         )
+        self.assertTrue(all(leg.max_output_tokens == 4096 for leg in image_legs))
         self.assertTrue(all(
             run_live.body_for_leg(leg, "run")["generationConfig"]["responseModalities"]
             == ["TEXT", "IMAGE"]

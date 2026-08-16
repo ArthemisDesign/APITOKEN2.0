@@ -12,8 +12,11 @@ For every model in the backend `conversion_models`, the runner checks native non
 SSE, all published thinking levels, fresh text, a repeatable text-cache payload, audio and a
 repeatable audio payload, a function-declaration tool prompt, and Google Search. For models
 with tiered pricing, a dedicated payload must cross the published long-context threshold by
-actual `countTokens`; for the image model, 1K, 2K, and 4K are executed separately. The free
-`countTokens` is the preflight of every paid request. HTTP 400/403/404 and a successful turn
+actual `countTokens`; for the image model, 1K, 2K, and 4K are executed separately with a
+4,096-token text-output ceiling. The current daily backend can consume more than the generic
+128-token default before returning the image; a smaller cap can settle a text-only `MAX_TOKENS`
+turn and is not a valid availability probe. The free `countTokens` is the preflight of every paid
+request. HTTP 400/403/404 and a successful turn
 without the expected separately metered token class are recorded in
 `unavailable_capabilities` rather than counted as zero spend. `toolUsePromptTokenCount` is
 only an optional subset of regular input: a missing subset is acceptable when the forced

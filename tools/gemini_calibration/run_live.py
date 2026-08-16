@@ -1004,8 +1004,18 @@ def build_coverage_legs(
         if model_rates is not None and model_rates.long_threshold < 1_000_000_000:
             legs.append(Leg(f"long-context:{model}", model, "long", max_output_tokens=128))
         if model == "gemini-3.1-flash-image":
+            # The current daily image backend can consume more than the generic 128-token default
+            # before emitting inlineData. A lower ceiling produced a settled text-only MAX_TOKENS
+            # turn; 4096 is the smallest reviewed fail-closed calibration envelope that delivered
+            # a real 1K image with authoritative usage.
             for size in ("1K", "2K", "4K"):
-                legs.append(Leg(f"image-{size}:{model}", model, "image", image_size=size))
+                legs.append(Leg(
+                    f"image-{size}:{model}",
+                    model,
+                    "image",
+                    image_size=size,
+                    max_output_tokens=4096,
+                ))
     return legs
 
 
