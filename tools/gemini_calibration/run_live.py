@@ -56,6 +56,144 @@ TINY_PNG_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
     "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 )
+# 1s 440Hz tone, 8kHz mono μ-law 8-bit WAV (official audio/wav, 32 tokens/second).
+TONE_WAV_BASE64 = (
+    "UklGRnofAABXQVZFZm10IBIAAAAHAAEAQB8AAEAfAAABAAgAAABmYWN0BAAAAEAfAABkYXRhQB8AAP+voZuYmJugruAxIhsYGBof"
+    "LFS0o5yZmJqfq8w3JRwZGBoeKka6pp2ZmJmeqMA9Jx0ZGBkdJz3AqJ6ZmJmdprpGKh4aGBkcJTfMq5+amJmco7RULB8aGBgbIjHg"
+    "rqCbmJiboa//LyEbGBgbIC5gsaKbmJian6zUNCMcGRgaHytMt6WcmZianqrGOiYdGRgZHihAvaedmZiZnae9QCgeGRgZHSY6xqqe"
+    "mpiZnKW3TCsfGhgZHCM01KyfmpiYm6KxYC4gGxgYGyEv/6+hm5iYm6Cu4DEiGxgYGh8sVLSjnJmYmp+rzDclHBkYGh4qRrqmnZmY"
+    "mZ6owD0nHRkYGR0nPcConpmYmZ2mukYqHhoYGRwlN8yrn5qYmZyjtFQsHxoYGBsiMeCuoJuYmJuhr/8vIRsYGBsgLmCxopuYmJqf"
+    "rNQ0IxwZGBofK0y3pZyZmJqeqsY6Jh0ZGBkeKEC9p52ZmJmdp71AKB4ZGBkdJjrGqp6amJmcpbdMKx8aGBkcIzTUrJ+amJiborFg"
+    "LiAbGBgbIS//r6GbmJiboK7gMSIbGBgaHyxUtKOcmZian6vMNyUcGRgaHipGuqadmZiZnqjAPScdGRgZHSc9wKiemZiZnaa6Rioe"
+    "GhgZHCU3zKufmpiZnKO0VCwfGhgYGyIx4K6gm5iYm6Gv/y8hGxgYGyAuYLGim5iYmp+s1DQjHBkYGh8rTLelnJmYmp6qxjomHRkY"
+    "GR4oQL2nnZmYmZ2nvUAoHhkYGR0mOsaqnpqYmZylt0wrHxoYGRwjNNSsn5qYmJuisWAuIBsYGBshL/+voZuYmJugruAxIhsYGBof"
+    "LFS0o5yZmJqfq8w3JRwZGBoeKka6pp2ZmJmeqMA9Jx0ZGBkdJz3AqJ6ZmJmdprpGKh4aGBkcJTfMq5+amJmco7RULB8aGBgbIjHg"
+    "rqCbmJiboa//LyEbGBgbIC5gsaKbmJian6zUNCMcGRgaHytMt6WcmZianqrGOiYdGRgZHihAvaedmZiZnae9QCgeGRgZHSY6xqqe"
+    "mpiZnKW3TCsfGhgZHCM01KyfmpiYm6KxYC4gGxgYGyEv/6+hm5iYm6Cu4DEiGxgYGh8sVLSjnJmYmp+rzDclHBkYGh4qRrqmnZmY"
+    "mZ6owD0nHRkYGR0nPcConpmYmZ2mukYqHhoYGRwlN8yrn5qYmZyjtFQsHxoYGBsiMeCuoJuYmJuhr/8vIRsYGBsgLmCxopuYmJqf"
+    "rNQ0IxwZGBofK0y3pZyZmJqeqsY6Jh0ZGBkeKEC9p52ZmJmdp71AKB4ZGBkdJjrGqp6amJmcpbdMKx8aGBkcIzTUrJ+amJiborFg"
+    "LiAbGBgbIS//r6GbmJiboK7gMSIbGBgaHyxUtKOcmZian6vMNyUcGRgaHipGuqadmZiZnqjAPScdGRgZHSc9wKiemZiZnaa6Rioe"
+    "GhgZHCU3zKufmpiZnKO0VCwfGhgYGyIx4K6gm5iYm6Gv/y8hGxgYGyAuYLGim5iYmp+s1DQjHBkYGh8rTLelnJmYmp6qxjomHRkY"
+    "GR4oQL2nnZmYmZ2nvUAoHhkYGR0mOsaqnpqYmZylt0wrHxoYGRwjNNSsn5qYmJuisWAuIBsYGBshL/+voZuYmJugruAxIhsYGBof"
+    "LFS0o5yZmJqfq8w3JRwZGBoeKka6pp2ZmJmeqMA9Jx0ZGBkdJz3AqJ6ZmJmdprpGKh4aGBkcJTfMq5+amJmco7RULB8aGBgbIjHg"
+    "rqCbmJiboa//LyEbGBgbIC5gsaKbmJian6zUNCMcGRgaHytMt6WcmZianqrGOiYdGRgZHihAvaedmZiZnae9QCgeGRgZHSY6xqqe"
+    "mpiZnKW3TCsfGhgZHCM01KyfmpiYm6KxYC4gGxgYGyEv/6+hm5iYm6Cu4DEiGxgYGh8sVLSjnJmYmp+rzDclHBkYGh4qRrqmnZmY"
+    "mZ6owD0nHRkYGR0nPcConpmYmZ2mukYqHhoYGRwlN8yrn5qYmZyjtFQsHxoYGBsiMeCuoJuYmJuhr/8vIRsYGBsgLmCxopuYmJqf"
+    "rNQ0IxwZGBofK0y3pZyZmJqeqsY6Jh0ZGBkeKEC9p52ZmJmdp71AKB4ZGBkdJjrGqp6amJmcpbdMKx8aGBkcIzTUrJ+amJiborFg"
+    "LiAbGBgbIS//r6GbmJiboK7gMSIbGBgaHyxUtKOcmZian6vMNyUcGRgaHipGuqadmZiZnqjAPScdGRgZHSc9wKiemZiZnaa6Rioe"
+    "GhgZHCU3zKufmpiZnKO0VCwfGhgYGyIx4K6gm5iYm6Gv/y8hGxgYGyAuYLGim5iYmp+s1DQjHBkYGh8rTLelnJmYmp6qxjomHRkY"
+    "GR4oQL2nnZmYmZ2nvUAoHhkYGR0mOsaqnpqYmZylt0wrHxoYGRwjNNSsn5qYmJuisWAuIBsYGBshL/+voZuYmJugruAxIhsYGBof"
+    "LFS0o5yZmJqfq8w3JRwZGBoeKka6pp2ZmJmeqMA9Jx0ZGBkdJz3AqJ6ZmJmdprpGKh4aGBkcJTfMq5+amJmco7RULB8aGBgbIjHg"
+    "rqCbmJiboa//LyEbGBgbIC5gsaKbmJian6zUNCMcGRgaHytMt6WcmZianqrGOiYdGRgZHihAvaedmZiZnae9QCgeGRgZHSY6xqqe"
+    "mpiZnKW3TCsfGhgZHCM01KyfmpiYm6KxYC4gGxgYGyEv/6+hm5iYm6Cu4DEiGxgYGh8sVLSjnJmYmp+rzDclHBkYGh4qRrqmnZmY"
+    "mZ6owD0nHRkYGR0nPcConpmYmZ2mukYqHhoYGRwlN8yrn5qYmZyjtFQsHxoYGBsiMeCuoJuYmJuhr/8vIRsYGBsgLmCxopuYmJqf"
+    "rNQ0IxwZGBofK0y3pZyZmJqeqsY6Jh0ZGBkeKEC9p52ZmJmdp71AKB4ZGBkdJjrGqp6amJmcpbdMKx8aGBkcIzTUrJ+amJiborFg"
+    "LiAbGBgbIS//r6GbmJiboK7gMSIbGBgaHyxUtKOcmZian6vMNyUcGRgaHipGuqadmZiZnqjAPScdGRgZHSc9wKiemZiZnaa6Rioe"
+    "GhgZHCU3zKufmpiZnKO0VCwfGhgYGyIx4K6gm5iYm6Gv/y8hGxgYGyAuYLGim5iYmp+s1DQjHBkYGh8rTLelnJmYmp6qxjomHRkY"
+    "GR4oQL2nnZmYmZ2nvUAoHhkYGR0mOsaqnpqYmZylt0wrHxoYGRwjNNSsn5qYmJuisWAuIBsYGBshL/+voZuYmJugruAxIhsYGBof"
+    "LFS0o5yZmJqfq8w3JRwZGBoeKka6pp2ZmJmeqMA9Jx0ZGBkdJz3AqJ6ZmJmdprpGKh4aGBkcJTfMq5+amJmco7RULB8aGBgbIjHg"
+    "rqCbmJiboa//LyEbGBgbIC5gsaKbmJian6zUNCMcGRgaHytMt6WcmZianqrGOiYdGRgZHihAvaedmZiZnae9QCgeGRgZHSY6xqqe"
+    "mpiZnKW3TCsfGhgZHCM01KyfmpiYm6KxYC4gGxgYGyEv/6+hm5iYm6Cu4DEiGxgYGh8sVLSjnJmYmp+rzDclHBkYGh4qRrqmnZmY"
+    "mZ6owD0nHRkYGR0nPcConpmYmZ2mukYqHhoYGRwlN8yrn5qYmZyjtFQsHxoYGBsiMeCuoJuYmJuhr/8vIRsYGBsgLmCxopuYmJqf"
+    "rNQ0IxwZGBofK0y3pZyZmJqeqsY6Jh0ZGBkeKEC9p52ZmJmdp71AKB4ZGBkdJjrGqp6amJmcpbdMKx8aGBkcIzTUrJ+amJiborFg"
+    "LiAbGBgbIS//r6GbmJiboK7gMSIbGBgaHyxUtKOcmZian6vMNyUcGRgaHipGuqadmZiZnqjAPScdGRgZHSc9wKiemZiZnaa6Rioe"
+    "GhgZHCU3zKufmpiZnKO0VCwfGhgYGyIx4K6gm5iYm6Gv/y8hGxgYGyAuYLGim5iYmp+s1DQjHBkYGh8rTLelnJmYmp6qxjomHRkY"
+    "GR4oQL2nnZmYmZ2nvUAoHhkYGR0mOsaqnpqYmZylt0wrHxoYGRwjNNSsn5qYmJuisWAuIBsYGBshL/+voZuYmJugruAxIhsYGBof"
+    "LFS0o5yZmJqfq8w3JRwZGBoeKka6pp2ZmJmeqMA9Jx0ZGBkdJz3AqJ6ZmJmdprpGKh4aGBkcJTfMq5+amJmco7RULB8aGBgbIjHg"
+    "rqCbmJiboa//LyEbGBgbIC5gsaKbmJian6zUNCMcGRgaHytMt6WcmZianqrGOiYdGRgZHihAvaedmZiZnae9QCgeGRgZHSY6xqqe"
+    "mpiZnKW3TCsfGhgZHCM01KyfmpiYm6KxYC4gGxgYGyEv/6+hm5iYm6Cu4DEiGxgYGh8sVLSjnJmYmp+rzDclHBkYGh4qRrqmnZmY"
+    "mZ6owD0nHRkYGR0nPcConpmYmZ2mukYqHhoYGRwlN8yrn5qYmZyjtFQsHxoYGBsiMeCuoJuYmJuhr/8vIRsYGBsgLmCxopuYmJqf"
+    "rNQ0IxwZGBofK0y3pZyZmJqeqsY6Jh0ZGBkeKEC9p52ZmJmdp71AKB4ZGBkdJjrGqp6amJmcpbdMKx8aGBkcIzTUrJ+amJiborFg"
+    "LiAbGBgbIS//r6GbmJiboK7gMSIbGBgaHyxUtKOcmZian6vMNyUcGRgaHipGuqadmZiZnqjAPScdGRgZHSc9wKiemZiZnaa6Rioe"
+    "GhgZHCU3zKufmpiZnKO0VCwfGhgYGyIx4K6gm5iYm6Gv/y8hGxgYGyAuYLGim5iYmp+s1DQjHBkYGh8rTLelnJmYmp6qxjomHRkY"
+    "GR4oQL2nnZmYmZ2nvUAoHhkYGR0mOsaqnpqYmZylt0wrHxoYGRwjNNSsn5qYmJuisWAuIBsYGBshL/+voZuYmJugruAxIhsYGBof"
+    "LFS0o5yZmJqfq8w3JRwZGBoeKka6pp2ZmJmeqMA9Jx0ZGBkdJz3AqJ6ZmJmdprpGKh4aGBkcJTfMq5+amJmco7RULB8aGBgbIjHg"
+    "rqCbmJiboa//LyEbGBgbIC5gsaKbmJian6zUNCMcGRgaHytMt6WcmZianqrGOiYdGRgZHihAvaedmZiZnae9QCgeGRgZHSY6xqqe"
+    "mpiZnKW3TCsfGhgZHCM01KyfmpiYm6KxYC4gGxgYGyEv/6+hm5iYm6Cu4DEiGxgYGh8sVLSjnJmYmp+rzDclHBkYGh4qRrqmnZmY"
+    "mZ6owD0nHRkYGR0nPcConpmYmZ2mukYqHhoYGRwlN8yrn5qYmZyjtFQsHxoYGBsiMeCuoJuYmJuhr/8vIRsYGBsgLmCxopuYmJqf"
+    "rNQ0IxwZGBofK0y3pZyZmJqeqsY6Jh0ZGBkeKEC9p52ZmJmdp71AKB4ZGBkdJjrGqp6amJmcpbdMKx8aGBkcIzTUrJ+amJiborFg"
+    "LiAbGBgbIS//r6GbmJiboK7gMSIbGBgaHyxUtKOcmZian6vMNyUcGRgaHipGuqadmZiZnqjAPScdGRgZHSc9wKiemZiZnaa6Rioe"
+    "GhgZHCU3zKufmpiZnKO0VCwfGhgYGyIx4K6gm5iYm6Gv/y8hGxgYGyAuYLGim5iYmp+s1DQjHBkYGh8rTLelnJmYmp6qxjomHRkY"
+    "GR4oQL2nnZmYmZ2nvUAoHhkYGR0mOsaqnpqYmZylt0wrHxoYGRwjNNSsn5qYmJuisWAuIBsYGBshL/+voZuYmJugruAxIhsYGBof"
+    "LFS0o5yZmJqfq8w3JRwZGBoeKka6pp2ZmJmeqMA9Jx0ZGBkdJz3AqJ6ZmJmdprpGKh4aGBkcJTfMq5+amJmco7RULB8aGBgbIjHg"
+    "rqCbmJiboa//LyEbGBgbIC5gsaKbmJian6zUNCMcGRgaHytMt6WcmZianqrGOiYdGRgZHihAvaedmZiZnae9QCgeGRgZHSY6xqqe"
+    "mpiZnKW3TCsfGhgZHCM01KyfmpiYm6KxYC4gGxgYGyEv/6+hm5iYm6Cu4DEiGxgYGh8sVLSjnJmYmp+rzDclHBkYGh4qRrqmnZmY"
+    "mZ6owD0nHRkYGR0nPcConpmYmZ2mukYqHhoYGRwlN8yrn5qYmZyjtFQsHxoYGBsiMeCuoJuYmJuhr/8vIRsYGBsgLmCxopuYmJqf"
+    "rNQ0IxwZGBofK0y3pZyZmJqeqsY6Jh0ZGBkeKEC9p52ZmJmdp71AKB4ZGBkdJjrGqp6amJmcpbdMKx8aGBkcIzTUrJ+amJiborFg"
+    "LiAbGBgbIS//r6GbmJiboK7gMSIbGBgaHyxUtKOcmZian6vMNyUcGRgaHipGuqadmZiZnqjAPScdGRgZHSc9wKiemZiZnaa6Rioe"
+    "GhgZHCU3zKufmpiZnKO0VCwfGhgYGyIx4K6gm5iYm6Gv/y8hGxgYGyAuYLGim5iYmp+s1DQjHBkYGh8rTLelnJmYmp6qxjomHRkY"
+    "GR4oQL2nnZmYmZ2nvUAoHhkYGR0mOsaqnpqYmZylt0wrHxoYGRwjNNSsn5qYmJuisWAuIBsYGBshL/+voZuYmJugruAxIhsYGBof"
+    "LFS0o5yZmJqfq8w3JRwZGBoeKka6pp2ZmJmeqMA9Jx0ZGBkdJz3AqJ6ZmJmdprpGKh4aGBkcJTfMq5+amJmco7RULB8aGBgbIjHg"
+    "rqCbmJiboa//LyEbGBgbIC5gsaKbmJian6zUNCMcGRgaHytMt6WcmZianqrGOiYdGRgZHihAvaedmZiZnae9QCgeGRgZHSY6xqqe"
+    "mpiZnKW3TCsfGhgZHCM01KyfmpiYm6KxYC4gGxgYGyEv/6+hm5iYm6Cu4DEiGxgYGh8sVLSjnJmYmp+rzDclHBkYGh4qRrqmnZmY"
+    "mZ6owD0nHRkYGR0nPcConpmYmZ2mukYqHhoYGRwlN8yrn5qYmZyjtFQsHxoYGBsiMeCuoJuYmJuhr/8vIRsYGBsgLmCxopuYmJqf"
+    "rNQ0IxwZGBofK0y3pZyZmJqeqsY6Jh0ZGBkeKEC9p52ZmJmdp71AKB4ZGBkdJjrGqp6amJmcpbdMKx8aGBkcIzTUrJ+amJiborFg"
+    "LiAbGBgbIS//r6GbmJiboK7gMSIbGBgaHyxUtKOcmZian6vMNyUcGRgaHipGuqadmZiZnqjAPScdGRgZHSc9wKiemZiZnaa6Rioe"
+    "GhgZHCU3zKufmpiZnKO0VCwfGhgYGyIx4K6gm5iYm6Gv/y8hGxgYGyAuYLGim5iYmp+s1DQjHBkYGh8rTLelnJmYmp6qxjomHRkY"
+    "GR4oQL2nnZmYmZ2nvUAoHhkYGR0mOsaqnpqYmZylt0wrHxoYGRwjNNSsn5qYmJuisWAuIBsYGBshL/+voZuYmJugruAxIhsYGBof"
+    "LFS0o5yZmJqfq8w3JRwZGBoeKka6pp2ZmJmeqMA9Jx0ZGBkdJz3AqJ6ZmJmdprpGKh4aGBkcJTfMq5+amJmco7RULB8aGBgbIjHg"
+    "rqCbmJiboa//LyEbGBgbIC5gsaKbmJian6zUNCMcGRgaHytMt6WcmZianqrGOiYdGRgZHihAvaedmZiZnae9QCgeGRgZHSY6xqqe"
+    "mpiZnKW3TCsfGhgZHCM01KyfmpiYm6KxYC4gGxgYGyEv/6+hm5iYm6Cu4DEiGxgYGh8sVLSjnJmYmp+rzDclHBkYGh4qRrqmnZmY"
+    "mZ6owD0nHRkYGR0nPcConpmYmZ2mukYqHhoYGRwlN8yrn5qYmZyjtFQsHxoYGBsiMeCuoJuYmJuhr/8vIRsYGBsgLmCxopuYmJqf"
+    "rNQ0IxwZGBofK0y3pZyZmJqeqsY6Jh0ZGBkeKEC9p52ZmJmdp71AKB4ZGBkdJjrGqp6amJmcpbdMKx8aGBkcIzTUrJ+amJiborFg"
+    "LiAbGBgbIS//r6GbmJiboK7gMSIbGBgaHyxUtKOcmZian6vMNyUcGRgaHipGuqadmZiZnqjAPScdGRgZHSc9wKiemZiZnaa6Rioe"
+    "GhgZHCU3zKufmpiZnKO0VCwfGhgYGyIx4K6gm5iYm6Gv/y8hGxgYGyAuYLGim5iYmp+s1DQjHBkYGh8rTLelnJmYmp6qxjomHRkY"
+    "GR4oQL2nnZmYmZ2nvUAoHhkYGR0mOsaqnpqYmZylt0wrHxoYGRwjNNSsn5qYmJuisWAuIBsYGBshL/+voZuYmJugruAxIhsYGBof"
+    "LFS0o5yZmJqfq8w3JRwZGBoeKka6pp2ZmJmeqMA9Jx0ZGBkdJz3AqJ6ZmJmdprpGKh4aGBkcJTfMq5+amJmco7RULB8aGBgbIjHg"
+    "rqCbmJiboa//LyEbGBgbIC5gsaKbmJian6zUNCMcGRgaHytMt6WcmZianqrGOiYdGRgZHihAvaedmZiZnae9QCgeGRgZHSY6xqqe"
+    "mpiZnKW3TCsfGhgZHCM01KyfmpiYm6KxYC4gGxgYGyEv/6+hm5iYm6Cu4DEiGxgYGh8sVLSjnJmYmp+rzDclHBkYGh4qRrqmnZmY"
+    "mZ6owD0nHRkYGR0nPcConpmYmZ2mukYqHhoYGRwlN8yrn5qYmZyjtFQsHxoYGBsiMeCuoJuYmJuhr/8vIRsYGBsgLmCxopuYmJqf"
+    "rNQ0IxwZGBofK0y3pZyZmJqeqsY6Jh0ZGBkeKEC9p52ZmJmdp71AKB4ZGBkdJjrGqp6amJmcpbdMKx8aGBkcIzTUrJ+amJiborFg"
+    "LiAbGBgbIS//r6GbmJiboK7gMSIbGBgaHyxUtKOcmZian6vMNyUcGRgaHipGuqadmZiZnqjAPScdGRgZHSc9wKiemZiZnaa6Rioe"
+    "GhgZHCU3zKufmpiZnKO0VCwfGhgYGyIx4K6gm5iYm6Gv/y8hGxgYGyAuYLGim5iYmp+s1DQjHBkYGh8rTLelnJmYmp6qxjomHRkY"
+    "GR4oQL2nnZmYmZ2nvUAoHhkYGR0mOsaqnpqYmZylt0wrHxoYGRwjNNSsn5qYmJuisWAuIBsYGBshL/+voZuYmJugruAxIhsYGBof"
+    "LFS0o5yZmJqfq8w3JRwZGBoeKka6pp2ZmJmeqMA9Jx0ZGBkdJz3AqJ6ZmJmdprpGKh4aGBkcJTfMq5+amJmco7RULB8aGBgbIjHg"
+    "rqCbmJiboa//LyEbGBgbIC5gsaKbmJian6zUNCMcGRgaHytMt6WcmZianqrGOiYdGRgZHihAvaedmZiZnae9QCgeGRgZHSY6xqqe"
+    "mpiZnKW3TCsfGhgZHCM01KyfmpiYm6KxYC4gGxgYGyEv/6+hm5iYm6Cu4DEiGxgYGh8sVLSjnJmYmp+rzDclHBkYGh4qRrqmnZmY"
+    "mZ6owD0nHRkYGR0nPcConpmYmZ2mukYqHhoYGRwlN8yrn5qYmZyjtFQsHxoYGBsiMeCuoJuYmJuhr/8vIRsYGBsgLmCxopuYmJqf"
+    "rNQ0IxwZGBofK0y3pZyZmJqeqsY6Jh0ZGBkeKEC9p52ZmJmdp71AKB4ZGBkdJjrGqp6amJmcpbdMKx8aGBkcIzTUrJ+amJiborFg"
+    "LiAbGBgbIS//r6GbmJiboK7gMSIbGBgaHyxUtKOcmZian6vMNyUcGRgaHipGuqadmZiZnqjAPScdGRgZHSc9wKiemZiZnaa6Rioe"
+    "GhgZHCU3zKufmpiZnKO0VCwfGhgYGyIx4K6gm5iYm6Gv/y8hGxgYGyAuYLGim5iYmp+s1DQjHBkYGh8rTLelnJmYmp6qxjomHRkY"
+    "GR4oQL2nnZmYmZ2nvUAoHhkYGR0mOsaqnpqYmZylt0wrHxoYGRwjNNSsn5qYmJuisWAuIBsYGBshL/+voZuYmJugruAxIhsYGBof"
+    "LFS0o5yZmJqfq8w3JRwZGBoeKka6pp2ZmJmeqMA9Jx0ZGBkdJz3AqJ6ZmJmdprpGKh4aGBkcJTfMq5+amJmco7RULB8aGBgbIjHg"
+    "rqCbmJiboa//LyEbGBgbIC5gsaKbmJian6zUNCMcGRgaHytMt6WcmZianqrGOiYdGRgZHihAvaedmZiZnae9QCgeGRgZHSY6xqqe"
+    "mpiZnKW3TCsfGhgZHCM01KyfmpiYm6KxYC4gGxgYGyEv/6+hm5iYm6Cu4DEiGxgYGh8sVLSjnJmYmp+rzDclHBkYGh4qRrqmnZmY"
+    "mZ6owD0nHRkYGR0nPcConpmYmZ2mukYqHhoYGRwlN8yrn5qYmZyjtFQsHxoYGBsiMeCuoJuYmJuhr/8vIRsYGBsgLmCxopuYmJqf"
+    "rNQ0IxwZGBofK0y3pZyZmJqeqsY6Jh0ZGBkeKEC9p52ZmJmdp71AKB4ZGBkdJjrGqp6amJmcpbdMKx8aGBkcIzTUrJ+amJiborFg"
+    "LiAbGBgbIS//r6GbmJiboK7gMSIbGBgaHyxUtKOcmZian6vMNyUcGRgaHipGuqadmZiZnqjAPScdGRgZHSc9wKiemZiZnaa6Rioe"
+    "GhgZHCU3zKufmpiZnKO0VCwfGhgYGyIx4K6gm5iYm6Gv/y8hGxgYGyAuYLGim5iYmp+s1DQjHBkYGh8rTLelnJmYmp6qxjomHRkY"
+    "GR4oQL2nnZmYmZ2nvUAoHhkYGR0mOsaqnpqYmZylt0wrHxoYGRwjNNSsn5qYmJuisWAuIBsYGBshL/+voZuYmJugruAxIhsYGBof"
+    "LFS0o5yZmJqfq8w3JRwZGBoeKka6pp2ZmJmeqMA9Jx0ZGBkdJz3AqJ6ZmJmdprpGKh4aGBkcJTfMq5+amJmco7RULB8aGBgbIjHg"
+    "rqCbmJiboa//LyEbGBgbIC5gsaKbmJian6zUNCMcGRgaHytMt6WcmZianqrGOiYdGRgZHihAvaedmZiZnae9QCgeGRgZHSY6xqqe"
+    "mpiZnKW3TCsfGhgZHCM01KyfmpiYm6KxYC4gGxgYGyEv"
+)
+# 1s solid-red 64x64 MP4 (video/mp4), the smallest ffmpeg-generated valid clip.
+RED_MP4_BASE64 = (
+    "AAAAHGZ0eXBpc29tAAACAGlzb21pc28ybXA0MQAAAAhmcmVlAAAAXW1kYXQAAAGzABAHAAABthYLGFptgugccbbfxtt/G237AACh"
+    "UYWm2C6Bxxtt/G238bbfvwAAwVGFptgugccbbfxtt/G2378AAOFRhabYLoHHG238bbfxtt+/AAADQW1vb3YAAABsbXZoZAAAAAAA"
+    "AAAAAAAAAAAAA+gAAAPoAAEAAAEAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAIAAAJrdHJhawAAAFx0a2hkAAAAAwAAAAAAAAAAAAAAAQAAAAAAAAPoAAAAAAAAAAAAAAAAAAAA"
+    "AAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAQAAAAABAAAAAQAAAAAAAJGVkdHMAAAAcZWxzdAAAAAAAAAABAAAD6AAA"
+    "AAAAAQAAAAAB421kaWEAAAAgbWRoZAAAAAAAAAAAAAAAAAAAQAAAAEAAVcQAAAAAAC1oZGxyAAAAAAAAAAB2aWRlAAAAAAAAAAAA"
+    "AAAAVmlkZW9IYW5kbGVyAAAAAY5taW5mAAAAFHZtaGQAAAABAAAAAAAAAAAAAAAkZGluZgAAABxkcmVmAAAAAAAAAAEAAAAMdXJs"
+    "IAAAAAEAAAFOc3RibAAAAOpzdHNkAAAAAAAAAAEAAADabXA0dgAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAABAAEAASAAAAEgAAAAA"
+    "AAAAARNMYXZjNjIuMjguMTAyIG1wZWc0AAAAAAAAAAAAAAAAABj//wAAAGBlc2RzAAAAAAOAgIBPAAEABICAgEEgEQAAAAADDUAA"
+    "AAKoBYCAgC8AAAGwAQAAAbWJEwAAAQAAAAEgAMSNiAANAgQIFEMAAAGyTGF2YzYyLjI4LjEwMgaAgIABAgAAABBwYXNwAAAAAQAA"
+    "AAEAAAAUYnRydAAAAAAAAw1AAAACqAAAABhzdHRzAAAAAAAAAAEAAAABAABAAAAAABxzdHNjAAAAAAAAAAEAAAABAAAAAQAAAAEA"
+    "AAAUc3RzegAAAAAAAABVAAAAAQAAABRzdGNvAAAAAAAAAAEAAAAsAAAAYnVkdGEAAABabWV0YQAAAAAAAAAhaGRscgAAAAAAAAAA"
+    "bWRpcmFwcGwAAAAAAAAAAAAAAAAtaWxzdAAAACWpdG9vAAAAHWRhdGEAAAABAAAAAExhdmY2Mi4xMi4xMDI="
+)
+# One-page application/pdf whose only rendered text is CALIBRATION-BEACON-7734.
+BEACON_PDF_BASE64 = (
+    "JVBERi0xLjQKMSAwIG9iaiA8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4gZW5kb2JqCjIgMCBvYmogPDwgL1R5cGUg"
+    "L1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4gZW5kb2JqCjMgMCBvYmogPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAg"
+    "UiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIg"
+    "Pj4gPj4gPj4gZW5kb2JqCjQgMCBvYmogPDwgL0xlbmd0aCA1NCA+PiBzdHJlYW0KQlQgL0YxIDI0IFRmIDcyIDcyMCBUZCAoQ0FM"
+    "SUJSQVRJT04tQkVBQ09OLTc3MzQpIFRqIEVUCmVuZHN0cmVhbSBlbmRvYmoKNSAwIG9iaiA8PCAvVHlwZSAvRm9udCAvU3VidHlw"
+    "ZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4gZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAw"
+    "MDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAow"
+    "MDAwMDAwMzQ1IDAwMDAwIG4gCnRyYWlsZXIgPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDE1CiUlRU9G"
+)
 # Publication of explicit thinking levels requires one live-admitted paid SSE generation per
 # level. `minimal` is not in the list: the official model rules reject it, and omission means
 # `medium`, so it can never become an advertised effort for this model.
@@ -81,6 +219,14 @@ GEMINI_37_CAPABILITY_KINDS = (
 # immutable event's exact webSearchQueries count is the billed truth, and any turn that would
 # exceed this reserve violates the preflight bound and stops the run fail closed.
 GEMINI_37_SEARCH_QUERY_RESERVE = 10
+# Media admission legs for gemini-3.7-flash: official inputs are Text/Image/Video/Audio/PDF,
+# and each admission turn must prove the content was actually perceived, not just accepted.
+GEMINI_37_MEDIA_KINDS = ("audio-input", "video-input", "pdf-input")
+GEMINI_37_MEDIA_EXPECTED_TEXT = {
+    "audio-input": ("TONE",),
+    "video-input": ("red", "RED", "Red"),
+    "pdf-input": ("CALIBRATION-BEACON-7734",),
+}
 IMAGE_OUTPUT_TOKEN_CEILINGS = {"1K": 1_120, "2K": 1_680, "4K": 2_520}
 EVENT_TOKEN_FIELDS = (
     "input_tokens",
@@ -1098,6 +1244,48 @@ def body_for_gemini37_capability(leg: Leg, run_id: str) -> dict[str, Any]:
             "generationConfig": {"maxOutputTokens": leg.max_output_tokens},
             "tools": [{"googleSearch": {}}],
         }
+    if short == "audio-input":
+        return {
+            "contents": [{
+                "role": "user",
+                "parts": [
+                    {"inlineData": {"mimeType": "audio/wav", "data": TONE_WAV_BASE64}},
+                    {"text": (
+                        "This clip is a pure tone. Reply with exactly the word TONE "
+                        "if you heard a tone."
+                    )},
+                ],
+            }],
+            "generationConfig": {"maxOutputTokens": leg.max_output_tokens},
+        }
+    if short == "video-input":
+        return {
+            "contents": [{
+                "role": "user",
+                "parts": [
+                    {"inlineData": {"mimeType": "video/mp4", "data": RED_MP4_BASE64}},
+                    {"text": (
+                        "This video is a solid color. Reply with exactly the name of "
+                        "that color."
+                    )},
+                ],
+            }],
+            "generationConfig": {"maxOutputTokens": leg.max_output_tokens},
+        }
+    if short == "pdf-input":
+        return {
+            "contents": [{
+                "role": "user",
+                "parts": [
+                    {"inlineData": {"mimeType": "application/pdf", "data": BEACON_PDF_BASE64}},
+                    {"text": (
+                        "Reply with exactly the beacon string shown in this document, "
+                        "in the form CALIBRATION-BEACON-NNNN."
+                    )},
+                ],
+            }],
+            "generationConfig": {"maxOutputTokens": leg.max_output_tokens},
+        }
     raise CalibrationError(f"unknown Gemini 3.7 capability leg: {leg.name}")
 
 
@@ -1577,6 +1765,16 @@ def verify_generation_response(
             return evidence, "structured-output admission JSON did not match the schema contract"
         if event["output_tokens"] <= event["thinking_output_tokens"]:
             return evidence, "immutable output has no billed non-thinking candidate tokens"
+    elif leg.name.rsplit(":", 1)[-1] in GEMINI_37_MEDIA_EXPECTED_TEXT:
+        expected = GEMINI_37_MEDIA_EXPECTED_TEXT[leg.name.rsplit(":", 1)[-1]]
+        joined = "".join(visible_text_parts)
+        if not any(marker in joined for marker in expected):
+            return evidence, (
+                f"media admission answer {joined[:80]!r} did not contain the expected "
+                f"perception marker {expected!r}"
+            )
+        if event["output_tokens"] <= event["thinking_output_tokens"]:
+            return evidence, "immutable output has no billed non-thinking candidate tokens"
     else:
         if evidence["unexpected_plain_parts"]:
             return evidence, "plain-text generation returned an unrequested non-text part"
@@ -1868,7 +2066,7 @@ class Runner:
                     or leg.model != GEMINI_37_ADMISSION_MODEL
                     or leg.name not in {
                         f"admission:{GEMINI_37_ADMISSION_MODEL}:{name}"
-                        for name in (*GEMINI_37_CAPABILITY_KINDS, "search")
+                        for name in (*GEMINI_37_CAPABILITY_KINDS, "search", *GEMINI_37_MEDIA_KINDS)
                     }
                 ):
                     raise CalibrationError(
@@ -1994,11 +2192,14 @@ class Runner:
         if is_admission_search:
             upper += GEMINI_37_SEARCH_QUERY_RESERVE * rates.search
         if self.admission is not None:
-            capability_legs = (
-                list(GEMINI_37_CAPABILITY_KINDS) if self.admission.capability_matrix else []
-            )
             if leg.name == f"admission:{GEMINI_37_ADMISSION_MODEL}:search":
                 capability_legs = ["search"]
+            elif leg.name.rsplit(":", 1)[-1] in GEMINI_37_MEDIA_KINDS:
+                capability_legs = list(GEMINI_37_MEDIA_KINDS)
+            else:
+                capability_legs = (
+                    list(GEMINI_37_CAPABILITY_KINDS) if self.admission.capability_matrix else []
+                )
             planned = (
                 len(capability_legs)
                 if self.admission.capability_matrix
@@ -2008,8 +2209,11 @@ class Runner:
             # capability leg carries 220k counted tokens plus the hidden provider prompt,
             # which strictly dominates every other leg's ceiling. The single search leg
             # adds the explicit query reserve on top of its own token ceiling.
+            media_mode = set(capability_legs) == set(GEMINI_37_MEDIA_KINDS)
             worst_leg = (
-                Leg("", GEMINI_37_ADMISSION_MODEL, "long", max_output_tokens=512)
+                Leg("", GEMINI_37_ADMISSION_MODEL, "fresh", max_output_tokens=1024)
+                if media_mode
+                else Leg("", GEMINI_37_ADMISSION_MODEL, "long", max_output_tokens=512)
                 if self.admission.capability_matrix and "search" not in capability_legs
                 else Leg(
                     "",
@@ -2273,6 +2477,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--gemini-37-thinking-levels", action="store_true")
     parser.add_argument("--gemini-37-capabilities", action="store_true")
     parser.add_argument("--gemini-37-search", action="store_true")
+    parser.add_argument("--gemini-37-media", action="store_true")
     parser.add_argument("--admission-profile")
     parser.add_argument("--implementation-sha")
     parser.add_argument("--production-capacity-over-ssh", action="store_true")
@@ -2298,6 +2503,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         bool(args.gemini_37_thinking_levels),
         bool(args.gemini_37_capabilities),
         bool(args.gemini_37_search),
+        bool(args.gemini_37_media),
     ))
     if admission_mode_count:
         if admission_mode_count > 1:
@@ -2328,6 +2534,30 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
+    if args.gemini_37_media:
+        return {
+            "schema": "gemini-3.7-media-plan/v1",
+            "mode": "dry-run",
+            "paid_requests_sent": 0,
+            "planned_count_requests": len(GEMINI_37_MEDIA_KINDS),
+            "planned_paid_generation_requests": len(GEMINI_37_MEDIA_KINDS),
+            "budget_nanousd_total": str(budget_nano),
+            "model": GEMINI_37_ADMISSION_MODEL,
+            "profile_id": args.admission_profile,
+            "implementation_sha": args.implementation_sha,
+            "capabilities": list(GEMINI_37_MEDIA_KINDS),
+            "guards": [
+                "one-free-countTokens-per-paid-generation",
+                "one-paid-generation-attempt-per-modality",
+                "no-resume-retry-reconnect-or-replay",
+                "exact-profile-and-uuidv4-attribution",
+                "exact-current-tariff-ceiling-times-generation-count",
+                "pre-deadline-count-and-generation-dispatch-attestation",
+                "raw-modelVersion-terminal-usage-and-response-event-parity",
+                "content-perception-marker-required-per-modality",
+                "per-modality-coverage-misses-recorded-not-fatal",
+            ],
+        }
     if args.gemini_37_search:
         return {
             "schema": "gemini-3.7-search-plan/v1",
@@ -2496,7 +2726,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     profiles = (
         [args.admission_profile]
-        if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search
+        if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search or args.gemini_37_media
         else (resume.profiles if resume else healthy_profiles)
     )
     if not profiles:
@@ -2509,7 +2739,7 @@ def main(argv: list[str] | None = None) -> int:
     rates = rate_catalog(baseline)
     models = (
         [GEMINI_37_ADMISSION_MODEL]
-        if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search
+        if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search or args.gemini_37_media
         else (resume.models if resume else (args.models or sorted(rates)))
     )
     unknown = sorted(set(models) - set(rates))
@@ -2556,6 +2786,12 @@ def main(argv: list[str] | None = None) -> int:
             capability_matrix=True,
         )
     elif args.gemini_37_search:
+        admission = Gemini37Admission(
+            profile_id=args.admission_profile,
+            implementation_sha=args.implementation_sha,
+            capability_matrix=True,
+        )
+    elif args.gemini_37_media:
         admission = Gemini37Admission(
             profile_id=args.admission_profile,
             implementation_sha=args.implementation_sha,
@@ -2656,6 +2892,16 @@ def main(argv: list[str] | None = None) -> int:
             "search",
             max_output_tokens=512,
         )]
+    elif args.gemini_37_media:
+        legs = [
+            Leg(
+                f"admission:{GEMINI_37_ADMISSION_MODEL}:{name}",
+                GEMINI_37_ADMISSION_MODEL,
+                "fresh",
+                max_output_tokens=1024,
+            )
+            for name in GEMINI_37_MEDIA_KINDS
+        ]
     else:
         legs = build_coverage_legs(models, run_id, rates)
     expected = {(profile, leg.name): leg for leg in legs for profile in profiles}
@@ -2690,7 +2936,11 @@ def main(argv: list[str] | None = None) -> int:
                         "blocking": True,
                     })
                     completed.add(key)
-                    if args.gemini_37_thinking_levels or args.gemini_37_capabilities:
+                    if (
+                        args.gemini_37_thinking_levels
+                        or args.gemini_37_capabilities
+                        or args.gemini_37_media
+                    ):
                         # The level/capability matrices exist to map real per-control wire
                         # behavior. A failed control (e.g. MAX_TOKENS with thinking-only
                         # output) is evidence about that control, not a reason to skip the
@@ -2801,7 +3051,7 @@ def main(argv: list[str] | None = None) -> int:
         "model_profitability": model_profitability(runner.records),
         "final_capacity": final,
     }
-    if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search:
+    if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search or args.gemini_37_media:
         if args.gemini_37_capabilities:
             generations = len(GEMINI_37_CAPABILITY_KINDS)
         else:

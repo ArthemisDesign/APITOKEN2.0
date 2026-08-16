@@ -389,6 +389,74 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         )
         self.assertGreater(run_live.GEMINI_37_SEARCH_QUERY_RESERVE, 0)
 
+    def test_gemini_37_media_legs_carry_real_bounded_payloads(self):
+        bodies = {
+            name: run_live.body_for_gemini37_capability(
+                run_live.Leg(
+                    f"admission:gemini-3.7-flash:{name}",
+                    "gemini-3.7-flash",
+                    "fresh",
+                    max_output_tokens=1024,
+                ),
+                "run",
+            )
+            for name in run_live.GEMINI_37_MEDIA_KINDS
+        }
+        self.assertEqual(
+            bodies["audio-input"]["contents"][0]["parts"][0]["inlineData"]["mimeType"],
+            "audio/wav",
+        )
+        self.assertEqual(
+            bodies["video-input"]["contents"][0]["parts"][0]["inlineData"]["mimeType"],
+            "video/mp4",
+        )
+        self.assertEqual(
+            bodies["pdf-input"]["contents"][0]["parts"][0]["inlineData"]["mimeType"],
+            "application/pdf",
+        )
+        # Every admission leg must demand a perception marker, so a silently dropped
+        # attachment cannot pass as support.
+        for name in run_live.GEMINI_37_MEDIA_KINDS:
+            self.assertIn(name, run_live.GEMINI_37_MEDIA_EXPECTED_TEXT)
+
+    def test_gemini_37_media_response_requires_the_perception_marker(self):
+        model = run_live.GEMINI_37_ADMISSION_MODEL
+        leg = run_live.Leg(
+            f"admission:{model}:pdf-input",
+            model,
+            "fresh",
+            max_output_tokens=1024,
+        )
+        response = run_live.GenerationResponse(
+            frames=({
+                "modelVersion": "gemini-3.7-flash-tiered",
+                "candidates": [{
+                    "content": {"parts": [{"text": "CALIBRATION-BEACON-7734"}]},
+                    "finishReason": "STOP",
+                }],
+                "usageMetadata": {"promptTokenCount": 300, "candidatesTokenCount": 9},
+            },),
+            stream=False,
+        )
+        immutable = event(model=model)
+        immutable.update({"input_tokens": 300, "output_tokens": 9})
+        immutable = run_live.recent_turn_events(capacity([immutable]))["req-1"]
+        _evidence, error = run_live.verify_generation_response(leg, response, immutable)
+        self.assertIsNone(error)
+
+        wrong = dataclasses.replace(
+            response,
+            frames=({
+                **response.frames[0],
+                "candidates": [{
+                    "content": {"parts": [{"text": "I cannot read documents."}]},
+                    "finishReason": "STOP",
+                }],
+            },),
+        )
+        _evidence, error = run_live.verify_generation_response(leg, wrong, immutable)
+        self.assertIn("perception marker", error)
+
     def test_gemini_37_brief_sse_accepts_a_single_visible_frame(self):
         model = run_live.GEMINI_37_ADMISSION_MODEL
         leg = run_live.Leg(
