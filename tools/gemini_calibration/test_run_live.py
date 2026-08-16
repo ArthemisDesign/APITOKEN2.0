@@ -189,6 +189,8 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             "0.788352",
         ])
         plan = run_live.dry_run_plan(args, run_live.usd_to_nano(args.budget_usd))
+        self.assertEqual(args.http_timeout, run_live.DEFAULT_HTTP_TIMEOUT_SECONDS)
+        self.assertEqual(args.http_timeout, 600)
         self.assertEqual(plan["schema"], "gemini-3.7-admission-plan/v1")
         self.assertEqual(plan["planned_count_requests"], 1)
         self.assertEqual(plan["planned_paid_generation_requests"], 1)

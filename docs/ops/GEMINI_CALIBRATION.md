@@ -15,8 +15,10 @@ with tiered pricing, a dedicated payload must cross the published long-context t
 actual `countTokens`; for the image model, 1K, 2K, and 4K are executed separately with a
 4,096-token text-output ceiling. The current daily backend can consume more than the generic
 128-token default before returning the image; a smaller cap can settle a text-only `MAX_TOKENS`
-turn and is not a valid availability probe. The free `countTokens` is the preflight of every paid
-request. HTTP 400/403/404 and a successful turn
+turn and is not a valid availability probe. A verified 1K image turn also completed after 256.8
+seconds, so the runner's default HTTP timeout is 600 seconds; shortening it below the observed
+latency can leave a paid image request transport-ambiguous. The free `countTokens` is the preflight
+of every paid request. HTTP 400/403/404 and a successful turn
 without the expected separately metered token class are recorded in
 `unavailable_capabilities` rather than counted as zero spend. `toolUsePromptTokenCount` is
 only an optional subset of regular input: a missing subset is acceptable when the forced

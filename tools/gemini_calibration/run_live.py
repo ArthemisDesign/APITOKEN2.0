@@ -33,6 +33,7 @@ SAFE_READ_ATTEMPTS = 3
 SAFE_READ_RETRY_DELAY_SECONDS = 2.0
 DEFAULT_EVIDENCE_TIMEOUT_SECONDS = 180
 DEFAULT_PROFILE_DELAY_SECONDS = 16.0
+DEFAULT_HTTP_TIMEOUT_SECONDS = 600
 DEFAULT_PRODUCTION_SSH_TARGET = "apitokensale"
 DEFAULT_PRODUCTION_CAPACITY_PORT = 8794
 DEFAULT_PRODUCTION_API_PORT = 8794
@@ -2589,7 +2590,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--models", nargs="*")
     parser.add_argument("--evidence-timeout", type=int, default=DEFAULT_EVIDENCE_TIMEOUT_SECONDS)
     parser.add_argument("--profile-delay", type=float, default=DEFAULT_PROFILE_DELAY_SECONDS)
-    parser.add_argument("--http-timeout", type=int, default=240)
+    parser.add_argument(
+        "--http-timeout",
+        type=int,
+        default=DEFAULT_HTTP_TIMEOUT_SECONDS,
+        help=(
+            "per-request transport timeout; the daily image backend has produced verified "
+            "successful turns after more than 240 seconds"
+        ),
+    )
     parser.add_argument("--report", default="/tmp/gemini-calibration-report.json")
     parser.add_argument("--resume-report")
     parser.add_argument("--gemini-37-admission", action="store_true")

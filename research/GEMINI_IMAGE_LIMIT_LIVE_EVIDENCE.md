@@ -3,22 +3,56 @@
 > **Route correction (2026-08-16):** the 429 fleet result below measured the retained gateway's
 > then-pinned `cloudcode-pa.googleapis.com` image origin. Current first-party Antigravity CLI 1.1.10
 > was subsequently observed using `daily-cloudcode-pa.googleapis.com` for the same exact
-> `gemini-3.1-flash-image` model and succeeding after an earlier capacity refusal. The endpoint drift
-> invalidates any fleet-wide statement that the subscriptions themselves could not generate images;
-> this report remains evidence about the old route/error window only.
+> `gemini-3.1-flash-image` model. Production now uses that daily origin and has generated a verified
+> 1K image on every routable subscription. The old result is evidence about its route/error window,
+> not evidence that the subscriptions lack image capability.
 
 ## Conclusion
 
-Production evidence strongly supports an image-specific shared Google limit or backend wall that is
-independent of the ordinary text-generation path. It does **not** establish a separate per-profile
-catalog quota: Google advertised the same positive catalog fraction for image and text models, while
-image generation alone returned `RESOURCE_EXHAUSTED` across profiles.
+The corrected production route generated a real image on **7 of 7** routable subscriptions: six
+Google AI Pro profiles and one Google AI Ultra profile. This disproves the earlier fleet-wide
+interpretation that none of the subscriptions could generate images. The strongest causal evidence
+is the corrected origin followed by fleet success, but endpoint alone is not proven to be the sole
+cause: the local AGY account differed from the production roster and Google capacity also changed
+over time.
 
-The safe evidence cannot distinguish a hidden global RPM/concurrency/policy limit from shared image
-backend capacity. Therefore the operationally correct classification is **image-specific shared
-rate/backend wall**, not “each subscription exhausted its image quota.”
+The evidence does **not** establish a separate per-profile image quota. Google continued to project
+the same positive catalog fraction for image and text model rows. The old origin produced an
+image-specific shared rate/backend wall while text worked; the corrected origin admitted image
+turns. The safe conclusion is therefore a route/backend-specific admission incident, not exhausted
+independent image allowances and not a durable undocumented numeric RPM limit.
 
-## Historical production evidence
+## Corrected-route production evidence
+
+The image origin fix was deployed in GREEN master `b782c04b`. Bounded exact-profile probes then used
+one free `countTokens` preflight per paid generation, no profile rotation, UUIDv4 immutable-event
+attribution, terminal usage parity, and a resolved post-turn provider quota snapshot.
+
+- All **7/7** routable profiles returned HTTP 200 with one real `inlineData` image part and exactly
+  **1,120 image output tokens** for a 1K request.
+- Actual cost per successful image was **$0.0675425–$0.0679780**; total for the seven successful
+  images was **$0.4745545**.
+- The first pass proved four profiles. Two requests exceeded the original 240-second client timeout
+  without a terminal event or image billing, and one returned HTTP 503 without image billing.
+- At the person's explicit request, only those three profiles were checked again. All succeeded;
+  the slowest completed in **256.8 seconds**, proving that 240 seconds was not a viable image probe
+  timeout. The runner now uses a 600-second transport default without adding retries.
+- Cheap text controls on the same three profiles had already returned terminal responses with
+  authoritative event parity and cost **$0.0002727** in total, isolating the initial failures from
+  general subscription health.
+- The initial 128-output-token route probe settled a text-only `MAX_TOKENS` response without an
+  image and cost **$0.0003960**. It is a harness-ceiling artifact, not an image failure. Image legs
+  now reserve 4,096 output tokens.
+- Total spend after the route correction, including the seven images, three text controls, and the
+  deliberately retained text-only ceiling artifact, was **$0.4752232**. Free `countTokens` calls and
+  the HTTP 503/transport-ambiguous attempts produced no image billing.
+
+Every claimed success is tied to its exact calibration UUID and matching immutable usage. Four of
+seven successful probes observed no other same-profile request id in their evidence window; three
+overlapped unrelated production activity, so this result proves exact turn attribution but does not
+claim that the whole fleet was idle.
+
+## Historical old-route production evidence
 
 Read-only analysis covered the production Gemini journal from 2026-07-25 through 2026-08-16 and the
 protected sanitized capacity projection. No raw provider bodies, customer content, credential,
@@ -62,9 +96,9 @@ snapshot, and no foreign same-profile turn. Its actual official-API equivalent w
 ($0.0000965). The Ultra text turn settled 51,700 nanoUSD but hit its deliberately small 128-token
 output cap, so it is retained as paid evidence but not counted as full response coverage.
 
-The two current image refusals additionally logged fresh positive catalog evidence with the same
-image-only safe error shape as the historical incidents. No successful image was billed during this
-experiment.
+Those two old-route live refusals additionally logged fresh positive catalog evidence with the same
+image-only safe error shape as the historical incidents. No successful image was billed during that
+old-route experiment; corrected-route successes are recorded separately above.
 
 ## What the catalog means
 
