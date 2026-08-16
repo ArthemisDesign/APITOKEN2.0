@@ -68,6 +68,14 @@ carry an allowlisted table name. Existing writers remain unchanged. The LISTEN/S
 the central admin client must ship only after this migration SHA is green in production; until then
 the triggers are harmless because PostgreSQL discards notifications when nobody is listening.
 
+Sales migration `packages/sales-db/migrations/0021_external_referral_aliases.sql` creates an empty
+mapping from a trusted external sales tool's opaque reference to a public referral alias and one
+existing partner. It neither issues an alias nor attributes a user by itself. Existing Sales and
+Commerce versions ignore the table; the alias producer and resolver must ship only after this
+migration SHA is green in `deploy/migration` and `deploy/watchdog`. The mapping is immutable and
+does not reuse `partner_discount_links`, so a CRM link can never acquire legacy price-marker
+semantics.
+
 ## Historical pricing release v2 migrations (non-executable)
 
 The entries through migration 0044 below describe what each immutable migration did when it was

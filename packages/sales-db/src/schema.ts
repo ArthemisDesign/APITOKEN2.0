@@ -203,6 +203,27 @@ export const referredUsers = pgTable("referred_users", {
   index("referred_users_partner_idx").on(table.partnerId, table.attributedAt),
 ]);
 
+/**
+ * Opaque aliases issued to trusted external sales tools. The external reference is meaningful
+ * only to its source; the public alias is what the customer carries through `?ref=`. Resolving an
+ * alias keeps the ordinary partner/commission path unchanged and never grants a price marker.
+ */
+export const externalReferralAliases = pgTable("external_referral_aliases", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  source: text("source").notNull(),
+  externalRef: text("external_ref").notNull(),
+  aliasCode: text("alias_code").notNull(),
+  partnerId: uuid("partner_id").notNull().references(() => partners.id, { onDelete: "restrict" }),
+  createdAt,
+}, (table) => [
+  uniqueIndex("external_referral_aliases_source_ref_uidx").on(table.source, table.externalRef),
+  uniqueIndex("external_referral_aliases_code_uidx").on(table.aliasCode),
+  index("external_referral_aliases_partner_idx").on(table.partnerId, table.createdAt),
+  check("external_referral_aliases_source_check", sql`${table.source} ~ '^[a-z][a-z0-9_-]{1,31}$'`),
+  check("external_referral_aliases_external_ref_check", sql`length(${table.externalRef}) BETWEEN 1 AND 128`),
+  check("external_referral_aliases_code_check", sql`${table.aliasCode} ~ '^[a-z0-9_-]{3,32}$'`),
+]);
+
 // Legacy one-time attribution links. The first matching user consumes the code and the stored bps
 // is retained as audit/display metadata only; it never changes Commerce/engine pricing.
 export const partnerDiscountLinks = pgTable("partner_discount_links", {

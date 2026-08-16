@@ -148,6 +148,13 @@
       "when": 1786527001000,
       "tag": "0020_admin_change_notify",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1786900000000,
+      "tag": "0021_external_referral_aliases",
+      "breakpoints": true
     }
   ]
 }
