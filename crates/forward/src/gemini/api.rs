@@ -1340,7 +1340,16 @@ fn validate_image_generation_request(body: &Value, model: &GeminiModel) -> Resul
         }
     }
 
-    let inline_images = inline_image_data(body).collect::<Vec<_>>();
+    let inline_images = inline_image_data(body)
+        .filter(|inline| {
+            // application/pdf is document input, not an image reference: it bypasses the
+            // image MIME allowlist and the 14-reference cap.
+            inline
+                .get("mimeType")
+                .and_then(Value::as_str)
+                .is_none_or(|mime| !mime.eq_ignore_ascii_case("application/pdf"))
+        })
+        .collect::<Vec<_>>();
     if inline_images.len() > 14 {
         return Err(ApiError::invalid(
             "Gemini 3.1 Flash Image accepts at most 14 reference images.",
