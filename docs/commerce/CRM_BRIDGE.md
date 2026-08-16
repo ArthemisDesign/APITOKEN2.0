@@ -105,8 +105,12 @@ Each registration exposes the minimum useful snapshot:
 
 `paidTopupNano` is gross verified payment funding, including a payment that later became refunded or
 disputed. `refundedNano` reports those terminal returns separately. `usageSpentNano` is full billed
-usage. `customerFundedSpentNano` uses immutable paid-funding evidence, not a top-up/balance guess.
-The live balance and default multiplier come from one batch `EngineClient.getAccounts` call.
+usage. `customerFundedSpentNano` sums the live scalar
+`pricing_usage_events.real_funded_nano`, not a top-up/balance guess. CRM referral aliases were added
+after the scalar writer became authoritative, so registrations reachable through this bridge are a
+post-scalar cohort. The bridge never reads retired pricing-attribution incident evidence to recover
+arbitrary pre-cutover users. The live balance and default multiplier come from one batch
+`EngineClient.getAccounts` call.
 
 If the engine is unavailable, `balanceNano` is `null` and `liveState=unavailable`; the API never
 fabricates zero. Saved money evidence remains available. If Sales alias issuance/replay is

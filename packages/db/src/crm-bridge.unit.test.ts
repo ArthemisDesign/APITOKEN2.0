@@ -26,7 +26,8 @@ describe("CRM referral registration projection", () => {
     expect(query.mock.calls[0]![1]).toEqual(["r_opaquealias000000000000"]);
     expect(query.mock.calls[0]![0]).toContain("WHERE attribution.code = $1");
     expect(query.mock.calls[0]![0]).toContain("payment.status IN ('paid', 'refunded', 'disputed')");
-    expect(query.mock.calls[0]![0]).toContain("COALESCE(evidence.paid_funded_nano, usage.real_funded_nano)");
+    expect(query.mock.calls[0]![0]).toContain("COALESCE(sum(usage.real_funded_nano), 0)");
+    expect(query.mock.calls[0]![0]).not.toContain("pricing_usage_attributions");
     expect(rows[0]).toMatchObject({
       candidateId: "10000000-0000-4000-8000-000000000001",
       paidTopupNano: 9_007_199_254_740_993n,

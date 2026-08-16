@@ -150,11 +150,13 @@ bonus, promo, admin credit). That split has exactly one writer:
 - `pricing_usage_events.real_funded_nano` — the part of that charge the customer paid for. Free
   balance is consumed first; the remainder is real.
 
-Two things read it, and nothing else may reimplement the split:
+Three surfaces read it, and nothing else may reimplement the split:
 
 - **Partner commission.** The sales feed emits `real_funded_nano` as the commission basis, so free
   credit never becomes commission.
 - **Refund eligibility.** A top-up is refundable only while no real money has been spent since it.
+- **CRM referral profiles.** The scoped bridge sums `real_funded_nano` only for registrations reached
+  through post-scalar CRM aliases; it never falls back to retired pricing-attribution evidence.
 
 `admin-credit:*` is deliberately free/commission-ineligible. The admin audit reason “manual action”
 does not prove an external payment, and an irreversible partner payout must not be created from an

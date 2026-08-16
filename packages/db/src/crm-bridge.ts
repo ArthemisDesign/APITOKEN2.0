@@ -68,12 +68,9 @@ export async function listCrmReferralRegistrations(
     ), usage_totals AS (
       SELECT usage.user_id,
         COALESCE(sum(usage.amount_nano), 0) AS usage_spent_nano,
-        COALESCE(sum(COALESCE(evidence.paid_funded_nano, usage.real_funded_nano)), 0)
-          AS customer_funded_spent_nano
+        COALESCE(sum(usage.real_funded_nano), 0) AS customer_funded_spent_nano
       FROM pricing_usage_events usage
       JOIN attributed ON attributed.user_id = usage.user_id
-      LEFT JOIN pricing_usage_attributions evidence
-        ON evidence.pricing_usage_event_id = usage.id
       GROUP BY usage.user_id
     ), provider_overrides AS (
       SELECT discount.user_id,
