@@ -293,6 +293,13 @@ pub struct GeminiConfig {
     /// a momentary throttle into a minute-long model outage across the fleet. Kept short on
     /// purpose: it just spaces concurrent retries without parking the model.
     pub rate_limit_rpm_cool_secs: i64,
+    /// Cap applied to an authoritative retry hint when the 429 carries no real quota-exhaustion
+    /// reason. Google sometimes attaches a long `RetryInfo` to a transient profile stall (observed
+    /// on Antigravity image generation with a near-full catalogue) even though the account stays
+    /// usable, so honouring such hints verbatim parks a healthy profile for many minutes. Only a
+    /// genuine `QUOTA_EXHAUSTED` reason is trusted with the full hint; every other hinted 429 is
+    /// cooled for at most this window and re-probed.
+    pub rate_limit_unknown_cool_secs: i64,
     /// Soft reserve used only while another profile has healthier quota headroom. The service floor
     /// is preserved: if every eligible profile is below its reserve, routing fails open to them.
     pub quota_reserve_fraction: f64,

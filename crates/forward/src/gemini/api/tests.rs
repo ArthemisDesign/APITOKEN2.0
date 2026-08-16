@@ -596,6 +596,7 @@ fn gateway_fixture_with_models_calibration_and_node(
             model_failure_max_cool_secs: 900,
             default_rate_limit_cool_secs: 60,
             rate_limit_rpm_cool_secs: 2,
+            rate_limit_unknown_cool_secs: 60,
             quota_reserve_fraction: 0.05,
             quota_reserve_jitter: 0.01,
             health_probe_interval_secs: 60,
@@ -5261,7 +5262,10 @@ fn audio_input_fails_closed_until_usage_reports_authoritative_modality_tokens() 
 fn retry_info_and_headers_are_parsed_without_exposing_body() {
     let headers = HeaderMap::new();
     let body = br#"{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"2.25s"}]}}"#;
-    assert_eq!(retry_after(&headers, body, 60), 3);
+    let hint = rate_limit::retry_after_header_delay(Some(&headers)).or_else(|| {
+        serde_json::from_slice::<Value>(body).ok().and_then(|value| rate_limit::retry_info_delay(&value))
+    });
+    assert_eq!(hint, Some(3));
 }
 
 #[test]
@@ -5485,4 +5489,83 @@ async fn files_api_reference_is_refused_locally_with_a_machine_reason() {
     }
     // Never dispatched: the pool must not spend a profile on an input we already know is refused.
     assert!(server.state.seen().is_empty());
+}
+
+fn cool_test_config() -> super::super::config::GeminiConfig {
+    super::super::config::GeminiConfig {
+        enabled: true,
+        upstream: "http://127.0.0.1".to_string(),
+        profiles_file: String::new(),
+        credential_layout: super::super::config::GeminiCredentialLayout::SealedRoster,
+        credential_keys: CredentialKeyring::parse("00:0000000000000000000000000000000000000000000000000000000000000000").unwrap(),
+        models: Vec::new(),
+        connect_timeout_secs: 5,
+        read_timeout_secs: 5,
+        generation_idle_timeout_secs: 5,
+        max_transport_retries: 1,
+        auth_quarantine_secs: 900,
+        auth_blocked_cool_secs: 15,
+        min_probe_interval_secs: 15,
+        transport_cool_secs: 5,
+        model_failure_cool_secs: 15,
+        model_failure_max_cool_secs: 900,
+        default_rate_limit_cool_secs: 60,
+        rate_limit_rpm_cool_secs: 2,
+        rate_limit_unknown_cool_secs: 60,
+        quota_reserve_fraction: 0.05,
+        quota_reserve_jitter: 0.01,
+        health_probe_interval_secs: 60,
+        reserve_overhead_tokens: 10,
+        antigravity_version: gemini_credential::ANTIGRAVITY_VERSION.to_string(),
+        node_binary: "/usr/bin/node".to_string(),
+        node_version: "v24.18.0".to_string(),
+        node_sha256: String::new(),
+    }
+}
+
+fn reason_diagnostic(reason: &str) -> RateLimitDiagnostic {
+    let value = serde_json::json!({
+        "error": {
+            "code": 429,
+            "status": "RESOURCE_EXHAUSTED",
+            "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": reason}]
+        }
+    });
+    RateLimitDiagnostic::from_value(None, Some(&value))
+}
+
+#[test]
+fn hinted_real_quota_exhaustion_is_honoured_in_full() {
+    let cfg = cool_test_config();
+    let diagnostic = reason_diagnostic("QUOTA_EXHAUSTED");
+    assert_eq!(generation_429_cool_secs(Some(13_437), &diagnostic, true, &cfg), 13_437);
+}
+
+#[test]
+fn hinted_transient_stall_is_capped_not_honoured_verbatim() {
+    let cfg = cool_test_config();
+    let diagnostic = reason_diagnostic("SOME_TRANSIENT_STALL");
+    // A 1376s hint on a non-exhaustion reason must be capped to the short window.
+    assert_eq!(generation_429_cool_secs(Some(1_376), &diagnostic, true, &cfg), 60);
+}
+
+#[test]
+fn hinted_short_hint_below_cap_is_kept() {
+    let cfg = cool_test_config();
+    let diagnostic = reason_diagnostic("RATE_LIMIT_EXCEEDED");
+    assert_eq!(generation_429_cool_secs(Some(2), &diagnostic, true, &cfg), 2);
+}
+
+#[test]
+fn unhinted_with_quota_remaining_cools_briefly() {
+    let cfg = cool_test_config();
+    let diagnostic = RateLimitDiagnostic::from_value(None, None);
+    assert_eq!(generation_429_cool_secs(None, &diagnostic, true, &cfg), 2);
+}
+
+#[test]
+fn unhinted_without_quota_remaining_uses_default_cool() {
+    let cfg = cool_test_config();
+    let diagnostic = RateLimitDiagnostic::from_value(None, None);
+    assert_eq!(generation_429_cool_secs(None, &diagnostic, false, &cfg), 60);
 }

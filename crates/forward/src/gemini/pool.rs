@@ -2951,6 +2951,7 @@ mod tests {
             model_failure_max_cool_secs: 900,
             default_rate_limit_cool_secs: 60,
             rate_limit_rpm_cool_secs: 2,
+            rate_limit_unknown_cool_secs: 60,
             quota_reserve_fraction: 0.05,
             quota_reserve_jitter: 0.01,
             health_probe_interval_secs: 60,

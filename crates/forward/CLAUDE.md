@@ -835,7 +835,12 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
     (`quota_reports_remaining`), the verdict is an RPM/concurrency stall, not exhaustion: the model
     is parked only for the short `rate_limit_rpm_cool_secs`, never the full
     `default_rate_limit_cool_secs` window — a momentary throttle must not freeze the model across
-    the whole fleet for a minute. Fail-closed: a missing/stale catalogue, no matching bucket or any
+    the whole fleet for a minute. When a generation 429 DOES carry a retry hint, the hint is only
+    honoured in full for a genuine `QUOTA_EXHAUSTED` error reason; any other hinted 429 (observed
+    on Antigravity image generation, where a long `RetryInfo` accompanied a near-full catalogue and
+    the account stayed usable via the official client) is a transient profile stall, so its hint is
+    capped at `rate_limit_unknown_cool_secs` and the profile is re-probed instead of parked for
+    many minutes. Fail-closed: a missing/stale catalogue, no matching bucket or any
     non-positive/unknown remainder keeps the long exhaustion cool. A health probe never erases
     generation cooling. Every generation/probe 429
    emits only bounded machine evidence under `gemini-rate-limit`: one request id joins pre-byte

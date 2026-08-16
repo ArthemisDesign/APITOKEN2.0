@@ -1,7 +1,7 @@
 //! Native Gemini-compatible surface backed by encrypted paid-subscription OAuth profiles.
 
 use super::billing::{begin_admission, AdmissionError, GeminiAdmission};
-use super::config::GeminiModel;
+use super::config::{GeminiConfig, GeminiModel};
 use super::pool::{GeminiGateway, GeminiLease, GeminiProfile, TokenAcquisitionPolicy, TokenError};
 use super::rate_limit::{self, RateLimitDiagnostic};
 use super::transport::{TransportError, TransportResponse, TransportRetryPolicy};
@@ -742,16 +742,34 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn retry_after(headers: &HeaderMap, body: &[u8], default_secs: i64) -> i64 {
-    if let Some(seconds) = rate_limit::retry_after_header_delay(Some(headers)) {
-        return seconds;
-    }
-    if let Ok(value) = serde_json::from_slice::<Value>(body) {
-        if let Some(delay) = rate_limit::retry_info_delay(&value) {
-            return delay;
+
+/// Decide how long to cool a model after an upstream 429.
+///
+/// Two independent safety valves keep a healthy profile from being parked too long:
+/// * an unhinted 429 whose fresh quota catalogue still reports a positive remainder is an
+///   RPM/concurrency stall, so it cools for the short `rate_limit_rpm_cool_secs`;
+/// * a hinted 429 whose error reason is NOT a real `QUOTA_EXHAUSTED` is likewise a transient
+///   profile stall (observed on Antigravity image generation with a near-full catalogue, where the
+///   account stayed usable via the official client), so its hint is capped at
+///   `rate_limit_unknown_cool_secs` rather than honoured verbatim. Only a genuine
+///   `QUOTA_EXHAUSTED` is trusted with the full provider hint.
+fn generation_429_cool_secs(
+    hint: Option<i64>,
+    diagnostic: &RateLimitDiagnostic,
+    quota_has_remaining: bool,
+    config: &GeminiConfig,
+) -> i64 {
+    if let Some(secs) = hint {
+        if diagnostic.error_reason() == "QUOTA_EXHAUSTED" {
+            secs
+        } else {
+            secs.min(config.rate_limit_unknown_cool_secs)
         }
+    } else if quota_has_remaining {
+        config.rate_limit_rpm_cool_secs
+    } else {
+        config.default_rate_limit_cool_secs
     }
-    default_secs.clamp(1, 86_400)
 }
 
 fn log_rate_limit_attempt(
@@ -2627,27 +2645,16 @@ async fn stream_response(
                 }
                 Some(429) => {
                     Metrics::inc(&metrics.upstream_429);
-                    let delay = translator
-                        .provider_retry_after
-                        .unwrap_or(gateway.config().default_rate_limit_cool_secs);
                     let diagnostic = translator
                         .provider_rate_limit_diagnostic
                         .clone()
                         .unwrap_or_else(|| RateLimitDiagnostic::from_value(None, None));
-                    // No authoritative retry hint, but the profile's fresh quota catalogue still
-                    // shows a positive remainder: this is an RPM/concurrency stall, not exhaustion.
-                    // Park the model only briefly instead of converting the throttle into a
-                    // minute-long fleet-wide outage via the default exhaustion cool.
-                    let delay = if translator.provider_retry_after.is_none()
-                        && profile.quota_reports_remaining(
-                            &wire_model_id,
-                            gateway.config(),
-                            pool::now(),
-                        ) {
-                        gateway.config().rate_limit_rpm_cool_secs
-                    } else {
-                        delay
-                    };
+                    let delay = generation_429_cool_secs(
+                        translator.provider_retry_after,
+                        &diagnostic,
+                        profile.quota_reports_remaining(&wire_model_id, gateway.config(), pool::now()),
+                        gateway.config(),
+                    );
                     log_rate_limit_attempt(
                         &rate_limit_request_id,
                         "stream_generate",
@@ -3450,26 +3457,18 @@ async fn api_inner(
                         saw_quota = true;
                         rate_limit_attempts = rate_limit_attempts.saturating_add(1);
                         excluded.insert(profile.id().to_string());
-                        let delay = translator
-                            .provider_retry_after
-                            .unwrap_or(gateway.config().default_rate_limit_cool_secs);
                         let diagnostic = translator
                             .provider_rate_limit_diagnostic
                             .as_ref()
                             .cloned()
                             .unwrap_or_else(|| RateLimitDiagnostic::from_value(None, None));
-                        // Unhinted 429 with a fresh positive quota remainder is an RPM/concurrency
-                        // stall, not exhaustion: cool briefly, not for the full default window.
-                        let delay = if translator.provider_retry_after.is_none()
-                            && profile.quota_reports_remaining(
-                                &wire_model_id,
-                                gateway.config(),
-                                pool::now(),
-                            ) {
-                            gateway.config().rate_limit_rpm_cool_secs
-                        } else {
-                            delay
-                        };
+                        let delay = generation_429_cool_secs(
+                            translator.provider_retry_after,
+                            &diagnostic,
+                            profile
+                                .quota_reports_remaining(&wire_model_id, gateway.config(), pool::now()),
+                            gateway.config(),
+                        );
                         log_rate_limit_attempt(
                             &rate_limit_request_id,
                             route.operation.diagnostic_name(),
@@ -3637,31 +3636,20 @@ async fn api_inner(
                 saw_quota = true;
                 rate_limit_attempts = rate_limit_attempts.saturating_add(1);
                 excluded.insert(profile.id().to_string());
-                let hint_present = rate_limit::retry_after_header_delay(Some(&response_headers))
-                    .is_some()
-                    || serde_json::from_slice::<Value>(&response_body)
-                        .ok()
-                        .and_then(|value| rate_limit::retry_info_delay(&value))
-                        .is_some();
-                let delay = retry_after(
-                    &response_headers,
-                    &response_body,
-                    gateway.config().default_rate_limit_cool_secs,
-                );
                 let diagnostic =
                     RateLimitDiagnostic::from_body(Some(&response_headers), &response_body);
-                // Unhinted 429 with a fresh positive quota remainder is an RPM/concurrency stall,
-                // not exhaustion: cool briefly, not for the full default window.
-                let delay = if !hint_present
-                    && profile.quota_reports_remaining(
-                        &wire_model_id,
-                        gateway.config(),
-                        pool::now(),
-                    ) {
-                    gateway.config().rate_limit_rpm_cool_secs
-                } else {
-                    delay
-                };
+                let hint = rate_limit::retry_after_header_delay(Some(&response_headers))
+                    .or_else(|| {
+                        serde_json::from_slice::<Value>(&response_body)
+                            .ok()
+                            .and_then(|value| rate_limit::retry_info_delay(&value))
+                    });
+                let delay = generation_429_cool_secs(
+                    hint,
+                    &diagnostic,
+                    profile.quota_reports_remaining(&wire_model_id, gateway.config(), pool::now()),
+                    gateway.config(),
+                );
                 log_rate_limit_attempt(
                     &rate_limit_request_id,
                     route.operation.diagnostic_name(),

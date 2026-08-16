@@ -187,6 +187,13 @@ impl RateLimitDiagnostic {
             applied_cool_secs,
         }
     }
+
+    /// The classified provider error reason, used to decide how much of an authoritative retry
+    /// hint to trust. A real `QUOTA_EXHAUSTED` is honoured in full; any other hinted 429 is
+    /// treated as a transient profile stall and capped by the caller.
+    pub(crate) fn error_reason(&self) -> &'static str {
+        self.error_reason
+    }
 }
 
 pub(crate) struct AppliedFields<'a> {
@@ -263,6 +270,7 @@ fn reason_class(value: Option<&str>) -> &'static str {
     match value {
         Some("RATE_LIMIT_EXCEEDED") => "RATE_LIMIT_EXCEEDED",
         Some("QUOTA_EXCEEDED") => "QUOTA_EXCEEDED",
+        Some("QUOTA_EXHAUSTED") => "QUOTA_EXHAUSTED",
         Some("RESOURCE_EXHAUSTED") => "RESOURCE_EXHAUSTED",
         Some("USER_RATE_LIMIT_EXCEEDED") => "USER_RATE_LIMIT_EXCEEDED",
         Some("DAILY_LIMIT_EXCEEDED") => "DAILY_LIMIT_EXCEEDED",
@@ -553,4 +561,36 @@ mod tests {
         assert!(rendered.contains("google_status=unknown"));
         assert!(rendered.contains("error_fingerprint=none"));
     }
+
+#[test]
+fn classifies_real_quota_exhaustion_distinct_from_generic_other() {
+    let value = serde_json::json!({
+        "error": {
+            "code": 429,
+            "status": "RESOURCE_EXHAUSTED",
+            "details": [
+                {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "QUOTA_EXHAUSTED"},
+                {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "13437s"}
+            ]
+        }
+    });
+    let diagnostic = RateLimitDiagnostic::from_value(None, Some(&value));
+    assert_eq!(diagnostic.error_reason(), "QUOTA_EXHAUSTED");
+}
+
+#[test]
+fn classifies_unknown_uppercase_reason_as_other() {
+    let value = serde_json::json!({
+        "error": {
+            "code": 429,
+            "status": "RESOURCE_EXHAUSTED",
+            "details": [
+                {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "SOME_TRANSIENT_STALL"},
+                {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "1376s"}
+            ]
+        }
+    });
+    let diagnostic = RateLimitDiagnostic::from_value(None, Some(&value));
+    assert_eq!(diagnostic.error_reason(), "other");
+}
 }
