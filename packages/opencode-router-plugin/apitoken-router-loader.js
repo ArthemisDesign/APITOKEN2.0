@@ -88,6 +88,7 @@ async function readLimited(response, maximum, label) {
   if (response.url) {
     const final = new URL(response.url)
     if (label === "channel" && final.toString() !== CHANNEL_URL) throw new Error("channel redirect rejected")
+    if (label === "runtime") validateReleaseUrl(final.toString(), final.pathname.match(/apitoken-router-([0-9]+\.[0-9]+\.[0-9]+)\.mjs$/)?.[1])
   }
   const declared = Number(response.headers?.get?.("content-length"))
   if (Number.isFinite(declared) && declared > maximum) throw new Error(`${label} exceeds size limit`)
