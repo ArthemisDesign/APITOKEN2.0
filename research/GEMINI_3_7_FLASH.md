@@ -213,7 +213,7 @@ request remains terminal; no failed or successful paid transport may be replayed
 | Function calling | Forced tool call with preserved `name`, `call_id`, and thought signature; successful follow-up | Separately bounded | Required only if published for this model |
 | Caching | Authoritative cache-token usage on a request meeting the 4,096-token minimum | Separately bounded | Required before a cache/billing claim |
 | Image/video/audio/PDF input | One successful bounded request per modality with real text output and usage | Separately bounded | Test every modality the product intends to advertise |
-| Search/Maps grounding | Grounding metadata, executed-query count, and authoritative cost evidence | Not permitted under the default cap unless free allowance is proven; otherwise explicit larger budget | Official capability remains unclaimed in Stage 1 |
+| Search/Maps grounding | Grounding metadata, executed-query count, and authoritative cost evidence | Not permitted under the default cap unless free allowance is proven; otherwise explicit larger budget | **GREEN 2026-08-15** on `35153abe…`-lineage SHA `ed63dc0f…`: one grounded prompt with exactly 1 authoritative `webSearchQueries` count, terminal STOP/usage/parity, `14,000,000` search nanoUSD reconciled inside the explicit 10-query reserve contract |
 | Code execution, File Search, URL context, Computer Use Preview | Surface-specific real result and usage for every claimed control | Separate risk and budget approval where applicable | Not claimed in Stage 1 |
 | Each subscription plan | Repeat required generation/stream/control checks with a credential bound to that exact plan | Per-plan bounded budget | One plan's success proves only that plan |
 
@@ -507,6 +507,22 @@ regression tests; no admission rule was weakened for the thinking-level matrix.
 
 Publication of `tool_calling`, `structured_outputs`, image input and implicit caching in the
 native and unified catalogues follows in the same change as this evidence.
+
+### Search grounding controlled live — 2026-08-15
+
+Gemini 3 search is billed per executed query (`14,000,000` nanoUSD each) with no
+provider-documented fanout ceiling, so the generic matrix runner refuses to dispatch it. The
+closed `--gemini-37-search` admission instead pins a one-fact prompt, reserves an explicit
+conservative 10-query cap on top of the exact token ceiling, and trusts only the immutable
+event's authoritative `webSearchQueries` count; a turn billed above the reserve violates the
+preflight bound and stops the run fail closed. On production-GREEN runtime
+`ed63dc0f646f0ef5709eb23b0a0fa4677a0e9fe9` and the same Ultra profile the single paid generation
+executed exactly **one** web search query, returned the grounded answer with terminal `STOP`,
+terminal usage equal to the immutable event, and the confirmed tiered raw `modelVersion`, for a
+reconciled `14,921,000` nanoUSD (`$0.014921`, of which `14,000,000` is the single query SKU)
+against the authorized `928,352,000` nanoUSD ceiling. Search grounding is therefore advertised
+for this model from the same change; Maps grounding remains a separately billed SKU and stays
+fail-closed in the request validator.
 
 ## Checklist disposition
 

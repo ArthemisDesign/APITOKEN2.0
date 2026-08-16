@@ -860,8 +860,9 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
     explicit thinking levels `low`/`medium`/`high` (live-admitted per level on `916dee0d…`,
     `$0.00546` aggregate; `minimal` is rejected locally), function calling, JSON structured output
     and implicit prompt caching (capability matrix on `35153abe…`, `$0.0190` aggregate, 8,170
-    authoritative cached tokens); search (no provider fanout ceiling) and audio input remain
-    unclaimed. The
+    authoritative cached tokens), plus Google Search grounding (one-query admission on
+    `ed63dc0f…` under the explicit 10-query reserve contract, `$0.014921` reconciled); audio input
+    remains unclaimed. The
    retained generic evidence producer admits only an admin exact
    profile plus canonical UUIDv4 `x-apitoken-calibration-request-id` and positive Unix-seconds
    `x-apitoken-calibration-not-after`; the half-open fence is `now < not_after`, so equality expires.

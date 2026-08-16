@@ -76,6 +76,11 @@ GEMINI_37_CAPABILITY_KINDS = (
     "image-input",
     "long-context",
 )
+# Gemini 3 search is billed per query with no provider-documented fanout ceiling. The admission
+# leg therefore pins a one-fact prompt and reserves a conservative explicit query cap; the
+# immutable event's exact webSearchQueries count is the billed truth, and any turn that would
+# exceed this reserve violates the preflight bound and stops the run fail closed.
+GEMINI_37_SEARCH_QUERY_RESERVE = 10
 IMAGE_OUTPUT_TOKEN_CEILINGS = {"1K": 1_120, "2K": 1_680, "4K": 2_520}
 EVENT_TOKEN_FIELDS = (
     "input_tokens",
@@ -1079,6 +1084,20 @@ def body_for_gemini37_capability(leg: Leg, run_id: str) -> dict[str, Any]:
             }],
             "generationConfig": {"maxOutputTokens": leg.max_output_tokens},
         }
+    if short == "search":
+        return {
+            "contents": [{
+                "role": "user",
+                "parts": [{
+                    "text": (
+                        "Use Google Search to report today's current UTC date. "
+                        "Cite exactly one source and answer in one short sentence."
+                    )
+                }],
+            }],
+            "generationConfig": {"maxOutputTokens": leg.max_output_tokens},
+            "tools": [{"googleSearch": {}}],
+        }
     raise CalibrationError(f"unknown Gemini 3.7 capability leg: {leg.name}")
 
 
@@ -1849,7 +1868,7 @@ class Runner:
                     or leg.model != GEMINI_37_ADMISSION_MODEL
                     or leg.name not in {
                         f"admission:{GEMINI_37_ADMISSION_MODEL}:{name}"
-                        for name in GEMINI_37_CAPABILITY_KINDS
+                        for name in (*GEMINI_37_CAPABILITY_KINDS, "search")
                     }
                 ):
                     raise CalibrationError(
@@ -1965,29 +1984,41 @@ class Runner:
                 f"countTokens returned {input_tokens}, not above long-context threshold "
                 f"{rates.long_threshold}"
             )
+        is_admission_search = leg.name == f"admission:{GEMINI_37_ADMISSION_MODEL}:search"
         upper = rates.upper_bound(
             input_tokens,
             leg.max_output_tokens,
-            leg.kind,
+            "fresh" if is_admission_search else leg.kind,
             leg.image_size,
         )
+        if is_admission_search:
+            upper += GEMINI_37_SEARCH_QUERY_RESERVE * rates.search
         if self.admission is not None:
+            capability_legs = (
+                list(GEMINI_37_CAPABILITY_KINDS) if self.admission.capability_matrix else []
+            )
+            if leg.name == f"admission:{GEMINI_37_ADMISSION_MODEL}:search":
+                capability_legs = ["search"]
             planned = (
-                len(GEMINI_37_CAPABILITY_KINDS)
+                len(capability_legs)
                 if self.admission.capability_matrix
                 else len(self.admission.thinking_levels or (None,))
             )
             # The contract reserves the worst planned leg per generation: the long-context
             # capability leg carries 220k counted tokens plus the hidden provider prompt,
-            # which strictly dominates every other leg's ceiling.
+            # which strictly dominates every other leg's ceiling. The single search leg
+            # adds the explicit query reserve on top of its own token ceiling.
             worst_leg = (
                 Leg("", GEMINI_37_ADMISSION_MODEL, "long", max_output_tokens=512)
-                if self.admission.capability_matrix
+                if self.admission.capability_matrix and "search" not in capability_legs
                 else Leg(
                     "",
                     GEMINI_37_ADMISSION_MODEL,
+                    # The search admission reserves its tokens like a plain generation plus the
+                    # explicit query reserve below; passing kind="search" here would hit the
+                    # generic unbounded-SKU guard instead of the closed contract.
                     "fresh",
-                    max_output_tokens=self.admission.output_tokens,
+                    max_output_tokens=512 if "search" in capability_legs else self.admission.output_tokens,
                 )
             )
             worst = rates.upper_bound(
@@ -1995,6 +2026,10 @@ class Runner:
                 worst_leg.max_output_tokens,
                 worst_leg.kind,
             )
+            if "search" in capability_legs:
+                # The per-query SKU is unbounded upstream; the closed admission contract
+                # substitutes the explicit conservative reserve for the missing provider ceiling.
+                worst += GEMINI_37_SEARCH_QUERY_RESERVE * rates.search
             if self.budget.limit_nano != worst * planned:
                 raise CalibrationError(
                     "Gemini 3.7 admission budget must equal the worst-case exact "
@@ -2237,6 +2272,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--gemini-37-admission", action="store_true")
     parser.add_argument("--gemini-37-thinking-levels", action="store_true")
     parser.add_argument("--gemini-37-capabilities", action="store_true")
+    parser.add_argument("--gemini-37-search", action="store_true")
     parser.add_argument("--admission-profile")
     parser.add_argument("--implementation-sha")
     parser.add_argument("--production-capacity-over-ssh", action="store_true")
@@ -2261,6 +2297,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         bool(args.gemini_37_admission),
         bool(args.gemini_37_thinking_levels),
         bool(args.gemini_37_capabilities),
+        bool(args.gemini_37_search),
     ))
     if admission_mode_count:
         if admission_mode_count > 1:
@@ -2291,6 +2328,29 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
+    if args.gemini_37_search:
+        return {
+            "schema": "gemini-3.7-search-plan/v1",
+            "mode": "dry-run",
+            "paid_requests_sent": 0,
+            "planned_count_requests": 1,
+            "planned_paid_generation_requests": 1,
+            "budget_nanousd_total": str(budget_nano),
+            "model": GEMINI_37_ADMISSION_MODEL,
+            "profile_id": args.admission_profile,
+            "implementation_sha": args.implementation_sha,
+            "capability": "search",
+            "search_query_reserve": GEMINI_37_SEARCH_QUERY_RESERVE,
+            "guards": [
+                "one-free-countTokens-then-one-paid-generation",
+                "no-resume-retry-reconnect-or-replay",
+                "exact-profile-and-uuidv4-attribution",
+                "exact-token-ceiling-plus-explicit-search-query-reserve",
+                "pre-deadline-count-and-generation-dispatch-attestation",
+                "authoritative-webSearchQueries-count-in-immutable-event",
+                "raw-modelVersion-terminal-usage-and-response-event-parity",
+            ],
+        }
     if args.gemini_37_capabilities:
         return {
             "schema": "gemini-3.7-capabilities-plan/v1",
@@ -2436,7 +2496,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     profiles = (
         [args.admission_profile]
-        if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities
+        if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search
         else (resume.profiles if resume else healthy_profiles)
     )
     if not profiles:
@@ -2449,7 +2509,7 @@ def main(argv: list[str] | None = None) -> int:
     rates = rate_catalog(baseline)
     models = (
         [GEMINI_37_ADMISSION_MODEL]
-        if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities
+        if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search
         else (resume.models if resume else (args.models or sorted(rates)))
     )
     unknown = sorted(set(models) - set(rates))
@@ -2490,6 +2550,12 @@ def main(argv: list[str] | None = None) -> int:
             output_tokens=GEMINI_37_THINKING_LEVELS_OUTPUT_TOKENS,
         )
     elif args.gemini_37_capabilities:
+        admission = Gemini37Admission(
+            profile_id=args.admission_profile,
+            implementation_sha=args.implementation_sha,
+            capability_matrix=True,
+        )
+    elif args.gemini_37_search:
         admission = Gemini37Admission(
             profile_id=args.admission_profile,
             implementation_sha=args.implementation_sha,
@@ -2583,6 +2649,13 @@ def main(argv: list[str] | None = None) -> int:
                 max_output_tokens=512,
             ),
         ]
+    elif args.gemini_37_search:
+        legs = [Leg(
+            f"admission:{GEMINI_37_ADMISSION_MODEL}:search",
+            GEMINI_37_ADMISSION_MODEL,
+            "search",
+            max_output_tokens=512,
+        )]
     else:
         legs = build_coverage_legs(models, run_id, rates)
     expected = {(profile, leg.name): leg for leg in legs for profile in profiles}
@@ -2728,7 +2801,7 @@ def main(argv: list[str] | None = None) -> int:
         "model_profitability": model_profitability(runner.records),
         "final_capacity": final,
     }
-    if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities:
+    if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search:
         if args.gemini_37_capabilities:
             generations = len(GEMINI_37_CAPABILITY_KINDS)
         else:

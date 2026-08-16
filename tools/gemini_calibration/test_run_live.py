@@ -352,6 +352,43 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
                 "run",
             )
 
+    def test_gemini_37_search_leg_body_and_budget_reserve(self):
+        body = run_live.body_for_gemini37_capability(
+            run_live.Leg("admission:gemini-3.7-flash:search", "gemini-3.7-flash", "search",
+                         max_output_tokens=512),
+            "run",
+        )
+        self.assertEqual(body["tools"], [{"googleSearch": {}}])
+        rates = run_live.ModelRates(
+            "google/test/v1", 1_000, 10, 10, 1, 1, 10, 0,
+            1_000, 10, 10, 1, 1, 10, "query", 14_000_000, 1_000,
+        )
+        # Per-query billing stays unbounded in the generic matrix...
+        with self.assertRaises(run_live.UnboundedCostError):
+            rates.upper_bound(10, 5, "search")
+        # ...while the closed 3.7 search admission substitutes the explicit query reserve.
+        args = run_live.parse_args([
+            "--gemini-37-search",
+            "--admission-profile",
+            "profile-a",
+            "--implementation-sha",
+            "d" * 40,
+            "--production-capacity-port",
+            "18898",
+            "--production-api-port",
+            "18898",
+            "--budget-usd",
+            "1",
+        ])
+        plan = run_live.dry_run_plan(args, run_live.usd_to_nano(args.budget_usd))
+        self.assertEqual(plan["schema"], "gemini-3.7-search-plan/v1")
+        self.assertEqual(plan["planned_paid_generation_requests"], 1)
+        self.assertEqual(
+            plan["search_query_reserve"],
+            run_live.GEMINI_37_SEARCH_QUERY_RESERVE,
+        )
+        self.assertGreater(run_live.GEMINI_37_SEARCH_QUERY_RESERVE, 0)
+
     def test_gemini_37_brief_sse_accepts_a_single_visible_frame(self):
         model = run_live.GEMINI_37_ADMISSION_MODEL
         leg = run_live.Leg(
