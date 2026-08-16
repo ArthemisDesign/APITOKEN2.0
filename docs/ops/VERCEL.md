@@ -17,6 +17,11 @@ triggers a build, how to read deployment state without Vercel access, and the fa
   merge-lock only until `deploy/watchdog` is green and deliberately does not trust the combined
   commit status (see `docs/ops/DEVBOT.md`). A green merge therefore says nothing about the
   frontend — Vercel state must be checked separately.
+- The seven-character CRM referral path is handled by `apps/web/src/proxy.ts` on Vercel, not by
+  host Caddy. Its matcher is deliberately limited to a digit followed by six lowercase base-36
+  characters, so ordinary root pages stay in the Next.js route tree. The proxy performs a bounded,
+  no-store server request to `https://crm.apitoken.sale/r/:code` and emits a `303` only for the
+  validated same-origin attributed landing URL.
 - `apps/web/vercel.json` runs `apps/web/scripts/vercel-ignore-build.sh` as the ignored-build step
   (contract and shallow-history recovery — `apps/web/README.md`). Exit 0 skips the build (commit
   status `Skipped - Not affected`, a success); exit 1 builds; the script fails closed to a normal

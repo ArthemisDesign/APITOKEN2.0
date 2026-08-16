@@ -42,6 +42,14 @@ The repository-level `pnpm-lock.yaml` is the dependency lock. Keep `apitoken.sal
 origin because the backend CORS and mutation-origin checks intentionally allow one exact frontend
 origin.
 
+The root short-referral gateway accepts only seven-character lowercase codes matching
+`[0-9][a-z0-9]{6}` (for example, `https://apitoken.sale/3kgj45g`). `src/proxy.ts` resolves such a
+code server-to-server through the standalone CRM's public `/r/:code` tracker and returns a `303`
+only when CRM supplies an attributed destination on the exact `https://apitoken.sale/` origin.
+Ordinary named pages never call CRM; upstream errors, bare landing redirects, malformed locations,
+and off-origin redirects fail closed as an uncached `404`. The browser never sees the CRM wrapper
+origin and no browser cookie or authorization header is forwarded to CRM.
+
 `vercel.json` runs `scripts/vercel-ignore-build.sh` before allocating a frontend build. The script
 compares the current checkout with `VERCEL_GIT_PREVIOUS_SHA` across `apps/web` and the root lockfile,
 workspace definition, Node version, and workspace manifest. Because Vercel clones only a short Git
