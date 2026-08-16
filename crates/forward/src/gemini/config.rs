@@ -77,14 +77,27 @@ impl GeminiModel {
     /// native admission.
     pub fn input_modalities(&self) -> &'static [&'static str] {
         if self.id == "gemini-3-flash-preview" {
-            &["text", "image", "audio"]
+            // 2026-08-16 fleet media matrix: video/mp4 and application/pdf inline inputs
+            // returned the content-perception marker with terminal usage; audio was admitted
+            // earlier with the exact PCM WAV contract.
+            &["text", "image", "audio", "video", "pdf"]
         } else if self.id == "gemini-3.7-flash" {
             // 2026-08-16 exact-SHA (fc556402…) media matrix: audio/wav, video/mp4 and
             // application/pdf inline inputs each returned the content-perception marker with
             // terminal usage on the confirmed tiered wire.
             &["text", "image", "audio", "video", "pdf"]
+        } else if self.id == "gemini-2.5-flash" {
+            // 2026-08-16 fleet media matrix: audio (marker `TONE`) and video (marker `red`)
+            // admitted with terminal usage/parity. PDF has no official claim for this model.
+            &["text", "image", "audio", "video"]
+        } else if self.is_image_generation() {
+            // Official input surface is Text/Image/PDF; the 2026-08-16 fleet matrix admitted
+            // inline application/pdf (beacon extraction, terminal usage/parity).
+            &["text", "image", "pdf"]
         } else {
-            &["text", "image"]
+            // 2026-08-16 fleet media matrix: audio/video/pdf each admitted with the
+            // content-perception marker and terminal usage/parity on this model.
+            &["text", "image", "audio", "video", "pdf"]
         }
     }
 
@@ -460,7 +473,19 @@ mod tests {
         assert!(flash_37.structured_outputs());
         assert_eq!(
             model("gemini-3-flash-preview").input_modalities(),
-            ["text", "image", "audio"]
+            ["text", "image", "audio", "video", "pdf"]
+        );
+        assert_eq!(
+            model("gemini-2.5-flash").input_modalities(),
+            ["text", "image", "audio", "video"]
+        );
+        assert_eq!(
+            model("gemini-3.1-flash-image").input_modalities(),
+            ["text", "image", "pdf"]
+        );
+        assert_eq!(
+            model("gemini-3.6-flash").input_modalities(),
+            ["text", "image", "audio", "video", "pdf"]
         );
     }
 

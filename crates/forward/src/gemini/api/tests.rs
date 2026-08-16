@@ -1524,7 +1524,7 @@ fn model_value_is_native_shaped() {
         json!({
             "reasoning_efforts": ["minimal", "low", "medium", "high"],
             "service_tiers": ["standard"],
-            "input_modalities": ["text", "image"],
+            "input_modalities": ["text", "image", "audio", "video"],
             "output_modalities": ["text"],
             "tool_calling": true,
             "structured_outputs": true,
@@ -1540,7 +1540,7 @@ fn model_value_is_native_shaped() {
         json!({
             "reasoning_efforts": [],
             "service_tiers": ["standard"],
-            "input_modalities": ["text", "image"],
+            "input_modalities": ["text", "image", "pdf"],
             "output_modalities": ["text", "image"],
             "tool_calling": false,
             "structured_outputs": false,
@@ -1552,7 +1552,7 @@ fn model_value_is_native_shaped() {
     let audio = model_value(&model);
     assert_eq!(
         audio["apitoken"]["capabilities"]["input_modalities"],
-        json!(["text", "image", "audio"])
+        json!(["text", "image", "audio", "video", "pdf"])
     );
 
     model.id = "gemini-3.7-flash".to_string();

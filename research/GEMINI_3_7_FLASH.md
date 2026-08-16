@@ -550,6 +550,32 @@ port `18898` was stopped and collected; the stable Gemini production plane staye
 Publication of `audio`/`video`/`pdf` in `input_modalities` in the native and unified catalogues
 follows in the same change as this evidence.
 
+### Fleet media matrix — 2026-08-16
+
+The same marker contract was extended to every other published model via the runner's
+`--gemini-media-matrix` mode (one free attested `countTokens` plus exactly one paid generation
+per model × modality, exact `--media-profile <model>=<profile>` targets, no retry/replay). All
+20 legs completed with terminal `STOP`, terminal usage and response/event parity on
+production-GREEN-lineage runtime `a4ff0e5c…`, for an aggregate `18,221,900` nanoUSD (`$0.0182`)
+against the authorized `28,922,675,200` nanoUSD worst-case envelope:
+
+| Model | audio | video | pdf |
+|---|---|---|---|
+| `gemini-3.6-flash` | GREEN (marker `TONE`) | GREEN (`red`) | GREEN (beacon) |
+| `gemini-3.5-flash` | GREEN | GREEN | GREEN |
+| `gemini-3.1-pro-preview` | GREEN | GREEN | GREEN |
+| `gemini-3.1-flash-lite` | GREEN | GREEN | GREEN |
+| `gemini-2.5-flash` | marker returned but no separate upstream AUDIO token class — **not published** | GREEN | no official claim — not in matrix |
+| `gemini-2.5-flash-lite` | same — **not published** | GREEN | GREEN |
+| `gemini-3-flash-preview` | admitted earlier | GREEN | GREEN |
+| `gemini-3.1-flash-image` | no official claim | no official claim | GREEN (after the route admitted inline PDF) |
+
+The two 2.5 audio turns prove perception but lack the authoritative modality token class the
+billing contract requires, so audio stays unpublished for exactly those two models. The
+`gemini-3.1-flash-image` PDF leg initially returned a 400 from the image-route MIME allowlist;
+the route now admits inline `application/pdf` as document input (image references keep their
+allowlist and cap), and the rerun passed.
+
 ## Checklist disposition
 
 The new-model checklist in

@@ -779,7 +779,7 @@ export const geminiModels: GeminiModel[] = [
     maxOutput: "64K tokens",
     bestFor: [
       "Agentic coding and tool use at Flash speed.",
-      "Multimodal workloads across text, image and audio input.",
+      "Multimodal workloads across text, image, audio, video and PDF input.",
       "Long-context analysis in the full 1M-token window.",
     ],
     notes: [
@@ -841,7 +841,7 @@ export const geminiModels: GeminiModel[] = [
     maxOutput: "64K tokens",
     bestFor: [
       "Agentic coding and function calling at Flash latency.",
-      "Multimodal text, image, audio and document input.",
+      "Multimodal text, image, audio, video and document input.",
       "Cost-efficient analysis across the full 1M-token window.",
     ],
     notes: [
