@@ -227,6 +227,21 @@ GEMINI_37_MEDIA_EXPECTED_TEXT = {
     "video-input": ("red", "RED", "Red"),
     "pdf-input": ("CALIBRATION-BEACON-7734",),
 }
+# Fleet-wide media rollout: every published text model runs each of the three modality legs
+# exactly once on its exact target profile, with the same perception-marker contract as the
+# 3.7 matrix. The image-generation model has a narrower official input surface (Text/Image/PDF)
+# and no audio/video claim, so it runs only the PDF leg. The already-admitted 3.7-flash and the
+# audio legs of 3-flash-preview stay out of the matrix: their evidence is already recorded.
+MEDIA_MATRIX_MODELS: dict[str, tuple[str, ...]] = {
+    "gemini-3.6-flash": ("audio-input", "video-input", "pdf-input"),
+    "gemini-3.5-flash": ("audio-input", "video-input", "pdf-input"),
+    "gemini-3.1-pro-preview": ("audio-input", "video-input", "pdf-input"),
+    "gemini-3.1-flash-lite": ("audio-input", "video-input", "pdf-input"),
+    "gemini-2.5-flash": ("audio-input", "video-input"),
+    "gemini-2.5-flash-lite": ("audio-input", "video-input", "pdf-input"),
+    "gemini-3-flash-preview": ("video-input", "pdf-input"),
+    "gemini-3.1-flash-image": ("pdf-input",),
+}
 IMAGE_OUTPUT_TOKEN_CEILINGS = {"1K": 1_120, "2K": 1_680, "4K": 2_520}
 EVENT_TOKEN_FIELDS = (
     "input_tokens",
@@ -1289,6 +1304,54 @@ def body_for_gemini37_capability(leg: Leg, run_id: str) -> dict[str, Any]:
     raise CalibrationError(f"unknown Gemini 3.7 capability leg: {leg.name}")
 
 
+def body_for_media_leg(leg: Leg) -> dict[str, Any]:
+    """Fleet media-matrix bodies: the same payloads and perception contract as the 3.7
+    admission, keyed by leg kind instead of the admission-only name prefix."""
+    if leg.kind == "audio":
+        return {
+            "contents": [{
+                "role": "user",
+                "parts": [
+                    {"inlineData": {"mimeType": "audio/wav", "data": TONE_WAV_BASE64}},
+                    {"text": (
+                        "This clip is a pure tone. Reply with exactly the word TONE "
+                        "if you heard a tone."
+                    )},
+                ],
+            }],
+            "generationConfig": {"maxOutputTokens": leg.max_output_tokens},
+        }
+    if leg.kind == "video":
+        return {
+            "contents": [{
+                "role": "user",
+                "parts": [
+                    {"inlineData": {"mimeType": "video/mp4", "data": RED_MP4_BASE64}},
+                    {"text": (
+                        "This video is a solid color. Reply with exactly the name of "
+                        "that color."
+                    )},
+                ],
+            }],
+            "generationConfig": {"maxOutputTokens": leg.max_output_tokens},
+        }
+    if leg.kind == "pdf":
+        return {
+            "contents": [{
+                "role": "user",
+                "parts": [
+                    {"inlineData": {"mimeType": "application/pdf", "data": BEACON_PDF_BASE64}},
+                    {"text": (
+                        "Reply with exactly the beacon string shown in this document, "
+                        "in the form CALIBRATION-BEACON-NNNN."
+                    )},
+                ],
+            }],
+            "generationConfig": {"maxOutputTokens": leg.max_output_tokens},
+        }
+    raise CalibrationError(f"unknown Gemini media-matrix leg: {leg.name}")
+
+
 def body_for_gemini37_admission(
     thinking_level: str | None = None,
     output_tokens: int = GEMINI_37_ADMISSION_OUTPUT_TOKENS,
@@ -1765,6 +1828,16 @@ def verify_generation_response(
             return evidence, "structured-output admission JSON did not match the schema contract"
         if event["output_tokens"] <= event["thinking_output_tokens"]:
             return evidence, "immutable output has no billed non-thinking candidate tokens"
+    elif leg.kind in {"audio", "video", "pdf"} and leg.name.startswith("media:"):
+        expected = GEMINI_37_MEDIA_EXPECTED_TEXT[f"{leg.kind}-input"]
+        joined = "".join(visible_text_parts)
+        if not any(marker in joined for marker in expected):
+            return evidence, (
+                f"media admission answer {joined[:80]!r} did not contain the expected "
+                f"perception marker {expected!r}"
+            )
+        if event["output_tokens"] <= event["thinking_output_tokens"]:
+            return evidence, "immutable output has no billed non-thinking candidate tokens"
     elif leg.name.rsplit(":", 1)[-1] in GEMINI_37_MEDIA_EXPECTED_TEXT:
         expected = GEMINI_37_MEDIA_EXPECTED_TEXT[leg.name.rsplit(":", 1)[-1]]
         joined = "".join(visible_text_parts)
@@ -2044,7 +2117,8 @@ class CapacityReader:
 class Runner:
     def __init__(self, api: Any, capacity: CapacityReader, rates: dict[str, ModelRates], budget: Budget,
                  timeout: int, delay: float, run_id: str, cache_scopes: dict[str, str],
-                 admission: Gemini37Admission | None = None) -> None:
+                 admission: Gemini37Admission | None = None,
+                 media_matrix: bool = False) -> None:
         self.api = api
         self.capacity = capacity
         self.rates = rates
@@ -2054,12 +2128,13 @@ class Runner:
         self.run_id = run_id
         self.cache_scopes = cache_scopes
         self.admission = admission
+        self.media_matrix = media_matrix
         self.records: list[dict[str, Any]] = []
         self.admission_attempts: list[dict[str, Any]] = []
 
     def execute_leg(self, leg: Leg, profile_id: str) -> dict[str, Any]:
-        if self.admission is not None:
-            levels = self.admission.thinking_levels
+        if self.admission is not None or self.media_matrix:
+            levels = self.admission.thinking_levels if self.admission else ()
             if self.admission.capability_matrix:
                 if (
                     profile_id != self.admission.profile_id
@@ -2105,20 +2180,26 @@ class Runner:
         body = (
             body_for_gemini37_capability(leg, self.run_id)
             if self.admission is not None and self.admission.capability_matrix
-            else body_for_gemini37_admission(leg.thinking_level, self.admission.output_tokens)
+            else body_for_gemini37_admission(leg.thinking_level, self.admission.output_tokens if self.admission else GEMINI_37_ADMISSION_OUTPUT_TOKENS)
             if self.admission is not None
+            else body_for_media_leg(leg)
+            if self.media_matrix
             else body_for_leg(leg, self.run_id, cache_scope)
         )
         model_path = urllib.parse.quote(leg.model, safe="-._")
+        deadline_seconds = (
+            self.admission.deadline_seconds if self.admission is not None
+            else GEMINI_37_ADMISSION_DEADLINE_SECONDS
+        )
         not_after = None
         count_request_id = None
-        if self.admission is not None:
-            not_after = int(time.time()) + self.admission.deadline_seconds
+        if self.admission is not None or self.media_matrix:
+            not_after = int(time.time()) + deadline_seconds
             count_request_id = str(uuid.uuid4())
             if count_request_id in before_ids:
                 raise CalibrationError("generated Gemini count request id already exists")
         count_options: dict[str, Any] = {}
-        if self.admission is not None:
+        if self.admission is not None or self.media_matrix:
             count_options = {
                 "calibration_request_id": count_request_id,
                 "calibration_not_after": not_after,
@@ -2126,7 +2207,7 @@ class Runner:
                 "allow_safe_retry": False,
             }
         count_attempt = None
-        if self.admission is not None:
+        if self.admission is not None or self.media_matrix:
             count_attempt = {
                 "kind": "countTokens",
                 "request_id": count_request_id,
@@ -2150,7 +2231,7 @@ class Runner:
                 count_attempt["outcome"] = "terminal_failure"
             raise
         count_dispatch_ms = None
-        if self.admission is not None:
+        if self.admission is not None or self.media_matrix:
             if not isinstance(counted, JsonResponse):
                 raise CalibrationError("Gemini 3.7 countTokens returned no attested envelope")
             try:
@@ -2167,7 +2248,7 @@ class Runner:
                 count_attempt["outcome"] = "attested_response"
                 count_attempt["dispatch_ms"] = str(count_dispatch_ms)
         input_tokens = as_int(counted.get("totalTokens"), f"{leg.name}.countTokens")
-        if self.admission is not None:
+        if self.admission is not None or self.media_matrix:
             if input_tokens <= 0:
                 if count_attempt is not None:
                     count_attempt["outcome"] = "terminal_failure"
@@ -2191,7 +2272,7 @@ class Runner:
         )
         if is_admission_search:
             upper += GEMINI_37_SEARCH_QUERY_RESERVE * rates.search
-        if self.admission is not None:
+        if self.admission is not None or self.media_matrix:
             if leg.name == f"admission:{GEMINI_37_ADMISSION_MODEL}:search":
                 capability_legs = ["search"]
             elif leg.name.rsplit(":", 1)[-1] in GEMINI_37_MEDIA_KINDS:
@@ -2203,7 +2284,7 @@ class Runner:
             planned = (
                 len(capability_legs)
                 if self.admission.capability_matrix
-                else len(self.admission.thinking_levels or (None,))
+                else len((self.admission.thinking_levels if self.admission else ()) or (None,))
             )
             # The contract reserves the worst planned leg per generation: the long-context
             # capability leg carries 220k counted tokens plus the hidden provider prompt,
@@ -2222,7 +2303,7 @@ class Runner:
                     # explicit query reserve below; passing kind="search" here would hit the
                     # generic unbounded-SKU guard instead of the closed contract.
                     "fresh",
-                    max_output_tokens=512 if "search" in capability_legs else self.admission.output_tokens,
+                    max_output_tokens=512 if "search" in capability_legs else (self.admission.output_tokens if self.admission else GEMINI_37_ADMISSION_OUTPUT_TOKENS),
                 )
             )
             worst = rates.upper_bound(
@@ -2246,13 +2327,13 @@ class Runner:
         if calibration_request_id in before_ids:
             raise CalibrationError("generated Gemini calibration request id already exists")
         generation_options: dict[str, Any] = {}
-        if self.admission is not None:
+        if self.admission is not None or self.media_matrix:
             generation_options = {
                 "calibration_not_after": not_after,
                 "allow_safe_retry": False,
             }
         generation_attempt = None
-        if self.admission is not None:
+        if self.admission is not None or self.media_matrix:
             generation_attempt = {
                 "kind": "paid_generation",
                 "request_id": calibration_request_id,
@@ -2279,7 +2360,7 @@ class Runner:
                 generation_attempt["outcome"] = "terminal_failure"
             raise
         generation_dispatch_ms = None
-        if self.admission is not None:
+        if self.admission is not None or self.media_matrix:
             if not isinstance(generation_response, GenerationResponse):
                 raise CalibrationError(
                     f"{leg.name}: generation client returned no verifiable response envelope"
@@ -2392,9 +2473,11 @@ class Runner:
             "usage": {field: str(event[field]) for field in EVENT_TOKEN_FIELDS},
             "api_cost": {field: str(event[field]) for field in EVENT_MONEY_FIELDS},
         }
-        if self.admission is not None:
+        if self.admission is not None or self.media_matrix:
             record["admission"] = {
-                "implementation_sha": self.admission.implementation_sha,
+                "implementation_sha": (
+                    self.admission.implementation_sha if self.admission else None
+                ),
                 "thinking_level": leg.thinking_level,
                 "count_request_id": count_request_id,
                 "not_after": str(not_after),
@@ -2478,6 +2561,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--gemini-37-capabilities", action="store_true")
     parser.add_argument("--gemini-37-search", action="store_true")
     parser.add_argument("--gemini-37-media", action="store_true")
+    parser.add_argument("--gemini-media-matrix", action="store_true")
+    parser.add_argument("--media-profile", action="append", default=[])
     parser.add_argument("--admission-profile")
     parser.add_argument("--implementation-sha")
     parser.add_argument("--production-capacity-over-ssh", action="store_true")
@@ -2530,10 +2615,72 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             parser.error("Gemini 3.7 admission requires one exact canary port")
         if args.production_api_port == DEFAULT_PRODUCTION_API_PORT:
             parser.error("Gemini 3.7 admission must target a non-public canary port")
+    if args.gemini_media_matrix:
+        if args.resume_report:
+            parser.error("Gemini media matrix cannot resume or replay a prior report")
+        if args.models:
+            parser.error("Gemini media matrix fixes the model set itself")
+        if args.admission_profile or args.implementation_sha:
+            parser.error("Gemini media matrix takes exact targets only via --media-profile")
+        matrix_models = set(MEDIA_MATRIX_MODELS)
+        targets = parse_media_profile_targets(args.media_profile)
+        if set(targets) != matrix_models:
+            parser.error(
+                "Gemini media matrix requires one --media-profile <model>=<profile> for each of: "
+                + ", ".join(sorted(matrix_models))
+            )
+        if args.execute and not (
+            args.production_capacity_over_ssh and args.production_api_over_ssh
+        ):
+            parser.error("Gemini media matrix requires both production SSH transports")
+        if args.production_capacity_port != args.production_api_port:
+            parser.error("Gemini media matrix requires one exact canary port")
+        if args.production_api_port == DEFAULT_PRODUCTION_API_PORT:
+            parser.error("Gemini media matrix must target a non-public canary port")
     return args
 
 
+def parse_media_profile_targets(values: list[str]) -> dict[str, str]:
+    targets: dict[str, str] = {}
+    for value in values:
+        model, separator, profile = value.partition("=")
+        if not separator or not model or not profile:
+            raise argparse.ArgumentError(
+                None, f"invalid --media-profile mapping: {value!r} (want <model>=<profile>)"
+            )
+        if model in targets:
+            raise argparse.ArgumentError(None, f"duplicate --media-profile model: {model!r}")
+        targets[model] = profile
+    return targets
+
+
 def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
+    if args.gemini_media_matrix:
+        targets = parse_media_profile_targets(args.media_profile)
+        legs_planned = sum(len(kinds) for kinds in MEDIA_MATRIX_MODELS.values())
+        return {
+            "schema": "gemini-media-matrix-plan/v1",
+            "mode": "dry-run",
+            "paid_requests_sent": 0,
+            "planned_count_requests": legs_planned,
+            "planned_paid_generation_requests": legs_planned,
+            "budget_nanousd_total": str(budget_nano),
+            "models": {
+                model: {"profile_id": targets[model], "legs": list(kinds)}
+                for model, kinds in MEDIA_MATRIX_MODELS.items()
+            },
+            "guards": [
+                "one-free-countTokens-per-paid-generation",
+                "one-paid-generation-attempt-per-model-modality",
+                "no-resume-retry-reconnect-or-replay",
+                "exact-profile-and-uuidv4-attribution",
+                "exact-current-tariff-ceiling-times-generation-count",
+                "pre-deadline-count-and-generation-dispatch-attestation",
+                "raw-modelVersion-terminal-usage-and-response-event-parity",
+                "content-perception-marker-required-per-modality",
+                "per-leg-coverage-misses-recorded-not-fatal",
+            ],
+        }
     if args.gemini_37_media:
         return {
             "schema": "gemini-3.7-media-plan/v1",
@@ -2724,9 +2871,14 @@ def main(argv: list[str] | None = None) -> int:
         and state["cooling_until"] <= now
         and state["persistence_ok"]
     )
+    media_targets: dict[str, str] = (
+        parse_media_profile_targets(args.media_profile) if args.gemini_media_matrix else {}
+    )
     profiles = (
         [args.admission_profile]
         if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search or args.gemini_37_media
+        else sorted(set(media_targets.values()))
+        if args.gemini_media_matrix
         else (resume.profiles if resume else healthy_profiles)
     )
     if not profiles:
@@ -2740,6 +2892,8 @@ def main(argv: list[str] | None = None) -> int:
     models = (
         [GEMINI_37_ADMISSION_MODEL]
         if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search or args.gemini_37_media
+        else sorted(MEDIA_MATRIX_MODELS)
+        if args.gemini_media_matrix
         else (resume.models if resume else (args.models or sorted(rates)))
     )
     unknown = sorted(set(models) - set(rates))
@@ -2807,6 +2961,7 @@ def main(argv: list[str] | None = None) -> int:
         run_id,
         profile_cache_scopes(profiles),
         admission,
+        media_matrix=args.gemini_media_matrix,
     )
     runner.records = list(resume.records) if resume else []
     unavailable: list[dict[str, Any]] = list(resume.unavailable) if resume else []
@@ -2902,9 +3057,24 @@ def main(argv: list[str] | None = None) -> int:
             )
             for name in GEMINI_37_MEDIA_KINDS
         ]
+    elif args.gemini_media_matrix:
+        legs = [
+            Leg(
+                f"media:{model}:{name}",
+                model,
+                name.removesuffix("-input"),
+                max_output_tokens=1024,
+            )
+            for model in models
+            for name in MEDIA_MATRIX_MODELS[model]
+        ]
     else:
         legs = build_coverage_legs(models, run_id, rates)
-    expected = {(profile, leg.name): leg for leg in legs for profile in profiles}
+    expected = {
+        (media_targets[leg.model], leg.name): leg for leg in legs
+    } if args.gemini_media_matrix else {
+        (profile, leg.name): leg for leg in legs for profile in profiles
+    }
     completed = {
         (record["profile_id"], record["leg"])
         for record in runner.records
@@ -2919,8 +3089,13 @@ def main(argv: list[str] | None = None) -> int:
             + ", ".join(f"{profile}/{leg}" for profile, leg in unknown_completed)
         )
     failure: str | None = None
+    schedule = (
+        [(media_targets[leg.model], leg) for leg in legs]
+        if args.gemini_media_matrix
+        else coverage_schedule(legs, profiles)
+    )
     try:
-        for profile, leg in coverage_schedule(legs, profiles):
+        for profile, leg in schedule:
             key = (profile, leg.name)
             if profile in stopped or key in completed:
                 continue
@@ -2940,6 +3115,7 @@ def main(argv: list[str] | None = None) -> int:
                         args.gemini_37_thinking_levels
                         or args.gemini_37_capabilities
                         or args.gemini_37_media
+                        or args.gemini_media_matrix
                     ):
                         # The level/capability matrices exist to map real per-control wire
                         # behavior. A failed control (e.g. MAX_TOKENS with thinking-only
@@ -2974,6 +3150,19 @@ def main(argv: list[str] | None = None) -> int:
                     or args.gemini_37_capabilities
                 ):
                     raise
+                if args.gemini_media_matrix and error.status in {400, 403, 404}:
+                    # A rejected modality is the answer the matrix exists to collect: record
+                    # it as tested-unavailable and continue the remaining legs.
+                    unavailable.append({
+                        "profile_id": profile,
+                        "model": leg.model,
+                        "capability": leg.name,
+                        "http_status": error.status,
+                        "reason": error.detail[:300],
+                        "blocking": True,
+                    })
+                    completed.add(key)
+                    continue
                 if error.status in {400, 403, 404}:
                     unavailable.append({
                         "profile_id": profile,

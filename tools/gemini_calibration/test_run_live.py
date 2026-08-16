@@ -457,6 +457,73 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         _evidence, error = run_live.verify_generation_response(leg, wrong, immutable)
         self.assertIn("perception marker", error)
 
+    def test_gemini_media_matrix_cli_covers_every_model_exactly_once(self):
+        matrix_args = []
+        for index, model in enumerate(sorted(run_live.MEDIA_MATRIX_MODELS), start=1):
+            matrix_args += ["--media-profile", f"{model}=profile-{index}"]
+        args = run_live.parse_args([
+            "--gemini-media-matrix",
+            *matrix_args,
+            "--production-capacity-port",
+            "18898",
+            "--production-api-port",
+            "18898",
+            "--budget-usd",
+            "26.5518592",
+        ])
+        plan = run_live.dry_run_plan(args, run_live.usd_to_nano(args.budget_usd))
+        self.assertEqual(plan["schema"], "gemini-media-matrix-plan/v1")
+        legs_planned = sum(len(kinds) for kinds in run_live.MEDIA_MATRIX_MODELS.values())
+        self.assertEqual(plan["planned_paid_generation_requests"], legs_planned)
+        self.assertEqual(set(plan["models"]), set(run_live.MEDIA_MATRIX_MODELS))
+        # The image-generation model admits only the PDF leg (its official input surface
+        # is Text/Image/PDF); 2.5-flash has no official PDF claim; 3.7-flash stays out of
+        # the matrix because its media evidence is already recorded.
+        self.assertEqual(
+            run_live.MEDIA_MATRIX_MODELS["gemini-3.1-flash-image"],
+            ("pdf-input",),
+        )
+        self.assertNotIn("pdf-input", run_live.MEDIA_MATRIX_MODELS["gemini-2.5-flash"])
+        self.assertNotIn("gemini-3.7-flash", run_live.MEDIA_MATRIX_MODELS)
+
+        with self.assertRaises(SystemExit):
+            run_live.parse_args(["--gemini-media-matrix"])
+        with self.assertRaises(SystemExit):
+            run_live.parse_args([
+                "--gemini-media-matrix",
+                "--gemini-37-media",
+                *matrix_args,
+            ])
+
+    def test_gemini_media_matrix_generic_leg_carries_marker_and_exact_target(self):
+        leg = run_live.Leg(
+            "media:gemini-3.6-flash:video-input",
+            "gemini-3.6-flash",
+            "video",
+            max_output_tokens=1024,
+        )
+        body = run_live.body_for_media_leg(leg)
+        self.assertEqual(
+            body["contents"][0]["parts"][0]["inlineData"]["mimeType"],
+            "video/mp4",
+        )
+        response = run_live.GenerationResponse(
+            frames=({
+                "modelVersion": "gemini-3.6-flash",
+                "candidates": [{
+                    "content": {"parts": [{"text": "red"}]},
+                    "finishReason": "STOP",
+                }],
+                "usageMetadata": {"promptTokenCount": 90, "candidatesTokenCount": 8},
+            },),
+            stream=False,
+        )
+        immutable = event(model=leg.model)
+        immutable.update({"input_tokens": 90, "output_tokens": 8})
+        immutable = run_live.recent_turn_events(capacity([immutable]))["req-1"]
+        _evidence, error = run_live.verify_generation_response(leg, response, immutable)
+        self.assertIsNone(error)
+
     def test_gemini_37_brief_sse_accepts_a_single_visible_frame(self):
         model = run_live.GEMINI_37_ADMISSION_MODEL
         leg = run_live.Leg(

@@ -2928,23 +2928,46 @@ async fn every_public_error_marks_the_execution_not_started() {
 #[tokio::test]
 async fn inline_audio_is_rejected_before_provider_dispatch() {
     let server = start_mock(MockState::default()).await;
-    let fixture = gateway_fixture(&server.upstream, &[None], 1);
-    let response = invoke(
-        app_state(fixture.gateway.clone(), None),
-        json!({
-            "contents": [{
-                "role": "user",
-                "parts": [{
-                    "inlineData": {
-                        "mimeType": "audio/wav",
-                        "data": "UklGRg=="
-                    }
-                }]
+    let fixture = gateway_fixture_with_models(
+        &server.upstream,
+        &[None],
+        1,
+        None,
+        OAuthKind::LegacyGeminiCli,
+        64,
+        &["gemini-3.1-flash-image"],
+    );
+    let body = json!({
+        "contents": [{
+            "role": "user",
+            "parts": [{
+                "text": "describe this sound",
+                "inlineData": {
+                    "mimeType": "audio/wav",
+                    "data": "UklGRg=="
+                }
             }]
-        }),
-        false,
+        }]
+    });
+    let request = axum::extract::Request::builder()
+        .method(Method::POST)
+        // Every published text model now admits inline audio; the image-generation
+        // surface is the remaining fail-closed route.
+        .uri("/v1beta/models/gemini-3.1-flash-image:generateContent")
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let response = match api_inner(
+        app_state(fixture.gateway.clone(), None),
+        "198.51.100.10:12345".parse().unwrap(),
+        request,
     )
-    .await;
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => error.into_response(),
+    };
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(
@@ -5169,7 +5192,7 @@ fn independently_billed_or_unknown_server_tools_fail_closed() {
 
 #[test]
 fn audio_input_fails_closed_until_usage_reports_authoritative_modality_tokens() {
-    let model = catalog_model("gemini-2.5-flash-lite");
+    let model = catalog_model("gemini-3.1-flash-image");
     let audio = json!({
         "contents": [{
             "parts": [{
@@ -5217,14 +5240,21 @@ fn audio_input_fails_closed_until_usage_reports_authoritative_modality_tokens() 
         Operation::Generate,
         &json!({
             "contents": [{
-                "parts": [{
-                    "inlineData": {"mimeType": "image/png", "data": "iVBORw0KGgo="}
-                }]
+                "parts": [
+                    {"text": "generate a blue circle"},
+                    {"inlineData": {"mimeType": "image/png", "data": "iVBORw0KGgo="}}
+                ]
             }]
         }),
         &model,
     )
     .expect("same-priced inline image input remains available");
+
+    // Published text models accept inline audio: the fleet media matrix admits each one with a
+    // mandatory perception marker, and the usage fallback accounts the exact WAV duration.
+    let text_model = catalog_model("gemini-2.5-flash-lite");
+    validate_native_request(Operation::Generate, &audio, &text_model)
+        .expect("published text models admit inline audio after the fleet media matrix");
 }
 
 #[test]

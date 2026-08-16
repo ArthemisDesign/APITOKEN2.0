@@ -1392,15 +1392,13 @@ fn validate_image_generation_request(body: &Value, model: &GeminiModel) -> Resul
 
 fn validate_generation_request(body: &Value, model: &GeminiModel) -> Result<(), ApiError> {
     validate_no_file_data(body)?;
-    if model.id != "gemini-3-flash-preview" && model.id != "gemini-3.7-flash" && has_inline_audio_data(body) {
-        // Current published subscription routes other than Flash Preview and the
-        // live-admitted 3.7 Flash collapse audio into generic prompt tokens and omit
-        // promptTokensDetails[AUDIO]. Flash Preview has a bounded exact PCM WAV fallback,
-        // and 3.7 Flash was live-admitted for audio on 2026-08-16 (content-perception proof);
-        // every other model must reject audio before dispatch.
+    if model.is_image_generation() && has_inline_audio_data(body) {
+        // The image-generation model has no official audio surface. Published text models accept
+        // inline audio/wav: 3-flash-preview and 3.7-flash were live-admitted first, and the
+        // fleet-wide media matrix (2026-08-16) carries the same perception-marker contract for
+        // every remaining text model.
         return Err(ApiError::unsupported(
-            "Audio input is not available for this model on the subscription gateway. \
-             Only gemini-3-flash-preview and gemini-3.7-flash accept audio, as inline audio/wav.",
+            "Audio input is not available for this model on the subscription gateway.",
             "AUDIO_INPUT_UNSUPPORTED",
         ));
     }
