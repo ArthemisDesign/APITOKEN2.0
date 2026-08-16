@@ -1103,7 +1103,7 @@ def body_for_leg(
         generation["thinkingConfig"] = {"thinkingLevel": leg.thinking_level}
     if leg.kind == "image":
         generation.update({
-            "responseModalities": ["IMAGE"],
+            "responseModalities": ["TEXT", "IMAGE"],
             "imageConfig": {"imageSize": leg.image_size},
         })
     body: dict[str, Any] = {

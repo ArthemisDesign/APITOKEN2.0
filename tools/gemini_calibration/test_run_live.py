@@ -782,10 +782,16 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         self.assertTrue(any(leg.kind == "tool" for leg in legs))
         self.assertTrue(any(leg.kind == "search" for leg in legs))
         self.assertTrue(any(leg.kind == "long" for leg in legs))
+        image_legs = [leg for leg in legs if leg.kind == "image"]
         self.assertEqual(
-            {leg.image_size for leg in legs if leg.kind == "image"},
+            {leg.image_size for leg in image_legs},
             {"1K", "2K", "4K"},
         )
+        self.assertTrue(all(
+            run_live.body_for_leg(leg, "run")["generationConfig"]["responseModalities"]
+            == ["TEXT", "IMAGE"]
+            for leg in image_legs
+        ))
 
     def test_cache_and_audio_replays_are_identical_per_profile_but_isolated_between_profiles(self):
         legs = run_live.build_coverage_legs(["gemini-2.5-flash"], "run")
