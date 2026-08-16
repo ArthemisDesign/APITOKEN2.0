@@ -5,6 +5,7 @@ export * from "./auth.js";
 export * from "./outbox.js";
 export * from "./referrals.js";
 export * from "./discount-links.js";
+export * from "./external-referral-aliases.js";
 export * from "./commissions.js";
 export * from "./commissions-v2.js";
 export * from "./payouts.js";

@@ -271,6 +271,16 @@ rows are reject-only, and an old batch without an `earned_before` checkpoint mus
 
 Commerce calls sales-api at `SALES_API_URL` with the same `SALES_CONTROL_KEY`.
 
+- `POST /v1/internal/partners/external-referral-alias` — idempotently issues an opaque public
+  `?ref=` alias for one trusted server-side acquisition object. Body
+  `{source, externalRef, partnerCode}` → `{source, externalRef, code, partnerId, createdAt}`.
+  `(source, externalRef)` is immutable: an exact replay returns the same alias, while an attempt to
+  move it to another partner returns 409. `partnerCode` must belong to an active partner. The alias
+  contains no email/contact identifier, resolves to that partner during the existing attribution
+  sync, and always carries `discountBps=0`; it cannot create or revive a legacy price marker. This
+  producer is consumed only by Commerce, under `SALES_CONTROL_KEY`; an external CRM never receives
+  that broad boundary key.
+
 - `POST /v1/internal/promo/redeem` — redeeming a partner promo code (called from
   `apps/api/src/promo.service.ts`, public `POST /v1/promo/redeem`). Body
   `{code, commerceUserId}` → `{valueNano, partnerId, referralCode, redemptionRef, discountBps,
@@ -299,6 +309,11 @@ Rules: sales does not open the commerce/engine PostgreSQL and does not import `@
 commerce symmetrically does not open the sales DB — everything goes through HTTP under the key.
 Money amounts — only integer nanoUSD decimal strings; end-user emails are never given to a partner
 (the dashboard shows only a masked user-id).
+
+External referral aliases live in `external_referral_aliases`, not in
+`partner_discount_links`. Their only job is identity-preserving attribution to an ordinary partner;
+commission, suspension, first-touch user binding and every payout rule remain unchanged. Deleting a
+partner with an issued alias is blocked just like deleting one with referral history.
 
 ## Attribution on the main site
 

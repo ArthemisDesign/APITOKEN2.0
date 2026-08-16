@@ -227,7 +227,7 @@ export async function deletePartnerAdmin(database: SalesDatabase, partnerId: str
       await client.query("ROLLBACK");
       return false;
     }
-    const history = await client.query<{ referred: string; topups: string; commissions: string; adjustments: string; payouts: string; children: string; promos: string; links: string }>(`
+    const history = await client.query<{ referred: string; topups: string; commissions: string; adjustments: string; payouts: string; children: string; promos: string; links: string; aliases: string }>(`
       SELECT
         (SELECT count(*) FROM referred_users WHERE partner_id = $1)::text AS referred,
         (SELECT count(*) FROM referred_topups WHERE partner_id = $1)::text AS topups,
@@ -240,10 +240,11 @@ export async function deletePartnerAdmin(database: SalesDatabase, partnerId: str
         (SELECT count(*) FROM payouts WHERE partner_id = $1)::text AS payouts,
         (SELECT count(*) FROM promo_codes WHERE partner_id = $1)::text AS promos,
         (SELECT count(*) FROM partner_discount_links WHERE partner_id = $1)::text AS links,
+        (SELECT count(*) FROM external_referral_aliases WHERE partner_id = $1)::text AS aliases,
         (SELECT count(*) FROM partners WHERE parent_partner_id = $1)::text AS children
     `, [partnerId]);
     const h = history.rows[0]!;
-    if (h.referred !== "0" || h.topups !== "0" || h.commissions !== "0" || h.adjustments !== "0" || h.payouts !== "0" || h.promos !== "0" || h.links !== "0" || h.children !== "0") {
+    if (h.referred !== "0" || h.topups !== "0" || h.commissions !== "0" || h.adjustments !== "0" || h.payouts !== "0" || h.promos !== "0" || h.links !== "0" || h.aliases !== "0" || h.children !== "0") {
       await client.query("ROLLBACK");
       throw new PartnerHasHistoryError(
         "partner has referrals, earnings, payouts or sub-partners — suspend instead of deleting",

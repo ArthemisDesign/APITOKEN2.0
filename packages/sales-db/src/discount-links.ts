@@ -1,4 +1,5 @@
 import type { SalesDatabase } from "./client.js";
+import { resolveExternalReferralAlias } from "./external-referral-aliases.js";
 
 // Legacy one-time attribution links. The first attributed user atomically consumes the code;
 // discount_bps is immutable audit metadata and is not a Commerce/engine price authority.
@@ -132,6 +133,10 @@ export async function resolveReferralCode(database: SalesDatabase, code: string)
   );
   if (partner.rows[0]) {
     return { partnerId: partner.rows[0].id, discountBps: 0, discountLinkId: null, discountLinkConsumed: false };
+  }
+  const alias = await resolveExternalReferralAlias(database, code);
+  if (alias) {
+    return { partnerId: alias.partnerId, discountBps: 0, discountLinkId: null, discountLinkConsumed: false };
   }
   const link = await database.pool.query<{ id: string; partner_id: string; discount_bps: number; consumed_by_commerce_user_id: string | null }>(
     `SELECT dl.id, dl.partner_id, dl.discount_bps, dl.consumed_by_commerce_user_id

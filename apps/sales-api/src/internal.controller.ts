@@ -21,6 +21,9 @@ import { ConfigService } from "@nestjs/config";
 import { z } from "zod";
 import {
   findPartnerByReferralCode,
+  ensureExternalReferralAlias,
+  ExternalReferralAliasConflictError,
+  ExternalReferralAliasOwnerNotFoundError,
   redeemPromoCode,
   claimReferralDiscount,
   PromoAlreadyRedeemedError,
@@ -110,6 +113,39 @@ export class InternalPartnersController {
     return { found: true, partnerId: partner.id, referralDiscountBps: partner.referralDiscountBps };
   }
 
+  /**
+   * Producer for trusted server-side acquisition tools. The alias contains no customer identity,
+   * does not change pricing, and resolves through the ordinary partner attribution path.
+   */
+  @Post("external-referral-alias")
+  @HttpCode(200)
+  async externalReferralAlias(@Body() body: unknown): Promise<unknown> {
+    const parsed = externalReferralAliasSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException("invalid external referral alias payload");
+    try {
+      const alias = await ensureExternalReferralAlias(this.database, {
+        source: parsed.data.source,
+        externalRef: parsed.data.externalRef,
+        partnerReferralCode: parsed.data.partnerCode.toLowerCase(),
+      });
+      return {
+        source: alias.source,
+        externalRef: alias.externalRef,
+        code: alias.aliasCode,
+        partnerId: alias.partnerId,
+        createdAt: alias.createdAt.toISOString(),
+      };
+    } catch (error) {
+      if (error instanceof ExternalReferralAliasOwnerNotFoundError) {
+        throw new NotFoundException("active referral owner not found");
+      }
+      if (error instanceof ExternalReferralAliasConflictError) {
+        throw new ConflictException("external referral reference already has another owner");
+      }
+      throw error;
+    }
+  }
+
   // Atomically consumes a legacy one-time attribution link and returns its marker only to the
   // winner. The marker does not change pricing; ordinary/already-consumed codes return zero.
   // POST, т.к. мутирует (consume). Идемпотентно по (code,user).
@@ -127,6 +163,12 @@ const claimSchema = z.object({
   code: z.string().trim().regex(/^[A-Za-z0-9_-]{3,32}$/),
   commerceUserId: z.string().uuid(),
 });
+
+const externalReferralAliasSchema = z.object({
+  source: z.string().regex(/^[a-z][a-z0-9_-]{1,31}$/),
+  externalRef: z.string().min(1).max(128).regex(/^[A-Za-z0-9:_-]+$/),
+  partnerCode: z.string().trim().regex(/^[A-Za-z0-9_-]{3,32}$/),
+}).strict();
 
 function safeEqual(left: string, right: string): boolean {
   const a = createHash("sha256").update(left).digest();
