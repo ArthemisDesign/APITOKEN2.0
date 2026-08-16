@@ -13,6 +13,7 @@ import { ContentStudioModule } from "./content-studio.module.js";
 import { SalesFeedModule } from "./sales-feed.module.js";
 import { PromoController } from "./promo.controller.js";
 import { PromoService } from "./promo.service.js";
+import { CrmBridgeModule } from "./crm-bridge.module.js";
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { PromoService } from "./promo.service.js";
     SecurityModule,
     PaymentsModule,
     SalesFeedModule,
+    CrmBridgeModule,
   ],
   controllers: [HealthController, PromoController],
   providers: [ReadinessService, PromoService],

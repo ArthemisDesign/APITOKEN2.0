@@ -58,6 +58,13 @@ const environmentSchema = z.object({
   SALES_CONTROL_KEY: z.string().min(32).optional(),
   // База sales-api для обратного вызова (погашение промокодов). Не задано — промо выключено.
   SALES_API_URL: z.string().url().optional(),
+  // Узкий PII-мост CRM→Commerce. Он не переиспользует sales/admin credentials и включается
+  // только полной парой; партнёрский владелец всегда выбирается сервером, а не телом запроса.
+  CRM_CONTROL_KEY: z.preprocess((value) => value === "" ? undefined : value, z.string().min(32).optional()),
+  CRM_REFERRAL_PARTNER_CODE: z.preprocess(
+    (value) => value === "" ? undefined : value,
+    z.string().trim().regex(/^[A-Za-z0-9_-]{3,32}$/).optional(),
+  ),
   DIGISELLER_SELLER_ID: z.coerce.number().int().positive().optional(),
   DIGISELLER_API_KEY: z.string().min(1).optional(),
   DIGISELLER_PRODUCT_ID: z.coerce.number().int().positive().optional(),
@@ -100,6 +107,18 @@ const environmentSchema = z.object({
   }
   if (value.MIN_TOPUP_USD > value.MAX_TOPUP_USD) {
     context.addIssue({ code: "custom", message: "MIN_TOPUP_USD must not exceed MAX_TOPUP_USD" });
+  }
+  if (Boolean(value.CRM_CONTROL_KEY) !== Boolean(value.CRM_REFERRAL_PARTNER_CODE)) {
+    context.addIssue({
+      code: "custom",
+      message: "CRM_CONTROL_KEY and CRM_REFERRAL_PARTNER_CODE must be set together",
+    });
+  }
+  if (value.CRM_CONTROL_KEY && (!value.SALES_API_URL || !value.SALES_CONTROL_KEY)) {
+    context.addIssue({
+      code: "custom",
+      message: "CRM bridge requires SALES_API_URL and SALES_CONTROL_KEY",
+    });
   }
   const googleConfigured = [value.GOOGLE_CLIENT_ID, value.GOOGLE_CLIENT_SECRET, value.GOOGLE_REDIRECT_URI]
     .filter((item) => item !== undefined).length;

@@ -46,6 +46,7 @@ document, update this index.
 - [PLATEGA_INTEGRATION.md](commerce/PLATEGA_INTEGRATION.md) — accepting payments via Platega (default provider).
 - [DIGISELLER_INTEGRATION.md](commerce/DIGISELLER_INTEGRATION.md) — DigiSeller: provider disabled, adapter groundwork and enablement conditions.
 - [EMAIL_INTEGRATION.md](commerce/EMAIL_INTEGRATION.md) — transactional email and self-hosted SMTP.
+- [CRM_BRIDGE.md](commerce/CRM_BRIDGE.md) — live least-privilege CRM referral link, registration, pricing and money bridge.
 
 ## sales/ — the affiliate arm (`apps/sales-*`, `packages/sales-db`)
 

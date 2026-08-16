@@ -70,4 +70,24 @@ describe("commercial API configuration", () => {
       CONTENT_STUDIO_ENGINE_KEY: `sk-pool-${"x".repeat(32)}`,
     }).CONTENT_STUDIO_ENGINE_KEY).toMatch(/^sk-pool-/);
   });
+
+  it("enables the CRM bridge only with its dedicated key, owner and Sales boundary", () => {
+    const enabled = validateEnvironment({
+      ...requiredEnvironment,
+      SALES_API_URL: "https://sales.example.test",
+      SALES_CONTROL_KEY: "s".repeat(32),
+      CRM_CONTROL_KEY: "c".repeat(32),
+      CRM_REFERRAL_PARTNER_CODE: "crm-owner",
+    });
+    expect(enabled.CRM_REFERRAL_PARTNER_CODE).toBe("crm-owner");
+    expect(() => validateEnvironment({
+      ...requiredEnvironment,
+      CRM_CONTROL_KEY: "c".repeat(32),
+    })).toThrow("CRM_CONTROL_KEY and CRM_REFERRAL_PARTNER_CODE must be set together");
+    expect(() => validateEnvironment({
+      ...requiredEnvironment,
+      CRM_CONTROL_KEY: "c".repeat(32),
+      CRM_REFERRAL_PARTNER_CODE: "crm-owner",
+    })).toThrow("CRM bridge requires SALES_API_URL and SALES_CONTROL_KEY");
+  });
 });
