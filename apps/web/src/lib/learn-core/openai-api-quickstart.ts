@@ -5,28 +5,31 @@ export const article: LearnArticle = {
   slug: "openai-api-quickstart",
   cluster: "integrate",
   title: "OpenAI-Compatible API Quickstart — GPT-5.6 on One Key",
-  h1: "OpenAI-compatible API quickstart: Responses and Chat Completions",
-  description: "Run GPT-5.6 models on apiToken.sale through the OpenAI-compatible API — Responses and Chat Completions with SSE streaming, one sk-pool key and balance shared with Claude, at a flat 50% off.",
-  keywords: ["openai compatible api", "gpt-5.6 api", "responses api", "chat completions custom base url", "openai sdk base_url", "gpt api key", "gpt-5.6 price", "gpt-5.6-sol", "openai api alternative"],
-  dek: "Your sk-pool key is not Claude-only. The same key and prepaid balance also serve the GPT-5 line through an OpenAI-compatible endpoint — standard Responses and Chat Completions calls, official OpenAI SDKs, SSE streaming, and the same flat 50% discount.",
+  h1: "OpenAI-compatible API quickstart: from curl to the official SDK",
+  description: "OpenAI-compatible API quickstart: call GPT-5.6 models on apiToken.sale through Responses and Chat Completions with SSE streaming — one sk-pool key, a shared prepaid balance with Claude, and a flat 50% off official rates.",
+  keywords: ["openai compatible api", "openai compatible api quickstart", "gpt-5.6 api", "responses api example", "chat completions custom base url", "openai sdk base_url", "gpt api key alternative", "gpt-5.6-sol", "openai api endpoint redirect", "gpt-5.6 price per token"],
+  dek: "Looking for an OpenAI-compatible API you can hit in the next five minutes? Point any OpenAI client at https://router.apitoken.sale/v1 with one sk-pool key and the same prepaid balance that already covers Claude. Responses and Chat Completions both stream over SSE, and GPT-5.6 usage bills at official OpenAI token rates minus your flat 50% discount.",
   sections: [
-    { h2: "Three steps to your first GPT call", blocks: [
+    { h2: "Your first GPT-5.6 response in three steps", blocks: [
+      { type: "p", text: "The whole migration from OpenAI's API to this endpoint is a base URL and a header swap. There is no new SDK to learn, no adapter layer, and no separate account for GPT — the key you may already use for Claude is the same credential here, and the same prepaid balance meters both providers." },
       { type: "steps", items: [
-        "Create a free account and generate one API key (it looks like sk-pool-…) — the same key already covers Claude models too.",
-        `Point your client at ${OPENAI_BASE} and authenticate with Authorization: Bearer — not x-api-key; that header belongs to the Anthropic surface.`,
-        "Confirm the enabled models with GET https://router.apitoken.sale/v1/models — the unified catalog namespaces IDs by provider (anthropic/*, openai/*, google/*) — then send a Responses request.",
+        "Create a free account and generate one API key — it looks like sk-pool-… and already covers supported Claude, Gemini and Kimi models on their own protocol surfaces.",
+        `Point your client at ${OPENAI_BASE} and authenticate with Authorization: Bearer — do not send x-api-key; that header belongs to the Anthropic Messages surface and will be rejected here.`,
+        "Confirm the enabled model set with GET https://router.apitoken.sale/v1/models — the unified catalog namespaces IDs by provider (anthropic/*, openai/*, google/*) — then send the Responses request below.",
       ] },
       { type: "code", code: `curl ${OPENAI_BASE}/responses \\\n  -H "Authorization: Bearer $APITOKEN_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-sol",\n    "input": "Reply with exactly: connected"\n  }'` },
+      { type: "p", text: "If the body comes back with output text, you are done — every other client you own is a one-line configuration change away from working the same way." },
       cta(),
     ] },
-    { h2: "Use the official OpenAI SDK", blocks: [
-      { type: "p", text: "The official SDKs work unchanged — only base_url and the key change. Keep the key in a server-side environment variable in production." },
+    { h2: "Two constructor arguments switch the official SDK", blocks: [
+      { type: "p", text: "The official OpenAI SDKs work unchanged. Only base_url and the key change, and the key should live in a server-side environment variable in production — never in client-side code or a committed file." },
       { type: "code", code: `import os\nfrom openai import OpenAI\n\nclient = OpenAI(\n    api_key=os.environ["APITOKEN_API_KEY"],\n    base_url="${OPENAI_BASE}",\n)\n\nresponse = client.responses.create(\n    model="gpt-5.6-sol",\n    input="Reply with exactly: connected",\n)\nprint(response.output_text)` },
-      { type: "p", text: "Chat Completions is served on the same host if your client expects it — the model ID and key stay the same." },
+      { type: "p", text: "Frameworks that hard-code the Chat Completions shape — older LangChain chains, LiteLLM configs, most open-source chat UIs — work on the same host with the same model ID and key:" },
       { type: "code", code: `completion = client.chat.completions.create(\n    model="gpt-5.6-sol",\n    messages=[{"role": "user", "content": "Hello"}],\n)\nprint(completion.choices[0].message.content)` },
+      { type: "p", text: "Which surface should new code target? Responses. Both endpoints stream over SSE with identical models, pricing and discount, but Responses is the surface current OpenAI tooling builds around — it keeps reasoning items and tool calls in one typed stream and exposes conveniences like response.output_text. Chat Completions exists for clients and frameworks that expect the classic messages array; nothing you build on one surface locks you out of the other." },
     ] },
-    { h2: "Which GPT models are available", blocks: [
-      { type: "p", text: "The served set is pinned and priced in the engine; GET https://router.apitoken.sale/v1/models is always the live answer. Today the line covers three GPT-5.6 tiers and two previous-generation models:" },
+    { h2: "Model IDs, per-token prices and the 272K trap", blocks: [
+      { type: "p", text: "The served set is pinned and priced in the engine, and GET https://router.apitoken.sale/v1/models is always the live answer. Today the line covers three GPT-5.6 tiers plus two previous-generation models kept for compatibility:" },
       { type: "table", headers: ["Model ID", "Tier", "Official in / out ($ per 1M)", "Cached input"], rows: [
         ["gpt-5.6-sol (alias: gpt-5.6)", "Flagship", "$5 / $30", "$0.50"],
         ["gpt-5.6-terra", "Balanced", "$2 / $12", "$0.20"],
@@ -35,25 +38,32 @@ export const article: LearnArticle = {
         ["gpt-5.4", "Previous balanced", "$2.50 / $15", "$0.25"],
       ] },
       { type: "list", items: [
+        "Pick by tier: gpt-5.6-sol for the hardest reasoning, gpt-5.6-terra as the daily driver, gpt-5.6-luna for high-volume cheap calls. The alias gpt-5.6 tracks the flagship.",
         "Reasoning effort is adjustable per request — none through xhigh on every model, plus max on the GPT-5.6 line.",
         "Every model accepts text and image input and streams over SSE on both Responses and Chat Completions.",
-        "Requests above 272K input tokens bill at OpenAI long-context rates: 2× input and 1.5× output on the whole request.",
-        "Your B2C discount applies here exactly as it does to Claude usage — one balance, one rate, 50% off official spend.",
+        "Cached input is priced separately and far cheaper than fresh input ($0.50 vs $5 per 1M on the flagship) — keeping a stable prompt prefix across calls is real money, not a micro-optimization.",
+        "Your flat 50% B2C discount applies here exactly as it does to Claude usage — one balance, one rate, half off official spend.",
       ] },
+      { type: "note", text: "The 272K threshold is the trap: above it, OpenAI long-context rates apply to the whole request — 2× on input and 1.5× on output, not just the overflow. A request at 273K input tokens costs more than twice one at 270K. Split oversized contexts or trim history before you cross the boundary." },
       { type: "link", text: "Full per-model specs and discounted prices", href: "/models" },
     ] },
-    { h2: "What the endpoint does and does not cover", blocks: [
-      { type: "p", text: "This is an independent OpenAI-compatible service, not the OpenAI Platform. It serves model discovery, streaming Responses and Chat Completions, plus dedicated GPT Image 2 generation and edit routes. Audio, file, realtime, assistants, batch and fine-tuning endpoints are not available." },
-      { type: "note", text: "Errors come in the OpenAI envelope — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}. A 401 means the key or the auth header is wrong (use Bearer, not x-api-key), a 402 means the shared prepaid balance needs a top-up, and a 404 means the model ID is not enabled — check GET https://router.apitoken.sale/v1/models." },
+    { h2: "What this endpoint is — and is not", blocks: [
+      { type: "p", text: "This is an independent OpenAI-compatible service, not the OpenAI Platform. It serves model discovery, streaming Responses and Chat Completions, plus dedicated GPT Image 2 generation and edit routes. Audio, file, realtime, assistants, batch and fine-tuning endpoints are not available — if your app depends on those, it is not a candidate for migration. For pure text and vision chat workloads, though, the surface here is complete: nothing in a standard generate-or-stream loop touches an endpoint that is missing." },
+      { type: "p", text: "Errors arrive in the standard OpenAI envelope — {\"error\":{\"message\",\"type\",\"param\",\"code\"}} — so existing error-handling code keeps working. Three status codes cover almost everything you will see while integrating:" },
+      { type: "list", items: [
+        "401 — the key is wrong, revoked, or you sent x-api-key instead of Authorization: Bearer. Reproduce with curl outside your app to isolate which half is broken.",
+        "402 — the shared prepaid balance needs a top-up; no retry or backoff fixes an empty balance.",
+        "404 — the model ID is not enabled on your key; check GET https://router.apitoken.sale/v1/models instead of assuming a name from OpenAI's docs exists here.",
+      ] },
     ] },
   ],
   faq: [
-    { q: "Does the same key work beyond GPT?", a: "Yes. One sk-pool key and prepaid balance also cover supported Claude, Gemini and Kimi models; use the protocol and authentication header documented for each provider." },
-    { q: "Which auth header does the OpenAI-compatible endpoint use?", a: "Authorization: Bearer sk-pool-…. The x-api-key header is only for the Anthropic surface — sending it to the OpenAI endpoint returns a 401." },
-    { q: "Responses or Chat Completions?", a: "Both are served with SSE streaming. Use Responses for new code and the official SDKs; Chat Completions works for clients and frameworks that expect the classic shape." },
-    { q: "How is GPT usage billed?", a: "Per token at official OpenAI rates — including cached-input and long-context pricing — then your flat 50% B2C discount is subtracted before the charge touches your prepaid balance, exactly like Claude usage." },
+    { q: "Can I use my existing OpenAI SDK with a custom base URL?", a: `Yes — pass api_key and base_url="${OPENAI_BASE}" to the official client and everything else stays the same. Keep the key in a server-side environment variable in production.` },
+    { q: "Does one API key really cover GPT, Claude, Gemini and Kimi?", a: "Yes. One sk-pool key and one prepaid balance serve all four providers; you use the protocol and auth header documented for each surface (Bearer here, x-api-key on the Anthropic Messages endpoint)." },
+    { q: "Responses API or Chat Completions for a new project?", a: "Responses. Both stream over SSE with the same models and pricing, but Responses is the surface current OpenAI SDKs and tooling build around; Chat Completions exists for clients that expect the classic shape." },
+    { q: "Why do I get a 401 on the OpenAI-compatible endpoint?", a: "Almost always the auth header: this endpoint wants Authorization: Bearer sk-pool-…, and the x-api-key header from Anthropic-style setups returns a 401 here." },
   ],
   related: ["how-to-buy-gpt-api-key", "gpt-api-pricing", "gpt-5-6-sol-vs-terra-vs-luna", "codex-cli-setup"],
   published: "2026-07-29",
-  updated: "2026-07-29",
+  updated: "2026-08-17",
 };
