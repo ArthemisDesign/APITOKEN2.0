@@ -1272,6 +1272,39 @@ fn unknown_top_level_tool_types_are_dropped_not_rejected() {
     assert_eq!(parsed.dynamic_tools[0]["name"], "get_weather");
 }
 
+/// A history item type the gateway has no translation for is forwarded verbatim instead of failing
+/// the turn — the Responses backend is the authority on what it accepts. Structural requirements
+/// (an object carrying a type or a role) still hold, so genuinely malformed input fails locally.
+#[test]
+fn unknown_input_item_types_pass_through_verbatim() {
+    let parsed = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": [
+                {"type": "future_history_item", "id": "fh_1", "payload": {"note": "kept"}},
+                {"role": "user", "content": "continue"}
+            ]
+        }),
+    )
+    .unwrap();
+    assert_eq!(parsed.input.canonical_items.len(), 2);
+    assert_eq!(
+        parsed.input.canonical_items[0],
+        json!({"type": "future_history_item", "id": "fh_1", "payload": {"note": "kept"}})
+    );
+
+    let untyped = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": [{"id": "fh_2"}]
+        }),
+    )
+    .unwrap_err();
+    assert_eq!(untyped.param.as_deref(), Some("input.0.type"));
+}
+
 #[test]
 fn strict_function_tools_are_silently_downgraded() {
     let parsed = parse_responses_request(

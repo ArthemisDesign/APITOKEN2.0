@@ -25,7 +25,13 @@ use tokio::sync::mpsc;
 
 pub(super) const OPENAI_BODY_LIMIT: usize = 8 * 1024 * 1024;
 pub(super) const MAX_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
-const MAX_TOOLS: usize = 128;
+/// Sanity bound against a pathological body, not a model of the provider's own tool-count limit —
+/// the 8 MiB body cap is what really bounds parsing work, and the backend is the authority on how
+/// many tools it accepts. It sits far above any real client: a Codex config wiring several MCP
+/// servers routinely declares a few hundred tools (namespace children included), and the old
+/// 128-tool cap would have failed those turns locally with a deterministic 400 before the provider
+/// ever saw them.
+const MAX_TOOLS: usize = 1024;
 const MAX_CUSTOM_TOOL_GRAMMAR_BYTES: usize = 256 * 1024;
 /// Codex 0.146 exposes client-side deferred tool discovery as a Responses-native `tool_search`
 /// tool. The pinned 0.145 upstream client does not know that wire type, so the gateway presents an
@@ -1772,10 +1778,15 @@ fn normalize_response_item(item: &Value, index: usize) -> Result<Value, ApiError
         "tool_search_call" => normalize_tool_search_call(object, index),
         "tool_search_output" => normalize_tool_search_output(object, index),
         "agent_message" => normalize_agent_message_item(object, index),
-        _ => Err(ApiError::invalid(
-            format!("Input item type {kind:?} is not supported by this endpoint."),
-            Some(format!("input.{index}.type")),
-        )),
+        // A history item type this gateway has no translation for is forwarded verbatim, like
+        // `reasoning` and the tool-call items above. Input items are conversation history, never a
+        // capability grant — the backend executes only what the tool list declares — so passing an
+        // unknown one through cannot start an unmetered hosted call. What it does avoid is the
+        // failure mode that keeps recurring here: the client ships a new item type (`agent_message`
+        // was the last one) and every turn replaying that history dies locally on a deterministic
+        // 400 until the gateway is taught the type. Now the authority on what the Responses
+        // backend accepts is the backend itself.
+        _ => Ok(item.clone()),
     }
 }
 

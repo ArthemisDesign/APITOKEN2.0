@@ -162,7 +162,16 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   break callers on the next client release that adds a type. Both lists reach the same verdict for
   the same descriptor — unknown descriptor fields ignored, `strict` degraded rather than rejected,
   identifiers bounded at 128 bytes of letters/digits/underscore/hyphen/dot — so a tool is never
-  accepted on one model family and rejected on another.
+  accepted on one model family and rejected on another. The 1024-tool ceiling is a sanity bound on
+  a pathological body, not a model of the provider's own limit: the 8 MiB body cap bounds parsing
+  work and the backend stays the authority, so an MCP-heavy config with a few hundred declared
+  tools is never failed locally first.
+  History items follow the same principle: `message`, `reasoning`, the tool-call/-output pairs,
+  `tool_search_*` and `agent_message` are translated, and an item type the gateway does not know is
+  forwarded verbatim for the backend to judge. Input items are history, never a capability grant —
+  only the tool list can start an executed, billable call — so passing one through is safe, while
+  rejecting it locally would repeat the `agent_message` failure, where every turn replaying a new
+  client item type died on a deterministic 400 until the gateway learned the type.
   Multi-agent collaboration (spawn_agent) persists inter-agent messages as `agent_message` history
   items and replays them into `input` on the next turn; the upstream Responses backend has no such
   item type, so the parser translates each one into a plain message — a message addressed to
