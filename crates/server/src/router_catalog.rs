@@ -79,14 +79,17 @@ pub(crate) async fn kimi(
                     "reasoning_efforts": REASONING_EFFORTS,
                     // Thinking is on by default and switched off through `thinking.type`, so the
                     // capability is proven. Image input is declared by the official Kimi Code
-                    // models page for every published subscription id (reviewed 2026-08-12:
-                    // k3/kimi-for-coding(-highspeed) image+video, k3-256k image-only), but it has
-                    // not been exercised live on the subscription route — that is what the media
-                    // capability probe in tools/kimi_calibration exists for. Structured outputs
-                    // are likewise unproven. `null` keeps both unknown instead of promising or
-                    // denying a capability we have not tested.
+                    // models page for every published subscription id (reviewed 2026-08-12) and
+                    // is now proven live: the media capability probe of tools/kimi_calibration
+                    // dispatched a 1x1 PNG inline part to every served family on the production
+                    // subscription route (run 2026-08-17, profile kimi-3e80dc1f94df83de,
+                    // exact request-id attribution on the immutable event; k3-256k,
+                    // kimi-for-coding high and thinking-off, kimi-for-coding-highspeed all
+                    // answered 2xx with real output and a metered cost inside the hold bound).
+                    // Structured outputs are still unproven, so `null` keeps that capability
+                    // unknown instead of promising or denying it.
                     "reasoning": true,
-                    "image_input": Value::Null,
+                    "image_input": true,
                     "structured_outputs": Value::Null,
                 })
             })

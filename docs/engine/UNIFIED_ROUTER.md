@@ -546,8 +546,14 @@ retired pricing design on 2026-08-10.
 KIMI entries carry the same normalized capability block as the other planes. Input modalities
 follow the producer's `image_input`: a proven `true` adds `image`, while `null` (unproven) keeps
 the entry text-only — an unproven capability is advertised neither as present nor as absent by
-fiat. Until the media capability probe of `tools/kimi_calibration` has run live, every `kimi/*`
-entry is therefore `input_modalities:["text"]`.
+fiat. The media capability probe of `tools/kimi_calibration` ran live on 2026-08-17 (1x1 PNG
+inline part on the production subscription route, exact request-id attribution, every served
+family answered 2xx with metered cost inside the hold bound), so the producer now publishes
+`image_input: true` and every `kimi/*` entry carries `input_modalities:["text","image"]`. Video
+input is declared by the official Kimi Code models page (reviewed 2026-08-12) for the k3 family
+only, so `kimi/k3`, `kimi/k3[1m]` and `kimi/k3-256k` additionally carry `video`; the coding
+aliases stay image-only. Video is a declared capability, not a live-proven one — the media
+probe exercises an image part, and the catalog says exactly that through the producer's gate.
 
 A namespaced `kimi/<alias>` is resolved by the Anthropic plane's admission back to the bare
 alias before dispatch (`KimiGateway::resolve_public_model`). The plane strips only its own

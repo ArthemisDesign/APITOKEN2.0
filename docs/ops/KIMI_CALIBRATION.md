@@ -149,13 +149,17 @@ with `kimi_tools_unpriced` is provider-executed work — `mcp_servers` and serve
 search/computer/code-execution tools — because it may bill a unit that is invisible in the body
 (unknown 8 of the manifest).
 
-What the probes still have to prove is on the provider side: that the subscription route actually
-accepts an image part and that the metered cost of a tool declaration or media part stays inside
-the hold bound. The media probe is the gate for advertising `image_input` in the unified router
-catalog — the official models page declares image input for every published subscription id
-(reviewed 2026-08-12), but a declaration is not live proof. The probes carry their own
-authorization switch, separate from the coverage budget, because their cost is exactly what is
-unproven:
+The media probe has now run live (2026-08-17, profile `kimi-3e80dc1f94df83de`, plan Vivace):
+a 1x1 PNG inline part was dispatched for every served family (`k3-256k`, `kimi-for-coding`
+high and thinking-off, `kimi-for-coding-highspeed`), each leg answered 2xx with real output,
+was attributed by exact request id to the immutable event, and its metered cost ($0.0002–$0.0009)
+stayed orders of magnitude inside the worst-case bound. The producer therefore advertises
+`image_input: true` and the unified router catalog publishes `input_modalities:["text","image"]`
+for every `kimi/*` entry (plus `video` for the k3 family per the official models page). The tool
+probe remains the open leg: provider-executed tools (`mcp_servers`, server-side
+search/computer/code-execution) stay refused with `kimi_tools_unpriced` until their unit cost is
+proven the same way. The probes carry their own authorization switch, separate from the coverage
+budget, because their cost is exactly what is unproven:
 
 ```bash
 python3 tools/kimi_calibration/run_live.py \

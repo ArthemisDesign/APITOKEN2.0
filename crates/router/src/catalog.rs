@@ -1001,7 +1001,10 @@ fn parse_gemini(body: &Value) -> ParseResult {
 /// plane has not proved. Everything else is fixed by what the gateway actually accepts —
 /// streaming and tool calling are exercised on every served turn, and the only output modality is
 /// text. Input modalities follow the producer's `image_input`: only a proven `true` adds `image`;
-/// `null`/`false` keep the entry text-only, so an unproven capability is never advertised.
+/// `null`/`false` keep the entry text-only, so an unproven capability is never advertised. Video
+/// input follows the official Kimi Code models page: it is declared for the k3 family
+/// (`k3`/`k3[1m]`/`k3-256k`) and never for the coding aliases, so `video` is added only on top
+/// of a proven image gate and only for that family.
 fn parse_kimi(body: &Value) -> ParseResult {
     let models = body.get("data").and_then(Value::as_array).ok_or(())?;
     if models.len() > MAX_MODELS_PER_PLANE {
@@ -1045,6 +1048,11 @@ fn parse_kimi(body: &Value) -> ParseResult {
                     Err(()) => return Some(Err(())),
                 };
                 let image_input = model.get("image_input").and_then(Value::as_bool);
+                // Video input is declared by the official Kimi Code models page for the k3
+                // family only (k3/k3[1m]/k3-256k); the coding aliases are declared image-only.
+                // It rides the producer's proven image gate: a `null`/`false` image_input keeps
+                // the entry text-only, and video is never advertised on its own.
+                let k3_family = matches!(id.as_str(), "k3" | "k3[1m]" | "k3-256k");
                 Some(Ok(CatalogEntry {
                     id: namespaced_id,
                     native_id: id.clone(),
@@ -1058,7 +1066,11 @@ fn parse_kimi(body: &Value) -> ParseResult {
                     reasoning_efforts,
                     service_tiers: Some(vec!["standard".to_string()]),
                     input_modalities: Some(if image_input == Some(true) {
-                        vec!["text".to_string(), "image".to_string()]
+                        let mut modalities = vec!["text".to_string(), "image".to_string()];
+                        if k3_family {
+                            modalities.push("video".to_string());
+                        }
+                        modalities
                     } else {
                         vec!["text".to_string()]
                     }),
@@ -1231,7 +1243,7 @@ mod tests {
     }
 
     #[test]
-    fn kimi_producer_proven_image_input_adds_the_image_modality() {
+    fn kimi_producer_proven_image_input_adds_image_and_video_to_the_k3_family() {
         let body = serde_json::json!({"schema_version": 1, "data": [
             {
                 "id": "k3-256k",
@@ -1247,11 +1259,36 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(
             entries[0].input_modalities.as_deref(),
-            Some(["text".to_string(), "image".to_string()].as_slice())
+            Some(
+                ["text".to_string(), "image".to_string(), "video".to_string()].as_slice()
+            )
         );
         assert_eq!(
             entries[0].output_modalities.as_deref(),
             Some(["text".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn kimi_coding_alias_with_proven_image_input_stays_video_free() {
+        // Video is declared for the k3 family only; a proven image capability on a coding
+        // alias must not leak a modality the provider does not declare for it.
+        let body = serde_json::json!({"schema_version": 1, "data": [
+            {
+                "id": "kimi-for-coding",
+                "display_name": "Kimi for Coding",
+                "max_input_tokens": 262_144,
+                "reasoning_efforts": ["none", "high"],
+                "reasoning": true,
+                "image_input": true,
+                "structured_outputs": null,
+            }
+        ]});
+        let entries = parse_kimi(&body).expect("producer envelope parses");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].input_modalities.as_deref(),
+            Some(["text".to_string(), "image".to_string()].as_slice())
         );
     }
 
