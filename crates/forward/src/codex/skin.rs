@@ -1721,6 +1721,9 @@ pub async fn count_tokens(
     let admitted_at = pool::now();
     let fact_seed = pending.request_fact_seed(
         parts.extensions.get::<crate::execution::LogicalRequestId>(),
+        parts
+            .extensions
+            .get::<crate::execution::ClientAttribution>(),
         admitted_at,
     );
     let tenant_scope = pending.tenant_scope().to_owned();
@@ -2022,6 +2025,7 @@ mod tests {
         body: Value,
         key: Option<&str>,
         logical_id: Option<&str>,
+        client: Option<&str>,
         attempt: Option<i32>,
     ) -> axum::extract::Request {
         let mut builder = axum::extract::Request::builder();
@@ -2045,6 +2049,11 @@ mod tests {
             let logical_id = crate::execution::admit_logical_request_id(&mut headers).unwrap();
             request.extensions_mut().insert(logical_id);
         }
+        if let Some(client) = client {
+            request
+                .extensions_mut()
+                .insert(client_attribution(Some(client)));
+        }
         request
     }
 
@@ -2063,6 +2072,17 @@ mod tests {
             .await
             .unwrap();
         (status, headers, bytes)
+    }
+
+    fn client_attribution(value: Option<&str>) -> crate::execution::ClientAttribution {
+        let mut headers = axum::http::HeaderMap::new();
+        if let Some(value) = value {
+            headers.insert(
+                crate::execution::CLIENT_ATTRIBUTION_HEADER,
+                axum::http::HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        crate::execution::admit_client_attribution(&mut headers)
     }
 
     fn valid_count_tokens_body() -> Value {
@@ -2114,7 +2134,13 @@ mod tests {
             let response = count_tokens(
                 State(test.app.clone()),
                 ConnectInfo(peer),
-                count_tokens_request(body, Some(RAW_KEY), Some(LOGICAL_ID), Some(2)),
+                count_tokens_request(
+                    body,
+                    Some(RAW_KEY),
+                    Some(LOGICAL_ID),
+                    Some("opencode/1.2.3"),
+                    Some(2),
+                ),
             )
             .await;
             assert_eq!(response.status(), expected_status);
@@ -2135,12 +2161,13 @@ mod tests {
             assert!(!fact.stream_flag);
             assert_eq!(
                 fact.client_kind,
-                registry::request_facts::ClientKind::Unknown
+                registry::request_facts::ClientKind::OpenCode
             );
             assert_eq!(
                 fact.client_source,
-                registry::request_facts::ClientSource::Unknown
+                registry::request_facts::ClientSource::Explicit
             );
+            assert_eq!(fact.client_version.as_deref(), Some("1.2.3"));
             assert_eq!(
                 fact.terminal.http_status_code,
                 Some(i32::from(expected_status.as_u16()))
@@ -2181,6 +2208,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn count_tokens_missing_or_malformed_client_attribution_stays_unknown() {
+        let peer = "192.0.2.1:443".parse().unwrap();
+        for client in [
+            None,
+            Some("OpenCode/1"),
+            Some("opencode/"),
+            Some("opencode/1/2"),
+        ] {
+            let (sender, mut receiver) = mpsc::channel(1);
+            let test = count_tokens_test_app(true, Some(sender)).await;
+            let response = count_tokens(
+                State(test.app.clone()),
+                ConnectInfo(peer),
+                count_tokens_request(
+                    valid_count_tokens_body(),
+                    Some(RAW_KEY),
+                    Some(LOGICAL_ID),
+                    client,
+                    None,
+                ),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK, "client={client:?}");
+            let fact = receiver.try_recv().expect("one terminal request fact");
+            assert_eq!(
+                fact.client_kind,
+                registry::request_facts::ClientKind::Unknown
+            );
+            assert_eq!(
+                fact.client_source,
+                registry::request_facts::ClientSource::Unknown
+            );
+            assert_eq!(fact.client_version, None);
+        }
+    }
+
+    #[tokio::test]
     async fn count_tokens_excludes_unauthorized_admin_and_missing_logical_context() {
         let peer = "192.0.2.1:443".parse().unwrap();
         for (key, logical_id, configure_admin, expected_status) in [
@@ -2204,7 +2268,7 @@ mod tests {
             let response = count_tokens(
                 State(test.app.clone()),
                 ConnectInfo(peer),
-                count_tokens_request(valid_count_tokens_body(), key, logical_id, None),
+                count_tokens_request(valid_count_tokens_body(), key, logical_id, None, None),
             )
             .await;
             assert_eq!(response.status(), expected_status);
@@ -2226,7 +2290,7 @@ mod tests {
             let baseline = count_tokens(
                 State(baseline.app.clone()),
                 ConnectInfo(peer),
-                count_tokens_request(body.clone(), Some(RAW_KEY), Some(LOGICAL_ID), None),
+                count_tokens_request(body.clone(), Some(RAW_KEY), Some(LOGICAL_ID), None, None),
             )
             .await;
             let baseline = response_snapshot(baseline).await;
@@ -2236,6 +2300,7 @@ mod tests {
                 .try_send(
                     super::super::billing::CodexRequestFactSeed::for_test(
                         LOGICAL_ID,
+                        client_attribution(None),
                         registry::ExecutionAttempt::direct(),
                         ACCOUNT_ID,
                         KEY_ID,
@@ -2248,7 +2313,7 @@ mod tests {
             let full = count_tokens(
                 State(full.app.clone()),
                 ConnectInfo(peer),
-                count_tokens_request(body.clone(), Some(RAW_KEY), Some(LOGICAL_ID), None),
+                count_tokens_request(body.clone(), Some(RAW_KEY), Some(LOGICAL_ID), None, None),
             )
             .await;
             let full = response_snapshot(full).await;
@@ -2259,7 +2324,7 @@ mod tests {
             let closed = count_tokens(
                 State(closed.app.clone()),
                 ConnectInfo(peer),
-                count_tokens_request(body, Some(RAW_KEY), Some(LOGICAL_ID), None),
+                count_tokens_request(body, Some(RAW_KEY), Some(LOGICAL_ID), None, None),
             )
             .await;
             let closed = response_snapshot(closed).await;
@@ -2284,7 +2349,7 @@ mod tests {
         let baseline = count_tokens(
             State(baseline_test.app.clone()),
             ConnectInfo(peer),
-            count_tokens_request(valid_count_tokens_body(), Some(RAW_KEY), None, None),
+            count_tokens_request(valid_count_tokens_body(), Some(RAW_KEY), None, None, None),
         )
         .await;
         let baseline = response_snapshot(baseline).await;
@@ -2295,6 +2360,7 @@ mod tests {
                 valid_count_tokens_body(),
                 Some(RAW_KEY),
                 Some(LOGICAL_ID),
+                None,
                 None,
             ),
         )
@@ -2390,6 +2456,7 @@ mod tests {
                     valid_count_tokens_body(),
                     Some(RAW_KEY),
                     Some(LOGICAL_ID),
+                    Some("claude_code/2.1.220"),
                     Some(2),
                 ),
             )
@@ -2432,9 +2499,9 @@ mod tests {
         assert_eq!(row.get::<_, String>(4), ACCOUNT_ID);
         assert_eq!(row.get::<_, String>(5), key_id);
         assert_ne!(row.get::<_, String>(5), RAW_KEY);
-        assert_eq!(row.get::<_, String>(6), "unknown");
-        assert_eq!(row.get::<_, String>(7), "unknown");
-        assert_eq!(row.get::<_, Option<String>>(8), None);
+        assert_eq!(row.get::<_, String>(6), "claude_code");
+        assert_eq!(row.get::<_, String>(7), "explicit");
+        assert_eq!(row.get::<_, Option<String>>(8).as_deref(), Some("2.1.220"));
         assert_eq!(row.get::<_, String>(9), "openai");
         assert_eq!(row.get::<_, String>(10), "universal");
         assert_eq!(row.get::<_, String>(11), "count_tokens");
@@ -2487,6 +2554,7 @@ mod tests {
         let seed = |attempt| {
             super::super::billing::CodexRequestFactSeed::for_test(
                 logical.as_str(),
+                client_attribution(None),
                 registry::ExecutionAttempt::grouped(EXECUTION_GROUP, attempt).unwrap(),
                 ACCOUNT_ID,
                 KEY_ID,

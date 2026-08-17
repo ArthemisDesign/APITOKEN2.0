@@ -4,7 +4,7 @@ use super::openai_image_snapshot::{
     openai_image_quote, OpenAiImageOperation, OpenAiImageQuoteInput,
 };
 use super::{CodexModel, CodexUsage};
-use crate::execution::LogicalRequestId;
+use crate::execution::{ClientAttribution, LogicalRequestId};
 use crate::metrics::Metrics;
 use crate::pricing::{tariff_book, EnginePricingRequestId};
 use crate::proxy::{authorize, Authz, HoldGuard};
@@ -12,8 +12,7 @@ use crate::state::AppState;
 use anyhow::Context as _;
 use axum::http::HeaderMap;
 use registry::request_facts::{
-    ClientKind, ClientSource, DeliveryState, ProviderTerminalClass, RequestFactTerminalEvidence,
-    TerminalRequestFact,
+    DeliveryState, ProviderTerminalClass, RequestFactTerminalEvidence, TerminalRequestFact,
 };
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
@@ -69,6 +68,7 @@ pub(crate) struct PendingCodexAdmission {
 /// deliberately carries the authoritative non-secret key identity but never the raw credential.
 pub(crate) struct CodexRequestFactSeed {
     logical_request_id: String,
+    client_attribution: ClientAttribution,
     execution: registry::ExecutionAttempt,
     account_id: String,
     key_id: String,
@@ -79,6 +79,7 @@ impl CodexRequestFactSeed {
     #[cfg(test)]
     pub(crate) fn for_test(
         logical_request_id: &str,
+        client_attribution: ClientAttribution,
         execution: registry::ExecutionAttempt,
         account_id: &str,
         key_id: &str,
@@ -86,6 +87,7 @@ impl CodexRequestFactSeed {
     ) -> Self {
         Self {
             logical_request_id: logical_request_id.into(),
+            client_attribution,
             execution,
             account_id: account_id.into(),
             key_id: key_id.into(),
@@ -119,9 +121,9 @@ impl CodexRequestFactSeed {
             attempt: self.execution.attempt(),
             account_id: self.account_id,
             key_id: self.key_id,
-            client_kind: ClientKind::Unknown,
-            client_source: ClientSource::Unknown,
-            client_version: None,
+            client_kind: self.client_attribution.kind(),
+            client_source: self.client_attribution.source(),
+            client_version: self.client_attribution.version().map(str::to_owned),
             provider_plane: "openai".into(),
             route_class: "universal".into(),
             request_class: "count_tokens".into(),
@@ -165,6 +167,7 @@ impl PendingCodexAdmission {
     pub(crate) fn request_fact_seed(
         &self,
         logical_request_id: Option<&LogicalRequestId>,
+        client_attribution: Option<&ClientAttribution>,
         admitted_at: i64,
     ) -> Option<CodexRequestFactSeed> {
         let logical_request_id = logical_request_id?;
@@ -176,6 +179,9 @@ impl PendingCodexAdmission {
         };
         Some(CodexRequestFactSeed {
             logical_request_id: logical_request_id.as_str().to_owned(),
+            client_attribution: client_attribution
+                .cloned()
+                .unwrap_or_else(ClientAttribution::unknown_for_internal_use),
             execution: self.execution.clone(),
             account_id: account_id.clone(),
             key_id: key_id.clone(),

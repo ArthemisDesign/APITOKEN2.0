@@ -380,6 +380,8 @@ async fn admit_logical_request_context(
     }
 
     let envelope = logical_id_error_envelope(provider, request.headers());
+    let client_attribution = forward::admit_client_attribution(request.headers_mut());
+    request.extensions_mut().insert(client_attribution);
     match forward::admit_logical_request_id(request.headers_mut()) {
         Ok(logical_request_id) => {
             request.extensions_mut().insert(logical_request_id);

@@ -1,9 +1,13 @@
 use axum::http::{Extensions, HeaderMap, HeaderName, HeaderValue};
+use registry::request_facts::{ClientKind, ClientSource};
 use std::fmt;
 
 /// Private router-to-plane capability carrying one logical customer request identity.
 pub const LOGICAL_REQUEST_ID_HEADER: HeaderName =
     HeaderName::from_static("x-apitoken-logical-request-id");
+
+/// Optional public attribution hint. Admission consumes every value before provider dispatch.
+pub const CLIENT_ATTRIBUTION_HEADER: HeaderName = HeaderName::from_static("x-apitoken-client");
 
 /// Canonical logical identity admitted once by the provider process.
 ///
@@ -24,10 +28,114 @@ impl fmt::Debug for LogicalRequestId {
     }
 }
 
+/// Privacy-bounded client attribution admitted once at the provider boundary.
+///
+/// The raw header is never retained. Producer values are the closed v1 set even though registry
+/// preserves its wider deployed vocabulary for compatibility with already-persisted rows.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ClientAttribution {
+    kind: ClientKind,
+    source: ClientSource,
+    version: Option<String>,
+}
+
+impl ClientAttribution {
+    pub fn kind(&self) -> ClientKind {
+        self.kind
+    }
+
+    pub fn source(&self) -> ClientSource {
+        self.source
+    }
+
+    pub fn version(&self) -> Option<&str> {
+        self.version.as_deref()
+    }
+
+    pub(crate) fn unknown_for_internal_use() -> Self {
+        Self {
+            kind: ClientKind::Unknown,
+            source: ClientSource::Unknown,
+            version: None,
+        }
+    }
+}
+
+impl fmt::Debug for ClientAttribution {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ClientAttribution(<redacted>)")
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LogicalRequestIdError {
     Duplicate,
     Invalid,
+}
+
+/// Consume and normalize the optional public client-attribution hint.
+///
+/// Malformed, duplicated, unsupported, or absent evidence fails open to typed `unknown`. A present
+/// malformed value is terminal for classification and never falls through to heuristics. Heuristic
+/// v1 has no reviewed positive OpenCode or Claude Code signatures, so absence is also `unknown`.
+pub fn admit_client_attribution(headers: &mut HeaderMap) -> ClientAttribution {
+    let parsed = {
+        let mut values = headers.get_all(&CLIENT_ATTRIBUTION_HEADER).iter();
+        match (values.next(), values.next()) {
+            (None, None) => None,
+            (Some(value), None) => Some(parse_explicit_client_attribution(value)),
+            (Some(_), Some(_)) => Some(None),
+            (None, Some(_)) => unreachable!("HeaderMap iterator cannot skip its first value"),
+        }
+    };
+    headers.remove(&CLIENT_ATTRIBUTION_HEADER);
+
+    match parsed {
+        Some(Some(attribution)) => attribution,
+        // A malformed explicit value never falls through. Heuristic v1 also deliberately has no
+        // reviewed positive signatures, so both missing and invalid evidence stay unknown.
+        Some(None) | None => ClientAttribution::unknown_for_internal_use(),
+    }
+}
+
+fn parse_explicit_client_attribution(value: &HeaderValue) -> Option<ClientAttribution> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > 80
+        || bytes.contains(&b',')
+        || !bytes.is_ascii()
+        || bytes.iter().any(|byte| byte.is_ascii_control())
+    {
+        return None;
+    }
+    let value = std::str::from_utf8(bytes).ok()?;
+    let mut segments = value.split('/');
+    let kind = match segments.next()? {
+        "opencode" => ClientKind::OpenCode,
+        "claude_code" => ClientKind::ClaudeCode,
+        _ => return None,
+    };
+    let version = segments.next();
+    if segments.next().is_some() {
+        return None;
+    }
+    let version = match version {
+        None => None,
+        Some(version)
+            if (1..=64).contains(&version.len())
+                && version
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._+-".contains(&byte)) =>
+        {
+            Some(version.to_owned())
+        }
+        Some(_) => return None,
+    };
+    Some(ClientAttribution {
+        kind,
+        source: ClientSource::Explicit,
+        version,
+    })
 }
 
 /// Consume the reserved logical-ID capability at the provider-process boundary.
@@ -61,11 +169,111 @@ pub fn admit_logical_request_id(
     }
 }
 
-/// Preserve the already-admitted typed context when a universal adapter synthesizes its leaf
-/// request. The wire header deliberately remains absent.
-pub(crate) fn inherit_logical_request_id(source: &Extensions, target: &mut Extensions) {
+/// Preserve already-admitted typed context when a universal adapter synthesizes its leaf request.
+/// Wire headers deliberately remain absent.
+pub(crate) fn inherit_request_context(source: &Extensions, target: &mut Extensions) {
     if let Some(logical_request_id) = source.get::<LogicalRequestId>() {
         target.insert(logical_request_id.clone());
+    }
+    if let Some(client_attribution) = source.get::<ClientAttribution>() {
+        target.insert(client_attribution.clone());
+    }
+}
+
+#[cfg(test)]
+mod client_attribution_tests {
+    use super::*;
+
+    fn classify(values: &[HeaderValue]) -> (ClientAttribution, HeaderMap) {
+        let mut headers = HeaderMap::new();
+        for value in values {
+            headers.append(&CLIENT_ATTRIBUTION_HEADER, value.clone());
+        }
+        let attribution = admit_client_attribution(&mut headers);
+        (attribution, headers)
+    }
+
+    fn assert_unknown(values: &[HeaderValue]) {
+        let (attribution, headers) = classify(values);
+        assert_eq!(attribution.kind(), ClientKind::Unknown);
+        assert_eq!(attribution.source(), ClientSource::Unknown);
+        assert_eq!(attribution.version(), None);
+        assert_eq!(format!("{attribution:?}"), "ClientAttribution(<redacted>)");
+        assert!(!headers.contains_key(&CLIENT_ATTRIBUTION_HEADER));
+    }
+
+    #[test]
+    fn accepts_the_closed_explicit_v1_grammar_and_bounds() {
+        for (value, kind, version) in [
+            ("opencode", ClientKind::OpenCode, None),
+            ("claude_code", ClientKind::ClaudeCode, None),
+            ("opencode/1", ClientKind::OpenCode, Some("1")),
+            (
+                "claude_code/Az09._+-",
+                ClientKind::ClaudeCode,
+                Some("Az09._+-"),
+            ),
+        ] {
+            let (attribution, headers) = classify(&[HeaderValue::from_str(value).unwrap()]);
+            assert_eq!(attribution.kind(), kind, "value={value:?}");
+            assert_eq!(attribution.source(), ClientSource::Explicit);
+            assert_eq!(attribution.version(), version);
+            assert!(!headers.contains_key(&CLIENT_ATTRIBUTION_HEADER));
+        }
+
+        let max_version = "V".repeat(64);
+        let max_total = format!("opencode/{max_version}");
+        assert_eq!(max_total.len(), 73);
+        let (attribution, _) = classify(&[HeaderValue::from_str(&max_total).unwrap()]);
+        assert_eq!(attribution.version(), Some(max_version.as_str()));
+
+        // Header-wide 80-byte admission remains independent of the stricter 64-byte version bound.
+        assert_unknown(&[HeaderValue::from_str(&format!("opencode/{}", "v".repeat(65))).unwrap()]);
+        assert_unknown(&[HeaderValue::from_str(&"x".repeat(80)).unwrap()]);
+        assert_unknown(&[HeaderValue::from_str(&"x".repeat(81)).unwrap()]);
+    }
+
+    #[test]
+    fn malformed_unsupported_case_variants_and_missing_are_unknown_and_removed() {
+        assert_unknown(&[]);
+        for value in [
+            "",
+            "OpenCode",
+            "CLAUDE_CODE",
+            "opencode/",
+            "claude_code/",
+            "opencode/1/2",
+            "opencode//1",
+            "opencode,claude_code",
+            "opencode/1,claude_code/2",
+            "cursor",
+            "codex_cli/1",
+            "sdk",
+            "opencode/1 2",
+            "opencode/1/",
+            " opencode",
+            "opencode ",
+        ] {
+            assert_unknown(&[HeaderValue::from_str(value).unwrap()]);
+        }
+
+        // HeaderValue admits opaque obs-text, which the classifier must reject as non-ASCII.
+        assert_unknown(&[HeaderValue::from_bytes(&[0x80]).unwrap()]);
+
+        // HTTP itself rejects wire controls before a HeaderMap can exist. Keep the classifier's
+        // explicit `is_ascii_control` guard for any future header representation.
+        assert!(HeaderValue::from_bytes(&[0x7f]).is_err());
+        assert_unknown(&[HeaderValue::from_bytes(b"opencode/1	2").unwrap()]);
+    }
+
+    #[test]
+    fn duplicate_field_lines_are_unknown_even_when_identical_or_individually_valid() {
+        for second in ["opencode", "claude_code/2"] {
+            assert_unknown(&[
+                HeaderValue::from_static("opencode"),
+                HeaderValue::from_str(second).unwrap(),
+            ]);
+        }
     }
 }
 
@@ -311,18 +519,29 @@ mod logical_request_id_tests {
     }
 
     #[test]
-    fn extension_inheritance_copies_only_the_typed_context_not_a_wire_header() {
+    fn extension_inheritance_copies_typed_context_only_not_wire_headers() {
         let mut headers = one(HeaderValue::from_static(CANONICAL));
+        headers.insert(
+            &CLIENT_ATTRIBUTION_HEADER,
+            HeaderValue::from_static("opencode/1.2.3"),
+        );
         let logical = admit_logical_request_id(&mut headers).unwrap();
+        let attribution = admit_client_attribution(&mut headers);
         let mut source = Extensions::new();
         source.insert(logical);
+        source.insert(attribution);
         let mut target = Extensions::new();
-        inherit_logical_request_id(&source, &mut target);
+        inherit_request_context(&source, &mut target);
 
         assert_eq!(
             target.get::<LogicalRequestId>().unwrap().as_str(),
             CANONICAL
         );
+        let attribution = target.get::<ClientAttribution>().unwrap();
+        assert_eq!(attribution.kind(), ClientKind::OpenCode);
+        assert_eq!(attribution.source(), ClientSource::Explicit);
+        assert_eq!(attribution.version(), Some("1.2.3"));
         assert!(!headers.contains_key(&LOGICAL_REQUEST_ID_HEADER));
+        assert!(!headers.contains_key(&CLIENT_ATTRIBUTION_HEADER));
     }
 }

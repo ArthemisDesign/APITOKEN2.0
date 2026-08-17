@@ -1736,7 +1736,7 @@ async fn run_inner(
         .body(Body::from(body_bytes))
         .expect("static request builder is infallible");
     *inner.headers_mut() = headers;
-    crate::execution::inherit_logical_request_id(&extensions, inner.extensions_mut());
+    crate::execution::inherit_request_context(&extensions, inner.extensions_mut());
     gemini_api(State(app), ConnectInfo(peer), inner).await
 }
 

@@ -1,10 +1,12 @@
 # Request observability contract
 
 > **Status: v1 DECISIONS LOCKED; implementation is incomplete.** Registry S2, forward-core S3A,
-> the Caddy logical-ID perimeter, the provider-plane admission/context consumer, and the router
-> logical-ID producer are implemented. The only production request-fact producer is metered
-> Codex/OpenAI universal `POST /v1/messages/count_tokens`; no private read surface, request-fact
-> metric, client classifier, or billable producer exists.
+> the Caddy logical-ID perimeter, provider-plane logical/client context admission, router logical-ID
+> production, and the client-attribution slice of classifier stage 5 are implemented. The only
+> production request-fact producer is metered Codex/OpenAI universal
+> `POST /v1/messages/count_tokens`; it consumes normalized client attribution. Tool/capability
+> classification and lifecycle clocks remain before stage 6. No private read surface,
+> request-fact metric, or billable producer exists.
 >
 > This document is the owner-approved v1 implementation contract. It authorizes only the finite,
 > ordered rollout and Definition of Done in §§13-15; it does not claim that those stages are complete.
@@ -17,10 +19,11 @@
 > generate one for direct ingress, remove the wire header, and retain only a typed request extension
 > through internal adapters. The provider consumer's exact production SHA is GREEN, and the router
 > creates one canonical UUIDv4 after admission and sends it on every executable attempt, reusing it
-> across fallback. Codex universal count_tokens consumes the typed extension only after metered
+> across fallback. Codex universal count_tokens consumes the typed extensions only after metered
 > admission and submits one already-terminal nullable-billing-ID fact through the fail-open PostgreSQL
-> inbox. The logical ID remains operator-only. Billable paths, native OpenAI Responses token counting,
-> Anthropic, Gemini, and every other plane caller remain absent.
+> inbox, persisting normalized explicit client attribution or unknown when malformed/absent. The
+> logical ID remains operator-only. Billable paths, native OpenAI Responses token counting, Anthropic,
+> Gemini, and every other plane caller remain absent.
 
 ## 1. Purpose
 
@@ -64,10 +67,12 @@ count_tokens producer exposes only the non-secret identity through a privacy-min
 `billing_outcome` is never accepted in the outbox envelope: APPLY derives it from the authoritative
 winner, reconciliation, cancellation, and metered-amount state.
 
-Provider-plane logical identity admission is implemented for customer routes in Anthropic, OpenAI,
-Gemini, and the Combined migration bridge. Malformed reserved capabilities fail before auth, body
-handling, reserve, or dispatch; direct ingress gets a fresh canonical UUIDv4; the wire header is
-removed; and only a typed extension survives through synthesized universal leaf requests. Health,
+Provider-plane request-context admission is implemented for customer routes in Anthropic, OpenAI,
+Gemini, and the Combined migration bridge. Malformed reserved logical capabilities fail before auth,
+body handling, reserve, or dispatch; direct ingress gets a fresh canonical UUIDv4. The optional
+public client header is consumed at that same early boundary and malformed/duplicate/unsupported or
+absent evidence fails open to typed unknown without changing HTTP semantics. Both raw headers are
+removed, and only typed extensions survive through synthesized universal leaf requests. Health,
 admin, internal preflight, and backend-only KIMI/GLM/Tripo3D/Suno routes stay outside this MVP. After that
 consumer reached production GREEN, the router producer was implemented: client copies are removed,
 one fresh canonical ID is generated immediately before the first executable provider attempt, direct
@@ -146,7 +151,8 @@ retained execution attempt, and authoritative account/key IDs without exposing t
 skin. Body/translation/model/prepare/success exits converge through one terminalization call and one
 `try_submit_terminal_request_fact`; submission outcomes never affect response status, headers, or
 body. Facts use `billing_request_id=NULL`, `billing_outcome=not_applicable`,
-`openai`/`universal`/`count_tokens`, stream false, client kind/source unknown, internal attempt count
+`openai`/`universal`/`count_tokens`, stream false, the normalized typed client kind/source/version
+(or unknown/unknown/NULL when malformed, absent, or the extension is missing), internal attempt count
 zero, bounded client model spelling after Messages validation, and canonical public model ID only
 after Responses parsing. Deliberately unextracted capability and terminal fields remain NULL. Admin,
 unauthorized, missing typed logical context, native OpenAI Responses token counting, billable Messages,
@@ -199,9 +205,16 @@ length/grammar, and unsupported kinds fail open to `client_kind=unknown`, `clien
 `client_version=NULL`. The provider plane consumes the header before compatibility-header stripping,
 retains only the normalized fields, and removes it before any external upstream dispatch.
 
-Heuristic classifier version 1 contains only reviewed positive signatures for `opencode` and
-`claude_code`. It persists neither the evidence nor raw headers. A partial, conflicting, or ambiguous
-signature is `unknown`; absence of a match is never classified as a generic SDK or custom client.
+The implemented producer-side classifier admits exactly this grammar, removes all header values,
+retains only a private-field typed value with redacted `Debug`, and emits only the closed producer
+values `opencode`, `claude_code`, or `unknown`; it does not narrow the deployed registry vocabulary.
+It runs before auth/body/dispatch, and malformed explicit evidence is terminal for classification,
+not an HTTP error and not a reason to try heuristics.
+
+Heuristic classifier version 1 currently has no reviewed positive signatures for `opencode` or
+`claude_code`, so it always yields `unknown`. It does not reuse or reclassify the existing Codex-envelope
+prefix check. Heuristics persist neither evidence nor raw headers; absence of a match is never
+classified as a generic SDK or custom client.
 
 The only existing inbound heuristic today is a Codex-envelope prefix check on `originator`/`user-agent`
 (`crates/forward/src/codex/api.rs:409-416`). There is no `claude_code`, `opencode`, or `cursor`
@@ -459,9 +472,11 @@ the prerequisite exact SHA is production GREEN.
    Gemini/Combined provider consumers/direct generators, and typed adapter propagation are deployed.
 4. **Router producer — complete.** Routed executable requests receive one operator-only logical ID,
    reused across fallback attempts and kept separate from billing and execution-group identities.
-5. **Freeze v1 classifiers.** Add the exact client-header grammar and fail-open normalization from
-   §5, reviewed positive heuristic rule set version 1, closed tool classes from §6, lifecycle clocks
-   from §7, and privacy-negative tests. This stage changes no public response contract.
+5. **Freeze v1 classifiers — client-attribution slice implemented; stage remains incomplete.**
+   The exact client-header grammar, fail-open normalization, empty reviewed-positive heuristic v1,
+   typed adapter propagation, Codex count_tokens consumption, and privacy-negative tests are in the
+   current implementation. Closed tool classes from §6 and lifecycle clocks from §7 remain required
+   before stage 6. This stage changes no public response contract.
 6. **Complete nonbillable producers.** Cover exactly Anthropic native Messages
    `POST /v1/messages/count_tokens`; OpenAI universal Messages `POST /v1/messages/count_tokens` plus
    native Responses `POST /v1/responses/input_tokens`; and Gemini universal Messages
@@ -520,8 +535,8 @@ Implementation is incomplete without tests for:
 - internal provider rotation versus router fallback attempts, including no extra Combined fact;
 - post-auth validation, balance, quota, and provider errors;
 - the exact nonbillable matrix and every explicit v1 exclusion from §13;
-- explicit client-header valid/missing/malformed/duplicate/unsupported cases and positive/ambiguous
-  heuristic signatures;
+- explicit client-header valid/missing/malformed/duplicate/unsupported cases, plus proof that the
+  empty reviewed-positive heuristic v1 leaves absent or malformed evidence unknown;
 - tool declaration/result/output-call classification on Anthropic, OpenAI, and Gemini shapes, with no
   names, payloads, schemas, or fingerprint persisted;
 - stripping and strict validation of internal logical-ID headers and absence of a public logical-ID

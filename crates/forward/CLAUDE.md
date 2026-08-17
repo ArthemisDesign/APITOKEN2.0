@@ -90,11 +90,14 @@ account ID, execution group, and attempt against the money command before dispat
 A raw secret key cannot be compared with the fact's non-secret `key_id` in forward; PostgreSQL retains
 the authoritative same-transaction key lookup/comparison, while SQLite deliberately omits analytics.
 SQLite keeps the existing money semantics, starts no fact thread, persists no analytics, and reports
-`UnsupportedAuthority` for terminal-at-insert submission. Provider-process logical-ID admission is implemented separately: the reserved header is consumed into
-a typed request extension. Codex count_tokens uses that typed value only; its absence after metered
-auth omits analytics rather than generating or guessing an identity. The producer records
-`openai`/`universal`/`count_tokens`, client kind/source `unknown`, no billing ID, no upstream attempt,
-and only bounded requested/canonical executable models; unextracted capability fields remain NULL.
+`UnsupportedAuthority` for terminal-at-insert submission. Provider-process request-context admission
+is implemented separately: the reserved logical-ID header and optional public client-attribution
+header are consumed into typed request extensions. Codex count_tokens uses the typed logical value
+only; its absence after metered auth omits analytics rather than generating or guessing an identity.
+When the typed attribution extension is missing it still records the fact as client `unknown`. The
+producer records `openai`/`universal`/`count_tokens`, normalized client attribution, no billing ID,
+no upstream attempt, and only bounded requested/canonical executable models; unextracted capability
+fields remain NULL.
 Admin, unauthorized, all billable paths, native Responses token counting, Anthropic, Gemini, metrics,
 read APIs, and every other production request-fact surface remain absent. Dropped coverage is visible
 only through the existing internal delivery snapshot, not a public metric.
@@ -173,16 +176,24 @@ partial/duplicate/malformed/noncanonical → fail closed. Anthropic parses in `p
 Codex/Gemini — in `begin_admission`; identity passes through the reserve in `AsyncBilling`. When sending to the external Anthropic upstream both internal headers
 are removed. A plane never generates or repairs identity on its own.
 
-**Logical request identity admission (request-observability provider stage):**
-`execution.rs` owns the typed `LogicalRequestId` and the reserved lowercase
-`x-apitoken-logical-request-id`. At the central server admission layer, an absent value gets one
-fresh CSPRNG canonical lowercase UUIDv4 through `fresh_request_id`; exactly one canonical trusted
-value is consumed; duplicate, coalesced, non-UTF8, whitespace, uppercase, non-v4/variant, and every
-other noncanonical shape fail closed. Removal happens before either success or error returns. The
-typed value lives only in request extensions, and universal Anthropic/Gemini adapters copy that
-extension to synthesized leaf requests without recreating the wire header. It is dormant context:
-no request fact, metric, public response identity, billing identity, or execution-group semantics
-change in this stage.
+**Request-observability identity and client admission:** `execution.rs` owns the typed
+`LogicalRequestId`, privacy-bounded `ClientAttribution`, the reserved lowercase
+`x-apitoken-logical-request-id`, and the optional public lowercase `x-apitoken-client`. At the
+central server admission layer, an absent logical ID gets one fresh CSPRNG canonical lowercase
+UUIDv4 through `fresh_request_id`; exactly one canonical trusted value is consumed; duplicate,
+coalesced, non-UTF8, whitespace, uppercase, non-v4/variant, and every other noncanonical logical ID
+fail closed. Client attribution is always fail-open: exactly one ASCII value no longer than 80 bytes
+may be `opencode` or `claude_code`, optionally followed by one slash and a 1..64-byte version whose
+characters are ASCII alphanumeric or `._+-`. Duplicate field-lines, comma, unsupported/case-variant
+kinds, invalid bytes/control/grammar, empty, and over-limit values normalize to
+`unknown`/`unknown`/no version. A malformed explicit value never falls through; heuristic v1 has no
+reviewed positive signatures, so absent evidence also stays unknown and the existing Codex-envelope
+heuristic is not reused. Both raw headers are removed before auth/body/dispatch. Universal
+Anthropic/Gemini adapters copy both typed extensions to synthesized leaf requests without recreating
+wire headers; native requests retain them. The current Codex universal count_tokens fact producer
+persists the normalized attribution (or unknown when the typed attribution extension is absent).
+No metric, public response/header identity, billing identity, execution-group semantics, or other
+request-fact producer changes in this slice.
 
 **Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** every
 successful Anthropic turn, including unmetered admin traffic, after authoritative usage builds one

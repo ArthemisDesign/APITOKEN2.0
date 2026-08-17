@@ -23,10 +23,12 @@ background loops and the HTTP router. Here — and only here — everything is w
   see `admin.rs`) + fallback to `forward::forward`. Key issuance returns the non-secret `key_id`,
   and `/admin/key-id/{key_id}/status` allows revoking a key without passing the full secret again.
   A single provider-process admission layer applies only to customer provider routes for
-  `Combined|Anthropic|OpenAi|Gemini`: it consumes the reserved logical-request-ID header, attaches
-  the typed dormant context, and rejects malformed identity before auth/body/reserve/dispatch. This
-  precedence is deliberate because public Caddy has already removed internet values: malformed
-  identity is a broken trusted internal capability, not customer credential input.
+  `Combined|Anthropic|OpenAi|Gemini`: it consumes the reserved logical-request-ID header and optional
+  public `x-apitoken-client`, attaches typed request context, and runs before
+  auth/body/reserve/dispatch. Malformed logical identity is rejected because public Caddy has already
+  removed internet values: it represents a broken trusted internal capability, not customer
+  credential input. Client attribution is not authority: invalid, duplicate, unsupported, or absent
+  evidence fails open to typed unknown and never changes the existing HTTP/auth/body response.
   Health/admin/internal router preflight and backend-only KIMI/Tripo3D/Suno stay outside this MVP;
   OPTIONS on a customer provider route is admitted like every other method; the capability is
   removed before existing method/fallback semantics, so it cannot escape to an external upstream.

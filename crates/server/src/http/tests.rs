@@ -2129,6 +2129,34 @@ async fn non_customer_sentinel(request: Request) -> Response {
     StatusCode::NO_CONTENT.into_response()
 }
 
+async fn client_attribution_sentinel(request: Request) -> Response {
+    assert!(
+        request
+            .headers()
+            .get(forward::CLIENT_ATTRIBUTION_HEADER)
+            .is_none(),
+        "raw client attribution reached the next service"
+    );
+    let attribution = request
+        .extensions()
+        .get::<forward::ClientAttribution>()
+        .expect("typed client attribution must be attached exactly once");
+    let status = if request.headers().get("x-api-key").is_some() {
+        StatusCode::UNAUTHORIZED
+    } else {
+        StatusCode::OK
+    };
+    (
+        status,
+        Json(json!({
+            "client_kind": attribution.kind().as_str(),
+            "client_source": attribution.source().as_str(),
+            "client_version": attribution.version(),
+        })),
+    )
+        .into_response()
+}
+
 async fn logical_id_sentinel(request: Request) -> Response {
     assert!(
         request
@@ -2151,6 +2179,10 @@ async fn logical_id_sentinel(request: Request) -> Response {
 fn logical_id_test_service(provider: forward::ProviderMode) -> Router {
     Router::new()
         .route("/v1/test", axum::routing::any(logical_id_sentinel))
+        .route(
+            "/v1/client-test",
+            axum::routing::any(client_attribution_sentinel),
+        )
         .route("/control-test", axum::routing::any(non_customer_sentinel))
         .layer(middleware::from_fn_with_state(
             provider,
@@ -2182,6 +2214,149 @@ fn expected_logical_id_error(envelope: LogicalIdErrorEnvelope) -> Value {
                 "status": "INVALID_ARGUMENT"
             }
         }),
+    }
+}
+
+#[tokio::test]
+async fn client_classifier_is_fail_open_private_and_precedes_existing_auth_semantics() {
+    for (value, expected_kind, expected_source, expected_version) in [
+        (Some("opencode"), "opencode", "explicit", None),
+        (
+            Some("claude_code/2.1.220"),
+            "claude_code",
+            "explicit",
+            Some("2.1.220"),
+        ),
+        (None, "unknown", "unknown", None),
+        (Some("OpenCode/1"), "unknown", "unknown", None),
+        (Some("opencode/"), "unknown", "unknown", None),
+        (Some("opencode/1/2"), "unknown", "unknown", None),
+        (Some("opencode,claude_code"), "unknown", "unknown", None),
+    ] {
+        for has_bad_key in [false, true] {
+            let mut request = Request::builder()
+                .method(Method::POST)
+                .uri("/v1/client-test")
+                .body(Body::from("deliberately-unparsed-body"))
+                .unwrap();
+            if let Some(value) = value {
+                request
+                    .headers_mut()
+                    .insert(forward::CLIENT_ATTRIBUTION_HEADER, value.parse().unwrap());
+            }
+            if has_bad_key {
+                request
+                    .headers_mut()
+                    .insert("x-api-key", "invalid".parse().unwrap());
+            }
+            let response = logical_id_test_service(forward::ProviderMode::OpenAi)
+                .oneshot(request)
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                if has_bad_key {
+                    StatusCode::UNAUTHORIZED
+                } else {
+                    StatusCode::OK
+                },
+                "value={value:?}"
+            );
+            let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&body).unwrap(),
+                json!({
+                    "client_kind": expected_kind,
+                    "client_source": expected_source,
+                    "client_version": expected_version,
+                }),
+                "value={value:?}"
+            );
+        }
+    }
+
+    let mut duplicate = Request::builder()
+        .uri("/v1/client-test")
+        .body(Body::empty())
+        .unwrap();
+    duplicate.headers_mut().append(
+        forward::CLIENT_ATTRIBUTION_HEADER,
+        "opencode".parse().unwrap(),
+    );
+    duplicate.headers_mut().append(
+        forward::CLIENT_ATTRIBUTION_HEADER,
+        "claude_code/2".parse().unwrap(),
+    );
+    let response = logical_id_test_service(forward::ProviderMode::Anthropic)
+        .oneshot(duplicate)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap(),
+        json!({
+            "client_kind": "unknown",
+            "client_source": "unknown",
+            "client_version": Value::Null,
+        })
+    );
+}
+
+#[tokio::test]
+async fn malformed_client_attribution_never_changes_existing_auth_response() {
+    let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+    for (provider, path) in [
+        (forward::ProviderMode::Anthropic, "/v1/messages"),
+        (forward::ProviderMode::OpenAi, "/v1/messages/count_tokens"),
+        (
+            forward::ProviderMode::Gemini,
+            "/v1beta/models/gemini-2.5-flash:countTokens",
+        ),
+        (forward::ProviderMode::Combined, "/v1/messages"),
+    ] {
+        let service = router(provider_test_app(provider), Arc::new(AtomicBool::new(true)));
+        let make_request = |client: Option<&str>| {
+            let mut request = Request::builder()
+                .method(Method::POST)
+                .uri(path)
+                .header("x-api-key", "not-a-real-key")
+                .header("content-type", "application/json")
+                .body(Body::from("not-json"))
+                .unwrap();
+            if let Some(client) = client {
+                request.headers_mut().insert(
+                    forward::CLIENT_ATTRIBUTION_HEADER,
+                    client.parse().unwrap(),
+                );
+            }
+            request.extensions_mut().insert(peer);
+            request
+        };
+        let baseline = service.clone().oneshot(make_request(None)).await.unwrap();
+        let baseline_status = baseline.status();
+        let baseline_headers = baseline.headers().clone();
+        let baseline_body = to_bytes(baseline.into_body(), 4_096).await.unwrap();
+
+        for client in ["OpenCode/1", "opencode/", "opencode/1/2"] {
+            let response = service
+                .clone()
+                .oneshot(make_request(Some(client)))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), baseline_status, "provider={provider:?}");
+            assert_eq!(
+                response.headers().get("content-type"),
+                baseline_headers.get("content-type"),
+                "provider={provider:?}"
+            );
+            assert!(response
+                .headers()
+                .get(forward::CLIENT_ATTRIBUTION_HEADER)
+                .is_none());
+            let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+            assert_eq!(body, baseline_body, "provider={provider:?} client={client:?}");
+        }
     }
 }
 

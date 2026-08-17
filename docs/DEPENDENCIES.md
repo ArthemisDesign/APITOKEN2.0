@@ -209,12 +209,19 @@ is only what is needed to walk the relationships when making changes:
   copies so the ID stays private. `crates/server` consumes exactly one canonical trusted value on
   Anthropic, OpenAI, Gemini, and Combined customer routes, removes the wire capability, and stores a
   typed `crates/forward` extension; direct provider ingress with zero values creates its own ID.
-  Universal Anthropic/Gemini adapters preserve the extension on synthesized leaf requests. Health,
-  admin/internal preflight and backend-only KIMI/Tripo3D/Suno remain outside this MVP. The first and only
-  production request-fact producer is Codex/OpenAI universal `POST /v1/messages/count_tokens`: after
-  successful metered admission it consumes the typed logical context and authoritative non-secret
-  account/key plus execution identities, then submits exactly one already-terminal nullable-billing-ID
-  fact through the fail-open PostgreSQL inbox. Router fallback reuses the logical ID while each plane
+  Universal Anthropic/Gemini adapters preserve the typed logical and client-attribution context on
+  synthesized leaf requests. At the same early boundary, `crates/server` consumes all optional public
+  `x-apitoken-client` values into privacy-bounded `crates/forward::ClientAttribution`: exactly one
+  valid `opencode[/version]` or `claude_code[/version]` is explicit, while absent, malformed,
+  duplicated, unsupported, or case-variant evidence fails open to unknown. The raw value never reaches
+  dispatch/upstream; heuristic v1 has no reviewed positive signature and does not reuse the Codex
+  envelope heuristic. Health, admin/internal preflight and backend-only KIMI/Tripo3D/Suno remain
+  outside this MVP. The first and only production request-fact producer is Codex/OpenAI universal
+  `POST /v1/messages/count_tokens`: after successful metered admission it consumes the typed logical
+  and client context plus authoritative non-secret account/key and execution identities, then submits
+  exactly one already-terminal nullable-billing-ID fact through the fail-open PostgreSQL inbox.
+  Missing typed client context remains unknown without suppressing the fact. Router fallback reuses
+  the logical ID while each plane
   attempt keeps its distinct execution attempt. Admin/unauthorized/missing-logical-context traffic is
   omitted. Billable paths, native Responses token counting, Anthropic/Gemini, read APIs, public metrics,
   and a public logical-ID header remain absent; `x-request-id` and response availability are unchanged.
@@ -514,9 +521,12 @@ attempt. Separately, the logical-ID perimeter makes the four public provider/rou
 reserved internal `X-Apitoken-Logical-Request-Id`; stable loopback origins retain the reserved
 capability for the trusted router→plane hop; loopback access alone is not sender authorization.
 Anthropic/OpenAI/Gemini/Combined customer routers consume that capability or generate a direct-ingress
-ID before dispatch, remove the wire header, and keep only a typed dormant extension. After that strict
-consumer reached production GREEN, the unified router producer began injecting one private canonical ID
-per admitted customer request across every executable attempt. No provider request-fact caller exists.
+ID before dispatch, remove the wire header, and keep only typed context. They also consume the optional
+public `x-apitoken-client` into fail-open normalized attribution before auth/body/dispatch and propagate
+only the typed value through synthesized leaves. After the strict logical consumer reached production
+GREEN, the unified router producer began injecting one private canonical ID per admitted customer request
+across every executable attempt. Codex universal Messages count_tokens is the only request-fact caller
+and persists this attribution; other producers remain absent.
 
 ### systemd (`systemd/`) — service → application
 
