@@ -2176,12 +2176,36 @@ async fn logical_id_sentinel(request: Request) -> Response {
         .into_response()
 }
 
+async fn lifecycle_clock_sentinel(request: Request) -> Response {
+    let lifecycle_clock = request
+        .extensions()
+        .get::<forward::RequestLifecycleClock>()
+        .expect("typed lifecycle clock must be attached exactly once")
+        .clone();
+    let body = if request.uri().path().ends_with("clock-empty") {
+        Body::empty()
+    } else {
+        Body::from("public")
+    };
+    let mut response = body.into_response();
+    response.extensions_mut().insert(lifecycle_clock);
+    response
+}
+
 fn logical_id_test_service(provider: forward::ProviderMode) -> Router {
     Router::new()
         .route("/v1/test", axum::routing::any(logical_id_sentinel))
         .route(
             "/v1/client-test",
             axum::routing::any(client_attribution_sentinel),
+        )
+        .route(
+            "/v1/clock-data",
+            axum::routing::any(lifecycle_clock_sentinel),
+        )
+        .route(
+            "/v1/clock-empty",
+            axum::routing::any(lifecycle_clock_sentinel),
         )
         .route("/control-test", axum::routing::any(non_customer_sentinel))
         .layer(middleware::from_fn_with_state(
@@ -5656,5 +5680,197 @@ async fn the_active_request_gauge_spans_the_response_body_not_just_the_handler()
     probe.extensions_mut().insert(peer);
     let probe = service.oneshot(probe).await.unwrap();
     let _ = to_bytes(probe.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(forward::Metrics::get(&metrics.active_requests), 0);
+}
+
+#[tokio::test]
+async fn admission_clock_is_unset_until_the_public_body_yields_nonempty_data() {
+    for (path, expected_body, should_observe) in [
+        ("/v1/clock-data", "public", true),
+        ("/v1/clock-empty", "", false),
+    ] {
+        let request = Request::builder().uri(path).body(Body::empty()).unwrap();
+        let response = logical_id_test_service(forward::ProviderMode::OpenAi)
+            .oneshot(request)
+            .await
+            .unwrap();
+        let clock = response
+            .extensions()
+            .get::<forward::RequestLifecycleClock>()
+            .expect("handler exposes its admitted clock to the test")
+            .clone();
+        assert_eq!(clock.first_public_byte_at(), None);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body, expected_body);
+        assert_eq!(clock.first_public_byte_at().is_some(), should_observe);
+    }
+}
+
+#[derive(Debug)]
+struct ScriptedBody {
+    frames: std::collections::VecDeque<Result<Frame<axum::body::Bytes>, &'static str>>,
+    hint: SizeHint,
+    end_stream: bool,
+}
+
+impl ScriptedBody {
+    fn new(
+        frames: impl IntoIterator<Item = Result<Frame<axum::body::Bytes>, &'static str>>,
+    ) -> Self {
+        let frames = frames
+            .into_iter()
+            .collect::<std::collections::VecDeque<_>>();
+        let mut hint = SizeHint::new();
+        hint.set_lower(7);
+        hint.set_upper(11);
+        Self {
+            frames,
+            hint,
+            end_stream: false,
+        }
+    }
+}
+
+impl HttpBody for ScriptedBody {
+    type Data = axum::body::Bytes;
+    type Error = &'static str;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        match self.frames.pop_front() {
+            Some(frame) => Poll::Ready(Some(frame)),
+            None => {
+                self.end_stream = true;
+                Poll::Ready(None)
+            }
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.end_stream
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.hint.clone()
+    }
+}
+
+async fn next_body_frame<B: HttpBody + Unpin>(
+    body: &mut B,
+) -> Option<Result<Frame<B::Data>, B::Error>> {
+    futures_util::future::poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx)).await
+}
+
+#[tokio::test]
+async fn first_public_byte_body_preserves_frames_and_observes_first_nonempty_data_once() {
+    let mut trailers = HeaderMap::new();
+    trailers.insert("x-test-trailer", "preserved".parse().unwrap());
+    let clock = forward::RequestLifecycleClock::default();
+    let inner = ScriptedBody::new([
+        Ok(Frame::data(axum::body::Bytes::new())),
+        Ok(Frame::trailers(trailers.clone())),
+        Ok(Frame::data(axum::body::Bytes::from_static(b"one"))),
+        Ok(Frame::data(axum::body::Bytes::from_static(b"two"))),
+    ]);
+    let expected_hint = inner.size_hint();
+    let mut body = FirstPublicByteBody::new(inner, clock.clone());
+
+    assert_eq!(body.size_hint().lower(), expected_hint.lower());
+    assert_eq!(body.size_hint().upper(), expected_hint.upper());
+    assert!(!body.is_end_stream());
+
+    let empty = next_body_frame(&mut body).await.unwrap().unwrap();
+    assert_eq!(empty.data_ref().unwrap().len(), 0);
+    assert_eq!(clock.first_public_byte_at(), None);
+
+    let trailer = next_body_frame(&mut body).await.unwrap().unwrap();
+    assert_eq!(trailer.trailers_ref(), Some(&trailers));
+    assert_eq!(clock.first_public_byte_at(), None);
+
+    let first = next_body_frame(&mut body).await.unwrap().unwrap();
+    assert_eq!(
+        first.data_ref().unwrap(),
+        &axum::body::Bytes::from_static(b"one")
+    );
+    let observed = clock
+        .first_public_byte_at()
+        .expect("first nonempty DATA is observed");
+
+    let second = next_body_frame(&mut body).await.unwrap().unwrap();
+    assert_eq!(
+        second.data_ref().unwrap(),
+        &axum::body::Bytes::from_static(b"two")
+    );
+    assert_eq!(clock.first_public_byte_at(), Some(observed));
+    assert!(next_body_frame(&mut body).await.is_none());
+    assert!(body.is_end_stream());
+}
+
+#[tokio::test]
+async fn first_public_byte_body_forwards_errors_and_drop_before_data_stays_unset() {
+    let error_clock = forward::RequestLifecycleClock::default();
+    let mut error_body =
+        FirstPublicByteBody::new(ScriptedBody::new([Err("body-failed")]), error_clock.clone());
+    assert_eq!(
+        next_body_frame(&mut error_body).await.unwrap().unwrap_err(),
+        "body-failed"
+    );
+    assert_eq!(error_clock.first_public_byte_at(), None);
+
+    let dropped_clock = forward::RequestLifecycleClock::default();
+    let dropped_body = FirstPublicByteBody::new(
+        ScriptedBody::new([Ok(Frame::data(axum::body::Bytes::from_static(b"unpolled")))]),
+        dropped_clock.clone(),
+    );
+    drop(dropped_body);
+    assert_eq!(dropped_clock.first_public_byte_at(), None);
+}
+
+#[tokio::test]
+async fn active_request_body_preserves_trailers_errors_hints_and_guard_lifetime() {
+    let metrics = Arc::new(forward::Metrics::new());
+    let mut trailers = HeaderMap::new();
+    trailers.insert("x-active-trailer", "preserved".parse().unwrap());
+    let inner = ScriptedBody::new([
+        Ok(Frame::data(axum::body::Bytes::from_static(b"a"))),
+        Ok(Frame::trailers(trailers.clone())),
+        Err("tail-failed"),
+    ]);
+    let expected_hint = inner.size_hint();
+    let guard = ActiveRequestGuard::new(metrics.clone());
+    let mut body = ActiveRequestBody::new(inner, guard);
+
+    assert_eq!(forward::Metrics::get(&metrics.active_requests), 1);
+    assert_eq!(body.size_hint().lower(), expected_hint.lower());
+    assert_eq!(body.size_hint().upper(), expected_hint.upper());
+    assert_eq!(
+        next_body_frame(&mut body)
+            .await
+            .unwrap()
+            .unwrap()
+            .data_ref()
+            .unwrap(),
+        &axum::body::Bytes::from_static(b"a")
+    );
+    assert_eq!(
+        next_body_frame(&mut body)
+            .await
+            .unwrap()
+            .unwrap()
+            .trailers_ref(),
+        Some(&trailers)
+    );
+    assert_eq!(
+        next_body_frame(&mut body).await.unwrap().unwrap_err(),
+        "tail-failed"
+    );
+    assert!(next_body_frame(&mut body).await.is_none());
+    assert!(body.is_end_stream());
+    assert_eq!(forward::Metrics::get(&metrics.active_requests), 1);
+
+    drop(body);
     assert_eq!(forward::Metrics::get(&metrics.active_requests), 0);
 }

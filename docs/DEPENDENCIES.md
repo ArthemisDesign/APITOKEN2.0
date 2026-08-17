@@ -209,9 +209,14 @@ is only what is needed to walk the relationships when making changes:
   copies so the ID stays private. `crates/server` consumes exactly one canonical trusted value on
   Anthropic, OpenAI, Gemini, and Combined customer routes, removes the wire capability, and stores a
   typed `crates/forward` extension; direct provider ingress with zero values creates its own ID.
-  Universal Anthropic/Gemini adapters preserve the typed logical and client-attribution context on
-  synthesized leaf requests. At the same early boundary, `crates/server` consumes all optional public
-  `x-apitoken-client` values into privacy-bounded `crates/forward::ClientAttribution`: exactly one
+  Universal Anthropic/Gemini adapters preserve the typed logical, client-attribution, and shared
+  request-lifecycle-clock context on synthesized leaf requests. At the same early boundary,
+  `crates/server` creates the typed once-only clock and wraps the final public response body: only its
+  first non-empty successful DATA frame is observed, while data, trailers, errors, frame boundaries,
+  cancellation, hints and backpressure remain unchanged. No request-fact producer consumes this clock
+  yet; terminal handoff remains a later producer-owned slice and unmeasured evidence stays `NULL`.
+  `crates/server` also consumes all optional public `x-apitoken-client` values into privacy-bounded
+  `crates/forward::ClientAttribution`: exactly one
   valid `opencode[/version]` or `claude_code[/version]` is explicit, while absent, malformed,
   duplicated, unsupported, or case-variant evidence fails open to unknown. The raw value never reaches
   dispatch/upstream; heuristic v1 has no reviewed positive signature and does not reuse the Codex

@@ -220,6 +220,16 @@ serialization implementation. It is intentionally not wired into live parsers, h
 emission in stage 5: producer integration remains stage 6/7 and must preserve response/upstream bytes.
 Lifecycle clocks and output tool-call evidence remain separate later-producer work.
 
+**Request lifecycle clock carrier (`execution.rs`, `crates/server/src/http.rs`):** each successfully
+admitted customer provider request owns a typed, redacted, once-only clock shared through the same
+synthetic-leaf extension propagation as logical identity and client attribution. The server wraps the
+final public Axum body after provider translation and observes only the first non-empty successful DATA
+frame in `http_body::Body::poll_frame`; empty frames, trailers, errors, EOF and drop-before-data stay
+unobserved. The wrapper and the outer active-request guard delegate complete frames, errors,
+`is_end_stream` and `size_hint` without buffering, rewriting, eager polling, I/O or settlement. No
+request-fact producer consumes the clock yet: authoritative terminal handoff remains producer-owned,
+and an unmeasured first byte stays `NULL`.
+
 **Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** every
 successful Anthropic turn, including unmetered admin traffic, after authoritative usage builds one
 immutable event with the internal request ID, subject/email, model, Standard/Fast, inference geography,

@@ -25,12 +25,15 @@ use forward::{
     resolve_client_keys, AppState, Metrics, TerminalErrorReason,
 };
 use futures_util::StreamExt;
+use http_body::{Body as HttpBody, Frame, SizeHint};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 /// One-release migration marker used only by the `Combined` bridge. Fixed provider routers never
 /// inspect it, and Caddy strips/overwrites client input while the bridge is present.
@@ -384,10 +387,61 @@ async fn admit_logical_request_context(
     request.extensions_mut().insert(client_attribution);
     match forward::admit_logical_request_id(request.headers_mut()) {
         Ok(logical_request_id) => {
+            let lifecycle_clock = forward::RequestLifecycleClock::default();
             request.extensions_mut().insert(logical_request_id);
-            next.run(request).await
+            request.extensions_mut().insert(lifecycle_clock.clone());
+            next.run(request)
+                .await
+                .map(|body| axum::body::Body::new(FirstPublicByteBody::new(body, lifecycle_clock)))
         }
         Err(_) => malformed_logical_id_response(envelope),
+    }
+}
+
+/// Transparent outer customer-response seam that observes only the first non-empty DATA frame.
+///
+/// Observation happens after every provider/handler translator and immediately before the exact
+/// frame is returned. No frame is buffered, rewritten, combined, split, or polled speculatively.
+struct FirstPublicByteBody<B> {
+    inner: B,
+    lifecycle_clock: forward::RequestLifecycleClock,
+}
+
+impl<B> FirstPublicByteBody<B> {
+    fn new(inner: B, lifecycle_clock: forward::RequestLifecycleClock) -> Self {
+        Self {
+            inner,
+            lifecycle_clock,
+        }
+    }
+}
+
+impl<B> HttpBody for FirstPublicByteBody<B>
+where
+    B: HttpBody<Data = axum::body::Bytes> + Unpin,
+{
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let frame = Pin::new(&mut self.inner).poll_frame(cx);
+        if let Poll::Ready(Some(Ok(frame))) = &frame {
+            if frame.data_ref().is_some_and(|data| !data.is_empty()) {
+                self.lifecycle_clock.observe_first_public_byte();
+            }
+        }
+        frame
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
     }
 }
 
@@ -741,17 +795,46 @@ async fn track_active_request(
     }
     let guard = ActiveRequestGuard::new(state.app.metrics.clone());
     let response = next.run(request).await;
-    // The guard rides inside the body's stream adapter, so dropping the body — whether it ended
-    // cleanly or the client disconnected mid-answer — drops the closure that owns it.
-    response.map(|body| {
-        axum::body::Body::from_stream(futures_util::StreamExt::map(
-            body.into_data_stream(),
-            move |chunk| {
-                let _hold = &guard;
-                chunk
-            },
-        ))
-    })
+    // The guard rides inside a transparent frame adapter, so dropping the body — whether it ended
+    // cleanly or the client disconnected mid-answer — releases it without discarding trailers.
+    response.map(|body| axum::body::Body::new(ActiveRequestBody::new(body, guard)))
+}
+
+struct ActiveRequestBody<B> {
+    inner: B,
+    _guard: ActiveRequestGuard,
+}
+
+impl<B> ActiveRequestBody<B> {
+    fn new(inner: B, guard: ActiveRequestGuard) -> Self {
+        Self {
+            inner,
+            _guard: guard,
+        }
+    }
+}
+
+impl<B> HttpBody for ActiveRequestBody<B>
+where
+    B: HttpBody + Unpin,
+{
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        Pin::new(&mut self.inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
 }
 
 struct ActiveRequestGuard {

@@ -1,6 +1,10 @@
 use axum::http::{Extensions, HeaderMap, HeaderName, HeaderValue};
 use registry::request_facts::{ClientKind, ClientSource};
 use std::fmt;
+use std::sync::{
+    atomic::{AtomicI64, Ordering},
+    Arc,
+};
 
 /// Private router-to-plane capability carrying one logical customer request identity.
 pub const LOGICAL_REQUEST_ID_HEADER: HeaderName =
@@ -25,6 +29,45 @@ impl fmt::Debug for LogicalRequestId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // This capability is never request-log material. Keep accidental derived diagnostics redacted.
         formatter.write_str("LogicalRequestId(<redacted>)")
+    }
+}
+
+/// Shared once-only lifecycle observation for the first successful public response bytes.
+///
+/// The timestamp cannot be supplied by a caller: the server's outer response-body seam asks this
+/// carrier to observe the process clock only when it is returning a non-empty DATA frame. Clones
+/// share the same atomic state through synthesized provider-leaf requests.
+#[derive(Clone, Default)]
+pub struct RequestLifecycleClock(Arc<AtomicI64>);
+
+impl RequestLifecycleClock {
+    /// Observe `pool::now()` once when it is a positive Unix epoch second.
+    pub fn observe_first_public_byte(&self) {
+        if self.0.load(Ordering::Acquire) == 0 {
+            self.observe_first_public_byte_at(pool::now());
+        }
+    }
+
+    /// Return the first positive observed Unix epoch second, or `None` while unobserved.
+    pub fn first_public_byte_at(&self) -> Option<i64> {
+        match self.0.load(Ordering::Acquire) {
+            timestamp if timestamp > 0 => Some(timestamp),
+            _ => None,
+        }
+    }
+
+    fn observe_first_public_byte_at(&self, timestamp: i64) {
+        if timestamp > 0 {
+            let _ = self
+                .0
+                .compare_exchange(0, timestamp, Ordering::AcqRel, Ordering::Acquire);
+        }
+    }
+}
+
+impl fmt::Debug for RequestLifecycleClock {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RequestLifecycleClock(<redacted>)")
     }
 }
 
@@ -177,6 +220,36 @@ pub(crate) fn inherit_request_context(source: &Extensions, target: &mut Extensio
     }
     if let Some(client_attribution) = source.get::<ClientAttribution>() {
         target.insert(client_attribution.clone());
+    }
+    if let Some(lifecycle_clock) = source.get::<RequestLifecycleClock>() {
+        target.insert(lifecycle_clock.clone());
+    }
+}
+
+#[cfg(test)]
+mod request_lifecycle_clock_tests {
+    use super::*;
+
+    #[test]
+    fn starts_unset_and_records_only_the_first_positive_observation_across_clones() {
+        let clock = RequestLifecycleClock::default();
+        let clone = clock.clone();
+        assert_eq!(clock.first_public_byte_at(), None);
+
+        clone.observe_first_public_byte_at(101);
+        clock.observe_first_public_byte_at(202);
+
+        assert_eq!(clock.first_public_byte_at(), Some(101));
+        assert_eq!(clone.first_public_byte_at(), Some(101));
+        assert_eq!(format!("{clock:?}"), "RequestLifecycleClock(<redacted>)");
+    }
+
+    #[test]
+    fn non_positive_observations_leave_the_clock_unset() {
+        let clock = RequestLifecycleClock::default();
+        clock.observe_first_public_byte_at(0);
+        clock.observe_first_public_byte_at(-1);
+        assert_eq!(clock.first_public_byte_at(), None);
     }
 }
 
@@ -527,9 +600,11 @@ mod logical_request_id_tests {
         );
         let logical = admit_logical_request_id(&mut headers).unwrap();
         let attribution = admit_client_attribution(&mut headers);
+        let lifecycle_clock = RequestLifecycleClock::default();
         let mut source = Extensions::new();
         source.insert(logical);
         source.insert(attribution);
+        source.insert(lifecycle_clock.clone());
         let mut target = Extensions::new();
         inherit_request_context(&source, &mut target);
 
@@ -541,6 +616,14 @@ mod logical_request_id_tests {
         assert_eq!(attribution.kind(), ClientKind::OpenCode);
         assert_eq!(attribution.source(), ClientSource::Explicit);
         assert_eq!(attribution.version(), Some("1.2.3"));
+        let inherited_clock = target.get::<RequestLifecycleClock>().unwrap();
+        assert!(inherited_clock.first_public_byte_at().is_none());
+        inherited_clock.observe_first_public_byte_at(123);
+        assert_eq!(lifecycle_clock.first_public_byte_at(), Some(123));
+        assert_eq!(
+            format!("{inherited_clock:?}"),
+            "RequestLifecycleClock(<redacted>)"
+        );
         assert!(!headers.contains_key(&LOGICAL_REQUEST_ID_HEADER));
         assert!(!headers.contains_key(&CLIENT_ATTRIBUTION_HEADER));
     }

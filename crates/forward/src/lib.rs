@@ -71,7 +71,8 @@ pub use codex::{
 };
 pub use execution::{
     admit_client_attribution, admit_logical_request_id, ClientAttribution, LogicalRequestId,
-    LogicalRequestIdError, CLIENT_ATTRIBUTION_HEADER, LOGICAL_REQUEST_ID_HEADER,
+    LogicalRequestIdError, RequestLifecycleClock, CLIENT_ATTRIBUTION_HEADER,
+    LOGICAL_REQUEST_ID_HEADER,
 };
 pub use config::{
     ClaudeStoreFallbackConfig, ProxyConfig, CLAUDESTORE_CLAUDE_FALLBACK_BASE_URL,

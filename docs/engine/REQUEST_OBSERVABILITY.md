@@ -6,9 +6,10 @@
 > production request-fact producer is metered Codex/OpenAI universal
 > `POST /v1/messages/count_tokens`; it consumes normalized client attribution. The closed structural
 > classifier contract is implemented but dormant: pure Anthropic Messages, OpenAI Chat/Responses
-> and canonical Gemini GenerateContent classifiers are not wired to producers. Lifecycle clocks remain
-> before stage 6. No private read surface,
-> request-fact metric, or billable producer exists.
+> and canonical Gemini GenerateContent classifiers are not wired to producers. A typed once-only
+> lifecycle carrier and transparent final-public-body observation seam are active, but no producer
+> consumes the observed first-byte clock yet. Authoritative terminal clock integration remains before
+> stage 6. No private read surface, request-fact metric, or billable producer exists.
 >
 > This document is the owner-approved v1 implementation contract. It authorizes only the finite,
 > ordered rollout and Definition of Done in §§13-15; it does not claim that those stages are complete.
@@ -301,6 +302,14 @@ The four v1 timestamp points are mandatory when safely observable without changi
   buffering or rewriting;
 - `terminal_at`: the terminal lifecycle observation or authoritative settlement/reconciliation point.
 
+The active server seam creates one typed clock for each successfully admitted customer provider
+request, preserves it through synthetic leaf adapters, and observes the first non-empty successful
+DATA frame from the final public `http_body::Body`. It forwards data, trailers, errors, frame
+boundaries, cancellation, `is_end_stream`, `size_hint` and backpressure unchanged. Empty DATA,
+trailers-only, errors, EOF and drop-before-data leave the clock unset. This seam does not itself write
+facts or settle money; producer terminal integration must snapshot only safely ordered evidence, so
+`NULL` remains correct until that integration exists.
+
 The read surface safely derives four durations and only when both endpoints are measured and ordered:
 admission-to-delivery, admission-to-first-public-byte, delivery-to-first-public-byte, and
 admission-to-terminal. A missing, unsafe, or contradictory endpoint yields `NULL`; zero is never
@@ -501,13 +510,14 @@ the prerequisite exact SHA is production GREEN.
    Gemini/Combined provider consumers/direct generators, and typed adapter propagation are deployed.
 4. **Router producer — complete.** Routed executable requests receive one operator-only logical ID,
    reused across fallback attempts and kept separate from billing and execution-group identities.
-5. **Freeze v1 classifiers — structural definitions complete; lifecycle clocks remain incomplete.**
+5. **Freeze v1 classifiers — structural definitions and lifecycle observation seams complete; stage remains incomplete.**
    The exact client-header grammar, fail-open normalization, empty reviewed-positive heuristic v1,
-   typed adapter propagation, Codex count_tokens consumption, and privacy-negative tests are in the
-   current implementation. The closed structural contract and pure already-validated Anthropic,
-   OpenAI and Gemini shape classifiers from §6 are implemented and deliberately dormant: no handler
-   or request-fact producer consumes them yet, and `tool_calls_in_output` remains terminal evidence.
-   Stage 6/7 owns producer integration. The four lifecycle clocks from §7 remain required separately.
+   typed adapter propagation, Codex count_tokens consumption, privacy-negative tests, closed structural
+   contract, and pure already-validated Anthropic/OpenAI/Gemini shape classifiers are implemented.
+   Structural classifiers remain deliberately dormant: no handler or request-fact producer consumes
+   them yet, and `tool_calls_in_output` remains terminal evidence. The typed once-only lifecycle carrier
+   and transparent final-public-body observation seam are active, but no producer consumes the observed
+   first-byte value yet. Stage 6/7 owns producer integration and authoritative terminal clock handoff.
    This stage changes no public response or upstream request contract.
 6. **Complete nonbillable producers.** Cover exactly Anthropic native Messages
    `POST /v1/messages/count_tokens`; OpenAI universal Messages `POST /v1/messages/count_tokens` plus

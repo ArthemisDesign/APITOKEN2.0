@@ -560,6 +560,7 @@ dependencies = [
  "futures-util",
  "gemini-credential",
  "glm-credential",
+ "http-body",
  "kimi-credential",
  "metering",
  "pool",
