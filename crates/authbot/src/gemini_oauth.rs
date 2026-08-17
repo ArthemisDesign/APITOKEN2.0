@@ -1706,7 +1706,7 @@ impl Failure {
 
 Прошёл проверку — нажми кнопку ниже, бот перепроверит немедленно. Кнопки нет или сутки автопроверки уже вышли — отправь <code>повторить</code>, бот выдаст новые ссылки авторизации на том же прокси.
 
-Профиль не опубликован и сделка не завершена. Прокси закреплён за этой позицией.",
+Профиль не опубликован и сделка не завершена. Прокси сохранён.",
             Self::StaleHandoff => "❌ Эта попытка подключения уже не относится к текущей сделке. Профиль не опубликован; продолжи актуальный шаг в боте.",
             Self::Duplicate => "❌ Эта Google-подписка уже присутствует в пуле.",
             Self::DuplicateProxy => "❌ Этот прокси уже закреплён за другим Gemini-профилем. Для подписки нужен отдельный прокси.",
@@ -1725,13 +1725,11 @@ impl Failure {
             Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь тариф на этом аккаунте и отправь <code>повторить</code>; будет использован закреплённый прокси.",
             Self::AccountMismatch => "❌ На втором этапе выбран другой Google-аккаунт. Оба согласия должны быть выданы одной подпиской в одном профиле браузера. Профиль не опубликован; отправь <code>повторить</code> и начни заново.",
             Self::GenerationUnavailable => "⚠️ Google подтвердил вход и активный тариф, но реальная тестовая генерация не была подтверждена. Профиль не опубликован и сделка не завершена. Подожди немного и отправь <code>повторить</code>; будет использован закреплённый прокси.",
-            Self::AccountValidationRequired => "❌ Google держит сам аккаунт на проверке: генерация отклонена с «Verify your account to continue». Это отдельная проверка — обычный Gemini на сайте при этом может работать, и повтор без её прохождения ничего не изменит.
+            Self::AccountValidationRequired => "❌ Google держит сам аккаунт на проверке и не выполняет генерацию. Это отдельная проверка — обычный Gemini на сайте при этом может работать, и повтор без её прохождения ничего не изменит.
 
-Сделай по порядку, СТРОГО в том же профиле антидетект-браузера и через тот же прокси:
-1️⃣ Привяжи и подтверди номер телефона: <code>myaccount.google.com/signinoptions/rescuephone</code>
-2️⃣ Открой <code>youtube.com</code> под этим аккаунтом и пройди проверку, если она появится.
-3️⃣ Открой персональную ссылку Google, если она пришла ниже.
-4️⃣ Дальше жди: статус у Google обновляется не мгновенно, бот сам повторяет проверку каждые 5 минут в течение суток и присылает свежую ссылку раз в полчаса.
+Приготовь заранее: телефон для приёма кода и вход в YouTube под этим же аккаунтом — Google может попросить любое из этого, и что именно, решает он.
+
+Ниже — то, что он сообщает по этому аккаунту: его текст и его ссылки, дословно. Открывай их СТРОГО в том же профиле антидетект-браузера и через тот же прокси, где выдавал согласие, — с другого устройства или IP проверка не засчитается. Дальше Google проведёт по шагам сам.
 
 Прошёл проверку — нажми кнопку ниже, бот перепроверит немедленно. Кнопки нет или сутки автопроверки уже вышли — отправь <code>повторить</code>, бот выдаст новые ссылки авторизации на том же прокси.
 
@@ -2957,7 +2955,12 @@ async fn generation_probe(
                 // `None`. The first surface that carries instructions keeps them: a later host
                 // answering without any is not evidence that the account stopped being held.
                 if validation_guidance.is_none() {
-                    *validation_guidance = validation_guidance_from_body(&response.body);
+                    if let Some(parts) = validation_guidance_from_body(&response.body) {
+                        if std::env::var("AUTH_BOT_GEMINI_TIER_EVIDENCE").as_deref() == Ok("1") {
+                            elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} account verification guidance: {}", parts.journal));
+                        }
+                        *validation_guidance = Some(parts.seller);
+                    }
                 }
                 elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} account verification link is {} after the {surface} rejection", if validation_guidance.is_some() {
                         "present in the rejection metadata"
@@ -2970,14 +2973,6 @@ async fn generation_probe(
                 // recover a link the seller lost. `valid_verification_url` has already fail-closed it
                 // to a real Google sign-in URL, and the same operator switch gates it as the rest of
                 // the evidence.
-                if let Some(guidance) = validation_guidance.as_deref() {
-                    if std::env::var("AUTH_BOT_GEMINI_TIER_EVIDENCE").as_deref() == Ok("1") {
-                        // Flattened on purpose: journald stores a multi-line message but prints it
-                        // as "blob data", and the whole point of this line is that an operator can
-                        // read the instructions back when the seller has lost them.
-                        elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} account verification guidance: {}", guidance.replace('\n', " | ")));
-                    }
-                }
                 // An account-level rejection is the same on every host, so stop asking. A 2xx that
                 // fails acceptance already consumed a paid generation, and any other status is not
                 // evidence that a different host would answer differently. Only a refusal that
@@ -3075,7 +3070,15 @@ fn classify_generation_failure(body: &[u8]) -> Option<Failure> {
 /// our own Telegram message becomes a credible phishing vector against the seller whose account we
 /// just touched. Requiring the full `https://accounts.google.com/` prefix also rules out lookalike
 /// hosts such as `accounts.google.com.example.net`. A rejection carrying less simply says less.
-fn validation_guidance_from_body(body: &[u8]) -> Option<String> {
+/// The seller's copy carries Telegram markup; the operator's carries none, because journald
+/// prints a message with markup and emoji only under `--all` and the whole point of journalling it
+/// is that it can be read back when the seller has lost theirs.
+struct GuidanceParts {
+    seller: String,
+    journal: String,
+}
+
+fn validation_guidance_from_body(body: &[u8]) -> Option<GuidanceParts> {
     let parsed = serde_json::from_slice::<Value>(body).ok()?;
     let details = parsed.pointer("/error/details")?.as_array()?;
     let metadata = details
@@ -3090,8 +3093,10 @@ fn validation_guidance_from_body(body: &[u8]) -> Option<String> {
     };
     let action_url = field("validation_url").filter(|url| valid_verification_url(url))?;
     let mut block = String::from("📋 <b>Что сообщает Google по этому аккаунту:</b>");
+    let mut journal = String::new();
     if let Some(message) = field("validation_error_message") {
         block.push_str(&format!("\n«{}»", crate::bot::esc(&message)));
+        journal.push_str(&message);
     }
     let action_text =
         field("validation_url_link_text").unwrap_or_else(|| "Verify your account".into());
@@ -3100,6 +3105,10 @@ fn validation_guidance_from_body(body: &[u8]) -> Option<String> {
         crate::bot::esc(&action_text),
         crate::bot::esc(&action_url)
     ));
+    if !journal.is_empty() {
+        journal.push_str(" | ");
+    }
+    journal.push_str(&format!("{action_text}: {action_url}"));
     if let Some(help_url) = field("validation_learn_more_url").filter(|url| valid_help_url(url)) {
         let help_text =
             field("validation_learn_more_link_text").unwrap_or_else(|| "Learn more".into());
@@ -3108,8 +3117,12 @@ fn validation_guidance_from_body(body: &[u8]) -> Option<String> {
             crate::bot::esc(&help_text),
             crate::bot::esc(&help_url)
         ));
+        journal.push_str(&format!(" | {help_text}: {help_url}"));
     }
-    Some(block)
+    Some(GuidanceParts {
+        seller: block,
+        journal,
+    })
 }
 
 /// Google's help centre is the only host besides the sign-in one this message ever points at.

@@ -800,8 +800,9 @@ fn generation_acceptance_surfaces_are_ordered_and_access_failures_stay_actionabl
     });
     // Google's instruction set is forwarded whole: its own sentence, the label it puts on the
     // action, the action itself, and the help link it offers beside it.
-    let guidance = validation_guidance_from_body(&serde_json::to_vec(&with_link).unwrap())
+    let parts = validation_guidance_from_body(&serde_json::to_vec(&with_link).unwrap())
         .expect("a rejection carrying a reviewed link must produce guidance");
+    let guidance = parts.seller;
     for expected in [
         "Verify your account to continue.",
         "Verify your account",
@@ -811,17 +812,20 @@ fn generation_acceptance_surfaces_are_ordered_and_access_failures_stay_actionabl
     ] {
         assert!(guidance.contains(expected), "guidance must carry {expected}");
     }
-    assert_eq!(
-        validation_guidance_from_body(&serde_json::to_vec(&validation).unwrap()),
-        None,
+    assert!(
+        validation_guidance_from_body(&serde_json::to_vec(&validation).unwrap()).is_none(),
         "a rejection without metadata must not invent instructions"
     );
     // A help link anywhere but Google's help centre is dropped without taking the rest with it.
     let mut hostile_help = with_link.clone();
     hostile_help["error"]["details"][0]["metadata"]["validation_learn_more_url"] =
         json!("https://evil.example/accounts");
-    let guidance = validation_guidance_from_body(&serde_json::to_vec(&hostile_help).unwrap())
+    let parts = validation_guidance_from_body(&serde_json::to_vec(&hostile_help).unwrap())
         .expect("a hostile help link must not suppress the action itself");
+    // The operator copy carries the same instructions without the markup journald refuses to print.
+    assert!(parts.journal.contains("https://accounts.google.com/signin/continue"));
+    assert!(!parts.journal.contains('<'));
+    let guidance = parts.seller;
     assert!(!guidance.contains("evil.example"));
     assert!(guidance.contains("https://accounts.google.com/signin/continue"));
     // The link is upstream input that we forward to a human, so anything but a real Google
@@ -857,6 +861,18 @@ fn generation_acceptance_surfaces_are_ordered_and_access_failures_stay_actionabl
         assert!(
             !message.contains("Подожди немного"),
             "waiting never clears an account verification requirement"
+        );
+        // Both variants of the same verdict must carry the same instructions. They were edited
+        // apart once — one kept a step list invented from a single account's history while the
+        // other already forwarded Google's own words — and the seller who happened to be on the
+        // stale branch was told to do things Google had not asked for.
+        assert!(
+            message.contains("Приготовь заранее"),
+            "every variant must say what to have ready"
+        );
+        assert!(
+            !message.contains("Привяжи и подтверди номер телефона"),
+            "no variant may prescribe a challenge Google has not asked for"
         );
     }
     assert_eq!(
