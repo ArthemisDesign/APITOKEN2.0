@@ -16,13 +16,6 @@ import {
   learnImageSeoRu,
   learnImageSeoZh,
 } from "./learn-image-seo";
-import {
-  enrichExistingProviderParityContent,
-  learnProviderParityEn,
-  learnProviderParityKo,
-  learnProviderParityRu,
-  learnProviderParityZh,
-} from "./learn-provider-parity";
 
 export type LearnCluster = "buy" | "free" | "integrate" | "compare" | "explain";
 
@@ -1808,7 +1801,6 @@ const coreLearnArticles: LearnArticle[] = [
 export const learnArticles: LearnArticle[] = [
   ...coreLearnArticles,
   ...learnProviderEn,
-  ...learnProviderParityEn,
   ...learnImageSeoEn,
 ];
 
@@ -1884,9 +1876,9 @@ export const learnArticlesBySlug: Record<string, LearnArticle> = Object.fromEntr
 );
 
 const translations: Record<Exclude<Locale, "en">, Record<string, LocalizedContent>> = {
-  ru: { ...learnRu, ...learnProviderRu, ...learnProviderParityRu, ...learnImageSeoRu },
-  zh: { ...learnZh, ...learnProviderZh, ...learnProviderParityZh, ...learnImageSeoZh },
-  ko: { ...learnKo, ...learnProviderKo, ...learnProviderParityKo, ...learnImageSeoKo },
+  ru: { ...learnRu, ...learnProviderRu, ...learnImageSeoRu },
+  zh: { ...learnZh, ...learnProviderZh, ...learnImageSeoZh },
+  ko: { ...learnKo, ...learnProviderKo, ...learnImageSeoKo },
 };
 
 function enContent(article: LearnArticle): LocalizedContent {
@@ -1927,13 +1919,11 @@ export function resolveArticle(slug: string, locale: Locale): ResolvedArticle | 
   const base = learnArticlesBySlug[slug];
   if (!base) return null;
   if (locale === "en") {
-    const content = enrichExistingProviderParityContent(slug, locale, enContent(base));
-    return { slug, cluster: base.cluster, related: base.related, locale, content: stripBoilerplateCta(content) };
+    return { slug, cluster: base.cluster, related: base.related, locale, content: stripBoilerplateCta(enContent(base)) };
   }
   const content = translations[locale][slug];
   if (!content) return null;
-  const enriched = enrichExistingProviderParityContent(slug, locale, content);
-  return { slug, cluster: base.cluster, related: base.related, locale, content: stripBoilerplateCta(enriched) };
+  return { slug, cluster: base.cluster, related: base.related, locale, content: stripBoilerplateCta(content) };
 }
 
 /** The day the learn cluster first shipped — the default published/modified date. */

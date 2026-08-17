@@ -19,7 +19,7 @@ describe("public product truth regressions", () => {
       read("lib/learn-provider-ru.ts"),
       read("lib/learn-provider-ko.ts"),
       read("lib/learn-provider-zh.ts"),
-      read("lib/learn-provider-parity.ts"),
+      read("lib/learn-image-seo.ts"),
     ].join("\n");
 
     expect(copy).not.toMatch(/daily and monthly spend caps|request caps are configurable|model scoping|IP controls|rotation without downtime|scope keys to tools/i);
