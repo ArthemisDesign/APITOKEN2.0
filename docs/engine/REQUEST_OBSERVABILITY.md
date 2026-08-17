@@ -365,8 +365,9 @@ than a false zero or 100% coverage.
 
 Responses return no raw API key, key label, email, prompt, content, provider subject/profile, or raw
 error. The admin backend may resolve account/key display metadata through its existing authoritative
-mappings. The producer must reach the complete v1 route matrix and pass the coverage gate in §15
-before any read endpoint or UI consumer ships.
+mappings. The producer must reach the complete v1 route matrix, pass the producer coverage gate, ship
+the fixed operations surfaces, and pass the 24-hour observation gate in §13 steps 8-10 before any
+read endpoint or cross-context consumer ships.
 
 The customer-facing usage API is unchanged in v1. There is no customer request-fact API, aggregate,
 or request-level UI.
@@ -434,10 +435,10 @@ pagination.
 - `deploy/Caddyfile`: implemented owner of the completed security-only perimeter stage; the
   `strip_execution_identity` snippet removes client-supplied logical identity at all four public
   ingresses without changing stable loopback origins;
-- `packages/contracts` and `packages/engine-client`: typed private consumers only if the future
-  producer contract needs them, and only after the engine producer is deployed GREEN;
-- `apps/api` and `apps/admin`: private operator identity join and the dedicated Request Analytics UI
-  after the producer and 24-hour gate;
+- `packages/contracts`: additive typed private contract producer only after the engine read producer
+  and 24-hour gate; `packages/engine-client` consumes it only after its exact SHA is GREEN;
+- `apps/api`: private operator identity join only after the engine-client producer is GREEN;
+- `apps/admin`: dedicated Request Analytics UI only after the `apps/api` producer is GREEN;
 - `observability/` and `docs/ops/MONITORING.md`: only aggregate health metrics, alerts, dashboards,
   and runbooks.
 
@@ -478,17 +479,25 @@ the prerequisite exact SHA is production GREEN.
    dispatch, prove one and only one leaf fact per scoped plane attempt, prove all exclusions, and run
    the full privacy, lifecycle, stream-transparency, fallback, persistence, and billing-invariant
    suite. No read endpoint, metric completeness ratio, or UI may ship before this gate is GREEN.
-9. **Deliver private Control API producers.** Add only the three endpoints and coverage semantics from
-   §9; update `docs/engine/CONTROL_API.md` and `docs/DEPENDENCIES.md` in the same producer commit.
-10. **Deliver fixed-cardinality operations surfaces.** Add the metrics, alert rules, dashboard panels,
-    and runbook anchors from §10 under the new metric checklist.
-11. **Run the 24-hour observation gate.** Compare the instrumented exact SHA with its approved
+9. **Deliver fixed-cardinality operations surfaces.** Add the metrics, alert rules, dashboard panels,
+   and runbook anchors from §10 under the new metric checklist.
+10. **Run the 24-hour observation gate.** Compare the instrumented exact SHA with its approved
     baseline and apply every threshold from §15. Any breach stops rollout and is fixed or rolled back
-    before consumers.
-12. **Deliver the operator consumer.** After the producer exact SHA is GREEN and the observation gate
-    passes, add a dedicated **Request Analytics** area in `apps/admin`, linked from but not mixed into
-    Engine Spend. It consumes only the private producer contract. There is no customer API or UI.
-13. **Record final proof.** Capture exact producer and consumer SHAs, migration/watchdog verdicts,
+    before the private Control API or any cross-context consumer.
+11. **Deliver private Control API producers.** Only after step 10 passes, add the three endpoints and
+    coverage semantics from §9; update `docs/engine/CONTROL_API.md` and `docs/DEPENDENCIES.md` in the
+    same producer commit, then wait for its exact SHA to be production GREEN.
+12. **Deliver `packages/contracts`.** Only after the step-11 producer is GREEN, add the typed private
+    request-analytics schemas as an additive contract producer; update `docs/DEPENDENCIES.md` in the
+    same commit and wait for the exact SHA to be GREEN.
+13. **Deliver `packages/engine-client`.** Only after the step-12 contract producer is GREEN, consume
+    those schemas in the sole TypeScript Control API transport; wait for the exact SHA to be GREEN.
+14. **Deliver `apps/api`.** Only after the step-13 engine-client producer is GREEN, add the private
+    admin-backend identity join and request-analytics projection; wait for the exact SHA to be GREEN.
+15. **Deliver `apps/admin`.** Only after the step-14 API producer is GREEN, add the dedicated
+    **Request Analytics** area, linked from but not mixed into Engine Spend. It consumes only the
+    private producer chain. There is no customer API or UI.
+16. **Record final proof.** Capture exact producer and consumer SHAs, migration/watchdog verdicts,
     route-manifest coverage, exclusion tests, privacy-negative tests, metric/alert/runbook checks,
     24-hour thresholds, and bounded live smoke results. Live-smoke credentials and budget records may
     remain in the operator evidence system rather than this repository; no secret or customer content
@@ -539,16 +548,18 @@ The owner-approved v1 decisions are locked:
 5. The four timestamps and four safely derived durations in §7 are mandatory; unmeasured is `NULL`.
 6. The operator surface is a dedicated Request Analytics area in `apps/admin`, linked from but not
    mixed with Engine Spend. There is no customer API or UI.
-7. Complete producer coverage is a hard gate before private reads or UI. The exact private read
-   surface, keyset, limits, windows, and honest coverage semantics are §9.
+7. Complete producer coverage, fixed operations surfaces, and the 24-hour observation are hard gates
+   before the private Control API. The exact private read surface, keyset, limits, windows, and honest
+   coverage semantics are §9.
 8. Retention is exactly 30 days. The fixed-cardinality metric and alert contract is §10.
-9. The rollout order and final evidence bundle are §13. Later providers or modalities require a new
-   versioned scope decision rather than silently widening v1.
+9. The rollout order and final evidence bundle are §13. Each cross-context stage proceeds only after
+   its previous producer's exact SHA is GREEN. Later providers or modalities require a new versioned
+   scope decision rather than silently widening v1.
 
 The MVP is **Done** only when all of the following finite conditions hold:
 
 - §§13.1-13.10 are complete on production-GREEN exact SHAs, including the mechanical producer
-  coverage gate and every test in §14;
+  coverage gate, fixed operations surfaces, 24-hour observation gate, and every test in §14;
 - the exact scoped route manifest has no missing leaf and no duplicate/Combined fact, while every v1
   exclusion produces no request fact;
 - private reads return `scope_version=1`, enforce `[from,to) <= 30d`, keyset ordering and `limit<=200`,
@@ -565,9 +576,10 @@ The MVP is **Done** only when all of the following finite conditions hold:
   thresholds, persistence-health alert, unexplained fact loss, billing divergence, changed response
   bytes, or changed retry/stream fence blocks the consumer rollout until a new exact SHA passes a
   fresh 24-hour window;
-- §§13.12-13.13 are complete: the dedicated operator UI consumes the GREEN producer, and the final
-  proof records exact SHAs, production verdicts, route/exclusion/privacy coverage, observation results,
-  and bounded live smoke evidence.
+- §§13.11-13.16 are complete in order: the private Control API, `packages/contracts`,
+  `packages/engine-client`, `apps/api`, and dedicated `apps/admin` UI each follow their previous GREEN
+  producer, and the final proof records exact SHAs, production verdicts, route/exclusion/privacy
+  coverage, observation results, and bounded live smoke evidence.
 
 Passing unit tests alone, a partial provider matrix, rows without honest coverage, or a UI over the
 current single Codex count-token producer is not completion.
