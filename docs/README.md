@@ -27,7 +27,7 @@ document, update this index.
 - [STAGE2_POSTGRES_AUTHORITY.md](engine/STAGE2_POSTGRES_AUTHORITY.md) — PostgreSQL authority model and Stage 2 fencing.
 - [UNIFIED_ROUTER.md](engine/UNIFIED_ROUTER.md) — target architecture of the single endpoint for all providers (design).
 - [ROUTING_FENCING.md](engine/ROUTING_FENCING.md) — detailed design of UNIFIED_ROUTER stage 6: routing with fallback lists and attempt fencing (execution group / single billable winner).
-- [REQUEST_OBSERVABILITY.md](engine/REQUEST_OBSERVABILITY.md) — proposed privacy-minimal request lifecycle, client/model/tool analytics, correlation identities, and producer-first rollout contract (not implemented).
+- [REQUEST_OBSERVABILITY.md](engine/REQUEST_OBSERVABILITY.md) — owner-approved v1 request-lifecycle decision record, privacy boundary, exact producer/read/metrics scope, ordered rollout, and finite Definition of Done (first Codex count-token producer only; implementation incomplete).
 - [ELOG.md](../crates/elog/CLAUDE.md) — unified error logging contract (crate-level instruction: format, levels, scrubbing).
 
 ## commerce/ — commerce (`apps/api`, `apps/worker`, `packages/*`)
