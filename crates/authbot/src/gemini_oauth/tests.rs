@@ -838,6 +838,14 @@ fn generation_acceptance_surfaces_are_ordered_and_access_failures_stay_actionabl
     assert!(valid_verification_url(
         "https://accounts.google.com/signin/continue?sarp=1&scc=1"
     ));
+    // Binding or confirming a phone is an account action, and Google serves those from its other
+    // account host; refusing it would drop the whole instruction block for that rejection.
+    assert!(valid_verification_url(
+        "https://myaccount.google.com/signinoptions/rescuephone"
+    ));
+    assert!(!valid_verification_url(
+        "https://myaccount.google.com.example.net/signinoptions/rescuephone"
+    ));
     for message in [
         Failure::AccountValidationRequired.public_message(),
         Failure::AccountValidationRequired.fixed_proxy_message(),

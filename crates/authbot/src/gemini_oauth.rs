@@ -1055,7 +1055,7 @@ async fn process_oauth_completion(
     } else {
         pending.redirect_uri.as_str()
     };
-    let mut verification_url = None;
+    let mut validation_guidance = None;
     match complete(
         &state.store,
         oauth,
@@ -1069,7 +1069,7 @@ async fn process_oauth_completion(
         exchange_redirect,
         pending.phase,
         pending.bootstrap_subject.as_str(),
-        &mut verification_url,
+        &mut validation_guidance,
     )
     .await
     {
@@ -1132,7 +1132,7 @@ async fn process_oauth_completion(
             .await;
         }
         Err(failure) => {
-            fail_callback(state, &session, failure, verification_url.as_deref()).await;
+            fail_callback(state, &session, failure, validation_guidance.as_deref()).await;
         }
     }
 }
@@ -1464,7 +1464,7 @@ async fn fail_callback(
     state: &CallbackState,
     session: &GeminiOAuthSession,
     failure: Failure,
-    verification_url: Option<&str>,
+    validation_guidance: Option<&str>,
 ) {
     let Some(oauth) = state.config.gemini_oauth.as_ref() else {
         return;
@@ -1525,7 +1525,7 @@ async fn fail_callback(
     // surrounding verdict classified as: a quota refusal answers before the validation gate is even
     // reached and carries no `reason`, yet the account is still held and these are still the only
     // way past it.
-    let message = match verification_url {
+    let message = match validation_guidance {
         Some(guidance) => format!("{base}\n\n{guidance}"),
         _ => base.to_string(),
     };
@@ -1700,7 +1700,9 @@ impl Failure {
             Self::GenerationUnavailable => "⚠️ Google подтвердил вход и активный тариф, но реальная тестовая генерация не была подтверждена. Профиль не опубликован и сделка не завершена; прокси сохранён. Подожди немного и отправь <code>повторить</code>.",
             Self::AccountValidationRequired => "❌ Google держит сам аккаунт на проверке и не выполняет генерацию. Это отдельная проверка — обычный Gemini на сайте при этом может работать, и повтор без её прохождения ничего не изменит.
 
-Ниже — то, что Google сообщает по этому аккаунту: его текст и его ссылки, дословно. Открывай их СТРОГО в том же профиле антидетект-браузера и через тот же прокси, где выдавал согласие, — с другого устройства или IP проверка не засчитается. Дальше Google проведёт по шагам сам.
+Приготовь заранее: телефон для приёма кода и вход в YouTube под этим же аккаунтом — Google может попросить любое из этого, и что именно, решает он.
+
+Ниже — то, что он сообщает по этому аккаунту: его текст и его ссылки, дословно. Открывай их СТРОГО в том же профиле антидетект-браузера и через тот же прокси, где выдавал согласие, — с другого устройства или IP проверка не засчитается. Дальше Google проведёт по шагам сам.
 
 Прошёл проверку — нажми кнопку ниже, бот перепроверит немедленно. Кнопки нет или сутки автопроверки уже вышли — отправь <code>повторить</code>, бот выдаст новые ссылки авторизации на том же прокси.
 
@@ -2105,7 +2107,7 @@ async fn complete(
     bootstrap_subject: &str,
     // Set when Google refuses the acceptance generation until the seller's own Google account is
     // verified; carries that account's verification link back to the Telegram answer.
-    verification_url: &mut Option<String>,
+    validation_guidance: &mut Option<String>,
 ) -> Result<Completion, Failure> {
     elog::info("authbot", format!("[gemini-oauth] chat={} proxy_order={} finalizing: exchanging Google authorization code", session.chat_id, proxy_order_id));
     if session.expires_ts < now() {
@@ -2240,7 +2242,7 @@ async fn complete(
         &mut client,
         &mut credential,
         session.chat_id,
-        verification_url,
+        validation_guidance,
     )
     .await
     {
@@ -2423,7 +2425,7 @@ async fn resolve_and_probe(
     client: &mut RecoveringClient<'_>,
     credential: &mut GeminiCredential,
     chat_id: i64,
-    verification_url: &mut Option<String>,
+    validation_guidance: &mut Option<String>,
 ) -> Result<(), Failure> {
     if credential.expires_at <= now() {
         refresh_parked_access_token(client, credential).await?;
@@ -2455,7 +2457,7 @@ async fn resolve_and_probe(
         &credential.access_token,
         &credential.project_id,
         chat_id,
-        verification_url,
+        validation_guidance,
     )
     .await
 }
@@ -2475,7 +2477,7 @@ async fn report_parked_rejection(
     chat_id: i64,
     job: Option<&SellerJobRef>,
     failure: Failure,
-    verification_url: Option<&str>,
+    validation_guidance: Option<&str>,
 ) {
     let accepts_proxy_input = job
         .is_some_and(|expected| crate::bot::gemini_job_accepts_proxy_input(store, expected, 0));
@@ -2487,7 +2489,7 @@ async fn report_parked_rejection(
     // Google's own instructions, already rendered and escaped, follow whatever verdict text this
     // refusal produced — including one classified as something else, because the account is still
     // held and those instructions are still the only way past it.
-    let message = match verification_url {
+    let message = match validation_guidance {
         Some(guidance) => format!("{base}\n\n{guidance}"),
         None => base.to_string(),
     };
@@ -2531,7 +2533,7 @@ pub(crate) async fn finish_parked_verification(
         VerificationRetry::Published(profile) => {
             announce_publication(bot, store, config, chat_id, job, &profile).await;
         }
-        VerificationRetry::Rejected(failure, verification_url) => {
+        VerificationRetry::Rejected(failure, validation_guidance) => {
             report_parked_rejection(
                 bot,
                 store,
@@ -2539,7 +2541,7 @@ pub(crate) async fn finish_parked_verification(
                 chat_id,
                 job.as_ref(),
                 failure,
-                verification_url.as_deref(),
+                validation_guidance.as_deref(),
             )
             .await;
             elog::error("authbot", format!("[gemini-oauth] chat={chat_id} post-verification retry failed: {}", failure.code()));
@@ -2597,9 +2599,9 @@ pub(crate) async fn retry_parked_verification(
             return VerificationRetry::Rejected(failure, None);
         }
     };
-    let mut verification_url = None;
+    let mut validation_guidance = None;
     if let Err(failure) =
-        resolve_and_probe(&mut client, &mut credential, chat_id, &mut verification_url).await
+        resolve_and_probe(&mut client, &mut credential, chat_id, &mut validation_guidance).await
     {
         // Keep the material. A refused generation is a statement about the account's current state
         // — held for verification, tier not provisioned yet, a surface having a bad minute, a
@@ -2607,7 +2609,7 @@ pub(crate) async fn retry_parked_verification(
         // for. Erasing here is exactly what turned one throttled proxy into a dead button.
         reseal_parked_credential(store, config, chat_id, &credential);
         record_probe_outcome(store, chat_id, failure);
-        return VerificationRetry::Rejected(failure, verification_url);
+        return VerificationRetry::Rejected(failure, validation_guidance);
     }
     match publish_verified_credential(store, config, chat_id, parked.job.as_ref(), credential).await
     {
@@ -2652,7 +2654,7 @@ pub(crate) async fn sweep_recorded_verifications(
                 elog::info("authbot", format!("[gemini-oauth] chat={chat_id} automatic acceptance passed; publishing profile {}", profile.id));
                 announce_publication(bot, store, config, chat_id, job, &profile).await;
             }
-            VerificationRetry::Rejected(failure, verification_url) => {
+            VerificationRetry::Rejected(failure, validation_guidance) => {
                 elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} automatic acceptance attempt failed: {}", failure.code()));
                 // Mostly silent by design — 288 identical messages a day would be noise — but not
                 // in the two cases where silence costs the deal. A changed verdict is news the
@@ -2674,7 +2676,7 @@ pub(crate) async fn sweep_recorded_verifications(
                         chat_id,
                         job.as_ref(),
                         failure,
-                        verification_url.as_deref(),
+                        validation_guidance.as_deref(),
                     )
                     .await;
                 }
@@ -2906,7 +2908,7 @@ async fn generation_probe(
     access_token: &str,
     project_id: &str,
     chat_id: i64,
-    verification_url: &mut Option<String>,
+    validation_guidance: &mut Option<String>,
 ) -> Result<(), Failure> {
     let mut last = Failure::GenerationUnavailable;
     for (surface, host) in CODE_ASSIST_SURFACES {
@@ -2954,10 +2956,10 @@ async fn generation_probe(
                 // literally a Google sign-in URL, so a rejection without one simply leaves this
                 // `None`. The first surface that carries instructions keeps them: a later host
                 // answering without any is not evidence that the account stopped being held.
-                if verification_url.is_none() {
-                    *verification_url = validation_guidance_from_body(&response.body);
+                if validation_guidance.is_none() {
+                    *validation_guidance = validation_guidance_from_body(&response.body);
                 }
-                elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} account verification link is {} after the {surface} rejection", if verification_url.is_some() {
+                elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} account verification link is {} after the {surface} rejection", if validation_guidance.is_some() {
                         "present in the rejection metadata"
                     } else {
                         "absent from the rejection metadata"
@@ -2968,9 +2970,12 @@ async fn generation_probe(
                 // recover a link the seller lost. `valid_verification_url` has already fail-closed it
                 // to a real Google sign-in URL, and the same operator switch gates it as the rest of
                 // the evidence.
-                if let Some(url) = verification_url.as_deref() {
+                if let Some(guidance) = validation_guidance.as_deref() {
                     if std::env::var("AUTH_BOT_GEMINI_TIER_EVIDENCE").as_deref() == Ok("1") {
-                        elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} account verification link: {url}"));
+                        // Flattened on purpose: journald stores a multi-line message but prints it
+                        // as "blob data", and the whole point of this line is that an operator can
+                        // read the instructions back when the seller has lost them.
+                        elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} account verification guidance: {}", guidance.replace('\n', " | ")));
                     }
                 }
                 // An account-level rejection is the same on every host, so stop asking. A 2xx that
@@ -3127,9 +3132,16 @@ fn bounded_instruction(value: &str) -> String {
         .collect()
 }
 
+/// Google puts account actions on more than one of its own hosts: a sign-in challenge lands on
+/// `accounts.google.com`, while binding or confirming a phone lives under `myaccount.google.com`.
+/// Accepting only the first silently dropped the whole instruction block for any rejection that
+/// pointed at the second — the seller would have seen a verdict with no action at all. Both are
+/// Google-owned; the match stays an exact prefix including the slash, so lookalikes such as
+/// `accounts.google.com.example.net` are still refused.
 fn valid_verification_url(url: &str) -> bool {
     url.len() <= 2048
-        && url.starts_with("https://accounts.google.com/")
+        && (url.starts_with("https://accounts.google.com/")
+            || url.starts_with("https://myaccount.google.com/"))
         && !url.chars().any(|character| {
             character.is_control()
                 || character.is_whitespace()
