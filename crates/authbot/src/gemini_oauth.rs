@@ -1509,6 +1509,15 @@ async fn fail_callback(
             "{base}\n\n🔗 Персональная ссылка Google для этой проверки:\n<code>{}</code>",
             crate::bot::esc(url)
         ),
+        // Google can attach the account's verification link to a rejection that classifies as
+        // something else entirely — a quota refusal answers before the validation gate is reached
+        // and carries no `reason` to classify on. The link is still this account's own check and
+        // still the only way past it, so it is forwarded with its own sentence instead of being
+        // dropped because the surrounding refusal was about something else.
+        Some(url) => format!(
+            "{base}\n\n🔗 Google приложил к отказу персональную ссылку проверки этого аккаунта. Открой её СТРОГО в том же профиле браузера и через тот же прокси:\n<code>{}</code>",
+            crate::bot::esc(url)
+        ),
         _ => base.to_string(),
     };
     // The button exists only while the account is actually parked: offering a retry we cannot honour
@@ -2448,6 +2457,13 @@ pub(crate) async fn finish_parked_verification(
                     "{base}\n\n🔗 Персональная ссылка Google для этой проверки:\n<code>{}</code>",
                     crate::bot::esc(url)
                 ),
+                // Same reasoning as the callback path: a link Google attached to a differently
+                // classified refusal is still actionable, and this sweep is the surface the seller
+                // actually sees while the account sits parked.
+                Some(url) => format!(
+                    "{base}\n\n🔗 Google приложил к отказу персональную ссылку проверки этого аккаунта. Открой её СТРОГО в том же профиле браузера и через тот же прокси:\n<code>{}</code>",
+                    crate::bot::esc(url)
+                ),
                 _ => base.to_string(),
             };
             // The seller does not have to babysit this: the same acceptance runs automatically
@@ -2769,25 +2785,33 @@ async fn generation_probe(
             }
             Err(failure) => {
                 log_generation_failure(chat_id, surface, response.status, &response.body);
+                // Google puts the account's own verification link in the rejection metadata and
+                // only the bare sentence in `message`. Surfacing the link is the difference between
+                // an actionable instruction and a dead end, because the seller cannot reach this
+                // particular check from a normal Gemini session — theirs already works.
+                //
+                // The link is read from every rejection, not only from the one that classifies as
+                // `AccountValidationRequired`. Google answers whichever refusal wins the race, and a
+                // quota refusal wins before the validation gate is ever evaluated: it arrives as
+                // `RESOURCE_EXHAUSTED` with no `reason`, the classifier returns `None`, and gating
+                // the lookup on that classification threw away any link the rejection still carried.
+                // `verification_url_from_body` stays fail-closed on anything that is not literally a
+                // Google sign-in URL, so a rejection without one simply leaves this `None`. The
+                // first surface that carries a link keeps it: a later host answering without one is
+                // not evidence that the account stopped being held.
+                if verification_url.is_none() {
+                    *verification_url = verification_url_from_body(&response.body);
+                }
+                elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} account verification link is {} after the {surface} rejection", if verification_url.is_some() {
+                        "present in the rejection metadata"
+                    } else {
+                        "absent from the rejection metadata"
+                    }));
                 // An account-level rejection is the same on every host, so stop asking. A 2xx that
                 // fails acceptance already consumed a paid generation, and any other status is not
                 // evidence that a different host would answer differently. Only an access rejection
                 // made before the model ran may try the next reviewed surface.
-                let classified = classify_generation_failure(&response.body);
-                if let Some(classified) = classified {
-                    if classified == Failure::AccountValidationRequired {
-                        // Google puts the account's own verification link in the rejection
-                        // metadata and only the bare sentence in `message`. Surfacing the link is
-                        // the difference between an actionable instruction and a dead end, because
-                        // the seller cannot reach this particular check from a normal Gemini
-                        // session — theirs already works.
-                        *verification_url = verification_url_from_body(&response.body);
-                        elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} account verification link is {}", if verification_url.is_some() {
-                                "present in the rejection metadata"
-                            } else {
-                                "absent from the rejection metadata"
-                            }));
-                    }
+                if let Some(classified) = classify_generation_failure(&response.body) {
                     return Err(classified);
                 }
                 if !matches!(response.status, 403 | 404) {
@@ -2824,6 +2848,13 @@ fn log_generation_failure(chat_id: i64, surface: &str, status: u16, body: &[u8])
             .and_then(|error| error.get("message"))
             .and_then(Value::as_str);
         elog::error("authbot", format!("[gemini-oauth] chat={chat_id} generation acceptance detail: {}", bounded_label(message)));
+        // The rejection metadata is the only place a per-account verification link ever appears, so
+        // when Google refuses for a reason this code does not model yet, the operator has to be able
+        // to see the shape it actually sent. Same opt-in switch and the same control-character
+        // stripping as the message above, with a wider bound because `details` is a structure rather
+        // than a sentence.
+        let details = error.and_then(|error| error.get("details")).map(Value::to_string);
+        elog::error("authbot", format!("[gemini-oauth] chat={chat_id} generation acceptance details: {}", bounded_evidence(details.as_deref(), 1_024)));
     }
 }
 
@@ -3255,6 +3286,24 @@ fn bounded_label(value: Option<&str>) -> String {
         .chars()
         .filter(|character| !character.is_control())
         .take(96)
+        .collect();
+    if cleaned.is_empty() {
+        "<empty>".into()
+    } else {
+        cleaned
+    }
+}
+
+/// `bounded_label` is sized for one enum-shaped field, so operator evidence that is a structure
+/// rather than a sentence needs a wider bound while keeping the same control-character stripping.
+fn bounded_evidence(value: Option<&str>, limit: usize) -> String {
+    let Some(value) = value else {
+        return "<none>".into();
+    };
+    let cleaned: String = value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(limit)
         .collect();
     if cleaned.is_empty() {
         "<empty>".into()
