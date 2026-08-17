@@ -816,6 +816,22 @@ fn generation_acceptance_surfaces_are_ordered_and_access_failures_stay_actionabl
         validation_guidance_from_body(&serde_json::to_vec(&validation).unwrap()).is_none(),
         "a rejection without metadata must not invent instructions"
     );
+    // Google signs these links with a token that runs well past any sane text bound, and a
+    // truncated URL is not a shorter link but a broken one: it opens the plain success page
+    // instead of the challenge, so the seller passes a verification that changes nothing.
+    let long_url = format!(
+        "https://accounts.google.com/signin/continue?plt={}&flowName=GlifWebSignIn&authuser",
+        "A".repeat(400)
+    );
+    let mut long = with_link.clone();
+    long["error"]["details"][0]["metadata"]["validation_url"] = json!(long_url);
+    let parts = validation_guidance_from_body(&serde_json::to_vec(&long).unwrap())
+        .expect("a long signed link is still a valid link");
+    assert!(
+        parts.journal.contains(&long_url),
+        "the action URL must survive whole"
+    );
+
     // A help link anywhere but Google's help centre is dropped without taking the rest with it.
     let mut hostile_help = with_link.clone();
     hostile_help["error"]["details"][0]["metadata"]["validation_learn_more_url"] =

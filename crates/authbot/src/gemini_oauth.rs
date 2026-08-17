@@ -3084,14 +3084,20 @@ fn validation_guidance_from_body(body: &[u8]) -> Option<GuidanceParts> {
     let metadata = details
         .iter()
         .find_map(|detail| detail.pointer("/metadata")?.as_object());
-    let field = |name: &str| -> Option<String> {
+    let raw = |name: &str| -> Option<String> {
         metadata
             .and_then(|metadata| metadata.get(name))
             .and_then(Value::as_str)
-            .map(bounded_instruction)
+            .map(str::to_string)
             .filter(|value| !value.is_empty())
     };
-    let action_url = field("validation_url").filter(|url| valid_verification_url(url))?;
+    // Only free-form text is bounded. A URL must never be: Google mints these with a signed token
+    // that runs past three hundred characters, and a truncated one is not a shorter link, it is a
+    // broken one — it opens the plain success page instead of the challenge, so the seller sees a
+    // verification that appears to pass and changes nothing. Length is already capped where it
+    // belongs, in the validators below, at the two kilobytes a real URL can reach.
+    let field = |name: &str| raw(name).map(|value| bounded_instruction(&value));
+    let action_url = raw("validation_url").filter(|url| valid_verification_url(url))?;
     let mut block = String::from("📋 <b>Что сообщает Google по этому аккаунту:</b>");
     let mut journal = String::new();
     if let Some(message) = field("validation_error_message") {
@@ -3109,7 +3115,7 @@ fn validation_guidance_from_body(body: &[u8]) -> Option<GuidanceParts> {
         journal.push_str(" | ");
     }
     journal.push_str(&format!("{action_text}: {action_url}"));
-    if let Some(help_url) = field("validation_learn_more_url").filter(|url| valid_help_url(url)) {
+    if let Some(help_url) = raw("validation_learn_more_url").filter(|url| valid_help_url(url)) {
         let help_text =
             field("validation_learn_more_link_text").unwrap_or_else(|| "Learn more".into());
         block.push_str(&format!(
