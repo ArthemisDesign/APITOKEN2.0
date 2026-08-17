@@ -88,7 +88,8 @@ and immutable/dormant artifacts are not rewritten.
 - [ ] `apps/web` — storefront figures: remove dependencies on `src/lib/pricing-tiers.ts`, check
       `src/lib/models.ts` and all
       storefront copy (`src/components/marketing-pages.tsx`, `src/components/cost-calculator.tsx`,
-      `src/lib/md-pages.ts`, `src/lib/messages.json`, `src/lib/llms.ts`, `src/lib/learn-*.ts`).
+      `src/lib/md-pages.ts`, `src/lib/messages.json`, `src/lib/llms.ts`, `src/lib/learn-shared.ts`,
+      `src/lib/learn-core*/`, `src/lib/learn-provider-*/`, `src/lib/learn-image-seo/`).
       Determine the radius by grepping for the old figure, not from memory.
 - [ ] `docs/commerce/PRICING_MODEL.md` and the `PRICING.md` entry point — account default/provider
       pricing, B2C/B2B/OpenKeys/service and paid/free attribution.
