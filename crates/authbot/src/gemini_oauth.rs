@@ -40,9 +40,16 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 const AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = gemini_credential::GEMINI_OFFICIAL_TOKEN_URI;
 const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo";
-const CODE_ASSIST_PROD_URL: &str = "https://cloudcode-pa.googleapis.com";
-const CODE_ASSIST_DAILY_URL: &str = "https://daily-cloudcode-pa.googleapis.com";
-const CODE_ASSIST_SANDBOX_URL: &str = "https://daily-cloudcode-pa.sandbox.googleapis.com";
+/// Every Code Assist call — discovery, onboarding and the acceptance generation — walks this one
+/// ordered list, and its origins come from `gemini_credential` so Auth Bot and the engine cannot
+/// drift apart again. They already had: acceptance probed the legacy host while the pool served
+/// from the runtime origin, so a live Google AI Pro subscription was refused on a host whose quota
+/// it never needed, and the seller was told their subscription had none.
+const CODE_ASSIST_SURFACES: [(&str, &str); 3] = [
+    ("runtime", gemini_credential::CODE_ASSIST_RUNTIME_ORIGIN),
+    ("daily", gemini_credential::CODE_ASSIST_DAILY_ORIGIN),
+    ("legacy", gemini_credential::CODE_ASSIST_LEGACY_ORIGIN),
+];
 const LEGACY_CLIENT_ID: &str = gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_ID;
 const LEGACY_CLIENT_SECRET: &str = gemini_credential::GEMINI_OFFICIAL_OAUTH_CLIENT_SECRET;
 const LEGACY_REDIRECT_URI: &str = "https://codeassist.google.com/authcode";
@@ -742,9 +749,19 @@ fn submitted_authorization_code(
         return Some(value.to_string());
     }
     let url = reqwest::Url::parse(value).ok()?;
-    if url.scheme() != "http"
-        || url.host_str() != Some("localhost")
-        || url.port_or_known_default() != Some(51_121)
+    let loopback = url.scheme() == "http"
+        && url.host_str() == Some("localhost")
+        && url.port_or_known_default() == Some(51_121);
+    // Google renders the code on its own hosted callback page for clients that ask for that redirect
+    // instead of the loopback one. We keep asking for loopback, so this address is not one we
+    // produced — but a seller who copies the address bar rather than the code otherwise gets an
+    // opaque `authorization` failure with nothing to act on. Accepting the shape costs nothing:
+    // what authorises a submission is the state binding checked below, and it is identical either
+    // way, so a code minted for any other transaction is still refused.
+    let hosted = url.scheme() == "https"
+        && url.host_str() == Some("antigravity.google")
+        && url.port().is_none();
+    if !(loopback || hosted)
         || url.path() != "/oauth-callback"
         || !url.username().is_empty()
         || url.password().is_some()
@@ -2823,25 +2840,6 @@ async fn resolve_antigravity_account(
     })
 }
 
-/// The reviewed acceptance surfaces for the one paid probe generation, in order.
-///
-/// Admission has to be evidence about the surface that will actually carry the subscription. That
-/// is not the legacy production host: the engine serves Antigravity customer traffic from the origin
-/// in `CLAUDE_API_GEMINI_UPSTREAM`, which is the sandbox origin in production, and the first-party
-/// Antigravity client talks to the daily origin. Probing production first is what rejected accounts
-/// that generate perfectly well where they are actually used — the host answered
-/// `RESOURCE_EXHAUSTED` about a tier the account never serves traffic on, and the seller was told
-/// their working subscription had no quota.
-///
-/// Ordered by how much each host's answer is worth: the origin the pool will use, then the origin
-/// the official client uses, then the legacy production host. Nothing that already produced a
-/// generation is ever replayed, so reaching a later host always costs zero paid generations.
-const GENERATION_PROBE_SURFACES: [(&str, &str); 3] = [
-    ("runtime-sandbox", CODE_ASSIST_SANDBOX_URL),
-    ("daily", CODE_ASSIST_DAILY_URL),
-    ("production", CODE_ASSIST_PROD_URL),
-];
-
 async fn generation_probe(
     client: &mut RecoveringClient<'_>,
     access_token: &str,
@@ -2850,7 +2848,7 @@ async fn generation_probe(
     verification_url: &mut Option<String>,
 ) -> Result<(), Failure> {
     let mut last = Failure::GenerationUnavailable;
-    for (surface, host) in GENERATION_PROBE_SURFACES {
+    for (surface, host) in CODE_ASSIST_SURFACES {
         let session_id = fresh_uuid_v4().map_err(|_| Failure::GenerationUnavailable)?;
         let request_id = fresh_uuid_v4().map_err(|_| Failure::GenerationUnavailable)?;
         let body = generation_probe_body(project_id, &session_id, &request_id);
@@ -3071,11 +3069,7 @@ async fn load_code_assist(
     client: &mut RecoveringClient<'_>,
     access_token: &str,
 ) -> Result<LoadCodeAssistResponse, Failure> {
-    for base in [
-        CODE_ASSIST_PROD_URL,
-        CODE_ASSIST_SANDBOX_URL,
-        CODE_ASSIST_DAILY_URL,
-    ] {
+    for (_, base) in CODE_ASSIST_SURFACES {
         match post_antigravity_json(
             client,
             access_token,
@@ -3104,11 +3098,7 @@ async fn onboard_antigravity(
     tier_id: &str,
 ) -> Result<(), Failure> {
     let body = onboard_request_body(tier_id);
-    for base in [
-        CODE_ASSIST_SANDBOX_URL,
-        CODE_ASSIST_DAILY_URL,
-        CODE_ASSIST_PROD_URL,
-    ] {
+    for (_, base) in CODE_ASSIST_SURFACES {
         for poll in 0..MAX_ONBOARD_POLLS {
             if poll > 0 {
                 tokio::time::sleep(Duration::from_secs(5)).await;

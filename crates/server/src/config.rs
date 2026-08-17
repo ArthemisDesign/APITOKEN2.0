@@ -848,7 +848,7 @@ fn gemini_config() -> Option<GeminiConfig> {
     let upstream = validate_gemini_upstream(
         &ev_or(
             "CLAUDE_API_GEMINI_UPSTREAM",
-            "https://daily-cloudcode-pa.sandbox.googleapis.com",
+            gemini_credential::CODE_ASSIST_RUNTIME_ORIGIN,
         ),
         ev_opt_in("CLAUDE_API_GEMINI_ALLOW_INSECURE_LOOPBACK_UPSTREAM"),
     )

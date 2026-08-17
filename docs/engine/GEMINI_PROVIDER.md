@@ -151,12 +151,16 @@ resolved project, matching roster invariants and one real generation.
    a completed payout), fenced to the exact seller-job generation, kept on record for seven days.
    Tier/project resolved later are re-sealed into the same envelope.
 7. Admission sends one tiny non-streaming `gemini-2.5-flash-lite` generation using the runtime
-   Antigravity wrapper and headers, **first to the production endpoint the gateway actually serves
-   customer traffic from**, so admission is evidence about the surface that will carry the
-   subscription. It requires HTTP 2xx, a wrapped candidate and non-zero authoritative
-   `usageMetadata`. An access rejection made before the model ran (`403`/`404`) repeats the same
-   probe once on the reviewed sandbox endpoint, because a subscription can be admitted on one host
-   and refused on the other and nothing was generated or billed yet. `503`, malformed JSON,
+   Antigravity wrapper and headers, walking the one shared `CODE_ASSIST_SURFACES` order that every
+   Code Assist call uses: **the origin the gateway actually serves customer traffic from**
+   (`CLAUDE_API_GEMINI_UPSTREAM`, whose default is `gemini_credential::CODE_ASSIST_RUNTIME_ORIGIN`),
+   then the origin the first-party Antigravity client talks to, then the legacy Code Assist host.
+   Admission is therefore evidence about the surface that will carry the subscription. It requires
+   HTTP 2xx, a wrapped candidate and non-zero authoritative `usageMetadata`. A refusal that provably
+   ran no model — `403`/`404` access rejections and `429` quota refusals — moves to the next origin,
+   because a subscription can be admitted on one host and refused on another and nothing was
+   generated or billed yet. Deciding admission on the legacy host alone is what refused live paid
+   subscriptions over a quota they never needed there. `503`, malformed JSON,
    missing usage and ambiguous transport return `generation_unavailable` without trying another
    host; a generation that did run is never replayed automatically, no credential is published and
    seller payout does not complete. A CONNECT-stage transport refusal is a different fact: the

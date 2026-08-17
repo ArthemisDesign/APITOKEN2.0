@@ -45,6 +45,20 @@ pub const ANTIGRAVITY_OAUTH_CLIENT_ID: &str =
     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 pub const ANTIGRAVITY_OAUTH_CLIENT_SECRET: &str = "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";
 pub const ANTIGRAVITY_REDIRECT_URI: &str = "http://localhost:51121/oauth-callback";
+
+/// Code Assist origins, ordered by how much authority each one's answer carries about a
+/// subscription. Shared by the engine and Auth Bot so admission can never again be decided on
+/// a host the pool does not use.
+///
+/// `CODE_ASSIST_RUNTIME_ORIGIN` is where the engine serves Antigravity traffic from — it is the
+/// default behind `CLAUDE_API_GEMINI_UPSTREAM` — so it is the only origin whose answer is
+/// evidence about a subscription we are about to sell. `CODE_ASSIST_DAILY_ORIGIN` is what the
+/// first-party Antigravity client talks to. `CODE_ASSIST_LEGACY_ORIGIN` is the pre-Antigravity
+/// Code Assist host and stays last: deciding admission on its answer rejected live paid
+/// subscriptions with `RESOURCE_EXHAUSTED` for a quota they never needed there.
+pub const CODE_ASSIST_RUNTIME_ORIGIN: &str = "https://daily-cloudcode-pa.sandbox.googleapis.com";
+pub const CODE_ASSIST_DAILY_ORIGIN: &str = "https://daily-cloudcode-pa.googleapis.com";
+pub const CODE_ASSIST_LEGACY_ORIGIN: &str = "https://cloudcode-pa.googleapis.com";
 pub const ANTIGRAVITY_VERSION: &str = "2.2.1";
 pub const ANTIGRAVITY_PLATFORM: &str = "darwin/arm64";
 pub const ANTIGRAVITY_NODE_API_CLIENT_VERSION: &str = "10.3.0";

@@ -504,7 +504,7 @@ fn code_form_accepts_only_generated_state_and_posts_without_query_secrets() {
 }
 
 #[test]
-fn localhost_callback_submission_is_state_bound() {
+fn callback_submission_is_state_bound_on_every_accepted_form() {
     let state = "A".repeat(43);
     let callback =
         format!("http://localhost:51121/oauth-callback?state={state}&code=4%2Fsecret-code&scope=x");
@@ -532,6 +532,32 @@ fn localhost_callback_submission_is_state_bound() {
         assert!(submitted_authorization_code(&ambiguous, &state, false).is_none());
     }
     assert!(submitted_authorization_code("state=x&code=y", &state, true).is_none());
+
+    // Google renders the code on its own hosted callback page for clients that ask for that
+    // redirect. We ask for the loopback one, so this address is never ours — but a seller who
+    // copies the address bar instead of the code must not be told the authorization failed.
+    let hosted =
+        format!("https://antigravity.google/oauth-callback?state={state}&code=4%2Fhosted-code");
+    assert_eq!(
+        submitted_authorization_code(&hosted, &state, false).as_deref(),
+        Some("4/hosted-code")
+    );
+    assert!(submitted_authorization_code(&hosted, &"B".repeat(43), false).is_none());
+    // The accepted shape is exact: the state binding is what authorises a submission, and nothing
+    // about a wider host, scheme or path is allowed to stand in for it.
+    for hostile in [
+        format!("http://antigravity.google/oauth-callback?state={state}&code=x"),
+        format!("https://antigravity.google.example.invalid/oauth-callback?state={state}&code=x"),
+        format!("https://evil.antigravity.google/oauth-callback?state={state}&code=x"),
+        format!("https://antigravity.google:8443/oauth-callback?state={state}&code=x"),
+        format!("https://antigravity.google/oauth-callback/../x?state={state}&code=x"),
+        format!("https://antigravity.google/oauth-callback?state={state}&error=denied&code=x"),
+    ] {
+        assert!(
+            submitted_authorization_code(&hostile, &state, false).is_none(),
+            "must reject {hostile}"
+        );
+    }
 }
 
 #[test]
@@ -705,11 +731,11 @@ fn automatic_acceptance_retries_everything_except_settled_verdicts() {
 #[test]
 fn generation_acceptance_surfaces_are_ordered_and_access_failures_stay_actionable() {
     assert_eq!(
-        GENERATION_PROBE_SURFACES.map(|(_, host)| host),
+        CODE_ASSIST_SURFACES.map(|(_, host)| host),
         [
-            CODE_ASSIST_SANDBOX_URL,
-            CODE_ASSIST_DAILY_URL,
-            CODE_ASSIST_PROD_URL
+            gemini_credential::CODE_ASSIST_RUNTIME_ORIGIN,
+            gemini_credential::CODE_ASSIST_DAILY_ORIGIN,
+            gemini_credential::CODE_ASSIST_LEGACY_ORIGIN
         ],
         "acceptance must first ask the origin the engine actually serves customer traffic from,          which is CLAUDE_API_GEMINI_UPSTREAM (the sandbox origin), then the origin the first-party          Antigravity client uses, and only then the legacy production host"
     );
