@@ -706,8 +706,12 @@ fn automatic_acceptance_retries_everything_except_settled_verdicts() {
 fn generation_acceptance_surfaces_are_ordered_and_access_failures_stay_actionable() {
     assert_eq!(
         GENERATION_PROBE_SURFACES.map(|(_, host)| host),
-        [CODE_ASSIST_PROD_URL, CODE_ASSIST_SANDBOX_URL],
-        "acceptance must first ask the production host the engine actually serves customer traffic from"
+        [
+            CODE_ASSIST_SANDBOX_URL,
+            CODE_ASSIST_DAILY_URL,
+            CODE_ASSIST_PROD_URL
+        ],
+        "acceptance must first ask the origin the engine actually serves customer traffic from,          which is CLAUDE_API_GEMINI_UPSTREAM (the sandbox origin), then the origin the first-party          Antigravity client uses, and only then the legacy production host"
     );
     let disabled = json!({
         "error": {

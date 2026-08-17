@@ -2823,15 +2823,23 @@ async fn resolve_antigravity_account(
     })
 }
 
-/// The reviewed acceptance surfaces for the one paid probe generation, in order. Production comes
-/// first because that is the host the engine actually serves customer traffic from
-/// (`gemini::config::LEGACY_GEMINI_UPSTREAM` / the configured Antigravity upstream): admission has
-/// to be evidence about the surface that will carry the subscription, not about a sandbox that can
-/// admit or reject independently. Only a pre-generation access refusal (403/404) moves to the
-/// sandbox host; nothing that already produced a generation is ever replayed.
-const GENERATION_PROBE_SURFACES: [(&str, &str); 2] = [
+/// The reviewed acceptance surfaces for the one paid probe generation, in order.
+///
+/// Admission has to be evidence about the surface that will actually carry the subscription. That
+/// is not the legacy production host: the engine serves Antigravity customer traffic from the origin
+/// in `CLAUDE_API_GEMINI_UPSTREAM`, which is the sandbox origin in production, and the first-party
+/// Antigravity client talks to the daily origin. Probing production first is what rejected accounts
+/// that generate perfectly well where they are actually used — the host answered
+/// `RESOURCE_EXHAUSTED` about a tier the account never serves traffic on, and the seller was told
+/// their working subscription had no quota.
+///
+/// Ordered by how much each host's answer is worth: the origin the pool will use, then the origin
+/// the official client uses, then the legacy production host. Nothing that already produced a
+/// generation is ever replayed, so reaching a later host always costs zero paid generations.
+const GENERATION_PROBE_SURFACES: [(&str, &str); 3] = [
+    ("runtime-sandbox", CODE_ASSIST_SANDBOX_URL),
+    ("daily", CODE_ASSIST_DAILY_URL),
     ("production", CODE_ASSIST_PROD_URL),
-    ("sandbox", CODE_ASSIST_SANDBOX_URL),
 ];
 
 async fn generation_probe(
@@ -2897,12 +2905,15 @@ async fn generation_probe(
                     }));
                 // An account-level rejection is the same on every host, so stop asking. A 2xx that
                 // fails acceptance already consumed a paid generation, and any other status is not
-                // evidence that a different host would answer differently. Only an access rejection
-                // made before the model ran may try the next reviewed surface.
+                // evidence that a different host would answer differently. Only a refusal that
+                // provably ran no model may try the next reviewed surface: 403/404 are access
+                // rejections, and 429 is a quota refusal, which is a statement about this host's
+                // quota for this account and says nothing about the host whose quota it holds.
+                // Letting 429 end the whole probe is what made a working subscription look exhausted.
                 if let Some(classified) = classify_generation_failure(&response.body) {
                     return Err(classified);
                 }
-                if !matches!(response.status, 403 | 404) {
+                if !matches!(response.status, 403 | 404 | 429) {
                     return Err(failure);
                 }
                 last = failure;
