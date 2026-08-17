@@ -26,8 +26,6 @@ use tokio::sync::mpsc;
 pub(super) const OPENAI_BODY_LIMIT: usize = 8 * 1024 * 1024;
 pub(super) const MAX_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 const MAX_TOOLS: usize = 128;
-const MAX_CLIENT_METADATA_KEYS: usize = 32;
-const MAX_CLIENT_METADATA_VALUE_BYTES: usize = 16 * 1024;
 const MAX_PROMPT_CACHE_KEY_BYTES: usize = 256;
 const MAX_CUSTOM_TOOL_GRAMMAR_BYTES: usize = 256 * 1024;
 /// Codex 0.146 exposes client-side deferred tool discovery as a Responses-native `tool_search`
@@ -1050,7 +1048,12 @@ pub(super) fn parse_responses_request(
             Some("prompt_cache_key".to_string()),
         ));
     }
-    validate_client_metadata(object.get("client_metadata"))?;
+    // `client_metadata` is the caller's own diagnostic identity (installation/session/thread/turn
+    // ids, `x-codex-turn-metadata`). The transport rebuilds that object from OUR wire identity
+    // before the upstream call, so whatever the client sent is discarded and never leaves the
+    // gateway. Validating a discarded field can only reject otherwise-valid traffic: newer Codex
+    // CLI builds ship a turn-metadata blob that tripped the old size/control-character gate and
+    // made every turn fail with a deterministic 400. Accept any shape and ignore it.
     validate_optional_identifier(object.get("safety_identifier"), "safety_identifier")?;
     let service_tier = parse_service_tier(object.get("service_tier"), &public_model);
     let (reasoning_effort, reasoning_summary) =
@@ -1208,47 +1211,6 @@ fn parse_service_tier(value: Option<&Value>, model: &CodexModel) -> Option<Strin
     } else {
         None
     }
-}
-
-fn validate_client_metadata(value: Option<&Value>) -> Result<(), ApiError> {
-    let Some(value) = value.filter(|value| !value.is_null()) else {
-        return Ok(());
-    };
-    let metadata = value.as_object().ok_or_else(|| {
-        ApiError::invalid(
-            "client_metadata must be an object.",
-            Some("client_metadata".to_string()),
-        )
-    })?;
-    if metadata.len() > MAX_CLIENT_METADATA_KEYS {
-        return Err(ApiError::invalid(
-            format!("client_metadata may contain at most {MAX_CLIENT_METADATA_KEYS} keys."),
-            Some("client_metadata".to_string()),
-        ));
-    }
-    for (key, value) in metadata {
-        if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
-            return Err(ApiError::invalid(
-                "client_metadata keys must be 1-128 bytes without control characters.",
-                Some("client_metadata".to_string()),
-            ));
-        }
-        let Some(value) = value.as_str() else {
-            return Err(ApiError::invalid(
-                "client_metadata values must be strings.",
-                Some(format!("client_metadata.{key}")),
-            ));
-        };
-        if value.len() > MAX_CLIENT_METADATA_VALUE_BYTES || value.chars().any(char::is_control) {
-            return Err(ApiError::invalid(
-                format!(
-                    "client_metadata values must be at most {MAX_CLIENT_METADATA_VALUE_BYTES} bytes without control characters."
-                ),
-                Some(format!("client_metadata.{key}")),
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn validate_optional_identifier(value: Option<&Value>, field: &str) -> Result<(), ApiError> {

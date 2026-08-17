@@ -169,7 +169,11 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   2026-08-14 on the exact failing history).
   The upstream request keeps `store:false`, `stream:true`,
   `include:["reasoning.encrypted_content"]`, tenant-scoped
-  `prompt_cache_key` and first-party-shaped `client_metadata`. Headers carry the pinned client
+  `prompt_cache_key` and first-party-shaped `client_metadata`. The caller's own `client_metadata`
+  is accepted in any shape and never validated: the transport replaces that whole object with the
+  gateway's wire identity, so nothing the client wrote there can reach upstream, and a size or
+  control-character gate on it could only reject otherwise-valid client builds — newer Codex CLI
+  ships an `x-codex-turn-metadata` blob that used to fail every turn with a 400. Headers carry the pinned client
   identity (`originator: codex_cli_rs`, UA and `version` pinned to `CODEX_CLI_VERSION`,
   `ChatGPT-Account-ID` from the envelope) plus stable opaque installation/session/thread/window
   metadata and a per-turn id. Root session and thread ids are equal, as in the official 0.146

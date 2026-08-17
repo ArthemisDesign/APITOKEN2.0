@@ -1163,21 +1163,26 @@ fn hosted_web_search_is_accepted_and_never_forwarded() {
         .any(|tool| tool["type"] == "web_search"));
 }
 
+/// The caller's `client_metadata` never reaches upstream: the transport overwrites it with the
+/// gateway's own wire identity. So no shape of it may fail a turn — an oversized
+/// `x-codex-turn-metadata` (shipped by newer Codex CLI builds), embedded control characters, and
+/// non-string values all parse and are simply ignored.
 #[test]
-fn codex_diagnostic_metadata_is_bounded() {
-    let metadata_error = parse_responses_request(
+fn codex_diagnostic_metadata_is_ignored() {
+    let parsed = parse_responses_request(
         &gateway(),
         json!({
             "model": "gpt-5.6",
             "input": "hi",
-            "client_metadata": {"turn_id": 42}
+            "client_metadata": {
+                "turn_id": 42,
+                "x-codex-turn-metadata": "x".repeat(64 * 1024),
+                "x-codex-window-id": "line\nbreak",
+            }
         }),
     )
-    .unwrap_err();
-    assert_eq!(
-        metadata_error.param.as_deref(),
-        Some("client_metadata.turn_id")
-    );
+    .unwrap();
+    assert_eq!(parsed.public_model.id, "gpt-5.6");
 }
 
 #[test]
