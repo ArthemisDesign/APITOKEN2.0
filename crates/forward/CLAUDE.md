@@ -195,6 +195,31 @@ persists the normalized attribution (or unknown when the typed attribution exten
 No metric, public response/header identity, billing identity, execution-group semantics, or other
 request-fact producer changes in this slice.
 
+**Request-observability structural definitions (stage 5 partial, dormant):**
+`request_classification.rs` freezes the privacy-bounded v1 value contract and pure classifiers for
+already validated client shapes: Anthropic Messages, OpenAI Chat/Responses and canonical native
+Gemini GenerateContent. Universal Chat/Responses use their OpenAI classifiers before translation;
+Messages uses its Anthropic classifier before translation. Stage 6/7 producers must preserve that
+client-intent boundary rather than classifying a degraded or gateway-injected translated shape. Evidence is limited to
+checked `i32` tool count, the seven registry-defined closed bits, closed choice mode with named choices
+stripped of the name, explicit parallel/result/structured/reasoning flags, reviewed Standard/Priority
+tier and validated modality bits. Result `true` is existential, while `false` requires exhaustive
+review; structured output requires an exact reviewed format. Missing, malformed, unsupported or unmeasured evidence stays
+`None`; explicit empty arrays may be zero. The declaration count stays measurable when a lenient
+parser accepts an unreviewed type, but the whole class bitset becomes `None` rather than a misleading
+partial set. Unknown tool kinds are never promoted to `other_reviewed`. Current reviewed uses of that
+bit are Gemini `urlContext` and an explicit Codex `tool_search` client descriptor; its later synthetic
+dynamic function name is discarded and is not counted as a second client declaration. Codex
+`web_search` records the accepted client intent even though admission drops that hosted descriptor,
+and a namespace contributes only its reviewed function/custom child classes while remaining one
+top-level count. Native Responses selects a single validated `input.additional_tools.tools` list when
+present (including beside an explicit empty top-level list); it is classified once and the later
+synthetic dynamic functions are never counted. The classifier stores no content, names, schemas, arguments, results, MCP labels,
+raw JSON, headers, metadata or other arbitrary strings; its fields are private, `Debug` is redacted and it has no
+serialization implementation. It is intentionally not wired into live parsers, handlers or request-fact
+emission in stage 5: producer integration remains stage 6/7 and must preserve response/upstream bytes.
+Lifecycle clocks and output tool-call evidence remain separate later-producer work.
+
 **Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** every
 successful Anthropic turn, including unmetered admin traffic, after authoritative usage builds one
 immutable event with the internal request ID, subject/email, model, Standard/Fast, inference geography,

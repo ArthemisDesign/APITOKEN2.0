@@ -4,8 +4,10 @@
 > the Caddy logical-ID perimeter, provider-plane logical/client context admission, router logical-ID
 > production, and the client-attribution slice of classifier stage 5 are implemented. The only
 > production request-fact producer is metered Codex/OpenAI universal
-> `POST /v1/messages/count_tokens`; it consumes normalized client attribution. Tool/capability
-> classification and lifecycle clocks remain before stage 6. No private read surface,
+> `POST /v1/messages/count_tokens`; it consumes normalized client attribution. The closed structural
+> classifier contract is implemented but dormant: pure Anthropic Messages, OpenAI Chat/Responses
+> and canonical Gemini GenerateContent classifiers are not wired to producers. Lifecycle clocks remain
+> before stage 6. No private read surface,
 > request-fact metric, or billable producer exists.
 >
 > This document is the owner-approved v1 implementation contract. It authorizes only the finite,
@@ -245,6 +247,33 @@ Arbitrary tool names, descriptions, JSON schemas, arguments, results, MCP server
 tool types are forbidden. A toolset fingerprint is not part of v1. Adding one requires a later
 versioned scope decision; it cannot be inferred from this contract.
 
+The stage-5 definition is now frozen in `crates/forward/src/request_classification.rs`: a private-field,
+redacted-`Debug`, non-serializable typed value; a checked `usize`→`i32` declared-count conversion; the
+registry's seven closed bits; closed choice/tier/modality types; and pure classifiers for already
+validated client shapes: Anthropic Messages, OpenAI Chat/Responses and canonical native Gemini
+GenerateContent. Universal Chat/Responses use their OpenAI classifiers before translation; Messages
+uses its Anthropic classifier before translation. A producer must therefore preserve explicit client
+intent and never classify a degraded or gateway-injected translated body. None inspect transport bytes. Only explicit tool types reviewed by the owning parser get bits. Unknown kinds stay
+unclassified rather than becoming `other_reviewed`. Current reviewed uses of that fallback bit are
+Gemini `urlContext` and an explicit client-declared Codex `tool_search`; its gateway-produced dynamic
+function name is discarded and is not counted again. An accepted Codex `web_search` declaration records
+client intent even though admission drops that hosted descriptor. A Codex namespace remains one
+top-level declared count and contributes only the reviewed function/custom classes of its validated
+children. Native Responses classifies its single validated `input.additional_tools.tools` list when
+present (including beside an explicit empty top-level list), and never counts its later synthetic
+dynamic functions. Anthropic's ordinary absent/`custom` JSON-schema tool is `custom_function`; only the exact
+reviewed native server-tool versions receive their corresponding bits, and no currently unproven MCP
+prefix is inferred. When any accepted declaration or namespace child is unreviewed, its count stays
+known but the entire class bitset is `NULL`, never a misleading partial set. A named choice becomes only
+`named`. Missing, malformed, unsupported or unmeasured evidence stays `NULL`; an explicit validated
+empty tool array or modality shape may become zero, and booleans are set only where the owning shape proves the value: a reviewed tool result is existential
+`true`, while `false` requires an exhaustively reviewed input; structured output is classified only
+from exact reviewed formats. Input modality bits come only from validated strings or content parts; image-only
+input and Gemini functionResponse-only input do not implicitly become text. No live parser, handler or
+request-fact producer consumes this definition yet. Stage 6/7 must wire it after owning
+validation without changing public responses or upstream bytes. `tool_calls_in_output` remains later
+terminal producer evidence, and lifecycle clocks remain outside this structural slice.
+
 `web_search_requests` in `usage_events` remains the authoritative billable search counter. A request
 fact may describe the presence/class of a web-search tool but must not override settlement usage.
 
@@ -472,11 +501,14 @@ the prerequisite exact SHA is production GREEN.
    Gemini/Combined provider consumers/direct generators, and typed adapter propagation are deployed.
 4. **Router producer — complete.** Routed executable requests receive one operator-only logical ID,
    reused across fallback attempts and kept separate from billing and execution-group identities.
-5. **Freeze v1 classifiers — client-attribution slice implemented; stage remains incomplete.**
+5. **Freeze v1 classifiers — structural definitions complete; lifecycle clocks remain incomplete.**
    The exact client-header grammar, fail-open normalization, empty reviewed-positive heuristic v1,
    typed adapter propagation, Codex count_tokens consumption, and privacy-negative tests are in the
-   current implementation. Closed tool classes from §6 and lifecycle clocks from §7 remain required
-   before stage 6. This stage changes no public response contract.
+   current implementation. The closed structural contract and pure already-validated Anthropic,
+   OpenAI and Gemini shape classifiers from §6 are implemented and deliberately dormant: no handler
+   or request-fact producer consumes them yet, and `tool_calls_in_output` remains terminal evidence.
+   Stage 6/7 owns producer integration. The four lifecycle clocks from §7 remain required separately.
+   This stage changes no public response or upstream request contract.
 6. **Complete nonbillable producers.** Cover exactly Anthropic native Messages
    `POST /v1/messages/count_tokens`; OpenAI universal Messages `POST /v1/messages/count_tokens` plus
    native Responses `POST /v1/responses/input_tokens`; and Gemini universal Messages

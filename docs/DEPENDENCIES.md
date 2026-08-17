@@ -221,10 +221,16 @@ is only what is needed to walk the relationships when making changes:
   and client context plus authoritative non-secret account/key and execution identities, then submits
   exactly one already-terminal nullable-billing-ID fact through the fail-open PostgreSQL inbox.
   Missing typed client context remains unknown without suppressing the fact. Router fallback reuses
-  the logical ID while each plane
-  attempt keeps its distinct execution attempt. Admin/unauthorized/missing-logical-context traffic is
-  omitted. Billable paths, native Responses token counting, Anthropic/Gemini, read APIs, public metrics,
-  and a public logical-ID header remain absent; `x-request-id` and response availability are unchanged.
+  the logical ID while each plane attempt keeps its distinct execution attempt. `crates/forward` also
+  defines dormant, privacy-bounded pure structural classifiers for already-validated client shapes:
+  Anthropic Messages, OpenAI Chat/Responses and canonical native Gemini GenerateContent. Universal
+  Chat/Responses classify the OpenAI client shape before translation and Messages classifies its
+  Anthropic client shape before translation. They retain only closed registry bits/counts/flags and
+  discard names and request content; no handler or request-fact producer consumes
+  them yet, so Stage 6/7 owns the producer connection and lifecycle/output evidence. Admin/unauthorized/
+  missing-logical-context traffic is omitted. Billable paths, native Responses token counting,
+  Anthropic/Gemini, read APIs, public metrics, and a public logical-ID header remain absent; `x-request-id`
+  and response availability are unchanged.
   Contract —
   `docs/engine/REQUEST_OBSERVABILITY.md` §§4, 13; perimeter details — `deploy/CADDY.md`.
 - **ClaudeStore-compatible emergency transports (`crates/server` → `crates/forward` → external relay origins).**

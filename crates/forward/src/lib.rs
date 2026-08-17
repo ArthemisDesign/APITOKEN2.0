@@ -33,6 +33,8 @@ pub mod nodetls;
 mod openai_responses_stream;
 mod pricing;
 mod proxy;
+#[allow(dead_code)]
+mod request_classification;
 mod state;
 // Dormant until the plane's runtime writer lands (docs/engine/SUNO_PROVIDER.md §8):
 // consumed only by its own tests so far.
