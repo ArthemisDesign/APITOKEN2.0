@@ -65,7 +65,7 @@ The feed `https://apitoken.sale/zen.xml` (route `src/app/zen.xml/route.ts`) serv
 of all learn articles in Zen's native format. Hookup is one-time, done by hand by the owner:
 Zen channel → Studio → "Website" → merge the site and the channel → provide the feed URL.
 Once connected, publication is fully automatic (new/updated articles from
-`learn.ts`/`learn-ru.ts` flow in on their own). The copies carry `noindex` so they do not cannibalize
+`learn.ts`/`learn-core-ru/` flow in on their own). The copies carry `noindex` so they do not cannibalize
 our /ru pages in Yandex (toggled in `ZEN_CATEGORIES` in the route). RSS updates
 of a piece work for 7 days after upload; manual editing in Studio disables them.
 

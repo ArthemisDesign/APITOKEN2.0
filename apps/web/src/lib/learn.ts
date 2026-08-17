@@ -3,9 +3,9 @@
 // rendered server-side (fully crawlable) with Article + FAQPage + Breadcrumb
 // structured data. Copy is grounded in real product facts only.
 
-import { learnRu } from "./learn-ru";
-import { learnZh } from "./learn-zh";
-import { learnKo } from "./learn-ko";
+import { learnRu } from "./learn-core-ru";
+import { learnZh } from "./learn-core-zh";
+import { learnKo } from "./learn-core-ko";
 import { learnProviderEn } from "./learn-provider-en";
 import { learnProviderRu } from "./learn-provider-ru";
 import { learnProviderZh } from "./learn-provider-zh";

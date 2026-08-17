@@ -1,9 +1,16 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const sourceRoot = join(process.cwd(), "src");
 const read = (path: string) => readFileSync(join(sourceRoot, path), "utf8");
+// Learn articles live one module per slug; scan the whole per-locale directory.
+const readDir = (path: string) =>
+  readdirSync(join(sourceRoot, path))
+    .filter((name) => name.endsWith(".ts"))
+    .sort()
+    .map((name) => readFileSync(join(sourceRoot, path, name), "utf8"))
+    .join("\n");
 
 describe("public product truth regressions", () => {
   it("does not advertise unimplemented key-control features", () => {
@@ -12,14 +19,14 @@ describe("public product truth regressions", () => {
       read("app/changelog/page.tsx"),
       read("lib/messages.json"),
       read("lib/learn.ts"),
-      read("lib/learn-ru.ts"),
-      read("lib/learn-ko.ts"),
-      read("lib/learn-zh.ts"),
-      read("lib/learn-provider-en.ts"),
-      read("lib/learn-provider-ru.ts"),
-      read("lib/learn-provider-ko.ts"),
-      read("lib/learn-provider-zh.ts"),
-      read("lib/learn-image-seo.ts"),
+      readDir("lib/learn-core-ru"),
+      readDir("lib/learn-core-ko"),
+      readDir("lib/learn-core-zh"),
+      readDir("lib/learn-provider-en"),
+      readDir("lib/learn-provider-ru"),
+      readDir("lib/learn-provider-ko"),
+      readDir("lib/learn-provider-zh"),
+      readDir("lib/learn-image-seo"),
     ].join("\n");
 
     expect(copy).not.toMatch(/daily and monthly spend caps|request caps are configurable|model scoping|IP controls|rotation without downtime|scope keys to tools/i);

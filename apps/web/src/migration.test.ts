@@ -199,9 +199,9 @@ describe("completed Next.js migration", () => {
     const welcomeCopy = [
       join(root, "lib", "messages.json"),
       join(root, "lib", "learn.ts"),
-      join(root, "lib", "learn-ru.ts"),
-      join(root, "lib", "learn-ko.ts"),
-      join(root, "lib", "learn-zh.ts"),
+      ...sourceFiles(join(root, "lib", "learn-core-ru")),
+      ...sourceFiles(join(root, "lib", "learn-core-ko")),
+      ...sourceFiles(join(root, "lib", "learn-core-zh")),
       join(root, "lib", "llms.ts"),
       join(root, "lib", "md-pages.ts"),
       join(appRoot, "page.tsx"),
