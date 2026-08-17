@@ -15,6 +15,7 @@ struct Recorded {
     x_api_key: Option<String>,
     anthropic_beta: Option<String>,
     anthropic_version: Option<String>,
+    x_apitoken_client: Option<String>,
     execution_group: Option<String>,
     execution_attempt: Option<String>,
     logical_request_ids: Vec<String>,
@@ -48,6 +49,7 @@ fn record_of(req: &AxumRequest<Body>) -> Recorded {
         x_api_key: header("x-api-key"),
         anthropic_beta: header("anthropic-beta"),
         anthropic_version: header("anthropic-version"),
+        x_apitoken_client: header("x-apitoken-client"),
         execution_group: header("x-apitoken-execution-group"),
         execution_attempt: header("x-apitoken-attempt"),
         logical_request_ids: req
@@ -571,6 +573,7 @@ async fn native_lane_passes_body_headers_and_response_verbatim() {
         .header("x-api-key", "sk-pool-secret")
         .header("anthropic-beta", "messages-2023-12-15")
         .header("anthropic-version", "2023-06-01")
+        .header("x-apitoken-client", "opencode/1.2.3")
         .header("x-apitoken-execution-group", "client-spoof")
         .header("x-apitoken-attempt", "99")
         .header("x-apitoken-logical-request-id", "not-a-uuid")
@@ -601,6 +604,10 @@ async fn native_lane_passes_body_headers_and_response_verbatim() {
         Some("messages-2023-12-15")
     );
     assert_eq!(recorded.anthropic_version.as_deref(), Some("2023-06-01"));
+    assert_eq!(
+        recorded.x_apitoken_client.as_deref(),
+        Some("opencode/1.2.3")
+    );
     assert!(recorded.execution_group.is_none());
     assert!(recorded.execution_attempt.is_none());
     assert_eq!(recorded.logical_request_ids.len(), 1);
@@ -1426,6 +1433,7 @@ async fn fallback_owns_one_uuid_group_and_monotonic_attempt_headers() {
         .post(format!("{router}/v1/responses"))
         .header("x-apitoken-execution-group", "client-controlled")
         .header("x-apitoken-attempt", "9000")
+        .header("x-apitoken-client", "claude_code/2.1.220")
         .body(r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"input":"hi"}"#)
         .send()
         .await
@@ -1454,6 +1462,11 @@ async fn fallback_owns_one_uuid_group_and_monotonic_attempt_headers() {
     assert_eq!(second.execution_group.as_deref(), Some(group));
     assert_eq!(first.execution_attempt.as_deref(), Some("1"));
     assert_eq!(second.execution_attempt.as_deref(), Some("2"));
+    assert_eq!(
+        first.x_apitoken_client.as_deref(),
+        Some("claude_code/2.1.220")
+    );
+    assert_eq!(second.x_apitoken_client, first.x_apitoken_client);
     assert_eq!(first.logical_request_ids.len(), 1);
     assert_canonical_uuid_v4(&first.logical_request_ids[0]);
     assert_eq!(second.logical_request_ids, first.logical_request_ids);
@@ -1839,7 +1852,6 @@ async fn policy_401_is_terminal_and_invalid_ordered_subsets_fail_closed() {
         assert!(bodies_g.lock().unwrap().is_empty());
     }
 }
-
 
 #[tokio::test]
 async fn provider_filters_order_sort_and_allow_fallbacks_are_deterministic() {
