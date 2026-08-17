@@ -5130,7 +5130,7 @@ async fn start_gemini_handoff(
     }
 }
 
-const GEMINI_STEP_PROXY_RETRY: &str = "🤔 Не разобрал прокси. Пришли его как <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code> одним сообщением.";
+const GEMINI_STEP_PROXY_RETRY: &str = "🤔 Не разобрал прокси, а закреплённого за этой позицией нет — поэтому <code>повторить</code> здесь не сработает, переиспользовать нечего. Пришли прокси как <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code> одним сообщением.";
 
 const KIMI_STEP_PROXY_RETRY: &str = "🤔 Не разобрал прокси. Пришли его как <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code> одним сообщением.";
 

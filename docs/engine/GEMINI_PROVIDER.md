@@ -181,11 +181,16 @@ resolved project, matching roster invariants and one real generation.
 8. **A recorded account that has not been admitted is retried automatically: one acceptance
    generation every five minutes for twenty-four hours after consent.** Every attempt runs the
    identical code path — refresh the bearer over the same egress if it aged out, resolve tier and
-   project if a previous attempt could not, then exactly one probe — so a late admission rests on
+   project again — an entitlement Google provisions hours after consent becomes visible only
+   this way — then exactly one probe — so a late admission rests on
    the same evidence as an immediate one. The schedule lives in SQLite, so a restart neither loses
    it nor fires a burst; claiming an attempt advances the next one, so the seller's button and the
    sweep cannot double-charge one account. A success publishes and settles the deal, payout
-   included, through the callback's own code path. Only a verdict no retry can change
+   included, through the callback's own code path. The sweep is otherwise quiet, because 288
+   identical messages a day are noise, but it does speak twice: when the verdict changes under the
+   seller, and every sixth attempt, carrying the `validation_url` that is current then — Google
+   mints a fresh one per rejection and the seller's first one goes stale while they are still
+   working through the checklist. Only a verdict no retry can change
    (`authorization`, `account_mismatch`, `duplicate_account`, `duplicate_proxy`,
    `migration_proxy_mismatch`, `stale_handoff`) ends the window early. When the window closes, the
    seller and the admins are told once, probing stops and **the credential stays on record**.

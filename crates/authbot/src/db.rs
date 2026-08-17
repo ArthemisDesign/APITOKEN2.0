@@ -1935,6 +1935,29 @@ impl Store {
         Ok(parked.is_some())
     }
 
+    /// Attempts already spent on a parked account and the verdict the last one produced.
+    ///
+    /// Read-only and taken before an attempt claims the row, so the sweep can tell a repeat of the
+    /// same refusal from a verdict that just changed under the seller.
+    pub fn gemini_verification_progress(&self, chat_id: i64) -> Result<Option<(i64, String)>> {
+        let progress = self
+            .c
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT attempts,last_failure FROM gemini_pending_verifications WHERE chat_id=?1",
+                rusqlite::params![chat_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0).unwrap_or_default(),
+                        row.get::<_, String>(1).unwrap_or_default(),
+                    ))
+                },
+            )
+            .optional()?;
+        Ok(progress)
+    }
+
     pub fn clear_gemini_verification(&self, chat_id: i64) -> Result<()> {
         self.c.lock().unwrap().execute(
             "DELETE FROM gemini_pending_verifications WHERE chat_id=?1",

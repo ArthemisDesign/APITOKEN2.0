@@ -1706,7 +1706,17 @@ impl Failure {
             Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь, что нужный тариф активирован именно на этом аккаунте; прокси сохранён, для новой авторизации отправь <code>повторить</code>.",
             Self::AccountMismatch => "❌ На втором этапе выбран другой Google-аккаунт. Оба согласия должны быть выданы одной подпиской в одном профиле браузера. Профиль не опубликован; отправь <code>повторить</code> и начни заново.",
             Self::GenerationUnavailable => "⚠️ Google подтвердил вход и активный тариф, но реальная тестовая генерация не была подтверждена. Профиль не опубликован и сделка не завершена; прокси сохранён. Подожди немного и отправь <code>повторить</code>.",
-            Self::AccountValidationRequired => "❌ Google подтвердил вход и активный тариф Google AI, но держит сам аккаунт на проверке: генерация отклонена с «Verify your account to continue». Обычный Gemini на сайте при этом может работать — это отдельная проверка, и повтор без её прохождения ничего не изменит. Открой ссылку ниже (если её нет — <code>gemini.google.com</code> или Antigravity) СТРОГО в том же профиле антидетект-браузера и через тот же прокси и заверши проверку Google — обычно это подтверждение номера телефона. Профиль не опубликован, сделка не завершена, прокси сохранён; после успешной проверки отправь <code>повторить</code>.",
+            Self::AccountValidationRequired => "❌ Google держит сам аккаунт на проверке: генерация отклонена с «Verify your account to continue». Это отдельная проверка — обычный Gemini на сайте при этом может работать, и повтор без её прохождения ничего не изменит.
+
+Сделай по порядку, СТРОГО в том же профиле антидетект-браузера и через тот же прокси:
+1️⃣ Привяжи и подтверди номер телефона: <code>myaccount.google.com/signinoptions/rescuephone</code>
+2️⃣ Открой <code>youtube.com</code> под этим аккаунтом и пройди проверку, если она появится.
+3️⃣ Открой персональную ссылку Google, если она пришла ниже.
+4️⃣ Дальше жди: статус у Google обновляется не мгновенно, бот сам повторяет проверку каждые 5 минут в течение суток и присылает свежую ссылку раз в полчаса.
+
+Прошёл проверку — нажми кнопку ниже, бот перепроверит немедленно. Кнопки нет или сутки автопроверки уже вышли — отправь <code>повторить</code>, бот выдаст новые ссылки авторизации на том же прокси.
+
+Профиль не опубликован и сделка не завершена. Прокси сохранён.",
             Self::StaleHandoff => "❌ Эта попытка подключения уже не относится к текущей сделке. Профиль не опубликован; продолжи актуальный шаг в боте.",
             Self::Duplicate => "❌ Эта Google-подписка уже присутствует в пуле.",
             Self::DuplicateProxy => "❌ Этот прокси уже закреплён за другим Gemini-профилем. Для подписки нужен отдельный прокси.",
@@ -1725,7 +1735,17 @@ impl Failure {
             Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь тариф на этом аккаунте и отправь <code>повторить</code>; будет использован закреплённый прокси.",
             Self::AccountMismatch => "❌ На втором этапе выбран другой Google-аккаунт. Оба согласия должны быть выданы одной подпиской в одном профиле браузера. Профиль не опубликован; отправь <code>повторить</code> и начни заново.",
             Self::GenerationUnavailable => "⚠️ Google подтвердил вход и активный тариф, но реальная тестовая генерация не была подтверждена. Профиль не опубликован и сделка не завершена. Подожди немного и отправь <code>повторить</code>; будет использован закреплённый прокси.",
-            Self::AccountValidationRequired => "❌ Google подтвердил вход и активный тариф Google AI, но держит сам аккаунт на проверке: генерация отклонена с «Verify your account to continue». Обычный Gemini на сайте при этом может работать — это отдельная проверка, и повтор без её прохождения ничего не изменит. Открой ссылку ниже (если её нет — <code>gemini.google.com</code> или Antigravity) СТРОГО в том же профиле браузера и через закреплённый прокси и заверши проверку Google — обычно это подтверждение номера телефона. Затем отправь <code>повторить</code> — будет использован закреплённый прокси.",
+            Self::AccountValidationRequired => "❌ Google держит сам аккаунт на проверке: генерация отклонена с «Verify your account to continue». Это отдельная проверка — обычный Gemini на сайте при этом может работать, и повтор без её прохождения ничего не изменит.
+
+Сделай по порядку, СТРОГО в том же профиле антидетект-браузера и через тот же прокси:
+1️⃣ Привяжи и подтверди номер телефона: <code>myaccount.google.com/signinoptions/rescuephone</code>
+2️⃣ Открой <code>youtube.com</code> под этим аккаунтом и пройди проверку, если она появится.
+3️⃣ Открой персональную ссылку Google, если она пришла ниже.
+4️⃣ Дальше жди: статус у Google обновляется не мгновенно, бот сам повторяет проверку каждые 5 минут в течение суток и присылает свежую ссылку раз в полчаса.
+
+Прошёл проверку — нажми кнопку ниже, бот перепроверит немедленно. Кнопки нет или сутки автопроверки уже вышли — отправь <code>повторить</code>, бот выдаст новые ссылки авторизации на том же прокси.
+
+Профиль не опубликован и сделка не завершена. Прокси закреплён за этой позицией.",
             Self::StaleHandoff => "❌ Эта попытка подключения уже не относится к текущей сделке. Профиль не опубликован; продолжи актуальный шаг в боте.",
             _ => self.public_message(),
         }
@@ -2317,6 +2337,13 @@ const VERIFICATION_PARK_SECS: i64 = 7 * 24 * 3600;
 /// Google's own holds (account verification, tier provisioning) and a throttled residential egress
 /// all clear on that timescale, and a `gemini-2.5-flash-lite` probe capped at 8 output tokens is
 /// negligible against the subscription it is proving.
+/// Attempts between two reminders while an account sits parked.
+///
+/// Silence is right for an unchanged verdict — 288 identical messages a day are noise — but not
+/// forever: Google mints a fresh `validation_url` for every rejection, so the one the seller was
+/// given first goes stale while they are still working through the checklist. Every sixth attempt
+/// is a reminder every half hour, carrying the link that is current right now.
+const VERIFICATION_REMINDER_EVERY: i64 = 6;
 const VERIFICATION_PROBE_INTERVAL_SECS: i64 = 300;
 const VERIFICATION_PROBE_WINDOW_SECS: i64 = 24 * 3600;
 
@@ -2448,6 +2475,64 @@ async fn resolve_and_probe(
 /// The seller pressed “I verified the account”. One press = one real acceptance generation with the
 /// tokens their consent already produced; the deal is settled here on success, and on a repeated
 /// hold the same button is offered again with whatever fresh verification link Google returned.
+/// Tell the seller what a parked attempt just decided, with whatever link it carried.
+///
+/// Shared by the seller's button and the background sweep so both surfaces say the same thing about
+/// the same verdict, and so the sweep can hand over a link that is current instead of leaving the
+/// seller with the stale one from the first rejection.
+async fn report_parked_rejection(
+    bot: &Bot,
+    store: &Arc<Store>,
+    config: &Arc<BotConfig>,
+    chat_id: i64,
+    job: Option<&SellerJobRef>,
+    failure: Failure,
+    verification_url: Option<&str>,
+) {
+    let accepts_proxy_input = job
+        .is_some_and(|expected| crate::bot::gemini_job_accepts_proxy_input(store, expected, 0));
+    let base = if accepts_proxy_input {
+        failure.public_message()
+    } else {
+        failure.fixed_proxy_message()
+    };
+    let message = match verification_url {
+        Some(url) if failure == Failure::AccountValidationRequired => format!(
+            "{base}\n\n🔗 Персональная ссылка Google для этой проверки:\n<code>{}</code>",
+            crate::bot::esc(url)
+        ),
+        // A link Google attached to a differently classified refusal is still this account's own
+        // check and still the only way past it.
+        Some(url) => format!(
+            "{base}\n\n🔗 Google приложил к отказу персональную ссылку проверки этого аккаунта. Открой её СТРОГО в том же профиле браузера и через тот же прокси:\n<code>{}</code>",
+            crate::bot::esc(url)
+        ),
+        None => base.to_string(),
+    };
+    // The seller does not have to babysit this: the same acceptance runs automatically every five
+    // minutes for a day, and a late success publishes and pays out on its own.
+    let parked = matches!(store.gemini_verification_is_parked(chat_id), Ok(true));
+    let message = if parked {
+        format!(
+            "{message}\n\n🔄 Доступ сохранён у нас: бот сам повторяет проверку каждые 5 минут в течение суток и завершит сделку автоматически, как только она пройдёт. Кнопкой ниже можно проверить немедленно."
+        )
+    } else {
+        message
+    };
+    if parked {
+        let _ = bot
+            .send_kb(chat_id, &message, Some(&crate::bot::gemini_verified_kb()))
+            .await;
+    } else {
+        let _ = bot.send(chat_id, &message).await;
+    }
+    if failure.operator_action_required() {
+        for admin in &config.admins_id {
+            let _ = bot.send(*admin, failure.operator_message()).await;
+        }
+    }
+}
+
 pub(crate) async fn finish_parked_verification(
     bot: &Bot,
     store: &Arc<Store>,
@@ -2465,49 +2550,16 @@ pub(crate) async fn finish_parked_verification(
             announce_publication(bot, store, config, chat_id, job, &profile).await;
         }
         VerificationRetry::Rejected(failure, verification_url) => {
-            let accepts_proxy_input = job.as_ref().is_some_and(|expected| {
-                crate::bot::gemini_job_accepts_proxy_input(store, expected, 0)
-            });
-            let base = if accepts_proxy_input {
-                failure.public_message()
-            } else {
-                failure.fixed_proxy_message()
-            };
-            let message = match verification_url.as_deref() {
-                Some(url) if failure == Failure::AccountValidationRequired => format!(
-                    "{base}\n\n🔗 Персональная ссылка Google для этой проверки:\n<code>{}</code>",
-                    crate::bot::esc(url)
-                ),
-                // Same reasoning as the callback path: a link Google attached to a differently
-                // classified refusal is still actionable, and this sweep is the surface the seller
-                // actually sees while the account sits parked.
-                Some(url) => format!(
-                    "{base}\n\n🔗 Google приложил к отказу персональную ссылку проверки этого аккаунта. Открой её СТРОГО в том же профиле браузера и через тот же прокси:\n<code>{}</code>",
-                    crate::bot::esc(url)
-                ),
-                _ => base.to_string(),
-            };
-            // The seller does not have to babysit this: the same acceptance runs automatically
-            // every five minutes for a day, and a late success publishes and pays out on its own.
-            let message = if matches!(store.gemini_verification_is_parked(chat_id), Ok(true)) {
-                format!(
-                    "{message}\n\n🔄 Доступ сохранён у нас: бот сам повторяет проверку каждые 5 минут в течение суток и завершит сделку автоматически, как только она пройдёт. Кнопкой ниже можно проверить немедленно."
-                )
-            } else {
-                message
-            };
-            if matches!(store.gemini_verification_is_parked(chat_id), Ok(true)) {
-                let _ = bot
-                    .send_kb(chat_id, &message, Some(&crate::bot::gemini_verified_kb()))
-                    .await;
-            } else {
-                let _ = bot.send(chat_id, &message).await;
-            }
-            if failure.operator_action_required() {
-                for admin in &config.admins_id {
-                    let _ = bot.send(*admin, failure.operator_message()).await;
-                }
-            }
+            report_parked_rejection(
+                bot,
+                store,
+                config,
+                chat_id,
+                job.as_ref(),
+                failure,
+                verification_url.as_deref(),
+            )
+            .await;
             elog::error("authbot", format!("[gemini-oauth] chat={chat_id} post-verification retry failed: {}", failure.code()));
         }
         VerificationRetry::Missing => {
@@ -2610,14 +2662,41 @@ pub(crate) async fn sweep_recorded_verifications(
             .ok()
             .flatten()
             .map(|job| job.reference);
+        // Read before the attempt: claiming the row increments the counter and overwrites the
+        // verdict, and both are needed to decide whether this attempt is worth a message.
+        let previous = store.gemini_verification_progress(chat_id).unwrap_or_default();
         match retry_parked_verification(store, oauth, chat_id).await {
             VerificationRetry::Published(profile) => {
                 elog::info("authbot", format!("[gemini-oauth] chat={chat_id} automatic acceptance passed; publishing profile {}", profile.id));
                 announce_publication(bot, store, config, chat_id, job, &profile).await;
             }
-            // Silent by design: the seller already has the explanation and the button from the
-            // attempt that failed first, and 288 identical messages a day would be noise.
-            VerificationRetry::Rejected(failure, _) => elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} automatic acceptance attempt failed: {}", failure.code())),
+            VerificationRetry::Rejected(failure, verification_url) => {
+                elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} automatic acceptance attempt failed: {}", failure.code()));
+                // Mostly silent by design — 288 identical messages a day would be noise — but not
+                // in the two cases where silence costs the deal. A changed verdict is news the
+                // seller cannot get anywhere else: a window that turned terminal looks exactly like
+                // one still working. And a periodic reminder carries the link that is current now,
+                // because Google mints a new one per rejection and the seller's first one goes stale
+                // long before they finish the checklist.
+                let (attempts_before, previous_verdict) = previous.unwrap_or_default();
+                // An empty previous verdict is the parking row as the callback left it, not a
+                // change: the seller already has that message and its link from seconds ago.
+                let verdict_changed =
+                    !previous_verdict.is_empty() && previous_verdict != failure.code();
+                let reminder_due = (attempts_before + 1) % VERIFICATION_REMINDER_EVERY == 0;
+                if verdict_changed || reminder_due {
+                    report_parked_rejection(
+                        bot,
+                        store,
+                        config,
+                        chat_id,
+                        job.as_ref(),
+                        failure,
+                        verification_url.as_deref(),
+                    )
+                    .await;
+                }
+            }
             VerificationRetry::Missing => {}
         }
     }
@@ -2901,6 +2980,17 @@ async fn generation_probe(
                     } else {
                         "absent from the rejection metadata"
                     }));
+                // Journal the link itself, not only that it exists. It reaches exactly one person in
+                // exactly one message, Google mints a new one per rejection, and the bounded
+                // `details` dump truncates before its token — so without this an operator cannot
+                // recover a link the seller lost. `valid_verification_url` has already fail-closed it
+                // to a real Google sign-in URL, and the same operator switch gates it as the rest of
+                // the evidence.
+                if let Some(url) = verification_url.as_deref() {
+                    if std::env::var("AUTH_BOT_GEMINI_TIER_EVIDENCE").as_deref() == Ok("1") {
+                        elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} account verification link: {url}"));
+                    }
+                }
                 // An account-level rejection is the same on every host, so stop asking. A 2xx that
                 // fails acceptance already consumed a paid generation, and any other status is not
                 // evidence that a different host would answer differently. Only a refusal that
