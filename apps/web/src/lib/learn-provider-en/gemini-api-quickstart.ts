@@ -1,20 +1,42 @@
 import type { LearnArticle } from "../learn";
+import { cta } from "../learn-shared";
 import { ROUTER } from "./shared";
 
 export const article: LearnArticle = {
     slug: "gemini-api-quickstart",
     cluster: "integrate",
     title: "Gemini API Quickstart",
-    h1: "Gemini API quickstart: curl and Google GenAI SDK",
-    description: "Make your first Gemini API call through apiToken.sale with curl or the Google GenAI SDK, native generateContent, x-goog-api-key and an explicit Gemini model ID.",
-    keywords: ["gemini api quickstart", "gemini api tutorial", "google genai sdk base url", "gemini generatecontent", "gemini api curl", "gemini api example"],
-    dek: "The gateway preserves the native Google Gemini protocol. Change the base URL and API key, keep generateContent and the official SDK shapes, and always select an explicit model.",
+    h1: "Gemini API quickstart: first call with curl and the Google GenAI SDK",
+    description: "Make your first Gemini API call through apiToken.sale: native generateContent with curl or the Google GenAI SDK, x-goog-api-key auth, SSE streaming and explicit model IDs.",
+    keywords: ["gemini api quickstart", "gemini api tutorial", "gemini api curl example", "google genai sdk base url", "gemini generatecontent api", "gemini api python example", "gemini api streaming", "x-goog-api-key header", "how to call gemini api", "gemini api javascript sdk"],
+    dek: "This Gemini API quickstart gets a first working call done in minutes: one curl against the native generateContent route, then the same call from the official Google GenAI SDK in Python or JavaScript. Only the base URL and the key header change — request shapes, streaming and usage metadata stay exactly as Google documents them.",
     sections: [
-      { h2: "First request with curl", blocks: [
-        { type: "code", code: "curl " + ROUTER + "/v1beta/models/gemini-3.6-flash:generateContent \\\n  -H \"x-goog-api-key: $APITOKEN_API_KEY\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"contents\":[{\"parts\":[{\"text\":\"Reply with exactly: connected\"}]}]}'" },
-        { type: "p", text: "For incremental output, call streamGenerateContent?alt=sse. countTokens is available on the same model path when you want a free input estimate before generation." },
+      { h2: "One endpoint, the native Gemini protocol", blocks: [
+        { type: "p", text: "To make your first Gemini API call through apiToken.sale, keep the Google protocol exactly as documented and change only two values: the base URL becomes " + ROUTER + " and the key is your apiToken.sale key, sent as the x-goog-api-key header. Every request and response keeps the native generateContent shape, so Google's own documentation, SDK samples and any Gemini code you already have apply unchanged." },
+        { type: "p", text: "One key and one prepaid balance cover every supported provider — Gemini alongside Claude, GPT and Kimi. Gemini usage is metered at official Google token rates, and a flat 50% discount is applied before the cost is drawn from your balance. No Google Cloud project or billing account is involved on your side." },
       ] },
-      { h2: "Use the official Python SDK", blocks: [
+      { h2: "Create the key and list your catalog", blocks: [
+        { type: "steps", items: [
+          "Create a free apiToken.sale account and open the dashboard — no approval step or waitlist.",
+          "Generate one API key. It looks like sk-pool-… and works for Gemini, Claude, GPT and Kimi alike.",
+          "Top up any whole-dollar amount by card or crypto; the prepaid balance does not expire.",
+          "Export the key as APITOKEN_API_KEY, then list the models your key can actually call:",
+        ] },
+        { type: "code", code: "curl " + ROUTER + "/v1beta/models \\\n  -H \"x-goog-api-key: $APITOKEN_API_KEY\"" },
+        { type: "p", text: "Pick an explicit model ID from that response. gemini-3.6-flash is the right default for a first text call; a client library's built-in default may not be in the gateway catalog, and the router only serves the IDs it lists." },
+        cta(),
+      ] },
+      { h2: "First call: generateContent with curl", blocks: [
+        { type: "code", code: "curl " + ROUTER + "/v1beta/models/gemini-3.6-flash:generateContent \\\n  -H \"x-goog-api-key: $APITOKEN_API_KEY\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"contents\":[{\"parts\":[{\"text\":\"Reply with exactly: connected\"}]}]}'" },
+        { type: "p", text: "The response is the standard Google shape: read candidates[0].content.parts and join the text parts. The same JSON carries usageMetadata with prompt, candidate and total token counts, so token- and cost-tracking code works from the very first call." },
+        { type: "p", text: "Before sending a large prompt, call :countTokens on the same model path. It returns a token count without generating anything — a free input estimate before you spend on generation." },
+      ] },
+      { h2: "Stream tokens with streamGenerateContent", blocks: [
+        { type: "code", code: "curl \"" + ROUTER + "/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse\" \\\n  -H \"x-goog-api-key: $APITOKEN_API_KEY\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"contents\":[{\"parts\":[{\"text\":\"Count from one to five\"}]}]}'" },
+        { type: "p", text: "The ?alt=sse query switches the response to server-sent events: each event is one incremental chunk in the same candidate structure, and the terminal event carries the aggregate usageMetadata. In the SDKs the same route is reached through generate_content_stream in Python and generateContentStream in JavaScript." },
+        { type: "p", text: "Stream anything user-facing so the first tokens render immediately. For batch jobs where only the final text matters, plain generateContent is simpler to parse and retry." },
+      ] },
+      { h2: "Official SDKs: Python and JavaScript", blocks: [
         { type: "code", code: [
           "import os",
           "from google import genai",
@@ -31,19 +53,59 @@ export const article: LearnArticle = {
           ")",
           "print(response.text)",
         ].join("\n") },
+        { type: "code", code: [
+          "import { GoogleGenAI } from \"@google/genai\";",
+          "",
+          "const ai = new GoogleGenAI({",
+          "  apiKey: process.env.APITOKEN_API_KEY,",
+          "  httpOptions: { baseUrl: \"" + ROUTER + "\" },",
+          "});",
+          "",
+          "const response = await ai.models.generateContent({",
+          "  model: \"gemini-3.6-flash\",",
+          "  contents: \"Reply with exactly: connected\",",
+          "});",
+          "console.log(response.text);",
+        ].join("\n") },
         { type: "list", items: [
-          "Pass the bare base URL; do not append /v1beta in SDK configuration.",
-          "Pass a concrete model ID. A client's automatic default may not be in the gateway catalog.",
-          "Keep APITOKEN_API_KEY in the environment rather than source code.",
+          "Pass the bare base URL " + ROUTER + "; do not append /v1beta in SDK configuration.",
+          "Pass a concrete model ID such as gemini-3.6-flash — never rely on a client default.",
+          "Keep APITOKEN_API_KEY in the environment rather than in source code.",
         ] },
+        { type: "note", text: "If every SDK request returns 404, check the request path for a doubled /v1beta/v1beta segment. The SDK appends its API version itself; configuring the host with /v1beta already included produces the doubled path." },
+      ] },
+      { h2: "What the first calls cost", blocks: [
+        { type: "p", text: "Gemini calls settle at the exact official Google rate legs — input, cached input and output — and the flat 50% discount is applied on top. Post-discount prices per 1M tokens for the common text models:" },
+        { type: "table", headers: ["Model", "Input / cached / output per 1M", "Good first job"], rows: [
+          ["gemini-3.6-flash", "$0.75 / $0.075 / $3.75", "Everyday coding, chat and agents"],
+          ["gemini-3.1-flash-lite", "$0.125 / $0.0125 / $0.75", "Classification, extraction, routing"],
+          ["gemini-2.5-flash-lite", "$0.05 / $0.005 / $0.20", "Cheapest high-volume text"],
+          ["gemini-3.1-pro-preview", "$1 / $0.10 / $6", "Hardest reasoning and review"],
+        ] },
+        { type: "p", text: "Gemini 3.1 Flash Image (Nano Banana 2) runs on the same route with the same key; its rendered-image output is a separately priced leg covered in the image guide. Per-request spend and the applied discount are visible in the dashboard after each call." },
+        { type: "link", text: "Full Gemini rate card, including long-context and image legs", href: "/docs/learn/gemini-api-pricing" },
+        { type: "link", text: "Every supported model ID and price", href: "/models" },
+      ] },
+      { h2: "Troubleshooting the first response", blocks: [
+        { type: "table", headers: ["Status", "Likely cause", "Fix"], rows: [
+          ["401", "Missing or wrong x-goog-api-key", "Re-check the key value and the exact header name"],
+          ["404", "Doubled /v1beta, or a model ID not in the catalog", "Pass the bare host; pick an ID from GET /v1beta/models"],
+          ["402", "Prepaid balance exhausted", "Top up any whole-dollar amount in the dashboard"],
+        ] },
+        { type: "p", text: "Do not send Authorization: Bearer or the Anthropic x-api-key header on the native Gemini routes — x-goog-api-key is the only credential they accept. Because the wire format is unchanged, reverting to Google's own endpoint later is a one-line base-URL change." },
+        { type: "link", text: "Choose between Pro, Flash and Flash-Lite", href: "/docs/learn/gemini-pro-vs-flash-vs-flash-lite" },
+        { type: "link", text: "Generate images with Nano Banana 2", href: "/docs/learn/nano-banana-2-api-guide" },
       ] },
     ],
     faq: [
-      { q: "Does the official Google GenAI SDK work?", a: "Yes. Set HttpOptions(base_url) to https://router.apitoken.sale and provide the apiToken.sale key; request and response shapes stay native." },
-      { q: "How do I stream Gemini output?", a: "Use /v1beta/models/{model}:streamGenerateContent?alt=sse with x-goog-api-key, or the matching SDK streaming method." },
-      { q: "Why does a doubled /v1beta return 404?", a: "The Google SDK appends its API version. Configure only the bare host so the final request contains one /v1beta segment." },
+      { q: "Does the official Google GenAI SDK work with apiToken.sale?", a: "Yes. Set HttpOptions(base_url) in Python or httpOptions.baseUrl in JavaScript to https://router.apitoken.sale and pass the apiToken.sale key; request and response shapes stay native." },
+      { q: "Which header authenticates Gemini API requests?", a: "x-goog-api-key carrying your sk-pool key. The native Gemini routes do not accept Authorization: Bearer or the Anthropic x-api-key header." },
+      { q: "How do I stream Gemini output?", a: "Call /v1beta/models/{model}:streamGenerateContent?alt=sse with x-goog-api-key, or use the SDK's generate_content_stream / generateContentStream method. The terminal SSE event carries the aggregate usageMetadata." },
+      { q: "Why does a doubled /v1beta return 404?", a: "The Google SDK appends its API version to the configured host. Configure only the bare host so the final request contains exactly one /v1beta segment." },
+      { q: "Which Gemini model should I call first?", a: "Start with gemini-3.6-flash for general text and coding work. Move bulk classification to a Flash-Lite model and the hardest reasoning to gemini-3.1-pro-preview." },
+      { q: "Is countTokens free to call?", a: "Yes. Calling :countTokens on the model path returns a token count without generating, so you can estimate input size before paying for a generation." },
     ],
     related: ["how-to-buy-gemini-api-key", "gemini-api-pricing", "gemini-pro-vs-flash-vs-flash-lite", "nano-banana-2-api-guide"],
     published: "2026-08-09",
-    updated: "2026-08-09",
+    updated: "2026-08-17",
   };

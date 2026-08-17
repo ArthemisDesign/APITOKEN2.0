@@ -1,20 +1,29 @@
 import type { LearnArticle } from "../learn";
-import { ROUTER } from "./shared";
+import { cta } from "../learn-shared";
+import { OPENAI, ROUTER } from "./shared";
 
 export const article: LearnArticle = {
     slug: "kimi-api-quickstart",
     cluster: "integrate",
-    title: "Kimi API Quickstart",
-    h1: "Kimi API quickstart with the Anthropic SDK",
-    description: "Call Kimi K3 and Kimi for Coding through apiToken.sale using the Anthropic Messages API, x-api-key, namespaced model IDs, terminal usage and one shared balance.",
-    keywords: ["kimi api quickstart", "kimi api tutorial", "kimi anthropic api", "kimi k3 api example", "kimi for coding api", "kimi api curl"],
-    dek: "Kimi speaks the Anthropic Messages protocol on the unified router. Existing Anthropic clients need only a custom base URL, the apiToken.sale key and an explicit kimi/* model ID.",
+    title: "Kimi API Quickstart: K3 and Kimi for Coding",
+    h1: "Kimi API quickstart: first call with curl or the Anthropic SDK",
+    description: "Kimi API quickstart: call Kimi K3 and Kimi for Coding through apiToken.sale with curl or the official Anthropic SDK — x-api-key auth, kimi/* model IDs, one prepaid balance, 50% off official rates.",
+    keywords: ["kimi api quickstart", "kimi api tutorial", "kimi anthropic api", "kimi k3 api example", "kimi for coding api", "kimi api curl", "kimi api python", "kimi api key", "moonshot kimi api", "kimi api openai compatible"],
+    dek: "This Kimi API quickstart takes you from a fresh account to a working Kimi K3 response in about five minutes: one base URL, one x-api-key header, one namespaced model ID. Kimi speaks the Anthropic Messages protocol on the apiToken.sale router, so the official Anthropic SDK works with a single base_url change. The same prepaid key and balance also cover Claude, GPT and Gemini.",
     sections: [
-      { h2: "First request with curl", blocks: [
+      { h2: "Your first Kimi request in three steps", blocks: [
+        { type: "p", text: `The fastest path to a first Kimi response is a single POST to ${ROUTER}/v1/messages with your apiToken.sale key in the x-api-key header and a kimi/* model ID in the body. There is no new SDK and no adapter layer — the endpoint speaks the Anthropic Messages protocol, so any client that already talks to Claude can talk to Kimi. Usage settles against the same prepaid balance as your Claude, GPT and Gemini traffic.` },
+        { type: "steps", items: [
+          "Create a free account and generate one API key — it looks like sk-pool-… and already covers the supported Claude, GPT, Gemini and Kimi models.",
+          "Top up any whole-dollar amount by card or crypto; Kimi needs no separate plan and no per-provider balance.",
+          "Export the key as APITOKEN_API_KEY and send the request below. A JSON body with content blocks means the route is live.",
+        ] },
         { type: "code", code: "curl " + ROUTER + "/v1/messages \\\n  -H \"x-api-key: $APITOKEN_API_KEY\" \\\n  -H \"anthropic-version: 2023-06-01\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"model\":\"kimi/k3-256k\",\"max_tokens\":256,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: connected\"}]}'" },
-        { type: "p", text: "Terminal usage follows the Anthropic response shape, so existing usage parsers keep working. The route accepts stream: true, but provider-boundary incrementality remains under live validation." },
+        { type: "p", text: "The response is a standard Anthropic Messages object, and its terminal usage block follows the Anthropic shape — input and output token counts plus the cache legs — so existing usage parsers and cost trackers keep working unchanged." },
+        cta(),
       ] },
-      { h2: "Use the Anthropic Python SDK", blocks: [
+      { h2: "The official Anthropic SDK needs one extra argument", blocks: [
+        { type: "p", text: "Because the wire protocol is Anthropic Messages, the official Anthropic Python SDK works unmodified. Two constructor arguments switch it over: api_key reads your key from the environment, and base_url points the client at the router. Keep the key in a server-side environment variable — never in client-side code or a committed file." },
         { type: "code", code: [
           "import os",
           "from anthropic import Anthropic",
@@ -31,15 +40,72 @@ export const article: LearnArticle = {
           ")",
           "print(message.content[0].text)",
         ].join("\n") },
-        { type: "note", text: "Do not substitute an official Open Platform ID such as kimi-k2.7-code. The public router accepts the subscription aliases shown by GET /v1/models. OpenAI-compatible clients can reach the same Kimi aliases through the universal /v1 lane." },
+        { type: "note", text: "Pass the bare router root, not a path: the SDK appends /v1/messages itself, so a base_url ending in /v1 produces requests to /v1/v1/messages and a 404. The TypeScript SDK takes the same root as baseURL and sends the x-api-key and anthropic-version headers for you." },
+        { type: "p", text: "System prompts, multi-turn histories and tool-use request bodies all serialize exactly as they do against api.anthropic.com — only the model ID and the per-token price differ." },
+      ] },
+      { h2: "Model IDs are subscription aliases with published rates", blocks: [
+        { type: "p", text: `The router addresses Kimi through namespaced subscription aliases, and GET ${ROUTER}/v1/models is the authoritative list for your key — availability can depend on provider capacity and account policy, so read the catalog instead of hard-coding a name from external docs.` },
+        { type: "code", code: "curl " + OPENAI + "/models \\\n  -H \"Authorization: Bearer $APITOKEN_API_KEY\"" },
+        { type: "table", headers: ["Public alias", "Context", "Official hit / miss / output", "You pay after 50% off"], rows: [
+          ["kimi/kimi-for-coding", "256K", "$0.19 / $0.95 / $4", "$0.095 / $0.475 / $2"],
+          ["kimi/kimi-for-coding-highspeed", "256K", "$0.38 / $1.90 / $8", "$0.19 / $0.95 / $4"],
+          ["kimi/k3-256k", "256K", "$0.30 / $3 / $15", "$0.15 / $1.50 / $7.50"],
+          ["kimi/k3 · kimi/k3[1m]", "1M", "$0.30 / $3 / $15", "$0.15 / $1.50 / $7.50"],
+        ] },
+        { type: "p", text: "Figures are per 1M tokens. Kimi splits input into cache-hit and cache-miss legs because its caching is automatic; the highspeed alias costs exactly double the base Kimi for Coding token rates, so reserve it for work where latency genuinely matters." },
+        { type: "note", text: "Do not substitute an official Open Platform ID such as kimi-k2.7-code. The public router accepts the subscription aliases shown by GET /v1/models, and an official tariff name returns a model error even though it looks correct." },
+        { type: "link", text: "Full per-model specs and discounted prices", href: "/models" },
+      ] },
+      { h2: "The same aliases work on the OpenAI-compatible lane", blocks: [
+        { type: "p", text: "If your stack is built on the OpenAI SDK — or on a framework that hard-codes the Chat Completions shape — you do not need the Anthropic surface at all. The router's universal /v1 lane serves the identical kimi/* aliases through Chat Completions:" },
+        { type: "code", code: [
+          "from openai import OpenAI",
+          "",
+          "client = OpenAI(",
+          "    api_key=os.environ[\"APITOKEN_API_KEY\"],",
+          "    base_url=\"" + OPENAI + "\",",
+          ")",
+          "",
+          "completion = client.chat.completions.create(",
+          "    model=\"kimi/kimi-for-coding\",",
+          "    messages=[{\"role\": \"user\", \"content\": \"Reply with exactly: connected\"}],",
+          ")",
+          "print(completion.choices[0].message.content)",
+        ].join("\n") },
+        { type: "note", text: "Match the auth header to the lane: the OpenAI-compatible /v1 surface wants Authorization: Bearer sk-pool-…, and sending x-api-key there returns a 401. The Anthropic Messages surface is the mirror image — x-api-key required, Bearer rejected." },
+      ] },
+      { h2: "Usage accounting, streaming and billing behavior", blocks: [
+        { type: "list", items: [
+          "Terminal usage arrives in the Anthropic response shape on every call, so per-request token and cost tracking needs no changes.",
+          "Kimi publishes no separate cache-write price: a newly cached token bills as a cache miss, and repeat context comes back on the cheaper cache-hit leg automatically.",
+          "Reasoning tokens are a subset of output and bill at the output rate — they are not metered again as a separate token class.",
+          "The route accepts stream: true, but upstream and public chunk incrementality remain under live validation. Use non-streaming mode when chunk timing matters to your UX.",
+          "A 402 response means the prepaid balance needs a top-up; settled usage per request is visible in the dashboard, and a lifetime key spending limit caps what any single key can burn.",
+        ] },
+        { type: "p", text: "Every call is metered at the official Kimi token rates above, then your flat 50% discount is subtracted before the draw hits the balance — the same billing rule that applies to Claude, GPT and Gemini usage on this key." },
+        { type: "link", text: "Cache legs, alias mapping and spend controls in the pricing guide", href: "/docs/learn/kimi-api-pricing" },
+      ] },
+      { h2: "One key plugs into every coding agent", blocks: [
+        { type: "p", text: "The endpoint and key you just verified are the same credentials the coding-agent setups use, so there is nothing new to buy or provision when you move from scripts to an agent loop. Each agent has its own configuration contract, covered in a dedicated guide:" },
+        { type: "list", items: [
+          "Claude Code speaks Anthropic Messages natively — point it at the router and pin every internal model tier to one Kimi alias.",
+          "Kimi Code takes an OpenAI-compatible provider block in config.toml and addresses models as kimi/k3, openai/* or google/* on the same entry.",
+          "OpenCode consumes the router's key-scoped live catalog through the apiToken.sale plugin, so retired aliases never linger in local config.",
+        ] },
+        { type: "link", text: "Run Kimi K3 and Kimi for Coding in Claude Code", href: "/docs/learn/kimi-api-for-claude-code" },
+        { type: "link", text: "Connect Kimi Code to the unified catalog", href: "/docs/learn/kimi-api-for-kimi-code" },
+        { type: "link", text: "Use the Kimi API in OpenCode", href: "/docs/learn/kimi-api-for-opencode" },
       ] },
     ],
     faq: [
-      { q: "Can I use the Anthropic SDK for Kimi?", a: "Yes. Point its base_url at https://router.apitoken.sale and choose a kimi/* model ID from the scoped catalog." },
+      { q: "Can I use the Anthropic SDK for Kimi?", a: "Yes. Point its base_url at https://router.apitoken.sale and choose a kimi/* model ID from the key-scoped catalog — imports, streaming code and error handling stay the same." },
+      { q: "What model ID should I start with?", a: "Use kimi/kimi-for-coding as the economical coding default, or kimi/k3-256k when you need K3 reasoning without the full 1M window. Confirm availability for your key with GET /v1/models first." },
       { q: "Can I set stream: true on the Kimi route?", a: "The route accepts it, but upstream and public chunk incrementality are still being live-verified. Use non-stream mode when chunk timing matters." },
-      { q: "What model ID should I start with?", a: "Use kimi/kimi-for-coding for a coding-oriented default or kimi/k3-256k when you need K3 reasoning without the full 1M window." },
+      { q: "Why does the router reject official Kimi model names?", a: "The public router accepts the subscription aliases shown by GET /v1/models, not Open Platform IDs such as kimi-k2.7-code. An official tariff name returns a model error even though it looks correct." },
+      { q: "How much does Kimi for Coding cost per million tokens?", a: "Official replacement rates are $0.19 per 1M cache-hit tokens, $0.95 per 1M cache-miss tokens and $4 per 1M output tokens; apiToken.sale charges half. The highspeed alias is exactly double the base rates." },
+      { q: "Does Kimi usage share a balance with Claude, GPT and Gemini?", a: "Yes. One sk-pool key and one prepaid balance cover all four providers; top up any whole-dollar amount by card or crypto and every provider draws from the same pool." },
     ],
     related: ["how-to-buy-kimi-api-key", "kimi-api-for-claude-code", "kimi-api-for-kimi-code", "kimi-api-for-opencode"],
     published: "2026-08-09",
-    updated: "2026-08-09",
+    updated: "2026-08-17",
   };
