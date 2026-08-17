@@ -33,7 +33,7 @@ use std::io::Write as _;
 use std::net::SocketAddr;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -2396,24 +2396,28 @@ async fn resolve_and_probe(
     if credential.expires_at <= now() {
         refresh_parked_access_token(client, credential).await?;
     }
-    if credential.project_id.is_empty() {
-        let resolved = match resolve_antigravity_account(client, &credential.access_token).await {
-            Ok(resolved) => resolved,
-            Err(failure) => {
-                elog::error("authbot", format!("[gemini-oauth] chat={chat_id} tier/project resolution failed: {}", failure.code()));
-                return Err(failure);
-            }
-        };
-        if !supported_paid_plan(&resolved.plan) {
-            log_unsupported_plan("unreviewed_reported_tier", resolved.diagnostic);
-            elog::error("authbot", format!("[gemini-oauth] chat={chat_id} rejected: unsupported Google plan {}", plan_label(&resolved.plan)));
-            return Err(Failure::UnsupportedPlan);
+    // Resolved on every attempt, not only when the project is still unknown. The stored project id
+    // never changes, but the account's tier does: Google can provision the purchased entitlement
+    // hours after consent, and `resolve_antigravity_account` can move an account off the free tier
+    // it was parked on. Skipping this while a project existed is what made a parked account retry the same
+    // refused generation for a day without anything being able to change its outcome. One
+    // control-plane read per five-minute attempt is what that visibility costs.
+    let resolved = match resolve_antigravity_account(client, &credential.access_token).await {
+        Ok(resolved) => resolved,
+        Err(failure) => {
+            elog::error("authbot", format!("[gemini-oauth] chat={chat_id} tier/project resolution failed: {}", failure.code()));
+            return Err(failure);
         }
-        credential.project_id = resolved.project_id;
-        credential.tier_id = resolved.tier_id;
-        credential.tier_name = resolved.tier_name;
-        credential.plan = resolved.plan;
+    };
+    if !supported_paid_plan(&resolved.plan) {
+        log_unsupported_plan("unreviewed_reported_tier", resolved.diagnostic);
+        elog::error("authbot", format!("[gemini-oauth] chat={chat_id} rejected: unsupported Google plan {}", plan_label(&resolved.plan)));
+        return Err(Failure::UnsupportedPlan);
     }
+    credential.project_id = resolved.project_id;
+    credential.tier_id = resolved.tier_id;
+    credential.tier_name = resolved.tier_name;
+    credential.plan = resolved.plan;
     generation_probe(
         client,
         &credential.access_token,
@@ -2685,6 +2689,69 @@ async fn refresh_parked_access_token(
     Ok(())
 }
 
+/// Projects this process has already tried to move onto a paid tier.
+///
+/// The parked sweep re-resolves every five minutes for a day, so without this an account Google
+/// insists on keeping below its entitlement would be sent an `onboardUser` write on all 288 of them.
+/// One attempt per project per process is what unsticking an account our own default-tier choice
+/// parked there actually needs, and a deploy restart is a natural bounded retry.
+static REONBOARDED_PROJECTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+/// Claim the single re-onboarding attempt for this project, returning false if it is already spent
+/// or the memo is poisoned — both mean "do not write to Google again".
+fn claim_reonboarding_attempt(project_id: &str) -> bool {
+    let claimed = REONBOARDED_PROJECTS.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut claimed) = claimed.lock() else {
+        return false;
+    };
+    claimed.insert(project_id.to_string())
+}
+
+/// Does this tier map to a reviewed paid plan?
+fn tier_is_supported_paid(tier: &Tier) -> bool {
+    gemini_credential::supported_plan_for_tier(
+        tier.id.as_deref().unwrap_or_default(),
+        tier.name.as_deref().unwrap_or_default(),
+    )
+    .is_some_and(supported_paid_plan)
+}
+
+/// Choose the tier to onboard an Antigravity account onto.
+///
+/// Google marks the free tier `is_default`, so taking the default put a seller's paid subscription
+/// on `free-tier`: the account then holds a real entitlement while every acceptance generation is
+/// refused with `RESOURCE_EXHAUSTED`, which reads as an exhausted account rather than as a tier we
+/// chose for it. Prefer a tier that maps to a reviewed paid plan and fall back to Google's own
+/// default ordering only when none of the offered tiers is one.
+///
+/// The candidate is always a tier Google itself listed for this account. The reported `paidTier` is
+/// preferred only when it also appears in `allowedTiers`, so onboarding never sends an id Google did
+/// not offer — an entitlement Antigravity has not provisioned yet is not an onboarding target.
+fn preferred_onboarding_tier(loaded: &LoadCodeAssistResponse) -> Option<Tier> {
+    let entitled_id = loaded
+        .paid_tier
+        .as_ref()
+        .filter(|tier| tier_is_supported_paid(tier))
+        .and_then(|tier| tier.id.clone());
+    if let Some(entitled_id) = entitled_id {
+        if let Some(offered) = loaded
+            .allowed_tiers
+            .iter()
+            .find(|tier| tier.id.as_deref() == Some(entitled_id.as_str()))
+        {
+            return Some(offered.clone());
+        }
+    }
+    loaded
+        .allowed_tiers
+        .iter()
+        .find(|tier| tier_is_supported_paid(tier))
+        .or_else(|| loaded.allowed_tiers.iter().find(|tier| tier.is_default))
+        .or(loaded.current_tier.as_ref())
+        .or_else(|| loaded.allowed_tiers.first())
+        .cloned()
+}
+
 fn valid_identity(value: &str, max: usize) -> bool {
     !value.is_empty() && value.len() <= max && !value.chars().any(char::is_control)
 }
@@ -2694,15 +2761,9 @@ async fn resolve_antigravity_account(
     access_token: &str,
 ) -> Result<ResolvedAccount, Failure> {
     let mut loaded = load_code_assist(client, access_token).await?;
+    let mut onboarded = false;
     if project_from_value(loaded.cloudaicompanion_project.as_ref()).is_none() {
-        let tier = loaded
-            .allowed_tiers
-            .iter()
-            .find(|tier| tier.is_default)
-            .or(loaded.current_tier.as_ref())
-            .or_else(|| loaded.allowed_tiers.first())
-            .cloned();
-        let Some(tier) = tier else {
+        let Some(tier) = preferred_onboarding_tier(&loaded) else {
             log_unsupported_plan(
                 "antigravity_missing_onboarding_tier",
                 CodeAssistDiagnostic::from_response(&loaded),
@@ -2718,6 +2779,33 @@ async fn resolve_antigravity_account(
         };
         onboard_antigravity(client, access_token, tier_id).await?;
         loaded = load_code_assist(client, access_token).await?;
+        onboarded = true;
+    }
+    // An account that was already onboarded before this preference existed still sits on whatever
+    // tier Google marked default, which is the free one. It holds a real paid entitlement and is
+    // refused on every generation with `RESOURCE_EXHAUSTED`, and nothing about waiting changes that:
+    // the tier is only ever chosen while the account has no project. Move it once, here, whenever
+    // Google is still offering a reviewed paid tier it is not on.
+    //
+    // Best-effort on purpose. A refused or unavailable re-onboarding must leave the account exactly
+    // where it was and still let the acceptance generation run, so a tier we could not improve never
+    // becomes a new way to fail an account that was merely waiting.
+    if !onboarded && !loaded.current_tier.as_ref().is_some_and(tier_is_supported_paid) {
+        let project = project_from_value(loaded.cloudaicompanion_project.as_ref());
+        let target = preferred_onboarding_tier(&loaded)
+            .filter(tier_is_supported_paid)
+            .and_then(|tier| tier.id.clone());
+        if let (Some(project), Some(tier_id)) = (project, target) {
+            if claim_reonboarding_attempt(&project) {
+                elog::warn("authbot", format!("[gemini-oauth] account is onboarded below its entitlement; re-onboarding onto {}: {}", bounded_label(Some(&tier_id)),
+                    CodeAssistDiagnostic::from_response(&loaded).sanitized()));
+                match onboard_antigravity(client, access_token, &tier_id).await {
+                    Ok(()) => loaded = load_code_assist(client, access_token).await?,
+                    Err(failure) => elog::warn("authbot", format!("[gemini-oauth] re-onboarding onto {} did not take: {}", bounded_label(Some(&tier_id)),
+                        failure.code())),
+                }
+            }
+        }
     }
     let diagnostic = CodeAssistDiagnostic::from_response(&loaded);
     log_tier_evidence_if_enabled(&loaded);
