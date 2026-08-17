@@ -550,10 +550,13 @@ fiat. The media capability probe of `tools/kimi_calibration` ran live on 2026-08
 inline part on the production subscription route, exact request-id attribution, every served
 family answered 2xx with metered cost inside the hold bound), so the producer now publishes
 `image_input: true` and every `kimi/*` entry carries `input_modalities:["text","image"]`. Video
-input is declared by the official Kimi Code models page (reviewed 2026-08-12) for the k3 family
-only, so `kimi/k3`, `kimi/k3[1m]` and `kimi/k3-256k` additionally carry `video`; the coding
-aliases stay image-only. Video is a declared capability, not a live-proven one — the media
-probe exercises an image part, and the catalog says exactly that through the producer's gate.
+input follows the official Kimi Code models table (re-reviewed live on 2026-08-18): `k3`,
+`kimi-for-coding` and `kimi-for-coding-highspeed` accept image+video, while `k3-256k` is explicitly
+image-only; the local `k3[1m]` spelling maps to wire model `k3` and inherits its capability.
+Minimal 0.12-second MP4 probes were also accepted and correctly identified as black by `k3` and
+both coding aliases, with exact request-id attribution and metered costs inside the hold bound.
+`k3-256k` currently accepts the same probe too, but the public catalog deliberately keeps it
+image-only because the provider does not guarantee video for that id.
 
 A namespaced `kimi/<alias>` is resolved by the Anthropic plane's admission back to the bare
 alias before dispatch (`KimiGateway::resolve_public_model`). The plane strips only its own

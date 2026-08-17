@@ -1002,9 +1002,10 @@ fn parse_gemini(body: &Value) -> ParseResult {
 /// streaming and tool calling are exercised on every served turn, and the only output modality is
 /// text. Input modalities follow the producer's `image_input`: only a proven `true` adds `image`;
 /// `null`/`false` keep the entry text-only, so an unproven capability is never advertised. Video
-/// input follows the official Kimi Code models page: it is declared for the k3 family
-/// (`k3`/`k3[1m]`/`k3-256k`) and never for the coding aliases, so `video` is added only on top
-/// of a proven image gate and only for that family.
+/// input follows the official Kimi Code models table: `k3`, `kimi-for-coding` and
+/// `kimi-for-coding-highspeed` accept image+video, while `k3-256k` is image-only. The local
+/// `k3[1m]` spelling resolves to wire model `k3`, so it inherits the same video capability.
+/// `video` is added only on top of the producer's proven image gate.
 fn parse_kimi(body: &Value) -> ParseResult {
     let models = body.get("data").and_then(Value::as_array).ok_or(())?;
     if models.len() > MAX_MODELS_PER_PLANE {
@@ -1048,11 +1049,11 @@ fn parse_kimi(body: &Value) -> ParseResult {
                     Err(()) => return Some(Err(())),
                 };
                 let image_input = model.get("image_input").and_then(Value::as_bool);
-                // Video input is declared by the official Kimi Code models page for the k3
-                // family only (k3/k3[1m]/k3-256k); the coding aliases are declared image-only.
-                // It rides the producer's proven image gate: a `null`/`false` image_input keeps
-                // the entry text-only, and video is never advertised on its own.
-                let k3_family = matches!(id.as_str(), "k3" | "k3[1m]" | "k3-256k");
+                // The official Kimi Code models table declares every served alias except
+                // k3-256k as image+video; k3-256k is explicitly image-only. `k3[1m]` is our
+                // local spelling for the same wire model as `k3`, so it inherits video. The
+                // modality rides the proven image gate and is never advertised on its own.
+                let video_input = id != "k3-256k";
                 Some(Ok(CatalogEntry {
                     id: namespaced_id,
                     native_id: id.clone(),
@@ -1067,7 +1068,7 @@ fn parse_kimi(body: &Value) -> ParseResult {
                     service_tiers: Some(vec!["standard".to_string()]),
                     input_modalities: Some(if image_input == Some(true) {
                         let mut modalities = vec!["text".to_string(), "image".to_string()];
-                        if k3_family {
+                        if video_input {
                             modalities.push("video".to_string());
                         }
                         modalities
@@ -1243,37 +1244,35 @@ mod tests {
     }
 
     #[test]
-    fn kimi_producer_proven_image_input_adds_image_and_video_to_the_k3_family() {
+    fn kimi_proven_image_gate_applies_the_official_video_matrix() {
         let body = serde_json::json!({"schema_version": 1, "data": [
             {
-                "id": "k3-256k",
-                "display_name": "Kimi K3 (256K)",
-                "max_input_tokens": 256_000,
+                "id": "k3",
+                "display_name": "Kimi K3 (1M)",
+                "max_input_tokens": 1_048_576,
                 "reasoning_efforts": ["none", "low", "high", "max"],
                 "reasoning": true,
                 "image_input": true,
                 "structured_outputs": null,
-            }
-        ]});
-        let entries = parse_kimi(&body).expect("producer envelope parses");
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries[0].input_modalities.as_deref(),
-            Some(
-                ["text".to_string(), "image".to_string(), "video".to_string()].as_slice()
-            )
-        );
-        assert_eq!(
-            entries[0].output_modalities.as_deref(),
-            Some(["text".to_string()].as_slice())
-        );
-    }
-
-    #[test]
-    fn kimi_coding_alias_with_proven_image_input_stays_video_free() {
-        // Video is declared for the k3 family only; a proven image capability on a coding
-        // alias must not leak a modality the provider does not declare for it.
-        let body = serde_json::json!({"schema_version": 1, "data": [
+            },
+            {
+                "id": "k3[1m]",
+                "display_name": "Kimi K3 (1M)",
+                "max_input_tokens": 1_048_576,
+                "reasoning_efforts": ["none", "low", "high", "max"],
+                "reasoning": true,
+                "image_input": true,
+                "structured_outputs": null,
+            },
+            {
+                "id": "k3-256k",
+                "display_name": "Kimi K3 (256K)",
+                "max_input_tokens": 262_144,
+                "reasoning_efforts": ["none", "low", "high", "max"],
+                "reasoning": true,
+                "image_input": true,
+                "structured_outputs": null,
+            },
             {
                 "id": "kimi-for-coding",
                 "display_name": "Kimi for Coding",
@@ -1282,13 +1281,45 @@ mod tests {
                 "reasoning": true,
                 "image_input": true,
                 "structured_outputs": null,
+            },
+            {
+                "id": "kimi-for-coding-highspeed",
+                "display_name": "Kimi for Coding (High Speed)",
+                "max_input_tokens": 262_144,
+                "reasoning_efforts": ["none", "high"],
+                "reasoning": true,
+                "image_input": true,
+                "structured_outputs": null,
             }
         ]});
         let entries = parse_kimi(&body).expect("producer envelope parses");
-        assert_eq!(entries.len(), 1);
+        assert_eq!(entries.len(), 5);
+        for id in [
+            "kimi/k3",
+            "kimi/k3[1m]",
+            "kimi/kimi-for-coding",
+            "kimi/kimi-for-coding-highspeed",
+        ] {
+            let entry = entries.iter().find(|entry| entry.id == id).expect("entry exists");
+            assert_eq!(
+                entry.input_modalities.as_deref(),
+                Some(
+                    ["text".to_string(), "image".to_string(), "video".to_string()].as_slice()
+                ),
+                "{id} must advertise the official image+video capability"
+            );
+        }
+        let compact = entries
+            .iter()
+            .find(|entry| entry.id == "kimi/k3-256k")
+            .expect("k3-256k exists");
         assert_eq!(
-            entries[0].input_modalities.as_deref(),
+            compact.input_modalities.as_deref(),
             Some(["text".to_string(), "image".to_string()].as_slice())
+        );
+        assert_eq!(
+            compact.output_modalities.as_deref(),
+            Some(["text".to_string()].as_slice())
         );
     }
 

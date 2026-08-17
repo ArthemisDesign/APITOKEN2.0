@@ -155,7 +155,12 @@ high and thinking-off, `kimi-for-coding-highspeed`), each leg answered 2xx with 
 was attributed by exact request id to the immutable event, and its metered cost ($0.0002–$0.0009)
 stayed orders of magnitude inside the worst-case bound. The producer therefore advertises
 `image_input: true` and the unified router catalog publishes `input_modalities:["text","image"]`
-for every `kimi/*` entry (plus `video` for the k3 family per the official models page). The tool
+for every `kimi/*` entry. Video was probed separately on 2026-08-18 with a minimal 0.12-second
+16x16 MP4: `k3`, `kimi-for-coding` and `kimi-for-coding-highspeed` each returned 2xx, identified
+the black frame correctly and produced an exact immutable event inside the hold bound. The public
+catalog follows the official table rather than undocumented acceptance: those three ids (plus the
+local `k3[1m]` spelling for wire model `k3`) advertise `video`, while `k3-256k` stays image-only
+even though it currently accepted the same probe. The tool
 probe remains the open leg: provider-executed tools (`mcp_servers`, server-side
 search/computer/code-execution) stay refused with `kimi_tools_unpriced` until their unit cost is
 proven the same way. The probes carry their own authorization switch, separate from the coverage
