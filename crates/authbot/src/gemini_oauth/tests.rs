@@ -791,19 +791,39 @@ fn generation_acceptance_surfaces_are_ordered_and_access_failures_stay_actionabl
                 "metadata": {
                     "validation_url": "https://accounts.google.com/signin/continue?sarp=1&scc=1&plt=token",
                     "validation_url_link_text": "Verify your account",
+                    "validation_error_message": "Verify your account to continue.",
+                    "validation_learn_more_link_text": "Learn more",
+                    "validation_learn_more_url": "https://support.google.com/accounts?p=al_alert",
                 },
             }],
         }
     });
+    // Google's instruction set is forwarded whole: its own sentence, the label it puts on the
+    // action, the action itself, and the help link it offers beside it.
+    let guidance = validation_guidance_from_body(&serde_json::to_vec(&with_link).unwrap())
+        .expect("a rejection carrying a reviewed link must produce guidance");
+    for expected in [
+        "Verify your account to continue.",
+        "Verify your account",
+        "https://accounts.google.com/signin/continue?sarp=1&amp;scc=1&amp;plt=token",
+        "Learn more",
+        "https://support.google.com/accounts?p=al_alert",
+    ] {
+        assert!(guidance.contains(expected), "guidance must carry {expected}");
+    }
     assert_eq!(
-        verification_url_from_body(&serde_json::to_vec(&with_link).unwrap()).as_deref(),
-        Some("https://accounts.google.com/signin/continue?sarp=1&scc=1&plt=token")
-    );
-    assert_eq!(
-        verification_url_from_body(&serde_json::to_vec(&validation).unwrap()),
+        validation_guidance_from_body(&serde_json::to_vec(&validation).unwrap()),
         None,
-        "a rejection without metadata must not invent a link"
+        "a rejection without metadata must not invent instructions"
     );
+    // A help link anywhere but Google's help centre is dropped without taking the rest with it.
+    let mut hostile_help = with_link.clone();
+    hostile_help["error"]["details"][0]["metadata"]["validation_learn_more_url"] =
+        json!("https://evil.example/accounts");
+    let guidance = validation_guidance_from_body(&serde_json::to_vec(&hostile_help).unwrap())
+        .expect("a hostile help link must not suppress the action itself");
+    assert!(!guidance.contains("evil.example"));
+    assert!(guidance.contains("https://accounts.google.com/signin/continue"));
     // The link is upstream input that we forward to a human, so anything but a real Google
     // sign-in URL is refused rather than turned into a phishing vector in our own message.
     for hostile in [

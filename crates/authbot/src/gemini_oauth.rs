@@ -1521,20 +1521,12 @@ async fn fail_callback(
     // The link is account-bound and must be opened from the same browser profile and egress as the
     // account itself, so it is offered as copyable text rather than a tappable link that Telegram
     // would open in its own in-app browser.
+    // Google's own instructions, already rendered and escaped. They are forwarded whatever the
+    // surrounding verdict classified as: a quota refusal answers before the validation gate is even
+    // reached and carries no `reason`, yet the account is still held and these are still the only
+    // way past it.
     let message = match verification_url {
-        Some(url) if failure == Failure::AccountValidationRequired => format!(
-            "{base}\n\n🔗 Персональная ссылка Google для этой проверки:\n<code>{}</code>",
-            crate::bot::esc(url)
-        ),
-        // Google can attach the account's verification link to a rejection that classifies as
-        // something else entirely — a quota refusal answers before the validation gate is reached
-        // and carries no `reason` to classify on. The link is still this account's own check and
-        // still the only way past it, so it is forwarded with its own sentence instead of being
-        // dropped because the surrounding refusal was about something else.
-        Some(url) => format!(
-            "{base}\n\n🔗 Google приложил к отказу персональную ссылку проверки этого аккаунта. Открой её СТРОГО в том же профиле браузера и через тот же прокси:\n<code>{}</code>",
-            crate::bot::esc(url)
-        ),
+        Some(guidance) => format!("{base}\n\n{guidance}"),
         _ => base.to_string(),
     };
     // The button exists only while the account is actually parked: offering a retry we cannot honour
@@ -1706,17 +1698,13 @@ impl Failure {
             Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь, что нужный тариф активирован именно на этом аккаунте; прокси сохранён, для новой авторизации отправь <code>повторить</code>.",
             Self::AccountMismatch => "❌ На втором этапе выбран другой Google-аккаунт. Оба согласия должны быть выданы одной подпиской в одном профиле браузера. Профиль не опубликован; отправь <code>повторить</code> и начни заново.",
             Self::GenerationUnavailable => "⚠️ Google подтвердил вход и активный тариф, но реальная тестовая генерация не была подтверждена. Профиль не опубликован и сделка не завершена; прокси сохранён. Подожди немного и отправь <code>повторить</code>.",
-            Self::AccountValidationRequired => "❌ Google держит сам аккаунт на проверке: генерация отклонена с «Verify your account to continue». Это отдельная проверка — обычный Gemini на сайте при этом может работать, и повтор без её прохождения ничего не изменит.
+            Self::AccountValidationRequired => "❌ Google держит сам аккаунт на проверке и не выполняет генерацию. Это отдельная проверка — обычный Gemini на сайте при этом может работать, и повтор без её прохождения ничего не изменит.
 
-Сделай по порядку, СТРОГО в том же профиле антидетект-браузера и через тот же прокси:
-1️⃣ Привяжи и подтверди номер телефона: <code>myaccount.google.com/signinoptions/rescuephone</code>
-2️⃣ Открой <code>youtube.com</code> под этим аккаунтом и пройди проверку, если она появится.
-3️⃣ Открой персональную ссылку Google, если она пришла ниже.
-4️⃣ Дальше жди: статус у Google обновляется не мгновенно, бот сам повторяет проверку каждые 5 минут в течение суток и присылает свежую ссылку раз в полчаса.
+Ниже — то, что Google сообщает по этому аккаунту: его текст и его ссылки, дословно. Открывай их СТРОГО в том же профиле антидетект-браузера и через тот же прокси, где выдавал согласие, — с другого устройства или IP проверка не засчитается. Дальше Google проведёт по шагам сам.
 
 Прошёл проверку — нажми кнопку ниже, бот перепроверит немедленно. Кнопки нет или сутки автопроверки уже вышли — отправь <code>повторить</code>, бот выдаст новые ссылки авторизации на том же прокси.
 
-Профиль не опубликован и сделка не завершена. Прокси сохранён.",
+Профиль не опубликован и сделка не завершена. Прокси закреплён за этой позицией.",
             Self::StaleHandoff => "❌ Эта попытка подключения уже не относится к текущей сделке. Профиль не опубликован; продолжи актуальный шаг в боте.",
             Self::Duplicate => "❌ Эта Google-подписка уже присутствует в пуле.",
             Self::DuplicateProxy => "❌ Этот прокси уже закреплён за другим Gemini-профилем. Для подписки нужен отдельный прокси.",
@@ -2496,17 +2484,11 @@ async fn report_parked_rejection(
     } else {
         failure.fixed_proxy_message()
     };
+    // Google's own instructions, already rendered and escaped, follow whatever verdict text this
+    // refusal produced — including one classified as something else, because the account is still
+    // held and those instructions are still the only way past it.
     let message = match verification_url {
-        Some(url) if failure == Failure::AccountValidationRequired => format!(
-            "{base}\n\n🔗 Персональная ссылка Google для этой проверки:\n<code>{}</code>",
-            crate::bot::esc(url)
-        ),
-        // A link Google attached to a differently classified refusal is still this account's own
-        // check and still the only way past it.
-        Some(url) => format!(
-            "{base}\n\n🔗 Google приложил к отказу персональную ссылку проверки этого аккаунта. Открой её СТРОГО в том же профиле браузера и через тот же прокси:\n<code>{}</code>",
-            crate::bot::esc(url)
-        ),
+        Some(guidance) => format!("{base}\n\n{guidance}"),
         None => base.to_string(),
     };
     // The seller does not have to babysit this: the same acceptance runs automatically every five
@@ -2968,12 +2950,12 @@ async fn generation_probe(
                 // quota refusal wins before the validation gate is ever evaluated: it arrives as
                 // `RESOURCE_EXHAUSTED` with no `reason`, the classifier returns `None`, and gating
                 // the lookup on that classification threw away any link the rejection still carried.
-                // `verification_url_from_body` stays fail-closed on anything that is not literally a
-                // Google sign-in URL, so a rejection without one simply leaves this `None`. The
-                // first surface that carries a link keeps it: a later host answering without one is
-                // not evidence that the account stopped being held.
+                // `validation_guidance_from_body` stays fail-closed on anything that is not
+                // literally a Google sign-in URL, so a rejection without one simply leaves this
+                // `None`. The first surface that carries instructions keeps them: a later host
+                // answering without any is not evidence that the account stopped being held.
                 if verification_url.is_none() {
-                    *verification_url = verification_url_from_body(&response.body);
+                    *verification_url = validation_guidance_from_body(&response.body);
                 }
                 elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} account verification link is {} after the {surface} rejection", if verification_url.is_some() {
                         "present in the rejection metadata"
@@ -3074,22 +3056,75 @@ fn classify_generation_failure(body: &[u8]) -> Option<Failure> {
     (validation_reason || validation_message).then_some(Failure::AccountValidationRequired)
 }
 
-/// Pull Google's account-verification link out of the rejection metadata.
+/// Render everything Google said about an account it is holding, in Google's own words.
 ///
-/// This string is upstream input that we forward to a human, so it is fail-closed on anything that
-/// is not literally a Google sign-in URL: a redirect elsewhere would turn our own Telegram message
-/// into a credible phishing vector against the seller whose account we just touched. Requiring the
-/// `https://accounts.google.com/` prefix (slash included) also rules out lookalike hosts such as
-/// `accounts.google.com.example.net`.
-fn verification_url_from_body(body: &[u8]) -> Option<String> {
+/// The rejection carries a labelled instruction set, not just an address: its own sentence, the
+/// text it puts on the primary action, that action's URL, and a secondary "learn more" pointing at
+/// its help centre. Forwarding only the bare URL threw the labels away, and the message had to
+/// guess out loud which check Google wanted — a guess is how a seller ends up doing something
+/// Google never asked for. Google walks the account owner through the actual challenge once they
+/// open its own link, so the honest thing to forward is its instructions, verbatim.
+///
+/// Every piece is optional and independently fail-closed: upstream text is bounded and stripped,
+/// the action must be a real Google sign-in URL and the help link must be Google's help centre, or
+/// our own Telegram message becomes a credible phishing vector against the seller whose account we
+/// just touched. Requiring the full `https://accounts.google.com/` prefix also rules out lookalike
+/// hosts such as `accounts.google.com.example.net`. A rejection carrying less simply says less.
+fn validation_guidance_from_body(body: &[u8]) -> Option<String> {
     let parsed = serde_json::from_slice::<Value>(body).ok()?;
     let details = parsed.pointer("/error/details")?.as_array()?;
-    let url = details.iter().find_map(|detail| {
-        detail
-            .pointer("/metadata/validation_url")
+    let metadata = details
+        .iter()
+        .find_map(|detail| detail.pointer("/metadata")?.as_object());
+    let field = |name: &str| -> Option<String> {
+        metadata
+            .and_then(|metadata| metadata.get(name))
             .and_then(Value::as_str)
-    })?;
-    valid_verification_url(url).then(|| url.to_string())
+            .map(bounded_instruction)
+            .filter(|value| !value.is_empty())
+    };
+    let action_url = field("validation_url").filter(|url| valid_verification_url(url))?;
+    let mut block = String::from("📋 <b>Что сообщает Google по этому аккаунту:</b>");
+    if let Some(message) = field("validation_error_message") {
+        block.push_str(&format!("\n«{}»", crate::bot::esc(&message)));
+    }
+    let action_text =
+        field("validation_url_link_text").unwrap_or_else(|| "Verify your account".into());
+    block.push_str(&format!(
+        "\n\n🔗 <b>{}</b>:\n<code>{}</code>",
+        crate::bot::esc(&action_text),
+        crate::bot::esc(&action_url)
+    ));
+    if let Some(help_url) = field("validation_learn_more_url").filter(|url| valid_help_url(url)) {
+        let help_text =
+            field("validation_learn_more_link_text").unwrap_or_else(|| "Learn more".into());
+        block.push_str(&format!(
+            "\n\nℹ️ <b>{}</b>:\n<code>{}</code>",
+            crate::bot::esc(&help_text),
+            crate::bot::esc(&help_url)
+        ));
+    }
+    Some(block)
+}
+
+/// Google's help centre is the only host besides the sign-in one this message ever points at.
+fn valid_help_url(url: &str) -> bool {
+    url.len() <= 2048
+        && url.starts_with("https://support.google.com/")
+        && !url.chars().any(|character| {
+            character.is_control()
+                || character.is_whitespace()
+                || matches!(character, '"' | '\'' | '<' | '>' | '\\')
+        })
+}
+
+/// Upstream instruction text forwarded to a human: bounded and stripped of control characters.
+fn bounded_instruction(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(300)
+        .collect()
 }
 
 fn valid_verification_url(url: &str) -> bool {
