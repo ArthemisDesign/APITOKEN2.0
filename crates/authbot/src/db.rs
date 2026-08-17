@@ -2024,6 +2024,16 @@ impl Store {
         )?)
     }
 
+    /// chat_id рантайм-админов (role='admin'). Админ, выданный ролью в БД, обязан получать те же
+    /// push-уведомления, что и админ из env: кнопка выплаты живёт только в этих сообщениях, и без
+    /// рассылки такая админка молча оказывается наполовину нерабочей.
+    pub fn admin_chat_ids(&self) -> Result<Vec<i64>> {
+        let c = self.c.lock().unwrap();
+        let mut s = c.prepare("SELECT chat_id FROM users WHERE role='admin' AND chat_id<>0")?;
+        let rows = s.query_map([], |r| r.get::<_, i64>(0))?;
+        Ok(rows.filter_map(|x| x.ok()).collect())
+    }
+
     /// chat_id одобренных продавцов (для рассылки офферов).
     pub fn approved_sellers(&self) -> Result<Vec<i64>> {
         let c = self.c.lock().unwrap();

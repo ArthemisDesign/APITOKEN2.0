@@ -16,6 +16,7 @@ use crate::tg::{Bot, CallbackQuery, Keyboard};
 use crate::tripo3d_key;
 use crate::tripo3d_roster;
 use crate::Config;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 pub const WELCOME_NEW: &str =
@@ -401,10 +402,21 @@ fn batch_jobs_kb(overview: &BatchOverview, admin: bool) -> Option<Keyboard> {
 
 fn single_job_kb(job: &SellerJob, admin: bool) -> Option<Keyboard> {
     (admin && matches!(job.phase.as_str(), "accepted" | "processing")).then(|| {
-        vec![vec![(
+        let mut keyboard = Vec::new();
+        // Выплата обязана быть доступна из списка сделок: push с кнопкой одноразовый, и админ,
+        // который его не получил или потерял, иначе не может оплатить принятый оффер вообще.
+        // Повторное нажатие безопасно — claim_offer_payment пускает только фазу `accepted`.
+        if job.phase == "accepted" {
+            keyboard.push(vec![(
+                "💸 Оплатить".into(),
+                format!("pay:{}:{}", job.reference.offer_id, job.seller_chat),
+            )]);
+        }
+        keyboard.push(vec![(
             "🗑 Удалить оффер".into(),
             format!("odel:{}:ask", job.reference.offer_id),
-        )]]
+        )]);
+        keyboard
     })
 }
 
@@ -497,9 +509,33 @@ fn fmt_usd(a: f64) -> String {
     }
 }
 
-async fn notify_admins(bot: &Bot, cfg: &Config, text: &str, kb: Option<&Keyboard>) {
-    for id in &cfg.admins_id {
-        let _ = bot.send_kb(*id, text, kb).await;
+/// Получатели админской рассылки: env-список ПЛЮС рантайм-админы из БД (`role='admin'`).
+/// `is_admin` уже признаёт роль из БД, поэтому рассылка обязана признавать её тоже — иначе выданная
+/// админка даёт права в обработчиках, но ни одного собственного уведомления, а кнопка выплаты живёт
+/// именно в них.
+pub(crate) fn admin_recipients(env_admins: &HashSet<i64>, store: &Store) -> Vec<i64> {
+    let mut ids: Vec<i64> = env_admins.iter().copied().filter(|id| *id != 0).collect();
+    ids.extend(
+        store
+            .admin_chat_ids()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|id| *id != 0),
+    );
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+async fn notify_admins(
+    bot: &Bot,
+    cfg: &Config,
+    store: &Store,
+    text: &str,
+    kb: Option<&Keyboard>,
+) {
+    for id in admin_recipients(&cfg.admins_id, store) {
+        let _ = bot.send_kb(id, text, kb).await;
     }
 }
 
@@ -1220,12 +1256,14 @@ fn offer_payment_review_kb(offer_id: i64) -> Keyboard {
 async fn notify_batch_payment_ready(
     bot: &Bot,
     cfg: &Config,
+    store: &Store,
     batch: &PurchaseBatch,
     seller: &crate::db::UserRow,
 ) {
     notify_admins(
         bot,
         cfg,
+        store,
         &format!(
             "✅ <b>Batch #{} принят продавцом.</b>\n{} × {}\nИтого: <b>{}</b> USDT\nАдрес: <code>{}</code>\nПрокси: {}",
             batch.id,
@@ -1570,7 +1608,7 @@ pub async fn on_message(
                     let _ = bot.send(chat, "✅ Адрес сохранён. Жди оффер.").await;
                     for batch in store.accepted_batches_for_seller(chat).unwrap_or_default() {
                         if let Some(seller) = store.get_user(chat).ok().flatten() {
-                            notify_batch_payment_ready(bot, cfg, &batch, &seller).await;
+                            notify_batch_payment_ready(bot, cfg, store, &batch, &seller).await;
                         }
                     }
                     for offer in store.accepted_offers_for_seller(chat).unwrap_or_default() {
@@ -1581,6 +1619,7 @@ pub async fn on_message(
                         notify_admins(
                             bot,
                             cfg,
+                            store,
                             &format!(
                                 "✅ Адрес продавца сохранён для оффера #{} «{}».\nАдрес: <code>{}</code>",
                                 offer.id,
@@ -2173,6 +2212,7 @@ async fn restart_gemini_oauth_attempt(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 "⚠️ Gemini /cancel погасил зависшее поколение, но не смог восстановить его запечатанный или закреплённый egress. Проверь источник прокси текущей позиции; старый callback уже недействителен.",
                 None,
             )
@@ -2665,6 +2705,7 @@ async fn do_feed_token(
                         notify_admins(
                             bot,
                             cfg,
+                            store,
                             "⚠️ Claude опубликован в registry, но lifecycle binding не записан. Сделка оставлена незавершённой; публикацию не откатывать, требуется reconciliation.",
                             None,
                         )
@@ -2681,7 +2722,7 @@ async fn do_feed_token(
                     if current {
                         let _ = bot.send(chat, &format!(
                         "✅ <b>Готово!</b> Доступ передан, подписка <code>{}</code> в системе. Спасибо за сделку! 🤝", esc(&email))).await;
-                        notify_admins(bot, cfg, &format!(
+                        notify_admins(bot, cfg, store, &format!(
                             "✅ <b>Claude-доступ получен</b>: аккаунт <code>{}</code> добавлен в пул (прокси: {}).",
                             esc(&email), if proxy.is_empty() { "нет" } else { "есть" }), None).await;
                     }
@@ -2708,6 +2749,7 @@ async fn do_feed_token(
                     notify_admins(
                         bot,
                         cfg,
+                        store,
                         &format!(
                             "⚠️ PostgreSQL registration failed for <code>{}</code>: {}",
                             esc(&email),
@@ -2829,6 +2871,7 @@ async fn prepare_kimi_account(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 &format!(
                     "⚠️ KIMI proxy не прошёл локальную проверку формата для {}. Сетевых запросов не выполнялось; секреты прокси не логировались.",
                     seller_job_label(&job),
@@ -2926,6 +2969,7 @@ async fn prepare_gemini_account(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 &format!(
                     "⚠️ Gemini proxy не прошёл локальную проверку формата для {}. Сетевых запросов не выполнялось; секреты прокси не логировались.",
                     seller_job_label(&job),
@@ -3036,6 +3080,7 @@ async fn start_kimi_handoff(
         notify_admins(
             bot,
             cfg,
+            store,
             "⚠️ KIMI handoff недоступен: не настроен AEAD keyring (AUTH_BOT_KIMI_CREDENTIAL_KEYS / _ACTIVE_KID).",
             None,
         )
@@ -3220,6 +3265,7 @@ async fn start_kimi_handoff(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 "⚠️ KIMI publication failed closed. Проверь права AUTH_BOT_KIMI_DIR, profiles.json и совпадение credential keyring; секреты не логировались.",
                 None,
             )
@@ -3320,6 +3366,7 @@ async fn prepare_glm_account(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 &format!(
                     "⚠️ GLM proxy не прошёл локальную проверку формата для {}. Сетевых запросов не выполнялось; секреты прокси не логировались.",
                     seller_job_label(&job),
@@ -3425,6 +3472,7 @@ async fn start_glm_handoff(
         notify_admins(
             bot,
             cfg,
+            store,
             "⚠️ GLM handoff недоступен: не настроен AEAD keyring (AUTH_BOT_GLM_CREDENTIAL_KEYS / _ACTIVE_KID).",
             None,
         )
@@ -3609,6 +3657,7 @@ async fn handle_glm_key_message(
         notify_admins(
             bot,
             cfg,
+            store,
             "⚠️ GLM handoff недоступен: не настроен AEAD keyring (AUTH_BOT_GLM_CREDENTIAL_KEYS / _ACTIVE_KID).",
             None,
         )
@@ -3627,6 +3676,7 @@ async fn handle_glm_key_message(
         notify_admins(
             bot,
             cfg,
+            store,
             &format!(
                 "⚠️ GLM-сделка {} имеет нераспознанный declared plan; запрос к провайдеру не выполнялся.",
                 seller_job_label(&job),
@@ -3755,6 +3805,7 @@ async fn handle_glm_key_message(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 &format!(
                     "⚠️ GLM credential_from отклонил уже валидированный материал для {}; секреты не логировались.",
                     seller_job_label(&job),
@@ -3807,6 +3858,7 @@ async fn handle_glm_key_message(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 &format!(
                     "⚠️ GLM publication hit a profile-id collision для {}; секреты не логировались.",
                     seller_job_label(&job),
@@ -3827,6 +3879,7 @@ async fn handle_glm_key_message(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 "⚠️ GLM publication failed closed. Проверь права AUTH_BOT_GLM_DIR, profiles.json и совпадение credential keyring; секреты не логировались.",
                 None,
             )
@@ -3909,6 +3962,7 @@ async fn prepare_tripo3d_account(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 &format!(
                     "⚠️ Tripo3D proxy не прошёл локальную проверку формата для {}. Сетевых запросов не выполнялось; секреты прокси не логировались.",
                     seller_job_label(&job),
@@ -4015,6 +4069,7 @@ async fn start_tripo3d_handoff(
         notify_admins(
             bot,
             cfg,
+            store,
             "⚠️ Tripo3D handoff недоступен: не настроен AEAD keyring (AUTH_BOT_TRIPO3D_CREDENTIAL_KEYS / _ACTIVE_KID).",
             None,
         )
@@ -4211,6 +4266,7 @@ async fn handle_tripo3d_key_message(
         notify_admins(
             bot,
             cfg,
+            store,
             "⚠️ Tripo3D handoff недоступен: не настроен AEAD keyring (AUTH_BOT_TRIPO3D_CREDENTIAL_KEYS / _ACTIVE_KID).",
             None,
         )
@@ -4229,6 +4285,7 @@ async fn handle_tripo3d_key_message(
         notify_admins(
             bot,
             cfg,
+            store,
             &format!(
                 "⚠️ Tripo3D-сделка {} имеет нераспознанную declared cohort; запрос к провайдеру не выполнялся.",
                 seller_job_label(&job),
@@ -4320,6 +4377,7 @@ async fn handle_tripo3d_key_message(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 &format!(
                     "⚠️ Tripo3D credential_from отклонил уже валидированный материал для {}; секреты не логировались.",
                     seller_job_label(&job),
@@ -4372,6 +4430,7 @@ async fn handle_tripo3d_key_message(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 &format!(
                     "⚠️ Tripo3D publication hit a profile-id collision для {}; секреты не логировались.",
                     seller_job_label(&job),
@@ -4392,6 +4451,7 @@ async fn handle_tripo3d_key_message(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 "⚠️ Tripo3D publication failed closed. Проверь права AUTH_BOT_TRIPO3D_DIR, profiles.json и совпадение credential keyring; секреты не логировались.",
                 None,
             )
@@ -4473,6 +4533,7 @@ async fn prepare_suno_account(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 &format!(
                     "⚠️ Suno proxy не прошёл локальную проверку формата для {}. Сетевых запросов не выполнялось; секреты прокси не логировались.",
                     seller_job_label(&job),
@@ -4576,6 +4637,7 @@ async fn start_suno_handoff(
         notify_admins(
             bot,
             cfg,
+            store,
             "⚠️ Suno handoff недоступен: не настроен AEAD keyring (AUTH_BOT_SUNO_CREDENTIAL_KEYS / _ACTIVE_KID).",
             None,
         )
@@ -4686,6 +4748,7 @@ async fn handle_suno_cookie_message(
         notify_admins(
             bot,
             cfg,
+            store,
             "⚠️ Suno handoff недоступен: не настроен AEAD keyring (AUTH_BOT_SUNO_CREDENTIAL_KEYS / _ACTIVE_KID).",
             None,
         )
@@ -4704,6 +4767,7 @@ async fn handle_suno_cookie_message(
         notify_admins(
             bot,
             cfg,
+            store,
             &format!(
                 "⚠️ Suno-сделка {} имеет нераспознанный declared plan; запрос к провайдеру не выполнялся.",
                 seller_job_label(&job),
@@ -4854,6 +4918,7 @@ async fn handle_suno_cookie_message(
                 notify_admins(
                     bot,
                     cfg,
+                    store,
                     &format!(
                         "⚠️ Suno credential_from отклонил уже валидированный материал для {}; секреты не логировались.",
                         seller_job_label(&job),
@@ -4906,6 +4971,7 @@ async fn handle_suno_cookie_message(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 &format!(
                     "⚠️ Suno publication hit a profile-id collision для {}; секреты не логировались.",
                     seller_job_label(&job),
@@ -4926,6 +4992,7 @@ async fn handle_suno_cookie_message(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 "⚠️ Suno publication failed closed. Проверь права AUTH_BOT_SUNO_DIR, profiles.json и совпадение credential keyring; секреты не логировались.",
                 None,
             )
@@ -4986,6 +5053,7 @@ async fn start_gemini_handoff(
         notify_admins(
             bot,
             cfg,
+            store,
             "⚠️ Продавец дошёл до Gemini OAuth, но AUTH_BOT_GEMINI_* credential configuration отсутствует.",
             None,
         )
@@ -5943,6 +6011,7 @@ async fn start_batch_item(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 &format!(
                     "⚠️ В batch #{} отсутствует прокси для позиции {}.",
                     batch.id, item.item_no
@@ -6022,6 +6091,7 @@ pub(crate) async fn complete_seller_job_after_handoff(
         notify_admins(
             bot,
             cfg,
+            store,
             &format!(
                 "⚠️ Завершившийся {:?} handoff продавца {} не был привязан к сделке. Доступ мог быть опубликован, но состояние продавца и batch не изменены.",
                 completed_kind,
@@ -6036,6 +6106,7 @@ pub(crate) async fn complete_seller_job_after_handoff(
         notify_admins(
             bot,
             cfg,
+            store,
             &format!(
                 "⚠️ Завершившийся {:?} handoff продавца {} относится к уже закрытой или заменённой работе. Доступ уже опубликован, но состояние продавца и batch не изменены — нужна ручная сверка.",
                 completed_kind,
@@ -6050,6 +6121,7 @@ pub(crate) async fn complete_seller_job_after_handoff(
         notify_admins(
             bot,
             cfg,
+            store,
             &format!(
                 "⚠️ Завершившийся {:?} handoff продавца {} не совпал с активной работой «{}». Доступ уже опубликован, но работа не закрыта и batch не сдвинут — нужна ручная сверка.",
                 completed_kind,
@@ -6069,6 +6141,7 @@ pub(crate) async fn complete_seller_job_after_handoff(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 &format!(
                     "✅ <b>Оффер #{} завершён.</b> Продавец {} передал «{}». Он снова свободен.",
                     job.reference.offer_id,
@@ -6083,6 +6156,7 @@ pub(crate) async fn complete_seller_job_after_handoff(
         notify_admins(
             bot,
             cfg,
+            store,
             &format!(
                 "⚠️ Оффер #{} изменился одновременно с завершением handoff. Доступ опубликован, но работа не закрыта автоматически; проверь /jobs.",
                 job.reference.offer_id
@@ -6107,6 +6181,7 @@ pub(crate) async fn complete_seller_job_after_handoff(
         notify_admins(
             bot,
             cfg,
+            store,
             &format!(
                 "⚠️ Batch #{} · позиция {} изменилась одновременно с завершением handoff. Курсор не сдвинут; проверь /jobs.",
                 job.reference.batch_id, job.reference.item_no
@@ -6129,6 +6204,7 @@ pub(crate) async fn complete_seller_job_after_handoff(
         notify_admins(
             bot,
             cfg,
+            store,
             &format!(
                 "✅ <b>Batch #{} завершён.</b> Приняты все {} подписок «{}».",
                 batch.id,
@@ -6165,6 +6241,7 @@ pub async fn resume_batches(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>) {
         notify_admins(
             bot,
             cfg,
+            store,
             &format!(
                 "⚠️ Оффер #{} остался в состоянии оплаты после перезапуска. Сначала проверь BscScan/кошелёк продавца; повторную выплату разблокируй только если транзакции нет.",
                 job.reference.offer_id
@@ -6177,6 +6254,7 @@ pub async fn resume_batches(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>) {
         notify_admins(
             bot,
             cfg,
+            store,
             &format!(
                 "⚠️ Batch #{} остался в состоянии оплаты после перезапуска. Транзакция могла уйти, поэтому сначала проверь BscScan/кошелёк продавца. Если выплаты нет, нажми кнопку для разблокировки повторной оплаты.",
                 batch.id
@@ -6296,6 +6374,7 @@ async fn start_codex_handoff(
         notify_admins(
             bot,
             cfg,
+            store,
             &format!(
                 "⚠️ ChatGPT handoff продавца {} был отменён: активная работа изменилась во время запуска авторизации.",
                 seller_label(store, chat)
@@ -6349,6 +6428,7 @@ async fn start_codex_handoff(
                     notify_admins(
                         &bot2,
                         &cfg2,
+                        &store2,
                         "⚠️ Codex опубликован в roster, но lifecycle binding не записан. Сделка оставлена незавершённой; публикацию не откатывать, требуется reconciliation.",
                         None,
                     )
@@ -6365,7 +6445,7 @@ async fn start_codex_handoff(
                     let _ = bot2.send(chat, &format!(
                         "✅ <b>Готово!</b> Доступ передан, подписка <code>{}</code> принята. Спасибо за сделку! 🤝",
                         esc(&label))).await;
-                    notify_admins(&bot2, &cfg2, &format!(
+                    notify_admins(&bot2, &cfg2, &store2, &format!(
                         "✅ <b>ChatGPT-доступ получен</b>: аккаунт <code>{}</code> добавлен в пул Codex (прокси: {}). \
                          Движок подхватит его ближайшим health-тиком.",
                         esc(&label), if has_proxy { "свой" } else { "общий" }), None).await;
@@ -6494,6 +6574,7 @@ async fn deliver_issued_proxy(
                 notify_admins(
                     bot,
                     cfg,
+                    store,
                     &format!(
                         "⚠️ Прокси IPRoyal для оффера #{} выпущен (заказ #{}), но активная работа продавца уже изменилась. Прокси не отправлен; нужна ручная проверка.",
                         oid, px.order_id
@@ -6548,6 +6629,7 @@ async fn deliver_issued_proxy(
             notify_admins(
                 bot,
                 cfg,
+                store,
                 &format!(
                     "⚠️ Авто-выпуск прокси для оффера #{oid} не удался: {}\n{}",
                     esc(&e.to_string()),
@@ -6592,6 +6674,7 @@ async fn start_buyer_offer_handoff(
         notify_admins(
             bot,
             cfg,
+            store,
             &format!("⚠️ В оффере #{} отсутствует прокси покупателя.", oid),
             None,
         )
@@ -6778,6 +6861,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
         notify_admins(
             bot,
             cfg,
+            store,
             &format!(
                 "🔔 <b>Новая заявка в продавцы</b>: @{} (id {})",
                 esc(&uname),
@@ -7206,7 +7290,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
             if chat != batch.seller_chat {
                 let _ = bot.send(batch.seller_chat, &message).await;
             } else {
-                notify_admins(bot, cfg, &message, None).await;
+                notify_admins(bot, cfg, store, &message, None).await;
             }
             return;
         }
@@ -7256,7 +7340,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
         if chat != batch.seller_chat {
             let _ = bot.send(batch.seller_chat, &message).await;
         } else {
-            notify_admins(bot, cfg, &message, None).await;
+            notify_admins(bot, cfg, store, &message, None).await;
         }
         start_batch_item(bot, store, cfg, batch.id, item_no, None).await;
         return;
@@ -7462,6 +7546,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                 notify_admins(
                     bot,
                     cfg,
+                    store,
                     &format!("🚫 <b>Batch #{}</b> продавец отклонил.", batch_id),
                     None,
                 )
@@ -7493,6 +7578,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                 notify_admins(
                     bot,
                     cfg,
+                    store,
                     &format!(
                         "✅ <b>@{} принял batch #{}</b> «{}» — ждём адрес для общей выплаты.",
                         esc(&uname),
@@ -7507,7 +7593,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                     "✅ <b>Batch #{} принят.</b> Адрес для выплаты уже сохранён. Ожидай одну общую оплату. {}",
                     batch_id, accepted_next_step(&batch.product, &batch.proxy_source)
                 )).await;
-                notify_batch_payment_ready(bot, cfg, &batch, &rec).await;
+                notify_batch_payment_ready(bot, cfg, store, &batch, &rec).await;
             }
             return;
         }
@@ -7560,7 +7646,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                 .send(chat, "У продавца нет сохранённого BEP-20 адреса.")
                 .await;
         } else {
-            notify_batch_payment_ready(bot, cfg, &updated, &seller).await;
+            notify_batch_payment_ready(bot, cfg, store, &updated, &seller).await;
         }
         return;
     }
@@ -7688,6 +7774,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                     notify_admins(
                         bot,
                         cfg,
+                        store,
                         &format!(
                             "⚠️ Batch #{}: выплата отправлена, но не удалось сохранить статус paid. tx: <code>{}</code>",
                             batch_id,
@@ -7721,6 +7808,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                 notify_admins(
                     bot,
                     cfg,
+                    store,
                     &format!(
                         "⚠️ Batch #{} остался заблокирован в статусе оплаты после ошибки: {}",
                         batch_id,
@@ -7826,6 +7914,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                         notify_admins(
                             bot,
                             cfg,
+                            store,
                             &format!(
                                 "⚠️ Оффер #{}: выплата отправлена, но handoff не запущен. tx: <code>{}</code>",
                                 oid,
@@ -7889,6 +7978,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                     notify_admins(
                         bot,
                         cfg,
+                        store,
                         &format!(
                             "⚠️ Оффер #{} остался заблокирован в статусе оплаты после ошибки: {}",
                             oid,
@@ -7964,6 +8054,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                     notify_admins(
                         bot,
                         cfg,
+                        store,
                         &format!(
                             "✅ <b>@{} принял оффер #{oid}</b> «{}» — ждём от него адрес.",
                             esc(&uname),
@@ -7987,6 +8078,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                     notify_admins(
                         bot,
                         cfg,
+                        store,
                         &format!(
                             "✅ <b>@{} принял оффер #{oid}</b> «{}».\nАдрес: <code>{}</code>",
                             esc(&uname),

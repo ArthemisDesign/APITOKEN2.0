@@ -1677,6 +1677,32 @@ fn batch_source_keyboard_has_exactly_the_two_requested_flows() {
 }
 
 #[test]
+fn admin_broadcast_reaches_env_and_database_admins_without_duplicates() {
+    let store = store();
+    // Админ, выданный ролью в БД, и админ, продублированный в env: рассылка обязана покрыть обоих
+    // и не отправить одному и тому же чату два сообщения.
+    store.register_user(391811468, 391811468, "Rodarius").unwrap();
+    store.set_role(391811468, "admin").unwrap();
+    store.register_user(970926576, 970926576, "qqjambaa").unwrap();
+    store.set_role(970926576, "admin").unwrap();
+    store.register_user(415292883, 415292883, "seller").unwrap();
+
+    let env_admins: HashSet<i64> = [970926576, 0].into_iter().collect();
+    assert_eq!(
+        admin_recipients(&env_admins, &store),
+        vec![391811468, 970926576]
+    );
+
+    // Пустой env не должен обнулять админов, выданных ролью, — иначе выплату некому подтвердить.
+    assert_eq!(
+        admin_recipients(&HashSet::new(), &store),
+        vec![391811468, 970926576]
+    );
+    // Продавец без роли в рассылку не попадает.
+    assert!(!admin_recipients(&env_admins, &store).contains(&415292883));
+}
+
+#[test]
 fn batch_quantity_accepts_only_plain_integers() {
     assert_eq!(parse_quantity("10"), Some(10));
     assert_eq!(parse_quantity(" 10 "), Some(10));
@@ -1702,7 +1728,10 @@ fn jobs_card_exposes_progress_and_role_safe_batch_controls() {
     };
     assert!(single_job_kb(&single, false).is_none());
     let single_admin = single_job_kb(&single, true).unwrap();
-    assert_eq!(single_admin[0][0].1, "odel:9:ask");
+    // Принятый оффер ждёт выплату: кнопка оплаты обязана быть достижима из списка сделок, а не
+    // только из одноразового push-уведомления.
+    assert_eq!(single_admin[0][0].1, "pay:9:42");
+    assert_eq!(single_admin[1][0].1, "odel:9:ask");
     assert!(
         format!("odel:{}:{}", i64::MAX, single.reference.token).len() <= 64,
         "confirmation callback must fit Telegram's limit"
@@ -1710,7 +1739,10 @@ fn jobs_card_exposes_progress_and_role_safe_batch_controls() {
     single.phase = "paying".into();
     assert!(single_job_kb(&single, true).is_none());
     single.phase = "processing".into();
-    assert!(single_job_kb(&single, true).is_some());
+    let processing_admin = single_job_kb(&single, true).unwrap();
+    // Уже оплаченная сделка не должна предлагать вторую выплату.
+    assert_eq!(processing_admin.len(), 1);
+    assert_eq!(processing_admin[0][0].1, "odel:9:ask");
 
     let mut overview = BatchOverview {
         batch: PurchaseBatch {

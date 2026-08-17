@@ -62,6 +62,10 @@ while a paused batch exists is forbidden. Resume is allowed only after the singl
 creates a new exact generation for the same position. The admin can two-step delete a batch from
 the work queue; this is a soft-delete into the `cancelled` status, so tx/progress remain in SQLite
 for audit. A batch in the indeterminate `paying` phase cannot be deleted before payment review.
+For a single-offer still in the `accepted` phase the admin card also carries «💸 Оплатить»: the
+payout must be reachable from the queue and not only from the one-shot push, because an admin who
+never received or has lost that message otherwise cannot pay the seller at all. Pressing it twice is
+safe — `claim_offer_payment` admits the `accepted` phase only.
 
 **Seller deal isolation:** `seller_jobs` holds exactly one active job per seller — either a
 specific single-offer or a specific `batch_id + item_no`. The context is reserved atomically at
@@ -267,6 +271,14 @@ are preserved in `offer_archive_events`. The `paying` phase is not subject to de
 
 **Env:**
 - `AUTH_BOT_TOKEN`, `AUTH_BOT_ADMIN`, `AUTH_BOT_FLEET`, `CLAUDE_API_DATABASE_URL` — the basics.
+- Admin rights have two sources and both must stay complete: the `AUTH_BOT_ADMIN` list (numeric ids
+  and/or usernames) and the runtime role `users.role='admin'` in the bot's SQLite. `is_admin` accepts
+  either, and the admin broadcast (`notify_admins`) resolves recipients through `admin_recipients`,
+  which unions the env ids with the `chat_id`s carrying that role. Never narrow the broadcast back to
+  the env list alone: the payout button ships inside those push messages, so a role-only admin would
+  get the whole panel and still be unable to pay anybody. A username-only entry in `AUTH_BOT_ADMIN`
+  grants rights but carries no `chat_id`, so it reaches the broadcast only once that person is also
+  listed by id or holds the role.
 - `AUTH_BOT_CLAUDE_BIN` (priority) / `CLAUDE_BIN` — the claude CLI for the Claude branch. The
   production unit sets the former and bind-mounts the official install read-only at
   `/run/claude-authbot/claude`, without exposing the rest of home; the legacy `CLAUDE_BIN` from
