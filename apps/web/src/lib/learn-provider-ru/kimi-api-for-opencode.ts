@@ -2,33 +2,79 @@ import type { LocalizedContent } from "../learn";
 import { sourceBlock } from "./shared";
 
 export const content: LocalizedContent = {
-    title: "Как использовать Kimi API в OpenCode",
+    title: "Kimi API для OpenCode: K3 и Kimi for Coding через router plugin",
     h1: "Запускаем Kimi K3 и Kimi for Coding в OpenCode",
-    description: "Подключите OpenCode к Kimi через apiToken.sale: router plugin, каталог для конкретного ключа, явные kimi/* IDs и один предоплаченный ключ.",
-    keywords: ["kimi opencode", "kimi api opencode", "kimi k3 opencode", "настройка kimi for coding", "opencode custom provider", "kimi coding agent"],
-    dek: "OpenCode умеет явно обращаться к namespace Kimi и читает живой каталог router. Это безопасный coding-agent вариант для переключения между K3 и Kimi for Coding без ручного списка лимитов.",
+    description: "Настройте Kimi API в OpenCode через router plugin apiToken.sale: живой каталог под ваш ключ, явные ID моделей apitoken/kimi/*, реальные тарифы K3 и Kimi for Coding и один предоплаченный ключ.",
+    keywords: ["kimi opencode", "kimi api opencode", "kimi k3 opencode", "настройка kimi for coding", "opencode custom provider", "kimi coding agent", "opencode router plugin", "провайдер opencode.jsonc", "kimi k3 coding agent", "opencode models apitoken"],
+    dek: "OpenCode работает с Kimi API через один config-плагин apiToken.sale: installer регистрирует провайдера apitoken на OpenAI-совместимом lane роутера, а плагин при каждом запуске пересобирает список моделей из живого каталога, привязанного к вашему ключу. K3 и Kimi for Coding адресуются явно — apitoken/kimi/{model}, а расход списывается с того же предоплаченного баланса, что и Claude, GPT и Gemini.",
     sections: [
-      { h2: "Установите и проверьте", blocks: [
-        { type: "steps", items: [
-          "Запустите installer apiToken.sale для OpenCode: он добавит router plugin и сохранит backup существующего config.",
-          "Перезапустите OpenCode, чтобы plugin получил scoped-каталог моделей.",
-          "Выполните один однозначный prompt с явной namespaced-моделью.",
-        ] },
-        sourceBlock("kimi-api-for-opencode", 0, 1),
+      { h2: "Один плагин вместо ручного списка провайдеров", blocks: [
+        { type: "p", text: "Прямой ответ на вопрос «Kimi в OpenCode»: установите router plugin apiToken.sale, перезапустите и выберите явную модель apitoken/kimi/*. Поддерживать статический блок провайдера не нужно — при каждом запуске плагин запрашивает ваш персональный ответ GET /v1/models и переводит авторитетные лимиты, возможности и текущие цены в нативную схему моделей OpenCode. Чего каталог не вернул для вашего ключа, того просто нет в выборе моделей." },
+        { type: "p", text: "Installer кладёт небольшой loader в глобальный auto-load каталог OpenCode, подкладывает проверенный fallback runtime и вливает одного провайдера apitoken в ~/.config/opencode/opencode.jsonc — с бэкапом того, что там было до этого. Запись провайдера говорит через @ai-sdk/openai-compatible с /v1 lane роутера и держит либо сам ключ sk-pool-…, либо стандартный placeholder OpenCode {env:NAME}:" },
+        sourceBlock("kimi-api-for-opencode", 0, 2),
+        { type: "note", text: "Предпочитайте placeholder {env:APITOKEN_API_KEY} прямой вставке ключа: тогда секрет живёт в профиле shell, а не в config-файле, который можно случайно закоммитить или синхронизировать." },
       ] },
-      { h2: "Безопасный выбор Kimi-модели", blocks: [
-        { type: "list", items: [
-          "apitoken/kimi/kimi-for-coding — экономичный coding default.",
-          "apitoken/kimi/kimi-for-coding-highspeed — меньшая задержка за двойную токенную ставку.",
-          "apitoken/kimi/k3-256k — K3 reasoning в меньшем context mode.",
-          "apitoken/kimi/k3 — K3 с контекстом 1M, если он есть в каталоге.",
+      { h2: "Установка и проверка соединения", blocks: [
+        { type: "steps", items: [
+          "Запустите installer — он вольёт провайдера apitoken в существующий opencode.jsonc и сохранит бэкап.",
+          "Если выбрали вариант с placeholder, экспортируйте APITOKEN_API_KEY в shell, из которого запускается OpenCode, затем перезапустите OpenCode, чтобы плагин получил каталог под ваш ключ.",
+          "Посмотрите, что реально видит ваш ключ: opencode models apitoken. Именно этот вывод, а не блог-пост — источник истины по доступным ID Kimi.",
+          "Выполните один детерминированный промпт с явной namespaced-моделью. Чистый ответ доказывает ключ, base URL и баланс за один round trip.",
         ] },
-        { type: "note", text: "Claude Code и Kimi Code тоже поддерживают Kimi, но настраиваются иначе: Claude Code требует закрепить каждый model tier, а Kimi Code — явный OpenAI-совместимый provider block." },
+        sourceBlock("kimi-api-for-opencode", 1, 1),
+      ] },
+      { h2: "Выбираем между четырьмя alias Kimi", blocks: [
+        { type: "p", text: "Доступ к моделям определяется каталогом, поэтому подтвердите alias в opencode models apitoken, прежде чем закреплять его в проекте. Все четыре делят один баланс; выбор — это цена, контекст и задержка. Цифры — за 1 млн токенов, по официальным ставкам с применённой плоской скидкой apiToken.sale 50%:" },
+        { type: "table", headers: ["ID модели в OpenCode", "Роль", "Официально: hit / miss / output", "Вы платите после 50%"], rows: [
+          ["apitoken/kimi/kimi-for-coding", "Экономичный дефолт для кода", "$0.19 / $0.95 / $4", "$0.095 / $0.475 / $2"],
+          ["apitoken/kimi/kimi-for-coding-highspeed", "Меньше задержка за ровно двойную ставку", "$0.38 / $1.90 / $8", "$0.19 / $0.95 / $4"],
+          ["apitoken/kimi/k3-256k", "K3 reasoning в режиме контекста 256K", "$0.30 / $3 / $15", "$0.15 / $1.50 / $7.50"],
+          ["apitoken/kimi/k3", "K3 с полным контекстом 1M", "$0.30 / $3 / $15", "$0.15 / $1.50 / $7.50"],
+        ] },
+        { type: "list", items: [
+          "Повседневные агентные циклы — на kimi-for-coding: самая низкая общая ставка для кода в опубликованном наборе Kimi.",
+          "highspeed берите только тогда, когда задержка видимо окупается: каждая нога тарифа ровно вдвое выше базового alias.",
+          "k3-256k — когда нужен reasoning K3 без оплаты режима контекста 1M, а k3 — когда каталог открывает полное окно для длинных кодовых баз.",
+          "Кэширование Kimi автоматическое: повторный контекст тарифицируется по hit-ставке, свежезакэшированный токен — это miss, а reasoning-токены входят в output и считаются по output-ставке — четвёртой ноги нет.",
+        ] },
+        { type: "link", text: "Механика цен Kimi в деталях: кэш-ноги, aliases, High Speed", href: "/docs/learn/kimi-api-pricing" },
+      ] },
+      { h2: "Почему живой каталог лучше статического списка моделей", blocks: [
+        { type: "p", text: "Ручной конфиг провайдера замораживает ID моделей, лимиты контекста и цены на день, когда вы их вписали. Плагин же перечитывает /v1/models под ваш ключ при каждом запуске OpenCode: снятые или недоступные alias не зависают в локальном конфиге, а лимиты приходят из авторитетных полей роутера, а не из эвристики по подстроке в имени модели. Каталог привязан к ключу, поэтому предлагает только те модели, которые для вас сейчас маршрутизируются и оценены." },
+        { type: "p", text: "Если каталог кратковременно недоступен, плагин откатывается на зашифрованный локальный last-good снапшот — AES-256-GCM, режим 0600, привязан к точной паре credential и base URL, свежий 15 минут и переиспользуемый не дольше 7 дней. Модели из снапшота явно помечаются «[stale metadata; pricing unavailable]», а стоимость из кэша не показывается никогда: цены возвращаются только после следующего успешного живого discovery." },
+        { type: "note", text: "Не вставляйте внутренние тарифные ID Kimi (вроде kimi-k2.7-code) в OpenCode. Роутер принимает публичные subscription alias, которые возвращает каталог, и плагин регистрирует ровно их." },
+      ] },
+      { h2: "Три ошибки, которые реально выбросит сессия Kimi", blocks: [
+        { type: "list", items: [
+          "401 — ключ неверный, отозван или baseURL потерял суффикс /v1. Воспроизведите вызов curl'ом против https://router.apitoken.sale/v1/models вне OpenCode, чтобы понять, какая половина сломана.",
+          "404 — этот ID модели сейчас не включён для вашего ключа. Проверьте opencode models apitoken, а не предполагайте, что вписанный alias существует.",
+          "402 — общий предоплаченный баланс пуст. Retry с backoff не поможет: пополните баланс, и следующий запрос пройдёт.",
+        ] },
+        { type: "p", text: "Все три — проблемы конфигурации или баланса, а не модели: ни одна не чинится повторной отправкой того же промпта. 401, в частности, почти всегда сводится к пропущенному суффиксу /v1 или лишнему символу, вклеенному в ключ." },
+      ] },
+      { h2: "Сколько стоит сессия OpenCode на предоплаченном балансе", blocks: [
+        { type: "p", text: "Списание идёт за токены по официальным ставкам Kimi, и плоская скидка 50% вычитается до того, как оно коснётся предоплаченного баланса. Ни подписки, ни платы за место: неделя простоя стоит ноль, а тяжёлая сессия рефакторинга — ровно потраченные токены по половине официального расхода. Баланс общий для поддерживаемых namespace Claude, GPT, Gemini и Kimi, так что сессии OpenCode тянут из того же пула, что и всё остальное, что вы запускаете." },
+        { type: "list", items: [
+          "Пополняйте на любую целую сумму в долларах картой или криптой — отдельный план Kimi с вашей стороны не нужен.",
+          "Установите общий лимит расходов на ключ и смотрите списания в дашборде; 402 — это кончившийся счётчик, а не поломка.",
+          "Держите длинные агентные циклы на kimi-for-coding и поднимайтесь до k3 только для сложного reasoning или работы с длинным контекстом — настоящая экономия живёт именно в этом разделении.",
+        ] },
+        { type: "note", text: "Новые аккаунты, созданные через Google или GitHub, стартуют с $5 бонусного кредита платформы — он действует на поддерживаемые модели Claude, GPT, Gemini и Kimi; аккаунтам по email и паролю бонус не начисляется." },
+        { type: "link", text: "Полные спецификации и цены со скидкой по каждой модели", href: "/models" },
+      ] },
+      { h2: "Если вы также гоняете Kimi из Claude Code или Kimi Code", blocks: [
+        { type: "p", text: "Тот же ключ работает и в других coding-агентах, но конфигурация отличается. Claude Code говорит с Anthropic Messages endpoint роутера и требует закрепить каждый model tier — main, Opus, Sonnet, Haiku и переменные subagent-модели — на одном Kimi alias. Kimi Code принимает явный OpenAI-совместимый provider block в собственном config.toml с ключом, хранящимся в файле, которому затем нужен chmod 600." },
+        { type: "p", text: "OpenCode — единственный из трёх, кто читает живой каталог напрямую, поэтому это самый безопасный вариант для переключения между K3 и Kimi for Coding без ручного ведения лимитов провайдера: двое других доверяют тому, что вы закрепили." },
+        { type: "link", text: "Закрепить alias Kimi в Claude Code", href: "/docs/learn/kimi-api-for-claude-code" },
+        { type: "link", text: "Объявить провайдера в config.toml Kimi Code", href: "/docs/learn/kimi-api-for-kimi-code" },
       ] },
     ],
     faq: [
-      { q: "OpenCode поддерживает Kimi?", a: "Да. Router plugin apiToken.sale регистрирует живой Kimi namespace, а модель выбирается как apitoken/kimi/{model}." },
-      { q: "Зачем plugin вместо статического списка?", a: "Он синхронизирует IDs, лимиты и доступность со scoped-каталогом ключа, поэтому retired или недоступные aliases не остаются в config." },
-      { q: "Claude Code тоже работает с Kimi?", a: "Да, с другой настройкой. Направьте Claude Code на Anthropic endpoint и закрепите main, Opus, Sonnet, Haiku и subagent model variables на одном Kimi alias." },
+      { q: "OpenCode поддерживает модели Kimi?", a: "Да. Router plugin apiToken.sale регистрирует живой namespace Kimi, и OpenCode выбирает модели явно — как apitoken/kimi/{model}, например apitoken/kimi/kimi-for-coding." },
+      { q: "Зачем router plugin вместо статического списка моделей?", a: "Плагин при каждом запуске заново запрашивает каталог /v1/models под ваш ключ, поэтому ID моделей, лимиты и доступность совпадают с тем, что ключ реально может запустить. Статический конфиг продолжает предлагать снятые или недоступные alias, пока вы не поправите его руками." },
+      { q: "Что происходит в OpenCode, когда каталог недоступен?", a: "Плагин восстанавливает метаданные возможностей из зашифрованного last-good снапшота, привязанного к вашему credential и base URL. Модели из кэша помечаются «[stale metadata; pricing unavailable]» и не показывают стоимость до следующего успешного живого discovery." },
+      { q: "Сколько стоит Kimi for Coding в OpenCode?", a: "Официальные ставки — $0.19 за 1 млн cache-hit токенов, $0.95 за 1 млн cache-miss токенов и $4 за 1 млн output-токенов; apiToken.sale списывает с предоплаченного баланса половину. Alias highspeed — ровно двойная ставка по каждой ноге." },
+      { q: "Какую модель Kimi сделать дефолтом в OpenCode?", a: "Дефолт для повседневных агентных циклов — apitoken/kimi/kimi-for-coding; на apitoken/kimi/k3 поднимайтесь для сложного reasoning или работы с длинным контекстом кодовой базы, а highspeed оставьте для сессий, где задержка видимо стоит двойной ставки." },
+      { q: "Claude Code тоже умеет Kimi?", a: "Да, но с другой настройкой. Направьте Claude Code на Anthropic Messages endpoint роутера и закрепите его main, Opus, Sonnet, Haiku и subagent model variables на одном Kimi alias." },
     ],
   };
