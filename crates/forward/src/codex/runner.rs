@@ -128,10 +128,12 @@ fn effective_service_tier(
 
 /// The native backend caps `prompt_cache_key` at 64 bytes (verified live: 129-byte affinity
 /// keys are rejected with `string_above_max_length`). Client keys up to that size pass through
-/// verbatim; anything longer collapses to a keyed 64-hex digest, preserving tenant-level cache
-/// affinity without exposing the composite affinity key's structure upstream.
+/// verbatim; anything longer — or anything carrying control characters, which the backend also
+/// refuses — collapses to a keyed 64-hex digest, preserving tenant-level cache affinity without
+/// exposing the composite affinity key's structure upstream. Normalizing here is what lets the
+/// public parser accept any client key instead of failing the turn on its shape.
 pub(crate) fn bounded_cache_key(key: &str) -> String {
-    if key.len() <= 64 {
+    if key.len() <= 64 && !key.chars().any(char::is_control) {
         key.to_string()
     } else {
         blake3::hash(key.as_bytes()).to_hex().to_string()
@@ -901,6 +903,11 @@ mod tests {
         // Deterministic and tenant-stable, never the raw composite key.
         assert_eq!(bounded, bounded_cache_key(&affinity_shaped));
         assert_ne!(bounded, affinity_shaped);
+        // A short key the backend would still refuse (control characters) is hashed rather than
+        // rejected upstream — the public parser deliberately forwards any client key here.
+        let controlled = bounded_cache_key("session\n1");
+        assert_eq!(controlled.len(), 64);
+        assert!(controlled.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 
     #[test]

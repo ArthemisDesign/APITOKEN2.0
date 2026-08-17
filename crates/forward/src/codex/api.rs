@@ -26,7 +26,6 @@ use tokio::sync::mpsc;
 pub(super) const OPENAI_BODY_LIMIT: usize = 8 * 1024 * 1024;
 pub(super) const MAX_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 const MAX_TOOLS: usize = 128;
-const MAX_PROMPT_CACHE_KEY_BYTES: usize = 256;
 const MAX_CUSTOM_TOOL_GRAMMAR_BYTES: usize = 256 * 1024;
 /// Codex 0.146 exposes client-side deferred tool discovery as a Responses-native `tool_search`
 /// tool. The pinned 0.145 upstream client does not know that wire type, so the gateway presents an
@@ -1035,26 +1034,18 @@ pub(super) fn parse_responses_request(
             Some("previous_response_id".to_string()),
         ));
     }
-    let prompt_cache_key = optional_string(object, "prompt_cache_key")?;
-    if prompt_cache_key.as_ref().is_some_and(|key| {
-        key.is_empty()
-            || key.len() > MAX_PROMPT_CACHE_KEY_BYTES
-            || key.chars().any(char::is_control)
-    }) {
-        return Err(ApiError::invalid(
-            format!(
-                "prompt_cache_key must be 1-{MAX_PROMPT_CACHE_KEY_BYTES} bytes without control characters."
-            ),
-            Some("prompt_cache_key".to_string()),
-        ));
-    }
-    // `client_metadata` is the caller's own diagnostic identity (installation/session/thread/turn
-    // ids, `x-codex-turn-metadata`). The transport rebuilds that object from OUR wire identity
-    // before the upstream call, so whatever the client sent is discarded and never leaves the
-    // gateway. Validating a discarded field can only reject otherwise-valid traffic: newer Codex
-    // CLI builds ship a turn-metadata blob that tripped the old size/control-character gate and
-    // made every turn fail with a deterministic 400. Accept any shape and ignore it.
-    validate_optional_identifier(object.get("safety_identifier"), "safety_identifier")?;
+    // `prompt_cache_key` never reaches upstream verbatim: the runner passes it through
+    // `bounded_cache_key`, which hashes anything the native backend would not take. So an
+    // unusual key is normalized there, never rejected here — an empty one simply means "no key",
+    // and the client keeps seeing its own value echoed in the response.
+    let prompt_cache_key = optional_string(object, "prompt_cache_key")?
+        .filter(|key| !key.trim().is_empty());
+    // `client_metadata` and `safety_identifier` are the caller's own diagnostic fields. The
+    // transport rebuilds `client_metadata` from OUR wire identity and the public response pins
+    // `safety_identifier` to null, so neither one can leave the gateway. Validating a discarded
+    // field can only reject otherwise-valid traffic: newer Codex CLI builds ship a turn-metadata
+    // blob that tripped the old size/control-character gate and made every turn fail with a
+    // deterministic 400. Accept any shape for both and ignore them.
     let service_tier = parse_service_tier(object.get("service_tier"), &public_model);
     let (reasoning_effort, reasoning_summary) =
         parse_reasoning(object.get("reasoning"), &public_model)?;
@@ -1151,22 +1142,6 @@ pub(super) fn parse_responses_request(
     })
 }
 
-fn reject_unsupported_fields(
-    object: &Map<String, Value>,
-    supported: &[&str],
-) -> Result<(), ApiError> {
-    if let Some(field) = object
-        .keys()
-        .find(|field| !supported.iter().any(|supported| field == supported))
-    {
-        return Err(ApiError::invalid(
-            format!("Parameter {field:?} is not supported by this endpoint."),
-            Some(field.clone()),
-        ));
-    }
-    Ok(())
-}
-
 fn required_string<'a>(object: &'a Map<String, Value>, field: &str) -> Result<&'a str, ApiError> {
     object.get(field).and_then(Value::as_str).ok_or_else(|| {
         ApiError::invalid(
@@ -1210,21 +1185,6 @@ fn parse_service_tier(value: Option<&Value>, model: &CodexModel) -> Option<Strin
         Some("priority".to_string())
     } else {
         None
-    }
-}
-
-fn validate_optional_identifier(value: Option<&Value>, field: &str) -> Result<(), ApiError> {
-    match value {
-        None | Some(Value::Null) => Ok(()),
-        Some(Value::String(value))
-            if !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control) =>
-        {
-            Ok(())
-        }
-        Some(_) => Err(ApiError::invalid(
-            format!("{field} must be null or a 1-256 byte string without control characters."),
-            Some(field.to_string()),
-        )),
     }
 }
 
@@ -1327,7 +1287,6 @@ fn extract_additional_tools(
                 Some(format!("input.{index}")),
             )
         })?;
-        reject_unsupported_fields(object, &["type", "role", "tools"])?;
         if object.get("role").and_then(Value::as_str) != Some("developer") {
             return Err(ApiError::invalid(
                 "additional_tools.role must be \"developer\".",
@@ -1415,7 +1374,6 @@ fn parse_dynamic_tools(
                 dynamic.push(parsed);
             }
             Some("namespace") => {
-                reject_unsupported_fields(object, &["type", "name", "description", "tools"])?;
                 let name = required_string(object, "name")?;
                 validate_dynamic_tool_identifier(name, &format!("{tool_param}.name"), 64)?;
                 if !namespaces.insert(name.to_string()) {
@@ -1508,18 +1466,14 @@ fn parse_dynamic_tools(
             // unusable on the models that carry it. Accept it as a declaration we cannot honor —
             // the same leniency this endpoint already applies to service_tier, tool_choice and
             // parallel_tool_calls — and drop it: the model simply gets no web search tool.
-            Some("web_search") => {}
-            _ => return Err(ApiError::invalid(
-                match source {
-                    ToolListSource::TopLevel => {
-                        "Tool type must be function, custom, namespace, or tool_search."
-                    }
-                    ToolListSource::Additional => {
-                        "Additional tool type must be function, custom, namespace, or tool_search."
-                    }
-                },
-                Some(format!("{tool_param}.type")),
-            )),
+            //
+            // Every other unknown tool type takes the same route. A descriptor this gateway does
+            // not understand is never forwarded, so it can neither run nor bill; failing the whole
+            // turn over it only breaks the caller on the next client release that adds a type,
+            // which is precisely how the stock `web_search` descriptor once bricked every default
+            // config. The turn proceeds with the tools we do understand. Namespace children stay
+            // strict on purpose: there the type decides whether a member is client-executed.
+            _ => {}
         }
         if callable_count > MAX_TOOLS {
             return Err(ApiError::invalid(
@@ -1532,26 +1486,9 @@ fn parse_dynamic_tools(
 }
 
 fn parse_additional_function(object: &Map<String, Value>, param: &str) -> Result<Value, ApiError> {
-    reject_unsupported_fields(
-        object,
-        &[
-            "type",
-            "name",
-            "description",
-            "parameters",
-            "strict",
-            "defer_loading",
-        ],
-    )?;
-    if object
-        .get("strict")
-        .is_some_and(|strict| !strict.is_null() && strict.as_bool() != Some(false))
-    {
-        return Err(ApiError::invalid(
-            "strict=true additional tools are not supported.",
-            Some(format!("{param}.strict")),
-        ));
-    }
+    // Unknown descriptor fields are ignored and `strict` is degraded rather than rejected, exactly
+    // as on the top-level list: the same tool must not fail on the gpt-5.6 family (which carries
+    // client tools in `additional_tools`) while it is accepted on every other model.
     let name = required_string(object, "name")?;
     validate_dynamic_tool_identifier(name, &format!("{param}.name"), 128)?;
     let description = optional_tool_description(object, &format!("{param}.description"))?;
@@ -1588,7 +1525,6 @@ fn parse_additional_tool_search(
     object: &Map<String, Value>,
     param: &str,
 ) -> Result<Value, ApiError> {
-    reject_unsupported_fields(object, &["type", "execution", "description", "parameters"])?;
     if object.get("execution").and_then(Value::as_str) != Some("client") {
         return Err(ApiError::invalid(
             "tool_search.execution must be \"client\".",
@@ -1616,7 +1552,6 @@ fn parse_additional_tool_search(
 }
 
 fn parse_additional_custom(object: &Map<String, Value>, param: &str) -> Result<Value, ApiError> {
-    reject_unsupported_fields(object, &["type", "name", "description", "format"])?;
     let name = required_string(object, "name")?;
     validate_dynamic_tool_identifier(name, &format!("{param}.name"), 128)?;
     let description = optional_tool_description(object, &format!("{param}.description"))?;
@@ -1629,7 +1564,6 @@ fn parse_additional_custom(object: &Map<String, Value>, param: &str) -> Result<V
                 Some(format!("{param}.format")),
             )
         })?;
-    reject_unsupported_fields(format, &["type", "syntax", "definition"])?;
     if required_string(format, "type")? != "grammar" {
         return Err(ApiError::invalid(
             "Custom tool format.type must be \"grammar\".",
@@ -1677,15 +1611,17 @@ fn validate_dynamic_tool_identifier(
     param: &str,
     max_len: usize,
 ) -> Result<(), ApiError> {
+    // The dot is part of the charset on the top-level list (MCP-style `server.tool` names reach
+    // this endpoint through both lists), so it is accepted here too — same tool, same verdict.
     if name.is_empty()
         || name.len() > max_len
         || !name
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
     {
         return Err(ApiError::invalid(
             format!(
-                "Dynamic tool identifiers must be 1-{max_len} ASCII letters, digits, underscore, or hyphen."
+                "Dynamic tool identifiers must be 1-{max_len} ASCII letters, digits, underscore, hyphen, or dot."
             ),
             Some(param.to_string()),
         ));
@@ -1739,14 +1675,16 @@ fn parse_top_level_function(object: &Map<String, Value>, param: &str) -> Result<
 }
 
 fn validate_tool_name(name: &str, param: &str) -> Result<(), ApiError> {
+    // Same bound as the `additional_tools` path: one tool must not be accepted on the gpt-5.6
+    // family and rejected on every other model just because the client puts it in a different list.
     if name.is_empty()
-        || name.len() > 64
+        || name.len() > 128
         || !name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
     {
         return Err(ApiError::invalid(
-            "Function name must be 1-64 ASCII letters, digits, underscore, hyphen, or dot.",
+            "Function name must be 1-128 ASCII letters, digits, underscore, hyphen, or dot.",
             Some(param.to_string()),
         ));
     }

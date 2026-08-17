@@ -1185,6 +1185,93 @@ fn codex_diagnostic_metadata_is_ignored() {
     assert_eq!(parsed.public_model.id, "gpt-5.6");
 }
 
+/// `safety_identifier` is pinned to null in the public response and never forwarded, and an
+/// unusual `prompt_cache_key` is normalized by `bounded_cache_key` on the way upstream. Neither
+/// may fail a turn on its shape.
+#[test]
+fn discarded_caller_identity_fields_never_fail_a_turn() {
+    let parsed = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "hi",
+            "safety_identifier": "x".repeat(4096),
+            "prompt_cache_key": "session\n".repeat(64)
+        }),
+    )
+    .unwrap();
+    assert_eq!(parsed.prompt_cache_key.as_deref(), Some(&*"session\n".repeat(64)));
+
+    let empty = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "hi",
+            "prompt_cache_key": "   "
+        }),
+    )
+    .unwrap();
+    assert_eq!(empty.prompt_cache_key, None);
+}
+
+/// The `additional_tools` list (the gpt-5.6 family's channel for client tools) must reach the same
+/// verdict as the top-level list for the same descriptor: unknown fields ignored, `strict` degraded
+/// rather than rejected, dotted MCP-style names accepted.
+#[test]
+fn additional_tools_match_top_level_tool_leniency() {
+    let parsed = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": [{
+                "type": "additional_tools",
+                "role": "developer",
+                "origin": "codex-cli-future-field",
+                "tools": [{
+                    "type": "function",
+                    "name": "docs.search",
+                    "strict": true,
+                    "cache_control": {"type": "ephemeral"},
+                    "parameters": {"type": "object", "properties": {}}
+                }]
+            }, {
+                "role": "user",
+                "content": "find the release notes"
+            }]
+        }),
+    )
+    .unwrap();
+    assert!(parsed
+        .dynamic_tools
+        .iter()
+        .any(|tool| tool["name"] == "docs.search"));
+}
+
+/// An unknown tool type is dropped like the hosted `web_search` descriptor instead of failing the
+/// turn: it is never forwarded, so it can neither run nor bill, and the tools we do understand
+/// still reach the model. Namespace children keep failing closed (asserted separately).
+#[test]
+fn unknown_top_level_tool_types_are_dropped_not_rejected() {
+    let parsed = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "weather?",
+            "tools": [
+                {"type": "future_hosted_tool", "config": {"mode": "auto"}},
+                {
+                    "type": "function",
+                    "name": "get_weather",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            ]
+        }),
+    )
+    .unwrap();
+    assert_eq!(parsed.dynamic_tools.len(), 1);
+    assert_eq!(parsed.dynamic_tools[0]["name"], "get_weather");
+}
+
 #[test]
 fn strict_function_tools_are_silently_downgraded() {
     let parsed = parse_responses_request(

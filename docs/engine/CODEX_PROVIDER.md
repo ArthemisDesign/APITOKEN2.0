@@ -157,7 +157,12 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   `web_search` is server-executed and billed per call, so it is never forwarded: Codex sends the
   descriptor in every stock config (mode `cached`), so a tool list carrying it is accepted and the
   entry dropped, while a `web_search` nested inside a namespace still fails closed. The model
-  simply gets no web search tool.
+  simply gets no web search tool. Any other unknown tool type in either list is dropped the same
+  way: an undelivered descriptor can neither run nor bill, so failing the turn over it would only
+  break callers on the next client release that adds a type. Both lists reach the same verdict for
+  the same descriptor — unknown descriptor fields ignored, `strict` degraded rather than rejected,
+  identifiers bounded at 128 bytes of letters/digits/underscore/hyphen/dot — so a tool is never
+  accepted on one model family and rejected on another.
   Multi-agent collaboration (spawn_agent) persists inter-agent messages as `agent_message` history
   items and replays them into `input` on the next turn; the upstream Responses backend has no such
   item type, so the parser translates each one into a plain message — a message addressed to
@@ -173,7 +178,11 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   is accepted in any shape and never validated: the transport replaces that whole object with the
   gateway's wire identity, so nothing the client wrote there can reach upstream, and a size or
   control-character gate on it could only reject otherwise-valid client builds — newer Codex CLI
-  ships an `x-codex-turn-metadata` blob that used to fail every turn with a 400. Headers carry the pinned client
+  ships an `x-codex-turn-metadata` blob that used to fail every turn with a 400. The same rule
+  covers every caller field the gateway discards: `safety_identifier` is pinned to null in the
+  public response, and `prompt_cache_key` is normalized by `bounded_cache_key` (hashed when longer
+  than the backend's 64 bytes or carrying control characters), so neither can fail a turn on its
+  shape. Headers carry the pinned client
   identity (`originator: codex_cli_rs`, UA and `version` pinned to `CODEX_CLI_VERSION`,
   `ChatGPT-Account-ID` from the envelope) plus stable opaque installation/session/thread/window
   metadata and a per-turn id. Root session and thread ids are equal, as in the official 0.146
