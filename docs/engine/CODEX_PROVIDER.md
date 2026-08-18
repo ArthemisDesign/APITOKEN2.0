@@ -181,6 +181,15 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   a replay reference and fails the whole turn in-stream (`response.failed` with no code) when it
   cannot, which then reproduces identically across the client's five retries (verified live
   2026-08-14 on the exact failing history).
+  A replayed `reasoning` item without `encrypted_content` never reaches upstream. The backend
+  resolves a client-replayed reasoning item only through its encrypted continuation key; without it
+  the item is dead weight, and a live probe (2026-08-18) showed the whole turn failing with `The
+  request could not be processed by the selected model`. The gateway does not publish the key
+  unless the caller asked for `include:["reasoning.encrypted_content"]`, so an SDK-style echo
+  `output → input` always produces the unresolvable shape. `prepare_turn` therefore drops such
+  items from the upstream history (logging the count at `info`), keeps items that do carry the key,
+  and leaves the canonical/stored history untouched — a reasoning-free history is structurally
+  identical to a conversation that never had reasoning items, which the backend already accepts.
   The upstream request keeps `store:false`, `stream:true`,
   `include:["reasoning.encrypted_content"]`, tenant-scoped
   `prompt_cache_key` and first-party-shaped `client_metadata`. The caller's own `client_metadata`

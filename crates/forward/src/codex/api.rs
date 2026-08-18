@@ -866,6 +866,33 @@ fn strip_reasoning_items(items: Vec<Value>) -> Vec<Value> {
         .collect()
 }
 
+/// Drop replayed reasoning items that carry no `encrypted_content`. The ChatGPT Responses backend
+/// accepts a client-replayed reasoning item only when it holds the encrypted continuation state;
+/// without it the item is dead weight the backend cannot resolve, and a live probe (2026-08-18)
+/// showed the whole turn failing with `The request could not be processed by the selected model`.
+/// Items that do carry the key are kept: replaying them preserves reasoning continuity and is
+/// exactly what the official client does. The remaining history is structurally identical to a
+/// conversation that simply never had reasoning items — which the backend already accepts.
+fn drop_unencrypted_reasoning(items: Vec<Value>) -> (Vec<Value>, usize) {
+    let mut dropped = 0usize;
+    let kept = items
+        .into_iter()
+        .filter(|item| {
+            let is_unencrypted_reasoning = item.get("type").and_then(Value::as_str)
+                == Some("reasoning")
+                && item
+                    .get("encrypted_content")
+                    .and_then(Value::as_str)
+                    .is_none();
+            if is_unencrypted_reasoning {
+                dropped += 1;
+            }
+            !is_unencrypted_reasoning
+        })
+        .collect();
+    (kept, dropped)
+}
+
 pub(super) async fn prepare_turn(
     gateway: &CodexGateway,
     tenant_scope: &str,
@@ -916,6 +943,18 @@ pub(super) async fn prepare_turn(
         .into_iter()
         .map(tool_search_item_for_upstream)
         .collect::<Vec<_>>();
+    // Replayed reasoning without its encrypted continuation key is unresolvable upstream and
+    // fails the whole turn; strip it before the body is built. The canonical items and the stored
+    // history keep the item untouched — this only affects what the backend is asked to accept.
+    let (injected, dropped_reasoning) = drop_unencrypted_reasoning(injected);
+    if dropped_reasoning > 0 {
+        elog::info(
+            "codex",
+            format!(
+                "dropped {dropped_reasoning} replayed reasoning item(s) without encrypted_content"
+            ),
+        );
+    }
     let mut history_after_input = full_history_prefix.clone();
     history_after_input.extend(request.input.canonical_items.clone());
     full_history_prefix = history_after_input;

@@ -22,6 +22,50 @@ fn strip_reasoning_items_keeps_portable_items_only() {
     );
 }
 
+#[test]
+fn drop_unencrypted_reasoning_keeps_only_continuation_capable_items() {
+    let items = vec![
+        json!({"type": "message", "role": "user", "content": []}),
+        // The echo-output-to-input shape every SDK produces without `include`: unresolvable
+        // upstream, fails the whole turn (live probe 2026-08-18).
+        json!({"type": "reasoning", "id": "rs_1", "summary": []}),
+        json!({"type": "reasoning", "id": "rs_2", "summary": [], "encrypted_content": "key"}),
+        json!({"type": "function_call", "id": "fc_1", "call_id": "c1", "name": "f", "arguments": "{}"}),
+        json!({"type": "function_call_output", "call_id": "c1", "output": "ok"}),
+        json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "done"}]}),
+    ];
+    let (kept, dropped) = drop_unencrypted_reasoning(items);
+    assert_eq!(dropped, 1);
+    let types: Vec<_> = kept
+        .iter()
+        .map(|item| item["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        types,
+        vec![
+            "message",
+            "reasoning",
+            "function_call",
+            "function_call_output",
+            "message"
+        ]
+    );
+    // The surviving reasoning item is the one carrying its continuation key.
+    assert_eq!(kept[1]["id"], "rs_2");
+    assert_eq!(kept[1]["encrypted_content"], "key");
+}
+
+#[test]
+fn drop_unencrypted_reasoning_is_a_noop_without_reasoning_items() {
+    let items = vec![
+        json!({"type": "message", "role": "user", "content": []}),
+        json!({"type": "function_call", "id": "fc_1", "call_id": "c1", "name": "f", "arguments": "{}"}),
+    ];
+    let (kept, dropped) = drop_unencrypted_reasoning(items.clone());
+    assert_eq!(dropped, 0);
+    assert_eq!(kept, items);
+}
+
 /// Every public error the OpenAI-compatible surface can produce.
 fn all_public_errors() -> Vec<ApiError> {
     let mut errors = vec![
@@ -436,6 +480,76 @@ fn responses_system_history_is_preserved_as_backend_supported_developer_history(
         "follow this policy"
     );
     assert_eq!(normalized.turn_input[0]["text"], "hello");
+}
+
+/// SDK-style echo `output → input` replays reasoning items without `encrypted_content` (the
+/// gateway does not publish the key unless `include` asks for it). The backend cannot resolve such
+/// an item and fails the whole turn (live probe 2026-08-18), so `prepare_turn` must keep it out of
+/// the upstream body while leaving the canonical history untouched.
+#[tokio::test]
+async fn replayed_reasoning_without_encrypted_content_never_reaches_upstream() {
+    let parsed = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": [
+                {"role": "user", "content": "one"},
+                {"type": "reasoning", "id": "rs_bare", "summary": [{"type": "summary_text", "text": "thought"}]},
+                {"role": "assistant", "content": "two"},
+                {"role": "user", "content": "three"}
+            ]
+        }),
+    )
+    .unwrap();
+    let prepared = prepare_turn(&gateway(), "tenant", parsed).await.unwrap();
+    // The upstream body carries no bare reasoning item; portable items stay in order.
+    let injected_types: Vec<_> = prepared
+        .turn
+        .injected_items
+        .iter()
+        .map(|item| item["type"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(injected_types, vec!["message", "message"]);
+    assert!(
+        prepared
+            .turn
+            .injected_items
+            .iter()
+            .all(|item| item.get("encrypted_content").is_none())
+    );
+    // The canonical history (what a later store=true chain would persist) still holds the item.
+    assert!(
+        prepared
+            .full_history_prefix
+            .iter()
+            .any(|item| item["id"] == "rs_bare")
+    );
+}
+
+/// A reasoning item that does carry its encrypted continuation key is replayable and must stay.
+#[tokio::test]
+async fn replayed_reasoning_with_encrypted_content_is_kept_upstream() {
+    let parsed = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": [
+                {"role": "user", "content": "one"},
+                {"type": "reasoning", "id": "rs_keyed", "summary": [], "encrypted_content": "key"},
+                {"role": "user", "content": "two"}
+            ]
+        }),
+    )
+    .unwrap();
+    let prepared = prepare_turn(&gateway(), "tenant", parsed).await.unwrap();
+    let reasoning = prepared
+        .turn
+        .injected_items
+        .iter()
+        .find(|item| item["type"] == "reasoning")
+        .expect("keyed reasoning item must reach upstream");
+    assert_eq!(reasoning["id"], "rs_keyed");
+    assert_eq!(reasoning["encrypted_content"], "key");
 }
 
 /// Codex multi-agent collaboration (spawn_agent) replays inter-agent messages as
