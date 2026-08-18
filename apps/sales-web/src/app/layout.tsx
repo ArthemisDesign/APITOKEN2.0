@@ -8,7 +8,7 @@ export const metadata: Metadata = {
     template: "%s · APIToken Partners",
   },
   description:
-    "Partner program for apitoken.sale: share your link and earn a percentage of what your referrals actually spend on Claude API usage — their real, after-discount usage paid with real money (not top-ups, not free credit).",
+    "Partner program for apitoken.sale: share your link and earn a percentage of what your referrals actually spend on the API — across every provider in the catalog — their real, after-discount usage paid with real money (not top-ups, not free credit).",
 };
 
 export default function RootLayout({
