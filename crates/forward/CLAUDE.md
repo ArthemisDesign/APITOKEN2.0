@@ -223,12 +223,18 @@ Lifecycle clocks and output tool-call evidence remain separate later-producer wo
 **Request lifecycle clock carrier (`execution.rs`, `crates/server/src/http.rs`):** each successfully
 admitted customer provider request owns a typed, redacted, once-only clock shared through the same
 synthetic-leaf extension propagation as logical identity and client attribution. The server wraps the
-final public Axum body after provider translation and observes only the first non-empty successful DATA
-frame in `http_body::Body::poll_frame`; empty frames, trailers, errors, EOF and drop-before-data stay
-unobserved. The wrapper and the outer active-request guard delegate complete frames, errors,
-`is_end_stream` and `size_hint` without buffering, rewriting, eager polling, I/O or settlement. No
-request-fact producer consumes the clock yet: authoritative terminal handoff remains producer-owned,
-and an unmeasured first byte stays `NULL`.
+final public Axum body after provider translation and remains the sole observer of the first non-empty
+successful DATA frame in `http_body::Body::poll_frame`; empty frames, trailers, errors, EOF and
+drop-before-data stay unobserved. A crate-visible terminal primitive atomically seals an open clock
+with an internal never-exposed sentinel, linearizing against that outer-body observation: first byte
+wins before the seal, or terminalization wins and any later DATA observation is ignored. It never
+waits, polls, spawns or holds terminalization for a body consumer. It returns existing evidence only
+inside the inclusive `[admitted_at, terminal_at]` bounds; invalid or out-of-order evidence stays
+`NULL`, never clamped or fabricated, while the open state is still sealed. Repeated seals are
+idempotent. The wrapper and the outer active-request guard delegate complete frames, errors,
+`is_end_stream` and `size_hint` without buffering, rewriting, eager polling, I/O or settlement. This
+primitive remains dormant: no request-fact producer, `TeeMeter`, Codex settlement or `AsyncBilling`
+caller consumes it yet, so Stage 5 and producer coverage remain incomplete.
 
 **Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** every
 successful Anthropic turn, including unmetered admin traffic, after authoritative usage builds one

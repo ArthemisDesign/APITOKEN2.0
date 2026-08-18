@@ -36,9 +36,12 @@ impl fmt::Debug for LogicalRequestId {
 ///
 /// The timestamp cannot be supplied by a caller: the server's outer response-body seam asks this
 /// carrier to observe the process clock only when it is returning a non-empty DATA frame. Clones
-/// share the same atomic state through synthesized provider-leaf requests.
+/// share the same atomic state through synthesized provider-leaf requests. Terminal producers can
+/// seal an unobserved clock so a later body poll cannot add evidence after terminalization.
 #[derive(Clone, Default)]
 pub struct RequestLifecycleClock(Arc<AtomicI64>);
+
+const LIFECYCLE_CLOCK_SEALED_WITHOUT_BYTE: i64 = -1;
 
 impl RequestLifecycleClock {
     /// Observe `pool::now()` once when it is a positive Unix epoch second.
@@ -48,12 +51,39 @@ impl RequestLifecycleClock {
         }
     }
 
-    /// Return the first positive observed Unix epoch second, or `None` while unobserved.
+    /// Return the first positive observed Unix epoch second, or `None` while unobserved or sealed.
     pub fn first_public_byte_at(&self) -> Option<i64> {
         match self.0.load(Ordering::Acquire) {
             timestamp if timestamp > 0 => Some(timestamp),
             _ => None,
         }
+    }
+
+    /// Atomically seal this clock at terminalization and return safely ordered first-byte evidence.
+    ///
+    /// Sealing is nonwaiting and linearizes with the outer body's first-byte observation. An open
+    /// clock is sealed even when the supplied lifecycle bounds are invalid. Existing evidence is
+    /// returned only when it lies inside the inclusive admission-to-terminal interval.
+    pub(crate) fn seal_first_public_byte_for_terminal(
+        &self,
+        admitted_at: i64,
+        terminal_at: i64,
+    ) -> Option<i64> {
+        let observed = match self.0.compare_exchange(
+            0,
+            LIFECYCLE_CLOCK_SEALED_WITHOUT_BYTE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => None,
+            Err(timestamp) if timestamp > 0 => Some(timestamp),
+            Err(_) => None,
+        };
+
+        if admitted_at < 0 || terminal_at < admitted_at {
+            return None;
+        }
+        observed.filter(|timestamp| (admitted_at..=terminal_at).contains(timestamp))
     }
 
     fn observe_first_public_byte_at(&self, timestamp: i64) {
@@ -231,25 +261,140 @@ mod request_lifecycle_clock_tests {
     use super::*;
 
     #[test]
-    fn starts_unset_and_records_only_the_first_positive_observation_across_clones() {
+    fn first_byte_wins_before_terminal_seal() {
         let clock = RequestLifecycleClock::default();
-        let clone = clock.clone();
-        assert_eq!(clock.first_public_byte_at(), None);
 
-        clone.observe_first_public_byte_at(101);
+        clock.observe_first_public_byte_at(101);
+
+        assert_eq!(
+            clock.seal_first_public_byte_for_terminal(100, 102),
+            Some(101)
+        );
         clock.observe_first_public_byte_at(202);
-
         assert_eq!(clock.first_public_byte_at(), Some(101));
-        assert_eq!(clone.first_public_byte_at(), Some(101));
-        assert_eq!(format!("{clock:?}"), "RequestLifecycleClock(<redacted>)");
     }
 
     #[test]
-    fn non_positive_observations_leave_the_clock_unset() {
+    fn terminal_seal_wins_before_later_first_byte() {
+        let clock = RequestLifecycleClock::default();
+
+        assert_eq!(clock.seal_first_public_byte_for_terminal(100, 102), None);
+        clock.observe_first_public_byte_at(101);
+
+        assert_eq!(clock.first_public_byte_at(), None);
+        assert_eq!(clock.seal_first_public_byte_for_terminal(100, 102), None);
+    }
+
+    #[test]
+    fn clones_share_observation_and_terminal_seal() {
+        let observed = RequestLifecycleClock::default();
+        let observed_clone = observed.clone();
+        observed_clone.observe_first_public_byte_at(101);
+        assert_eq!(
+            observed.seal_first_public_byte_for_terminal(100, 102),
+            Some(101)
+        );
+
+        let sealed = RequestLifecycleClock::default();
+        let sealed_clone = sealed.clone();
+        assert_eq!(
+            sealed_clone.seal_first_public_byte_for_terminal(100, 102),
+            None
+        );
+        sealed.observe_first_public_byte_at(101);
+        assert_eq!(sealed.first_public_byte_at(), None);
+    }
+
+    #[test]
+    fn repeated_terminal_seal_is_idempotent() {
+        let without_byte = RequestLifecycleClock::default();
+        assert_eq!(
+            without_byte.seal_first_public_byte_for_terminal(100, 102),
+            None
+        );
+        assert_eq!(
+            without_byte.seal_first_public_byte_for_terminal(100, 102),
+            None
+        );
+
+        let observed = RequestLifecycleClock::default();
+        observed.observe_first_public_byte_at(101);
+        assert_eq!(
+            observed.seal_first_public_byte_for_terminal(100, 102),
+            Some(101)
+        );
+        assert_eq!(
+            observed.seal_first_public_byte_for_terminal(100, 102),
+            Some(101)
+        );
+    }
+
+    #[test]
+    fn inclusive_lifecycle_endpoints_are_valid() {
+        let admitted = RequestLifecycleClock::default();
+        admitted.observe_first_public_byte_at(100);
+        assert_eq!(
+            admitted.seal_first_public_byte_for_terminal(100, 102),
+            Some(100)
+        );
+
+        let terminal = RequestLifecycleClock::default();
+        terminal.observe_first_public_byte_at(102);
+        assert_eq!(
+            terminal.seal_first_public_byte_for_terminal(100, 102),
+            Some(102)
+        );
+    }
+
+    #[test]
+    fn invalid_bounds_seal_open_clock() {
+        for (admitted_at, terminal_at) in [(-1, 102), (103, 102), (-1, -1)] {
+            let clock = RequestLifecycleClock::default();
+
+            assert_eq!(
+                clock.seal_first_public_byte_for_terminal(admitted_at, terminal_at),
+                None
+            );
+            clock.observe_first_public_byte_at(101);
+            assert_eq!(clock.first_public_byte_at(), None);
+        }
+    }
+
+    #[test]
+    fn invalid_observed_evidence_stays_observed_but_is_not_returned() {
+        for observed_at in [99, 103] {
+            let clock = RequestLifecycleClock::default();
+            clock.observe_first_public_byte_at(observed_at);
+
+            assert_eq!(clock.seal_first_public_byte_for_terminal(100, 102), None);
+            clock.observe_first_public_byte_at(101);
+            assert_eq!(clock.first_public_byte_at(), Some(observed_at));
+        }
+    }
+
+    #[test]
+    fn non_positive_observations_leave_clock_open_until_terminal_seal() {
         let clock = RequestLifecycleClock::default();
         clock.observe_first_public_byte_at(0);
         clock.observe_first_public_byte_at(-1);
+
         assert_eq!(clock.first_public_byte_at(), None);
+        assert_eq!(clock.seal_first_public_byte_for_terminal(100, 102), None);
+        clock.observe_first_public_byte_at(101);
+        assert_eq!(clock.first_public_byte_at(), None);
+    }
+
+    #[test]
+    fn debug_output_redacts_open_observed_and_sealed_state() {
+        let open = RequestLifecycleClock::default();
+        let observed = RequestLifecycleClock::default();
+        observed.observe_first_public_byte_at(101);
+        let sealed = RequestLifecycleClock::default();
+        sealed.seal_first_public_byte_for_terminal(100, 102);
+
+        for clock in [open, observed, sealed] {
+            assert_eq!(format!("{clock:?}"), "RequestLifecycleClock(<redacted>)");
+        }
     }
 }
 

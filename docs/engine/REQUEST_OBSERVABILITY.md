@@ -7,9 +7,11 @@
 > `POST /v1/messages/count_tokens`; it consumes normalized client attribution. The closed structural
 > classifier contract is implemented but dormant: pure Anthropic Messages, OpenAI Chat/Responses
 > and canonical Gemini GenerateContent classifiers are not wired to producers. A typed once-only
-> lifecycle carrier and transparent final-public-body observation seam are active, but no producer
-> consumes the observed first-byte clock yet. Authoritative terminal clock integration remains before
-> stage 6. No private read surface, request-fact metric, or billable producer exists.
+> lifecycle carrier, transparent final-public-body observation seam, and nonwaiting atomic terminal
+> seal are active, but no producer consumes the first-byte handoff yet. The seal linearizes terminal
+> state against a later body observation without waiting indefinitely; authoritative producer
+> integration remains before stage 6. No private read surface, request-fact metric, or billable producer
+> exists.
 >
 > This document is the owner-approved v1 implementation contract. It authorizes only the finite,
 > ordered rollout and Definition of Done in §§13-15; it does not claim that those stages are complete.
@@ -303,12 +305,19 @@ The four v1 timestamp points are mandatory when safely observable without changi
 - `terminal_at`: the terminal lifecycle observation or authoritative settlement/reconciliation point.
 
 The active server seam creates one typed clock for each successfully admitted customer provider
-request, preserves it through synthetic leaf adapters, and observes the first non-empty successful
-DATA frame from the final public `http_body::Body`. It forwards data, trailers, errors, frame
-boundaries, cancellation, `is_end_stream`, `size_hint` and backpressure unchanged. Empty DATA,
-trailers-only, errors, EOF and drop-before-data leave the clock unset. This seam does not itself write
-facts or settle money; producer terminal integration must snapshot only safely ordered evidence, so
-`NULL` remains correct until that integration exists.
+request, preserves it through synthetic leaf adapters, and is the sole observer of the first non-empty
+successful DATA frame from the final public `http_body::Body`. It forwards data, trailers, errors,
+frame boundaries, cancellation, `is_end_stream`, `size_hint` and backpressure unchanged. Empty DATA,
+trailers-only, errors, EOF and drop-before-data leave the clock unset. The dormant terminal primitive
+atomically seals an open clock with an internal, never-exposed no-byte sentinel and linearizes with
+that observer: an earlier first byte wins, while an earlier terminal seal prevents any later body poll
+from creating post-terminal evidence. It never waits, notifies, polls, spawns, performs I/O or delays
+terminal work, and repeated seals are idempotent. Existing evidence is returned only when safely
+ordered inside inclusive `[admitted_at, terminal_at]`; invalid bounds or out-of-order evidence produce
+`NULL` without clamping or fabrication, and invalid bounds still seal an open clock. This seam does
+not itself write facts or settle money. No request-fact producer, `TeeMeter`, Codex settlement or
+`AsyncBilling` caller consumes the terminal handoff yet, so producer coverage and Stage 5 remain
+incomplete.
 
 The read surface safely derives four durations and only when both endpoints are measured and ordered:
 admission-to-delivery, admission-to-first-public-byte, delivery-to-first-public-byte, and
@@ -515,10 +524,12 @@ the prerequisite exact SHA is production GREEN.
    typed adapter propagation, Codex count_tokens consumption, privacy-negative tests, closed structural
    contract, and pure already-validated Anthropic/OpenAI/Gemini shape classifiers are implemented.
    Structural classifiers remain deliberately dormant: no handler or request-fact producer consumes
-   them yet, and `tool_calls_in_output` remains terminal evidence. The typed once-only lifecycle carrier
-   and transparent final-public-body observation seam are active, but no producer consumes the observed
-   first-byte value yet. Stage 6/7 owns producer integration and authoritative terminal clock handoff.
-   This stage changes no public response or upstream request contract.
+   them yet, and `tool_calls_in_output` remains terminal evidence. The typed once-only lifecycle carrier,
+   transparent final-public-body observer and nonwaiting atomic terminal seal are active. The seal
+   closes an unobserved clock against later DATA without indefinite holding and accepts only safely
+   ordered first-byte evidence, but no producer consumes that handoff yet. Stage 6/7 owns request-fact,
+   `TeeMeter`, Codex settlement and `AsyncBilling` integration. This stage remains incomplete and changes
+   no public response or upstream request contract.
 6. **Complete nonbillable producers.** Cover exactly Anthropic native Messages
    `POST /v1/messages/count_tokens`; OpenAI universal Messages `POST /v1/messages/count_tokens` plus
    native Responses `POST /v1/responses/input_tokens`; and Gemini universal Messages
