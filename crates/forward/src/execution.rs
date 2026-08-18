@@ -41,6 +41,8 @@ impl fmt::Debug for LogicalRequestId {
 #[derive(Clone, Default)]
 pub struct RequestLifecycleClock(Arc<AtomicI64>);
 
+// Dormant until authoritative terminal producer integration consumes the handoff.
+#[allow(dead_code)]
 const LIFECYCLE_CLOCK_SEALED_WITHOUT_BYTE: i64 = -1;
 
 impl RequestLifecycleClock {
@@ -64,6 +66,8 @@ impl RequestLifecycleClock {
     /// Sealing is nonwaiting and linearizes with the outer body's first-byte observation. An open
     /// clock is sealed even when the supplied lifecycle bounds are invalid. Existing evidence is
     /// returned only when it lies inside the inclusive admission-to-terminal interval.
+    // Dormant until authoritative terminal producer integration consumes the handoff.
+    #[allow(dead_code)]
     pub(crate) fn seal_first_public_byte_for_terminal(
         &self,
         admitted_at: i64,
