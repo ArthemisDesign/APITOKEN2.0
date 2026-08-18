@@ -575,6 +575,10 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
         commerceUserId: row.userId,
         amountNano: row.amountNano,
         attribution: toReferredSpendAttribution(row),
+        // The live scalar row carries its provider outside the attribution tuple; keeping it is
+        // what lets partner earnings be broken down per provider. Reporting only — see the
+        // spendProviderId contract on recordReferredSpend.
+        spendProviderId: row.providerId,
         occurredAt: row.occurredAt,
       });
     }

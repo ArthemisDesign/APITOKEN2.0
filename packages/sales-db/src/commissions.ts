@@ -247,18 +247,22 @@ async function bufferPendingReferralEvent(
   amountNano: bigint,
   occurredAt: Date,
   attribution: ReferredSpendAttribution | null,
+  spendProviderId: string | null = null,
 ): Promise<string> {
   const attributionValues = attributionSqlValues(attribution);
   const inserted = await client.query<{ id: string }>(`
     INSERT INTO pending_referral_events (
       kind, commerce_ref, commerce_user_id, amount_nano, occurred_at,
       provider_id, account_class, pricing_mode, paid_funded_nano,
-      commission_eligible, snapshot_digest
+      commission_eligible, snapshot_digest, spend_provider_id
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     ON CONFLICT (kind, commerce_ref) DO NOTHING
     RETURNING id
-  `, [kind, commerceRef, commerceUserId, amountNano.toString(), occurredAt, ...attributionValues]);
+  `, [
+    kind, commerceRef, commerceUserId, amountNano.toString(), occurredAt,
+    ...attributionValues, spendProviderId,
+  ]);
   if (inserted.rows[0]) return inserted.rows[0].id;
 
   const existing = await client.query<StoredSpendAttribution & {
@@ -446,14 +450,39 @@ export async function recordReferredDeposit(database: SalesDatabase, input: {
  * `attribution=null` остаётся временным legacy free-first путём для старых ledger rows.
  * Награда считается по цепочке и идемпотентна по commerce_event_id.
  */
+/**
+ * Fill in the reporting provider on a row that predates it. Write-once and never a conflict: the
+ * dimension is descriptive, so a replay may only ADD it to a row that has none, and a replay that
+ * disagrees with an already-recorded provider leaves the stored value untouched.
+ */
+async function enrichSpendProvider(
+  client: PoolClient,
+  commerceEventId: string,
+  spendProviderId: string | null,
+): Promise<void> {
+  if (spendProviderId === null) return;
+  await client.query(
+    `UPDATE partner_usage_events SET spend_provider_id = $2
+     WHERE commerce_event_id = $1 AND spend_provider_id IS NULL`,
+    [commerceEventId, spendProviderId],
+  );
+}
+
 export async function recordReferredSpend(database: SalesDatabase, input: {
   commerceEventId: bigint;
   commerceUserId: string;
   amountNano: bigint;
   attribution?: ReferredSpendAttribution | null;
+  /**
+   * Which provider served the spend. Reporting only — it is never compared during replay and never
+   * influences commission, so a producer that omits it (or an event imported before the column
+   * existed) simply reports as unattributed instead of failing the page.
+   */
+  spendProviderId?: string | null;
   occurredAt: Date;
 }): Promise<SpendCommissionOutcome> {
   const attribution = input.attribution ?? null;
+  const spendProviderId = input.spendProviderId ?? null;
   assertValidSpendAttribution(input.amountNano, attribution);
   if (input.amountNano <= 0n) return "skipped";
   const client = await database.pool.connect();
@@ -549,6 +578,7 @@ export async function recordReferredSpend(database: SalesDatabase, input: {
       if (!storedAttributionMatches(stored, attribution)) {
         throw new ReferralEventReplayConflictError("spend", input.commerceEventId.toString());
       }
+      await enrichSpendProvider(client, input.commerceEventId.toString(), spendProviderId);
       await client.query("COMMIT");
       return "duplicate";
     }
@@ -563,6 +593,7 @@ export async function recordReferredSpend(database: SalesDatabase, input: {
         input.amountNano,
         input.occurredAt,
         attribution,
+        spendProviderId,
       );
     }
 
@@ -577,6 +608,7 @@ export async function recordReferredSpend(database: SalesDatabase, input: {
           input.amountNano,
           input.occurredAt,
           attribution,
+          spendProviderId,
         );
       }
       await client.query("COMMIT");
@@ -598,14 +630,14 @@ export async function recordReferredSpend(database: SalesDatabase, input: {
       INSERT INTO partner_usage_events (
         commerce_event_id, commerce_user_id, partner_id, amount_nano,
         provider_id, account_class, pricing_mode, paid_funded_nano,
-        commission_eligible, snapshot_digest, occurred_at
+        commission_eligible, snapshot_digest, occurred_at, spend_provider_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       ON CONFLICT (commerce_event_id) DO NOTHING
       RETURNING id
     `, [
       input.commerceEventId.toString(), input.commerceUserId, directPartnerId,
-      input.amountNano.toString(), ...attributionValues, input.occurredAt,
+      input.amountNano.toString(), ...attributionValues, input.occurredAt, spendProviderId,
     ]);
     const usageEventId = inserted.rows[0]?.id;
     if (!usageEventId) {
@@ -659,6 +691,7 @@ export async function recordReferredSpend(database: SalesDatabase, input: {
       if (!storedAttributionMatches(stored, attribution)) {
         throw new ReferralEventReplayConflictError("spend", input.commerceEventId.toString());
       }
+      await enrichSpendProvider(client, input.commerceEventId.toString(), spendProviderId);
       await client.query("COMMIT");
       return "duplicate";
     }
@@ -694,12 +727,13 @@ export async function reconcilePendingReferralEvents(database: SalesDatabase, li
     commerce_user_id: string;
     amount_nano: string;
     occurred_at: Date;
+    spend_provider_id: string | null;
   }>(`
     SELECT pe.id, pe.kind, pe.commerce_ref, pe.commerce_user_id,
            pe.amount_nano::text AS amount_nano, pe.occurred_at,
            pe.provider_id, pe.account_class, pe.pricing_mode,
            pe.paid_funded_nano::text AS paid_funded_nano,
-           pe.commission_eligible, pe.snapshot_digest
+           pe.commission_eligible, pe.snapshot_digest, pe.spend_provider_id
     FROM pending_referral_events pe
     JOIN referred_users ru ON ru.commerce_user_id = pe.commerce_user_id
     ORDER BY pe.id
@@ -735,6 +769,7 @@ export async function reconcilePendingReferralEvents(database: SalesDatabase, li
           commerceUserId: row.commerce_user_id,
           amountNano,
           attribution,
+          spendProviderId: row.spend_provider_id,
           occurredAt: row.occurred_at,
         });
     } else {
@@ -938,6 +973,67 @@ export async function getPartnerDailyEarnings(
     });
   }
   return series;
+}
+
+export interface ProviderEarningsRow {
+  /** Provider id as the engine reports it, or null for spend recorded before the dimension existed. */
+  providerId: string | null;
+  events: number;
+  /** Referred spend funded by the customer's own money — the commission basis. */
+  spendNano: bigint;
+  earnedNano: bigint;
+}
+
+/**
+ * Partner earnings split by the provider that served the spend, over the last `days` days.
+ *
+ * The split is descriptive: it re-groups commission that is already recorded, so the totals here
+ * always reconcile with getPartnerEarningsTotals for the same window. v1 rows carry the dimension
+ * in spend_provider_id, v2 rows in their authoritative provider_id; rows imported before migration
+ * 0022 have neither and group under null rather than being dropped, so the parts still sum to the
+ * whole. Manual commission adjustments are not per-provider and are deliberately excluded.
+ */
+export async function getPartnerEarningsByProvider(
+  database: SalesDatabase,
+  partnerId: string,
+  days: number,
+): Promise<ProviderEarningsRow[]> {
+  const result = await database.pool.query<{
+    provider_id: string | null;
+    events: string;
+    spend_nano: string;
+    earned_nano: string;
+  }>(`
+    SELECT provider_id,
+           COUNT(*)::text AS events,
+           COALESCE(SUM(spend_nano), 0)::text AS spend_nano,
+           COALESCE(SUM(earned_nano), 0)::text AS earned_nano
+    FROM (
+      SELECT pue.spend_provider_id AS provider_id,
+             pue.amount_nano AS spend_nano,
+             COALESCE(ce.amount_nano, 0) AS earned_nano
+      FROM partner_usage_events pue
+      LEFT JOIN commission_entries ce
+        ON ce.usage_event_id = pue.id AND ce.partner_id = $1
+      WHERE pue.partner_id = $1 AND pue.occurred_at >= now() - ($2 * interval '1 day')
+      UNION ALL
+      SELECT pue.provider_id AS provider_id,
+             pue.paid_funded_nano AS spend_nano,
+             COALESCE(ce.amount_nano, 0) AS earned_nano
+      FROM partner_usage_events_v2 pue
+      LEFT JOIN commission_entries_v2 ce
+        ON ce.usage_event_id = pue.id AND ce.partner_id = $1
+      WHERE pue.partner_id = $1 AND pue.occurred_at >= now() - ($2 * interval '1 day')
+    ) per_event
+    GROUP BY 1
+    ORDER BY 4 DESC, 3 DESC
+  `, [partnerId, days]);
+  return result.rows.map((row) => ({
+    providerId: row.provider_id,
+    events: Number(row.events),
+    spendNano: BigInt(row.spend_nano),
+    earnedNano: BigInt(row.earned_nano),
+  }));
 }
 
 export interface TeamMemberSummary {

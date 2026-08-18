@@ -83,6 +83,16 @@ of reaching SQL as an out-of-range value.
     `accountClass`, not on `providerId`. This is the shape the old all-null legacy rows also parse
     into, so the historical tail and the live stream share one path.
 
+    The consumer nevertheless **stores** the scalar `providerId`, in
+    `partner_usage_events.spend_provider_id` (migration 0022) — a column separate from the retired
+    attribution `provider_id`, which the legacy CHECK still binds to the whole tuple. The stored
+    value is a reporting dimension with no authority: it is not compared during replay, a replay
+    that disagrees leaves the recorded value untouched instead of failing the page, and a row that
+    predates the column is enriched once. Commission is unchanged by it — identical spend earns
+    identical commission whichever provider served it. Rows imported before 0022 keep
+    `spend_provider_id` NULL and are reported as "no provider on record" rather than guessed, so a
+    per-provider split still sums to the partner's recorded total.
+
     A wire-exact example of this row lives in `tests/contracts/sales-usage-feed.golden.json`, and
     both ends assert against that same file — the producer that it serializes it, the consumer that
     it accepts it. Changing the shape means changing the golden and rolling both sides together.

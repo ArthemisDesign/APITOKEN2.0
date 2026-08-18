@@ -9,6 +9,7 @@ import {
   formatUsd,
   type EarningRow,
   type Overview,
+  type ProviderEarningsRow,
   type ReferralRow,
 } from "@/lib/api";
 import {
@@ -20,6 +21,7 @@ import {
   Notice,
 } from "@/components/ui";
 import { EarningsChart } from "@/components/earnings-chart";
+import { ProviderBreakdown } from "@/components/provider-breakdown";
 import { CommissionFormula } from "@/components/commission-formula";
 import { useI18n } from "@/components/i18n";
 
@@ -27,6 +29,7 @@ export default function OverviewPage() {
   const { t } = useI18n();
   const [overview, setOverview] = useState<Overview | null>(null);
   const [earnings, setEarnings] = useState<EarningRow[] | null>(null);
+  const [byProvider, setByProvider] = useState<ProviderEarningsRow[] | null>(null);
   const [recent, setRecent] = useState<ReferralRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,14 +37,16 @@ export default function OverviewPage() {
     let cancelled = false;
     (async () => {
       try {
-        const [ov, earn, refs] = await Promise.all([
+        const [ov, earn, providers, refs] = await Promise.all([
           api<Overview>("/v1/partner/overview"),
           api<{ items: EarningRow[] }>("/v1/partner/earnings?days=30"),
+          api<{ items: ProviderEarningsRow[] }>("/v1/partner/earnings/providers?days=30"),
           api<{ items: ReferralRow[] }>("/v1/partner/referrals"),
         ]);
         if (cancelled) return;
         setOverview(ov);
         setEarnings(earn.items);
+        setByProvider(providers.items);
         setRecent(
           [...refs.items]
             .sort((a, b) => (a.attributedAt < b.attributedAt ? 1 : -1))
@@ -171,6 +176,16 @@ export default function OverviewPage() {
           )}
         >
           <EarningsChart items={earnings} />
+        </Card>
+
+        <Card
+          title={t("Where your earnings come from", "Откуда приходит ваш заработок")}
+          sub={t(
+            "Last 30 days, split by the provider that served your referrals' requests.",
+            "За последние 30 дней, в разбивке по провайдеру, обслужившему запросы ваших рефералов.",
+          )}
+        >
+          {byProvider === null ? <Loading /> : <ProviderBreakdown items={byProvider} />}
         </Card>
 
         <Card

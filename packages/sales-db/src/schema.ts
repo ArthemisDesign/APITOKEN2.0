@@ -262,12 +262,21 @@ export const partnerUsageEvents = pgTable("partner_usage_events", {
   paidFundedNano: bigint("paid_funded_nano", { mode: "bigint" }),
   commissionEligible: boolean("commission_eligible"),
   snapshotDigest: text("snapshot_digest"),
+  // Reporting dimension only: which provider served this spend. Deliberately OUTSIDE the retired
+  // attribution tuple above, so recording it can never re-open a commission authority. See
+  // migration 0022. Null on rows imported before that migration.
+  spendProviderId: text("spend_provider_id"),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
   importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   uniqueIndex("partner_usage_events_commerce_event_uidx").on(table.commerceEventId),
   index("partner_usage_events_partner_time_idx").on(table.partnerId, table.occurredAt),
   index("partner_usage_events_user_idx").on(table.commerceUserId),
+  index("partner_usage_events_partner_provider_idx")
+    .on(table.partnerId, table.spendProviderId, table.occurredAt),
+  check("partner_usage_events_spend_provider_check", sql`
+    ${table.spendProviderId} IS NULL OR ${table.spendProviderId} <> ''
+  `),
   check("partner_usage_events_amount_check", sql`${table.amountNano} > 0`),
   check("partner_usage_events_multi_discount_check", sql`
     (
@@ -650,10 +659,15 @@ export const pendingReferralEvents = pgTable("pending_referral_events", {
   paidFundedNano: bigint("paid_funded_nano", { mode: "bigint" }),
   commissionEligible: boolean("commission_eligible"),
   snapshotDigest: text("snapshot_digest"),
+  // Carried through the buffer so a replayed event keeps its reporting provider (migration 0022).
+  spendProviderId: text("spend_provider_id"),
   createdAt,
 }, (table) => [
   uniqueIndex("pending_referral_events_kind_ref_uidx").on(table.kind, table.commerceRef),
   index("pending_referral_events_user_idx").on(table.commerceUserId),
+  check("pending_referral_events_spend_provider_check", sql`
+    ${table.spendProviderId} IS NULL OR ${table.spendProviderId} <> ''
+  `),
   check("pending_referral_events_attribution_check", sql`
     (
       ${table.providerId} IS NULL

@@ -24,6 +24,7 @@ import {
   countReferredUsers,
   createPartnerInvite,
   getPartnerDailyEarnings,
+  getPartnerEarningsByProvider,
   getPartnerEarningsTotals,
   listPartnerInvites,
   listPartnerPayouts,
@@ -216,6 +217,24 @@ export class PartnerController {
       discountBps: parsed.data.discountBps,
       multiplierBp: result.multiplierBp,
       pricingAffected: false,
+    };
+  }
+
+  /** Same window and same recorded commission as /earnings, re-grouped by serving provider. */
+  @Get("earnings/providers")
+  @Header("Cache-Control", "no-store")
+  async earningsByProvider(@CurrentAuth() current: RequestAuth, @Query() query: unknown): Promise<unknown> {
+    const parsed = earningsQuerySchema.safeParse(query ?? {});
+    if (!parsed.success) throw new BadRequestException("invalid earnings query");
+    const rows = await getPartnerEarningsByProvider(this.database, current.partner.id, parsed.data.days);
+    return {
+      days: parsed.data.days,
+      items: rows.map((row) => ({
+        providerId: row.providerId,
+        events: row.events,
+        spendNano: row.spendNano.toString(),
+        earnedNano: row.earnedNano.toString(),
+      })),
     };
   }
 

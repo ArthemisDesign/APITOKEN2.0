@@ -245,6 +245,15 @@ export type EarningRow = {
   date: string; spendNano: string; earnedNano: string; adjustmentNano: string; netNano: string;
 };
 
+/** Recorded commission re-grouped by the provider that served the spend. providerId is null for
+ *  events imported before the portal started recording the dimension. */
+export type ProviderEarningsRow = {
+  providerId: string | null;
+  events: number;
+  spendNano: string;
+  earnedNano: string;
+};
+
 export type TeamRow = {
   id: string;
   email: string | null;

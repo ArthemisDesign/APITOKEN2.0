@@ -244,4 +244,37 @@ describe("sales multi-discount migration", () => {
     ].map((match) => match[1]).filter((name): name is string => name !== undefined);
     expect(databaseObjectNames.filter((name) => Buffer.byteLength(name, "utf8") > 63)).toEqual([]);
   });
+
+  it("adds the spend provider as a nullable reporting dimension only", () => {
+    const migration = readFileSync(
+      join(MIGRATIONS_FOLDER, "0022_spend_provider_dimension.sql"),
+      "utf8",
+    );
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; tag: string; when: number }> };
+    const previous = journal.entries.find((entry) => entry.idx === 21);
+    const current = journal.entries.find((entry) => entry.idx === 22);
+
+    expect(current).toMatchObject({ idx: 22, tag: "0022_spend_provider_dimension" });
+    expect(current!.when).toBeGreaterThan(previous!.when);
+    // Expand-only: the dimension may never rewrite or delete recorded money history.
+    expect(migration).not.toMatch(/\b(?:DROP|UPDATE|DELETE|TRUNCATE)\b/i);
+    for (const table of ["partner_usage_events", "pending_referral_events"]) {
+      expect(migration).toContain(`ALTER TABLE "${table}" ADD COLUMN "spend_provider_id" text;`);
+    }
+    // Nullable and unbackfilled: rows imported earlier honestly have no provider on record.
+    expect(migration).not.toMatch(/"spend_provider_id" text NOT NULL/);
+    // It must stay outside the retired attribution tuple: the legacy CHECK keeps fencing that
+    // tuple untouched, so recording a provider for reporting cannot re-open a commission path.
+    const statements = migration
+      .split("--> statement-breakpoint")
+      .map((part) => part.replace(/^\s*--.*$/gm, "").trim())
+      .filter((part) => part.length > 0);
+    expect(statements.length).toBeGreaterThan(0);
+    for (const statement of statements) {
+      expect(statement).not.toContain("multi_discount_check");
+      expect(statement).not.toContain("attribution_check");
+    }
+  });
 });

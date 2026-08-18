@@ -157,7 +157,12 @@ In detail (phases, formula, time zone, what the partner/admin sees) —
 ## 8. Partner dashboard (`partners.apitoken.sale`)
 
 - **Overview** — the rate and what the percentage comes from (a "How your commission works" card
-  with an example), the ref link with copy, key metrics, a 30-day chart, recent referrals.
+  with an example), the ref link with copy, key metrics, a 30-day chart, a 30-day split of earnings
+  by the provider that served the referrals' requests (`GET /v1/partner/earnings/providers`), and
+  recent referrals. The split only re-groups commission that is already recorded — it never changes
+  what is owed, since the same spend earns the same commission on every provider. Spend recorded
+  before the portal stored the provider (migration 0022) appears as one "no provider on record"
+  line rather than being dropped, so the parts always sum to the whole.
 - **Referrals** — the users brought in (identities masked), their paid spend and your earnings on
   each of them.
 - **Team** — sub-salespeople and invitations (the tab is currently temporarily closed with a
