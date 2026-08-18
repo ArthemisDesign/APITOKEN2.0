@@ -39,6 +39,8 @@ API_UNIT=apitoken-sales-api.service
 WEB_UNIT=apitoken-sales-web.service
 API_HEALTH=${SALES_API_HEALTH:-http://127.0.0.1:3100/v1/health}
 WEB_HEALTH=${SALES_WEB_HEALTH:-http://127.0.0.1:3200/}
+WEB_LOGIN=${SALES_WEB_LOGIN:-http://127.0.0.1:3200/login}
+API_TELEGRAM_CONFIG=${SALES_API_TELEGRAM_CONFIG:-http://127.0.0.1:3100/v1/auth/telegram/config}
 COMMERCE_BALANCER_URL=${COMMERCE_BALANCER_URL:-http://127.0.0.1:8791}
 HEALTH_RETRIES=${SALES_HEALTH_RETRIES:-30}
 HEALTH_INTERVAL=${SALES_HEALTH_INTERVAL:-2}
@@ -108,10 +110,28 @@ health_ok() {
   [[ $code == 200 ]]
 }
 
+# The sign-in page returning 200 is NOT proof that a partner can sign in: the page renders its
+# own shell, and the Telegram Login Widget is injected by a third-party script. A CSP that forbids
+# that script leaves a perfectly healthy 200 page with no sign-in button at all — the exact way a
+# broken login once shipped unnoticed. Gate on the two preconditions the button needs.
+login_ok() {
+  local headers policy
+  headers=$(curl --noproxy '*' -sS -D - -o /dev/null --max-time 5 "$WEB_LOGIN" 2>/dev/null || true)
+  grep -qiE '^HTTP/[0-9.]+ 200' <<<"$headers" || return 1
+  policy=$(grep -i '^content-security-policy:' <<<"$headers" || true)
+  # Exactly one policy: two headers make the browser enforce their intersection, which would
+  # silently re-block the widget even though each header looks correct on its own.
+  [[ $(grep -ci '^content-security-policy:' <<<"$headers") == 1 ]] || return 1
+  grep -q "telegram.org" <<<"$policy" || return 1
+  grep -q "unsafe-eval" <<<"$policy" || return 1
+  # And the backend must actually name a bot, otherwise the widget has nothing to render.
+  curl --noproxy '*' -sS --max-time 5 "$API_TELEGRAM_CONFIG" 2>/dev/null | grep -q '"botUsername":"[A-Za-z0-9_]\{5,\}"'
+}
+
 wait_healthy() {
   local i
   for (( i = 0; i < HEALTH_RETRIES; i++ )); do
-    if health_ok "$API_HEALTH" && health_ok "$WEB_HEALTH"; then
+    if health_ok "$API_HEALTH" && health_ok "$WEB_HEALTH" && login_ok; then
       return 0
     fi
     sleep "$HEALTH_INTERVAL"
@@ -201,7 +221,7 @@ restart_units
 
 # 4) Health-gate; roll back the symlink on failure.
 if wait_healthy; then
-  log "sales $SHA healthy (api+web 200); deploy complete"
+  log "sales $SHA healthy (api+web 200, sign-in page can load the Telegram widget); deploy complete"
   # Prune older releases, keep the two most recent plus the live one.
   mapfile -t olds < <(cd "$RELEASE_ROOT" && ls -1dt -- */ 2>/dev/null | sed 's#/$##' | grep -E '^[0-9a-f]{40}$' || true)
   keep=0
