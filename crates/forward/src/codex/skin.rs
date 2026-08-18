@@ -1724,6 +1724,9 @@ pub async fn count_tokens(
         parts
             .extensions
             .get::<crate::execution::ClientAttribution>(),
+        parts
+            .extensions
+            .get::<crate::execution::RequestLifecycleClock>(),
         admitted_at,
     );
     let tenant_scope = pending.tenant_scope().to_owned();
@@ -2027,6 +2030,7 @@ mod tests {
         logical_id: Option<&str>,
         client: Option<&str>,
         attempt: Option<i32>,
+        lifecycle_clock: Option<crate::execution::RequestLifecycleClock>,
     ) -> axum::extract::Request {
         let mut builder = axum::extract::Request::builder();
         if let Some(key) = key {
@@ -2053,6 +2057,9 @@ mod tests {
             request
                 .extensions_mut()
                 .insert(client_attribution(Some(client)));
+        }
+        if let Some(lifecycle_clock) = lifecycle_clock {
+            request.extensions_mut().insert(lifecycle_clock);
         }
         request
     }
@@ -2131,6 +2138,9 @@ mod tests {
         ] {
             let (sender, mut receiver) = mpsc::channel(4);
             let test = count_tokens_test_app(true, Some(sender)).await;
+            let lifecycle_clock = crate::execution::RequestLifecycleClock::default();
+            lifecycle_clock.observe_first_public_byte();
+            let expected_first_public_byte_at = lifecycle_clock.first_public_byte_at();
             let response = count_tokens(
                 State(test.app.clone()),
                 ConnectInfo(peer),
@@ -2140,6 +2150,7 @@ mod tests {
                     Some(LOGICAL_ID),
                     Some("opencode/1.2.3"),
                     Some(2),
+                    Some(lifecycle_clock),
                 ),
             )
             .await;
@@ -2201,7 +2212,10 @@ mod tests {
             assert_eq!(fact.output_modalities, None);
             assert_eq!(fact.terminal.downstream_disconnect, None);
             assert_eq!(fact.terminal.upstream_request_id, None);
-            assert_eq!(fact.terminal.first_public_byte_at, None);
+            assert_eq!(
+                fact.terminal.first_public_byte_at,
+                expected_first_public_byte_at
+            );
             assert_eq!(fact.terminal.failure_class, None);
             assert_eq!(fact.terminal.tool_calls_in_output, None);
         }
@@ -2227,6 +2241,7 @@ mod tests {
                     Some(LOGICAL_ID),
                     client,
                     None,
+                    Some(crate::execution::RequestLifecycleClock::default()),
                 ),
             )
             .await;
@@ -2245,17 +2260,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn count_tokens_excludes_unauthorized_admin_and_missing_logical_context() {
+    async fn count_tokens_excludes_unauthorized_admin_and_missing_typed_context() {
         let peer = "192.0.2.1:443".parse().unwrap();
-        for (key, logical_id, configure_admin, expected_status) in [
+        for (key, logical_id, lifecycle_clock, configure_admin, expected_status) in [
             (
                 Some("unknown"),
                 Some(LOGICAL_ID),
+                Some(crate::execution::RequestLifecycleClock::default()),
                 false,
                 StatusCode::UNAUTHORIZED,
             ),
-            (Some(RAW_KEY), None, false, StatusCode::OK),
-            (Some("admin-key"), Some(LOGICAL_ID), true, StatusCode::OK),
+            (
+                Some(RAW_KEY),
+                None,
+                Some(crate::execution::RequestLifecycleClock::default()),
+                false,
+                StatusCode::OK,
+            ),
+            (Some(RAW_KEY), Some(LOGICAL_ID), None, false, StatusCode::OK),
+            (
+                Some("admin-key"),
+                Some(LOGICAL_ID),
+                Some(crate::execution::RequestLifecycleClock::default()),
+                true,
+                StatusCode::OK,
+            ),
         ] {
             let (sender, mut receiver) = mpsc::channel(1);
             let mut test = count_tokens_test_app(true, Some(sender)).await;
@@ -2268,7 +2297,14 @@ mod tests {
             let response = count_tokens(
                 State(test.app.clone()),
                 ConnectInfo(peer),
-                count_tokens_request(valid_count_tokens_body(), key, logical_id, None, None),
+                count_tokens_request(
+                    valid_count_tokens_body(),
+                    key,
+                    logical_id,
+                    None,
+                    None,
+                    lifecycle_clock,
+                ),
             )
             .await;
             assert_eq!(response.status(), expected_status);
@@ -2290,7 +2326,14 @@ mod tests {
             let baseline = count_tokens(
                 State(baseline.app.clone()),
                 ConnectInfo(peer),
-                count_tokens_request(body.clone(), Some(RAW_KEY), Some(LOGICAL_ID), None, None),
+                count_tokens_request(
+                    body.clone(),
+                    Some(RAW_KEY),
+                    Some(LOGICAL_ID),
+                    None,
+                    None,
+                    Some(crate::execution::RequestLifecycleClock::default()),
+                ),
             )
             .await;
             let baseline = response_snapshot(baseline).await;
@@ -2305,6 +2348,7 @@ mod tests {
                         ACCOUNT_ID,
                         KEY_ID,
                         pool::now(),
+                        crate::execution::RequestLifecycleClock::default(),
                     )
                     .terminal_fact(StatusCode::OK, None, None),
                 )
@@ -2313,7 +2357,14 @@ mod tests {
             let full = count_tokens(
                 State(full.app.clone()),
                 ConnectInfo(peer),
-                count_tokens_request(body.clone(), Some(RAW_KEY), Some(LOGICAL_ID), None, None),
+                count_tokens_request(
+                    body.clone(),
+                    Some(RAW_KEY),
+                    Some(LOGICAL_ID),
+                    None,
+                    None,
+                    Some(crate::execution::RequestLifecycleClock::default()),
+                ),
             )
             .await;
             let full = response_snapshot(full).await;
@@ -2324,7 +2375,14 @@ mod tests {
             let closed = count_tokens(
                 State(closed.app.clone()),
                 ConnectInfo(peer),
-                count_tokens_request(body, Some(RAW_KEY), Some(LOGICAL_ID), None, None),
+                count_tokens_request(
+                    body,
+                    Some(RAW_KEY),
+                    Some(LOGICAL_ID),
+                    None,
+                    None,
+                    Some(crate::execution::RequestLifecycleClock::default()),
+                ),
             )
             .await;
             let closed = response_snapshot(closed).await;
@@ -2349,7 +2407,14 @@ mod tests {
         let baseline = count_tokens(
             State(baseline_test.app.clone()),
             ConnectInfo(peer),
-            count_tokens_request(valid_count_tokens_body(), Some(RAW_KEY), None, None, None),
+            count_tokens_request(
+                valid_count_tokens_body(),
+                Some(RAW_KEY),
+                None,
+                None,
+                None,
+                Some(crate::execution::RequestLifecycleClock::default()),
+            ),
         )
         .await;
         let baseline = response_snapshot(baseline).await;
@@ -2362,6 +2427,7 @@ mod tests {
                 Some(LOGICAL_ID),
                 None,
                 None,
+                Some(crate::execution::RequestLifecycleClock::default()),
             ),
         )
         .await;
@@ -2458,6 +2524,7 @@ mod tests {
                     Some(LOGICAL_ID),
                     Some("claude_code/2.1.220"),
                     Some(2),
+                    Some(crate::execution::RequestLifecycleClock::default()),
                 ),
             )
             .await;
@@ -2542,6 +2609,60 @@ mod tests {
     }
 
     #[test]
+    fn count_tokens_terminal_fact_captures_prior_valid_outer_observation() {
+        let admitted_at = pool::now();
+        let clock = crate::execution::RequestLifecycleClock::default();
+        clock.observe_first_public_byte();
+        let observed_at = clock
+            .first_public_byte_at()
+            .expect("outer observation must be present before terminalization");
+        let fact = super::super::billing::CodexRequestFactSeed::for_test(
+            LOGICAL_ID,
+            client_attribution(None),
+            registry::ExecutionAttempt::direct(),
+            ACCOUNT_ID,
+            KEY_ID,
+            admitted_at,
+            clock,
+        )
+        .terminal_fact(StatusCode::OK, None, None);
+
+        assert_eq!(fact.terminal.first_public_byte_at, Some(observed_at));
+        assert!((admitted_at..=fact.terminal.terminal_at).contains(&observed_at));
+    }
+
+    #[tokio::test]
+    async fn count_tokens_terminal_fact_seals_none_before_later_outer_observation() {
+        let peer = "192.0.2.1:443".parse().unwrap();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let test = count_tokens_test_app(true, Some(sender)).await;
+        let clock = crate::execution::RequestLifecycleClock::default();
+        let response = count_tokens(
+            State(test.app.clone()),
+            ConnectInfo(peer),
+            count_tokens_request(
+                valid_count_tokens_body(),
+                Some(RAW_KEY),
+                Some(LOGICAL_ID),
+                None,
+                None,
+                Some(clock.clone()),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let fact = receiver.try_recv().expect("one terminal request fact");
+        assert_eq!(fact.terminal.first_public_byte_at, None);
+
+        clock.observe_first_public_byte();
+        assert_eq!(
+            clock.first_public_byte_at(),
+            None,
+            "outer observation after terminalization must be ignored"
+        );
+    }
+
+    #[test]
     fn fallback_attempt_context_reuses_logical_id_and_keeps_attempts_distinct() {
         let logical = {
             let mut headers = axum::http::HeaderMap::new();
@@ -2559,6 +2680,7 @@ mod tests {
                 ACCOUNT_ID,
                 KEY_ID,
                 10,
+                crate::execution::RequestLifecycleClock::default(),
             )
         };
         let first = seed(1).terminal_fact(StatusCode::BAD_REQUEST, None, None);

@@ -8,10 +8,11 @@
 > classifier contract is implemented but dormant: pure Anthropic Messages, OpenAI Chat/Responses
 > and canonical Gemini GenerateContent classifiers are not wired to producers. A typed once-only
 > lifecycle carrier, transparent final-public-body observation seam, and nonwaiting atomic terminal
-> seal are active, but no producer consumes the first-byte handoff yet. The seal linearizes terminal
-> state against a later body observation without waiting indefinitely; authoritative producer
-> integration remains before stage 6. No private read surface, request-fact metric, or billable producer
-> exists.
+> seal are active. The nonbillable Codex universal count_tokens fact producer is the first production
+> consumer: terminal-fact construction captures safely ordered first-byte evidence or freezes `NULL`
+> before any later outer body poll. Billable/TeeMeter/Codex-generation integration and every other
+> producer remain incomplete before stage 6. No private read surface, request-fact metric, or billable
+> producer exists.
 >
 > This document is the owner-approved v1 implementation contract. It authorizes only the finite,
 > ordered rollout and Definition of Done in §§13-15; it does not claim that those stages are complete.
@@ -151,16 +152,19 @@ common proxy passes no typed ID and therefore only strips. The router neither lo
 The current production request-fact producer is deliberately narrower than the locked v1 matrix. Only the
 Codex/OpenAI handler for universal `POST /v1/messages/count_tokens` participates, including Combined
 and router universal dispatch that reaches that same handler. Immediately after successful metered
-`begin_admission`, it snapshots `pool::now()`, the typed logical ID from request extensions, the
-retained execution attempt, and authoritative account/key IDs without exposing the raw key to the
-skin. Body/translation/model/prepare/success exits converge through one terminalization call and one
-`try_submit_terminal_request_fact`; submission outcomes never affect response status, headers, or
-body. Facts use `billing_request_id=NULL`, `billing_outcome=not_applicable`,
+`begin_admission`, it snapshots `pool::now()`, the typed logical ID and lifecycle clock from request
+extensions, the retained execution attempt, and authoritative account/key IDs without exposing the raw
+key to the skin. Missing either typed logical or lifecycle context omits the fact as an instrumentation
+gap. Body/translation/model/prepare/success exits converge through one terminalization call, which
+atomically seals first-byte evidence, and one `try_submit_terminal_request_fact`; sealing and
+submission outcomes never affect response status, headers, or body. Facts use
+`billing_request_id=NULL`, `billing_outcome=not_applicable`,
 `openai`/`universal`/`count_tokens`, stream false, the normalized typed client kind/source/version
 (or unknown/unknown/NULL when malformed, absent, or the extension is missing), internal attempt count
 zero, bounded client model spelling after Messages validation, and canonical public model ID only
-after Responses parsing. Deliberately unextracted capability and terminal fields remain NULL. Admin,
-unauthorized, missing typed logical context, native OpenAI Responses token counting, billable Messages,
+after Responses parsing. Safely ordered `first_public_byte_at` is captured by the terminal seal;
+other deliberately unextracted capability and terminal fields remain NULL. Admin, unauthorized,
+missing typed logical or lifecycle context, native OpenAI Responses token counting, billable Messages,
 Anthropic, Gemini, and all other surfaces are omitted. SQLite and inbox drops fail open; coverage is
 visible only through the existing internal delivery snapshot, not public metrics.
 
@@ -308,16 +312,17 @@ The active server seam creates one typed clock for each successfully admitted cu
 request, preserves it through synthetic leaf adapters, and is the sole observer of the first non-empty
 successful DATA frame from the final public `http_body::Body`. It forwards data, trailers, errors,
 frame boundaries, cancellation, `is_end_stream`, `size_hint` and backpressure unchanged. Empty DATA,
-trailers-only, errors, EOF and drop-before-data leave the clock unset. The dormant terminal primitive
+trailers-only, errors, EOF and drop-before-data leave the clock unset. The terminal primitive
 atomically seals an open clock with an internal, never-exposed no-byte sentinel and linearizes with
 that observer: an earlier first byte wins, while an earlier terminal seal prevents any later body poll
 from creating post-terminal evidence. It never waits, notifies, polls, spawns, performs I/O or delays
 terminal work, and repeated seals are idempotent. Existing evidence is returned only when safely
 ordered inside inclusive `[admitted_at, terminal_at]`; invalid bounds or out-of-order evidence produce
 `NULL` without clamping or fabrication, and invalid bounds still seal an open clock. This seam does
-not itself write facts or settle money. No request-fact producer, `TeeMeter`, Codex settlement or
-`AsyncBilling` caller consumes the terminal handoff yet, so producer coverage and Stage 5 remain
-incomplete.
+not itself write facts or settle money. The nonbillable Codex/OpenAI universal
+`POST /v1/messages/count_tokens` fact producer is its first production consumer. Billable/TeeMeter/
+Codex-generation integration and every other producer remain incomplete, so producer coverage and
+Stage 5 remain incomplete.
 
 The read surface safely derives four durations and only when both endpoints are measured and ordered:
 admission-to-delivery, admission-to-first-public-byte, delivery-to-first-public-byte, and
@@ -527,9 +532,11 @@ the prerequisite exact SHA is production GREEN.
    them yet, and `tool_calls_in_output` remains terminal evidence. The typed once-only lifecycle carrier,
    transparent final-public-body observer and nonwaiting atomic terminal seal are active. The seal
    closes an unobserved clock against later DATA without indefinite holding and accepts only safely
-   ordered first-byte evidence, but no producer consumes that handoff yet. Stage 6/7 owns request-fact,
-   `TeeMeter`, Codex settlement and `AsyncBilling` integration. This stage remains incomplete and changes
-   no public response or upstream request contract.
+   ordered first-byte evidence. The nonbillable Codex universal count_tokens fact producer is its first
+   production consumer; billable/TeeMeter/Codex-generation and every other producer remain incomplete.
+   Stage 6/7 owns the remaining request-fact, `TeeMeter`, Codex settlement and `AsyncBilling`
+   integration. This stage remains incomplete and changes no public response or upstream request
+   contract.
 6. **Complete nonbillable producers.** Cover exactly Anthropic native Messages
    `POST /v1/messages/count_tokens`; OpenAI universal Messages `POST /v1/messages/count_tokens` plus
    native Responses `POST /v1/responses/input_tokens`; and Gemini universal Messages

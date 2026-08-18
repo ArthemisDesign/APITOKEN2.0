@@ -4,7 +4,7 @@ use super::openai_image_snapshot::{
     openai_image_quote, OpenAiImageOperation, OpenAiImageQuoteInput,
 };
 use super::{CodexModel, CodexUsage};
-use crate::execution::{ClientAttribution, LogicalRequestId};
+use crate::execution::{ClientAttribution, LogicalRequestId, RequestLifecycleClock};
 use crate::metrics::Metrics;
 use crate::pricing::{tariff_book, EnginePricingRequestId};
 use crate::proxy::{authorize, Authz, HoldGuard};
@@ -73,6 +73,7 @@ pub(crate) struct CodexRequestFactSeed {
     account_id: String,
     key_id: String,
     admitted_at: i64,
+    lifecycle_clock: RequestLifecycleClock,
 }
 
 impl CodexRequestFactSeed {
@@ -84,6 +85,7 @@ impl CodexRequestFactSeed {
         account_id: &str,
         key_id: &str,
         admitted_at: i64,
+        lifecycle_clock: RequestLifecycleClock,
     ) -> Self {
         Self {
             logical_request_id: logical_request_id.into(),
@@ -92,6 +94,7 @@ impl CodexRequestFactSeed {
             account_id: account_id.into(),
             key_id: key_id.into(),
             admitted_at,
+            lifecycle_clock,
         }
     }
 
@@ -114,6 +117,9 @@ impl CodexRequestFactSeed {
             DeliveryState::NotStarted
         };
         let terminal_at = pool::now().max(self.admitted_at);
+        let first_public_byte_at = self
+            .lifecycle_clock
+            .seal_first_public_byte_for_terminal(self.admitted_at, terminal_at);
         TerminalRequestFact {
             logical_request_id: self.logical_request_id,
             billing_request_id: None,
@@ -148,7 +154,7 @@ impl CodexRequestFactSeed {
                 delivery_state,
                 downstream_disconnect: None,
                 upstream_request_id: None,
-                first_public_byte_at: None,
+                first_public_byte_at,
                 internal_attempt_count: Some(0),
                 failure_class: None,
                 tool_calls_in_output: None,
@@ -163,14 +169,17 @@ impl PendingCodexAdmission {
     }
 
     /// Snapshot fact attribution without widening `Authz` or exposing the raw key to a protocol
-    /// adapter. Missing typed logical context is an instrumentation gap and therefore omits the fact.
+    /// adapter. Missing typed logical or lifecycle context is an instrumentation gap and therefore
+    /// omits the fact.
     pub(crate) fn request_fact_seed(
         &self,
         logical_request_id: Option<&LogicalRequestId>,
         client_attribution: Option<&ClientAttribution>,
+        lifecycle_clock: Option<&RequestLifecycleClock>,
         admitted_at: i64,
     ) -> Option<CodexRequestFactSeed> {
         let logical_request_id = logical_request_id?;
+        let lifecycle_clock = lifecycle_clock?;
         let Authz::Metered {
             account_id, key_id, ..
         } = &self.authz
@@ -186,6 +195,7 @@ impl PendingCodexAdmission {
             account_id: account_id.clone(),
             key_id: key_id.clone(),
             admitted_at,
+            lifecycle_clock: lifecycle_clock.clone(),
         })
     }
 

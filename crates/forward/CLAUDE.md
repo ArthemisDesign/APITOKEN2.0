@@ -191,7 +191,10 @@ reviewed positive signatures, so absent evidence also stays unknown and the exis
 heuristic is not reused. Both raw headers are removed before auth/body/dispatch. Universal
 Anthropic/Gemini adapters copy both typed extensions to synthesized leaf requests without recreating
 wire headers; native requests retain them. The current Codex universal count_tokens fact producer
-persists the normalized attribution (or unknown when the typed attribution extension is absent).
+persists the normalized attribution (or unknown when the typed attribution extension is absent) and
+is the first production consumer of the lifecycle terminal seal: it captures safely ordered outer
+first-byte evidence or freezes `NULL` before any later body poll. A missing typed lifecycle extension,
+like a missing logical extension, omits the fact rather than fabricating evidence.
 No metric, public response/header identity, billing identity, execution-group semantics, or other
 request-fact producer changes in this slice.
 
@@ -232,9 +235,11 @@ waits, polls, spawns or holds terminalization for a body consumer. It returns ex
 inside the inclusive `[admitted_at, terminal_at]` bounds; invalid or out-of-order evidence stays
 `NULL`, never clamped or fabricated, while the open state is still sealed. Repeated seals are
 idempotent. The wrapper and the outer active-request guard delegate complete frames, errors,
-`is_end_stream` and `size_hint` without buffering, rewriting, eager polling, I/O or settlement. This
-primitive remains dormant: no request-fact producer, `TeeMeter`, Codex settlement or `AsyncBilling`
-caller consumes it yet, so Stage 5 and producer coverage remain incomplete.
+`is_end_stream` and `size_hint` without buffering, rewriting, eager polling, I/O or settlement.
+The first production consumer is the nonbillable Codex/OpenAI universal
+`POST /v1/messages/count_tokens` fact producer; it seals at terminal-fact construction without
+waiting for a later body poll. Billable/TeeMeter/Codex-generation integration and every other
+request-fact producer remain incomplete, so Stage 5 and producer coverage remain incomplete.
 
 **Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** every
 successful Anthropic turn, including unmetered admin traffic, after authoritative usage builds one
