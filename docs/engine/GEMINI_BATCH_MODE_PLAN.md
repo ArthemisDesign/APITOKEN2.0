@@ -191,10 +191,11 @@ provider semantics — в `forward`; env, worker composition и HTTP routes — 
 
 Create принимает только `batch.inputConfig.requests`; `fileName`, `webhookConfig`, `priority` и
 embedding forms возвращают явный Google-shaped `400 INVALID_ARGUMENT`, а не silently ignored
-fields. Поддерживаемые inline request обязаны содержать тот же canonical `request.model`, что и
-path model; отсутствующий или другой model отклоняется. Это намеренно более узкое подмножество
-актуальной Google schema, в которой model присутствует и на batch, и на каждом
-`GenerateContentRequest`. Discovery-visible `updateGenerateContentBatch` и
+fields. Официальные Python SDK fixtures задают модель только create path и опускают
+`request.model`, поэтому вложенный model необязателен: отсутствующий наследует path model, а
+присутствующий обязан совпадать с ним после canonicalization. Другой model отклоняется. Это
+учитывает актуальную Google schema, в которой model формально присутствует и на batch, и на каждом
+`GenerateContentRequest`, не ломая стандартный SDK shape. Discovery-visible `updateGenerateContentBatch` и
 `updateEmbedContentBatch` также не входят в MVP и получают явный unsupported ответ, а не
 непреднамеренный fallback.
 
