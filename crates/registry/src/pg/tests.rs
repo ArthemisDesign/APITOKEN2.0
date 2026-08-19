@@ -234,12 +234,13 @@ fn gemini_batch_foundation_migration_postgres_matrix() {
     let account_delete = pg
         .client
         .execute("DELETE FROM accounts WHERE id=$1", &[&account]);
-    assert_eq!(
-        account_delete
-            .expect_err("accepted batch must restrict account deletion")
-            .as_db_error()
-            .map(|error| error.code().code()),
-        Some("23503"),
+    let account_delete_code = account_delete
+        .expect_err("accepted batch must restrict account deletion")
+        .as_db_error()
+        .map(|error| error.code().code().to_owned());
+    assert!(
+        matches!(account_delete_code.as_deref(), Some("23001" | "23503")),
+        "restrictive account delete returned unexpected SQLSTATE: {account_delete_code:?}",
     );
 
     pg.migrate().unwrap();

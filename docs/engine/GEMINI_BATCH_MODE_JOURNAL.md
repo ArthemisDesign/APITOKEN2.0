@@ -23,3 +23,10 @@ SHA: failed candidate `cf812302db0ffccc49a2e690a922e72ff1e58c4f`; corrective SHA
 Отступления от плана: нет; исправляется только повторяемость schema test, runtime и публичные surfaces остаются отсутствующими.
 Измерения: два независимых trusted-host отказа до merge; локальный fresh-DB matrix оставался GREEN, что согласуется с residue-only причиной.
 Следующий шаг: доказать matrix на одном PostgreSQL два запуска подряд, выполнить обязательные local gates и отправить новый exact SHA; Этап 2 не начинать до GREEN production migration/watchdog.
+
+## 2026-08-20 — Этап 1 (§6): PostgreSQL SQLSTATE portability
+SHA: failed candidates `0e6cbb161ce4f65daa1a9d96036070a70999bed2` (stale после движения master) и `fd44f0ae7af038d9250c48fe823493f7849240b8`; corrective SHA фиксируется commit этой записи
+Результат: exact trusted-host journal показал, что restrictive account delete корректно отказал, но host PostgreSQL вернул стандартный SQLSTATE `23001` (`restrict_violation`), тогда как локальный PostgreSQL возвращал `23503` (`foreign_key_violation`). Test теперь принимает оба нормативных класса только для этого доказанного restrictive delete; любой success или иной SQLSTATE остается RED. `0e6cbb…` не получил окончательного verdict, потому что master сдвинулся; `fd44f0…` не был merged.
+Отступления от плана: нет; migration/schema и runtime не изменены, исправлена переносимость real-PostgreSQL assertion.
+Измерения: host — `23001`; local PostgreSQL 16 — `23503`; оба означают запрещенный owner delete при живой batch-ссылке.
+Следующий шаг: GREEN local gates, новый exact candidate через управляемый background merge, затем обязательные GREEN `deploy/migration` + `deploy/watchdog`.
