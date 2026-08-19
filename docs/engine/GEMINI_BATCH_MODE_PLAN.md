@@ -449,7 +449,9 @@ wire-фактурой; принято по тексту документации
 - `account_id`, creator `key_id`, public model и bounded display name;
 - canonical request digest;
 - nullable idempotency digest с unique `(account_id, digest)`;
-- create/update/cancel/deadline/completed/delete/result-expiry timestamps;
+- create/update/cancel/deadline/completed/delete timestamps; `result_expiry` nullable до terminalization
+  и выставляется atomically как `completed + 42 days`, чтобы 48-часовая queue не сокращала клиентский
+  срок чтения результатов;
 - принятый `priority` (echo-only, см. §4.1) и форма ввода/вывода (`input_kind=inline|file`,
   `output_file_id` для file-ввода);
 - schema version и encryption policy version;
@@ -486,7 +488,10 @@ wire-фактурой; принято по тексту документации
 - `account_id`, bounded display name, mime type, size bytes, sha256 digest;
 - `source_kind=client_upload|batch_output` — output-файлы создаются только terminalization пути
   job и не могут быть удалены клиентом до result expiry (как у Google);
-- blob ciphertext reference (тот же keyring, что у batch blobs, но отдельный `kind=file`);
+- blob ciphertext хранится chunked в отдельной `gemini_batch_file_chunks` authority: ordered
+  `(file_id, chunk_index)`, per-chunk key id/nonce/ciphertext/plaintext length/digest. Один inline
+  PostgreSQL `bytea` запрещен: varlena не покрывает честный 2 GB контракт и не позволяет resumable
+  upload без giant in-memory copy;
 - state `processing|active|failed`, failure reason class;
 - create/update/expiration timestamps (TTL 48 часов как у Google для upload; для batch_output —
   не короче result retention ссылающегося job, см. §4.5);
@@ -496,6 +501,9 @@ wire-фактурой; принято по тексту документации
 
 - одна immutable settlement intent на item request UUID;
 - disposition, actual/charge basis, typed usage и terminal result transition;
+- полный immutable `ProviderTurnCalibrationEvent` payload: selected opaque profile/subject, model,
+  service tier/geography, completed/priced timestamps, tariff schedule и disjoint API nanoUSD legs;
+  без этого money + usage + calibration нельзя применить atomically или exact-replay validate;
 - pending/done/failed, attempts, next retry и bounded error;
 - exact replay validation и unique item identity.
 
@@ -850,6 +858,11 @@ Exit gate: old runtime работает с расширенной schema; rollba
 
 ### Этап 2. Registry authority, без публичных routes
 
+- **Migration correction перед runtime (добавлено после schema review 2026-08-20):** отдельной
+  expand-only migration добавить nullable `ledger.key_id`/`usage_events.key_id`, item-level
+  creator `key_id`, nullable result expiry, chunked file storage и полный immutable calibration
+  payload для batch outbox. Эту correction доставить и дождаться GREEN `deploy/engine` +
+  `deploy/watchdog` до любого reader/writer Stage 2; migration 0055 не переписывается.
 - Реализовать atomic create + all-item holds + idempotency.
 - Реализовать scoped list/get/cancel/delete/prune для jobs и files.
 - Реализовать leader/item leases и owner/claim fencing.

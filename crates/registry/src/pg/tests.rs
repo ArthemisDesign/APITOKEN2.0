@@ -12,8 +12,38 @@ fn engine_migration_plan_is_contiguous() {
 }
 
 #[test]
+fn gemini_batch_authority_correction_migration_is_expand_only() {
+    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
+    assert_eq!(
+        ENGINE_MIGRATIONS
+            .iter()
+            .find(|(version, _)| *version == 56)
+            .map(|(_, sql)| *sql),
+        Some(MIGRATION_0056),
+    );
+    let normalized = MIGRATION_0056
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(normalized.contains("CREATE TABLE IF NOT EXISTS gemini_batch_file_chunks"));
+    assert!(normalized.contains("ADD COLUMN IF NOT EXISTS key_id text"));
+    assert!(normalized.contains("ADD COLUMN IF NOT EXISTS creator_key_id text"));
+    assert!(normalized.contains("ALTER COLUMN result_expiration_ts DROP NOT NULL"));
+    assert!(normalized.contains("calibration_api_total_nanousd bigint"));
+    assert!(normalized.contains("num_nonnulls("));
+    assert!(normalized.contains("VALUES (56)"));
+    for forbidden in ["DROP TABLE", "DROP COLUMN", "TRUNCATE", "CREATE TRIGGER"] {
+        assert!(!normalized.contains(forbidden), "0056 contains {forbidden}");
+    }
+}
+
+#[test]
 fn gemini_batch_foundation_migration_is_dormant_expand_only() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 55);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
     assert_eq!(
         ENGINE_MIGRATIONS
             .iter()
@@ -128,6 +158,7 @@ fn gemini_batch_foundation_migration_postgres_matrix() {
         tables,
         vec![
             "gemini_batch_blobs",
+            "gemini_batch_file_chunks",
             "gemini_batch_files",
             "gemini_batch_item_files",
             "gemini_batch_items",
@@ -174,9 +205,9 @@ fn gemini_batch_foundation_migration_postgres_matrix() {
             "INSERT INTO gemini_batch_jobs( \
                  job_id,account_id,creator_key_id,public_model,display_name, \
                  canonical_request_digest,input_kind,schema_version,encryption_policy_version, \
-                 create_ts,update_ts,deadline_ts,result_expiration_ts \
+                 create_ts,update_ts,deadline_ts \
              ) VALUES($1,$2,$3,'gemini-2.5-flash','matrix',decode(repeat('11',32),'hex'), \
-                 'inline',1,1,10,10,20,30)",
+                 'inline',1,1,10,10,20)",
             &[&job, &account, &key_id],
         )
         .unwrap();
@@ -618,7 +649,7 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 55);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
@@ -723,7 +754,7 @@ fn tripo3d_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn tripo3d_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 55);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 49)
@@ -843,7 +874,7 @@ fn suno_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn suno_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 55);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 50)
@@ -954,7 +985,7 @@ fn tripo3d_pricing_provider_migration_widens_both_closed_sets() {
 
 #[test]
 fn tripo3d_pricing_provider_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 55);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 51)
@@ -1003,7 +1034,7 @@ fn suno_pricing_provider_migration_widens_both_closed_sets() {
 
 #[test]
 fn suno_pricing_provider_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 55);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 52)
@@ -1286,7 +1317,7 @@ fn request_fact_terminal_envelope_migration_postgres_matrix() {
     let mut pg = PgStore::connect(&url).unwrap();
     pg.migrate().unwrap();
     assert_eq!(pg.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 55);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
     assert_eq!(
         ENGINE_MIGRATIONS
             .iter()

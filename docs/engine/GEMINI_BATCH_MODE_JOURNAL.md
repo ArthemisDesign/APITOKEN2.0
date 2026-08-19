@@ -30,3 +30,17 @@ SHA: failed candidates `0e6cbb161ce4f65daa1a9d96036070a70999bed2` (stale пос�
 Отступления от плана: нет; migration/schema и runtime не изменены, исправлена переносимость real-PostgreSQL assertion.
 Измерения: host — `23001`; local PostgreSQL 16 — `23503`; оба означают запрещенный owner delete при живой batch-ссылке.
 Следующий шаг: GREEN local gates, новый exact candidate через управляемый background merge, затем обязательные GREEN `deploy/migration` + `deploy/watchdog`.
+
+## 2026-08-20 — Этап 1 (§6): production GREEN migration 0055
+SHA: `f60605e8261c80a1c087bbc126f2e2d8f40937c7`
+Результат: `deploy/tests`, `deploy/engine` и `deploy/watchdog` GREEN; engine schema 55 мигрирована до slot admission, public batch routes/readers/writers отсутствуют. `deploy/migration` GREEN с описанием `No commerce migration changes`; engine migration gate входит в `deploy/engine`/overall watchdog по repository delivery contract.
+Отступления от плана: нет.
+Измерения: production rollout завершился за 455 секунд ожидания после push; trusted candidate validation GREEN.
+Следующий шаг: schema review Этапа 2 до первого runtime writer.
+
+## 2026-08-20 — Этап 2 (§6): pre-runtime schema correction
+SHA: фиксируется commit этой записи
+Результат: review 0055 против §§4.3–4.5 выявил блокирующие gaps до authority runtime: один `bytea` не покрывает streamable 2 GiB file, result expiry был привязан к create вместо completion, outbox не нес полный immutable Gemini calibration payload, а ledger/usage не имели durable non-secret `key_id` после удаления key row. План сначала обновлен; migration 0056 expand-only добавляет chunk authority, nullable completion-based expiry, calibration envelope и key attribution. Runtime readers/writers и public surfaces остаются отсутствующими.
+Отступления от плана: добавлен явно описанный migration-correction шаг в Этап 2; причина — доказанные ограничения уже deployed schema 0055. План исправлен в том же commit до dependent code, как требует контракт.
+Измерения: chunk plaintext bound 8 MiB; logical file contract остается 2 GiB; result retention минимум 3,628,800 секунд от completion.
+Следующий шаг: локальные Rust/docs gates, merge migration 0056 и GREEN production до реализации Stage 2 authority.
