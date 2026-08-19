@@ -67,10 +67,13 @@ legacy_payload=$(mktemp /etc/caddy/.admin-legacy.XXXXXX)
 legacy_response=$(mktemp /etc/caddy/.admin-import-response.XXXXXX)
 curl_config=$(mktemp /etc/caddy/.admin-import-curl.XXXXXX)
 openai_response=$(mktemp /etc/caddy/.openai-surface.XXXXXX)
+admin_session_headers=$(mktemp /etc/caddy/.admin-session-headers.XXXXXX)
+admin_login_response=$(mktemp /etc/caddy/.admin-login-response.XXXXXX)
 backup=
 rollback_tmp=
 cleanup() {
-  rm -f -- "$tmp" "$legacy_payload" "$legacy_response" "$curl_config" "$openai_response"
+  rm -f -- "$tmp" "$legacy_payload" "$legacy_response" "$curl_config" "$openai_response" \
+    "$admin_session_headers" "$admin_login_response"
   [[ -z $rollback_tmp ]] || rm -f -- "$rollback_tmp"
 }
 trap cleanup EXIT
@@ -78,7 +81,8 @@ trap cleanup EXIT
 # Preserve shared production-only service keys without placing any secret in argv, stdout, the
 # repository, or a world-readable temporary file. AWK receives only the private raw-key path,
 # renders its canonical value, and rejects a divergent value already present in live Caddy.
-chmod 0600 "$tmp" "$legacy_payload" "$legacy_response" "$curl_config" "$openai_response"
+chmod 0600 "$tmp" "$legacy_payload" "$legacy_response" "$curl_config" "$openai_response" \
+  "$admin_session_headers" "$admin_login_response"
 awk -v proxy_admin_key_file="$PROXY_ADMIN_KEY_FILE" -v render_output="$tmp" \
   -f "$SCRIPT_DIR/render-caddy.awk" "$LIVE" "$TEMPLATE"
 
@@ -160,6 +164,40 @@ if ! caddy reload --adapter caddyfile --config "$LIVE"; then
   fi
   echo "Caddy reload failed; restored and activated $backup" >&2
   exit 1
+fi
+# Prove the staged managed-admin consumer contract through the public TLS boundary before the
+# infrastructure SHA can be accepted. This is credential-free: a document must redirect without a
+# Basic challenge, while the same-origin login projection must render the form directly.
+if grep -q '^crm\.apitoken\.sale {' "$LIVE"; then
+  admin_session_ready=0
+  for _ in 1 2 3 4 5 6 7 8; do
+    if admin_document_status=$(curl --noproxy '*' --silent --show-error --max-time 8 \
+        --resolve crm.apitoken.sale:443:127.0.0.1 \
+        -H 'accept: text/html' -D "$admin_session_headers" -o /dev/null -w '%{http_code}' \
+        https://crm.apitoken.sale/) \
+        && [[ $admin_document_status == 303 ]] \
+        && grep -Eiq '^location: /__admin-auth/login\?return_to=%2F\r?$' \
+          "$admin_session_headers" \
+        && ! grep -Eiq '^www-authenticate:' "$admin_session_headers" \
+        && admin_login_status=$(curl --noproxy '*' --silent --show-error --max-time 8 \
+          --resolve crm.apitoken.sale:443:127.0.0.1 \
+          -H 'accept: text/html' -D "$admin_session_headers" -o "$admin_login_response" \
+          -w '%{http_code}' 'https://crm.apitoken.sale/__admin-auth/login?return_to=%2F') \
+        && [[ $admin_login_status == 200 ]] \
+        && grep -Fq 'action="/__admin-auth/login"' "$admin_login_response"; then
+      admin_session_ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ $admin_session_ready != 1 ]]; then
+    if ! restore_live_config; then
+      echo "managed admin session smoke failed and Caddy rollback could not be activated" >&2
+      exit 1
+    fi
+    echo "managed admin session smoke failed; restored and activated $backup" >&2
+    exit 1
+  fi
 fi
 # Syntax-valid routing can still point the public OpenAI hostname at the wrong provider. Exercise a
 # quota-free unauthenticated request through loopback TLS before committing the infrastructure SHA.

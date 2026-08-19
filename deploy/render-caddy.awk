@@ -32,7 +32,7 @@ NR == FNR {
 
 END {
   if (key_file_valid != 1 || live_proxy_rows > 1 || control == "" || commadmin == "" || salesadmin == "" ||
-      admin_control_used < 1 || openkeys_internal_used != 1 || authkey_used != 1 || commadmin_used != 1 ||
+      admin_control_used < 1 || openkeys_internal_used != 1 || authkey_used != 2 || commadmin_used != 1 ||
       admin_commadmin_used != 1 || salesadmin_used != 1 || proxyadmin_used != 1) exit 43
 
   if (live_proxy_rows == 1 &&

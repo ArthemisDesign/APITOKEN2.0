@@ -2,6 +2,10 @@
 	# Clear client-supplied audit identity before forward_auth writes verified values. Caddy's
 	# default order is the reverse, which would erase the copied identity after authentication.
 	order request_header before forward_auth
+	# The managed-auth snippet uses one order-preserving route so its successful cookie bridge and
+	# credential cleanup run before any terminal site handle. The only other route is already nested
+	# inside Gemini's OAuth callback handle, so this does not reorder an unrelated site boundary.
+	order route before handle
 
 	# RSA, not Caddy's default ECDSA. The native (Bun-based) Claude Code Windows build fails TLS
 	# verification against Let's Encrypt ECDSA chains with UNKNOWN_CERTIFICATE_VERIFICATION_ERROR,
@@ -29,6 +33,9 @@
 	# failed upstream can never copy an internal key into journald.
 	log default {
 		format filter {
+			request>headers>Authorization replace REDACTED
+			request>headers>Cookie replace REDACTED
+			request>headers>X-Admin-Session-Set-Cookie replace REDACTED
 			request>headers>X-Admin-Key replace REDACTED
 			request>headers>X-Api-Key replace REDACTED
 			request>headers>X-Proxy-Admin-Key replace REDACTED
@@ -59,15 +66,53 @@ import /etc/caddy/router-active.caddy
 
 # Central database-backed admin authentication. The auth service checks the original hostname
 # against each account's domain grants and returns a trusted actor identity for downstream audit.
+# `forward_auth` copies successful auth-response headers onto the original request. The temporary
+# cookie header is therefore bridged onto the browser response and removed again before an app can
+# see it. Failed auth responses (401/303) are passed through by Caddy with their Location,
+# X-Admin-Login and Set-Cookie headers intact.
 (managed_admin_auth) {
-	request_header -X-Admin-Actor
-	request_header -X-Admin-Account-Id
-	forward_auth 127.0.0.1:8791 {
-		uri /v1/internal/admin-auth/verify
-		header_up Host 127.0.0.1:8791
-		header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"
-		header_up X-Admin-Domain {http.request.host}
-		copy_headers X-Admin-Actor X-Admin-Account-Id
+	route {
+		request_header -X-Admin-Actor
+		request_header -X-Admin-Account-Id
+		request_header -X-Admin-Auth-Mode
+		request_header -X-Admin-Session-Set-Cookie
+		@managed_admin_request not path /__admin-auth/*
+		forward_auth @managed_admin_request 127.0.0.1:8791 {
+			uri /v1/internal/admin-auth/verify
+			header_up Host 127.0.0.1:8791
+			header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"
+			header_up X-Admin-Domain {http.request.host}
+			header_up X-Admin-Auth-Mode session-v1
+			header_up X-Forwarded-Method {http.request.method}
+			header_up X-Forwarded-Uri {http.request.uri}
+			header_up Sec-Fetch-Dest {http.request.header.Sec-Fetch-Dest}
+			header_up Accept {http.request.header.Accept}
+			header_down -WWW-Authenticate
+			copy_headers X-Admin-Actor X-Admin-Account-Id Set-Cookie>X-Admin-Session-Set-Cookie
+		}
+		@admin_session_cookie header X-Admin-Session-Set-Cookie *
+		header @admin_session_cookie +Set-Cookie {http.request.header.X-Admin-Session-Set-Cookie}
+		request_header -X-Admin-Session-Set-Cookie
+		request_header -Authorization
+	}
+}
+
+# Same-origin browser login/logout is the only public projection of the internal auth controller.
+# `handle_path` strips /__admin-auth before the exact internal browser prefix is restored.
+(managed_admin_browser_auth) {
+	handle_path /__admin-auth/* {
+		rewrite * /v1/internal/admin-auth/browser{uri}
+		reverse_proxy 127.0.0.1:8791 {
+			header_up Host 127.0.0.1:8791
+			header_up -X-Admin-Actor
+			header_up -X-Admin-Account-Id
+			header_up -X-Admin-Session-Set-Cookie
+			header_up -X-Admin-Login
+			header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"
+			header_up X-Admin-Domain {http.request.host}
+			header_up X-Admin-Auth-Mode session-v1
+			header_down -WWW-Authenticate
+		}
 	}
 }
 
@@ -331,6 +376,10 @@ mail.apitoken.sale, autodiscover.apitoken.sale, autoconfig.apitoken.sale {
 # the commerce admin key stays server-side. The app also emits noindex headers as defence in depth.
 content-studio.apitoken.sale {
 	import managed_admin_auth
+	import managed_admin_browser_auth
+	handle /v1/internal/admin-auth/* {
+		respond 404
+	}
 	handle /v1/* {
 		import commerce_admin_backend
 	}
@@ -344,6 +393,7 @@ content-studio.apitoken.sale {
 monitoring.apitoken.sale {
 	request_header -X-WEBAUTH-USER
 	import managed_admin_auth
+	import managed_admin_browser_auth
 	reverse_proxy 127.0.0.1:3600 {
 		header_up X-WEBAUTH-USER {http.request.header.X-Admin-Actor}
 	}
@@ -356,6 +406,7 @@ monitoring.apitoken.sale {
 # depth that must not depend on the app release.
 admin.apitoken.sale {
 	import managed_admin_auth
+	import managed_admin_browser_auth
 	encode zstd gzip
 	header {
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
@@ -508,6 +559,7 @@ openkeys.apitoken.sale {
 }
 
 crm.apitoken.sale {
+	import managed_admin_browser_auth
 	# Parser ingest bypasses human admin auth and remains protected by x-crm-ingest-key in crm-api.
 	handle /v1/ingest/* {
 		reverse_proxy 127.0.0.1:3400
@@ -533,6 +585,7 @@ crm.apitoken.sale {
 # Caddy инжектит x-sales-admin-key на /v1/* server-side → страница /admin не просит ключ.
 admin.partners.apitoken.sale {
 	import managed_admin_auth
+	import managed_admin_browser_auth
 	handle /v1/* {
 		import sales_admin_backend
 	}

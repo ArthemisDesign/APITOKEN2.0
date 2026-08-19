@@ -1869,10 +1869,23 @@ https_vhost_status() {
 }
 
 require_admin_auth_vhost() {
-  local host=$1 status
-  status=$(https_vhost_status "$host")
-  [[ $status == 401 ]] \
-    || wd_die "$host is not reachable behind managed admin auth (HTTP ${status:-unreachable})"
+  local host=$1 response headers status login_status
+  response=$(curl --noproxy '*' --insecure --silent --show-error --max-time 5 \
+    --resolve "$host:443:127.0.0.1" -H 'Accept: text/html' -D - -o /dev/null \
+    -w $'\n%{http_code}' "https://$host/" 2>/dev/null || true)
+  status=${response##*$'\n'}
+  headers=${response%$'\n'*}
+  [[ $status == 303 ]] \
+    || wd_die "$host document navigation is not redirected by managed admin auth (HTTP ${status:-unreachable})"
+  grep -Eiq '^location: /__admin-auth/login\?return_to=%2F\r?$' <<<"$headers" \
+    || wd_die "$host managed admin auth returned an unsafe or missing login location"
+  ! grep -Eiq '^www-authenticate:' <<<"$headers" \
+    || wd_die "$host managed session auth leaked a Basic browser challenge"
+  login_status=$(curl --noproxy '*' --insecure --silent --show-error --max-time 5 \
+    --resolve "$host:443:127.0.0.1" -H 'Accept: text/html' -o /dev/null -w '%{http_code}' \
+    "https://$host/__admin-auth/login?return_to=%2F" 2>/dev/null || true)
+  [[ $login_status == 200 ]] \
+    || wd_die "$host same-origin managed admin login is unavailable (HTTP ${login_status:-unreachable})"
 }
 
 require_retired_vhost() {

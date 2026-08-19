@@ -517,15 +517,15 @@ together with it (the full walk — the "New model" / "Price change" checklists 
 | (loopback only, no public vhost) | KIMI runtime `:8803` (active/passive slots 8804/8805); a backend-only plane, not part of the router namespace or catalog |
 | `router.apitoken.sale` | atomic `router_backend` → claude-router slot `:8800` or `:8801`; the stable loopback `:8802` uses the same backend |
 | `backend.apitoken.sale` | commerce `apps/api` `:8791` (slots 3000/3001) |
-| `admin.apitoken.sale` | managed auth; data and `/events/{engine,openai,gemini,kimi}` routes → engine 8790/8792/8794/8803, `/admin/*` → commerce 8791, `/openkeys-admin/*` → 3410, `/partner-admin/*` → sales 3100, `/proxy-admin/*` → Authbot 8806; everything else → `apps/admin` `:3700` |
+| `admin.apitoken.sale` | managed 180-day host-only session; `/__admin-auth/*` → commerce auth 8791; data and `/events/{engine,openai,gemini,kimi}` routes → engine 8790/8792/8794/8803, `/admin/*` → commerce 8791, `/openkeys-admin/*` → 3410, `/partner-admin/*` → sales 3100, `/proxy-admin/*` → Authbot 8806; everything else → `apps/admin` `:3700` |
 | `partners.apitoken.sale` | `/v1/*` → sales-api `:3100`; everything else → sales-web `:3200` |
 | `openkeys.apitoken.sale` | `apps/openkeys` `:3410` |
-| `content-studio.apitoken.sale` | `/v1/*` → commerce 8791; everything else → `apps/content-studio` `:3500` |
-| `crm.apitoken.sale` | `/v1/ingest/*`, `/r/*` → crm-api `:3400` (no admin auth); `/v1/*` and everything else → managed auth → crm-api 3400 / crm-web `:3300`. The CRM lives in a separate repository — do NOT delete the routing |
-| `monitoring.apitoken.sale` | Grafana `:3600`; `support.apitoken.sale` → Chatwoot `:3010` |
+| `content-studio.apitoken.sale` | managed session; `/__admin-auth/*` → commerce auth 8791; `/v1/*` → commerce 8791; everything else → `apps/content-studio` `:3500` |
+| `crm.apitoken.sale` | `/v1/ingest/*`, `/r/*` → crm-api `:3400` (no admin auth); `/__admin-auth/*` → commerce auth 8791; `/v1/*` and everything else → managed session → crm-api 3400 / crm-web `:3300`. The CRM lives in a separate repository — do NOT delete the routing |
+| `monitoring.apitoken.sale` | managed session with `/__admin-auth/*` on commerce auth 8791; Grafana `:3600`; `support.apitoken.sale` → Chatwoot `:3010` |
 | `mail.apitoken.sale` (+`autodiscover.`, `autoconfig.`) | mail service `127.0.0.1:8080` |
 | `sales.apitoken.sale` | 301 redirect to `partners.apitoken.sale` |
-| `admin.partners.apitoken.sale` | managed auth; `/v1/*` → sales-api `:3100`; everything else → sales-web `:3200` |
+| `admin.partners.apitoken.sale` | managed session; `/__admin-auth/*` → commerce auth 8791; `/v1/*` → sales-api `:3100`; everything else → sales-web `:3200` |
 
 The stable provider origins 8790/8792/8794/8803 synthesize the internal
 `X-Apitoken-Execution-State: not_started` only on Caddy `no healthy upstream`; an ordinary

@@ -2217,11 +2217,43 @@ unset -f systemctl docker activate_redis_definition
 ! grep -Fq 'partners.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'crm.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 [[ $(grep -Fc 'import managed_admin_auth' "$ROOT/deploy/Caddyfile") -ge 5 ]]
-grep -Fq 'forward_auth 127.0.0.1:8791' "$ROOT/deploy/Caddyfile"
+grep -Fq 'forward_auth @managed_admin_request 127.0.0.1:8791' "$ROOT/deploy/Caddyfile"
 grep -Fq 'order request_header before forward_auth' "$ROOT/deploy/Caddyfile"
+grep -Fq 'order route before handle' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'managed admin auth route can run after a terminal application handle'
 grep -Fq 'header_up Host 127.0.0.1:8791' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-Admin-Domain {http.request.host}' "$ROOT/deploy/Caddyfile"
+[[ $(grep -Fc 'import managed_admin_browser_auth' "$ROOT/deploy/Caddyfile") == 5 ]] \
+  || wd_die 'not every managed-admin vhost exposes the same-origin browser auth projection'
+grep -Fq 'handle_path /__admin-auth/* {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'rewrite * /v1/internal/admin-auth/browser{uri}' "$ROOT/deploy/Caddyfile"
+[[ $(grep -Fc 'header_up X-Admin-Auth-Mode session-v1' "$ROOT/deploy/Caddyfile") == 2 ]] \
+  || wd_die 'managed admin auth is not pinned to the session-v1 producer contract'
+grep -Fq 'header_up X-Forwarded-Method {http.request.method}' "$ROOT/deploy/Caddyfile"
+grep -Fq 'header_up X-Forwarded-Uri {http.request.uri}' "$ROOT/deploy/Caddyfile"
+grep -Fq 'header_up Sec-Fetch-Dest {http.request.header.Sec-Fetch-Dest}' "$ROOT/deploy/Caddyfile"
+grep -Fq 'header_up Accept {http.request.header.Accept}' "$ROOT/deploy/Caddyfile"
+grep -Fq 'copy_headers X-Admin-Actor X-Admin-Account-Id Set-Cookie>X-Admin-Session-Set-Cookie' \
+  "$ROOT/deploy/Caddyfile"
+grep -Fq 'header @admin_session_cookie +Set-Cookie {http.request.header.X-Admin-Session-Set-Cookie}' \
+  "$ROOT/deploy/Caddyfile"
+[[ $(grep -Fc 'request_header -X-Admin-Session-Set-Cookie' "$ROOT/deploy/Caddyfile") == 2 ]] \
+  || wd_die 'temporary managed-admin cookie bridge is not cleared before and after forward auth'
+grep -Fq 'request_header -Authorization' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'successful Basic migration still forwards credentials into application upstreams'
+for browser_auth_spoof_header in X-Admin-Actor X-Admin-Account-Id \
+  X-Admin-Session-Set-Cookie X-Admin-Login; do
+  grep -Fq "header_up -$browser_auth_spoof_header" "$ROOT/deploy/Caddyfile" \
+    || wd_die "browser auth projection accepts client-supplied $browser_auth_spoof_header"
+done
+[[ $(grep -Fc 'header_down -WWW-Authenticate' "$ROOT/deploy/Caddyfile") == 2 ]] \
+  || wd_die 'session auth can leak a browser Basic challenge'
+content_studio_vhost=$(sed -n \
+  '/^content-studio\.apitoken\.sale {$/,/^monitoring\.apitoken\.sale {$/p' \
+  "$ROOT/deploy/Caddyfile")
+grep -Fq 'handle /v1/internal/admin-auth/* {' <<<"$content_studio_vhost" \
+  || wd_die 'content studio exposes the internal browser-auth route outside its public projection'
 ! grep -Fqi 'X-Apitoken-Api-Plane' "$ROOT/deploy/Caddyfile"
 strip_execution_identity_block=$(sed -n \
   '/^(strip_execution_identity) {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
@@ -2310,6 +2342,11 @@ grep -Fq 'lb_policy first' <<<"$gemini_stable_origin" \
 ! grep -Fq 'health_body invalid_request_error' "$ROOT/deploy/Caddyfile"
 grep -Fq 'OpenAI hostname smoke failed; restored' "$ROOT/deploy/install-caddy.sh" \
   || wd_die "Caddy installation can commit a syntactically valid but misrouted OpenAI hostname"
+grep -Fq 'managed admin session smoke failed; restored' "$ROOT/deploy/install-caddy.sh" \
+  || wd_die 'Caddy installation can commit a broken managed-admin session boundary'
+grep -Fq 'https://crm.apitoken.sale/__admin-auth/login?return_to=%2F' \
+  "$ROOT/deploy/install-caddy.sh" \
+  || wd_die 'Caddy installation does not exercise the public same-origin login projection'
 grep -Fq -- "-d '{}'" "$ROOT/deploy/install-caddy.sh" \
   || wd_die "Caddy smoke can execute a real OpenAI provider turn"
 grep -Fq -- "-d '{}'" "$ROOT/deploy/watchdog.sh" \
@@ -2424,6 +2461,12 @@ grep -Fq 'reverse_proxy 127.0.0.1:3700' "$ROOT/deploy/Caddyfile" \
 ! grep -Fq 'fail_duration' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'max_fails' "$ROOT/deploy/Caddyfile"
 grep -Fq 'request>headers>X-Admin-Key replace REDACTED' "$ROOT/deploy/Caddyfile"
+grep -Fq 'request>headers>Authorization replace REDACTED' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'managed-admin Basic migration credentials can enter Caddy logs'
+grep -Fq 'request>headers>Cookie replace REDACTED' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'managed-admin session cookies can enter Caddy logs'
+grep -Fq 'request>headers>X-Admin-Session-Set-Cookie replace REDACTED' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'managed-admin cookie bridge can enter Caddy logs'
 grep -Fq 'request>headers>X-Proxy-Admin-Key replace REDACTED' "$ROOT/deploy/Caddyfile" \
   || wd_die 'dedicated proxy-admin header is not redacted from Caddy runtime errors'
 # Both slots of each pair stay listed as upstreams while exactly one runs, so the active health
@@ -4114,11 +4157,11 @@ awk -v proxy_admin_key_file="$render_proxy_key" -v render_output="$rendered_twic
 for rendered in "$rendered_once" "$rendered_twice"; do
   ! grep -Fq 'basic_auth' "$rendered"
   ! grep -Fq '$2y$' "$rendered"
-  grep -Fq 'forward_auth 127.0.0.1:8791' "$rendered"
+  grep -Fq 'forward_auth @managed_admin_request 127.0.0.1:8791' "$rendered"
   [[ $(grep -Fc 'header_up x-api-key "test-control-secret"' "$rendered") == 5 ]]
   [[ $(grep -Fc 'header_up X-OpenKeys-Control-Key "test-control-secret"' "$rendered") == 1 ]]
   [[ $(grep -Fc 'header_up x-admin-key "test-commerce-secret"' "$rendered") == 2 ]]
-  [[ $(grep -Fc 'header_up X-Admin-Key "test-commerce-secret"' "$rendered") == 1 ]]
+  [[ $(grep -Fc 'header_up X-Admin-Key "test-commerce-secret"' "$rendered") == 2 ]]
   [[ $(grep -Fc 'header_up x-sales-admin-key "test-sales-secret"' "$rendered") == 1 ]]
   [[ $(grep -Fc "header_up X-Proxy-Admin-Key \"$canonical_proxy_key\"" "$rendered") == 1 ]]
   if grep -Eq '<[A-Z_]*PLACEHOLDER>' "$rendered"; then

@@ -8,7 +8,7 @@ functions were moved here.
 ## Architecture
 
 ```
-browser ──Basic credentials──▶ Caddy forward_auth ──▶ commerce admin identity store
+browser ──host-only session──▶ Caddy forward_auth ──▶ commerce admin identity store
                           │
                           ▼
                        Caddy (admin.apitoken.sale)
@@ -32,21 +32,23 @@ browser ──Basic credentials──▶ Caddy forward_auth ──▶ commerce a
   diagram above. Security headers are sent by the app itself via `next.config.ts`; Caddy
   adds only the defence-in-depth Permissions Policy and the indexing ban.
 - Caddy `forward_auth` is the single human gate. Commerce PostgreSQL stores only password
-  hashes, status and grants for the four managed domains. Control, commerce-admin and
+  hashes, status and grants for the five managed domains. Control, commerce-admin and
   sales-admin keys are injected only server-side and never end up in HTML, browser
   storage, responses or logs.
-- The commerce auth producer also supports the staged `session-v1` contract for the next
-  Caddy release. Only a trusted Caddy request carrying `X-Admin-Auth-Mode: session-v1`
-  enables it; without that header the existing Basic challenge is unchanged. The new
-  contract provides same-origin browser login/logout endpoints and a 180-day host-only
+- Caddy uses the commerce auth producer's `session-v1` contract. Only a trusted Caddy request
+  carrying `X-Admin-Auth-Mode: session-v1` enables it; direct legacy calls without that header
+  retain the Basic contract for rollback compatibility. The browser contract provides
+  same-origin login/logout endpoints and a 180-day host-only
   `HttpOnly; Secure; SameSite=Lax` signed cookie. Every request still rechecks the active
   account and exact domain grant, while password, domain or status changes revoke the
-  cookie. Caddy must not activate this consumer contract until the API producer release
-  is live on both commerce slots.
+  cookie. Document requests redirect locally to login; API requests receive a challenge-free
+  `401` with `X-Admin-Login`, so mobile Safari never opens its native Basic prompt.
 - The verified identity is passed to commerce as `x-admin-actor` and `x-admin-account-id`
   via `forward_auth copy_headers`. The global directive order places an anti-spoof
   `request_header` clear before authentication, so Caddy first removes client forgeries,
   then sets the verified identity, and auth stays ahead of the terminal `handle` routes.
+  A successful Basic-to-session upgrade bridges its cookie onto the browser response and
+  removes the temporary internal header before any application upstream runs.
   The downstream proxy preserves these headers without override, so that audit can
   distinguish operators and self-service password rotation. The internal auth API is
   closed on the public `backend.apitoken.sale` and is reachable by Caddy only via

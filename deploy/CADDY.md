@@ -1,6 +1,29 @@
 # Caddy production routing
 
-`deploy/Caddyfile` is the complete intended production configuration for Caddy 2.11. It includes the public engine API, the blue-green commerce API, loopback-only stable origins, mail/autodiscovery, support routing, the unified admin, partner admin, CRM, and the basic-auth-protected Content Studio.
+`deploy/Caddyfile` is the complete intended production configuration for Caddy 2.11. It includes the public engine API, the blue-green commerce API, loopback-only stable origins, mail/autodiscovery, support routing, and the managed-session-protected unified admin, partner admin, CRM, Content Studio and monitoring surfaces.
+
+## Managed browser sessions
+
+The five managed admin hosts expose only `/__admin-auth/*` as the same-origin browser projection of
+the loopback commerce auth controller. Every other protected request passes through `forward_auth`
+with the exact original method, URI and browser navigation headers plus
+`X-Admin-Auth-Mode: session-v1`. A document without a valid cookie receives a challenge-free `303`
+to the local login form; an API request receives a challenge-free `401` and `X-Admin-Login`.
+Successful login sets the host-only `HttpOnly; Secure; SameSite=Lax` cookie for 180 days. The auth
+producer still resolves the account and exact hostname grant on every request, so disabling the
+account or changing its password/domains revokes the cookie immediately.
+
+Caddy's `forward_auth copy_headers` writes successful auth-response headers onto the original
+request. For Basic-to-cookie migration, `Set-Cookie` is therefore copied through the private
+`X-Admin-Session-Set-Cookie` bridge, added to the eventual browser response, and cleared before the
+application upstream runs; successful Basic credentials are removed at the same boundary. Client
+copies of identity, auth-mode and bridge headers are removed first. Non-2xx auth responses retain
+their safe `Location`, `X-Admin-Login` and cookie-clear headers,
+while `WWW-Authenticate` is stripped so iOS never reopens its native Basic prompt. CRM ingest and
+public `/r/*` tracking remain outside human auth. `install-caddy.sh` imports the old Caddy bcrypt
+rows before the one-time cutover and rolls the live file back if the public redirect/login smoke
+does not pass. Caddy's structured-log filter redacts Authorization, Cookie and the temporary bridge
+header in addition to the injected service credentials.
 
 ## Host-only secrets
 
