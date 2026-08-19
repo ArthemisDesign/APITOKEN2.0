@@ -118,6 +118,19 @@ fn make_fallback_router(anthropic: &str, openai: &str, gemini: &str, ttl: Durati
     )
 }
 
+fn private_spool_root() -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "router-spool-test-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    path
+}
+
 fn make_router_with(
     anthropic: &str,
     openai: &str,
@@ -126,6 +139,18 @@ fn make_router_with(
     fallback_enabled: bool,
     client: Client,
 ) -> Router {
+    let spool_root = private_spool_root();
+    let body_storage = bounded_body::Budget::new(
+        api_limits::current::ROUTER_SPOOL_BUDGET,
+        api_limits::ByteLimit::from_bytes(api_limits::MIB),
+    )
+    .unwrap();
+    let body_memory = bounded_body::Budget::new(
+        api_limits::current::ROUTER_MEMORY_BUDGET,
+        api_limits::ByteLimit::from_bytes(api_limits::MIB),
+    )
+    .unwrap();
+    let body_spool = bounded_body::PrivateSpoolFactory::new(&spool_root).unwrap();
     app(Arc::new(AppState {
         cfg: Config {
             host: "127.0.0.1".into(),
@@ -141,11 +166,14 @@ fn make_router_with(
             body_limits: api_limits::current::ROUTER,
             body_idle_secs: api_limits::current::ROUTER_BODY_IDLE_SECS,
             body_max_secs: api_limits::current::ROUTER_BODY_MAX_SECS,
+            body_spool_root: spool_root,
         },
         client,
         catalog: Catalog::with_ttl(ttl),
         metrics: Arc::new(RouterMetrics::new()),
-        body_admission: Arc::new(Semaphore::new(routing::BODY_ADMISSION_UNITS)),
+        body_storage,
+        body_memory,
+        body_spool,
     }))
 }
 

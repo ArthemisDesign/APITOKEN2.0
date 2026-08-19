@@ -64,6 +64,8 @@ if ! kill -0 "$SRV" 2>/dev/null || \
   echo "mock engine не поднялся" >&2; tail -n 80 "$DATA/srv.log" >&2; exit 2
 fi
 
+mkdir -m 700 "$DATA/router-spool"
+CLAUDE_ROUTER_BODY_SPOOL_ROOT="$DATA/router-spool" \
 CLAUDE_ROUTER_HOST=127.0.0.1 CLAUDE_ROUTER_PORT=$RTRP \
 CLAUDE_ROUTER_ANTHROPIC_ORIGIN="http://127.0.0.1:$SRVP" \
 CLAUDE_ROUTER_OPENAI_ORIGIN="http://127.0.0.1:1" \

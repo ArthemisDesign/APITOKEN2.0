@@ -36,7 +36,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use axum::Router;
 use reqwest::Client;
-use tokio::sync::Semaphore;
 
 use catalog::{Catalog, PlaneOrigins};
 use config::Config;
@@ -50,10 +49,11 @@ pub struct AppState {
     client: Client,
     catalog: Catalog,
     metrics: Arc<RouterMetrics>,
-    /// Raw request-body admission only. Weighted units grow with observed chunked bytes and remain
-    /// held through buffering until the outbound upload completes; provider TTFT/response streams
-    /// and native lanes never hold them.
-    body_admission: Arc<Semaphore>,
+    /// Independent fail-fast raw-storage and estimated-memory authorities plus the slot-private
+    /// directory capability. Native and response/SSE bodies never enter these budgets.
+    body_storage: bounded_body::Budget,
+    body_memory: bounded_body::Budget,
+    body_spool: bounded_body::PrivateSpoolFactory,
 }
 
 /// HTTP-клиент плоскостей. Только loopback HTTP: TLS не нужен. Redirect не
@@ -381,18 +381,25 @@ async fn shutdown_signal() {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cfg = Config::from_env()?;
+    let body_storage = bounded_body::Budget::new(
+        cfg.body_limits.spool_budget,
+        api_limits::ByteLimit::from_bytes(api_limits::MIB),
+    )
+    .map_err(|error| anyhow::anyhow!("router body storage budget: {error:?}"))?;
+    let body_memory = bounded_body::Budget::new(
+        cfg.body_limits.memory_budget,
+        api_limits::ByteLimit::from_bytes(api_limits::MIB),
+    )
+    .map_err(|error| anyhow::anyhow!("router body memory budget: {error:?}"))?;
+    let body_spool = bounded_body::PrivateSpoolFactory::new(&cfg.body_spool_root)
+        .map_err(|error| anyhow::anyhow!("router private body spool unavailable: {error:?}"))?;
     let state = Arc::new(AppState {
         client: build_client()?,
         catalog: Catalog::new(),
         metrics: Arc::new(RouterMetrics::new()),
-        body_admission: Arc::new(Semaphore::new(
-            api_limits::AdmissionUnits::for_bytes(
-                cfg.body_limits.memory_budget,
-                api_limits::ByteLimit::from_bytes(api_limits::MIB),
-            )
-            .map_err(|error| anyhow::anyhow!("router body admission units: {error}"))?
-            .get() as usize,
-        )),
+        body_storage,
+        body_memory,
+        body_spool,
         cfg,
     });
     let addr: SocketAddr = format!("{}:{}", state.cfg.host, state.cfg.port).parse()?;

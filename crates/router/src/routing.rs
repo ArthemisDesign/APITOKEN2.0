@@ -18,7 +18,6 @@ use axum::extract::Request;
 use axum::http::{request::Parts, HeaderMap};
 use axum::response::Response;
 use futures_util::{stream, StreamExt};
-use tokio::sync::OwnedSemaphorePermit;
 
 use crate::auth::{self, AuthError};
 use crate::catalog::{self, NS_ANTHROPIC, NS_GOOGLE, NS_KIMI, NS_OPENAI};
@@ -33,37 +32,36 @@ use crate::{proxy, AppState};
 #[cfg(test)]
 const BODY_LIMIT: usize = api_limits::current::ROUTER_REQUEST.bytes() as usize;
 pub const BODY_ADMISSION_UNIT_BYTES: usize = api_limits::MIB as usize;
-#[cfg(test)]
-pub const BODY_ADMISSION_UNITS: usize =
-    (api_limits::current::ROUTER_MEMORY_BUDGET.bytes() / api_limits::MIB) as usize;
-
-struct BodyAdmissionPermit {
-    permit: OwnedSemaphorePermit,
+struct BodyMetricUnits {
     metrics: Arc<RouterMetrics>,
     units: u32,
 }
 
-impl BodyAdmissionPermit {
-    fn new(permit: OwnedSemaphorePermit, metrics: Arc<RouterMetrics>, units: u32) -> Self {
+impl BodyMetricUnits {
+    fn new(metrics: Arc<RouterMetrics>, units: u32) -> Self {
         metrics.body_units_acquired(units);
-        Self {
-            permit,
-            metrics,
-            units,
-        }
+        Self { metrics, units }
     }
 
-    fn merge(&mut self, permit: OwnedSemaphorePermit, units: u32) {
-        self.permit.merge(permit);
-        self.units += units;
-        self.metrics.body_units_acquired(units);
+    fn replace(&mut self, units: u32) {
+        if units > self.units {
+            self.metrics.body_units_acquired(units - self.units);
+        } else {
+            self.metrics.body_units_released(self.units - units);
+        }
+        self.units = units;
     }
 }
 
-impl Drop for BodyAdmissionPermit {
+impl Drop for BodyMetricUnits {
     fn drop(&mut self) {
         self.metrics.body_units_released(self.units);
     }
+}
+
+struct BodyOwnership {
+    _stored: bounded_body::StoredBodyLease,
+    _metric_units: BodyMetricUnits,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -583,7 +581,7 @@ async fn read_body(
     state: &AppState,
     headers: &HeaderMap,
     body: Body,
-) -> Result<(Bytes, BodyAdmissionPermit), BodyReadError> {
+) -> Result<(Bytes, BodyOwnership), BodyReadError> {
     read_body_with_timeouts(
         state,
         headers,
@@ -600,7 +598,7 @@ async fn read_body_with_timeouts(
     body: Body,
     idle_timeout: Duration,
     max_timeout: Duration,
-) -> Result<(Bytes, BodyAdmissionPermit), BodyReadError> {
+) -> Result<(Bytes, BodyOwnership), BodyReadError> {
     let body_limit = state
         .cfg
         .body_limits
@@ -609,30 +607,47 @@ async fn read_body_with_timeouts(
         .map_err(|_| BodyReadError::TooLarge)?;
     let declared_units = declared_body_admission_units(headers, body_limit)?;
     let initial_units = declared_units.unwrap_or(1);
-    let permit = state
-        .body_admission
-        .clone()
-        .try_acquire_many_owned(initial_units)
+    let initial_weight =
+        api_limits::ByteLimit::from_bytes(u64::from(initial_units) * api_limits::MIB);
+    let storage = state
+        .body_storage
+        .try_reserve(initial_weight)
         .map_err(|_| {
             state.metrics.body_admission_overload();
             BodyReadError::Overloaded
         })?;
-    let mut admission = BodyAdmissionPermit::new(permit, state.metrics.clone(), initial_units);
-    let admission_pool = state.body_admission.clone();
+    let memory = match state.body_memory.try_reserve(initial_weight) {
+        Ok(reservation) => reservation,
+        Err(_) => {
+            drop(storage);
+            state.metrics.body_admission_overload();
+            return Err(BodyReadError::Overloaded);
+        }
+    };
+    let metric_units = BodyMetricUnits::new(state.metrics.clone(), initial_units);
+    let spool = state
+        .body_spool
+        .try_clone()
+        .map_err(|_| BodyReadError::Overloaded)?;
+    let mut store = bounded_body::BodyStore::start(
+        bounded_body::StorageConfig {
+            request_limit: state.cfg.body_limits.request,
+            memory_threshold: state.cfg.body_limits.memory_threshold,
+        },
+        &state.body_storage,
+        &state.body_memory,
+        storage,
+        memory,
+        spool,
+    )
+    .map_err(|_| BodyReadError::Overloaded)?;
     let metrics = state.metrics.clone();
 
     let read = async move {
+        let mut metric_units = metric_units;
         let mut stream = body.into_data_stream();
         let started_at = tokio::time::Instant::now();
         let mut last_progress_at = started_at;
-        let mut bytes = Vec::with_capacity(
-            headers
-                .get(axum::http::header::CONTENT_LENGTH)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(0)
-                .min(body_limit),
-        );
         loop {
             let now = tokio::time::Instant::now();
             let idle_remaining = idle_timeout
@@ -655,28 +670,33 @@ async fn read_body_with_timeouts(
                 continue;
             }
             last_progress_at = tokio::time::Instant::now();
-            let next_len = bytes
-                .len()
-                .checked_add(chunk.len())
-                .ok_or(BodyReadError::TooLarge)?;
-            if next_len > body_limit {
-                return Err(BodyReadError::TooLarge);
-            }
-            let needed_units = body_units_for_len(next_len, body_limit);
-            if needed_units > admission.units {
-                let additional = needed_units - admission.units;
-                let permit = admission_pool
-                    .clone()
-                    .try_acquire_many_owned(additional)
-                    .map_err(|_| {
-                        metrics.body_admission_overload();
-                        BodyReadError::Overloaded
-                    })?;
-                admission.merge(permit, additional);
-            }
-            bytes.extend_from_slice(&chunk);
+            store.push(&chunk).map_err(|error| match error {
+                bounded_body::StorageError::TooLarge
+                | bounded_body::StorageError::ArithmeticOverflow => BodyReadError::TooLarge,
+                bounded_body::StorageError::StorageExhausted
+                | bounded_body::StorageError::MemoryExhausted
+                | bounded_body::StorageError::PrivateSpoolUnavailable
+                | bounded_body::StorageError::Io
+                | bounded_body::StorageError::InvalidConfig => {
+                    metrics.body_admission_overload();
+                    BodyReadError::Overloaded
+                }
+            })?;
         }
-        Ok((Bytes::from(bytes), admission))
+        let stored = store.finish().map_err(|_| BodyReadError::Overloaded)?;
+        let (bytes, stored) = stored
+            .into_memory()
+            .map_err(|_| BodyReadError::Overloaded)?;
+        let units = body_units_for_len(bytes.len(), body_limit);
+        let bytes = Bytes::from(bytes);
+        metric_units.replace(units);
+        Ok((
+            bytes,
+            BodyOwnership {
+                _stored: stored,
+                _metric_units: metric_units,
+            },
+        ))
     };
 
     match read.await {
@@ -688,7 +708,7 @@ async fn read_body_with_timeouts(
     }
 }
 
-fn upload_body(bytes: Bytes, permit: BodyAdmissionPermit) -> Body {
+fn upload_body(bytes: Bytes, permit: BodyOwnership) -> Body {
     // The permit remains in the unfold state after yielding the only chunk. Reqwest polls once more
     // for EOF only after it has consumed that chunk, so admission releases after upload rather than
     // after provider TTFT/response headers. Transport cancellation drops the state immediately.
@@ -707,7 +727,7 @@ async fn proxy_single(
     surface: Surface,
     fast_header: bool,
     fast_body_alias: bool,
-    body_permit: BodyAdmissionPermit,
+    body_permit: BodyOwnership,
 ) -> Response {
     let mut rewrite_native_model = None;
     let lane = match catalog::namespace_lane(model) {
@@ -897,7 +917,7 @@ fn normalize_fast_service_tier(
     Ok(())
 }
 
-fn request_from_parts(parts: &Parts, body: Bytes, permit: Option<BodyAdmissionPermit>) -> Request {
+fn request_from_parts(parts: &Parts, body: Bytes, permit: Option<BodyOwnership>) -> Request {
     let body = match permit {
         Some(permit) => upload_body(body, permit),
         None => Body::from(body),
@@ -957,7 +977,6 @@ fn bounded_log_id(id: &str) -> String {
 mod tests {
     use super::*;
     use axum::http::{HeaderValue, StatusCode};
-    use tokio::sync::Semaphore;
 
     #[test]
     fn attempt_log_model_is_single_line_and_bounded() {
@@ -1121,29 +1140,16 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn outbound_upload_releases_admission_at_eof() {
-        let semaphore = Arc::new(Semaphore::new(1));
-        let metrics = Arc::new(RouterMetrics::new());
-        let permit = semaphore.clone().try_acquire_owned().unwrap();
-        let admission = BodyAdmissionPermit::new(permit, metrics.clone(), 1);
-        let body = upload_body(Bytes::from_static(b"payload"), admission);
-
-        assert_eq!(semaphore.available_permits(), 0);
-        assert_eq!(
-            axum::body::to_bytes(body, 1024).await.unwrap(),
-            Bytes::from_static(b"payload")
-        );
-        assert_eq!(semaphore.available_permits(), 1);
-        assert!(metrics
-            .render()
-            .contains("claude_router_active_body_admission_units 0"));
-    }
-
-    #[tokio::test]
-    async fn body_read_idle_deadline_releases_admission_and_records_timeout() {
-        let metrics = Arc::new(RouterMetrics::new());
-        let state = AppState {
+    fn test_state(metrics: Arc<RouterMetrics>) -> AppState {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "router-routing-test-{}-{:p}",
+            std::process::id(),
+            Arc::as_ptr(&metrics)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        AppState {
             cfg: crate::config::Config {
                 host: "127.0.0.1".into(),
                 port: 0,
@@ -1155,12 +1161,29 @@ mod tests {
                 body_limits: api_limits::current::ROUTER,
                 body_idle_secs: api_limits::current::ROUTER_BODY_IDLE_SECS,
                 body_max_secs: api_limits::current::ROUTER_BODY_MAX_SECS,
+                body_spool_root: root.clone(),
             },
             client: crate::build_client().unwrap(),
             catalog: crate::catalog::Catalog::new(),
-            metrics: metrics.clone(),
-            body_admission: Arc::new(Semaphore::new(BODY_ADMISSION_UNITS)),
-        };
+            metrics,
+            body_storage: bounded_body::Budget::new(
+                api_limits::current::ROUTER_SPOOL_BUDGET,
+                api_limits::ByteLimit::from_bytes(api_limits::MIB),
+            )
+            .unwrap(),
+            body_memory: bounded_body::Budget::new(
+                api_limits::current::ROUTER_MEMORY_BUDGET,
+                api_limits::ByteLimit::from_bytes(api_limits::MIB),
+            )
+            .unwrap(),
+            body_spool: bounded_body::PrivateSpoolFactory::new(root).unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn body_read_idle_deadline_releases_admission_and_records_timeout() {
+        let metrics = Arc::new(RouterMetrics::new());
+        let state = test_state(metrics.clone());
         let body = Body::from_stream(stream::pending::<Result<Bytes, Infallible>>());
         assert!(matches!(
             read_body_with_timeouts(
@@ -1173,10 +1196,8 @@ mod tests {
             .await,
             Err(BodyReadError::Timeout)
         ));
-        assert_eq!(
-            state.body_admission.available_permits(),
-            BODY_ADMISSION_UNITS
-        );
+        assert_eq!(state.body_storage.used_bytes(), 0);
+        assert_eq!(state.body_memory.used_bytes(), 0);
         let rendered = metrics.render();
         assert!(rendered.contains("claude_router_body_read_timeout_total 1"));
         assert!(rendered.contains("claude_router_active_body_admission_units 0"));
@@ -1185,24 +1206,7 @@ mod tests {
     #[tokio::test]
     async fn body_read_progress_refreshes_idle_deadline() {
         let metrics = Arc::new(RouterMetrics::new());
-        let state = AppState {
-            cfg: crate::config::Config {
-                host: "127.0.0.1".into(),
-                port: 0,
-                anthropic_origin: "http://127.0.0.1:1".into(),
-                kimi_origin: "http://127.0.0.1:1".into(),
-                openai_origin: "http://127.0.0.1:2".into(),
-                gemini_origin: "http://127.0.0.1:3".into(),
-                fallback_enabled: false,
-                body_limits: api_limits::current::ROUTER,
-                body_idle_secs: api_limits::current::ROUTER_BODY_IDLE_SECS,
-                body_max_secs: api_limits::current::ROUTER_BODY_MAX_SECS,
-            },
-            client: crate::build_client().unwrap(),
-            catalog: crate::catalog::Catalog::new(),
-            metrics: metrics.clone(),
-            body_admission: Arc::new(Semaphore::new(BODY_ADMISSION_UNITS)),
-        };
+        let state = test_state(metrics.clone());
         let chunks = stream::unfold(0, |index| async move {
             if index == 3 {
                 return None;
@@ -1222,10 +1226,8 @@ mod tests {
 
         assert_eq!(bytes, Bytes::from_static(b"xxx"));
         drop(permit);
-        assert_eq!(
-            state.body_admission.available_permits(),
-            BODY_ADMISSION_UNITS
-        );
+        assert_eq!(state.body_storage.used_bytes(), 0);
+        assert_eq!(state.body_memory.used_bytes(), 0);
         assert!(metrics
             .render()
             .contains("claude_router_body_read_timeout_total 0"));

@@ -193,6 +193,8 @@ with socket.socket() as listener:
     print(listener.getsockname()[1])
 PY
 )
+mkdir -m 700 "$DATA/router-spool"
+CLAUDE_ROUTER_BODY_SPOOL_ROOT="$DATA/router-spool" \
 CLAUDE_ROUTER_HOST=127.0.0.1 \
 CLAUDE_ROUTER_PORT=$ROUTER_PORT \
 CLAUDE_ROUTER_ANTHROPIC_ORIGIN=http://127.0.0.1:$ANTHROPIC_PORT \

@@ -73,9 +73,11 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
 - `config.rs` — the only place env is read (`CLAUDE_ROUTER_*`), including
   the strict off-by-default flag `CLAUDE_ROUTER_FALLBACK_ENABLED` (`0|1|false|true`). The dormant
   body settings use `api-limits` strict decimal MiB/seconds parsing and fail startup on malformed,
-  zero, inconsistent, or above-current values. They preserve the 32 MiB request, 128 MiB aggregate,
-  and 60/300-second deadlines; future 256 MiB ceilings are not enablement before spooling and dual
-  admission land.
+  zero, inconsistent, or above-current values. They preserve the 32 MiB request, independent 128 MiB
+  raw-storage and estimated-memory budgets, and 60/300-second deadlines. A required absolute
+  `CLAUDE_ROUTER_BODY_SPOOL_ROOT` is opened as a private directory capability; systemd gives every
+  slot a separate mode-0700 RuntimeDirectory. The current threshold equals the request cap, so public
+  behavior remains memory-first; future 256 MiB ceilings are not enablement.
 - `auth.rs` — uncached bodyless early-auth client: before reading the universal body it probes fixed
   origins in hedged Anthropic → OpenAI → Gemini order. Anthropic starts immediately; each later
   origin starts after a 50 ms hedge only without a conclusive result, or immediately when an

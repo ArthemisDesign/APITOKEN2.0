@@ -3068,6 +3068,14 @@ for router_unit in claude-router.service claude-router@.service; do
   grep -Fxq 'MemoryMax=512M' "$ROOT/systemd/$router_unit" \
     || wd_die "$router_unit changed memory before weighted admission"
 done
+grep -Fq 'CLAUDE_ROUTER_BODY_SPOOL_ROOT=/run/claude-router-%i' "$ROOT/systemd/claude-router@.service" \
+  || wd_die 'router slots do not use separate instance-private spool roots'
+grep -Fxq 'RuntimeDirectory=claude-router-%i' "$ROOT/systemd/claude-router@.service" \
+  || wd_die 'router slot runtime directory is not instance-scoped'
+grep -Fxq 'RuntimeDirectoryMode=0700' "$ROOT/systemd/claude-router@.service" \
+  || wd_die 'router slot spool root is not private'
+grep -Fq 'CLAUDE_ROUTER_BODY_SPOOL_ROOT=/run/claude-router-8798' "$ROOT/systemd/claude-router.service" \
+  || wd_die 'legacy router does not have its own spool root'
 provider_payload_pins='CLAUDE_API_TEXT_BODY_MAX_MIB=32 CLAUDE_API_BODY_MEMORY_BUDGET_MIB=2048 CLAUDE_API_BODY_SPOOL_BUDGET_MIB=2048 CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=32 CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=64'
 for provider_unit in claude-api.service claude-api@.service claude-api-anthropic@.service \
   claude-api-openai.service claude-api-openai@.service claude-api-gemini.service \

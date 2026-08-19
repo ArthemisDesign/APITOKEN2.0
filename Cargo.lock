@@ -594,6 +594,7 @@ dependencies = [
  "anyhow",
  "api-limits",
  "axum",
+ "bounded-body",
  "elog",
  "futures-util",
  "getrandom 0.3.4",

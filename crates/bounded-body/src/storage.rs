@@ -77,6 +77,15 @@ impl PrivateSpoolFactory {
         Ok(Self { root })
     }
 
+    pub fn try_clone(&self) -> Result<Self, StorageError> {
+        Ok(Self {
+            root: self
+                .root
+                .try_clone()
+                .map_err(|_| StorageError::PrivateSpoolUnavailable)?,
+        })
+    }
+
     fn create(&self) -> Result<File, StorageError> {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         for _ in 0..32 {
@@ -136,8 +145,9 @@ pub struct BodyStore {
 }
 
 enum StoreState {
-    Memory(Vec<Box<[u8]>>),
+    Memory(Vec<u8>),
     Spool(File),
+    Poisoned,
 }
 
 impl fmt::Debug for BodyStore {
@@ -177,6 +187,9 @@ impl BodyStore {
     }
 
     pub fn push(&mut self, chunk: &[u8]) -> Result<(), StorageError> {
+        if matches!(self.state, StoreState::Poisoned) {
+            return Err(StorageError::Io);
+        }
         let chunk_len = u64::try_from(chunk.len()).map_err(|_| StorageError::ArithmeticOverflow)?;
         let next_len = self
             .len
@@ -194,7 +207,7 @@ impl BodyStore {
                     let _ = self.storage.shrink_to(ByteLimit::from_bytes(self.len));
                     return Err(memory_capacity(error));
                 }
-                chunks.push(chunk.to_vec().into_boxed_slice());
+                chunks.extend_from_slice(chunk);
                 self.len = next_len;
                 Ok(())
             }
@@ -205,19 +218,35 @@ impl BodyStore {
                     .map_err(storage_capacity)?;
                 if file.write_all(chunk).is_err() {
                     let _ = self.storage.shrink_to(ByteLimit::from_bytes(self.len));
+                    self.state = StoreState::Poisoned;
                     return Err(StorageError::Io);
                 }
                 self.len = next_len;
                 Ok(())
             }
+            StoreState::Poisoned => Err(StorageError::Io),
         }
     }
 
     pub fn finish(mut self) -> Result<StoredBody, StorageError> {
-        let state = std::mem::replace(&mut self.state, StoreState::Memory(Vec::new()));
+        self.storage
+            .shrink_to(ByteLimit::from_bytes(self.len))
+            .map_err(|_| StorageError::InvalidConfig)?;
+        match &self.state {
+            StoreState::Memory(_) => self
+                .memory
+                .shrink_to(ByteLimit::from_bytes(self.len))
+                .map_err(|_| StorageError::InvalidConfig)?,
+            StoreState::Spool(_) => self
+                .memory
+                .shrink_to(ByteLimit::from_bytes(0))
+                .map_err(|_| StorageError::InvalidConfig)?,
+            StoreState::Poisoned => return Err(StorageError::Io),
+        }
+        let state = std::mem::replace(&mut self.state, StoreState::Poisoned);
         match state {
-            StoreState::Memory(chunks) => Ok(StoredBody::Memory(MemoryBody {
-                chunks,
+            StoreState::Memory(bytes) => Ok(StoredBody::Memory(MemoryBody {
+                bytes,
                 len: self.len,
                 _storage: take_reservation(&mut self.storage),
                 _memory: take_reservation(&mut self.memory),
@@ -231,6 +260,7 @@ impl BodyStore {
                     _memory: take_reservation(&mut self.memory),
                 }))
             }
+            StoreState::Poisoned => Err(StorageError::Io),
         }
     }
 
@@ -265,9 +295,7 @@ impl BodyStore {
             let StoreState::Memory(chunks) = &self.state else {
                 return Err(StorageError::InvalidConfig);
             };
-            for prefix in chunks {
-                file.write_all(prefix).map_err(|_| StorageError::Io)?;
-            }
+            file.write_all(chunks).map_err(|_| StorageError::Io)?;
             file.write_all(chunk).map_err(|_| StorageError::Io)?;
             file.flush().map_err(|_| StorageError::Io)?;
             Ok(file)
@@ -317,6 +345,11 @@ pub enum StoredBody {
     Spool(SpoolBody),
 }
 
+pub struct StoredBodyLease {
+    _storage: Reservation,
+    _memory: Reservation,
+}
+
 impl fmt::Debug for StoredBody {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -346,14 +379,22 @@ impl StoredBody {
         self.len().bytes() == 0
     }
 
+    pub fn into_memory(self) -> Result<(Vec<u8>, StoredBodyLease), Self> {
+        match self {
+            Self::Memory(body) => Ok((
+                body.bytes,
+                StoredBodyLease {
+                    _storage: body._storage,
+                    _memory: body._memory,
+                },
+            )),
+            spool @ Self::Spool(_) => Err(spool),
+        }
+    }
+
     pub fn copy_to(&mut self, writer: &mut impl Write) -> Result<(), StorageError> {
         match self {
-            Self::Memory(body) => {
-                for chunk in &body.chunks {
-                    writer.write_all(chunk).map_err(|_| StorageError::Io)?;
-                }
-                Ok(())
-            }
+            Self::Memory(body) => writer.write_all(&body.bytes).map_err(|_| StorageError::Io),
             Self::Spool(body) => {
                 body.file
                     .seek(SeekFrom::Start(0))
@@ -366,7 +407,7 @@ impl StoredBody {
 }
 
 pub struct MemoryBody {
-    chunks: Vec<Box<[u8]>>,
+    bytes: Vec<u8>,
     len: u64,
     _storage: Reservation,
     _memory: Reservation,

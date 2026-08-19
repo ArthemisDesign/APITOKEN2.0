@@ -437,11 +437,15 @@ outcome received wins, and actual provider-plane admission re-checks the credent
 before reserve anyway. The deployment-only startup probe remains an eager concurrent
 probe of all three origins.
 
-After auth the consumer makes a fail-fast reservation against the 128 MiB budget in
-1 MiB steps. These current values now come from the dependency-free `crates/api-limits` typed
-contract and strict router composition (`CLAUDE_ROUTER_MAX_BODY_MIB`, memory budget and upload
-seconds). Startup rejects malformed, zero, inconsistent, or above-current values; the future
-256 MiB hard ceiling is not enablement before bounded spool storage and dual admission. A valid
+After auth the consumer makes fail-fast reservations against independent 128 MiB raw-storage and
+estimated-memory budgets in 1 MiB steps. Both are owned by `crates/bounded-body` RAII reservations;
+no wait queue exists. These current values come from the dependency-free `crates/api-limits` typed
+contract and strict router composition. Startup additionally requires the absolute private
+`CLAUDE_ROUTER_BODY_SPOOL_ROOT`; each systemd slot owns a separate mode-0700 RuntimeDirectory and the
+path is never logged. The current memory threshold still equals the 32 MiB request limit, preserving
+memory-first production behavior while the spill path remains exercised under smaller test configs.
+Malformed, zero, inconsistent, or above-current values fail startup; the future 256 MiB hard ceiling
+is not enablement. A valid
 `Content-Length` is rounded up; a chunked/unknown size first
 gets 1 MiB and acquires more weight only when crossing the next MiB boundary. On
 exhaustion the router immediately returns a lane-shaped 503 with no queue and no

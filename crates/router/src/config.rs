@@ -25,6 +25,8 @@ pub struct Config {
     pub body_limits: api_limits::BodyLimits,
     pub body_idle_secs: u64,
     pub body_max_secs: u64,
+    /// Absolute slot-private root provisioned by systemd; never logged.
+    pub body_spool_root: std::path::PathBuf,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -117,6 +119,14 @@ impl Config {
                 && body_max_secs <= api_limits::current::ROUTER_BODY_MAX_SECS,
             "router upload timeouts cannot exceed current runtime ceilings before bounded storage is deployed"
         );
+        let body_spool_root = std::path::PathBuf::from(
+            std::env::var("CLAUDE_ROUTER_BODY_SPOOL_ROOT")
+                .map_err(|_| anyhow::anyhow!("CLAUDE_ROUTER_BODY_SPOOL_ROOT is required"))?,
+        );
+        anyhow::ensure!(
+            body_spool_root.is_absolute(),
+            "CLAUDE_ROUTER_BODY_SPOOL_ROOT must be absolute"
+        );
         let cfg = Config {
             host: env_or("CLAUDE_ROUTER_HOST", "127.0.0.1"),
             port: env_or("CLAUDE_ROUTER_PORT", "8798")
@@ -136,6 +146,7 @@ impl Config {
             body_limits,
             body_idle_secs,
             body_max_secs,
+            body_spool_root,
         };
         for (name, origin) in [
             ("CLAUDE_ROUTER_ANTHROPIC_ORIGIN", &cfg.anthropic_origin),

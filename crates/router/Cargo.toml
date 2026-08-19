@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 api-limits = { path = "../api-limits" }
+bounded-body = { path = "../bounded-body" }
 elog = { path = "../elog" }
 axum = "0.8"
 futures-util = "0.3"

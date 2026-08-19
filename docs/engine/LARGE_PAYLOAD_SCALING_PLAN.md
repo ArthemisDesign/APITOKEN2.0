@@ -487,12 +487,19 @@ Exact candidate SHA допускается к повышенным defaults то
 - Малые unit tests доказывают threshold/limit boundaries, one-byte chunks, replay, exhaustion,
   panic/drop cleanup, private root/mode и отсутствие content/path в Debug.
 
-### Commit 2b/2c — интеграция bounded storage
+### Commit 2b — интеграция router bounded storage
 
-- Сначала router universal bodies, затем provider materializers route-by-route получают spooling и
-  два независимых budget: raw storage и caller-supplied estimated RSS.
-- Публичные пределы пока прежние.
-- Доказать отсутствие protocol/money изменений до любого raised default.
+- Universal bodies получают два независимых fail-fast budget: raw storage и estimated memory;
+  auth/deadlines/errors/permit lifetime остаются прежними.
+- Каждый slot получает private mode-0700 RuntimeDirectory и обязательный абсолютный spool root;
+  `/tmp` fallback запрещён. Threshold пока равен текущему 32 MiB request cap.
+- Публичные пределы и `MemoryMax=512M` прежние; доказать отсутствие protocol/money/SSE изменений.
+
+### Commit 2c — интеграция provider bounded storage
+
+- Provider materializers route-by-route получают spooling и два независимых budget: raw storage и
+  caller-supplied estimated RSS.
+- Публичные пределы пока прежние; доказать отсутствие protocol/money изменений до raised default.
 
 ### Commit 3 — Gemini typed executor и binary IPC v2
 
