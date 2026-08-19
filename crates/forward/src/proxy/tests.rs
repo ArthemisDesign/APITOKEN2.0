@@ -1801,6 +1801,7 @@ data: {"type":"message_stop"}
         )),
         affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
         clients: Arc::new(Clients::new(&cfg)),
+        body_storage: None,
         codex: None,
         gemini: None,
         gemini_batch: None,
