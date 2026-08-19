@@ -27,6 +27,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
+discover_required_databases() {
+  local database database_exists
+  required_databases=(commerce)
+  for database in claude_engine sales openkeys apitoken_crm; do
+    database_exists=$(docker compose --env-file "$POSTGRES_ENV" -f "$COMPOSE_FILE" \
+      exec -T commerce-postgres psql -U commerce -d postgres -Atqc \
+      "SELECT 1 FROM pg_database WHERE datname='$database'")
+    [[ -z $database_exists || $database_exists == 1 ]] \
+      || wd_die "could not establish whether $database requires a backup"
+    if [[ $database_exists == 1 ]]; then
+      required_databases+=("$database")
+    fi
+  done
+}
+
+backup_set_is_fresh() {
+  local database source modified
+  for database in "${required_databases[@]}"; do
+    source=$BACKUP_ROOT/$database.dump
+    [[ -f $source && ! -L $source ]] || return 1
+    modified=$(stat -c %Y -- "$source") || return 1
+    [[ $modified =~ ^[0-9]+$ && $modified -ge $backup_started ]] || return 1
+  done
+}
+
 validate_and_preserve() {
   local database=$1 source=$BACKUP_ROOT/$1.dump temporary final
   [[ -f $source && ! -L $source ]] || wd_die "fresh $database backup is missing"
@@ -49,19 +74,40 @@ validate_and_preserve() {
 
 install -d -o root -g root -m 0700 "$BACKUP_ROOT"
 backup_started=$(date +%s)
-systemctl reset-failed "$BACKUP_SERVICE" >/dev/null 2>&1 || true
-systemctl start "$BACKUP_SERVICE"
-[[ $(systemctl show "$BACKUP_SERVICE" -p Result --value) == success ]] \
-  || wd_die "pre-deployment backup service did not succeed"
-
-validate_and_preserve commerce
-for database in claude_engine sales openkeys apitoken_crm; do
-  database_exists=$(docker compose --env-file "$POSTGRES_ENV" -f "$COMPOSE_FILE" \
-    exec -T commerce-postgres psql -U commerce -d postgres -Atqc \
-    "SELECT 1 FROM pg_database WHERE datname='$database'")
-  if [[ $database_exists == 1 ]]; then
-    validate_and_preserve "$database"
+fresh_backup_ready=0
+for backup_attempt in 1 2; do
+  service_state=$(systemctl show "$BACKUP_SERVICE" -p ActiveState --value)
+  case "$service_state" in
+    inactive|failed) ;;
+    activating|active|deactivating) ;;
+    *) wd_die "backup service has unexpected active state: $service_state" ;;
+  esac
+  joined_pre_boundary=0
+  if (( backup_attempt == 1 )) \
+      && [[ $service_state == activating || $service_state == active \
+        || $service_state == deactivating ]]; then
+    joined_pre_boundary=1
   fi
+
+  systemctl reset-failed "$BACKUP_SERVICE" >/dev/null 2>&1 || true
+  systemctl start "$BACKUP_SERVICE"
+  [[ $(systemctl show "$BACKUP_SERVICE" -p Result --value) == success ]] \
+    || wd_die "pre-deployment backup service did not succeed"
+
+  discover_required_databases
+  if (( joined_pre_boundary == 0 )) && backup_set_is_fresh; then
+    fresh_backup_ready=1
+    break
+  fi
+  if (( backup_attempt == 1 )); then
+    wd_log "backup invocation predates the deployment boundary; requesting one fresh run"
+  fi
+done
+(( fresh_backup_ready == 1 )) \
+  || wd_die "backup service did not produce a complete fresh database set after two runs"
+
+for database in "${required_databases[@]}"; do
+  validate_and_preserve "$database"
 done
 
 marker_temporary=$COMPLETE_MARKER.tmp.$$

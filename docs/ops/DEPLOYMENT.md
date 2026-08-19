@@ -822,7 +822,14 @@ systemctl show claude-api-backup.service -p Result
 ```
 
 Every present named dump must be non-empty, mode 0600, and readable by the matching PostgreSQL
-`pg_restore --list`. Replication is not a backup; future HA still needs independent PITR.
+`pg_restore --list`. Before a deployment or migration, the backup runner records a freshness
+boundary and waits for `claude-api-backup.service`. It verifies the complete required dump set
+before preservation. If the service is already active at admission, the runner joins it only to
+completion and always requests one new invocation; publication mtimes from that older invocation
+cannot satisfy the gate. No exact-SHA dump is preserved until the post-boundary set is fresh. A
+second stale or incomplete result
+fails closed instead of looping or admitting mixed evidence. Replication is not a backup; future HA
+still needs independent PITR.
 
 ## Final post-deploy gate
 

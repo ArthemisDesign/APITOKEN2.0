@@ -125,6 +125,7 @@ am_gate_deployment() (
   bash "$ROOT/deploy/lib.test.sh"
   bash "$ROOT/deploy/shutdown-ladder.test.sh"
   bash "$ROOT/deploy/codex-homes-migrate.test.sh"
+  bash "$ROOT/deploy/watchdog-backup.test.sh"
   bash "$ROOT/deploy/sccache-cargo.test.sh"
   bash "$ROOT/deploy/agent-worktree.test.sh"
   bash "$ROOT/deploy/delete-worktree-agent.test.sh"
