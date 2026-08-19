@@ -170,21 +170,53 @@ fi
 # Basic challenge, while the same-origin login projection must render the form directly.
 if grep -q '^crm\.apitoken\.sale {' "$LIVE"; then
   admin_session_ready=0
-  for _ in 1 2 3 4 5 6 7 8; do
-    if admin_document_status=$(curl --noproxy '*' --silent --show-error --max-time 8 \
-        --resolve crm.apitoken.sale:443:127.0.0.1 \
-        -H 'accept: text/html' -D "$admin_session_headers" -o /dev/null -w '%{http_code}' \
-        https://crm.apitoken.sale/) \
-        && [[ $admin_document_status == 303 ]] \
-        && grep -Eiq '^location: /__admin-auth/login\?return_to=%2F\r?$' \
-          "$admin_session_headers" \
-        && ! grep -Eiq '^www-authenticate:' "$admin_session_headers" \
-        && admin_login_status=$(curl --noproxy '*' --silent --show-error --max-time 8 \
-          --resolve crm.apitoken.sale:443:127.0.0.1 \
-          -H 'accept: text/html' -D "$admin_session_headers" -o "$admin_login_response" \
-          -w '%{http_code}' 'https://crm.apitoken.sale/__admin-auth/login?return_to=%2F') \
-        && [[ $admin_login_status == 200 ]] \
-        && grep -Fq 'action="/__admin-auth/login"' "$admin_login_response"; then
+  admin_document_status=not-run
+  admin_document_location=absent
+  admin_document_www=absent
+  admin_login_status=not-run
+  admin_login_form=absent
+  # A full Caddy reload also recreates the commerce blue-green health checker behind :8791. Give
+  # that local path enough time to converge, and evaluate both public surfaces on every attempt so
+  # a failure reports the exact safe predicates without leaking headers, cookies or form contents.
+  for _ in {1..20}; do
+    : >"$admin_session_headers"
+    if ! admin_document_status=$(curl --noproxy '*' --silent --show-error --max-time 8 \
+      --resolve crm.apitoken.sale:443:127.0.0.1 \
+      -H 'accept: text/html' -D "$admin_session_headers" -o /dev/null -w '%{http_code}' \
+      https://crm.apitoken.sale/); then
+      admin_document_status=curl-error
+    fi
+    if grep -Eiq '^location: /__admin-auth/login\?return_to=%2F\r?$' \
+      "$admin_session_headers"; then
+      admin_document_location=expected
+    else
+      admin_document_location=absent-or-unexpected
+    fi
+    if grep -Eiq '^www-authenticate:' "$admin_session_headers"; then
+      admin_document_www=present
+    else
+      admin_document_www=absent
+    fi
+
+    : >"$admin_session_headers"
+    : >"$admin_login_response"
+    if ! admin_login_status=$(curl --noproxy '*' --silent --show-error --max-time 8 \
+      --resolve crm.apitoken.sale:443:127.0.0.1 \
+      -H 'accept: text/html' -D "$admin_session_headers" -o "$admin_login_response" \
+      -w '%{http_code}' 'https://crm.apitoken.sale/__admin-auth/login?return_to=%2F'); then
+      admin_login_status=curl-error
+    fi
+    if grep -Fq 'action="/__admin-auth/login"' "$admin_login_response"; then
+      admin_login_form=present
+    else
+      admin_login_form=absent
+    fi
+
+    if [[ $admin_document_status == 303 \
+        && $admin_document_location == expected \
+        && $admin_document_www == absent \
+        && $admin_login_status == 200 \
+        && $admin_login_form == present ]]; then
       admin_session_ready=1
       break
     fi
@@ -195,7 +227,10 @@ if grep -q '^crm\.apitoken\.sale {' "$LIVE"; then
       echo "managed admin session smoke failed and Caddy rollback could not be activated" >&2
       exit 1
     fi
-    echo "managed admin session smoke failed; restored and activated $backup" >&2
+    echo "managed admin session smoke failed: document_status=$admin_document_status;" \
+      "document_location=$admin_document_location; document_www=$admin_document_www;" \
+      "login_status=$admin_login_status; login_form=$admin_login_form;" \
+      "restored and activated $backup" >&2
     exit 1
   fi
 fi

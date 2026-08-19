@@ -2342,8 +2342,15 @@ grep -Fq 'lb_policy first' <<<"$gemini_stable_origin" \
 ! grep -Fq 'health_body invalid_request_error' "$ROOT/deploy/Caddyfile"
 grep -Fq 'OpenAI hostname smoke failed; restored' "$ROOT/deploy/install-caddy.sh" \
   || wd_die "Caddy installation can commit a syntactically valid but misrouted OpenAI hostname"
-grep -Fq 'managed admin session smoke failed; restored' "$ROOT/deploy/install-caddy.sh" \
+grep -Fq 'managed admin session smoke failed: document_status=' \
+  "$ROOT/deploy/install-caddy.sh" \
+  || wd_die 'Caddy installation does not safely diagnose a broken managed-admin session boundary'
+grep -Fq 'restored and activated $backup' "$ROOT/deploy/install-caddy.sh" \
   || wd_die 'Caddy installation can commit a broken managed-admin session boundary'
+grep -Fq 'for _ in {1..20}; do' "$ROOT/deploy/install-caddy.sh" \
+  || wd_die 'Caddy installer does not allow managed-admin health convergence after reload'
+grep -Fq 'admin_document_location=absent-or-unexpected' "$ROOT/deploy/install-caddy.sh" \
+  || wd_die 'Caddy installer could leak an unexpected managed-admin redirect target'
 grep -Fq 'https://crm.apitoken.sale/__admin-auth/login?return_to=%2F' \
   "$ROOT/deploy/install-caddy.sh" \
   || wd_die 'Caddy installation does not exercise the public same-origin login projection'
