@@ -7,14 +7,92 @@
 
 use crate::billing::AnthropicQuotaSnapshot;
 use crate::billing::AsyncBilling;
+use crate::execution::RequestLifecycleClock;
 use bytes::Bytes;
 use futures_util::Stream;
 use pool::Pool;
+use registry::request_facts::{DeliveryState, ProviderTerminalClass, RequestFactTerminalEvidence};
+use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
+
+/// Checked count of actual provider HTTP submissions for one Anthropic billing request. The value
+/// becomes unknown on arithmetic overflow or when cancellation/panic prevents an exhaustive terminal
+/// observation; it contains no request, credential, profile, or response data.
+pub(crate) struct AnthropicAttemptTracker {
+    count: Option<usize>,
+}
+
+impl Default for AnthropicAttemptTracker {
+    fn default() -> Self {
+        Self { count: Some(0) }
+    }
+}
+
+impl AnthropicAttemptTracker {
+    pub(crate) fn record_send(&mut self) {
+        self.count = self.count.and_then(|count| count.checked_add(1));
+    }
+
+    pub(crate) fn exhaustive_i32(&self) -> Option<i32> {
+        self.count.and_then(|count| i32::try_from(count).ok())
+    }
+}
+
+impl fmt::Debug for AnthropicAttemptTracker {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AnthropicAttemptTracker(<redacted>)")
+    }
+}
+
+/// Privacy-bounded lifecycle state admitted atomically with an Anthropic reservation. It carries
+/// only typed clock/counter evidence and bounded terminal metadata; raw JSON, headers, key secrets,
+/// upstream errors, and subscription identities are structurally absent.
+pub(crate) struct AnthropicBillableFactContext {
+    pub(crate) admitted_at: i64,
+    pub(crate) lifecycle_clock: RequestLifecycleClock,
+    pub(crate) attempts: AnthropicAttemptTracker,
+    pub(crate) upstream_request_id: Option<String>,
+    pub(crate) downstream_disconnect: Option<bool>,
+}
+
+impl AnthropicBillableFactContext {
+    pub(crate) fn terminal_evidence(
+        &self,
+        http_status_code: Option<i32>,
+        provider_terminal_class: ProviderTerminalClass,
+        delivery_state: DeliveryState,
+        tool_calls_in_output: Option<bool>,
+        attempts_exhaustive: bool,
+    ) -> RequestFactTerminalEvidence {
+        let terminal_at = pool::now().max(self.admitted_at);
+        RequestFactTerminalEvidence {
+            terminal_at,
+            http_status_code,
+            provider_terminal_class,
+            delivery_state,
+            downstream_disconnect: self.downstream_disconnect,
+            upstream_request_id: self.upstream_request_id.clone(),
+            first_public_byte_at: self
+                .lifecycle_clock
+                .seal_first_public_byte_for_terminal(self.admitted_at, terminal_at),
+            internal_attempt_count: attempts_exhaustive
+                .then(|| self.attempts.exhaustive_i32())
+                .flatten(),
+            failure_class: None,
+            tool_calls_in_output,
+        }
+    }
+}
+
+impl fmt::Debug for AnthropicBillableFactContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AnthropicBillableFactContext(<redacted>)")
+    }
+}
 
 /// Какой pricing-authority выдал admission-hold — выбирает контракт округления при settlement.
 /// Опциональное списание с АККАУНТА клиента (только для метерных ключей). Баланс общий на аккаунт;
@@ -36,8 +114,13 @@ pub struct BillCtx {
     pub policy_us_inference: Option<bool>,
     /// Internal, generated before reservation; the exactly-once money identity.
     pub request_id: String,
+    /// Exact successful provider response status observed before body delivery.
+    pub(crate) http_status_code: i32,
     /// Upstream Anthropic request-id retained only as audit metadata.
     pub reference: Option<String>,
+    /// Present only for the native billable Anthropic Messages slice. Universal adapters, admin,
+    /// SQLite and legacy paths keep this absent and retain their existing money semantics.
+    pub(crate) request_fact: Option<AnthropicBillableFactContext>,
 }
 
 /// Provider-capacity evidence is independent of customer billing, so admin traffic carries this
@@ -129,6 +212,13 @@ pub struct TeeMeter {
     sse_delta_bytes: u64,
     sse_web_search_requests: u64,
     sse_output_tokens: Option<u64>,
+    sse_protocol_valid: bool,
+    sse_saw_message_start: bool,
+    sse_saw_message_delta: bool,
+    sse_saw_message_stop: bool,
+    sse_saw_error: bool,
+    output_tool_calls: bool,
+    stream_error: Option<ProviderTerminalClass>,
     lease_heartbeat: Option<tokio::task::JoinHandle<()>>,
     ctx: Option<MeterCtx>, // берётся ровно один раз (finalize идемпотентен)
 }
@@ -183,6 +273,13 @@ impl TeeMeter {
             sse_delta_bytes: 0,
             sse_web_search_requests: 0,
             sse_output_tokens: None,
+            sse_protocol_valid: true,
+            sse_saw_message_start: false,
+            sse_saw_message_delta: false,
+            sse_saw_message_stop: false,
+            sse_saw_error: false,
+            output_tool_calls: false,
+            stream_error: None,
             lease_heartbeat,
             ctx: Some(ctx),
         }
@@ -202,24 +299,42 @@ impl TeeMeter {
                 } else {
                     self.sse_line.clear();
                     self.sse_drop_line = true;
+                    self.sse_protocol_valid = false;
                 }
                 continue;
             }
 
             let line = std::mem::take(&mut self.sse_line);
             let Ok(line) = std::str::from_utf8(&line) else {
+                self.sse_protocol_valid = false;
                 continue;
             };
             let Some(json) = line.trim_start().strip_prefix("data:").map(str::trim) else {
                 continue;
             };
             let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+                self.sse_protocol_valid = false;
                 continue;
             };
             let event_type = value.get("type").and_then(serde_json::Value::as_str);
             match event_type {
+                Some("message_start") => self.sse_saw_message_start = true,
                 Some("content_block_start") => {
                     let block = value.get("content_block");
+                    if block
+                        .and_then(|block| block.get("type"))
+                        .and_then(serde_json::Value::as_str)
+                        .is_none()
+                    {
+                        self.sse_protocol_valid = false;
+                    }
+                    if block
+                        .and_then(|block| block.get("type"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("tool_use")
+                    {
+                        self.output_tool_calls = true;
+                    }
                     if block
                         .and_then(|block| block.get("type"))
                         .and_then(serde_json::Value::as_str)
@@ -245,6 +360,7 @@ impl TeeMeter {
                     }
                 }
                 Some("message_delta") => {
+                    self.sse_saw_message_delta = true;
                     if let Some(output_tokens) = value
                         .get("usage")
                         .and_then(|usage| usage.get("output_tokens"))
@@ -253,6 +369,8 @@ impl TeeMeter {
                         self.sse_output_tokens = Some(output_tokens);
                     }
                 }
+                Some("message_stop") => self.sse_saw_message_stop = true,
+                Some("error") => self.sse_saw_error = true,
                 _ => {}
             }
             let relevant = matches!(
@@ -267,7 +385,106 @@ impl TeeMeter {
         }
     }
 
+    fn nonstream_terminal_evidence(&self) -> (ProviderTerminalClass, DeliveryState, Option<bool>) {
+        if let Some(provider_terminal_class) = self.stream_error {
+            return (provider_terminal_class, DeliveryState::Interrupted, None);
+        }
+        let Ok(response) = serde_json::from_slice::<serde_json::Value>(&self.acc) else {
+            return (
+                ProviderTerminalClass::ProtocolError,
+                DeliveryState::Interrupted,
+                None,
+            );
+        };
+        let Some(object) = response.as_object() else {
+            return (
+                ProviderTerminalClass::ProtocolError,
+                DeliveryState::Interrupted,
+                None,
+            );
+        };
+        let valid = object.get("type").and_then(serde_json::Value::as_str) == Some("message")
+            && object
+                .get("content")
+                .is_some_and(serde_json::Value::is_array)
+            && object
+                .get("usage")
+                .is_some_and(serde_json::Value::is_object)
+            && object
+                .get("stop_reason")
+                .and_then(serde_json::Value::as_str)
+                .is_some();
+        if !valid {
+            return (
+                ProviderTerminalClass::ProtocolError,
+                DeliveryState::Interrupted,
+                None,
+            );
+        }
+        let blocks = object
+            .get("content")
+            .and_then(serde_json::Value::as_array)
+            .expect("validated Anthropic content array");
+        if !blocks.iter().all(|block| {
+            block
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+        }) {
+            return (
+                ProviderTerminalClass::ProtocolError,
+                DeliveryState::Interrupted,
+                None,
+            );
+        }
+        let tool_calls = blocks
+            .iter()
+            .any(|block| block.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"));
+        (
+            ProviderTerminalClass::Success,
+            DeliveryState::Completed,
+            Some(tool_calls),
+        )
+    }
+
+    fn sse_terminal_evidence(&self) -> (ProviderTerminalClass, DeliveryState, Option<bool>) {
+        if let Some(provider_terminal_class) = self.stream_error {
+            return (provider_terminal_class, DeliveryState::Interrupted, None);
+        }
+        if self.sse_saw_error {
+            return (
+                ProviderTerminalClass::UpstreamError,
+                DeliveryState::Interrupted,
+                None,
+            );
+        }
+        let exhaustive = self.sse_protocol_valid
+            && !self.sse_drop_line
+            && self.sse_line.is_empty()
+            && self.sse_saw_message_start
+            && self.sse_saw_message_delta
+            && self.sse_saw_message_stop
+            && self.sse_output_tokens.is_some();
+        if !exhaustive {
+            return (
+                ProviderTerminalClass::ProtocolError,
+                DeliveryState::Interrupted,
+                None,
+            );
+        }
+        (
+            ProviderTerminalClass::Success,
+            DeliveryState::Completed,
+            Some(self.output_tool_calls),
+        )
+    }
+
     fn finalize(&mut self) {
+        let terminal_result = if self.ctx.as_ref().is_some_and(|ctx| ctx.is_sse) {
+            self.sse_terminal_evidence()
+        } else {
+            self.nonstream_terminal_evidence()
+        };
         let ctx = match self.ctx.take() {
             Some(c) => c,
             None => return,
@@ -631,15 +848,49 @@ impl TeeMeter {
             // A missing pinned override version never settles at compiled prices: the reservation
             // is left to the reconciler instead of this settle.
             if !pinned_missing {
-                b.billing.settle_detached(
-                    &b.request_id,
-                    &b.account_id,
-                    &b.key,
-                    b.hold,
-                    charge_i64,
-                    b.reference.as_deref(),
-                    usage_event,
-                );
+                let settlement = match b.request_fact.as_ref() {
+                    Some(request_fact) => {
+                        let (provider_terminal_class, delivery_state, tool_calls_in_output) =
+                            terminal_result;
+                        let evidence = request_fact.terminal_evidence(
+                            Some(b.http_status_code),
+                            provider_terminal_class,
+                            delivery_state,
+                            tool_calls_in_output,
+                            true,
+                        );
+                        b.billing.settle_detached_with_request_fact(
+                            &b.request_id,
+                            &b.account_id,
+                            &b.key,
+                            b.hold,
+                            charge_i64,
+                            b.reference.as_deref(),
+                            usage_event,
+                            evidence,
+                        )
+                    }
+                    None => {
+                        b.billing.settle_detached(
+                            &b.request_id,
+                            &b.account_id,
+                            &b.key,
+                            b.hold,
+                            charge_i64,
+                            b.reference.as_deref(),
+                            usage_event,
+                        );
+                        Ok(())
+                    }
+                };
+                if let Err(error) = settlement {
+                    // The reservation/fact remain for the existing reconciler rather than issuing a
+                    // late fact-free settlement after typed evidence validation failed.
+                    elog::error(
+                        "meter",
+                        format!("Anthropic request-fact terminal evidence rejected: {error:#}"),
+                    );
+                }
                 if charge_i64 > 0 {
                     // хвост ключа для лога — по символам (не байтами: срез не на границе char паникует)
                     let tail: String = {
@@ -769,7 +1020,9 @@ mod tests {
                     policy_fast: None,
                     policy_us_inference: None,
                     request_id: "request".into(),
+                    http_status_code: 200,
                     reference: None,
+                    request_fact: None,
                 }),
                 subscription: Some(SubscriptionMeterCtx {
                     pool,
@@ -1069,7 +1322,9 @@ mod tests {
                     policy_fast: None,
                     policy_us_inference: None,
                     request_id: "missing-pin-request".into(),
+                    http_status_code: 200,
                     reference: None,
+                    request_fact: None,
                 }),
                 subscription: None,
             },
@@ -1116,6 +1371,127 @@ mod tests {
         assert_eq!(outcome.usage.charge_nano, 60_000);
     }
 
+    #[test]
+    fn attempt_tracker_is_exact_and_terminal_clock_seals_once() {
+        let mut attempts = AnthropicAttemptTracker::default();
+        assert_eq!(attempts.exhaustive_i32(), Some(0));
+        attempts.record_send();
+        attempts.record_send();
+        assert_eq!(attempts.exhaustive_i32(), Some(2));
+
+        let clock = RequestLifecycleClock::default();
+        let context = AnthropicBillableFactContext {
+            admitted_at: pool::now(),
+            lifecycle_clock: clock.clone(),
+            attempts,
+            upstream_request_id: Some("req-bounded".into()),
+            downstream_disconnect: Some(false),
+        };
+        let evidence = context.terminal_evidence(
+            Some(200),
+            ProviderTerminalClass::Success,
+            DeliveryState::Completed,
+            Some(false),
+            true,
+        );
+        assert_eq!(evidence.internal_attempt_count, Some(2));
+        assert_eq!(evidence.downstream_disconnect, Some(false));
+        assert_eq!(evidence.tool_calls_in_output, Some(false));
+        assert_eq!(evidence.first_public_byte_at, None);
+        clock.observe_first_public_byte();
+        assert_eq!(clock.first_public_byte_at(), None);
+    }
+
+    #[test]
+    fn terminal_output_tool_call_evidence_requires_exhaustive_native_output() {
+        let ctx = MeterCtx {
+            model: "claude-test".into(),
+            is_sse: false,
+            bill: None,
+            subscription: None,
+        };
+        let mut meter = TeeMeter::new(Box::pin(futures_util::stream::empty()), ctx);
+        meter.acc = br#"{"type":"message","content":[{"type":"tool_use","id":"toolu_private","name":"never-store","input":{"secret":true}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}"#.to_vec();
+        assert_eq!(
+            meter.nonstream_terminal_evidence(),
+            (
+                ProviderTerminalClass::Success,
+                DeliveryState::Completed,
+                Some(true)
+            )
+        );
+
+        meter.acc = br#"{"type":"message","content":[{"type":"text","text":"PRIVATE"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#.to_vec();
+        assert_eq!(
+            meter.nonstream_terminal_evidence(),
+            (
+                ProviderTerminalClass::Success,
+                DeliveryState::Completed,
+                Some(false)
+            )
+        );
+
+        meter.acc = br#"{"type":"message","content":[{"type":"tool_use"}]"#.to_vec();
+        assert_eq!(
+            meter.nonstream_terminal_evidence(),
+            (
+                ProviderTerminalClass::ProtocolError,
+                DeliveryState::Interrupted,
+                None
+            )
+        );
+
+        meter.acc = br#"{"type":"message","content":[{"type":"text","text":"PRIVATE"},{"payload":"malformed"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#.to_vec();
+        assert_eq!(
+            meter.nonstream_terminal_evidence(),
+            (
+                ProviderTerminalClass::ProtocolError,
+                DeliveryState::Interrupted,
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn sse_terminal_truth_requires_valid_stop_and_never_infers_disconnect_from_error() {
+        let ctx = MeterCtx {
+            model: "claude-test".into(),
+            is_sse: true,
+            bill: None,
+            subscription: None,
+        };
+        let mut meter = TeeMeter::new(Box::pin(futures_util::stream::empty()), ctx);
+        meter.retain_sse_usage(
+            b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n\
+              data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\",\"name\":\"PRIVATE\"}}\n\n\
+              data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1}}\n\n\
+              data: {\"type\":\"message_stop\"}\n\n",
+        );
+        assert_eq!(
+            meter.sse_terminal_evidence(),
+            (
+                ProviderTerminalClass::Success,
+                DeliveryState::Completed,
+                Some(true)
+            )
+        );
+
+        meter.sse_saw_error = true;
+        assert_eq!(
+            meter.sse_terminal_evidence(),
+            (
+                ProviderTerminalClass::UpstreamError,
+                DeliveryState::Interrupted,
+                None
+            )
+        );
+        assert!(meter
+            .ctx
+            .as_ref()
+            .and_then(|ctx| ctx.bill.as_ref())
+            .is_none());
+    }
+
     #[tokio::test]
     async fn downstream_abort_drains_truncated_upstream_before_billing() {
         let text = "🙂".repeat(1_000);
@@ -1152,8 +1528,28 @@ impl Stream for TeeMeter {
                 }
                 Poll::Ready(Some(Ok(chunk)))
             }
-            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
+            Poll::Ready(Some(Err(e))) => {
+                me.stream_error = Some(
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) {
+                        ProviderTerminalClass::Timeout
+                    } else {
+                        ProviderTerminalClass::Transport
+                    },
+                );
+                Poll::Ready(Some(Err(e)))
+            }
             Poll::Ready(None) => {
+                if let Some(request_fact) = me
+                    .ctx
+                    .as_mut()
+                    .and_then(|ctx| ctx.bill.as_mut())
+                    .and_then(|bill| bill.request_fact.as_mut())
+                {
+                    request_fact.downstream_disconnect = Some(false);
+                }
                 me.finalize();
                 Poll::Ready(None)
             }
@@ -1176,6 +1572,16 @@ impl Drop for TeeMeter {
         // authoritative final usage can settle the request. The stream carries the capacity/global
         // guards, so those remain held until the drain completes.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            if self.stream_error.is_none() {
+                if let Some(request_fact) = self
+                    .ctx
+                    .as_mut()
+                    .and_then(|ctx| ctx.bill.as_mut())
+                    .and_then(|bill| bill.request_fact.as_mut())
+                {
+                    request_fact.downstream_disconnect = Some(true);
+                }
+            }
             let detached_work = self.ctx.as_ref().and_then(|ctx| {
                 ctx.bill
                     .as_ref()
@@ -1195,6 +1601,13 @@ impl Drop for TeeMeter {
             let sse_delta_bytes = self.sse_delta_bytes;
             let sse_web_search_requests = self.sse_web_search_requests;
             let sse_output_tokens = self.sse_output_tokens;
+            let sse_protocol_valid = self.sse_protocol_valid;
+            let sse_saw_message_start = self.sse_saw_message_start;
+            let sse_saw_message_delta = self.sse_saw_message_delta;
+            let sse_saw_message_stop = self.sse_saw_message_stop;
+            let sse_saw_error = self.sse_saw_error;
+            let output_tool_calls = self.output_tool_calls;
+            let stream_error = self.stream_error;
             let lease_heartbeat = self.lease_heartbeat.take();
             handle.spawn(async move {
                 use futures_util::StreamExt;
@@ -1206,11 +1619,33 @@ impl Drop for TeeMeter {
                     sse_delta_bytes,
                     sse_web_search_requests,
                     sse_output_tokens,
+                    sse_protocol_valid,
+                    sse_saw_message_start,
+                    sse_saw_message_delta,
+                    sse_saw_message_stop,
+                    sse_saw_error,
+                    output_tool_calls,
+                    stream_error,
                     lease_heartbeat,
                     ctx,
                 };
                 while let Some(frame) = meter.inner.next().await {
-                    let Ok(chunk) = frame else { break };
+                    let chunk = match frame {
+                        Ok(chunk) => chunk,
+                        Err(error) => {
+                            meter.stream_error = Some(
+                                if matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                                ) {
+                                    ProviderTerminalClass::Timeout
+                                } else {
+                                    ProviderTerminalClass::Transport
+                                },
+                            );
+                            break;
+                        }
+                    };
                     let is_sse = meter.ctx.as_ref().is_some_and(|ctx| ctx.is_sse);
                     if is_sse {
                         meter.retain_sse_usage(&chunk);

@@ -244,6 +244,12 @@ pub fn admit_logical_request_id(
 
 /// Preserve already-admitted typed context when a universal adapter synthesizes its leaf request.
 /// Wire headers deliberately remain absent.
+/// Content-free proof that an internal adapter synthesized a Messages leaf from a different public
+/// protocol. Stage 7 request-fact producers use this typed marker to keep native and universal route
+/// classes distinct without retaining the translated request or adding a wire header.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SynthesizedMessagesOrigin;
+
 pub(crate) fn inherit_request_context(source: &Extensions, target: &mut Extensions) {
     if let Some(logical_request_id) = source.get::<LogicalRequestId>() {
         target.insert(logical_request_id.clone());
@@ -253,6 +259,29 @@ pub(crate) fn inherit_request_context(source: &Extensions, target: &mut Extensio
     }
     if let Some(lifecycle_clock) = source.get::<RequestLifecycleClock>() {
         target.insert(lifecycle_clock.clone());
+    }
+}
+
+#[cfg(test)]
+mod synthesized_messages_origin_tests {
+    use super::*;
+
+    #[test]
+    fn adapter_origin_is_explicit_and_content_free() {
+        let source = Extensions::new();
+        let mut target = Extensions::new();
+        inherit_request_context(&source, &mut target);
+        assert!(target.get::<SynthesizedMessagesOrigin>().is_none());
+
+        target.insert(SynthesizedMessagesOrigin);
+        assert_eq!(
+            target.get::<SynthesizedMessagesOrigin>(),
+            Some(&SynthesizedMessagesOrigin)
+        );
+        assert_eq!(
+            format!("{:?}", SynthesizedMessagesOrigin),
+            "SynthesizedMessagesOrigin"
+        );
     }
 }
 

@@ -75,10 +75,13 @@ NOT metered.
 **Request-fact producer plumbing (S3A plus four narrow producers):** `AsyncBilling` has opt-in
 typed fact-aware reserve, delivery, and terminal settlement commands. On PostgreSQL they stay in the
 existing single money writer and delegate to the registry S2 same-transaction methods; legacy APIs
-pass no fact and every billable path remains dormant. The only production callers are the nonbillable
-Codex/OpenAI universal Messages count, OpenAI native `POST /v1/responses/input_tokens`,
-Anthropic native Messages count, Gemini universal Messages count, and native Gemini `:countTokens`
-paths. Each starts only
+pass no fact. Production callers are the nonbillable Codex/OpenAI universal Messages count, OpenAI
+native `POST /v1/responses/input_tokens`, Anthropic native Messages count, Gemini universal Messages
+count, native Gemini `:countTokens`, and the first billable Stage-7 slice: native Anthropic
+`POST /v1/messages` on a real Claude subscription or the configured Anthropic-wire ClaudeStore
+fallback. OpenAI Chat/Responses adapters add a typed, content-free synthesized-Messages origin marker
+and are omitted from this first billable slice; KIMI/GLM aliases are separate backends and never
+produce an Anthropic fact. Each starts only
 after successful metered route/body admission, captures the typed logical/lifecycle context plus
 authoritative account/key and execution identities, and converges every later exit through one
 nonblocking terminal submission. Anthropic owns one request-scoped RAII guard across subscription
@@ -118,8 +121,9 @@ retains raw JSON. Gemini count facts are owned once at native execution: the uni
 accepted client intent and receives an ownership handoff for the final public mapping; native parsing
 classifies only after validation. A content-free transport observer counts profile rotation, 401
 resends and helper replay at the actual submission seam, with checked conversion and conservative
-NULL on uncertainty. Admin, unauthorized, all billable paths, other Gemini routes, metrics, read APIs,
-and every other production request-fact surface remain absent. Dropped coverage is visible
+NULL on uncertainty. Admin, unauthorized, other Gemini routes, billable paths except native Anthropic
+Messages, metrics, read APIs, and every other production request-fact surface remain absent. Dropped
+coverage is visible
 only through the existing internal delivery snapshot, not a public metric.
 For policy keys the cap takes the minimum of the account balance and the remaining lifetime limit. Such keys
 bypass the auth TTL cache; expiry and limit are re-checked inside the atomic reserve transaction.
@@ -266,8 +270,9 @@ The production consumers are the nonbillable Codex/OpenAI/Gemini universal Messa
 native Responses input-token count, and Anthropic/Gemini native count fact producers; each seals at
 terminal-fact construction without waiting for a later body poll. Gemini universal first transfers
 its still-unsubmitted native owner through a typed response extension and seals only after outer
-response conversion. Billable/TeeMeter/Codex-generation integration remains incomplete, so Stage
-5/6 and producer coverage remain incomplete.
+response conversion. Billable integration remains incomplete: native Anthropic Messages is the only
+Stage-7 generation producer; Anthropic universal adapters, Codex/OpenAI generation, Gemini generation and the rest of the
+locked route matrix remain future slices. Producer coverage is therefore incomplete.
 
 **Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** every
 successful Anthropic turn, including unmetered admin traffic, after authoritative usage builds one

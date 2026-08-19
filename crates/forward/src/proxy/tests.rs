@@ -270,6 +270,69 @@ fn spawn_count_upstream(
     (format!("http://{address}"), handle)
 }
 
+fn spawn_messages_upstream(
+    transient_failures: usize,
+    response_headers: Vec<(&'static str, &'static str)>,
+    body: &'static [u8],
+) -> (String, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let handle = std::thread::spawn(move || {
+        for attempt in 0..=transient_failures {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = socket.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                let Some(header_end) = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|position| position + 4)
+                else {
+                    continue;
+                };
+                let content_length = String::from_utf8_lossy(&request[..header_end])
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("content-length: ")
+                            .or_else(|| line.strip_prefix("Content-Length: "))
+                    })
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if request.len() >= header_end + content_length {
+                    break;
+                }
+            }
+            assert!(request.starts_with(b"POST /v1/messages?beta=true HTTP/1.1"));
+            if attempt < transient_failures {
+                socket
+                    .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\n\r\n{}")
+                    .unwrap();
+            } else {
+                write!(
+                    socket,
+                    "HTTP/1.1 201 Created\r\nContent-Length: {}\r\n",
+                    body.len()
+                )
+                .unwrap();
+                for (name, value) in &response_headers {
+                    write!(socket, "{name}: {value}\r\n").unwrap();
+                }
+                socket.write_all(b"\r\n").unwrap();
+                socket.write_all(body).unwrap();
+            }
+        }
+    });
+    (format!("http://{address}"), handle)
+}
+
 async fn body_snapshot(response: Response) -> (StatusCode, HeaderMap, bytes::Bytes) {
     let status = response.status();
     let headers = response.headers().clone();
@@ -1535,6 +1598,219 @@ fn exact_not_started_metric_predicate_matches_the_router_proof() {
         .body(Body::empty())
         .unwrap();
     assert!(!is_exact_not_started_response(&success));
+}
+
+#[test]
+fn native_billable_messages_admission_delivery_and_terminal_share_postgres_money_lifecycle() {
+    const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_443;
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping Anthropic billable Messages fact row: test URL is unset");
+        return;
+    };
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let mut connection = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    connection
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    connection
+        .batch_execute(
+            "TRUNCATE request_facts,execution_group_winner,settlement_outbox,reservations, \
+             capacity_leases,leader_leases,engine_instances,usage_events,ledger,api_keys,accounts, \
+             pool_state,subs RESTART IDENTITY CASCADE",
+        )
+        .unwrap();
+    pg.account_create(COUNT_FACT_ACCOUNT_ID, None, 10_000)
+        .unwrap();
+    pg.account_topup(
+        COUNT_FACT_ACCOUNT_ID,
+        1_000_000_000,
+        Some("anthropic-billable-fact"),
+    )
+    .unwrap();
+    pg.key_issue(COUNT_FACT_RAW_KEY, COUNT_FACT_ACCOUNT_ID, None)
+        .unwrap();
+    let expected_key_id = pg.key_get(COUNT_FACT_RAW_KEY).unwrap().unwrap().key_id;
+    pg.add("pg-message@example.test", "subscription-token", "", "test")
+        .unwrap();
+    pg.add(
+        "pg-message-rotation@example.test",
+        "subscription-token-rotation",
+        "",
+        "test",
+    )
+    .unwrap();
+    let owner = pg
+        .claim_instance(
+            &format!("anthropic-billable-fact-{}-{unique}", std::process::id()),
+            600,
+        )
+        .unwrap();
+    drop(pg);
+
+    let billing = Arc::new(
+        AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+            Some(owner),
+            1,
+            0,
+        )
+        .unwrap(),
+    );
+    let success_body = br#"{"type":"message","id":"msg_private","model":"claude-test-served","content":[{"type":"tool_use","id":"toolu_private","name":"PRIVATE TOOL","input":{"secret":true}}],"stop_reason":"tool_use","usage":{"input_tokens":2,"output_tokens":3}}"#;
+    let (upstream, server) = spawn_messages_upstream(
+        1,
+        vec![
+            ("content-type", "application/json"),
+            ("request-id", "req-pg-billable"),
+        ],
+        success_body,
+    );
+    let mut cfg = (*proxy_test_config()).clone();
+    cfg.upstream = upstream;
+    cfg.max_tries = 2;
+    let cfg = Arc::new(cfg);
+    let app = AppState {
+        provider: crate::ProviderMode::Anthropic,
+        authority: Arc::new(registry::authority::AuthorityConfig::Postgres { url: url.clone() }),
+        data_db_path: Arc::new(format!("/tmp/anthropic-billable-fact-{unique}")),
+        pool: Arc::new(Pool::new(
+            vec![
+                Sub {
+                    email: "pg-message@example.test".into(),
+                    token: "subscription-token".into(),
+                    proxy: String::new(),
+                    fleet: "test".into(),
+                    plan: "max20".into(),
+                },
+                Sub {
+                    email: "pg-message-rotation@example.test".into(),
+                    token: "subscription-token-rotation".into(),
+                    proxy: String::new(),
+                    fleet: "test".into(),
+                    plan: "max20".into(),
+                },
+            ],
+            Reserve::FULL,
+            1.0,
+            1.0,
+        )),
+        affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
+        clients: Arc::new(Clients::new(&cfg)),
+        codex: None,
+        gemini: None,
+        kimi: None,
+        glm: None,
+        tripo3d: None,
+        suno: None,
+        billing: Some(Arc::clone(&billing)),
+        authority_ready: Arc::new(AtomicBool::new(true)),
+        breaker: Arc::new(Breaker::new(100)),
+        metrics: Arc::new(Metrics::new()),
+        probe_poke: None,
+        admin_changes: tokio::sync::broadcast::channel(16).0,
+        cfg,
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let mut request = native_count_tokens_request(
+                serde_json::json!({
+                    "model":"claude-test",
+                    "max_tokens":8,
+                    "messages":[{"role":"user","content":"PRIVATE PG PROMPT"}],
+                    "tools":[{"name":"PRIVATE PG TOOL","input_schema":{"type":"object"}}]
+                }),
+                true,
+                Some("claude_code/2.1.220"),
+            );
+            *request.uri_mut() = "/v1/messages".parse().unwrap();
+            let response = forward(
+                State(app),
+                ConnectInfo("192.0.2.1:443".parse().unwrap()),
+                request,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::CREATED);
+            // Fully exhaust the body: TeeMeter remains authoritative for usage and terminal fact.
+            assert_eq!(
+                to_bytes(response.into_body(), 1024 * 1024)
+                    .await
+                    .unwrap()
+                    .as_ref(),
+                success_body
+            );
+            billing.flush().await.unwrap();
+        });
+    server.join().unwrap();
+
+    let row = connection
+        .query_one(
+            "SELECT account_id,key_id,provider_plane,route_class,request_class,requested_model, \
+                    executable_model,stream_flag,tools_declared_count,delivery_started_at, \
+                    http_status_code,provider_terminal_class,delivery_state,billing_outcome, \
+                    downstream_disconnect,upstream_request_id,internal_attempt_count,tool_calls_in_output, \
+                    terminal_at \
+               FROM request_facts WHERE logical_request_id=$1",
+            &[&COUNT_FACT_LOGICAL_ID],
+        )
+        .unwrap();
+    assert_eq!(row.get::<_, String>(0), COUNT_FACT_ACCOUNT_ID);
+    assert_eq!(row.get::<_, String>(1), expected_key_id);
+    assert_eq!(row.get::<_, String>(2), "anthropic");
+    assert_eq!(row.get::<_, String>(3), "native");
+    assert_eq!(row.get::<_, String>(4), "messages");
+    assert_eq!(
+        row.get::<_, Option<String>>(5).as_deref(),
+        Some("claude-test")
+    );
+    assert_eq!(row.get::<_, Option<String>>(6), None);
+    assert!(!row.get::<_, bool>(7));
+    assert_eq!(row.get::<_, Option<i32>>(8), Some(1));
+    assert!(row.get::<_, Option<i64>>(9).is_some());
+    assert_eq!(row.get::<_, Option<i32>>(10), Some(201));
+    assert_eq!(row.get::<_, String>(11), "success");
+    assert_eq!(row.get::<_, String>(12), "completed");
+    assert_eq!(row.get::<_, String>(13), "winner");
+    assert_eq!(row.get::<_, Option<bool>>(14), Some(false));
+    assert_eq!(
+        row.get::<_, Option<String>>(15).as_deref(),
+        Some("req-pg-billable")
+    );
+    assert_eq!(row.get::<_, Option<i32>>(16), Some(2));
+    assert_eq!(row.get::<_, Option<bool>>(17), Some(true));
+    assert!(row.get::<_, Option<i64>>(18).is_some());
+    let row_json = connection
+        .query_one(
+            "SELECT row_to_json(request_facts)::text FROM request_facts WHERE logical_request_id=$1",
+            &[&COUNT_FACT_LOGICAL_ID],
+        )
+        .unwrap()
+        .get::<_, String>(0);
+    for private in [
+        COUNT_FACT_RAW_KEY,
+        "PRIVATE PG PROMPT",
+        "PRIVATE PG TOOL",
+        "secret",
+    ] {
+        assert!(!row_json.contains(private));
+    }
+    connection
+        .query_one(
+            "SELECT pg_advisory_unlock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    drop(billing);
 }
 
 #[test]

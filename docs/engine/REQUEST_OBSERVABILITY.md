@@ -9,9 +9,12 @@
 > implemented: Anthropic, OpenAI native, and both Gemini counting routes consume their owning
 > classifiers, while OpenAI Chat and Gemini generation remain dormant. A typed once-only lifecycle
 > carrier, transparent final-public-body observation seam, and nonwaiting atomic terminal seal are
-> active. All counting producers capture safely ordered first-byte evidence or freeze `NULL` before any later outer body poll. Billable/TeeMeter/Codex-generation
-> integration remains incomplete in stage 6; both Gemini count-token producers are now wired. No private
-> read surface, request-fact metric, or billable producer exists.
+> active. All counting producers capture safely ordered first-byte evidence or freeze `NULL` before
+> any later outer body poll. Stage 7 has started with the
+> native billable Anthropic `POST /v1/messages` leaf, including stream/nonstream settlement and the
+> configured ClaudeStore Anthropic-wire fallback. OpenAI Chat/Responses universal adapters now mark
+> their synthesized Messages leaves and remain explicitly excluded from this first slice. All other
+> billable producers, the private read surface, and request-fact metrics remain incomplete.
 >
 > This document is the owner-approved v1 implementation contract. It authorizes only the finite,
 > ordered rollout and Definition of Done in §§13-15; it does not claim that those stages are complete.
@@ -29,7 +32,9 @@
 > inbox, persisting normalized explicit client attribution or unknown when malformed/absent. Anthropic
 > additionally publishes its privacy-bounded Messages classifier only after upstream success proves
 > native shape acceptance; Gemini classifiers are parser-gated at their owning seams. The logical ID
-> remains operator-only. Billable paths, Gemini generation, and every other plane caller remain absent.
+> remains operator-only. The native Anthropic billable Messages slice now admits facts in the reserve
+> transaction, marks delivery with money, and seals terminal evidence through TeeMeter settlement;
+> universal Anthropic adapters and every other billable plane caller remain absent.
 
 ## 1. Purpose
 
@@ -340,9 +345,9 @@ terminal work, and repeated seals are idempotent. Existing evidence is returned 
 ordered inside inclusive `[admitted_at, terminal_at]`; invalid bounds or out-of-order evidence produce
 `NULL` without clamping or fabrication, and invalid bounds still seal an open clock. This seam does
 not itself write facts or settle money. The nonbillable Codex/OpenAI/Gemini universal Messages count,
-OpenAI native Responses input-token count, and Anthropic/Gemini native count fact producers consume
-it. Billable/TeeMeter/Codex-generation integration remains incomplete, so producer coverage and Stage
-5/6 remain incomplete.
+OpenAI native Responses input-token count, Anthropic/Gemini native count fact producers, and native
+billable Anthropic Messages consume it. Other billable/TeeMeter and Codex-generation integration
+remains incomplete, so producer coverage remains incomplete.
 
 The read surface safely derives four durations and only when both endpoints are measured and ordered:
 admission-to-delivery, admission-to-first-public-byte, delivery-to-first-public-byte, and
@@ -378,8 +383,9 @@ without adding a second hot-path round trip. Before either backend receives the 
 requires the fact's `billing_request_id`, `account_id`, `execution_group_id`, and `attempt` to match the
 reservation arguments. The forward authorization result now carries both the raw secret key and its
 authoritative non-secret `key_id`, obtained by the existing `key_account` statement in one snapshot.
-Current reserve/settle calls still receive the raw key, and no billable request-fact producer uses
-`key_id`. The nonbillable Codex count_tokens producer consumes a separate typed seed that contains only
+Reserve/settle calls still receive the raw key, while native billable Anthropic Messages admits the
+authoritative `key_id` only through its privacy-bounded fact. The nonbillable Codex count_tokens
+producer consumes a separate typed seed that contains only
 the authoritative non-secret identity. PostgreSQL keeps the final authoritative same-transaction fact
 key lookup/comparison, while SQLite intentionally persists no request-fact analytics.
 
@@ -548,15 +554,13 @@ the prerequisite exact SHA is production GREEN.
    The exact client-header grammar, fail-open normalization, empty reviewed-positive heuristic v1,
    typed adapter propagation, Codex count_tokens consumption, privacy-negative tests, closed structural
    contract, and pure already-validated Anthropic/OpenAI/Gemini shape classifiers are implemented.
-   Structural classifiers remain deliberately dormant: no handler or request-fact producer consumes
-   them yet, and `tool_calls_in_output` remains terminal evidence. The typed once-only lifecycle carrier,
-   transparent final-public-body observer and nonwaiting atomic terminal seal are active. The seal
-   closes an unobserved clock against later DATA without indefinite holding and accepts only safely
-   ordered first-byte evidence. The nonbillable Codex universal count_tokens fact producer is its first
-   production consumer; billable/TeeMeter/Codex-generation and every other producer remain incomplete.
-   Stage 6/7 owns the remaining request-fact, `TeeMeter`, Codex settlement and `AsyncBilling`
-   integration. This stage remains incomplete and changes no public response or upstream request
-   contract.
+   Structural classifiers have narrow owning consumers for the completed count-token slices and native
+   billable Anthropic Messages; unowned route classifiers remain dormant. `tool_calls_in_output` is
+   terminal evidence only. The typed once-only lifecycle carrier, transparent final-public-body
+   observer and nonwaiting atomic terminal seal are active. The seal closes an unobserved clock against
+   later DATA without indefinite holding and accepts only safely ordered first-byte evidence. Native
+   Anthropic Messages now passes its carrier through TeeMeter settlement. Stage 7 still owns the
+   remaining billable producers, so this slice does not complete coverage or add a public response.
 6. **Complete nonbillable producers.** Cover exactly Anthropic native Messages
    `POST /v1/messages/count_tokens`; OpenAI universal Messages `POST /v1/messages/count_tokens` plus
    native Responses `POST /v1/responses/input_tokens`; and Gemini universal Messages
@@ -564,9 +568,14 @@ the prerequisite exact SHA is production GREEN.
    Codex/OpenAI universal Messages, OpenAI native Responses, and Anthropic native Messages callers
    are the three completed slices. Discovery, stored-response
    reads, health, balance, catalogs, router/provider preflights, and auth helpers remain excluded.
-7. **Complete billable producers.** Cover every customer-facing text-generation leaf route on the
-   Anthropic, OpenAI, and Gemini planes, in native and universal protocols, stream and nonstream. This
-   includes native Anthropic Messages, OpenAI Responses/Chat, Gemini generateContent/
+7. **Complete billable producers — started, native Anthropic slice only.** Native Anthropic
+   `POST /v1/messages` now covers stream/nonstream local subscription attempts and the configured
+   ClaudeStore Anthropic-wire fallback. Its immutable admission shares the reservation transaction;
+   delivery and TeeMeter terminal evidence share the existing money transitions. Typed synthesized-
+   Messages origin markers explicitly omit the OpenAI Chat/Responses universal adapters in this first
+   slice. Remaining work must cover every other customer-facing text-generation leaf route on the
+   Anthropic, OpenAI, and Gemini planes, in native and universal protocols. This includes Anthropic
+   universal adapters, OpenAI Responses/Chat, Gemini generateContent/
    streamGenerateContent, and the universal Messages/Responses/Chat adapters that execute on those
    planes. A Combined route creates only the underlying leaf fact and never an extra Combined fact.
    Backend-only KIMI and GLM, Tripo3D, Suno, images, embeddings, files, and batches remain outside v1.

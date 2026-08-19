@@ -10,7 +10,10 @@
 //!   5) ответ (включая SSE-стрим) отдаём клиенту байт-в-байт.
 
 use crate::execution::{ClientAttribution, LogicalRequestId, RequestLifecycleClock};
-use crate::meter::{BillCtx, CalibrationCtx, MeterCtx, SubscriptionMeterCtx, TeeMeter};
+use crate::meter::{
+    AnthropicAttemptTracker, AnthropicBillableFactContext, BillCtx, CalibrationCtx, MeterCtx,
+    SubscriptionMeterCtx, TeeMeter,
+};
 use crate::metrics::Metrics;
 use crate::pricing::tariff_book;
 use crate::request_classification::{classify_anthropic_messages, RequestClassification};
@@ -22,8 +25,8 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::Response;
 use futures_util::{Stream, StreamExt};
 use registry::request_facts::{
-    DeliveryState, ProviderTerminalClass, RequestFactTerminalEvidence, TerminalRequestFact,
-    MAX_REQUEST_FACT_MODEL_LEN, MAX_REQUEST_FACT_UPSTREAM_ID_LEN,
+    DeliveryState, ProviderTerminalClass, RequestFactAdmission, RequestFactTerminalEvidence,
+    TerminalRequestFact, MAX_REQUEST_FACT_MODEL_LEN, MAX_REQUEST_FACT_UPSTREAM_ID_LEN,
 };
 use serde_json::Value;
 use std::collections::HashSet;
@@ -85,6 +88,7 @@ pub(crate) struct HoldGuard {
     key: String,
     hold: i64,
     request_id: String,
+    request_fact: Option<AnthropicBillableFactContext>,
     armed: bool,
 }
 impl HoldGuard {
@@ -101,11 +105,76 @@ impl HoldGuard {
             key,
             hold,
             request_id,
+            request_fact: None,
             armed: true,
         }
     }
 
     pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    fn with_request_fact(mut self, request_fact: AnthropicBillableFactContext) -> Self {
+        self.request_fact = Some(request_fact);
+        self
+    }
+
+    fn record_send(&mut self) {
+        if let Some(request_fact) = self.request_fact.as_mut() {
+            request_fact.attempts.record_send();
+        }
+    }
+
+    fn set_terminal_upstream(&mut self, upstream_request_id: Option<String>) {
+        if let Some(request_fact) = self.request_fact.as_mut() {
+            request_fact.upstream_request_id = upstream_request_id;
+        }
+    }
+
+    fn take_request_fact(&mut self) -> Option<AnthropicBillableFactContext> {
+        self.request_fact.take()
+    }
+
+    fn settle_terminal(
+        &mut self,
+        actual: i64,
+        reference: Option<&str>,
+        http_status_code: Option<i32>,
+        provider_terminal_class: ProviderTerminalClass,
+        delivery_state: DeliveryState,
+        attempts_exhaustive: bool,
+    ) {
+        let Some(billing) = self.billing.as_ref() else {
+            self.armed = false;
+            return;
+        };
+        let Some(request_fact) = self.request_fact.take() else {
+            return;
+        };
+        let evidence = request_fact.terminal_evidence(
+            http_status_code,
+            provider_terminal_class,
+            delivery_state,
+            None,
+            attempts_exhaustive,
+        );
+        if let Err(error) = billing.settle_detached_with_request_fact(
+            &self.request_id,
+            &self.account_id,
+            &self.key,
+            self.hold,
+            actual,
+            reference,
+            None,
+            evidence,
+        ) {
+            // Fact admission was already durable. Invalid local terminal evidence must not fall back
+            // to a fact-free cancellation; the reconciler owns this true invariant failure.
+            elog::error(
+                "forward",
+                format!("Anthropic request-fact cancellation evidence rejected: {error:#}"),
+            );
+        }
         self.armed = false;
     }
 }
@@ -114,7 +183,18 @@ impl Drop for HoldGuard {
         if self.armed {
             // возврат резерва на аккаунт (actual=0 → ledger-charge не пишется). Drop синхронен —
             // шлём АСИНХРОННО через актор (settle_detached: mpsc::send не блокирует, не требует await).
-            if let Some(b) = &self.billing {
+            if self.request_fact.is_some() {
+                // Cancellation/unwind cannot prove an exhaustive send count or public HTTP result.
+                // The admitted fact is closed in the same money actor as the reservation refund.
+                self.settle_terminal(
+                    0,
+                    None,
+                    None,
+                    ProviderTerminalClass::Unknown,
+                    DeliveryState::Unknown,
+                    false,
+                );
+            } else if let Some(b) = &self.billing {
                 b.settle_detached(
                     &self.request_id,
                     &self.account_id,
@@ -1068,13 +1148,21 @@ fn merged_beta(headers: &HeaderMap, configured: &str) -> Result<String, ()> {
 /// caller for the ordinary delivery marker and exact usage meter; every failure is deliberately
 /// collapsed back into the already-computed local terminal response so ClaudeStore credential,
 /// balance and infrastructure details never cross the public boundary.
+enum ClaudeStoreAttempt {
+    Response(wreq::Response),
+    BeforeSend,
+    Transport,
+    Http(StatusCode, Option<String>),
+}
+
 async fn attempt_claudestore_fallback(
     app: &AppState,
     config: &crate::config::ClaudeStoreFallbackConfig,
     body: bytes::Bytes,
     anthropic_version: &str,
     client_beta: &str,
-) -> Option<wreq::Response> {
+    hold_guard: &mut HoldGuard,
+) -> ClaudeStoreAttempt {
     Metrics::inc(&app.metrics.claudestore_fallback_attempts);
     // A dedicated cache identity creates a direct connection pool that is never shared with a
     // subscription proxy/TLS session. No local OAuth or persona header is attached below.
@@ -1086,12 +1174,13 @@ async fn attempt_claudestore_fallback(
                 "forward",
                 format!("ClaudeStore fallback client unavailable: {error}"),
             );
-            return None;
+            return ClaudeStoreAttempt::BeforeSend;
         }
     };
     let url = format!("{}/v1/messages", config.base_url().trim_end_matches('/'));
     let mut request = client
         .request(Method::POST, url)
+        .redirect(wreq::redirect::Policy::none())
         .header("x-api-key", config.api_key())
         .header("anthropic-version", anthropic_version)
         .header("content-type", "application/json")
@@ -1099,6 +1188,7 @@ async fn attempt_claudestore_fallback(
     if !client_beta.is_empty() {
         request = request.header("anthropic-beta", client_beta);
     }
+    hold_guard.record_send();
     let response = match request.send().await {
         Ok(response) => response,
         Err(error) => {
@@ -1107,21 +1197,23 @@ async fn attempt_claudestore_fallback(
                 "forward",
                 format!("ClaudeStore fallback transport failed: {error}"),
             );
-            return None;
+            return ClaudeStoreAttempt::Transport;
         }
     };
     if !response.status().is_success() {
         Metrics::inc(&app.metrics.claudestore_fallback_failures);
+        let status = response.status();
+        let request_id = bounded_anthropic_request_id(&response);
         elog::warn(
             "forward",
             format!(
                 "ClaudeStore fallback returned terminal status {}",
-                response.status().as_u16()
+                status.as_u16()
             ),
         );
-        return None;
+        return ClaudeStoreAttempt::Http(status, request_id);
     }
-    Some(response)
+    ClaudeStoreAttempt::Response(response)
 }
 
 /// Claude-Code persona нужна для OAuth-поведения, но документированную атрибуцию клиента нельзя
@@ -1199,6 +1291,10 @@ pub async fn forward(
     let typed_logical_request_id = req.extensions().get::<LogicalRequestId>().cloned();
     let typed_client_attribution = req.extensions().get::<ClientAttribution>().cloned();
     let typed_lifecycle_clock = req.extensions().get::<RequestLifecycleClock>().cloned();
+    let synthesized_messages = req
+        .extensions()
+        .get::<crate::execution::SynthesizedMessagesOrigin>()
+        .is_some();
     if !app.authority_ready.load(AtomicOrdering::Acquire) {
         // Инстанс зафенсен/authority недоступен — НАША внутренняя причина. Клиенту — транзиентный
         // retryable overload (ретрай, вероятно, попадёт на здоровый инстанс), без слова «authority».
@@ -1303,6 +1399,30 @@ pub async fn forward(
     let mut requested_us_inference = false;
     let mut affinity_input = None;
     let mut parsed = serde_json::from_slice::<Value>(&raw).ok();
+    // Capture native client intent before namespace removal, max_tokens balance mutation, persona,
+    // identity or billing injection. Unknown/unvalidated sub-shapes remain nullable classifier fields.
+    let native_messages_fact_candidate = (billable
+        && app.provider.serves_anthropic()
+        && !synthesized_messages
+        && matches!(authz, Authz::Metered { .. }))
+    .then(|| parsed.as_ref())
+    .flatten()
+    .filter(|original| original.is_object())
+    .map(|original| {
+        let requested_model = original
+            .get("model")
+            .and_then(Value::as_str)
+            .and_then(|model| bounded_request_fact_ascii(model, MAX_REQUEST_FACT_MODEL_LEN));
+        let stream_flag = original
+            .get("stream")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        (
+            requested_model,
+            stream_flag,
+            classify_anthropic_messages(original),
+        )
+    });
     let mut count_tokens_fact = if native_count_tokens {
         match (
             app.billing.as_ref(),
@@ -1601,6 +1721,66 @@ pub async fn forward(
     // One stable internal ID spans reservation, all upstream attempts, settlement, and capacity leases.
     // It is generated before any money mutation and is never replaced by an upstream audit header.
     let engine_request_id = crate::upstream::fresh_request_id();
+    // Build the immutable fact before reserve. Missing typed logical/lifecycle context, admin,
+    // SQLite (whose fact-aware method deliberately ignores analytics), universal adapters, and
+    // internal KIMI/GLM leaves keep this absent and preserve the legacy money path.
+    let request_fact_admitted_at = pool::now();
+    let request_fact_admission = match (
+        native_messages_fact_candidate.as_ref(),
+        typed_logical_request_id.as_ref(),
+        typed_lifecycle_clock.as_ref(),
+        &authz,
+    ) {
+        (
+            Some((requested_model, stream_flag, classification)),
+            Some(logical_request_id),
+            Some(_),
+            Authz::Metered {
+                account_id, key_id, ..
+            },
+        ) if kimi_model.is_none() && glm_model.is_none() => Some(RequestFactAdmission {
+            logical_request_id: logical_request_id.as_str().to_owned(),
+            billing_request_id: engine_request_id.clone(),
+            execution_group_id: execution.group_id().map(str::to_owned),
+            attempt: execution.attempt(),
+            account_id: account_id.clone(),
+            key_id: key_id.clone(),
+            client_kind: typed_client_attribution
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(ClientAttribution::unknown_for_internal_use)
+                .kind(),
+            client_source: typed_client_attribution
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(ClientAttribution::unknown_for_internal_use)
+                .source(),
+            client_version: typed_client_attribution
+                .as_ref()
+                .and_then(|client| client.version().map(str::to_owned)),
+            provider_plane: "anthropic".into(),
+            route_class: "native".into(),
+            request_class: "messages".into(),
+            requested_model: requested_model.clone(),
+            // Only a locally resolved/accepted executable id is admissible. Native Anthropic model
+            // resolution happens upstream, after immutable admission, so this remains unknown.
+            executable_model: None,
+            stream_flag: *stream_flag,
+            tools_declared_count: classification.tools_declared_count(),
+            tool_classes: classification.tool_classes(),
+            tool_choice_mode: classification.tool_choice_mode(),
+            parallel_tools_requested: classification.parallel_tools_requested(),
+            tool_results_in_input: classification.tool_results_in_input(),
+            structured_output_flag: classification.structured_output_flag(),
+            reasoning_flag: classification.reasoning_flag(),
+            service_tier: classification.service_tier().map(str::to_owned),
+            input_modalities: classification.input_modalities(),
+            output_modalities: classification.output_modalities(),
+            admitted_at: request_fact_admitted_at,
+        }),
+        _ => None,
+    };
+
     // Tuple: request/account/key/hold plus the payable multiplier, the optional strict tariff pin
     // and the hot tariff override version pinned at admission (None = compiled constants).
     let mut reserved: Option<(
@@ -1688,18 +1868,36 @@ pub async fn forward(
                 Some(x) => x,
                 None => break,
             };
-            match billing
-                .reserve_priced_request_for_execution(
-                    &engine_request_id,
-                    account_id,
-                    key,
-                    hold,
-                    execution.clone(),
-                    registry::PROVIDER_ANTHROPIC,
-                    *mult_bp,
-                )
-                .await
-            {
+            let reserve_result = match request_fact_admission.as_ref() {
+                Some(request_fact) => {
+                    billing
+                        .reserve_priced_request_for_execution_with_fact(
+                            &engine_request_id,
+                            account_id,
+                            key,
+                            hold,
+                            execution.clone(),
+                            registry::PROVIDER_ANTHROPIC,
+                            *mult_bp,
+                            request_fact.clone(),
+                        )
+                        .await
+                }
+                None => {
+                    billing
+                        .reserve_priced_request_for_execution(
+                            &engine_request_id,
+                            account_id,
+                            key,
+                            hold,
+                            execution.clone(),
+                            registry::PROVIDER_ANTHROPIC,
+                            *mult_bp,
+                        )
+                        .await
+                }
+            };
+            match reserve_result {
                 Ok(Some(_)) => {
                     reserved_pair = Some((eff_mt, hold));
                     break;
@@ -1763,16 +1961,51 @@ pub async fn forward(
     // Гард резерва: на любом не-успешном исходе И при отмене запроса вернёт hold клиенту. Создаём
     // ДО пересборки тела — если она упадёт и мы вернёмся, Drop гарда вернёт hold (без утечки).
     // Разоружим на успехе — там hold закрывает tee-метеринг. Снимает утечку денег при disconnect.
-    let mut hold_guard = reserved
-        .as_ref()
-        .map(|(request_id, acct, k, h, _, _, _)| HoldGuard {
+    let mut hold_guard = reserved.as_ref().map(|(request_id, acct, k, h, _, _, _)| {
+        let guard = HoldGuard {
             billing: app.billing.clone(),
             account_id: acct.clone(),
             key: k.clone(),
             hold: *h,
             request_id: request_id.clone(),
+            request_fact: None,
             armed: true,
-        });
+        };
+        match (
+            request_fact_admission.as_ref(),
+            typed_lifecycle_clock.as_ref(),
+        ) {
+            (Some(admission), Some(lifecycle_clock)) => {
+                guard.with_request_fact(AnthropicBillableFactContext {
+                    admitted_at: admission.admitted_at,
+                    lifecycle_clock: lifecycle_clock.clone(),
+                    attempts: AnthropicAttemptTracker::default(),
+                    upstream_request_id: None,
+                    downstream_disconnect: None,
+                })
+            }
+            _ => guard,
+        }
+    });
+    macro_rules! return_after_reserve_local {
+        ($response:expr) => {{
+            let response = $response;
+            if let Some(guard) = hold_guard.as_mut() {
+                guard.settle_terminal(
+                    0,
+                    None,
+                    Some(i32::from(response.status().as_u16())),
+                    ProviderTerminalClass::Unknown,
+                    DeliveryState::NotStarted,
+                    true,
+                );
+            }
+            return match count_tokens_fact.take() {
+                Some(fact) => fact.finish_local(response),
+                None => response,
+            };
+        }};
+    }
     let version = parts
         .headers
         .get("anthropic-version")
@@ -1781,11 +2014,11 @@ pub async fn forward(
         .to_string();
     let beta = match merged_beta(&parts.headers, &app.cfg.default_beta) {
         Ok(v) => v,
-        Err(()) => return_local!(local_err(LocalErr::BadBeta, None)),
+        Err(()) => return_after_reserve_local!(local_err(LocalErr::BadBeta, None)),
     };
     let fallback_beta = match merged_beta(&parts.headers, "") {
         Ok(v) => v,
-        Err(()) => return_local!(local_err(LocalErr::BadBeta, None)),
+        Err(()) => return_after_reserve_local!(local_err(LocalErr::BadBeta, None)),
     };
     let fallback_body = if reserved.is_some() {
         fallback_parsed
@@ -1959,7 +2192,7 @@ pub async fn forward(
                     Err(error) => {
                         app.pool.mark_done(&sub.email);
                         elog::error("forward", format!("capacity authority failed: {error:#}"));
-                        return_local!(local_err_for(
+                        return_after_reserve_local!(local_err_for(
                             LocalErr::Overloaded,
                             "capacity_authority_unavailable",
                             Some(2),
@@ -2009,6 +2242,7 @@ pub async fn forward(
                 .unwrap_or(false);
             let mut rb = client
                 .request(method.clone(), &url)
+                .redirect(wreq::redirect::Policy::none())
                 .header("authorization", format!("Bearer {}", sub.token))
                 .header("anthropic-version", &version)
                 .header("user-agent", &ua)
@@ -2066,7 +2300,7 @@ pub async fn forward(
                     }
                     match serde_json::to_vec(v) {
                         Ok(b) => bytes::Bytes::from(b),
-                        Err(_) => return_local!(local_err(LocalErr::Internal, None)),
+                        Err(_) => return_after_reserve_local!(local_err(LocalErr::Internal, None)),
                     }
                 }
                 None => body_bytes.clone(), // не-JSON тело → как есть
@@ -2085,6 +2319,9 @@ pub async fn forward(
 
             if let Some(fact) = count_tokens_fact.as_mut() {
                 fact.record_send();
+            }
+            if let Some(guard) = hold_guard.as_mut() {
+                guard.record_send();
             }
             let resp = match rb.send().await {
                 Ok(r) => r,
@@ -2194,6 +2431,17 @@ pub async fn forward(
                 // Запрос-детерминированный 401/403 возвращаем БАЙТ-В-БАЙТ: body/request-id/error type
                 // принадлежат Anthropic и нужны SDK-диагностике; секретные auth headers уже фильтруются.
                 let upstream_request_id = bounded_anthropic_request_id(&resp);
+                if let Some(hold_guard) = hold_guard.as_mut() {
+                    hold_guard.set_terminal_upstream(upstream_request_id.clone());
+                    hold_guard.settle_terminal(
+                        0,
+                        upstream_request_id.as_deref(),
+                        Some(i32::from(st.as_u16())),
+                        AnthropicCountTokensTerminalEvidence::upstream(st).provider_terminal_class,
+                        DeliveryState::Started,
+                        true,
+                    );
+                }
                 let response = stream_back(st, resp, None, app.metrics.clone());
                 return match count_tokens_fact.take() {
                     Some(fact) => fact.finish_upstream(st, upstream_request_id, response),
@@ -2229,6 +2477,7 @@ pub async fn forward(
             // На УСПЕХЕ всегда меряем ответ: расход подписки → калибровка пула; для метерного ключа
             // finalize закрывает резерв фактической стоимостью; и там же `end_stream` снимает слот
             // конкуррентности. 4xx не меряем — резерв возвращаем, слот освобождаем сразу.
+            let terminal_upstream_request_id = bounded_anthropic_request_id(&resp);
             let meter = if st.is_success() {
                 app.pool.mark_healthy(&sub.email);
                 // count_tokens is successful but does not populate Anthropic's prompt cache.
@@ -2245,27 +2494,45 @@ pub async fn forward(
                 if let (Some((request_id, account_id, key, hold, _, priced_ts, _)), Some(billing)) =
                     (reserved.as_ref(), app.billing.as_ref())
                 {
-                    if !matches!(billing.mark_delivering(request_id, 3600).await, Ok(true)) {
+                    let delivery = if request_fact_admission.is_some() {
+                        billing
+                            .mark_delivering_with_request_fact(request_id, 3600)
+                            .await
+                    } else {
+                        billing.mark_delivering(request_id, 3600).await
+                    };
+                    if !matches!(delivery, Ok(true)) {
                         // The provider accepted the request, but the durable delivery marker was
                         // fenced. Nothing was measured, so the customer is not billed the admission
                         // ceiling for it; the request still fails closed rather than streaming
                         // untracked usage.
-                        if priced_ts.is_some() {
-                            billing
-                                .settle_detached(request_id, account_id, key, *hold, 0, None, None);
+                        let actual = if priced_ts.is_some() {
+                            0
                         } else {
-                            billing.settle_detached(
-                                request_id,
-                                account_id,
-                                key,
-                                *hold,
-                                crate::settlement_policy::unknown_usage_charge(*hold),
-                                Some("delivery-marker-failed"),
-                                None,
-                            );
-                        }
+                            crate::settlement_policy::unknown_usage_charge(*hold)
+                        };
                         if let Some(g) = hold_guard.as_mut() {
-                            g.disarm();
+                            if g.request_fact.is_some() {
+                                g.settle_terminal(
+                                    actual,
+                                    Some("delivery-marker-failed"),
+                                    Some(i32::from(StatusCode::SERVICE_UNAVAILABLE.as_u16())),
+                                    ProviderTerminalClass::Unknown,
+                                    DeliveryState::Unknown,
+                                    true,
+                                );
+                            } else {
+                                billing.settle_detached(
+                                    request_id,
+                                    account_id,
+                                    key,
+                                    *hold,
+                                    actual,
+                                    Some("delivery-marker-failed"),
+                                    None,
+                                );
+                                g.disarm();
+                            }
                         }
                         // Заголовок not_started снимаем: в legacy-scalar ветке выше settle
                         // закрыл hold ПОЛНЫМ списанием (actual=hold), значит условие «reserve не
@@ -2308,7 +2575,16 @@ pub async fn forward(
                         policy_fast: priced_ts.map(|_| requested_fast),
                         policy_us_inference: priced_ts.map(|_| requested_us_inference),
                         request_id,
+                        http_status_code: i32::from(st.as_u16()),
                         reference: request_id_of(&resp),
+                        request_fact: hold_guard
+                            .as_mut()
+                            .and_then(HoldGuard::take_request_fact)
+                            .map(|mut request_fact| {
+                                request_fact.upstream_request_id =
+                                    terminal_upstream_request_id.clone();
+                                request_fact
+                            }),
                     }),
                     _ => None,
                 };
@@ -2360,9 +2636,20 @@ pub async fn forward(
             } else {
                 // клиентская 4xx: подписка ни при чём. Слот закроет guard, резерв — hold_guard (на return).
                 app.pool.mark_healthy(&sub.email);
+                if let Some(hold_guard) = hold_guard.as_mut() {
+                    hold_guard.set_terminal_upstream(terminal_upstream_request_id.clone());
+                    hold_guard.settle_terminal(
+                        0,
+                        terminal_upstream_request_id.as_deref(),
+                        Some(i32::from(st.as_u16())),
+                        AnthropicCountTokensTerminalEvidence::upstream(st).provider_terminal_class,
+                        DeliveryState::Started,
+                        true,
+                    );
+                }
                 None
             };
-            let upstream_request_id = bounded_anthropic_request_id(&resp);
+            let upstream_request_id = terminal_upstream_request_id;
             let response = stream_back(st, resp, meter, app.metrics.clone());
             return match count_tokens_fact.take() {
                 Some(fact) => fact.finish_upstream(st, upstream_request_id, response),
@@ -2398,22 +2685,51 @@ pub async fn forward(
         // local rotation and smooth-wait budget are terminal, no public byte has been emitted, and
         // this is the sole external attempt. A failed external call leaves the hold guard armed and
         // falls through to the original local terminal response/refund path.
-        let mut fallback_attempted = false;
+        let mut fallback_terminal = None;
         if let (Some(config), Some(body)) =
             (app.cfg.claudestore_fallback.as_ref(), fallback_body.clone())
         {
-            fallback_attempted = true;
-            if let Some(resp) =
-                attempt_claudestore_fallback(&app, config, body, &version, &fallback_beta).await
-            {
+            let fallback_attempt = attempt_claudestore_fallback(
+                &app,
+                config,
+                body,
+                &version,
+                &fallback_beta,
+                hold_guard
+                    .as_mut()
+                    .expect("fallback requires a durable metered reservation"),
+            )
+            .await;
+            if let ClaudeStoreAttempt::Response(resp) = fallback_attempt {
+                let fallback_upstream_request_id = bounded_anthropic_request_id(&resp);
+                if let Some(guard) = hold_guard.as_mut() {
+                    guard.set_terminal_upstream(fallback_upstream_request_id.clone());
+                }
                 let delivery_marked = match (reserved.as_ref(), app.billing.as_ref()) {
                     (Some((request_id, ..)), Some(billing)) => {
-                        matches!(billing.mark_delivering(request_id, 3600).await, Ok(true))
+                        let delivery = if request_fact_admission.is_some() {
+                            billing
+                                .mark_delivering_with_request_fact(request_id, 3600)
+                                .await
+                        } else {
+                            billing.mark_delivering(request_id, 3600).await
+                        };
+                        matches!(delivery, Ok(true))
                     }
                     _ => false,
                 };
                 if !delivery_marked {
                     Metrics::inc(&app.metrics.claudestore_fallback_failures);
+                    if let Some(guard) = hold_guard.as_mut() {
+                        guard.settle_terminal(
+                            crate::settlement_policy::unknown_usage_charge(guard.hold),
+                            Some("delivery-marker-failed"),
+                            Some(i32::from(StatusCode::SERVICE_UNAVAILABLE.as_u16())),
+                            ProviderTerminalClass::Unknown,
+                            DeliveryState::Unknown,
+                            true,
+                        );
+                    }
                     return without_not_started(local_err_for(
                         LocalErr::Overloaded,
                         "billing_delivery_marker_unavailable",
@@ -2443,7 +2759,16 @@ pub async fn forward(
                         policy_fast: priced_ts.map(|_| requested_fast),
                         policy_us_inference: priced_ts.map(|_| requested_us_inference),
                         request_id,
+                        http_status_code: i32::from(resp.status().as_u16()),
                         reference: request_id_of(&resp),
+                        request_fact: hold_guard
+                            .as_mut()
+                            .and_then(HoldGuard::take_request_fact)
+                            .map(|mut request_fact| {
+                                request_fact.upstream_request_id =
+                                    fallback_upstream_request_id.clone();
+                                request_fact
+                            }),
                     }),
                     None => None,
                 };
@@ -2457,6 +2782,18 @@ pub async fn forward(
                 };
                 return stream_back(status, resp, Some(meter), app.metrics.clone());
             }
+            fallback_terminal = match fallback_attempt {
+                ClaudeStoreAttempt::BeforeSend => None,
+                ClaudeStoreAttempt::Transport => {
+                    Some((None, None, ProviderTerminalClass::Transport))
+                }
+                ClaudeStoreAttempt::Http(status, request_id) => Some((
+                    Some(status),
+                    request_id,
+                    AnthropicCountTokensTerminalEvidence::upstream(status).provider_terminal_class,
+                )),
+                ClaudeStoreAttempt::Response(_) => unreachable!("returned above"),
+            };
         }
         // Терминал: реальный Anthropic-ответ приоритетнее локальной классификации; иначе backend-аутейдж
         // (или пул пуст) → last_local; иначе синтетический 429 с readiness всего пула.
@@ -2483,11 +2820,48 @@ pub async fn forward(
         // Once an external transport attempt begins, classify its failure conservatively: the
         // provider might have accepted it before the response was lost. Preserve the local terminal
         // status and refund, but never sign the stronger proof that execution definitely did not start.
-        let terminal = if fallback_attempted {
+        let terminal = if fallback_terminal.is_some() {
             without_not_started(terminal)
         } else {
             terminal
         };
+        if let Some(hold_guard) = hold_guard.as_mut() {
+            if let Some((status, upstream_request_id, terminal_class)) = fallback_terminal.as_ref()
+            {
+                hold_guard.set_terminal_upstream(upstream_request_id.clone());
+                hold_guard.settle_terminal(
+                    0,
+                    upstream_request_id.as_deref(),
+                    status.map(|status| i32::from(status.as_u16())),
+                    *terminal_class,
+                    DeliveryState::Unknown,
+                    true,
+                );
+            } else {
+                match upstream_terminal.as_ref() {
+                    Some((status, upstream_request_id)) => {
+                        hold_guard.set_terminal_upstream(upstream_request_id.clone());
+                        hold_guard.settle_terminal(
+                            0,
+                            upstream_request_id.as_deref(),
+                            Some(i32::from(status.as_u16())),
+                            AnthropicCountTokensTerminalEvidence::upstream(*status)
+                                .provider_terminal_class,
+                            DeliveryState::Started,
+                            true,
+                        );
+                    }
+                    None => hold_guard.settle_terminal(
+                        0,
+                        None,
+                        Some(i32::from(terminal.status().as_u16())),
+                        ProviderTerminalClass::Unknown,
+                        DeliveryState::NotStarted,
+                        true,
+                    ),
+                }
+            }
+        }
         return match (count_tokens_fact.take(), upstream_terminal) {
             (Some(fact), Some((status, upstream_request_id))) => {
                 fact.finish_upstream(status, upstream_request_id, terminal)
