@@ -8,6 +8,7 @@
 //! Ниже по стеку зависеть не от кого.
 
 pub mod authority;
+mod gemini_batch;
 mod glm_calibration;
 mod kimi_calibration;
 pub mod pg;
@@ -17,6 +18,7 @@ pub mod request_facts;
 mod suno_calibration;
 mod tripo3d_calibration;
 
+pub use gemini_batch::*;
 pub use glm_calibration::*;
 pub use kimi_calibration::*;
 pub use suno_calibration::*;

@@ -51,3 +51,17 @@ SHA: `4865ccfeb1128e58c2dc3d595ab40c65c8c3f323`
 Отступления от плана: план расширен вторым migration-correction 0057 до runtime; fake inline blob как обход отклонен, 0055/0056 остаются immutable.
 Измерения: 0056 rollout ожидал 670 секунд до overall GREEN; chunk table применена, active chunked row пока корректно запрещен legacy CHECK.
 Следующий шаг: migration 0057 снимает только narrowing anonymous CHECK, вводит named dual storage shape и должна стать production GREEN до authority runtime.
+
+## 2026-08-20 — Этап 2 (§6): production GREEN migration 0057
+SHA: `7aed0400379736e7de1d435ef76ea85c369b18ee`
+Результат: trusted tests, `deploy/engine` и `deploy/watchdog` GREEN; chunk-backed file shape production-live, fake inline blob больше не требуется. Runtime reader/writer и public routes отсутствовали на этом SHA.
+Отступления от плана: нет сверх уже зафиксированной migration-correction.
+Измерения: rollout ожидал 485 секунд до overall GREEN; real PostgreSQL batch migration matrix 4/4 GREEN.
+Следующий шаг: реализовать registry authority Stage 2 поверх schema 57.
+
+## 2026-08-20 — Этап 2 (§6): registry authority runtime
+SHA: фиксируется commit этой записи
+Результат: добавлены PostgreSQL-only domain types и authority для atomic all-item admission/holds/idempotency, account-scoped get/list, chunked files, scheduler/profile claims с owner+generation fencing, cancel/delete/prune и durable settlement/result/calibration apply. SQLite возвращает typed unsupported; server/forward/routes/env не меняются. GREEN: `cargo test -p registry` (187 passed); дополнительные real-PG runtime matrix и полные local gates выполняются перед merge.
+Отступления от плана: общий settlement math пока сохранен как тот же account-floor SQL equation внутри batch transaction, но не выделен в полностью общий helper с interactive path; перед merge требуется regression review обеих формул и real-PG conservation tests. Если parity не доказана, этап не считается завершенным.
+Измерения: source authority разделен на domain + create/read/file + claims + settlement modules; file chunk bound 8 MiB.
+Следующий шаг: real-PostgreSQL Stage 2 money/fencing matrix, исправление найденных отклонений, затем production merge.

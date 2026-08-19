@@ -524,17 +524,62 @@ impl Authority {
 }
 
 impl Authority {
+    fn gemini_batch_postgres(&mut self) -> Result<&mut PgStore> {
+        match self {
+            Self::Postgres(pg) => Ok(pg),
+            Self::Sqlite(_) => Err(crate::GeminiBatchUnsupported.into()),
+        }
+    }
 
+    pub fn gemini_batch_create(
+        &mut self,
+        create: &crate::GeminiBatchCreate,
+        creator_key: &str,
+    ) -> Result<crate::GeminiBatchCreateOutcome> {
+        self.gemini_batch_postgres()?.gemini_batch_create(create, creator_key)
+    }
 
+    pub fn gemini_batch_get(
+        &mut self,
+        account_id: &str,
+        job_id: &str,
+    ) -> Result<Option<crate::GeminiBatchJobDetail>> {
+        self.gemini_batch_postgres()?.gemini_batch_get(account_id, job_id)
+    }
 
+    pub fn gemini_batch_list(
+        &mut self,
+        account_id: &str,
+        cursor: Option<&crate::GeminiBatchPageCursor>,
+        limit: i64,
+    ) -> Result<crate::GeminiBatchJobPage> {
+        self.gemini_batch_postgres()?.gemini_batch_list(account_id, cursor, limit)
+    }
 
+    pub fn gemini_batch_file_create(&mut self, create: &crate::GeminiBatchFileCreate) -> Result<bool> {
+        self.gemini_batch_postgres()?.gemini_batch_file_create(create)
+    }
 
+    pub fn gemini_batch_cancel(
+        &mut self,
+        account_id: &str,
+        job_id: &str,
+    ) -> Result<Option<crate::GeminiBatchCancelResult>> {
+        self.gemini_batch_postgres()?.gemini_batch_cancel(account_id, job_id)
+    }
 
+    pub fn enqueue_gemini_batch_settlement(
+        &mut self,
+        intent: &crate::GeminiBatchSettlementIntent,
+    ) -> Result<()> {
+        self.gemini_batch_postgres()?.enqueue_gemini_batch_settlement(intent)
+    }
 
-
-
-
-
-
-
+    pub fn prune_gemini_batch(
+        &mut self,
+        older_than: i64,
+        limit: usize,
+    ) -> Result<crate::GeminiBatchPruneReport> {
+        self.gemini_batch_postgres()?.prune_gemini_batch(older_than, limit)
+    }
 }

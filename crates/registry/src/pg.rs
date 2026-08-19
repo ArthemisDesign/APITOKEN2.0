@@ -3,6 +3,11 @@
 //! All correctness-sensitive mutations are transactions. Request IDs and lease IDs are the
 //! idempotency boundary; owner epochs fence stale instances. PostgreSQL is the recovery floor.
 
+mod gemini_batch;
+mod gemini_batch_claims;
+mod gemini_batch_settlement;
+#[cfg(test)]
+mod gemini_batch_tests;
 mod request_facts;
 
 use crate::request_facts::{
