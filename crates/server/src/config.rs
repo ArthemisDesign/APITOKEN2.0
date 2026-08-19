@@ -80,6 +80,8 @@ pub struct Settings {
     pub tariff_overrides: bool,
     /// Reader connections this slot opens against the authority. See `CLAUDE_API_BILLING_READERS`.
     pub billing_readers: usize,
+    /// Absolute slot-private request spool root; empty outside `serve` composition.
+    pub body_spool_root: std::path::PathBuf,
     /// Strict dormant body envelope. Current provider-specific caps remain authoritative.
     pub body_limits: api_limits::BodyLimits,
     pub mult_bp: i64,   // дефолтная наценка для `key issue` (× 10000; 900 = ×0.09)
@@ -1325,6 +1327,12 @@ impl Settings {
         let db_path = ev("SUBS_DB").unwrap_or_else(|| format!("{cfg_dir}/subscriptions.db"));
         let database_url = ev("CLAUDE_API_DATABASE_URL");
         let body_limits = body_limits_from_env();
+        let body_spool_root = ev("CLAUDE_API_BODY_SPOOL_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        if !body_spool_root.as_os_str().is_empty() && !body_spool_root.is_absolute() {
+            panic!("CLAUDE_API_BODY_SPOOL_ROOT must be absolute");
+        }
         let instance_id = ev("CLAUDE_API_INSTANCE_ID").unwrap_or_else(|| {
             let host = ev("HOSTNAME").unwrap_or_else(|| "engine".into());
             let ts = std::time::SystemTime::now()
@@ -1464,6 +1472,7 @@ impl Settings {
                 1,
                 64,
             ),
+            body_spool_root,
             body_limits,
             // Наценка по умолчанию: клиент платит 20% от реального API-эквивалента (×0.20).
             mult_bp,

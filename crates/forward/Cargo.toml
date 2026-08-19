@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 api-limits = { path = "../api-limits" }
+bounded-body = { path = "../bounded-body" }
 registry = { path = "../registry" }
 pool = { path = "../pool" }
 metering = { path = "../metering" }

@@ -2046,7 +2046,8 @@ grep -Fxq 'ReadOnlyPaths=/srv/claude-api/data/gemini' \
   || wd_die 'Gemini slots can mutate Auth Bot roster state'
 legacy_gemini_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-gemini.service" \
   | sed -e 's/CLAUDE_API_PORT=8795/CLAUDE_API_PORT=%i/' \
-    -e 's/CLAUDE_API_INSTANCE_ID=%H:engine:gemini /CLAUDE_API_INSTANCE_ID=%H:engine:gemini:%i /')
+    -e 's/CLAUDE_API_INSTANCE_ID=%H:engine:gemini /CLAUDE_API_INSTANCE_ID=%H:engine:gemini:%i /' \
+    -e 's#CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api-gemini #CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api-gemini-%i #')
 slot_gemini_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-gemini@.service" \
   | sed 's/CLAUDE_API_GEMINI_BATCH_ENABLED=1 CLAUDE_API_GEMINI_BATCH_PUBLIC_ENABLED=1 //')
 [[ $slot_gemini_exec == "$legacy_gemini_exec" ]] \
@@ -2086,7 +2087,8 @@ for kimi_unit in claude-api-kimi.service claude-api-kimi@.service; do
 done
 legacy_kimi_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-kimi.service" \
   | sed -e 's/CLAUDE_API_PORT=8804/CLAUDE_API_PORT=%i/' \
-    -e 's/CLAUDE_API_INSTANCE_ID=%H:engine:kimi /CLAUDE_API_INSTANCE_ID=%H:engine:kimi:%i /')
+    -e 's/CLAUDE_API_INSTANCE_ID=%H:engine:kimi /CLAUDE_API_INSTANCE_ID=%H:engine:kimi:%i /' \
+    -e 's#CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api-kimi #CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api-kimi-%i #')
 slot_kimi_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-kimi@.service")
 [[ $slot_kimi_exec == "$legacy_kimi_exec" ]] \
   || wd_die 'KIMI slots drifted from the reviewed provider pins'
@@ -3116,6 +3118,10 @@ for provider_unit in claude-api.service claude-api@.service claude-api-anthropic
     || wd_die "$provider_unit does not argv-pin the dormant current payload contract"
   grep -Fxq 'MemoryMax=2G' "$ROOT/systemd/$provider_unit" \
     || wd_die "$provider_unit changed memory before weighted admission"
+  grep -Fq 'CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api' "$ROOT/systemd/$provider_unit" \
+    || wd_die "$provider_unit does not argv-pin a private provider spool root"
+  grep -Fxq 'RuntimeDirectoryMode=0700' "$ROOT/systemd/$provider_unit" \
+    || wd_die "$provider_unit spool root is not mode 0700"
 done
 grep -Fq 'router-bluegreen.sh' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die "router blue-green controller is never installed"

@@ -1120,6 +1120,9 @@ fn sub_cmd(op: SubOp) -> Result<()> {
 
 async fn serve() -> Result<()> {
     let s = Settings::from_env();
+    if s.body_spool_root.as_os_str().is_empty() {
+        bail!("CLAUDE_API_BODY_SPOOL_ROOT is required for serve");
+    }
     elog::info(
         "server",
         format!(
@@ -1604,6 +1607,10 @@ async fn serve() -> Result<()> {
     } else {
         None
     };
+    let body_storage = Arc::new(
+        forward::BodyStorage::new(s.body_limits, &s.body_spool_root)
+            .map_err(|error| anyhow::anyhow!("private provider body spool unavailable: {error:?}"))?,
+    );
     let app = AppState {
         provider: s.provider,
         cfg: Arc::new(s.proxy.clone()),
@@ -1617,6 +1624,7 @@ async fn serve() -> Result<()> {
         )),
         affinity,
         clients: Arc::new(Clients::new(&s.proxy)),
+        body_storage: Some(body_storage),
         codex,
         gemini,
         gemini_batch: gemini_batch_public,

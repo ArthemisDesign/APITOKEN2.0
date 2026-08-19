@@ -15,6 +15,38 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
+pub struct BodyStorage {
+    pub limits: api_limits::BodyLimits,
+    pub storage: bounded_body::Budget,
+    pub memory: bounded_body::Budget,
+    pub spool: bounded_body::PrivateSpoolFactory,
+}
+
+impl BodyStorage {
+    pub fn new(
+        limits: api_limits::BodyLimits,
+        spool_root: impl AsRef<std::path::Path>,
+    ) -> Result<Self, bounded_body::StorageError> {
+        let storage = bounded_body::Budget::new(
+            limits.spool_budget,
+            api_limits::ByteLimit::from_bytes(api_limits::MIB),
+        )
+        .map_err(|_| bounded_body::StorageError::InvalidConfig)?;
+        let memory = bounded_body::Budget::new(
+            limits.memory_budget,
+            api_limits::ByteLimit::from_bytes(api_limits::MIB),
+        )
+        .map_err(|_| bounded_body::StorageError::InvalidConfig)?;
+        let spool = bounded_body::PrivateSpoolFactory::new(spool_root)?;
+        Ok(Self {
+            limits,
+            storage,
+            memory,
+            spool,
+        })
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct AdminChange {
     pub source: &'static str,
@@ -131,6 +163,9 @@ pub struct AppState {
     /// shares bindings across engine slots. It never authorizes money or capacity.
     pub affinity: Arc<AffinityStore>,
     pub clients: Arc<Clients>,
+    /// Process-local bounded request-body authorities. Native Anthropic is the first consumer;
+    /// other provider paths retain their current readers until their route-specific integration.
+    pub body_storage: Option<Arc<BodyStorage>>,
     /// Optional OpenAI-compatible text provider backed by the native Codex profile pool.
     /// It owns no OAuth material; the child reads the dedicated authenticated `CODEX_HOME`.
     pub codex: Option<Arc<CodexGateway>>,
@@ -177,6 +212,18 @@ pub struct AppState {
     /// Process-local invalidations for the admin console. It carries no data or secrets; browser
     /// consumers refetch only mounted resources after a real state transition.
     pub admin_changes: tokio::sync::broadcast::Sender<AdminChange>,
+}
+
+impl AppState {
+    pub fn install_body_storage(&mut self, storage: Arc<BodyStorage>) {
+        self.body_storage = Some(storage);
+    }
+
+    pub(crate) fn body_storage(&self) -> Result<&Arc<BodyStorage>, bounded_body::StorageError> {
+        self.body_storage
+            .as_ref()
+            .ok_or(bounded_body::StorageError::InvalidConfig)
+    }
 }
 
 /// Unlimited request-task registration with an exact graceful-shutdown barrier.

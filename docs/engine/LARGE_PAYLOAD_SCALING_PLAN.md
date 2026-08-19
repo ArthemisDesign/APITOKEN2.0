@@ -497,8 +497,10 @@ Exact candidate SHA допускается к повышенным defaults то
 
 ### Commit 2c — интеграция provider bounded storage
 
-- Provider materializers route-by-route получают spooling и два независимых budget: raw storage и
-  caller-supplied estimated RSS.
+- Native Anthropic Messages идёт первым: после auth/allowlist и до parse/reserve он получает два
+  независимых 2 GiB fail-fast budget и slot-private spool capability; cap/threshold остаются 32 MiB.
+- Затем universal Anthropic, Codex и Gemini materializers route-by-route получают spooling и
+  caller-supplied estimated RSS с собственными узкими caps.
 - Публичные пределы пока прежние; доказать отсутствие protocol/money изменений до raised default.
 
 ### Commit 3 — Gemini typed executor и binary IPC v2

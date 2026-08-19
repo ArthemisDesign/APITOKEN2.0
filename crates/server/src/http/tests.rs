@@ -906,6 +906,7 @@ fn admin_auth_test_app() -> AppState {
         )),
         affinity: Arc::new(forward::AffinityStore::new(None, None, 3_600, 300, 35).unwrap()),
         clients,
+        body_storage: None,
         codex: None,
         gemini: None,
         gemini_batch: None,

@@ -488,7 +488,12 @@ pub fn is_exact_not_started_response(response: &Response) -> bool {
 
 // Anthropic Messages принимает тела до 32 МиБ. Держим тот же публичный предел; точное различение
 // overflow/read-error ниже сохраняет нативный 413-контракт вместо ложного generic 400.
-const BODY_LIMIT: usize = 32 * 1024 * 1024;
+const BODY_LIMIT: usize = api_limits::current::ANTHROPIC_TEXT_REQUEST.bytes() as usize;
+
+struct MaterializedAnthropicBody {
+    bytes: bytes::Bytes,
+    _lease: bounded_body::StoredBodyLease,
+}
 
 pub(crate) enum BodyReadError {
     TooLarge,
@@ -509,6 +514,52 @@ pub(crate) async fn read_body_limited(
         out.extend_from_slice(&chunk);
     }
     Ok(out.freeze())
+}
+
+async fn read_anthropic_body_bounded(
+    app: &AppState,
+    body: Body,
+) -> Result<MaterializedAnthropicBody, bounded_body::StorageError> {
+    let initial = api_limits::ByteLimit::from_bytes(api_limits::MIB);
+    let body_storage = app.body_storage()?;
+    let storage = body_storage
+        .storage
+        .try_reserve(initial)
+        .map_err(|_| bounded_body::StorageError::StorageExhausted)?;
+    let memory = body_storage
+        .memory
+        .try_reserve(initial)
+        .map_err(|_| bounded_body::StorageError::MemoryExhausted)?;
+    let mut store = bounded_body::BodyStore::start(
+        bounded_body::StorageConfig {
+            request_limit: body_storage
+                .limits
+                .request
+                .min(api_limits::current::ANTHROPIC_TEXT_REQUEST),
+            memory_threshold: body_storage
+                .limits
+                .memory_threshold
+                .min(api_limits::current::ANTHROPIC_TEXT_REQUEST),
+        },
+        &body_storage.storage,
+        &body_storage.memory,
+        storage,
+        memory,
+        body_storage.spool.try_clone()?,
+    )?;
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| bounded_body::StorageError::Io)?;
+        store.push(&chunk)?;
+    }
+    let stored = store.finish()?;
+    let (bytes, lease) = stored
+        .into_memory()
+        .map_err(|_| bounded_body::StorageError::InvalidConfig)?;
+    Ok(MaterializedAnthropicBody {
+        bytes: bytes::Bytes::from(bytes),
+        _lease: lease,
+    })
 }
 
 // Заголовки клиента, которые НЕ пробрасываем апстриму (перезаписываем или служебные).
@@ -1383,10 +1434,36 @@ pub async fn forward(
     };
     let url = format!("{}{}", app.cfg.upstream.trim_end_matches('/'), pq);
 
-    let raw = match read_body_limited(body, BODY_LIMIT).await {
-        Ok(b) => b,
-        Err(BodyReadError::TooLarge) => return local_err(LocalErr::BodyTooLarge, None),
-        Err(BodyReadError::Read) => return local_err(LocalErr::BadRequest, None),
+    let bounded_native_messages = billable && app.provider.serves_anthropic();
+    let (raw, _body_lease) = if bounded_native_messages {
+        let bounded = match read_anthropic_body_bounded(&app, body).await {
+            Ok(body) => body,
+            Err(bounded_body::StorageError::TooLarge)
+            | Err(bounded_body::StorageError::ArithmeticOverflow) => {
+                return local_err(LocalErr::BodyTooLarge, None)
+            }
+            Err(bounded_body::StorageError::Io) => return local_err(LocalErr::BadRequest, None),
+            Err(
+                bounded_body::StorageError::StorageExhausted
+                | bounded_body::StorageError::MemoryExhausted
+                | bounded_body::StorageError::PrivateSpoolUnavailable
+                | bounded_body::StorageError::InvalidConfig,
+            ) => {
+                return with_not_started(local_err_for(
+                    LocalErr::Overloaded,
+                    "body_storage_unavailable",
+                    Some(2),
+                ))
+            }
+        };
+        (bounded.bytes, Some(bounded._lease))
+    } else {
+        let raw = match read_body_limited(body, BODY_LIMIT).await {
+            Ok(body) => body,
+            Err(BodyReadError::TooLarge) => return local_err(LocalErr::BodyTooLarge, None),
+            Err(BodyReadError::Read) => return local_err(LocalErr::BadRequest, None),
+        };
+        (raw, None)
     };
 
     // тело: один парс — вытаскиваем модель + max_tokens (для тарификации/резерва) и инжектим

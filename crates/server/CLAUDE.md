@@ -131,6 +131,9 @@ background loops and the HTTP router. Here — and only here — everything is w
   dormant `CLAUDE_API_*BODY*_MIB` envelope is parsed strictly through `api-limits`: malformed, zero,
   inconsistent, or above-current values stop startup. It cannot widen Anthropic 32 MiB, Codex 8 MiB,
   Gemini text 32 MiB/media 20 MiB, translated 32 MiB, or Gemini-native 64 MiB caps before later stages.
+  `CLAUDE_API_BODY_SPOOL_ROOT` is a required absolute, never-logged path provisioned as a distinct
+  mode-0700 RuntimeDirectory by every provider/rollback unit; server opens the `bounded-body`
+  authorities once and installs them into forward state.
 - `openai-image-canary` introduces no image key/origin/env. Dry-run validates the strict prompt,
   optional one-to-five PNG references, optional opaque profile, private target paths, numeric
   budget and the `low|medium|high` quality knob (default `low`), then prints a sanitized plan without

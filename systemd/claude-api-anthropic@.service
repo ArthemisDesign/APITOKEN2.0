@@ -29,7 +29,7 @@ EnvironmentFile=/srv/claude-api/data/engine-postgres.env
 # The 180-second drain pin is argv-level for the same reason as the GLM pin: a stale long value in
 # the shared env must not silently re-widen the deploy window. The engine already defaults to 180;
 # this slot held the 540s default that made every blue-green cutover sit through the full deadline.
-ExecStart=/usr/bin/env CLAUDE_API_PRICING_BRIDGE_ENABLED=1 CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP=10000 CLAUDE_API_PROVIDER=anthropic CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_GLM_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:anthropic:%i CLAUDE_API_KIMI_ENABLED=1 CLAUDE_API_DRAIN_DEADLINE_SECS=180 CLAUDE_API_TEXT_BODY_MAX_MIB=32 CLAUDE_API_BODY_MEMORY_BUDGET_MIB=2048 CLAUDE_API_BODY_SPOOL_BUDGET_MIB=2048 CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=32 CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=64 /srv/claude-api/releases/current/claude-api serve
+ExecStart=/usr/bin/env CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api-anthropic-%i CLAUDE_API_PRICING_BRIDGE_ENABLED=1 CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP=10000 CLAUDE_API_PROVIDER=anthropic CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_GLM_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:anthropic:%i CLAUDE_API_KIMI_ENABLED=1 CLAUDE_API_DRAIN_DEADLINE_SECS=180 CLAUDE_API_TEXT_BODY_MAX_MIB=32 CLAUDE_API_BODY_MEMORY_BUDGET_MIB=2048 CLAUDE_API_BODY_SPOOL_BUDGET_MIB=2048 CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=32 CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=64 /srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM
@@ -39,6 +39,9 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+RuntimeDirectory=claude-api-anthropic-%i
+RuntimeDirectoryMode=0700
+ReadWritePaths=/run/claude-api-anthropic-%i
 ReadWritePaths=/srv/claude-api/data
 MemoryMax=2G
 

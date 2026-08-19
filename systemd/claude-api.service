@@ -19,7 +19,7 @@ EnvironmentFile=-/srv/claude-api/data/engine-postgres.env
 # The legacy combined rollback anchor reads the shared engine env. Keep the GLM backend preview
 # fail-closed here: it has no live subscription or compliant private serving boundary. The 180s
 # drain pin keeps the old 540s shared-env default from re-widening the blue-green deploy window.
-ExecStart=/usr/bin/env CLAUDE_API_GLM_ENABLED=0 CLAUDE_API_DRAIN_DEADLINE_SECS=180 CLAUDE_API_TEXT_BODY_MAX_MIB=32 CLAUDE_API_BODY_MEMORY_BUDGET_MIB=2048 CLAUDE_API_BODY_SPOOL_BUDGET_MIB=2048 CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=32 CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=64 /srv/claude-api/releases/current/claude-api serve
+ExecStart=/usr/bin/env CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api CLAUDE_API_GLM_ENABLED=0 CLAUDE_API_DRAIN_DEADLINE_SECS=180 CLAUDE_API_TEXT_BODY_MAX_MIB=32 CLAUDE_API_BODY_MEMORY_BUDGET_MIB=2048 CLAUDE_API_BODY_SPOOL_BUDGET_MIB=2048 CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=32 CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=64 /srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
 # Graceful shutdown: сервер по SIGTERM дренирует in-flight стримы (см. serve()). Даём время дотечь
@@ -32,6 +32,9 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+RuntimeDirectory=claude-api
+RuntimeDirectoryMode=0700
+ReadWritePaths=/run/claude-api
 ReadWritePaths=/srv/claude-api/data
 # Крыша по памяти (bindings/live ограничены, но страхуемся от рантайм-аномалий):
 MemoryMax=2G
