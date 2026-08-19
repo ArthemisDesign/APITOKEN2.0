@@ -851,6 +851,19 @@ async fn input_tokens_parser_gate_discards_models_and_classifier_on_rejection() 
     }
 }
 
+#[test]
+fn input_tokens_fact_model_bound_omits_overlong_or_unsafe_values() {
+    let maximum = "m".repeat(registry::request_facts::MAX_REQUEST_FACT_MODEL_LEN);
+    assert_eq!(bounded_request_fact_model(&maximum).as_deref(), Some(maximum.as_str()));
+    assert_eq!(
+        bounded_request_fact_model(&format!("{maximum}x")),
+        None,
+        "overlong requested model must stay unknown"
+    );
+    assert_eq!(bounded_request_fact_model("unsafe\nmodel"), None);
+    assert_eq!(bounded_request_fact_model(""), None);
+}
+
 #[tokio::test]
 async fn input_tokens_prepare_failure_retains_parser_accepted_evidence() {
     let (sender, mut receiver) = mpsc::channel(1);

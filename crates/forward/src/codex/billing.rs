@@ -2171,4 +2171,43 @@ mod tests {
         drop(billing);
         let _ = std::fs::remove_file(path);
     }
+
+    #[test]
+    fn request_fact_specs_keep_shared_terminal_status_semantics() {
+        let seed = || {
+            CodexRequestFactSeed::for_test(
+                "55555555-5555-4555-8555-555555555555",
+                ClientAttribution::unknown_for_internal_use(),
+                registry::ExecutionAttempt::direct(),
+                "account",
+                "key_nonsecret",
+                pool::now(),
+                RequestLifecycleClock::default(),
+            )
+        };
+        let universal = seed().terminal_fact(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            None,
+            None,
+        );
+        let native = seed().terminal_input_tokens_fact(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            None,
+            None,
+            None,
+        );
+        for fact in [&universal, &native] {
+            assert_eq!(fact.terminal.http_status_code, Some(503));
+            assert_eq!(
+                fact.terminal.provider_terminal_class,
+                ProviderTerminalClass::Unknown
+            );
+            assert_eq!(fact.terminal.delivery_state, DeliveryState::NotStarted);
+            assert_eq!(fact.terminal.internal_attempt_count, Some(0));
+        }
+        assert_eq!(universal.route_class, "universal");
+        assert_eq!(universal.request_class, "count_tokens");
+        assert_eq!(native.route_class, "native");
+        assert_eq!(native.request_class, "input_tokens");
+    }
 }
