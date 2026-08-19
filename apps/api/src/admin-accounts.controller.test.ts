@@ -201,6 +201,7 @@ describe("internal managed-admin verifier", () => {
     await expect(controller.browserLogin(
       "crm.apitoken.sale",
       "https://crm.apitoken.sale",
+      undefined,
       { username: "crm-admin", password: "secret", return_to: "/?tab=hot" },
       reply,
     )).resolves.toBe("");
@@ -218,10 +219,67 @@ describe("internal managed-admin verifier", () => {
     await expect(controller.browserLogin(
       "crm.apitoken.sale",
       "https://attacker.example",
+      "https://crm.apitoken.sale/__admin-auth/login",
       { username: "crm-admin", password: "secret" },
       fakeReply(),
     )).rejects.toBeInstanceOf(ForbiddenException);
     expect(fake.authenticatePassword).not.toHaveBeenCalled();
+  });
+
+  it("accepts a same-origin Referer when a browser omits Origin", async () => {
+    const fake = fakeAccounts();
+    const sessions = fakeSessions();
+    const controller = new InternalAdminAuthController(fake.service, sessions.service);
+    const reply = fakeReply();
+    fake.authenticatePassword.mockResolvedValue(null);
+    await expect(controller.browserLogin(
+      "monitoring.apitoken.sale",
+      undefined,
+      "https://monitoring.apitoken.sale/__admin-auth/login?return_to=%2F",
+      { username: "monitor-admin", password: "invalid", return_to: "/" },
+      reply,
+    )).resolves.toContain("Неверный логин или пароль");
+    expect(reply.status).toHaveBeenCalledWith(401);
+    expect(fake.authenticatePassword).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [undefined, undefined],
+    [undefined, "not a URL"],
+    [undefined, "https://attacker.example/login"],
+    [undefined, "https://monitoring.apitoken.sale.attacker.example/login"],
+    [undefined, "https://monitoring.apitoken.sale@attacker.example/login"],
+    ["null", "https://monitoring.apitoken.sale/__admin-auth/login"],
+  ])("rejects login without exact trustworthy source headers", async (origin, referer) => {
+    const fake = fakeAccounts();
+    const controller = new InternalAdminAuthController(fake.service, fakeSessions().service);
+    await expect(controller.browserLogin(
+      "monitoring.apitoken.sale",
+      origin,
+      referer,
+      { username: "monitor-admin", password: "secret" },
+      fakeReply(),
+    )).rejects.toBeInstanceOf(ForbiddenException);
+    expect(fake.authenticatePassword).not.toHaveBeenCalled();
+  });
+
+  it("uses the same strict Referer fallback for logout", () => {
+    const controller = new InternalAdminAuthController(fakeAccounts().service, fakeSessions().service);
+    const reply = fakeReply();
+    expect(controller.browserLogout(
+      "admin.apitoken.sale",
+      undefined,
+      "https://admin.apitoken.sale/settings",
+      reply,
+    )).toBe("");
+    expect(reply.header).toHaveBeenCalledWith("Set-Cookie", expect.stringContaining("Max-Age=0"));
+    expect(reply.header).toHaveBeenCalledWith("Location", "/__admin-auth/login");
+    expect(() => controller.browserLogout(
+      "admin.apitoken.sale",
+      undefined,
+      "https://attacker.example/",
+      fakeReply(),
+    )).toThrow(ForbiddenException);
   });
 });
 

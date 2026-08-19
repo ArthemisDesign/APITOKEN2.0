@@ -1869,7 +1869,7 @@ https_vhost_status() {
 }
 
 require_admin_auth_vhost() {
-  local host=$1 response headers status login_status
+  local host=$1 response headers status login_response login_headers login_status form_response form_body form_status
   response=$(curl --noproxy '*' --insecure --silent --show-error --max-time 5 \
     --resolve "$host:443:127.0.0.1" -H 'Accept: text/html' -D - -o /dev/null \
     -w $'\n%{http_code}' "https://$host/" 2>/dev/null || true)
@@ -1881,11 +1881,39 @@ require_admin_auth_vhost() {
     || wd_die "$host managed admin auth returned an unsafe or missing login location"
   ! grep -Eiq '^www-authenticate:' <<<"$headers" \
     || wd_die "$host managed session auth leaked a Basic browser challenge"
-  login_status=$(curl --noproxy '*' --insecure --silent --show-error --max-time 5 \
-    --resolve "$host:443:127.0.0.1" -H 'Accept: text/html' -o /dev/null -w '%{http_code}' \
-    "https://$host/__admin-auth/login?return_to=%2F" 2>/dev/null || true)
+  login_response=$(curl --noproxy '*' --insecure --silent --show-error --max-time 5 \
+    --resolve "$host:443:127.0.0.1" -H 'Accept: text/html' -D - -o /dev/null \
+    -w $'\n%{http_code}' "https://$host/__admin-auth/login?return_to=%2F" 2>/dev/null || true)
+  login_status=${login_response##*$'\n'}
+  login_headers=${login_response%$'\n'*}
   [[ $login_status == 200 ]] \
     || wd_die "$host same-origin managed admin login is unavailable (HTTP ${login_status:-unreachable})"
+  grep -Eiq '^referrer-policy: same-origin[[:space:]]*$' <<<"$login_headers" \
+    || wd_die "$host managed admin login cannot supply the no-Origin CSRF fallback"
+
+  # Some browsers omit Origin on a same-origin HTML form POST. Exercise the exact credential-free
+  # fallback through public TLS: the login page's same-origin Referer must reach password validation,
+  # while a cross-origin Referer must still fail before credentials are checked.
+  form_response=$(curl --noproxy '*' --insecure --silent --show-error --max-time 5 \
+    --resolve "$host:443:127.0.0.1" \
+    -H "Referer: https://$host/__admin-auth/login?return_to=%2F" \
+    -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data 'username=managed-auth-smoke-invalid&password=invalid&return_to=%2F' \
+    -w $'\n%{http_code}' "https://$host/__admin-auth/login" 2>/dev/null || true)
+  form_status=${form_response##*$'\n'}
+  form_body=${form_response%$'\n'*}
+  [[ $form_status == 401 ]] \
+    || wd_die "$host no-Origin managed admin form is rejected before password validation (HTTP ${form_status:-unreachable})"
+  grep -Fq 'Неверный логин или пароль' <<<"$form_body" \
+    || wd_die "$host no-Origin managed admin form did not return the login error page"
+  form_status=$(curl --noproxy '*' --insecure --silent --show-error --max-time 5 \
+    --resolve "$host:443:127.0.0.1" \
+    -H 'Referer: https://attacker.invalid/' \
+    -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data 'username=managed-auth-smoke-invalid&password=invalid&return_to=%2F' \
+    -o /dev/null -w '%{http_code}' "https://$host/__admin-auth/login" 2>/dev/null || true)
+  [[ $form_status == 403 ]] \
+    || wd_die "$host managed admin form accepts a cross-origin Referer (HTTP ${form_status:-unreachable})"
 }
 
 require_retired_vhost() {

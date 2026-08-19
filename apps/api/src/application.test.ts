@@ -35,6 +35,14 @@ describe("commercial API bootstrap", () => {
         method: "GET",
         url: "/v1/internal/admin-auth/browser/login",
       })).toBe(true);
+      expect(fastify.hasRoute({
+        method: "POST",
+        url: "/v1/internal/admin-auth/browser/login",
+      })).toBe(true);
+      expect(fastify.hasRoute({
+        method: "POST",
+        url: "/v1/internal/admin-auth/browser/logout",
+      })).toBe(true);
     } finally {
       await app.close();
     }

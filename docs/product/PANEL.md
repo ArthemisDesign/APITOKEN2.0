@@ -41,7 +41,11 @@ browser ──host-only session──▶ Caddy forward_auth ──▶ commerce a
   same-origin login/logout endpoints and a 180-day host-only
   `HttpOnly; Secure; SameSite=Lax` signed cookie. Every request still rechecks the active
   account and exact domain grant, while password, domain or status changes revoke the
-  cookie. Document requests redirect locally to login; API requests receive a challenge-free
+  cookie. Login and logout POSTs require the exact managed origin; for browsers that omit
+  `Origin` on a same-origin HTML form, the login surface publishes `Referrer-Policy: same-origin`
+  and accepts only a parsed `Referer` with that exact HTTPS origin. A present foreign or `null`
+  `Origin`, a foreign/malformed `Referer`, and requests with neither signal remain forbidden.
+  Document requests redirect locally to login; API requests receive a challenge-free
   `401` with `X-Admin-Login`, so mobile Safari never opens its native Basic prompt.
 - The verified identity is passed to commerce as `x-admin-actor` and `x-admin-account-id`
   via `forward_auth copy_headers`. The global directive order places an anti-spoof

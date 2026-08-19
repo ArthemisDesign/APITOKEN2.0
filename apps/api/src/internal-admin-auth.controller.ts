@@ -105,6 +105,7 @@ export class InternalAdminAuthController {
   @UseGuards(AdminGuard)
   @Header("Cache-Control", "no-store")
   @Header("Content-Type", "text/html; charset=utf-8")
+  @Header("Referrer-Policy", "same-origin")
   @Header(
     "Content-Security-Policy",
     "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
@@ -122,14 +123,16 @@ export class InternalAdminAuthController {
   @HttpCode(200)
   @Header("Cache-Control", "no-store")
   @Header("Content-Type", "text/html; charset=utf-8")
+  @Header("Referrer-Policy", "same-origin")
   async browserLogin(
     @Headers("x-admin-domain") domain: string | undefined,
     @Headers("origin") origin: string | undefined,
+    @Headers("referer") referer: string | undefined,
     @Body() body: unknown,
     @Res({ passthrough: true }) response: ReplyLike,
   ): Promise<string> {
     if (!isManagedAdminDomain(domain)) throw new UnauthorizedException("admin authentication required");
-    requireSameOrigin(origin, domain);
+    requireSameOrigin({ origin, referer, domain });
     const parsed = browserLoginSchema.safeParse(body);
     const returnTo = normalizeReturnTo(parsed.success ? parsed.data.return_to : undefined);
     if (!parsed.success) {
@@ -155,13 +158,15 @@ export class InternalAdminAuthController {
   @UseGuards(AdminGuard)
   @HttpCode(303)
   @Header("Cache-Control", "no-store")
+  @Header("Referrer-Policy", "same-origin")
   browserLogout(
     @Headers("x-admin-domain") domain: string | undefined,
     @Headers("origin") origin: string | undefined,
+    @Headers("referer") referer: string | undefined,
     @Res({ passthrough: true }) response: ReplyLike,
   ): string {
     if (!isManagedAdminDomain(domain)) throw new UnauthorizedException("admin authentication required");
-    requireSameOrigin(origin, domain);
+    requireSameOrigin({ origin, referer, domain });
     response.header("Set-Cookie", clearAdminSessionCookie());
     response.header("Location", `${BROWSER_AUTH_PATH}/login`);
     return "";
@@ -222,8 +227,28 @@ function normalizeReturnTo(value: string | undefined): string {
   return value;
 }
 
-function requireSameOrigin(origin: string | undefined, domain: string): void {
-  if (origin !== `https://${domain}`) throw new ForbiddenException("same-origin form required");
+function requireSameOrigin(input: {
+  origin: string | undefined;
+  referer: string | undefined;
+  domain: string;
+}): void {
+  const expected = `https://${input.domain}`;
+  if (input.origin !== undefined) {
+    if (input.origin === expected) return;
+    throw new ForbiddenException("same-origin form required");
+  }
+  if (input.referer !== undefined && exactOrigin(input.referer) === expected) return;
+  throw new ForbiddenException("same-origin form required");
+}
+
+function exactOrigin(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (url.username || url.password) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
 }
 
 function readCookie(header: string, name: string): string | null {

@@ -3933,6 +3933,12 @@ grep -Fq 'sales-dsn)' "$ROOT/deploy/watchdog-test-db.sh"
 grep -Fq 'require_retired_vhost panel.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'require_admin_auth_vhost content-studio.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'require_admin_auth_vhost monitoring.apitoken.sale' "$ROOT/deploy/watchdog.sh"
+grep -Fq "Referer: https://\$host/__admin-auth/login?return_to=%2F" "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'managed-admin final verification does not exercise the no-Origin same-origin form fallback'
+grep -Fq "Referer: https://attacker.invalid/" "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'managed-admin final verification does not prove a foreign Referer stays forbidden'
+grep -Fq "'^referrer-policy: same-origin[[:space:]]*\$'" "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'managed-admin final verification does not require a browser-usable Referrer policy'
 grep -Fq "''|000|404|421" "$ROOT/deploy/watchdog.sh"
 # Встроенной панели в движке больше нет: UI — standalone Next.js app на :3700 (свой deploy
 # lane), а engine отдаёт только data routes. Ни HTML/JS-панели, ни её version marker в

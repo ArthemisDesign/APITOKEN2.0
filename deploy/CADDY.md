@@ -9,9 +9,13 @@ the loopback commerce auth controller. Every other protected request passes thro
 with the exact original method, URI and browser navigation headers plus
 `X-Admin-Auth-Mode: session-v1`. A document without a valid cookie receives a challenge-free `303`
 to the local login form; an API request receives a challenge-free `401` and `X-Admin-Login`.
-Successful login sets the host-only `HttpOnly; Secure; SameSite=Lax` cookie for 180 days. The auth
-producer still resolves the account and exact hostname grant on every request, so disabling the
-account or changing its password/domains revokes the cookie immediately.
+Successful login sets the host-only `HttpOnly; Secure; SameSite=Lax` cookie for 180 days. Login
+and logout POSTs require the exact managed HTTPS origin. Browsers that omit `Origin` on a
+same-origin HTML form receive `Referrer-Policy: same-origin` on the login surface; only a parsed
+`Referer` with that exact origin is accepted as fallback. A present foreign or `null` `Origin`
+never falls through to `Referer`, and missing/foreign/malformed fallback evidence stays forbidden.
+The auth producer still resolves the account and exact hostname grant on every request, so disabling
+the account or changing its password/domains revokes the cookie immediately.
 
 Caddy's `forward_auth copy_headers` writes successful auth-response headers onto the original
 request. For Basic-to-cookie migration, `Set-Cookie` is therefore copied through the private
@@ -22,7 +26,10 @@ their safe `Location`, `X-Admin-Login` and cookie-clear headers,
 while `WWW-Authenticate` is stripped so iOS never reopens its native Basic prompt. CRM ingest and
 public `/r/*` tracking remain outside human auth. `install-caddy.sh` imports the old Caddy bcrypt
 rows before the one-time cutover and rolls the live file back if the public redirect/login smoke
-does not pass. Caddy's structured-log filter redacts Authorization, Cookie and the temporary bridge
+does not pass. Final watchdog verification exercises a credential-free invalid login POST with no
+`Origin` and an exact same-origin `Referer` on all five hosts, plus a foreign-Referer rejection, so
+browser compatibility cannot regress behind a GET-only green check. Caddy's structured-log filter
+redacts Authorization, Cookie and the temporary bridge
 header in addition to the injected service credentials.
 
 ## Host-only secrets
