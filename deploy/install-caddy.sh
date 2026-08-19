@@ -175,10 +175,9 @@ if grep -q '^crm\.apitoken\.sale {' "$LIVE"; then
   admin_document_www=absent
   admin_login_status=not-run
   admin_login_form=absent
-  # A full Caddy reload also recreates the commerce blue-green health checker behind :8791. Give
-  # that local path enough time to converge, and evaluate both public surfaces on every attempt so
-  # a failure reports the exact safe predicates without leaking headers, cookies or form contents.
-  for _ in {1..20}; do
+  # Evaluate both public surfaces on every attempt so a failure reports the exact safe predicates
+  # without leaking headers, cookies or form contents.
+  for _ in 1 2 3 4 5 6 7 8; do
     : >"$admin_session_headers"
     if ! admin_document_status=$(curl --noproxy '*' --silent --show-error --max-time 8 \
       --resolve crm.apitoken.sale:443:127.0.0.1 \
@@ -186,7 +185,7 @@ if grep -q '^crm\.apitoken\.sale {' "$LIVE"; then
       https://crm.apitoken.sale/); then
       admin_document_status=curl-error
     fi
-    if grep -Eiq '^location: /__admin-auth/login\?return_to=%2F\r?$' \
+    if grep -Eiq '^location: /__admin-auth/login\?return_to=%2F[[:space:]]*$' \
       "$admin_session_headers"; then
       admin_document_location=expected
     else

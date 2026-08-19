@@ -1877,7 +1877,7 @@ require_admin_auth_vhost() {
   headers=${response%$'\n'*}
   [[ $status == 303 ]] \
     || wd_die "$host document navigation is not redirected by managed admin auth (HTTP ${status:-unreachable})"
-  grep -Eiq '^location: /__admin-auth/login\?return_to=%2F\r?$' <<<"$headers" \
+  grep -Eiq '^location: /__admin-auth/login\?return_to=%2F[[:space:]]*$' <<<"$headers" \
     || wd_die "$host managed admin auth returned an unsafe or missing login location"
   ! grep -Eiq '^www-authenticate:' <<<"$headers" \
     || wd_die "$host managed session auth leaked a Basic browser challenge"

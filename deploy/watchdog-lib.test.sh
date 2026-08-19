@@ -2347,10 +2347,15 @@ grep -Fq 'managed admin session smoke failed: document_status=' \
   || wd_die 'Caddy installation does not safely diagnose a broken managed-admin session boundary'
 grep -Fq 'restored and activated $backup' "$ROOT/deploy/install-caddy.sh" \
   || wd_die 'Caddy installation can commit a broken managed-admin session boundary'
-grep -Fq 'for _ in {1..20}; do' "$ROOT/deploy/install-caddy.sh" \
-  || wd_die 'Caddy installer does not allow managed-admin health convergence after reload'
 grep -Fq 'admin_document_location=absent-or-unexpected' "$ROOT/deploy/install-caddy.sh" \
   || wd_die 'Caddy installer could leak an unexpected managed-admin redirect target'
+admin_redirect_headers=$'HTTP/2 303\r\nlocation: /__admin-auth/login?return_to=%2F\r\n\r\n'
+grep -Eiq '^location: /__admin-auth/login\?return_to=%2F[[:space:]]*$' \
+  <<<"$admin_redirect_headers" \
+  || wd_die 'managed-admin smoke rejects a valid CRLF-terminated Location header'
+! grep -Eiq '^location: /__admin-auth/login\?return_to=%2F[[:space:]]*$' \
+  <<<$'location: /__admin-auth/login?return_to=%2F.evil\r\n' \
+  || wd_die 'managed-admin smoke accepts a Location suffix outside the login route'
 grep -Fq 'https://crm.apitoken.sale/__admin-auth/login?return_to=%2F' \
   "$ROOT/deploy/install-caddy.sh" \
   || wd_die 'Caddy installation does not exercise the public same-origin login projection'
