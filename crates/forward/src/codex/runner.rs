@@ -10,7 +10,7 @@ use super::{
 use crate::metrics::Metrics;
 use serde_json::{json, Value};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -53,6 +53,37 @@ impl CodexUsage {
     }
 }
 
+/// Shared checked count of actual provider generation HTTP submissions for one logical Codex turn.
+/// Clones cross home refresh/rotation/retry/fallback without carrying any provider identity or data.
+#[derive(Clone, Default)]
+pub(crate) struct CodexAttemptObserver(Arc<AtomicUsize>);
+
+const CODEX_ATTEMPT_OVERFLOW: usize = usize::MAX;
+
+impl CodexAttemptObserver {
+    pub(crate) fn record_send(&self) {
+        let _ = self
+            .0
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count != CODEX_ATTEMPT_OVERFLOW)
+                    .then(|| count.checked_add(1).unwrap_or(CODEX_ATTEMPT_OVERFLOW))
+            });
+    }
+
+    pub(crate) fn exhaustive_i32(&self) -> Option<i32> {
+        let count = self.0.load(Ordering::Acquire);
+        (count != CODEX_ATTEMPT_OVERFLOW)
+            .then_some(count)
+            .and_then(|count| i32::try_from(count).ok())
+    }
+}
+
+impl std::fmt::Debug for CodexAttemptObserver {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CodexAttemptObserver(<redacted>)")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct CodexTurnRequest {
     pub model: CodexModel,
@@ -75,6 +106,8 @@ pub(crate) struct CodexTurnRequest {
     pub reasoning_summary: Option<String>,
     pub output_schema: Option<Value>,
     pub verbosity: Option<String>,
+    /// Present only after PostgreSQL admitted a request fact; shared by every actual submission.
+    pub attempts: Option<CodexAttemptObserver>,
 }
 
 #[derive(Clone, Debug)]
@@ -510,6 +543,7 @@ impl CodexHome {
                     body.clone(),
                     request.prompt_cache_key.as_deref(),
                     self.rate_limits.clone(),
+                    request.attempts.as_ref(),
                 )
                 .await
             {
@@ -890,6 +924,7 @@ mod tests {
             reasoning_summary: Some("auto".to_string()),
             output_schema: None,
             verbosity: None,
+            attempts: None,
         }
     }
 

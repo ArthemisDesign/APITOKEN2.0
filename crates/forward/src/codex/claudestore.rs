@@ -80,6 +80,10 @@ impl ClaudeStoreCodexFallback {
         // trust boundary.
         body["model"] = Value::String(request.model.id.clone());
 
+        // Count only the configured fallback generation submission, immediately before `.send()`.
+        if let Some(attempts) = &request.attempts {
+            attempts.record_send();
+        }
         let response = self
             .client
             .post(format!(

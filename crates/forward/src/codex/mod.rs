@@ -37,7 +37,9 @@ pub use images::{
     ImageErrorContext, ImageGenerationRequest, ImageQuality, ImageReference, ImageSize,
     ImageTurnId, GPT_IMAGE_2, PUBLIC_IMAGE_MODEL_IDS,
 };
-pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdate};
+pub(crate) use runner::{
+    CodexAttemptObserver, CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdate,
+};
 pub use skin::{count_tokens as codex_messages_count_tokens, messages as codex_messages_skin};
 pub use transport::RATE_LIMIT_FRACTION_SCALE;
 pub(crate) use transport::{
@@ -2445,6 +2447,7 @@ mod calibration_integration_tests {
             reasoning_summary: None,
             output_schema: None,
             verbosity: None,
+            attempts: None,
         }
     }
 

@@ -1,6 +1,8 @@
 //! OpenAI-compatible `/v1/responses` and model-discovery HTTP surface.
 
-use super::billing::{begin_admission, AdmissionError, CodexRequestFactSeed};
+use super::billing::{
+    begin_admission, AdmissionError, CodexBillableRequestSpec, CodexRequestFactSeed,
+};
 use super::{
     new_id, CodexGateway, CodexModel, CodexTurnRequest, CodexTurnResult, CodexUsage, HistoryError,
     ProcessError, StoredHistory, TurnUpdate,
@@ -298,16 +300,40 @@ pub async fn responses(
                 .into_response()
         }
     };
+    let classification = classify_openai_responses(&value);
+    let requested_model = value
+        .get("model")
+        .and_then(Value::as_str)
+        .and_then(bounded_request_fact_model);
     let parsed = match parse_responses_request(&gateway, value) {
         Ok(parsed) => parsed,
         Err(error) => return error.into_response(),
     };
     let tenant_scope = pending.tenant_scope().to_string();
-    let prepared = match prepare_turn(&gateway, &tenant_scope, parsed).await {
+    let mut prepared = match prepare_turn(&gateway, &tenant_scope, parsed).await {
         Ok(prepared) => prepared,
         Err(error) => return error.into_response(),
     };
     let routing = build_turn_routing(&app, &tenant_scope, &parts.headers, &prepared).await;
+    let fact_seed = pending.request_fact_seed(
+        parts.extensions.get::<crate::execution::LogicalRequestId>(),
+        parts
+            .extensions
+            .get::<crate::execution::ClientAttribution>(),
+        parts
+            .extensions
+            .get::<crate::execution::RequestLifecycleClock>(),
+        pool::now(),
+    );
+    let billable_fact = fact_seed.map(|seed| {
+        let spec = CodexBillableRequestSpec::native_responses(
+            requested_model,
+            bounded_request_fact_model(&prepared.request.public_model.id),
+            prepared.request.stream,
+            classification,
+        );
+        (seed, spec)
+    });
     let admission = match pending
         .reserve(
             &app,
@@ -316,12 +342,14 @@ pub async fn responses(
             prepared.request.max_output_tokens,
             gateway.config().reserve_overhead_tokens,
             prepared.request.service_tier.is_some(),
+            billable_fact,
         )
         .await
     {
         Ok(admission) => admission,
         Err(error) => return ApiError::from(error).into_response(),
     };
+    prepared.turn.attempts = admission.attempt_observer();
     let response_id = new_id("resp");
     let created_at = pool::now();
 
@@ -332,6 +360,7 @@ pub async fn responses(
             .preflight_capacity(&prepared.request.public_model)
             .await
         {
+            admission.settle_error(&error);
             return ApiError::from(error).into_response();
         }
         if let Err(error) = admission.mark_delivering().await {
@@ -352,7 +381,10 @@ pub async fn responses(
 
     let result = match gateway.run_turn(prepared.turn.clone(), None, routing).await {
         Ok(result) => result,
-        Err(error) => return ApiError::from(error).into_response(),
+        Err(error) => {
+            admission.settle_error(&error);
+            return ApiError::from(error).into_response();
+        }
     };
     if let Err(error) = admission.mark_delivering().await {
         elog::error("codex", "codex delivery marker failed");
@@ -370,9 +402,10 @@ pub async fn responses(
     .await;
     admission.settle(
         &prepared.request.public_model,
-        &result.usage,
+        &result,
         prepared.request.max_output_tokens,
         result.effective_service_tier.as_deref() == Some("priority"),
+        None,
     );
     let mut http_response = json_response(StatusCode::OK, response, &response_id);
     insert_extra_headers(&mut http_response, ratelimit_headers(&gateway).await);
@@ -805,7 +838,7 @@ async fn input_tokens_after_admission(
     )
 }
 
-fn bounded_request_fact_model(value: &str) -> Option<String> {
+pub(super) fn bounded_request_fact_model(value: &str) -> Option<String> {
     (!value.is_empty()
         && value.len() <= MAX_REQUEST_FACT_MODEL_LEN
         && value.is_ascii()
@@ -1087,6 +1120,7 @@ pub(super) async fn prepare_turn(
         reasoning_summary: request.reasoning_summary.clone(),
         output_schema: request.output_schema.clone(),
         verbosity: request.verbosity.clone(),
+        attempts: None,
     };
     Ok(PreparedTurn {
         request,
@@ -2590,6 +2624,7 @@ async fn stream_responses(
         )
         .await
         {
+            admission.record_downstream_disconnect();
             return;
         }
         sequence += 1;
@@ -2604,6 +2639,7 @@ async fn stream_responses(
         )
         .await
         {
+            admission.record_downstream_disconnect();
             return;
         }
         sequence += 1;
@@ -2625,6 +2661,7 @@ async fn stream_responses(
         'updates: loop {
             let update = tokio::select! {
                 _ = frame_tx.closed() => {
+                    admission.record_downstream_disconnect();
                     downstream_closed = true;
                     break;
                 }
@@ -2641,7 +2678,8 @@ async fn stream_responses(
                     )
                     .await
                     {
-                        downstream_closed = true;
+                        admission.record_downstream_disconnect();
+                    downstream_closed = true;
                         break;
                     }
                     sequence += 1;
@@ -2682,6 +2720,7 @@ async fn stream_responses(
                         )
                         .await
                         {
+                            admission.record_downstream_disconnect();
                             downstream_closed = true;
                             break 'updates;
                         }
@@ -2700,7 +2739,8 @@ async fn stream_responses(
                         )
                         .await
                         {
-                            downstream_closed = true;
+                            admission.record_downstream_disconnect();
+                    downstream_closed = true;
                             break 'updates;
                         }
                         sequence += 1;
@@ -2721,6 +2761,7 @@ async fn stream_responses(
                     )
                     .await
                     {
+                        admission.record_downstream_disconnect();
                         downstream_closed = true;
                         break 'updates;
                     }
@@ -2754,6 +2795,7 @@ async fn stream_responses(
                         )
                         .await
                     {
+                        admission.record_downstream_disconnect();
                         downstream_closed = true;
                         break 'updates;
                     }
@@ -2774,6 +2816,7 @@ async fn stream_responses(
                         )
                         .await
                     {
+                        admission.record_downstream_disconnect();
                         downstream_closed = true;
                         break 'updates;
                     }
@@ -2807,6 +2850,7 @@ async fn stream_responses(
                         )
                         .await
                     {
+                        admission.record_downstream_disconnect();
                         downstream_closed = true;
                         break 'updates;
                     }
@@ -2827,6 +2871,7 @@ async fn stream_responses(
                         )
                         .await
                     {
+                        admission.record_downstream_disconnect();
                         downstream_closed = true;
                         break 'updates;
                     }
@@ -2849,6 +2894,7 @@ async fn stream_responses(
                     )
                     .await
                     {
+                        admission.record_downstream_disconnect();
                         downstream_closed = true;
                         break 'updates;
                     }
@@ -2878,6 +2924,7 @@ async fn stream_responses(
                                 )
                                 .await
                                 {
+                                    admission.record_downstream_disconnect();
                                     downstream_closed = true;
                                     break 'updates;
                                 }
@@ -2890,6 +2937,7 @@ async fn stream_responses(
                                 )
                                 .await
                                 {
+                                    admission.record_downstream_disconnect();
                                     downstream_closed = true;
                                     break 'updates;
                                 }
@@ -2915,6 +2963,7 @@ async fn stream_responses(
                             )
                             .await
                             {
+                                admission.record_downstream_disconnect();
                                 downstream_closed = true;
                                 break 'updates;
                             }
@@ -2936,6 +2985,7 @@ async fn stream_responses(
         let result = match run.await {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
+                admission.settle_error(&error);
                 let api_error = ApiError::from(error);
                 if !downstream_closed {
                     emit_stream_failure(
@@ -2982,9 +3032,10 @@ async fn stream_responses(
         .await;
         admission.settle(
             &prepared.request.public_model,
-            &result.usage,
+            &result,
             prepared.request.max_output_tokens,
             result.effective_service_tier.as_deref() == Some("priority"),
+            downstream_closed.then_some(true),
         );
         if downstream_closed || frame_tx.is_closed() {
             return;

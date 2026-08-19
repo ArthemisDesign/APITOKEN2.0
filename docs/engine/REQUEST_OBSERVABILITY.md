@@ -4,8 +4,9 @@
 > the Caddy logical-ID perimeter, provider-plane logical/client context admission, router logical-ID
 > production, and the client-attribution slice of classifier stage 5 are implemented. The production
 > request-fact surfaces are metered Codex/OpenAI/Gemini universal Messages count,
-> OpenAI native Responses input-token count, Anthropic native Messages count, and native Gemini
-> countTokens; all consume normalized client attribution. The closed structural classifier contract is
+> OpenAI native Responses input-token count, Anthropic native Messages count, native Gemini
+> countTokens, and OpenAI/Codex generation through native Responses, native Chat Completions, and
+> universal Messages; all consume normalized client attribution. The closed structural classifier contract is
 > implemented: Anthropic, OpenAI native, both Gemini counting routes, and Anthropic-plane OpenAI
 > Chat/Responses consume their owning classifiers; remaining OpenAI Chat and Gemini generation routes
 > remain dormant. A typed once-only lifecycle
@@ -14,8 +15,12 @@
 > any later outer body poll. Stage 7 now covers the native billable Anthropic `POST /v1/messages` leaf
 > and Anthropic-plane universal OpenAI Chat `POST /v1/chat/completions` and Responses
 > `POST /v1/responses`, including stream/nonstream settlement and the configured ClaudeStore
-> Anthropic-wire fallback. All other billable producers, the private read surface, and request-fact
-> metrics remain incomplete.
+> Anthropic-wire fallback. The OpenAI/Codex generation slice admits facts only with PostgreSQL money reservations,
+> shares one overflow-checked count across every actual generation POST (including retries and the
+> configured ClaudeStore fallback), and seals success, provider failure, cancellation, explicit
+> downstream disconnect, and reviewed tool-call output evidence conservatively. Legacy/admin,
+> SQLite, image, and missing-context paths remain fact-free. All other billable producers, the
+> private read surface, and request-fact metrics remain incomplete.
 >
 > This document is the owner-approved v1 implementation contract. It authorizes only the finite,
 > ordered rollout and Definition of Done in §§13-15; it does not claim that those stages are complete.
@@ -33,9 +38,10 @@
 > inbox, persisting normalized explicit client attribution or unknown when malformed/absent. Anthropic
 > additionally publishes its privacy-bounded Messages classifier only after upstream success proves
 > native shape acceptance; Gemini classifiers are parser-gated at their owning seams. The logical ID
-> remains operator-only. The native Anthropic billable Messages and Anthropic-plane universal OpenAI
-> Chat/Responses slices now admit facts in the reserve transaction, mark delivery with money, and seal
-> terminal evidence through TeeMeter settlement; every other billable plane caller remains absent.
+> remains operator-only. The native Anthropic billable Messages, Anthropic-plane universal OpenAI Chat/Responses, and
+> OpenAI/Codex native Responses, native Chat Completions, and universal Messages slices now admit
+> facts in the PostgreSQL reserve transaction, mark delivery with money, and seal terminal evidence
+> through their authoritative settlements. Every other billable plane caller remains absent.
 
 ## 1. Purpose
 

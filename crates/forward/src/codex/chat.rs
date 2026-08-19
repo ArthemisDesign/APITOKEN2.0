@@ -9,8 +9,9 @@ use super::api::{
     json_response, normalize_output_item, parse_responses_request, prepare_turn, ApiError,
     PreparedTurn, MAX_INSTRUCTIONS_BYTES, OPENAI_BODY_LIMIT, STREAM_FRAME_SEND_TIMEOUT,
 };
-use super::billing::begin_admission;
+use super::billing::{begin_admission, CodexBillableRequestSpec};
 use super::{new_id, CodexGateway, CodexTurnResult, CodexUsage, TurnUpdate};
+use crate::request_classification::classify_openai_chat;
 use crate::state::AppState;
 use crate::validation::optional_positive_u64;
 use axum::body::{to_bytes, Body};
@@ -69,6 +70,11 @@ pub async fn completions(
                 .into_response()
         }
     };
+    let classification = classify_openai_chat(&value);
+    let requested_model = value
+        .get("model")
+        .and_then(Value::as_str)
+        .and_then(super::api::bounded_request_fact_model);
     let parsed = match parse_chat_request(&gateway, value) {
         Ok(parsed) => parsed,
         Err(error) => return error.into_response(),
@@ -84,6 +90,25 @@ pub async fn completions(
     prepared.turn.developer_instructions = prepared.request.instructions.clone();
     let routing =
         super::api::build_turn_routing(&app, &tenant_scope, &parts.headers, &prepared).await;
+    let fact_seed = pending.request_fact_seed(
+        parts.extensions.get::<crate::execution::LogicalRequestId>(),
+        parts
+            .extensions
+            .get::<crate::execution::ClientAttribution>(),
+        parts
+            .extensions
+            .get::<crate::execution::RequestLifecycleClock>(),
+        pool::now(),
+    );
+    let billable_fact = fact_seed.map(|seed| {
+        let spec = CodexBillableRequestSpec::native_chat(
+            requested_model,
+            super::api::bounded_request_fact_model(&prepared.request.public_model.id),
+            prepared.request.stream,
+            classification,
+        );
+        (seed, spec)
+    });
     let admission = match pending
         .reserve(
             &app,
@@ -92,12 +117,14 @@ pub async fn completions(
             prepared.request.max_output_tokens,
             gateway.config().reserve_overhead_tokens,
             prepared.request.service_tier.is_some(),
+            billable_fact,
         )
         .await
     {
         Ok(admission) => admission,
         Err(error) => return ApiError::from(error).into_response(),
     };
+    prepared.turn.attempts = admission.attempt_observer();
     let completion_id = new_id("chatcmpl");
     let created = pool::now();
 
@@ -108,6 +135,7 @@ pub async fn completions(
             .preflight_capacity(&prepared.request.public_model)
             .await
         {
+            admission.settle_error(&error);
             return ApiError::from(error).into_response();
         }
         if let Err(error) = admission.mark_delivering().await {
@@ -130,7 +158,10 @@ pub async fn completions(
 
     let result = match gateway.run_turn(prepared.turn.clone(), None, routing).await {
         Ok(result) => result,
-        Err(error) => return ApiError::from(error).into_response(),
+        Err(error) => {
+            admission.settle_error(&error);
+            return ApiError::from(error).into_response();
+        }
     };
     if let Err(error) = admission.mark_delivering().await {
         elog::error("codex", "codex delivery marker failed");
@@ -146,9 +177,10 @@ pub async fn completions(
     );
     admission.settle(
         &prepared.request.public_model,
-        &result.usage,
+        &result,
         prepared.request.max_output_tokens,
         result.effective_service_tier.as_deref() == Some("priority"),
+        None,
     );
     let mut http_response = json_response(StatusCode::OK, response, &completion_id);
     super::api::insert_extra_headers(
@@ -1087,6 +1119,7 @@ async fn stream_chat(
         )
         .await
         {
+            admission.record_downstream_disconnect();
             return;
         }
 
@@ -1135,6 +1168,7 @@ async fn stream_chat(
         loop {
             tokio::select! {
                 _ = frame_tx.closed() => {
+                    admission.record_downstream_disconnect();
                     downstream_closed = true;
                     break;
                 }
@@ -1151,7 +1185,8 @@ async fn stream_chat(
                     )
                     .await
                     {
-                        downstream_closed = true;
+                        admission.record_downstream_disconnect();
+                    downstream_closed = true;
                         break;
                     }
                     continue;
@@ -1208,7 +1243,8 @@ async fn stream_chat(
                     )
                     .await
                     {
-                        downstream_closed = true;
+                        admission.record_downstream_disconnect();
+                    downstream_closed = true;
                         break;
                     }
                 }
@@ -1250,6 +1286,7 @@ async fn stream_chat(
                         )
                         .await
                     {
+                        admission.record_downstream_disconnect();
                         downstream_closed = true;
                     }
                 }
@@ -1266,6 +1303,7 @@ async fn stream_chat(
         let result = match run.await {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
+                admission.settle_error(&error);
                 elog::error(
                     "codex",
                     format!("Codex chat stream failed [{}]", error.diagnostic_class()),
@@ -1289,9 +1327,10 @@ async fn stream_chat(
         };
         admission.settle(
             &prepared.request.public_model,
-            &result.usage,
+            &result,
             prepared.request.max_output_tokens,
             result.effective_service_tier.as_deref() == Some("priority"),
+            downstream_closed.then_some(true),
         );
         if downstream_closed {
             return;

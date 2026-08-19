@@ -13,10 +13,13 @@ use crate::state::AppState;
 use anyhow::Context as _;
 use axum::http::HeaderMap;
 use registry::request_facts::{
-    DeliveryState, ProviderTerminalClass, RequestFactTerminalEvidence, TerminalRequestFact,
+    DeliveryState, ProviderTerminalClass, RequestFactAdmission, RequestFactTerminalEvidence,
+    TerminalRequestFact,
 };
+use std::fmt;
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdmissionError {
@@ -31,6 +34,7 @@ type CodexReserveResult = (
     i64,
     Option<i64>,
     Option<tariff_book::PinnedTariff>,
+    Option<CodexBillableFactContext>,
 );
 
 struct Reservation {
@@ -46,6 +50,7 @@ struct Reservation {
     policy_fast: Option<bool>,
     request_id: String,
     guard: HoldGuard,
+    request_fact: Option<CodexBillableFactContext>,
 }
 
 /// Owns the exact billing reservation until a non-streaming response is returned or a streaming
@@ -53,6 +58,105 @@ struct Reservation {
 /// local global/per-key concurrency ceilings are intentionally not applied to this provider.
 pub(crate) struct CodexAdmission {
     reservation: Option<Reservation>,
+}
+
+/// Closed, content-free route evidence created only after the owning generation parser accepts.
+/// Its mutable members carry only a checked submission count and an explicit disconnect latch.
+pub(crate) struct CodexBillableRequestSpec {
+    route: CodexBillableRoute,
+    requested_model: Option<String>,
+    executable_model: Option<String>,
+    stream_flag: bool,
+    classification: RequestClassification,
+    attempts: super::CodexAttemptObserver,
+    downstream_disconnect: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy)]
+enum CodexBillableRoute {
+    NativeResponses,
+    NativeChat,
+    UniversalMessages,
+}
+
+struct CodexBillableFactContext {
+    admitted_at: i64,
+    lifecycle_clock: RequestLifecycleClock,
+    attempts: super::CodexAttemptObserver,
+    downstream_disconnect: Arc<AtomicBool>,
+}
+
+impl fmt::Debug for CodexBillableRequestSpec {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CodexBillableRequestSpec(<redacted>)")
+    }
+}
+
+impl fmt::Debug for CodexBillableFactContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CodexBillableFactContext(<redacted>)")
+    }
+}
+
+impl CodexBillableRequestSpec {
+    pub(crate) fn native_responses(
+        requested_model: Option<String>,
+        executable_model: Option<String>,
+        stream_flag: bool,
+        classification: RequestClassification,
+    ) -> Self {
+        Self {
+            route: CodexBillableRoute::NativeResponses,
+            requested_model,
+            executable_model,
+            stream_flag,
+            classification,
+            attempts: super::CodexAttemptObserver::default(),
+            downstream_disconnect: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub(crate) fn native_chat(
+        requested_model: Option<String>,
+        executable_model: Option<String>,
+        stream_flag: bool,
+        classification: RequestClassification,
+    ) -> Self {
+        Self {
+            route: CodexBillableRoute::NativeChat,
+            requested_model,
+            executable_model,
+            stream_flag,
+            classification,
+            attempts: super::CodexAttemptObserver::default(),
+            downstream_disconnect: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub(crate) fn universal_messages(
+        requested_model: Option<String>,
+        executable_model: Option<String>,
+        stream_flag: bool,
+        classification: RequestClassification,
+    ) -> Self {
+        Self {
+            route: CodexBillableRoute::UniversalMessages,
+            requested_model,
+            executable_model,
+            stream_flag,
+            classification,
+            attempts: super::CodexAttemptObserver::default(),
+            downstream_disconnect: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn route_classes(&self) -> (&'static str, &'static str) {
+        match self.route {
+            CodexBillableRoute::NativeResponses => ("native", "responses"),
+            CodexBillableRoute::NativeChat => ("native", "chat"),
+            CodexBillableRoute::UniversalMessages => ("universal", "messages"),
+        }
+    }
 }
 
 pub(crate) struct OpenAiImageAdmission {
@@ -111,6 +215,49 @@ impl CodexRequestFactSeed {
             admitted_at,
             lifecycle_clock,
         }
+    }
+
+    fn into_billable_admission(
+        self,
+        billing_request_id: String,
+        spec: &CodexBillableRequestSpec,
+    ) -> (RequestFactAdmission, CodexBillableFactContext) {
+        let (route_class, request_class) = spec.route_classes();
+        let admission = RequestFactAdmission {
+            logical_request_id: self.logical_request_id,
+            billing_request_id,
+            execution_group_id: self.execution.group_id().map(str::to_owned),
+            attempt: self.execution.attempt(),
+            account_id: self.account_id,
+            key_id: self.key_id,
+            client_kind: self.client_attribution.kind(),
+            client_source: self.client_attribution.source(),
+            client_version: self.client_attribution.version().map(str::to_owned),
+            provider_plane: "openai".into(),
+            route_class: route_class.into(),
+            request_class: request_class.into(),
+            requested_model: spec.requested_model.clone(),
+            executable_model: spec.executable_model.clone(),
+            stream_flag: spec.stream_flag,
+            tools_declared_count: spec.classification.tools_declared_count(),
+            tool_classes: spec.classification.tool_classes(),
+            tool_choice_mode: spec.classification.tool_choice_mode(),
+            parallel_tools_requested: spec.classification.parallel_tools_requested(),
+            tool_results_in_input: spec.classification.tool_results_in_input(),
+            structured_output_flag: spec.classification.structured_output_flag(),
+            reasoning_flag: spec.classification.reasoning_flag(),
+            service_tier: spec.classification.service_tier().map(str::to_owned),
+            input_modalities: spec.classification.input_modalities(),
+            output_modalities: spec.classification.output_modalities(),
+            admitted_at: self.admitted_at,
+        };
+        let context = CodexBillableFactContext {
+            admitted_at: self.admitted_at,
+            lifecycle_clock: self.lifecycle_clock,
+            attempts: spec.attempts.clone(),
+            downstream_disconnect: spec.downstream_disconnect.clone(),
+        };
+        (admission, context)
     }
 
     pub(crate) fn terminal_fact(
@@ -308,6 +455,7 @@ impl PendingCodexAdmission {
         requested_output_tokens: Option<u64>,
         reserve_overhead_tokens: u64,
         fast: bool,
+        billable_fact: Option<(CodexRequestFactSeed, CodexBillableRequestSpec)>,
     ) -> Result<CodexAdmission, AdmissionError> {
         let reservation = match (&self.authz, &app.billing) {
             (
@@ -319,21 +467,35 @@ impl PendingCodexAdmission {
                 },
                 Some(billing),
             ) => {
-                let (request_id, hold, reservation_mult_bp, tariff_priced_ts, pinned_tariff) =
-                    reserve_codex_metered(
-                        billing,
-                        account_id,
-                        key,
-                        model,
-                        estimated_input_tokens,
-                        requested_output_tokens,
-                        reserve_overhead_tokens,
-                        fast,
-                        self.authz.mult_for(registry::PROVIDER_OPENAI),
-                        *available_nano,
-                        &self.execution,
-                    )
-                    .await?;
+                // SQLite intentionally preserves the legacy money path and never admits an
+                // analytics fact. PostgreSQL is identified by its owned command metrics carrier.
+                let billable_fact = billing
+                    .pg_command_stats()
+                    .is_some()
+                    .then_some(billable_fact)
+                    .flatten();
+                let (
+                    request_id,
+                    hold,
+                    reservation_mult_bp,
+                    tariff_priced_ts,
+                    pinned_tariff,
+                    request_fact,
+                ) = reserve_codex_metered(
+                    billing,
+                    account_id,
+                    key,
+                    model,
+                    estimated_input_tokens,
+                    requested_output_tokens,
+                    reserve_overhead_tokens,
+                    fast,
+                    self.authz.mult_for(registry::PROVIDER_OPENAI),
+                    *available_nano,
+                    &self.execution,
+                    billable_fact,
+                )
+                .await?;
                 Some(Reservation {
                     billing: billing.clone(),
                     account_id: account_id.clone(),
@@ -344,6 +506,7 @@ impl PendingCodexAdmission {
                     pinned_tariff,
                     policy_fast: tariff_priced_ts.map(|_| fast),
                     request_id: request_id.clone(),
+                    request_fact,
                     guard: HoldGuard::new(
                         Some(billing.clone()),
                         account_id.clone(),
@@ -483,6 +646,7 @@ fn image_reservation(
         tariff_priced_ts,
         pinned_tariff,
         policy_fast: None,
+        request_fact: None,
         guard: HoldGuard::new(
             Some(billing.clone()),
             account_id.to_owned(),
@@ -507,6 +671,7 @@ async fn reserve_codex_metered(
     mult_bp: i64,
     available_nano: i64,
     execution: &registry::ExecutionAttempt,
+    billable_fact: Option<(CodexRequestFactSeed, CodexBillableRequestSpec)>,
 ) -> Result<CodexReserveResult, AdmissionError> {
     let request_id = crate::upstream::fresh_request_id();
     if mult_bp > 0 && available_nano <= 0 {
@@ -525,6 +690,7 @@ async fn reserve_codex_metered(
         available_nano,
         &request_id,
         execution,
+        billable_fact,
     )
     .await
 }
@@ -543,6 +709,7 @@ async fn reserve_codex_legacy(
     available_nano: i64,
     request_id: &str,
     execution: &registry::ExecutionAttempt,
+    billable_fact: Option<(CodexRequestFactSeed, CodexBillableRequestSpec)>,
 ) -> Result<CodexReserveResult, AdmissionError> {
     let estimated = estimated_input_tokens.saturating_add(reserve_overhead_tokens);
     let now = pool::now();
@@ -579,19 +746,51 @@ async fn reserve_codex_legacy(
     // capped to the account balance. Exact settlement retains the full charge; registry caps only
     // collection at the shared account floor and records any remainder as uncollected.
     let hold = hold.min(available_nano.max(1));
-    match billing
-        .reserve_priced_request_for_execution(
-            request_id,
-            account_id,
-            key,
+    let (request_fact_admission, request_fact_context) = match billable_fact {
+        Some((seed, spec)) => {
+            let (admission, context) = seed.into_billable_admission(request_id.to_owned(), &spec);
+            (Some(admission), Some(context))
+        }
+        None => (None, None),
+    };
+    let reserved = match request_fact_admission {
+        Some(admission) => {
+            billing
+                .reserve_priced_request_for_execution_with_fact(
+                    request_id,
+                    account_id,
+                    key,
+                    hold,
+                    execution.clone(),
+                    registry::PROVIDER_OPENAI,
+                    mult_bp,
+                    admission,
+                )
+                .await
+        }
+        None => {
+            billing
+                .reserve_priced_request_for_execution(
+                    request_id,
+                    account_id,
+                    key,
+                    hold,
+                    execution.clone(),
+                    registry::PROVIDER_OPENAI,
+                    mult_bp,
+                )
+                .await
+        }
+    };
+    match reserved {
+        Ok(Some(_)) => Ok((
+            request_id.to_owned(),
             hold,
-            execution.clone(),
-            registry::PROVIDER_OPENAI,
             mult_bp,
-        )
-        .await
-    {
-        Ok(Some(_)) => Ok((request_id.to_owned(), hold, mult_bp, None, resolved.pin)),
+            None,
+            resolved.pin,
+            request_fact_context,
+        )),
         Ok(None) => Err(AdmissionError::LowBalance),
         Err(error) => {
             elog::error(
@@ -797,28 +996,164 @@ fn settled_openai_image_charge_with_prices(
     (charge, usage_event)
 }
 
+fn codex_tool_calls_in_output(result: &super::CodexTurnResult) -> Option<bool> {
+    let mut saw_tool_call = false;
+    for item in &result.output {
+        match item.get("type").and_then(serde_json::Value::as_str) {
+            Some("function_call" | "custom_tool_call") => saw_tool_call = true,
+            Some("message" | "reasoning") => {}
+            // `CodexTurnResult` is provider-parsed output, so an unreviewed future item type makes
+            // the existential false non-exhaustive rather than silently treating it as non-tool.
+            _ => return None,
+        }
+    }
+    Some(saw_tool_call)
+}
+
+fn codex_process_error_terminal(
+    error: &super::ProcessError,
+) -> (ProviderTerminalClass, DeliveryState) {
+    match error {
+        super::ProcessError::BadRequest | super::ProcessError::ContextWindowExceeded => {
+            (ProviderTerminalClass::ClientError, DeliveryState::Unknown)
+        }
+        super::ProcessError::UsageLimitExceeded { .. } => {
+            (ProviderTerminalClass::Quota, DeliveryState::Unknown)
+        }
+        super::ProcessError::AuthenticationRequired | super::ProcessError::SubscriptionRequired => {
+            (ProviderTerminalClass::Auth, DeliveryState::Unknown)
+        }
+        super::ProcessError::Timeout(_) => {
+            (ProviderTerminalClass::Timeout, DeliveryState::Interrupted)
+        }
+        super::ProcessError::Closed => {
+            (ProviderTerminalClass::Transport, DeliveryState::Interrupted)
+        }
+        super::ProcessError::Protocol(_) => (
+            ProviderTerminalClass::ProtocolError,
+            DeliveryState::Interrupted,
+        ),
+        super::ProcessError::ExternalFallbackFailed { .. } => {
+            (ProviderTerminalClass::Unknown, DeliveryState::Unknown)
+        }
+        super::ProcessError::Disabled | super::ProcessError::InvalidConfig(_) => {
+            (ProviderTerminalClass::Unknown, DeliveryState::NotStarted)
+        }
+    }
+}
+
+impl CodexBillableFactContext {
+    fn terminal_evidence(
+        &self,
+        http_status_code: Option<i32>,
+        provider_terminal_class: ProviderTerminalClass,
+        delivery_state: DeliveryState,
+        downstream_disconnect: Option<bool>,
+        attempts_exhaustive: bool,
+        tool_calls_in_output: Option<bool>,
+    ) -> RequestFactTerminalEvidence {
+        let terminal_at = pool::now().max(self.admitted_at);
+        RequestFactTerminalEvidence {
+            terminal_at,
+            http_status_code,
+            provider_terminal_class,
+            delivery_state,
+            downstream_disconnect: downstream_disconnect.filter(|observed| *observed).or_else(
+                || {
+                    self.downstream_disconnect
+                        .load(Ordering::Acquire)
+                        .then_some(true)
+                },
+            ),
+            upstream_request_id: None,
+            first_public_byte_at: self
+                .lifecycle_clock
+                .seal_first_public_byte_for_terminal(self.admitted_at, terminal_at),
+            internal_attempt_count: attempts_exhaustive
+                .then(|| self.attempts.exhaustive_i32())
+                .flatten(),
+            failure_class: None,
+            tool_calls_in_output,
+        }
+    }
+}
+
 impl CodexAdmission {
+    pub(crate) fn attempt_observer(&self) -> Option<super::CodexAttemptObserver> {
+        self.reservation
+            .as_ref()
+            .and_then(|reservation| reservation.request_fact.as_ref())
+            .map(|context| context.attempts.clone())
+    }
+
+    pub(crate) fn record_downstream_disconnect(&self) {
+        if let Some(context) = self
+            .reservation
+            .as_ref()
+            .and_then(|reservation| reservation.request_fact.as_ref())
+        {
+            context.downstream_disconnect.store(true, Ordering::Release);
+        }
+    }
+
     pub(crate) async fn mark_delivering(&self) -> Result<(), AdmissionError> {
         let Some(reservation) = &self.reservation else {
             return Ok(());
         };
-        match reservation
-            .billing
-            .mark_delivering(&reservation.request_id, 3_600)
-            .await
-        {
+        let result = if reservation.request_fact.is_some() {
+            reservation
+                .billing
+                .mark_delivering_with_request_fact(&reservation.request_id, 3_600)
+                .await
+        } else {
+            reservation
+                .billing
+                .mark_delivering(&reservation.request_id, 3_600)
+                .await
+        };
+        match result {
             Ok(true) => Ok(()),
             Ok(false) | Err(_) => Err(AdmissionError::Unavailable),
         }
     }
 
+    pub(crate) fn settle_error(mut self, error: &super::ProcessError) {
+        let Some(mut reservation) = self.reservation.take() else {
+            return;
+        };
+        let Some(context) = reservation.request_fact.take() else {
+            return;
+        };
+        let (provider_class, delivery_state) = codex_process_error_terminal(error);
+        let evidence =
+            context.terminal_evidence(None, provider_class, delivery_state, None, true, None);
+        if let Err(error) = reservation.billing.settle_detached_with_request_fact(
+            &reservation.request_id,
+            &reservation.account_id,
+            &reservation.key,
+            reservation.hold,
+            0,
+            None,
+            None,
+            evidence,
+        ) {
+            elog::error(
+                "codex-billing",
+                format!("Codex request-fact error settlement rejected: {error:#}"),
+            );
+        }
+        reservation.guard.disarm();
+    }
+
     pub(crate) fn settle(
         mut self,
         model: &CodexModel,
-        usage: &CodexUsage,
+        result: &super::CodexTurnResult,
         requested_output_tokens: Option<u64>,
         fast: bool,
+        downstream_disconnect: Option<bool>,
     ) {
+        let usage = &result.usage;
         let Some(mut reservation) = self.reservation.take() else {
             return;
         };
@@ -870,15 +1205,46 @@ impl CodexAdmission {
             effective_fast,
             prices,
         );
-        reservation.billing.settle_detached(
-            &reservation.request_id,
-            &reservation.account_id,
-            &reservation.key,
-            reservation.hold,
-            charge,
-            None,
-            usage_event,
-        );
+        let settlement = match reservation.request_fact.take() {
+            Some(context) => {
+                let evidence = context.terminal_evidence(
+                    Some(200),
+                    ProviderTerminalClass::Success,
+                    DeliveryState::Completed,
+                    downstream_disconnect,
+                    true,
+                    codex_tool_calls_in_output(result),
+                );
+                reservation.billing.settle_detached_with_request_fact(
+                    &reservation.request_id,
+                    &reservation.account_id,
+                    &reservation.key,
+                    reservation.hold,
+                    charge,
+                    None,
+                    usage_event,
+                    evidence,
+                )
+            }
+            None => {
+                reservation.billing.settle_detached(
+                    &reservation.request_id,
+                    &reservation.account_id,
+                    &reservation.key,
+                    reservation.hold,
+                    charge,
+                    None,
+                    usage_event,
+                );
+                Ok(())
+            }
+        };
+        if let Err(error) = settlement {
+            elog::error(
+                "codex-billing",
+                format!("Codex request-fact settlement rejected: {error:#}"),
+            );
+        }
         reservation.guard.disarm();
         if charge > 0 {
             elog::info(
@@ -890,6 +1256,41 @@ impl CodexAdmission {
                 ),
             );
         }
+    }
+}
+
+impl Drop for CodexAdmission {
+    fn drop(&mut self) {
+        let Some(reservation) = self.reservation.as_mut() else {
+            return;
+        };
+        let Some(context) = reservation.request_fact.take() else {
+            return;
+        };
+        let evidence = context.terminal_evidence(
+            None,
+            ProviderTerminalClass::Unknown,
+            DeliveryState::Unknown,
+            None,
+            false,
+            None,
+        );
+        if let Err(error) = reservation.billing.settle_detached_with_request_fact(
+            &reservation.request_id,
+            &reservation.account_id,
+            &reservation.key,
+            reservation.hold,
+            0,
+            None,
+            None,
+            evidence,
+        ) {
+            elog::error(
+                "codex-billing",
+                format!("Codex request-fact cancellation evidence rejected: {error:#}"),
+            );
+        }
+        reservation.guard.disarm();
     }
 }
 
@@ -1325,6 +1726,15 @@ mod tests {
         }
     }
 
+    fn turn_result(usage: CodexUsage) -> super::super::CodexTurnResult {
+        super::super::CodexTurnResult {
+            output: Vec::new(),
+            usage,
+            effective_service_tier: None,
+            provider_reported_service_tier: None,
+        }
+    }
+
     fn settlement_model() -> CodexModel {
         let mut model = model();
         // Deliberately stay outside the effective-dated production catalog so every expected value
@@ -1387,6 +1797,7 @@ mod tests {
                 pinned_tariff: None,
                 policy_fast: None,
                 request_id: request_id.to_string(),
+                request_fact: None,
                 guard: HoldGuard::new(
                     Some(Arc::clone(&billing)),
                     ACCOUNT.to_string(),
@@ -1420,7 +1831,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (text_request_id, text_hold, text_multiplier, _, _) = reserve_codex_metered(
+        let (text_request_id, text_hold, text_multiplier, _, _, _) = reserve_codex_metered(
             &billing,
             ACCOUNT,
             KEY,
@@ -1432,6 +1843,7 @@ mod tests {
             0,
             0,
             &registry::ExecutionAttempt::direct(),
+            None,
         )
         .await
         .expect("zero-multiplier text request must not require balance");
@@ -1730,13 +2142,14 @@ mod tests {
         });
         admission.settle(
             &model(),
-            &CodexUsage {
+            &turn_result(CodexUsage {
                 input_tokens: 1_000,
                 output_tokens: 20,
                 ..CodexUsage::default()
-            },
+            }),
             None,
             false,
+            None,
         );
         billing.flush().await.unwrap();
         let account = billing
@@ -1782,13 +2195,14 @@ mod tests {
         });
         admission.settle(
             &model(),
-            &CodexUsage {
+            &turn_result(CodexUsage {
                 input_tokens: 1_000,
                 output_tokens: 20,
                 ..CodexUsage::default()
-            },
+            }),
             None,
             false,
+            None,
         );
         billing.flush().await.unwrap();
         let account = billing
@@ -1977,7 +2391,7 @@ mod tests {
             ..CodexUsage::default()
         };
 
-        admission.settle(&settlement_model(), &usage, None, false);
+        admission.settle(&settlement_model(), &turn_result(usage), None, false, None);
         billing.flush().await.unwrap();
 
         let account = billing

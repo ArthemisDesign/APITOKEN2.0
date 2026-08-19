@@ -76,12 +76,13 @@ use super::api::{
     normalize_output_item, parse_responses_request, prepare_turn, ApiError, PreparedTurn,
     MAX_INSTRUCTIONS_BYTES, OPENAI_BODY_LIMIT,
 };
-use super::billing::{begin_admission, CodexRequestFactSeed};
+use super::billing::{begin_admission, CodexBillableRequestSpec, CodexRequestFactSeed};
 use super::chat::{
     enforce_output_limits, output_chars_for, send_chat_bytes, ChatReceiverStream, StopFilter,
 };
 use super::{new_id, CodexGateway, CodexTurnResult, CodexUsage, TurnUpdate};
 use crate::proxy::{with_not_started, without_not_started, TerminalErrorReason};
+use crate::request_classification::classify_anthropic_messages;
 use crate::state::AppState;
 use crate::validation::optional_bool;
 use axum::body::{to_bytes, Body};
@@ -1294,6 +1295,7 @@ async fn stream_messages(
         )
         .await
         {
+            admission.record_downstream_disconnect();
             return;
         }
 
@@ -1342,12 +1344,14 @@ async fn stream_messages(
         loop {
             tokio::select! {
                 _ = frame_tx.closed() => {
+                    admission.record_downstream_disconnect();
                     downstream_closed = true;
                     break;
                 }
                 _ = heartbeat.tick() => {
                     if !send_chat_bytes(&frame_tx, Bytes::from_static(b"event: ping\ndata: {}\n\n")).await {
-                        downstream_closed = true;
+                        admission.record_downstream_disconnect();
+                    downstream_closed = true;
                         break;
                     }
                     continue;
@@ -1417,7 +1421,8 @@ async fn stream_messages(
                     let mut failed = false;
                     for (event, data) in frames {
                         if !send_skin_frame(&frame_tx, &event, data).await {
-                            downstream_closed = true;
+                            admission.record_downstream_disconnect();
+                    downstream_closed = true;
                             failed = true;
                             break;
                         }
@@ -1454,6 +1459,7 @@ async fn stream_messages(
                     if !shaped.is_empty() {
                         for (event, data) in emitter.text_delta(&shaped) {
                             if !send_skin_frame(&frame_tx, &event, data).await {
+                                admission.record_downstream_disconnect();
                                 downstream_closed = true;
                                 break;
                             }
@@ -1472,6 +1478,7 @@ async fn stream_messages(
         let result = match run.await {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
+                admission.settle_error(&error);
                 elog::error(
                     "codex",
                     format!(
@@ -1501,9 +1508,10 @@ async fn stream_messages(
         };
         admission.settle(
             &prepared.request.public_model,
-            &result.usage,
+            &result,
             prepared.request.max_output_tokens,
             result.effective_service_tier.as_deref() == Some("priority"),
+            downstream_closed.then_some(true),
         );
         if downstream_closed {
             return;
@@ -1612,6 +1620,11 @@ pub async fn messages(
         Ok(value) => value,
         Err(response) => return response,
     };
+    let classification = classify_anthropic_messages(&value);
+    let requested_model = value
+        .get("model")
+        .and_then(Value::as_str)
+        .and_then(bounded_request_fact_model);
     let translated = match translate_messages_request(value, true) {
         Ok(translated) => translated,
         Err(response) => return response,
@@ -1631,6 +1644,25 @@ pub async fn messages(
     prepared.turn.base_instructions = prepared.request.instructions.clone();
     let routing =
         super::api::build_turn_routing(&app, &tenant_scope, &parts.headers, &prepared).await;
+    let fact_seed = pending.request_fact_seed(
+        parts.extensions.get::<crate::execution::LogicalRequestId>(),
+        parts
+            .extensions
+            .get::<crate::execution::ClientAttribution>(),
+        parts
+            .extensions
+            .get::<crate::execution::RequestLifecycleClock>(),
+        pool::now(),
+    );
+    let billable_fact = fact_seed.map(|seed| {
+        let spec = CodexBillableRequestSpec::universal_messages(
+            requested_model,
+            bounded_request_fact_model(&prepared.request.public_model.id),
+            prepared.request.stream,
+            classification,
+        );
+        (seed, spec)
+    });
     let admission = match pending
         .reserve(
             &app,
@@ -1639,12 +1671,14 @@ pub async fn messages(
             prepared.request.max_output_tokens,
             gateway.config().reserve_overhead_tokens,
             prepared.request.service_tier.is_some(),
+            billable_fact,
         )
         .await
     {
         Ok(admission) => admission,
         Err(error) => return anthropic_error(ApiError::from(error)),
     };
+    prepared.turn.attempts = admission.attempt_observer();
     let message_id = new_id("msg");
 
     if prepared.request.stream {
@@ -1654,6 +1688,7 @@ pub async fn messages(
             .preflight_capacity(&prepared.request.public_model)
             .await
         {
+            admission.settle_error(&error);
             return anthropic_error(ApiError::from(error));
         }
         if let Err(error) = admission.mark_delivering().await {
@@ -1674,7 +1709,10 @@ pub async fn messages(
 
     let result = match gateway.run_turn(prepared.turn.clone(), None, routing).await {
         Ok(result) => result,
-        Err(error) => return anthropic_error(ApiError::from(error)),
+        Err(error) => {
+            admission.settle_error(&error);
+            return anthropic_error(ApiError::from(error));
+        }
     };
     if let Err(error) = admission.mark_delivering().await {
         elog::error("codex", "codex delivery marker failed");
@@ -1689,9 +1727,10 @@ pub async fn messages(
     );
     admission.settle(
         &prepared.request.public_model,
-        &result.usage,
+        &result,
         prepared.request.max_output_tokens,
         result.effective_service_tier.as_deref() == Some("priority"),
+        None,
     );
     skin_json_response(response, &message_id)
 }

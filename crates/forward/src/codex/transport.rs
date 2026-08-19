@@ -598,11 +598,16 @@ impl ProfileTransport {
         mut body: Value,
         prompt_cache_key: Option<&str>,
         rate_limits: Arc<Mutex<Option<CodexRateLimits>>>,
+        attempts: Option<&super::CodexAttemptObserver>,
     ) -> Result<TurnEvents, ProcessError> {
         let cache_key = prompt_cache_key.map(bounded_cache_key).unwrap_or_else(uuid);
         let identity = self.request_identity(&cache_key);
         self.attach_client_metadata(&mut body, &identity);
         let headers = self.turn_headers(auth, &identity);
+        // Count only the actual generation transport submission, immediately before `.send()`.
+        if let Some(attempts) = attempts {
+            attempts.record_send();
+        }
         let response = self
             .client
             .post(self.cfg.responses_url())
@@ -1872,7 +1877,13 @@ mod tests {
         let transport = ProfileTransport::new(test_config(&base), None).unwrap();
         let limits = Arc::new(Mutex::new(None));
         let mut events = transport
-            .run_turn(&test_auth(), json!({"model": "gpt-5.5"}), None, limits)
+            .run_turn(
+                &test_auth(),
+                json!({"model": "gpt-5.5"}),
+                None,
+                limits,
+                None,
+            )
             .await
             .unwrap();
         let seen = collect(&mut events).await;
@@ -1930,6 +1941,7 @@ mod tests {
                 json!({"model": "gpt-5.5"}),
                 None,
                 Arc::new(Mutex::new(None)),
+                None,
             )
             .await
             .unwrap();
@@ -1990,6 +2002,7 @@ mod tests {
                 json!({"model": "gpt-5.5"}),
                 None,
                 Arc::new(Mutex::new(None)),
+                None,
             )
             .await
             .unwrap();
@@ -2021,6 +2034,7 @@ mod tests {
                 json!({"model": "gpt-5.5"}),
                 None,
                 Arc::new(Mutex::new(None)),
+                None,
             )
             .await
             .unwrap();
@@ -2054,6 +2068,7 @@ mod tests {
                 json!({"model": "gpt-5.5"}),
                 None,
                 Arc::new(Mutex::new(None)),
+                None,
             )
             .await;
         assert!(matches!(
@@ -2105,6 +2120,7 @@ mod tests {
                 json!({"model": "gpt-5.5"}),
                 None,
                 cell.clone(),
+                None,
             )
             .await
             .unwrap();
@@ -2140,6 +2156,7 @@ mod tests {
                 json!({"model": "gpt-5.5"}),
                 None,
                 cell.clone(),
+                None,
             )
             .await
             .unwrap();
@@ -2173,6 +2190,7 @@ mod tests {
                 json!({"model": "gpt-5.5", "service_tier": "priority"}),
                 None,
                 Arc::new(Mutex::new(None)),
+                None,
             )
             .await
             .unwrap();
@@ -2203,6 +2221,7 @@ mod tests {
                 json!({"model": "gpt-5.5"}),
                 None,
                 Arc::new(Mutex::new(None)),
+                None,
             )
             .await
             .unwrap();
