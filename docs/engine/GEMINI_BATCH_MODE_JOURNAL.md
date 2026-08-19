@@ -72,3 +72,10 @@ SHA: implementation commits `0c1ccb6e`, `5cdfa794`, `035b95ef`; exact SHA мож
 Отступления от плана: общий settlement helper между interactive и batch не выделен буквально; parity доказывается одинаковой account-floor SQL equation и regression matrix. Это остается техническим долгом, но второй постепенно расходящийся алгоритм не допускается: любое дальнейшее изменение money equation обязано одновременно менять оба path и общий тест до последующего refactor.
 Измерения: 190 registry tests; real-PG Stage 2 matrix 1/1 GREEN; file chunk 8 MiB; public routes/flags/discovery отсутствуют.
 Следующий шаг: дождаться исправления несвязанного RED master (`commerce backup is stale`), затем merge Stage 2 через `agent-merge.sh`; не использовать `--fix-red` для этой ветки.
+
+## 2026-08-20 — Этап 2 (§6): failed trusted-host matrix concurrency
+SHA: failed candidate `8304c186702f1c950e8f4164b9d1a1d691537eaf`; corrective SHA фиксируется commit этой записи
+Результат: trusted host остановил candidate до merge: `stage2_authority_postgres_matrix` получил SQLSTATE `55P03` на общем destructive advisory lock, потому что его connection унаследовал `lock_timeout=5s`, пока параллельно работала другая PostgreSQL matrix. Authority assertions не падали. Test harness исправлен по существующему repository pattern: lock-holder session устанавливает `statement_timeout=0; lock_timeout=0`, поэтому destructive suites сериализуются вместо ложного RED. Failed SHA не повторяется.
+Отступления от плана: нет; изменен только real-PG test harness, runtime authority неизменна.
+Измерения: host matrix ждала общий lock 5 секунд и была отменена; локальный isolated matrix GREEN.
+Следующий шаг: новый exact SHA через `agent-merge.sh`, затем production GREEN Stage 2.

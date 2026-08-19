@@ -78,7 +78,9 @@ fn recovery_candidate_preserves_settlement_policy() {
 #[test]
 fn stage2_authority_postgres_matrix(){
     let Ok(url)=std::env::var("CLAUDE_API_TEST_DATABASE_URL")else{eprintln!("skipping Stage 2 batch authority matrix");return};
-    let mut lock=PgStore::connect(&url).unwrap();lock.client.query_one("SELECT pg_advisory_lock($1)",&[&POSTGRES_DESTRUCTIVE_TEST_LOCK]).unwrap();
+    let mut lock=PgStore::connect(&url).unwrap();
+    lock.client.batch_execute("SET statement_timeout=0; SET lock_timeout=0").unwrap();
+    lock.client.query_one("SELECT pg_advisory_lock($1)",&[&POSTGRES_DESTRUCTIVE_TEST_LOCK]).unwrap();
     let mut pg=PgStore::connect(&url).unwrap();pg.migrate().unwrap();
     pg.client.batch_execute("DELETE FROM gemini_batch_profile_leases WHERE job_id='stage2-job';DELETE FROM gemini_batch_settlement_outbox WHERE job_id='stage2-job';DELETE FROM gemini_batch_blobs WHERE job_id='stage2-job';DELETE FROM gemini_batch_items WHERE job_id='stage2-job';DELETE FROM gemini_batch_jobs WHERE job_id='stage2-job';DELETE FROM gemini_batch_file_chunks WHERE file_id='stage2-file';DELETE FROM gemini_batch_files WHERE file_id='stage2-file';DELETE FROM provider_turn_calibration_events WHERE request_id='stage2-request';DELETE FROM provider_calibration_subject_spend WHERE subject_id='stage2-profile';DELETE FROM usage_events WHERE request_id='stage2-request';DELETE FROM ledger WHERE request_id='stage2-request';DELETE FROM api_keys WHERE key='stage2-key';DELETE FROM accounts WHERE id='stage2-account';").unwrap();
     pg.client.execute("INSERT INTO accounts(id,balance_nano,spent_nano,reserved_nano,mult_bp,status,created_ts,created)VALUES('stage2-account',1000,0,0,5000,'active',1,'x')",&[]).unwrap();
