@@ -101,13 +101,18 @@ Vertex AI batch — другой контракт: OAuth/IAM, project/location r
 | Удаление | `DELETE /v1beta/files/{id}` |
 
 У настоящего Google Files API файлы живут в проекте клиента, TTL — 48 часов, бесплатно, до 2 GB на
-файл и 20 GB на проект; state машины `PROCESSING → ACTIVE | FAILED`. Batch-ввод принимает файл
-только как `inputConfig.fileName` — JSONL, где каждая строка содержит полный
-`GenerateContentRequest` с `inlineData`; `fileData`-ссылки на другие файлы внутри batch-ввода Google
-не поддерживает. Наш режим может идти дальше Google в одной точке: поддерживать `fileData.fileUri`
-со ссылкой на наш собственный Files API внутри любого item-запроса (см. §4.1). Это честное
-расширение поверх Google-shaped контракта, а не маскировка под Google-возможность: в документации
-клиенту оно объявляется явно.
+файл и 20 GB на проект; state машины `PROCESSING → ACTIVE | FAILED`. Наш Files API повторяет те же
+рамки: до 2 GB на файл, до 20 GB суммарно на аккаунт, TTL 48 часов; места в хранилище для этого
+достаточно, а upload обрабатывается потоково, без целиком in-memory copy. Batch-ввод принимает файл
+только как `inputConfig.fileName` — JSONL, где каждая строка содержит клиентский opaque `key` и
+полный `GenerateContentRequest` с `inlineData`; `fileData`-ссылки на другие файлы внутри batch-ввода
+Google не поддерживает. При файловом вводе результат Google отдает симметрично файлом: в terminal
+operation появляется `metadata.output.responsesFile` — ссылка на JSONL-файл со строками
+`{"key": ..., "response"|"error": ...}` в нашем же Files API, а `inlinedResponses` отсутствует. Наш
+режим может идти дальше Google в одной точке: поддерживать `fileData.fileUri` со ссылкой на наш
+собственный Files API внутри любого item-запроса (см. §4.1). Это честное расширение поверх
+Google-shaped контракта, а не маскировка под Google-возможность: в документации клиенту оно
+объявляется явно.
 
 Официальные источники, которые надо повторно зафиксировать golden fixtures перед кодированием:
 
@@ -256,19 +261,36 @@ provider semantics — в `forward`; env, worker composition и HTTP routes — 
 - `OPTIONS` и CORS, включая `DELETE`.
 
 Create принимает `batch.inputConfig.requests` (inline) и `batch.inputConfig.fileName` — ссылку на
-файл нашего собственного Files API с JSONL-вводом (одна строка = один полный
-`GenerateContentRequest`, как у Google). Расширение сверх Google: внутри item-запросов (и inline,
-и из JSONL) разрешается `fileData.fileUri` со ссылкой на наш собственный файл — сервер резолвит ее
-в bytes до dispatch, проверяет mime type/size и передает upstream как `inlineData`. Ссылки на
-внешние Google `files/…` ресурсы остаются отклоненными тем же `FILE_URI_UNSUPPORTED` ответом, что
-сегодня: pooled identity их не видит. `webhookConfig`, `priority` и embedding forms возвращают
-явный Google-shaped `400 INVALID_ARGUMENT`, а не silently ignored fields. Официальные Python SDK
-fixtures задают модель только create path и опускают `request.model`, поэтому вложенный model
-необязателен: отсутствующий наследует path model, а присутствующий обязан совпадать с ним после
-canonicalization. Другой model отклоняется. Это учитывает актуальную Google schema, в которой model
-формально присутствует и на batch, и на каждом `GenerateContentRequest`, не ломая стандартный SDK
-shape. Discovery-visible `updateGenerateContentBatch` и `updateEmbedContentBatch` также не входят в
-MVP и получают явный unsupported ответ, а не непреднамеренный fallback.
+файл нашего собственного Files API с JSONL-вводом (одна строка = `{"key": ..., "request": {...}}`,
+как у Google; `key` — клиентский opaque идентификатор строки). Расширение сверх Google: внутри
+item-запросов (и inline, и из JSONL) разрешается `fileData.fileUri` со ссылкой на наш собственный
+файл — сервер резолвит ее в bytes до dispatch, проверяет mime type/size и передает upstream как
+`inlineData`. Ссылки на внешние Google `files/…` ресурсы остаются отклоненными тем же
+`FILE_URI_UNSUPPORTED` ответом, что сегодня: pooled identity их не видит.
+
+Форма результата симметрична вводу, как у Google:
+
+- inline ввод → terminal operation содержит `metadata.output.inlinedResponses[]` в порядке входных
+  элементов, каждый элемент несет `response` или `error` и echo исходного `metadata`;
+- файловый ввод → terminal operation содержит `metadata.output.responsesFile` — ссылку на новый
+  файл нашего Files API с JSONL-строками `{"key": ..., "response"|"error": ...}`; `key` из входной
+  строки возвращается без изменений, `inlinedResponses` в этом случае отсутствует. Output-файл
+  создается atomically при terminalization job, принадлежит тому же account, скачивается обычным
+  `:download`; его TTL отсчитывается от завершения job и ограничен 42-дневным result retention
+  (§4.5), а не стандартными 48 часами upload TTL.
+
+`priority` принимается как у Google: поле валидируется по wire-типу (int), сохраняется и echo'ится
+в operation metadata, но функционально игнорируется — наш scheduler имеет собственный детерминизм
+(fair order между account/job, 5h headroom gate) и не дает одному клиенту обгонять других. Это
+осознанный no-op для wire-совместимости, а не silently dropped field: поведение документируется в
+клиентской документации. `webhookConfig` и embedding forms возвращают явный Google-shaped
+`400 INVALID_ARGUMENT`, а не silently ignored fields. Официальные Python SDK fixtures задают модель
+только create path и опускают `request.model`, поэтому вложенный model необязателен: отсутствующий
+наследует path model, а присутствующий обязан совпадать с ним после canonicalization. Другой model
+отклоняется. Это учитывает актуальную Google schema, в которой model формально присутствует и на
+batch, и на каждом `GenerateContentRequest`, не ломая стандартный SDK shape. Discovery-visible
+`updateGenerateContentBatch` и `updateEmbedContentBatch` также не входят в MVP и получают явный
+unsupported ответ, а не непреднамеренный fallback.
 
 Собственный Files API (Google-shaped subset, account-scoped, зашифрованное хранение):
 
@@ -288,10 +310,10 @@ MVP и получают явный unsupported ответ, а не непред�
 рекомендация: запрет удаления при живых ссылках, как более предсказуемая семантика). Тело резолвится
 один раз при диспетче item, не кэшируется вне зашифрованного blob.
 
-Discovery подтверждает operation envelope, `metadata` типа `GenerateContentBatch`,
-`batchStats`, `operations[]`, `nextPageToken` и пустые cancel/delete responses. До реализации их
-конкретную JSON-сериализацию, timestamps, mixed-result semantics и pagination token нужно
-закрепить официальными golden fixtures. Нельзя придумывать Google-compatible поля по памяти.
+`batchStats` считается derived-on-read из item rows на каждый GET (подробно — §4.2), никаких
+mutable counters. До реализации конкретную JSON-сериализацию, timestamps, mixed-result semantics и
+pagination token нужно закрепить официальными golden fixtures. Нельзя придумывать
+Google-compatible поля по памяти.
 
 Допустимое локальное расширение — необязательный `Idempotency-Key` header:
 
@@ -344,9 +366,31 @@ Job state выводится из item rows, а не хранится как н�
   `inlinedResponses[]`; per-item error не превращает весь корректно обработанный batch в job-level
   failure.
 
+**`batchStats` — derived-on-read, mutable counters запрещены.** Google-форма объекта —
+`requestCount`, `successfulRequestCount`, `failedRequestCount`, `pendingRequestCount`. Все четыре
+значения на каждый GET считаются SQL-агрегатом по item rows этого job (grouped by state class),
+операция дешевая при индексе `(job_id, state)`. Хранить их как обновляемые счетчики в
+`gemini_batch_jobs` нельзя, и это зафиксировано в схеме (§4.3) как инвариант, потому что:
+
+1. **Второй источник истины неизбежно расходится.** Item state меняют несколько независимых
+   акторов: scheduler claim, worker dispatch, settlement outbox apply, cancel path, expiry
+   reconciler. Каждый из них может упасть между обновлением item row и обновлением счетчика —
+   после crash счетчик навсегда отличается от факта, и нет способа доказать, какое значение
+   верное, кроме полного пересчета (то есть derived-on-read все равно остается эталоном).
+2. **Lost update под конкуренцией.** Worker settlement и cancel одного job идут в разных
+   транзакциях; неатомарный `UPDATE counters = counters + 1` или read-modify-write вне одной
+   блокировки теряет приращения. Поддерживать это корректно — значит воспроизвести вторую
+   locking-матрицу рядом с уже существующей money/state fencing, без новой информации.
+3. **Транзакционная простота.** Derived-on-read не требует ни одной дополнительной записи на hot
+   path settlement: terminal transition item — это один row update, а stats появляются «бесплатно»
+   при следующем чтении. Консистентность stats с видимым результатом гарантируется тем же
+   правилом, что и раньше: GET не считает item terminal, пока outbox APPLY не завершен, поэтому
+   клиент никогда не видит `successfulRequestCount`, опережающий реально видимые результаты.
+
 Точное отображение mixed result на Google operation `done/error/state` фиксируется golden fixture.
 Внутренний `indeterminate` наружу идет только как bounded per-item Google Status без profile,
-request body или provider trace.
+request body или provider trace; в `batchStats` indeterminate учитывается в
+`failedRequestCount` (для клиента это отказ item), что также подтверждается fixture.
 
 ### 4.3 PostgreSQL schema
 
@@ -360,12 +404,17 @@ request body или provider trace.
 - canonical request digest;
 - nullable idempotency digest с unique `(account_id, digest)`;
 - create/update/cancel/deadline/completed/delete/result-expiry timestamps;
+- принятый `priority` (echo-only, см. §4.1) и форма ввода/вывода (`input_kind=inline|file`,
+  `output_file_id` для file-ввода);
 - schema version и encryption policy version;
-- никаких plaintext prompts, API keys или correctness-critical mutable counters.
+- никаких plaintext prompts, API keys или correctness-critical mutable counters (`batchStats`
+  считается derived-on-read, см. §4.2).
 
 `gemini_batch_items`:
 
 - `(job_id, item_index)` и stable item request UUID;
+- nullable bounded client `key` из входной JSONL-строки (opaque passthrough в output-файл;
+  хранится как небольшое текстовое значение, не secret);
 - request digest и bounded metadata ciphertext reference;
 - nullable `file_id` reference на файл ввода и per-item file references для `fileData`;
 - `hold_nano`, provider=`google`, payable multiplier, priced timestamp и exact tariff pin;
@@ -389,9 +438,12 @@ request body или provider trace.
 
 - CSPRNG public `file_id` и resource name `files/{id}`;
 - `account_id`, bounded display name, mime type, size bytes, sha256 digest;
+- `source_kind=client_upload|batch_output` — output-файлы создаются только terminalization пути
+  job и не могут быть удалены клиентом до result expiry (как у Google);
 - blob ciphertext reference (тот же keyring, что у batch blobs, но отдельный `kind=file`);
 - state `processing|active|failed`, failure reason class;
-- create/update/expiration timestamps (TTL 48 часов как у Google);
+- create/update/expiration timestamps (TTL 48 часов как у Google для upload; для batch_output —
+  не короче result retention ссылающегося job, см. §4.5);
 - никаких plaintext bytes и никаких raw API keys.
 
 `gemini_batch_settlement_outbox`:
@@ -427,14 +479,18 @@ Create выполняет одну PostgreSQL transaction:
 3. валидирует все items до money mutation (включая резолвинг `fileData` ссылок в существующие
    active файлы того же account и проверку суммарного resolved size против per-item/aggregate
    лимитов);
-4. вычисляет hold каждого item по обычному Gemini rate card, тому же provider multiplier и одному
+4. проверяет Google-масштабные лимиты: число items (строк JSONL или inline requests) не превышает
+   документированный Google максимум, размер файла ввода — 2 GB, суммарный объем файлов аккаунта —
+   20 GB; превышение отклоняет весь batch с `RESOURCE_EXHAUSTED`, а не частично;
+5. вычисляет hold каждого item по обычному Gemini rate card, тому же provider multiplier и одному
    priced timestamp;
-5. запрещает silent output cap: при недостатке денег отклоняется весь batch с 402;
-6. блокирует account, затем key в существующем money lock order;
-7. проверяет aggregate hold против account floor и key spend limit;
-8. одним движением уменьшает balance, увеличивает account/key reserved totals;
-9. вставляет job, items и encrypted payloads;
-10. commit предшествует успешному operation response.
+6. запрещает silent output cap: при недостатке денег отклоняется весь batch с 402;
+7. блокирует account, затем key в существующем money lock order;
+8. проверяет aggregate hold против account floor и key spend limit;
+9. одним движением уменьшает balance, увеличивает account/key reserved totals;
+10. вставляет job, items и encrypted payloads; для файлового ввода потоково читает JSONL,
+    валидируя каждую строку (`key` + `request`) и не материализуя весь файл в памяти;
+11. commit предшествует успешному operation response.
 
 Если `maxOutputTokens` отсутствует, hold использует native model output ceiling. API должен явно
 документировать, что bounded value уменьшает крупный hold; сервер не подменяет клиентский request.
@@ -452,10 +508,21 @@ Create выполняет одну PostgreSQL transaction:
 - insert unique ledger/usage;
 - persist explicit uncollected amount;
 - insert/validate immutable Gemini provider-turn event and cumulative profile spend;
-- terminalize item/result и outbox в той же transaction.
+- terminalize item/result и outbox в той же transaction;
+- при file-вводе после terminalization всех items job той же authority транзакцией собирает
+  output JSONL (`key` + `response`/`error` по строкам), шифрует его как `batch_output` файл и
+  проставляет `output_file_id` в job row до того, как GET увидит operation terminal.
 
 Нельзя копировать settlement SQL во второй, постепенно расходящийся алгоритм. Common helper остается
 в `registry` и принимает типизированный source (`interactive reservation` или `Gemini batch item`).
+**Масштаб hold-агрегата при Google-лимитах.** Aggregate hold сотен тысяч items может превышать
+любой реальный баланс — и это корректно: create честно отклоняется 402, сервер не подменяет
+клиентский request и не принимает частично. Формула hold не меняется (native output ceiling при
+отсутствии `maxOutputTokens`), поэтому крупный file-based batch требует от клиента либо
+достаточного баланса, либо явного `maxOutputTokens` на item. Это следствие решения «весь batch
+финансово допускается атомарно» и осознанно отличается от Google (у Google batch предоплаты нет);
+в клиентской документации оно называется прямо.
+
 Worker сначала шифрует terminal response, затем одной registry command atomically сохраняет
 ciphertext и immutable settlement/calibration intent. Публичный GET не считает item terminal и не
 отдает result, пока outbox APPLY не завершил money, usage, ledger, calibration и terminal state. Так
@@ -490,7 +557,9 @@ Retention policy:
 - input payload хранится до terminal state плюс короткий recovery grace period;
 - загруженные файлы живут 48 часов от `createTime` (как у Google) или до истечения ссылок на них,
   смотря что позже; expired файл удаляется pruner'ом вместе с blob;
-- terminal inline results доступны 42 дня, как документированные шесть недель Google;
+- terminal inline results и output-файлы file-based jobs доступны 42 дня, как документированные
+  шесть недель Google; expiration output-файла не короче result expiry ссылающегося job, после
+  expiry файл удаляется pruner'ом;
 - после result expiry GET возвращает явный expired operation без payload;
 - idempotency tombstone и canonical digest хранятся минимум 60 дней;
 - ledger, usage, tariff/settlement evidence следуют существующей financial retention;
@@ -584,11 +653,16 @@ Batch — lower-priority workload:
   повторяющихся 5h-stop'ов, честно умирает `EXPIRED`, а не висит вечно;
 - никакой номинальный subscription RPM/RPD не придумывается локально.
 
-Нужны начальные compile/config bounds, окончательно выбранные после load test. Рекомендуемый стартовый
-envelope: 20 MiB inline create body, до 1,000 items, до 1,000,000 суммарно запрошенных output tokens,
-до 64 MiB сериализованного result set, до 100 nonterminal jobs на account. Лимиты должны быть меньше
-реально измеренной безопасной PostgreSQL/worker границы и возвращать `RESOURCE_EXHAUSTED`, а не
-частично принимать batch.
+Лимиты целимся в Google-масштаб, а не в локальный MVP-envelope: inline create body ограничен
+общим 20 MiB лимитом тела Gemini plane; файловый ввод — до 2 GB на файл и 20 GB суммарно на
+аккаунт (как у Google Files API); число items на batch — документированный Google максимум для
+batch JSONL (фиксируется fixtures в Этапе 0), file-based result set не ограничен 64 MiB, потому
+что результат отдается файлом, а не одним JSON; ограничение 64 MiB остается только для
+inline-формы. Per-account ограничения: до 100 nonterminal jobs и 20 GB файлов — единственные
+флот-защитные лимиты сверх Google. Все bounds — config-driven, возвращают `RESOURCE_EXHAUSTED`, а
+не частично принимают batch. Реальная пропускная способность (PostgreSQL locks, outbox throughput,
+потоковая сборка output-файла) доказывается load test в Этапе 5 на Google-масштабных объемах;
+если измеренная граница ниже Google-лимита, документируется измеренное значение, а не желаемое.
 
 ### 4.7 Execution primitive
 
@@ -695,8 +769,11 @@ Graceful shutdown:
   v1beta Discovery document, включая Files API upload/get/list/delete и batch `inputConfig.fileName`.
 - Зафиксировать exact create/list/get/cancel/delete envelopes, mixed item errors и pagination.
 - Проверить модельный allowlist Batch API, но не переносить Google tariff/SLO.
-- Утвердить MVP limits, 48-hour execution deadline, 48-hour file TTL, 42-day result retention и
-  60-day tombstone.
+- Зафиксировать Google-масштабные лимиты (максимум items на batch из официальных fixtures, 2 GB
+  файл, 20 GB на аккаунт), 48-hour execution deadline, 48-hour upload file TTL, 42-day result
+  retention (включая output-файлы) и 60-day tombstone.
+- Зафиксировать форму результата: inline → `inlinedResponses`, file → `responsesFile` JSONL с
+  passthrough `key`; точную сериализацию `batchStats` и echo-семантику `priority`.
 - Утвердить batch 5h headroom policy: порог 15% (config, default 15), источник — `gemini-5h` bucket
   quota summary, fail-closed при отсутствии свежего snapshot, weekly-окно вне gate.
 - Решить семантику удаления файла при живых batch-ссылках (рекомендация: запрет до terminal/expiry).
@@ -758,7 +835,9 @@ Exit gate: official SDK compatibility tests проходят на direct Gemini 
 ### Этап 5. Resilience, observability и controlled canary
 
 - Добавить metrics, alerts, Grafana/admin fleet summary и runbooks.
-- Прогнать multi-owner fault injection, kill-at-every-boundary matrix и load/fairness tests.
+- Прогнать multi-owner fault injection, kill-at-every-boundary matrix и load/fairness tests на
+  Google-масштабных объемах (файл ввода ближе к 2 GB, сотни тысяч items), чтобы доказать потоковую
+  валидацию JSONL, сборку output-файла и outbox throughput без giant in-memory copy.
 - Выполнить controlled internal batch с explicit aggregate budget: несколько items, несколько
   профилей, partial error, cancel, restart, 5h-headroom stop и recovery, exact settlement.
 - Проверить no-discount charge parity с теми же requests через ordinary generateContent.
@@ -785,7 +864,6 @@ Exit gate: точный published SHA GREEN, queue drains, нет balance diverg
 
 - signed webhooks с SSRF defense, retry budget и secret rotation;
 - image-output batch с отдельными storage/egress limits;
-- streamed result download для крупных result sets;
 - universal provider-neutral batch contract, только если появится второй реальный provider;
 - direct Google Batch adapter, только если появится отдельная metered credential/tariff authority;
 - расширение Files API на синхронный `generateContent` (резолвинг `fileData` в inlineData на лету),
@@ -801,14 +879,19 @@ Exit gate: точный published SHA GREEN, queue drains, нет balance diverg
 - Python/JavaScript SDK create/list/get/cancel/delete direct + router, включая пустые
   cancel/delete responses;
 - Files API upload/get/list/delete/download fixtures, state machine `PROCESSING → ACTIVE`;
-- batch `inputConfig.fileName` с JSONL-вводом и `fileData` ссылками на собственные файлы;
+- batch `inputConfig.fileName` с JSONL-вводом (`key` + `request`), `fileData` ссылками на
+  собственные файлы и симметричным `responsesFile` output с passthrough `key`;
+- `priority` принимается, валидируется по типу и echo'ится в operation metadata без влияния на
+  порядок выполнения;
+- `batchStats` на каждый GET совпадает с фактическими item states (derived-on-read), включая
+  гонки с cancel/expiry;
 - exact golden JSON и unknown-field behavior;
 - auth до buffering oversized/chunked body;
 - query credential rejected;
 - same-account/different-key access;
 - foreign/unknown/deleted IDs имеют одинаковый 404;
 - stable cursor pagination без cross-account rows;
-- explicit rejection webhook/priority/update/embedding/cross-model/image-output/external Google
+- explicit rejection webhook/update/embedding/cross-model/image-output/external Google
   `files/…` reference.
 
 ### Money и idempotency
@@ -860,7 +943,8 @@ Exit gate: точный published SHA GREEN, queue drains, нет balance diverg
 - AEAD swap между account/job/item/kind/file не decrypt;
 - active/old key rotation и missing key fail closed;
 - body/item/output/result/file/job/account limits;
-- file upload streaming без одного giant in-memory copy; bounded result assembly;
+- file upload streaming без одного giant in-memory copy; потоковая валидация входного JSONL и
+  потоковая сборка output-файла при Google-масштабном числе items;
 - fair progress двух accounts при одном крупном batch;
 - batch workload не добавляет wait/reject на interactive path;
 - load test PostgreSQL locks, outbox throughput, scheduler wakeup и result reads.
@@ -885,13 +969,17 @@ public contract, поэтому их надо закрыть в Этапе 0.
 | Concurrency | bounded global, один batch item на profile, interactive не блокируется |
 | Batch 5h headroom | batch dispatch только при `gemini-5h` remaining > 15% (config, default 15); fail-closed при stale/missing snapshot; weekly-окно вне gate |
 | File input | собственный encrypted Files API (TTL 48ч), `inputConfig.fileName` JSONL + `fileData` ссылки внутри batch |
+| File output | как у Google: file-ввод → `metadata.output.responsesFile` JSONL в нашем Files API, passthrough клиентского `key`; inline-ввод → `inlinedResponses` |
+| `priority` | принимаем и echo'им как у Google, функционально игнорируем (scheduler имеет собственный детерминизм) |
+| Лимиты | Google-масштаб: 2 GB файл, 20 GB на аккаунт, Google-максимум items; флот-защита — только nonterminal jobs на аккаунт |
+| `batchStats` | derived-on-read из item rows на каждый GET; mutable counters в job row запрещены (§4.2) |
 | File delete с живыми ссылками | запрещено до terminal/expiry ссылающихся jobs |
 | Create idempotency | Google-compatible non-idempotent default + optional `Idempotency-Key` |
 | Ownership | account-scoped, creator key only attribution/revocation policy |
 | Cancel | queued stops immediately; dispatching drains best effort |
 | Crash after send | indeterminate, no automatic replay |
 | Queue deadline | 48 часов |
-| Result retention | 42 дня; financial evidence отдельно |
+| Result retention | 42 дня (включая output-файлы); financial evidence отдельно |
 | MVP media | existing bounded inline inputs + собственные файлы внутри batch; image-output model excluded |
 | Large input | собственный Files API (в MVP) |
 
@@ -902,6 +990,9 @@ Batch mode считается готовым, только когда однов
 - official SDK create/poll/result/cancel/delete compatibility на опубликованном contract subset;
 - собственный Files API принимает upload, отдает metadata/download, соблюдает TTL и account isolation;
 - batch принимает JSONL-файл и `fileData` ссылки на собственные файлы и резолвит их до dispatch;
+- file-based batch возвращает результат output-файлом (`responsesFile`) с passthrough клиентских
+  `key`, inline batch — `inlinedResponses`; обе формы совпадают с Google fixtures;
+- `batchStats` на GET всегда согласован с фактически видимыми результатами;
 - batch dispatch останавливается при 15%-остатке `gemini-5h` и возобновляется после reset без
   ручного вмешательства; interactive-трафик при этом не меняет поведения;
 - один accepted batch распределяет items минимум по двум доступным subscriptions без client hints;
@@ -999,3 +1090,42 @@ Batch-политика — hard floor с fail-closed деградацией на
 10. **Рекомендация держать batch-порог в config, а не в константе.** 15% — бизнес-решение, которое
     может меняться по мере наблюдения за живостью пула; env-driven значение с валидацией диапазона
     в `crates/server/src/config.rs` не требует redeploy-freeze для операционной подстройки.
+
+### 11.1 Вторая итерация ревью — закрытие расхождений с Google-контрактом
+
+Сравнение предыдущей редакции с официальным Gemini Batch API выявило пять пробелов; все закрыты
+решением «как у Google»:
+
+11. **File output отсутствовал.** У Google файловый ввод порождает файловый результат:
+    `metadata.output.responsesFile` — JSONL со строками `{"key": ..., "response"|"error": ...}` в
+    том же Files API, а `inlinedResponses` отсутствует. План всегда отдавал inline output, что
+    ломало SDK-workflow клиентов Google и противоречило нашему же лимиту на result set. Теперь
+    форма результата симметрична вводу (§4.1), output-файл создается atomically при
+    terminalization job, его TTL ограничен 42-дневным result retention (§4.3, §4.5), а в схеме
+    появился `source_kind=client_upload|batch_output`.
+12. **Passthrough `key` из JSONL-строк не был описан.** Официальный файловый формат —
+    `{"key": ..., "request": ...}`, и `key` возвращается в результатах для корреляции. Без него
+    миграция клиента с Google ломалась бы. В `gemini_batch_items` добавлен nullable bounded client
+    `key` (§4.3), echo-правила — в §4.1 и тестовую матрицу.
+13. **`priority` отклонялся.** Google принимает это опциональное поле. Решение: принимать и
+    echo'ить как у Google, но функционально игнорировать — наш scheduler имеет собственный
+    детерминизм (fair order, 5h gate), и давать клиенту ручку обгона других нельзя. Это
+    осознанный wire-compatible no-op, документированный клиенту, а не silently dropped field
+    (§4.1, §8).
+14. **Лимиты были локальным MVP-envelope (1,000 items, 64 MiB result set) без траектории к
+    Google.** Решение: целимся в Google-масштаб — 2 GB на файл, 20 GB на аккаунт, Google-максимум
+    items, file-based result set не ограничен 64 MiB (результат отдается файлом); из флот-защитных
+    лимитов сверх Google остается только 100 nonterminal jobs на аккаунт. Потоковая валидация
+    JSONL и потоковая сборка output-файла обязательны; реальная пропускная способность доказывается
+    load test в Этапе 5, и если измеренная граница ниже Google-лимита — документируется измеренное
+    значение, а не желаемое (§4.4, §4.6, Этап 0/5). Следствие, которое надо честно назвать
+    клиенту: aggregate hold Google-масштабного batch может превышать реальный баланс, и create
+    тогда отклоняется 402 целиком — это цена атомарного admission (§4.4).
+15. **Семантика `batchStats` была отложена на fixtures без инварианта реализации.** Теперь
+    зафиксировано (§4.2): все четыре счетчика (`requestCount`, `successfulRequestCount`,
+    `failedRequestCount`, `pendingRequestCount`) считаются SQL-агрегатом по item rows на каждый
+    GET, а mutable counters в job row запрещены инвариантом схемы — иначе второй источник истины
+    расходится с фактом при crash между обновлением item и счетчика, теряет приращения под
+    конкуренцией settlement/cancel и требует второй locking-матрицы без новой информации.
+    Derived-on-read также бесплатно гарантирует, что stats никогда не опережают реально видимые
+    клиенту результаты (GET не считает item terminal до outbox APPLY).
