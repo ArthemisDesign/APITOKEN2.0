@@ -637,10 +637,16 @@ For every request the runtime:
   proxy/network/token-refresh failures still cool the complete profile. `countTokens` remains a
   quota-free diagnostic and cannot falsely rehabilitate generation health;
 - reserves customer balance before upstream delivery and settles from native `usageMetadata`.
-  A metered non-stream success without authoritative non-zero usage is withheld and refunded; once
-  streaming bytes have been delivered, missing final usage settles the conservative hold and emits
-  an operational counter instead of inventing a usage event or granting a free request.
-  Because that settlement is the most expensive one a customer can receive, the stream translator
+  A metered non-stream success without authoritative non-zero usage is withheld and refunded. A
+  turn whose usage never arrived at all follows the fleet unknown-usage policy
+  (`crates/forward/src/settlement_policy.rs`, read 2026-08-21): by default it settles at **zero** —
+  the preflight hold is an admission device, not a price; when the owner managed to write a
+  measured checkpoint, reconciliation charges exactly that measurement, clamped to the hold; the
+  conservative full-hold recovery exists only behind the operator switch
+  `CLAUDE_API_CHARGE_HOLD_ON_UNKNOWN_USAGE` (default off) for a provider that stops reporting
+  usage entirely. A customer cannot reach the zero branch on purpose — it needs our own process
+  to die or the provider to withhold usage; a client disconnect mid-answer is settled from
+  measured usage instead. To keep unmetered turns diagnosable, the stream translator
   reads `usageMetadata` from **every** envelope Google reports it in — beside `response`, in a
   trailing envelope that carries no `response` at all, and inside it — and a frame whose
   `usageMetadata` carries no token counts (a bare `trafficType`, an empty object) never erases the
@@ -742,8 +748,9 @@ prices the aggregate remainder as text/thinking. An explicit provider modality s
 and a refusal/text-only response never receives an image charge. Preflight reserves the complete
 requested image without silently lowering its quality: 1,120 image tokens for 1K (`$0.0672`),
 1,680 for 2K (`$0.1008`), and 2,520 for 4K (`$0.1512`), plus bounded text/input and grounding. A
-stream that delivered bytes but never supplied final usage settles the conservative hold without
-inventing a token event.
+stream that delivered bytes but never supplied final usage follows the same fleet unknown-usage
+policy as above: zero by default, the measured checkpoint when one was written, and the
+conservative hold only behind the operator switch — never an invented token event.
 
 For money, the paid-tier pricing table is authoritative. On 2026-07-31 Google's separate image
 generation resolution table showed different 2K/4K processing-token figures; those describe the

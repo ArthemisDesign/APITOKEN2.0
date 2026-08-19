@@ -1,6 +1,6 @@
 # План реализации Gemini Batch Mode
 
-Статус: проектное предложение, runtime не реализован.
+Статус: план утвержден (Этап 0 выполнен 2026-08-21), runtime не реализован.
 
 Дата исследования: 2026-08-19.
 
@@ -55,80 +55,124 @@ Inline media можно разрешать только там, где его у
 
 ## 2. Что предоставляет оригинальный Gemini Batch API
 
-Gemini Developer API использует Google long-running operation и следующие native routes:
+Этот раздел — зафиксированный контракт. Он собран из публичных источников без живого доступа к
+официальному API: актуальный v1beta Discovery document
+(`https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta`, снят 2026-08-21),
+официальная документация batch-api/files и исходники Python SDK (`google/genai/batches.py`,
+`types.py`). Пометкой **[не подтверждено]** отмечены места, где публичных данных нет и решение —
+наш самостоятельный дизайн, допустимый по правилу «не маскировать догадки под Google-факт».
 
-| Операция | REST route |
-|---|---|
-| Создать | `POST /v1beta/models/{model}:batchGenerateContent` |
-| Список | `GET /v1beta/batches` |
-| Состояние и результат | `GET /v1beta/batches/{id}` |
-| Отмена | `POST /v1beta/batches/{id}:cancel` |
-| Удаление | `DELETE /v1beta/batches/{id}` |
+### 2.1 Routes и long-running operation
 
-Для inline input клиент передает `batch.inputConfig.requests.requests[]`; каждый элемент содержит
-`request` и необязательный `metadata`. В terminal operation inline output находится в
-`metadata.output.inlinedResponses`, в порядке входных элементов; один элемент содержит `response`
-или `error` и возвращает исходный `metadata`. Отдельного `/results` route у Developer API нет.
+| Операция | REST route | Ответ |
+|---|---|---|
+| Создать | `POST /v1beta/models/{model}:batchGenerateContent` | `Operation` |
+| Список | `GET /v1beta/batches` | `ListOperationsResponse` |
+| Состояние и результат | `GET /v1beta/batches/{id}` | `Operation` |
+| Отмена | `POST /v1beta/batches/{id}:cancel` | `Empty` |
+| Удаление | `DELETE /v1beta/batches/{id}` | `Empty` |
 
-Wire-состояния Google включают `BATCH_STATE_PENDING`, `BATCH_STATE_RUNNING`,
-`BATCH_STATE_SUCCEEDED`, `BATCH_STATE_FAILED`, `BATCH_STATE_CANCELLED` и
-`BATCH_STATE_EXPIRED` (плюс unspecified). List возвращает `operations[]` и `nextPageToken`, а
-cancel/delete — пустой `google.protobuf.Empty` response.
-Документированный queue/run deadline — 48 часов, target turnaround — 24 часа без SLA, успешные
-результаты хранятся шесть недель. Inline request ограничен 20 MB; file mode допускает более крупный
-JSONL, но требует отдельного Files API. Создание у Google неидемпотентно: повторный POST создает
-новую operation.
+List — это стандартный метод operations (`generativelanguage.batches.list`): query-параметры
+`pageSize` (int32), `pageToken`, `filter`, `returnPartialSuccess`; ответ содержит `operations[]`
+и `nextPageToken`. Мы поддерживаем `pageSize`/`pageToken`; `filter` и `returnPartialSuccess`
+отклоняем `INVALID_ARGUMENT`/`UNIMPLEMENTED` **[не подтверждено поведение Google по умолчанию —
+наш осознанный subset]**.
+
+Create body — `BatchGenerateContentRequest` с единственным полем `batch`
+(`GenerateContentBatch`). Клиент заполняет `displayName` (required у Google), `model` (required,
+`models/{model}`; наш SDK-совместимый fallback — наследование из path, §4.1), `inputConfig`
+(required) и опциональный `priority`. Остальные поля output-only.
+
+### 2.2 Operation envelope и `GenerateContentBatch` metadata
+
+Сырой REST-ответ Google (подтверждено REST-курлом в официальной документации): `done` (bool),
+`metadata` — это сериализованный `GenerateContentBatch` (SDK читает `metadata.state`,
+`metadata.model`, `metadata.output`, …; `t_job_state` конвертирует wire `BATCH_STATE_*` в
+SDK-имена `JOB_STATE_*`), `response` на success, `error` (`google.rpc.Status`) на
+FAILED/CANCELLED. Python SDK поверх не показывает `batchStats` клиенту: его `BatchJob` имеет
+`completion_stats` с пометкой «not supported in Gemini API». То есть `batchStats` существует
+только на сыром wire; наш публичный контракт его реализует (§4.2), но SDK-совместимость от него
+не зависит.
+
+Поля `GenerateContentBatch` (Discovery): `name` (`batches/{batch_id}`, output-only), `model`,
+`displayName`, `inputConfig`, `state` (output-only), `batchStats` (output-only), `output`
+(output-only), `createTime`, `updateTime`, `endTime` (google-datetime), `priority`
+(optional, string-int64, default 0, отрицательные разрешены; мы принимаем и echo'им, но
+игнорируем — §4.1). Отдельного `startTime` в Developer API нет (это Vertex-поле SDK).
+
+`batchStats` (Discovery, все поля string-int64, output-only): `requestCount`,
+`successfulRequestCount`, `failedRequestCount`, `pendingRequestCount`.
+
+Состояния (Discovery enum): `BATCH_STATE_UNSPECIFIED`, `BATCH_STATE_PENDING`, `BATCH_STATE_RUNNING`,
+`BATCH_STATE_SUCCEEDED`, `BATCH_STATE_FAILED`, `BATCH_STATE_CANCELLED`, `BATCH_STATE_EXPIRED`.
+Документация описывает EXPIRED как «running или pending дольше 48 часов, результатов нет».
+
+### 2.3 Ввод: inline и файл
+
+`InputConfig` содержит ровно одно из: `requests` (`InlinedRequests{requests: InlinedRequest[]}`)
+или `fileName` (`files/...`). `InlinedRequest` = `request` (`GenerateContentRequest`, required) +
+`metadata` (optional object, произвольные ключи; официальный пример кладет туда клиентский ключ:
+`"metadata": {"key": "request-1"}`).
+
+Файл — JSONL, одна строка = `{"key": ..., "request": {...}}`; ключ — user-defined, возвращается в
+выводе для корреляции (официальная документация). Лимиты: inline create body ≤ 20 MB; input-файл
+≤ 2 GB. Документированного жесткого максимума числа запросов на batch в публичных источниках нет
+**[не подтверждено]**: наш предел — config-driven, цель «не ниже практических Google-объемов»,
+финальное значение фиксируется измерением в Этапе 5 (§4.6).
+
+### 2.4 Вывод: симметрия вводу
+
+`GenerateContentBatchOutput` содержит ровно одно из:
+
+- `inlinedResponses` (`InlinedResponses{inlinedResponses: InlinedResponse[]}`) для inline ввода;
+  элемент — `response` (`GenerateContentResponse`) или `error` (`google.rpc.Status`) + echo
+  `metadata`; порядок совпадает с порядком входных requests;
+- `responsesFile` (имя файла) для файлового ввода; JSONL-строки в порядке входных requests
+  **[не подтверждено, несут ли строки файл-вывода клиентский `key`; документация гарантирует
+  корреляцию через «user-defined key … will have its response annotated with the same key name» —
+  мы реализуем `{"key": ..., "response"|"error": ...}`]**.
+
+Mixed-result семантика: batch с частичными per-item ошибками завершается
+`BATCH_STATE_SUCCEEDED` (не FAILED): официальная документация предписывает после успеха смотреть
+`batchStats.failedRequestCount` и разбирать строки файла/элементы inline output на предмет
+per-item `Status`-ошибок. Job-level `error` — только для FAILED/CANCELLED. Точное соответствие
+`done/error/state` при mixed result этому правилу **[не подтверждено wire-фактурой; принято по
+тексту документации]**.
+
+### 2.5 Жизненный цикл и лимиты Google
+
+Queue/run deadline — 48 часов (EXPIRED), target turnaround — 24 часа без SLA, результаты хранятся
+6 недель. Создание неидемпотентно: повторный POST создает новую operation. Files API: до 2 GB на
+файл, 20 GB на проект, TTL 48 часов, state-машина `PROCESSING → ACTIVE | FAILED` (enum включает
+`STATE_UNSPECIFIED`), `File` несет `sha256Hash`, `uri`, `downloadUri`, `expirationTime`,
+`source` (`UPLOADED|GENERATED|REGISTERED`), а `error` — `Status` при FAILED. У Google Files API
+скачивания клиентских файлов нет (download доступен только для сгенерированных файлов, в т.ч.
+batch output); мы добавляем `:download` как осознанное расширение, потому что содержимое
+принадлежит нам. Discovery также объявляет `PATCH /v1beta/batches/{name}:updateGenerateContentBatch`
+и `updateEmbedContentBatch` — вне MVP, явный unsupported (§4.1).
 
 Google продает Batch API по отдельному тарифу, обычно на 50% дешевле interactive inference. Эта
 скидка неприменима к нашей реализации: под капотом выполняются обычные subscription-backed turns, а
 не тарифицируемые Google Batch jobs. В публичной документации нельзя называть локальную очередь
-Google Batch со скидкой или обещать его SLO.
+Google Batch со скидкой или обещать его SLO. Модельный охват: Google поддерживает «range of Gemini
+models» с модальностями интерактивного API; мы не делаем allowlist и пускаем все опубликованные
+текстовые Gemini-модели (image-output исключен из MVP, §1).
 
 Vertex AI batch — другой контракт: OAuth/IAM, project/location resources, GCS/BigQuery input/output
 и другой lifecycle. Смешивать его с Developer API или заявлять Vertex compatibility не нужно.
 
-### 2.1 Файлы у Google Batch API и что из этого переносим
-
-Семейство Gemini Developer API Files API:
-
-| Операция | REST route |
-|---|---|
-| Upload | `POST /upload/v1beta/files` (multipart) |
-| Create metadata | `POST /v1beta/files` |
-| Список | `GET /v1beta/files` |
-| Метаданные | `GET /v1beta/files/{id}` |
-| Скачивание | `GET /v1beta/files/{id}:download` |
-| Удаление | `DELETE /v1beta/files/{id}` |
-
-У настоящего Google Files API файлы живут в проекте клиента, TTL — 48 часов, бесплатно, до 2 GB на
-файл и 20 GB на проект; state машины `PROCESSING → ACTIVE | FAILED`. Наш Files API повторяет те же
-рамки: до 2 GB на файл, до 20 GB суммарно на аккаунт, TTL 48 часов; места в хранилище для этого
-достаточно, а upload обрабатывается потоково, без целиком in-memory copy. Batch-ввод принимает файл
-только как `inputConfig.fileName` — JSONL, где каждая строка содержит клиентский opaque `key` и
-полный `GenerateContentRequest` с `inlineData`; `fileData`-ссылки на другие файлы внутри batch-ввода
-Google не поддерживает. При файловом вводе результат Google отдает симметрично файлом: в terminal
-operation появляется `metadata.output.responsesFile` — ссылка на JSONL-файл со строками
-`{"key": ..., "response"|"error": ...}` в нашем же Files API, а `inlinedResponses` отсутствует. Наш
-режим может идти дальше Google в одной точке: поддерживать `fileData.fileUri` со ссылкой на наш
-собственный Files API внутри любого item-запроса (см. §4.1). Это честное расширение поверх
-Google-shaped контракта, а не маскировка под Google-возможность: в документации клиенту оно
-объявляется явно.
-
-Официальные источники, которые надо повторно зафиксировать golden fixtures перед кодированием:
+Официальные источники, на которых зафиксирован контракт:
 
 - <https://ai.google.dev/gemini-api/docs/batch-api>
 - <https://ai.google.dev/gemini-api/docs/files>
-- <https://ai.google.dev/gemini-api/docs/rate-limits>
-- <https://ai.google.dev/gemini-api/docs/pricing>
-- <https://github.com/googleapis/python-genai/blob/main/google/genai/batches.py>
+- `https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta` (snapshot 2026-08-21)
+- <https://github.com/googleapis/python-genai/blob/main/google/genai/batches.py> и `types.py`
 - <https://github.com/googleapis/js-genai/blob/main/src/batches.ts>
-- <https://github.com/googleapis/go-genai/blob/main/batches.go>
 - <https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/batch-prediction-gemini>
 
-SDK-код полезен для точных route и field mappings, но не заменяет wire capture официального API.
-Перед публикацией нужны sanitized request/response fixtures create/list/get/cancel/delete и
-terminal inline output из актуальных Python и JavaScript SDK, а также fixtures Files API
-upload/get/list/delete и batch с `inputConfig.fileName`.
+Правило на будущее: любое место, где публичные источники молчат, реализуется самостоятельно и
+помечается **[не подтверждено]**; клиентская документация не выдает такие места за
+Google-совместимость.
 
 ## 3. Текущее состояние проекта
 
@@ -304,16 +348,16 @@ unsupported ответ, а не непреднамеренный fallback.
 Ограничения MVP: файл не используется обычным синхронным `generateContent` (там `fileData` по-
 прежнему отклоняется `FILE_URI_UNSUPPORTED` с указанием inlineData как альтернативы); ссылка на файл
 валидна только внутри batch-ввода; файл привязан к `account_id`, виден любому активному ключу того
-же account; при создании batch делается durable reference (`file_id`) в item row, а удаление файла,
-на который есть живые ссылки, запрещено до terminal/expiry соответствующих jobs (или файл удаляется
-и queued items с ссылкой на него завершаются per-item typed error — решение фиксируется в Этапе 0,
-рекомендация: запрет удаления при живых ссылках, как более предсказуемая семантика). Тело резолвится
+же account; при создании batch делается durable reference (`file_id`) в item row. **Решение
+(подтверждено владельцем продукта): удаление файла, на который есть живые ссылки незавершенных
+jobs, запрещено до terminal/expiry этих jobs** — `DELETE /v1beta/files/{id}` в этом случае
+возвращает `FAILED_PRECONDITION` со списком блокирующих jobs в sanitized виде. Тело резолвится
 один раз при диспетче item, не кэшируется вне зашифрованного blob.
 
 `batchStats` считается derived-on-read из item rows на каждый GET (подробно — §4.2), никаких
-mutable counters. До реализации конкретную JSON-сериализацию, timestamps, mixed-result semantics и
-pagination token нужно закрепить официальными golden fixtures. Нельзя придумывать
-Google-compatible поля по памяти.
+mutable counters. JSON-сериализация полей зафиксирована в §2.2 по Discovery document (string-int64
+счетчики, google-datetime timestamps); pagination token — opaque stable cursor нашего дизайна
+**[не подтверждено]**, Google его формат публично не раскрывает.
 
 Допустимое локальное расширение — необязательный `Idempotency-Key` header:
 
@@ -387,10 +431,12 @@ Job state выводится из item rows, а не хранится как н�
    правилом, что и раньше: GET не считает item terminal, пока outbox APPLY не завершен, поэтому
    клиент никогда не видит `successfulRequestCount`, опережающий реально видимые результаты.
 
-Точное отображение mixed result на Google operation `done/error/state` фиксируется golden fixture.
-Внутренний `indeterminate` наружу идет только как bounded per-item Google Status без profile,
-request body или provider trace; в `batchStats` indeterminate учитывается в
-`failedRequestCount` (для клиента это отказ item), что также подтверждается fixture.
+Mixed-result отображение на operation зафиксировано по официальной документации (§2.4): частичные
+per-item ошибки завершают job как `BATCH_STATE_SUCCEEDED` с per-item `Status` внутри output, а
+job-level `error` — только для FAILED/CANCELLED. Внутренний `indeterminate` наружу идет только как
+bounded per-item Google Status без profile, request body или provider trace; в `batchStats`
+indeterminate учитывается в `failedRequestCount` (для клиента это отказ item) **[не подтверждено
+wire-фактурой; принято по тексту документации]**.
 
 ### 4.3 PostgreSQL schema
 
@@ -654,15 +700,18 @@ Batch — lower-priority workload:
 - никакой номинальный subscription RPM/RPD не придумывается локально.
 
 Лимиты целимся в Google-масштаб, а не в локальный MVP-envelope: inline create body ограничен
-общим 20 MiB лимитом тела Gemini plane; файловый ввод — до 2 GB на файл и 20 GB суммарно на
-аккаунт (как у Google Files API); число items на batch — документированный Google максимум для
-batch JSONL (фиксируется fixtures в Этапе 0), file-based result set не ограничен 64 MiB, потому
-что результат отдается файлом, а не одним JSON; ограничение 64 MiB остается только для
-inline-формы. Per-account ограничения: до 100 nonterminal jobs и 20 GB файлов — единственные
-флот-защитные лимиты сверх Google. Все bounds — config-driven, возвращают `RESOURCE_EXHAUSTED`, а
-не частично принимают batch. Реальная пропускная способность (PostgreSQL locks, outbox throughput,
-потоковая сборка output-файла) доказывается load test в Этапе 5 на Google-масштабных объемах;
-если измеренная граница ниже Google-лимита, документируется измеренное значение, а не желаемое.
+общим 20 MiB лимитом тела Gemini plane (у Google — 20 MB, §2.5); файловый ввод — до 2 GB на файл
+и 20 GB суммарно на аккаунт (как у Google Files API); публично документированного максимума числа
+items на batch у Google нет **[не подтверждено]**, поэтому наш предел — config-driven, цель «не
+ниже практических Google-объемов», и его финальное значение фиксируется измерением. File-based
+result set не ограничен 64 MiB, потому что результат отдается файлом, а не одним JSON;
+ограничение 64 MiB остается только для inline-формы. Per-account ограничения: до 100 nonterminal
+jobs и 20 GB файлов — единственные флот-защитные лимиты сверх Google. Все bounds — config-driven,
+возвращают `RESOURCE_EXHAUSTED`, а не частично принимают batch. Реальная пропускная способность
+(PostgreSQL locks, outbox throughput, потоковая сборка output-файла) доказывается load test в
+Этапе 5 на Google-масштабных объемах; если измеренная граница ниже целевого лимита, план и
+клиентская документация обновляются на измеренное значение в том же commit, что и результаты
+измерения (§12), а не остаются на желаемом.
 
 ### 4.7 Execution primitive
 
@@ -717,9 +766,12 @@ payload cleanup. Для active job клиент сначала вызывает 
 | Settlement DB transient error | result не публикуется terminal до outbox apply | outbox retries |
 | Permanent settlement conflict | item/outbox quarantined, alert | hold не silently released |
 
-Политика unknown usage должна совпадать с фактическим default PostgreSQL reconciler и быть явно
-описана в `GEMINI_PROVIDER.md`; сейчас текст provider doc о full-hold stream fallback требует
-сверки с default-off operator switch до начала реализации batch.
+Политика unknown usage (сверена с кодом 2026-08-21, `crates/forward/src/settlement_policy.rs` +
+`crates/registry/src/pg.rs::reconcile_expired`): флот default — **unmeasured turn стоит клиенту
+0**; если owner успел записать measured checkpoint, reconcile списывает ровно его (clamp до
+hold). Полный hold списывается только при включенном operator switch
+`CLAUDE_API_CHARGE_HOLD_ON_UNKNOWN_USAGE` (default off). Batch-строки выше ссылаются ровно на эту
+политику; `GEMINI_PROVIDER.md` описывает ее в тех же терминах.
 
 ## 5. Наблюдаемость и операции
 
@@ -763,23 +815,29 @@ Graceful shutdown:
 
 ## 6. Этапы реализации
 
-### Этап 0. Contract fixtures и решения
+### Этап 0. Контракт и решения — ВЫПОЛНЕН (2026-08-21)
 
-- Получить официальные sanitized wire fixtures из Python и JavaScript SDK; сверить их с актуальным
-  v1beta Discovery document, включая Files API upload/get/list/delete и batch `inputConfig.fileName`.
-- Зафиксировать exact create/list/get/cancel/delete envelopes, mixed item errors и pagination.
-- Проверить модельный allowlist Batch API, но не переносить Google tariff/SLO.
-- Зафиксировать Google-масштабные лимиты (максимум items на batch из официальных fixtures, 2 GB
-  файл, 20 GB на аккаунт), 48-hour execution deadline, 48-hour upload file TTL, 42-day result
-  retention (включая output-файлы) и 60-day tombstone.
-- Зафиксировать форму результата: inline → `inlinedResponses`, file → `responsesFile` JSONL с
-  passthrough `key`; точную сериализацию `batchStats` и echo-семантику `priority`.
-- Утвердить batch 5h headroom policy: порог 15% (config, default 15), источник — `gemini-5h` bucket
-  quota summary, fail-closed при отсутствии свежего snapshot, weekly-окно вне gate.
-- Решить семантику удаления файла при живых batch-ссылках (рекомендация: запрет до terminal/expiry).
-- Исправить расхождение unknown-usage текста и runtime policy в `GEMINI_PROVIDER.md`.
+Контракт зафиксирован в §2 из публичных источников (Discovery document v1beta snapshot
+2026-08-21, официальная документация batch-api/files, исходники Python SDK); живые wire captures
+официального API осознанно не выполняются — нет доступа, а места без публичных данных помечены
+**[не подтверждено]** и реализуются как наш дизайн. Решения владельца продукта:
 
-Exit gate: contract tests могут быть написаны без догадок; open questions из раздела 8 закрыты.
+- модели: без allowlist — все опубликованные текстовые Gemini-модели; image-output вне MVP (§1);
+- лимиты: Google-масштаб (2 GB файл, 20 GB на аккаунт, 20 MB inline body, 48h TTL upload-файлов,
+  42-day result retention включая output-файлы, 60-day tombstone); максимум items на batch —
+  config-driven, измеряется в Этапе 5 (§4.6);
+- форма результата: inline → `inlinedResponses`, file → `responsesFile` JSONL с passthrough `key`;
+  сериализация `batchStats` и echo-семантика `priority` — по §2.2;
+- batch 5h headroom policy ПОДТВЕРЖДЕНА: порог 15% (config, default 15), источник — `gemini-5h`
+  bucket quota summary, fail-closed при отсутствии свежего snapshot, weekly-окно вне gate;
+- удаление файла при живых batch-ссылках ПОДТВЕРЖДЕНО как запрет до terminal/expiry ссылающихся
+  jobs (`FAILED_PRECONDITION`, §4.1);
+- unknown-usage политика сверена с кодом и описана в `GEMINI_PROVIDER.md` (fleet default:
+  unmeasured turn стоит 0; measured checkpoint clamp до hold; full hold только при operator
+  switch `CLAUDE_API_CHARGE_HOLD_ON_UNKNOWN_USAGE=on`).
+
+Exit gate: contract tests могут быть написаны без догадок — выполнен; все пункты раздела 8 имеют
+подтвержденные ответы.
 
 ### Этап 1. Migration-only expansion
 
@@ -877,7 +935,7 @@ Exit gate: точный published SHA GREEN, queue drains, нет balance diverg
 ### Contract и auth
 
 - Python/JavaScript SDK create/list/get/cancel/delete direct + router, включая пустые
-  cancel/delete responses;
+  cancel/delete responses (ожидания — из зафиксированного контракта §2, не из live captures);
 - Files API upload/get/list/delete/download fixtures, state machine `PROCESSING → ACTIVE`;
 - batch `inputConfig.fileName` с JSONL-вводом (`key` + `request`), `fileData` ссылками на
   собственные файлы и симметричным `responsesFile` output с passthrough `key`;
@@ -885,6 +943,8 @@ Exit gate: точный published SHA GREEN, queue drains, нет balance diverg
   порядок выполнения;
 - `batchStats` на каждый GET совпадает с фактическими item states (derived-on-read), включая
   гонки с cancel/expiry;
+- wire-сериализация совпадает с зафиксированным контрактом §2: string-int64 счетчики,
+  google-datetime timestamps, `BATCH_STATE_*` в `metadata`, `output` внутри `metadata`;
 - exact golden JSON и unknown-field behavior;
 - auth до buffering oversized/chunked body;
 - query credential rejected;
@@ -953,12 +1013,12 @@ Exit gate: точный published SHA GREEN, queue drains, нет balance diverg
 router native passthrough tests, `cargo test --locked --workspace`, rotation and universal chat smoke
 остаются green.
 
-## 8. Решения, которые надо подтвердить до кода
+## 8. Решения, подтвержденные до кода
 
-Рекомендованные defaults перечислены ниже. Изменение любого ответа существенно меняет schema или
-public contract, поэтому их надо закрыть в Этапе 0.
+Все ответы ниже подтверждены владельцем продукта 2026-08-21 (Этап 0 выполнен, §6). Изменение
+любого ответа существенно меняет schema или public contract и требует нового review.
 
-| Вопрос | Рекомендация |
+| Вопрос | Решение |
 |---|---|
 | API shape | Gemini Developer API inline-compatible subset + собственный Files API subset |
 | Где доступен | direct Gemini host и native `/v1beta/*` (+`/upload/v1beta/*`) unified-router passthrough |
@@ -967,17 +1027,19 @@ public contract, поэтому их надо закрыть в Этапе 0.
 | Admission | весь batch атомарно, per-item holds |
 | Affinity | выключена для независимых items; quota/inflight/cursor selection остается |
 | Concurrency | bounded global, один batch item на profile, interactive не блокируется |
-| Batch 5h headroom | batch dispatch только при `gemini-5h` remaining > 15% (config, default 15); fail-closed при stale/missing snapshot; weekly-окно вне gate |
+| Batch 5h headroom | ПОДТВЕРЖДЕНО: batch dispatch только при `gemini-5h` remaining > 15% (config, default 15); fail-closed при stale/missing snapshot; weekly-окно вне gate |
+| Модели | без allowlist: все опубликованные текстовые Gemini-модели; image-output model вне MVP |
+| Контрактные фактуры | без live captures: публичные источники (§2); места без данных помечены **[не подтверждено]** и реализуются как наш дизайн |
 | File input | собственный encrypted Files API (TTL 48ч), `inputConfig.fileName` JSONL + `fileData` ссылки внутри batch |
 | File output | как у Google: file-ввод → `metadata.output.responsesFile` JSONL в нашем Files API, passthrough клиентского `key`; inline-ввод → `inlinedResponses` |
 | `priority` | принимаем и echo'им как у Google, функционально игнорируем (scheduler имеет собственный детерминизм) |
-| Лимиты | Google-масштаб: 2 GB файл, 20 GB на аккаунт, Google-максимум items; флот-защита — только nonterminal jobs на аккаунт |
+| Лимиты | Google-масштаб: 2 GB файл, 20 GB на аккаунт, 20 MB inline body; максимум items — config-driven, измеряется в Этапе 5 и обновляется здесь же (§12); флот-защита — только nonterminal jobs на аккаунт |
 | `batchStats` | derived-on-read из item rows на каждый GET; mutable counters в job row запрещены (§4.2) |
-| File delete с живыми ссылками | запрещено до terminal/expiry ссылающихся jobs |
+| File delete с живыми ссылками | ПОДТВЕРЖДЕНО: запрещено до terminal/expiry ссылающихся jobs (`FAILED_PRECONDITION`) |
 | Create idempotency | Google-compatible non-idempotent default + optional `Idempotency-Key` |
 | Ownership | account-scoped, creator key only attribution/revocation policy |
 | Cancel | queued stops immediately; dispatching drains best effort |
-| Crash after send | indeterminate, no automatic replay |
+| Crash after send | indeterminate, no automatic replay; unknown-usage policy — fleet default «unmeasured = 0», measured checkpoint clamp до hold, full hold только при operator switch (§4.9) |
 | Queue deadline | 48 часов |
 | Result retention | 42 дня (включая output-файлы); financial evidence отдельно |
 | MVP media | existing bounded inline inputs + собственные файлы внутри batch; image-output model excluded |
@@ -991,7 +1053,7 @@ Batch mode считается готовым, только когда однов
 - собственный Files API принимает upload, отдает metadata/download, соблюдает TTL и account isolation;
 - batch принимает JSONL-файл и `fileData` ссылки на собственные файлы и резолвит их до dispatch;
 - file-based batch возвращает результат output-файлом (`responsesFile`) с passthrough клиентских
-  `key`, inline batch — `inlinedResponses`; обе формы совпадают с Google fixtures;
+  `key`, inline batch — `inlinedResponses`; обе формы совпадают с контрактом §2;
 - `batchStats` на GET всегда согласован с фактически видимыми результатами;
 - batch dispatch останавливается при 15%-остатке `gemini-5h` и возобновляется после reset без
   ручного вмешательства; interactive-трафик при этом не меняет поведения;
@@ -1129,3 +1191,31 @@ Batch-политика — hard floor с fail-closed деградацией на
     конкуренцией settlement/cancel и требует второй locking-матрицы без новой информации.
     Derived-on-read также бесплатно гарантирует, что stats никогда не опережают реально видимые
     клиенту результаты (GET не считает item terminal до outbox APPLY).
+
+## 12. Журнал исполнения
+
+Агент, работающий над исполнением этого плана (Этапы 1–6), обязан вести журнал результатов в
+`docs/engine/GEMINI_BATCH_MODE_JOURNAL.md` (создается первой записью; файл — часть того же
+commit, что и соответствующая работа). Этот файл — не инструкция, а append-only протокол
+исполнения: новые записи добавляются в конец, существующие не переписываются.
+
+Формат записи:
+
+```text
+## YYYY-MM-DD — <этап и краткое название шага>
+SHA: <точный commit SHA(ы)>
+Результат: <что сделано, чем доказано: команды проверки и их исход>
+Отступления от плана: <нет | что и почему; любое отклонение сначала отражается
+правкой соответствующего раздела этого плана в том же commit>
+Измерения: <load/limits/latency цифры, если шаг их производил>
+Следующий шаг: <что блокирует / что дальше>
+```
+
+Обязательные правила:
+
+- каждый завершенный шаг этапа (не только этап целиком) — отдельная запись;
+- измеренные лимиты Этапа 5 сначала обновляют §4.6/§8 этого плана, затем попадают в запись;
+- проваленный шаг фиксируется так же, как успешный: с фактическим выводом проверок и причиной;
+- номера этапов и ссылки на разделы этого плана обязательны, чтобы журнал читался как
+  машинно-проверяемая трассировка плана;
+- `docs/README.md` получает строку на журнал в commit первой записи.

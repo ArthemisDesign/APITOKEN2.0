@@ -2969,7 +2969,9 @@ async fn stream_response(
         let usage = (!translator.audio_usage_failed && !translator.usage.is_zero())
             .then_some(&translator.usage);
         // A metered turn that ends with no usage is not a healthy turn however clean the stream
-        // looked: it settles at the conservative preflight hold instead of the measured cost. Decide
+        // looked: it settles through the fleet unknown-usage policy (zero by default, the measured
+        // checkpoint when one was written, the full hold only behind the operator switch) instead
+        // of a measured cost. Decide
         // that before classifying the profile, so the model is never credited with a success on the
         // very turn that is about to be recorded as a usage failure.
         let usage_missing = usage.is_none() && admission.requires_usage();
