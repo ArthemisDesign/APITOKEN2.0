@@ -2428,6 +2428,7 @@ class Runner:
                 # Single closed leg: the reserve is this leg's own measured countTokens plus
                 # its exact output cap, times the single planned generation. Unlike the other
                 # capability matrices there is no long-context sibling to dominate it.
+                capability_legs = []
                 if self.budget.limit_nano != upper:
                     raise CalibrationError(
                         "Gemini 3.7 tool-result-final-turn admission budget must equal the "
@@ -2450,38 +2451,41 @@ class Runner:
             # The contract reserves the worst planned leg per generation: the long-context
             # capability leg carries 220k counted tokens plus the hidden provider prompt,
             # which strictly dominates every other leg's ceiling. The single search leg
-            # adds the explicit query reserve on top of its own token ceiling.
-            media_mode = set(capability_legs) == set(GEMINI_37_MEDIA_KINDS)
-            worst_leg = (
-                Leg("", GEMINI_37_ADMISSION_MODEL, "fresh", max_output_tokens=1024)
-                if media_mode
-                else Leg("", GEMINI_37_ADMISSION_MODEL, "long", max_output_tokens=512)
-                if self.admission.capability_matrix and "search" not in capability_legs
-                else Leg(
-                    "",
-                    GEMINI_37_ADMISSION_MODEL,
-                    # The search admission reserves its tokens like a plain generation plus the
-                    # explicit query reserve below; passing kind="search" here would hit the
-                    # generic unbounded-SKU guard instead of the closed contract.
-                    "fresh",
-                    max_output_tokens=512 if "search" in capability_legs else (self.admission.output_tokens if self.admission else GEMINI_37_ADMISSION_OUTPUT_TOKENS),
+            # adds the explicit query reserve on top of its own token ceiling. The closed
+            # tool-result-final-turn leg is exempt: it is single and its exact ceiling was
+            # already pinned against its own measured count above.
+            if leg.kind != "tool-result-final-turn":
+                media_mode = set(capability_legs) == set(GEMINI_37_MEDIA_KINDS)
+                worst_leg = (
+                    Leg("", GEMINI_37_ADMISSION_MODEL, "fresh", max_output_tokens=1024)
+                    if media_mode
+                    else Leg("", GEMINI_37_ADMISSION_MODEL, "long", max_output_tokens=512)
+                    if self.admission.capability_matrix and "search" not in capability_legs
+                    else Leg(
+                        "",
+                        GEMINI_37_ADMISSION_MODEL,
+                        # The search admission reserves its tokens like a plain generation plus the
+                        # explicit query reserve below; passing kind="search" here would hit the
+                        # generic unbounded-SKU guard instead of the closed contract.
+                        "fresh",
+                        max_output_tokens=512 if "search" in capability_legs else (self.admission.output_tokens if self.admission else GEMINI_37_ADMISSION_OUTPUT_TOKENS),
+                    )
                 )
-            )
-            worst = rates.upper_bound(
-                rates.input_token_limit,
-                worst_leg.max_output_tokens,
-                worst_leg.kind,
-            )
-            if "search" in capability_legs:
-                # The per-query SKU is unbounded upstream; the closed admission contract
-                # substitutes the explicit conservative reserve for the missing provider ceiling.
-                worst += GEMINI_37_SEARCH_QUERY_RESERVE * rates.search
-            if self.budget.limit_nano != worst * planned:
-                raise CalibrationError(
-                    "Gemini 3.7 admission budget must equal the worst-case exact "
-                    f"current-tariff ceiling {worst} nanoUSD times the planned generation "
-                    f"count {planned}, got {self.budget.limit_nano}"
+                worst = rates.upper_bound(
+                    rates.input_token_limit,
+                    worst_leg.max_output_tokens,
+                    worst_leg.kind,
                 )
+                if "search" in capability_legs:
+                    # The per-query SKU is unbounded upstream; the closed admission contract
+                    # substitutes the explicit conservative reserve for the missing provider ceiling.
+                    worst += GEMINI_37_SEARCH_QUERY_RESERVE * rates.search
+                if self.budget.limit_nano != worst * planned:
+                    raise CalibrationError(
+                        "Gemini 3.7 admission budget must equal the worst-case exact "
+                        f"current-tariff ceiling {worst} nanoUSD times the planned generation "
+                        f"count {planned}, got {self.budget.limit_nano}"
+                    )
         self.budget.require(upper)
         suffix = "streamGenerateContent?alt=sse" if leg.stream else "generateContent"
         calibration_request_id = str(uuid.uuid4())
