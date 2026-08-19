@@ -122,7 +122,9 @@ plausible number in the UI does not substitute for that gate.
 **Shared payload-limit contract.** `crates/api-limits` is a dependency-free leaf used by router,
 forward, and server for checked byte/admission units, current defaults, and hard ceilings. It reads
 no environment and enables no limit by itself; composition remains in router/server config and
-provider-owned narrower caps always win.
+provider-owned narrower caps always win. `crates/bounded-body` builds only runtime-independent
+fail-fast weighted budgets and private memory→file storage on those units; it owns no HTTP/env/
+provider semantics and enables no limit until later router/provider integration.
 
 **Invariants (check before committing):**
 1. **Transparency.** For the client the protocol = pure Anthropic API (body/response/stream/errors).

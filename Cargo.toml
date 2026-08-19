@@ -14,6 +14,7 @@ members = [
     "crates/suno-credential",
     "crates/elog",
     "crates/api-limits",
+    "crates/bounded-body",
     "crates/registry",
     "crates/pool",
     "crates/forward",

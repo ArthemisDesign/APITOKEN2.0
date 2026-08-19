@@ -479,11 +479,20 @@ Exact candidate SHA допускается к повышенным defaults то
 - Собрать минимум 7 дней body-size/concurrency evidence; RSS coefficients отдельно доказываются
   profiler/cgroup load harness перед raised defaults.
 
-### Commit 2 — bounded storage и weighted admission
+### Commit 2a — leaf-примитивы bounded storage и weighted admission
 
-- Router/provider spooling и dual budgets.
+- Добавить dependency-light `crates/bounded-body`: fail-fast atomic weighted budgets, single-owner
+  RAII reservations и private memory→anonymous-file storage с checked growth/rollback.
+- Runtime call sites, config, metrics, systemd и public errors не менять; публичные пределы прежние.
+- Малые unit tests доказывают threshold/limit boundaries, one-byte chunks, replay, exhaustion,
+  panic/drop cleanup, private root/mode и отсутствие content/path в Debug.
+
+### Commit 2b/2c — интеграция bounded storage
+
+- Сначала router universal bodies, затем provider materializers route-by-route получают spooling и
+  два независимых budget: raw storage и caller-supplied estimated RSS.
 - Публичные пределы пока прежние.
-- Доказать отсутствие protocol/money изменений.
+- Доказать отсутствие protocol/money изменений до любого raised default.
 
 ### Commit 3 — Gemini typed executor и binary IPC v2
 

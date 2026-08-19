@@ -359,6 +359,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bounded-body"
+version = "0.1.0"
+dependencies = [
+ "api-limits",
+ "libc",
+]
+
+[[package]]
 name = "brotli"
 version = "8.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

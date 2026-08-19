@@ -1,0 +1,12 @@
+[package]
+name = "bounded-body"
+version = "0.1.0"
+edition = "2021"
+description = "Fail-fast weighted admission and private bounded body storage primitives"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+api-limits = { path = "../api-limits" }
+libc = "0.2"

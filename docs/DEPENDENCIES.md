@@ -128,6 +128,10 @@ is only what is needed to walk the relationships when making changes:
   stable formatting and relationship validation. Consumers are `crates/router`, `crates/forward`, and
   `crates/server`; environment stays in router/server composition. A hard ceiling never enables a
   public limit, and the narrower Anthropic/Codex/Gemini-media contracts remain authoritative.
+- **`crates/bounded-body` — bounded payload ownership primitives.** A standard-library leaf consuming
+  only `api-limits`; it produces fail-fast weighted budgets, single-owner RAII reservations and
+  private memory→anonymous-file storage. Router/forward integration is deliberately absent in the
+  primitive slice, so it changes no public cap, protocol, billing, retry, or metrics contract.
 - **`crates/elog` — the engine's unified error log.** A leaf crate (no dependencies) that
   every runtime layer that logs (`forward`, `server`, `router`, `authbot`, `registry`,
   `pool`) consumes. All runtime diagnostic lines flow through `elog::error/warn/info`
