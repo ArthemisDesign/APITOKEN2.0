@@ -16,3 +16,10 @@ SHA: failed candidate `8facde0f6eb3f01100a1d39728845b08ddfed358`; corrective SHA
 Отступления от плана: нет; это обязательная фиксация проваленного шага по §12 и новая доставка того же migration-only результата вместо повтора красного SHA.
 Измерения: workspace gate — 1,487 forward tests и 185 registry tests GREEN; real-PostgreSQL migration matrix — 1/1 GREEN; release artifacts — 3/3 GREEN.
 Следующий шаг: отправить новый candidate через `deploy/agent-merge.sh`; Этап 2 остается заблокирован до GREEN `deploy/migration` + `deploy/watchdog`.
+
+## 2026-08-20 — Этап 1 (§6): root cause повторного host-gate failure
+SHA: failed candidate `cf812302db0ffccc49a2e690a922e72ff1e58c4f`; corrective SHA фиксируется commit этой записи
+Результат: второй trusted-host candidate до merge снова завершился `Rust candidate lane failed (exit 101)`. Root cause найден в новой PostgreSQL matrix: после прерванного host process тестовый DB slot сохранял собственные batch rows, а стартовая очистка пыталась удалить owner account до restrictive child rows и закономерно получала FK violation. Очистка исправлена child-first для всех семи batch tables; production migration/schema не изменены.
+Отступления от плана: нет; исправляется только повторяемость schema test, runtime и публичные surfaces остаются отсутствующими.
+Измерения: два независимых trusted-host отказа до merge; локальный fresh-DB matrix оставался GREEN, что согласуется с residue-only причиной.
+Следующий шаг: доказать matrix на одном PostgreSQL два запуска подряд, выполнить обязательные local gates и отправить новый exact SHA; Этап 2 не начинать до GREEN production migration/watchdog.

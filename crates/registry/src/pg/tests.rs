@@ -141,9 +141,17 @@ fn gemini_batch_foundation_migration_postgres_matrix() {
     let raw_key = "gemini-batch-migration-key";
     let key_id = "gemini-batch-migration-key-id";
     let job = "gemini-batch-migration-job";
+    // A host slot may retain rows after a killed candidate process. Clean children before their
+    // restrictive owner so rerunning the matrix proves replay instead of tripping on its own residue.
     pg.client
         .batch_execute(&format!(
-            "DELETE FROM api_keys WHERE key='{raw_key}'; \
+            "DELETE FROM gemini_batch_profile_leases WHERE job_id='{job}'; \
+             DELETE FROM gemini_batch_settlement_outbox WHERE job_id='{job}'; \
+             DELETE FROM gemini_batch_blobs WHERE job_id='{job}'; \
+             DELETE FROM gemini_batch_item_files WHERE job_id='{job}'; \
+             DELETE FROM gemini_batch_items WHERE job_id='{job}'; \
+             DELETE FROM gemini_batch_jobs WHERE job_id='{job}'; \
+             DELETE FROM api_keys WHERE key='{raw_key}'; \
              DELETE FROM accounts WHERE id='{account}';"
         ))
         .unwrap();
