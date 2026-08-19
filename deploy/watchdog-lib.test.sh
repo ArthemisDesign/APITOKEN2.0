@@ -2508,6 +2508,10 @@ grep -Fq 'NAME=apitoken-watchdog-postgres-$SLOT' "$ROOT/deploy/watchdog-test-db.
   || wd_die 'parallel test database slots do not have distinct container names'
 grep -Fq -- '--label "apitoken.watchdog.slot=$SLOT"' "$ROOT/deploy/watchdog-test-db.sh" \
   || wd_die 'test database ownership is not fenced by slot'
+grep -Fq 'host_postgres_ready' "$ROOT/deploy/watchdog-test-db.sh" \
+  || wd_die 'test database helper never proves the published host listener'
+grep -Fq '"/dev/tcp/127.0.0.1/$PORT"' "$ROOT/deploy/watchdog-test-db.sh" \
+  || wd_die 'test database helper does not probe the published host listener'
 
 # The shared cache-affinity L2 is the only place two engine slots agree on a prompt-cache home. Its
 # single-winner and opaque-keyspace invariants were unprovable while the gate ran without Redis, so

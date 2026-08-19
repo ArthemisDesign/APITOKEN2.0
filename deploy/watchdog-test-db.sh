@@ -34,6 +34,15 @@ die() {
   exit 1
 }
 
+host_postgres_ready() {
+  # Container-local pg_isready can turn green before Docker's published loopback listener is
+  # reachable in the host network namespace. Prove that exact listener from this host process
+  # before handing the authenticated DSN to CI; container-local SQL already proved credentials.
+  local fd
+  exec {fd}<>"/dev/tcp/127.0.0.1/$PORT" 2>/dev/null || return 1
+  exec {fd}>&-
+}
+
 [[ ${EUID:-$(id -u)} -eq 0 ]] || die "must run as root"
 [[ $# -ge 1 && $# -le 2 ]] \
   || die "usage: $0 start|engine-dsn|sales-dsn|openkeys-dsn|redis-url|stop [0|1|2]"
@@ -124,8 +133,17 @@ case "$COMMAND" in
           docker rm -f "$REDIS_NAME" >/dev/null 2>&1 || true
           die "could not create the disposable engine, sales and openkeys PostgreSQL databases"
         fi
-        printf 'postgresql://%s:%s@127.0.0.1:%s/%s\n' "$USER_NAME" "$PASSWORD" "$PORT" "$DATABASE"
-        exit 0
+        for _ in $(seq 1 30); do
+          if host_postgres_ready; then
+            printf 'postgresql://%s:%s@127.0.0.1:%s/%s\n' "$USER_NAME" "$PASSWORD" "$PORT" "$DATABASE"
+            exit 0
+          fi
+          sleep 1
+        done
+        docker logs --tail 100 "$NAME" >&2 || true
+        docker rm -f "$NAME" >/dev/null 2>&1 || true
+        docker rm -f "$REDIS_NAME" >/dev/null 2>&1 || true
+        die "disposable PostgreSQL published listener did not become ready"
       fi
       sleep 1
     done
