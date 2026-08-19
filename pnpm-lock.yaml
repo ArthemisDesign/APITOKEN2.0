@@ -67,9 +67,6 @@ importers:
       '@claude-api/payments':
         specifier: workspace:*
         version: link:../../packages/payments
-      '@fastify/formbody':
-        specifier: ^8.0.2
-        version: 8.0.2
       '@fastify/helmet':
         specifier: ^13.0.0
         version: 13.1.0
