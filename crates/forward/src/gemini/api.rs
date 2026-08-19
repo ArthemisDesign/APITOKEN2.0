@@ -574,6 +574,7 @@ fn model_value(model: &GeminiModel) -> Value {
         "version": model_version(&model.id),
         "displayName": model.display_name,
         "description": format!("Google {} model served through the Gemini API.", model.display_name),
+        "created": model.created,
         "inputTokenLimit": model.input_token_limit,
         "outputTokenLimit": model.output_token_limit,
         "supportedGenerationMethods": [

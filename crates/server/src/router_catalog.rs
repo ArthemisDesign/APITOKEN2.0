@@ -75,6 +75,7 @@ pub(crate) async fn kimi(
                 json!({
                     "id": model.alias,
                     "display_name": display_name(model.alias),
+                    "created": model.created,
                     "max_input_tokens": model.input_token_limit,
                     "reasoning_efforts": REASONING_EFFORTS,
                     // Thinking is on by default and switched off through `thinking.type`, so the
@@ -125,6 +126,7 @@ mod tests {
     #[test]
     fn every_published_alias_has_a_label_and_an_accepted_effort_set() {
         for model in metering::kimi_subscription_models() {
+            assert!(model.created > 0, "{} has no release date", model.alias);
             assert_ne!(
                 display_name(model.alias),
                 "Kimi",

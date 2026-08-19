@@ -46,7 +46,10 @@ Two states that look like readiness and are not:
    the uncommitted files. During the KIMI wiring this happened twice. The first commit is
    the capability manifest skeleton, even if empty.
 2. **Research first, then design.** Price aggregators contradict each other and the provider.
-   The tariff is taken only from a provider-owned page, with a review date.
+   The tariff is taken only from a provider-owned page, with a review date. Record the public
+   release date from a provider-owned source separately: it must travel through model discovery,
+   and must not be replaced by a pricing epoch, knowledge cutoff, repository publication date, or
+   a date parsed from the model ID.
 3. **Check whether the provider has an official OSS client.** It shows real endpoints
    missing from the documentation. With KIMI, that is exactly how `/usages`, `/me`, the device
    flow, and the client id were found. Clone read-only into `mktemp -d`, read with `rg`, run

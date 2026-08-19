@@ -50,6 +50,8 @@ pub struct GeminiPriceEpoch {
 pub struct GeminiModelSpec {
     pub id: &'static str,
     pub display_name: &'static str,
+    /// Public release date as Unix seconds at 00:00:00 UTC.
+    pub created: i64,
     pub input_token_limit: u64,
     pub output_token_limit: u64,
     pub prices: GeminiPrices,
@@ -93,6 +95,8 @@ impl GeminiUsage {
 struct CatalogEntry {
     id: &'static str,
     display_name: &'static str,
+    /// Public release date from the Gemini API release notes, normalized to 00:00:00 UTC.
+    created: i64,
     input_token_limit: u64,
     output_token_limit: u64,
     /// Hot-override tariff family of this model: `google/gemini/<id>`. Per model (not the shared
@@ -104,6 +108,18 @@ struct CatalogEntry {
 const SEARCH_GEMINI_3: GeminiSearchBilling = GeminiSearchBilling::PerQuery { nano: 14_000_000 };
 const SEARCH_GEMINI_25: GeminiSearchBilling =
     GeminiSearchBilling::PerGroundedPrompt { nano: 35_000_000 };
+
+// Public release dates: https://ai.google.dev/gemini-api/docs/changelog (reviewed 2026-08-19).
+const GEMINI_25_PRO_RELEASED: i64 = 1_750_118_400; // 2025-06-17
+const GEMINI_25_FLASH_RELEASED: i64 = 1_750_118_400; // 2025-06-17
+const GEMINI_25_FLASH_LITE_RELEASED: i64 = 1_753_142_400; // 2025-07-22
+const GEMINI_3_FLASH_PREVIEW_RELEASED: i64 = 1_765_929_600; // 2025-12-17
+const GEMINI_31_PRO_PREVIEW_RELEASED: i64 = 1_771_459_200; // 2026-02-19
+const GEMINI_31_FLASH_LITE_RELEASED: i64 = 1_778_112_000; // 2026-05-07
+const GEMINI_35_FLASH_RELEASED: i64 = 1_779_148_800; // 2026-05-19
+const GEMINI_31_FLASH_IMAGE_RELEASED: i64 = 1_779_926_400; // 2026-05-28
+const GEMINI_36_FLASH_RELEASED: i64 = 1_784_592_000; // 2026-07-21
+const GEMINI_37_FLASH_RELEASED: i64 = 1_786_579_200; // 2026-08-13
 
 const fn flat_prices(
     input: i128,
@@ -247,6 +263,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gemini-3.1-flash-image",
         display_name: "Gemini 3.1 Flash Image (Nano Banana 2)",
+        created: GEMINI_31_FLASH_IMAGE_RELEASED,
         input_token_limit: 131_072,
         output_token_limit: 32_768,
         tariff_family: "google/gemini/gemini-3.1-flash-image",
@@ -255,6 +272,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gemini-3.7-flash",
         display_name: "Gemini 3.7 Flash",
+        created: GEMINI_37_FLASH_RELEASED,
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
         tariff_family: "google/gemini/gemini-3.7-flash",
@@ -263,6 +281,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gemini-3.6-flash",
         display_name: "Gemini 3.6 Flash",
+        created: GEMINI_36_FLASH_RELEASED,
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
         tariff_family: "google/gemini/gemini-3.6-flash",
@@ -271,6 +290,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gemini-3.5-flash",
         display_name: "Gemini 3.5 Flash",
+        created: GEMINI_35_FLASH_RELEASED,
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
         tariff_family: "google/gemini/gemini-3.5-flash",
@@ -279,6 +299,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gemini-3-flash-preview",
         display_name: "Gemini 3 Flash Preview",
+        created: GEMINI_3_FLASH_PREVIEW_RELEASED,
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
         tariff_family: "google/gemini/gemini-3-flash-preview",
@@ -287,6 +308,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gemini-3.1-flash-lite",
         display_name: "Gemini 3.1 Flash-Lite",
+        created: GEMINI_31_FLASH_LITE_RELEASED,
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
         tariff_family: "google/gemini/gemini-3.1-flash-lite",
@@ -295,6 +317,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gemini-3.1-pro-preview",
         display_name: "Gemini 3.1 Pro Preview",
+        created: GEMINI_31_PRO_PREVIEW_RELEASED,
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
         tariff_family: "google/gemini/gemini-3.1-pro-preview",
@@ -303,6 +326,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gemini-2.5-pro",
         display_name: "Gemini 2.5 Pro",
+        created: GEMINI_25_PRO_RELEASED,
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
         tariff_family: "google/gemini/gemini-2.5-pro",
@@ -311,6 +335,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gemini-2.5-flash",
         display_name: "Gemini 2.5 Flash",
+        created: GEMINI_25_FLASH_RELEASED,
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
         tariff_family: "google/gemini/gemini-2.5-flash",
@@ -319,6 +344,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gemini-2.5-flash-lite",
         display_name: "Gemini 2.5 Flash-Lite",
+        created: GEMINI_25_FLASH_LITE_RELEASED,
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
         tariff_family: "google/gemini/gemini-2.5-flash-lite",
@@ -345,6 +371,7 @@ pub fn gemini_catalog_at(now_unix: i64) -> Vec<GeminiModelSpec> {
         .map(|entry| GeminiModelSpec {
             id: entry.id,
             display_name: entry.display_name,
+            created: entry.created,
             input_token_limit: entry.input_token_limit,
             output_token_limit: entry.output_token_limit,
             prices: prices_at(entry.schedule, now_unix),
@@ -855,6 +882,7 @@ mod tests {
                 .iter()
                 .find(|spec| spec.id == model)
                 .expect("official model must be catalogued");
+            assert!(spec.created > 0, "{model} release date");
             let (input_limit, output_limit) = if model == "gemini-3.1-flash-image" {
                 (131_072, 32_768)
             } else {

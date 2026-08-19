@@ -821,6 +821,7 @@ fn gemini_config() -> Option<GeminiConfig> {
         models.push(GeminiModel {
             id: spec.id.to_string(),
             display_name: spec.display_name.to_string(),
+            created: spec.created,
             input_token_limit: spec.input_token_limit,
             output_token_limit: spec.output_token_limit,
             prices: spec.prices,
@@ -968,9 +969,7 @@ fn codex_model_catalog(now_unix: i64) -> Vec<CodexModel> {
         .map(|spec| CodexModel {
             id: spec.id.to_string(),
             upstream: spec.upstream.to_string(),
-            // Public `/v1/models` keeps the field for SDK compatibility without inventing an
-            // upstream creation timestamp that the backend does not provide.
-            created: 0,
+            created: spec.created,
             owned_by: "apitoken".to_string(),
             max_output_tokens: spec.max_output_tokens,
             reasoning_efforts: spec

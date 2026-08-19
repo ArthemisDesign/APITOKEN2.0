@@ -807,6 +807,9 @@ by that profile's own live calibration rather than inferred from the Developer A
 
 Official evidence (review date stated per item where newer than the baseline 2026-07-31 review):
 
+- public release dates for every pinned Gemini catalog entry come from the Gemini API release notes
+  <https://ai.google.dev/gemini-api/docs/changelog>; the reviewed date is stored in
+  `crates/metering/src/gemini.rs` and must accompany any newly published model;
 - Gemini 3.7 Flash GA identity, 1M/64K limits, `low`/`medium`/`high`, migration rules and
   introductory-to-standard price boundary:
   <https://ai.google.dev/gemini-api/docs/latest-model> and

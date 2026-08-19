@@ -39,7 +39,9 @@ and immutable/dormant artifacts are not rewritten.
 - [ ] Research/implementation commit: official model/price/control contract, exact private wire
       mapping, and a controlled canary path; runtime implementation is dormant by default.
 - [ ] `crates/metering/src/{lib,<provider>}.rs` (including `openai_image.rs`) — tariff table
-      (price authority, nanoUSD).
+      (price authority, nanoUSD) and the correct provider-sourced public release date carried by
+      the serving catalog; publication with `created=0`, an inferred ID date, or a pricing epoch is
+      forbidden.
 - [ ] `packages/contracts` — public/display model identities such as
       `OPENKEYS_SUPPORTED_MODELS`, only where the publication commit exposes the model.
 - [ ] GREEN exact implementation SHA + live gate: generation/output/usage/SSE/controls confirmed

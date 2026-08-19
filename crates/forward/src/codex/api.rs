@@ -457,7 +457,7 @@ fn image_model_object(id: &str) -> Value {
     json!({
         "id": id,
         "object": "model",
-        "created": 0,
+        "created": metering::GPT_IMAGE_2_CREATED,
         "owned_by": "apitoken",
         "apitoken": {
             "endpoints": ["/v1/images/generations", "/v1/images/edits"],

@@ -178,7 +178,10 @@ full email and external account id in the projection.
 ## 3. Model admission
 
 `official` Subscription ids (Kimi Code docs, models) and their mapping to the official
-Open Platform rate card (`platform.kimi.ai/docs/pricing/*`).
+Open Platform rate card (`platform.kimi.ai/docs/pricing/*`). Each published alias also carries a
+positive Unix-seconds release date from the provider's Kimi Code release notes; aliases of the same
+released weights (`k3`, local `k3[1m]`, and the later 256K context identity) share the K3 model
+release date rather than inventing a second weight-release date.
 
 | Subscription model | Official model (rate card) | Context | Tier | Non-stream | Incremental stream | Usage | Quota | Decision |
 |---|---|---|---|---|---|---|---|---|

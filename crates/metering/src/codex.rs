@@ -63,6 +63,8 @@ pub struct CodexCreditUsage {
 pub struct CodexModelSpec {
     pub id: &'static str,
     pub upstream: &'static str,
+    /// Public release date as Unix seconds at 00:00:00 UTC.
+    pub created: i64,
     pub max_output_tokens: u64,
     pub reasoning_efforts: &'static [&'static str],
     /// ChatGPT-subscription credit multiplier for Codex Fast mode.
@@ -143,6 +145,8 @@ pub struct CodexAdmissionTariffIdentity {
 struct CatalogEntry {
     id: &'static str,
     upstream: &'static str,
+    /// Public release date from the OpenAI changelog, normalized to 00:00:00 UTC.
+    created: i64,
     max_output_tokens: u64,
     reasoning_efforts: &'static [&'static str],
     subscription_fast_multiplier_basis_points: Option<i64>,
@@ -162,6 +166,10 @@ const EFFORTS_STANDARD: &[&str] = &["none", "low", "medium", "high", "xhigh"];
 const FAST_25X: Option<i64> = Some(25_000);
 const FAST_20X: Option<i64> = Some(20_000);
 const PRICE_CUT_2026_07_30: i64 = 1_785_369_600;
+// Public release dates: https://developers.openai.com/api/docs/changelog (reviewed 2026-08-19).
+const GPT_54_RELEASED: i64 = 1_772_668_800; // 2026-03-05
+const GPT_55_RELEASED: i64 = 1_776_988_800; // 2026-04-24
+const GPT_56_RELEASED: i64 = 1_783_555_200; // 2026-07-09
 
 /// OpenAI's long-context boundary and multipliers are uniform across the pinned catalog.
 const fn prices(
@@ -264,6 +272,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gpt-5.6",
         upstream: "gpt-5.6-sol",
+        created: GPT_56_RELEASED,
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_WITH_MAX,
         subscription_fast_multiplier_basis_points: FAST_25X,
@@ -275,6 +284,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gpt-5.6-sol",
         upstream: "gpt-5.6-sol",
+        created: GPT_56_RELEASED,
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_WITH_MAX,
         subscription_fast_multiplier_basis_points: FAST_25X,
@@ -286,6 +296,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gpt-5.6-terra",
         upstream: "gpt-5.6-terra",
+        created: GPT_56_RELEASED,
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_WITH_MAX,
         subscription_fast_multiplier_basis_points: FAST_25X,
@@ -297,6 +308,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gpt-5.6-luna",
         upstream: "gpt-5.6-luna",
+        created: GPT_56_RELEASED,
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_WITH_MAX,
         subscription_fast_multiplier_basis_points: FAST_25X,
@@ -308,6 +320,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gpt-5.5",
         upstream: "gpt-5.5",
+        created: GPT_55_RELEASED,
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_STANDARD,
         subscription_fast_multiplier_basis_points: FAST_25X,
@@ -319,6 +332,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "gpt-5.4",
         upstream: "gpt-5.4",
+        created: GPT_54_RELEASED,
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_STANDARD,
         subscription_fast_multiplier_basis_points: FAST_20X,
@@ -336,6 +350,7 @@ pub fn codex_catalog_at(now_unix: i64) -> Vec<CodexModelSpec> {
         .map(|entry| CodexModelSpec {
             id: entry.id,
             upstream: entry.upstream,
+            created: entry.created,
             max_output_tokens: entry.max_output_tokens,
             reasoning_efforts: entry.reasoning_efforts,
             subscription_fast_multiplier_basis_points: entry
@@ -648,6 +663,9 @@ mod tests {
             .find(|model| model.id == "gpt-5.6-sol")
             .unwrap();
         assert_eq!(alias.upstream, concrete.upstream);
+        assert_eq!(alias.created, GPT_56_RELEASED);
+        assert_eq!(alias.created, concrete.created);
+        assert!(catalog.iter().all(|model| model.created > 0));
         assert_eq!(alias.prices, concrete.prices);
         assert_eq!(
             alias.subscription_fast_multiplier_basis_points,

@@ -3051,6 +3051,7 @@ mod tests {
             models: vec![super::super::config::GeminiModel {
                 id: "gemini-test".to_string(),
                 display_name: "Gemini Test".to_string(),
+                created: 1,
                 input_token_limit: 100,
                 output_token_limit: 10,
                 prices: metering::GeminiPrices {

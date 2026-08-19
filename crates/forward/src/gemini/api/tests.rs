@@ -545,6 +545,7 @@ fn gateway_fixture_with_models_calibration_and_node(
         .map(|model_id| GeminiModel {
             id: (*model_id).to_string(),
             display_name: format!("Gemini Integration Model {model_id}"),
+            created: 1,
             input_token_limit: 1_000_000,
             output_token_limit,
             prices: metering::GeminiPrices {
@@ -843,6 +844,7 @@ fn catalog_model(id: &str) -> GeminiModel {
     GeminiModel {
         id: spec.id.to_string(),
         display_name: spec.display_name.to_string(),
+        created: spec.created,
         input_token_limit: spec.input_token_limit,
         output_token_limit: spec.output_token_limit,
         prices: spec.prices,
@@ -1491,6 +1493,7 @@ fn model_value_is_native_shaped() {
     let mut model = GeminiModel {
         id: "gemini-2.5-flash".to_string(),
         display_name: "Gemini 2.5 Flash".to_string(),
+        created: 1_750_118_400,
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
         prices: metering::GeminiPrices {
@@ -1512,6 +1515,7 @@ fn model_value_is_native_shaped() {
     let value = model_value(&model);
     assert_eq!(value["name"], "models/gemini-2.5-flash");
     assert_eq!(value["version"], "2.5");
+    assert_eq!(value["created"], 1_750_118_400);
     assert_ne!(value["description"], value["displayName"]);
     assert!(value["temperature"].is_number());
     assert!(value["topP"].is_number());
@@ -1536,7 +1540,9 @@ fn model_value_is_native_shaped() {
 
     model.id = "gemini-3.1-flash-image".to_string();
     model.display_name = "Gemini 3.1 Flash Image".to_string();
+    model.created = 1_779_926_400;
     let image = model_value(&model);
+    assert_eq!(image["created"], 1_779_926_400);
     assert_eq!(
         image["apitoken"]["capabilities"],
         json!({
@@ -1551,14 +1557,18 @@ fn model_value_is_native_shaped() {
     );
 
     model.id = "gemini-3-flash-preview".to_string();
+    model.created = 1_765_929_600;
     let audio = model_value(&model);
+    assert_eq!(audio["created"], 1_765_929_600);
     assert_eq!(
         audio["apitoken"]["capabilities"]["input_modalities"],
         json!(["text", "image", "audio", "video", "pdf"])
     );
 
     model.id = "gemini-3.7-flash".to_string();
+    model.created = 1_786_579_200;
     let dormant = model_value(&model);
+    assert_eq!(dormant["created"], 1_786_579_200);
     for removed in ["temperature", "topP", "topK", "maxTemperature"] {
         assert!(dormant.get(removed).is_none());
     }

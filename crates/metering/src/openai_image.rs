@@ -10,6 +10,8 @@ pub const OPENAI_IMAGE_TARIFF_SCHEDULE_ID: &str = "openai/gpt-image-2/2026-04-21
 pub const OPENAI_IMAGE_ALIAS_GENERATION: i64 = 1;
 pub const GPT_IMAGE_2_ALIAS: &str = "gpt-image-2";
 pub const GPT_IMAGE_2_SNAPSHOT: &str = "gpt-image-2-2026-04-21";
+/// GPT Image 2 public release date from the OpenAI changelog, at 00:00:00 UTC.
+pub const GPT_IMAGE_2_CREATED: i64 = 1_776_729_600;
 
 /// Hot-override tariff family of the GPT Image 2 card: `OPENAI_IMAGE_TARIFF_SCHEDULE_ID` minus
 /// its date/version suffix. One family covers both the alias and the immutable snapshot because

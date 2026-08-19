@@ -63,6 +63,8 @@ pub struct KimiModelSpec {
 pub struct KimiSubscriptionModel {
     /// Model id clients address us with. Not necessarily what goes on the wire — see [`Self::wire_model`].
     pub alias: &'static str,
+    /// Public release date of this subscription-facing identity as Unix seconds at 00:00:00 UTC.
+    pub created: i64,
     /// Model id actually accepted on `api.kimi.com/coding`.
     ///
     /// Equal to `alias` for every id the provider itself publishes. The exception is the bracket
@@ -206,27 +208,40 @@ const CATALOG: &[CatalogEntry] = &[
 ///
 /// `k3[1m]` is not a distinct model: it is the Claude Code spelling that selects the 1M window.
 /// It resolves to the same tariff as `k3` and differs only in accepted context.
+// Public release dates: https://www.kimi.com/code/docs/en/kimi-code/whats-new.html
+// (reviewed 2026-08-19).
+const KIMI_K27_CODE_RELEASED: i64 = 1_781_222_400; // 2026-06-12
+const KIMI_K27_CODE_HIGHSPEED_RELEASED: i64 = 1_783_555_200; // 2026-07-09
+const KIMI_K3_RELEASED: i64 = 1_784_160_000; // 2026-07-16
+// The exact first publication day of the later 256K alias is not stated in the provider's current
+// release notes. It is the same K3 model, not a distinct weight release, so it inherits K3's date.
+const KIMI_K3_256K_RELEASED: i64 = KIMI_K3_RELEASED;
+
 const SUBSCRIPTION_MODELS: &[KimiSubscriptionModel] = &[
     KimiSubscriptionModel {
         alias: "kimi-for-coding",
+        created: KIMI_K27_CODE_RELEASED,
         wire_model: "kimi-for-coding",
         official_model: "kimi-k2.7-code",
         input_token_limit: CONTEXT_256K,
     },
     KimiSubscriptionModel {
         alias: "kimi-for-coding-highspeed",
+        created: KIMI_K27_CODE_HIGHSPEED_RELEASED,
         wire_model: "kimi-for-coding-highspeed",
         official_model: "kimi-k2.7-code-highspeed",
         input_token_limit: CONTEXT_256K,
     },
     KimiSubscriptionModel {
         alias: "k3",
+        created: KIMI_K3_RELEASED,
         wire_model: "k3",
         official_model: "kimi-k3",
         input_token_limit: CONTEXT_1M,
     },
     KimiSubscriptionModel {
         alias: "k3[1m]",
+        created: KIMI_K3_RELEASED,
         // The provider has no bracket form; plain `k3` is the same 1M model.
         wire_model: "k3",
         official_model: "kimi-k3",
@@ -234,6 +249,7 @@ const SUBSCRIPTION_MODELS: &[KimiSubscriptionModel] = &[
     },
     KimiSubscriptionModel {
         alias: "k3-256k",
+        created: KIMI_K3_256K_RELEASED,
         wire_model: "k3-256k",
         official_model: "kimi-k3",
         input_token_limit: CONTEXT_256K,

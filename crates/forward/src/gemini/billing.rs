@@ -1083,6 +1083,7 @@ mod tests {
         GeminiModel {
             id: spec.id.to_string(),
             display_name: spec.display_name.to_string(),
+            created: 1,
             input_token_limit: spec.input_token_limit,
             output_token_limit: spec.output_token_limit,
             prices: spec.prices,
@@ -1097,6 +1098,7 @@ mod tests {
         GeminiModel {
             id: spec.id.to_string(),
             display_name: spec.display_name.to_string(),
+            created: 1,
             input_token_limit: spec.input_token_limit,
             output_token_limit: spec.output_token_limit,
             prices: spec.prices,
@@ -1111,6 +1113,7 @@ mod tests {
         GeminiModel {
             id: spec.id.to_string(),
             display_name: spec.display_name.to_string(),
+            created: 1,
             input_token_limit: spec.input_token_limit,
             output_token_limit: spec.output_token_limit,
             prices: spec.prices,

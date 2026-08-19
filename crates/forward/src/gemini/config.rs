@@ -40,6 +40,8 @@ pub struct GeminiProfilesFile {
 pub struct GeminiModel {
     pub id: String,
     pub display_name: String,
+    /// Public release date as Unix seconds at 00:00:00 UTC.
+    pub created: i64,
     pub input_token_limit: u64,
     pub output_token_limit: u64,
     pub prices: GeminiPrices,
@@ -431,6 +433,7 @@ mod tests {
         let model = |id: &str| GeminiModel {
             id: id.to_string(),
             display_name: id.to_string(),
+            created: 1,
             input_token_limit: 1,
             output_token_limit: 1,
             prices: metering::GeminiPrices {

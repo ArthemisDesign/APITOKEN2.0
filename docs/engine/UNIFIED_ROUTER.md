@@ -575,8 +575,9 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
 `crates/metering`.
 
 Authoritative runtime metadata arrives producer-first from the planes. Anthropic
-already publishes native `max_input_tokens`, `max_tokens`, and `capabilities`; owned
-OpenAI/Gemini model resources add a closed expand-only object:
+already publishes native `created_at`, `max_input_tokens`, `max_tokens`, and `capabilities`; owned
+OpenAI/Gemini model resources publish a positive Unix-seconds `created` release date and add a
+closed expand-only object:
 
 ```json
 {"apitoken":{
@@ -641,9 +642,11 @@ the separately audited *image*-input class metered on edits has no field in the 
 schema v1 card and is documented in `docs/commerce/PRICING.md` instead of being folded
 into a leg that would then misprice plain generation.
 
-`created:0` means only "the producer provided no shared OpenAI-compatible creation
-date". The router does not substitute this field with a release date from
-documentation or a model name. Active `preset/*` entries publish
+Every model producer owns a reviewed public release date and sends it with the runtime catalog:
+Anthropic's RFC 3339 `created_at` is preserved on its transparent native plane, while OpenAI,
+Gemini and KIMI publish positive Unix seconds directly. The router consumer will convert and
+validate these values after this producer-first contract is live; it never derives a date from a
+model ID or a pricing epoch. Active `preset/*` entries publish
 `apitoken.routing.members` exactly from the live members available to this key, and
 `variable_model_pricing:true`: the selected model is determined per request, so a
 preset has no single rate. Their limits are the minimum over only the values known

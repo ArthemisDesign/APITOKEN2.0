@@ -604,6 +604,7 @@ fn gemini_conversion_catalogue_keeps_long_context_media_and_quota_aliases() {
     let model = forward::GeminiModel {
         id: spec.id.into(),
         display_name: spec.display_name.into(),
+        created: 1,
         input_token_limit: spec.input_token_limit,
         output_token_limit: spec.output_token_limit,
         prices: spec.prices,
@@ -629,6 +630,7 @@ fn gemini_conversion_catalogue_keeps_long_context_media_and_quota_aliases() {
     let preview = forward::GeminiModel {
         id: preview.id.into(),
         display_name: preview.display_name.into(),
+        created: 1,
         input_token_limit: preview.input_token_limit,
         output_token_limit: preview.output_token_limit,
         prices: preview.prices,
@@ -649,6 +651,7 @@ fn gemini_conversion_catalogue_keeps_long_context_media_and_quota_aliases() {
     let flash_37 = forward::GeminiModel {
         id: flash_37.id.into(),
         display_name: flash_37.display_name.into(),
+        created: 1,
         input_token_limit: flash_37.input_token_limit,
         output_token_limit: flash_37.output_token_limit,
         prices: flash_37.prices,
@@ -673,6 +676,7 @@ fn gemini_conversion_catalogue_projects_the_effective_hot_tariff_identity_and_ra
     let model = forward::GeminiModel {
         id: spec.id.into(),
         display_name: spec.display_name.into(),
+        created: 1,
         input_token_limit: spec.input_token_limit,
         output_token_limit: spec.output_token_limit,
         prices: spec.prices,

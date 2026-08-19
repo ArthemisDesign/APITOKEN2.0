@@ -69,6 +69,10 @@ full append-only recovery procedure is in `docs/engine/CONTROL_API.md`.
 
 Only after the live proof and the tariff seed are done:
 
+- pin the model's correct public release date from a provider-owned source in the serving catalog;
+  the producer must expose it and discovery must reject a missing, zero, malformed, or guessed date;
+  a pricing effective date, repository publication date, knowledge cutoff, or date-looking model ID
+  is not a substitute for release evidence;
 - `apps/web/src/lib/models.ts` + the docs portal and all storefront copy (grep the old model
   list, do not work from memory);
 - OpenKeys: runtime-capable models sell at the account's fixed 1:1 scalar; verify the existing

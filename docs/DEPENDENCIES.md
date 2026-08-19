@@ -404,12 +404,13 @@ is only what is needed to walk the relationships when making changes:
   256 candidates are cut into deterministic chunks; a failed chunk closes the entire
   overlay. The credential-specific overlay is not cached and never lands in the shared
   catalog TTL cache. The public provider vhosts do not serve `/internal/*`.
-- **Catalog runtime metadata contract (provider planes → router).** Anthropic produces
-  native `max_input_tokens`/`max_tokens`/`capabilities`; the owned OpenAI and Gemini
-  model resources produce expand-only `apitoken.limits`/`apitoken.capabilities`,
-  including modalities, tool calling, structured outputs, and streaming; OpenAI may also
-  publish a provider-authored `name`. Codex context/name is last-good authenticated
-  provider evidence, aggregated conservatively across serving profiles; the
+- **Catalog runtime metadata contract (provider planes → router).** Anthropic produces native
+  RFC 3339 `created_at` plus `max_input_tokens`/`max_tokens`/`capabilities`; the owned OpenAI,
+  Gemini and KIMI resources publish a positive Unix-seconds `created` release date, and OpenAI and
+  Gemini produce expand-only `apitoken.limits`/`apitoken.capabilities`, including modalities, tool
+  calling, structured outputs, and streaming. OpenAI may also publish a provider-authored `name`
+  and a closed `apitoken.endpoints` list for endpoint-specific models. Codex context/name is
+  last-good authenticated provider evidence, aggregated conservatively across serving profiles; the
   output/efforts/Fast/adapter capabilities and the Gemini model-specific metadata belong
   to the reviewed runtime contract. The consumer is `crates/router`: after a separate
   producer-first GREEN SHA it strictly validates and normalizes metadata into the unified

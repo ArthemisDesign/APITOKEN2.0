@@ -303,6 +303,7 @@ fn image_models_are_published_with_their_real_capabilities() {
         // Both ids are exactly what the paid image routes admit.
         assert!(metering::openai_image_tariff(model["id"].as_str().unwrap()).is_ok());
         assert_eq!(model["object"], "model");
+        assert_eq!(model["created"], metering::GPT_IMAGE_2_CREATED);
         assert_eq!(
             model["apitoken"]["capabilities"],
             json!({

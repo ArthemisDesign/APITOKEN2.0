@@ -9,6 +9,10 @@
   `cost_nanodollars`, `total_tokens`, and the tests as well.
 - Money amounts are counted in INTEGER nanodollars (1 USD = 1e9 nano; $/Mtoken × 1000 = nano/token — an integer).
   No f64 in money counting.
+- Provider-owned model catalogs also store the reviewed public release date used by discovery.
+  It must come from a provider-owned source and be normalized to positive Unix seconds at
+  00:00:00 UTC; a pricing epoch, knowledge cutoff, repository publication date, or date parsed
+  from the model ID is not a release date.
 - The Gemini catalog also lives only here: paid-tier effective-dated rates, uncached/audio/cached
   input, candidate+thinking output, the diagnostic tool-prompt subset, long-context and Search.
   A missing `toolUsePromptTokenCount` is not subtracted from the authoritative `promptTokenCount`
