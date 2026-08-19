@@ -18,6 +18,7 @@ document, update this index.
 - [CODEX_PROVIDER.md](engine/CODEX_PROVIDER.md) — Codex (ChatGPT) OAuth subscription provider.
 - [CLAUDESTORE_FALLBACK.md](engine/CLAUDESTORE_FALLBACK.md) — dormant emergency Claude/GPT transports via ClaudeStore and their compliance/live gates.
 - [GEMINI_PROVIDER.md](engine/GEMINI_PROVIDER.md) — Gemini OAuth subscription provider.
+- [GEMINI_BATCH_MODE_PLAN.md](engine/GEMINI_BATCH_MODE_PLAN.md) — implementation plan for a durable, subscription-distributed Gemini-compatible batch mode without an extra batch discount.
 - [GLM_PROVIDER.md](engine/GLM_PROVIDER.md) — GLM (Zhipu / Z.ai) Coding Plan subscription provider: capability manifest, backend-only, not published.
 - [KIMI_PROVIDER.md](engine/KIMI_PROVIDER.md) — KIMI (Moonshot) Kimi Code subscription provider: capability manifest, backend-only, not published.
 - [TRIPO3D_PROVIDER.md](engine/TRIPO3D_PROVIDER.md) — Tripo3D (VAST / Holymolly) 3D generation API provider: capability manifest, backend-only, not published.
