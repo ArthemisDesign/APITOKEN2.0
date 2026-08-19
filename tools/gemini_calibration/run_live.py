@@ -1344,6 +1344,11 @@ def body_for_gemini37_tool_result_final_turn(leg: Leg, run_id: str) -> dict[str,
     replayed functionCall carries the accepted stateless context-engineering thought signature
     marker because portable clients do not retain Google's opaque response signatures. There
     is intentionally no text part in the final turn: the leg exists to prove that wire shape.
+
+    The opening instruction must NOT forbid the post-tool answer ("do not answer with plain
+    text" made the model correctly emit an empty candidate once the tool result arrived —
+    observed live on 2026-08-19 for both 3.7 and 3.6). The probe therefore asks for the tool
+    first and then requires the marker answer once the tool result is in.
     """
     return {
         "contents": [
@@ -1351,8 +1356,9 @@ def body_for_gemini37_tool_result_final_turn(leg: Leg, run_id: str) -> dict[str,
                 "role": "user",
                 "parts": [{
                     "text": (
-                        f"Calibration {run_id}:{leg.name}. Call calibration_probe exactly "
-                        "once with marker CALIBRATION_OK. Do not answer with plain text."
+                        f"Calibration {run_id}:{leg.name}. First call calibration_probe "
+                        "exactly once with marker CALIBRATION_OK. After the tool result "
+                        "arrives, answer with exactly CALIBRATION_OK."
                     )
                 }],
             },
@@ -1892,7 +1898,13 @@ def verify_generation_response(
     evidence["terminal_usage"] = True
     if leg.stream and leg.kind != "long":
         if leg.kind not in {"tool", "image"}:
-            admission_brief_sse = leg.name == f"admission:{GEMINI_37_ADMISSION_MODEL}:sse"
+            # A one-word marker answer legitimately arrives in a single visible frame; the
+            # brief-SSE admission accepted exactly that on 2026-08-15. The tool-result-final-turn
+            # leg answers with the same one marker, so it uses the same brief rule.
+            admission_brief_sse = leg.name in {
+                f"admission:{GEMINI_37_ADMISSION_MODEL}:sse",
+                f"admission:{GEMINI_37_ADMISSION_MODEL}:tool-result-final-turn",
+            }
             evidence["incremental_sse"] = (
                 len(response.frames) >= 2
                 and evidence["visible_text_frames"] >= (1 if admission_brief_sse else 2)
