@@ -118,8 +118,8 @@ pub struct BillCtx {
     pub(crate) http_status_code: i32,
     /// Upstream Anthropic request-id retained only as audit metadata.
     pub reference: Option<String>,
-    /// Present only for the native billable Anthropic Messages slice. Universal adapters, admin,
-    /// SQLite and legacy paths keep this absent and retain their existing money semantics.
+    /// Present only for scoped billable Anthropic native Messages or universal OpenAI Chat/Responses.
+    /// Admin, SQLite and legacy paths keep this absent and retain their existing money semantics.
     pub(crate) request_fact: Option<AnthropicBillableFactContext>,
 }
 

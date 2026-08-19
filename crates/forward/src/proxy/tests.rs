@@ -140,6 +140,35 @@ fn native_count_tokens_request(
     request
 }
 
+fn universal_request(uri: &str, body: serde_json::Value) -> axum::extract::Request {
+    let mut request = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header("x-api-key", COUNT_FACT_RAW_KEY)
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        crate::execution::LOGICAL_REQUEST_ID_HEADER,
+        COUNT_FACT_LOGICAL_ID.parse().unwrap(),
+    );
+    request
+        .extensions_mut()
+        .insert(crate::execution::admit_logical_request_id(&mut headers).unwrap());
+    request
+        .extensions_mut()
+        .insert(crate::execution::RequestLifecycleClock::default());
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        crate::execution::CLIENT_ATTRIBUTION_HEADER,
+        "opencode/1.2.3".parse().unwrap(),
+    );
+    request
+        .extensions_mut()
+        .insert(crate::execution::admit_client_attribution(&mut headers));
+    request
+}
+
 async fn count_fact_test_app(
     upstream: &str,
     subs: usize,
@@ -328,6 +357,57 @@ fn spawn_messages_upstream(
                 socket.write_all(b"\r\n").unwrap();
                 socket.write_all(body).unwrap();
             }
+        }
+    });
+    (format!("http://{address}"), handle)
+}
+
+fn spawn_universal_messages_upstream(
+    responses: Vec<(&'static str, &'static str, &'static [u8])>,
+) -> (String, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let handle = std::thread::spawn(move || {
+        for (request_id, content_type, body) in responses {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = socket.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                let Some(header_end) = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|position| position + 4)
+                else {
+                    continue;
+                };
+                let content_length = String::from_utf8_lossy(&request[..header_end])
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("content-length: ")
+                            .or_else(|| line.strip_prefix("Content-Length: "))
+                    })
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if request.len() >= header_end + content_length {
+                    break;
+                }
+            }
+            assert!(request.starts_with(b"POST /v1/messages?beta=true HTTP/1.1"));
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nrequest-id: {request_id}\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            socket.write_all(body).unwrap();
         }
     });
     (format!("http://{address}"), handle)
@@ -1598,6 +1678,350 @@ fn exact_not_started_metric_predicate_matches_the_router_proof() {
         .body(Body::empty())
         .unwrap();
     assert!(!is_exact_not_started_response(&success));
+}
+
+#[test]
+fn anthropic_universal_chat_and_responses_persist_exactly_one_postgres_fact_each() {
+    const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_444;
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping Anthropic universal fact rows: test URL is unset");
+        return;
+    };
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let mut connection = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    connection
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    connection
+        .batch_execute(
+            "TRUNCATE request_facts,execution_group_winner,settlement_outbox,reservations, \
+             capacity_leases,leader_leases,engine_instances,usage_events,ledger,api_keys,accounts, \
+             pool_state,subs RESTART IDENTITY CASCADE",
+        )
+        .unwrap();
+    pg.account_create(COUNT_FACT_ACCOUNT_ID, None, 10_000)
+        .unwrap();
+    pg.account_topup(
+        COUNT_FACT_ACCOUNT_ID,
+        1_000_000_000,
+        Some("anthropic-universal-facts"),
+    )
+    .unwrap();
+    pg.key_issue(COUNT_FACT_RAW_KEY, COUNT_FACT_ACCOUNT_ID, None)
+        .unwrap();
+    let expected_key_id = pg.key_get(COUNT_FACT_RAW_KEY).unwrap().unwrap().key_id;
+    pg.add(
+        "pg-universal@example.test",
+        "subscription-token",
+        "",
+        "test",
+    )
+    .unwrap();
+    let owner = pg
+        .claim_instance(
+            &format!("anthropic-universal-facts-{}-{unique}", std::process::id()),
+            600,
+        )
+        .unwrap();
+    drop(pg);
+
+    let billing = Arc::new(
+        AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+            Some(owner),
+            1,
+            0,
+        )
+        .unwrap(),
+    );
+    let success_body = br#"{"type":"message","id":"msg_private","model":"claude-opus-4-7","content":[{"type":"text","text":"PUBLIC RESULT"}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":3}}"#;
+    let success_sse = br#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_private_stream","model":"claude-opus-4-7","usage":{"input_tokens":2,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"PUBLIC STREAM RESULT"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#;
+    let (upstream, server) = spawn_universal_messages_upstream(vec![
+        ("req-universal-chat", "application/json", success_body),
+        ("req-universal-responses", "text/event-stream", success_sse),
+        (
+            "req-universal-missing-context",
+            "application/json",
+            success_body,
+        ),
+    ]);
+    let mut cfg = (*proxy_test_config()).clone();
+    cfg.upstream = upstream;
+    let cfg = Arc::new(cfg);
+    let app = AppState {
+        provider: crate::ProviderMode::Anthropic,
+        authority: Arc::new(registry::authority::AuthorityConfig::Postgres { url: url.clone() }),
+        data_db_path: Arc::new(format!("/tmp/anthropic-universal-facts-{unique}")),
+        pool: Arc::new(Pool::new(
+            vec![Sub {
+                email: "pg-universal@example.test".into(),
+                token: "subscription-token".into(),
+                proxy: String::new(),
+                fleet: "test".into(),
+                plan: "max20".into(),
+            }],
+            Reserve::FULL,
+            1.0,
+            1.0,
+        )),
+        affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
+        clients: Arc::new(Clients::new(&cfg)),
+        codex: None,
+        gemini: None,
+        kimi: None,
+        glm: None,
+        tripo3d: None,
+        suno: None,
+        billing: Some(Arc::clone(&billing)),
+        authority_ready: Arc::new(AtomicBool::new(true)),
+        breaker: Arc::new(Breaker::new(100)),
+        metrics: Arc::new(Metrics::new()),
+        probe_poke: None,
+        admin_changes: tokio::sync::broadcast::channel(16).0,
+        cfg,
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let malformed_chat = crate::anthropic::anthropic_chat_completions(
+                State(app.clone()),
+                ConnectInfo("192.0.2.1:443".parse().unwrap()),
+                universal_request(
+                    "/v1/chat/completions",
+                    serde_json::json!({
+                        "model":"anthropic/claude-opus-4-7",
+                        "messages":[],
+                        "stream":true,
+                        "tools":[{"type":"function","function":{"name":"MALFORMED PRIVATE TOOL"}}]
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(malformed_chat.status(), StatusCode::BAD_REQUEST);
+            let malformed_responses = crate::anthropic_responses::anthropic_responses(
+                State(app.clone()),
+                ConnectInfo("192.0.2.1:443".parse().unwrap()),
+                universal_request(
+                    "/v1/responses",
+                    serde_json::json!({
+                        "model":"anthropic/claude-opus-4-7",
+                        "stream":"not-a-boolean",
+                        "input":"MALFORMED PRIVATE INPUT"
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(malformed_responses.status(), StatusCode::BAD_REQUEST);
+
+            let chat = crate::anthropic::anthropic_chat_completions(
+                State(app.clone()),
+                ConnectInfo("192.0.2.1:443".parse().unwrap()),
+                universal_request(
+                    "/v1/chat/completions",
+                    serde_json::json!({
+                        "model":"anthropic/claude-opus-4-7",
+                        "messages":[{"role":"user","content":"PRIVATE CHAT PROMPT"}],
+                        "max_completion_tokens":8,
+                        "stream":false,
+                        "tools":[{"type":"function","function":{"name":"PRIVATE CHAT TOOL","parameters":{"type":"object","properties":{"secret":{"type":"string"}}}}}],
+                        "tool_choice":"required",
+                        "parallel_tool_calls":false,
+                        "response_format":{"type":"json_schema","json_schema":{"name":"PRIVATE CHAT FORMAT","schema":{"type":"object"}}},
+                        "reasoning_effort":"high"
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(chat.status(), StatusCode::OK);
+            let _ = to_bytes(chat.into_body(), 1024 * 1024).await.unwrap();
+
+            let responses = crate::anthropic_responses::anthropic_responses(
+                State(app.clone()),
+                ConnectInfo("192.0.2.1:443".parse().unwrap()),
+                universal_request(
+                    "/v1/responses",
+                    serde_json::json!({
+                        "model":"anthropic/claude-opus-4-7",
+                        "input":"PRIVATE RESPONSES PROMPT",
+                        "max_output_tokens":8,
+                        "stream":true,
+                        "tools":[{"type":"function","name":"PRIVATE RESPONSES TOOL","parameters":{"type":"object","properties":{"secret":{"type":"string"}}}}],
+                        "tool_choice":"required",
+                        "parallel_tool_calls":false,
+                        "text":{"format":{"type":"json_schema","name":"PRIVATE RESPONSES FORMAT","schema":{"type":"object"}}},
+                        "reasoning":{"effort":"high"}
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(responses.status(), StatusCode::OK);
+            // Never poll the outer public stream. Dropping it must keep the existing TeeMeter
+            // detach-and-drain settlement path and must not create a late or duplicate fact.
+            drop(responses);
+
+            let mut missing_context = universal_request(
+                "/v1/chat/completions",
+                serde_json::json!({
+                    "model":"anthropic/claude-opus-4-7",
+                    "messages":[{"role":"user","content":"PRIVATE MISSING CONTEXT"}],
+                    "max_completion_tokens":8
+                }),
+            );
+            missing_context
+                .extensions_mut()
+                .remove::<crate::execution::RequestLifecycleClock>();
+            let response = crate::anthropic::anthropic_chat_completions(
+                State(app.clone()),
+                ConnectInfo("192.0.2.1:443".parse().unwrap()),
+                missing_context,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let _ = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+
+            let unauthorized = universal_request(
+                "/v1/chat/completions",
+                serde_json::json!({
+                    "model":"anthropic/claude-opus-4-7",
+                    "messages":[{"role":"user","content":"PRIVATE UNAUTHORIZED"}]
+                }),
+            );
+            let mut unauthorized = unauthorized;
+            unauthorized
+                .headers_mut()
+                .insert("x-api-key", "invalid".parse().unwrap());
+            let response = crate::anthropic::anthropic_chat_completions(
+                State(app.clone()),
+                ConnectInfo("192.0.2.1:443".parse().unwrap()),
+                unauthorized,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            billing.flush().await.unwrap();
+        });
+    server.join().unwrap();
+
+    let rows = connection
+        .query(
+            "SELECT f.account_id,f.key_id,f.provider_plane,f.route_class,f.request_class, \
+                    f.requested_model,f.executable_model,f.stream_flag,f.tools_declared_count, \
+                    f.tool_classes,f.tool_choice_mode,f.parallel_tools_requested, \
+                    f.structured_output_flag,f.reasoning_flag,f.delivery_started_at, \
+                    f.provider_terminal_class,f.billing_outcome,o.state,f.http_status_code, \
+                    f.delivery_state,f.downstream_disconnect,f.upstream_request_id, \
+                    f.internal_attempt_count,f.tool_calls_in_output,f.terminal_at, \
+                    f.first_public_byte_at,row_to_json(f)::text \
+               FROM request_facts f \
+               JOIN settlement_outbox o ON o.request_id=f.billing_request_id \
+              WHERE f.logical_request_id=$1 ORDER BY f.request_class",
+            &[&COUNT_FACT_LOGICAL_ID],
+        )
+        .unwrap();
+    assert_eq!(
+        rows.len(),
+        2,
+        "one leaf fact for Chat and one for Responses"
+    );
+    for (row, (request_class, stream_flag)) in
+        rows.iter().zip([("chat", false), ("responses", true)])
+    {
+        assert_eq!(row.get::<_, String>(0), COUNT_FACT_ACCOUNT_ID);
+        assert_eq!(row.get::<_, String>(1), expected_key_id);
+        assert_eq!(row.get::<_, String>(2), "anthropic");
+        assert_eq!(row.get::<_, String>(3), "universal");
+        assert_eq!(row.get::<_, String>(4), request_class);
+        assert_eq!(
+            row.get::<_, Option<String>>(5).as_deref(),
+            Some("anthropic/claude-opus-4-7")
+        );
+        assert_eq!(row.get::<_, Option<String>>(6), None);
+        assert_eq!(row.get::<_, bool>(7), stream_flag);
+        assert_eq!(row.get::<_, Option<i32>>(8), Some(1));
+        assert_eq!(
+            row.get::<_, Option<i32>>(9),
+            Some(registry::request_facts::TOOL_CLASS_CUSTOM_FUNCTION)
+        );
+        assert_eq!(row.get::<_, String>(10), "required");
+        assert_eq!(row.get::<_, Option<bool>>(11), Some(false));
+        assert_eq!(row.get::<_, Option<bool>>(12), Some(true));
+        assert_eq!(row.get::<_, Option<bool>>(13), Some(true));
+        assert!(row.get::<_, Option<i64>>(14).is_some());
+        assert_eq!(row.get::<_, String>(15), "success");
+        assert_eq!(row.get::<_, String>(16), "winner");
+        assert_eq!(row.get::<_, String>(17), "done");
+        assert_eq!(row.get::<_, Option<i32>>(18), Some(200));
+        assert_eq!(row.get::<_, String>(19), "completed");
+        assert_eq!(
+            row.get::<_, Option<bool>>(20),
+            Some(request_class == "responses")
+        );
+        assert_eq!(
+            row.get::<_, Option<String>>(21).as_deref(),
+            Some(if request_class == "chat" {
+                "req-universal-chat"
+            } else {
+                "req-universal-responses"
+            })
+        );
+        assert_eq!(row.get::<_, Option<i32>>(22), Some(1));
+        assert_eq!(row.get::<_, Option<bool>>(23), Some(false));
+        assert!(row.get::<_, Option<i64>>(24).is_some());
+        // This test invokes the leaf adapters directly, outside the server's final public body
+        // observer, so no first-byte time may be invented for either lifecycle.
+        assert_eq!(row.get::<_, Option<i64>>(25), None);
+        let row_json = row.get::<_, String>(26);
+        for private in [
+            COUNT_FACT_RAW_KEY,
+            "PRIVATE CHAT PROMPT",
+            "PRIVATE CHAT TOOL",
+            "PRIVATE CHAT FORMAT",
+            "PRIVATE RESPONSES PROMPT",
+            "PRIVATE RESPONSES TOOL",
+            "PRIVATE RESPONSES FORMAT",
+            "MALFORMED PRIVATE TOOL",
+            "MALFORMED PRIVATE INPUT",
+            "PRIVATE MISSING CONTEXT",
+            "PRIVATE UNAUTHORIZED",
+            "secret",
+        ] {
+            assert!(!row_json.contains(private));
+        }
+    }
+    connection
+        .query_one(
+            "SELECT pg_advisory_unlock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    drop(billing);
 }
 
 #[test]

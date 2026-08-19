@@ -1,8 +1,9 @@
 //! Privacy-bounded v1 structural request classification.
 //!
-//! Classifiers in this module are pure. Native Anthropic count-tokens and OpenAI Responses
-//! input-token counting are their narrow runtime consumers; all other stage 6/7 producer integration
-//! remains incomplete. They accept only request values already admitted by the owning parser; they
+//! Classifiers in this module are pure. Native Anthropic count-tokens, OpenAI Responses input-token
+//! counting and Anthropic-plane OpenAI Chat/Responses generation are their narrow runtime consumers;
+//! all other stage 6/7 producer integration remains incomplete. They accept only request values
+//! already admitted by the owning parser; they
 //! never retain arbitrary strings or request content.
 
 use registry::request_facts::{

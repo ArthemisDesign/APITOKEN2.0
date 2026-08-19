@@ -134,6 +134,7 @@ use crate::anthropic_stream::AnthropicStreamState;
 use crate::codex::new_id;
 use crate::openai_responses_stream::ResponsesEventEncoder;
 use crate::proxy::{forward, read_body_limited, without_not_started, BodyReadError};
+use crate::request_classification::classify_openai_responses;
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
 
@@ -178,10 +179,21 @@ pub async fn anthropic_responses(
             )
         }
     };
+    // Preserve original accepted client intent before translation strips the namespace, rewrites
+    // tools/history and injects Messages defaults. The temporary JSON is dropped here; the typed
+    // carrier contains only bounded model/stream/classifier fields.
+    let requested_model =
+        crate::execution::SynthesizedMessagesOrigin::bounded_requested_model(&value);
+    let classification = classify_openai_responses(&value);
     let translated = match translate_responses_request(value) {
         Ok(translated) => translated,
         Err(response) => return response,
     };
+    let synthesized_origin = crate::execution::SynthesizedMessagesOrigin::openai_responses(
+        requested_model,
+        translated.stream,
+        classification,
+    );
 
     // Внутренний запрос на /v1/messages: admission, reserve, ротация,
     // identity-инжект, tee-метеринг и settle выполняет общий forward().
@@ -213,9 +225,7 @@ pub async fn anthropic_responses(
         .expect("static request builder is infallible");
     *inner.headers_mut() = headers;
     crate::execution::inherit_request_context(&parts.extensions, inner.extensions_mut());
-    inner
-        .extensions_mut()
-        .insert(crate::execution::SynthesizedMessagesOrigin);
+    inner.extensions_mut().insert(synthesized_origin);
     let upstream = forward(State(app), ConnectInfo(peer), inner).await;
 
     if upstream.status() != StatusCode::OK {

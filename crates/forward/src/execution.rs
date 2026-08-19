@@ -244,11 +244,105 @@ pub fn admit_logical_request_id(
 
 /// Preserve already-admitted typed context when a universal adapter synthesizes its leaf request.
 /// Wire headers deliberately remain absent.
-/// Content-free proof that an internal adapter synthesized a Messages leaf from a different public
-/// protocol. Stage 7 request-fact producers use this typed marker to keep native and universal route
-/// classes distinct without retaining the translated request or adding a wire header.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct SynthesizedMessagesOrigin;
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SynthesizedMessagesRouteKind {
+    Universal,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SynthesizedMessagesRequestKind {
+    Chat,
+    Responses,
+}
+
+/// Privacy-bounded proof that an accepted OpenAI adapter request synthesized one Anthropic Messages
+/// leaf. The carrier is created only after the owning outer parser accepts the client shape. It keeps
+/// the original bounded model spelling, accepted stream value and the pure pre-translation structural
+/// classification; request content, tool names/schemas/arguments and headers are absent by type.
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct SynthesizedMessagesOrigin {
+    route_kind: SynthesizedMessagesRouteKind,
+    request_kind: SynthesizedMessagesRequestKind,
+    requested_model: Option<String>,
+    stream_flag: bool,
+    classification: crate::request_classification::RequestClassification,
+}
+
+impl SynthesizedMessagesOrigin {
+    /// Extract only the durable model candidate before translation consumes the original JSON.
+    pub(crate) fn bounded_requested_model(request: &serde_json::Value) -> Option<String> {
+        request
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|model| {
+                let valid = !model.is_empty()
+                    && model.len() <= registry::request_facts::MAX_REQUEST_FACT_MODEL_LEN
+                    && model
+                        .bytes()
+                        .all(|byte| byte.is_ascii_graphic() || byte == b' ');
+                valid.then(|| model.to_owned())
+            })
+    }
+
+    pub(crate) fn openai_chat(
+        requested_model: Option<String>,
+        stream_flag: bool,
+        classification: crate::request_classification::RequestClassification,
+    ) -> Self {
+        Self {
+            route_kind: SynthesizedMessagesRouteKind::Universal,
+            request_kind: SynthesizedMessagesRequestKind::Chat,
+            requested_model,
+            stream_flag,
+            classification,
+        }
+    }
+
+    pub(crate) fn openai_responses(
+        requested_model: Option<String>,
+        stream_flag: bool,
+        classification: crate::request_classification::RequestClassification,
+    ) -> Self {
+        Self {
+            route_kind: SynthesizedMessagesRouteKind::Universal,
+            request_kind: SynthesizedMessagesRequestKind::Responses,
+            requested_model,
+            stream_flag,
+            classification,
+        }
+    }
+
+    pub(crate) fn route_class(&self) -> &'static str {
+        match self.route_kind {
+            SynthesizedMessagesRouteKind::Universal => "universal",
+        }
+    }
+
+    pub(crate) fn request_class(&self) -> &'static str {
+        match self.request_kind {
+            SynthesizedMessagesRequestKind::Chat => "chat",
+            SynthesizedMessagesRequestKind::Responses => "responses",
+        }
+    }
+
+    pub(crate) fn requested_model(&self) -> &Option<String> {
+        &self.requested_model
+    }
+
+    pub(crate) fn stream_flag(&self) -> bool {
+        self.stream_flag
+    }
+
+    pub(crate) fn classification(&self) -> &crate::request_classification::RequestClassification {
+        &self.classification
+    }
+}
+
+impl fmt::Debug for SynthesizedMessagesOrigin {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SynthesizedMessagesOrigin(<redacted>)")
+    }
+}
 
 pub(crate) fn inherit_request_context(source: &Extensions, target: &mut Extensions) {
     if let Some(logical_request_id) = source.get::<LogicalRequestId>() {
@@ -265,22 +359,96 @@ pub(crate) fn inherit_request_context(source: &Extensions, target: &mut Extensio
 #[cfg(test)]
 mod synthesized_messages_origin_tests {
     use super::*;
+    use crate::request_classification::{classify_openai_chat, classify_openai_responses};
 
     #[test]
-    fn adapter_origin_is_explicit_and_content_free() {
+    fn adapter_origin_is_typed_redacted_and_content_free() {
         let source = Extensions::new();
         let mut target = Extensions::new();
         inherit_request_context(&source, &mut target);
         assert!(target.get::<SynthesizedMessagesOrigin>().is_none());
 
-        target.insert(SynthesizedMessagesOrigin);
+        let chat_request = serde_json::json!({
+            "model": "anthropic/claude-test",
+            "stream": true,
+            "messages": [{"role":"user","content":"PRIVATE PROMPT"}],
+            "tools": [{"type":"function","function":{"name":"PRIVATE TOOL","parameters":{"secret":true}}}],
+            "tool_choice": "required",
+            "parallel_tool_calls": false,
+            "response_format": {"type":"json_schema","json_schema":{"name":"PRIVATE FORMAT","schema":{}}},
+            "reasoning_effort": "high"
+        });
+        let origin = SynthesizedMessagesOrigin::openai_chat(
+            SynthesizedMessagesOrigin::bounded_requested_model(&chat_request),
+            true,
+            classify_openai_chat(&chat_request),
+        );
+        target.insert(origin);
+        let origin = target.get::<SynthesizedMessagesOrigin>().unwrap();
+        assert_eq!(origin.route_class(), "universal");
+        assert_eq!(origin.request_class(), "chat");
         assert_eq!(
-            target.get::<SynthesizedMessagesOrigin>(),
-            Some(&SynthesizedMessagesOrigin)
+            origin.requested_model().as_deref(),
+            Some("anthropic/claude-test")
+        );
+        assert!(origin.stream_flag());
+        assert_eq!(origin.classification().tools_declared_count(), Some(1));
+        assert_eq!(
+            origin.classification().tool_classes(),
+            Some(registry::request_facts::TOOL_CLASS_CUSTOM_FUNCTION)
         );
         assert_eq!(
-            format!("{:?}", SynthesizedMessagesOrigin),
-            "SynthesizedMessagesOrigin"
+            origin.classification().tool_choice_mode(),
+            Some(registry::request_facts::ToolChoiceMode::Required)
+        );
+        assert_eq!(
+            origin.classification().parallel_tools_requested(),
+            Some(false)
+        );
+        assert_eq!(origin.classification().structured_output_flag(), Some(true));
+        assert_eq!(origin.classification().reasoning_flag(), Some(true));
+        assert_eq!(
+            format!("{origin:?}"),
+            "SynthesizedMessagesOrigin(<redacted>)"
+        );
+        for private in ["PRIVATE PROMPT", "PRIVATE TOOL", "PRIVATE FORMAT", "secret"] {
+            assert!(!format!("{origin:?}").contains(private));
+        }
+
+        let responses_request = serde_json::json!({
+            "model": "anthropic/claude-responses",
+            "input": "PRIVATE RESPONSES PROMPT",
+            "stream": false,
+            "tools": [{"type":"function","name":"PRIVATE RESPONSES TOOL","parameters":{}}]
+        });
+        let origin = SynthesizedMessagesOrigin::openai_responses(
+            SynthesizedMessagesOrigin::bounded_requested_model(&responses_request),
+            false,
+            classify_openai_responses(&responses_request),
+        );
+        assert_eq!(origin.route_class(), "universal");
+        assert_eq!(origin.request_class(), "responses");
+        assert!(!origin.stream_flag());
+        assert_eq!(origin.classification().tools_declared_count(), Some(1));
+    }
+
+    #[test]
+    fn adapter_origin_rejects_unbounded_or_nonprintable_model_spelling() {
+        assert_eq!(
+            SynthesizedMessagesOrigin::bounded_requested_model(&serde_json::json!({"model":""})),
+            None
+        );
+        assert_eq!(
+            SynthesizedMessagesOrigin::bounded_requested_model(
+                &serde_json::json!({"model":"bad\nmodel"})
+            ),
+            None
+        );
+        assert_eq!(
+            SynthesizedMessagesOrigin::bounded_requested_model(&serde_json::json!({
+                "model": "x".repeat(registry::request_facts::MAX_REQUEST_FACT_MODEL_LEN + 1)
+            })),
+            None
         );
     }
 }

@@ -1291,10 +1291,10 @@ pub async fn forward(
     let typed_logical_request_id = req.extensions().get::<LogicalRequestId>().cloned();
     let typed_client_attribution = req.extensions().get::<ClientAttribution>().cloned();
     let typed_lifecycle_clock = req.extensions().get::<RequestLifecycleClock>().cloned();
-    let synthesized_messages = req
+    let synthesized_messages_origin = req
         .extensions()
         .get::<crate::execution::SynthesizedMessagesOrigin>()
-        .is_some();
+        .cloned();
     if !app.authority_ready.load(AtomicOrdering::Acquire) {
         // Инстанс зафенсен/authority недоступен — НАША внутренняя причина. Клиенту — транзиентный
         // retryable overload (ретрай, вероятно, попадёт на здоровый инстанс), без слова «authority».
@@ -1403,7 +1403,7 @@ pub async fn forward(
     // identity or billing injection. Unknown/unvalidated sub-shapes remain nullable classifier fields.
     let native_messages_fact_candidate = (billable
         && app.provider.serves_anthropic()
-        && !synthesized_messages
+        && synthesized_messages_origin.is_none()
         && matches!(authz, Authz::Metered { .. }))
     .then(|| parsed.as_ref())
     .flatten()
@@ -1721,18 +1721,41 @@ pub async fn forward(
     // One stable internal ID spans reservation, all upstream attempts, settlement, and capacity leases.
     // It is generated before any money mutation and is never replaced by an upstream audit header.
     let engine_request_id = crate::upstream::fresh_request_id();
-    // Build the immutable fact before reserve. Missing typed logical/lifecycle context, admin,
-    // SQLite (whose fact-aware method deliberately ignores analytics), universal adapters, and
-    // internal KIMI/GLM leaves keep this absent and preserve the legacy money path.
+    // Build the immutable fact before reserve. Native intent comes from the original Messages JSON;
+    // a universal adapter supplies the accepted original OpenAI intent through its typed carrier.
+    // Missing typed logical/lifecycle context, admin, SQLite (whose fact-aware method deliberately
+    // ignores analytics), and internal KIMI/GLM leaves preserve the legacy money path.
     let request_fact_admitted_at = pool::now();
+    let request_fact_source = native_messages_fact_candidate
+        .as_ref()
+        .map(|(requested_model, stream_flag, classification)| {
+            (
+                "native",
+                "messages",
+                requested_model,
+                *stream_flag,
+                classification,
+            )
+        })
+        .or_else(|| {
+            synthesized_messages_origin.as_ref().map(|origin| {
+                (
+                    origin.route_class(),
+                    origin.request_class(),
+                    origin.requested_model(),
+                    origin.stream_flag(),
+                    origin.classification(),
+                )
+            })
+        });
     let request_fact_admission = match (
-        native_messages_fact_candidate.as_ref(),
+        request_fact_source,
         typed_logical_request_id.as_ref(),
         typed_lifecycle_clock.as_ref(),
         &authz,
     ) {
         (
-            Some((requested_model, stream_flag, classification)),
+            Some((route_class, request_class, requested_model, stream_flag, classification)),
             Some(logical_request_id),
             Some(_),
             Authz::Metered {
@@ -1759,13 +1782,13 @@ pub async fn forward(
                 .as_ref()
                 .and_then(|client| client.version().map(str::to_owned)),
             provider_plane: "anthropic".into(),
-            route_class: "native".into(),
-            request_class: "messages".into(),
+            route_class: route_class.into(),
+            request_class: request_class.into(),
             requested_model: requested_model.clone(),
-            // Only a locally resolved/accepted executable id is admissible. Native Anthropic model
+            // Only a locally resolved/accepted executable id is admissible. Anthropic model
             // resolution happens upstream, after immutable admission, so this remains unknown.
             executable_model: None,
-            stream_flag: *stream_flag,
+            stream_flag,
             tools_declared_count: classification.tools_declared_count(),
             tool_classes: classification.tool_classes(),
             tool_choice_mode: classification.tool_choice_mode(),

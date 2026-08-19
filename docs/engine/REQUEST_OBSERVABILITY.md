@@ -6,15 +6,16 @@
 > request-fact surfaces are metered Codex/OpenAI/Gemini universal Messages count,
 > OpenAI native Responses input-token count, Anthropic native Messages count, and native Gemini
 > countTokens; all consume normalized client attribution. The closed structural classifier contract is
-> implemented: Anthropic, OpenAI native, and both Gemini counting routes consume their owning
-> classifiers, while OpenAI Chat and Gemini generation remain dormant. A typed once-only lifecycle
+> implemented: Anthropic, OpenAI native, both Gemini counting routes, and Anthropic-plane OpenAI
+> Chat/Responses consume their owning classifiers; remaining OpenAI Chat and Gemini generation routes
+> remain dormant. A typed once-only lifecycle
 > carrier, transparent final-public-body observation seam, and nonwaiting atomic terminal seal are
 > active. All counting producers capture safely ordered first-byte evidence or freeze `NULL` before
-> any later outer body poll. Stage 7 has started with the
-> native billable Anthropic `POST /v1/messages` leaf, including stream/nonstream settlement and the
-> configured ClaudeStore Anthropic-wire fallback. OpenAI Chat/Responses universal adapters now mark
-> their synthesized Messages leaves and remain explicitly excluded from this first slice. All other
-> billable producers, the private read surface, and request-fact metrics remain incomplete.
+> any later outer body poll. Stage 7 now covers the native billable Anthropic `POST /v1/messages` leaf
+> and Anthropic-plane universal OpenAI Chat `POST /v1/chat/completions` and Responses
+> `POST /v1/responses`, including stream/nonstream settlement and the configured ClaudeStore
+> Anthropic-wire fallback. All other billable producers, the private read surface, and request-fact
+> metrics remain incomplete.
 >
 > This document is the owner-approved v1 implementation contract. It authorizes only the finite,
 > ordered rollout and Definition of Done in §§13-15; it does not claim that those stages are complete.
@@ -32,9 +33,9 @@
 > inbox, persisting normalized explicit client attribution or unknown when malformed/absent. Anthropic
 > additionally publishes its privacy-bounded Messages classifier only after upstream success proves
 > native shape acceptance; Gemini classifiers are parser-gated at their owning seams. The logical ID
-> remains operator-only. The native Anthropic billable Messages slice now admits facts in the reserve
-> transaction, marks delivery with money, and seals terminal evidence through TeeMeter settlement;
-> universal Anthropic adapters and every other billable plane caller remain absent.
+> remains operator-only. The native Anthropic billable Messages and Anthropic-plane universal OpenAI
+> Chat/Responses slices now admit facts in the reserve transaction, mark delivery with money, and seal
+> terminal evidence through TeeMeter settlement; every other billable plane caller remains absent.
 
 ## 1. Purpose
 
@@ -345,9 +346,10 @@ terminal work, and repeated seals are idempotent. Existing evidence is returned 
 ordered inside inclusive `[admitted_at, terminal_at]`; invalid bounds or out-of-order evidence produce
 `NULL` without clamping or fabrication, and invalid bounds still seal an open clock. This seam does
 not itself write facts or settle money. The nonbillable Codex/OpenAI/Gemini universal Messages count,
-OpenAI native Responses input-token count, Anthropic/Gemini native count fact producers, and native
-billable Anthropic Messages consume it. Other billable/TeeMeter and Codex-generation integration
-remains incomplete, so producer coverage remains incomplete.
+OpenAI native Responses input-token count, Anthropic/Gemini native count fact producers, native
+billable Anthropic Messages, and Anthropic-plane universal OpenAI Chat/Responses consume it. Other
+billable/TeeMeter and Codex-generation integration remains incomplete, so producer coverage remains
+incomplete.
 
 The read surface safely derives four durations and only when both endpoints are measured and ordered:
 admission-to-delivery, admission-to-first-public-byte, delivery-to-first-public-byte, and
@@ -568,14 +570,20 @@ the prerequisite exact SHA is production GREEN.
    Codex/OpenAI universal Messages, OpenAI native Responses, and Anthropic native Messages callers
    are the three completed slices. Discovery, stored-response
    reads, health, balance, catalogs, router/provider preflights, and auth helpers remain excluded.
-7. **Complete billable producers — started, native Anthropic slice only.** Native Anthropic
-   `POST /v1/messages` now covers stream/nonstream local subscription attempts and the configured
-   ClaudeStore Anthropic-wire fallback. Its immutable admission shares the reservation transaction;
-   delivery and TeeMeter terminal evidence share the existing money transitions. Typed synthesized-
-   Messages origin markers explicitly omit the OpenAI Chat/Responses universal adapters in this first
-   slice. Remaining work must cover every other customer-facing text-generation leaf route on the
-   Anthropic, OpenAI, and Gemini planes, in native and universal protocols. This includes Anthropic
-   universal adapters, OpenAI Responses/Chat, Gemini generateContent/
+7. **Complete billable producers — started, Anthropic native and universal slices.** Native
+   Anthropic `POST /v1/messages` plus Anthropic-plane universal OpenAI Chat
+   `POST /v1/chat/completions` and Responses `POST /v1/responses` now cover stream/nonstream local
+   subscription attempts and the configured ClaudeStore Anthropic-wire fallback. Their immutable
+   admission shares the reservation transaction; delivery and TeeMeter terminal evidence share the
+   existing money transitions. Each outer OpenAI adapter classifies the original accepted client JSON
+   before translation/injection, then creates one typed content-free carrier only after its owning
+   translator accepts. It carries route `universal`, exact request class `chat` or `responses`, the
+   original bounded requested model, accepted stream boolean, and closed classifier fields—never raw
+   content, tool names/schemas/arguments or headers. The inner Messages leaf consumes the carrier and
+   suppresses native classification, producing exactly one fact. Missing typed context, unauthorized,
+   malformed adapter input, KIMI/GLM and non-Anthropic planes remain fact-free. Remaining work must
+   cover every other customer-facing text-generation leaf route on the Anthropic, OpenAI, and Gemini
+   planes, in native and universal protocols. This includes OpenAI Responses/Chat, Gemini generateContent/
    streamGenerateContent, and the universal Messages/Responses/Chat adapters that execute on those
    planes. A Combined route creates only the underlying leaf fact and never an extra Combined fact.
    Backend-only KIMI and GLM, Tripo3D, Suno, images, embeddings, files, and batches remain outside v1.

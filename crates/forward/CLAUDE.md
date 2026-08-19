@@ -77,11 +77,17 @@ typed fact-aware reserve, delivery, and terminal settlement commands. On Postgre
 existing single money writer and delegate to the registry S2 same-transaction methods; legacy APIs
 pass no fact. Production callers are the nonbillable Codex/OpenAI universal Messages count, OpenAI
 native `POST /v1/responses/input_tokens`, Anthropic native Messages count, Gemini universal Messages
-count, native Gemini `:countTokens`, and the first billable Stage-7 slice: native Anthropic
-`POST /v1/messages` on a real Claude subscription or the configured Anthropic-wire ClaudeStore
-fallback. OpenAI Chat/Responses adapters add a typed, content-free synthesized-Messages origin marker
-and are omitted from this first billable slice; KIMI/GLM aliases are separate backends and never
-produce an Anthropic fact. Each starts only
+count, native Gemini `:countTokens`, and the first billable Stage-7 slices: native Anthropic
+`POST /v1/messages` plus the Anthropic-plane universal OpenAI Chat `POST /v1/chat/completions` and
+Responses `POST /v1/responses`, on a real Claude subscription or the configured Anthropic-wire
+ClaudeStore fallback. Each accepted universal adapter creates a private typed synthesized-Messages
+carrier only after its owning parser/translator accepts the original client shape. The carrier holds
+only route `universal`, exact request class `chat` or `responses`, bounded original model spelling,
+accepted stream boolean, and the pure original OpenAI structural classifier; raw content, tool
+names/schemas/arguments and headers are absent by type. The inner Messages proxy consumes it instead
+of reclassifying the translated body, so one reserve admits exactly one universal fact and suppresses
+native double emission. KIMI/GLM aliases are separate backends and never produce an Anthropic fact.
+Each producer starts only
 after successful metered route/body admission, captures the typed logical/lifecycle context plus
 authoritative account/key and execution identities, and converges every later exit through one
 nonblocking terminal submission. Anthropic owns one request-scoped RAII guard across subscription
@@ -270,9 +276,10 @@ The production consumers are the nonbillable Codex/OpenAI/Gemini universal Messa
 native Responses input-token count, and Anthropic/Gemini native count fact producers; each seals at
 terminal-fact construction without waiting for a later body poll. Gemini universal first transfers
 its still-unsubmitted native owner through a typed response extension and seals only after outer
-response conversion. Billable integration remains incomplete: native Anthropic Messages is the only
-Stage-7 generation producer; Anthropic universal adapters, Codex/OpenAI generation, Gemini generation and the rest of the
-locked route matrix remain future slices. Producer coverage is therefore incomplete.
+response conversion. Billable integration remains incomplete: native Anthropic Messages and
+Anthropic-plane universal OpenAI Chat/Responses are the Stage-7 generation producers; Codex/OpenAI generation, Gemini
+generation and the rest of the locked route matrix remain future slices. Producer coverage is
+therefore incomplete.
 
 **Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** every
 successful Anthropic turn, including unmetered admin traffic, after authoritative usage builds one
