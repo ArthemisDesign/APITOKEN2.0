@@ -9,9 +9,11 @@
 //!   4) при 429/5xx/протухшем токене — cooling и ротация на следующую подписку;
 //!   5) ответ (включая SSE-стрим) отдаём клиенту байт-в-байт.
 
+use crate::execution::{ClientAttribution, LogicalRequestId, RequestLifecycleClock};
 use crate::meter::{BillCtx, CalibrationCtx, MeterCtx, SubscriptionMeterCtx, TeeMeter};
 use crate::metrics::Metrics;
 use crate::pricing::tariff_book;
+use crate::request_classification::{classify_anthropic_messages, RequestClassification};
 use crate::state::AppState;
 use crate::upstream::{limits_from_headers, Limits};
 use axum::body::Body;
@@ -19,6 +21,10 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::Response;
 use futures_util::{Stream, StreamExt};
+use registry::request_facts::{
+    DeliveryState, ProviderTerminalClass, RequestFactTerminalEvidence, TerminalRequestFact,
+    MAX_REQUEST_FACT_MODEL_LEN, MAX_REQUEST_FACT_UPSTREAM_ID_LEN,
+};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -124,6 +130,242 @@ impl Drop for HoldGuard {
 }
 
 type ResponseByteStream = Pin<Box<dyn Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>>;
+
+/// Privacy-minimal terminal fact for the one native Anthropic nonbillable route in scope. The guard
+/// is created only after metered auth, body ownership/JSON admission and typed request context exist.
+/// It owns no raw key, headers or request JSON. Explicit `finish` is the normal path; `Drop` is only
+/// cancellation/panic safety and records an honest local/unknown terminal without waiting.
+struct AnthropicCountTokensFactGuard {
+    billing: Arc<crate::billing::AsyncBilling>,
+    seed: Option<AnthropicCountTokensFactSeed>,
+    internal_attempt_count: Option<usize>,
+    send_started: bool,
+}
+
+struct AnthropicCountTokensFactSeed {
+    logical_request_id: String,
+    client_attribution: ClientAttribution,
+    execution: registry::ExecutionAttempt,
+    account_id: String,
+    key_id: String,
+    requested_model_candidate: Option<String>,
+    classification_candidate: Option<RequestClassification>,
+    admitted_at: i64,
+    lifecycle_clock: RequestLifecycleClock,
+}
+
+#[derive(Clone, Copy)]
+struct AnthropicCountTokensTerminalEvidence {
+    provider_terminal_class: ProviderTerminalClass,
+    delivery_state: DeliveryState,
+    internal_attempts_exhaustive: bool,
+}
+
+impl AnthropicCountTokensTerminalEvidence {
+    fn local(sent_any: bool) -> Self {
+        Self {
+            provider_terminal_class: ProviderTerminalClass::Unknown,
+            delivery_state: if sent_any {
+                DeliveryState::Unknown
+            } else {
+                DeliveryState::NotStarted
+            },
+            internal_attempts_exhaustive: true,
+        }
+    }
+
+    fn upstream(status: StatusCode) -> Self {
+        let provider_terminal_class = match status.as_u16() {
+            200..=299 => ProviderTerminalClass::Success,
+            401 | 403 => ProviderTerminalClass::Auth,
+            408 => ProviderTerminalClass::Timeout,
+            409 | 425 | 500..=599 => ProviderTerminalClass::UpstreamError,
+            429 => ProviderTerminalClass::Quota,
+            400..=499 => ProviderTerminalClass::ClientError,
+            _ => ProviderTerminalClass::Unknown,
+        };
+        Self {
+            provider_terminal_class,
+            // Headers prove that the provider started a response, not that the public body was
+            // consumed. Terminal submission deliberately does not depend on body polling.
+            delivery_state: DeliveryState::Started,
+            internal_attempts_exhaustive: true,
+        }
+    }
+}
+
+impl AnthropicCountTokensFactGuard {
+    fn new(billing: Arc<crate::billing::AsyncBilling>, seed: AnthropicCountTokensFactSeed) -> Self {
+        Self {
+            billing,
+            seed: Some(seed),
+            internal_attempt_count: Some(0),
+            send_started: false,
+        }
+    }
+
+    fn record_send(&mut self) {
+        self.send_started = true;
+        self.internal_attempt_count = self
+            .internal_attempt_count
+            .and_then(|count| count.checked_add(1));
+    }
+
+    fn finish_local(mut self, response: Response) -> Response {
+        let evidence = AnthropicCountTokensTerminalEvidence::local(self.send_started);
+        self.submit(Some(response.status()), None, evidence, false);
+        response
+    }
+
+    fn finish_upstream(
+        mut self,
+        status: StatusCode,
+        upstream_request_id: Option<String>,
+        response: Response,
+    ) -> Response {
+        self.submit(
+            Some(status),
+            upstream_request_id,
+            AnthropicCountTokensTerminalEvidence::upstream(status),
+            status.is_success(),
+        );
+        response
+    }
+
+    fn submit(
+        &mut self,
+        status: Option<StatusCode>,
+        upstream_request_id: Option<String>,
+        evidence: AnthropicCountTokensTerminalEvidence,
+        publish_candidates: bool,
+    ) {
+        let Some(seed) = self.seed.take() else {
+            return;
+        };
+        let terminal_at = pool::now().max(seed.admitted_at);
+        let first_public_byte_at = seed
+            .lifecycle_clock
+            .seal_first_public_byte_for_terminal(seed.admitted_at, terminal_at);
+        let internal_attempt_count = evidence
+            .internal_attempts_exhaustive
+            .then_some(self.internal_attempt_count)
+            .flatten()
+            .and_then(|count| i32::try_from(count).ok());
+        // The native lane intentionally delegates shape validation to Anthropic. A successful
+        // terminal status is the owning parser's exhaustive acceptance proof; on every other status
+        // the content-free candidate is discarded rather than treating rejected JSON as validated.
+        let classification = publish_candidates
+            .then_some(seed.classification_candidate)
+            .flatten();
+        let fact = TerminalRequestFact {
+            logical_request_id: seed.logical_request_id,
+            billing_request_id: None,
+            execution_group_id: seed.execution.group_id().map(str::to_owned),
+            attempt: seed.execution.attempt(),
+            account_id: seed.account_id,
+            key_id: seed.key_id,
+            client_kind: seed.client_attribution.kind(),
+            client_source: seed.client_attribution.source(),
+            client_version: seed.client_attribution.version().map(str::to_owned),
+            provider_plane: "anthropic".into(),
+            route_class: "native".into(),
+            request_class: "count_tokens".into(),
+            // The native lane delegates model validation to Anthropic. A bounded spelling is
+            // still only a candidate until the provider accepts the request successfully.
+            requested_model: publish_candidates
+                .then_some(seed.requested_model_candidate)
+                .flatten(),
+            // Subscription rotation does not resolve a different executable model. The client
+            // spelling is not promoted to execution proof merely because a request was sent.
+            executable_model: None,
+            stream_flag: false,
+            tools_declared_count: classification
+                .as_ref()
+                .and_then(RequestClassification::tools_declared_count),
+            tool_classes: classification
+                .as_ref()
+                .and_then(RequestClassification::tool_classes),
+            tool_choice_mode: classification
+                .as_ref()
+                .and_then(RequestClassification::tool_choice_mode),
+            parallel_tools_requested: classification
+                .as_ref()
+                .and_then(RequestClassification::parallel_tools_requested),
+            tool_results_in_input: classification
+                .as_ref()
+                .and_then(RequestClassification::tool_results_in_input),
+            structured_output_flag: classification
+                .as_ref()
+                .and_then(RequestClassification::structured_output_flag),
+            reasoning_flag: classification
+                .as_ref()
+                .and_then(RequestClassification::reasoning_flag),
+            service_tier: classification
+                .as_ref()
+                .and_then(RequestClassification::service_tier)
+                .map(str::to_owned),
+            input_modalities: classification
+                .as_ref()
+                .and_then(RequestClassification::input_modalities),
+            output_modalities: classification
+                .as_ref()
+                .and_then(RequestClassification::output_modalities),
+            admitted_at: seed.admitted_at,
+            terminal: RequestFactTerminalEvidence {
+                terminal_at,
+                http_status_code: status.map(|status| i32::from(status.as_u16())),
+                provider_terminal_class: evidence.provider_terminal_class,
+                delivery_state: evidence.delivery_state,
+                downstream_disconnect: None,
+                upstream_request_id,
+                first_public_byte_at,
+                internal_attempt_count,
+                failure_class: None,
+                tool_calls_in_output: None,
+            },
+        };
+        let _ = self.billing.try_submit_terminal_request_fact(fact);
+    }
+}
+
+impl Drop for AnthropicCountTokensFactGuard {
+    fn drop(&mut self) {
+        if self.seed.is_some() {
+            self.submit(
+                None,
+                None,
+                AnthropicCountTokensTerminalEvidence {
+                    provider_terminal_class: ProviderTerminalClass::Unknown,
+                    // Drop means cancellation or unwind. Even before a send, no normal HTTP
+                    // response exists, so preserve only the known transport boundary and never
+                    // fabricate a public terminal status or completed delivery.
+                    delivery_state: DeliveryState::Unknown,
+                    internal_attempts_exhaustive: false,
+                },
+                false,
+            );
+        }
+    }
+}
+
+fn bounded_request_fact_ascii(value: &str, max_len: usize) -> Option<String> {
+    (!value.is_empty()
+        && value.len() <= max_len
+        && value.is_ascii()
+        && !value.bytes().any(|byte| byte.is_ascii_control()))
+    .then(|| value.to_owned())
+}
+
+fn bounded_anthropic_request_id(response: &wreq::Response) -> Option<String> {
+    let mut values = response.headers().get_all("request-id").iter();
+    match (values.next(), values.next()) {
+        (Some(value), None) => value
+            .to_str()
+            .ok()
+            .and_then(|value| bounded_request_fact_ascii(value, MAX_REQUEST_FACT_UPSTREAM_ID_LEN)),
+        _ => None,
+    }
+}
 
 /// Заголовок авторитетной семантики исполнения (docs/engine/ROUTING_FENCING.md §3):
 /// `not_started` — запрос гарантированно не был исполнен: ни байта публичного ответа клиенту не
@@ -954,6 +1196,9 @@ pub async fn forward(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     req: axum::extract::Request,
 ) -> Response {
+    let typed_logical_request_id = req.extensions().get::<LogicalRequestId>().cloned();
+    let typed_client_attribution = req.extensions().get::<ClientAttribution>().cloned();
+    let typed_lifecycle_clock = req.extensions().get::<RequestLifecycleClock>().cloned();
     if !app.authority_ready.load(AtomicOrdering::Acquire) {
         // Инстанс зафенсен/authority недоступен — НАША внутренняя причина. Клиенту — транзиентный
         // retryable overload (ретрай, вероятно, попадёт на здоровый инстанс), без слова «authority».
@@ -1005,6 +1250,10 @@ pub async fn forward(
     if !is_supported_endpoint(&parts.method, parts.uri.path()) {
         return local_err(LocalErr::NotFound, None);
     }
+    let native_count_tokens = app.provider.serves_anthropic()
+        && parts.method == Method::POST
+        && parts.uri.path() == "/v1/messages/count_tokens"
+        && matches!(authz, Authz::Metered { .. });
     // Model-specific release resolution below decides balance vs service meter_only. Rejecting a
     // zero balance here would incorrectly block service accounts before their release assignment.
     Metrics::inc(&app.metrics.requests);
@@ -1054,6 +1303,68 @@ pub async fn forward(
     let mut requested_us_inference = false;
     let mut affinity_input = None;
     let mut parsed = serde_json::from_slice::<Value>(&raw).ok();
+    let mut count_tokens_fact = if native_count_tokens {
+        match (
+            app.billing.as_ref(),
+            typed_logical_request_id.as_ref(),
+            typed_lifecycle_clock.as_ref(),
+            parsed.as_ref(),
+            &authz,
+        ) {
+            (
+                Some(billing),
+                Some(logical_request_id),
+                Some(lifecycle_clock),
+                Some(original),
+                Authz::Metered {
+                    account_id, key_id, ..
+                },
+            ) if original.is_object() => Some(AnthropicCountTokensFactGuard::new(
+                Arc::clone(billing),
+                AnthropicCountTokensFactSeed {
+                    logical_request_id: logical_request_id.as_str().to_owned(),
+                    client_attribution: typed_client_attribution
+                        .clone()
+                        .unwrap_or_else(ClientAttribution::unknown_for_internal_use),
+                    execution: execution.clone(),
+                    account_id: account_id.clone(),
+                    key_id: key_id.clone(),
+                    requested_model_candidate: original
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .and_then(|model| {
+                            bounded_request_fact_ascii(model, MAX_REQUEST_FACT_MODEL_LEN)
+                        }),
+                    // This private classifier result has no arbitrary strings/content and remains a
+                    // candidate until a successful upstream status proves native shape acceptance.
+                    // Internal KIMI/GLM aliases are not native Anthropic count-token shapes, so
+                    // even an unexpected accepting response cannot publish structural evidence.
+                    classification_candidate: (!original
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .is_some_and(|model| {
+                            crate::kimi::KimiGateway::resolve_public_model(model).is_some()
+                                || crate::glm::GlmGateway::model_is_glm(model)
+                        }))
+                    .then(|| classify_anthropic_messages(original)),
+                    admitted_at: pool::now(),
+                    lifecycle_clock: lifecycle_clock.clone(),
+                },
+            )),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    macro_rules! return_local {
+        ($response:expr) => {{
+            let response = $response;
+            return match count_tokens_fact.take() {
+                Some(fact) => fact.finish_local(response),
+                None => response,
+            };
+        }};
+    }
     // KIMI is an internal backend of the Anthropic Messages plane, not a public provider mode.
     // Dispatch only exact reviewed subscription aliases, after shared authorization/body bounds
     // and before Claude-specific identity injection, breaker, pricing policy and pool selection.
@@ -1067,7 +1378,7 @@ pub async fn forward(
         // A KIMI alias exists only on POST /v1/messages: the subscription route has no
         // count_tokens sibling. Refuse here rather than forward the internal alias to the
         // Claude upstream, whose unknown-model error would name neither the alias nor the cause.
-        return local_err(LocalErr::NotFound, None);
+        return_local!(local_err(LocalErr::NotFound, None));
     }
     if billable {
         if let Some(kimi_model) = kimi_model {
@@ -1274,11 +1585,11 @@ pub async fn forward(
     if let Some(retry) = app.breaker.open_for(pool::now()) {
         Metrics::inc(&app.metrics.breaker_rejects);
         if fallback_parsed.is_none() {
-            return local_err_for(
+            return_local!(local_err_for(
                 LocalErr::Overloaded,
                 "upstream_circuit_breaker",
                 Some(retry),
-            );
+            ));
         }
     }
 
@@ -1470,11 +1781,11 @@ pub async fn forward(
         .to_string();
     let beta = match merged_beta(&parts.headers, &app.cfg.default_beta) {
         Ok(v) => v,
-        Err(()) => return local_err(LocalErr::BadBeta, None),
+        Err(()) => return_local!(local_err(LocalErr::BadBeta, None)),
     };
     let fallback_beta = match merged_beta(&parts.headers, "") {
         Ok(v) => v,
-        Err(()) => return local_err(LocalErr::BadBeta, None),
+        Err(()) => return_local!(local_err(LocalErr::BadBeta, None)),
     };
     let fallback_body = if reserved.is_some() {
         fallback_parsed
@@ -1648,11 +1959,11 @@ pub async fn forward(
                     Err(error) => {
                         app.pool.mark_done(&sub.email);
                         elog::error("forward", format!("capacity authority failed: {error:#}"));
-                        return local_err_for(
+                        return_local!(local_err_for(
                             LocalErr::Overloaded,
                             "capacity_authority_unavailable",
                             Some(2),
-                        );
+                        ));
                     }
                 }
             } else {
@@ -1755,7 +2066,7 @@ pub async fn forward(
                     }
                     match serde_json::to_vec(v) {
                         Ok(b) => bytes::Bytes::from(b),
-                        Err(_) => return local_err(LocalErr::Internal, None),
+                        Err(_) => return_local!(local_err(LocalErr::Internal, None)),
                     }
                 }
                 None => body_bytes.clone(), // не-JSON тело → как есть
@@ -1772,6 +2083,9 @@ pub async fn forward(
                 break;
             }
 
+            if let Some(fact) = count_tokens_fact.as_mut() {
+                fact.record_send();
+            }
             let resp = match rb.send().await {
                 Ok(r) => r,
                 Err(e) => {
@@ -1879,7 +2193,12 @@ pub async fn forward(
                 }
                 // Запрос-детерминированный 401/403 возвращаем БАЙТ-В-БАЙТ: body/request-id/error type
                 // принадлежат Anthropic и нужны SDK-диагностике; секретные auth headers уже фильтруются.
-                return stream_back(st, resp, None, app.metrics.clone());
+                let upstream_request_id = bounded_anthropic_request_id(&resp);
+                let response = stream_back(st, resp, None, app.metrics.clone());
+                return match count_tokens_fact.take() {
+                    Some(fact) => fact.finish_upstream(st, upstream_request_id, response),
+                    None => response,
+                };
             }
             if st.is_server_error() || code == 408 || code == 409 || code == 425 {
                 // вина АПСТРИМА, не подписки: НЕ студим подписку (слот закроет guard), кормим breaker
@@ -2043,7 +2362,12 @@ pub async fn forward(
                 app.pool.mark_healthy(&sub.email);
                 None
             };
-            return stream_back(st, resp, meter, app.metrics.clone());
+            let upstream_request_id = bounded_anthropic_request_id(&resp);
+            let response = stream_back(st, resp, meter, app.metrics.clone());
+            return match count_tokens_fact.take() {
+                Some(fact) => fact.finish_upstream(st, upstream_request_id, response),
+                None => response,
+            };
         }
         // Итог раунда. Транзиентную нехватку (нет реального upstream-ответа И backend-бюджет цел) тихо
         // ждём и ретраим до smooth_deadline; всё остальное — отдаём клиенту. Резерв держит hold_guard,
@@ -2136,26 +2460,40 @@ pub async fn forward(
         }
         // Терминал: реальный Anthropic-ответ приоритетнее локальной классификации; иначе backend-аутейдж
         // (или пул пуст) → last_local; иначе синтетический 429 с readiness всего пула.
-        let terminal = if let Some((st, resp)) = last_upstream {
-            stream_back(st, resp, None, app.metrics.clone())
+        let (terminal, upstream_terminal) = if let Some((st, resp)) = last_upstream {
+            let upstream_request_id = bounded_anthropic_request_id(&resp);
+            (
+                stream_back(st, resp, None, app.metrics.clone()),
+                Some((st, upstream_request_id)),
+            )
         } else if backend_exhausted || tried.is_empty() {
-            last_local
+            (last_local, None)
         } else {
             Metrics::inc(&app.metrics.exhausted);
             let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
-            local_err_for(
-                LocalErr::RateLimited,
-                "subscription_pool_exhausted",
-                Some(retry),
+            (
+                local_err_for(
+                    LocalErr::RateLimited,
+                    "subscription_pool_exhausted",
+                    Some(retry),
+                ),
+                None,
             )
         };
         // Once an external transport attempt begins, classify its failure conservatively: the
         // provider might have accepted it before the response was lost. Preserve the local terminal
         // status and refund, but never sign the stronger proof that execution definitely did not start.
-        return if fallback_attempted {
+        let terminal = if fallback_attempted {
             without_not_started(terminal)
         } else {
             terminal
+        };
+        return match (count_tokens_fact.take(), upstream_terminal) {
+            (Some(fact), Some((status, upstream_request_id))) => {
+                fact.finish_upstream(status, upstream_request_id, terminal)
+            }
+            (Some(fact), None) => fact.finish_local(terminal),
+            (None, _) => terminal,
         };
     } // 'smooth: loop
 }

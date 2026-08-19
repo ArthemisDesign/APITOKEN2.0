@@ -1,7 +1,8 @@
 //! Privacy-bounded v1 structural request classification.
 //!
-//! Classifiers in this module are pure and intentionally dormant until the stage 6/7 request-fact
-//! producers consume them. They accept only request values already admitted by the owning parser;
+//! Classifiers in this module are pure. The native Anthropic count-tokens producer is their first
+//! narrow runtime consumer; all other stage 6/7 producer integration remains incomplete. They accept
+//! only request values already admitted by the owning parser;
 //! they never retain arbitrary strings or request content.
 
 use registry::request_facts::{

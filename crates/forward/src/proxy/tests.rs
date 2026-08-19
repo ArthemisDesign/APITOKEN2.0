@@ -4,10 +4,14 @@ use crate::billing::AsyncBilling;
 use crate::breaker::Breaker;
 use crate::config::ProxyConfig;
 use crate::upstream::Clients;
-use axum::body::Body;
+use axum::body::{to_bytes, Body};
 use axum::extract::{ConnectInfo, State};
 use pool::{Pool, Reserve};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use registry::Sub;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::atomic::AtomicBool;
+use tokio::sync::mpsc;
 
 fn lim(u5: f64, u7: f64, claim: Option<&str>, r5: i64, r7: i64) -> Limits {
     Limits {
@@ -84,6 +88,821 @@ fn proxy_test_app(billing: Arc<AsyncBilling>, path: &str) -> AppState {
         probe_poke: None,
         admin_changes: tokio::sync::broadcast::channel(16).0,
         cfg,
+    }
+}
+
+const COUNT_FACT_LOGICAL_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const COUNT_FACT_EXECUTION_GROUP: &str = "bbbbbbbb-bbbb-4bbb-9bbb-bbbbbbbbbbbb";
+const COUNT_FACT_RAW_KEY: &str = "sk-anthropic-count-fact-secret";
+const COUNT_FACT_ACCOUNT_ID: &str = "anthropic-count-fact-account";
+const COUNT_FACT_KEY_ID: &str = "key_anthropic_count_nonsecret";
+
+fn native_count_tokens_request(
+    body: serde_json::Value,
+    with_context: bool,
+    client: Option<&str>,
+) -> axum::extract::Request {
+    let mut request = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri("/v1/messages/count_tokens")
+        .header("x-api-key", COUNT_FACT_RAW_KEY)
+        .header("anthropic-version", "2023-06-01")
+        .header(
+            crate::execution::EXECUTION_GROUP_HEADER,
+            COUNT_FACT_EXECUTION_GROUP,
+        )
+        .header(crate::execution::EXECUTION_ATTEMPT_HEADER, 2)
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    if with_context {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            crate::execution::LOGICAL_REQUEST_ID_HEADER,
+            COUNT_FACT_LOGICAL_ID.parse().unwrap(),
+        );
+        request
+            .extensions_mut()
+            .insert(crate::execution::admit_logical_request_id(&mut headers).unwrap());
+        request
+            .extensions_mut()
+            .insert(crate::execution::RequestLifecycleClock::default());
+    }
+    if let Some(client) = client {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            crate::execution::CLIENT_ATTRIBUTION_HEADER,
+            client.parse().unwrap(),
+        );
+        request
+            .extensions_mut()
+            .insert(crate::execution::admit_client_attribution(&mut headers));
+    }
+    request
+}
+
+async fn count_fact_test_app(
+    upstream: &str,
+    subs: usize,
+    fact_sender: Option<mpsc::Sender<TerminalRequestFact>>,
+) -> (AppState, std::path::PathBuf) {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "claude-api-anthropic-count-fact-{}-{unique}.sqlite",
+        std::process::id()
+    ));
+    let path_string = path.to_string_lossy().into_owned();
+    let connection = registry::open(&path_string).unwrap();
+    registry::account_create(&connection, COUNT_FACT_ACCOUNT_ID, None, 10_000).unwrap();
+    registry::account_topup(&connection, COUNT_FACT_ACCOUNT_ID, 1_000, None).unwrap();
+    registry::key_issue(&connection, COUNT_FACT_RAW_KEY, COUNT_FACT_ACCOUNT_ID, None).unwrap();
+    connection
+        .execute(
+            "UPDATE api_keys SET key_id=?1 WHERE key=?2",
+            (COUNT_FACT_KEY_ID, COUNT_FACT_RAW_KEY),
+        )
+        .unwrap();
+    drop(connection);
+    let mut billing = AsyncBilling::start(path_string.clone(), 1).unwrap();
+    if let Some(sender) = fact_sender {
+        billing.replace_request_fact_inbox_for_test(sender);
+    }
+    let billing = Arc::new(billing);
+    let mut cfg = (*proxy_test_config()).clone();
+    cfg.upstream = upstream.to_owned();
+    cfg.max_tries = subs.max(1);
+    let cfg = Arc::new(cfg);
+    let pool = Pool::new(
+        (0..subs)
+            .map(|index| Sub {
+                email: format!("count-fact-{index}@example.test"),
+                token: "subscription-token".into(),
+                proxy: String::new(),
+                fleet: "test".into(),
+                plan: "max20".into(),
+            })
+            .collect(),
+        Reserve::FULL,
+        1.0,
+        1.0,
+    );
+    let app = AppState {
+        provider: crate::ProviderMode::Anthropic,
+        authority: Arc::new(registry::authority::AuthorityConfig::new(
+            path_string.clone(),
+            None,
+        )),
+        data_db_path: Arc::new(path_string),
+        pool: Arc::new(pool),
+        affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
+        clients: Arc::new(Clients::new(&cfg)),
+        codex: None,
+        gemini: None,
+        kimi: None,
+        glm: None,
+        tripo3d: None,
+        suno: None,
+        billing: Some(billing),
+        authority_ready: Arc::new(AtomicBool::new(true)),
+        breaker: Arc::new(Breaker::new(100)),
+        metrics: Arc::new(Metrics::new()),
+        probe_poke: None,
+        admin_changes: tokio::sync::broadcast::channel(16).0,
+        cfg,
+    };
+    (app, path)
+}
+
+fn spawn_count_upstream(
+    responses: Vec<(u16, Vec<(&'static str, &'static str)>, &'static [u8])>,
+) -> (String, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let handle = std::thread::spawn(move || {
+        for (status, headers, body) in responses {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = socket.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                let header_end = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|position| position + 4);
+                let Some(header_end) = header_end else {
+                    continue;
+                };
+                let content_length = String::from_utf8_lossy(&request[..header_end])
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("content-length: ")
+                            .or_else(|| line.strip_prefix("Content-Length: "))
+                    })
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if request.len() >= header_end + content_length {
+                    break;
+                }
+            }
+            assert!(request.starts_with(b"POST /v1/messages/count_tokens HTTP/1.1"));
+            write!(
+                socket,
+                "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\n",
+                body.len()
+            )
+            .unwrap();
+            for (name, value) in headers {
+                write!(socket, "{name}: {value}\r\n").unwrap();
+            }
+            socket.write_all(b"\r\n").unwrap();
+            socket.write_all(body).unwrap();
+        }
+    });
+    (format!("http://{address}"), handle)
+}
+
+async fn body_snapshot(response: Response) -> (StatusCode, HeaderMap, bytes::Bytes) {
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    (status, headers, body)
+}
+
+#[tokio::test]
+async fn native_count_tokens_submits_one_success_fact_after_rotation_without_polling_body() {
+    let success_body = br#"{"input_tokens":7}"#;
+    let (upstream, server) = spawn_count_upstream(vec![
+        (500, vec![("request-id", "req-discarded")], b"retry"),
+        (
+            200,
+            vec![("request-id", "req-terminal"), ("x-test", "kept")],
+            success_body,
+        ),
+    ]);
+    let (sender, mut facts) = mpsc::channel(4);
+    let (app, path) = count_fact_test_app(&upstream, 2, Some(sender)).await;
+    let body = serde_json::json!({
+        "model": "claude-test",
+        "messages": [{"role":"user","content":[{"type":"text","text":"PRIVATE"},{"type":"image","source":{"type":"base64","data":"SECRET"}}]}],
+        "tools": [{"name":"never-store-me","description":"PRIVATE","input_schema":{"secret":"schema"}}],
+        "tool_choice": {"type":"any", "disable_parallel_tool_use":false},
+        "output_config": {"format":{"type":"json_schema","schema":{"secret":true}}},
+        "thinking": {"type":"enabled", "budget_tokens":1}
+    });
+    let response = forward(
+        State(app.clone()),
+        ConnectInfo("192.0.2.1:443".parse().unwrap()),
+        native_count_tokens_request(body, true, Some("opencode/1.2.3")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get("x-test").unwrap(), "kept");
+    // Terminal fact exists before the response body is ever polled.
+    let fact = facts
+        .try_recv()
+        .expect("one terminal fact at returned headers");
+    assert!(
+        facts.try_recv().is_err(),
+        "one fact across subscription retries"
+    );
+    assert_eq!(fact.logical_request_id, COUNT_FACT_LOGICAL_ID);
+    assert_eq!(fact.billing_request_id, None);
+    assert_eq!(
+        fact.execution_group_id.as_deref(),
+        Some(COUNT_FACT_EXECUTION_GROUP)
+    );
+    assert_eq!(fact.attempt, 2);
+    assert_eq!(fact.account_id, COUNT_FACT_ACCOUNT_ID);
+    assert_ne!(fact.key_id, COUNT_FACT_RAW_KEY);
+    assert_eq!(fact.provider_plane, "anthropic");
+    assert_eq!(fact.route_class, "native");
+    assert_eq!(fact.request_class, "count_tokens");
+    assert_eq!(fact.requested_model.as_deref(), Some("claude-test"));
+    assert_eq!(fact.executable_model, None);
+    assert!(!fact.stream_flag);
+    assert_eq!(fact.tools_declared_count, Some(1));
+    assert_eq!(
+        fact.tool_classes,
+        Some(registry::request_facts::TOOL_CLASS_CUSTOM_FUNCTION)
+    );
+    assert_eq!(
+        fact.tool_choice_mode,
+        Some(registry::request_facts::ToolChoiceMode::Required)
+    );
+    assert_eq!(fact.parallel_tools_requested, Some(true));
+    assert_eq!(fact.structured_output_flag, Some(true));
+    assert_eq!(fact.reasoning_flag, Some(true));
+    assert_eq!(
+        fact.input_modalities,
+        Some(registry::request_facts::MODALITY_TEXT | registry::request_facts::MODALITY_IMAGE)
+    );
+    assert_eq!(fact.terminal.http_status_code, Some(200));
+    assert_eq!(
+        fact.terminal.provider_terminal_class,
+        ProviderTerminalClass::Success
+    );
+    assert_eq!(fact.terminal.delivery_state, DeliveryState::Started);
+    assert_eq!(fact.terminal.internal_attempt_count, Some(2));
+    assert_eq!(
+        fact.terminal.upstream_request_id.as_deref(),
+        Some("req-terminal")
+    );
+    assert_eq!(fact.terminal.first_public_byte_at, None);
+    assert_eq!(fact.terminal.downstream_disconnect, None);
+    assert_eq!(fact.terminal.tool_calls_in_output, None);
+    assert_eq!(format!("{:?}", fact.client_kind), "OpenCode");
+    assert_eq!(fact.client_version.as_deref(), Some("1.2.3"));
+    let serialized = format!("{fact:?}");
+    for private in ["PRIVATE", "SECRET", "never-store-me", "schema"] {
+        assert!(!serialized.contains(private));
+    }
+    let observed = body_snapshot(response).await;
+    assert_eq!(observed.0, StatusCode::OK);
+    assert_eq!(observed.2.as_ref(), success_body);
+    assert!(facts.try_recv().is_err());
+    server.join().unwrap();
+    drop(app);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn native_count_tokens_upstream_errors_keep_exact_response_and_discard_classifier_candidate()
+{
+    for (status, expected_class) in [
+        (400, ProviderTerminalClass::ClientError),
+        (401, ProviderTerminalClass::Auth),
+        (429, ProviderTerminalClass::Quota),
+        (500, ProviderTerminalClass::UpstreamError),
+    ] {
+        let body = format!("terminal-{status}").into_bytes();
+        let static_body: &'static [u8] = Box::leak(body.clone().into_boxed_slice());
+        let (upstream, server) = spawn_count_upstream(vec![(
+            status,
+            vec![("request-id", "req-error"), ("x-exact", "yes")],
+            static_body,
+        )]);
+        let (sender, mut facts) = mpsc::channel(2);
+        let (app, path) = count_fact_test_app(&upstream, 1, Some(sender)).await;
+        let response = forward(
+            State(app.clone()),
+            ConnectInfo("192.0.2.1:443".parse().unwrap()),
+            native_count_tokens_request(
+                serde_json::json!({
+                    "model":"claude-test",
+                    "messages":[{"role":"user","content":"PRIVATE"}],
+                    "tools":[]
+                }),
+                true,
+                None,
+            ),
+        )
+        .await;
+        let fact = facts.try_recv().unwrap();
+        assert_eq!(fact.terminal.http_status_code, Some(status as i32));
+        assert_eq!(fact.terminal.provider_terminal_class, expected_class);
+        assert_eq!(fact.terminal.delivery_state, DeliveryState::Started);
+        assert_eq!(fact.terminal.downstream_disconnect, None);
+        assert_eq!(fact.terminal.first_public_byte_at, None);
+        assert_eq!(fact.terminal.internal_attempt_count, Some(1));
+        assert_eq!(
+            fact.requested_model, None,
+            "a rejected upstream shape does not validate the requested model"
+        );
+        assert_eq!(fact.tools_declared_count, None);
+        assert_eq!(fact.tool_classes, None);
+        assert_eq!(fact.input_modalities, None);
+        assert_eq!(
+            fact.client_kind,
+            registry::request_facts::ClientKind::Unknown
+        );
+        assert_eq!(
+            fact.client_source,
+            registry::request_facts::ClientSource::Unknown
+        );
+        let response = body_snapshot(response).await;
+        assert_eq!(response.0.as_u16(), status);
+        assert_eq!(response.1.get("x-exact").unwrap(), "yes");
+        assert_eq!(response.2.as_ref(), body.as_slice());
+        assert!(facts.try_recv().is_err());
+        server.join().unwrap();
+        drop(app);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
+async fn native_count_tokens_local_pool_and_transport_terminals_are_honest() {
+    for (upstream, subs, expected_attempts, expected_delivery) in [
+        (
+            "http://127.0.0.1:1".to_owned(),
+            0,
+            Some(0),
+            DeliveryState::NotStarted,
+        ),
+        (
+            "http://127.0.0.1:1".to_owned(),
+            1,
+            Some(1),
+            DeliveryState::Unknown,
+        ),
+    ] {
+        let (sender, mut facts) = mpsc::channel(2);
+        let (app, path) = count_fact_test_app(&upstream, subs, Some(sender)).await;
+        let response = forward(
+            State(app.clone()),
+            ConnectInfo("192.0.2.1:443".parse().unwrap()),
+            native_count_tokens_request(
+                serde_json::json!({"model":"claude-test","messages":[]}),
+                true,
+                None,
+            ),
+        )
+        .await;
+        let response = body_snapshot(response).await;
+        assert!(!response.0.is_success());
+        let fact = facts.try_recv().unwrap();
+        assert_eq!(
+            fact.terminal.http_status_code,
+            Some(response.0.as_u16() as i32)
+        );
+        assert_eq!(
+            fact.terminal.provider_terminal_class,
+            ProviderTerminalClass::Unknown
+        );
+        assert_eq!(fact.terminal.delivery_state, expected_delivery);
+        assert_eq!(fact.terminal.internal_attempt_count, expected_attempts);
+        assert_eq!(fact.terminal.upstream_request_id, None);
+        assert!(facts.try_recv().is_err());
+        drop(app);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
+async fn native_count_tokens_omits_wrong_targets_auth_and_typed_context() {
+    for (method, uri) in [(Method::POST, "/v1/messages"), (Method::GET, "/v1/models")] {
+        let (sender, mut facts) = mpsc::channel(2);
+        let (app, path) = count_fact_test_app("http://127.0.0.1:1", 0, Some(sender)).await;
+        let mut request = native_count_tokens_request(
+            serde_json::json!({"model":"claude-test","messages":[]}),
+            true,
+            None,
+        );
+        *request.method_mut() = method;
+        *request.uri_mut() = uri.parse().unwrap();
+        let _ = forward(
+            State(app.clone()),
+            ConnectInfo("192.0.2.1:443".parse().unwrap()),
+            request,
+        )
+        .await;
+        assert!(facts.try_recv().is_err());
+        drop(app);
+        let _ = std::fs::remove_file(path);
+    }
+
+    for missing_lifecycle in [false, true] {
+        let (sender, mut facts) = mpsc::channel(2);
+        let (app, path) = count_fact_test_app("http://127.0.0.1:1", 0, Some(sender)).await;
+        let mut request = native_count_tokens_request(
+            serde_json::json!({"model":"claude-test","messages":[]}),
+            true,
+            None,
+        );
+        if missing_lifecycle {
+            request
+                .extensions_mut()
+                .remove::<crate::execution::RequestLifecycleClock>();
+        } else {
+            request
+                .extensions_mut()
+                .remove::<crate::execution::LogicalRequestId>();
+        }
+        let _ = forward(
+            State(app.clone()),
+            ConnectInfo("192.0.2.1:443".parse().unwrap()),
+            request,
+        )
+        .await;
+        assert!(facts.try_recv().is_err());
+        drop(app);
+        let _ = std::fs::remove_file(path);
+    }
+
+    for provider in [
+        crate::ProviderMode::OpenAi,
+        crate::ProviderMode::Gemini,
+        crate::ProviderMode::Kimi,
+        crate::ProviderMode::Tripo3d,
+        crate::ProviderMode::Suno,
+    ] {
+        let (sender, mut facts) = mpsc::channel(2);
+        let (mut app, path) = count_fact_test_app("http://127.0.0.1:1", 0, Some(sender)).await;
+        app.provider = provider;
+        let _ = forward(
+            State(app.clone()),
+            ConnectInfo("192.0.2.1:443".parse().unwrap()),
+            native_count_tokens_request(
+                serde_json::json!({"model":"claude-test","messages":[]}),
+                true,
+                None,
+            ),
+        )
+        .await;
+        assert!(facts.try_recv().is_err());
+        drop(app);
+        let _ = std::fs::remove_file(path);
+    }
+
+    for auth in ["unauthorized", "admin"] {
+        let (sender, mut facts) = mpsc::channel(2);
+        let (mut app, path) = count_fact_test_app("http://127.0.0.1:1", 0, Some(sender)).await;
+        let mut request = native_count_tokens_request(
+            serde_json::json!({"model":"claude-test","messages":[]}),
+            true,
+            None,
+        );
+        if auth == "unauthorized" {
+            request
+                .headers_mut()
+                .insert("x-api-key", "invalid".parse().unwrap());
+        } else {
+            let mut cfg = (*app.cfg).clone();
+            cfg.api_keys = vec![COUNT_FACT_RAW_KEY.to_string()];
+            app.cfg = Arc::new(cfg);
+        }
+        let _ = forward(
+            State(app.clone()),
+            ConnectInfo("192.0.2.1:443".parse().unwrap()),
+            request,
+        )
+        .await;
+        assert!(facts.try_recv().is_err());
+        drop(app);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
+async fn native_count_tokens_combined_mode_uses_anthropic_leaf_fact() {
+    let (upstream, server) = spawn_count_upstream(vec![(200, vec![], br#"{"input_tokens":1}"#)]);
+    let (sender, mut facts) = mpsc::channel(2);
+    let (mut app, path) = count_fact_test_app(&upstream, 1, Some(sender)).await;
+    app.provider = crate::ProviderMode::Combined;
+    let response = forward(
+        State(app.clone()),
+        ConnectInfo("192.0.2.1:443".parse().unwrap()),
+        native_count_tokens_request(
+            serde_json::json!({"model":"claude-test","messages":[]}),
+            true,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(facts.try_recv().unwrap().provider_plane, "anthropic");
+    assert!(facts.try_recv().is_err());
+    server.join().unwrap();
+    drop(app);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn native_count_tokens_missing_and_overlong_models_keep_success_fact_without_model() {
+    let overlong = "m".repeat(MAX_REQUEST_FACT_MODEL_LEN + 1);
+    for model in [None, Some(overlong.as_str())] {
+        let (upstream, server) =
+            spawn_count_upstream(vec![(200, vec![], br#"{"input_tokens":1}"#)]);
+        let (sender, mut facts) = mpsc::channel(2);
+        let (app, path) = count_fact_test_app(&upstream, 1, Some(sender)).await;
+        let mut body = serde_json::json!({"messages": [{"role":"user","content":"PRIVATE"}]});
+        if let Some(model) = model {
+            body["model"] = serde_json::Value::String(model.to_string());
+        }
+        let response = forward(
+            State(app.clone()),
+            ConnectInfo("192.0.2.1:443".parse().unwrap()),
+            native_count_tokens_request(body, true, None),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let fact = facts.try_recv().unwrap();
+        assert_eq!(fact.requested_model, None);
+        assert_eq!(
+            fact.input_modalities,
+            Some(registry::request_facts::MODALITY_TEXT)
+        );
+        assert!(facts.try_recv().is_err());
+        server.join().unwrap();
+        drop(app);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
+async fn native_count_tokens_internal_aliases_discard_structural_candidate_on_local_rejection() {
+    for (model, expected_attempts, expected_delivery) in [
+        ("kimi-for-coding", Some(0), DeliveryState::NotStarted),
+        ("glm-4.7", Some(1), DeliveryState::Unknown),
+    ] {
+        let (sender, mut facts) = mpsc::channel(2);
+        let (app, path) = count_fact_test_app("http://127.0.0.1:1", 1, Some(sender)).await;
+        let response = forward(
+            State(app.clone()),
+            ConnectInfo("192.0.2.1:443".parse().unwrap()),
+            native_count_tokens_request(
+                serde_json::json!({
+                    "model": model,
+                    "messages": [{"role":"user","content":"PRIVATE"}],
+                    "tools": [{"name":"PRIVATE TOOL","input_schema":{"type":"object"}}]
+                }),
+                true,
+                None,
+            ),
+        )
+        .await;
+        assert!(!response.status().is_success());
+        let fact = facts.try_recv().unwrap();
+        assert_eq!(fact.requested_model, None);
+        assert_eq!(fact.input_modalities, None);
+        assert_eq!(fact.tools_declared_count, None);
+        assert_eq!(fact.terminal.internal_attempt_count, expected_attempts);
+        assert_eq!(fact.terminal.delivery_state, expected_delivery);
+        assert!(facts.try_recv().is_err());
+        drop(app);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
+async fn native_count_tokens_unsupported_sqlite_fact_authority_preserves_response() {
+    let success_body = br#"{"input_tokens":17}"#;
+    let (upstream, server) = spawn_count_upstream(vec![(
+        200,
+        vec![("x-exact", "sqlite-unchanged")],
+        success_body,
+    )]);
+    let (app, path) = count_fact_test_app(&upstream, 1, None).await;
+    let response = forward(
+        State(app.clone()),
+        ConnectInfo("192.0.2.1:443".parse().unwrap()),
+        native_count_tokens_request(
+            serde_json::json!({"model":"claude-test","messages":[]}),
+            true,
+            None,
+        ),
+    )
+    .await;
+    let response = body_snapshot(response).await;
+    assert_eq!(response.0, StatusCode::OK);
+    assert_eq!(response.1.get("x-exact").unwrap(), "sqlite-unchanged");
+    assert_eq!(response.2.as_ref(), success_body);
+    server.join().unwrap();
+    drop(app);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn native_count_tokens_terminal_seal_keeps_prior_observation_and_blocks_later_one() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "claude-api-anthropic-count-lifecycle-{}-{unique}.sqlite",
+        std::process::id()
+    ));
+    let mut billing = AsyncBilling::start(path.to_string_lossy().into_owned(), 1).unwrap();
+    let (sender, mut receiver) = mpsc::channel(2);
+    billing.replace_request_fact_inbox_for_test(sender);
+    let billing = Arc::new(billing);
+
+    let observed_clock = crate::execution::RequestLifecycleClock::default();
+    observed_clock.observe_first_public_byte();
+    let observed_at = observed_clock.first_public_byte_at().unwrap();
+    let admitted_at = observed_at;
+    let seed = AnthropicCountTokensFactSeed {
+        logical_request_id: COUNT_FACT_LOGICAL_ID.into(),
+        client_attribution: {
+            let mut headers = HeaderMap::new();
+            crate::execution::admit_client_attribution(&mut headers)
+        },
+        execution: registry::ExecutionAttempt::direct(),
+        account_id: COUNT_FACT_ACCOUNT_ID.into(),
+        key_id: "key-lifecycle".into(),
+        requested_model_candidate: None,
+        classification_candidate: Some(classify_anthropic_messages(&serde_json::json!({}))),
+        admitted_at,
+        lifecycle_clock: observed_clock,
+    };
+    let response = AnthropicCountTokensFactGuard::new(Arc::clone(&billing), seed)
+        .finish_local(local_err(LocalErr::BadRequest, None));
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        receiver.try_recv().unwrap().terminal.first_public_byte_at,
+        Some(observed_at)
+    );
+
+    let sealed_clock = crate::execution::RequestLifecycleClock::default();
+    let seed = AnthropicCountTokensFactSeed {
+        logical_request_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc".into(),
+        client_attribution: {
+            let mut headers = HeaderMap::new();
+            crate::execution::admit_client_attribution(&mut headers)
+        },
+        execution: registry::ExecutionAttempt::direct(),
+        account_id: COUNT_FACT_ACCOUNT_ID.into(),
+        key_id: "key-lifecycle".into(),
+        requested_model_candidate: None,
+        classification_candidate: Some(classify_anthropic_messages(&serde_json::json!({}))),
+        admitted_at: pool::now(),
+        lifecycle_clock: sealed_clock.clone(),
+    };
+    let _ = AnthropicCountTokensFactGuard::new(Arc::clone(&billing), seed)
+        .finish_local(local_err(LocalErr::BadRequest, None));
+    let fact = receiver.try_recv().unwrap();
+    assert_eq!(fact.terminal.first_public_byte_at, None);
+    sealed_clock.observe_first_public_byte();
+    assert_eq!(sealed_clock.first_public_byte_at(), None);
+    drop(billing);
+    drop(runtime);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn native_count_tokens_cancellation_submits_unknown_without_fabricated_status_or_count() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut buffer = [0_u8; 4096];
+        let _ = socket.read(&mut buffer);
+        accepted_tx.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    });
+    let (sender, mut facts) = mpsc::channel(2);
+    let (app, path) = count_fact_test_app(&format!("http://{address}"), 1, Some(sender)).await;
+    let task = tokio::spawn(forward(
+        State(app.clone()),
+        ConnectInfo("192.0.2.1:443".parse().unwrap()),
+        native_count_tokens_request(
+            serde_json::json!({"model":"claude-test","messages":[]}),
+            true,
+            None,
+        ),
+    ));
+    tokio::task::spawn_blocking(move || {
+        accepted_rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    let fact = tokio::time::timeout(std::time::Duration::from_secs(1), facts.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fact.terminal.http_status_code, None);
+    assert_eq!(
+        fact.terminal.provider_terminal_class,
+        ProviderTerminalClass::Unknown
+    );
+    assert_eq!(fact.terminal.delivery_state, DeliveryState::Unknown);
+    assert_eq!(fact.terminal.internal_attempt_count, None);
+    assert_eq!(fact.terminal.first_public_byte_at, None);
+    assert!(facts.try_recv().is_err());
+    server.join().unwrap();
+    drop(app);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn native_count_tokens_fact_inbox_closed_or_full_never_changes_response() {
+    let success_body = br#"{"input_tokens":11}"#;
+    for full in [false, true] {
+        let (upstream, server) =
+            spawn_count_upstream(vec![(200, vec![("x-exact", "unchanged")], success_body)]);
+        let (sender, receiver) = mpsc::channel(1);
+        if full {
+            sender
+                .try_send(TerminalRequestFact {
+                    logical_request_id: COUNT_FACT_LOGICAL_ID.into(),
+                    billing_request_id: None,
+                    execution_group_id: None,
+                    attempt: 1,
+                    account_id: "filler-account".into(),
+                    key_id: "filler-key".into(),
+                    client_kind: registry::request_facts::ClientKind::Unknown,
+                    client_source: registry::request_facts::ClientSource::Unknown,
+                    client_version: None,
+                    provider_plane: "anthropic".into(),
+                    route_class: "native".into(),
+                    request_class: "count_tokens".into(),
+                    requested_model: None,
+                    executable_model: None,
+                    stream_flag: false,
+                    tools_declared_count: None,
+                    tool_classes: None,
+                    tool_choice_mode: None,
+                    parallel_tools_requested: None,
+                    tool_results_in_input: None,
+                    structured_output_flag: None,
+                    reasoning_flag: None,
+                    service_tier: None,
+                    input_modalities: None,
+                    output_modalities: None,
+                    admitted_at: pool::now(),
+                    terminal: RequestFactTerminalEvidence {
+                        terminal_at: pool::now(),
+                        http_status_code: Some(200),
+                        provider_terminal_class: ProviderTerminalClass::Success,
+                        delivery_state: DeliveryState::Started,
+                        downstream_disconnect: None,
+                        upstream_request_id: None,
+                        first_public_byte_at: None,
+                        internal_attempt_count: Some(1),
+                        failure_class: None,
+                        tool_calls_in_output: None,
+                    },
+                })
+                .unwrap();
+        } else {
+            drop(receiver);
+        }
+        let (app, path) = count_fact_test_app(&upstream, 1, Some(sender)).await;
+        let response = forward(
+            State(app.clone()),
+            ConnectInfo("192.0.2.1:443".parse().unwrap()),
+            native_count_tokens_request(
+                serde_json::json!({"model":"claude-test","messages":[]}),
+                true,
+                None,
+            ),
+        )
+        .await;
+        let response = body_snapshot(response).await;
+        assert_eq!(response.0, StatusCode::OK);
+        assert_eq!(response.1.get("x-exact").unwrap(), "unchanged");
+        assert_eq!(response.2.as_ref(), success_body);
+        server.join().unwrap();
+        drop(app);
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -716,4 +1535,187 @@ fn exact_not_started_metric_predicate_matches_the_router_proof() {
         .body(Body::empty())
         .unwrap();
     assert!(!is_exact_not_started_response(&success));
+}
+
+#[test]
+fn native_count_tokens_terminal_fact_persists_privacy_bounded_postgres_row() {
+    const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_442;
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping Anthropic count_tokens fact row: test URL is unset");
+        return;
+    };
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let mut connection = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    connection
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    connection
+        .batch_execute(
+            "TRUNCATE request_facts,execution_group_winner,settlement_outbox,reservations, \
+             capacity_leases,leader_leases,engine_instances,usage_events,ledger,api_keys,accounts, \
+             pool_state,subs RESTART IDENTITY CASCADE",
+        )
+        .unwrap();
+    pg.account_create(COUNT_FACT_ACCOUNT_ID, None, 10_000)
+        .unwrap();
+    pg.account_topup(COUNT_FACT_ACCOUNT_ID, 1_000, Some("anthropic-count-fact"))
+        .unwrap();
+    pg.key_issue(COUNT_FACT_RAW_KEY, COUNT_FACT_ACCOUNT_ID, None)
+        .unwrap();
+    let expected_key_id = pg.key_get(COUNT_FACT_RAW_KEY).unwrap().unwrap().key_id;
+    pg.add("pg-count@example.test", "subscription-token", "", "test")
+        .unwrap();
+    let owner = pg
+        .claim_instance(
+            &format!("anthropic-count-fact-{}-{unique}", std::process::id()),
+            600,
+        )
+        .unwrap();
+    drop(pg);
+
+    let billing = Arc::new(
+        AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+            Some(owner),
+            1,
+            0,
+        )
+        .unwrap(),
+    );
+    let success_body = br#"{"input_tokens":13}"#;
+    let (upstream, server) = spawn_count_upstream(vec![(
+        200,
+        vec![("request-id", "req-pg-terminal")],
+        success_body,
+    )]);
+    let mut cfg = (*proxy_test_config()).clone();
+    cfg.upstream = upstream;
+    let cfg = Arc::new(cfg);
+    let app = AppState {
+        provider: crate::ProviderMode::Anthropic,
+        authority: Arc::new(registry::authority::AuthorityConfig::Postgres { url: url.clone() }),
+        data_db_path: Arc::new(format!("/tmp/anthropic-count-fact-{unique}")),
+        pool: Arc::new(Pool::new(
+            vec![Sub {
+                email: "pg-count@example.test".into(),
+                token: "subscription-token".into(),
+                proxy: String::new(),
+                fleet: "test".into(),
+                plan: "max20".into(),
+            }],
+            Reserve::FULL,
+            1.0,
+            1.0,
+        )),
+        affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
+        clients: Arc::new(Clients::new(&cfg)),
+        codex: None,
+        gemini: None,
+        kimi: None,
+        glm: None,
+        tripo3d: None,
+        suno: None,
+        billing: Some(Arc::clone(&billing)),
+        authority_ready: Arc::new(AtomicBool::new(true)),
+        breaker: Arc::new(Breaker::new(100)),
+        metrics: Arc::new(Metrics::new()),
+        probe_poke: None,
+        admin_changes: tokio::sync::broadcast::channel(16).0,
+        cfg,
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let response = forward(
+                State(app),
+                ConnectInfo("192.0.2.1:443".parse().unwrap()),
+                native_count_tokens_request(
+                    serde_json::json!({
+                        "model":"claude-pg-test",
+                        "messages":[{"role":"user","content":"PRIVATE PG PROMPT"}],
+                        "tools":[{"name":"PRIVATE PG TOOL","input_schema":{"type":"object"}}]
+                    }),
+                    true,
+                    Some("claude_code/2.1.220"),
+                ),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        });
+    server.join().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let row = loop {
+        if let Some(row) = connection
+            .query_opt(
+                "SELECT account_id,key_id,client_kind,client_version,provider_plane,route_class, \
+                        request_class,requested_model,executable_model,tools_declared_count,tool_classes, \
+                        http_status_code,provider_terminal_class,delivery_state,billing_outcome, \
+                        upstream_request_id,internal_attempt_count \
+                   FROM request_facts WHERE logical_request_id=$1",
+                &[&COUNT_FACT_LOGICAL_ID],
+            )
+            .unwrap()
+        {
+            break row;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fact was not persisted"
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(row.get::<_, String>(0), COUNT_FACT_ACCOUNT_ID);
+    assert_eq!(row.get::<_, String>(1), expected_key_id);
+    assert_ne!(row.get::<_, String>(1), COUNT_FACT_RAW_KEY);
+    assert_eq!(row.get::<_, String>(2), "claude_code");
+    assert_eq!(row.get::<_, Option<String>>(3).as_deref(), Some("2.1.220"));
+    assert_eq!(row.get::<_, String>(4), "anthropic");
+    assert_eq!(row.get::<_, String>(5), "native");
+    assert_eq!(row.get::<_, String>(6), "count_tokens");
+    assert_eq!(
+        row.get::<_, Option<String>>(7).as_deref(),
+        Some("claude-pg-test")
+    );
+    assert_eq!(row.get::<_, Option<String>>(8), None);
+    assert_eq!(row.get::<_, Option<i32>>(9), Some(1));
+    assert_eq!(
+        row.get::<_, Option<i32>>(10),
+        Some(registry::request_facts::TOOL_CLASS_CUSTOM_FUNCTION)
+    );
+    assert_eq!(row.get::<_, Option<i32>>(11), Some(200));
+    assert_eq!(row.get::<_, String>(12), "success");
+    assert_eq!(row.get::<_, String>(13), "started");
+    assert_eq!(row.get::<_, String>(14), "not_applicable");
+    assert_eq!(
+        row.get::<_, Option<String>>(15).as_deref(),
+        Some("req-pg-terminal")
+    );
+    assert_eq!(row.get::<_, Option<i32>>(16), Some(1));
+    let row_json = connection
+        .query_one(
+            "SELECT row_to_json(request_facts)::text FROM request_facts WHERE logical_request_id=$1",
+            &[&COUNT_FACT_LOGICAL_ID],
+        )
+        .unwrap()
+        .get::<_, String>(0);
+    for private in [COUNT_FACT_RAW_KEY, "PRIVATE PG PROMPT", "PRIVATE PG TOOL"] {
+        assert!(!row_json.contains(private));
+    }
+    connection
+        .query_one(
+            "SELECT pg_advisory_unlock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    drop(billing);
 }

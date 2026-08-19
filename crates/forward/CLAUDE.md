@@ -50,9 +50,9 @@ by the provider quote builders, plus the hot tariff book below.
 the env admin is checked FIRST in memory; otherwise the client key → `key_account` (JOIN key→account)
 → ACCOUNT balance (a non-positive balance rejects only a positive multiplier). The metered auth result
 carries both the raw secret `key` for every existing reserve/settle flow and the authoritative non-secret
-`key_id`. The first request-fact producer consumes only that non-secret identity for metered Codex
-universal `POST /v1/messages/count_tokens`; every money path still receives the raw key, and the two
-identities must never be substituted for one another. A zero multiplier is
+`key_id`. The two request-fact producers consume only that non-secret identity for metered Codex
+universal and Anthropic native `POST /v1/messages/count_tokens`; every money path still receives the
+raw key, and the two identities must never be substituted for one another. A zero multiplier is
 free but metered on every provider: admission holds zero, settlement debits zero and still persists
 the authoritative usage event. Balance/reserve/markup live on the account (shared across all of a user's keys).
 All DB operations go through `AsyncBilling` (DB actors: 1 writer + N readers; sync PostgreSQL/legacy
@@ -70,11 +70,15 @@ NOT metered.
 **Request-fact producer plumbing (S3A plus the first narrow producer):** `AsyncBilling` has opt-in
 typed fact-aware reserve, delivery, and terminal settlement commands. On PostgreSQL they stay in the
 existing single money writer and delegate to the registry S2 same-transaction methods; legacy APIs
-pass no fact and every billable path remains dormant. The only production caller is the nonbillable
-Codex/OpenAI universal `POST /v1/messages/count_tokens`: after successful metered admission it captures
-the typed logical ID, authoritative account/key IDs, execution attempt and one admission timestamp,
-then converges every post-auth exit through one nonblocking terminal submission. A lost fact-aware
-reserve handoff is canceled with a
+pass no fact and every billable path remains dormant. The only production callers are the nonbillable
+Codex/OpenAI universal and Anthropic native `POST /v1/messages/count_tokens` paths. Each starts only
+after successful metered route/body admission, captures the typed logical/lifecycle context plus
+authoritative account/key and execution identities, and converges every later exit through one
+nonblocking terminal submission. Anthropic owns one request-scoped RAII guard across subscription
+rotation: send count is checked `usize`→`i32`, the terminal upstream response alone may contribute a
+validated bounded `request-id`, returned headers use honest `started` rather than body completion,
+and cancellation/panic fallback has no fabricated HTTP status or exhaustive attempt count. A lost
+fact-aware reserve handoff is canceled with a
 privacy-empty `unknown`/`not_started` terminal envelope so the admitted fact cannot leak as nonterminal.
 Already-terminal post-auth/nonbillable facts alone use the PostgreSQL-only 4096-slot, nonblocking
 `try_send` inbox and its lazily connected `request-facts-pg-writer` thread. That connection is
@@ -92,14 +96,17 @@ the authoritative same-transaction key lookup/comparison, while SQLite deliberat
 SQLite keeps the existing money semantics, starts no fact thread, persists no analytics, and reports
 `UnsupportedAuthority` for terminal-at-insert submission. Provider-process request-context admission
 is implemented separately: the reserved logical-ID header and optional public client-attribution
-header are consumed into typed request extensions. Codex count_tokens uses the typed logical value
-only; its absence after metered auth omits analytics rather than generating or guessing an identity.
-When the typed attribution extension is missing it still records the fact as client `unknown`. The
-producer records `openai`/`universal`/`count_tokens`, normalized client attribution, no billing ID,
-no upstream attempt, and only bounded requested/canonical executable models; unextracted capability
-fields remain NULL.
-Admin, unauthorized, all billable paths, native Responses token counting, Anthropic, Gemini, metrics,
-read APIs, and every other production request-fact surface remain absent. Dropped coverage is visible
+header are consumed into typed request extensions. Both count_tokens producers use only typed
+logical/lifecycle values; either value's absence after metered auth omits analytics rather than
+creating or guessing identity or time. A missing typed
+attribution extension still records client `unknown`. Codex records
+`openai`/`universal`/`count_tokens`, no upstream attempt, and bounded requested/canonical executable
+models. Anthropic records `anthropic`/`native`/`count_tokens`; bounded client model and structural
+classifier evidence remain untrusted candidates until an upstream 2xx proves the owning native shape
+accepted. Rejection discards both, executable model stays absent without exact execution proof, and
+neither guard retains raw JSON. Admin, unauthorized, all billable paths, native Responses
+token counting, Gemini, metrics, read APIs, and every other production request-fact surface remain
+absent. Dropped coverage is visible
 only through the existing internal delivery snapshot, not a public metric.
 For policy keys the cap takes the minimum of the account balance and the remaining lifetime limit. Such keys
 bypass the auth TTL cache; expiry and limit are re-checked inside the atomic reserve transaction.
@@ -190,18 +197,21 @@ kinds, invalid bytes/control/grammar, empty, and over-limit values normalize to
 reviewed positive signatures, so absent evidence also stays unknown and the existing Codex-envelope
 heuristic is not reused. Both raw headers are removed before auth/body/dispatch. Universal
 Anthropic/Gemini adapters copy both typed extensions to synthesized leaf requests without recreating
-wire headers; native requests retain them. The current Codex universal count_tokens fact producer
-persists the normalized attribution (or unknown when the typed attribution extension is absent) and
-is the first production consumer of the lifecycle terminal seal: it captures safely ordered outer
-first-byte evidence or freezes `NULL` before any later body poll. A missing typed lifecycle extension,
-like a missing logical extension, omits the fact rather than fabricating evidence.
-No metric, public response/header identity, billing identity, execution-group semantics, or other
-request-fact producer changes in this slice.
+wire headers; native requests retain them. The Codex universal and Anthropic native count_tokens fact
+producers persist normalized attribution (or unknown when the typed attribution extension is absent)
+and consume the lifecycle terminal seal:
+they capture safely ordered outer first-byte evidence or freeze `NULL` before any later body poll. A
+missing typed lifecycle extension, like a missing logical extension, omits the fact rather than
+fabricating evidence. No metric, public response/header identity, billing identity, execution-group
+semantics, or billable producer changes in this slice.
 
 **Request-observability structural definitions (stage 5 partial, dormant):**
 `request_classification.rs` freezes the privacy-bounded v1 value contract and pure classifiers for
 already validated client shapes: Anthropic Messages, OpenAI Chat/Responses and canonical native
-Gemini GenerateContent. Universal Chat/Responses use their OpenAI classifiers before translation;
+Gemini GenerateContent. The Anthropic native count_tokens producer is the first narrow runtime
+consumer: it classifies original client JSON before namespace/identity mutation, but publishes those
+closed fields only after an upstream 2xx proves the native owning shape accepted. All other classifiers
+remain dormant. Universal Chat/Responses must use their OpenAI classifiers before translation;
 Messages uses its Anthropic classifier before translation. Stage 6/7 producers must preserve that
 client-intent boundary rather than classifying a degraded or gateway-injected translated shape. Evidence is limited to
 checked `i32` tool count, the seven registry-defined closed bits, closed choice mode with named choices
@@ -219,8 +229,8 @@ top-level count. Native Responses selects a single validated `input.additional_t
 present (including beside an explicit empty top-level list); it is classified once and the later
 synthetic dynamic functions are never counted. The classifier stores no content, names, schemas, arguments, results, MCP labels,
 raw JSON, headers, metadata or other arbitrary strings; its fields are private, `Debug` is redacted and it has no
-serialization implementation. It is intentionally not wired into live parsers, handlers or request-fact
-emission in stage 5: producer integration remains stage 6/7 and must preserve response/upstream bytes.
+serialization implementation. Only the narrow Anthropic native count_tokens producer is wired;
+remaining producer integration stays stage 6/7 and must preserve response/upstream bytes.
 Lifecycle clocks and output tool-call evidence remain separate later-producer work.
 
 **Request lifecycle clock carrier (`execution.rs`, `crates/server/src/http.rs`):** each successfully
@@ -236,10 +246,10 @@ inside the inclusive `[admitted_at, terminal_at]` bounds; invalid or out-of-orde
 `NULL`, never clamped or fabricated, while the open state is still sealed. Repeated seals are
 idempotent. The wrapper and the outer active-request guard delegate complete frames, errors,
 `is_end_stream` and `size_hint` without buffering, rewriting, eager polling, I/O or settlement.
-The first production consumer is the nonbillable Codex/OpenAI universal
-`POST /v1/messages/count_tokens` fact producer; it seals at terminal-fact construction without
-waiting for a later body poll. Billable/TeeMeter/Codex-generation integration and every other
-request-fact producer remain incomplete, so Stage 5 and producer coverage remain incomplete.
+The production consumers are the nonbillable Codex/OpenAI universal and Anthropic native
+`POST /v1/messages/count_tokens` fact producers; each seals at terminal-fact construction without
+waiting for a later body poll. Billable/TeeMeter/Codex-generation integration and all remaining
+nonbillable producers stay incomplete, so Stage 5/6 and producer coverage remain incomplete.
 
 **Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** every
 successful Anthropic turn, including unmetered admin traffic, after authoritative usage builds one

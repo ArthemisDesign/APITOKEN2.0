@@ -213,29 +213,30 @@ is only what is needed to walk the relationships when making changes:
   request-lifecycle-clock context on synthesized leaf requests. At the same early boundary,
   `crates/server` creates the typed once-only clock and wraps the final public response body: only its
   first non-empty successful DATA frame is observed, while data, trailers, errors, frame boundaries,
-  cancellation, hints and backpressure remain unchanged. No request-fact producer consumes this clock
-  yet; terminal handoff remains a later producer-owned slice and unmeasured evidence stays `NULL`.
+  cancellation, hints and backpressure remain unchanged. Codex universal and Anthropic native
+  count_tokens facts consume this clock through the nonwaiting terminal seal; all remaining terminal
+  handoffs stay later producer-owned slices and unmeasured evidence stays `NULL`.
   `crates/server` also consumes all optional public `x-apitoken-client` values into privacy-bounded
   `crates/forward::ClientAttribution`: exactly one
   valid `opencode[/version]` or `claude_code[/version]` is explicit, while absent, malformed,
   duplicated, unsupported, or case-variant evidence fails open to unknown. The raw value never reaches
   dispatch/upstream; heuristic v1 has no reviewed positive signature and does not reuse the Codex
   envelope heuristic. Health, admin/internal preflight and backend-only KIMI/Tripo3D/Suno remain
-  outside this MVP. The first and only production request-fact producer is Codex/OpenAI universal
-  `POST /v1/messages/count_tokens`: after successful metered admission it consumes the typed logical
-  and client context plus authoritative non-secret account/key and execution identities, then submits
-  exactly one already-terminal nullable-billing-ID fact through the fail-open PostgreSQL inbox.
-  Missing typed client context remains unknown without suppressing the fact. Router fallback reuses
-  the logical ID while each plane attempt keeps its distinct execution attempt. `crates/forward` also
-  defines dormant, privacy-bounded pure structural classifiers for already-validated client shapes:
-  Anthropic Messages, OpenAI Chat/Responses and canonical native Gemini GenerateContent. Universal
-  Chat/Responses classify the OpenAI client shape before translation and Messages classifies its
-  Anthropic client shape before translation. They retain only closed registry bits/counts/flags and
-  discard names and request content; no handler or request-fact producer consumes
-  them yet, so Stage 6/7 owns the producer connection and lifecycle/output evidence. Admin/unauthorized/
-  missing-logical-context traffic is omitted. Billable paths, native Responses token counting,
-  Anthropic/Gemini, read APIs, public metrics, and a public logical-ID header remain absent; `x-request-id`
-  and response availability are unchanged.
+  outside this MVP. The production request-fact producers are Codex/OpenAI universal and Anthropic
+  native `POST /v1/messages/count_tokens`: after successful metered route/body admission they consume
+  typed logical/client/lifecycle context plus authoritative non-secret account/key and execution
+  identities, then submit exactly one already-terminal nullable-billing-ID fact through the fail-open
+  PostgreSQL inbox. Missing typed client context remains unknown without suppressing the fact; missing
+  logical/lifecycle context omits it. Router fallback reuses the logical ID while each plane attempt
+  keeps its distinct execution attempt. `crates/forward` also defines privacy-bounded pure structural
+  classifiers for already-validated Anthropic Messages, OpenAI Chat/Responses and canonical native
+  Gemini GenerateContent. Anthropic native count_tokens is the first narrow runtime consumer: original
+  client JSON is classified before mutation into content-free closed bits/counts/flags, emitted only
+  when an upstream 2xx proves native shape acceptance; names and request content are discarded. All
+  other classifiers remain dormant for Stage 6/7. Admin/unauthorized/missing-context traffic is omitted.
+  Billable paths, native Responses token counting, remaining Anthropic/Gemini nonbillable paths, read
+  APIs, public metrics, and a public logical-ID header remain absent; `x-request-id` and response
+  availability are unchanged.
   Contract —
   `docs/engine/REQUEST_OBSERVABILITY.md` §§4, 13; perimeter details — `deploy/CADDY.md`.
 - **ClaudeStore-compatible emergency transports (`crates/server` → `crates/forward` → external relay origins).**

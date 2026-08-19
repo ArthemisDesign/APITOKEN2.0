@@ -3,15 +3,15 @@
 > **Status: v1 DECISIONS LOCKED; implementation is incomplete.** Registry S2, forward-core S3A,
 > the Caddy logical-ID perimeter, provider-plane logical/client context admission, router logical-ID
 > production, and the client-attribution slice of classifier stage 5 are implemented. The only
-> production request-fact producer is metered Codex/OpenAI universal
-> `POST /v1/messages/count_tokens`; it consumes normalized client attribution. The closed structural
-> classifier contract is implemented but dormant: pure Anthropic Messages, OpenAI Chat/Responses
-> and canonical Gemini GenerateContent classifiers are not wired to producers. A typed once-only
+> production request-fact producers are metered Codex/OpenAI universal and Anthropic native
+> `POST /v1/messages/count_tokens`; both consume normalized client attribution. The closed structural
+> classifier contract is implemented, and Anthropic native count_tokens is its first narrow runtime
+> consumer; OpenAI Chat/Responses and canonical Gemini GenerateContent remain dormant. A typed once-only
 > lifecycle carrier, transparent final-public-body observation seam, and nonwaiting atomic terminal
 > seal are active. The nonbillable Codex universal count_tokens fact producer is the first production
 > consumer: terminal-fact construction captures safely ordered first-byte evidence or freezes `NULL`
 > before any later outer body poll. Billable/TeeMeter/Codex-generation integration and every other
-> producer remain incomplete before stage 6. No private read surface, request-fact metric, or billable
+> producers remain incomplete in stage 6. No private read surface, request-fact metric, or billable
 > producer exists.
 >
 > This document is the owner-approved v1 implementation contract. It authorizes only the finite,
@@ -25,11 +25,12 @@
 > generate one for direct ingress, remove the wire header, and retain only a typed request extension
 > through internal adapters. The provider consumer's exact production SHA is GREEN, and the router
 > creates one canonical UUIDv4 after admission and sends it on every executable attempt, reusing it
-> across fallback. Codex universal count_tokens consumes the typed extensions only after metered
-> admission and submits one already-terminal nullable-billing-ID fact through the fail-open PostgreSQL
-> inbox, persisting normalized explicit client attribution or unknown when malformed/absent. The
-> logical ID remains operator-only. Billable paths, native OpenAI Responses token counting, Anthropic,
-> Gemini, and every other plane caller remain absent.
+> across fallback. Codex universal and Anthropic native count_tokens consume the typed extensions only
+> after metered route/body admission and submit one already-terminal nullable-billing-ID fact through the fail-open
+> PostgreSQL inbox, persisting normalized explicit client attribution or unknown when malformed/absent.
+> Anthropic additionally consumes the privacy-bounded Messages classifier only after upstream success
+> proves native shape acceptance. The logical ID remains operator-only. Billable paths, native OpenAI
+> Responses token counting, Gemini, and every other plane caller remain absent.
 
 ## 1. Purpose
 
@@ -68,8 +69,8 @@ it is fail-open and excluded from money `flush`. Existing methods remain fact-fr
 money behavior is unchanged and omits analytics, and no production plane caller exercises the new
 forms for billable lifecycles yet. The existing authorization snapshot carries the authoritative
 non-secret `key_id` beside the raw credential: registry obtains both in the same `key_account`
-statement/snapshot, every money path still uses only the raw key, and the first narrow Codex
-count_tokens producer exposes only the non-secret identity through a privacy-minimal typed seed.
+statement/snapshot, every money path still uses only the raw key, and both narrow count_tokens producers
+expose only the non-secret identity through privacy-minimal typed seeds.
 `billing_outcome` is never accepted in the outbox envelope: APPLY derives it from the authoritative
 winner, reconciliation, cancellation, and metered-amount state.
 
@@ -149,24 +150,41 @@ copies again in the common proxy function, and injects the same logical ID into 
 Native and universal single attempts receive it; balance and helper/preflight traffic traversing the
 common proxy passes no typed ID and therefore only strips. The router neither logs nor publishes it.
 
-The current production request-fact producer is deliberately narrower than the locked v1 matrix. Only the
-Codex/OpenAI handler for universal `POST /v1/messages/count_tokens` participates, including Combined
-and router universal dispatch that reaches that same handler. Immediately after successful metered
-`begin_admission`, it snapshots `pool::now()`, the typed logical ID and lifecycle clock from request
-extensions, the retained execution attempt, and authoritative account/key IDs without exposing the raw
-key to the skin. Missing either typed logical or lifecycle context omits the fact as an instrumentation
-gap. Body/translation/model/prepare/success exits converge through one terminalization call, which
-atomically seals first-byte evidence, and one `try_submit_terminal_request_fact`; sealing and
-submission outcomes never affect response status, headers, or body. Facts use
-`billing_request_id=NULL`, `billing_outcome=not_applicable`,
-`openai`/`universal`/`count_tokens`, stream false, the normalized typed client kind/source/version
-(or unknown/unknown/NULL when malformed, absent, or the extension is missing), internal attempt count
-zero, bounded client model spelling after Messages validation, and canonical public model ID only
-after Responses parsing. Safely ordered `first_public_byte_at` is captured by the terminal seal;
-other deliberately unextracted capability and terminal fields remain NULL. Admin, unauthorized,
-missing typed logical or lifecycle context, native OpenAI Responses token counting, billable Messages,
-Anthropic, Gemini, and all other surfaces are omitted. SQLite and inbox drops fail open; coverage is
-visible only through the existing internal delivery snapshot, not public metrics.
+The current production request-fact producers remain deliberately narrower than the locked v1 matrix.
+Codex/OpenAI universal and Anthropic native `POST /v1/messages/count_tokens` participate, including
+Combined/router dispatch that reaches those leaf paths. After successful metered admission, each
+snapshots `pool::now()`, typed logical/lifecycle context from request extensions, the retained execution
+attempt, and authoritative account/key IDs without exposing the raw key. Missing either typed logical
+or lifecycle context omits the fact as an instrumentation gap. Every later terminal response converges
+through one nonblocking `try_submit_terminal_request_fact`; sealing and submission outcomes never
+change response status, headers, frames, body, or polling. Both use `billing_request_id=NULL`,
+`billing_outcome=not_applicable`, stream false and normalized typed client kind/source/version (or
+unknown/unknown/NULL when malformed, absent, or the typed client extension is missing). Codex records
+`openai`/`universal`/`count_tokens`, internal attempt count zero, bounded client model spelling after
+Messages validation, and canonical public model only after Responses parsing.
+
+Anthropic records `anthropic`/`native`/`count_tokens` through one request-scoped RAII guard spanning all
+subscription rotations. It is created only after metered auth, target selection, bounded body read,
+JSON object ownership and typed logical/lifecycle context. The original client JSON is classified
+before namespace/identity mutation into a closed content-free candidate; structural fields are emitted
+only when an upstream 2xx proves the owning native shape accepted, while any rejected/local outcome
+discards the candidate. The guard retains no JSON, prompt, tool name/schema/argument, credential or
+header. Requested model is treated as an untrusted bounded printable-ASCII candidate and is emitted
+only after upstream 2xx acceptance; rejected/local/transport outcomes keep it NULL. Executable model
+remains NULL without exact execution proof. Actual upstream send attempts use checked `usize`→`i32`
+when exhaustively known; the final upstream response alone may contribute exactly one printable ASCII
+`request-id` up to the registry bound. A returned upstream response is terminalized at headers with
+honest delivery `started`, never `completed` merely because a body exists; local pre-send is
+`not_started`, post-send local/transport exhaustion is `unknown`, and cancellation/panic safety uses
+NULL HTTP status plus unknown class/delivery and attempt count. Submission happens before returning the
+response and never depends on body polling, so a never-polled body remains covered. This header-time
+handoff proves only the provider HTTP outcome plus delivery `started`, not response-body consumption or
+transport completion; `downstream_disconnect` remains NULL. Safely ordered `first_public_byte_at` is
+captured by the atomic terminal seal; a prior valid outer observation wins, otherwise NULL is frozen
+before later DATA. Admin, unauthorized, unsupported/model routes, missing typed logical/lifecycle
+context, native OpenAI Responses token counting, billable Messages, Gemini and
+all other surfaces are omitted. SQLite and full/closed inbox drops fail open; coverage remains visible
+only through the internal delivery snapshot, not public metrics.
 
 The logical ID is additive, operator-only correlation metadata in v1. It does not replace a
 protocol's public response ID, an upstream `request-id`, the billing ID, or the existing
@@ -276,9 +294,10 @@ known but the entire class bitset is `NULL`, never a misleading partial set. A n
 empty tool array or modality shape may become zero, and booleans are set only where the owning shape proves the value: a reviewed tool result is existential
 `true`, while `false` requires an exhaustively reviewed input; structured output is classified only
 from exact reviewed formats. Input modality bits come only from validated strings or content parts; image-only
-input and Gemini functionResponse-only input do not implicitly become text. No live parser, handler or
-request-fact producer consumes this definition yet. Stage 6/7 must wire it after owning
-validation without changing public responses or upstream bytes. `tool_calls_in_output` remains later
+input and Gemini functionResponse-only input do not implicitly become text. The Anthropic native
+count_tokens producer is the first narrow runtime consumer and releases its content-free candidate
+only after upstream success supplies the native owning-validation proof. All
+other classifiers remain dormant for Stage 6/7. `tool_calls_in_output` remains later
 terminal producer evidence, and lifecycle clocks remain outside this structural slice.
 
 `web_search_requests` in `usage_events` remains the authoritative billable search counter. A request
@@ -319,10 +338,10 @@ from creating post-terminal evidence. It never waits, notifies, polls, spawns, p
 terminal work, and repeated seals are idempotent. Existing evidence is returned only when safely
 ordered inside inclusive `[admitted_at, terminal_at]`; invalid bounds or out-of-order evidence produce
 `NULL` without clamping or fabrication, and invalid bounds still seal an open clock. This seam does
-not itself write facts or settle money. The nonbillable Codex/OpenAI universal
-`POST /v1/messages/count_tokens` fact producer is its first production consumer. Billable/TeeMeter/
-Codex-generation integration and every other producer remain incomplete, so producer coverage and
-Stage 5 remain incomplete.
+not itself write facts or settle money. The nonbillable Codex/OpenAI universal and Anthropic native
+`POST /v1/messages/count_tokens` fact producers consume it. Billable/TeeMeter/Codex-generation
+integration and all remaining producers remain incomplete, so producer coverage and Stage 5/6 remain
+incomplete.
 
 The read surface safely derives four durations and only when both endpoints are measured and ordered:
 admission-to-delivery, admission-to-first-public-byte, delivery-to-first-public-byte, and
