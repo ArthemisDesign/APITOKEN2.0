@@ -65,3 +65,10 @@ SHA: фиксируется commit этой записи
 Отступления от плана: общий settlement math пока сохранен как тот же account-floor SQL equation внутри batch transaction, но не выделен в полностью общий helper с interactive path; перед merge требуется regression review обеих формул и real-PG conservation tests. Если parity не доказана, этап не считается завершенным.
 Измерения: source authority разделен на domain + create/read/file + claims + settlement modules; file chunk bound 8 MiB.
 Следующий шаг: real-PostgreSQL Stage 2 money/fencing matrix, исправление найденных отклонений, затем production merge.
+
+## 2026-08-20 — Этап 2 (§6): adversarial authority hardening
+SHA: implementation commits `0c1ccb6e`, `5cdfa794`, `035b95ef`; exact SHA может измениться только rebase внутри `agent-merge.sh`
+Результат: adversarial review выявил P0 в cancel hold coupling, leader/claim fencing, dead-owner recovery, settlement replay/row counts, mixed recovery dispositions и file integrity/limits. Все P0 исправлены до merge. Real PostgreSQL `stage2_authority_postgres_matrix` GREEN: whole-batch hold + exact replay/conflict, account isolation, leader/profile claim+dispatch, physical key deletion settlement с `key_id`, exact double APPLY, calibration cumulative spend и chunked file lifecycle. Полный `cargo test -p registry`: 190 passed; `cargo build`, shell syntax, whitespace и docs-check GREEN.
+Отступления от плана: общий settlement helper между interactive и batch не выделен буквально; parity доказывается одинаковой account-floor SQL equation и regression matrix. Это остается техническим долгом, но второй постепенно расходящийся алгоритм не допускается: любое дальнейшее изменение money equation обязано одновременно менять оба path и общий тест до последующего refactor.
+Измерения: 190 registry tests; real-PG Stage 2 matrix 1/1 GREEN; file chunk 8 MiB; public routes/flags/discovery отсутствуют.
+Следующий шаг: дождаться исправления несвязанного RED master (`commerce backup is stale`), затем merge Stage 2 через `agent-merge.sh`; не использовать `--fix-red` для этой ветки.
