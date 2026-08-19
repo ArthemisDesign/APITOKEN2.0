@@ -2240,10 +2240,9 @@ async fn dormant_37_rejects_removed_controls_and_prefill_before_upstream() {
     }
 
     // A final user turn of only functionResponse parts is exactly the shape the closed live
-    // admission lane exists to prove, so on the exact-calibration lane it passes local
-    // validation; the mock has no generation reply queued, so dispatch fails closed with 503
-    // rather than a local 400. Ordinary traffic (covered by the unit-level gate test) keeps
-    // rejecting the same shape outright.
+    // admission lane proved (run gemini-cal-1787152582-af5e9cfb), so it passes local validation
+    // on every lane; the mock has no generation reply queued, so dispatch fails closed with 503
+    // rather than a local 400.
     let response = invoke_exact_uri(
         app.clone(),
         "/v1beta/models/gemini-3.7-flash:generateContent",
@@ -2316,7 +2315,7 @@ async fn dormant_37_rejects_removed_controls_and_prefill_before_upstream() {
 }
 
 #[test]
-fn gate_37_admits_tool_result_final_turn_only_on_the_exact_calibration_lane() {
+fn gate_37_admits_tool_result_final_turn_for_all_traffic() {
     let model = catalog_model("gemini-3.7-flash");
     let tool_loop = || {
         json!({
@@ -2329,8 +2328,10 @@ fn gate_37_admits_tool_result_final_turn_only_on_the_exact_calibration_lane() {
             ]
         })
     };
-    // Ordinary traffic stays fail-closed until the exact-SHA live gate proves the wire contract.
-    assert!(validate_generation_request(&tool_loop(), &model, false).is_err());
+    // The exact-SHA live gate proved the wire contract (run
+    // gemini-cal-1787152582-af5e9cfb: upstream returned incremental SSE with visible text and
+    // terminal usage), so ordinary traffic admits the tool-result-only final turn too.
+    assert!(validate_generation_request(&tool_loop(), &model, false).is_ok());
     // The one-shot exact-profile calibration lane admits exactly this shape.
     assert!(validate_generation_request(&tool_loop(), &model, true).is_ok());
 
@@ -2348,8 +2349,8 @@ fn gate_37_admits_tool_result_final_turn_only_on_the_exact_calibration_lane() {
     assert!(validate_generation_request(&mixed, &model, false).is_ok());
     assert!(validate_generation_request(&mixed, &model, true).is_ok());
 
-    // The exact lane must not become a blanket bypass: empty parts, whitespace-only text,
-    // image-only finals and prefilled model finals stay rejected there too.
+    // The gate must not become a blanket bypass: empty parts, whitespace-only text, image-only
+    // finals and prefilled model finals stay rejected on both lanes.
     for final_turn in [
         json!({"role": "user", "parts": []}),
         json!({"role": "user", "parts": [{"text": "   "}]}),
@@ -2368,14 +2369,18 @@ fn gate_37_admits_tool_result_final_turn_only_on_the_exact_calibration_lane() {
             validate_generation_request(&body, &model, true).is_err(),
             "exact lane must stay closed for {final_turn}"
         );
+        assert!(
+            validate_generation_request(&body, &model, false).is_err(),
+            "ordinary traffic must stay closed for {final_turn}"
+        );
     }
 
-    // The same admission applies to the free countTokens fence of the calibration lane.
+    // The same admission applies to the free countTokens fence on both lanes.
     let nested = json!({
         "generateContentRequest": tool_loop()
     });
     assert!(validate_native_request(Operation::CountTokens, &nested, &model, true).is_ok());
-    assert!(validate_native_request(Operation::CountTokens, &nested, &model, false).is_err());
+    assert!(validate_native_request(Operation::CountTokens, &nested, &model, false).is_ok());
 }
 
 #[test]

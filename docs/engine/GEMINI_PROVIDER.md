@@ -478,12 +478,14 @@ smooth retry. Deadline-bound 3.7 JSON and SSE preserve Google's raw upstream `mo
 admission evidence. That closed admission accepts public `gemini-3.7-flash` or the confirmed private
 `gemini-3.7-flash-tiered` alias; every other spelling fails. Established ordinary lanes retain
 canonical public-id rewriting, so a customer never sees the private alias.
-The ordinary final-turn gate requires non-empty user text and rejects prefilled model, image-only
-and tool-result-only final turns. Solely on the deadline-bound exact lane, a final user turn whose
+The ordinary final-turn gate requires non-empty user text and rejects prefilled model and
+image-only final turns. A final user turn whose
 parts are exclusively `functionResponse` objects — the transcript every portable tool-calling
-client produces after executing a call — is admitted so the closed
-`--gemini-37-tool-result-final-turn` runner mode can prove that wire contract live; ordinary
-traffic stays rejected until that evidence exists.
+client produces after executing a call — is admitted for all traffic: the closed
+`--gemini-37-tool-result-final-turn` runner mode proved that wire contract live (run
+gemini-cal-1787152582-af5e9cfb, request fa042530-3c7d-4aff-b795-ea1c3b2b0122: upstream
+`gemini-3.7-flash-tiered` returned incremental SSE with visible text, terminal `STOP` and
+authoritative terminal usage).
 The dedicated root admission consumer, trigger and private unit were retired after their delivery
 guard introduced a dependency on paid GitHub branch protection. The producer remains available only
 as an exact-profile evidence capability; no permanent canary or helper is installed. The

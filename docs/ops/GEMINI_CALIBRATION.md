@@ -363,9 +363,13 @@ answer is a terminal coverage failure, not evidence.
 Unlike the other capability matrices the budget contract is the leg's own measured
 `countTokens`-preflight ceiling at the exact current compiled tariff (input tokens plus the
 512-token output cap), not the fleet worst-case long-context envelope: there is no sibling leg to
-dominate it, and `--budget-usd` must equal that exact value. A GREEN run is the sole evidence that
-permits admitting tool-result-only final turns on this model; image-only final turns and prefilled
-model turns stay fail-closed until their own exact-SHA gates.
+dominate it, and `--budget-usd` must equal that exact value. A GREEN run was the sole evidence
+that permitted admitting tool-result-only final turns on this model for ordinary traffic; the
+gate ran GREEN (run gemini-cal-1787152582-af5e9cfb, request
+fa042530-3c7d-4aff-b795-ea1c3b2b0122: upstream `gemini-3.7-flash-tiered` returned incremental SSE
+with visible text, terminal `STOP` and authoritative terminal usage), so the local gate is now
+lifted and the runner mode remains as the regression gate for the wire contract. Image-only
+final turns and prefilled model turns stay fail-closed until their own exact-SHA gates.
 ## Offline verification
 
 ```bash

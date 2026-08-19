@@ -98,9 +98,11 @@ the subset that the exact implementation SHA and every claimed credential plan p
   product must reject them locally for this model instead of silently claiming that they work.
 - `candidateCount`/`candidate_count` is unsupported for Gemini 3.x and must not be forwarded as a
   supported control.
-- Prefilled model turns are unsupported, and the final user turn must contain non-empty text.
-  Stage 1 therefore also rejects image-only and tool-result-only final turns; those paths remain
-  unclaimed until an exact-SHA live gate proves their complete wire contract.
+- Prefilled model turns are unsupported, and the final user turn must contain non-empty text or
+  consist exclusively of `functionResponse` parts (the tool-loop continuation every portable
+  client produces; its wire contract was proved by the exact-SHA live gate, run
+  gemini-cal-1787152582-af5e9cfb). Image-only final turns remain unclaimed until an exact-SHA
+  live gate proves their complete wire contract.
 - Thought signatures must survive multi-turn and tool-call round trips.
 - A `FunctionResponse` must preserve both the function `name` and its `call_id`.
 - Output/thinking token accounting uses the output rate; thinking tokens are not free metadata.

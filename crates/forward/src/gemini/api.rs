@@ -1818,9 +1818,11 @@ fn validate_generation_request(
 /// turns: a transcript may contain historical model content, but its final turn must be user input
 /// carrying at least one non-empty part. A final turn of only functionResponse parts — the exact
 /// transcript every portable tool-calling client (OpenCode and other AI SDKs) produces after
-/// executing a call — is admitted through the closed one-shot exact-profile calibration lane so
-/// its wire contract is proven by live evidence before the local gate is lifted for ordinary
-/// traffic. Image-only final turns and prefilled model turns remain fail-closed.
+/// executing a call — is admitted for all traffic: the closed one-shot exact-profile calibration
+/// lane proved its wire contract with live evidence (run gemini-cal-1787152582-af5e9cfb, request
+/// fa042530-3c7d-4aff-b795-ea1c3b2b0122: upstream gemini-3.7-flash-tiered returned incremental
+/// SSE with visible text and terminal usage). Image-only final turns and prefilled model turns
+/// remain fail-closed.
 fn validate_gemini_37_request(body: &Value, exact_calibration: bool) -> Result<(), ApiError> {
     if let Some(generation_config) = body.get("generationConfig") {
         let generation_config = generation_config.as_object().ok_or_else(|| {
@@ -1868,21 +1870,20 @@ fn validate_gemini_37_request(body: &Value, exact_calibration: bool) -> Result<(
                 .is_some_and(|text| !text.trim().is_empty())
         })
     });
-    // The tool-result continuation is the exact shape the closed live gate proves: a user final
-    // turn whose parts are exclusively functionResponse objects. It is admitted only on the
-    // one-shot exact-profile calibration lane, never for ordinary traffic, and an empty final
-    // parts array is never a tool-result continuation.
+    // The tool-result continuation is the exact shape the closed live gate proved: a user final
+    // turn whose parts are exclusively functionResponse objects. It is admitted for ordinary
+    // traffic as well as the calibration lane, and an empty final parts array is never a
+    // tool-result continuation. An empty final parts array is never a tool-result continuation.
+    // The exact_calibration flag no longer widens admission here; it is kept in the signature
+    // because the remaining validators still scope it.
+    let _ = exact_calibration;
     let tool_result_only_final_turn = final_parts.is_some_and(|parts| {
         !parts.is_empty()
             && parts
                 .iter()
                 .all(|part| part.get("functionResponse").is_some_and(Value::is_object))
     });
-    let admitted_final_turn = if exact_calibration {
-        has_non_empty_text || tool_result_only_final_turn
-    } else {
-        has_non_empty_text
-    };
+    let admitted_final_turn = has_non_empty_text || tool_result_only_final_turn;
     if final_role != Some("user") || !admitted_final_turn {
         return Err(ApiError::invalid(
             "Gemini 3.7 Flash requires a final user turn with non-empty text; prefilled model, \
