@@ -123,6 +123,7 @@ The commercial admin API exposes the live managed surface:
 ```text
 GET       /admin/business-users/{id}/pricing
 PATCH     /admin/business-users/{id}/pricing
+GET       /admin/users?limit=...&offset=...&sort=...&dir=...
 POST      /admin/business-invites
 GET       /admin/business-invites/{id}/link
 POST      /admin/business-invites/{id}/revoke
@@ -133,6 +134,15 @@ GET       /admin/finance/paying-users?days=1|7|30&limit=...&offset=...&funding=p
 GET       /admin/finance/engine-spend?days=1|7|30
 GET       /admin/events  (SSE invalidation feed)
 ```
+
+`GET /admin/users` keeps search, filters, sorting and pagination in commerce PostgreSQL, then
+adds live aggregate balance/spend from the engine. Each row also carries the additive
+`provider_spend_30d` object: exact decimal nanoUSD strings for `anthropic_nano`, `openai_nano`,
+`google_nano`, `kimi_nano` and `other_nano`, derived from the same immutable
+`pricing_usage_events` half-open 30-day window as `spent_30d_usd`. Null, legacy and every provider
+outside the four named rails stay in `other_nano`; the producer never relabels that residual as an
+image-model total. The object is a read-only reporting projection and does not become a second
+money authority.
 
 `GET /admin/events` is an additive managed-admin SSE contract for cache invalidation, not a data
 replica. One process-wide PostgreSQL listener consumes the commit-bound

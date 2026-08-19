@@ -282,6 +282,15 @@ and blocks the readiness verdict; it is never coerced to `$0.00`. The backend re
 and accounting fences before any irreversible send, so this projection is operational guidance,
 not an authorization to transfer.
 
+## User provider spend
+
+The general `/users` producer returns an additive exact `provider_spend_30d` breakdown next to the
+existing 30-day spend. Its four named rails are Claude (`anthropic`), GPT (`openai`), Gemini
+(`google`) and Kimi (`kimi`); null, legacy and newer provider ids remain in the honest residual
+`other` rail. Every amount is a decimal nanoUSD string from commerce's immutable usage events. The
+API does not infer image generation from the provider id: OpenAI and Google image models remain in
+their actual provider totals until a producer-authored product-family attribution exists.
+
 ## Gift credits
 
 The `/users` action labelled `+ подарок` creates `admin-credit:*` funding. Its confirmation states

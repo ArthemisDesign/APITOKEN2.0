@@ -395,6 +395,13 @@ function serializeUser(
     reserved_usd: engine ? nanoToUsd(engine.reserved) : null,
     engine_live_status: engine?.status ?? null,
     spent_30d_usd: nanoToUsd(row.spent30dNano),
+    provider_spend_30d: {
+      anthropic_nano: row.providerSpend30dNano.anthropic,
+      openai_nano: row.providerSpend30dNano.openai,
+      google_nano: row.providerSpend30dNano.google,
+      kimi_nano: row.providerSpend30dNano.kimi,
+      other_nano: row.providerSpend30dNano.other,
+    },
     payments: {
       paid_count: row.paidPaymentsCount,
       paid_total_usd: nanoToUsd(row.paidTotalNano),

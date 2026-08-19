@@ -143,6 +143,13 @@ export interface AdminUserOverviewRow {
   apiKeysTotal: number;
   lastSeenAt: Date | null;
   spent30dNano: string;
+  providerSpend30dNano: {
+    anthropic: string;
+    openai: string;
+    google: string;
+    kimi: string;
+    other: string;
+  };
 }
 
 /** Допустимые поля сортировки админ-списка пользователей (GET /admin/users?sort=). */
@@ -197,6 +204,11 @@ interface RawRow {
   api_keys_total: string;
   last_seen_at: Date | null;
   spent_30d_nano: string;
+  spent_30d_anthropic_nano: string;
+  spent_30d_openai_nano: string;
+  spent_30d_google_nano: string;
+  spent_30d_kimi_nano: string;
+  spent_30d_other_nano: string;
 }
 
 // Белый список сортировок admin-списка пользователей. В SQL интерполируется ТОЛЬКО значение
@@ -331,7 +343,12 @@ export async function listAdminUserOverview(
       COALESCE(k.active_count, 0)::text AS api_keys_active,
       COALESCE(k.total_count, 0)::text AS api_keys_total,
       s.last_seen_at,
-      COALESCE(ue.spent_30d, 0)::text AS spent_30d_nano
+      COALESCE(ue.spent_30d, 0)::text AS spent_30d_nano,
+      COALESCE(ue.anthropic_nano, 0)::text AS spent_30d_anthropic_nano,
+      COALESCE(ue.openai_nano, 0)::text AS spent_30d_openai_nano,
+      COALESCE(ue.google_nano, 0)::text AS spent_30d_google_nano,
+      COALESCE(ue.kimi_nano, 0)::text AS spent_30d_kimi_nano,
+      COALESCE(ue.other_nano, 0)::text AS spent_30d_other_nano
     FROM users u
     LEFT JOIN customer_profiles cp ON cp.user_id = u.id
     LEFT JOIN engine_accounts ea ON ea.user_id = u.id
@@ -378,9 +395,19 @@ export async function listAdminUserOverview(
       FROM auth_sessions WHERE user_id = u.id AND revoked_at IS NULL
     ) s ON TRUE
     LEFT JOIN LATERAL (
-      SELECT sum(amount_nano) AS spent_30d
+      SELECT
+        sum(amount_nano) AS spent_30d,
+        sum(amount_nano) FILTER (WHERE provider_id = 'anthropic') AS anthropic_nano,
+        sum(amount_nano) FILTER (WHERE provider_id = 'openai') AS openai_nano,
+        sum(amount_nano) FILTER (WHERE provider_id = 'google') AS google_nano,
+        sum(amount_nano) FILTER (WHERE provider_id = 'kimi') AS kimi_nano,
+        sum(amount_nano) FILTER (
+          WHERE provider_id IS NULL OR provider_id NOT IN ('anthropic', 'openai', 'google', 'kimi')
+        ) AS other_nano
       FROM pricing_usage_events
-      WHERE user_id = u.id AND occurred_at > now() - interval '30 days'
+      WHERE user_id = u.id
+        AND occurred_at >= now() - interval '30 days'
+        AND occurred_at < now()
     ) ue ON TRUE
     WHERE ${filters}
     ORDER BY ${orderBy}
@@ -423,6 +450,13 @@ export async function listAdminUserOverview(
     apiKeysTotal: Number(row.api_keys_total),
     lastSeenAt: row.last_seen_at,
     spent30dNano: row.spent_30d_nano,
+    providerSpend30dNano: {
+      anthropic: row.spent_30d_anthropic_nano,
+      openai: row.spent_30d_openai_nano,
+      google: row.spent_30d_google_nano,
+      kimi: row.spent_30d_kimi_nano,
+      other: row.spent_30d_other_nano,
+    },
     })),
     total: Number(countResult.rows[0]?.total ?? 0),
     limit,

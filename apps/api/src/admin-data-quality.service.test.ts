@@ -51,6 +51,13 @@ describe("AdminService.listUsers sorting", () => {
       balance_usd: null,
       spent_usd: null,
       spent_30d_usd: "3.0000",
+      provider_spend_30d: {
+        anthropic_nano: "2000000000",
+        openai_nano: "1000000000",
+        google_nano: "0",
+        kimi_nano: "0",
+        other_nano: "0",
+      },
       payments: { paid_count: 1, paid_total_usd: "25.0000" },
     });
   });
@@ -181,5 +188,12 @@ function fakeOverviewRow(): AdminUserOverviewRow {
     apiKeysTotal: 1,
     lastSeenAt: new Date("2026-07-30T00:00:00.000Z"),
     spent30dNano: "3000000000",
+    providerSpend30dNano: {
+      anthropic: "2000000000",
+      openai: "1000000000",
+      google: "0",
+      kimi: "0",
+      other: "0",
+    },
   };
 }

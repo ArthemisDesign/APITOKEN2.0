@@ -53,6 +53,19 @@ describe("listAdminUserOverview sorting", () => {
     expect(queries[0]!.text).toContain("WHEN 'retry' THEN 1");
   });
 
+  it("returns exact 30-day provider buckets without treating unknown providers as a named rail", async () => {
+    const { database, queries } = fakeDatabase();
+    await listAdminUserOverview(database);
+
+    expect(queries[0]!.text).toContain("provider_id = 'anthropic'");
+    expect(queries[0]!.text).toContain("provider_id = 'openai'");
+    expect(queries[0]!.text).toContain("provider_id = 'google'");
+    expect(queries[0]!.text).toContain("provider_id = 'kimi'");
+    expect(queries[0]!.text).toContain(
+      "provider_id IS NULL OR provider_id NOT IN ('anthropic', 'openai', 'google', 'kimi')",
+    );
+  });
+
   it("maps every whitelisted sort to its aggregate expression, never the raw input", async () => {
     const cases: Array<[AdminUserSort, AdminSortDir, string]> = [
       ["paid_total", "desc", "ORDER BY COALESCE(p.paid_total, 0) DESC NULLS LAST, u.id ASC"],

@@ -55,6 +55,15 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
              ($2, 'b2c', 0, 4000, date_trunc('month', now()))
     `, [passwordUserId, oauthUserId]);
     await database.pool.query(`
+      INSERT INTO pricing_usage_events (
+        id, user_id, engine_account_id, ledger_entry_id, provider_id,
+        provider_recovery_version, amount_nano, real_funded_nano, occurred_at
+      ) VALUES
+        ($1, $4, 'acct_oauth', 1, 'anthropic', 1, 2000000000, 0, now()),
+        ($2, $4, 'acct_oauth', 2, 'openai', 1, 750000000, 0, now()),
+        ($3, $4, 'acct_oauth', 3, 'future-provider', 1, 250000000, 0, now())
+    `, [randomUUID(), randomUUID(), randomUUID(), oauthUserId]);
+    await database.pool.query(`
       INSERT INTO auth_sessions (id, user_id, token_hash, expires_at, last_seen_at)
       VALUES ($1, $2, $3, now() + interval '1 day', now())
     `, [randomUUID(), passwordUserId, "a".repeat(64)]);
@@ -124,6 +133,14 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
       email: "oauth@example.com",
       balance_usd: "12.0000",
       engine_live_status: "active",
+      spent_30d_usd: "3.0000",
+      provider_spend_30d: {
+        anthropic_nano: "2000000000",
+        openai_nano: "750000000",
+        google_nano: "0",
+        kimi_nano: "0",
+        other_nano: "250000000",
+      },
     }]);
     expect(engine.accountBatchRequests).toHaveLength(2);
   });
