@@ -96,6 +96,10 @@ const COUNT_FACT_EXECUTION_GROUP: &str = "bbbbbbbb-bbbb-4bbb-9bbb-bbbbbbbbbbbb";
 const COUNT_FACT_RAW_KEY: &str = "sk-anthropic-count-fact-secret";
 const COUNT_FACT_ACCOUNT_ID: &str = "anthropic-count-fact-account";
 const COUNT_FACT_KEY_ID: &str = "key_anthropic_count_nonsecret";
+// Every real-PostgreSQL test that truncates shared engine tables must serialize with registry's
+// canonical destructive-test advisory lock. A distinct lock races the workspace's concurrent PG
+// suites and can interleave TRUNCATE/setup, producing false duplicate-key failures.
+const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_441;
 
 fn native_count_tokens_request(
     body: serde_json::Value,
@@ -1682,7 +1686,6 @@ fn exact_not_started_metric_predicate_matches_the_router_proof() {
 
 #[test]
 fn anthropic_universal_chat_and_responses_persist_exactly_one_postgres_fact_each() {
-    const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_444;
     let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
         eprintln!("skipping Anthropic universal fact rows: test URL is unset");
         return;
@@ -2026,7 +2029,6 @@ data: {"type":"message_stop"}
 
 #[test]
 fn native_billable_messages_admission_delivery_and_terminal_share_postgres_money_lifecycle() {
-    const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_443;
     let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
         eprintln!("skipping Anthropic billable Messages fact row: test URL is unset");
         return;
@@ -2239,7 +2241,6 @@ fn native_billable_messages_admission_delivery_and_terminal_share_postgres_money
 
 #[test]
 fn native_count_tokens_terminal_fact_persists_privacy_bounded_postgres_row() {
-    const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_442;
     let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
         eprintln!("skipping Anthropic count_tokens fact row: test URL is unset");
         return;
