@@ -12,6 +12,259 @@ fn engine_migration_plan_is_contiguous() {
 }
 
 #[test]
+fn gemini_batch_foundation_migration_is_dormant_expand_only() {
+    assert_eq!(CURRENT_SCHEMA_VERSION, 55);
+    assert_eq!(
+        ENGINE_MIGRATIONS
+            .iter()
+            .find(|(version, _)| *version == 55)
+            .map(|(_, sql)| *sql),
+        Some(MIGRATION_0055),
+    );
+
+    let executable = MIGRATION_0055
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let normalized = executable.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for table in [
+        "gemini_batch_jobs",
+        "gemini_batch_items",
+        "gemini_batch_item_files",
+        "gemini_batch_blobs",
+        "gemini_batch_files",
+        "gemini_batch_settlement_outbox",
+        "gemini_batch_profile_leases",
+    ] {
+        assert!(
+            normalized.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")),
+            "migration 0055 is missing {table}",
+        );
+    }
+    for forbidden in [
+        "ALTER TABLE",
+        "DROP TABLE",
+        "DROP COLUMN",
+        "TRUNCATE",
+        "CREATE TRIGGER",
+        "UPDATE accounts",
+        "UPDATE api_keys",
+        "UPDATE reservations",
+        "UPDATE ledger",
+        "UPDATE usage_events",
+    ] {
+        assert!(
+            !normalized.contains(forbidden),
+            "dormant migration 0055 contains forbidden legacy/runtime mutation: {forbidden}",
+        );
+    }
+    assert_eq!(
+        normalized.matches("INSERT INTO").count(),
+        1,
+        "0055 may insert only its engine_schema_migrations bookkeeping row",
+    );
+    assert!(normalized.contains("INSERT INTO engine_schema_migrations(version) VALUES (55)"));
+    assert!(!normalized.contains("request_payload json"));
+    assert!(!normalized.contains("result_payload json"));
+    assert!(!normalized.contains("metadata json"));
+    for forbidden_counter in [
+        "request_count",
+        "successful_request_count",
+        "failed_request_count",
+        "pending_request_count",
+    ] {
+        assert!(
+            !normalized.contains(forbidden_counter),
+            "batchStats must remain derived-on-read, found {forbidden_counter}",
+        );
+    }
+    assert!(normalized.contains("ON gemini_batch_items(job_id, state, item_index)"));
+    assert!(normalized.contains("ON gemini_batch_item_files(file_id, job_id, item_index)"));
+    assert!(normalized.contains("WHERE idempotency_digest IS NOT NULL"));
+}
+
+/// Real PostgreSQL proof that migration 0055 applies, constrains the dormant authority, remains
+/// replay-safe, and leaves legacy money writers usable. Skipped unless an isolated destructive test
+/// database is supplied through `CLAUDE_API_TEST_DATABASE_URL`.
+#[test]
+fn gemini_batch_foundation_migration_postgres_matrix() {
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping Gemini batch foundation matrix: test URL is unset");
+        return;
+    };
+
+    let mut lock_holder = PgStore::connect(&url).unwrap();
+    lock_holder
+        .client
+        .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+        .unwrap();
+    lock_holder
+        .client
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+
+    let mut pg = PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    assert_eq!(pg.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
+
+    let tables: Vec<String> = pg
+        .client
+        .query(
+            "SELECT tablename FROM pg_tables \
+             WHERE schemaname='public' AND tablename LIKE 'gemini_batch_%' \
+             ORDER BY tablename",
+            &[],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(
+        tables,
+        vec![
+            "gemini_batch_blobs",
+            "gemini_batch_files",
+            "gemini_batch_item_files",
+            "gemini_batch_items",
+            "gemini_batch_jobs",
+            "gemini_batch_profile_leases",
+            "gemini_batch_settlement_outbox",
+        ],
+    );
+
+    let account = "gemini-batch-migration-account";
+    let raw_key = "gemini-batch-migration-key";
+    let key_id = "gemini-batch-migration-key-id";
+    let job = "gemini-batch-migration-job";
+    pg.client
+        .batch_execute(&format!(
+            "DELETE FROM api_keys WHERE key='{raw_key}'; \
+             DELETE FROM accounts WHERE id='{account}';"
+        ))
+        .unwrap();
+    pg.client
+        .execute(
+            "INSERT INTO accounts(id,balance_nano,spent_nano,mult_bp,status,created_ts,created) \
+             VALUES($1,1000000,0,5000,'active',1,'migration-matrix')",
+            &[&account],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "INSERT INTO api_keys(key,key_id,account_id,created_ts,created) \
+             VALUES($1,$2,$3,1,'migration-matrix')",
+            &[&raw_key, &key_id, &account],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "INSERT INTO gemini_batch_jobs( \
+                 job_id,account_id,creator_key_id,public_model,display_name, \
+                 canonical_request_digest,input_kind,schema_version,encryption_policy_version, \
+                 create_ts,update_ts,deadline_ts,result_expiration_ts \
+             ) VALUES($1,$2,$3,'gemini-2.5-flash','matrix',decode(repeat('11',32),'hex'), \
+                 'inline',1,1,10,10,20,30)",
+            &[&job, &account, &key_id],
+        )
+        .unwrap();
+    pg.client
+        .execute(
+            "INSERT INTO gemini_batch_items( \
+                 job_id,item_index,request_id,logical_request_id,execution_group_id,request_digest, \
+                 hold_nano,payable_multiplier_bp,priced_ts,tariff_family,tariff_version, \
+                 tariff_schedule_id,state,created_ts,updated_ts \
+             ) VALUES($1,0,'gemini-batch-item-request','gemini-batch-item-logical', \
+                 'gemini-batch-item-group',decode(repeat('22',32),'hex'),100,5000,10, \
+                 'google/gemini/gemini-2.5-flash',1, \
+                 'google/gemini/gemini-2.5-flash/v1','queued',10,10)",
+            &[&job],
+        )
+        .unwrap();
+
+    let invalid_half_fence = pg.client.execute(
+        "UPDATE gemini_batch_items SET worker_instance='worker' \
+         WHERE job_id=$1 AND item_index=0",
+        &[&job],
+    );
+    assert_eq!(
+        invalid_half_fence
+            .expect_err("half-populated claim fence must fail")
+            .as_db_error()
+            .map(|error| error.code().code()),
+        Some("23514"),
+    );
+    let invalid_terminal = pg.client.execute(
+        "UPDATE gemini_batch_items SET terminal_ts=11,terminal_class='success' \
+         WHERE job_id=$1 AND item_index=0",
+        &[&job],
+    );
+    assert_eq!(
+        invalid_terminal
+            .expect_err("terminal evidence on queued item must fail")
+            .as_db_error()
+            .map(|error| error.code().code()),
+        Some("23514"),
+    );
+
+    pg.client
+        .execute("DELETE FROM api_keys WHERE key=$1", &[&raw_key])
+        .unwrap();
+    let creator_key_id: String = pg
+        .client
+        .query_one(
+            "SELECT creator_key_id FROM gemini_batch_jobs WHERE job_id=$1",
+            &[&job],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(creator_key_id, key_id);
+    let account_delete = pg
+        .client
+        .execute("DELETE FROM accounts WHERE id=$1", &[&account]);
+    assert_eq!(
+        account_delete
+            .expect_err("accepted batch must restrict account deletion")
+            .as_db_error()
+            .map(|error| error.code().code()),
+        Some("23503"),
+    );
+
+    pg.migrate().unwrap();
+    assert_eq!(pg.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
+    let item_count: i64 = pg
+        .client
+        .query_one(
+            "SELECT COUNT(*)::bigint FROM gemini_batch_items WHERE job_id=$1",
+            &[&job],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(item_count, 1, "migration replay must preserve dormant rows");
+
+    pg.client
+        .execute("DELETE FROM gemini_batch_items WHERE job_id=$1", &[&job])
+        .unwrap();
+    pg.client
+        .execute("DELETE FROM gemini_batch_jobs WHERE job_id=$1", &[&job])
+        .unwrap();
+    pg.client
+        .execute("DELETE FROM accounts WHERE id=$1", &[&account])
+        .unwrap();
+    lock_holder
+        .client
+        .query_one(
+            "SELECT pg_advisory_unlock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+}
+
+#[test]
 fn execution_group_migration_preserves_old_reservation_writers() {
     let normalized = MIGRATION_0021
         .split_whitespace()
@@ -356,7 +609,7 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 54);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 55);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
@@ -461,7 +714,7 @@ fn tripo3d_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn tripo3d_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 54);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 55);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 49)
@@ -581,7 +834,7 @@ fn suno_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn suno_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 54);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 55);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 50)
@@ -692,7 +945,7 @@ fn tripo3d_pricing_provider_migration_widens_both_closed_sets() {
 
 #[test]
 fn tripo3d_pricing_provider_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 54);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 55);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 51)
@@ -741,7 +994,7 @@ fn suno_pricing_provider_migration_widens_both_closed_sets() {
 
 #[test]
 fn suno_pricing_provider_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 54);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 55);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 52)
@@ -1023,8 +1276,8 @@ fn request_fact_terminal_envelope_migration_postgres_matrix() {
 
     let mut pg = PgStore::connect(&url).unwrap();
     pg.migrate().unwrap();
-    assert_eq!(pg.schema_version().unwrap(), 54);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 54);
+    assert_eq!(pg.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 55);
     assert_eq!(
         ENGINE_MIGRATIONS
             .iter()
@@ -1462,7 +1715,7 @@ fn request_fact_terminal_envelope_migration_postgres_matrix() {
     }
 
     pg.migrate().unwrap();
-    assert_eq!(pg.schema_version().unwrap(), 54);
+    assert_eq!(pg.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
     let replayed_row = pg
         .client
         .query_one(

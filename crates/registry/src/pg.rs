@@ -227,9 +227,10 @@ const MIGRATION_0052: &str = include_str!("../migrations_pg/0052_suno_pricing_pr
 const MIGRATION_0053: &str = include_str!("../migrations_pg/0053_request_facts.sql");
 const MIGRATION_0054: &str =
     include_str!("../migrations_pg/0054_request_fact_terminal_envelope.sql");
+const MIGRATION_0055: &str = include_str!("../migrations_pg/0055_gemini_batch_foundation.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 54;
+pub const CURRENT_SCHEMA_VERSION: i64 = 55;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -287,6 +288,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (52, MIGRATION_0052),
     (53, MIGRATION_0053),
     (54, MIGRATION_0054),
+    (55, MIGRATION_0055),
 ];
 
 #[cfg(test)]
