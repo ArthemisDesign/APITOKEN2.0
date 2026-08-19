@@ -88,6 +88,56 @@ describe.runIf(Boolean(connectionString))("managed admin accounts", () => {
     }]);
   });
 
+  it("revokes persistent sessions after a password or domain-grant change", async () => {
+    const created = await service.create({
+      username: "session-admin",
+      password: "correct horse battery staple",
+      domains: ["admin.apitoken.sale", "crm.apitoken.sale"],
+      actorId: "legacy-main",
+      reason: "bootstrap session regression account",
+    }) as unknown as AccountResponse;
+    const identity = await service.authenticatePassword({
+      username: "session-admin",
+      password: "correct horse battery staple",
+      domain: "crm.apitoken.sale",
+    });
+    expect(identity?.sessionVersion).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    await expect(service.resolveSessionIdentity({
+      accountId: created.account.id,
+      domain: "crm.apitoken.sale",
+      sessionVersion: identity!.sessionVersion,
+    })).resolves.toMatchObject({ username: "session-admin" });
+
+    await service.changePassword({
+      accountId: created.account.id,
+      password: "replacement horse battery staple",
+      actorId: created.account.id,
+      reason: "rotate persistent session credential",
+    });
+    await expect(service.resolveSessionIdentity({
+      accountId: created.account.id,
+      domain: "crm.apitoken.sale",
+      sessionVersion: identity!.sessionVersion,
+    })).resolves.toBeNull();
+
+    const replacement = await service.authenticatePassword({
+      username: "session-admin",
+      password: "replacement horse battery staple",
+      domain: "crm.apitoken.sale",
+    });
+    await service.setDomains({
+      accountId: created.account.id,
+      domains: ["admin.apitoken.sale"],
+      actorId: created.account.id,
+      reason: "remove CRM access",
+    });
+    await expect(service.resolveSessionIdentity({
+      accountId: created.account.id,
+      domain: "crm.apitoken.sale",
+      sessionVersion: replacement!.sessionVersion,
+    })).resolves.toBeNull();
+  });
+
   it("prevents removal or disabling of the last active main-admin account", async () => {
     const first = await createMain(service);
     await expect(service.setDomains({

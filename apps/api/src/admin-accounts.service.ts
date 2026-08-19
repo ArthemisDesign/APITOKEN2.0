@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import {
   changeManagedAdminPassword,
   createManagedAdminAccount,
   findManagedAdminCredential,
+  findManagedAdminSessionIdentity,
   importLegacyAdminAccounts,
   listManagedAdminAccounts,
   MANAGED_ADMIN_DOMAINS,
@@ -27,6 +29,12 @@ export const MANAGED_ADMIN_DOMAIN_DETAILS = [
   { domain: "content-studio.apitoken.sale", label: "Content Studio" },
   { domain: "monitoring.apitoken.sale", label: "Monitoring" },
 ] as const satisfies readonly { domain: ManagedAdminDomain; label: string }[];
+
+export interface ManagedAdminAuthIdentity {
+  id: string;
+  username: string;
+  sessionVersion: string;
+}
 
 @Injectable()
 export class AdminAccountsService {
@@ -126,28 +134,62 @@ export class AdminAccountsService {
   async authenticate(input: {
     authorization: string | undefined;
     domain: ManagedAdminDomain;
-  }): Promise<{ id: string; username: string } | null> {
+  }): Promise<ManagedAdminAuthIdentity | null> {
     const basic = parseBasicAuthorization(input.authorization);
-    const account = basic
-      ? await findManagedAdminCredential(this.database, { username: basic.username, domain: input.domain })
-      : null;
+    if (!basic) return null;
+    return this.authenticatePassword({ ...basic, domain: input.domain });
+  }
+
+  async authenticatePassword(input: {
+    username: string;
+    password: string;
+    domain: ManagedAdminDomain;
+  }): Promise<ManagedAdminAuthIdentity | null> {
+    const account = await findManagedAdminCredential(this.database, {
+      username: input.username,
+      domain: input.domain,
+    });
     const candidateHash = account?.passwordHash ?? await dummyHash;
     let valid = false;
     try {
-      valid = basic ? await verifyPassword(candidateHash, basic.password) : false;
+      valid = await verifyPassword(candidateHash, input.password);
     } catch {
       valid = false;
     }
-    if (!basic || !account || !valid || account.status !== "active") return null;
+    if (!account || !valid || account.status !== "active") return null;
     if (isBcryptHash(account.passwordHash)) {
-      const upgraded = await hash(basic.password, passwordHashOptions());
-      await upgradeLegacyAdminPasswordHash(this.database, {
+      const upgraded = await hash(input.password, passwordHashOptions());
+      const replaced = await upgradeLegacyAdminPasswordHash(this.database, {
         accountId: account.id,
         previousHash: account.passwordHash,
         passwordHash: upgraded,
       });
+      if (!replaced) return null;
     }
-    return { id: account.id, username: account.username };
+    const current = await findManagedAdminCredential(this.database, {
+      username: account.username,
+      domain: input.domain,
+    });
+    if (!current || current.status !== "active") return null;
+    if (!isBcryptHash(account.passwordHash) && current.passwordHash !== account.passwordHash) return null;
+    return {
+      id: current.id,
+      username: current.username,
+      sessionVersion: makeSessionVersion(current.passwordHash, current.updatedAt),
+    };
+  }
+
+  async resolveSessionIdentity(input: {
+    accountId: string;
+    domain: ManagedAdminDomain;
+    sessionVersion: string;
+  }): Promise<ManagedAdminAuthIdentity | null> {
+    const account = await findManagedAdminSessionIdentity(this.database, input);
+    if (!account || account.status !== "active" ||
+        makeSessionVersion(account.passwordHash, account.updatedAt) !== input.sessionVersion) {
+      return null;
+    }
+    return { id: account.id, username: account.username, sessionVersion: input.sessionVersion };
   }
 
   async importLegacy(input: readonly {
@@ -163,6 +205,14 @@ export class AdminAccountsService {
       crm_accounts: result.crmAccounts,
     };
   }
+}
+
+function makeSessionVersion(passwordHash: string, updatedAt: Date): string {
+  return createHash("sha256")
+    .update(passwordHash, "utf8")
+    .update("\0", "utf8")
+    .update(updatedAt.toISOString(), "ascii")
+    .digest("base64url");
 }
 
 export function isManagedAdminDomain(value: string | undefined): value is ManagedAdminDomain {

@@ -27,6 +27,14 @@ export interface ManagedAdminCredential extends ManagedAdminAccount {
   passwordHash: string;
 }
 
+export interface ManagedAdminSessionIdentity {
+  id: string;
+  username: string;
+  status: ManagedAdminStatus;
+  passwordHash: string;
+  updatedAt: Date;
+}
+
 export class ManagedAdminConflictError extends Error {}
 export class ManagedAdminNotFoundError extends Error {}
 export class LastMainAdminError extends Error {}
@@ -69,6 +77,33 @@ export async function findManagedAdminCredential(
   `, [input.username, input.domain]);
   const row = result.rows[0];
   return row ? { ...mapAdminAccount(row), passwordHash: row.password_hash } : null;
+}
+
+export async function findManagedAdminSessionIdentity(
+  database: Database,
+  input: { accountId: string; domain: ManagedAdminDomain },
+): Promise<ManagedAdminSessionIdentity | null> {
+  const result = await database.pool.query<{
+    id: string;
+    username: string;
+    status: ManagedAdminStatus;
+    password_hash: string;
+    updated_at: Date;
+  }>(`
+    SELECT account.id, account.username, account.status, account.password_hash, account.updated_at
+    FROM admin_accounts account
+    JOIN admin_account_domains access_grant
+      ON access_grant.admin_account_id = account.id AND access_grant.domain = $2
+    WHERE account.id = $1
+  `, [input.accountId, input.domain]);
+  const row = result.rows[0];
+  return row ? {
+    id: row.id,
+    username: row.username,
+    status: row.status,
+    passwordHash: row.password_hash,
+    updatedAt: row.updated_at,
+  } : null;
 }
 
 export async function createManagedAdminAccount(
@@ -273,12 +308,14 @@ export async function importLegacyAdminAccounts(
 export async function upgradeLegacyAdminPasswordHash(
   database: Database,
   input: { accountId: string; previousHash: string; passwordHash: string },
-): Promise<void> {
-  await database.pool.query(`
+): Promise<boolean> {
+  const result = await database.pool.query(`
     UPDATE admin_accounts
     SET password_hash = $3, password_changed_at = now(), updated_at = now()
     WHERE id = $1 AND password_hash = $2 AND password_changed_at IS NULL
+    RETURNING id
   `, [input.accountId, input.previousHash, input.passwordHash]);
+  return result.rowCount === 1;
 }
 
 async function withAdminTransaction<T>(

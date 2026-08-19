@@ -1,4 +1,5 @@
 import "reflect-metadata";
+import formbody from "@fastify/formbody";
 import helmet from "@fastify/helmet";
 import { Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
@@ -27,6 +28,7 @@ async function bootstrap(): Promise<void> {
     // а весь антифрод по IP слеп. Доверяем X-Forwarded-For только от loopback.
     trustProxy: ["127.0.0.1", "::1"],
   }), { rawBody: true });
+  await app.register(formbody);
   const readiness = app.get(ReadinessService);
   process.on("SIGUSR1", () => {
     readiness.markDraining();

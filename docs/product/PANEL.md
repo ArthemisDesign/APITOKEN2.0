@@ -35,6 +35,14 @@ browser ──Basic credentials──▶ Caddy forward_auth ──▶ commerce a
   hashes, status and grants for the four managed domains. Control, commerce-admin and
   sales-admin keys are injected only server-side and never end up in HTML, browser
   storage, responses or logs.
+- The commerce auth producer also supports the staged `session-v1` contract for the next
+  Caddy release. Only a trusted Caddy request carrying `X-Admin-Auth-Mode: session-v1`
+  enables it; without that header the existing Basic challenge is unchanged. The new
+  contract provides same-origin browser login/logout endpoints and a 180-day host-only
+  `HttpOnly; Secure; SameSite=Lax` signed cookie. Every request still rechecks the active
+  account and exact domain grant, while password, domain or status changes revoke the
+  cookie. Caddy must not activate this consumer contract until the API producer release
+  is live on both commerce slots.
 - The verified identity is passed to commerce as `x-admin-actor` and `x-admin-account-id`
   via `forward_auth copy_headers`. The global directive order places an anti-spoof
   `request_header` clear before authentication, so Caddy first removes client forgeries,
@@ -244,7 +252,7 @@ rate are recorded in the audit.
 | admin password hashes + domain grants | commerce PostgreSQL | `apps/api` internal auth |
 | engine control key | live Caddy + engine env | `control_authed` |
 | OpenKeys internal credential (the same engine control key) | live Caddy + `openkeys.env` | OpenKeys internal route |
-| `COMMERCIAL_ADMIN_KEY` | live Caddy + commerce env | `AdminGuard` |
+| `COMMERCIAL_ADMIN_KEY` | live Caddy + commerce env | `AdminGuard` + domain-separated admin-session HMAC |
 | `SALES_ADMIN_KEY` | live Caddy + sales env | `AdminKeyGuard` |
 
 `deploy/render-caddy.awk` carries the service keys from the live Caddy config via

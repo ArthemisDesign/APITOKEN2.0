@@ -12,6 +12,7 @@ import { AdminOperationsService } from "./admin-operations.service.js";
 import { AdminPipelinesController } from "./admin-pipelines.controller.js";
 import { AdminPipelinesService } from "./admin-pipelines.service.js";
 import { AdminService } from "./admin.service.js";
+import { AdminSessionService } from "./admin-session.service.js";
 import { InternalAdminAuthController } from "./internal-admin-auth.controller.js";
 
 @Module({
@@ -28,6 +29,7 @@ import { InternalAdminAuthController } from "./internal-admin-auth.controller.js
     AdminGuard,
     AdminEventsService,
     AdminService,
+    AdminSessionService,
     AdminOperationsService,
     AdminAccountsService,
     AdminFinanceService,
