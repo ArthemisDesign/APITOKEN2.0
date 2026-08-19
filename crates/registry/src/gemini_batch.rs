@@ -11,6 +11,10 @@ pub const GEMINI_BATCH_DISPATCH_LEADER: &str = "gemini_batch_dispatch";
 pub const MAX_BATCH_PAGE_SIZE: i64 = 1_000;
 pub const MAX_BATCH_PRUNE_LIMIT: usize = 5_000;
 pub const MAX_BATCH_FILE_CHUNK_BYTES: i64 = 8 * 1024 * 1024;
+pub const MAX_BATCH_FILE_BYTES: i64 = 2 * 1024 * 1024 * 1024;
+pub const MAX_BATCH_ACCOUNT_FILE_BYTES: i64 = 20 * 1024 * 1024 * 1024;
+pub const MAX_BATCH_NONTERMINAL_JOBS: i64 = 100;
+pub const MAX_BATCH_REFERENCED_FILE_BYTES: i64 = MAX_BATCH_FILE_BYTES;
 pub const BATCH_RESULT_RETENTION_SECS: i64 = 42 * 24 * 60 * 60;
 
 #[derive(Debug)]
@@ -302,6 +306,7 @@ pub enum GeminiBatchCreateOutcome {
     Created { balance_nano: i64 },
     Replay { job_id: String },
     RejectedFunds,
+    RejectedLimit,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeminiBatchItem {
@@ -364,6 +369,26 @@ pub struct GeminiBatchClaim {
     pub profile_id: String,
 }
 
+/// A stale claim whose money must be resolved by the ordinary settlement authority.
+///
+/// Recovery never releases a hold or terminalizes an item directly. The consumer chooses the
+/// fleet's unknown-usage charge policy, builds encrypted error output, and enqueues a fenced
+/// [`GeminiBatchSettlementIntent`] through the normal settlement path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeminiBatchRecoveryCandidate {
+    pub job_id: String,
+    pub account_id: String,
+    pub item_index: i64,
+    pub request_id: String,
+    pub claim_generation: i64,
+    pub profile_id: String,
+    pub hold_nano: i64,
+    pub disposition: GeminiBatchSettlementDisposition,
+    pub terminal_state: GeminiBatchItemState,
+    pub terminal_class: GeminiBatchTerminalClass,
+    pub actual_send_evidence: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeminiBatchFileChunk {
     pub chunk_index: i64,
@@ -399,6 +424,18 @@ pub struct GeminiBatchFileCreate {
     pub source_kind: String,
     pub create_ts: i64,
     pub expiration_ts: i64,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeminiBatchFileCreateOutcome {
+    Created,
+    Replay,
+    Unavailable,
+    RejectedQuota,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GeminiBatchFileCompletion {
+    pub completed_ts: i64,
+    pub whole_file_sha256_digest: [u8; 32],
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeminiBatchFile {
@@ -469,19 +506,76 @@ impl GeminiBatchSettlementIntent {
             || self.actual_nano < 0
             || self.charge_basis_nano < 0
             || self.real_nano < 0
+            || self.completed_ts <= 0
             || !self.terminal_state.is_terminal()
         {
             bail!("invalid settlement intent")
+        }
+        let usage_is_valid = self.usage.as_ref().is_none_or(|usage| {
+            let values = [
+                usage.input_tokens,
+                usage.tool_prompt_tokens,
+                usage.audio_input_tokens,
+                usage.cached_input_tokens,
+                usage.cached_audio_input_tokens,
+                usage.output_tokens,
+                usage.thinking_output_tokens,
+                usage.image_output_tokens,
+                usage.search_queries,
+                usage.grounded_search_prompts,
+            ];
+            values.iter().all(|value| *value >= 0)
+                && usage.tool_prompt_tokens <= usage.input_tokens
+                && usage.cached_audio_input_tokens <= usage.cached_input_tokens
+                && usage.thinking_output_tokens <= usage.output_tokens
+        });
+        if !usage_is_valid {
+            bail!("invalid Gemini Batch usage")
+        }
+        let (expected_state, expected_class, expected_blob, measured) = match self.disposition {
+            GeminiBatchSettlementDisposition::Settle => (
+                GeminiBatchItemState::Succeeded,
+                GeminiBatchTerminalClass::Success,
+                "result",
+                true,
+            ),
+            GeminiBatchSettlementDisposition::Cancel => (
+                GeminiBatchItemState::Canceled,
+                GeminiBatchTerminalClass::Canceled,
+                "error",
+                false,
+            ),
+            GeminiBatchSettlementDisposition::Indeterminate => (
+                GeminiBatchItemState::Indeterminate,
+                GeminiBatchTerminalClass::Indeterminate,
+                "error",
+                false,
+            ),
+            GeminiBatchSettlementDisposition::Expire => (
+                GeminiBatchItemState::Canceled,
+                GeminiBatchTerminalClass::Expired,
+                "error",
+                false,
+            ),
         };
-        if matches!(self.disposition, GeminiBatchSettlementDisposition::Settle)
-            != self.calibration.is_some()
+        if self.terminal_state != expected_state
+            || self.terminal_class != expected_class
+            || self.result_blob.kind != expected_blob
+            || measured != self.usage.is_some()
+            || measured != self.calibration.is_some()
+            || (!measured
+                && (self.actual_nano != 0 || self.charge_basis_nano != 0 || self.real_nano != 0))
         {
-            bail!("calibration shape mismatch")
-        };
-        if let Some(c) = &self.calibration {
-            if c.provider != PROVIDER_GOOGLE || c.request_id != self.request_id {
+            bail!("settlement disposition shape mismatch")
+        }
+        if let Some(calibration) = &self.calibration {
+            if calibration.provider != PROVIDER_GOOGLE
+                || calibration.request_id != self.request_id
+                || calibration.completed_at != self.completed_ts
+            {
                 bail!("calibration identity mismatch")
             }
+            crate::validate_provider_turn_calibration_event(calibration)?;
         }
         self.result_blob.validate(self.completed_ts)
     }

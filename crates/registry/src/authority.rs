@@ -2,9 +2,8 @@
 
 use crate::{
     pg::{Owner, PgStore},
-    AccountRow, BillingTotals, ClaudeLifecycleProfile, KeyAuth,
-    KeyPolicyUpdate, KeyRow, LedgerRow, PoolStateRow, SpendAccountAgg, Sub, SubAdmin, SubHealth,
-    SubRow, UsageModelAgg, UsageReport,
+    AccountRow, BillingTotals, ClaudeLifecycleProfile, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow,
+    PoolStateRow, SpendAccountAgg, Sub, SubAdmin, SubHealth, SubRow, UsageModelAgg, UsageReport,
 };
 use anyhow::{bail, Result};
 use rusqlite::Connection;
@@ -536,7 +535,8 @@ impl Authority {
         create: &crate::GeminiBatchCreate,
         creator_key: &str,
     ) -> Result<crate::GeminiBatchCreateOutcome> {
-        self.gemini_batch_postgres()?.gemini_batch_create(create, creator_key)
+        self.gemini_batch_postgres()?
+            .gemini_batch_create(create, creator_key)
     }
 
     pub fn gemini_batch_get(
@@ -544,7 +544,8 @@ impl Authority {
         account_id: &str,
         job_id: &str,
     ) -> Result<Option<crate::GeminiBatchJobDetail>> {
-        self.gemini_batch_postgres()?.gemini_batch_get(account_id, job_id)
+        self.gemini_batch_postgres()?
+            .gemini_batch_get(account_id, job_id)
     }
 
     pub fn gemini_batch_list(
@@ -553,11 +554,54 @@ impl Authority {
         cursor: Option<&crate::GeminiBatchPageCursor>,
         limit: i64,
     ) -> Result<crate::GeminiBatchJobPage> {
-        self.gemini_batch_postgres()?.gemini_batch_list(account_id, cursor, limit)
+        self.gemini_batch_postgres()?
+            .gemini_batch_list(account_id, cursor, limit)
     }
 
-    pub fn gemini_batch_file_create(&mut self, create: &crate::GeminiBatchFileCreate) -> Result<bool> {
-        self.gemini_batch_postgres()?.gemini_batch_file_create(create)
+    pub fn gemini_batch_file_create(
+        &mut self,
+        create: &crate::GeminiBatchFileCreate,
+    ) -> Result<crate::GeminiBatchFileCreateOutcome> {
+        self.gemini_batch_postgres()?
+            .gemini_batch_file_create(create)
+    }
+    pub fn gemini_batch_file_append_chunk(
+        &mut self,
+        account_id: &str,
+        file_id: &str,
+        chunk: &crate::GeminiBatchFileChunk,
+    ) -> Result<bool> {
+        self.gemini_batch_postgres()?
+            .gemini_batch_file_append_chunk(account_id, file_id, chunk)
+    }
+    pub fn gemini_batch_file_complete(
+        &mut self,
+        account_id: &str,
+        file_id: &str,
+        completion: &crate::GeminiBatchFileCompletion,
+    ) -> Result<bool> {
+        self.gemini_batch_postgres()?
+            .gemini_batch_file_complete(account_id, file_id, completion)
+    }
+    pub fn gemini_batch_file_get(
+        &mut self,
+        account_id: &str,
+        file_id: &str,
+    ) -> Result<Option<crate::GeminiBatchFile>> {
+        self.gemini_batch_postgres()?
+            .gemini_batch_file_get(account_id, file_id)
+    }
+    pub fn gemini_batch_file_list(
+        &mut self,
+        account_id: &str,
+        limit: i64,
+    ) -> Result<Vec<crate::GeminiBatchFile>> {
+        self.gemini_batch_postgres()?
+            .gemini_batch_file_list(account_id, limit)
+    }
+    pub fn gemini_batch_file_delete(&mut self, account_id: &str, file_id: &str) -> Result<bool> {
+        self.gemini_batch_postgres()?
+            .gemini_batch_file_delete(account_id, file_id)
     }
 
     pub fn gemini_batch_cancel(
@@ -565,14 +609,30 @@ impl Authority {
         account_id: &str,
         job_id: &str,
     ) -> Result<Option<crate::GeminiBatchCancelResult>> {
-        self.gemini_batch_postgres()?.gemini_batch_cancel(account_id, job_id)
+        self.gemini_batch_postgres()?
+            .gemini_batch_cancel(account_id, job_id)
     }
 
     pub fn enqueue_gemini_batch_settlement(
         &mut self,
+        owner: &Owner,
+        claim: &crate::GeminiBatchClaim,
         intent: &crate::GeminiBatchSettlementIntent,
     ) -> Result<()> {
-        self.gemini_batch_postgres()?.enqueue_gemini_batch_settlement(intent)
+        self.gemini_batch_postgres()?
+            .enqueue_gemini_batch_settlement(owner, claim, intent)
+    }
+    pub fn process_gemini_batch_settlement(&mut self, request_id: &str) -> Result<Option<i64>> {
+        self.gemini_batch_postgres()?
+            .process_gemini_batch_settlement(request_id)
+    }
+    pub fn drain_gemini_batch_settlements(&mut self, limit: usize) -> Result<usize> {
+        self.gemini_batch_postgres()?
+            .drain_gemini_batch_settlements(limit)
+    }
+    pub fn gemini_batch_delete(&mut self, account_id: &str, job_id: &str) -> Result<bool> {
+        self.gemini_batch_postgres()?
+            .gemini_batch_delete(account_id, job_id)
     }
 
     pub fn prune_gemini_batch(
@@ -580,6 +640,7 @@ impl Authority {
         older_than: i64,
         limit: usize,
     ) -> Result<crate::GeminiBatchPruneReport> {
-        self.gemini_batch_postgres()?.prune_gemini_batch(older_than, limit)
+        self.gemini_batch_postgres()?
+            .prune_gemini_batch(older_than, limit)
     }
 }

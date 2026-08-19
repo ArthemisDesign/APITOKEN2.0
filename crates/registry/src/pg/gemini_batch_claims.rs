@@ -1,13 +1,16 @@
 //! PostgreSQL-only Gemini Batch scheduler and worker claim lifecycle.
 
 use super::{now, Owner, PgStore};
-use crate::gemini_batch::{GeminiBatchClaim, GEMINI_BATCH_DISPATCH_LEADER};
+use crate::gemini_batch::{
+    GeminiBatchClaim, GeminiBatchItemState, GeminiBatchRecoveryCandidate,
+    GeminiBatchSettlementDisposition, GeminiBatchTerminalClass, GEMINI_BATCH_DISPATCH_LEADER,
+};
 use anyhow::{bail, Result};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GeminiBatchReconcileReport {
     pub requeued_before_dispatch: usize,
-    pub indeterminate_after_dispatch: usize,
+    pub recovery_candidates: Vec<GeminiBatchRecoveryCandidate>,
 }
 
 impl PgStore {
@@ -40,6 +43,25 @@ impl PgStore {
             &[&profile_id],
         )?;
         Self::assert_owner_locked(&mut tx, owner, now())?;
+        let leader_valid = tx
+            .query_opt(
+                "SELECT 1
+                   FROM leader_leases
+                  WHERE name=$1 AND owner_instance=$2 AND owner_epoch=$3
+                    AND lease_until >= $4
+                  FOR UPDATE",
+                &[
+                    &GEMINI_BATCH_DISPATCH_LEADER,
+                    &owner.instance_id,
+                    &owner.epoch,
+                    &now(),
+                ],
+            )?
+            .is_some();
+        if !leader_valid {
+            tx.rollback()?;
+            return Ok(None);
+        }
 
         let profile_available = tx
             .query_opt(
@@ -99,12 +121,14 @@ impl PgStore {
                 AND job.completed_ts IS NULL
                 AND job.delete_ts IS NULL
                 AND job.deadline_ts > $1
-                AND NOT EXISTS (
-                    SELECT 1 FROM gemini_batch_items active
-                     WHERE active.job_id=item.job_id
-                       AND active.state IN ('claimed','dispatching','settlement_pending')
-                )
               ORDER BY job.priority DESC,
+                       COALESCE((
+                           SELECT MAX(peer.updated_ts)
+                             FROM gemini_batch_items peer
+                             JOIN gemini_batch_jobs peer_job ON peer_job.job_id=peer.job_id
+                            WHERE peer_job.account_id=job.account_id
+                              AND peer.state IN ('claimed','dispatching','settlement_pending')
+                       ),0),
                        COALESCE((
                            SELECT MAX(active.updated_ts)
                              FROM gemini_batch_items active
@@ -127,6 +151,23 @@ impl PgStore {
         let claim_generation: i64 = row.get(4);
 
         Self::assert_owner_locked(&mut tx, owner, now())?;
+        let leader_still_valid = tx
+            .query_opt(
+                "SELECT 1 FROM leader_leases
+                  WHERE name=$1 AND owner_instance=$2 AND owner_epoch=$3 AND lease_until >= $4
+                  FOR UPDATE",
+                &[
+                    &GEMINI_BATCH_DISPATCH_LEADER,
+                    &owner.instance_id,
+                    &owner.epoch,
+                    &now(),
+                ],
+            )?
+            .is_some();
+        if !leader_still_valid {
+            tx.rollback()?;
+            return Ok(None);
+        }
         let changed = tx.execute(
             "UPDATE gemini_batch_items
                 SET state='claimed',worker_instance=$3,worker_epoch=$4,
@@ -441,9 +482,10 @@ impl PgStore {
 
     /// Reconcile expired claims only after the exact owner heartbeat is dead.
     ///
-    /// Pre-dispatch claims are safe to replay. Every dispatch-intent claim is terminalized as
-    /// indeterminate, regardless of whether the actual-send observer fired, because intent creates
-    /// an ambiguity window and ordinary Code Assist generation has no replay key.
+    /// A pre-dispatch claim is replayable while its job is still live. Every post-dispatch claim,
+    /// and every claim whose job deadline/cancellation fence has closed, is returned as a typed
+    /// recovery candidate. The reconciler deliberately leaves its hold, ownership, profile lease,
+    /// and nonterminal state intact until the normal settlement path consumes that candidate.
     pub fn reconcile_expired_gemini_batch_claims(
         &mut self,
         limit: usize,
@@ -451,60 +493,147 @@ impl PgStore {
         let ts = now();
         let mut tx = self.client.transaction()?;
         let rows = tx.query(
-            "SELECT item.job_id,item.item_index,item.state,item.dispatch_intent_ts,
-                    item.actual_send_ts,item.actual_send_evidence
+            "SELECT item.job_id,job.account_id,item.item_index,item.request_id,item.state,
+                    item.claim_generation,item.selected_profile_id,item.hold_nano,
+                    item.dispatch_intent_ts,item.actual_send_ts,item.actual_send_evidence,
+                    job.deadline_ts,job.cancel_requested_ts,
+                    item.worker_instance,item.worker_epoch,
+                    lease.worker_instance,lease.worker_epoch,lease.claim_generation
                FROM gemini_batch_items item
+               JOIN gemini_batch_jobs job ON job.job_id=item.job_id
           LEFT JOIN engine_instances instance
                  ON instance.instance_id=item.worker_instance
                 AND instance.owner_epoch=item.worker_epoch
+               JOIN gemini_batch_profile_leases lease
+                 ON lease.job_id=item.job_id AND lease.item_index=item.item_index
+                AND lease.profile_id=item.selected_profile_id
+                AND lease.worker_instance=item.worker_instance
+                AND lease.worker_epoch=item.worker_epoch
+                AND lease.claim_generation=item.claim_generation
               WHERE item.state IN ('claimed','dispatching')
                 AND item.lease_until < $1
+                AND lease.lease_until < $1
                 AND (instance.instance_id IS NULL OR instance.lease_until < $1)
               ORDER BY item.updated_ts,item.job_id,item.item_index
-              FOR UPDATE OF item SKIP LOCKED
+              FOR UPDATE OF item,lease SKIP LOCKED
               LIMIT $2",
             &[&ts, &(limit.clamp(1, 10_000) as i64)],
         )?;
         let mut report = GeminiBatchReconcileReport::default();
         for row in rows {
             let job_id: String = row.get(0);
-            let item_index: i64 = row.get(1);
-            let state: String = row.get(2);
-            let dispatch_intent_ts: Option<i64> = row.get(3);
-            let actual_send_ts: Option<i64> = row.get(4);
-            let actual_send_evidence: Option<String> = row.get(5);
+            let account_id: String = row.get(1);
+            let item_index: i64 = row.get(2);
+            let request_id: String = row.get(3);
+            let state: String = row.get(4);
+            let claim_generation: i64 = row.get(5);
+            let profile_id: String = row.get(6);
+            let hold_nano: i64 = row.get(7);
+            let dispatch_intent_ts: Option<i64> = row.get(8);
+            let actual_send_ts: Option<i64> = row.get(9);
+            let actual_send_evidence: Option<String> = row.get(10);
+            let deadline_ts: i64 = row.get(11);
+            let cancel_requested_ts: Option<i64> = row.get(12);
+            let item_worker_instance: String = row.get(13);
+            let item_worker_epoch: i64 = row.get(14);
+            let lease_worker_instance: String = row.get(15);
+            let lease_worker_epoch: i64 = row.get(16);
+            let lease_claim_generation: i64 = row.get(17);
+            let complete_profile_fence = lease_worker_instance == item_worker_instance
+                && lease_worker_epoch == item_worker_epoch
+                && lease_claim_generation == claim_generation;
+            if !complete_profile_fence {
+                continue;
+            }
             let safe_before_dispatch = state == "claimed"
                 && dispatch_intent_ts.is_none()
                 && actual_send_ts.is_none()
                 && actual_send_evidence.is_none();
-            if safe_before_dispatch {
-                tx.execute(
-                    "UPDATE gemini_batch_items
+            let deadline_expired = deadline_ts <= ts;
+            if safe_before_dispatch && !deadline_expired && cancel_requested_ts.is_none() {
+                let changed = tx.execute(
+                    "UPDATE gemini_batch_items item
                         SET state='queued',worker_instance=NULL,worker_epoch=NULL,lease_until=NULL,
-                            selected_profile_id=NULL,updated_ts=$3
-                      WHERE job_id=$1 AND item_index=$2",
-                    &[&job_id, &item_index, &ts],
+                            selected_profile_id=NULL,updated_ts=$6
+                      WHERE item.job_id=$1 AND item.item_index=$2 AND item.request_id=$3
+                        AND item.claim_generation=$4 AND item.selected_profile_id=$5
+                        AND item.worker_instance=$7 AND item.worker_epoch=$8
+                        AND item.state='claimed' AND item.dispatch_intent_ts IS NULL
+                        AND item.actual_send_ts IS NULL AND item.actual_send_evidence IS NULL
+                        AND EXISTS (
+                            SELECT 1 FROM gemini_batch_profile_leases lease
+                             WHERE lease.profile_id=$5 AND lease.job_id=$1 AND lease.item_index=$2
+                               AND lease.worker_instance=$7 AND lease.worker_epoch=$8
+                               AND lease.claim_generation=$4
+                        )",
+                    &[
+                        &job_id,
+                        &item_index,
+                        &request_id,
+                        &claim_generation,
+                        &profile_id,
+                        &ts,
+                        &lease_worker_instance,
+                        &lease_worker_epoch,
+                    ],
                 )?;
-                report.requeued_before_dispatch += 1;
-            } else {
-                tx.execute(
-                    "UPDATE gemini_batch_items
-                        SET state='indeterminate',terminal_class='indeterminate',
-                            actual_send_evidence=CASE
-                                WHEN actual_send_ts IS NOT NULL THEN 'sent'
-                                ELSE 'ambiguous'
-                            END,
-                            lease_until=NULL,terminal_ts=$3,updated_ts=$3
-                      WHERE job_id=$1 AND item_index=$2",
-                    &[&job_id, &item_index, &ts],
-                )?;
-                report.indeterminate_after_dispatch += 1;
+                if changed == 1 {
+                    tx.execute(
+                        "DELETE FROM gemini_batch_profile_leases
+                          WHERE profile_id=$1 AND job_id=$2 AND item_index=$3
+                            AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6",
+                        &[
+                            &profile_id,
+                            &job_id,
+                            &item_index,
+                            &lease_worker_instance,
+                            &lease_worker_epoch,
+                            &claim_generation,
+                        ],
+                    )?;
+                    report.requeued_before_dispatch += 1;
+                }
+                continue;
             }
-            tx.execute(
-                "DELETE FROM gemini_batch_profile_leases
-                  WHERE job_id=$1 AND item_index=$2",
-                &[&job_id, &item_index],
-            )?;
+            let (disposition, terminal_class) = if deadline_expired {
+                (
+                    GeminiBatchSettlementDisposition::Expire,
+                    GeminiBatchTerminalClass::Expired,
+                )
+            } else if cancel_requested_ts.is_some() && safe_before_dispatch {
+                (
+                    GeminiBatchSettlementDisposition::Cancel,
+                    GeminiBatchTerminalClass::Canceled,
+                )
+            } else {
+                (
+                    GeminiBatchSettlementDisposition::Indeterminate,
+                    GeminiBatchTerminalClass::Indeterminate,
+                )
+            };
+            report.recovery_candidates.push(GeminiBatchRecoveryCandidate {
+                job_id,
+                account_id,
+                item_index,
+                request_id,
+                claim_generation,
+                profile_id,
+                hold_nano,
+                disposition,
+                terminal_state: if matches!(disposition, GeminiBatchSettlementDisposition::Indeterminate) {
+                    GeminiBatchItemState::Indeterminate
+                } else {
+                    GeminiBatchItemState::Canceled
+                },
+                terminal_class,
+                actual_send_evidence: if actual_send_ts.is_some() {
+                    Some("sent".to_owned())
+                } else if dispatch_intent_ts.is_some() {
+                    Some("ambiguous".to_owned())
+                } else {
+                    actual_send_evidence
+                },
+            });
         }
         tx.commit()?;
         Ok(report)

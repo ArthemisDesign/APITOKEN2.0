@@ -1,10 +1,12 @@
 use super::PgStore;
 use crate::gemini_batch::{
     GeminiBatchCreate, GeminiBatchCreateOutcome, GeminiBatchFile, GeminiBatchFileChunk,
-    GeminiBatchFileCreate, GeminiBatchIdempotencyConflict, GeminiBatchInputKind, GeminiBatchItem,
-    GeminiBatchItemState, GeminiBatchJob, GeminiBatchJobDetail, GeminiBatchJobPage,
-    GeminiBatchJobState, GeminiBatchPageCursor, GeminiBatchStats, GeminiBatchTerminalClass,
-    MAX_BATCH_PAGE_SIZE,
+    GeminiBatchFileCompletion, GeminiBatchFileCreate, GeminiBatchFileCreateOutcome,
+    GeminiBatchIdempotencyConflict, GeminiBatchInputKind, GeminiBatchItem, GeminiBatchItemState,
+    GeminiBatchJob, GeminiBatchJobDetail, GeminiBatchJobPage, GeminiBatchJobState,
+    GeminiBatchPageCursor, GeminiBatchStats, GeminiBatchTerminalClass,
+    MAX_BATCH_ACCOUNT_FILE_BYTES, MAX_BATCH_FILE_BYTES, MAX_BATCH_NONTERMINAL_JOBS,
+    MAX_BATCH_PAGE_SIZE, MAX_BATCH_REFERENCED_FILE_BYTES,
 };
 use crate::ACCOUNT_OVERDRAFT_NANO;
 use anyhow::{bail, Context, Result};
@@ -35,7 +37,7 @@ fn job_from_row(row: &Row) -> Result<GeminiBatchJob> {
     {
         GeminiBatchJobState::Expired
     } else if completed_ts.is_none() {
-        if pending_request_count == request_count {
+        if successful_request_count == 0 && failed_request_count == 0 {
             GeminiBatchJobState::Pending
         } else {
             GeminiBatchJobState::Running
@@ -113,7 +115,7 @@ fn validate_file_create(create: &GeminiBatchFileCreate) -> Result<()> {
         || create.display_name.len() > 512
         || create.mime_type.is_empty()
         || create.mime_type.len() > 255
-        || create.size_bytes < 0
+        || !(0..=MAX_BATCH_FILE_BYTES).contains(&create.size_bytes)
         || !matches!(
             create.source_kind.as_str(),
             "client_upload" | "batch_output"
@@ -186,14 +188,39 @@ impl PgStore {
             }
         }
 
-        if tx
-            .query_opt(
-                "SELECT 1 FROM gemini_batch_jobs WHERE job_id=$1",
-                &[&create.job_id],
-            )?
-            .is_some()
-        {
+        if let Some(row) = tx.query_opt(
+            "SELECT account_id,creator_key_id,canonical_request_digest,idempotency_digest \
+             FROM gemini_batch_jobs WHERE job_id=$1",
+            &[&create.job_id],
+        )? {
+            let exact = row.get::<_, String>(0) == create.account_id
+                && row.get::<_, String>(1) == create.creator_key_id
+                && bytes32(row.get(2), "canonical request digest")?
+                    == create.canonical_request_digest
+                && row
+                    .get::<_, Option<Vec<u8>>>(3)
+                    .map(|value| bytes32(value, "idempotency digest"))
+                    .transpose()?
+                    == create.idempotency_digest;
+            if exact {
+                tx.commit()?;
+                return Ok(GeminiBatchCreateOutcome::Replay {
+                    job_id: create.job_id.clone(),
+                });
+            }
             return Err(GeminiBatchIdempotencyConflict.into());
+        }
+
+        let active_jobs: i64 = tx
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM gemini_batch_jobs \
+                 WHERE account_id=$1 AND completed_ts IS NULL AND delete_ts IS NULL",
+                &[&create.account_id],
+            )?
+            .get(0);
+        if active_jobs >= MAX_BATCH_NONTERMINAL_JOBS {
+            tx.rollback()?;
+            return Ok(GeminiBatchCreateOutcome::RejectedLimit);
         }
 
         let mut referenced_files = create
@@ -205,13 +232,23 @@ impl PgStore {
             .collect::<Vec<_>>();
         referenced_files.sort();
         referenced_files.dedup();
+        let mut referenced_size = 0i64;
         for file_id in &referenced_files {
-            if tx.query_opt(
-                "SELECT 1 FROM gemini_batch_files WHERE account_id=$1 AND file_id=$2 AND state='active' AND expiration_ts>$3 FOR KEY SHARE",
+            let Some(row) = tx.query_opt(
+                "SELECT size_bytes FROM gemini_batch_files \
+                 WHERE account_id=$1 AND file_id=$2 AND state='active' AND expiration_ts>$3 \
+                 FOR KEY SHARE",
                 &[&create.account_id, file_id, &super::now()],
-            )?.is_none() {
+            )? else {
                 bail!("Gemini Batch referenced file is unavailable");
-            }
+            };
+            referenced_size = referenced_size
+                .checked_add(row.get::<_, i64>(0))
+                .context("Gemini Batch referenced file size overflow")?;
+        }
+        if referenced_size > MAX_BATCH_REFERENCED_FILE_BYTES {
+            tx.rollback()?;
+            return Ok(GeminiBatchCreateOutcome::RejectedLimit);
         }
 
         let now = super::now();
@@ -345,9 +382,11 @@ impl PgStore {
         let sql = format!(
             "SELECT {JOB_READ_COLUMNS} FROM gemini_batch_jobs j \
              LEFT JOIN gemini_batch_items i ON i.job_id=j.job_id \
-             WHERE j.account_id=$1 AND j.job_id=$2 GROUP BY j.job_id"
+             WHERE j.account_id=$1 AND j.job_id=$2 AND j.delete_ts IS NULL \
+               AND (j.result_expiration_ts IS NULL OR j.result_expiration_ts>$3) \
+             GROUP BY j.job_id"
         );
-        let Some(row) = tx.query_opt(&sql, &[&account_id, &job_id])? else {
+        let Some(row) = tx.query_opt(&sql, &[&account_id, &job_id, &super::now()])? else {
             tx.commit()?;
             return Ok(None);
         };
@@ -379,7 +418,9 @@ impl PgStore {
         let sql = format!(
             "SELECT {JOB_READ_COLUMNS} FROM gemini_batch_jobs j \
              LEFT JOIN gemini_batch_items i ON i.job_id=j.job_id \
-             WHERE j.account_id=$1 AND ($2::bigint IS NULL OR (j.create_ts,j.job_id)<($2,$3)) \
+             WHERE j.account_id=$1 AND j.delete_ts IS NULL \
+               AND (j.result_expiration_ts IS NULL OR j.result_expiration_ts>$5) \
+               AND ($2::bigint IS NULL OR (j.create_ts,j.job_id)<($2,$3)) \
              GROUP BY j.job_id ORDER BY j.create_ts DESC,j.job_id DESC LIMIT $4"
         );
         let rows = self.client.query(
@@ -389,6 +430,7 @@ impl PgStore {
                 &cursor.map(|v| v.create_ts),
                 &cursor.map(|v| v.job_id.as_str()),
                 &query_limit,
+                &super::now(),
             ],
         )?;
         let has_more = rows.len() as i64 > page_size;
@@ -409,14 +451,61 @@ impl PgStore {
         Ok(GeminiBatchJobPage { jobs, next_cursor })
     }
 
-    pub fn gemini_batch_file_create(&mut self, create: &GeminiBatchFileCreate) -> Result<bool> {
+    pub fn gemini_batch_file_create(
+        &mut self,
+        create: &GeminiBatchFileCreate,
+    ) -> Result<GeminiBatchFileCreateOutcome> {
         validate_file_create(create)?;
-        Ok(self.client.execute(
+        let mut tx = self.client.transaction()?;
+        let Some(_) = tx.query_opt(
+            "SELECT 1 FROM accounts WHERE id=$1 FOR UPDATE",
+            &[&create.account_id],
+        )? else {
+            tx.rollback()?;
+            return Ok(GeminiBatchFileCreateOutcome::Unavailable);
+        };
+        if let Some(row) = tx.query_opt(
+            "SELECT account_id,display_name,mime_type,size_bytes,sha256_digest,source_kind,\
+             create_ts,expiration_ts FROM gemini_batch_files WHERE file_id=$1 FOR UPDATE",
+            &[&create.file_id],
+        )? {
+            if row.get::<_, String>(0) != create.account_id {
+                tx.rollback()?;
+                return Ok(GeminiBatchFileCreateOutcome::Unavailable);
+            }
+            let exact = row.get::<_, String>(1) == create.display_name
+                && row.get::<_, String>(2) == create.mime_type
+                && row.get::<_, i64>(3) == create.size_bytes
+                && bytes32(row.get(4), "file digest")? == create.sha256_digest
+                && row.get::<_, String>(5) == create.source_kind
+                && row.get::<_, i64>(6) == create.create_ts
+                && row.get::<_, i64>(7) == create.expiration_ts;
+            tx.commit()?;
+            return Ok(if exact {
+                GeminiBatchFileCreateOutcome::Replay
+            } else {
+                GeminiBatchFileCreateOutcome::Unavailable
+            });
+        }
+        let stored_bytes: i64 = tx
+            .query_one(
+                "SELECT COALESCE(SUM(size_bytes),0)::bigint FROM gemini_batch_files \
+                 WHERE account_id=$1 AND expiration_ts>$2",
+                &[&create.account_id, &super::now()],
+            )?
+            .get(0);
+        if stored_bytes
+            .checked_add(create.size_bytes)
+            .is_none_or(|total| total > MAX_BATCH_ACCOUNT_FILE_BYTES)
+        {
+            tx.rollback()?;
+            return Ok(GeminiBatchFileCreateOutcome::RejectedQuota);
+        }
+        tx.execute(
             "INSERT INTO gemini_batch_files(\
              file_id,account_id,display_name,mime_type,size_bytes,sha256_digest,source_kind,state,\
              storage_kind,create_ts,update_ts,expiration_ts) \
-             VALUES($1,$2,$3,$4,$5,$6,$7,'processing','chunked',$8,$8,$9) \
-             ON CONFLICT(file_id) DO NOTHING",
+             VALUES($1,$2,$3,$4,$5,$6,$7,'processing','chunked',$8,$8,$9)",
             &[
                 &create.file_id,
                 &create.account_id,
@@ -428,7 +517,9 @@ impl PgStore {
                 &create.create_ts,
                 &create.expiration_ts,
             ],
-        )? == 1)
+        )?;
+        tx.commit()?;
+        Ok(GeminiBatchFileCreateOutcome::Created)
     }
 
     pub fn gemini_batch_file_append_chunk(
@@ -440,7 +531,7 @@ impl PgStore {
         chunk.validate()?;
         let mut tx = self.client.transaction()?;
         let file = tx.query_opt(
-            "SELECT state,storage_kind FROM gemini_batch_files \
+            "SELECT state,storage_kind,size_bytes,create_ts FROM gemini_batch_files \
              WHERE account_id=$1 AND file_id=$2 FOR UPDATE",
             &[&account_id, &file_id],
         )?;
@@ -451,6 +542,9 @@ impl PgStore {
         if file.get::<_, String>(0) != "processing" || file.get::<_, String>(1) != "chunked" {
             bail!("Gemini Batch file is not appendable")
         }
+        if chunk.created_ts < file.get::<_, i64>(3) {
+            bail!("Gemini Batch file chunk predates its file")
+        }
         let expected_index: i64 = tx
             .query_one(
                 "SELECT COUNT(*)::bigint FROM gemini_batch_file_chunks WHERE file_id=$1",
@@ -460,22 +554,36 @@ impl PgStore {
         if chunk.chunk_index != expected_index {
             if chunk.chunk_index < expected_index {
                 let row = tx.query_one(
-                    "SELECT key_id,nonce,ciphertext,plaintext_len,plaintext_digest,created_ts \
-                     FROM gemini_batch_file_chunks WHERE file_id=$1 AND chunk_index=$2",
-                    &[&file_id, &chunk.chunk_index],
+                    "SELECT key_id,nonce,ciphertext,plaintext_len,plaintext_digest \
+                     FROM gemini_batch_file_chunks c JOIN gemini_batch_files f USING(file_id) \
+                     WHERE f.account_id=$1 AND c.file_id=$2 AND c.chunk_index=$3",
+                    &[&account_id, &file_id, &chunk.chunk_index],
                 )?;
                 let exact = row.get::<_, String>(0) == chunk.key_id
                     && row.get::<_, Vec<u8>>(1) == chunk.nonce
                     && row.get::<_, Vec<u8>>(2) == chunk.ciphertext
                     && row.get::<_, i64>(3) == chunk.plaintext_len
-                    && bytes32(row.get(4), "file chunk digest")? == chunk.plaintext_digest
-                    && row.get::<_, i64>(5) == chunk.created_ts;
+                    && bytes32(row.get(4), "file chunk digest")? == chunk.plaintext_digest;
                 if exact {
                     tx.commit()?;
                     return Ok(true);
                 }
             }
             bail!("Gemini Batch file chunk is non-contiguous or conflicts with stored data")
+        }
+        let appended_size: i64 = tx
+            .query_one(
+                "SELECT COALESCE(SUM(plaintext_len),0)::bigint \
+                 FROM gemini_batch_file_chunks c JOIN gemini_batch_files f USING(file_id) \
+                 WHERE f.account_id=$1 AND c.file_id=$2",
+                &[&account_id, &file_id],
+            )?
+            .get(0);
+        if appended_size
+            .checked_add(chunk.plaintext_len)
+            .is_none_or(|total| total > file.get::<_, i64>(2))
+        {
+            bail!("Gemini Batch file chunks exceed the declared size")
         }
         tx.execute(
             "INSERT INTO gemini_batch_file_chunks(\
@@ -505,9 +613,9 @@ impl PgStore {
         &mut self,
         account_id: &str,
         file_id: &str,
-        completed_ts: i64,
+        completion: &GeminiBatchFileCompletion,
     ) -> Result<bool> {
-        if completed_ts <= 0 {
+        if completion.completed_ts <= 0 {
             bail!("invalid Gemini Batch file completion timestamp")
         }
         let mut tx = self.client.transaction()?;
@@ -520,17 +628,24 @@ impl PgStore {
             tx.rollback()?;
             return Ok(false);
         };
+        let declared_digest = bytes32(file.get(2), "file digest")?;
+        if declared_digest != completion.whole_file_sha256_digest {
+            bail!("Gemini Batch whole-file digest mismatch")
+        }
         if file.get::<_, String>(0) == "active" {
             tx.commit()?;
             return Ok(true);
         }
-        if file.get::<_, String>(0) != "processing" || completed_ts < file.get::<_, i64>(3) {
+        if file.get::<_, String>(0) != "processing"
+            || completion.completed_ts < file.get::<_, i64>(3)
+        {
             bail!("Gemini Batch file cannot be completed")
         }
         let chunks = tx.query(
-            "SELECT chunk_index,plaintext_len,plaintext_digest FROM gemini_batch_file_chunks \
-             WHERE file_id=$1 ORDER BY chunk_index",
-            &[&file_id],
+            "SELECT c.chunk_index,c.plaintext_len,c.plaintext_digest \
+             FROM gemini_batch_file_chunks c JOIN gemini_batch_files f USING(file_id) \
+             WHERE f.account_id=$1 AND c.file_id=$2 ORDER BY c.chunk_index",
+            &[&account_id, &file_id],
         )?;
         let mut total = 0i64;
         for (expected, chunk) in chunks.iter().enumerate() {
@@ -544,17 +659,15 @@ impl PgStore {
         if total != file.get::<_, i64>(1) {
             bail!("Gemini Batch file size does not match its chunks")
         }
-        if chunks.len() == 1 {
-            let digest = bytes32(chunks[0].get(2), "file chunk digest")?;
-            let expected = bytes32(file.get(2), "file digest")?;
-            if digest != expected {
-                bail!("Gemini Batch single-chunk file digest mismatch")
-            }
+        if chunks.len() == 1
+            && bytes32(chunks[0].get(2), "file chunk digest")? != declared_digest
+        {
+            bail!("Gemini Batch single-chunk file digest mismatch")
         }
         tx.execute(
             "UPDATE gemini_batch_files SET state='active',update_ts=$3 \
              WHERE account_id=$1 AND file_id=$2",
-            &[&account_id, &file_id, &completed_ts],
+            &[&account_id, &file_id, &completion.completed_ts],
         )?;
         tx.commit()?;
         Ok(true)
@@ -570,8 +683,8 @@ impl PgStore {
             .query_opt(
                 "SELECT file_id,account_id,display_name,mime_type,size_bytes,source_kind,state,\
                  create_ts,expiration_ts FROM gemini_batch_files \
-                 WHERE account_id=$1 AND file_id=$2",
-                &[&account_id, &file_id],
+                 WHERE account_id=$1 AND file_id=$2 AND expiration_ts>$3",
+                &[&account_id, &file_id, &super::now()],
             )?
             .as_ref()
             .map(file_from_row))
@@ -587,8 +700,8 @@ impl PgStore {
             .query(
                 "SELECT file_id,account_id,display_name,mime_type,size_bytes,source_kind,state,\
                  create_ts,expiration_ts FROM gemini_batch_files WHERE account_id=$1 \
-                 ORDER BY create_ts DESC,file_id DESC LIMIT $2",
-                &[&account_id, &limit.clamp(1, MAX_BATCH_PAGE_SIZE)],
+                 AND expiration_ts>$3 ORDER BY create_ts DESC,file_id DESC LIMIT $2",
+                &[&account_id, &limit.clamp(1, MAX_BATCH_PAGE_SIZE), &super::now()],
             )?
             .iter()
             .map(file_from_row)
@@ -609,18 +722,30 @@ impl PgStore {
         let referenced: bool = tx
             .query_one(
                 "SELECT EXISTS(\
-                 SELECT 1 FROM gemini_batch_jobs WHERE input_file_id=$1 OR output_file_id=$1 \
-                 UNION ALL SELECT 1 FROM gemini_batch_items WHERE input_file_id=$1 \
-                 UNION ALL SELECT 1 FROM gemini_batch_item_files WHERE file_id=$1)",
-                &[&file_id],
+                 SELECT 1 FROM gemini_batch_jobs j \
+                  WHERE j.account_id=$1 AND j.delete_ts IS NULL \
+                    AND (j.completed_ts IS NULL OR j.result_expiration_ts>$3) \
+                    AND (j.input_file_id=$2 OR j.output_file_id=$2) \
+                 UNION ALL SELECT 1 FROM gemini_batch_items i \
+                  JOIN gemini_batch_jobs j USING(job_id) \
+                  WHERE j.account_id=$1 AND j.delete_ts IS NULL \
+                    AND (j.completed_ts IS NULL OR j.result_expiration_ts>$3) \
+                    AND i.input_file_id=$2 \
+                 UNION ALL SELECT 1 FROM gemini_batch_item_files r \
+                  JOIN gemini_batch_jobs j USING(job_id) \
+                  WHERE j.account_id=$1 AND j.delete_ts IS NULL \
+                    AND (j.completed_ts IS NULL OR j.result_expiration_ts>$3) \
+                    AND r.file_id=$2)",
+                &[&account_id, &file_id, &super::now()],
             )?
             .get(0);
         if referenced {
             bail!("Gemini Batch file is referenced")
         }
         tx.execute(
-            "DELETE FROM gemini_batch_file_chunks WHERE file_id=$1",
-            &[&file_id],
+            "DELETE FROM gemini_batch_file_chunks c USING gemini_batch_files f \
+             WHERE f.account_id=$1 AND f.file_id=$2 AND c.file_id=f.file_id",
+            &[&account_id, &file_id],
         )?;
         tx.execute(
             "DELETE FROM gemini_batch_files WHERE account_id=$1 AND file_id=$2",
