@@ -4,9 +4,9 @@ The canonical config plugin for OpenCode. On startup it fetches the personal `/v
 translates the authoritative limits/capabilities and current prices into OpenCode's native model schema, and
 adds Fast entries with the original model ID only when the `priority` tier is published. Modalities,
 attachments, tool calling, structured output, reasoning, and variants come from
-`apitoken.capabilities`; there are no heuristics based on `owned_by` or a substring in the model ID. Router-owned presets
-are not added to the OpenCode provider list: they have a dynamic model and a variable price. Router
-limit fields remain independent authoritative facts, but OpenCode 1.18 requires both `context` and
+`apitoken.capabilities`; there are no heuristics based on `owned_by` or a substring in the model ID.
+The router publishes only provider-authored models and no synthetic presets. Router limit fields
+remain independent authoritative facts, but OpenCode 1.18 requires both `context` and
 `output` whenever a model `limit` object is present. The plugin therefore omits the OpenCode `limit`
 object when either required value is unknown instead of rejecting startup or inventing a ceiling;
 the encrypted capability cache still preserves every validated partial limit for a later compatible

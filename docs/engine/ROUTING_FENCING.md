@@ -1,7 +1,7 @@
 # ROUTING_FENCING.md — detailed design of UNIFIED_ROUTER stage 6 (routing + attempt fencing)
 
-Status: phases 6.1–6.3, the policy/presets consumer 6.4b and the telemetry/mock-load part of 6.4c
-are implemented; the phase 6.4 contract was fixed on 2026-08-02. Serial fallback remains off by
+Status: phases 6.1–6.3, the policy/preferences consumer 6.4b and the telemetry/mock-load part of
+6.4c are implemented; the phase 6.4 contract was fixed on 2026-08-02. Serial fallback remains off by
 default: ahead are a post-deploy live canary on the exact GREEN SHA and a separate production unit flag.
 The implementation follows this document; any deviation requires revising it.
 
@@ -11,8 +11,8 @@ References like `proxy.rs:1880` mean `crates/forward/src/proxy.rs` unless stated
 ## 1. Stage 6 scope
 
 Per `UNIFIED_ROUTER.md` item 6: OpenRouter-grade routing — provider preferences, explicit
-model fallback lists, attempt fencing (execution group / single billable winner),
-per-account policy, telemetry, presets. NOT included: quorum/parallel attempts (racing
+model fallback lists, attempt fencing (execution group / single billable winner), per-account
+policy, and telemetry. NOT included: quorum/parallel attempts (racing
 multiple models), cross-provider response storage, changes to the universal dictionaries
 of stages 3–5.
 
@@ -187,8 +187,9 @@ the signal works. The durable guarantee against a bug/desync is group identity:
   only per the §3.3 rules; the client gets the last attempt's response (its success or its error);
   the in-flight response is NOT buffered (the byte-passthrough invariant is untouched: retry
   is possible only before the first byte).
-- A `provider` preferences object (order/allow/sort by price-latency) — NOT in this phase;
-  a separate package after live fallback telemetry.
+- A `provider` preferences object — NOT in this phase; a separate package after live fallback
+  telemetry. Its later contract contains filters, explicit provider order and `allow_fallbacks`,
+  but no router-owned price/latency sorting.
 - Per-account policy: the existing substrate `crates/registry/src/pricing.rs` (provider
   switches, account policy) will filter the fallback chain BEFORE the first attempt in phase
   6.4; phase 6.2 does not read policy.
@@ -226,8 +227,8 @@ for a strict account are forbidden as long as the Gemini plane itself fail-close
 preflight has no right to promise executability that does not exist on the money path. Unbound,
 legacy-scalar, and shadow bindings remain `unrestricted`: their live admission does not change.
 
-The router performs exactly one preflight per logical chain after catalog/preset/preferences
-validation but before attempt 1. It tries stable origins sequentially without binding authority to
+The router performs exactly one preflight per logical chain after catalog/preferences validation
+but before attempt 1. It tries stable origins sequentially without binding authority to
 one provider; `404/405`, transport/`5xx`, and malformed responses allow trying the
 next plane, but the absence of at least one valid response ends in a lane-shaped
 `503` without execution. `401` is terminal. Decisions are neither cached nor indexed by key:
@@ -251,52 +252,28 @@ unknown/duplicate/out-of-order ID, unknown field/mode/version, or an oversized b
 producer-contract failure. The TCP integration matrix covers `404`, `5xx`, malformed and
 transport failover, terminal `401`, strict filtering before attempt 1, and empty `403` without execution.
 
-### 5.2. Provider preferences and presets (6.4b contract)
+### 5.2. Provider preferences (6.4b contract)
 
-Implemented on 2026-08-02 in `crates/router/src/routing.rs`, `policy.rs`, `presets.rs` and the compiled
-`crates/router/routing-presets.json`; rollout remains default-off until 6.4c.
+Implemented in `crates/router/src/routing.rs` and `policy.rs`; rollout remains default-off until
+6.4c. The universal body accepts an optional OpenRouter-shaped `provider` object with only these
+fields:
 
-The universal body accepts an optional OpenRouter-shaped `provider` object with only these fields:
+- `order`, `only`, `ignore`: arrays of unique namespaces `anthropic|openai|google|kimi`;
+- `allow_fallbacks`: boolean; `false` keeps only the first permitted candidate after filters/order.
 
-- `order`, `only`, `ignore`: arrays of unique namespaces `anthropic|openai|google`;
-- `allow_fallbacks`: boolean; `false` keeps only the first permitted candidate after
-  filters/sorting;
-- `sort`: `price|latency`; the deterministic rank is taken from the version-controlled router routing
-  manifest, not from unverified client input or floating telemetry.
+Unknown fields — including the removed `sort` — unknown values, duplicates, an intersection of
+`only` and `ignore`, or an empty chain after filtering produce a lane-shaped `400`. The
+transformation order is strict: one aggregate catalog snapshot → canonical dedup → `only`/`ignore`
+→ explicit `order` (unlisted namespaces keep their relative order afterwards) →
+`allow_fallbacks` → policy preflight. The `provider` field, like `models`, is removed before sending
+to the plane.
 
-An unknown field/value, a duplicate, an intersection of `only` and `ignore`, a missing rank for
-`sort`, or an empty chain after filtering → lane-shaped `400`. The transformation order is strict:
-expand preset → one aggregate catalog snapshot → canonical dedup → `only`/`ignore` →
-explicit `order` (unlisted namespaces keep their relative order afterwards) →
-`sort` as primary rank with request order as stable tie-break → `allow_fallbacks` → policy
-preflight. The `provider` field, like `models`, is removed before sending to the plane.
+Router-owned `preset/*` IDs, their compiled manifest, and price/latency rank sorting were removed.
+The caller owns the explicit ordered `model` + `models` chain; the router does not silently replace
+or expand it. A former preset spelling is now an ordinary unknown model: direct single-model use
+returns model-not-found, while its presence in an advanced chain returns a validation `400`.
 
-The reserved catalog IDs `preset/auto`, `preset/quality`, `preset/fast`, `preset/hermes` are described by a
-reviewed manifest next to `crates/router`; the manifest contains ordered model IDs and integer
-price/latency ranks. A preset is expanded before policy preflight and never reaches
-the plane. An unavailable member is skipped; a preset is published in `/v1/models` only if the
-aggregate snapshot contains at least one of its members, and an empty expansion → `503
-catalog_unavailable`. `preset/hermes` contains only explicitly verified models with a context of no
-less than 64K. Changing a model/rank is a normal reviewed manifest + documentation change plus a
-router rebuild, so a stale model never gets baked into an inaccessible host config.
-
-Current reviewed chains (first live member is primary):
-
-| Preset | Ordered members |
-|---|---|
-| `preset/auto` | `anthropic/claude-sonnet-5` → `openai/gpt-5.6-terra` → `google/gemini-3.6-flash` |
-| `preset/quality` | `anthropic/claude-opus-5` → `openai/gpt-5.6-sol` → `google/gemini-3.1-pro-preview` |
-| `preset/fast` | `openai/gpt-5.6-luna` → `google/gemini-3.1-flash-lite` → `anthropic/claude-haiku-4-5-20251001` |
-| `preset/hermes` | `anthropic/claude-sonnet-5` → `openai/gpt-5.6-terra` → `google/gemini-3.6-flash` |
-
-The manifest contains positive integer `price_rank`/`latency_rank` and a verified
-`context_tokens` for all 22 catalog IDs published as of the implementation date. A lower rank
-is preferred; this is a reviewed ordinal, not a per-request price computation and not live
-telemetry. Therefore a new catalog model without an explicit rank keeps working normally,
-but `provider.sort` with it fails closed with `400` before policy/attempt. Startup validation requires
-exactly four reserved presets, unique ranked members, and context ≥64K for every Hermes member.
-
-Any presence of `models`, `provider`, or `preset/*` is governed by the single rollout flag. While
+Any presence of `models` or `provider` is governed by the single rollout flag. While
 `CLAUDE_ROUTER_FALLBACK_ENABLED=false`, the request is rejected before catalog/policy/network work;
 single-model requests without these fields keep the byte-identical behavior of phases 1–5.
 
@@ -375,11 +352,11 @@ flag to false in a new commit, without removing the expand-only contract.
 3. **6.3 — group identity in registry/billing — IMPLEMENTED 2026-08-02:** migration-first
    schema 0021, trusted router headers, group-aware scalar/legacy/strict reserve, transactional
    insert-first-wins settle in SQLite/PostgreSQL, safe retention, fault matrix, and an always-zero alert.
-4. **6.4 — policies/presets + telemetry GA — 6.4a–6.4b AND THE TELEMETRY/MOCK-LOAD PART OF 6.4c
-   IMPLEMENTED 2026-08-02:**
-   the producer-first policy preflight is uniformly available on all fixed planes and covered by bounded
-   validation, auth-lattice, and real-SQLite strict-policy tests; the router consumer applies
-   preferences/presets and the exact policy subset before attempt 1. Counters, Prometheus alerts/runbooks,
+4. **6.4 — policy/preferences + telemetry GA — 6.4a–6.4b AND THE TELEMETRY/MOCK-LOAD PART
+   OF 6.4c IMPLEMENTED 2026-08-02:**
+   the producer-first policy preflight is uniformly available on all fixed planes and covered by
+   bounded validation, auth-lattice, and real-SQLite strict-policy tests; the router consumer applies
+   provider preferences and the exact policy subset before attempt 1. Counters, Prometheus alerts/runbooks,
    mock-load, and a credential-safe live runner are ready. Remaining: the post-deploy live canary and a
    separate production flag enablement; until then fallback remains default-off.
 

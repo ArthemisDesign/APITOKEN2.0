@@ -78,7 +78,6 @@ Only after the live proof and the tariff seed are done:
 - OpenKeys: runtime-capable models sell at the account's fixed 1:1 scalar; verify the existing
   issuance contract tests and that no OpenKeys-specific allowlist blocks the route;
 - `apps/admin` calculator `PRODUCT_CATALOG`;
-- `crates/router/routing-presets.json` if the router exposes it;
 - **discovery**: the serving plane's `GET /v1/models{,/{id}}` must list the model, and the plane's
   `/internal/router/catalog/pricing` producer must resolve a rate card for it — the router drops
   any catalog entry it cannot price. Both are required: a model that is missing from either is

@@ -882,7 +882,10 @@ mod tests {
                 .iter()
                 .find(|spec| spec.id == model)
                 .expect("official model must be catalogued");
-            assert!(spec.created > 0, "{model} release date");
+            assert!(
+                (1_577_836_800..4_102_444_800).contains(&spec.created),
+                "{model} release date"
+            );
             let (input_limit, output_limit) = if model == "gemini-3.1-flash-image" {
                 (131_072, 32_768)
             } else {

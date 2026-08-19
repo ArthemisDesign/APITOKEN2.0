@@ -27,7 +27,7 @@ translation but the provider's real API.
 | Universal OpenAI-compatible entry | yes | yes (universal lane) |
 | Native fidelity for Claude Code / Codex | no, everything is translated | yes (native lanes) |
 | Unsupported parameters | silently ignored | fail-closed `400 unsupported_parameter` |
-| Provider preferences / fallback | yes | fallback 6.2 + durable fencing 6.3 + policy/preferences/presets 6.4b + telemetry/mock-load 6.4c are ready default-off; live canary and the unit flag remain |
+| Provider preferences / fallback | yes | fallback 6.2 + durable fencing 6.3 + policy/preferences 6.4b + telemetry/mock-load 6.4c are ready default-off; live canary and the unit flag remain |
 
 The key fact that makes the solution cheap: the three provider planes are already
 independent at the process level and already share one fenced PostgreSQL billing
@@ -146,13 +146,12 @@ GET  /health, /live, /ready                       router-local process probes
 
 The four universal POST paths (`chat/completions`, `responses`, `messages`, and
 `messages/count_tokens`) accept an optional `models: [<id>, …]` as a continuation
-chain after the mandatory `model`, strict OpenRouter-shaped `provider` preferences,
-and reserved primary IDs `preset/auto|quality|fast|hermes`. These capabilities are
-active only with `CLAUDE_ROUTER_FALLBACK_ENABLED=1`; a default-off router returns a
-lane-shaped `400` before touching catalog/policy/plane. The router expands the
-preset, takes one aggregate snapshot, does canonical dedup, provider
-filters/order/reviewed sort, `allow_fallbacks`, then an engine-owned account-policy
-preflight; `models` and `provider` never reach the plane. The detailed contract and
+chain after the mandatory `model` and strict OpenRouter-shaped `provider`
+preferences. These capabilities are active only with
+`CLAUDE_ROUTER_FALLBACK_ENABLED=1`; a default-off router returns a lane-shaped `400`
+before touching catalog/policy/plane. The router takes one aggregate snapshot, does
+canonical dedup, provider filters/order, `allow_fallbacks`, then an engine-owned
+account-policy preflight; `models` and `provider` never reach the plane. The detailed contract and
 retry matrix are in `docs/engine/ROUTING_FENCING.md` §§3.3, 5.
 
 The `/api/v1` prefix (OpenRouter-compatible paths) is **not** added in the MVP:
@@ -642,18 +641,14 @@ the separately audited *image*-input class metered on edits has no field in the 
 schema v1 card and is documented in `docs/commerce/PRICING.md` instead of being folded
 into a leg that would then misprice plain generation.
 
-Every model producer owns a reviewed public release date and sends it with the runtime catalog:
-Anthropic's RFC 3339 `created_at` is preserved on its transparent native plane, while OpenAI,
-Gemini and KIMI publish positive Unix seconds directly. The router consumer will convert and
-validate these values after this producer-first contract is live; it never derives a date from a
-model ID or a pricing epoch. Active `preset/*` entries publish
-`apitoken.routing.members` exactly from the live members available to this key, and
-`variable_model_pricing:true`: the selected model is determined per request, so a
-preset has no single rate. Their limits are the minimum over only the values known
-for every active member; arrays are the ordered intersection; a boolean capability
-equals `true` only on unanimous true, `false` on any authoritative false, and is
-omitted on a true/unknown mix. Manifest ranks/context remain reviewed routing
-constraints but are not runtime authority for `/v1/models`.
+Every model producer owns a reviewed public release date and sends it with the runtime catalog.
+The router converts Anthropic's RFC 3339 `created_at` to Unix seconds and validates positive Unix
+seconds from OpenAI, Gemini and KIMI. Missing, zero, malformed, pre-2020, or 2100-and-later values
+fail the entire plane refresh to last-good/degraded. The router never derives a date from a model ID
+or pricing epoch. Owned `apitoken.endpoints` is likewise fail-closed: it must be a unique nonempty
+subset of `/v1/images/generations|/v1/images/edits` and is preserved in unified output. Router
+presets, rank tables, and `provider.sort` do not exist; clients provide explicit ordered `model` and
+`models` chains.
 
 The personal price projection uses a separate producer-first loopback contract
 `POST /internal/router/catalog/pricing` on each fixed provider plane. The router
@@ -752,8 +747,8 @@ received the response. Hence the gradation:
   chain, the planes validate and durably store the pair, and registry
   loser-settlement forces zero-charge/full refund. Any loser increments an
   always-zero incident metric.
-- **Phase 6.4:** provider preferences/presets and an engine-owned strict policy
-  filter the chain before attempt 1. The router and fixed planes export bounded
+- **Phase 6.4:** provider preferences and an engine-owned strict policy filter the chain before
+  attempt 1. The router and fixed planes export bounded
   fallback/not-started counters; Prometheus scrapes them separately and links them
   with double-winner, balance divergence, and settlement detectors. Mock-load is
   green, but the production unit remains default-off until live canary of the exact

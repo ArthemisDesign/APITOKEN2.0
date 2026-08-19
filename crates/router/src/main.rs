@@ -21,7 +21,6 @@ mod identity;
 mod messages;
 mod metrics;
 mod policy;
-mod presets;
 mod pricing;
 mod proxy;
 mod responses;
@@ -225,11 +224,10 @@ async fn list_models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
         .filter(|(_, entry)| pricing.entry(&entry.id).is_some())
         .cloned()
         .collect();
-    let mut data: Vec<_> = eligible
+    let data: Vec<_> = eligible
         .iter()
         .map(|(namespace, entry)| model_json_with_pricing(namespace, entry, &pricing))
         .collect();
-    data.extend(presets::active_catalog_entries(&eligible));
 
     let mut response = if codex_envelope {
         // Codex gets its backend-native empty overlay, but only after the uncached pricing call
@@ -285,10 +283,8 @@ async fn get_model(
         .filter(|(_, entry)| pricing.entry(&entry.id).is_some())
         .cloned()
         .collect();
-    let model = presets::active_catalog_entry(&id, &eligible).or_else(|| {
-        catalog::find(&eligible, &id)
-            .map(|(namespace, entry)| model_json_with_pricing(namespace, entry, &pricing))
-    });
+    let model = catalog::find(&eligible, &id)
+        .map(|(namespace, entry)| model_json_with_pricing(namespace, entry, &pricing));
     match model {
         Some(model) => {
             let mut response = axum::Json(model).into_response();
@@ -384,7 +380,6 @@ async fn shutdown_signal() {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    presets::validate_at_startup()?;
     let cfg = Config::from_env()?;
     let state = Arc::new(AppState {
         client: build_client()?,

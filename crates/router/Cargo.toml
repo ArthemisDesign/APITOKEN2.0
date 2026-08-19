@@ -22,8 +22,5 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
-# Test-only: the advertised-model manifest lives here, the exact tariff authority lives in
-# `metering`, and `advertised_models_all_have_an_exact_tariff` is what ties the two together.
-metering = { path = "../metering" }
 tokio = { version = "1", features = ["test-util"] }
 tokio-stream = { version = "0.1", features = ["sync"] }

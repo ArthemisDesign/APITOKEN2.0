@@ -1,10 +1,10 @@
 //! Shared model routing and serial fallback for universal Chat, Responses and
 //! Messages surfaces (docs/engine/ROUTING_FENCING.md phase 6.2).
 //!
-//! Requests without `models`, `provider`, `preset/*` or router-owned Fast compatibility selectors
-//! preserve the historical behavior and exact body bytes. Advanced plans expand reviewed presets,
-//! resolve one aggregate catalog snapshot, apply deterministic provider preferences and call the
-//! engine-owned account-policy preflight before attempt 1. Router-only fields are then removed and
+//! Requests without `models`, `provider` or router-owned Fast compatibility selectors preserve the
+//! historical behavior and exact body bytes. Advanced plans resolve one aggregate catalog snapshot,
+//! apply deterministic provider preferences and call the engine-owned account-policy preflight
+//! before attempt 1. Router-only fields are then removed and
 //! `model` is replaced for each serial attempt. A next attempt is allowed only by
 //! `proxy::RetryReason`'s fail-closed transport/execution proof.
 
@@ -26,9 +26,9 @@ use crate::error::{self, Lane};
 use crate::identity::{fresh_execution_group_id, LogicalRequestId};
 use crate::metrics::{AuthOutcome, PolicyFailure, RouterMetrics};
 use crate::policy::{
-    self, PolicyCandidate, PreflightError, ProviderNamespace, ProviderPreferences, SortMode,
+    self, PolicyCandidate, PreflightError, ProviderNamespace, ProviderPreferences,
 };
-use crate::{presets, proxy, AppState};
+use crate::{proxy, AppState};
 
 const BODY_LIMIT: usize = 32 * 1024 * 1024;
 const BODY_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -174,12 +174,6 @@ struct ResolvedAttempt {
     lane: Lane,
 }
 
-#[derive(Clone, Debug)]
-struct ExpandedCandidate {
-    body_model_value: String,
-    preset_id: Option<&'static str>,
-}
-
 /// Shared universal handler. The response body is never buffered; only the
 /// already-required 32 MiB request body is materialized.
 pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surface) -> Response {
@@ -240,8 +234,7 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
 
     let has_models = value.get("models").is_some();
     let has_provider = value.get("provider").is_some();
-    let has_preset = presets::is_preset_syntax(&model);
-    if !has_models && !has_provider && !has_preset {
+    if !has_models && !has_provider {
         return proxy_single(
             &state,
             parts,
@@ -261,13 +254,11 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
     if !state.cfg.fallback_enabled {
         let (message, param) = if has_models {
             ("Parameter `models` is disabled on this router.", "models")
-        } else if has_provider {
+        } else {
             (
                 "Parameter `provider` is disabled on this router.",
                 "provider",
             )
-        } else {
-            ("Routing presets are disabled on this router.", "model")
         };
         return surface.invalid(message, Some(param));
     }
@@ -326,33 +317,9 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         );
     }
 
-    let mut expanded = Vec::new();
-    let mut referenced_presets = Vec::new();
-    for requested_model in requested {
-        if presets::is_preset_syntax(&requested_model) {
-            let Some(preset) = presets::find(&requested_model) else {
-                return surface.invalid(
-                    &format!("Unknown routing preset: `{requested_model}`."),
-                    Some("model"),
-                );
-            };
-            referenced_presets.push(preset.id());
-            expanded.extend(preset.models().iter().cloned().map(|body_model_value| {
-                ExpandedCandidate {
-                    body_model_value,
-                    preset_id: Some(preset.id()),
-                }
-            }));
-        } else {
-            expanded.push(ExpandedCandidate {
-                body_model_value: requested_model,
-                preset_id: None,
-            });
-        }
-    }
-    if expanded.len() > policy::MAX_CANDIDATES {
+    if requested.len() > policy::MAX_CANDIDATES {
         return surface.invalid(
-            "The expanded routing chain must contain at most 32 models.",
+            "The routing chain must contain at most 32 models.",
             Some("models"),
         );
     }
@@ -376,30 +343,15 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         return surface.catalog_unavailable();
     }
 
-    let mut canonical_seen = HashSet::with_capacity(expanded.len());
-    let mut preset_live = vec![false; referenced_presets.len()];
-    let mut attempts = Vec::with_capacity(expanded.len());
-    for candidate in expanded {
-        let Some((namespace, entry)) = catalog::find(&entries, &candidate.body_model_value) else {
-            if candidate.preset_id.is_some() {
-                continue;
-            }
+    let mut canonical_seen = HashSet::with_capacity(requested.len());
+    let mut attempts = Vec::with_capacity(requested.len());
+    for requested_model in requested {
+        let Some((namespace, entry)) = catalog::find(&entries, &requested_model) else {
             return surface.invalid(
-                &format!(
-                    "Unknown model in routing chain: `{}`.",
-                    candidate.body_model_value
-                ),
+                &format!("Unknown model in routing chain: `{requested_model}`."),
                 Some("models"),
             );
         };
-        if let Some(preset_id) = candidate.preset_id {
-            if let Some(index) = referenced_presets
-                .iter()
-                .position(|referenced| *referenced == preset_id)
-            {
-                preset_live[index] = true;
-            }
-        }
         if !canonical_seen.insert(entry.id.clone()) {
             return surface.invalid(
                 "The routing chain must not contain duplicate models.",
@@ -408,35 +360,17 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         }
         let Some(provider) = provider_for_namespace(namespace) else {
             return surface.invalid(
-                &format!(
-                    "Unknown model in routing chain: `{}`.",
-                    candidate.body_model_value
-                ),
+                &format!("Unknown model in routing chain: `{}`.", requested_model),
                 Some("models"),
             );
         };
         attempts.push(ResolvedAttempt {
-            body_model_value: candidate.body_model_value,
+            body_model_value: requested_model,
             catalog_id: entry.id.clone(),
             provider,
             canonical_model_id: entry.native_id.clone(),
             lane: provider.lane(),
         });
-    }
-    if preset_live.iter().any(|live| !live) {
-        for (index, live) in preset_live.iter().enumerate() {
-            if !*live {
-                elog::warn(
-                    "router",
-                    format!(
-                        "preset {} has no live catalog members",
-                        referenced_presets[index]
-                    ),
-                );
-                break;
-            }
-        }
-        return surface.catalog_unavailable();
     }
 
     attempts.retain(|attempt| preferences.allows(attempt.provider));
@@ -447,25 +381,6 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         );
     }
     attempts.sort_by_key(|attempt| preferences.order_rank(attempt.provider));
-    if let Some(sort) = preferences.sort() {
-        if attempts
-            .iter()
-            .any(|attempt| presets::ranks(&attempt.catalog_id).is_none())
-        {
-            return surface.invalid(
-                "A model in the routing chain has no reviewed rank for the requested sort.",
-                Some("provider"),
-            );
-        }
-        attempts.sort_by_key(|attempt| {
-            let (price, latency) =
-                presets::ranks(&attempt.catalog_id).expect("ranks validated above");
-            match sort {
-                SortMode::Price => price,
-                SortMode::Latency => latency,
-            }
-        });
-    }
     if !preferences.allow_fallbacks() {
         attempts.truncate(1);
     }

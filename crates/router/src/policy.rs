@@ -54,12 +54,6 @@ impl ProviderNamespace {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SortMode {
-    Price,
-    Latency,
-}
-
 #[derive(Debug, Default)]
 struct OptionalProviderList(Option<Vec<ProviderNamespace>>);
 
@@ -69,26 +63,6 @@ impl<'de> Deserialize<'de> for OptionalProviderList {
         D: Deserializer<'de>,
     {
         Vec::<ProviderNamespace>::deserialize(deserializer).map(|values| Self(Some(values)))
-    }
-}
-
-#[derive(Debug, Default)]
-struct OptionalSort(Option<SortMode>);
-
-impl<'de> Deserialize<'de> for OptionalSort {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        match value.as_str() {
-            "price" => Ok(Self(Some(SortMode::Price))),
-            "latency" => Ok(Self(Some(SortMode::Latency))),
-            _ => Err(serde::de::Error::unknown_variant(
-                &value,
-                &["price", "latency"],
-            )),
-        }
     }
 }
 
@@ -107,8 +81,6 @@ pub struct ProviderPreferences {
     ignore: OptionalProviderList,
     #[serde(default = "default_allow_fallbacks")]
     allow_fallbacks: bool,
-    #[serde(default)]
-    sort: OptionalSort,
 }
 
 impl Default for ProviderPreferences {
@@ -118,7 +90,6 @@ impl Default for ProviderPreferences {
             only: OptionalProviderList::default(),
             ignore: OptionalProviderList::default(),
             allow_fallbacks: true,
-            sort: OptionalSort::default(),
         }
     }
 }
@@ -167,10 +138,6 @@ impl ProviderPreferences {
             .iter()
             .position(|candidate| *candidate == provider)
             .unwrap_or(order.len())
-    }
-
-    pub fn sort(&self) -> Option<SortMode> {
-        self.sort.0
     }
 
     pub fn allow_fallbacks(&self) -> bool {
@@ -351,14 +318,12 @@ mod tests {
             "order": ["openai", "anthropic"],
             "only": ["openai", "google"],
             "ignore": ["anthropic"],
-            "allow_fallbacks": false,
-            "sort": "latency"
+            "allow_fallbacks": false
         }))
         .unwrap();
         assert!(valid.allows(ProviderNamespace::OpenAi));
         assert!(!valid.allows(ProviderNamespace::Anthropic));
         assert_eq!(valid.order_rank(ProviderNamespace::OpenAi), 0);
-        assert_eq!(valid.sort(), Some(SortMode::Latency));
         assert!(!valid.allow_fallbacks());
 
         for invalid in [
@@ -368,7 +333,7 @@ mod tests {
             serde_json::json!({"only": ["openai"], "ignore": ["openai"]}),
             serde_json::json!({"only": null}),
             serde_json::json!({"allow_fallbacks": null}),
-            serde_json::json!({"sort": "throughput"}),
+            serde_json::json!({"sort": "price"}),
             serde_json::json!({"order": ["cohere"]}),
         ] {
             assert!(ProviderPreferences::parse(&invalid).is_err(), "{invalid}");

@@ -350,12 +350,12 @@ is only what is needed to walk the relationships when making changes:
   `deploy/gpt-image-2-public-paid-smoke-v3-gate.sh`, pinned to the fresh v3 evidence root and allowed exactly
   one `--execute`; every partial result permanently fences replay. The direct OpenAI plane and header-gated Combined
   bridge produce these routes; the unified router proxies both image routes to the OpenAI plane as a
-  native lane, and its preset lists the snapshot id; `/v1/models` deliberately does not publish the
-  image model. The v3 one-shot public generation+edit smoke (delivery
+  native lane. The earlier publication gap omitted the image model from `/v1/models`; the v3
+  one-shot public generation+edit smoke (delivery
   `d172c6fd0116ba73b051fc5aa02193a4885de5da`) is overall watchdog-GREEN, so the model is published:
   generation-6 pricing catalogs activated the immutable `gpt-image-2-2026-04-21` snapshot (release
-  head 41), and the router preset, site catalog and public docs list it (publication commit
-  `3917a31b333899aed87396acd6e8e83e403cd3e6`). The separately delivered
+  head 41), and the router/provider catalog, site catalog and public docs list it (publication
+  commit `3917a31b333899aed87396acd6e8e83e403cd3e6`). The separately delivered
   `deploy/gpt-image-2-surface-probe-gate.sh` is the control-surface probe: pinned to the
   probe-capable producer `d69868fb700aaeb9b6723d8780bb29be4aab9c0d`, it runs one medium and one
   high generation plus one two-reference edit, each under its exact official authorization ceiling
@@ -369,11 +369,12 @@ is only what is needed to walk the relationships when making changes:
   loopback-only `POST /internal/router/policy/preflight` reads the customer key and one
   coherent pricing bundle through `AsyncBilling`, applies the engine-owned resolver, and
   returns only a bounded ordered allow-list. The consumer is `crates/router` (6.4b
-  implemented): after preset/catalog/preferences, before attempt 1, with exact
+  implemented): after catalog/preferences, before attempt 1, with exact
   ordered-subset validation, sequential mixed-version origin failover, and with no
   credential/policy cache and no `forward`/`registry` imports. The public provider
   Caddy vhosts do not include `/internal/*` in the allowlist; the stable origins
-  8790/8792/8794 are reachable by the router over loopback. The contract and
+  8790/8792/8794 are reachable by the router over loopback. Router-owned preset expansion and
+  rank sorting have no consumers and are absent; callers supply explicit ordered chains. The contract and
   mixed-version failure semantics — `docs/engine/ROUTING_FENCING.md` §5.1.
 - **Early auth preflight contract (provider planes → router).** The producer is the
   identical `crates/server::router_auth` on every fixed runtime: a loopback-only bodyless
@@ -415,9 +416,10 @@ is only what is needed to walk the relationships when making changes:
   last-good authenticated provider evidence, aggregated conservatively across serving profiles; the
   output/efforts/Fast/adapter capabilities and the Gemini model-specific metadata belong
   to the reviewed runtime contract. The consumer is `crates/router`: after a separate
-  producer-first GREEN SHA it strictly validates and normalizes metadata into the unified
-  `apitoken`, keeps top-level capability mirrors, and moves a plane with malformed
-  metadata to last-good/degraded. It also strips globally conflicting aliases, keeping
+  producer-first GREEN SHA it strictly validates and normalizes release timestamps and metadata
+  into the unified `created`/`apitoken`, preserves the closed endpoint list, keeps top-level
+  capability mirrors, and moves a plane with missing/malformed authoritative metadata to
+  last-good/degraded. It also strips globally conflicting aliases, keeping
   namespaced IDs executable and the private native ID for rewrite/preflight. The pricing
   overlay complements, not replaces, runtime metadata. Pricing rates, account identity,
   and credentials do not travel through this relationship; unknown values are not derived
@@ -440,9 +442,8 @@ is only what is needed to walk the relationships when making changes:
   rollback republishes known-good bytes at a higher signed sequence. The OpenCode transport does not
   consume Gemini `inlineData`, so the plugin
   does not advertise generated-image output; the native Gemini API remains the supported
-  image surface. The router-owned preset publishes live member IDs, conservative
-  guarantees, and a variable-price marker, but the plugin deliberately does not turn it
-  into an OpenCode model. There are no other consumers of the cache file. Contract —
+  image surface. The router publishes only provider-authored models; synthetic preset cards do not
+  exist. There are no other consumers of the cache file. Contract —
   `docs/engine/UNIFIED_ROUTER.md` §§"Harness-agent compatibility", "Models and
   catalog".
 - **Fallback telemetry (router/provider planes → Prometheus, phase 6.4c).** `crates/router`

@@ -93,10 +93,10 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
 - `routing.rs` — shared model dispatch and serial fallback for all universal
   surfaces. It first performs the bodyless auth, then dynamically reserves the actual
   body size in the shared 128 MiB budget; overload/slow body return lane-shaped 503/408 without a billable call.
-  An ordinary request without `models`, `provider` and `preset/*` keeps
-  the original bytes and direct namespaced dispatch. The extended planner expands the preset,
-  obtains one aggregate catalog snapshot, canonically deduplicates the chain, applies
-  provider filters/order/reviewed sort and `allow_fallbacks`, then the account-policy preflight.
+  An ordinary request without `models` and `provider` keeps the original bytes and direct
+  namespaced dispatch. The extended planner obtains one aggregate catalog snapshot, canonically
+  deduplicates the explicit chain, applies provider filters/order and `allow_fallbacks`, then the
+  account-policy preflight.
   Only after that does it remove `models`/`provider`, substitute the chosen `model` and
   execute the retry matrix. Every nonempty final plan owns one logical-request UUIDv4 across all
   attempts; an effective chain longer than one element separately owns one CSPRNG execution-group UUIDv4
@@ -119,12 +119,6 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   chunk/`401` closes the whole overlay. Schema version/unit/canonical integer strings/ordered subset
   are checked fail closed. Personal rate cards exist only in request memory and are not
   cached.
-- `presets.rs` + `routing-presets.json` — compiled reviewed presets, integer price/latency
-  ranks and a verified context window. The manifest is validated at startup; missing live
-  members are skipped, a fully empty preset is not executed. Public preset metadata is built
-  only from live members available after pricing eligibility: `apitoken.routing.members`,
-  `variable_model_pricing:true`, minimal guaranteed limits and intersection capabilities.
-  The manifest context does not replace runtime metadata, and no fixed preset price is published.
 - `metrics.rs` — fixed-cardinality telemetry admission/auth/catalog/pricing/policy/balance-header-timeout/
   balance and a compile-bounded `claude_router_fallback_total` (exactly 18 series). Model, credential,
   group and request identity are forbidden in labels.
@@ -157,13 +151,15 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   OpenAI/Gemini `apitoken.limits/capabilities`; it publishes them in `apitoken` and in the previous top-level
   capability mirrors. A standalone `reasoning` is not derived from an empty effort: for Anthropic it comes from
   native `thinking.supported`, for an owned producer — from an explicit bool or the authoritative effort list.
-  Missing legacy metadata is not guessed; malformed metadata moves the
-  plane to last-good/degraded. An alias collision removes the alias from all participants, but the
-  namespaced ID and the separate native ID for body rewrite/pricing remain functional. Also here — the shared
-  `pub(crate) namespace_lane` for universal dispatches (direct plane selection without a catalog fetch
-  for requests without fallback). `main.rs` adds only active `preset/*` entries — if the
-  aggregate snapshot contains at least one member of the corresponding preset. Then `main.rs`
-  separately obtains the key-scoped pricing ordered subset, filters out unavailable models, publishes
+  Producer-authored release dates are mandatory: Anthropic RFC 3339 `created_at` is normalized to
+  Unix seconds, and owned planes supply positive Unix seconds directly. Missing/zero/malformed dates
+  and unknown/duplicate `apitoken.endpoints` fail the plane refresh to last-good/degraded; the closed
+  endpoint vocabulary is the two Images API paths. Other missing legacy metadata is not guessed. An
+  alias collision removes the alias from all participants, but the namespaced ID and separate native
+  ID for body rewrite/pricing remain functional. Also here — shared `pub(crate) namespace_lane` for
+  universal dispatches (direct plane selection without a catalog fetch for requests without
+  fallback). `main.rs` separately obtains the key-scoped pricing ordered subset, filters out
+  unavailable models, publishes
   exact nanoUSD/M strings in `apitoken.pricing` without overwriting runtime metadata, and sets
   `Cache-Control: private, no-store`;
   a pricing-authority error yields a 503 with no zero/stale fallback.
@@ -197,7 +193,7 @@ messages- and messages/count_tokens requests (namespaced without a catalog fetch
 alias via the catalog, 400 on an invalid/oversized body, unbuffered
 chat SSE), as well as off-by-default fallback, preflight of the whole chain, the exact
 retry matrix (`not_started`, 429, 4xx/5xx, ConnectionRefused/timeout), rewrite
-of the per-attempt body, provider preferences, preset publication/expansion, mixed-version policy
+of the per-attempt body, provider preferences, removed-sort rejection, mixed-version policy
 failover, terminal `401`, strict subset/empty `403`, Fast after policy filtering, and logical-ID spoof
 removal, canonical single/native injection, cross-fallback reuse, distinct external-request values,
 preflight/balance absence, and public-response stripping. No live PostgreSQL or subscriptions are needed.
@@ -225,5 +221,5 @@ only for the first handoff/rollback horizon. The public boundary is the Caddy vh
 
 After rollout, fallback stays off: absence of the env flag is the contractual
 default. The canary enables it only via an explicit
-`CLAUDE_ROUTER_FALLBACK_ENABLED=1`; any presence of `models`, `provider` or
-`preset/*` with the flag off receives a lane-shaped `400` before any catalog/policy/network work.
+`CLAUDE_ROUTER_FALLBACK_ENABLED=1`; any presence of `models` or `provider` with the flag off
+receives a lane-shaped `400` before any catalog/policy/network work.

@@ -52,17 +52,18 @@ and immutable/dormant artifacts are not rewritten.
       `crates/metering`); done only in the publication commit.
 - [ ] `apps/web/src/app/docs/` — docs portal: `integration-builder-data.ts` and, if the model
       appears in the reference, `api-reference-data.ts` / `docs-portal.tsx`; only after the live gate.
-- [ ] Production defaults/systemd and `crates/router/routing-presets.json` — only after the live gate.
+- [ ] Production defaults/systemd — only after the live gate; the router discovers provider
+      catalogs dynamically and has no separate preset/advertised-model manifest.
 - [ ] Discovery: the serving plane's `GET /v1/models{,/{id}}` lists the model AND that plane's
       `/internal/router/catalog/pricing` producer resolves a rate card for it. The router drops
       every catalog entry it cannot price, so either half missing leaves the model invisible to
       catalog-driven clients while its routes work (this is how gpt-image-2 shipped). A model that
       the text lanes cannot run is rejected there with a `400` naming its real endpoint, not a `404`.
-- [ ] `crates/metering` carries an exact tariff for the model BEFORE it is advertised. The gate
-      `advertised_models_all_have_an_exact_tariff` (`crates/router/src/tests.rs`) fails the build
-      otherwise, and a dated snapshot id additionally needs an explicit entry in
-      `ANTHROPIC_DATED_SNAPSHOT_ALIASES` — the alias table stays deliberate so an unpublished
-      future snapshot can never inherit today's price.
+- [ ] `crates/metering` carries an exact tariff for the model BEFORE it is advertised. Runtime
+      discovery requests a key-scoped exact pricing card and omits entries the authority cannot
+      price; a dated Anthropic snapshot additionally needs an explicit entry in
+      `ANTHROPIC_DATED_SNAPSHOT_ALIASES` so an unpublished future snapshot cannot inherit today's
+      price.
 - [ ] `docs/engine/<provider>.md` — provider's model list.
 - [ ] `docs/ops/MODEL_RELEASE_CYCLE.md` — no capability/policy/catalog generation or release-head
       advance. Verify the compiled tariff and bridge it into the hot tariff table with

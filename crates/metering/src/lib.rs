@@ -285,7 +285,7 @@ pub struct AnthropicAdmissionTariffIdentity {
 /// table stays explicit on purpose: a generic "strip the trailing date" rule would also promote an
 /// unpublished future snapshot to today's tariff, which is exactly the silent mispricing
 /// `anthropic_tariff_identity_does_not_promote_legacy_fallbacks` exists to prevent. Every entry
-/// here is a snapshot this repository already routes (`crates/router/routing-presets.json`).
+/// here is a snapshot admitted by the published provider catalog and runtime.
 const ANTHROPIC_DATED_SNAPSHOT_ALIASES: &[(&str, &str)] = &[
     ("claude-haiku-4-5-20251001", "claude-haiku-4-5"),
     ("claude-opus-4-5-20251101", "claude-opus-4-5"),

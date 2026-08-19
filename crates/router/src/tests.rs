@@ -174,38 +174,38 @@ async fn echo_plane() -> (String, SharedLog) {
 }
 
 const ANTHROPIC_MODELS: &str = r#"{"data":[
-    {"type":"model","id":"claude-opus-4-8","display_name":"Claude Opus 4.8","max_input_tokens":1000000,"max_tokens":128000,
+    {"type":"model","id":"claude-opus-4-8","created_at":"2026-05-28T00:00:00Z","display_name":"Claude Opus 4.8","max_input_tokens":1000000,"max_tokens":128000,
      "capabilities":{"image_input":{"supported":true},"structured_outputs":{"supported":true},"thinking":{"supported":true},"effort":{"supported":true,"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true},"xhigh":{"supported":true},"max":{"supported":true}}}},
-    {"type":"model","id":"claude-haiku-4-5","display_name":"Claude Haiku 4.5","max_input_tokens":200000,"max_tokens":64000,
+    {"type":"model","id":"claude-haiku-4-5","created_at":"2025-10-15T00:00:00Z","display_name":"Claude Haiku 4.5","max_input_tokens":200000,"max_tokens":64000,
      "capabilities":{"image_input":{"supported":true},"structured_outputs":{"supported":true},"thinking":{"supported":true},"effort":{"supported":false,"low":{"supported":false},"medium":{"supported":false},"high":{"supported":false},"xhigh":{"supported":false},"max":{"supported":false}}}}
 ],"has_more":false,"first_id":"claude-opus-4-8","last_id":"claude-haiku-4-5"}"#;
 
 const OPENAI_MODELS: &str = r#"{"object":"list","data":[
-    {"id":"gpt-5.6","object":"model","created":0,"owned_by":"apitoken","apitoken":{"limits":{"context":400000,"input":272000,"output":128000},"capabilities":{"reasoning_efforts":["none","low","medium","high","xhigh","max"],"service_tiers":["standard","priority"],"input_modalities":["text","image"],"output_modalities":["text"],"tool_calling":true,"structured_outputs":true,"streaming":true}}},
-    {"id":"gpt-5.5","object":"model","created":0,"owned_by":"apitoken","apitoken":{"limits":{"output":128000},"capabilities":{"reasoning_efforts":["none","low","medium","high","xhigh"],"service_tiers":["standard"],"input_modalities":["text","image"],"output_modalities":["text"],"tool_calling":true,"structured_outputs":true,"streaming":true}}}
+    {"id":"gpt-5.6","object":"model","created":1783555200,"owned_by":"apitoken","apitoken":{"limits":{"context":400000,"input":272000,"output":128000},"capabilities":{"reasoning_efforts":["none","low","medium","high","xhigh","max"],"service_tiers":["standard","priority"],"input_modalities":["text","image"],"output_modalities":["text"],"tool_calling":true,"structured_outputs":true,"streaming":true}}},
+    {"id":"gpt-5.5","object":"model","created":1783555200,"owned_by":"apitoken","apitoken":{"limits":{"output":128000},"capabilities":{"reasoning_efforts":["none","low","medium","high","xhigh"],"service_tiers":["standard"],"input_modalities":["text","image"],"output_modalities":["text"],"tool_calling":true,"structured_outputs":true,"streaming":true}}}
 ]}"#;
 
 const GEMINI_MODELS: &str = r#"{"models":[
-    {"name":"models/gemini-2.5-pro","displayName":"Gemini 2.5 Pro","supportedGenerationMethods":["generateContent"],"apitoken":{"limits":{"context":1048576,"input":1048576,"output":65536},"capabilities":{"reasoning_efforts":["low","medium","high"],"service_tiers":["standard"],"input_modalities":["text","image"],"output_modalities":["text"],"tool_calling":true,"structured_outputs":true,"streaming":true}}},
-    {"name":"models/gemini-2.5-flash","displayName":"Gemini 2.5 Flash","apitoken":{"limits":{"context":1048576,"input":1048576,"output":65536},"capabilities":{"reasoning_efforts":["low","medium","high"],"service_tiers":["standard"],"input_modalities":["text","image"],"output_modalities":["text"],"tool_calling":true,"structured_outputs":true,"streaming":true}}}
+    {"name":"models/gemini-2.5-pro","created":1750118400,"displayName":"Gemini 2.5 Pro","supportedGenerationMethods":["generateContent"],"apitoken":{"limits":{"context":1048576,"input":1048576,"output":65536},"capabilities":{"reasoning_efforts":["low","medium","high"],"service_tiers":["standard"],"input_modalities":["text","image"],"output_modalities":["text"],"tool_calling":true,"structured_outputs":true,"streaming":true}}},
+    {"name":"models/gemini-2.5-flash","created":1750118400,"displayName":"Gemini 2.5 Flash","apitoken":{"limits":{"context":1048576,"input":1048576,"output":65536},"capabilities":{"reasoning_efforts":["low","medium","high"],"service_tiers":["standard"],"input_modalities":["text","image"],"output_modalities":["text"],"tool_calling":true,"structured_outputs":true,"streaming":true}}}
 ]}"#;
 
 const ANTHROPIC_ROUTING_MODELS: &str = r#"{"data":[
-    {"type":"model","id":"claude-sonnet-5","display_name":"Claude Sonnet 5"},
-    {"type":"model","id":"claude-opus-5","display_name":"Claude Opus 5"},
-    {"type":"model","id":"claude-haiku-4-5-20251001","display_name":"Claude Haiku 4.5"}
+    {"type":"model","id":"claude-sonnet-5","created_at":"2026-06-30T00:00:00Z","display_name":"Claude Sonnet 5"},
+    {"type":"model","id":"claude-opus-5","created_at":"2026-07-24T00:00:00Z","display_name":"Claude Opus 5"},
+    {"type":"model","id":"claude-haiku-4-5-20251001","created_at":"2025-10-15T00:00:00Z","display_name":"Claude Haiku 4.5"}
 ]}"#;
 
 const OPENAI_ROUTING_MODELS: &str = r#"{"object":"list","data":[
-    {"id":"gpt-5.6-terra","object":"model","created":0,"owned_by":"apitoken"},
-    {"id":"gpt-5.6-sol","object":"model","created":0,"owned_by":"apitoken"},
-    {"id":"gpt-5.6-luna","object":"model","created":0,"owned_by":"apitoken"}
+    {"id":"gpt-5.6-terra","object":"model","created":1783555200,"owned_by":"apitoken"},
+    {"id":"gpt-5.6-sol","object":"model","created":1783555200,"owned_by":"apitoken"},
+    {"id":"gpt-5.6-luna","object":"model","created":1783555200,"owned_by":"apitoken"}
 ]}"#;
 
 const GEMINI_ROUTING_MODELS: &str = r#"{"models":[
-    {"name":"models/gemini-3.6-flash","displayName":"Gemini 3.6 Flash"},
-    {"name":"models/gemini-3.1-pro-preview","displayName":"Gemini 3.1 Pro Preview"},
-    {"name":"models/gemini-3.1-flash-lite","displayName":"Gemini 3.1 Flash-Lite"}
+    {"name":"models/gemini-3.6-flash","created":1784592000,"displayName":"Gemini 3.6 Flash"},
+    {"name":"models/gemini-3.1-pro-preview","created":1771459200,"displayName":"Gemini 3.1 Pro Preview"},
+    {"name":"models/gemini-3.1-flash-lite","created":1778112000,"displayName":"Gemini 3.1 Flash-Lite"}
 ]}"#;
 
 async fn catalog_pricing_response(req: AxumRequest<Body>) -> AxumResponse<Body> {
@@ -1322,7 +1322,7 @@ async fn unavailable_auth_authority_fails_before_universal_body_dispatch() {
 // ---------- universal serial fallback (routing phase 6.2) ----------
 
 #[tokio::test]
-async fn fallback_flag_off_rejects_models_provider_and_presets_before_any_plane() {
+async fn fallback_flag_off_rejects_models_and_provider_before_any_plane() {
     let (a, log_a) = echo_plane().await;
     let (o, log_o) = echo_plane().await;
     let (g, log_g) = echo_plane().await;
@@ -1338,7 +1338,6 @@ async fn fallback_flag_off_rejects_models_provider_and_presets_before_any_plane(
             r#"{"model":"anthropic/claude-opus-4-8","provider":{"only":["anthropic"]},"input":"hi"}"#,
             "provider",
         ),
-        (r#"{"model":"preset/auto","input":"hi"}"#, "model"),
     ] {
         let response = client
             .post(format!("{router}/v1/responses"))
@@ -1854,7 +1853,7 @@ async fn policy_401_is_terminal_and_invalid_ordered_subsets_fail_closed() {
 }
 
 #[tokio::test]
-async fn provider_filters_order_sort_and_allow_fallbacks_are_deterministic() {
+async fn provider_filters_order_and_allow_fallbacks_are_deterministic() {
     let (a, bodies_a, _) = policy_attempt_plane(
         ANTHROPIC_ROUTING_MODELS,
         "/v1/models",
@@ -1903,7 +1902,7 @@ async fn provider_filters_order_sort_and_allow_fallbacks_are_deterministic() {
         None,
     )
     .await;
-    let (o, bodies_o, _) = policy_attempt_plane(
+    let (o, bodies_o, log_o) = policy_attempt_plane(
         OPENAI_ROUTING_MODELS,
         "/v1/models",
         PolicyReply::Unrestricted,
@@ -1911,7 +1910,7 @@ async fn provider_filters_order_sort_and_allow_fallbacks_are_deterministic() {
         None,
     )
     .await;
-    let (g, bodies_g, log_g) = policy_attempt_plane(
+    let (g, bodies_g, _) = policy_attempt_plane(
         GEMINI_ROUTING_MODELS,
         "/v1beta/models",
         PolicyReply::Unrestricted,
@@ -1922,15 +1921,15 @@ async fn provider_filters_order_sort_and_allow_fallbacks_are_deterministic() {
     let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
     let response = reqwest::Client::new()
         .post(format!("{router}/v1/responses"))
-        .body(r#"{"model":"openai/gpt-5.6-sol","models":["openai/gpt-5.6-luna","google/gemini-3.1-flash-lite"],"provider":{"sort":"latency","allow_fallbacks":false},"input":"hi"}"#)
+        .body(r#"{"model":"openai/gpt-5.6-sol","models":["openai/gpt-5.6-luna","google/gemini-3.1-flash-lite"],"provider":{"allow_fallbacks":false},"input":"hi"}"#)
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(bodies_o.lock().unwrap().is_empty());
-    let body: serde_json::Value = serde_json::from_slice(&bodies_g.lock().unwrap()[0]).unwrap();
-    assert_eq!(body["model"], "google/gemini-3.1-flash-lite");
-    let execution = log_g
+    assert!(bodies_g.lock().unwrap().is_empty());
+    let body: serde_json::Value = serde_json::from_slice(&bodies_o.lock().unwrap()[0]).unwrap();
+    assert_eq!(body["model"], "openai/gpt-5.6-sol");
+    let execution = log_o
         .lock()
         .unwrap()
         .iter()
@@ -1941,7 +1940,7 @@ async fn provider_filters_order_sort_and_allow_fallbacks_are_deterministic() {
 }
 
 #[tokio::test]
-async fn provider_validation_and_expanded_chain_bounds_fail_before_execution() {
+async fn provider_validation_and_chain_bounds_fail_before_execution() {
     let (a, bodies_a) =
         attempt_plane(ANTHROPIC_MODELS, "/v1/models", StatusCode::OK, None, false).await;
     let (o, bodies_o) =
@@ -1965,13 +1964,13 @@ async fn provider_validation_and_expanded_chain_bounds_fail_before_execution() {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
-    let overflow: Vec<_> = (0..30)
+    let overflow: Vec<_> = (0..32)
         .map(|index| format!("unknown/model-{index}"))
         .collect();
     let response = client
         .post(format!("{router}/v1/responses"))
         .json(&serde_json::json!({
-            "model": "preset/auto",
+            "model": "anthropic/claude-opus-4-8",
             "models": overflow,
             "input": "hi"
         }))
@@ -1979,146 +1978,6 @@ async fn provider_validation_and_expanded_chain_bounds_fail_before_execution() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert!(bodies_a.lock().unwrap().is_empty());
-    assert!(bodies_o.lock().unwrap().is_empty());
-    assert!(bodies_g.lock().unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn presets_publish_expand_skip_missing_members_and_reject_overlap() {
-    let (a, bodies_a, _) = policy_attempt_plane(
-        ANTHROPIC_ROUTING_MODELS,
-        "/v1/models",
-        PolicyReply::Unrestricted,
-        StatusCode::SERVICE_UNAVAILABLE,
-        Some("not_started"),
-    )
-    .await;
-    let (o, bodies_o, _) = policy_attempt_plane(
-        OPENAI_ROUTING_MODELS,
-        "/v1/models",
-        PolicyReply::Unrestricted,
-        StatusCode::OK,
-        None,
-    )
-    .await;
-    let (g, bodies_g, _) = policy_attempt_plane(
-        GEMINI_ROUTING_MODELS,
-        "/v1beta/models",
-        PolicyReply::Unrestricted,
-        StatusCode::OK,
-        None,
-    )
-    .await;
-    let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
-    let client = reqwest::Client::new();
-
-    let response = client
-        .get(format!("{router}/v1/models"))
-        .send()
-        .await
-        .unwrap();
-    let json: serde_json::Value = response.json().await.unwrap();
-    let ids: Vec<_> = json["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|entry| entry["id"].as_str())
-        .collect();
-    for preset in [
-        "preset/auto",
-        "preset/quality",
-        "preset/fast",
-        "preset/hermes",
-    ] {
-        assert!(ids.contains(&preset), "{ids:?}");
-    }
-    let preset: serde_json::Value = client
-        .get(format!("{router}/v1/models/preset/auto"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(preset["owned_by"], "router");
-
-    let response = client
-        .post(format!("{router}/v1/responses"))
-        .body(r#"{"model":"preset/auto","input":"hi"}"#)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let first: serde_json::Value = serde_json::from_slice(&bodies_a.lock().unwrap()[0]).unwrap();
-    let second: serde_json::Value = serde_json::from_slice(&bodies_o.lock().unwrap()[0]).unwrap();
-    assert_eq!(first["model"], "anthropic/claude-sonnet-5");
-    assert_eq!(second["model"], "openai/gpt-5.6-terra");
-    assert!(bodies_g.lock().unwrap().is_empty());
-    assert_ne!(second["model"], "preset/auto");
-
-    let before_a = bodies_a.lock().unwrap().len();
-    let before_o = bodies_o.lock().unwrap().len();
-    let response = client
-        .post(format!("{router}/v1/responses"))
-        .body(r#"{"model":"preset/auto","models":["openai/gpt-5.6-terra"],"input":"hi"}"#)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(bodies_a.lock().unwrap().len(), before_a);
-    assert_eq!(bodies_o.lock().unwrap().len(), before_o);
-
-    let (a, bodies_a, _) = policy_attempt_plane(
-        ANTHROPIC_ROUTING_MODELS,
-        "/v1/models",
-        PolicyReply::Unrestricted,
-        StatusCode::SERVICE_UNAVAILABLE,
-        Some("not_started"),
-    )
-    .await;
-    let (o, bodies_o, _) = policy_attempt_plane(
-        OPENAI_ROUTING_MODELS,
-        "/v1/models",
-        PolicyReply::Unrestricted,
-        StatusCode::SERVICE_UNAVAILABLE,
-        Some("not_started"),
-    )
-    .await;
-    let (g, bodies_g, _) = policy_attempt_plane(
-        GEMINI_MODELS,
-        "/v1beta/models",
-        PolicyReply::Unrestricted,
-        StatusCode::OK,
-        None,
-    )
-    .await;
-    let partial_router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
-    let response = client
-        .post(format!("{partial_router}/v1/responses"))
-        .body(r#"{"model":"preset/auto","input":"hi"}"#)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(bodies_a.lock().unwrap().len(), 1);
-    assert_eq!(bodies_o.lock().unwrap().len(), 1);
-    assert!(bodies_g.lock().unwrap().is_empty());
-
-    let (a, bodies_a) =
-        attempt_plane(ANTHROPIC_MODELS, "/v1/models", StatusCode::OK, None, false).await;
-    let (o, bodies_o) =
-        attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
-    let (g, bodies_g) =
-        attempt_plane(GEMINI_MODELS, "/v1beta/models", StatusCode::OK, None, false).await;
-    let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
-    let response = client
-        .post(format!("{router}/v1/responses"))
-        .body(r#"{"model":"preset/auto","input":"hi"}"#)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(bodies_a.lock().unwrap().is_empty());
     assert!(bodies_o.lock().unwrap().is_empty());
     assert!(bodies_g.lock().unwrap().is_empty());
@@ -3323,6 +3182,9 @@ async fn catalog_merges_three_planes_with_namespaces_and_order() {
     );
     assert_eq!(json["data"][0]["aliases"][0], "claude-opus-4-8");
     assert_eq!(json["data"][0]["name"], "Claude Opus 4.8");
+    assert_eq!(json["data"][0]["created"], 1_779_926_400);
+    assert_eq!(json["data"][2]["created"], 1_783_555_200);
+    assert_eq!(json["data"][4]["created"], 1_750_118_400);
     assert_eq!(json["data"][0]["owned_by"], "anthropic");
     assert_eq!(
         json["data"][0]["reasoning_efforts"],
@@ -3456,7 +3318,7 @@ async fn catalog_degrades_partially_when_one_plane_fails() {
 #[tokio::test]
 async fn catalog_treats_malformed_authoritative_metadata_as_a_degraded_plane() {
     const MALFORMED_OPENAI: &str = r#"{"object":"list","data":[
-        {"id":"gpt-bad","apitoken":{"limits":{"context":0}}}
+        {"id":"gpt-bad","created":1783555200,"apitoken":{"limits":{"context":0}}}
     ]}"#;
     let (a, _, g, _, _, _) = three_catalog_planes().await;
     let (o, _) = catalog_plane(MALFORMED_OPENAI, "/v1/models", "ok").await;
@@ -3478,14 +3340,27 @@ async fn catalog_treats_malformed_authoritative_metadata_as_a_degraded_plane() {
         .unwrap()
         .iter()
         .all(|model| !model["id"].as_str().unwrap().starts_with("openai/")));
+
+    const MISSING_CREATED_OPENAI: &str =
+        r#"{"object":"list","data":[{"id":"gpt-undated","object":"model"}]}"#;
+    let (o, _) = catalog_plane(MISSING_CREATED_OPENAI, "/v1/models", "ok").await;
+    let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+    let response = reqwest::Client::new()
+        .get(format!("{router}/v1/models"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(catalog::DEGRADED_HEADER).unwrap(),
+        "openai"
+    );
 }
 
 #[tokio::test]
 async fn catalog_removes_cross_plane_alias_collisions_without_hiding_namespaced_models() {
-    const ANTHROPIC_COLLISION: &str =
-        r#"{"data":[{"id":"shared","display_name":"Anthropic Shared"}]}"#;
-    const OPENAI_COLLISION: &str =
-        r#"{"object":"list","data":[{"id":"shared","object":"model","owned_by":"apitoken"}]}"#;
+    const ANTHROPIC_COLLISION: &str = r#"{"data":[{"id":"shared","created_at":"2026-01-01T00:00:00Z","display_name":"Anthropic Shared"}]}"#;
+    const OPENAI_COLLISION: &str = r#"{"object":"list","data":[{"id":"shared","object":"model","created":1783555200,"owned_by":"apitoken"}]}"#;
     let (a, _) = catalog_plane(ANTHROPIC_COLLISION, "/v1/models", "ok").await;
     let (o, _) = catalog_plane(OPENAI_COLLISION, "/v1/models", "ok").await;
     let (g, _) = catalog_plane(GEMINI_MODELS, "/v1beta/models", "ok").await;
@@ -3859,73 +3734,5 @@ async fn unknown_path_is_404_and_wrong_method_is_lane_shaped_405() {
     assert_eq!(
         response.json::<serde_json::Value>().await.unwrap()["error"]["code"],
         "method_not_allowed"
-    );
-}
-
-/// Every model this router advertises must have an exact tariff in `metering`.
-///
-/// Publication and pricing are separate, manual steps: a model can reach `routing-presets.json`,
-/// the provider config and production while no authority can quote it. Admission then refuses the
-/// request — historically as a retryable 5xx — and the customer, not the build, is what discovers
-/// the gap. Production carried exactly this state: `claude-opus-4-6`, `claude-opus-4-5-20251101`
-/// and `claude-sonnet-4-5-20250929` were routed and unpriced for days.
-///
-/// The router already filters its live `/v1/models` by resolved pricing; this asserts the same
-/// property statically, before a deploy can ship the gap.
-#[test]
-fn advertised_models_all_have_an_exact_tariff() {
-    #[derive(serde::Deserialize)]
-    struct Manifest {
-        models: Vec<Model>,
-    }
-    #[derive(serde::Deserialize)]
-    struct Model {
-        id: String,
-    }
-
-    // Any positive instant resolves the same identity set; effective-dated tariffs only move
-    // prices, never membership.
-    const PRICED_AT: i64 = 1_788_220_800;
-
-    let manifest: Manifest = serde_json::from_str(include_str!("../routing-presets.json"))
-        .expect("routing-presets.json parses");
-    let mut unpriced = Vec::new();
-    for model in &manifest.models {
-        let Some((provider, model_id)) = model.id.split_once('/') else {
-            panic!("advertised model id is not namespaced: {}", model.id);
-        };
-        let priced = match provider {
-            "anthropic" => metering::anthropic_tariff_capability_at(
-                model_id,
-                PRICED_AT,
-                metering::AnthropicAdmissionModifiers {
-                    speed: metering::AnthropicSpeed::Standard,
-                    inference_geo: metering::AnthropicInferenceGeo::Global,
-                },
-            )
-            .is_ok(),
-            "google" => metering::gemini_prices_at(model_id, PRICED_AT).is_some(),
-            "openai" => {
-                metering::codex_prices_at(model_id, PRICED_AT).is_some()
-                    || metering::openai_image_tariff(model_id).is_ok()
-            }
-            // Only a published subscription alias is admissible: the official Open Platform ids
-            // are tariff keys the gateway refuses on the wire, so resolving one here would let a
-            // model into the catalog that admission then rejects.
-            "kimi" => {
-                metering::kimi_resolve_subscription_model(model_id).is_some()
-                    && metering::kimi_matched_tariff_at(model_id, PRICED_AT).is_some()
-            }
-            other => panic!("advertised model has an unknown provider namespace: {other}"),
-        };
-        if !priced {
-            unpriced.push(model.id.clone());
-        }
-    }
-    assert!(
-        unpriced.is_empty(),
-        "advertised models have no exact tariff and would be refused at admission: {unpriced:?}. \
-         Add the tariff to crates/metering before advertising the model, or drop it from \
-         routing-presets.json."
     );
 }

@@ -17,8 +17,8 @@ pub struct Config {
     /// Origin, публикующий каталог KIMI. По умолчанию совпадает с Anthropic-плоскостью:
     /// KIMI-шлюз скомпонован в тех же слотах и говорит на том же протоколе.
     pub kimi_origin: String,
-    /// Явный rollout-флаг advanced routing. По умолчанию выключен: `models`,
-    /// `provider` и `preset/*` отклоняются до catalog/policy/plane work.
+    /// Явный rollout-флаг advanced routing. По умолчанию выключен: `models` и
+    /// `provider` отклоняются до catalog/policy/plane work.
     pub fallback_enabled: bool,
 }
 

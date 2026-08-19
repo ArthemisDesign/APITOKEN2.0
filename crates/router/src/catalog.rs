@@ -95,7 +95,8 @@ impl Plane {
         matches!(self, Plane::Kimi)
     }
 
-    pub fn index(self) -> usize {        match self {
+    pub fn index(self) -> usize {
+        match self {
             Plane::Anthropic => 0,
             Plane::OpenAi => 1,
             Plane::Gemini => 2,
@@ -108,6 +109,9 @@ const REASONING_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high",
 const ANTHROPIC_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 const SERVICE_TIERS: &[&str] = &["standard", "priority"];
 const MODALITIES: &[&str] = &["text", "image", "audio", "video", "pdf"];
+const MODEL_ENDPOINTS: &[&str] = &["/v1/images/generations", "/v1/images/edits"];
+const MIN_MODEL_CREATED: i64 = 1_577_836_800; // 2020-01-01T00:00:00Z
+const MAX_MODEL_CREATED: i64 = 4_102_444_800; // 2100-01-01T00:00:00Z
 /// Public token limits are consumed as JavaScript numbers by harnesses. A u32
 /// ceiling is far above every reviewed provider context while keeping hostile
 /// catalog values bounded and exactly representable.
@@ -141,6 +145,10 @@ pub struct CatalogEntry {
     /// со всех записей, но не затрагивает namespaced ID и native_id.
     pub aliases: Vec<String>,
     pub display_name: Option<String>,
+    /// Provider-authored public release date, normalized to Unix seconds.
+    pub created: i64,
+    /// Closed provider-authored endpoint list for models that require a non-text route.
+    pub endpoints: Option<Vec<String>>,
     /// Authoritative normalized token limits from the provider plane.
     pub limits: Option<CatalogLimits>,
     /// Ordered OpenAI-compatible reasoning variants. `Some([])` is an
@@ -167,13 +175,12 @@ pub struct CatalogLimits {
 }
 
 impl CatalogEntry {
-    /// OpenAI-совместимое JSON-представление. `created: 0` — как у
-    /// OpenAI-плоскости: engine не публикует дату создания модели.
+    /// OpenAI-compatible model resource with producer-authored runtime metadata.
     pub fn to_json(&self, owned_by: &str) -> serde_json::Value {
         let mut obj = serde_json::json!({
             "id": self.id,
             "object": "model",
-            "created": 0,
+            "created": self.created,
             "owned_by": owned_by,
             "aliases": self.aliases,
         });
@@ -187,6 +194,9 @@ impl CatalogEntry {
             obj["service_tiers"] = serde_json::json!(tiers);
         }
         let mut apitoken = serde_json::Map::new();
+        if let Some(endpoints) = &self.endpoints {
+            apitoken.insert("endpoints".to_string(), serde_json::json!(endpoints));
+        }
         if let Some(limits) = &self.limits {
             let mut normalized = serde_json::Map::new();
             for (name, value) in [
@@ -382,7 +392,9 @@ impl Catalog {
             return PlaneOutcome::Fresh(cache.entries);
         }
         let state = self.plane(plane);
-        let observed_failed_generation = state.failed_refresh_generation.load(AtomicOrdering::Acquire);
+        let observed_failed_generation = state
+            .failed_refresh_generation
+            .load(AtomicOrdering::Acquire);
         let _refresh = state.refresh.lock().await;
         // Singleflight followers recheck after the leader publishes its snapshot.
         if let Some(cache) = self.fresh(plane) {
@@ -480,9 +492,11 @@ impl Catalog {
                 PlaneOutcome::Fresh(_) => {}
             }
             if let Some(entries) = outcome.entries() {
-                aggregate
-                    .entries
-                    .extend(entries.iter().map(|e| (plane.namespace().to_string(), e.clone())));
+                aggregate.entries.extend(
+                    entries
+                        .iter()
+                        .map(|e| (plane.namespace().to_string(), e.clone())),
+                );
             }
         }
         aggregate
@@ -697,8 +711,37 @@ fn optional_bool(object: &serde_json::Map<String, Value>, field: &str) -> Result
     }
 }
 
+fn created_seconds(value: Option<&Value>) -> Result<i64, ()> {
+    let created = value.and_then(Value::as_i64).ok_or(())?;
+    (MIN_MODEL_CREATED..MAX_MODEL_CREATED)
+        .contains(&created)
+        .then_some(created)
+        .ok_or(())
+}
+
+fn parse_endpoints(apitoken: &serde_json::Map<String, Value>) -> Result<Option<Vec<String>>, ()> {
+    let Some(values) = apitoken.get("endpoints") else {
+        return Ok(None);
+    };
+    let values = values.as_array().ok_or(())?;
+    if values.is_empty() || values.len() > MODEL_ENDPOINTS.len() {
+        return Err(());
+    }
+    let mut seen = HashSet::with_capacity(values.len());
+    let mut parsed = Vec::with_capacity(values.len());
+    for value in values {
+        let value = value.as_str().ok_or(())?;
+        if !MODEL_ENDPOINTS.contains(&value) || !seen.insert(value) {
+            return Err(());
+        }
+        parsed.push(value.to_string());
+    }
+    Ok(Some(parsed))
+}
+
 #[derive(Default)]
 struct OwnedMetadata {
+    endpoints: Option<Vec<String>>,
     limits: Option<CatalogLimits>,
     reasoning_efforts: Option<Vec<String>>,
     service_tiers: Option<Vec<String>>,
@@ -734,6 +777,7 @@ fn parse_owned_metadata(model: &serde_json::Map<String, Value>) -> Result<OwnedM
         }
     };
     let mut metadata = OwnedMetadata {
+        endpoints: parse_endpoints(apitoken)?,
         limits,
         ..OwnedMetadata::default()
     };
@@ -799,6 +843,88 @@ fn parse_anthropic_efforts(
         }
     }
     Ok(Some(parsed))
+}
+
+fn parse_rfc3339_seconds(value: &str) -> Option<i64> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 20
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return None;
+    }
+    let number = |start: usize, end: usize| value.get(start..end)?.parse::<i64>().ok();
+    let (year, month, day) = (number(0, 4)?, number(5, 7)?, number(8, 10)?);
+    let (hour, minute, second) = (number(11, 13)?, number(14, 16)?, number(17, 19)?);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if !(1..=days_in_month).contains(&day) || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let mut timezone_index = 19usize;
+    if bytes.get(timezone_index) == Some(&b'.') {
+        timezone_index += 1;
+        let fraction_start = timezone_index;
+        while bytes.get(timezone_index).is_some_and(u8::is_ascii_digit) {
+            timezone_index += 1;
+        }
+        if timezone_index == fraction_start {
+            return None;
+        }
+    }
+    let offset = match bytes.get(timezone_index).copied()? {
+        b'Z' if timezone_index + 1 == bytes.len() => 0,
+        sign @ (b'+' | b'-') if timezone_index + 6 == bytes.len() => {
+            if bytes[timezone_index + 3] != b':' {
+                return None;
+            }
+            let hours = value
+                .get(timezone_index + 1..timezone_index + 3)?
+                .parse::<i64>()
+                .ok()?;
+            let minutes = value
+                .get(timezone_index + 4..timezone_index + 6)?
+                .parse::<i64>()
+                .ok()?;
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            let seconds = hours * 3_600 + minutes * 60;
+            if sign == b'+' {
+                seconds
+            } else {
+                -seconds
+            }
+        }
+        _ => return None,
+    };
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = if adjusted_year >= 0 {
+        adjusted_year
+    } else {
+        adjusted_year - 399
+    } / 400;
+    let year_of_era = adjusted_year - era * 400;
+    let shifted_month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    let seconds = days
+        .checked_mul(86_400)?
+        .checked_add(hour * 3_600 + minute * 60 + second)?
+        .checked_sub(offset)?;
+    (MIN_MODEL_CREATED..MAX_MODEL_CREATED)
+        .contains(&seconds)
+        .then_some(seconds)
 }
 
 fn anthropic_adapter_efforts(model: &str) -> Vec<String> {
@@ -892,6 +1018,14 @@ fn parse_anthropic(body: &Value) -> ParseResult {
                     Ok(None) => return None,
                     Err(()) => return Some(Err(())),
                 };
+                let created = match model
+                    .get("created_at")
+                    .and_then(Value::as_str)
+                    .and_then(parse_rfc3339_seconds)
+                {
+                    Some(created) => created,
+                    None => return Some(Err(())),
+                };
                 let input = match positive_limit(model, "max_input_tokens") {
                     Ok(value) => value,
                     Err(()) => return Some(Err(())),
@@ -944,6 +1078,8 @@ fn parse_anthropic(body: &Value) -> ParseResult {
                     native_id: id.clone(),
                     aliases: anthropic_aliases(&id),
                     display_name,
+                    created,
+                    endpoints: None,
                     limits,
                     reasoning_efforts: Some(reasoning_efforts),
                     service_tiers: Some(vec!["standard".to_string()]),
@@ -1019,9 +1155,7 @@ fn parse_kimi(body: &Value) -> ParseResult {
                     Some(model) => model,
                     None => return Some(Err(())),
                 };
-                let id = match bounded_model_id(
-                    model.get("id").and_then(Value::as_str),
-                ) {
+                let id = match bounded_model_id(model.get("id").and_then(Value::as_str)) {
                     Ok(Some(id)) => id,
                     Ok(None) => return None,
                     Err(()) => return Some(Err(())),
@@ -1039,15 +1173,19 @@ fn parse_kimi(body: &Value) -> ParseResult {
                     Ok(name) => name,
                     Err(()) => return Some(Err(())),
                 };
+                let created = match created_seconds(model.get("created")) {
+                    Ok(created) => created,
+                    Err(()) => return Some(Err(())),
+                };
                 let context = match positive_limit(model, "max_input_tokens") {
                     Ok(value) => value,
                     Err(()) => return Some(Err(())),
                 };
-                let reasoning_efforts = match closed_list(model, "reasoning_efforts", REASONING_EFFORTS)
-                {
-                    Ok(value) => value,
-                    Err(()) => return Some(Err(())),
-                };
+                let reasoning_efforts =
+                    match closed_list(model, "reasoning_efforts", REASONING_EFFORTS) {
+                        Ok(value) => value,
+                        Err(()) => return Some(Err(())),
+                    };
                 let image_input = model.get("image_input").and_then(Value::as_bool);
                 // The official Kimi Code models table declares every served alias except
                 // k3-256k as image+video; k3-256k is explicitly image-only. `k3[1m]` is our
@@ -1059,6 +1197,8 @@ fn parse_kimi(body: &Value) -> ParseResult {
                     native_id: id.clone(),
                     aliases: vec![id],
                     display_name,
+                    created,
+                    endpoints: None,
                     limits: context.map(|context| CatalogLimits {
                         context: Some(context),
                         input: Some(context),
@@ -1077,9 +1217,7 @@ fn parse_kimi(body: &Value) -> ParseResult {
                     }),
                     output_modalities: Some(vec!["text".to_string()]),
                     tool_calling: Some(true),
-                    structured_outputs: model
-                        .get("structured_outputs")
-                        .and_then(Value::as_bool),
+                    structured_outputs: model.get("structured_outputs").and_then(Value::as_bool),
                     reasoning: model.get("reasoning").and_then(Value::as_bool),
                     streaming: Some(true),
                 }))
@@ -1088,7 +1226,8 @@ fn parse_kimi(body: &Value) -> ParseResult {
     )
 }
 
-fn parse_owned_models<Id, Display>(    models: Option<&Vec<Value>>,
+fn parse_owned_models<Id, Display>(
+    models: Option<&Vec<Value>>,
     namespace: &str,
     id_of: Id,
     display_of: Display,
@@ -1118,6 +1257,10 @@ where
                     Ok(metadata) => metadata,
                     Err(()) => return Some(Err(())),
                 };
+                let created = match created_seconds(model.get("created")) {
+                    Ok(created) => created,
+                    Err(()) => return Some(Err(())),
+                };
                 let namespaced_id = match namespaced_id(namespace, &id) {
                     Ok(id) => id,
                     Err(()) => return Some(Err(())),
@@ -1131,6 +1274,8 @@ where
                     native_id: id.clone(),
                     aliases: vec![id],
                     display_name,
+                    created,
+                    endpoints: metadata.endpoints,
                     limits: metadata.limits,
                     reasoning_efforts: metadata.reasoning_efforts,
                     service_tiers: metadata.service_tiers,
@@ -1195,6 +1340,36 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn release_timestamps_accept_strict_rfc3339_and_reject_malformed_or_out_of_range_values() {
+        assert_eq!(
+            parse_rfc3339_seconds("2026-05-28T00:00:00Z"),
+            Some(1_779_926_400)
+        );
+        assert_eq!(
+            parse_rfc3339_seconds("2026-05-28T03:00:00+03:00"),
+            Some(1_779_926_400)
+        );
+        assert_eq!(
+            parse_rfc3339_seconds("2026-05-28T00:00:00.125Z"),
+            Some(1_779_926_400)
+        );
+        for invalid in [
+            "2026-02-29T00:00:00Z",
+            "2026-05-28T00:00:60Z",
+            "2026-05-28T00:00:00",
+            "2026-05-28T00:00:00.Z",
+            "2019-12-31T23:59:59Z",
+            "2100-01-01T00:00:00Z",
+        ] {
+            assert_eq!(parse_rfc3339_seconds(invalid), None, "accepted {invalid}");
+        }
+        assert!(created_seconds(None).is_err());
+        assert!(created_seconds(Some(&Value::from(0))).is_err());
+        assert!(created_seconds(Some(&Value::from(1.5))).is_err());
+        assert!(created_seconds(Some(&Value::from(MAX_MODEL_CREATED))).is_err());
+    }
+
+    #[test]
     fn namespace_lane_maps_known_prefixes() {
         assert_eq!(
             namespace_lane("anthropic/claude-opus-4-8"),
@@ -1214,6 +1389,7 @@ mod tests {
         let body = serde_json::json!({"schema_version": 1, "data": [
             {
                 "id": "k3[1m]",
+                "created": 1784160000,
                 "display_name": "Kimi K3 (1M)",
                 "max_input_tokens": 1_000_000,
                 "reasoning_efforts": ["none", "low", "high", "max"],
@@ -1248,6 +1424,7 @@ mod tests {
         let body = serde_json::json!({"schema_version": 1, "data": [
             {
                 "id": "k3",
+                "created": 1784160000,
                 "display_name": "Kimi K3 (1M)",
                 "max_input_tokens": 1_048_576,
                 "reasoning_efforts": ["none", "low", "high", "max"],
@@ -1257,6 +1434,7 @@ mod tests {
             },
             {
                 "id": "k3[1m]",
+                "created": 1784160000,
                 "display_name": "Kimi K3 (1M)",
                 "max_input_tokens": 1_048_576,
                 "reasoning_efforts": ["none", "low", "high", "max"],
@@ -1266,6 +1444,7 @@ mod tests {
             },
             {
                 "id": "k3-256k",
+                "created": 1784160000,
                 "display_name": "Kimi K3 (256K)",
                 "max_input_tokens": 262_144,
                 "reasoning_efforts": ["none", "low", "high", "max"],
@@ -1275,6 +1454,7 @@ mod tests {
             },
             {
                 "id": "kimi-for-coding",
+                "created": 1781222400,
                 "display_name": "Kimi for Coding",
                 "max_input_tokens": 262_144,
                 "reasoning_efforts": ["none", "high"],
@@ -1284,6 +1464,7 @@ mod tests {
             },
             {
                 "id": "kimi-for-coding-highspeed",
+                "created": 1783555200,
                 "display_name": "Kimi for Coding (High Speed)",
                 "max_input_tokens": 262_144,
                 "reasoning_efforts": ["none", "high"],
@@ -1300,12 +1481,13 @@ mod tests {
             "kimi/kimi-for-coding",
             "kimi/kimi-for-coding-highspeed",
         ] {
-            let entry = entries.iter().find(|entry| entry.id == id).expect("entry exists");
+            let entry = entries
+                .iter()
+                .find(|entry| entry.id == id)
+                .expect("entry exists");
             assert_eq!(
                 entry.input_modalities.as_deref(),
-                Some(
-                    ["text".to_string(), "image".to_string(), "video".to_string()].as_slice()
-                ),
+                Some(["text".to_string(), "image".to_string(), "video".to_string()].as_slice()),
                 "{id} must advertise the official image+video capability"
             );
         }
@@ -1326,7 +1508,8 @@ mod tests {
     #[test]
     fn kimi_producer_envelope_rejects_an_effort_outside_the_closed_vocabulary() {
         let body = serde_json::json!({"data": [
-            {"id": "k3", "reasoning_efforts": ["turbo"]}
+            {"id": "k3",
+                "created": 1784160000, "reasoning_efforts": ["turbo"]}
         ]});
         assert!(parse_kimi(&body).is_err());
         assert!(parse_kimi(&serde_json::json!({"models": []})).is_err());
@@ -1351,7 +1534,7 @@ mod tests {
     fn anthropic_envelope_maps_to_namespaced_entries() {
         let body = serde_json::json!({
             "data": [
-                {"type": "model", "id": "claude-opus-4-8", "display_name": "Claude Opus 4.8",
+                {"type": "model", "created_at": "2026-01-01T00:00:00Z", "id": "claude-opus-4-8", "display_name": "Claude Opus 4.8",
                  "max_input_tokens": 1000000, "max_tokens": 128000,
                  "capabilities": {"image_input": {"supported": true},
                     "structured_outputs": {"supported": true},
@@ -1360,7 +1543,7 @@ mod tests {
                     "low": {"supported": true}, "medium": {"supported": true},
                     "high": {"supported": true}, "xhigh": {"supported": true},
                     "max": {"supported": true}}}},
-                {"type": "model", "id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6",
+                {"type": "model", "created_at": "2026-01-01T00:00:00Z", "id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6",
                  "max_input_tokens": 1000000, "max_tokens": 128000,
                  "capabilities": {"image_input": {"supported": true},
                     "structured_outputs": {"supported": true},
@@ -1424,7 +1607,7 @@ mod tests {
     fn dated_haiku_entry_publishes_the_bare_alias() {
         let body = serde_json::json!({
             "data": [
-                {"type": "model", "id": "claude-haiku-4-5-20251001",
+                {"type": "model", "created_at": "2026-01-01T00:00:00Z", "id": "claude-haiku-4-5-20251001",
                  "display_name": "Claude Haiku 4.5",
                  "max_input_tokens": 200000, "max_tokens": 64000}
             ],
@@ -1461,7 +1644,7 @@ mod tests {
     #[test]
     fn openai_envelope_maps_to_namespaced_entries() {
         let body = serde_json::json!({"object": "list", "data": [
-            {"id": "gpt-5.6", "object": "model", "created": 0, "owned_by": "apitoken",
+            {"id": "gpt-5.6", "object": "model", "created": 1_750_118_400, "owned_by": "apitoken",
              "apitoken": {"limits": {"context": 400000, "input": 272000, "output": 128000},
                  "capabilities": {"reasoning_efforts": ["none", "low", "max"],
                                   "service_tiers": ["standard", "priority"],
@@ -1470,7 +1653,7 @@ mod tests {
                                   "tool_calling": true,
                                   "structured_outputs": true,
                                   "streaming": true}}},
-            {"id": "text-embedding-4", "object": "model", "created": 0, "owned_by": "apitoken"}
+            {"id": "text-embedding-4", "object": "model", "created": 1_750_118_400, "owned_by": "apitoken"}
         ]});
         let entries = parse_openai(&body).unwrap();
         assert_eq!(entries.len(), 2);
@@ -1504,7 +1687,7 @@ mod tests {
     #[test]
     fn openai_image_models_keep_their_image_only_capabilities() {
         let body = serde_json::json!({"object": "list", "data": [
-            {"id": "gpt-image-2", "object": "model", "created": 0, "owned_by": "apitoken",
+            {"id": "gpt-image-2", "object": "model", "created": 1_750_118_400, "owned_by": "apitoken",
              "apitoken": {"endpoints": ["/v1/images/generations", "/v1/images/edits"],
                  "capabilities": {"reasoning_efforts": [],
                                   "service_tiers": ["standard"],
@@ -1519,6 +1702,17 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, "openai/gpt-image-2");
         assert_eq!(entries[0].aliases, vec!["gpt-image-2".to_string()]);
+        assert_eq!(entries[0].created, 1_750_118_400);
+        assert_eq!(
+            entries[0].endpoints.as_deref(),
+            Some(
+                [
+                    "/v1/images/generations".to_string(),
+                    "/v1/images/edits".to_string()
+                ]
+                .as_slice()
+            )
+        );
         assert_eq!(
             entries[0].output_modalities.as_deref(),
             Some(["image".to_string()].as_slice())
@@ -1531,8 +1725,9 @@ mod tests {
     }
 
     #[test]
-    fn gemini_envelope_strips_models_prefix() {        let body = serde_json::json!({"models": [
-            {"name": "models/gemini-2.5-pro", "displayName": "Gemini 2.5 Pro",
+    fn gemini_envelope_strips_models_prefix() {
+        let body = serde_json::json!({"models": [
+            {"name": "models/gemini-2.5-pro", "created": 1_750_118_400, "displayName": "Gemini 2.5 Pro",
              "supportedGenerationMethods": ["generateContent"],
              "apitoken": {"limits": {"context": 1048576, "input": 1048576, "output": 65536},
                  "capabilities": {"reasoning_efforts": ["low", "medium", "high"],
@@ -1542,7 +1737,7 @@ mod tests {
                                   "tool_calling": true,
                                   "structured_outputs": true,
                                   "streaming": true}}},
-            {"name": "models/gemini-2.5-flash", "displayName": "Gemini 2.5 Flash"}
+            {"name": "models/gemini-2.5-flash", "created": 1_750_118_400, "displayName": "Gemini 2.5 Flash"}
         ]});
         let entries = parse_gemini(&body).unwrap();
         assert_eq!(entries.len(), 2);
@@ -1564,7 +1759,7 @@ mod tests {
     #[test]
     fn parsers_accept_missing_legacy_metadata_without_guessing() {
         let mixed = serde_json::json!({"data": [
-            {"id": ""}, {"id": "  "}, {"id": "claude-haiku-4-5"}, {"no_id": true}
+            {"id": ""}, {"id": "  "}, {"id": "claude-haiku-4-5", "created_at": "2025-10-15T00:00:00Z"}, {"no_id": true}
         ]});
         let entries = parse_anthropic(&mixed).unwrap();
         assert_eq!(entries.len(), 1);
@@ -1581,20 +1776,25 @@ mod tests {
         assert!(parse_openai(&serde_json::json!({"data": "not-an-array"})).is_err());
         assert!(parse_gemini(&serde_json::json!({"models": [1]})).is_err());
         for bad in [
-            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"limits":{"context":0}}}]}),
-            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"limits":{"input":10,"context":9}}}]}),
-            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"reasoning_efforts":["ultra"]}}}]}),
-            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"service_tiers":["standard","standard"]}}}]}),
-            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"input_modalities":["text","3d"]}}}]}),
-            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"output_modalities":["text","text"]}}}]}),
-            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"tool_calling":"yes"}}}]}),
-            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"structured_outputs":1}}}]}),
-            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"reasoning":"yes"}}}]}),
-            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"reasoning":false,"reasoning_efforts":["high"]}}}]}),
-            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"streaming":null}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200,"apitoken":{"limits":{"context":0}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200,"apitoken":{"limits":{"input":10,"context":9}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200,"apitoken":{"capabilities":{"reasoning_efforts":["ultra"]}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200,"apitoken":{"capabilities":{"service_tiers":["standard","standard"]}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200,"apitoken":{"capabilities":{"input_modalities":["text","3d"]}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200,"apitoken":{"capabilities":{"output_modalities":["text","text"]}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200,"apitoken":{"capabilities":{"tool_calling":"yes"}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200,"apitoken":{"capabilities":{"structured_outputs":1}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200,"apitoken":{"capabilities":{"reasoning":"yes"}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200,"apitoken":{"capabilities":{"reasoning":false,"reasoning_efforts":["high"]}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200,"apitoken":{"capabilities":{"streaming":null}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":0}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":"2026-01-01"}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200,"apitoken":{"endpoints":[]}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200,"apitoken":{"endpoints":["/v1/unknown"]}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200,"apitoken":{"endpoints":["/v1/images/edits","/v1/images/edits"]}}]}),
             serde_json::json!({"data":[{"id":" gpt-x"}]}),
-            serde_json::json!({"data":[{"id":"gpt-x","name":" GPT X"}]}),
-            serde_json::json!({"data":[{"id":"gpt-x"},{"id":"gpt-x"}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200,"name":" GPT X"}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","created":1783555200},{"id":"gpt-x","created":1783555200}]}),
         ] {
             assert!(parse_openai(&bad).is_err(), "{bad}");
         }
@@ -1635,13 +1835,13 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(30)).await;
                 let body = match request.uri().query() {
                     Some(query) if query.contains("pageSize") => {
-                        serde_json::json!({"models": [{"name": "models/gemini-x"}]})
+                        serde_json::json!({"models": [{"name": "models/gemini-x", "created": 1783555200}]})
                     }
-                    Some(_) => serde_json::json!({"data": [{"id": "claude-x"}]}),
+                    Some(_) => serde_json::json!({"data": [{"id": "claude-x", "created_at": "2026-01-01T00:00:00Z"}]}),
                     None if request.uri().path().ends_with("/kimi") => {
-                        serde_json::json!({"data": [{"id": "kimi-x"}]})
+                        serde_json::json!({"data": [{"id": "kimi-x", "created": 1783555200}]})
                     }
-                    None => serde_json::json!({"data": [{"id": "gpt-x"}]}),
+                    None => serde_json::json!({"data": [{"id": "gpt-x", "created": 1783555200}]}),
                 };
                 Response::builder()
                     .header("content-type", "application/json")
@@ -1741,6 +1941,8 @@ mod tests {
                 native_id: alias.into(),
                 aliases: vec![alias.into()],
                 display_name: None,
+                created: MIN_MODEL_CREATED,
+                endpoints: None,
                 limits: None,
                 reasoning_efforts: None,
                 service_tiers: None,
@@ -1801,6 +2003,8 @@ mod tests {
             native_id: "claude-opus-4-8".into(),
             aliases: vec!["claude-opus-4-8".into()],
             display_name: Some("Claude Opus 4.8".into()),
+            created: 1_779_926_400,
+            endpoints: None,
             limits: Some(CatalogLimits {
                 context: Some(1_000_000),
                 input: Some(1_000_000),
@@ -1823,7 +2027,7 @@ mod tests {
         let json = entry.to_json("anthropic");
         assert_eq!(json["id"], "anthropic/claude-opus-4-8");
         assert_eq!(json["object"], "model");
-        assert_eq!(json["created"], 0);
+        assert_eq!(json["created"], 1_779_926_400);
         assert_eq!(json["owned_by"], "anthropic");
         assert_eq!(json["aliases"][0], "claude-opus-4-8");
         assert_eq!(json["name"], "Claude Opus 4.8");
@@ -1849,6 +2053,8 @@ mod tests {
             native_id: "gpt-5.6".into(),
             aliases: vec![],
             display_name: None,
+            created: 1_783_555_200,
+            endpoints: Some(vec!["/v1/images/generations".into()]),
             limits: None,
             reasoning_efforts: None,
             service_tiers: Some(vec!["standard".into(), "priority".into()]),
@@ -1861,6 +2067,10 @@ mod tests {
         };
         assert!(bare.to_json("openai").get("name").is_none());
         assert_eq!(bare.to_json("openai")["aliases"], serde_json::json!([]));
+        assert_eq!(
+            bare.to_json("openai")["apitoken"]["endpoints"],
+            serde_json::json!(["/v1/images/generations"])
+        );
         assert_eq!(
             bare.to_json("openai")["service_tiers"],
             serde_json::json!(["standard", "priority"])

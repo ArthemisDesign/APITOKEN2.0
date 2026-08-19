@@ -69,15 +69,15 @@ class Handler(BaseHTTPRequestHandler):
         native, _catalog_id = MODELS[ARGS.plane]
         if ARGS.plane == "anthropic" and self.path.startswith("/v1/models"):
             record("catalog", "discovery")
-            self.reply(200, {"data": [{"id": native, "display_name": "Mock Anthropic"}]})
+            self.reply(200, {"data": [{"id": native, "created_at": "2026-01-01T00:00:00Z", "display_name": "Mock Anthropic"}]})
             return
         if ARGS.plane == "openai" and self.path == "/v1/models":
             record("catalog", "discovery")
-            self.reply(200, {"data": [{"id": native, "object": "model"}]})
+            self.reply(200, {"data": [{"id": native, "object": "model", "created": 1783555200}]})
             return
         if ARGS.plane == "google" and self.path.startswith("/v1beta/models"):
             record("catalog", "discovery")
-            self.reply(200, {"models": [{"name": f"models/{native}", "displayName": "Mock Gemini"}]})
+            self.reply(200, {"models": [{"name": f"models/{native}", "created": 1783555200, "displayName": "Mock Gemini"}]})
             return
         self.reply(404, {"error": "not found"})
 
