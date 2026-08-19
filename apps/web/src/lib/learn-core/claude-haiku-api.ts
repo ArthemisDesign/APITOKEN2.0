@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "free",
   title: "Claude Haiku API Access",
   h1: "Claude Haiku 4.5 through the API",
-  description: "Claude Haiku API access via apiToken.sale: the claude-haiku-4-5 model ID, a working Messages API call, streaming, prompt caching and pricing at a flat 50% off official rates.",
+  description: "Claude Haiku API access via apiToken.sale: the claude-haiku-4-5 model ID, a working Messages API call and pricing at a flat 50% off official rates.",
   keywords: ["claude haiku api", "claude haiku 4.5 api", "claude-haiku-4-5", "haiku api key", "claude haiku pricing", "cheapest claude model", "fastest claude model", "claude haiku prompt caching", "claude api free credits", "try claude api free", "claude api free tier"],
   dek: "The Claude Haiku API is where high-volume work belongs: classification, extraction, routing and any request where latency and unit cost matter more than deep reasoning. Haiku 4.5 is metered at $1/$5 per million tokens officially — $0.50/$2.50 here with the flat 50% discount — and it shares one key and one prepaid balance with Sonnet, Opus, GPT, Gemini and Kimi. This guide covers the workloads it fits, a working request, and how to escalate the hard fraction upward.",
   sections: [

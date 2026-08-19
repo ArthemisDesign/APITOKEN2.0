@@ -1,9 +1,9 @@
 import type { LocalizedContent } from "../learn";
 
 export const content: LocalizedContent = {
-    title: "Быстрый старт Claude API: от ключа до первого вызова за минуты",
+    title: "Быстрый старт Claude API за минуты",
     h1: "Быстрый старт Claude API: настройка и первый вызов",
-    description: "Быстрый старт Claude API: создайте один ключ, направьте любой Anthropic-совместимый клиент на router.apitoken.sale и отправьте первый запрос /v1/messages через curl, Python, TypeScript или IDE.",
+    description: "Быстрый старт Claude API: создайте один ключ, направьте любой Anthropic-совместимый клиент на router.apitoken.sale и отправьте первый запрос за минуты.",
     keywords: ["claude api быстрый старт", "claude api настройка", "claude api первый запрос", "anthropic messages api", "claude api base url", "claude api curl пример", "claude api ключ", "как подключить claude api", "claude api quickstart", "claude api туториал", "купить доступ к claude api"],
     dek: "Этот быстрый старт Claude API проведёт вас от свежего аккаунта до завершённого вызова /v1/messages за несколько минут. Нужно ровно три вещи: один ключ sk-pool, base URL router.apitoken.sale и два HTTP-заголовка. Всё остальное — стандартный Anthropic Messages API, поэтому тот же код без изменений работает и против официального эндпоинта.",
     sections: [

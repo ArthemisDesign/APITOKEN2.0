@@ -2,9 +2,9 @@ import type { LocalizedContent } from "../learn";
 import { sourceBlock } from "./shared";
 
 export const content: LocalizedContent = {
-    title: "Kimi K3 vs Kimi for Coding: контекст, reasoning и цена",
+    title: "Kimi K3 vs Kimi for Coding: контекст и цена",
     h1: "Kimi K3 vs Kimi for Coding: какая модель для какой нагрузки",
-    description: "Kimi K3 vs Kimi for Coding: публичные алиасы, контекст 256K против 1M, настраиваемый reasoning effort против always-on thinking, двойная ставка High Speed и двухуровневая политика маршрутизации.",
+    description: "Kimi K3 vs Kimi for Coding: контекст 256K против 1M, настраиваемый reasoning против always-on thinking, двойная ставка High Speed и политика маршрутизации.",
     keywords: ["kimi k3 vs kimi for coding", "kimi k3 api", "kimi for coding цена", "лучшая kimi модель для кода", "kimi k3 256k или 1m", "kimi highspeed стоит ли", "сравнение моделей kimi", "kimi k3 reasoning effort", "kimi k2.7 code", "какую kimi выбрать для coding-агентов"],
     dek: "Kimi K3 — семейство для reasoning и длинного контекста; Kimi for Coding — недорогая coding-линейка с постоянно включённым thinking. Это сравнение Kimi K3 vs Kimi for Coding разбирает каждый публичный алиас — окно контекста, управление reasoning и ставки за токены — и заканчивается политикой маршрутизации: повседневные правки уходят в дешёвую модель, а сложные и слишком большие задачи эскалируются в K3.",
     sections: [

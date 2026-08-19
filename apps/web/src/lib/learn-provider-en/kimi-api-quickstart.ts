@@ -7,7 +7,7 @@ export const article: LearnArticle = {
     cluster: "integrate",
     title: "Kimi API Quickstart: K3 and Kimi for Coding",
     h1: "Kimi API quickstart: first call with curl or the Anthropic SDK",
-    description: "Kimi API quickstart: call Kimi K3 and Kimi for Coding through apiToken.sale with curl or the official Anthropic SDK — x-api-key auth, kimi/* model IDs, one prepaid balance, 50% off official rates.",
+    description: "Kimi API quickstart: first call to Kimi K3 or Kimi for Coding with curl or the Anthropic SDK — x-api-key auth, kimi/* model IDs, 50% off official rates.",
     keywords: ["kimi api quickstart", "kimi api tutorial", "kimi anthropic api", "kimi k3 api example", "kimi for coding api", "kimi api curl", "kimi api python", "kimi api key", "moonshot kimi api", "kimi api openai compatible"],
     dek: "This Kimi API quickstart takes you from a fresh account to a working Kimi K3 response in about five minutes: one base URL, one x-api-key header, one namespaced model ID. Kimi speaks the Anthropic Messages protocol on the apiToken.sale router, so the official Anthropic SDK works with a single base_url change. The same prepaid key and balance also cover Claude, GPT and Gemini.",
     sections: [

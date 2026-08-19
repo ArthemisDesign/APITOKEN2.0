@@ -1,9 +1,9 @@
 import type { LocalizedContent } from "../learn";
 
 export const content: LocalizedContent = {
-    title: "OpenAI-совместимый API: быстрый старт — GPT-5.6 на одном ключе",
+    title: "OpenAI-совместимый API: быстрый старт с GPT-5.6",
     h1: "OpenAI-совместимый API: быстрый старт — от curl до официального SDK",
-    description: "OpenAI-совместимый API: быстрый старт — вызывайте модели GPT-5.6 на apiToken.sale через Responses и Chat Completions со SSE-стримингом: один ключ sk-pool, общий с Claude предоплаченный баланс и единая скидка 50% от официальных ставок.",
+    description: "OpenAI-совместимый API: быстрый старт — GPT-5.6 на apiToken.sale через Responses и Chat Completions со стримингом. Один ключ, общий с Claude баланс, скидка 50%.",
     keywords: ["openai совместимый api", "быстрый старт openai api", "gpt-5.6 api", "responses api пример", "chat completions свой base url", "openai sdk base_url", "альтернатива gpt api key", "gpt-5.6-sol", "перенаправление openai api endpoint", "цена gpt-5.6 за токен"],
     dek: "Ищете OpenAI-совместимый API, к которому можно подключиться за ближайшие пять минут? Направьте любой клиент OpenAI на https://router.apitoken.sale/v1 с одним ключом sk-pool и тем же предоплаченным балансом, который уже покрывает Claude. Responses и Chat Completions стримят по SSE, а использование GPT-5.6 тарифицируется по официальным ставкам OpenAI за токены минус ваша единая скидка 50%.",
     sections: [

@@ -6,7 +6,7 @@ export const article: LearnArticle = {
     cluster: "buy",
     title: "How to Buy a Gemini API Key",
     h1: "How to buy a Gemini API key",
-    description: "Buy a Gemini API key without a Google Cloud billing account: prepaid top-up by card or crypto, native generateContent endpoints, and one balance for Gemini, GPT, Claude and Kimi at a flat 50% off official spend.",
+    description: "Buy a Gemini API key without a Google Cloud billing account: top up by card or crypto and call native generateContent at 50% off official spend.",
     keywords: ["buy gemini api key", "how to buy gemini api key", "gemini api key", "google gemini api access", "gemini api key without google cloud", "gemini api prepaid balance", "buy gemini api with crypto", "gemini api card payment", "cheap gemini api", "gemini api 50% discount", "gemini api key instant activation"],
     dek: "You buy a Gemini API key on apiToken.sale the way you buy prepaid credit: create an account, top up any whole-dollar amount by card or crypto, and generate a key in the dashboard. That key authenticates against the native Google Gemini protocol — x-goog-api-key, generateContent, the official SDK — at a flat 50% off official token spend. No Google Cloud project, billing account, or waitlist is involved.",
     sections: [

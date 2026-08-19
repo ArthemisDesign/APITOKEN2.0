@@ -4,7 +4,7 @@ import { sourceBlock } from "./shared";
 export const content: LocalizedContent = {
     title: "Как купить API-ключ Kimi",
     h1: "Как купить API-ключ Kimi",
-    description: "Купите один предоплаченный API-ключ для Kimi K3 и Kimi for Coding, оплатите картой или криптовалютой, вызывайте Anthropic Messages или OpenAI-совместимый endpoint — и платите 50% официальных тарифов Kimi.",
+    description: "Как купить API-ключ Kimi: один предоплаченный ключ для K3 и Kimi for Coding за 50% официальных тарифов — оплата картой или криптой, бонус $5 при регистрации.",
     keywords: ["купить api ключ kimi", "kimi api key", "api ключ kimi k3", "kimi for coding api ключ", "moonshot kimi api", "kimi api предоплата", "kimi api pay as you go", "kimi api без аккаунта moonshot", "kimi api anthropic совместимый", "доступ к kimi api дёшево"],
     dek: "Покупка API-ключа Kimi здесь — это один предоплаченный ключ, который открывает весь namespace kimi/* — K3 и Kimi for Coding — за половину официальных тарифов за токены. Вы регистрируетесь, пополняете баланс на любую целую сумму в долларах картой или криптовалютой и вызываете либо route Anthropic Messages, либо OpenAI-совместимый. Этот гайд проведёт через покупку, первый платный запрос и правила биллинга, которые стоит знать до того, как деньги уйдут.",
     sections: [

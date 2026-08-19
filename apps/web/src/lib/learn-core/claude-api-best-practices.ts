@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "explain",
   title: "Claude API Best Practices",
   h1: "Claude API best practices",
-  description: "Practical best practices for the Claude API on apiToken.sale: model choice, prompt caching, streaming, lifetime key spending limits, expiration, and secure key handling.",
+  description: "Claude API best practices for production: route tasks to Haiku, Sonnet or Opus, cache repeated context, stream responses, and cap keys with spending limits.",
   keywords: ["claude api best practices", "claude api production checklist", "anthropic api best practices", "claude api model routing", "claude api prompt caching", "claude api streaming", "claude api 429 error handling", "claude api key management", "reduce claude api cost", "claude api tips"],
   dek: "Claude API best practices come down to two levers: how many tokens you send and which model burns them. This guide covers model routing, prompt caching, streaming, retry discipline and per-key guardrails — the habits that keep a production integration fast, cheap and safe on apiToken.sale.",
   sections: [

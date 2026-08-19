@@ -1,9 +1,9 @@
 import type { LocalizedContent } from "../learn";
 
 export const content: LocalizedContent = {
-    title: "API-ключ для Claude Code: настройка в двух переменных окружения",
+    title: "API-ключ для Claude Code: две переменные",
     h1: "Запустите Claude Code на API-ключе apiToken.sale",
-    description: "Получите API-ключ для Claude Code без подписки Anthropic: укажите ANTHROPIC_BASE_URL и ANTHROPIC_API_KEY на router.apitoken.sale и запускайте любую модель Claude на предоплаченном балансе с единой скидкой 50%.",
+    description: "Получите API-ключ для Claude Code без подписки Anthropic: задайте ANTHROPIC_BASE_URL и ANTHROPIC_API_KEY и запускайте любую модель Claude со скидкой 50%.",
     keywords: ["claude code api ключ", "claude code api key", "claude code настройка", "claude code anthropic base url", "claude code переменные окружения", "claude code кастомный api ключ", "claude code без аккаунта anthropic", "anthropic_api_key claude code", "claude code оплата по факту", "claude code неверный api ключ"],
     dek: "Claude Code берёт эндпоинт и ключ из двух переменных окружения, поэтому API-ключ от apiToken.sale — прямая замена подписочному биллингу: один раз задайте ANTHROPIC_BASE_URL и ANTHROPIC_API_KEY, и CLI работает как раньше, списывая с предоплаченного баланса. Ниже — точная настройка, какую модель выбрать для сессии и как исправить три ошибки, с которыми сталкиваются все.",
     sections: [

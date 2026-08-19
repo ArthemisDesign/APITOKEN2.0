@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "integrate",
   title: "Use the Claude API with LiteLLM",
   h1: "Use the Claude API with LiteLLM",
-  description: "Use the Claude API with LiteLLM through apiToken.sale: keep the anthropic/ prefix, set api_base to router.apitoken.sale in litellm.completion() or the proxy config, and pay 50% less per token.",
+  description: "Use the Claude API with LiteLLM: keep the anthropic/ prefix, point api_base at router.apitoken.sale, and pay 50% less per token.",
   keywords: ["claude api litellm", "litellm anthropic", "litellm claude", "litellm api_base anthropic", "litellm proxy claude", "litellm claude api key", "litellm anthropic base url", "litellm custom anthropic endpoint", "claude api through litellm proxy", "cheap claude api litellm"],
   dek: "Using the Claude API with LiteLLM through apiToken.sale comes down to one parameter: LiteLLM speaks the Anthropic Messages protocol natively, so you keep the anthropic/ model prefix and only override api_base. Same request and response shape, 50% less per token — whether you call litellm.completion() from a script or front your whole stack with the LiteLLM proxy.",
   published: "2026-07-17",

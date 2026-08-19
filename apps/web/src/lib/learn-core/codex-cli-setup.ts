@@ -4,9 +4,9 @@ import { cta, OPENAI_BASE, KEY } from "../learn-shared";
 export const article: LearnArticle = {
   slug: "codex-cli-setup",
   cluster: "integrate",
-  title: "Codex CLI Setup with apiToken.sale — Custom GPT-5.6 Provider",
+  title: "Codex CLI Setup: Custom GPT-5.6 Provider",
   h1: "Codex CLI setup: a custom provider profile for apiToken.sale",
-  description: "Codex CLI setup without a ChatGPT login: one model_providers profile points Codex at the apiToken.sale OpenAI-compatible endpoint and runs GPT-5.6 models on prepaid balance at a flat 50% off.",
+  description: "Codex CLI setup without a ChatGPT login: one model_providers profile points Codex at apiToken.sale and runs GPT-5.6 on prepaid balance at 50% off.",
   keywords: ["codex cli setup", "codex custom model provider", "codex config.toml profile", "codex cli api key", "codex cli without chatgpt", "codex cli gpt-5.6", "codex responses api", "codex base_url", "openai codex cli config"],
   dek: "Codex CLI setup comes down to one TOML profile: declare a custom model provider, point base_url at apiToken.sale, and name the environment variable that holds your key. From there Codex runs GPT-5.6 models entirely on API-key authentication against your prepaid balance — no ChatGPT login, at a flat 50% below official OpenAI spend.",
   sections: [

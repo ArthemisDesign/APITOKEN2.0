@@ -4,9 +4,9 @@ import { cta, BASE, KEY } from "../learn-shared";
 export const article: LearnArticle = {
   slug: "claude-api-quick-setup",
   cluster: "integrate",
-  title: "Claude API Quickstart: From Key to First Call in Minutes",
+  title: "Claude API Quickstart: First Call in Minutes",
   h1: "Claude API quickstart: set up and make your first call",
-  description: "Claude API quickstart: create one key, point any Anthropic-compatible client at router.apitoken.sale, and send your first /v1/messages request with curl, Python, TypeScript or your IDE.",
+  description: "Claude API quickstart: create one key, point any Anthropic-compatible client at router.apitoken.sale and send your first /v1/messages request in minutes.",
   keywords: ["claude api quickstart", "claude api setup", "claude api first request", "anthropic messages api", "claude api base url", "claude api curl example", "claude api hello world", "claude api key", "claude api getting started", "claude api tutorial", "buy claude api access"],
   dek: "This Claude API quickstart takes you from a fresh account to a completed /v1/messages call in minutes. You need exactly three things: one sk-pool key, the router.apitoken.sale base URL, and two HTTP headers. Everything after that is the standard Anthropic Messages API, so the same code runs against the official endpoint unchanged.",
   sections: [

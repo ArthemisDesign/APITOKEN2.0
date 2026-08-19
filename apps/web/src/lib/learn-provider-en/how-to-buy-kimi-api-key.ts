@@ -7,7 +7,7 @@ export const article: LearnArticle = {
     cluster: "buy",
     title: "How to Buy a Kimi API Key",
     h1: "How to buy a Kimi API key",
-    description: "Buy one prepaid API key for Kimi K3 and Kimi for Coding, pay by card or crypto, call the Anthropic Messages or OpenAI-compatible endpoint, and pay 50% of official Kimi rates.",
+    description: "How to buy a Kimi API key: one prepaid key covers K3 and Kimi for Coding at 50% of official rates — pay by card or crypto, get a $5 welcome bonus.",
     keywords: ["buy kimi api key", "kimi api key", "kimi k3 api", "kimi for coding api key", "moonshot kimi api", "kimi api prepaid", "kimi api pay as you go", "kimi api without moonshot account", "kimi api anthropic compatible", "cheap kimi api access"],
     dek: "Buying a Kimi API key here means one prepaid key that unlocks the whole kimi/* namespace — K3 and Kimi for Coding — at half the official token rates. You sign up, top up a whole-dollar amount by card or crypto, and call either the Anthropic Messages lane or the OpenAI-compatible one. This guide walks through the purchase, the first paid request, and the billing rules worth knowing before money moves.",
     sections: [

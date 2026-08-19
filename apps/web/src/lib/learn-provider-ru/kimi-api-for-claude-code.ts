@@ -4,7 +4,7 @@ import { sourceBlock } from "./shared";
 export const content: LocalizedContent = {
     title: "Kimi API для Claude Code: K3 и Kimi for Coding",
     h1: "Запуск Kimi K3 и Kimi for Coding в Claude Code",
-    description: "Направьте Claude Code на Kimi K3 или Kimi for Coding через apiToken.sale: закрепите каждый model tier, сохраните контекстное окно 1M, проверьте маршрут и контролируйте расход за токен.",
+    description: "Kimi API для Claude Code: направьте Claude Code на Kimi K3 или Kimi for Coding через apiToken.sale — контекст 1M, закреплённые tier и скидка 50%.",
     keywords: ["kimi claude code", "kimi api для claude code", "kimi k3 claude code", "kimi for coding claude code", "claude code custom model", "claude code kimi api", "claude code anthropic_base_url", "claude code subagent model", "k3 1m claude code", "claude code без подписки claude", "kimi api anthropic messages endpoint"],
     dek: "Claude Code говорит по Anthropic Messages с любым эндпоинтом, который вы укажете, поэтому subscription alias Kimi на роутере apiToken.sale работает без плагина и без патча. Надёжная настройка закрепляет каждый внутренний model tier на Kimi — незакреплённый tier унаследует Claude ID и упадёт только тогда, когда запустится фоновый путь. Весь расход ложится на один предоплатный баланс — вдвое ниже официальных токен-расценок Kimi.",
     sections: [

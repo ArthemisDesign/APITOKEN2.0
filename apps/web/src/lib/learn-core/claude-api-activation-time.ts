@@ -4,9 +4,9 @@ import { BASE, KEY, cta } from "../learn-shared";
 export const article: LearnArticle = {
   slug: "claude-api-activation-time",
   cluster: "explain",
-  title: "Claude API Activation Time: How Fast Your Key Works",
+  title: "Claude API Activation Time: Seconds, Not Days",
   h1: "How fast your Claude API key activates",
-  description: "Claude API activation time on apiToken.sale is effectively zero — the key works on the next request. See the real timeline: signup, card vs crypto top-up, first call.",
+  description: "Claude API activation time on apiToken.sale is zero — the key works on the next request. Card top-ups clear in seconds; no waitlist, no review.",
   keywords: ["claude api activation time", "how fast claude api key", "instant claude api key", "claude api ready to use", "claude api key not working yet", "how long until claude api key works", "claude api first request", "claude api no waitlist", "claude api card payment", "claude api crypto top up time"],
   dek: "Claude API activation time on apiToken.sale is effectively zero: a generated key works on the very next request, with no manual review and no waitlist. The only real clock is payment confirmation — seconds for a card, one network confirmation for crypto. Below is the honest timeline for each stage, plus a one-minute way to prove a fresh key works.",
   sections: [

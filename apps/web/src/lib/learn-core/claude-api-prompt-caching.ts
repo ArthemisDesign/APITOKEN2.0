@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "explain",
   title: "Prompt Caching on the Claude API",
   h1: "Claude API prompt caching: how it works and what it saves",
-  description: "Claude prompt caching stores reused context so repeat calls pay cache-read rates instead of full input prices. Breakpoints, TTLs, pricing math, and how it stacks with the apiToken.sale discount.",
+  description: "Claude prompt caching: cache reads cost 0.1× the input price (0.05× with the apiToken.sale discount). Breakpoints, TTLs and the pricing math.",
   keywords: ["claude prompt caching", "claude api cache", "anthropic prompt cache", "cache_control claude api", "claude cache read pricing", "claude api cache breakpoints", "anthropic messages api caching", "reduce claude api cost caching", "claude cache ttl", "claude api base url", "claude api key"],
   dek: "Claude prompt caching lets you mark stable context — system prompts, tool definitions, reference files — so repeat requests read it from cache at a fraction of the input price instead of paying full freight every call. This guide covers breakpoints, cache TTLs, the write-versus-read pricing math, and how cached usage appears on your apiToken.sale bill.",
   sections: [

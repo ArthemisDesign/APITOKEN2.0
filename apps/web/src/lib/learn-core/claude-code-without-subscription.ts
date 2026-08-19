@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "free",
   title: "Use Claude Code Without a Subscription",
   h1: "Claude Code without the $200/month plan",
-  description: "Run Claude Code on pay-as-you-go API balance instead of a monthly subscription. Set ANTHROPIC_BASE_URL to router.apitoken.sale and pay only for what you use.",
+  description: "Use Claude Code without a subscription: point ANTHROPIC_BASE_URL at router.apitoken.sale and pay per token from prepaid balance at 50% off official rates.",
   keywords: ["claude code without subscription", "claude code api key", "claude code pay as you go", "claude code without max plan", "claude code no subscription", "run claude code cheap", "claude code anthropic_base_url", "claude code prepaid api", "claude code cost per session", "claude code billing alternative"],
   dek: "You can use Claude Code without a subscription by pointing it at any Anthropic-compatible API key. On apiToken.sale that means prepaid balance at a flat 50% off official token rates — no monthly fee, no seat, no idle-time cost.",
   sections: [

@@ -53,7 +53,7 @@ export const article: LearnArticle = {
       { type: "code", code: `curl ${OPENAI_BASE}/chat/completions \\\n  -H "Authorization: Bearer ${KEY}" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-terra",\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
       { type: "p", text: "Gemini-native tools authenticate with an x-goog-api-key header against the same router host, and Kimi models answer on both the Anthropic Messages lane and the OpenAI-compatible one. One balance, four providers, zero extra sign-ups." },
     ] },
-    { h2: "When the credit runs out", blocks: [
+    { h2: "After the free trial ends", blocks: [
       { type: "p", text: "There is no trial expiry date and no plan to pick. When the balance gets low, top up any whole-dollar amount — your flat discount applies immediately — and keep calling with the same key. The prepaid balance never expires, there is no subscription and no monthly minimum, so after the trial you only ever pay for the tokens you actually use." },
       { type: "link", text: "Estimate your real monthly spend from the trial's usage numbers", href: "/tools/claude-api-cost-calculator" },
       { type: "link", text: "Compare every supported model and its price", href: "/models" },

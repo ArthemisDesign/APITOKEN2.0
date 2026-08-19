@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "integrate",
   title: "Use Anthropic SDKs with a Custom Base URL",
   h1: "Point the Anthropic SDK at apiToken.sale",
-  description: "Use the official Anthropic Python and TypeScript SDKs with apiToken.sale by setting base_url to router.apitoken.sale. Same SDK, same code, lower cost per token.",
+  description: "Set the Anthropic SDK base URL to router.apitoken.sale: same Python and TypeScript code, same model IDs, and a flat 50% off every token.",
   keywords: ["anthropic sdk base url", "anthropic python sdk custom endpoint", "claude sdk base url", "anthropic typescript sdk", "claude api sdk", "anthropic_base_url environment variable", "claude api custom endpoint", "anthropic sdk proxy", "@anthropic-ai/sdk baseurl", "claude api gateway url"],
   dek: "Every official Anthropic SDK accepts a custom Anthropic SDK base URL, so moving to apiToken.sale is a one-argument change. Your model IDs, message code and streaming logic stay exactly the same — only the endpoint and the per-token price change.",
   updated: "2026-08-17",

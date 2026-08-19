@@ -4,7 +4,7 @@ import { sourceBlock } from "./shared";
 export const content: LocalizedContent = {
     title: "Быстрый старт Kimi API: K3 и Kimi for Coding",
     h1: "Быстрый старт Kimi API: первый вызов через curl или Anthropic SDK",
-    description: "Быстрый старт Kimi API: вызывайте Kimi K3 и Kimi for Coding через apiToken.sale с curl или официальным Anthropic SDK — авторизация x-api-key, model ID вида kimi/*, один предоплатный баланс, скидка 50% от официальных тарифов.",
+    description: "Быстрый старт Kimi API: первый вызов Kimi K3 или Kimi for Coding через curl или Anthropic SDK — авторизация x-api-key, ID вида kimi/*, скидка 50% от тарифов.",
     keywords: ["kimi api quickstart", "быстрый старт kimi api", "kimi anthropic api", "пример kimi k3 api", "kimi for coding api", "kimi api curl", "kimi api python", "ключ kimi api", "moonshot kimi api", "kimi api openai compatible"],
     dek: "Этот быстрый старт по Kimi API проведёт вас от свежего аккаунта до рабочего ответа Kimi K3 примерно за пять минут: один base URL, один заголовок x-api-key, один namespaced model ID. Kimi говорит на протоколе Anthropic Messages на роутере apiToken.sale, поэтому официальный Anthropic SDK работает после замены одного base_url. Тот же предоплатный ключ и баланс покрывают Claude, GPT и Gemini.",
     sections: [

@@ -4,9 +4,9 @@ import { BASE, OPENAI_BASE, KEY, cta } from "../learn-shared";
 export const article: LearnArticle = {
   slug: "claude-api-key-security",
   cluster: "integrate",
-  title: "Claude API Key Security: Storage, Rotation, Leak Response",
+  title: "Claude API Key Security: Storage and Rotation",
   h1: "Keep your Claude API key secure",
-  description: "Practical Claude API key security on apiToken.sale: where to store the key, how to set a lifetime spending limit and expiration date, the safe rotation order, and what to do in the first ten minutes after a leak.",
+  description: "Claude API key security: storage rules, lifetime spending limits, the safe rotation order, and what to do in the first ten minutes after a leak.",
   keywords: ["claude api key security", "claude api key leaked", "rotate claude api key", "revoke claude api key", "anthropic api key best practices", "store api keys in environment variables", "api key rotation", "claude api key management", "secure anthropic api key", "api key secret manager"],
   updated: "2026-08-17",
   dek: "Claude API key security is mostly boring discipline: keep the key out of source control, cap what it can spend, and rehearse revocation before you need it. This guide walks through the exact controls apiToken.sale gives you — a lifetime spending limit, an expiration date, per-tool named keys — plus a storage setup and a leak-response playbook you can copy.",

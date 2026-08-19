@@ -34,6 +34,7 @@ export const content: LocalizedContent = {
         ["银行卡手续费或加密货币网络费", "永不可退款——费用已实际发生"],
         ["超过 5 天但未使用的充值", "超出标准窗口——请联系客服；强制性消费者权利和服务故障补偿仍然适用"],
       ] },
+      { type: "link", text: "加密货币充值如何运作：币种、网络手续费与确认时间", href: "/docs/learn/claude-api-crypto-payment" },
     ] },
     { h2: "如何一步步申请退款", blocks: [
       { type: "steps", items: [
@@ -49,6 +50,7 @@ export const content: LocalizedContent = {
       { type: "p", text: "因为余额永不过期，一笔退不了的充值并不是损失掉的钱——它留在你的账户里，只在有请求运行时才被扣减。充值接受任意整数美元金额，且每笔充值都可以在银行卡和加密货币之间切换，所以务实的策略是小额、多次充值，而不是一次性存入一大笔日后可能想退回的钱。" },
       { type: "p", text: "同一余额覆盖支持的 Claude、GPT、Gemini 和 Kimi 模型，所以未用完的金额永远不会被困在你已经弃用的某个模型上。每笔请求都会带 token 级别的明细出现在控制台里，你很容易核实付费余额到底是从哪一刻开始被消耗的。" },
       { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额，适用于支持的 Claude、GPT、Gemini 和 Kimi 模型；邮箱密码账户不享受此奖励。" },
+      { type: "link", text: "计费完整指南：余额、按请求计量与 50% 折扣", href: "/docs/learn/how-billing-works" },
     ] },
     { h2: "联系真人：英语和俄语支持", blocks: [
       { type: "p", text: "退款、账单和接入问题都去同一个地方：Telegram 客服或邮件 apitokensale@gmail.com，以英语或俄语解答。大多数接入问题都能很快得到答复，账单或退款消息会直接到真人手里，而不是排队机器人。写信谈钱的时候，务必附上你的账户邮箱和订单号——这一个细节就能把来回拉扯变成一条消息解决问题。" },

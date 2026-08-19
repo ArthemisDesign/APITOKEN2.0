@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "explain",
   title: "Claude API Refund Policy",
   h1: "Claude API refund policy: balance, refunds and support",
-  description: "How refunds work for prepaid Claude API balance on apiToken.sale: unspent top-ups are refundable within 5 calendar days through the original payment provider. Balance never expires; support answers in English and Russian.",
+  description: "Claude API refund policy on apiToken.sale: unspent top-ups are refundable within 5 calendar days via the original payment provider; balance never expires.",
   keywords: ["claude api refund", "claude api refund policy", "apitoken refund policy", "claude api money back", "prepaid api balance refund", "claude api support", "apitoken support telegram", "claude api billing help", "claude api payment issue", "anthropic api refund"],
   dek: "The Claude API refund question has a short answer on a prepaid platform: an untouched top-up can be refunded within 5 calendar days, and anything already spent on real usage cannot. Balance never expires, so money you do not refund simply stays available for future calls.",
   sections: [
@@ -37,6 +37,7 @@ export const article: LearnArticle = {
         ["Card processing or crypto network fee", "Never refundable — fees already incurred"],
         ["Unspent top-up older than 5 days", "Outside the standard window — contact support; mandatory consumer rights and service-failure remedies still apply"],
       ] },
+      { type: "link", text: "How crypto top-ups work: coins, network fees and confirmation times", href: "/docs/learn/claude-api-crypto-payment" },
     ] },
     { h2: "How to request a refund, step by step", blocks: [
       { type: "steps", items: [
@@ -51,6 +52,7 @@ export const article: LearnArticle = {
     { h2: "Why the balance model limits your downside anyway", blocks: [
       { type: "p", text: "Because the balance never expires, a top-up you cannot refund is not money lost — it stays on your account and is drawn down only as requests run. Top-ups accept any whole-dollar amount, and you can switch between bank card and cryptocurrency per top-up, so the practical strategy is to fund small and often rather than park a large sum you might later want back." },
       { type: "p", text: "The same balance covers supported Claude, GPT, Gemini and Kimi models, so an unspent amount is never stranded on a model you stopped using. Every request appears in the dashboard with a token-level breakdown, which makes it easy to verify exactly when a paid balance started being consumed." },
+      { type: "link", text: "The full billing guide: balance, per-request metering and the 50% discount", href: "/docs/learn/how-billing-works" },
       cta(),
     ] },
     { h2: "Reaching a human: support in English and Russian", blocks: [

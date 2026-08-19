@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
     title: "Anthropic SDK с кастомным base URL",
     h1: "Направьте Anthropic SDK на apiToken.sale",
-    description: "Используйте официальные Anthropic SDK для Python и TypeScript с apiToken.sale, задав base_url на router.apitoken.sale. Тот же SDK, тот же код, ниже цена за токен.",
+    description: "Anthropic SDK с кастомным base URL: укажите router.apitoken.sale в base_url — код на Python и TypeScript не меняется, а токены на 50% дешевле.",
     keywords: ["anthropic sdk base url", "anthropic python sdk кастомный endpoint", "claude sdk base url", "anthropic typescript sdk", "claude api sdk", "anthropic_base_url переменная окружения", "claude api кастомный endpoint", "anthropic sdk прокси", "@anthropic-ai/sdk baseurl", "claude api gateway url"],
     dek: "Каждый официальный Anthropic SDK принимает кастомный base URL, поэтому переход на apiToken.sale — это изменение одного аргумента. Идентификаторы моделей, код сообщений и логика стриминга остаются ровно теми же — меняются только эндпоинт и цена за токен.",
     sections: [

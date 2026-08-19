@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
     title: "Что такое шлюз Claude API?",
     h1: "Что такое шлюз Claude API и когда он нужен",
-    description: "Шлюз Claude API стоит между вашими инструментами и Anthropic, добавляя доступ, биллинг и контроль ключей. apiToken.sale — нативный шлюз с фиксированной скидкой 50% для B2C.",
+    description: "Что делает шлюз Claude API: нативный Messages API, лимиты расходов на ключ и фиксированная скидка 50% для B2C — без аккаунта Anthropic.",
     keywords: ["claude api шлюз", "что такое api шлюз", "anthropic api шлюз", "claude api прокси", "шлюз или прокси claude", "claude api gateway", "как работает claude api", "claude api цена"],
     dek: "Шлюз Claude API принимает стандартные запросы Anthropic Messages API с одной стороны и передаёт их провайдеру модели с другой, добавляя между ними аутентификацию, биллинг и управление ключами. Ваши инструменты не заметят разницы — а вот счёт заметит. Разбираем, как устроен этот слой и как оценить шлюз перед подключением.",
     sections: [

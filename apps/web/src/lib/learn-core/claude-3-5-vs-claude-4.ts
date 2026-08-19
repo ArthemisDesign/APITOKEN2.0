@@ -4,9 +4,9 @@ import { cta, BASE, KEY } from "../learn-shared";
 export const article: LearnArticle = {
   slug: "claude-3-5-vs-claude-4",
   cluster: "compare",
-  title: "Claude 3.5 vs Claude 4 — What Changed and How to Migrate",
+  title: "Claude 3.5 vs Claude 4: Changes and Migration",
   h1: "Claude 3.5 vs Claude 4: what changed",
-  description: "Claude 3.5 vs Claude 4: what actually improved, the model-ID mapping from claude-3-5-sonnet to the current line, per-token pricing, and the one-line migration on apiToken.sale.",
+  description: "Claude 3.5 vs Claude 4: what improved, the model-ID mapping from claude-3-5-sonnet to the current line, and the one-line migration on apiToken.sale.",
   keywords: ["claude 3.5 vs 4", "claude 4 vs 3.5", "migrate from claude 3.5", "claude-3-5-sonnet-20241022 replacement", "claude model migration", "claude sonnet 5 vs 3.5 sonnet", "claude 4 model ids", "claude 3.5 sonnet discontinued", "claude api pricing", "upgrade claude model"],
   dek: "Claude 3.5 vs Claude 4 is not a close call: the current line is stronger at agentic coding, reasoning and long-context consistency, and the Messages API it runs on is unchanged. The migration is a model-ID swap — this guide gives you the exact mapping, the price impact, and the things worth re-testing before you flip the string.",
   sections: [

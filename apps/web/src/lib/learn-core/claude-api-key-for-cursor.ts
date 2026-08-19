@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "integrate",
   title: "Claude API Key for Cursor",
   h1: "Use a Claude API key in Cursor",
-  description: "Connect Cursor to Claude with an apiToken.sale key: point the Anthropic provider at router.apitoken.sale, paste your key, pick a model, and code at a flat 50% off official rates.",
+  description: "Get a Claude API key for Cursor with no Anthropic account: point Cursor's Anthropic provider at router.apitoken.sale and code at a flat 50% off official rates.",
   keywords: ["claude api key for cursor", "cursor claude api", "cursor anthropic api key", "use claude in cursor with api key", "cursor custom anthropic base url", "cursor bring your own api key", "cursor without cursor pro", "claude api key", "anthropic-compatible api", "claude api base url"],
   dek: "A Claude API key for Cursor replaces the bundled plan with your own Anthropic-compatible endpoint, and Cursor's settings make that a two-minute change. Point the Anthropic provider at apiToken.sale and the same prepaid balance that covers GPT, Gemini and Kimi powers Cursor's chat, inline edit and agent at a flat 50% off official token rates. No extension, no proxy, no waitlist.",
   sections: [

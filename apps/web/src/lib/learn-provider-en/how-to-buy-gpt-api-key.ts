@@ -6,7 +6,7 @@ export const article: LearnArticle = {
     cluster: "buy",
     title: "How to Buy a GPT API Key",
     h1: "How to buy a GPT API key",
-    description: "Buy a GPT API key with a prepaid balance and card or crypto checkout. One OpenAI-compatible endpoint serves GPT-5.6 Sol, Terra and Luna, GPT-5.5 and GPT Image 2 at 50% off official spend.",
+    description: "Buy a GPT API key without an OpenAI account: prepaid balance, card or crypto checkout, and GPT-5.6, GPT-5.5 and GPT Image 2 at 50% off official rates.",
     keywords: ["buy gpt api key", "gpt api key", "how to buy gpt api key", "buy openai api key", "gpt-5.6 api access", "openai compatible api key", "gpt api prepaid", "gpt api key without openai account", "gpt api pay with crypto", "cheap gpt-5.6 api"],
     dek: "To buy a GPT API key without an OpenAI Platform account, create an apiToken.sale account, top up a prepaid balance by card or crypto, and generate one sk-pool key. That key authenticates against an OpenAI-compatible endpoint with Authorization: Bearer and serves GPT-5.6, GPT-5.5 and GPT Image 2 at 50% off official token spend. This guide walks the purchase, the billing math and the exact client configuration.",
     sections: [

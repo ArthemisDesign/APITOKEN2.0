@@ -4,7 +4,7 @@ import { sourceBlock } from "./shared";
 export const content: LocalizedContent = {
     title: "Как купить API-ключ GPT",
     h1: "Как купить API-ключ GPT",
-    description: "Купите API-ключ GPT с предоплаченным балансом и оплатой картой или криптовалютой. Один OpenAI-совместимый endpoint обслуживает GPT-5.6 Sol, Terra и Luna, GPT-5.5 и GPT Image 2 со скидкой 50% от официальных расходов.",
+    description: "Купите API-ключ GPT без аккаунта OpenAI: предоплата картой или криптовалютой, а GPT-5.6, GPT-5.5 и GPT Image 2 — со скидкой 50% от официальных цен.",
     keywords: ["купить api ключ gpt", "api ключ gpt", "как купить api ключ gpt", "купить ключ openai api", "доступ к gpt-5.6 api", "openai совместимый api ключ", "gpt api с предоплатой", "gpt api ключ без аккаунта openai", "оплата gpt api криптовалютой", "дешевый gpt-5.6 api"],
     dek: "Чтобы купить API-ключ GPT без аккаунта OpenAI Platform, создайте аккаунт apiToken.sale, пополните предоплаченный баланс картой или криптовалютой и сгенерируйте один ключ sk-pool. Этот ключ авторизуется на OpenAI-совместимом endpoint через Authorization: Bearer и обслуживает GPT-5.6, GPT-5.5 и GPT Image 2 со скидкой 50% от официальной стоимости токенов. Гайд проведёт через покупку, математику биллинга и точную настройку клиента.",
     sections: [

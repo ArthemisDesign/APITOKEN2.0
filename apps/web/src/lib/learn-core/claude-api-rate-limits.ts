@@ -32,6 +32,7 @@ export const article: LearnArticle = {
     { h2: "Why bursts trip limits before your averages do", blocks: [
       { type: "p", text: "Because the counters are per-minute, concurrency is the real lever. Fifty parallel calls at the top of a minute can exhaust the request budget even if you send nothing for the next hour. Token counters amplify this: every concurrent long generation keeps consuming output-token budget while it runs, so ten simultaneous 4,000-token answers put far more pressure on the limit than ten quick ones." },
       { type: "p", text: "Streaming changes none of the accounting. A streamed call is still one request, metered and billed by the same input and output tokens as a non-streamed one — it only lets you render tokens sooner and abort early when an agent has what it needs." },
+      { type: "link", text: "Claude API streaming: SSE events and identical billing", href: "/docs/learn/claude-api-streaming" },
     ] },
     { h2: "Throughput limits are not spending limits", blocks: [
       { type: "p", text: "Two systems get confused here. A rate limit is a traffic shaper: transient, per-minute, resolved by waiting. A spending guardrail is a budget brake: it decides how much a key may ever spend. On apiToken.sale the dashboard does not configure request throughput at all — the per-key guardrails it offers are an optional lifetime spending limit and an expiration date. A 429 says slow down; it says nothing about your balance, and topping up will not clear it." },
@@ -41,6 +42,7 @@ export const article: LearnArticle = {
         ["Where it lives", "Gateway and upstream capacity", "Your apiToken.sale dashboard, per key"],
         ["The right response", "Retry-After, backoff, less concurrency", "Raise or remove the limit deliberately"],
       ] },
+      { type: "link", text: "Set a lifetime spending limit and expiration date on your key", href: "/docs/learn/claude-api-key-security" },
     ] },
     { h2: "Lowering 429 pressure without raising the limit", blocks: [
       { type: "list", items: [

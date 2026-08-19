@@ -6,8 +6,8 @@ export const spec: ImageSeoSpec = {
     cluster: "compare",
     related: ["nano-banana-2-api-cost", "gpt-image-2-api-cost", "cheapest-image-generation-api", "image-editing-api-guide"],
     title: tr(
-      "Nano Banana 2 vs GPT Image 2 API: Price, Protocol and Output Contract",
-      "Nano Banana 2 vs GPT Image 2 API: цена, protocol и контракт output",
+      "Nano Banana 2 vs GPT Image 2: Price and Output",
+      "Nano Banana 2 vs GPT Image 2: цена и контракт API",
       "Nano Banana 2 vs GPT Image 2 API：价格、协议与输出契约",
       "Nano Banana 2 vs GPT Image 2 API: 가격, protocol, output 계약 비교",
     ),
@@ -18,8 +18,8 @@ export const spec: ImageSeoSpec = {
       "Nano Banana 2 vs GPT Image 2: 내 workload에 맞는 image API 고르기",
     ),
     description: tr(
-      "Nano Banana 2 vs GPT Image 2 on real request shapes, sizes, reference limits, published rates and the 50% B2C policy — with cost math per accepted asset, not per headline.",
-      "Nano Banana 2 и GPT Image 2: реальные request shapes, размеры, лимиты references, опубликованные ставки и скидка 50% для B2C — с расчётом цены за принятый ассет, а не за headline.",
+      "Nano Banana 2 vs GPT Image 2: real request shapes, reference limits, published rates, 50% B2C pricing and cost per accepted asset.",
+      "Nano Banana 2 против GPT Image 2: реальные формы запросов, лимиты references, опубликованные ставки, скидка 50% и цена принятого ассета.",
       "从真实请求结构、尺寸、参考图限制、已公布费率与 B2C 五折政策比较 Nano Banana 2 和 GPT Image 2，并按每个验收资产而非表面报价核算成本。",
       "실제 request shape, 크기, reference 제한, 공개 요금과 B2C 50% 정책으로 Nano Banana 2와 GPT Image 2를 비교하고 headline이 아닌 accepted asset당 비용을 계산합니다.",
     ),
@@ -105,6 +105,12 @@ export const spec: ImageSeoSpec = {
             "应比较每个验收资产的成本而非每次请求：需要两次重试才能通过视觉清单的模型，实际成本是名义费率的两倍——验收率是价格表永远看不到的乘数。",
             "요청당이 아닌 accepted asset당 비용을 비교하세요. visual checklist 통과에 retry 두 번이 필요한 모델은 명목 요금의 두 배입니다. acceptance rate는 가격표에 없는 승수입니다.",
           ),
+          tr(
+            { type: "link", text: "Nano Banana 2 fixed per-size prices, token by token", href: "/docs/learn/nano-banana-2-api-cost" },
+            { type: "link", text: "Фиксированные цены Nano Banana 2 по размерам — до токена", href: "/docs/learn/nano-banana-2-api-cost" },
+            { type: "link", text: "Nano Banana 2 按尺寸固定价格，精确到 token", href: "/docs/learn/nano-banana-2-api-cost" },
+            { type: "link", text: "Nano Banana 2 크기별 고정 가격, token 단위 상세", href: "/docs/learn/nano-banana-2-api-cost" },
+          ),
         ],
       ),
       section(
@@ -121,6 +127,12 @@ export const spec: ImageSeoSpec = {
             "На практике картина такая: Nano Banana 2 выигрывает классы ассетов, где явные size/aspect controls и много references — требование контракта: ecommerce batch-пайплайны, обязанные отгружать точные 1K или 4K мастера, и editing flows, смешивающие product shot с несколькими scene references. GPT Image 2 выигрывает там, где существующий OpenAI Images client, strict-PNG edit pipeline или контракт одного output снижают integration risk. Ни один verdict не отменяет собственный eval.",
             "实践中呈现的规律是：当明确尺寸/宽高比控制与多参考图属于契约要求时——例如必须交付精确 1K 或 4K 母版的电商批量流水线、或把一张产品图与多张场景参考图融合的编辑流程——Nano Banana 2 胜出；当已有 OpenAI Images 客户端、严格 PNG 编辑流程或单输出契约能降低集成风险时，GPT Image 2 胜出。任何结论都不能替代自己的评测。",
             "실무에서 드러나는 패턴은 이렇습니다. 명시적 size/aspect control과 다수 references가 계약 요건인 asset class—정확한 1K/4K master를 배송해야 하는 ecommerce batch pipeline이나 product shot 하나와 여러 scene reference를 섞는 editing flow—에서는 Nano Banana 2가, 기존 OpenAI Images client·strict-PNG edit pipeline·one-output 계약이 integration risk를 줄이는 곳에서는 GPT Image 2가 이깁니다. 어떤 판정도 자체 eval을 대신하지 못합니다.",
+          ),
+          tr(
+            { type: "link", text: "A fair benchmark method for finding the cheapest image API", href: "/docs/learn/cheapest-image-generation-api" },
+            { type: "link", text: "Честная методика benchmark для поиска самого дешёвого image API", href: "/docs/learn/cheapest-image-generation-api" },
+            { type: "link", text: "寻找最便宜图像 API 的公平基准方法", href: "/docs/learn/cheapest-image-generation-api" },
+            { type: "link", text: "가장 저렴한 image API를 찾는 공정한 benchmark 방법", href: "/docs/learn/cheapest-image-generation-api" },
           ),
         ],
       ),

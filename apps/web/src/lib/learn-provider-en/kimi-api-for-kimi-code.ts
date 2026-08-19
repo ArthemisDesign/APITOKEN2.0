@@ -6,7 +6,7 @@ export const article: LearnArticle = {
     cluster: "integrate",
     title: "Use apiToken.sale in Kimi Code",
     h1: "Run Kimi, Claude, GPT and Gemini in Kimi Code",
-    description: "Configure Kimi Code with an OpenAI-compatible provider for apiToken.sale: the exact config.toml provider and models tables, namespaced catalog IDs, context windows and key hygiene.",
+    description: "Kimi Code API: set up an OpenAI-compatible provider for apiToken.sale — exact config.toml provider and models tables, namespaced IDs and context windows.",
     keywords: ["kimi code api", "kimi code custom provider", "kimi code config.toml", "kimi code api key", "kimi code openai compatible provider", "kimi code third party provider", "kimi code claude gpt gemini", "kimi code base_url", "kimi code models table", "kimi code prepaid api"],
     dek: "Kimi Code supports third-party OpenAI-compatible providers natively, so one apiToken.sale provider block in config.toml reaches the whole unified catalog — Kimi, Claude, GPT and Gemini on a single prepaid key. The integration is two TOML tables: a provider that holds the endpoint and credential, and one model alias per model you want to run.",
     sections: [

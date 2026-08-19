@@ -1,9 +1,9 @@
 import type { LocalizedContent } from "../learn";
 
 export const content: LocalizedContent = {
-    title: "Стриминг Claude API (SSE): токены по мере генерации",
+    title: "Стриминг Claude API (SSE): токены на лету",
     h1: "Стриминг Claude API: SSE-ответы токен за токеном",
-    description: "Как работает стриминг Claude API на apiToken.sale: stream:true, последовательность SSE-событий Anthropic, хелперы SDK, финальный подсчёт токенов и почему тарификация совпадает с обычными запросами.",
+    description: "Стриминг Claude API на apiToken.sale: один флаг stream:true, стандартная последовательность SSE-событий Anthropic и тарификация как у обычных запросов.",
     keywords: ["claude api стриминг", "claude sse", "потоковые ответы claude", "anthropic streaming api", "claude api server-sent events", "stream true claude messages api", "anthropic sdk стриминг", "claude streaming python", "claude api ответы в реальном времени", "claude api stream пример"],
     dek: "Стриминг Claude API отправляет каждый токен по server-sent events сразу после генерации, не заставляя ждать всё сообщение целиком. На apiToken.sale это стандартный SSE-формат Anthropic на том же эндпоинте, с оплатой за токены ровно как у обычного запроса. Разбираем запрос, последовательность событий и сбои, которые важны в проде.",
     sections: [

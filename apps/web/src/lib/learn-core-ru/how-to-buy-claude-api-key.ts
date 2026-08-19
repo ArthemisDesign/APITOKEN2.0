@@ -4,7 +4,7 @@ import { BASE, OPENAI_BASE, KEY } from "../learn-shared";
 export const content: LocalizedContent = {
     title: "Как купить ключ Claude API",
     h1: "Как купить ключ Claude API",
-    description: "Купите ключ Claude API за несколько минут: предоплаченный баланс, оплата картой или криптовалютой, один ключ для всех моделей Claude с единой скидкой 50% от официального расхода — без аккаунта Anthropic.",
+    description: "Купите ключ Claude API за минуты: оплата картой или криптовалютой, один ключ для всех моделей Claude со скидкой 50% — без аккаунта Anthropic.",
     keywords: ["купить ключ claude api", "как купить ключ claude api", "claude api ключ", "buy claude api key", "anthropic api ключ", "купить claude api за криптовалюту", "claude api ключ без аккаунта anthropic", "claude api предоплаченный баланс", "пополнить claude api", "доступ к claude api", "claude api скидка"],
     dek: "Если вы хотите купить ключ Claude API без аккаунта Anthropic, инвайта и корпоративной карты, весь процесс займёт около пяти минут: создайте аккаунт, пополните предоплаченный баланс картой или криптовалютой и сгенерируйте ключ. Этот ключ обращается к тому же Anthropic Messages API, что и ключ, выданный самой Anthropic, — включая Opus, Sonnet и Haiku — с единой скидкой 50% от официального расхода. Ниже — точный процесс покупки, математика биллинга и эндпоинты, на которые нужно направить ваши инструменты.",
     sections: [

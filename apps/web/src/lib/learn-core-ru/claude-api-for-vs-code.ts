@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
     title: "Claude API в VS Code (Cline, Continue)",
     h1: "Используйте Claude API в VS Code",
-    description: "Запустите Claude API в VS Code через Cline или Continue: задайте base URL Anthropic на router.apitoken.sale, вставьте ключ apiToken.sale и платите за токены с фиксированной скидкой 50%.",
+    description: "Claude API в VS Code через Cline или Continue: задайте base URL Anthropic на router.apitoken.sale, вставьте ключ и платите за токены на 50% дешевле.",
     keywords: ["claude api vs code", "cline claude api", "continue claude api", "claude в vscode", "vscode anthropic api ключ", "claude api ключ", "anthropic-совместимый api", "claude api base url", "cline custom base url", "continue config claude api", "claude api vscode"],
     dek: "Настройка Claude API в VS Code сводится к одному параметру: бесплатные расширения Cline и Continue принимают любой Anthropic-совместимый эндпоинт. Направьте одно из них на https://router.apitoken.sale с ключом apiToken.sale — и Claude правит код, отвечает на вопросы и разбирает диффы прямо в редакторе, с оплатой за токены из предоплаченного баланса со скидкой 50% от официальных цен API.",
     sections: [

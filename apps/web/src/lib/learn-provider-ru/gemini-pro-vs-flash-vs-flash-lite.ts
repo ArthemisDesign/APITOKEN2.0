@@ -2,9 +2,9 @@ import type { LocalizedContent } from "../learn";
 import { sourceBlock } from "./shared";
 
 export const content: LocalizedContent = {
-    title: "Gemini Pro vs Flash vs Flash-Lite: какой tier выбрать",
+    title: "Gemini Pro vs Flash vs Flash-Lite: что выбрать",
     h1: "Gemini Pro, Flash и Flash-Lite: как выбрать tier под каждый запрос",
-    description: "Сравнение Gemini Pro, Flash и Flash-Lite: реальные ставки за токены, поведение контекста, цены на кеш и подходящие нагрузки. Все три tier — и генерация изображений — на одном ключе apiToken.sale.",
+    description: "Gemini Pro vs Flash vs Flash-Lite: сравнение ставок за токены, поведения контекста и цен на кеш. Все три tier на одном ключе apiToken.sale со скидкой 50%.",
     keywords: ["gemini pro или flash", "gemini flash или flash lite", "gemini pro vs flash vs flash lite", "какую модель gemini выбрать", "лучшая модель gemini для кода", "сравнение моделей gemini", "gemini 3.6 flash или 3.1 pro", "задачи для gemini flash lite", "роутинг моделей gemini api", "сравнение цен gemini tier", "самая дешёвая модель gemini"],
     dek: "Выбор между Gemini Pro, Flash и Flash-Lite — задача маршрутизации, а не вопрос лояльности. Gemini 3.6 Flash — дефолт для кода и агентов, Gemini 3.1 Pro Preview — tier эскалации для трудных рассуждений, а Gemini 3.1 Flash-Lite забирает дешёвые массовые шаги — всё это на одном ключе, одном endpoint и одном предоплаченном балансе.",
     sections: [

@@ -4,7 +4,7 @@ import { sourceBlock } from "./shared";
 export const content: LocalizedContent = {
     title: "Nano Banana 2 API: гайд по генерации изображений",
     h1: "Nano Banana 2 API: генерация изображений",
-    description: "Как использовать Gemini 3.1 Flash Image (Nano Banana 2) через нативный Gemini API: точный model ID, запросы generateContent, управление размером изображения, цены по составляющим и фиксированная скидка 50%.",
+    description: "Nano Banana 2 API: генерация изображений через нативный Gemini API — точный model ID, запросы generateContent, контроль размера и фиксированная скидка 50%.",
     keywords: ["nano banana 2 api", "gemini 3.1 flash image api", "nano banana 2 api ключ", "gemini генерация изображений api", "gemini-3.1-flash-image model id", "nano banana 2 generatecontent", "nano banana 2 редактирование изображений", "цена gemini flash image", "nano banana 2 размер изображения", "google genai sdk генерация изображений"],
     dek: "Nano Banana 2 — публичное имя Gemini 3.1 Flash Image, а Nano Banana 2 API — это нативный маршрут Gemini generateContent с одним точным model ID: gemini-3.1-flash-image. Маршрут принимает multimodal input, возвращает отрисованные image parts рядом с текстом в том же ответе и списывает оплату с того же предоплаченного баланса, что текстовые вызовы Gemini, — вдвое дешевле официальных ставок за токен.",
     sections: [

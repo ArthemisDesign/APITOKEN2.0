@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "explain",
   title: "How to Save Tokens on the Claude API",
   h1: "How to save tokens on the Claude API",
-  description: "Save tokens on the Claude API with prompt caching, per-task model routing, and tighter context. Practitioner tactics with real request shapes that stack with the apiToken.sale discount.",
+  description: "How to save tokens on the Claude API: prompt caching, per-task model routing and tighter context — practical tactics that stack with a flat 50% off.",
   keywords: ["save tokens claude api", "reduce claude api cost", "claude prompt caching", "claude api optimization", "lower claude api bill", "claude api token usage", "claude api cost optimization", "cheapest claude model for task", "claude max_tokens", "anthropic api cache control"],
   dek: "Saving tokens on the Claude API comes down to three levers: send fewer input tokens, generate fewer output tokens, and pay less per token through model choice and prompt caching. Each lever is a concrete change to the requests you already send — and all of them stack with the apiToken.sale discount, which cuts the price side of the equation in half.",
   sections: [

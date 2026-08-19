@@ -5,9 +5,9 @@ import { cta } from "../learn-shared";
 export const article: LearnArticle = {
     slug: "gemini-pro-vs-flash-vs-flash-lite",
     cluster: "compare",
-    title: "Gemini Pro vs Flash vs Flash-Lite: Which Tier to Use",
+    title: "Gemini Pro vs Flash vs Flash-Lite: Which to Pick",
     h1: "Gemini Pro vs Flash vs Flash-Lite: pick the right tier per request",
-    description: "Gemini Pro vs Flash vs Flash-Lite compared by real token rates, context behavior, cache pricing and workload fit. Route all three tiers — plus image output — on one apiToken.sale key.",
+    description: "Gemini Pro vs Flash vs Flash-Lite compared: real input rates from $0.10 to $2 per 1M, context behavior, cache pricing — all three tiers on one key at 50% off.",
     keywords: ["gemini pro vs flash", "gemini flash vs flash lite", "gemini pro vs flash vs flash lite", "which gemini model to use", "best gemini model for coding", "gemini model comparison", "gemini 3.6 flash vs 3.1 pro", "gemini flash lite use cases", "gemini api model routing", "gemini tier pricing comparison", "cheapest gemini model"],
     dek: "The Gemini Pro vs Flash vs Flash-Lite decision is a routing problem, not a loyalty choice. Gemini 3.6 Flash is the default for coding and agents, Gemini 3.1 Pro Preview is the escalation tier for hard reasoning, and Gemini 3.1 Flash-Lite absorbs cheap bulk steps — all three on one key, one endpoint and one prepaid balance.",
     sections: [

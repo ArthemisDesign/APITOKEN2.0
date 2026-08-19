@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
     title: "Доступ к Claude Haiku API",
     h1: "Claude Haiku 4.5 через API",
-    description: "Доступ к Claude Haiku API через apiToken.sale: идентификатор модели claude-haiku-4-5, рабочий вызов Messages API, стриминг, промпт-кеширование и цены с единой скидкой 50% от официальных тарифов.",
+    description: "Claude Haiku API через apiToken.sale: модель claude-haiku-4-5, рабочий вызов Messages API и цены с единой скидкой 50% от официальных тарифов.",
     keywords: ["claude haiku api", "claude haiku 4.5 api", "claude-haiku-4-5", "haiku api ключ", "цена claude haiku", "самая дешёвая модель claude", "самая быстрая модель claude", "промпт-кеширование claude haiku", "claude api бесплатные кредиты", "попробовать claude api бесплатно", "claude api free tier"],
     dek: "Claude Haiku API — то место, где должна жить высокообъёмная работа: классификация, извлечение данных, маршрутизация и любые запросы, где латентность и цена за токен важнее глубоких рассуждений. Официально Haiku 4.5 тарифицируется по $1/$5 за миллион токенов — здесь $0.50/$2.50 с единой скидкой 50% — и использует один ключ и один предоплаченный баланс вместе с Sonnet, Opus, GPT, Gemini и Kimi. В этом гайде — задачи, для которых она подходит, рабочий запрос и способ эскалировать сложную часть трафика наверх.",
     sections: [

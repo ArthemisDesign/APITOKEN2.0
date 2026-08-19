@@ -4,7 +4,7 @@ import { sourceBlock } from "./shared";
 export const content: LocalizedContent = {
     title: "Kimi Code API: как подключить apiToken.sale",
     h1: "Kimi, Claude, GPT и Gemini в Kimi Code",
-    description: "Настройте Kimi Code с OpenAI-совместимым провайдером apiToken.sale: точные таблицы provider и models в config.toml, namespaced ID каталога, окна контекста и гигиена ключей.",
+    description: "Kimi Code API: настройка OpenAI-совместимого провайдера apiToken.sale — точные таблицы provider и models в config.toml, namespaced ID и окна контекста.",
     keywords: ["kimi code api", "kimi code custom provider", "kimi code config.toml", "kimi code api ключ", "kimi code openai compatible", "kimi code сторонний провайдер", "kimi code claude gpt gemini", "kimi code base_url", "kimi code настройка", "kimi code prepaid api"],
     dek: "Kimi Code нативно поддерживает сторонних OpenAI-совместимых провайдеров, поэтому один блок провайдера apiToken.sale в config.toml достаёт до всего единого каталога — Kimi, Claude, GPT и Gemini на одном предоплаченном ключе. Интеграция — это две TOML-таблицы: провайдер, который хранит endpoint и credential, и по одному model alias на каждую модель, которую вы хотите запускать.",
     sections: [

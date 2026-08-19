@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
     title: "Claude в Cursor без аккаунта Anthropic",
     h1: "Запустите Claude в Cursor без аккаунта Anthropic",
-    description: "Нет аккаунта Anthropic? Используйте Claude в Cursor с ключом apiToken.sale. Мгновенный доступ, оплата картой или криптой и единая скидка 50% от официальных тарифов API.",
+    description: "Нет аккаунта Anthropic? Используйте Claude в Cursor с ключом apiToken.sale. Мгновенный доступ, оплата картой или криптой и скидка 50% от официальных тарифов.",
     keywords: ["cursor без аккаунта anthropic", "claude в cursor без anthropic", "cursor anthropic api key", "cursor custom anthropic base url", "cursor свой api ключ", "ключ claude api для cursor", "запустить claude в cursor", "cursor byok claude", "anthropic-совместимый api", "claude в cursor без подписки"],
     dek: "Cursor без аккаунта Anthropic сводится к одной детали: провайдер Anthropic в Cursor принимает любой совместимый base URL и ключ, а apiToken.sale отдаёт ровно такой API. Этот гид проведёт по настройкам, покажет, какие функции Cursor реально работают на вашем ключе, и объяснит, как предоплатный биллинг с единой скидкой 50% от официальных тарифов API заменяет инвойс Anthropic.",
     sections: [

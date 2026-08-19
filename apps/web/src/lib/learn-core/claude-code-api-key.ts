@@ -4,9 +4,9 @@ import { cta, BASE, KEY } from "../learn-shared";
 export const article: LearnArticle = {
   slug: "claude-code-api-key",
   cluster: "integrate",
-  title: "Claude Code API Key: Setup in Two Environment Variables",
+  title: "Claude Code API Key: Two-Variable Setup",
   h1: "Run Claude Code on an apiToken.sale API key",
-  description: "Get a Claude Code API key without an Anthropic subscription: point ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY at router.apitoken.sale and run every Claude model on prepaid balance at a flat 50% off.",
+  description: "Get a Claude Code API key without an Anthropic subscription: set ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY and run every Claude model at a flat 50% off.",
   keywords: ["claude code api key", "claude code setup", "claude code anthropic base url", "claude code environment variables", "claude code custom api key", "claude code without anthropic account", "anthropic_api_key claude code", "claude code pay as you go", "claude code model settings", "claude code api key invalid"],
   dek: "Claude Code takes its endpoint and credential from two environment variables, so a Claude Code API key from apiToken.sale is a drop-in replacement for subscription billing: set ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY once and the CLI runs unchanged against your prepaid balance. Below is the exact setup, which model to run per session, and fixes for the three errors everyone hits first.",
   sections: [

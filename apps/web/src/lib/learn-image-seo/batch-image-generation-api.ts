@@ -6,8 +6,8 @@ export const spec: ImageSeoSpec = {
     cluster: "integrate",
     related: ["image-generation-api-pricing", "cheapest-image-generation-api", "nano-banana-2-api-cost", "gpt-image-2-api-cost"],
     title: tr(
-      "Batch Image Generation API: Cost-Controlled Production Workflow",
-      "Batch API генерации изображений: production workflow с контролем цены",
+      "Batch Image Generation API: Budget-Safe Pipeline",
+      "Batch API генерации изображений: контроль бюджета",
       "批量图像生成 API：成本可控的生产工作流",
       "Batch 이미지 생성 API: 비용 통제 production workflow",
     ),
@@ -18,8 +18,8 @@ export const spec: ImageSeoSpec = {
       "예산을 초과하지 않는 batch 이미지 생성 pipeline 만들기",
     ),
     description: tr(
-      "Design a batch AI image pipeline on Nano Banana 2 or GPT Image 2: one candidate per call, durable queues, idempotency, bounded concurrency, worked cost math and key-level spending limits.",
-      "Спроектируйте batch AI image pipeline на Nano Banana 2 или GPT Image 2: один candidate на call, durable queues, idempotency, bounded concurrency, расчёт цены и key-level spending limits.",
+      "Batch image generation API done safely: durable queues, idempotency, bounded concurrency, 500-SKU cost math and key-level spending limits.",
+      "Batch API генерации изображений без перерасхода: durable queues, idempotency, ограниченная concurrency, расчёт прогона на 500 SKU и лимиты ключа.",
       "使用 Nano Banana 2 或 GPT Image 2 设计批量 AI 图像流水线：一次调用一个候选项、持久队列、幂等、有界并发、成本演算与密钥级消费上限。",
       "Nano Banana 2 또는 GPT Image 2 기반 batch AI image pipeline: call당 candidate 하나, durable queue, idempotency, bounded concurrency, 비용 계산, key-level spending limit.",
     ),
@@ -107,6 +107,12 @@ export const spec: ImageSeoSpec = {
             "以上仅为图像输出项；text/image input、可选文本或思考输出以及 grounding 需按终态 usage 另计。B2C 五折会把官方 usage 减半，但不会限制 资产 × 候选 × 重试 × 分辨率 的乘积——它的边界由你来设定。",
             "이것은 image-output leg뿐입니다. text/image input, 선택적 text/thinking output, grounding은 terminal usage에서 더해집니다. B2C 50% 할인은 official usage를 절반으로 줄이지만 asset × candidate × retry × resolution의 곱을 제한하지 않습니다. 그 경계는 직접 정해야 합니다.",
           ),
+          tr(
+            { type: "link", text: "The per-leg token rates behind this batch math", href: "/docs/learn/image-generation-api-pricing" },
+            { type: "link", text: "Ставки за tokens, на которых строится этот расчёт batch", href: "/docs/learn/image-generation-api-pricing" },
+            { type: "link", text: "支撑该批量演算的各项 token 费率", href: "/docs/learn/image-generation-api-pricing" },
+            { type: "link", text: "이 batch 계산의 근거가 되는 token 요금", href: "/docs/learn/image-generation-api-pricing" },
+          ),
         ],
       ),
       section(
@@ -157,6 +163,12 @@ export const spec: ImageSeoSpec = {
             ["Один ключ на workload: batch generation никогда не делит ключ с interactive или editing трафиком.", "Сверяйте каждый settled charge с его request ID до закрытия кампании.", "Перепроверяйте lifetime spending limit перед каждой новой кампанией, а не один раз при настройке."],
             ["每个工作负载一把密钥：批量生成绝不与交互或编辑流量共用密钥。", "campaign 结束前，把每笔结算扣费与其 request ID 逐一对账。", "每个新 campaign 开始前重新检查终身消费上限，而不是只在初始化时设置一次。"],
             ["workload당 key 하나: batch generation은 interactive나 editing 트래픽과 key를 공유하지 않습니다.", "campaign을 닫기 전에 모든 settled charge를 request ID와 대조합니다.", "초기 설정 때 한 번이 아니라 새 campaign마다 평생 누적 지출 한도를 다시 확인합니다."],
+          ),
+          tr(
+            { type: "link", text: "Prepaid plans that never expire: fund exactly the campaign budget", href: "/plans" },
+            { type: "link", text: "Prepaid-тарифы без сгорания: вносите ровно бюджет кампании", href: "/plans" },
+            { type: "link", text: "永不过期的预付方案：正好充入活动预算", href: "/plans" },
+            { type: "link", text: "만료 없는 prepaid 요금제: campaign 예산만큼 정확히 충전", href: "/plans" },
           ),
         ],
       ),

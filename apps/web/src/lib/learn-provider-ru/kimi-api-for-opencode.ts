@@ -2,9 +2,9 @@ import type { LocalizedContent } from "../learn";
 import { sourceBlock } from "./shared";
 
 export const content: LocalizedContent = {
-    title: "Kimi API для OpenCode: K3 и Kimi for Coding через router plugin",
+    title: "Kimi API для OpenCode: настройка router plugin",
     h1: "Запускаем Kimi K3 и Kimi for Coding в OpenCode",
-    description: "Настройте Kimi API в OpenCode через router plugin apiToken.sale: живой каталог под ваш ключ, явные ID моделей apitoken/kimi/*, реальные тарифы K3 и Kimi for Coding и один предоплаченный ключ.",
+    description: "Kimi API для OpenCode: настройка router plugin apiToken.sale — живой каталог под ваш ключ, ID моделей apitoken/kimi/*, один предоплаченный ключ со скидкой 50%.",
     keywords: ["kimi opencode", "kimi api opencode", "kimi k3 opencode", "настройка kimi for coding", "opencode custom provider", "kimi coding agent", "opencode router plugin", "провайдер opencode.jsonc", "kimi k3 coding agent", "opencode models apitoken"],
     dek: "OpenCode работает с Kimi API через один config-плагин apiToken.sale: installer регистрирует провайдера apitoken на OpenAI-совместимом lane роутера, а плагин при каждом запуске пересобирает список моделей из живого каталога, привязанного к вашему ключу. K3 и Kimi for Coding адресуются явно — apitoken/kimi/{model}, а расход списывается с того же предоплаченного баланса, что и Claude, GPT и Gemini.",
     sections: [

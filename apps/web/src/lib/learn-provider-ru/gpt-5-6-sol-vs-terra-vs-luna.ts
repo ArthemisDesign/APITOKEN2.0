@@ -3,9 +3,9 @@ import { KEY, OPENAI_BASE } from "../learn-shared";
 import { sourceBlock } from "./shared";
 
 export const content: LocalizedContent = {
-    title: "GPT-5.6 Sol vs Terra vs Luna: какой tier использовать и когда",
+    title: "GPT-5.6 Sol vs Terra vs Luna: какой tier выбрать",
     h1: "GPT-5.6 Sol vs Terra vs Luna: выбирайте по задаче, а не по привычке",
-    description: "GPT-5.6 Sol vs Terra vs Luna: официальные цены и цены со скидкой за 1M токенов, общий контекст 400K, reasoning effort и политика маршрутизации по запросам — все три tier на одном ключе apiToken.sale.",
+    description: "GPT-5.6 Sol vs Terra vs Luna: цены за 1 млн токенов до и после скидки 50%, общий контекст 400K и reasoning effort — все три tier на одном ключе.",
     keywords: ["gpt-5.6 sol vs terra", "gpt-5.6 terra vs luna", "gpt-5.6 sol или terra", "сравнение моделей gpt-5.6", "лучшая модель gpt-5.6 для кода", "gpt-5.6 цены за токены", "какую gpt модель выбрать для программирования", "gpt-5.6 reasoning effort", "gpt-5.6 флагман или balanced", "маршрутизация gpt моделей"],
     dek: "GPT-5.6 Sol, Terra и Luna — одно семейство моделей в трёх ценовых точках: одинаковый контекст 400K, потолок output 128K и общие controls reasoning при ставках от $0.20/$1.20 до $5/$30 за 1M токенов. Для большинства нагрузок правильный ответ — Terra как default, Sol как tier эскалации и Luna для массовых механических шагов. На apiToken.sale все три работают на одном ключе с единого предоплаченного баланса со скидкой 50% от официальных ставок.",
     sections: [

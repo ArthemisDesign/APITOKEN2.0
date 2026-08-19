@@ -2,9 +2,9 @@ import type { LocalizedContent } from "../learn";
 import { BASE, KEY } from "../learn-shared";
 
 export const content: LocalizedContent = {
-    title: "Claude Opus vs Sonnet: какую модель выбрать и когда",
+    title: "Claude Opus vs Sonnet: какую модель выбрать",
     h1: "Claude Opus vs Sonnet: какую модель использовать?",
-    description: "Claude Opus или Sonnet — выбор по задаче: Sonnet 5 по умолчанию для кодинга и агентов, Opus 4.8 для сложных рассуждений — $1.50/$7.50 против $2.50/$12.50 за 1 млн токенов на одном ключе apiToken.sale.",
+    description: "Claude Opus или Sonnet: Sonnet 5 — для кода и агентов, Opus 4.8 — для сложных рассуждений. $1.50/$7.50 против $2.50/$12.50 за 1 млн токенов на одном ключе.",
     keywords: ["claude opus vs sonnet", "opus или sonnet для кодинга", "какую модель claude выбрать", "claude opus 4.8 vs sonnet 5", "сравнение моделей claude", "claude opus vs sonnet цена", "лучшая модель claude для кода", "когда использовать claude opus", "маршрутизация моделей claude api", "anthropic opus vs sonnet цена", "claude sonnet 5 vs opus"],
     dek: "Вопрос «Opus или Sonnet» — это решение о маршрутизации, а не о лояльности. Sonnet 5 закрывает ежедневный кодинг и агентную работу за 40% цены токенов Opus; Opus 4.8 — уровень эскалации для сложных рассуждений и длинных автономных прогонов. Обе модели живут на одном ключе apiToken.sale и одном предоплаченном балансе, так что переключаться можно от запроса к запросу.",
     sections: [

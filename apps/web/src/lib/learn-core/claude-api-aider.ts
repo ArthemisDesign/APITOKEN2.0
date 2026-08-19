@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "integrate",
   title: "Use the Claude API with Aider",
   h1: "Use the Claude API with Aider",
-  description: "Run Aider on Claude through apiToken.sale: export ANTHROPIC_API_BASE and your key, pick a Claude model, and pair-program in the terminal at a flat 50% off.",
+  description: "Use the Claude API with Aider: export ANTHROPIC_API_BASE pointing at router.apitoken.sale, pick a Claude model, and pair-program at a flat 50% off.",
   keywords: ["claude api aider", "aider anthropic", "aider claude", "aider anthropic api base", "aider claude api key", "aider custom anthropic endpoint", "aider cheap claude", "aider weak model", "aider token usage", "aider claude sonnet"],
   dek: "Aider reaches the Claude API through LiteLLM, and LiteLLM honours ANTHROPIC_API_BASE — so two environment variables reroute your whole claude-api-aider setup to the discounted gateway. Same models, same commands, same git workflow; every token bills at a flat 50% off official rates against a prepaid balance.",
   published: "2026-07-17",

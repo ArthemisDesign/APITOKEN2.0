@@ -1,9 +1,9 @@
 import type { LocalizedContent } from "../learn";
 
 export const content: LocalizedContent = {
-    title: "Claude 3.5 vs Claude 4 — что изменилось и как мигрировать",
+    title: "Claude 3.5 vs Claude 4: изменения и миграция",
     h1: "Claude 3.5 vs Claude 4: что изменилось",
-    description: "Claude 3.5 vs Claude 4: что реально улучшилось, соответствие ID моделей от claude-3-5-sonnet к актуальной линейке, цены за токен и миграция в одну строку на apiToken.sale.",
+    description: "Claude 3.5 vs Claude 4: что улучшилось, соответствие ID моделей от claude-3-5-sonnet к актуальной линейке и миграция в одну строку на apiToken.sale.",
     keywords: ["claude 3.5 vs 4", "claude 4 vs 3.5", "миграция с claude 3.5", "замена claude-3-5-sonnet-20241022", "миграция моделей claude", "claude sonnet 5 vs 3.5 sonnet", "id моделей claude 4", "claude 3.5 sonnet deprecated", "цены claude api", "обновление модели claude"],
     dek: "Claude 3.5 против Claude 4 — не равная пара: актуальная линейка сильнее в агентном кодинге, рассуждениях и стабильности на длинном контексте, а Messages API при этом не изменился. Миграция сводится к замене ID модели — в этом гайде точное соответствие, влияние на счёт и то, что стоит перепроверить, прежде чем менять строку.",
     sections: [

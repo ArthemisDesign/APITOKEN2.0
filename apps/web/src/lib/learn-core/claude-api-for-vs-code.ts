@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "integrate",
   title: "Claude API in VS Code (Cline, Continue)",
   h1: "Use the Claude API in VS Code",
-  description: "Run the Claude API in VS Code with Cline or Continue: set the Anthropic base URL to router.apitoken.sale, paste an apiToken.sale key, and pay per token at a flat 50% off.",
+  description: "Run the Claude API in VS Code with Cline or Continue: set the Anthropic base URL to router.apitoken.sale, paste your key, and pay per token at 50% off.",
   keywords: ["claude api vs code", "cline claude api", "continue claude api", "claude in vscode", "vscode anthropic api key", "claude api key", "anthropic-compatible api", "claude api base url", "cline custom base url", "continue config claude api", "claude api vscode"],
   dek: "Setting up the Claude API in VS Code comes down to a single setting: free extensions like Cline and Continue accept any Anthropic-compatible endpoint. Point one at https://router.apitoken.sale with an apiToken.sale key and Claude edits, answers and reviews inside the editor, billed per token from prepaid balance at 50% off official API pricing.",
   updated: "2026-08-17",

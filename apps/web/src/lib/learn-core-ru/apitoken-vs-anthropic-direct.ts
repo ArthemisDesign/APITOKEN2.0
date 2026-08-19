@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
     title: "apiToken.sale против Anthropic напрямую",
     h1: "apiToken.sale против покупки напрямую у Anthropic",
-    description: "Сравнение apiToken.sale и Anthropic напрямую: тот же Messages API и те же модели, но с единой скидкой 50%, без обязательного аккаунта и с оплатой картой или криптой.",
+    description: "Сравнение apiToken.sale и Anthropic напрямую: тот же Messages API и модели, но с единой скидкой 50%, без аккаунта Anthropic, оплата картой или криптой.",
     keywords: ["claude api против anthropic напрямую", "apitoken против anthropic", "альтернатива anthropic api", "дешевле anthropic api", "реселлер claude api", "скидка на claude api", "claude api без аккаунта anthropic", "claude api vs anthropic", "дешевый claude api", "лучший claude api"],
     dek: "apiToken.sale — это не другой API, а тот же Anthropic Messages API, перепроданный с предоплаченного баланса со скидкой. В этом гайде сравниваем apiToken и Anthropic напрямую по тому, что действительно различается: цена, порог входа и способ оплаты. Протокол, ID моделей и стриминг не меняются.",
     sections: [

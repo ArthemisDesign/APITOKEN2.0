@@ -4,7 +4,7 @@ import { BASE, OPENAI_BASE, KEY } from "../learn-shared";
 export const content: LocalizedContent = {
     title: "Claude API из России и регионов с ограничениями",
     h1: "Использование Claude API из России",
-    description: "Доступ к Claude API из России и других регионов с ограничениями через apiToken.sale — без аккаунта Anthropic, оплата картой или криптовалютой, один ключ для всех моделей Claude.",
+    description: "Доступ к Claude API из России и регионов с ограничениями: без аккаунта Anthropic, оплата картой или криптовалютой, один ключ для всех моделей Claude.",
     keywords: ["claude api из россии", "claude api россия", "anthropic api россия", "оплата claude api из россии", "claude api без vpn", "как подключить claude api в россии", "claude api без иностранной карты", "claude code в россии", "доступ к claude api", "пополнить claude api"],
     dek: "Любой поиск доступа к Claude API из России упирается в одну и ту же стену: Anthropic требует поддерживаемую биллинговую страну и привязанный к ней способ оплаты, поэтому регистрация застревает на чекауте ещё до выдачи ключа. apiToken.sale обходит эту стену: вы пополняете предоплаченный баланс банковской картой или криптовалютой и вызываете тот же Anthropic Messages API своим ключом. Без аккаунта Anthropic, без листа ожидания, без проверки компании.",
     sections: [

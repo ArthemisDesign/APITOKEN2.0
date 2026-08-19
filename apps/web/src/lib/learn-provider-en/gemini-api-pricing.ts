@@ -7,7 +7,7 @@ export const article: LearnArticle = {
   cluster: "explain",
   title: "Gemini API Pricing Explained",
   h1: "Gemini API pricing: Pro, Flash, Flash-Lite and image output",
-  description: "Full Gemini API pricing breakdown: Pro, Flash and Flash-Lite token rates, cached input, the 200K long-context premium, Nano Banana 2 image output and apiToken.sale's flat 50% discount.",
+  description: "Gemini API pricing explained: Pro, Flash and Flash-Lite token rates, cached input, the 200K context premium and a flat 50% discount on apiToken.sale.",
   keywords: ["gemini api pricing", "gemini api cost per token", "gemini 3.6 flash price", "gemini 3.1 pro price", "gemini flash lite price", "gemini cached input pricing", "gemini long context pricing", "nano banana 2 api price", "gemini image output cost", "cheapest gemini model", "gemini api price per 1m tokens", "cheap gemini api"],
   dek: "Gemini API pricing is three metered legs — input, cached input and output — with rates set by model tier, a long-context premium on Pro, and a separate image-output leg on Nano Banana 2. This guide lists every current rate, the arithmetic for combining the legs, and where apiToken.sale's flat 50% discount enters settlement.",
   sections: [

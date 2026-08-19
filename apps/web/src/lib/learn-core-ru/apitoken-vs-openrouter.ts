@@ -4,7 +4,7 @@ import { BASE, OPENAI_BASE, KEY } from "../learn-shared";
 export const content: LocalizedContent = {
   title: "apiToken.sale против OpenRouter для Claude",
   h1: "apiToken.sale vs OpenRouter: какой шлюз для Claude подойдёт вашему стеку",
-  description: "Честное сравнение альтернативы OpenRouter для пользователей Claude: нативный Anthropic Messages API с фиксированной скидкой 50% против мультипровайдерного слоя маршрутизации.",
+  description: "Альтернатива OpenRouter для Claude: нативный Anthropic Messages API с фиксированной скидкой 50% против мультипровайдерного слоя маршрутизации.",
   keywords: ["альтернатива openrouter", "замена openrouter", "apitoken vs openrouter", "шлюз claude api", "openrouter claude", "openrouter против anthropic api", "альтернатива anthropic api", "скидка на claude api", "дёшево claude api", "нативный эндпоинт anthropic", "лучший claude api"],
   dek: "Ищете альтернативу OpenRouter, потому что Claude — ваша основная модель? OpenRouter унифицирует сотни моделей за одним OpenAI-совместимым API; apiToken.sale даёт нативный Anthropic Messages API с фиксированной скидкой 50% от официального расхода на Claude. Разбираем точность протокола, механику ценообразования и реальную стоимость перехода.",
   sections: [

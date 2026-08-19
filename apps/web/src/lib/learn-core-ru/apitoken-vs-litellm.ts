@@ -4,7 +4,7 @@ import { BASE, KEY } from "../learn-shared";
 export const content: LocalizedContent = {
     title: "apiToken.sale против LiteLLM для Claude",
     h1: "apiToken.sale против LiteLLM",
-    description: "LiteLLM — self-hosted прокси, объединяющий API моделей поверх ключей, которые вы пополняете сами. apiToken.sale — хостируемый эндпоинт, продающий ключ и баланс со скидкой 50%. Сравниваем оба варианта — и их связку.",
+    description: "LiteLLM — self-hosted прокси поверх ваших ключей по полной цене; apiToken.sale — готовый эндпоинт со скидкой 50%. Сравниваем оба варианта и их связку.",
     keywords: ["замена litellm", "apitoken vs litellm", "litellm claude", "self-hosted llm прокси", "litellm proxy или хостируемый api", "claude api без self-hosting", "litellm api_base anthropic", "скидка на claude api", "хостируемый эндпоинт claude api", "дешёвый claude api"],
     dek: "Когда ищут альтернативу LiteLLM, обычно нужно одно из двух: единый API-слой без собственного прокси или более дешёвые токены Claude. apiToken.sale закрывает оба запроса — это хостируемый эндпоинт, где один предоплаченный ключ покрывает поддерживаемые модели Claude, GPT, Gemini и Kimi с фиксированной B2C-скидкой 50%. LiteLLM выигрывает, когда вы осознанно хотите владеть слоем маршрутизации.",
     sections: [

@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "compare",
   title: "Claude Opus vs Sonnet: Which Model to Use and When",
   h1: "Claude Opus vs Sonnet: which model should you use?",
-  description: "Claude Opus vs Sonnet, decided by task: Sonnet 5 as the default for coding and agents, Opus 4.8 for hard reasoning — $1.50/$7.50 vs $2.50/$12.50 per 1M tokens on one apiToken.sale key.",
+  description: "Claude Opus vs Sonnet, decided by task: Sonnet 5 for coding and agents, Opus 4.8 for hard reasoning — $1.50/$7.50 vs $2.50/$12.50 per 1M tokens here.",
   keywords: ["claude opus vs sonnet", "opus or sonnet for coding", "which claude model to use", "claude opus 4.8 vs sonnet 5", "claude model comparison", "claude opus vs sonnet pricing", "best claude model for coding", "when to use claude opus", "claude api model routing", "anthropic opus vs sonnet price", "claude sonnet 5 vs opus"],
   dek: "The Claude Opus vs Sonnet question is a routing decision, not a loyalty decision. Sonnet 5 handles daily coding and agent work at 40% of the Opus token price; Opus 4.8 is the escalation tier for hard reasoning and long autonomous runs. Both live on the same apiToken.sale key and prepaid balance, so you can switch per request.",
   sections: [

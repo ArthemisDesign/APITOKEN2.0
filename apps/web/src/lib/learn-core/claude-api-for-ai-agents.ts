@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "explain",
   title: "Claude API for AI Agents",
   h1: "Using the Claude API for AI agents",
-  description: "Build AI agents on the Claude API with apiToken.sale: one key for every model, streaming, tool use, prompt caching and a lifetime key spending limit for long-run cost control.",
+  description: "Build AI agents on the Claude API: one key for every model, tool use and streaming, prompt caching, and a lifetime spending limit to stop runaway loops.",
   keywords: ["claude api agents", "claude ai agent api", "claude tool use api", "build ai agent with claude", "claude agent loop cost", "claude api model routing", "claude prompt caching for agents", "claude api streaming agents", "claude api spend limit", "multi-agent claude api"],
   dek: "The Claude API is a strong foundation for agents: tool use and streaming are first-class, and the model lineup maps cleanly onto the steps of an agent loop. The catch is economics — a loop makes dozens of calls per task, so model routing, caching and a hard spend cap decide whether the run is viable. This guide covers all three on the Claude API for agents through apiToken.sale.",
   updated: "2026-08-17",

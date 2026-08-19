@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "compare",
   title: "apiToken.sale vs LiteLLM for Claude",
   h1: "apiToken.sale vs LiteLLM",
-  description: "LiteLLM is a self-hosted proxy that unifies model APIs over keys you fund yourself. apiToken.sale is a hosted endpoint that sells the key and balance at a 50% discount. Compare both, or combine them.",
+  description: "LiteLLM is a self-hosted proxy over keys you fund at list price; apiToken.sale is a hosted endpoint with a flat 50% discount. Compare both — or combine them.",
   keywords: ["litellm alternative", "apitoken vs litellm", "litellm claude", "self-hosted llm proxy", "litellm proxy vs hosted api", "claude api without self-hosting", "litellm api_base anthropic", "claude api discount", "hosted claude api endpoint", "cheap claude api"],
   dek: "Searching for a LiteLLM alternative usually means you want one of two things: a unified API layer without running a proxy, or cheaper Claude tokens. apiToken.sale answers both — a hosted endpoint where one prepaid key covers supported Claude, GPT, Gemini and Kimi models at a flat 50% B2C discount. LiteLLM still wins when you deliberately want to own the routing layer.",
   updated: "2026-08-17",

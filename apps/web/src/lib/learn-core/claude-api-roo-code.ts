@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "integrate",
   title: "Use the Claude API with Roo Code",
   h1: "Use the Claude API with Roo Code",
-  description: "Connect Roo Code in VS Code to Claude through apiToken.sale: pick the Anthropic provider, enable the custom base URL, paste your key and code at a flat 50% off.",
+  description: "Use the Claude API with Roo Code: pick the Anthropic provider, enable the custom base URL router.apitoken.sale, paste your key and code at 50% off.",
   keywords: ["claude api roo code", "roo code anthropic provider", "roo code custom base url", "roo code claude api key", "roo code model per mode", "roo code api configuration profile", "roo code prompt caching", "roo code openai compatible provider", "roo code vs cline", "roo code cheap claude"],
   dek: "The Claude API works in Roo Code through the extension's native Anthropic provider: tick the custom-base-URL box, point it at the apiToken.sale gateway, and paste one prepaid key. This guide walks the exact provider settings, per-mode model pinning across Roo's Code, Architect and Ask modes, and the four errors you will actually hit.",
   published: "2026-07-17",

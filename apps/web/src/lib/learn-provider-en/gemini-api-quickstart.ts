@@ -7,7 +7,7 @@ export const article: LearnArticle = {
     cluster: "integrate",
     title: "Gemini API Quickstart",
     h1: "Gemini API quickstart: first call with curl and the Google GenAI SDK",
-    description: "Make your first Gemini API call through apiToken.sale: native generateContent with curl or the Google GenAI SDK, x-goog-api-key auth, SSE streaming and explicit model IDs.",
+    description: "Gemini API quickstart: make your first call through apiToken.sale with curl or the Google GenAI SDK — native generateContent, SSE streaming, 50% off.",
     keywords: ["gemini api quickstart", "gemini api tutorial", "gemini api curl example", "google genai sdk base url", "gemini generatecontent api", "gemini api python example", "gemini api streaming", "x-goog-api-key header", "how to call gemini api", "gemini api javascript sdk"],
     dek: "This Gemini API quickstart gets a first working call done in minutes: one curl against the native generateContent route, then the same call from the official Google GenAI SDK in Python or JavaScript. Only the base URL and the key header change — request shapes, streaming and usage metadata stay exactly as Google documents them.",
     sections: [

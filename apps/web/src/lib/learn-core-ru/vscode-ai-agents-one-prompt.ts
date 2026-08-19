@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
     title: "Бесплатные ИИ-агенты VS Code на Claude",
     h1: "Запускайте бесплатных ИИ-агентов VS Code на Claude",
-    description: "Настройте бесплатных агентов VS Code вроде Cline и Roo Code с ключом Claude от apiToken.sale — без Cursor Pro. Один эндпоинт, все модели Claude, ровно на 50% дешевле официальных тарифов.",
+    description: "Бесплатные ИИ-агенты VS Code — Cline и Roo Code — на Claude без Cursor Pro: один ключ apiToken.sale, все модели Claude, скидка 50% от официальных тарифов.",
     keywords: ["бесплатный ии агент vscode", "cline roo code claude", "vscode claude агент", "бесплатная альтернатива cursor", "claude vscode без cursor", "агентное программирование vscode", "cline custom base url", "roo code anthropic api key", "claude api для агентов vscode", "бесплатный ии агент для кода vscode"],
     dek: "Бесплатному ИИ-агенту в VS Code нужны ровно две вещи: расширение вроде Cline или Roo Code и Anthropic-совместимый ключ API. Направьте расширение на шлюз apiToken.sale — и Claude будет выполнять ваши задачи одним промптом ровно на 50% дешевле официальных тарифов, без подписки Cursor Pro.",
     sections: [

@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
     title: "Самый дешёвый Claude API — единая скидка 50%",
     h1: "Самый дешёвый способ использовать Claude API",
-    description: "Самый дешёвый Claude API — идентичный Anthropic Messages API с единой скидкой 50% от официального расхода. Предоплаченный баланс, без подписки, скидка на каждую модель Claude.",
+    description: "Самый дешёвый Claude API: идентичный Anthropic Messages API со скидкой 50% от официальных ставок. Предоплата, без подписки, скидка на все модели.",
     keywords: ["самый дешевый claude api", "claude api дешево", "скидка на claude api", "claude api скидка 50%", "claude api дешевле anthropic", "cheap claude api", "cheapest claude api", "купить claude api дешево", "claude api предоплата", "цены claude api"],
     dek: "Самый дешёвый Claude API — это не младшая модель и не «задушенный» клон, а тот же Anthropic Messages API, тарифицируемый на 50% ниже официальных ставок. apiToken.sale считает каждый запрос по опубликованным потокенным ценам Anthropic, делит результат пополам и списывает его с предоплаченного баланса, который никогда не сгорает. На этой странице — цены по моделям со скидкой, устройство биллинга и способ направить на него существующий клиент.",
     sections: [

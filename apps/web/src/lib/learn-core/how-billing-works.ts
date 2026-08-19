@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "explain",
   title: "How Billing Works on apiToken.sale",
   h1: "How billing works",
-  description: "How apiToken.sale billing works: one prepaid balance for Claude, GPT, Gemini and Kimi, per-request metering at official provider rates, a flat 50% B2C discount, and token-level usage in the dashboard.",
+  description: "How apiToken.sale billing works: one prepaid balance for Claude, GPT, Gemini and Kimi, metered per request at official rates with a flat 50% discount.",
   keywords: [
     "multi provider api billing",
     "how apitoken billing works",

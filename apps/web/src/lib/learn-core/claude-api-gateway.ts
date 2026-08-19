@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "explain",
   title: "What Is a Claude API Gateway?",
   h1: "What a Claude API gateway is, and when you need one",
-  description: "A Claude API gateway sits between your tools and Anthropic, adding access, billing and key controls. apiToken.sale is a native gateway with a flat 50% B2C discount.",
+  description: "What a Claude API gateway does: native Anthropic Messages API, per-key spending limits, and a flat 50% B2C discount — no Anthropic account needed.",
   keywords: ["claude api gateway", "what is an api gateway", "anthropic api gateway", "claude api proxy", "claude gateway vs proxy", "claude api access layer", "how claude api works", "claude api explained", "claude api pricing", "anthropic api"],
   dek: "A Claude API gateway accepts standard Anthropic Messages API requests on one side and forwards them to the model provider on the other, adding authentication, billing and key management in between. Your tools cannot tell the difference — but your invoice can. Here is how the layer works and how to judge one.",
   sections: [

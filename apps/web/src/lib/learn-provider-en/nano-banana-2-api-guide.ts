@@ -7,7 +7,7 @@ export const article: LearnArticle = {
     cluster: "integrate",
     title: "Nano Banana 2 API Guide",
     h1: "Generate images with the Nano Banana 2 API",
-    description: "Use Gemini 3.1 Flash Image (Nano Banana 2) through the native Gemini API: exact model ID, generateContent requests, image-size controls, per-leg pricing and a flat 50% discount.",
+    description: "Nano Banana 2 API guide: call Gemini 3.1 Flash Image through the native Gemini API with exact model IDs, image-size controls and a flat 50% discount.",
     keywords: ["nano banana 2 api", "gemini 3.1 flash image api", "nano banana 2 api key", "gemini image generation api", "gemini-3.1-flash-image model id", "nano banana 2 generatecontent", "nano banana 2 image editing api", "gemini flash image pricing", "nano banana 2 image size", "google genai sdk image generation"],
     dek: "Nano Banana 2 is the public name for Gemini 3.1 Flash Image, and the Nano Banana 2 API is the native Gemini generateContent route with one exact model ID: gemini-3.1-flash-image. It accepts multimodal input, returns rendered image parts next to text in the same response, and bills against the same prepaid balance as Gemini text calls at half the official per-token rates.",
     sections: [

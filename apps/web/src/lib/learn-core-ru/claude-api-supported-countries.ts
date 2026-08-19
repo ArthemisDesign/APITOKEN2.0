@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
     title: "Поддерживаемые страны Claude API",
     h1: "Где работает Claude API — и что на самом деле его ограничивает",
-    description: "В каких странах доступен Claude API? Anthropic ограничивает прямые аккаунты биллинговой страной. У apiToken.sale такого ограничения нет: платите картой или криптой и вызывайте Claude из любого региона.",
+    description: "Поддерживаемые страны Claude API: Anthropic ограничивает аккаунты биллинговой страной, apiToken.sale — нет. Оплата картой или криптой из любого региона.",
     keywords: ["поддерживаемые страны claude api", "claude api supported countries", "доступен ли claude api в моей стране", "claude api доступные страны", "ограничения anthropic api по странам", "claude api not available in your country", "биллинговые страны anthropic", "claude api из любой страны", "claude api без аккаунта anthropic", "купить claude api из любого региона"],
     dek: "Поиск «поддерживаемые страны Claude API» обычно означает одно: Anthropic не принимает оплату из вашего региона. Ограничение — список биллинговых стран Anthropic, а не сами модели. apiToken.sale выдаёт ключ и баланс напрямую, поэтому требования к биллинговой стране нет: вы пользуетесь Claude API из любой точки мира и платите картой или криптой.",
     sections: [

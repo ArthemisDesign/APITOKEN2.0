@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "explain",
   title: "Claude API Supported Countries",
   h1: "Where the Claude API works — and what actually gates it",
-  description: "Which countries can use the Claude API? Anthropic gates direct accounts by billing country. apiToken.sale has no such gate: pay by card or crypto and call Claude from any region.",
+  description: "Claude API supported countries: Anthropic gates direct accounts by billing country; apiToken.sale has no such gate — pay by card or crypto anywhere.",
   keywords: ["claude api supported countries", "is claude api available in my country", "claude api available countries", "anthropic api country restrictions", "claude api not available in your country", "anthropic supported billing countries", "claude api worldwide access", "use claude api from unsupported region", "claude api without anthropic account", "buy claude api from anywhere"],
   dek: "Searching for Claude API supported countries usually means one thing: Anthropic would not bill you where you live. The gate is Anthropic's billing-country list, not the models themselves. apiToken.sale issues your key and balance directly, so there is no billing-country requirement — you use the Claude API worldwide and pay by card or crypto.",
   sections: [

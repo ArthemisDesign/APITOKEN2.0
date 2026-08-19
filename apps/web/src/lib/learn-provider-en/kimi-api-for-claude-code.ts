@@ -7,7 +7,7 @@ export const article: LearnArticle = {
     cluster: "integrate",
     title: "Kimi API for Claude Code: K3 and Kimi for Coding",
     h1: "Run Kimi K3 and Kimi for Coding in Claude Code",
-    description: "Point Claude Code at Kimi K3 or Kimi for Coding through apiToken.sale: pin every model tier, keep the 1M context window, verify the route and control per-token spend.",
+    description: "Kimi API for Claude Code: point Claude Code at Kimi K3 or Kimi for Coding via apiToken.sale, pin every model tier, keep the 1M context window, pay 50% less.",
     keywords: ["kimi claude code", "kimi k3 claude code", "kimi for coding claude code", "claude code custom model", "claude code kimi api", "claude code anthropic_base_url", "claude code subagent model", "k3 1m claude code", "claude code without claude subscription", "kimi api anthropic messages endpoint"],
     dek: "Claude Code speaks Anthropic Messages to whatever endpoint you name, so a Kimi subscription alias on the apiToken.sale router works with no plugin and no patch. The reliable setup pins every internal model tier to Kimi — an unpinned tier inherits a Claude ID and fails only when that background path runs. Usage lands on one prepaid balance at half the official Kimi token rates.",
     sections: [

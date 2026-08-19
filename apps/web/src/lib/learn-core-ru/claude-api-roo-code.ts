@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
     title: "Claude API в Roo Code: подключение и настройка",
     h1: "Используйте Claude API в Roo Code",
-    description: "Подключите Roo Code в VS Code к Claude через apiToken.sale: выберите провайдера Anthropic, включите кастомный base URL, вставьте ключ и кодьте с единой скидкой 50%.",
+    description: "Claude API в Roo Code: выберите провайдера Anthropic, включите кастомный base URL router.apitoken.sale, вставьте ключ и платите на 50% меньше.",
     keywords: ["claude api roo code", "roo code anthropic provider", "roo code custom base url", "roo code claude api key", "roo code настройка", "roo code модель для каждого режима", "roo code промпт-кеширование", "roo code openai compatible", "roo code vs cline", "roo code дешёвый claude"],
     dek: "Claude API работает в Roo Code через нативный провайдер Anthropic самого расширения: отметьте чекбокс кастомного base URL, направьте его на шлюз apiToken.sale и вставьте один предоплаченный ключ. Этот гайд разбирает точные настройки провайдера, закрепление моделей за режимами Code, Architect и Ask и четыре ошибки, с которыми вы реально столкнётесь.",
     sections: [

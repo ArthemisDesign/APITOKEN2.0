@@ -5,9 +5,9 @@ import { cta } from "../learn-shared";
 export const article: LearnArticle = {
     slug: "kimi-api-for-opencode",
     cluster: "integrate",
-    title: "Kimi API for OpenCode: K3 and Kimi for Coding via the Router Plugin",
+    title: "Kimi API for OpenCode: Router Plugin Setup",
     h1: "Run Kimi K3 and Kimi for Coding in OpenCode",
-    description: "Set up the Kimi API in OpenCode with the apiToken.sale router plugin: key-scoped live catalog, explicit apitoken/kimi/* model IDs, real K3 and Kimi for Coding rates, and one prepaid key.",
+    description: "Kimi API for OpenCode: set up the apiToken.sale router plugin with a key-scoped live catalog, apitoken/kimi/* model IDs and one prepaid key at 50% off.",
     keywords: ["kimi opencode", "kimi api opencode", "kimi k3 opencode", "kimi for coding setup", "opencode custom provider", "kimi coding agent", "opencode router plugin", "opencode.jsonc provider", "kimi k3 coding agent", "opencode models apitoken"],
     dek: "OpenCode runs the Kimi API through one apiToken.sale config plugin: the installer registers an apitoken provider on the router's OpenAI-compatible lane, and the plugin rebuilds the model list from the key-scoped live catalog on every start. You address K3 and Kimi for Coding explicitly as apitoken/kimi/{model}, and usage settles against the same prepaid balance as Claude, GPT and Gemini.",
     sections: [

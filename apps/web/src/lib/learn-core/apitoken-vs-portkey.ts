@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "compare",
   title: "apiToken.sale vs Portkey for Claude",
   h1: "apiToken.sale vs Portkey: key supplier vs AI gateway",
-  description: "Portkey is an AI gateway for routing and observability using your own provider keys. apiToken.sale provides the Claude key and balance itself, at a discount. Here is when to use each — and how to combine them.",
+  description: "Portkey alternative for Claude: Portkey routes keys you already own; apiToken.sale supplies the Claude key itself at 50% off. When to use each — or both.",
   keywords: ["portkey alternative", "apitoken vs portkey", "portkey claude api", "ai gateway claude", "claude api gateway", "byok ai gateway", "portkey anthropic provider", "anthropic api alternative", "claude api discount", "cheap claude api", "best claude api"],
   dek: "People searching for a Portkey alternative usually want one of two things: cheaper Claude tokens, or gateway features without Anthropic billing. Portkey solves the second problem; apiToken.sale solves the first. This guide shows how to tell which one you need — and how to run both together.",
   sections: [

@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "free",
   title: "Claude Opus API Access",
   h1: "Claude Opus 4.8 through the API",
-  description: "Access Claude Opus 4.8 and 4.7 through one apiToken.sale key at a flat 50% off official rates — $2.50/$12.50 per 1M tokens. Prepaid, no Anthropic account, standard Messages API.",
+  description: "Claude Opus API access on one apiToken.sale key: Opus 4.8 and 4.7 at a flat 50% off — $2.50/$12.50 per 1M tokens. Prepaid, no Anthropic account.",
   keywords: ["claude opus api", "claude opus 4.8 api", "claude opus api key", "claude opus api pricing", "claude opus api cost", "claude opus discount", "opus api without anthropic account", "claude opus prompt caching", "claude api free credits", "try claude api free"],
   dek: "The Claude Opus API is Anthropic's top tier for hard reasoning, multi-file refactors and long agent sessions. On apiToken.sale, Opus 4.8 and Opus 4.7 run on the same prepaid key and balance as every other supported model, metered at official rates and then discounted 50%. This guide covers the real prices, a working request, and how to keep long Opus runs affordable.",
   sections: [

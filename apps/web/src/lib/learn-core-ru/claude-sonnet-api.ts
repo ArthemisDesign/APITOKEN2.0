@@ -4,7 +4,7 @@ import { BASE, KEY } from "../learn-shared";
 export const content: LocalizedContent = {
     title: "Доступ к Claude Sonnet API",
     h1: "Доступ к Claude Sonnet API: Sonnet 5 и Sonnet 4.6",
-    description: "Доступ к Claude Sonnet API через apiToken.sale: ID моделей Sonnet 5 и 4.6, примеры Messages API, стриминг, промпт-кеширование и цены с единой скидкой 50% от официальных тарифов.",
+    description: "Claude Sonnet API через apiToken.sale: модели Sonnet 5 и 4.6, примеры Messages API и промпт-кеширование с единой скидкой 50% от официальных тарифов.",
     keywords: ["claude sonnet api", "claude sonnet 5 api", "claude-sonnet-5", "цена claude sonnet api", "claude sonnet 4.6 api", "sonnet api ключ", "пример claude sonnet api", "claude messages api стриминг", "промпт-кеширование claude sonnet", "лучшая модель claude для кода", "бесплатные кредиты claude api", "попробовать claude api бесплатно"],
     dek: "Claude Sonnet API — уровень по умолчанию для ежедневного кодинга и агентной работы: достаточно быстрый для интерактивных правок, достаточно сильный для реальных циклов с инструментами. В этом гайде — актуальные ID моделей, рабочий вызов Messages API, стриминг, промпт-кеширование и цены Sonnet на apiToken.sale с единой скидкой 50% от официальных тарифов.",
     sections: [

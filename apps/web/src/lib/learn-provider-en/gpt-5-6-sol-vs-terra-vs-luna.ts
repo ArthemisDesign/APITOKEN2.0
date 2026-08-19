@@ -4,9 +4,9 @@ import { cta, KEY, OPENAI_BASE } from "../learn-shared";
 export const article: LearnArticle = {
   slug: "gpt-5-6-sol-vs-terra-vs-luna",
   cluster: "compare",
-  title: "GPT-5.6 Sol vs Terra vs Luna: Which Tier to Use and When",
+  title: "GPT-5.6 Sol vs Terra vs Luna: Which Tier?",
   h1: "GPT-5.6 Sol vs Terra vs Luna: pick by task, not by loyalty",
-  description: "GPT-5.6 Sol vs Terra vs Luna compared: official and discounted prices per 1M tokens, shared 400K context, reasoning effort, and a per-request routing policy that runs all three on one apiToken.sale key.",
+  description: "GPT-5.6 Sol vs Terra vs Luna compared: official and discounted prices per 1M tokens, shared 400K context and reasoning effort — all three tiers on one key.",
   keywords: ["gpt-5.6 sol vs terra", "gpt-5.6 terra vs luna", "gpt-5.6 sol vs terra vs luna", "best gpt-5.6 model for coding", "gpt-5.6 model comparison", "gpt-5.6-sol vs gpt-5.6-terra", "gpt-5.6 pricing tiers", "which gpt model for coding", "gpt-5.6 flagship vs balanced", "gpt-5.6 reasoning effort", "gpt model routing"],
   dek: "GPT-5.6 Sol, Terra and Luna are the same model family at three price points: identical 400K context, 128K output ceiling and reasoning controls, with token rates from $0.20/$1.20 up to $5/$30 per 1M. The right answer for most workloads is Terra as the default, Sol as the escalation tier, and Luna for high-volume mechanical steps — and on apiToken.sale all three run on one key against one prepaid balance at 50% off official rates.",
   sections: [

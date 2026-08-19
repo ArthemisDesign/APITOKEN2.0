@@ -4,9 +4,9 @@ import { BASE, KEY, cta } from "../learn-shared";
 export const article: LearnArticle = {
   slug: "kimi-k3-vs-kimi-for-coding",
   cluster: "compare",
-  title: "Kimi K3 vs Kimi for Coding: Context, Reasoning and Price",
+  title: "Kimi K3 vs Kimi for Coding: Context and Price",
   h1: "Kimi K3 vs Kimi for Coding: which model for which workload",
-  description: "Kimi K3 vs Kimi for Coding compared: public aliases, 256K vs 1M context, reasoning effort vs always-on thinking, High Speed's double rate and a two-tier routing policy.",
+  description: "Kimi K3 vs Kimi for Coding compared: 256K vs 1M context, tunable reasoning vs always-on thinking, High Speed's double rate and a two-tier routing policy.",
   keywords: ["kimi k3 vs kimi for coding", "kimi k3 api", "kimi for coding price", "best kimi model for coding", "kimi k3 256k vs 1m", "kimi highspeed worth it", "kimi models comparison", "kimi k3 reasoning effort", "kimi k2.7 code", "which kimi model for coding agents"],
   dek: "Kimi K3 is the reasoning and long-context family; Kimi for Coding is the low-cost coding family with thinking always on. This Kimi K3 vs Kimi for Coding comparison maps every public alias — context window, reasoning controls and per-token rates — and ends with a routing policy that sends everyday edits to the cheap model and escalates hard or oversized tasks to K3.",
   sections: [

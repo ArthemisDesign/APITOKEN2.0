@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
     title: "Claude Code без подписки",
     h1: "Claude Code без плана за $200 в месяц",
-    description: "Запускайте Claude Code на предоплаченном API-балансе вместо ежемесячной подписки. Укажите ANTHROPIC_BASE_URL на router.apitoken.sale и платите только за реальное использование.",
+    description: "Claude Code без подписки: задайте ANTHROPIC_BASE_URL на router.apitoken.sale и платите за токены с предоплаченного баланса — на 50% дешевле официальных тарифов.",
     keywords: ["claude code без подписки", "claude code api ключ", "claude code pay as you go", "claude code без max плана", "claude code anthropic_base_url", "claude code оплата за токены", "запустить claude code дешево", "claude code предоплата api", "claude code стоимость сессии", "claude code альтернатива подписке"],
     dek: "Claude Code можно использовать без подписки — достаточно направить его на любой Anthropic-совместимый API-ключ. На apiToken.sale это предоплаченный баланс с фиксированной скидкой 50% от официальных тарифов за токены: без ежемесячной платы, без места в плане и без оплаты простоя.",
     sections: [

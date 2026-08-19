@@ -4,7 +4,7 @@ import { sourceBlock } from "./shared";
 export const content: LocalizedContent = {
     title: "Цены GPT API: как считается стоимость",
     h1: "Цены GPT API: input, кэш, output и длинный контекст",
-    description: "Цены GPT API простыми словами: ставки GPT-5.6 Sol, Terra и Luna за 1 млн токенов — input, cached input, cache write и output, множитель длинного контекста от 272K и единая скидка 50% на apiToken.sale.",
+    description: "Цены GPT API: ставки GPT-5.6 Sol, Terra и Luna за 1 млн токенов, цены на кэш, множитель длинного контекста от 272K и единая скидка 50% на apiToken.sale.",
     keywords: ["цены gpt api", "стоимость gpt api", "цена gpt-5.6 за 1 млн токенов", "цена токенов gpt", "gpt-5.6 sol цена", "gpt cached input цена", "gpt long context цена", "сколько стоит gpt api", "openai api цены", "дешевый gpt api"],
     dek: "Цены GPT API — это сумма точных токенных компонентов: свежий input, cached input, запись кэша и output, каждый по ставке того tier модели, который обслужил запрос. Разбираем прайс GPT-5.6 Sol, Terra и Luna, множители кэша и длинного контекста, которые двигают счёт, и точку, где в расчёт вступает единая скидка 50% apiToken.sale.",
     sections: [

@@ -30,6 +30,7 @@ export const content: LocalizedContent = {
       { h2: "为什么突发流量先于平均值触限", blocks: [
         { type: "p", text: "因为计数器按分钟计，并发才是真正的杠杆。在一分钟的开头并发打出五十个请求，即使接下来一小时什么都不发，也可能耗尽请求预算。token 计数器会放大这个效应：每一个并发的长生成在运行期间都在持续消耗输出 token 预算，所以十个并行的 4,000 token 回答对限流的压力，远大于十个快速短答。" },
         { type: "p", text: "流式不改变任何计量逻辑。流式调用仍然是一个请求，按与非流式完全相同的输入输出 token 计量和计费——它只是让你更早渲染 token，并在智能体拿到所需内容时提前中止。" },
+        { type: "link", text: "Claude API 流式输出详解：SSE 事件与相同的计费", href: "/docs/learn/claude-api-streaming" },
       ] },
       { h2: "吞吐限制不是消费限制", blocks: [
         { type: "p", text: "这里有两套容易被混淆的系统。速率限制是流量整形器：临时的、按分钟计的、靠等待就能解决。消费护栏是预算刹车：它决定一个密钥总共能花多少钱。apiToken.sale 的控制台完全不提供请求吞吐配置——它提供的按密钥护栏只有可选的终身累计消费上限和到期日期。429 说的是“慢一点”，与你的余额无关，充值也解不了它。" },
@@ -39,6 +40,7 @@ export const content: LocalizedContent = {
           ["所在位置", "网关与上游容量", "apiToken.sale 控制台，按密钥设置"],
           ["正确应对", "Retry-After、退避、降低并发", "有意识地调高或移除上限"],
         ] },
+        { type: "link", text: "如何为密钥设置终身消费上限和到期日期", href: "/docs/learn/claude-api-key-security" },
       ] },
       { h2: "不提额也能降低 429 压力", blocks: [
         { type: "list", items: [

@@ -2,9 +2,9 @@ import type { LocalizedContent } from "../learn";
 import { sourceBlock } from "./shared";
 
 export const content: LocalizedContent = {
-    title: "Цены Kimi API: тарифы K3, Kimi for Coding и High Speed",
+    title: "Цены Kimi API: K3, Kimi for Coding и High Speed",
     h1: "Цены Kimi API: cache hit, cache miss, output и скорость",
-    description: "Цены Kimi API для K3, Kimi for Coding и High Speed: ставки cache-hit, cache-miss и output, соответствие публичных alias и фиксированная скидка 50% от apiToken.sale.",
+    description: "Цены Kimi API: ставки cache-hit, cache-miss и output для K3, Kimi for Coding и High Speed, соответствие alias и скидка 50% от apiToken.sale.",
     keywords: [
       "цены kimi api",
       "kimi api pricing",

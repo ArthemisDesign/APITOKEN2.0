@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
     title: "Claude API в Aider: настройка и скидка 50%",
     h1: "Claude API в Aider: как подключить и экономить",
-    description: "Запустите Aider на Claude через apiToken.sale: экспортируйте ANTHROPIC_API_BASE и ключ, выберите модель Claude и программируйте в паре с ИИ в терминале с единой скидкой 50%.",
+    description: "Claude API в Aider: экспортируйте ANTHROPIC_API_BASE на router.apitoken.sale и ваш ключ, выберите модель Claude и программируйте в паре со скидкой 50%.",
     keywords: ["claude api aider", "aider anthropic", "aider claude", "aider anthropic api base", "aider claude api ключ", "aider кастомный эндпоинт anthropic", "aider дешёвый claude", "aider weak model", "aider расход токенов", "aider claude sonnet"],
     dek: "Aider обращается к Claude API через LiteLLM, а LiteLLM учитывает ANTHROPIC_API_BASE — поэтому две переменные окружения перенаправляют всю связку claude-api-aider на дисконтный шлюз. Те же модели, те же команды, тот же git-воркфлоу; каждый токен тарифицируется с единой скидкой 50% от официальных ставок и списывается с предоплаченного баланса.",
     sections: [

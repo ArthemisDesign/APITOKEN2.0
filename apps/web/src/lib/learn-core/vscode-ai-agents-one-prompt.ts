@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "integrate",
   title: "Free VS Code AI Agents with Claude",
   h1: "Run free VS Code AI agents on Claude",
-  description: "Set up free VS Code agents like Cline and Roo Code with an apiToken.sale Claude key — no Cursor Pro needed. One endpoint, every Claude model, at a flat 50% off official rates.",
+  description: "Free VS Code AI agents like Cline and Roo Code on Claude — no Cursor Pro needed. One apiToken.sale key, every Claude model, at a flat 50% off official rates.",
   keywords: ["free vscode ai agent", "cline roo code claude", "vscode claude agent", "cursor alternative free", "claude vscode without cursor", "agentic coding vscode", "cline custom base url", "roo code anthropic api key", "claude api for vscode agents", "free ai coding agent vscode"],
   dek: "A free VS Code AI agent needs exactly two things: an extension like Cline or Roo Code and an Anthropic-compatible API key. Point the extension at the apiToken.sale gateway and Claude executes your one-prompt tasks at a flat 50% off official rates — no Cursor Pro subscription involved.",
   updated: "2026-08-17",

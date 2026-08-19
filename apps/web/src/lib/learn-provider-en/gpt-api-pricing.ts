@@ -6,7 +6,7 @@ export const article: LearnArticle = {
     cluster: "explain",
     title: "GPT API Pricing Explained",
     h1: "GPT API pricing: input, cache, output and long context",
-    description: "GPT API pricing explained: GPT-5.6 Sol, Terra and Luna input, cached-input, cache-write and output rates per 1M tokens, the 272K long-context multiplier and the flat 50% apiToken.sale discount.",
+    description: "GPT API pricing explained: GPT-5.6 Sol, Terra and Luna rates per 1M tokens, cache pricing, the 272K long-context multiplier and a flat 50% discount.",
     keywords: ["gpt api pricing", "gpt api cost", "gpt-5.6 price per 1m tokens", "gpt token pricing", "gpt-5.6 sol price", "gpt cached input price", "gpt long context pricing", "gpt api cost per token", "openai api pricing explained", "cheapest gpt api"],
     dek: "GPT API pricing is a sum of exact token legs — fresh input, cached input, cache writes and output — each billed at the rate of the model tier that served the request. This guide walks the GPT-5.6 Sol, Terra and Luna rate card, the cache and long-context multipliers that move the bill, and the point where apiToken.sale's flat 50% discount enters settlement.",
     sections: [

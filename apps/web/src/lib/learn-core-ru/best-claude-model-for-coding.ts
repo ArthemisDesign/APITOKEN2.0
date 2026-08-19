@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
   title: "Лучшая модель Claude для кодинга",
   h1: "Лучшая модель Claude для кодинга",
-  description: "Какую модель Claude выбрать для кодинга? Практический гид: Opus, Sonnet или Haiku под конкретную задачу — все три доступны на одном ключе apiToken.sale.",
+  description: "Лучшая модель Claude для кодинга: Sonnet 5 по умолчанию, Opus 4.8 для сложных рефакторингов, Haiku 4.5 для рутины — один ключ со скидкой 50%.",
   keywords: ["лучшая модель claude для кодинга", "claude модель для программирования", "opus vs sonnet vs haiku", "какую модель claude выбрать для кода", "claude sonnet для кодинга", "claude opus для кодинга", "claude haiku для кода", "сравнение моделей claude", "маршрутизация моделей claude api", "скидка на claude api"],
   dek: "Лучшая модель Claude для кодинга — это не одна модель, а выбор между Sonnet, Opus и Haiku под каждую задачу. В этом гиде — правила маршрутизации, реальные тарифы со скидкой 50% и точное изменение запроса, которое переключает уровень на одном ключе apiToken.sale.",
   sections: [

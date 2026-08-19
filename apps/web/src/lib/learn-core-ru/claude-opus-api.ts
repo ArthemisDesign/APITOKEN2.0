@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
     title: "Доступ к Claude Opus API",
     h1: "Claude Opus 4.8 через API",
-    description: "Доступ к Claude Opus 4.8 и 4.7 через один ключ apiToken.sale с фиксированной скидкой 50% от официальных тарифов — $2.50/$12.50 за 1 млн токенов. Предоплата, без аккаунта Anthropic, стандартный Messages API.",
+    description: "Claude Opus API через один ключ apiToken.sale: Opus 4.8 и 4.7 со скидкой 50% — $2.50/$12.50 за 1 млн токенов. Предоплата, аккаунт Anthropic не нужен.",
     keywords: ["claude opus api", "claude opus 4.8 api", "claude opus api ключ", "цена claude opus api", "стоимость claude opus api", "claude opus скидка", "opus api без аккаунта anthropic", "промпт-кеширование claude opus", "claude api бесплатные кредиты", "попробовать claude api бесплатно"],
     dek: "Claude Opus API — это топовый уровень Anthropic для сложных рассуждений, многофайловых рефакторингов и длинных агентных сессий. На apiToken.sale Opus 4.8 и Opus 4.7 работают на том же предоплаченном ключе и балансе, что и остальные поддерживаемые модели: списание идёт по официальным тарифам минус 50%. В этом гайде — реальные цены, рабочий запрос и способы не разориться на длинных прогонах Opus.",
     sections: [

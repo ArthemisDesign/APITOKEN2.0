@@ -4,7 +4,7 @@ import { sourceBlock } from "./shared";
 export const content: LocalizedContent = {
     title: "Цены Gemini API: полный разбор тарифов",
     h1: "Цены Gemini API: Pro, Flash, Flash-Lite и генерация изображений",
-    description: "Полный разбор цен Gemini API: ставки Pro, Flash и Flash-Lite за токены, cached input, надбавка за контекст свыше 200K, image output Nano Banana 2 и плоская скидка apiToken.sale 50%.",
+    description: "Цены Gemini API: ставки Pro, Flash и Flash-Lite за токены, cached input, надбавка за контекст от 200K и плоская скидка 50% на apiToken.sale.",
     keywords: ["цены gemini api", "gemini api pricing", "стоимость gemini api за токены", "цена gemini 3.6 flash", "цена gemini 3.1 pro", "gemini flash lite цена", "cached input gemini цена", "long context gemini цена", "nano banana 2 api цена", "стоимость генерации изображений gemini", "самая дешёвая модель gemini", "дешевый gemini api"],
     dek: "Цена Gemini API складывается из трёх измеряемых компонентов — input, cached input и output; ставки задаются tier модели, у Pro есть надбавка за длинный контекст, а у Nano Banana 2 — отдельный тариф на image output. В этом гайде — все актуальные ставки, арифметика их суммирования и то, где в расчёт вступает плоская скидка 50% apiToken.sale.",
     sections: [

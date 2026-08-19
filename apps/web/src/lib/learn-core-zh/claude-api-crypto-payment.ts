@@ -37,11 +37,13 @@ export const content: LocalizedContent = {
           "你希望 API 支出不出现在共享卡或公司卡的对账单上。",
         ] },
         { type: "p", text: "由于余额是预付且永不过期的，加密货币充值并不是订阅承诺。充一次，随请求运行逐步扣减，需要时再充——两种方式都可以。未用完的资金会一直可用，所以没必要一次充太多：小额、定期充值和一次大额充值的效果完全一样。" },
+        { type: "link", text: "如何从俄罗斯及受限地区访问 Claude API", href: "/docs/learn/claude-api-for-russia" },
       ] },
       { h2: "花余额：一把密钥通用 Claude、GPT、Gemini 和 Kimi", blocks: [
         { type: "p", text: "余额到账后，在控制台生成密钥——形如 sk-pool-…，即时激活，无需排队。这一把密钥可在 https://router.apitoken.sale 上调用标准的 Anthropic Messages API，因此 Claude Code、Cursor、Cline 和官方 Anthropic SDK 都能原样使用；同一份余额还覆盖受支持的 GPT、Gemini 和 Kimi 模型。每个请求都按提供商官方费率计量，然后在从余额扣费前统一应用 50% 的 B2C 折扣。" },
         { type: "code", code: `curl https://router.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-opus-4-8",\n    "max_tokens": 1024,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
         { type: "p", text: "如果支付或充值出了任何问题，可以通过 Telegram 联系英文或俄文客服，或发邮件至 apitokensale@gmail.com，退款会通过原支付服务商处理。" },
+        { type: "link", text: "对比所有受支持的模型及价格", href: "/models" },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台奖励余额——可用于受支持的 Claude、GPT、Gemini 和 Kimi 模型；邮箱密码账户不享受此奖励。" },
       ] },
     ],

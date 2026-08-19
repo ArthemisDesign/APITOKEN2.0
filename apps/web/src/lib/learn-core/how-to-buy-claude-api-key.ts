@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "buy",
   title: "How to Buy a Claude API Key",
   h1: "How to buy a Claude API key",
-  description: "Buy a Claude API key in minutes: prepaid balance, card or crypto checkout, one key for every Claude model at a flat 50% off official spend — no Anthropic account required.",
+  description: "Buy a Claude API key in minutes: card or crypto checkout, one key for every Claude model at a flat 50% off — no Anthropic account required.",
   keywords: ["buy claude api key", "how to buy claude api key", "claude api key", "purchase claude api access", "anthropic api key", "buy claude api with crypto", "claude api key without anthropic account", "claude api prepaid balance", "claude api top up", "claude api access", "claude api discount"],
   dek: "If you want to buy a Claude API key without an Anthropic account, an invite, or a company card, the whole process takes about five minutes: create an account, top up a prepaid balance by card or crypto, and generate a key. That key calls the same Anthropic Messages API as one issued by Anthropic itself — Opus, Sonnet and Haiku included — at a flat 50% off official spend. Below is the exact purchase flow, the billing math, and the endpoints to point your tools at.",
   sections: [

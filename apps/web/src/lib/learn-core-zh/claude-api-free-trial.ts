@@ -50,7 +50,7 @@ export const content: LocalizedContent = {
         { type: "code", code: `curl https://router.apitoken.sale/v1/chat/completions \\\n  -H "Authorization: Bearer sk-pool-•••" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-terra",\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
         { type: "p", text: "Gemini 原生工具用 x-goog-api-key 请求头对同一个路由域名鉴权，Kimi 模型在 Anthropic Messages 通道和 OpenAI 兼容通道上都能应答。一份余额，四家提供商，零额外注册。" },
       ] },
-      { h2: "余额用完之后", blocks: [
+      { h2: "免费试用结束之后", blocks: [
         { type: "p", text: "没有试用到期日，也没有要选的套餐。余额不足时，充值任意整数美元金额——你的统一折扣立即生效——然后继续用同一把密钥调用。预付余额永不过期，没有订阅，也没有每月最低消费，所以试用结束后你只为实际用到的 token 付费。" },
         { type: "link", text: "根据试用的用量数字估算你真实的月度开销", href: "/tools/claude-api-cost-calculator" },
         { type: "link", text: "对比每个受支持的模型及其价格", href: "/models" },

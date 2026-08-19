@@ -4,9 +4,9 @@ import { cta, OPENAI_BASE } from "../learn-shared";
 export const article: LearnArticle = {
   slug: "openai-api-quickstart",
   cluster: "integrate",
-  title: "OpenAI-Compatible API Quickstart — GPT-5.6 on One Key",
+  title: "OpenAI-Compatible API Quickstart: GPT-5.6",
   h1: "OpenAI-compatible API quickstart: from curl to the official SDK",
-  description: "OpenAI-compatible API quickstart: call GPT-5.6 models on apiToken.sale through Responses and Chat Completions with SSE streaming — one sk-pool key, a shared prepaid balance with Claude, and a flat 50% off official rates.",
+  description: "OpenAI-compatible API quickstart: GPT-5.6 on apiToken.sale via Responses and Chat Completions with SSE streaming — one key, balance shared with Claude, 50% off.",
   keywords: ["openai compatible api", "openai compatible api quickstart", "gpt-5.6 api", "responses api example", "chat completions custom base url", "openai sdk base_url", "gpt api key alternative", "gpt-5.6-sol", "openai api endpoint redirect", "gpt-5.6 price per token"],
   dek: "Looking for an OpenAI-compatible API you can hit in the next five minutes? Point any OpenAI client at https://router.apitoken.sale/v1 with one sk-pool key and the same prepaid balance that already covers Claude. Responses and Chat Completions both stream over SSE, and GPT-5.6 usage bills at official OpenAI token rates minus your flat 50% discount.",
   sections: [

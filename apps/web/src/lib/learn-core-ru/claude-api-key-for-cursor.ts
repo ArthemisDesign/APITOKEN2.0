@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
     title: "Ключ Claude API для Cursor",
     h1: "Используйте ключ Claude API в Cursor",
-    description: "Подключите Cursor к Claude с ключом apiToken.sale: направьте провайдера Anthropic на router.apitoken.sale, вставьте ключ, выберите модель и кодьте с единой скидкой 50% от официальных тарифов.",
+    description: "Ключ Claude API для Cursor без аккаунта Anthropic: направьте провайдера Anthropic на router.apitoken.sale и кодьте со скидкой 50% от официальных тарифов.",
     keywords: ["ключ claude api для cursor", "claude api key for cursor", "cursor claude api", "cursor anthropic api key", "claude в cursor по api ключу", "cursor custom anthropic base url", "cursor без cursor pro", "ключ claude api", "anthropic-совместимый api", "claude api base url"],
     dek: "Ключ Claude API для Cursor заменяет встроенный тариф собственным Anthropic-совместимым эндпоинтом, а настройки Cursor превращают это в двухминутное дело. Направьте провайдера Anthropic на apiToken.sale — и тот же предоплаченный баланс, который покрывает GPT, Gemini и Kimi, будет обслуживать чат, inline-правки и агента Cursor с единой скидкой 50% от официальных потокенных тарифов. Без расширений, без прокси, без листов ожидания.",
     sections: [

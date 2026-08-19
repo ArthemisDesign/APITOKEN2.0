@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "compare",
   title: "Best Claude Model for Coding",
   h1: "The best Claude model for coding",
-  description: "Which Claude model should you use for coding? A practical guide to picking Opus, Sonnet or Haiku per task — all available on one apiToken.sale key.",
+  description: "Best Claude model for coding, picked per task: Sonnet 5 by default, Opus 4.8 for hard refactors, Haiku 4.5 for volume — one key at a flat 50% off.",
   keywords: ["best claude model for coding", "claude model for programming", "opus vs sonnet vs haiku", "which claude model should i use", "claude sonnet for coding", "claude opus for coding", "claude haiku for coding", "claude model comparison", "claude api model routing", "claude api discount"],
   dek: "The best Claude model for coding is not one model — it is a per-task decision between Sonnet, Opus and Haiku. This guide gives you the routing rules, the real token rates at 50% off, and the exact request change that switches tiers on a single apiToken.sale key.",
   sections: [

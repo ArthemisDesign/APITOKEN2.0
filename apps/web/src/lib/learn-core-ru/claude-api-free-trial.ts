@@ -50,7 +50,7 @@ export const content: LocalizedContent = {
         { type: "code", code: `curl https://router.apitoken.sale/v1/chat/completions \\\n  -H "Authorization: Bearer sk-pool-•••" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-terra",\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
         { type: "p", text: "Gemini-нативные инструменты авторизуются заголовком x-goog-api-key на том же хосте роутера, а модели Kimi отвечают и на линии Anthropic Messages, и на OpenAI-совместимой. Один баланс, четыре провайдера, ноль лишних регистраций." },
       ] },
-      { h2: "Когда бонус закончится", blocks: [
+      { h2: "После окончания бесплатного триала", blocks: [
         { type: "p", text: "У триала нет срока окончания и тарифа на выбор. Когда баланс подходит к концу, пополните его на любое целое число долларов — ваша единая скидка применится сразу — и продолжайте вызывать тем же ключом. Предоплаченный баланс никогда не сгорает, подписки и месячного минимума нет, так что после триала вы платите только за реально использованные токены." },
         { type: "link", text: "Оцените реальные месячные расходы по цифрам usage из триала", href: "/tools/claude-api-cost-calculator" },
         { type: "link", text: "Сравните все поддерживаемые модели и их цены", href: "/models" },

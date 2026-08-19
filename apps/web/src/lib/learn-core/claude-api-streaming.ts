@@ -4,9 +4,9 @@ import { cta, BASE, KEY } from "../learn-shared";
 export const article: LearnArticle = {
   slug: "claude-api-streaming",
   cluster: "explain",
-  title: "Claude API Streaming (SSE): Tokens as They Are Generated",
+  title: "Claude API Streaming (SSE): Tokens in Real Time",
   h1: "Claude API streaming: SSE responses, token by token",
-  description: "How Claude API streaming works on apiToken.sale: stream:true, the Anthropic SSE event sequence, SDK helpers, final token usage, and why billing is identical to non-streaming.",
+  description: "Claude API streaming on apiToken.sale: one stream:true flag, the standard Anthropic SSE event sequence, and billing identical to non-streaming.",
   keywords: ["claude api streaming", "claude sse", "stream claude responses", "anthropic streaming api", "claude api server-sent events", "claude messages api stream true", "anthropic sdk streaming", "claude api real-time responses", "claude streaming python", "claude api stream example"],
   dek: "Claude API streaming sends each token over server-sent events as it is generated, instead of making you wait for the full message. On apiToken.sale it is the standard Anthropic SSE format at the same endpoint, billed per token exactly like a non-streaming call. This guide walks through the request, the event sequence, and the failure modes that matter in production.",
   sections: [

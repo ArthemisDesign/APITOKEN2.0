@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "buy",
   title: "Pay for the Claude API with Crypto",
   h1: "Pay for the Claude API with cryptocurrency",
-  description: "Buy Claude API balance with USDT, BTC or a bank card on apiToken.sale. No Anthropic account or billing country, instant activation, prepaid balance that never expires.",
+  description: "Buy Claude API balance with USDT, BTC or a bank card on apiToken.sale. No Anthropic account, instant activation, prepaid balance that never expires.",
   keywords: ["claude api crypto payment", "buy claude api with crypto", "claude api usdt", "pay anthropic api with crypto", "claude api bitcoin", "claude api without bank card", "claude api top up crypto", "claude api prepaid balance", "buy claude api", "claude api access", "claude api tokens"],
   dek: "You can make a Claude API crypto payment without an Anthropic account, a supported billing country, or a bank card at all. On apiToken.sale you top up a prepaid balance with USDT, BTC or other major coins through a secure checkout provider, and the same balance also accepts card top-ups whenever you prefer one. The balance never expires and is spent only when API requests run.",
   sections: [
@@ -40,11 +40,13 @@ export const article: LearnArticle = {
         "You want to keep API spend off a shared or corporate card statement.",
       ] },
       { type: "p", text: "Because the balance is prepaid and never expires, a crypto top-up is not a subscription commitment. Fund once, draw the balance down as requests run, and top up again — by either rail — only when you need to. Unused funds simply stay available, so there is little reason to over-fund: small, regular top-ups work exactly as well as one large one." },
+      { type: "link", text: "How to access the Claude API from Russia and restricted regions", href: "/docs/learn/claude-api-for-russia" },
     ] },
     { h2: "Spending the balance: one key for Claude, GPT, Gemini and Kimi", blocks: [
       { type: "p", text: `Once the balance lands, generate a key in the dashboard — it looks like sk-pool-… and activates instantly, with no waitlist. That single key serves the standard Anthropic Messages API at ${BASE}, so Claude Code, Cursor, Cline and the official Anthropic SDKs work against it unchanged; the same balance also covers supported GPT, Gemini and Kimi models. Every request is metered at official provider rates, then your flat 50% B2C discount is applied before the charge hits your balance.` },
       { type: "code", code: `curl ${BASE}/v1/messages \\\n  -H "x-api-key: ${KEY}" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-opus-4-8",\n    "max_tokens": 1024,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
       { type: "p", text: "If anything goes wrong with a payment or a top-up, support is available in English and Russian through Telegram, or by email at apitokensale@gmail.com, and refunds are processed through the original payment provider." },
+      { type: "link", text: "Compare every supported model and its price", href: "/models" },
       cta(),
     ] },
   ],

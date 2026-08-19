@@ -1,9 +1,9 @@
 import type { LocalizedContent } from "../learn";
 
 export const content: LocalizedContent = {
-    title: "Бесплатный ключ Claude API — бонус $5, карта не нужна",
+    title: "Бесплатный ключ Claude API — бонус $5",
     h1: "Как получить бесплатный ключ Claude API за пару минут",
-    description: "Получите бесплатный ключ Claude API с бонусом $5 на баланс платформы: регистрация через Google или GitHub, без карты и аккаунта Anthropic — доступ ко всем поддерживаемым моделям Claude.",
+    description: "Получите бесплатный ключ Claude API с бонусом $5 на баланс: регистрация через Google или GitHub, без карты и аккаунта Anthropic — все модели Claude.",
     keywords: ["бесплатный ключ claude api", "claude api бесплатно", "claude api бесплатный тариф", "бесплатный anthropic api ключ", "claude api без карты", "free claude api key", "claude api free tier", "claude api free credits", "как получить бесплатный ключ claude api", "claude api без кредитной карты"],
     dek: "Бесплатный ключ Claude API — это одна регистрация через OAuth: создайте аккаунт apiToken.sale через Google или GitHub, и на баланс сразу упадёт приветственный бонус $5 — без карты, без аккаунта Anthropic и без листа ожидания. Ключ с первого запроса говорит на стандартном Anthropic Messages API, поэтому существующие инструменты работают без правок. Аккаунт по email и паролю тоже рабочий, но бонуса на нём не будет.",
     sections: [

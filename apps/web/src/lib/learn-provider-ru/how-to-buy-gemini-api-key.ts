@@ -4,7 +4,7 @@ import { sourceBlock } from "./shared";
 export const content: LocalizedContent = {
     title: "Как купить API-ключ Gemini",
     h1: "Как купить API-ключ Gemini",
-    description: "Купите API-ключ Gemini без биллинг-аккаунта Google Cloud: предоплата любой суммой картой или криптовалютой, нативные generateContent endpoints и один баланс для Gemini, GPT, Claude и Kimi с плоской скидкой 50% от официальных расходов.",
+    description: "Купите API-ключ Gemini без биллинг-аккаунта Google Cloud: пополнение картой или криптовалютой, нативный generateContent и скидка 50% от официальных цен.",
     keywords: ["купить api ключ gemini", "gemini api key", "api ключ gemini без google cloud", "gemini api предоплата", "gemini api оплата картой", "gemini api оплата криптовалютой", "дешёвый gemini api", "gemini api скидка 50%"],
     dek: "На apiToken.sale API-ключ Gemini покупается как предоплаченный баланс: создайте аккаунт, пополните его на любую целую сумму в долларах картой или криптовалютой и выпустите ключ в дашборде. Этот ключ работает с нативным протоколом Google Gemini — x-goog-api-key, generateContent, официальный SDK — с плоской скидкой 50% от официальной стоимости токенов. Никакого проекта Google Cloud, биллинг-аккаунта и листа ожидания.",
     sections: [

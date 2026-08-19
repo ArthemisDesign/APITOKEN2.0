@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "free",
   title: "Free Claude API Key — $5 Credit, No Card Required",
   h1: "Get a free Claude API key in minutes",
-  description: "Get a free Claude API key with $5 of platform bonus credit: sign up with Google or GitHub, no card and no Anthropic account required, and call every supported Claude model.",
+  description: "Get a free Claude API key with $5 of bonus credit: sign up with Google or GitHub, no card and no Anthropic account — call every Claude model.",
   keywords: ["free claude api key", "claude api free", "free claude api", "claude api free tier", "free anthropic api key", "claude api no card", "claude api no credit card", "claude api free credits", "try claude api free", "how to get a free claude api key"],
   dek: "A free Claude API key is one OAuth signup away: create an apiToken.sale account with Google or GitHub and $5 of platform bonus credit lands on your balance — no card, no Anthropic account, no waitlist. The key speaks the standard Anthropic Messages API from the first request, so existing tools work unmodified. Email and password signups get a working account but not the bonus.",
   sections: [

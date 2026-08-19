@@ -3,7 +3,7 @@ import type { LocalizedContent } from "../learn";
 export const content: LocalizedContent = {
     title: "apiToken.sale против Portkey для Claude",
     h1: "apiToken.sale против Portkey: поставщик ключей против AI-шлюза",
-    description: "Portkey — AI-шлюз для маршрутизации и наблюдаемости поверх ваших собственных ключей провайдеров. apiToken.sale сам поставляет ключ Claude и баланс со скидкой. Разбираем, когда что использовать — и как совместить.",
+    description: "Альтернатива Portkey для Claude: Portkey маршрутизирует ваши ключи, а apiToken.sale сам поставляет ключ Claude со скидкой 50%. Когда что выбрать.",
     keywords: ["альтернатива portkey", "apitoken vs portkey", "portkey claude api", "ai шлюз claude", "claude api gateway", "byok ai шлюз", "portkey anthropic провайдер", "альтернатива anthropic api", "скидка на claude api", "дешёвый claude api"],
     dek: "Те, кто ищет альтернативу Portkey, обычно хотят одно из двух: более дешёвые токены Claude или возможности шлюза без биллинга Anthropic. Portkey решает вторую задачу, apiToken.sale — первую. Разбираем, как понять, что нужно именно вам, — и как запустить оба продукта вместе.",
     sections: [

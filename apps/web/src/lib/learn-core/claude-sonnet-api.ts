@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "free",
   title: "Claude Sonnet API Access",
   h1: "Claude Sonnet API access: Sonnet 5 and Sonnet 4.6",
-  description: "Claude Sonnet API access via apiToken.sale: Sonnet 5 and 4.6 model IDs, Messages API examples, streaming, prompt caching and pricing at a flat 50% off official rates.",
+  description: "Claude Sonnet API access via apiToken.sale: Sonnet 5 and 4.6 model IDs, Messages API examples and prompt caching at a flat 50% off official rates.",
   keywords: ["claude sonnet api", "claude sonnet 5 api", "claude-sonnet-5", "claude sonnet api pricing", "claude sonnet 4.6 api", "sonnet api key", "claude sonnet api example", "claude messages api streaming", "claude sonnet prompt caching", "best claude model for coding", "claude api free credits", "try claude api free"],
   dek: "The Claude Sonnet API is the default tier for daily coding and agent work — fast enough for interactive edits, strong enough for real tool-use loops. This guide covers the live model IDs, a working Messages API call, streaming, prompt caching and what Sonnet costs on apiToken.sale at a flat 50% off official pricing.",
   sections: [

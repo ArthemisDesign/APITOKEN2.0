@@ -1,9 +1,9 @@
 import type { LocalizedContent } from "../learn";
 
 export const content: LocalizedContent = {
-    title: "Настройка Codex CLI с apiToken.sale — кастомный провайдер GPT-5.6",
+    title: "Настройка Codex CLI: кастомный провайдер GPT-5.6",
     h1: "Настройка Codex CLI: профиль кастомного провайдера для apiToken.sale",
-    description: "Настройка Codex CLI без входа в ChatGPT: один профиль model_providers направляет Codex на OpenAI-совместимый эндпоинт apiToken.sale, и модели GPT-5.6 работают на предоплаченном балансе с единой скидкой 50%.",
+    description: "Настройка Codex CLI без входа в ChatGPT: один профиль model_providers направляет Codex на apiToken.sale и запускает GPT-5.6 со скидкой 50%.",
     keywords: ["codex cli настройка", "codex custom model provider", "codex config.toml профиль", "codex cli api key", "codex cli без chatgpt", "codex cli gpt-5.6", "codex responses api", "codex base_url", "openai codex cli конфиг"],
     dek: "Настройка Codex CLI сводится к одному TOML-профилю: объявите кастомного провайдера модели, направьте base_url на apiToken.sale и назовите переменную окружения, в которой лежит ключ. Дальше Codex работает с моделями GPT-5.6 полностью на аутентификации по API-ключу и расходует предоплаченный баланс — без входа в ChatGPT и с единой скидкой 50% от официального расхода OpenAI.",
     sections: [

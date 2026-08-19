@@ -4,7 +4,7 @@ import { BASE, OPENAI_BASE, KEY } from "../learn-shared";
 export const content: LocalizedContent = {
     title: "Почему выбирают apiToken.sale",
     h1: "Почему стоит выбрать apiToken.sale",
-    description: "Почему разработчики используют один ключ apiToken.sale для Claude, GPT, Gemini и Kimi: нативные или совместимые API, скидка 50% от цен B2C и оплата картой или криптовалютой.",
+    description: "Один ключ apiToken.sale для Claude, GPT, Gemini и Kimi: нативные или совместимые API, скидка 50% от цен B2C и оплата картой или криптовалютой.",
     keywords: ["почему apitoken.sale", "один api ключ для claude gpt gemini", "скидка claude api", "скидка gpt api", "скидка gemini api", "ключ kimi api", "openai compatible api", "предоплаченный баланс api", "llm api gateway", "мультипровайдерный api шлюз"],
     dek: "Зачем нужен apiToken.sale: разработчик, который работает с Claude, GPT, Gemini и Kimi, вынужден держать четыре биллинговых аккаунта, четыре конфигурации SDK и четыре страницы с тарифами. Сервис сводит всё это к одному предоплаченному ключу с фиксированной скидкой 50% от официального B2C-расхода — и при этом не сплющивает четыре протокола в один. Ниже — что именно остаётся нативным, на что распространяется скидка и где проходят ограничения.",
     sections: [

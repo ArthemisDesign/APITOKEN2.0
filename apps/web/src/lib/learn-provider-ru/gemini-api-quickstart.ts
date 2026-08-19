@@ -4,7 +4,7 @@ import { sourceBlock } from "./shared";
 export const content: LocalizedContent = {
     title: "Gemini API Quickstart: первый запрос за минуты",
     h1: "Быстрый старт Gemini API: первый запрос через curl и Google GenAI SDK",
-    description: "Gemini API quickstart: первый запрос через apiToken.sale — нативный generateContent с curl или Google GenAI SDK, аутентификация x-goog-api-key, SSE-стриминг и явные model ID.",
+    description: "Gemini API quickstart: первый запрос через apiToken.sale с curl или Google GenAI SDK — нативный generateContent, SSE-стриминг и скидка 50%.",
     keywords: ["gemini api quickstart", "быстрый старт gemini api", "gemini api curl пример", "google genai sdk base url", "gemini generatecontent api", "gemini api python пример", "gemini api стриминг", "x-goog-api-key header", "как вызвать gemini api", "gemini api javascript sdk"],
     dek: "Этот quickstart по Gemini API доводит до первого рабочего запроса за минуты: один curl на нативный маршрут generateContent, затем тот же вызов из официального Google GenAI SDK на Python или JavaScript. Меняются только base URL и заголовок с ключом — формы запросов, стриминг и метаданные usage остаются в точности такими, как их описывает Google.",
     sections: [

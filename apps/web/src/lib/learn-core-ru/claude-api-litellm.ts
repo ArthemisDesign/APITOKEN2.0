@@ -4,7 +4,7 @@ import { BASE, OPENAI_BASE, KEY } from "../learn-shared";
 export const content: LocalizedContent = {
     title: "Claude API через LiteLLM",
     h1: "Используйте Claude API через LiteLLM",
-    description: "Используйте Claude API через LiteLLM с apiToken.sale: оставьте префикс anthropic/, задайте api_base на router.apitoken.sale в litellm.completion() или конфиге прокси и платите за токены на 50% меньше.",
+    description: "Claude API через LiteLLM: оставьте префикс anthropic/, направьте api_base на router.apitoken.sale и платите за токены на 50% меньше.",
     keywords: ["claude api litellm", "litellm anthropic", "litellm claude", "litellm api_base anthropic", "litellm proxy claude", "litellm claude api key", "litellm anthropic base url", "litellm custom anthropic endpoint", "claude api через litellm прокси", "дешёвый claude api litellm"],
     dek: "Подключение Claude API через LiteLLM к apiToken.sale сводится к одному параметру: LiteLLM нативно говорит протокол Anthropic Messages, поэтому вы оставляете префикс anthropic/ у модели и переопределяете только api_base. Тот же формат запросов и ответов, но на 50% дешевле за токен — и при вызове litellm.completion() из скрипта, и когда LiteLLM-прокси стоит перед всем вашим стеком.",
     sections: [

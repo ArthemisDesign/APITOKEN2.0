@@ -6,7 +6,7 @@ export const article: LearnArticle = {
   cluster: "compare",
   title: "Claude Max Plan vs the Claude API",
   h1: "Claude Max subscription vs the API",
-  description: "Claude Max plan vs the Claude API: what the $100/$200 subscription buys, where it stops, and when pay-as-you-go API tokens at a flat 50% off are the better deal.",
+  description: "Claude Max plan vs the Claude API: what the $100/$200 subscription buys, where it stops, and when pay-as-you-go tokens at 50% off are the better deal.",
   keywords: ["claude max plan", "claude max vs api", "claude subscription vs api", "is claude max worth it", "claude max plan price", "claude max usage limits", "claude api pay as you go", "claude code without max plan", "claude without subscription", "cheap claude api", "claude api tokens"],
   dek: "The Claude Max plan is Anthropic's top subscription tier, built for people who live inside claude.ai and Claude Code all day. The Claude API is the metered version of the same models, built for software and for anyone whose usage is spiky. This guide compares the Claude Max plan against pay-as-you-go API billing so you can pick the one that matches how you actually work.",
   sections: [

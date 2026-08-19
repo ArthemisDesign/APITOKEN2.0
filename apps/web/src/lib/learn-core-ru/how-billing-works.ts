@@ -4,7 +4,7 @@ import { BASE, KEY } from "../learn-shared";
 export const content: LocalizedContent = {
     title: "Как работает биллинг на apiToken.sale",
     h1: "Как работает биллинг",
-    description: "Как устроен биллинг apiToken.sale: единый предоплаченный баланс для Claude, GPT, Gemini и Kimi, тарификация каждого запроса по официальным тарифам провайдеров, единая скидка 50% для B2C и потокенная статистика в панели.",
+    description: "Как устроен биллинг apiToken.sale: один предоплаченный баланс для Claude, GPT, Gemini и Kimi, потокенная тарификация по официальным тарифам и скидка 50%.",
     keywords: [
       "как работает биллинг apitoken",
       "биллинг api разных провайдеров",
