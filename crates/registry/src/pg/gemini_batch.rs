@@ -11,6 +11,29 @@ use crate::gemini_batch::{
 use crate::ACCOUNT_OVERDRAFT_NANO;
 use anyhow::{bail, Context, Result};
 use postgres::{IsolationLevel, Row, Transaction};
+use sha2::{Digest, Sha256};
+
+const FILE_CHUNK_MANIFEST_DOMAIN: &[u8] = b"apitoken:gemini-batch-file-chunks:v1\0";
+
+/// Digest the exact ordered chunk authority without reading/decrypting customer bytes.
+#[allow(dead_code)]
+pub fn gemini_batch_file_chunk_manifest_digest(
+    chunks: &[GeminiBatchFileChunk],
+) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    hasher.update(FILE_CHUNK_MANIFEST_DOMAIN);
+    hasher.update(u64::try_from(chunks.len()).context("Gemini Batch chunk count overflow")?.to_be_bytes());
+    for (expected, chunk) in chunks.iter().enumerate() {
+        chunk.validate()?;
+        if chunk.chunk_index != i64::try_from(expected).context("Gemini Batch chunk index overflow")? {
+            bail!("Gemini Batch file chunks are not contiguous")
+        }
+        hasher.update(chunk.chunk_index.to_be_bytes());
+        hasher.update(chunk.plaintext_len.to_be_bytes());
+        hasher.update(chunk.plaintext_digest);
+    }
+    Ok(hasher.finalize().into())
+}
 
 const JOB_READ_COLUMNS: &str = "j.job_id,j.account_id,j.creator_key_id,j.public_model,j.display_name,\
  j.priority,j.input_kind,j.cancel_requested_ts,j.create_ts,j.update_ts,j.deadline_ts,j.completed_ts,\
@@ -647,14 +670,25 @@ impl PgStore {
              WHERE f.account_id=$1 AND c.file_id=$2 ORDER BY c.chunk_index",
             &[&account_id, &file_id],
         )?;
+        let mut manifest = Sha256::new();
+        manifest.update(FILE_CHUNK_MANIFEST_DOMAIN);
+        manifest.update(u64::try_from(chunks.len()).context("Gemini Batch chunk count overflow")?.to_be_bytes());
         let mut total = 0i64;
         for (expected, chunk) in chunks.iter().enumerate() {
-            if chunk.get::<_, i64>(0) != expected as i64 {
+            let chunk_index: i64 = chunk.get(0);
+            let plaintext_len: i64 = chunk.get(1);
+            if chunk_index != i64::try_from(expected).context("Gemini Batch chunk index overflow")? {
                 bail!("Gemini Batch file chunks are not contiguous")
             }
-            total = total
-                .checked_add(chunk.get::<_, i64>(1))
-                .context("Gemini Batch file size overflow")?;
+            let digest = bytes32(chunk.get(2), "file chunk digest")?;
+            manifest.update(chunk_index.to_be_bytes());
+            manifest.update(plaintext_len.to_be_bytes());
+            manifest.update(digest);
+            total = total.checked_add(plaintext_len).context("Gemini Batch file size overflow")?;
+        }
+        let durable_manifest: [u8; 32] = manifest.finalize().into();
+        if durable_manifest != completion.chunk_manifest_digest {
+            bail!("Gemini Batch file chunk manifest mismatch")
         }
         if total != file.get::<_, i64>(1) {
             bail!("Gemini Batch file size does not match its chunks")

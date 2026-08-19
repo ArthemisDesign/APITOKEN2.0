@@ -102,12 +102,12 @@ fn stage2_authority_postgres_matrix(){
     let ch=crate::GeminiBatchFileChunk{chunk_index:0,key_id:"k".into(),nonce:vec![1;24],ciphertext:vec![2;20],plaintext_len:4,plaintext_digest:[4;32],created_ts:ts};assert!(pg.gemini_batch_file_append_chunk("stage2-account","stage2-file",&ch).unwrap());
     let mut replay=ch.clone();replay.created_ts=ts+10;assert!(pg.gemini_batch_file_append_chunk("stage2-account","stage2-file",&replay).unwrap());
     assert_eq!(pg.client.query_one("SELECT update_ts FROM gemini_batch_files WHERE file_id='stage2-file'",&[]).unwrap().get::<_,i64>(0),ts);
-    assert!(pg.gemini_batch_file_complete("stage2-account","stage2-file",&crate::GeminiBatchFileCompletion{completed_ts:ts+1,whole_file_sha256_digest:[9;32]}).is_err());
-    assert!(pg.gemini_batch_file_complete("stage2-account","stage2-file",&crate::GeminiBatchFileCompletion{completed_ts:ts+1,whole_file_sha256_digest:[4;32]}).unwrap());
+    assert!(pg.gemini_batch_file_complete("stage2-account","stage2-file",&crate::GeminiBatchFileCompletion{completed_ts:ts+1,whole_file_sha256_digest:[9;32],chunk_manifest_digest:[205, 73, 180, 247, 182, 157, 101, 1, 58, 197, 142, 66, 96, 155, 64, 95, 235, 253, 134, 122, 184, 144, 157, 181, 52, 188, 252, 121, 94, 73, 233, 136]}).is_err());
+    assert!(pg.gemini_batch_file_complete("stage2-account","stage2-file",&crate::GeminiBatchFileCompletion{completed_ts:ts+1,whole_file_sha256_digest:[4;32],chunk_manifest_digest:[205, 73, 180, 247, 182, 157, 101, 1, 58, 197, 142, 66, 96, 155, 64, 95, 235, 253, 134, 122, 184, 144, 157, 181, 52, 188, 252, 121, 94, 73, 233, 136]}).unwrap());
     assert!(pg.gemini_batch_file_delete("stage2-account","stage2-file").unwrap());
     let zero=crate::GeminiBatchFileCreate{file_id:"stage2-zero-file".into(),size_bytes:0,sha256_digest:[0;32],..f};
     assert_eq!(pg.gemini_batch_file_create(&zero).unwrap(),crate::GeminiBatchFileCreateOutcome::Created);
-    assert!(pg.gemini_batch_file_complete("stage2-account","stage2-zero-file",&crate::GeminiBatchFileCompletion{completed_ts:ts+1,whole_file_sha256_digest:[0;32]}).unwrap());
+    assert!(pg.gemini_batch_file_complete("stage2-account","stage2-zero-file",&crate::GeminiBatchFileCompletion{completed_ts:ts+1,whole_file_sha256_digest:[0;32],chunk_manifest_digest:[160, 21, 227, 48, 235, 217, 253, 190, 242, 13, 102, 210, 42, 9, 140, 207, 75, 199, 12, 236, 163, 222, 104, 168, 110, 208, 96, 24, 193, 96, 120, 238]}).unwrap());
     assert!(pg.gemini_batch_file_delete("stage2-account","stage2-zero-file").unwrap());
     let mut sqlite=crate::authority::Authority::Sqlite(crate::open(":memory:").unwrap());assert!(crate::is_gemini_batch_unsupported(&sqlite.gemini_batch_get("a","b").unwrap_err()));
     lock.client.query_one("SELECT pg_advisory_unlock($1)",&[&POSTGRES_DESTRUCTIVE_TEST_LOCK]).unwrap();

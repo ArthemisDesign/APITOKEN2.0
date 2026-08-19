@@ -435,7 +435,11 @@ pub enum GeminiBatchFileCreateOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GeminiBatchFileCompletion {
     pub completed_ts: i64,
+    /// Whole plaintext SHA-256 computed by the trusted streaming encryption producer.
     pub whole_file_sha256_digest: [u8; 32],
+    /// Domain-separated digest of the exact ordered chunk manifest. Registry recomputes this from
+    /// durable chunk indices, plaintext lengths and per-chunk plaintext digests before activation.
+    pub chunk_manifest_digest: [u8; 32],
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeminiBatchFile {
