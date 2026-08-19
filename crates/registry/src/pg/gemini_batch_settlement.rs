@@ -167,6 +167,30 @@ impl PgStore {
         claim: &crate::GeminiBatchClaim,
         intent: &GeminiBatchSettlementIntent,
     ) -> Result<()> {
+        self.enqueue_gemini_batch_settlement_inner(Some(owner), claim, intent)
+    }
+
+    pub fn enqueue_gemini_batch_recovery_settlement(
+        &mut self,
+        recovery: &crate::GeminiBatchRecoveryCandidate,
+        intent: &GeminiBatchSettlementIntent,
+    ) -> Result<()> {
+        if recovery.job_id != intent.job_id || recovery.item_index != intent.item_index
+            || recovery.request_id != intent.request_id || recovery.claim_generation != intent.claim_generation
+            || recovery.profile_id.is_empty() || recovery.disposition != intent.disposition
+            || recovery.terminal_state != intent.terminal_state || recovery.terminal_class != intent.terminal_class {
+            bail!("Gemini Batch recovery settlement mismatch")
+        }
+        let claim = crate::GeminiBatchClaim { job_id: recovery.job_id.clone(), account_id: recovery.account_id.clone(), item_index: recovery.item_index, request_id: recovery.request_id.clone(), claim_generation: recovery.claim_generation, lease_until: 0, profile_id: recovery.profile_id.clone() };
+        self.enqueue_gemini_batch_settlement_inner(None, &claim, intent)
+    }
+
+    fn enqueue_gemini_batch_settlement_inner(
+        &mut self,
+        owner: Option<&Owner>,
+        claim: &crate::GeminiBatchClaim,
+        intent: &GeminiBatchSettlementIntent,
+    ) -> Result<()> {
         intent.validate()?;
         if claim.job_id != intent.job_id
             || claim.item_index != intent.item_index
@@ -180,16 +204,21 @@ impl PgStore {
             "SELECT pg_advisory_xact_lock(hashtextextended($1, 8485412))",
             &[&intent.request_id],
         )?;
-        Self::assert_owner_locked(&mut tx, owner, now())?;
+        if let Some(owner) = owner { Self::assert_owner_locked(&mut tx, owner, now())?; }
         let Some(item) = tx.query_opt(
             "SELECT state,claim_generation,worker_instance,worker_epoch,selected_profile_id FROM gemini_batch_items WHERE job_id=$1 AND item_index=$2 AND request_id=$3 FOR UPDATE",
             &[&intent.job_id, &intent.item_index, &intent.request_id],
         )? else {
             bail!("Gemini Batch settlement item does not exist")
         };
+        let worker_instance: String = item.get::<_, Option<String>>(2).context("Gemini Batch settlement worker is missing")?;
+        let worker_epoch: i64 = item.get::<_, Option<i64>>(3).context("Gemini Batch settlement epoch is missing")?;
+        if let Some(owner) = owner {
+            if worker_instance != owner.instance_id || worker_epoch != owner.epoch { bail!("Gemini Batch settlement owner fence is stale") }
+        } else if tx.query_opt("SELECT 1 FROM engine_instances WHERE instance_id=$1 AND owner_epoch=$2 AND lease_until >= $3", &[&worker_instance,&worker_epoch,&now()])?.is_some() {
+            bail!("Gemini Batch recovery owner is still live")
+        }
         if item.get::<_, i64>(1) != intent.claim_generation
-            || item.get::<_, Option<String>>(2).as_deref() != Some(owner.instance_id.as_str())
-            || item.get::<_, Option<i64>>(3) != Some(owner.epoch)
             || item.get::<_, Option<String>>(4).as_deref() != Some(claim.profile_id.as_str())
             || !matches!(
                 item.get::<_, String>(0).as_str(),
@@ -200,7 +229,7 @@ impl PgStore {
         }
         let lease = tx.query_opt(
             "SELECT lease_until FROM gemini_batch_profile_leases WHERE profile_id=$1 AND job_id=$2 AND item_index=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6 FOR UPDATE",
-            &[&claim.profile_id, &claim.job_id, &claim.item_index, &owner.instance_id, &owner.epoch, &claim.claim_generation],
+            &[&claim.profile_id, &claim.job_id, &claim.item_index, &worker_instance, &worker_epoch, &claim.claim_generation],
         )?;
         if lease.is_none() {
             bail!("Gemini Batch settlement profile lease is stale")
@@ -245,7 +274,7 @@ impl PgStore {
         }
         let item_changed = tx.execute(
             "UPDATE gemini_batch_items SET state='settlement_pending',settlement_id=$3,updated_ts=$4 WHERE job_id=$1 AND item_index=$2 AND request_id=$3 AND claim_generation=$5 AND worker_instance=$6 AND worker_epoch=$7 AND selected_profile_id=$8 AND state IN ('dispatching','settlement_pending')",
-            &[&intent.job_id, &intent.item_index, &intent.request_id, &intent.completed_ts, &intent.claim_generation, &owner.instance_id, &owner.epoch, &claim.profile_id],
+            &[&intent.job_id, &intent.item_index, &intent.request_id, &intent.completed_ts, &intent.claim_generation, &worker_instance, &worker_epoch, &claim.profile_id],
         )?;
         if item_changed != 1 {
             bail!("Gemini Batch settlement lost its fenced item")
