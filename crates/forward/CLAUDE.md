@@ -1018,8 +1018,14 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    Its thinking allowlist is exactly
    `low|medium|high` (omission
    means medium); `minimal`, `thinkingBudget`, `candidateCount`, deprecated sampling controls and
-   any final turn without non-empty user text fail locally. Image-only and tool-result-only final
-   turns remain closed until their wire contract is proved live. After the withdrawn 256-token
+   any final turn without non-empty user text fail locally. A final user turn whose parts are
+   exclusively `functionResponse` objects — the exact transcript every portable tool-calling
+   client (OpenCode and other AI SDKs) produces after executing a call — is admitted ONLY on the
+   one-shot exact-profile calibration lane (`x-apitoken-calibration-profile` + request-id +
+   deadline headers, `deadline_bound_exact`), so the closed
+   `--gemini-37-tool-result-final-turn` live gate can prove its wire contract before ordinary
+   traffic is admitted. Image-only final turns and prefilled model turns remain fail-closed on
+   every lane. After the withdrawn 256-token
    canary spent 241 of 252 output tokens on thinking and terminated at `MAX_TOKENS`; the successful
    successor evidence used `maxOutputTokens=512`. Public requests use the standard bounded output
    control. Any different wire/quota identity

@@ -883,7 +883,7 @@ fn canonicalize_promotes_snake_case_and_normalizes_tools() {
     assert!(tool.get("googleSearch").is_some());
     assert!(tool.get("google_search").is_none());
     // The normalized tool must pass validation just like its camelCase form.
-    assert!(validate_generation_request(&value, &catalog_model("gemini-2.5-flash-lite")).is_ok());
+    assert!(validate_generation_request(&value, &catalog_model("gemini-2.5-flash-lite"), false).is_ok());
 }
 
 #[test]
@@ -1383,7 +1383,7 @@ fn nano_banana_request_is_validated_and_wrapped_as_image_generation() {
         }
     });
     canonicalize_native_request(&mut native);
-    validate_native_request(Operation::Generate, &native, &model).unwrap();
+    validate_native_request(Operation::Generate, &native, &model, false).unwrap();
     assert_eq!(image_output_tokens(&native), 2_520);
     let (estimated_input, _, image_output, _) =
         generation_controls(&native, &model, 0, AudioUsageHint::default());
@@ -1422,7 +1422,7 @@ fn nano_banana_request_is_validated_and_wrapped_as_image_generation() {
 fn nano_banana_defaults_are_explicit_and_unsupported_controls_fail_closed() {
     let model = catalog_model("gemini-3.1-flash-image");
     let native = json!({"contents": [{"parts": [{"text": "Draw a banana"}]}]});
-    validate_native_request(Operation::Generate, &native, &model).unwrap();
+    validate_native_request(Operation::Generate, &native, &model, false).unwrap();
     let wrapped = wrap_code_assist_request(
         Operation::Generate,
         OAuthKind::Antigravity,
@@ -1461,7 +1461,7 @@ fn nano_banana_defaults_are_explicit_and_unsupported_controls_fail_closed() {
         json!({"contents": [{"parts": [{"text": "x"}, {"inlineData": {"mimeType": "image/png"}}]}]}),
         json!({"contents": [{"parts": [{"text": "x"}, {"inlineData": "aGVsbG8="}]}]}),
     ] {
-        assert!(validate_native_request(Operation::Generate, &invalid, &model).is_err());
+        assert!(validate_native_request(Operation::Generate, &invalid, &model, false).is_err());
     }
 
     let references = (0..15)
@@ -1470,7 +1470,7 @@ fn nano_banana_defaults_are_explicit_and_unsupported_controls_fail_closed() {
     let too_many_references = json!({
         "contents": [{"parts": [{"text": "x"}]} , {"parts": references}]
     });
-    assert!(validate_native_request(Operation::Generate, &too_many_references, &model).is_err());
+    assert!(validate_native_request(Operation::Generate, &too_many_references, &model, false).is_err());
 }
 
 #[test]
@@ -2145,7 +2145,10 @@ async fn published_37_customer_uses_tiered_wire_and_public_response_identity() {
 async fn dormant_37_rejects_removed_controls_and_prefill_before_upstream() {
     let server = start_mock(MockState::with_replies([(
         PROFILE_A_KEY,
-        vec![MockReply::json(StatusCode::OK, json!({"totalTokens": 2}))],
+        vec![
+            MockReply::json(StatusCode::OK, json!({"totalTokens": 2})),
+            MockReply::json(StatusCode::OK, json!({"totalTokens": 2})),
+        ],
     )]))
     .await;
     let fixture = gateway_fixture_with_models(
@@ -2218,7 +2221,6 @@ async fn dormant_37_rejects_removed_controls_and_prefill_before_upstream() {
         json!({"role": "user", "parts": []}),
         json!({"role": "user", "parts": [{"text": "   "}]}),
         json!({"role": "user", "parts": [{"inlineData": {"mimeType": "image/png", "data": "AA=="}}]}),
-        json!({"role": "user", "parts": [{"functionResponse": {"name": "lookup", "response": {"ok": true}}}]}),
     ] {
         let response = invoke_exact_uri(
             app.clone(),
@@ -2237,6 +2239,37 @@ async fn dormant_37_rejects_removed_controls_and_prefill_before_upstream() {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
+    // A final user turn of only functionResponse parts is exactly the shape the closed live
+    // admission lane exists to prove, so on the exact-calibration lane it passes local
+    // validation; the mock has no generation reply queued, so dispatch fails closed with 503
+    // rather than a local 400. Ordinary traffic (covered by the unit-level gate test) keeps
+    // rejecting the same shape outright.
+    let response = invoke_exact_uri(
+        app.clone(),
+        "/v1beta/models/gemini-3.7-flash:generateContent",
+        json!({
+            "contents": [
+                {"role": "user", "parts": [{"text": "hello"}]},
+                {"role": "model", "parts": [{"functionCall": {"name": "lookup", "args": {}}}]},
+                {"role": "user", "parts": [
+                    {"functionResponse": {"name": "lookup", "response": {"ok": true}}}
+                ]}
+            ]
+        }),
+        "profile_a",
+        "123e4567-e89b-42d3-a456-426614174015",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    // The admitted tool-result shape spends exactly one one-shot dispatch against the mock
+    // upstream (the exact lane forbids retry/rotation), receives no usable reply and terminates.
+    let seen = server.state.seen();
+    let generations = seen
+        .iter()
+        .filter(|request| request.uri.contains(":generateContent"))
+        .count();
+    assert_eq!(generations, 1, "exactly one one-shot generation dispatch");
+
     let response = invoke_exact_uri(
         app.clone(),
         "/v1beta/models/gemini-3.7-flash:countTokens",
@@ -2251,7 +2284,14 @@ async fn dormant_37_rejects_removed_controls_and_prefill_before_upstream() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert!(server.state.seen().is_empty());
+    // Only the admitted tool-result one-shot dispatch may have reached the upstream so far.
+    let generations_so_far = server
+        .state
+        .seen()
+        .iter()
+        .filter(|request| request.uri.contains(":generateContent"))
+        .count();
+    assert_eq!(generations_so_far, 1);
 
     // The removal is model-specific: the existing 3.6 route retains its current sampling and
     // historical-model-turn behavior.
@@ -2271,7 +2311,71 @@ async fn dormant_37_rejects_removed_controls_and_prefill_before_upstream() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response_json(response).await["totalTokens"], 2);
-    assert_eq!(server.state.seen().len(), 1);
+    // The 3.6 count consumed its queued mock reply on top of the admitted one-shot dispatch.
+    assert_eq!(server.state.seen().len(), 2);
+}
+
+#[test]
+fn gate_37_admits_tool_result_final_turn_only_on_the_exact_calibration_lane() {
+    let model = catalog_model("gemini-3.7-flash");
+    let tool_loop = || {
+        json!({
+            "contents": [
+                {"role": "user", "parts": [{"text": "look it up"}]},
+                {"role": "model", "parts": [{"functionCall": {"name": "lookup", "args": {}}}]},
+                {"role": "user", "parts": [
+                    {"functionResponse": {"name": "lookup", "response": {"ok": true}}}
+                ]}
+            ]
+        })
+    };
+    // Ordinary traffic stays fail-closed until the exact-SHA live gate proves the wire contract.
+    assert!(validate_generation_request(&tool_loop(), &model, false).is_err());
+    // The one-shot exact-profile calibration lane admits exactly this shape.
+    assert!(validate_generation_request(&tool_loop(), &model, true).is_ok());
+
+    // A mixed final turn (text plus a tool result) stays admitted for ordinary traffic too.
+    let mixed = json!({
+        "contents": [
+            {"role": "user", "parts": [{"text": "look it up"}]},
+            {"role": "model", "parts": [{"functionCall": {"name": "lookup", "args": {}}}]},
+            {"role": "user", "parts": [
+                {"functionResponse": {"name": "lookup", "response": {"ok": true}}},
+                {"text": "thanks"}
+            ]}
+        ]
+    });
+    assert!(validate_generation_request(&mixed, &model, false).is_ok());
+    assert!(validate_generation_request(&mixed, &model, true).is_ok());
+
+    // The exact lane must not become a blanket bypass: empty parts, whitespace-only text,
+    // image-only finals and prefilled model finals stay rejected there too.
+    for final_turn in [
+        json!({"role": "user", "parts": []}),
+        json!({"role": "user", "parts": [{"text": "   "}]}),
+        json!({"role": "user", "parts": [{"inlineData": {"mimeType": "image/png", "data": "AA=="}}]}),
+        json!({"role": "user", "parts": [{"functionResponse": {"name": "lookup", "response": {"ok": true}}}, {"inlineData": {"mimeType": "image/png", "data": "AA=="}}]}),
+        json!({"role": "model", "parts": [{"functionResponse": {"name": "lookup", "response": {"ok": true}}}]}),
+    ] {
+        let body = json!({
+            "contents": [
+                {"role": "user", "parts": [{"text": "look it up"}]},
+                {"role": "model", "parts": [{"functionCall": {"name": "lookup", "args": {}}}]},
+                final_turn
+            ]
+        });
+        assert!(
+            validate_generation_request(&body, &model, true).is_err(),
+            "exact lane must stay closed for {final_turn}"
+        );
+    }
+
+    // The same admission applies to the free countTokens fence of the calibration lane.
+    let nested = json!({
+        "generateContentRequest": tool_loop()
+    });
+    assert!(validate_native_request(Operation::CountTokens, &nested, &model, true).is_ok());
+    assert!(validate_native_request(Operation::CountTokens, &nested, &model, false).is_err());
 }
 
 #[test]
@@ -2284,9 +2388,9 @@ fn published_37_accepts_standard_output_bounds() {
     };
     let model = catalog_model("gemini-3.7-flash");
 
-    assert!(validate_generation_request(&request(256), &model).is_ok());
-    assert!(validate_generation_request(&request(512), &model).is_ok());
-    assert!(validate_generation_request(&request(513), &model).is_ok());
+    assert!(validate_generation_request(&request(256), &model, false).is_ok());
+    assert!(validate_generation_request(&request(512), &model, false).is_ok());
+    assert!(validate_generation_request(&request(513), &model, false).is_ok());
 }
 
 #[tokio::test]
@@ -4312,13 +4416,13 @@ fn count_tokens_rejects_ambiguous_input_and_unsupported_semantic_controls() {
             "contents": [],
             "generateContentRequest": {"contents": []}
         }),
-        &catalog_model("gemini-2.5-flash")
+        &catalog_model("gemini-2.5-flash"), false
     )
     .is_err());
     assert!(validate_native_request(
         Operation::CountTokens,
         &json!({"generateContentRequest": []}),
-        &catalog_model("gemini-2.5-flash")
+        &catalog_model("gemini-2.5-flash"), false
     )
     .is_err());
     for body in [
@@ -4330,13 +4434,14 @@ fn count_tokens_rejects_ambiguous_input_and_unsupported_semantic_controls() {
             Operation::CountTokens,
             &body,
             &catalog_model("gemini-2.5-flash"),
+            false,
         )
         .is_err());
     }
     assert!(validate_native_request(
         Operation::Generate,
         &json!({"contents": [], "serviceTier": "standard"}),
-        &catalog_model("gemini-2.5-flash")
+        &catalog_model("gemini-2.5-flash"), false
     )
     .is_err());
 }
@@ -5190,7 +5295,7 @@ fn independently_billed_or_unknown_server_tools_fail_closed() {
         json!({"tools": [{"futurePaidTool": {}}]}),
         json!({"cachedContent": "cachedContents/customer-selected-resource"}),
     ] {
-        assert!(validate_generation_request(&body, &model).is_err());
+        assert!(validate_generation_request(&body, &model, false).is_err());
     }
     for body in [
         json!({"tools": [{"googleSearch": {}}]}),
@@ -5198,7 +5303,7 @@ fn independently_billed_or_unknown_server_tools_fail_closed() {
         json!({"tools": [{"codeExecution": {}}]}),
         json!({"tools": [{"functionDeclarations": []}]}),
     ] {
-        validate_generation_request(&body, &model).unwrap();
+        validate_generation_request(&body, &model, false).unwrap();
     }
 }
 
@@ -5215,12 +5320,13 @@ fn audio_input_fails_closed_until_usage_reports_authoritative_modality_tokens() 
             }]
         }]
     });
-    assert!(validate_native_request(Operation::Generate, &audio, &model).is_err());
-    assert!(validate_native_request(Operation::CountTokens, &audio, &model).is_err());
+    assert!(validate_native_request(Operation::Generate, &audio, &model, false).is_err());
+    assert!(validate_native_request(Operation::CountTokens, &audio, &model, false).is_err());
     assert!(validate_native_request(
         Operation::CountTokens,
         &json!({"generateContentRequest": audio}),
         &model,
+        false,
     )
     .is_err());
 
@@ -5232,7 +5338,7 @@ fn audio_input_fails_closed_until_usage_reports_authoritative_modality_tokens() 
         }]
     });
     canonicalize_native_request(&mut snake_case_audio);
-    assert!(validate_native_request(Operation::Generate, &snake_case_audio, &model).is_err());
+    assert!(validate_native_request(Operation::Generate, &snake_case_audio, &model, false).is_err());
 
     assert!(validate_native_request(
         Operation::Generate,
@@ -5245,6 +5351,7 @@ fn audio_input_fails_closed_until_usage_reports_authoritative_modality_tokens() 
             "contents": []
         }),
         &model,
+        false,
     )
     .is_err());
 
@@ -5259,13 +5366,14 @@ fn audio_input_fails_closed_until_usage_reports_authoritative_modality_tokens() 
             }]
         }),
         &model,
+        false,
     )
     .expect("same-priced inline image input remains available");
 
     // Published text models accept inline audio: the fleet media matrix admits each one with a
     // mandatory perception marker, and the usage fallback accounts the exact WAV duration.
     let text_model = catalog_model("gemini-2.5-flash-lite");
-    validate_native_request(Operation::Generate, &audio, &text_model)
+    validate_native_request(Operation::Generate, &audio, &text_model, false)
         .expect("published text models admit inline audio after the fleet media matrix");
 }
 

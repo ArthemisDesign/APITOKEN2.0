@@ -1729,7 +1729,11 @@ fn validate_image_generation_request(body: &Value, model: &GeminiModel) -> Resul
     Ok(())
 }
 
-fn validate_generation_request(body: &Value, model: &GeminiModel) -> Result<(), ApiError> {
+fn validate_generation_request(
+    body: &Value,
+    model: &GeminiModel,
+    exact_calibration: bool,
+) -> Result<(), ApiError> {
     validate_no_file_data(body)?;
     if model.is_image_generation() && has_inline_audio_data(body) {
         // The image-generation model has no official audio surface. Published text models accept
@@ -1768,7 +1772,7 @@ fn validate_generation_request(body: &Value, model: &GeminiModel) -> Result<(), 
         ));
     }
     if model.id == "gemini-3.7-flash" {
-        validate_gemini_37_request(body)?;
+        validate_gemini_37_request(body, exact_calibration)?;
     }
     let Some(tools) = body.get("tools").and_then(Value::as_array) else {
         return Ok(());
@@ -1812,9 +1816,12 @@ fn validate_generation_request(body: &Value, model: &GeminiModel) -> Result<(), 
 /// Assist wrapper would otherwise accept and silently discard some of them, which would make the
 /// public request appear honored when it was not. The same release also removed prefilled model
 /// turns: a transcript may contain historical model content, but its final turn must be user input
-/// with non-empty text. Image-only and tool-result continuations remain fail-closed until the live
-/// capability gate proves their exact 3.7 wire contract.
-fn validate_gemini_37_request(body: &Value) -> Result<(), ApiError> {
+/// carrying at least one non-empty part. A final turn of only functionResponse parts — the exact
+/// transcript every portable tool-calling client (OpenCode and other AI SDKs) produces after
+/// executing a call — is admitted through the closed one-shot exact-profile calibration lane so
+/// its wire contract is proven by live evidence before the local gate is lifted for ordinary
+/// traffic. Image-only final turns and prefilled model turns remain fail-closed.
+fn validate_gemini_37_request(body: &Value, exact_calibration: bool) -> Result<(), ApiError> {
     if let Some(generation_config) = body.get("generationConfig") {
         let generation_config = generation_config.as_object().ok_or_else(|| {
             ApiError::invalid("The generationConfig field must be a JSON object.")
@@ -1853,17 +1860,30 @@ fn validate_gemini_37_request(body: &Value) -> Result<(), ApiError> {
             ApiError::invalid("Gemini 3.7 Flash requires a final user turn with non-empty text.")
         })?;
     let final_role = final_content.get("role").and_then(Value::as_str);
-    let has_non_empty_text = final_content
-        .get("parts")
-        .and_then(Value::as_array)
-        .is_some_and(|parts| {
-            parts.iter().any(|part| {
-                part.get("text")
-                    .and_then(Value::as_str)
-                    .is_some_and(|text| !text.trim().is_empty())
-            })
-        });
-    if final_role != Some("user") || !has_non_empty_text {
+    let final_parts = final_content.get("parts").and_then(Value::as_array);
+    let has_non_empty_text = final_parts.is_some_and(|parts| {
+        parts.iter().any(|part| {
+            part.get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.trim().is_empty())
+        })
+    });
+    // The tool-result continuation is the exact shape the closed live gate proves: a user final
+    // turn whose parts are exclusively functionResponse objects. It is admitted only on the
+    // one-shot exact-profile calibration lane, never for ordinary traffic, and an empty final
+    // parts array is never a tool-result continuation.
+    let tool_result_only_final_turn = final_parts.is_some_and(|parts| {
+        !parts.is_empty()
+            && parts
+                .iter()
+                .all(|part| part.get("functionResponse").is_some_and(Value::is_object))
+    });
+    let admitted_final_turn = if exact_calibration {
+        has_non_empty_text || tool_result_only_final_turn
+    } else {
+        has_non_empty_text
+    };
+    if final_role != Some("user") || !admitted_final_turn {
         return Err(ApiError::invalid(
             "Gemini 3.7 Flash requires a final user turn with non-empty text; prefilled model, \
              image-only, and tool-result-only final turns are not admitted.",
@@ -1876,9 +1896,10 @@ fn validate_native_request(
     operation: Operation,
     body: &Value,
     model: &GeminiModel,
+    exact_calibration: bool,
 ) -> Result<(), ApiError> {
     if operation != Operation::CountTokens {
-        validate_generation_request(body, model)?;
+        validate_generation_request(body, model, exact_calibration)?;
         return if model.is_image_generation() {
             validate_image_generation_request(body, model)
         } else {
@@ -1896,7 +1917,7 @@ fn validate_native_request(
     }
     match nested {
         Some(request) if request.is_object() => {
-            validate_generation_request(request, model)?;
+            validate_generation_request(request, model, exact_calibration)?;
             if model.is_image_generation() {
                 validate_image_generation_request(request, model)
             } else {
@@ -1907,7 +1928,7 @@ fn validate_native_request(
             "The generateContentRequest field must be a JSON object.",
         )),
         None => {
-            validate_generation_request(body, model)?;
+            validate_generation_request(body, model, exact_calibration)?;
             if model.is_image_generation() {
                 validate_image_generation_request(body, model)
             } else {
@@ -3313,7 +3334,7 @@ async fn api_inner_observed(
     // like the real API: normalize to camelCase up front so validation, reservation, the upstream
     // wrapper and settlement all see a single canonical shape instead of silently dropping fields.
     canonicalize_native_request(&mut value);
-    validate_native_request(route.operation, &value, &model)?;
+    validate_native_request(route.operation, &value, &model, deadline_bound_exact)?;
     if let Some(guard) = fact_guard.as_mut() {
         guard.update_after_native_accept(model_id, &value);
     }
