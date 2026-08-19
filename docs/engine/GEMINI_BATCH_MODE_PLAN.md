@@ -896,10 +896,16 @@ Exit gate: official SDK compatibility tests проходят на direct Gemini 
 - Прогнать multi-owner fault injection, kill-at-every-boundary matrix и load/fairness tests на
   Google-масштабных объемах (файл ввода ближе к 2 GB, сотни тысяч items), чтобы доказать потоковую
   валидацию JSONL, сборку output-файла и outbox throughput без giant in-memory copy.
-- Выполнить controlled internal batch с explicit aggregate budget: несколько items, несколько
-  профилей, partial error, cancel, restart, 5h-headroom stop и recovery, exact settlement.
-- Проверить no-discount charge parity с теми же requests через ordinary generateContent.
-- Сохранить sanitized exact-SHA evidence; failed paid run не replay.
+- Выполнить controlled internal batch с подтвержденным владельцем aggregate budget **$10** на весь
+  Этап 5 (live-smoke + canary вместе): несколько items, несколько профилей, partial error, cancel,
+  restart, 5h-headroom stop и recovery, exact settlement. Бюджет покрывает customer-деньги нашего
+  собственного тестового аккаунта; перед каждым paid run агент считает expected worst-case spend
+  (сумма per-item holds) и не стартует run, если остаток бюджета его не покрывает. Потраченное
+  фиксируется в журнале (§12) после каждого run — с точной суммой settlement и остатком.
+- Проверить no-discount charge parity с теми же requests через ordinary generateContent (считается
+  в тот же $10 бюджет).
+- Сохранить sanitized exact-SHA evidence; failed paid run не replay — сначала root cause, затем
+  новый run в пределах остатка бюджета.
 
 Exit gate: provider output/usage, profile distribution, 5h headroom gate behavior, customer ledger,
 quota calibration и restart recovery сходятся на production-GREEN implementation SHA.
@@ -910,7 +916,9 @@ quota calibration и restart recovery сходятся на production-GREEN imp
 - Обновить customer docs без заявления Google discount/SLA; честно описать собственный Files API и
   его TTL, расширение `fileData` внутри batch и 85%-потолок 5h-окна как операционную характеристику
   (не как клиентский лимит).
-- После deploy выполнить public create -> poll -> terminal result smoke через оба hostname.
+- После deploy выполнить public create -> poll -> terminal result smoke через оба hostname
+  (минимальный paid request; считается в тот же подтвержденный $10 aggregate budget Этапа 5, если
+  его остаток покрывает worst-case hold, иначе — отдельное подтверждение владельца).
 - Наблюдать queue age, settlements, indeterminate, 5h headroom stops и interactive latency в soak
   window.
 - Rollback выключает admission новых jobs, но совместимый runtime обязан дочитать уже принятые jobs;
@@ -1041,6 +1049,7 @@ router native passthrough tests, `cargo test --locked --workspace`, rotation and
 | Cancel | queued stops immediately; dispatching drains best effort |
 | Crash after send | indeterminate, no automatic replay; unknown-usage policy — fleet default «unmeasured = 0», measured checkpoint clamp до hold, full hold только при operator switch (§4.9) |
 | Queue deadline | 48 часов |
+| Live-smoke budget | ПОДТВЕРЖДЕНО: $10 aggregate на Этап 5 (canary + parity + public smoke Этапа 6); каждый paid run сначала считает worst-case по holds, потраченное идет в журнал (§12) |
 | Result retention | 42 дня (включая output-файлы); financial evidence отдельно |
 | MVP media | existing bounded inline inputs + собственные файлы внутри batch; image-output model excluded |
 | Large input | собственный Files API (в MVP) |
