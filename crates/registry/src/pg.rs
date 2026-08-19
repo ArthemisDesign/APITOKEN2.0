@@ -230,9 +230,11 @@ const MIGRATION_0054: &str =
 const MIGRATION_0055: &str = include_str!("../migrations_pg/0055_gemini_batch_foundation.sql");
 const MIGRATION_0056: &str =
     include_str!("../migrations_pg/0056_gemini_batch_authority_corrections.sql");
+const MIGRATION_0057: &str =
+    include_str!("../migrations_pg/0057_gemini_batch_chunked_file_shape.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 56;
+pub const CURRENT_SCHEMA_VERSION: i64 = 57;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -292,6 +294,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (54, MIGRATION_0054),
     (55, MIGRATION_0055),
     (56, MIGRATION_0056),
+    (57, MIGRATION_0057),
 ];
 
 #[cfg(test)]

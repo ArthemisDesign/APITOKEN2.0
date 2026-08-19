@@ -44,3 +44,10 @@ SHA: фиксируется commit этой записи
 Отступления от плана: добавлен явно описанный migration-correction шаг в Этап 2; причина — доказанные ограничения уже deployed schema 0055. План исправлен в том же commit до dependent code, как требует контракт.
 Измерения: chunk plaintext bound 8 MiB; logical file contract остается 2 GiB; result retention минимум 3,628,800 секунд от completion.
 Следующий шаг: локальные Rust/docs gates, merge migration 0056 и GREEN production до реализации Stage 2 authority.
+
+## 2026-08-20 — Этап 2 (§6): production GREEN migration 0056 и legacy file CHECK
+SHA: `4865ccfeb1128e58c2dc3d595ab40c65c8c3f323`
+Результат: trusted tests, `deploy/engine` и `deploy/watchdog` GREEN; schema 56 production-live без runtime reader/writer. Post-deploy review обнаружил, что anonymous CHECK из 0055 все еще требует inline blob для любого active file и тем самым блокирует честную активацию chunk-backed file из 0056.
+Отступления от плана: план расширен вторым migration-correction 0057 до runtime; fake inline blob как обход отклонен, 0055/0056 остаются immutable.
+Измерения: 0056 rollout ожидал 670 секунд до overall GREEN; chunk table применена, active chunked row пока корректно запрещен legacy CHECK.
+Следующий шаг: migration 0057 снимает только narrowing anonymous CHECK, вводит named dual storage shape и должна стать production GREEN до authority runtime.

@@ -861,8 +861,10 @@ Exit gate: old runtime работает с расширенной schema; rollba
 - **Migration correction перед runtime (добавлено после schema review 2026-08-20):** отдельной
   expand-only migration добавить nullable `ledger.key_id`/`usage_events.key_id`, item-level
   creator `key_id`, nullable result expiry, chunked file storage и полный immutable calibration
-  payload для batch outbox. Эту correction доставить и дождаться GREEN `deploy/engine` +
-  `deploy/watchdog` до любого reader/writer Stage 2; migration 0055 не переписывается.
+  payload для batch outbox. После 0056 отдельная 0057 заменяет только legacy anonymous file-shape
+  CHECK: active chunked file не обязан хранить фиктивный inline blob, а старый inline shape остается
+  валиден. Обе corrections доставить и дождаться GREEN `deploy/engine` + `deploy/watchdog` до любого
+  reader/writer Stage 2; migrations 0055/0056 не переписываются.
 - Реализовать atomic create + all-item holds + idempotency.
 - Реализовать scoped list/get/cancel/delete/prune для jobs и files.
 - Реализовать leader/item leases и owner/claim fencing.

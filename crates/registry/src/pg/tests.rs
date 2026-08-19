@@ -12,8 +12,28 @@ fn engine_migration_plan_is_contiguous() {
 }
 
 #[test]
+fn gemini_batch_chunked_file_shape_migration_replaces_only_the_narrow_check() {
+    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
+    assert_eq!(
+        ENGINE_MIGRATIONS
+            .iter()
+            .find(|(version, _)| *version == 57)
+            .map(|(_, sql)| *sql),
+        Some(MIGRATION_0057),
+    );
+    let normalized = MIGRATION_0057.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(normalized.contains("ADD COLUMN IF NOT EXISTS storage_kind text"));
+    assert!(normalized.contains("gemini_batch_files_state_storage_shape"));
+    assert!(normalized.contains("storage_kind = 'chunked'"));
+    assert!(normalized.contains("storage_kind = 'inline_legacy'"));
+    assert!(normalized.contains("VALUES (57)"));
+    assert!(!normalized.contains("DROP TABLE"));
+    assert!(!normalized.contains("DROP COLUMN"));
+}
+
+#[test]
 fn gemini_batch_authority_correction_migration_is_expand_only() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
     assert_eq!(
         ENGINE_MIGRATIONS
             .iter()
@@ -43,7 +63,7 @@ fn gemini_batch_authority_correction_migration_is_expand_only() {
 
 #[test]
 fn gemini_batch_foundation_migration_is_dormant_expand_only() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
     assert_eq!(
         ENGINE_MIGRATIONS
             .iter()
@@ -649,7 +669,7 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
@@ -754,7 +774,7 @@ fn tripo3d_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn tripo3d_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 49)
@@ -874,7 +894,7 @@ fn suno_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn suno_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 50)
@@ -985,7 +1005,7 @@ fn tripo3d_pricing_provider_migration_widens_both_closed_sets() {
 
 #[test]
 fn tripo3d_pricing_provider_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 51)
@@ -1034,7 +1054,7 @@ fn suno_pricing_provider_migration_widens_both_closed_sets() {
 
 #[test]
 fn suno_pricing_provider_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 52)
@@ -1317,7 +1337,7 @@ fn request_fact_terminal_envelope_migration_postgres_matrix() {
     let mut pg = PgStore::connect(&url).unwrap();
     pg.migrate().unwrap();
     assert_eq!(pg.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 56);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
     assert_eq!(
         ENGINE_MIGRATIONS
             .iter()

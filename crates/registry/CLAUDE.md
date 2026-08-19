@@ -56,15 +56,16 @@ side effect. `serve` may only perform the read-only schema verification before c
   into actual spend or releases it. Mutable policy replacement is account-scoped and atomic with
   reservations; a non-null new limit must cover both settled and reserved usage.
   Soft migration of the old "key=wallet" model → account per-key (`migrate_legacy_keys`).
-- **Dormant Gemini Batch foundation (migrations `0055` + `0056`) is PostgreSQL-only and has no runtime reader/writer.**
+- **Dormant Gemini Batch foundation (migrations `0055`–`0057`) is PostgreSQL-only and has no runtime reader/writer.**
   It creates isolated job/item/blob/file/outbox/profile-lease authorities plus normalized item→file
   references. Request, metadata and result bytes have only opaque `bytea` ciphertext storage; files
   use bounded encrypted chunks so the later 2 GiB logical contract never requires one giant value.
   Mutable job counters are absent and future `batchStats` must be derived from item rows. Batch rows
   retain non-secret creator `key_id` attribution without a foreign key to deletable API-key rows;
   nullable ledger/usage `key_id` preserves attribution after deletion. Result expiry starts only at
-  completion, and outbox rows can carry the complete immutable Gemini calibration event. Dependent
-  authority code may land only after migration 0056 is production-GREEN.
+  completion, and outbox rows can carry the complete immutable Gemini calibration event. Migration
+  0057 gives file rows an explicit `inline_legacy|chunked` storage shape without fake blob bytes.
+  Dependent authority code may land only after migration 0057 is production-GREEN.
 - **Dormant request-observability S2 (migrations `0053` + `0054`) is PostgreSQL-only and opt-in.**
   Fact-aware reservation and delivery methods insert/validate admission and first-delivery evidence in
   the owning money transaction. Terminal evidence is durably enqueued with settlement, then copied to
