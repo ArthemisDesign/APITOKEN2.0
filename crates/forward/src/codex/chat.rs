@@ -452,7 +452,17 @@ fn translate_messages(messages: &[Value]) -> Result<TranslatedChatMessages, ApiE
                     true,
                     &format!("messages.{index}.content"),
                 )?;
-                let visible_content = content.as_ref().filter(|content| !content.is_empty());
+                // Whitespace-only assistant text (an empty AI SDK step whose message never
+                // reached the tool loop) carries no model-visible payload either: replay it
+                // display-only, exactly like a reasoning-only turn. A genuinely empty
+                // assistant (absent/null content and no payload at all) stays a 400 below.
+                let visible_content = content
+                    .as_ref()
+                    .filter(|content| !content.trim().is_empty());
+                let display_only = reasoning_content.is_some()
+                    || content
+                        .as_ref()
+                        .is_some_and(|content| content.trim().is_empty());
                 if let Some(content) = visible_content {
                     input.push(chat_message_item("assistant", content));
                 }
@@ -524,7 +534,7 @@ fn translate_messages(messages: &[Value]) -> Result<TranslatedChatMessages, ApiE
                     // The public Chat response exposes display-only `reasoning_content` without
                     // an upstream replay signature. Drop a reasoning-only assistant turn exactly
                     // like the Anthropic/Gemini adapters; never turn it into model-visible text.
-                    if reasoning_content.is_some() {
+                    if display_only {
                         continue;
                     }
                     return Err(ApiError::invalid(
@@ -1563,9 +1573,21 @@ mod tests {
         assert_eq!(parsed.responses.input.turn_input[0]["text"], "continue");
         assert!(!format!("{:?}", parsed.responses.input.prior_items).contains("private summary"));
 
+        // Whitespace-only assistant text (an empty AI SDK step) is a display-only
+        // marker too: the turn is dropped, never turned into model-visible text.
+        for message in [
+            json!({"role": "assistant", "content": ""}),
+            json!({"role": "assistant", "content": "  \n\t "}),
+            json!({"role": "assistant", "content": []}),
+        ] {
+            let (items, _, _) = translate_messages(std::slice::from_ref(&message))
+                .expect("a whitespace-only assistant turn must replay as display-only");
+            assert!(items.is_empty(), "{message}");
+        }
+
         for message in [
             json!({"role": "assistant", "content": null}),
-            json!({"role": "assistant", "content": ""}),
+            json!({"role": "assistant"}),
             json!({"role": "assistant", "content": null, "reasoning_content": ""}),
             json!({"role": "assistant", "content": null, "tool_calls": null}),
             json!({"role": "assistant", "content": null, "tool_calls": []}),

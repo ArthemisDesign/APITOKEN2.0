@@ -566,11 +566,13 @@ pub(crate) fn merge_or_push(conversation: &mut Vec<Value>, role: &str, blocks: V
 /// отклоняет пустой text, а chat допускает `content: null` при tool calls.
 /// Непустой `reasoning_content` без видимого text/tool call — валидный replay
 /// ответа этого же адаптера, но без provider signature его нельзя превращать
-/// обратно в thinking-блок; такой display-only assistant turn опускается.
+/// обратно в thinking-блок; такой display-only assistant turn опускается. Тем же
+/// маркером считается whitespace-only text: пустой шаг AI SDK (сообщение
+/// отменили до tool loop) тоже опускается, а не становится видимым блоком.
 fn assistant_blocks(object: &Map<String, Value>) -> Result<Vec<Value>, Response> {
     let mut blocks = Vec::new();
     let text = message_text(object.get("content"))?;
-    if !text.is_empty() {
+    if !text.trim().is_empty() {
         blocks.push(json!({"type": "text", "text": text}));
     }
     if let Some(tool_calls) = object.get("tool_calls").filter(|v| !v.is_null()) {
@@ -606,10 +608,16 @@ fn assistant_blocks(object: &Map<String, Value>) -> Result<Vec<Value>, Response>
         }));
     }
     if blocks.is_empty() {
+        // Replay-маркеры без model-visible payload: непустой reasoning ответа
+        // этого адаптера либо whitespace-only text пустого шага AI SDK.
         if object
             .get("reasoning_content")
             .and_then(Value::as_str)
             .is_some_and(|reasoning| !reasoning.is_empty())
+            || object
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|content| content.trim().is_empty())
         {
             return Ok(blocks);
         }
@@ -2018,6 +2026,47 @@ mod tests {
         assert!(!translated.body.to_string().contains("private thought"));
     }
 
+    #[tokio::test]
+    async fn omits_whitespace_only_assistant_replay_without_visible_blocks() {
+        // Пустой шаг AI SDK (сообщение отменили до tool loop) реплеится как
+        // whitespace-only content без tool_calls: тот же display-only маркер,
+        // turn опускается, а genuinely empty assistant (content:null/отсутствует)
+        // остаётся 400.
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "  \n "},
+                {"role": "assistant", "content": ""},
+                {"role": "user", "content": "continue"}
+            ]
+        }));
+        assert_eq!(
+            translated.body["messages"],
+            serde_json::json!([{"role": "user", "content": [
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": "continue"}
+            ]}])
+        );
+
+        for message in [
+            serde_json::json!({"role": "assistant", "content": null}),
+            serde_json::json!({"role": "assistant"}),
+        ] {
+            let (status, body) = expect_err(serde_json::json!({
+                "model": "claude-opus-4-8",
+                "messages": [message]
+            }))
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert!(
+                body.to_string()
+                    .contains("Assistant message must have content or tool calls."),
+                "{body}"
+            );
+        }
+    }
+
     #[test]
     fn stop_temperature_top_p_and_user_are_honored() {
         let translated = ok_translated(serde_json::json!({
@@ -2390,12 +2439,13 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
-        // Пустое reasoning_content не легализует действительно пустой turn.
+        // Пустое reasoning_content само по себе не легализует действительно
+        // пустой turn (content:null).
         let (status, _) = expect_err(serde_json::json!({
             "model": "m",
             "messages": [
                 {"role": "user", "content": "hi"},
-                {"role": "assistant", "content": "", "reasoning_content": ""}
+                {"role": "assistant", "content": null, "reasoning_content": ""}
             ]
         }))
         .await;

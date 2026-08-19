@@ -363,7 +363,9 @@ Response thinking blocks/thinking_delta → `message.reasoning_content`/reasonin
 (signature/redacted_thinking are never exposed). On replay this field is display-only: the adapter never
 turns it into unsigned native thinking; an assistant turn with only a non-empty `reasoning_content`
 is dropped so a standard AI SDK round-trip does not poison the next send, while a genuinely empty
-assistant still gets a 400.
+assistant still gets a 400. The same display-only omission covers an assistant turn whose only
+payload is whitespace-only text (`content:""` or whitespace without tool calls — the replay shape
+of an empty AI SDK step); it never becomes a model-visible text block.
 Translated Messages SSE is validated by the shared state machine before conversion: known events
 must have a matching `data.type` and the order `message_start` → lifecycle of all content blocks →
 `message_delta` with stop reason/usage → `message_stop`; a malformed known event, an impossible order
@@ -409,9 +411,14 @@ name, `translate_tool_function`, `merge_or_push`, limit constants) —
 are discarded (signatures and encrypted content are never exposed — decision 4),
 `store:true`/`previous_response_id`/`item_reference` → `400 documented_limitation`
 (stored responses — openai/* only, decision 5).
-`codex/` contains the native HTTPS transport (`transport.rs`), profile pool (`mod.rs`),
-Responses/Chat adapters, tenant-bound history, Codex admission/settlement and reconstruction SSE
-events; `codex/skin.rs` — Anthropic Skin (stage 5.1 docs/engine/UNIFIED_ROUTER.md, routes
+ `codex/` contains the native HTTPS transport (`transport.rs`), profile pool (`mod.rs`),
+ Responses/Chat adapters, tenant-bound history, Codex admission/settlement and reconstruction SSE
+ events. The GPT Chat adapter's assistant-history replay follows the same display-only contract as
+ the universal Anthropic/Gemini adapters: a non-empty `reasoning_content` is never turned into
+ unsigned provider reasoning, a reasoning-only turn is dropped, and a whitespace-only assistant
+ turn (`content:""` or whitespace without tool calls — an empty AI SDK step) is dropped the same
+ way; only `content:null`/absent with no payload at all gets a 400.
+ `codex/skin.rs` — Anthropic Skin (stage 5.1 docs/engine/UNIFIED_ROUTER.md, routes
 `POST /v1/messages` and `/v1/messages/count_tokens` in `ProviderMode::OpenAi`, dispatch by
 model — in the router): a Messages request is translated into Responses JSON (strips the
 `openai/` prefix, `speed:"fast"` and compatible `service_tier:"fast"|"priority"` are normalized into the canonical
@@ -489,7 +496,8 @@ response thought parts → `message.reasoning_content`/reasoning_content deltas
 (`thoughtSignature` is never exposed). On replay this field is display-only: without an opaque signature it never
 becomes a native thought; a model turn with only a non-empty `reasoning_content`
 is dropped so an OpenAI-compatible AI SDK can continue the history after a thought-only response, while a genuinely empty
-assistant still gets a 400.
+assistant still gets a 400. A whitespace-only assistant turn (`content:""` or whitespace-only text without
+tool calls — an empty AI SDK step) is dropped the same way and never becomes a visible text part.
 Tool history replay works statelessly: every reconstructed functionCall part gets the
 confirmed Code Assist marker
 `thoughtSignature:"context_engineering_is_the_way_to_go"`. Real opaque response signatures

@@ -796,8 +796,11 @@ follows them, and deviating requires revising this section.
    **not exposed** in universal lanes — a documented limitation: harness clients use
    native lanes. Therefore inbound `reasoning_content` is display-only: it must not
    be promoted to unsigned native thinking. If it is the only payload of an assistant
-   turn, the adapter omits that turn and merges adjacent identical roles; a genuinely
-   empty assistant without reasoning remains a 400.
+   turn, the adapter omits that turn and merges adjacent identical roles. The same
+   omission applies to an assistant turn whose only payload is whitespace-only text
+   (`content:""` or whitespace without tool calls — an empty AI SDK step whose
+   message was cancelled before the tool loop); a genuinely empty assistant
+   (`content:null`/absent with no reasoning and no tool calls) remains a 400.
 5. **Stored responses (stage 4) — only for `openai/*`.** `store:true` and
    `GET/DELETE /v1/responses/{id}` work only for OpenAI models; for the rest →
    `400 documented_limitation`. A cross-provider response store is not built.
@@ -1049,7 +1052,11 @@ Two clarifying caveats from the audit:
    4): signature_delta/thoughtSignature are dropped, redacted_thinking is ignored. On
    the next Chat request a non-empty `reasoning_content` is accepted as display-only;
    a reasoning-only assistant turn is omitted, while regular content/tool history is
-   translated unchanged. This makes both planes' responses replay-safe for
+   translated unchanged. A whitespace-only assistant turn (`content:""` or
+   whitespace-only text without tool calls) — the replay shape of an empty AI SDK
+   step — is omitted the same way on all three planes (GPT/Anthropic/Gemini) and
+   never becomes model-visible text; only `content:null`/absent with no payload at
+   all stays a 400. This makes both planes' responses replay-safe for
    `@ai-sdk/openai-compatible` without forging provider signatures. The
    `reasoning_effort` rule was removed from both planes' capability matrix (Anthropic
    17→16, Gemini 19→18).

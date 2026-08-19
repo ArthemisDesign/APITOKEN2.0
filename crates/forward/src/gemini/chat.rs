@@ -703,14 +703,16 @@ pub(crate) fn translate_reasoning_effort(
 /// legacy `function_call`). Попутно регистрирует id→name для tool-ответов.
 /// Непустой `reasoning_content` без видимого text/tool call — валидный replay
 /// ответа этого же адаптера, но без provider signature его нельзя превращать
-/// обратно в thought-парт; такой display-only model turn опускается.
+/// обратно в thought-парт; такой display-only model turn опускается. Тем же
+/// маркером считается whitespace-only text: пустой шаг AI SDK (сообщение
+/// отменили до tool loop) тоже опускается, а не становится видимым контентом.
 fn assistant_parts(
     object: &Map<String, Value>,
     call_names: &mut HashMap<String, String>,
 ) -> Result<Vec<Value>, Response> {
     let mut parts = Vec::new();
     let text = message_text(object.get("content"))?;
-    if !text.is_empty() {
+    if !text.trim().is_empty() {
         parts.push(json!({"text": text}));
     }
     if let Some(tool_calls) = object.get("tool_calls").filter(|v| !v.is_null()) {
@@ -768,10 +770,16 @@ fn assistant_parts(
         parts.push(replayed_function_call_part(name, args));
     }
     if parts.is_empty() {
+        // Replay-маркеры без model-visible payload: непустой reasoning ответа
+        // этого адаптера либо whitespace-only text пустого шага AI SDK.
         if object
             .get("reasoning_content")
             .and_then(Value::as_str)
             .is_some_and(|reasoning| !reasoning.is_empty())
+            || object
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|content| content.trim().is_empty())
         {
             return Ok(parts);
         }
@@ -1894,6 +1902,47 @@ mod tests {
         assert!(!translated.body.to_string().contains("private thought"));
     }
 
+    #[tokio::test]
+    async fn omits_whitespace_only_assistant_replay_without_visible_parts() {
+        // Пустой шаг AI SDK (сообщение отменили до tool loop) реплеится как
+        // whitespace-only content без tool_calls: тот же display-only маркер,
+        // turn опускается, а genuinely empty assistant (content:null/отсутствует)
+        // остаётся 400.
+        let translated = ok_translated(json!({
+            "model": "gemini-3.6-flash",
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "  \n "},
+                {"role": "assistant", "content": ""},
+                {"role": "user", "content": "continue"}
+            ]
+        }));
+        assert_eq!(
+            translated.body["contents"],
+            json!([{"role": "user", "parts": [
+                {"text": "first"},
+                {"text": "continue"}
+            ]}])
+        );
+
+        for message in [
+            json!({"role": "assistant", "content": null}),
+            json!({"role": "assistant"}),
+        ] {
+            let (status, body) = expect_err(json!({
+                "model": "gemini-3.6-flash",
+                "messages": [message]
+            }))
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert!(
+                body.to_string()
+                    .contains("Assistant message must have content or tool calls."),
+                "{body}"
+            );
+        }
+    }
+
     #[test]
     fn honors_generation_config_parameters() {
         let translated = ok_translated(json!({
@@ -2367,7 +2416,7 @@ mod tests {
             json!({"model": "m", "messages": [{"role": "user"}]}),
             json!({"model": "m", "messages": [{"role": "user", "content": ""}]}),
             json!({"model": "m", "messages": [{"role": "assistant", "content": null}]}),
-            json!({"model": "m", "messages": [{"role": "assistant", "content": "", "reasoning_content": ""}]}),
+            json!({"model": "m", "messages": [{"role": "assistant", "content": null, "reasoning_content": ""}]}),
             json!({"model": "m", "messages": [{"role": "narrator", "content": "hi"}]}),
             json!({"model": "m", "messages": [{"role": "user", "content": "hi", "name": "bob"}]}),
             json!({"model": "m", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://x"}}]}]}),
