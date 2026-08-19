@@ -1,9 +1,11 @@
 # План масштабирования больших API payloads
 
-Статус: **предложение к реализации; текущий production-контракт не изменён**.  
+Статус: **предложение к реализации; текущий production-контракт не изменён**.
+
 Область: публичные model API endpoints `router.apitoken.sale`, `api.apitoken.sale`,
 `openai.api.apitoken.sale`, `gemini.api.apitoken.sale` и их внутренний путь
-Caddy → unified router → provider plane → provider transport.  
+Caddy → unified router → provider plane → provider transport.
+
 Не входит в этот план: увеличение контекстного окна модели, тарифов, quota подписки,
 provider-owned media limits и внутренних admin/catalog/error bounds, не ограничивающих customer
 model payload.
