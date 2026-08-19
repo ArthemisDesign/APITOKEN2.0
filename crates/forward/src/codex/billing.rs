@@ -8,6 +8,7 @@ use crate::execution::{ClientAttribution, LogicalRequestId, RequestLifecycleCloc
 use crate::metrics::Metrics;
 use crate::pricing::{tariff_book, EnginePricingRequestId};
 use crate::proxy::{authorize, Authz, HoldGuard};
+use crate::request_classification::RequestClassification;
 use crate::state::AppState;
 use anyhow::Context as _;
 use axum::http::HeaderMap;
@@ -76,6 +77,20 @@ pub(crate) struct CodexRequestFactSeed {
     lifecycle_clock: RequestLifecycleClock,
 }
 
+/// Content-free route-specific evidence accepted by the owning parser. Keeping the vocabulary typed
+/// prevents callers from manufacturing arbitrary provider, route, or request-class strings.
+enum CodexRequestFactSpec {
+    UniversalCountTokens {
+        requested_model: Option<String>,
+        executable_model: Option<String>,
+    },
+    NativeInputTokens {
+        requested_model: Option<String>,
+        executable_model: Option<String>,
+        classification: Option<RequestClassification>,
+    },
+}
+
 impl CodexRequestFactSeed {
     #[cfg(test)]
     pub(crate) fn for_test(
@@ -104,6 +119,37 @@ impl CodexRequestFactSeed {
         requested_model: Option<String>,
         executable_model: Option<String>,
     ) -> TerminalRequestFact {
+        self.terminal_fact_for(
+            status,
+            CodexRequestFactSpec::UniversalCountTokens {
+                requested_model,
+                executable_model,
+            },
+        )
+    }
+
+    pub(crate) fn terminal_input_tokens_fact(
+        self,
+        status: axum::http::StatusCode,
+        requested_model: Option<String>,
+        executable_model: Option<String>,
+        classification: Option<RequestClassification>,
+    ) -> TerminalRequestFact {
+        self.terminal_fact_for(
+            status,
+            CodexRequestFactSpec::NativeInputTokens {
+                requested_model,
+                executable_model,
+                classification,
+            },
+        )
+    }
+
+    fn terminal_fact_for(
+        self,
+        status: axum::http::StatusCode,
+        spec: CodexRequestFactSpec,
+    ) -> TerminalRequestFact {
         let provider_terminal_class = match status.as_u16() {
             200..=299 => ProviderTerminalClass::Success,
             401 | 403 => ProviderTerminalClass::Auth,
@@ -120,6 +166,61 @@ impl CodexRequestFactSeed {
         let first_public_byte_at = self
             .lifecycle_clock
             .seal_first_public_byte_for_terminal(self.admitted_at, terminal_at);
+        let (route_class, request_class, requested_model, executable_model, classification) =
+            match spec {
+                CodexRequestFactSpec::UniversalCountTokens {
+                    requested_model,
+                    executable_model,
+                } => (
+                    "universal",
+                    "count_tokens",
+                    requested_model,
+                    executable_model,
+                    None,
+                ),
+                CodexRequestFactSpec::NativeInputTokens {
+                    requested_model,
+                    executable_model,
+                    classification,
+                } => (
+                    "native",
+                    "input_tokens",
+                    requested_model,
+                    executable_model,
+                    classification,
+                ),
+            };
+        let tools_declared_count = classification
+            .as_ref()
+            .and_then(RequestClassification::tools_declared_count);
+        let tool_classes = classification
+            .as_ref()
+            .and_then(RequestClassification::tool_classes);
+        let tool_choice_mode = classification
+            .as_ref()
+            .and_then(RequestClassification::tool_choice_mode);
+        let parallel_tools_requested = classification
+            .as_ref()
+            .and_then(RequestClassification::parallel_tools_requested);
+        let tool_results_in_input = classification
+            .as_ref()
+            .and_then(RequestClassification::tool_results_in_input);
+        let structured_output_flag = classification
+            .as_ref()
+            .and_then(RequestClassification::structured_output_flag);
+        let reasoning_flag = classification
+            .as_ref()
+            .and_then(RequestClassification::reasoning_flag);
+        let service_tier = classification
+            .as_ref()
+            .and_then(RequestClassification::service_tier)
+            .map(str::to_owned);
+        let input_modalities = classification
+            .as_ref()
+            .and_then(RequestClassification::input_modalities);
+        let output_modalities = classification
+            .as_ref()
+            .and_then(RequestClassification::output_modalities);
         TerminalRequestFact {
             logical_request_id: self.logical_request_id,
             billing_request_id: None,
@@ -131,21 +232,21 @@ impl CodexRequestFactSeed {
             client_source: self.client_attribution.source(),
             client_version: self.client_attribution.version().map(str::to_owned),
             provider_plane: "openai".into(),
-            route_class: "universal".into(),
-            request_class: "count_tokens".into(),
+            route_class: route_class.into(),
+            request_class: request_class.into(),
             requested_model,
             executable_model,
             stream_flag: false,
-            tools_declared_count: None,
-            tool_classes: None,
-            tool_choice_mode: None,
-            parallel_tools_requested: None,
-            tool_results_in_input: None,
-            structured_output_flag: None,
-            reasoning_flag: None,
-            service_tier: None,
-            input_modalities: None,
-            output_modalities: None,
+            tools_declared_count,
+            tool_classes,
+            tool_choice_mode,
+            parallel_tools_requested,
+            tool_results_in_input,
+            structured_output_flag,
+            reasoning_flag,
+            service_tier,
+            input_modalities,
+            output_modalities,
             admitted_at: self.admitted_at,
             terminal: RequestFactTerminalEvidence {
                 terminal_at,

@@ -1,6 +1,18 @@
 use super::*;
+use crate::affinity::AffinityStore;
+use crate::billing::AsyncBilling;
+use crate::breaker::Breaker;
 use crate::codex::{CodexConfig, CodexPrices};
+use crate::config::ProxyConfig;
+use crate::metrics::Metrics;
+use crate::state::ProviderMode;
+use crate::upstream::Clients;
+use pool::{Pool, Reserve};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::mpsc;
 
 #[test]
 fn strip_reasoning_items_keeps_portable_items_only() {
@@ -439,6 +451,875 @@ fn gateway() -> CodexGateway {
         models: vec![model()],
     })
     .unwrap()
+}
+
+const INPUT_TOKENS_RAW_KEY: &str = "sk-pool-native-input-secret-never-a-fact";
+const INPUT_TOKENS_ACCOUNT_ID: &str = "native-input-fact-account";
+const INPUT_TOKENS_KEY_ID: &str = "key_native_input_nonsecret";
+const INPUT_TOKENS_LOGICAL_ID: &str = "33333333-3333-4333-8333-333333333333";
+const INPUT_TOKENS_EXECUTION_GROUP: &str = "44444444-4444-4444-8444-444444444444";
+
+struct InputTokensTestApp {
+    app: AppState,
+    path: PathBuf,
+}
+
+impl Drop for InputTokensTestApp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(format!("{}-wal", self.path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", self.path.display()));
+    }
+}
+
+fn input_tokens_unique_path(label: &str) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "claude-api-native-input-{label}-{}-{unique}-{sequence}.sqlite",
+        std::process::id()
+    ))
+}
+
+fn input_tokens_proxy_config() -> Arc<ProxyConfig> {
+    Arc::new(ProxyConfig {
+        api_keys: Vec::new(),
+        control_keys: Vec::new(),
+        panel_keys: Vec::new(),
+        default_mult_bp: 10_000,
+        trust_loopback: false,
+        upstream: "http://127.0.0.1:1".into(),
+        claudestore_fallback: None,
+        max_tries: 1,
+        util_cap: 1.0,
+        cool_secs: 1,
+        smooth_wait_ms: 0,
+        poll: false,
+        inject_identity: false,
+        identity: String::new(),
+        inject_billing: false,
+        cc_version: String::new(),
+        cc_entrypoint: String::new(),
+        default_beta: String::new(),
+        user_agent: "native-input-test".into(),
+        user_agents: Vec::new(),
+        ua_spread: 0,
+        anthropic_version: String::new(),
+        connect_timeout: 1,
+        read_timeout: 1,
+        nonstream_read_timeout: 1,
+        x_app: String::new(),
+        stainless_lang: String::new(),
+        stainless_runtime: String::new(),
+        stainless_runtime_version: String::new(),
+        stainless_package_version: String::new(),
+        stainless_os: String::new(),
+        stainless_arch: String::new(),
+    })
+}
+
+async fn input_tokens_test_app(
+    metered: bool,
+    fact_sender: Option<mpsc::Sender<registry::request_facts::TerminalRequestFact>>,
+    provider: ProviderMode,
+) -> InputTokensTestApp {
+    let path = input_tokens_unique_path("facts");
+    if metered {
+        let connection = registry::open(path.to_str().unwrap()).unwrap();
+        registry::account_create(&connection, INPUT_TOKENS_ACCOUNT_ID, None, 10_000).unwrap();
+        registry::account_topup(&connection, INPUT_TOKENS_ACCOUNT_ID, 1_000, None).unwrap();
+        registry::key_issue(
+            &connection,
+            INPUT_TOKENS_RAW_KEY,
+            INPUT_TOKENS_ACCOUNT_ID,
+            None,
+        )
+        .unwrap();
+        connection
+            .execute(
+                "UPDATE api_keys SET key_id=?1 WHERE key=?2",
+                (INPUT_TOKENS_KEY_ID, INPUT_TOKENS_RAW_KEY),
+            )
+            .unwrap();
+    }
+    let mut billing = AsyncBilling::start(path.to_string_lossy().into_owned(), 1).unwrap();
+    if let Some(sender) = fact_sender {
+        billing.replace_request_fact_inbox_for_test(sender);
+    }
+    let billing = Arc::new(billing);
+    let cfg = input_tokens_proxy_config();
+    let app = AppState {
+        provider,
+        authority: Arc::new(registry::authority::AuthorityConfig::new(
+            path.to_string_lossy().into_owned(),
+            None,
+        )),
+        data_db_path: Arc::new(path.to_string_lossy().into_owned()),
+        pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
+        affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
+        clients: Arc::new(Clients::new(&cfg)),
+        codex: Some(Arc::new(gateway())),
+        gemini: None,
+        kimi: None,
+        glm: None,
+        tripo3d: None,
+        suno: None,
+        billing: Some(billing),
+        authority_ready: Arc::new(AtomicBool::new(true)),
+        breaker: Arc::new(Breaker::new(1)),
+        metrics: Arc::new(Metrics::new()),
+        probe_poke: None,
+        admin_changes: tokio::sync::broadcast::channel(16).0,
+        cfg,
+    };
+    InputTokensTestApp { app, path }
+}
+
+fn input_tokens_request(
+    body: impl Into<Body>,
+    key: Option<&str>,
+    logical_id: Option<&str>,
+    client: Option<&str>,
+    attempt: Option<i32>,
+    lifecycle_clock: Option<crate::execution::RequestLifecycleClock>,
+) -> axum::extract::Request {
+    let mut builder = axum::extract::Request::builder();
+    if let Some(key) = key {
+        builder = builder.header("x-api-key", key);
+    }
+    if let Some(attempt) = attempt {
+        builder = builder
+            .header(
+                crate::execution::EXECUTION_GROUP_HEADER,
+                INPUT_TOKENS_EXECUTION_GROUP,
+            )
+            .header(crate::execution::EXECUTION_ATTEMPT_HEADER, attempt);
+    }
+    let mut request = builder.body(body.into()).unwrap();
+    if let Some(logical_id) = logical_id {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            crate::execution::LOGICAL_REQUEST_ID_HEADER,
+            logical_id.parse().unwrap(),
+        );
+        request
+            .extensions_mut()
+            .insert(crate::execution::admit_logical_request_id(&mut headers).unwrap());
+    }
+    if let Some(client) = client {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            crate::execution::CLIENT_ATTRIBUTION_HEADER,
+            client.parse().unwrap(),
+        );
+        request
+            .extensions_mut()
+            .insert(crate::execution::admit_client_attribution(&mut headers));
+    }
+    if let Some(lifecycle_clock) = lifecycle_clock {
+        request.extensions_mut().insert(lifecycle_clock);
+    }
+    request
+}
+
+fn input_tokens_json_request(
+    body: &Value,
+    key: Option<&str>,
+    logical_id: Option<&str>,
+    client: Option<&str>,
+    attempt: Option<i32>,
+    lifecycle_clock: Option<crate::execution::RequestLifecycleClock>,
+) -> axum::extract::Request {
+    input_tokens_request(
+        serde_json::to_vec(body).unwrap(),
+        key,
+        logical_id,
+        client,
+        attempt,
+        lifecycle_clock,
+    )
+}
+
+fn valid_input_tokens_body() -> Value {
+    json!({
+        "model": "openai/gpt-5.6",
+        "input": "private prompt marker",
+        "tools": [{
+            "type": "function",
+            "name": "private_tool_name",
+            "parameters": {"type": "object", "properties": {"secret": {"type": "string"}}}
+        }],
+        "tool_choice": "required",
+        "parallel_tool_calls": false,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "private_schema_name",
+                "schema": {"type": "object"}
+            }
+        },
+        "reasoning": {"effort": "high"},
+        "service_tier": "priority"
+    })
+}
+
+async fn input_tokens_response_snapshot(
+    response: Response,
+) -> (StatusCode, axum::http::HeaderMap, Bytes) {
+    let status = response.status();
+    let mut headers = response.headers().clone();
+    headers.remove("x-request-id");
+    let bytes = to_bytes(response.into_body(), OPENAI_BODY_LIMIT)
+        .await
+        .unwrap();
+    (status, headers, bytes)
+}
+
+async fn call_input_tokens(app: AppState, request: axum::extract::Request) -> Response {
+    input_tokens(
+        State(app),
+        ConnectInfo("192.0.2.1:443".parse().unwrap()),
+        request,
+    )
+    .await
+}
+
+fn assert_native_input_terminal(
+    fact: &registry::request_facts::TerminalRequestFact,
+    expected_status: StatusCode,
+) {
+    assert_eq!(fact.logical_request_id, INPUT_TOKENS_LOGICAL_ID);
+    assert_eq!(fact.billing_request_id, None);
+    assert_eq!(
+        fact.execution_group_id.as_deref(),
+        Some(INPUT_TOKENS_EXECUTION_GROUP)
+    );
+    assert_eq!(fact.attempt, 3);
+    assert_eq!(fact.account_id, INPUT_TOKENS_ACCOUNT_ID);
+    assert_eq!(fact.key_id, INPUT_TOKENS_KEY_ID);
+    assert_ne!(fact.key_id, INPUT_TOKENS_RAW_KEY);
+    assert_eq!(fact.provider_plane, "openai");
+    assert_eq!(fact.route_class, "native");
+    assert_eq!(fact.request_class, "input_tokens");
+    assert!(!fact.stream_flag);
+    assert_eq!(
+        fact.terminal.http_status_code,
+        Some(i32::from(expected_status.as_u16()))
+    );
+    assert_eq!(fact.terminal.internal_attempt_count, Some(0));
+    assert_eq!(fact.terminal.upstream_request_id, None);
+    assert_eq!(fact.terminal.downstream_disconnect, None);
+    assert_eq!(fact.terminal.failure_class, None);
+    assert_eq!(fact.terminal.tool_calls_in_output, None);
+    assert_eq!(
+        fact.terminal.provider_terminal_class,
+        if expected_status.is_success() {
+            registry::request_facts::ProviderTerminalClass::Success
+        } else {
+            registry::request_facts::ProviderTerminalClass::ClientError
+        }
+    );
+    assert_eq!(
+        fact.terminal.delivery_state,
+        if expected_status.is_success() {
+            registry::request_facts::DeliveryState::Completed
+        } else {
+            registry::request_facts::DeliveryState::NotStarted
+        }
+    );
+}
+
+#[tokio::test]
+async fn input_tokens_submits_one_content_free_fact_after_owning_parse() {
+    let (sender, mut receiver) = mpsc::channel(2);
+    let test = input_tokens_test_app(true, Some(sender), ProviderMode::OpenAi).await;
+    let clock = crate::execution::RequestLifecycleClock::default();
+    clock.observe_first_public_byte();
+    let expected_first_public_byte_at = clock.first_public_byte_at();
+    let response = call_input_tokens(
+        test.app.clone(),
+        input_tokens_json_request(
+            &valid_input_tokens_body(),
+            Some(INPUT_TOKENS_RAW_KEY),
+            Some(INPUT_TOKENS_LOGICAL_ID),
+            Some("opencode/1.2.3"),
+            Some(3),
+            Some(clock),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let fact = receiver.try_recv().expect("one terminal request fact");
+    assert!(receiver.try_recv().is_err(), "exactly one submission");
+    assert_native_input_terminal(&fact, StatusCode::OK);
+    assert_eq!(
+        fact.client_kind,
+        registry::request_facts::ClientKind::OpenCode
+    );
+    assert_eq!(
+        fact.client_source,
+        registry::request_facts::ClientSource::Explicit
+    );
+    assert_eq!(fact.client_version.as_deref(), Some("1.2.3"));
+    assert_eq!(fact.requested_model.as_deref(), Some("openai/gpt-5.6"));
+    assert_eq!(fact.executable_model.as_deref(), Some("gpt-5.6"));
+    assert_eq!(fact.tools_declared_count, Some(1));
+    assert_eq!(
+        fact.tool_classes,
+        Some(registry::request_facts::TOOL_CLASS_CUSTOM_FUNCTION)
+    );
+    assert_eq!(
+        fact.tool_choice_mode,
+        Some(registry::request_facts::ToolChoiceMode::Required)
+    );
+    assert_eq!(fact.parallel_tools_requested, Some(false));
+    assert_eq!(fact.tool_results_in_input, Some(false));
+    assert_eq!(fact.structured_output_flag, Some(true));
+    assert_eq!(fact.reasoning_flag, Some(true));
+    assert_eq!(fact.service_tier.as_deref(), Some("priority"));
+    assert_eq!(
+        fact.input_modalities,
+        Some(registry::request_facts::MODALITY_TEXT)
+    );
+    assert_eq!(fact.output_modalities, None);
+    assert_eq!(
+        fact.terminal.first_public_byte_at,
+        expected_first_public_byte_at
+    );
+    let debug = format!("{fact:?}");
+    for private in [
+        "private prompt marker",
+        "private_tool_name",
+        "private_schema_name",
+        "secret-never-a-fact",
+    ] {
+        assert!(!debug.contains(private), "fact Debug leaked {private:?}");
+    }
+}
+
+#[tokio::test]
+async fn input_tokens_parser_gate_discards_models_and_classifier_on_rejection() {
+    let peer_cases = [
+        (vec![b'x'; OPENAI_BODY_LIMIT + 1], StatusCode::BAD_REQUEST),
+        (b"{".to_vec(), StatusCode::BAD_REQUEST),
+        (
+            serde_json::to_vec(&json!({
+                "model": "openai/gpt-5.6",
+                "input": "private rejected content",
+                "tools": [{"type": "function", "name": "private_rejected_tool"}],
+                "parallel_tool_calls": "not-a-boolean"
+            }))
+            .unwrap(),
+            StatusCode::BAD_REQUEST,
+        ),
+    ];
+    for (body, expected_status) in peer_cases {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let test = input_tokens_test_app(true, Some(sender), ProviderMode::OpenAi).await;
+        let response = call_input_tokens(
+            test.app.clone(),
+            input_tokens_request(
+                body,
+                Some(INPUT_TOKENS_RAW_KEY),
+                Some(INPUT_TOKENS_LOGICAL_ID),
+                None,
+                Some(3),
+                Some(crate::execution::RequestLifecycleClock::default()),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), expected_status);
+        let fact = receiver.try_recv().expect("post-admission error fact");
+        assert_native_input_terminal(&fact, expected_status);
+        assert_eq!(fact.requested_model, None);
+        assert_eq!(fact.executable_model, None);
+        assert_eq!(fact.tools_declared_count, None);
+        assert_eq!(fact.tool_classes, None);
+        assert_eq!(fact.tool_choice_mode, None);
+        assert_eq!(fact.parallel_tools_requested, None);
+        assert_eq!(fact.tool_results_in_input, None);
+        assert_eq!(fact.structured_output_flag, None);
+        assert_eq!(fact.reasoning_flag, None);
+        assert_eq!(fact.service_tier, None);
+        assert_eq!(fact.input_modalities, None);
+        assert_eq!(fact.output_modalities, None);
+        assert!(receiver.try_recv().is_err(), "exactly one submission");
+    }
+}
+
+#[tokio::test]
+async fn input_tokens_prepare_failure_retains_parser_accepted_evidence() {
+    let (sender, mut receiver) = mpsc::channel(1);
+    let test = input_tokens_test_app(true, Some(sender), ProviderMode::OpenAi).await;
+    let mut body = valid_input_tokens_body();
+    body["previous_response_id"] = json!("resp_missing");
+    let response = call_input_tokens(
+        test.app.clone(),
+        input_tokens_json_request(
+            &body,
+            Some(INPUT_TOKENS_RAW_KEY),
+            Some(INPUT_TOKENS_LOGICAL_ID),
+            Some("claude_code/2.1.220"),
+            Some(3),
+            Some(crate::execution::RequestLifecycleClock::default()),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let fact = receiver.try_recv().expect("prepare failure fact");
+    assert_native_input_terminal(&fact, StatusCode::BAD_REQUEST);
+    assert_eq!(fact.requested_model.as_deref(), Some("openai/gpt-5.6"));
+    assert_eq!(fact.executable_model.as_deref(), Some("gpt-5.6"));
+    assert_eq!(fact.tools_declared_count, Some(1));
+    assert_eq!(fact.structured_output_flag, Some(true));
+    assert_eq!(fact.reasoning_flag, Some(true));
+    assert_eq!(fact.service_tier.as_deref(), Some("priority"));
+    assert_eq!(
+        fact.client_kind,
+        registry::request_facts::ClientKind::ClaudeCode
+    );
+}
+
+#[tokio::test]
+async fn input_tokens_omits_unowned_context_and_normalizes_missing_client() {
+    for (logical_id, lifecycle_clock) in [
+        (
+            None,
+            Some(crate::execution::RequestLifecycleClock::default()),
+        ),
+        (Some(INPUT_TOKENS_LOGICAL_ID), None),
+    ] {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let test = input_tokens_test_app(true, Some(sender), ProviderMode::OpenAi).await;
+        let response = call_input_tokens(
+            test.app.clone(),
+            input_tokens_json_request(
+                &valid_input_tokens_body(),
+                Some(INPUT_TOKENS_RAW_KEY),
+                logical_id,
+                None,
+                None,
+                lifecycle_clock,
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(receiver.try_recv().is_err(), "missing context emitted fact");
+    }
+
+    let (sender, mut receiver) = mpsc::channel(1);
+    let test = input_tokens_test_app(true, Some(sender), ProviderMode::OpenAi).await;
+    let response = call_input_tokens(
+        test.app.clone(),
+        input_tokens_json_request(
+            &valid_input_tokens_body(),
+            Some(INPUT_TOKENS_RAW_KEY),
+            Some(INPUT_TOKENS_LOGICAL_ID),
+            None,
+            None,
+            Some(crate::execution::RequestLifecycleClock::default()),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let fact = receiver.try_recv().expect("missing client stays unknown");
+    assert_eq!(
+        fact.client_kind,
+        registry::request_facts::ClientKind::Unknown
+    );
+    assert_eq!(
+        fact.client_source,
+        registry::request_facts::ClientSource::Unknown
+    );
+    assert_eq!(fact.client_version, None);
+}
+
+#[tokio::test]
+async fn input_tokens_unauthorized_and_admin_traffic_emit_no_fact() {
+    let (sender, mut receiver) = mpsc::channel(2);
+    let mut test = input_tokens_test_app(true, Some(sender), ProviderMode::OpenAi).await;
+    Arc::get_mut(&mut test.app.cfg)
+        .expect("test owns config")
+        .api_keys
+        .push("native-input-admin".into());
+    for (key, expected_status) in [
+        ("unknown", StatusCode::UNAUTHORIZED),
+        ("native-input-admin", StatusCode::OK),
+    ] {
+        let response = call_input_tokens(
+            test.app.clone(),
+            input_tokens_json_request(
+                &valid_input_tokens_body(),
+                Some(key),
+                Some(INPUT_TOKENS_LOGICAL_ID),
+                None,
+                None,
+                Some(crate::execution::RequestLifecycleClock::default()),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), expected_status);
+    }
+    assert!(receiver.try_recv().is_err(), "excluded auth emitted fact");
+}
+
+#[tokio::test]
+async fn input_tokens_fixed_and_combined_leaf_each_emit_exactly_one_fact() {
+    for provider in [ProviderMode::OpenAi, ProviderMode::Combined] {
+        let (sender, mut receiver) = mpsc::channel(2);
+        let test = input_tokens_test_app(true, Some(sender), provider).await;
+        let response = call_input_tokens(
+            test.app.clone(),
+            input_tokens_json_request(
+                &valid_input_tokens_body(),
+                Some(INPUT_TOKENS_RAW_KEY),
+                Some(INPUT_TOKENS_LOGICAL_ID),
+                None,
+                None,
+                Some(crate::execution::RequestLifecycleClock::default()),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(receiver.try_recv().is_ok(), "leaf omitted fact");
+        assert!(receiver.try_recv().is_err(), "leaf emitted duplicate fact");
+    }
+}
+
+#[tokio::test]
+async fn input_tokens_fail_open_delivery_paths_preserve_exact_response() {
+    let body = valid_input_tokens_body();
+    let baseline = input_tokens_test_app(true, None, ProviderMode::OpenAi).await;
+    let baseline = call_input_tokens(
+        baseline.app.clone(),
+        input_tokens_json_request(
+            &body,
+            Some(INPUT_TOKENS_RAW_KEY),
+            None,
+            None,
+            None,
+            Some(crate::execution::RequestLifecycleClock::default()),
+        ),
+    )
+    .await;
+    let baseline = input_tokens_response_snapshot(baseline).await;
+
+    let (full_sender, _full_receiver) = mpsc::channel(1);
+    full_sender
+        .try_send(
+            super::super::billing::CodexRequestFactSeed::for_test(
+                INPUT_TOKENS_LOGICAL_ID,
+                crate::execution::ClientAttribution::unknown_for_internal_use(),
+                registry::ExecutionAttempt::direct(),
+                INPUT_TOKENS_ACCOUNT_ID,
+                INPUT_TOKENS_KEY_ID,
+                pool::now(),
+                crate::execution::RequestLifecycleClock::default(),
+            )
+            .terminal_input_tokens_fact(StatusCode::OK, None, None, None),
+        )
+        .unwrap();
+    let full = input_tokens_test_app(true, Some(full_sender), ProviderMode::OpenAi).await;
+    let full = call_input_tokens(
+        full.app.clone(),
+        input_tokens_json_request(
+            &body,
+            Some(INPUT_TOKENS_RAW_KEY),
+            Some(INPUT_TOKENS_LOGICAL_ID),
+            None,
+            None,
+            Some(crate::execution::RequestLifecycleClock::default()),
+        ),
+    )
+    .await;
+    let full = input_tokens_response_snapshot(full).await;
+
+    let (closed_sender, closed_receiver) = mpsc::channel(1);
+    drop(closed_receiver);
+    let closed = input_tokens_test_app(true, Some(closed_sender), ProviderMode::OpenAi).await;
+    let closed = call_input_tokens(
+        closed.app.clone(),
+        input_tokens_json_request(
+            &body,
+            Some(INPUT_TOKENS_RAW_KEY),
+            Some(INPUT_TOKENS_LOGICAL_ID),
+            None,
+            None,
+            Some(crate::execution::RequestLifecycleClock::default()),
+        ),
+    )
+    .await;
+    let closed = input_tokens_response_snapshot(closed).await;
+
+    assert_eq!(baseline, full, "queue-full changed public response");
+    assert_eq!(baseline, closed, "writer-closed changed public response");
+}
+
+#[tokio::test]
+async fn input_tokens_sqlite_unsupported_preserves_response() {
+    let body = valid_input_tokens_body();
+    let baseline = input_tokens_test_app(true, None, ProviderMode::OpenAi).await;
+    let baseline = call_input_tokens(
+        baseline.app.clone(),
+        input_tokens_json_request(
+            &body,
+            Some(INPUT_TOKENS_RAW_KEY),
+            None,
+            None,
+            None,
+            Some(crate::execution::RequestLifecycleClock::default()),
+        ),
+    )
+    .await;
+    let baseline = input_tokens_response_snapshot(baseline).await;
+
+    let observed = input_tokens_test_app(true, None, ProviderMode::OpenAi).await;
+    let billing = Arc::clone(observed.app.billing.as_ref().unwrap());
+    let response = call_input_tokens(
+        observed.app.clone(),
+        input_tokens_json_request(
+            &body,
+            Some(INPUT_TOKENS_RAW_KEY),
+            Some(INPUT_TOKENS_LOGICAL_ID),
+            None,
+            None,
+            Some(crate::execution::RequestLifecycleClock::default()),
+        ),
+    )
+    .await;
+    let response = input_tokens_response_snapshot(response).await;
+    assert_eq!(baseline, response);
+    assert_eq!(
+        billing.request_fact_delivery_snapshot().dropped_unsupported,
+        1
+    );
+}
+
+#[test]
+fn input_tokens_terminal_fact_persists_privacy_bounded_postgres_row() {
+    const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_441;
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping native input_tokens fact row: test URL is unset");
+        return;
+    };
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let instance_id = format!("native-input-fact-{}-{unique}", std::process::id());
+    let mut lock_holder = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    lock_holder
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    lock_holder
+        .batch_execute(
+            "TRUNCATE request_facts,execution_group_winner,settlement_outbox,reservations, \
+             capacity_leases,leader_leases,engine_instances,usage_events,ledger,api_keys,accounts \
+             RESTART IDENTITY CASCADE",
+        )
+        .unwrap();
+    pg.account_create(INPUT_TOKENS_ACCOUNT_ID, None, 10_000)
+        .unwrap();
+    pg.account_topup(
+        INPUT_TOKENS_ACCOUNT_ID,
+        1_000,
+        Some("native-input-fact-seed"),
+    )
+    .unwrap();
+    pg.key_issue(INPUT_TOKENS_RAW_KEY, INPUT_TOKENS_ACCOUNT_ID, None)
+        .unwrap();
+    let key_id = pg.key_get(INPUT_TOKENS_RAW_KEY).unwrap().unwrap().key_id;
+    let owner = pg.claim_instance(&instance_id, 600).unwrap();
+    drop(pg);
+
+    let billing = Arc::new(
+        AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+            Some(owner),
+            1,
+            0,
+        )
+        .unwrap(),
+    );
+    let cfg = input_tokens_proxy_config();
+    let gateway_path = input_tokens_unique_path("pg-gateway");
+    let app = AppState {
+        provider: ProviderMode::OpenAi,
+        authority: Arc::new(registry::authority::AuthorityConfig::Postgres { url: url.clone() }),
+        data_db_path: Arc::new(gateway_path.to_string_lossy().into_owned()),
+        pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
+        affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
+        clients: Arc::new(Clients::new(&cfg)),
+        codex: Some(Arc::new(gateway())),
+        gemini: None,
+        kimi: None,
+        glm: None,
+        tripo3d: None,
+        suno: None,
+        billing: Some(Arc::clone(&billing)),
+        authority_ready: Arc::new(AtomicBool::new(true)),
+        breaker: Arc::new(Breaker::new(1)),
+        metrics: Arc::new(Metrics::new()),
+        probe_poke: None,
+        admin_changes: tokio::sync::broadcast::channel(16).0,
+        cfg,
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let response = call_input_tokens(
+                app,
+                input_tokens_json_request(
+                    &valid_input_tokens_body(),
+                    Some(INPUT_TOKENS_RAW_KEY),
+                    Some(INPUT_TOKENS_LOGICAL_ID),
+                    Some("claude_code/2.1.220"),
+                    Some(3),
+                    Some(crate::execution::RequestLifecycleClock::default()),
+                ),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let row = loop {
+        if let Some(row) = lock_holder
+            .query_opt(
+                "SELECT logical_request_id,billing_request_id,execution_group_id,attempt, \
+                        account_id,key_id,client_kind,client_source,client_version,provider_plane, \
+                        route_class,request_class,requested_model,executable_model,stream_flag, \
+                        tools_declared_count,tool_classes,tool_choice_mode,parallel_tools_requested, \
+                        tool_results_in_input,structured_output_flag,reasoning_flag,service_tier, \
+                        input_modalities,output_modalities,http_status_code,provider_terminal_class, \
+                        delivery_state,billing_outcome,downstream_disconnect,upstream_request_id, \
+                        first_public_byte_at,internal_attempt_count,failure_class,tool_calls_in_output \
+                   FROM request_facts WHERE logical_request_id=$1",
+                &[&INPUT_TOKENS_LOGICAL_ID],
+            )
+            .unwrap()
+        {
+            break row;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "native input_tokens fact was not persisted"
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(row.get::<_, String>(0), INPUT_TOKENS_LOGICAL_ID);
+    assert_eq!(row.get::<_, Option<String>>(1), None);
+    assert_eq!(
+        row.get::<_, Option<String>>(2).as_deref(),
+        Some(INPUT_TOKENS_EXECUTION_GROUP)
+    );
+    assert_eq!(row.get::<_, i32>(3), 3);
+    assert_eq!(row.get::<_, String>(4), INPUT_TOKENS_ACCOUNT_ID);
+    assert_eq!(row.get::<_, String>(5), key_id);
+    assert_ne!(row.get::<_, String>(5), INPUT_TOKENS_RAW_KEY);
+    assert_eq!(row.get::<_, String>(6), "claude_code");
+    assert_eq!(row.get::<_, String>(7), "explicit");
+    assert_eq!(row.get::<_, Option<String>>(8).as_deref(), Some("2.1.220"));
+    assert_eq!(row.get::<_, String>(9), "openai");
+    assert_eq!(row.get::<_, String>(10), "native");
+    assert_eq!(row.get::<_, String>(11), "input_tokens");
+    assert_eq!(
+        row.get::<_, Option<String>>(12).as_deref(),
+        Some("openai/gpt-5.6")
+    );
+    assert_eq!(row.get::<_, Option<String>>(13).as_deref(), Some("gpt-5.6"));
+    assert!(!row.get::<_, bool>(14));
+    assert_eq!(row.get::<_, Option<i32>>(15), Some(1));
+    assert_eq!(
+        row.get::<_, Option<i32>>(16),
+        Some(registry::request_facts::TOOL_CLASS_CUSTOM_FUNCTION)
+    );
+    assert_eq!(
+        row.get::<_, Option<String>>(17).as_deref(),
+        Some("required")
+    );
+    assert_eq!(row.get::<_, Option<bool>>(18), Some(false));
+    assert_eq!(row.get::<_, Option<bool>>(19), Some(false));
+    assert_eq!(row.get::<_, Option<bool>>(20), Some(true));
+    assert_eq!(row.get::<_, Option<bool>>(21), Some(true));
+    assert_eq!(
+        row.get::<_, Option<String>>(22).as_deref(),
+        Some("priority")
+    );
+    assert_eq!(
+        row.get::<_, Option<i32>>(23),
+        Some(registry::request_facts::MODALITY_TEXT)
+    );
+    assert_eq!(row.get::<_, Option<i32>>(24), None);
+    assert_eq!(row.get::<_, Option<i32>>(25), Some(200));
+    assert_eq!(row.get::<_, String>(26), "success");
+    assert_eq!(row.get::<_, String>(27), "completed");
+    assert_eq!(row.get::<_, String>(28), "not_applicable");
+    assert_eq!(row.get::<_, Option<bool>>(29), None);
+    assert_eq!(row.get::<_, Option<String>>(30), None);
+    assert_eq!(row.get::<_, Option<i64>>(31), None);
+    assert_eq!(row.get::<_, Option<i32>>(32), Some(0));
+    assert_eq!(row.get::<_, Option<String>>(33), None);
+    assert_eq!(row.get::<_, Option<bool>>(34), None);
+    let row_debug = format!("{row:?}");
+    for private in [
+        "private prompt marker",
+        "private_tool_name",
+        "private_schema_name",
+        "secret-never-a-fact",
+    ] {
+        assert!(
+            !row_debug.contains(private),
+            "PostgreSQL row leaked {private:?}"
+        );
+    }
+    lock_holder
+        .query_one(
+            "SELECT pg_advisory_unlock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    drop(billing);
+    let _ = std::fs::remove_file(gateway_path);
+}
+
+#[tokio::test]
+async fn input_tokens_terminal_seal_rejects_late_outer_observation() {
+    let (sender, mut receiver) = mpsc::channel(1);
+    let test = input_tokens_test_app(true, Some(sender), ProviderMode::OpenAi).await;
+    let clock = crate::execution::RequestLifecycleClock::default();
+    let response = call_input_tokens(
+        test.app.clone(),
+        input_tokens_json_request(
+            &valid_input_tokens_body(),
+            Some(INPUT_TOKENS_RAW_KEY),
+            Some(INPUT_TOKENS_LOGICAL_ID),
+            None,
+            None,
+            Some(clock.clone()),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let fact = receiver.try_recv().expect("one fact");
+    assert_eq!(fact.terminal.first_public_byte_at, None);
+    clock.observe_first_public_byte();
+    assert_eq!(
+        clock.first_public_byte_at(),
+        None,
+        "late observation won seal"
+    );
 }
 
 #[test]

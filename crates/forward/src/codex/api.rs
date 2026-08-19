@@ -1,11 +1,12 @@
 //! OpenAI-compatible `/v1/responses` and model-discovery HTTP surface.
 
-use super::billing::{begin_admission, AdmissionError};
+use super::billing::{begin_admission, AdmissionError, CodexRequestFactSeed};
 use super::{
     new_id, CodexGateway, CodexModel, CodexTurnRequest, CodexTurnResult, CodexUsage, HistoryError,
     ProcessError, StoredHistory, TurnUpdate,
 };
 use crate::proxy::{authorize, with_not_started, Authz, TerminalErrorReason};
+use crate::request_classification::{classify_openai_responses, RequestClassification};
 use crate::state::AppState;
 use crate::validation::{optional_bool as strict_optional_bool, optional_positive_u64};
 use axum::body::{to_bytes, Body};
@@ -14,6 +15,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use futures_util::Stream;
+use registry::request_facts::MAX_REQUEST_FACT_MODEL_LEN;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;
@@ -716,37 +718,117 @@ pub async fn input_tokens(
         Ok(pending) => pending,
         Err(error) => return ApiError::from(error).into_response(),
     };
+    let admitted_at = pool::now();
+    let fact_seed = pending.request_fact_seed(
+        parts.extensions.get::<crate::execution::LogicalRequestId>(),
+        parts
+            .extensions
+            .get::<crate::execution::ClientAttribution>(),
+        parts
+            .extensions
+            .get::<crate::execution::RequestLifecycleClock>(),
+        admitted_at,
+    );
+    let tenant_scope = pending.tenant_scope().to_owned();
+    let (response, evidence) = input_tokens_after_admission(gateway, &tenant_scope, body).await;
+    submit_input_tokens_fact(
+        app.billing.as_deref(),
+        fact_seed,
+        response.status(),
+        evidence,
+    );
+    response
+}
+
+#[derive(Default)]
+struct InputTokensFactEvidence {
+    requested_model: Option<String>,
+    executable_model: Option<String>,
+    classification: Option<RequestClassification>,
+}
+
+async fn input_tokens_after_admission(
+    gateway: Arc<CodexGateway>,
+    tenant_scope: &str,
+    body: Body,
+) -> (Response, InputTokensFactEvidence) {
     let raw = match to_bytes(body, OPENAI_BODY_LIMIT).await {
         Ok(raw) => raw,
         Err(_) => {
-            return ApiError::invalid("Request body exceeds the 8 MiB limit.", None::<String>)
-                .into_response()
+            return (
+                ApiError::invalid("Request body exceeds the 8 MiB limit.", None::<String>)
+                    .into_response(),
+                InputTokensFactEvidence::default(),
+            )
         }
     };
     let value: Value = match serde_json::from_slice(&raw) {
         Ok(value) => value,
         Err(_) => {
-            return ApiError::invalid("Invalid JSON in request body.", None::<String>)
-                .into_response()
+            return (
+                ApiError::invalid("Invalid JSON in request body.", None::<String>).into_response(),
+                InputTokensFactEvidence::default(),
+            )
         }
     };
+    // These are untrusted, content-free candidates only. The owning Responses parser below is the
+    // acceptance boundary; no field is published if parsing rejects the client value.
+    let classification_candidate = classify_openai_responses(&value);
+    let requested_model_candidate = value
+        .get("model")
+        .and_then(Value::as_str)
+        .and_then(bounded_request_fact_model);
     let parsed = match parse_responses_request(&gateway, value) {
         Ok(parsed) => parsed,
-        Err(error) => return error.into_response(),
+        Err(error) => return (error.into_response(), InputTokensFactEvidence::default()),
     };
-    let prepared = match prepare_turn(&gateway, pending.tenant_scope(), parsed).await {
+    let evidence = InputTokensFactEvidence {
+        requested_model: requested_model_candidate,
+        executable_model: bounded_request_fact_model(&parsed.public_model.id),
+        classification: Some(classification_candidate),
+    };
+    let prepared = match prepare_turn(&gateway, tenant_scope, parsed).await {
         Ok(prepared) => prepared,
-        Err(error) => return error.into_response(),
+        Err(error) => return (error.into_response(), evidence),
     };
     let input_tokens = prepared.estimated_input_tokens;
-    json_response(
-        StatusCode::OK,
-        json!({
-            "object": "response.input_tokens",
-            "input_tokens": input_tokens
-        }),
-        &new_id("req"),
+    (
+        json_response(
+            StatusCode::OK,
+            json!({
+                "object": "response.input_tokens",
+                "input_tokens": input_tokens
+            }),
+            &new_id("req"),
+        ),
+        evidence,
     )
+}
+
+fn bounded_request_fact_model(value: &str) -> Option<String> {
+    (!value.is_empty()
+        && value.len() <= MAX_REQUEST_FACT_MODEL_LEN
+        && value.is_ascii()
+        && !value.bytes().any(|byte| byte.is_ascii_control()))
+    .then(|| value.to_owned())
+}
+
+fn submit_input_tokens_fact(
+    billing: Option<&crate::billing::AsyncBilling>,
+    fact_seed: Option<CodexRequestFactSeed>,
+    status: StatusCode,
+    evidence: InputTokensFactEvidence,
+) {
+    let (Some(billing), Some(fact_seed)) = (billing, fact_seed) else {
+        return;
+    };
+    let fact = fact_seed.terminal_input_tokens_fact(
+        status,
+        evidence.requested_model,
+        evidence.executable_model,
+        evidence.classification,
+    );
+    let _ = billing.try_submit_terminal_request_fact(fact);
 }
 
 async fn authorize_models(

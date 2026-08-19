@@ -50,9 +50,10 @@ by the provider quote builders, plus the hot tariff book below.
 the env admin is checked FIRST in memory; otherwise the client key → `key_account` (JOIN key→account)
 → ACCOUNT balance (a non-positive balance rejects only a positive multiplier). The metered auth result
 carries both the raw secret `key` for every existing reserve/settle flow and the authoritative non-secret
-`key_id`. The two request-fact producers consume only that non-secret identity for metered Codex
-universal and Anthropic native `POST /v1/messages/count_tokens`; every money path still receives the
-raw key, and the two identities must never be substituted for one another. A zero multiplier is
+`key_id`. The three request-fact producers consume only that non-secret identity for metered Codex
+universal Messages count, OpenAI native Responses input-token count, and Anthropic native Messages
+count; every money path still receives the raw key, and the two identities must never be substituted
+for one another. A zero multiplier is
 free but metered on every provider: admission holds zero, settlement debits zero and still persists
 the authoritative usage event. Balance/reserve/markup live on the account (shared across all of a user's keys).
 All DB operations go through `AsyncBilling` (DB actors: 1 writer + N readers; sync PostgreSQL/legacy
@@ -67,11 +68,12 @@ fence limits collection to the aggregate −$1 floor; any remainder is explicit 
 `uncollected_nano`, never a silent clamp or a second per-request overdraft. 4xx/errors/rotation are
 NOT metered.
 
-**Request-fact producer plumbing (S3A plus the first narrow producer):** `AsyncBilling` has opt-in
+**Request-fact producer plumbing (S3A plus three narrow producers):** `AsyncBilling` has opt-in
 typed fact-aware reserve, delivery, and terminal settlement commands. On PostgreSQL they stay in the
 existing single money writer and delegate to the registry S2 same-transaction methods; legacy APIs
 pass no fact and every billable path remains dormant. The only production callers are the nonbillable
-Codex/OpenAI universal and Anthropic native `POST /v1/messages/count_tokens` paths. Each starts only
+Codex/OpenAI universal Messages count, OpenAI native `POST /v1/responses/input_tokens`, and
+Anthropic native Messages count paths. Each starts only
 after successful metered route/body admission, captures the typed logical/lifecycle context plus
 authoritative account/key and execution identities, and converges every later exit through one
 nonblocking terminal submission. Anthropic owns one request-scoped RAII guard across subscription
@@ -96,17 +98,19 @@ the authoritative same-transaction key lookup/comparison, while SQLite deliberat
 SQLite keeps the existing money semantics, starts no fact thread, persists no analytics, and reports
 `UnsupportedAuthority` for terminal-at-insert submission. Provider-process request-context admission
 is implemented separately: the reserved logical-ID header and optional public client-attribution
-header are consumed into typed request extensions. Both count_tokens producers use only typed
+header are consumed into typed request extensions. All three nonbillable producers use only typed
 logical/lifecycle values; either value's absence after metered auth omits analytics rather than
 creating or guessing identity or time. A missing typed
 attribution extension still records client `unknown`. Codex records
 `openai`/`universal`/`count_tokens`, no upstream attempt, and bounded requested/canonical executable
-models. Anthropic records `anthropic`/`native`/`count_tokens`; bounded client model and structural
-classifier evidence remain untrusted candidates until an upstream 2xx proves the owning native shape
-accepted. Rejection discards both, executable model stays absent without exact execution proof, and
-neither guard retains raw JSON. Admin, unauthorized, all billable paths, native Responses
-token counting, Gemini, metrics, read APIs, and every other production request-fact surface remain
-absent. Dropped coverage is visible
+models. OpenAI native input-token counting records `openai`/`native`/`input_tokens`, no upstream
+attempt, and publishes bounded model plus content-free structural candidates only after its owning
+Responses parser accepts them; a later preparation/history error retains that accepted evidence.
+Anthropic records `anthropic`/`native`/`count_tokens`; bounded client model and structural classifier
+evidence remain untrusted candidates until an upstream 2xx proves the owning native shape accepted.
+Rejection discards both, executable model stays absent without exact execution proof, and no producer
+retains raw JSON. Admin, unauthorized, all billable paths, Gemini, metrics, read APIs, and every other
+production request-fact surface remain absent. Dropped coverage is visible
 only through the existing internal delivery snapshot, not a public metric.
 For policy keys the cap takes the minimum of the account balance and the remaining lifetime limit. Such keys
 bypass the auth TTL cache; expiry and limit are re-checked inside the atomic reserve transaction.
@@ -229,8 +233,9 @@ top-level count. Native Responses selects a single validated `input.additional_t
 present (including beside an explicit empty top-level list); it is classified once and the later
 synthetic dynamic functions are never counted. The classifier stores no content, names, schemas, arguments, results, MCP labels,
 raw JSON, headers, metadata or other arbitrary strings; its fields are private, `Debug` is redacted and it has no
-serialization implementation. Only the narrow Anthropic native count_tokens producer is wired;
-remaining producer integration stays stage 6/7 and must preserve response/upstream bytes.
+serialization implementation. The narrow Anthropic native count_tokens and OpenAI native
+input_tokens producers are wired; remaining producer integration stays stage 6/7 and must preserve
+response/upstream bytes.
 Lifecycle clocks and output tool-call evidence remain separate later-producer work.
 
 **Request lifecycle clock carrier (`execution.rs`, `crates/server/src/http.rs`):** each successfully
@@ -246,10 +251,11 @@ inside the inclusive `[admitted_at, terminal_at]` bounds; invalid or out-of-orde
 `NULL`, never clamped or fabricated, while the open state is still sealed. Repeated seals are
 idempotent. The wrapper and the outer active-request guard delegate complete frames, errors,
 `is_end_stream` and `size_hint` without buffering, rewriting, eager polling, I/O or settlement.
-The production consumers are the nonbillable Codex/OpenAI universal and Anthropic native
-`POST /v1/messages/count_tokens` fact producers; each seals at terminal-fact construction without
-waiting for a later body poll. Billable/TeeMeter/Codex-generation integration and all remaining
-nonbillable producers stay incomplete, so Stage 5/6 and producer coverage remain incomplete.
+The production consumers are the nonbillable Codex/OpenAI universal Messages count, OpenAI native
+Responses input-token count, and Anthropic native Messages count fact producers; each seals at
+terminal-fact construction without waiting for a later body poll. Billable/TeeMeter/Codex-generation
+integration and the remaining Gemini nonbillable producers stay incomplete, so Stage 5/6 and
+producer coverage remain incomplete.
 
 **Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** every
 successful Anthropic turn, including unmetered admin traffic, after authoritative usage builds one
