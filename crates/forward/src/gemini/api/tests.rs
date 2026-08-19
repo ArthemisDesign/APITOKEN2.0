@@ -598,7 +598,7 @@ fn gateway_fixture_with_models_calibration_and_node(
             default_rate_limit_cool_secs: 60,
             rate_limit_rpm_cool_secs: 2,
             rate_limit_unknown_cool_secs: 60,
-        cooldown_state_file: String::new(),
+            cooldown_state_file: String::new(),
             quota_reserve_fraction: 0.05,
             quota_reserve_jitter: 0.01,
             health_probe_interval_secs: 60,
@@ -5274,7 +5274,9 @@ fn retry_info_and_headers_are_parsed_without_exposing_body() {
     let headers = HeaderMap::new();
     let body = br#"{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"2.25s"}]}}"#;
     let hint = rate_limit::retry_after_header_delay(Some(&headers)).or_else(|| {
-        serde_json::from_slice::<Value>(body).ok().and_then(|value| rate_limit::retry_info_delay(&value))
+        serde_json::from_slice::<Value>(body)
+            .ok()
+            .and_then(|value| rate_limit::retry_info_delay(&value))
     });
     assert_eq!(hint, Some(3));
 }
@@ -5508,7 +5510,10 @@ fn cool_test_config() -> super::super::config::GeminiConfig {
         upstream: "http://127.0.0.1".to_string(),
         profiles_file: String::new(),
         credential_layout: super::super::config::GeminiCredentialLayout::SealedRoster,
-        credential_keys: CredentialKeyring::parse("00:0000000000000000000000000000000000000000000000000000000000000000").unwrap(),
+        credential_keys: CredentialKeyring::parse(
+            "00:0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap(),
         models: Vec::new(),
         connect_timeout_secs: 5,
         read_timeout_secs: 5,
@@ -5550,7 +5555,10 @@ fn reason_diagnostic(reason: &str) -> RateLimitDiagnostic {
 fn hinted_real_quota_exhaustion_is_honoured_in_full() {
     let cfg = cool_test_config();
     let diagnostic = reason_diagnostic("QUOTA_EXHAUSTED");
-    assert_eq!(generation_429_cool_secs(Some(13_437), &diagnostic, true, &cfg), 13_437);
+    assert_eq!(
+        generation_429_cool_secs(Some(13_437), &diagnostic, true, &cfg),
+        13_437
+    );
 }
 
 #[test]
@@ -5558,14 +5566,20 @@ fn hinted_transient_stall_is_capped_not_honoured_verbatim() {
     let cfg = cool_test_config();
     let diagnostic = reason_diagnostic("SOME_TRANSIENT_STALL");
     // A 1376s hint on a non-exhaustion reason must be capped to the short window.
-    assert_eq!(generation_429_cool_secs(Some(1_376), &diagnostic, true, &cfg), 60);
+    assert_eq!(
+        generation_429_cool_secs(Some(1_376), &diagnostic, true, &cfg),
+        60
+    );
 }
 
 #[test]
 fn hinted_short_hint_below_cap_is_kept() {
     let cfg = cool_test_config();
     let diagnostic = reason_diagnostic("RATE_LIMIT_EXCEEDED");
-    assert_eq!(generation_429_cool_secs(Some(2), &diagnostic, true, &cfg), 2);
+    assert_eq!(
+        generation_429_cool_secs(Some(2), &diagnostic, true, &cfg),
+        2
+    );
 }
 
 #[test]
@@ -5580,4 +5594,328 @@ fn unhinted_without_quota_remaining_uses_default_cool() {
     let cfg = cool_test_config();
     let diagnostic = RateLimitDiagnostic::from_value(None, None);
     assert_eq!(generation_429_cool_secs(None, &diagnostic, false, &cfg), 60);
+}
+
+#[test]
+fn count_tokens_fact_handoff_is_exactly_once_privacy_bounded_and_parser_gated() {
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+    let mut billing = AsyncBilling::start(":memory:".to_string(), 1).unwrap();
+    billing.replace_request_fact_inbox_for_test(sender);
+    let billing = Arc::new(billing);
+    let clock = crate::execution::RequestLifecycleClock::default();
+    let seed = GeminiRequestFactSeed {
+        logical_request_id: "123e4567-e89b-42d3-a456-426614174099".into(),
+        client_attribution: crate::execution::ClientAttribution::unknown_for_internal_use(),
+        execution: registry::ExecutionAttempt::direct(),
+        account_id: ACCOUNT_ID.into(),
+        key_id: "key_123e4567e89b42d3a456426614174099".into(),
+        admitted_at: pool::now(),
+        lifecycle_clock: clock.clone(),
+    };
+    let intent = UniversalCountTokensIntent {
+        requested_model: Some("google/gemini-integration-model".into()),
+        classification: classify_gemini_generate_content(&json!({"tools": []})),
+    };
+    let guard = GeminiCountTokensFactGuard::new(billing, seed, Some(intent));
+    let observer = guard.actual_send_observer();
+    observer.record();
+    observer.record();
+    let mut response = (StatusCode::OK, "native").into_response();
+    guard.terminal_response(&mut response);
+    let handoff = response
+        .extensions_mut()
+        .remove::<GeminiCountTokensFactHandoff>()
+        .unwrap();
+    handoff.finish(StatusCode::INTERNAL_SERVER_ERROR, true);
+    let fact = receiver.try_recv().unwrap();
+    assert_eq!(fact.provider_plane, "gemini");
+    assert_eq!(fact.route_class, "universal");
+    assert_eq!(fact.request_class, "count_tokens");
+    assert_eq!(
+        fact.requested_model.as_deref(),
+        Some("google/gemini-integration-model")
+    );
+    assert_eq!(fact.executable_model, None);
+    assert_eq!(fact.terminal.http_status_code, Some(500));
+    assert_eq!(fact.terminal.internal_attempt_count, Some(2));
+    assert_eq!(
+        fact.terminal.provider_terminal_class,
+        ProviderTerminalClass::ProtocolError
+    );
+    assert_eq!(fact.terminal.delivery_state, DeliveryState::NotStarted);
+    assert_eq!(clock.first_public_byte_at(), None);
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
+fn count_tokens_fact_native_acceptance_and_drop_are_conservative() {
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+    let mut billing = AsyncBilling::start(":memory:".to_string(), 1).unwrap();
+    billing.replace_request_fact_inbox_for_test(sender);
+    let seed = GeminiRequestFactSeed {
+        logical_request_id: "123e4567-e89b-42d3-a456-426614174098".into(),
+        client_attribution: crate::execution::ClientAttribution::unknown_for_internal_use(),
+        execution: registry::ExecutionAttempt::grouped("123e4567-e89b-42d3-a456-426614174097", 2)
+            .unwrap(),
+        account_id: ACCOUNT_ID.into(),
+        key_id: "key_123e4567e89b42d3a456426614174098".into(),
+        admitted_at: pool::now(),
+        lifecycle_clock: crate::execution::RequestLifecycleClock::default(),
+    };
+    let mut guard = GeminiCountTokensFactGuard::new(Arc::new(billing), seed, None);
+    guard.update_after_native_accept(
+        "gemini-integration-model",
+        &json!({"contents": [], "tools": [{"googleSearch": {}}]}),
+    );
+    guard.resolve_executable_model("gemini-integration-model");
+    drop(guard);
+    let fact = receiver.try_recv().unwrap();
+    assert_eq!(fact.route_class, "native");
+    assert_eq!(
+        fact.requested_model.as_deref(),
+        Some("gemini-integration-model")
+    );
+    assert_eq!(
+        fact.executable_model.as_deref(),
+        Some("gemini-integration-model")
+    );
+    assert_eq!(fact.terminal.http_status_code, None);
+    assert_eq!(fact.terminal.internal_attempt_count, None);
+    assert_eq!(
+        fact.terminal.provider_terminal_class,
+        ProviderTerminalClass::Unknown
+    );
+    assert_eq!(fact.terminal.delivery_state, DeliveryState::Unknown);
+}
+
+#[tokio::test]
+async fn native_count_tokens_emits_one_fact_with_exact_401_resend_attempts() {
+    let refreshed = "gemini-profile-a-fact-refreshed-token";
+    let server = start_mock(MockState::with_replies([
+        (
+            PROFILE_A_KEY,
+            vec![MockReply::json(
+                StatusCode::UNAUTHORIZED,
+                json!({"error": {"message": "refresh me"}}),
+            )],
+        ),
+        (
+            "",
+            vec![MockReply::Json {
+                status: StatusCode::OK,
+                body: json!({"access_token": refreshed, "expires_in": 3600}),
+                retry_after: None,
+            }],
+        ),
+        (
+            refreshed,
+            vec![MockReply::json(StatusCode::OK, json!({"totalTokens": 19}))],
+        ),
+    ]))
+    .await;
+    let token_uri = format!("{}/token", server.upstream);
+    let fixture = gateway_fixture_with_token_uri(&server.upstream, &[None], 2, Some(&token_uri));
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "gemini-count-fact-{}-{unique}.sqlite",
+        std::process::id()
+    ));
+    let mut billing_owned = AsyncBilling::start(path.to_string_lossy().into_owned(), 1).unwrap();
+    billing_owned
+        .create_account(ACCOUNT_ID, None, 10_000)
+        .await
+        .unwrap();
+    billing_owned
+        .topup(ACCOUNT_ID, 1_000_000_000, None)
+        .await
+        .unwrap();
+    billing_owned
+        .issue_key(CUSTOMER_KEY, ACCOUNT_ID, None, None, None)
+        .await
+        .unwrap();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+    billing_owned.replace_request_fact_inbox_for_test(sender);
+    let billing_owned = Arc::new(billing_owned);
+    let app = app_state(fixture.gateway.clone(), Some(billing_owned.clone()));
+    let mut request = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri("/v1beta/models/gemini-integration-model:countTokens")
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .body(Body::from(
+            json!({"contents": [{"role":"user","parts":[{"text":"private prompt"}]}]}).to_string(),
+        ))
+        .unwrap();
+    request.headers_mut().insert(
+        crate::execution::LOGICAL_REQUEST_ID_HEADER,
+        "123e4567-e89b-42d3-a456-426614174090".parse().unwrap(),
+    );
+    let logical = crate::execution::admit_logical_request_id(request.headers_mut()).unwrap();
+    request.extensions_mut().insert(logical);
+    request
+        .extensions_mut()
+        .insert(crate::execution::RequestLifecycleClock::default());
+    let response = api(
+        State(app),
+        ConnectInfo("198.51.100.10:12345".parse().unwrap()),
+        request,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let fact = receiver.recv().await.unwrap();
+    assert_eq!(fact.route_class, "native");
+    assert_eq!(fact.request_class, "count_tokens");
+    assert_eq!(
+        fact.requested_model.as_deref(),
+        Some("gemini-integration-model")
+    );
+    assert_eq!(
+        fact.executable_model.as_deref(),
+        Some("gemini-integration-model")
+    );
+    assert_eq!(fact.terminal.http_status_code, Some(200));
+    assert_eq!(fact.terminal.internal_attempt_count, Some(2));
+    assert_eq!(
+        fact.terminal.provider_terminal_class,
+        ProviderTerminalClass::Success
+    );
+    assert_eq!(fact.terminal.delivery_state, DeliveryState::Completed);
+    let debug = format!("{fact:?}");
+    assert!(!debug.contains("private prompt"));
+    assert!(!debug.contains(CUSTOMER_KEY));
+    drop(billing_owned);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn gemini_count_tokens_facts_persist_universal_and_native_postgres_rows() {
+    const LOCK: i64 = 831_572_908_442;
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping Gemini count-token fact rows: test URL is unset");
+        return;
+    };
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let mut lock = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    lock.query_one("SELECT pg_advisory_lock($1)", &[&LOCK])
+        .unwrap();
+    let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    lock.batch_execute(
+        "TRUNCATE request_facts,execution_group_winner,settlement_outbox,reservations,          capacity_leases,leader_leases,engine_instances,usage_events,ledger,api_keys,accounts          RESTART IDENTITY CASCADE",
+    )
+    .unwrap();
+    pg.account_create(ACCOUNT_ID, None, 10_000).unwrap();
+    pg.account_topup(ACCOUNT_ID, 1_000, Some("gemini-count-facts"))
+        .unwrap();
+    pg.key_issue(CUSTOMER_KEY, ACCOUNT_ID, None).unwrap();
+    let key_id = pg.key_get(CUSTOMER_KEY).unwrap().unwrap().key_id;
+    let owner = pg
+        .claim_instance(
+            &format!("gemini-count-facts-{}-{unique}", std::process::id()),
+            600,
+        )
+        .unwrap();
+    drop(pg);
+    let billing = Arc::new(
+        AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+            Some(owner),
+            1,
+            0,
+        )
+        .unwrap(),
+    );
+    for (logical, intent) in [
+        (
+            "123e4567-e89b-42d3-a456-426614174080",
+            Some(UniversalCountTokensIntent {
+                requested_model: Some("google/gemini-integration-model".into()),
+                classification: classify_gemini_generate_content(&json!({"tools": []})),
+            }),
+        ),
+        ("123e4567-e89b-42d3-a456-426614174081", None),
+    ] {
+        let seed = GeminiRequestFactSeed {
+            logical_request_id: logical.into(),
+            client_attribution: crate::execution::ClientAttribution::unknown_for_internal_use(),
+            execution: registry::ExecutionAttempt::direct(),
+            account_id: ACCOUNT_ID.into(),
+            key_id: key_id.clone(),
+            admitted_at: pool::now(),
+            lifecycle_clock: crate::execution::RequestLifecycleClock::default(),
+        };
+        let mut guard = GeminiCountTokensFactGuard::new(Arc::clone(&billing), seed, intent);
+        if logical.ends_with("81") {
+            guard.update_after_native_accept(
+                "gemini-integration-model",
+                &json!({"contents": [], "tools": [{"googleSearch": {}}]}),
+            );
+            guard.resolve_executable_model("gemini-integration-model");
+        }
+        guard.observe(CountTokensTerminalEvidence::body(StatusCode::OK));
+        let mut response = (StatusCode::OK, "mapped").into_response();
+        guard.terminal_response(&mut response);
+        if let Some(handoff) = response
+            .extensions_mut()
+            .remove::<GeminiCountTokensFactHandoff>()
+        {
+            handoff.finish(StatusCode::OK, false);
+        }
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let rows = loop {
+        let rows = lock
+            .query(
+                "SELECT logical_request_id,route_class,provider_plane,request_class,requested_model,                         executable_model,stream_flag,billing_request_id,http_status_code,                         provider_terminal_class,delivery_state,upstream_request_id,internal_attempt_count                    FROM request_facts ORDER BY logical_request_id",
+                &[],
+            )
+            .unwrap();
+        if rows.len() == 2 {
+            break rows;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Gemini facts did not arrive"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(rows[0].get::<_, String>(1), "universal");
+    assert_eq!(rows[1].get::<_, String>(1), "native");
+    for row in &rows {
+        assert_eq!(row.get::<_, String>(2), "gemini");
+        assert_eq!(row.get::<_, String>(3), "count_tokens");
+        assert!(!row.get::<_, bool>(6));
+        assert_eq!(row.get::<_, Option<String>>(7), None);
+        assert_eq!(row.get::<_, Option<i32>>(8), Some(200));
+        assert_eq!(row.get::<_, String>(9), "success");
+        assert_eq!(row.get::<_, String>(10), "completed");
+        assert_eq!(row.get::<_, Option<String>>(11), None);
+        assert_eq!(row.get::<_, Option<i32>>(12), Some(0));
+        let debug = format!("{row:?}");
+        assert!(!debug.contains(CUSTOMER_KEY));
+        assert!(!debug.contains(PROFILE_A_KEY));
+        assert!(!debug.contains("googleSearch"));
+    }
+    assert_eq!(
+        rows[0].get::<_, Option<String>>(4).as_deref(),
+        Some("google/gemini-integration-model")
+    );
+    assert_eq!(rows[0].get::<_, Option<String>>(5), None);
+    assert_eq!(
+        rows[1].get::<_, Option<String>>(4).as_deref(),
+        Some("gemini-integration-model")
+    );
+    assert_eq!(
+        rows[1].get::<_, Option<String>>(5).as_deref(),
+        Some("gemini-integration-model")
+    );
+    drop(billing);
+    lock.query_one("SELECT pg_advisory_unlock($1)", &[&LOCK])
+        .unwrap();
 }

@@ -1,6 +1,7 @@
 //! Shared customer admission and exact native-Gemini settlement.
 
 use super::config::GeminiModel;
+use crate::execution::{ClientAttribution, LogicalRequestId, RequestLifecycleClock};
 use crate::metrics::Metrics;
 use crate::pricing::{tariff_book, EnginePricingRequestId};
 use crate::proxy::{authorize, Authz, HoldGuard};
@@ -59,6 +60,18 @@ pub(crate) struct PendingGeminiAdmission {
     calibration_not_after: Option<u64>,
 }
 
+/// Privacy-minimal immutable attribution captured from one successful metered Gemini admission.
+/// The raw API key and provider credential never enter this seed.
+pub(crate) struct GeminiRequestFactSeed {
+    pub(super) logical_request_id: String,
+    pub(super) client_attribution: ClientAttribution,
+    pub(super) execution: registry::ExecutionAttempt,
+    pub(super) account_id: String,
+    pub(super) key_id: String,
+    pub(super) admitted_at: i64,
+    pub(super) lifecycle_clock: RequestLifecycleClock,
+}
+
 impl PendingGeminiAdmission {
     /// Request-scoped diagnostic identity created before routing or reserve. It contains no
     /// customer/profile/provider identity and stays stable across every pre-byte rotation attempt.
@@ -78,6 +91,36 @@ impl PendingGeminiAdmission {
     /// present only on the deadline-bound exact profile lane and never becomes a provider header.
     pub(crate) fn calibration_not_after(&self) -> Option<u64> {
         self.calibration_not_after
+    }
+
+    /// Snapshot content-free request-fact attribution without widening `Authz`. Missing typed
+    /// logical/lifecycle context, admin authority and SQLite all deliberately omit the producer.
+    pub(crate) fn request_fact_seed(
+        &self,
+        logical_request_id: Option<&LogicalRequestId>,
+        client_attribution: Option<&ClientAttribution>,
+        lifecycle_clock: Option<&RequestLifecycleClock>,
+        admitted_at: i64,
+    ) -> Option<GeminiRequestFactSeed> {
+        let logical_request_id = logical_request_id?;
+        let lifecycle_clock = lifecycle_clock?;
+        let Authz::Metered {
+            account_id, key_id, ..
+        } = &self.authz
+        else {
+            return None;
+        };
+        Some(GeminiRequestFactSeed {
+            logical_request_id: logical_request_id.as_str().to_owned(),
+            client_attribution: client_attribution
+                .cloned()
+                .unwrap_or_else(ClientAttribution::unknown_for_internal_use),
+            execution: self.execution.clone(),
+            account_id: account_id.clone(),
+            key_id: key_id.clone(),
+            admitted_at,
+            lifecycle_clock: lifecycle_clock.clone(),
+        })
     }
 
     pub(crate) fn without_reserve(self) -> GeminiAdmission {

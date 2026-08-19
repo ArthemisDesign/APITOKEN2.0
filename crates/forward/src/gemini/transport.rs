@@ -55,6 +55,10 @@ struct RequestFrame<'a> {
     url: &'a str,
     headers: &'a [(&'a str, &'a str)],
     body: &'a str,
+    /// Ask the pinned helper to return a content-free proof at its final socket submission seam.
+    /// Omitted for every non-observed call so the ordinary protocol remains byte-identical.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    observe_actual_send: bool,
     /// Per-request silence bound in milliseconds. Absent means "use the process-wide value from
     /// the configure frame", which keeps other embedders of this helper (authbot) working
     /// unchanged; an explicit `0` means "no deadline", which is what customer generation sends.
@@ -166,10 +170,37 @@ impl TransportResponse {
     }
 }
 
+/// Content-free observer shared only with request-fact instrumentation. Each increment is made at
+/// the transport's final actual-submission boundary; overflow is sticky and renders the result
+/// unknown rather than publishing a guessed count.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ActualSendObserver(Arc<AtomicU64>);
+
+const ACTUAL_SEND_OVERFLOW: u64 = u64::MAX;
+
+impl ActualSendObserver {
+    pub(crate) fn record(&self) {
+        let _ = self
+            .0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                (current != ACTUAL_SEND_OVERFLOW)
+                    .then(|| current.checked_add(1).unwrap_or(ACTUAL_SEND_OVERFLOW))
+            });
+    }
+
+    pub(crate) fn count(&self) -> Option<u64> {
+        match self.0.load(Ordering::Relaxed) {
+            ACTUAL_SEND_OVERFLOW => None,
+            count => Some(count),
+        }
+    }
+}
+
 pub(crate) struct TransportRequest<'a> {
     pub(crate) url: &'a str,
     pub(crate) headers: Vec<(&'static str, SecretString)>,
     pub(crate) body: Bytes,
+    pub(crate) actual_send_observer: Option<ActualSendObserver>,
     /// How long this specific call may stay silent before it is treated as dead, or `None` for no
     /// deadline at all. Generation and token refresh have opposite needs: a reasoning model
     /// legitimately produces nothing for minutes, while a hung token call must fail fast so the
@@ -258,6 +289,9 @@ impl ProfileTransport {
                     .calibration_not_after
                     .map(calibration_dispatch_ms)
                     .transpose()?;
+                if let Some(observer) = &request.actual_send_observer {
+                    observer.record();
+                }
                 let response = builder
                     .body(request.body)
                     .send()
@@ -447,6 +481,7 @@ struct PendingRequest {
     headers: Option<oneshot::Sender<Result<ResponseHead, TransportError>>>,
     body: mpsc::Sender<Result<Bytes, TransportError>>,
     calibration_not_after: Option<u64>,
+    actual_send_observer: Option<ActualSendObserver>,
 }
 
 struct ProcessShared {
@@ -634,6 +669,7 @@ impl NodeProcess {
                         headers: Some(headers_tx),
                         body: body_tx,
                         calibration_not_after: request.calibration_not_after,
+                        actual_send_observer: request.actual_send_observer.clone(),
                     },
                 )
                 .is_some()
@@ -660,6 +696,7 @@ impl NodeProcess {
             url: request.url,
             headers: &headers,
             body: encoded_body.as_str(),
+            observe_actual_send: request.actual_send_observer.is_some(),
             read_timeout_ms: Some(request.idle_timeout.map_or(0, |idle| {
                 u64::try_from(idle.as_millis()).unwrap_or(u64::MAX)
             })),
@@ -842,6 +879,9 @@ struct InboundFrame {
     #[zeroize(skip)]
     calibration_dispatch_ms: Option<u64>,
     #[serde(default)]
+    #[zeroize(skip)]
+    actual_send: Option<bool>,
+    #[serde(default)]
     headers: Vec<String>,
     #[serde(default)]
     data: Option<String>,
@@ -911,6 +951,22 @@ async fn dispatch_frame(
         return Ok(());
     }
     match value.frame_type.as_str() {
+        "actual_send" => {
+            if value.actual_send != Some(true) {
+                return Err(TransportError::Protocol);
+            }
+            let observer = {
+                let pending = shared
+                    .pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                pending
+                    .get(&id)
+                    .and_then(|request| request.actual_send_observer.clone())
+                    .ok_or(TransportError::Protocol)?
+            };
+            observer.record();
+        }
         "headers" => {
             let status = value
                 .status
@@ -1169,6 +1225,7 @@ mod tests {
             url: "https://example.invalid/v1",
             headers: &headers,
             body: "",
+            observe_actual_send: false,
             read_timeout_ms: Some(1_800_000),
             calibration_not_after: Some(1_800_000_000),
         })
@@ -1187,6 +1244,7 @@ mod tests {
             url: "https://example.invalid/v1",
             headers: &headers,
             body: "",
+            observe_actual_send: false,
             read_timeout_ms: None,
             calibration_not_after: None,
         })
@@ -1283,6 +1341,7 @@ mod tests {
                         headers: Some(headers),
                         body,
                         calibration_not_after: not_after,
+                        actual_send_observer: None,
                     },
                 );
             (shared, headers_rx)
@@ -1299,6 +1358,7 @@ mod tests {
                 id: Some(7),
                 status: Some(200),
                 calibration_dispatch_ms: dispatch_ms,
+                actual_send: None,
                 headers: vec!["content-type".to_string(), "application/json".to_string()],
                 data: None,
                 error_kind: None,
@@ -1361,6 +1421,7 @@ mod tests {
                     headers: Some(headers),
                     body,
                     calibration_not_after: None,
+                    actual_send_observer: None,
                 },
             );
         let (cancel, mut canceled) = mpsc::unbounded_channel();
@@ -1394,6 +1455,7 @@ mod tests {
                     headers: Some(headers),
                     body,
                     calibration_not_after: None,
+                    actual_send_observer: None,
                 },
             );
         let (cancel, _canceled) = mpsc::unbounded_channel();
@@ -1409,6 +1471,7 @@ mod tests {
             id: Some(7),
             status: None,
             calibration_dispatch_ms: None,
+            actual_send: None,
             headers: Vec::new(),
             data: Some("bGF0ZQ==".to_string()),
             error_kind: None,
@@ -1426,6 +1489,7 @@ mod tests {
             id: Some(7),
             status: None,
             calibration_dispatch_ms: None,
+            actual_send: None,
             headers: Vec::new(),
             data: None,
             error_kind: None,
@@ -1482,5 +1546,53 @@ mod tests {
         );
         assert_eq!(helper_error_kind(Some("secret detail")), None);
         assert_eq!(helper_error_kind(None), None);
+    }
+
+    #[tokio::test]
+    async fn actual_send_frame_increments_only_the_typed_observer() {
+        let (ready, _ready_rx) = oneshot::channel();
+        let shared = Arc::new(ProcessShared {
+            pending: Mutex::new(HashMap::new()),
+            ready: Mutex::new(Some(ready)),
+            canceled: Mutex::new(HashMap::new()),
+            closed: AtomicBool::new(false),
+        });
+        let (headers, _headers_rx) = oneshot::channel();
+        let (body, _body_rx) = mpsc::channel(1);
+        let observer = ActualSendObserver::default();
+        shared
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                7,
+                PendingRequest {
+                    headers: Some(headers),
+                    body,
+                    calibration_not_after: None,
+                    actual_send_observer: Some(observer.clone()),
+                },
+            );
+        dispatch_frame(
+            &shared,
+            InboundFrame {
+                frame_type: "actual_send".into(),
+                protocol: None,
+                node: None,
+                platform: None,
+                arch: None,
+                undici: None,
+                id: Some(7),
+                status: None,
+                calibration_dispatch_ms: None,
+                actual_send: Some(true),
+                headers: Vec::new(),
+                data: None,
+                error_kind: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(observer.count(), Some(1));
     }
 }

@@ -223,8 +223,9 @@ is only what is needed to walk the relationships when making changes:
   duplicated, unsupported, or case-variant evidence fails open to unknown. The raw value never reaches
   dispatch/upstream; heuristic v1 has no reviewed positive signature and does not reuse the Codex
   envelope heuristic. Health, admin/internal preflight and backend-only KIMI/Tripo3D/Suno remain
-  outside this MVP. The production request-fact producers are Codex/OpenAI universal Messages count,
-  OpenAI native Responses input-token count, and Anthropic native Messages count: after successful
+  outside this MVP. The production request-fact producers are Codex/OpenAI/Gemini universal Messages count,
+  OpenAI native Responses input-token count, Anthropic native Messages count, and native Gemini
+  countTokens: after successful
   metered admission they consume typed logical/client/lifecycle context plus authoritative non-secret
   account/key and execution identities, then submit exactly one already-terminal nullable-billing-ID
   fact through the fail-open PostgreSQL inbox. Missing typed client context remains unknown without
@@ -236,7 +237,7 @@ is only what is needed to walk the relationships when making changes:
   2xx proves native shape acceptance. OpenAI native input_tokens publishes Responses evidence only
   after its owning parser accepts the shape; a later local preparation error retains accepted evidence.
   Names and request content are discarded. Other classifiers remain dormant for Stage 6/7.
-  Admin/unauthorized/missing-context traffic is omitted. Billable paths, Gemini nonbillable paths, read
+  Admin/unauthorized/missing-context traffic is omitted. Billable paths, Gemini generation paths, read
   APIs, public metrics, and a public logical-ID header remain absent; `x-request-id` and response
   availability are unchanged.
   Contract —
@@ -541,8 +542,9 @@ ID before dispatch, remove the wire header, and keep only typed context. They al
 public `x-apitoken-client` into fail-open normalized attribution before auth/body/dispatch and propagate
 only the typed value through synthesized leaves. After the strict logical consumer reached production
 GREEN, the unified router producer began injecting one private canonical ID per admitted customer request
-across every executable attempt. Codex universal Messages count_tokens is the only request-fact caller
-and persists this attribution; other producers remain absent.
+across every executable attempt. Codex/OpenAI/Gemini universal counts, native Anthropic/Gemini
+counts, and native OpenAI input-token counting are the request-fact callers that persist this
+attribution; other producers remain absent.
 
 ### systemd (`systemd/`) — service → application
 

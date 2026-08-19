@@ -1,13 +1,16 @@
 //! Native Gemini-compatible surface backed by encrypted paid-subscription OAuth profiles.
 
-use super::billing::{begin_admission, AdmissionError, GeminiAdmission};
+use super::billing::{begin_admission, AdmissionError, GeminiAdmission, GeminiRequestFactSeed};
 use super::config::{GeminiConfig, GeminiModel};
 use super::pool::{GeminiGateway, GeminiLease, GeminiProfile, TokenAcquisitionPolicy, TokenError};
 use super::rate_limit::{self, RateLimitDiagnostic};
-use super::transport::{TransportError, TransportResponse, TransportRetryPolicy};
+use super::transport::{
+    ActualSendObserver, TransportError, TransportResponse, TransportRetryPolicy,
+};
 use super::REPLAYED_FUNCTION_CALL_THOUGHT_SIGNATURE;
 use crate::metrics::Metrics;
 use crate::proxy::{with_not_started, TerminalErrorReason};
+use crate::request_classification::{classify_gemini_generate_content, RequestClassification};
 use crate::state::AppState;
 use crate::{AffinityInput, AffinityResolution};
 use axum::body::{to_bytes, Body};
@@ -18,11 +21,16 @@ use base64::Engine as _;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use gemini_credential::OAuthKind;
+use registry::request_facts::{
+    DeliveryState, ProviderTerminalClass, RequestFactTerminalEvidence, TerminalRequestFact,
+    MAX_REQUEST_FACT_MODEL_LEN,
+};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::io::Cursor;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -286,6 +294,309 @@ impl Operation {
 struct ParsedRoute {
     operation: Operation,
     model: Option<String>,
+}
+
+/// Content-free accepted-origin intent created only after the universal Messages owner accepts the
+/// original body. No request JSON or arbitrary identifier crosses into the native execution owner.
+#[derive(Clone)]
+pub(crate) struct UniversalCountTokensIntent {
+    pub(crate) requested_model: Option<String>,
+    pub(crate) classification: RequestClassification,
+}
+
+#[derive(Clone, Copy)]
+struct CountTokensTerminalEvidence {
+    provider_terminal_class: ProviderTerminalClass,
+    delivery_state: DeliveryState,
+    attempts_exhaustive: bool,
+}
+
+impl CountTokensTerminalEvidence {
+    fn local(observer: &ActualSendObserver) -> Self {
+        Self {
+            provider_terminal_class: ProviderTerminalClass::Unknown,
+            delivery_state: match observer.count() {
+                Some(0) => DeliveryState::NotStarted,
+                _ => DeliveryState::Unknown,
+            },
+            attempts_exhaustive: true,
+        }
+    }
+
+    fn body(status: StatusCode) -> Self {
+        Self {
+            provider_terminal_class: provider_status_class(status),
+            delivery_state: DeliveryState::Completed,
+            attempts_exhaustive: true,
+        }
+    }
+
+    fn headers(status: StatusCode) -> Self {
+        Self {
+            provider_terminal_class: provider_status_class(status),
+            delivery_state: DeliveryState::Started,
+            attempts_exhaustive: true,
+        }
+    }
+
+    fn transport(error: TransportError) -> Self {
+        Self {
+            provider_terminal_class: match error {
+                TransportError::Timeout => ProviderTerminalClass::Timeout,
+                TransportError::Protocol | TransportError::BodyTooLarge => {
+                    ProviderTerminalClass::ProtocolError
+                }
+                TransportError::Spawn | TransportError::Closed | TransportError::Network => {
+                    ProviderTerminalClass::Transport
+                }
+                TransportError::CalibrationExpired => ProviderTerminalClass::Unknown,
+            },
+            delivery_state: DeliveryState::Unknown,
+            attempts_exhaustive: true,
+        }
+    }
+
+    fn protocol() -> Self {
+        Self {
+            provider_terminal_class: ProviderTerminalClass::ProtocolError,
+            delivery_state: DeliveryState::Unknown,
+            attempts_exhaustive: true,
+        }
+    }
+}
+
+fn provider_status_class(status: StatusCode) -> ProviderTerminalClass {
+    match status.as_u16() {
+        200..=299 => ProviderTerminalClass::Success,
+        401 | 403 => ProviderTerminalClass::Auth,
+        408 => ProviderTerminalClass::Timeout,
+        409 | 425 | 500..=599 => ProviderTerminalClass::UpstreamError,
+        429 => ProviderTerminalClass::Quota,
+        400..=499 => ProviderTerminalClass::ClientError,
+        _ => ProviderTerminalClass::Unknown,
+    }
+}
+
+/// Shared exactly-once owner used by the universal response-extension handoff. Dropping the last
+/// reference without `finish` is cancellation/panic safety and emits only conservative evidence.
+struct GeminiCountTokensFactState {
+    billing: Arc<crate::billing::AsyncBilling>,
+    seed: GeminiRequestFactSeed,
+    route_class: &'static str,
+    requested_model: Option<String>,
+    executable_model: Option<String>,
+    classification: Option<RequestClassification>,
+    actual_sends: ActualSendObserver,
+    submitted: AtomicBool,
+}
+
+#[derive(Clone)]
+pub(crate) struct GeminiCountTokensFactHandoff {
+    state: Arc<GeminiCountTokensFactState>,
+    terminal_evidence: CountTokensTerminalEvidence,
+}
+
+struct GeminiCountTokensFactGuard {
+    state: Arc<GeminiCountTokensFactState>,
+    terminal_evidence: CountTokensTerminalEvidence,
+}
+
+impl GeminiCountTokensFactGuard {
+    fn new(
+        billing: Arc<crate::billing::AsyncBilling>,
+        seed: GeminiRequestFactSeed,
+        intent: Option<UniversalCountTokensIntent>,
+    ) -> Self {
+        let (route_class, requested_model, classification) = match intent {
+            Some(intent) => (
+                "universal",
+                intent.requested_model,
+                Some(intent.classification),
+            ),
+            None => ("native", None, None),
+        };
+        let actual_sends = ActualSendObserver::default();
+        Self {
+            state: Arc::new(GeminiCountTokensFactState {
+                billing,
+                seed,
+                route_class,
+                requested_model,
+                executable_model: None,
+                classification,
+                actual_sends: actual_sends.clone(),
+                submitted: AtomicBool::new(false),
+            }),
+            terminal_evidence: CountTokensTerminalEvidence::local(&actual_sends),
+        }
+    }
+
+    fn actual_send_observer(&self) -> ActualSendObserver {
+        self.state.actual_sends.clone()
+    }
+
+    fn update_after_native_accept(&mut self, model: &str, value: &Value) {
+        let state =
+            Arc::get_mut(&mut self.state).expect("request fact state is unique before send");
+        if state.route_class == "native" {
+            state.requested_model = bounded_request_fact_model(model);
+            state.classification = Some(classify_gemini_generate_content(
+                value.get("generateContentRequest").unwrap_or(value),
+            ));
+        }
+    }
+
+    fn resolve_executable_model(&mut self, model: &str) {
+        Arc::get_mut(&mut self.state)
+            .expect("request fact state is unique before send")
+            .executable_model = bounded_request_fact_model(model);
+    }
+
+    fn observe(&mut self, evidence: CountTokensTerminalEvidence) {
+        self.terminal_evidence = evidence;
+    }
+
+    fn terminal_response(self, response: &mut Response) {
+        if self.state.route_class == "universal" {
+            response
+                .extensions_mut()
+                .insert(GeminiCountTokensFactHandoff {
+                    state: Arc::clone(&self.state),
+                    terminal_evidence: self.terminal_evidence,
+                });
+        } else {
+            submit_gemini_count_tokens_fact(
+                &self.state,
+                Some(response.status()),
+                self.terminal_evidence,
+                true,
+            );
+        }
+    }
+}
+
+impl Drop for GeminiCountTokensFactGuard {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.state) == 1 {
+            submit_gemini_count_tokens_fact(
+                &self.state,
+                None,
+                CountTokensTerminalEvidence {
+                    provider_terminal_class: ProviderTerminalClass::Unknown,
+                    delivery_state: DeliveryState::Unknown,
+                    attempts_exhaustive: false,
+                },
+                false,
+            );
+        }
+    }
+}
+
+impl GeminiCountTokensFactHandoff {
+    pub(crate) fn finish(self, status: StatusCode, mapping_protocol_error: bool) {
+        let evidence = if !mapping_protocol_error {
+            self.terminal_evidence
+        } else {
+            CountTokensTerminalEvidence {
+                provider_terminal_class: ProviderTerminalClass::ProtocolError,
+                delivery_state: self.terminal_evidence.delivery_state,
+                attempts_exhaustive: self.terminal_evidence.attempts_exhaustive,
+            }
+        };
+        submit_gemini_count_tokens_fact(&self.state, Some(status), evidence, true);
+    }
+}
+
+impl Drop for GeminiCountTokensFactHandoff {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.state) == 1 {
+            submit_gemini_count_tokens_fact(
+                &self.state,
+                None,
+                CountTokensTerminalEvidence {
+                    provider_terminal_class: ProviderTerminalClass::Unknown,
+                    delivery_state: DeliveryState::Unknown,
+                    attempts_exhaustive: false,
+                },
+                false,
+            );
+        }
+    }
+}
+
+fn submit_gemini_count_tokens_fact(
+    state: &GeminiCountTokensFactState,
+    status: Option<StatusCode>,
+    evidence: CountTokensTerminalEvidence,
+    exhaustive: bool,
+) {
+    if state.submitted.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let seed = &state.seed;
+    let terminal_at = pool::now().max(seed.admitted_at);
+    let first_public_byte_at = seed
+        .lifecycle_clock
+        .seal_first_public_byte_for_terminal(seed.admitted_at, terminal_at);
+    let attempts = (exhaustive && evidence.attempts_exhaustive)
+        .then(|| state.actual_sends.count())
+        .flatten()
+        .and_then(|count| i32::try_from(count).ok());
+    let classification = state.classification.as_ref();
+    let fact = TerminalRequestFact {
+        logical_request_id: seed.logical_request_id.clone(),
+        billing_request_id: None,
+        execution_group_id: seed.execution.group_id().map(str::to_owned),
+        attempt: seed.execution.attempt(),
+        account_id: seed.account_id.clone(),
+        key_id: seed.key_id.clone(),
+        client_kind: seed.client_attribution.kind(),
+        client_source: seed.client_attribution.source(),
+        client_version: seed.client_attribution.version().map(str::to_owned),
+        provider_plane: "gemini".into(),
+        route_class: state.route_class.into(),
+        request_class: "count_tokens".into(),
+        requested_model: state.requested_model.clone(),
+        executable_model: state.executable_model.clone(),
+        stream_flag: false,
+        tools_declared_count: classification.and_then(RequestClassification::tools_declared_count),
+        tool_classes: classification.and_then(RequestClassification::tool_classes),
+        tool_choice_mode: classification.and_then(RequestClassification::tool_choice_mode),
+        parallel_tools_requested: classification
+            .and_then(RequestClassification::parallel_tools_requested),
+        tool_results_in_input: classification
+            .and_then(RequestClassification::tool_results_in_input),
+        structured_output_flag: classification
+            .and_then(RequestClassification::structured_output_flag),
+        reasoning_flag: classification.and_then(RequestClassification::reasoning_flag),
+        service_tier: classification
+            .and_then(RequestClassification::service_tier)
+            .map(str::to_owned),
+        input_modalities: classification.and_then(RequestClassification::input_modalities),
+        output_modalities: classification.and_then(RequestClassification::output_modalities),
+        admitted_at: seed.admitted_at,
+        terminal: RequestFactTerminalEvidence {
+            terminal_at,
+            http_status_code: status.map(|status| i32::from(status.as_u16())),
+            provider_terminal_class: evidence.provider_terminal_class,
+            delivery_state: evidence.delivery_state,
+            downstream_disconnect: None,
+            upstream_request_id: None,
+            first_public_byte_at,
+            internal_attempt_count: attempts,
+            failure_class: None,
+            tool_calls_in_output: None,
+        },
+    };
+    let _ = state.billing.try_submit_terminal_request_fact(fact);
+}
+
+fn bounded_request_fact_model(value: &str) -> Option<String> {
+    (!value.is_empty()
+        && value.len() <= MAX_REQUEST_FACT_MODEL_LEN
+        && value.is_ascii()
+        && !value.bytes().any(|byte| byte.is_ascii_control()))
+    .then(|| value.to_owned())
 }
 
 /// How a streaming response is framed back to the client. Upstream Code Assist only speaks SSE, so
@@ -2379,7 +2690,7 @@ fn account_stream_start_chunk(
 #[derive(Debug)]
 enum SendError {
     Token(TokenError),
-    Transport,
+    Transport(TransportError),
     CalibrationExpired,
 }
 
@@ -2394,6 +2705,7 @@ async fn send_upstream(
     retry_policy: TransportRetryPolicy,
     token_policy: TokenAcquisitionPolicy,
     calibration_not_after: Option<u64>,
+    actual_send_observer: Option<ActualSendObserver>,
 ) -> Result<(TransportResponse, gemini_credential::SecretString), SendError> {
     let access_token = match rejected_token {
         Some(rejected) => profile.access_token_after_rejection(rejected).await,
@@ -2435,22 +2747,23 @@ async fn send_upstream(
             profile.generation_idle(),
             retry_policy,
             calibration_not_after,
+            actual_send_observer,
         )
         .await
         .map_err(|error| match error {
             TransportError::CalibrationExpired => SendError::CalibrationExpired,
-            _ => SendError::Transport,
+            other => SendError::Transport(other),
         })?;
     Ok((response, access_token))
 }
 
-async fn read_upstream_body(response: TransportResponse) -> Result<Bytes, ()> {
+async fn read_upstream_body(response: TransportResponse) -> Result<Bytes, TransportError> {
     let mut stream = response.bytes_stream();
     let mut body = Vec::new();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| ())?;
+        let chunk = chunk?;
         if body.len().saturating_add(chunk.len()) > GEMINI_BODY_LIMIT {
-            return Err(());
+            return Err(TransportError::BodyTooLarge);
         }
         body.extend_from_slice(&chunk);
     }
@@ -2793,11 +3106,15 @@ pub async fn api(
     if request.method() == Method::OPTIONS {
         return cors_preflight_response();
     }
-    let mut response = match api_inner(app, peer, request).await {
+    let mut fact_guard = None;
+    let mut response = match api_inner_observed(app, peer, request, &mut fact_guard).await {
         Ok(response) => response,
         Err(error) => error.into_response(),
     };
     apply_native_response_headers(&mut response);
+    if let Some(guard) = fact_guard.take() {
+        guard.terminal_response(&mut response);
+    }
     response
 }
 
@@ -2863,16 +3180,54 @@ fn apply_native_response_headers(response: &mut Response) {
     );
 }
 
+#[cfg(test)]
 async fn api_inner(
     app: AppState,
     peer: SocketAddr,
     request: axum::extract::Request,
+) -> Result<Response, ApiError> {
+    let mut fact_guard = None;
+    let result = api_inner_observed(app, peer, request, &mut fact_guard).await;
+    drop(fact_guard);
+    result
+}
+
+async fn api_inner_observed(
+    app: AppState,
+    peer: SocketAddr,
+    request: axum::extract::Request,
+    fact_guard: &mut Option<GeminiCountTokensFactGuard>,
 ) -> Result<Response, ApiError> {
     let Some(gateway) = app.gemini.as_ref().cloned() else {
         return Err(ApiError::not_found());
     };
     let route = parse_route(request.method(), request.uri().path())?;
     let pending = begin_admission(&app, request.headers(), &peer).await?;
+    if route.operation == Operation::CountTokens {
+        let admitted_at = pool::now();
+        let seed = pending.request_fact_seed(
+            request
+                .extensions()
+                .get::<crate::execution::LogicalRequestId>(),
+            request
+                .extensions()
+                .get::<crate::execution::ClientAttribution>(),
+            request
+                .extensions()
+                .get::<crate::execution::RequestLifecycleClock>(),
+            admitted_at,
+        );
+        if let (Some(billing), Some(seed)) = (app.billing.as_ref(), seed) {
+            *fact_guard = Some(GeminiCountTokensFactGuard::new(
+                Arc::clone(billing),
+                seed,
+                request
+                    .extensions()
+                    .get::<UniversalCountTokensIntent>()
+                    .cloned(),
+            ));
+        }
+    }
     let calibration_target = pending.calibration_target().map(str::to_owned);
     let calibration_not_after = pending.calibration_not_after();
 
@@ -2959,7 +3314,13 @@ async fn api_inner(
     // wrapper and settlement all see a single canonical shape instead of silently dropping fields.
     canonicalize_native_request(&mut value);
     validate_native_request(route.operation, &value, &model)?;
+    if let Some(guard) = fact_guard.as_mut() {
+        guard.update_after_native_accept(model_id, &value);
+    }
     let wire_model_id = wire_model_for_request(route.operation, &model, &value)?;
+    if let Some(guard) = fact_guard.as_mut() {
+        guard.resolve_executable_model(&wire_model_id);
+    }
     let affinity_input = pending.affinity_scope().and_then(|scope| {
         app.affinity
             .infer_gemini(scope, &parts.headers, model_id, &value)
@@ -3242,6 +3603,9 @@ async fn api_inner(
             },
             token_policy,
             deadline_bound_exact.then_some(admitted_not_after).flatten(),
+            fact_guard
+                .as_ref()
+                .map(GeminiCountTokensFactGuard::actual_send_observer),
         )
         .await
         {
@@ -3271,7 +3635,10 @@ async fn api_inner(
                 }
                 continue;
             }
-            Err(SendError::Transport) => {
+            Err(SendError::Transport(error)) => {
+                if let Some(guard) = fact_guard.as_mut() {
+                    guard.observe(CountTokensTerminalEvidence::transport(error));
+                }
                 Metrics::inc(&app.metrics.upstream_5xx);
                 Metrics::inc(&app.metrics.gemini_transport_failures);
                 if one_shot_upstream {
@@ -3293,6 +3660,9 @@ async fn api_inner(
             }
         };
         let mut status = response.status();
+        if let Some(guard) = fact_guard.as_mut() {
+            guard.observe(CountTokensTerminalEvidence::headers(status));
+        }
 
         // A bearer can be revoked before its local expiry. Refresh once on the same profile. The
         // rejected-token compare in the profile mutex ensures a concurrent 401 burst performs one
@@ -3310,12 +3680,18 @@ async fn api_inner(
                 TransportRetryPolicy::RestartHelperOnce,
                 TokenAcquisitionPolicy::Normal,
                 None,
+                fact_guard
+                    .as_ref()
+                    .map(GeminiCountTokensFactGuard::actual_send_observer),
             )
             .await
             {
                 Ok((retried, _)) => {
                     response = retried;
                     status = response.status();
+                    if let Some(guard) = fact_guard.as_mut() {
+                        guard.observe(CountTokensTerminalEvidence::headers(status));
+                    }
                 }
                 Err(SendError::Token(TokenError::Invalid)) => {
                     saw_auth = true;
@@ -3324,10 +3700,16 @@ async fn api_inner(
                     continue;
                 }
                 Err(
-                    SendError::Token(TokenError::Temporary | TokenError::Blocked)
-                    | SendError::Transport
-                    | SendError::CalibrationExpired,
+                    error
+                    @ (SendError::Token(TokenError::Temporary | TokenError::Blocked)
+                    | SendError::Transport(_)
+                    | SendError::CalibrationExpired),
                 ) => {
+                    if let (Some(guard), SendError::Transport(error)) =
+                        (fact_guard.as_mut(), error)
+                    {
+                        guard.observe(CountTokensTerminalEvidence::transport(error));
+                    }
                     Metrics::inc(&app.metrics.upstream_5xx);
                     Metrics::inc(&app.metrics.gemini_transport_failures);
                     excluded.insert(profile.id().to_string());
@@ -3579,8 +3961,16 @@ async fn api_inner(
         }
 
         let response_body = match read_upstream_body(response).await {
-            Ok(bytes) => bytes,
-            Err(_) => {
+            Ok(bytes) => {
+                if let Some(guard) = fact_guard.as_mut() {
+                    guard.observe(CountTokensTerminalEvidence::body(status));
+                }
+                bytes
+            }
+            Err(error) => {
+                if let Some(guard) = fact_guard.as_mut() {
+                    guard.observe(CountTokensTerminalEvidence::transport(error));
+                }
                 Metrics::inc(&app.metrics.upstream_5xx);
                 Metrics::inc(&app.metrics.gemini_transport_failures);
                 excluded.insert(profile.id().to_string());
@@ -3732,6 +4122,9 @@ async fn api_inner(
                         });
                     }
                     Err(ResponseDecodeError::Malformed) => {
+                        if let Some(guard) = fact_guard.as_mut() {
+                            guard.observe(CountTokensTerminalEvidence::protocol());
+                        }
                         Metrics::inc(&app.metrics.upstream_5xx);
                         Metrics::inc(&app.metrics.gemini_malformed_responses);
                         excluded.insert(profile.id().to_string());

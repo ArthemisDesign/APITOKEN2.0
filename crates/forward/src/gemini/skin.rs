@@ -129,6 +129,7 @@ use bytes::BytesMut;
 use futures_util::{Stream, StreamExt};
 use serde_json::{json, Map, Value};
 
+use super::api::{GeminiCountTokensFactHandoff, UniversalCountTokensIntent};
 use super::chat::{
     function_response_value, map_finish_reason, merge_or_push, replayed_function_call_part,
     CHAT_BODY_LIMIT, RESPONSE_BODY_LIMIT,
@@ -141,6 +142,7 @@ use crate::proxy::{
     read_body_limited, with_not_started, without_not_started, BodyReadError, TerminalErrorReason,
     EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
 };
+use crate::request_classification::classify_anthropic_messages;
 use crate::state::AppState;
 use crate::validation::optional_bool;
 
@@ -1683,6 +1685,14 @@ fn stream_messages_response(upstream: Response, requested_model: String) -> Resp
 
 // ---------- handlers ----------
 
+fn bounded_request_fact_model(value: &str) -> Option<String> {
+    (!value.is_empty()
+        && value.len() <= registry::request_facts::MAX_REQUEST_FACT_MODEL_LEN
+        && value.is_ascii()
+        && !value.bytes().any(|byte| byte.is_ascii_control()))
+    .then(|| value.to_owned())
+}
+
 /// Буферизованное JSON-тело Messages-запроса под лимитом плоскости (32 MiB — общий
 /// `CHAT_BODY_LIMIT` universal lanes Gemini); ошибки — Anthropic-конверт 400.
 async fn read_messages_body(body: Body) -> Result<Value, Response> {
@@ -1711,6 +1721,7 @@ async fn run_inner(
     extensions: axum::http::Extensions,
     suffix: &str,
     translated: &Translated,
+    count_tokens_intent: Option<UniversalCountTokensIntent>,
 ) -> Response {
     let mut headers = headers;
     headers.remove(header::CONTENT_LENGTH);
@@ -1737,6 +1748,9 @@ async fn run_inner(
         .expect("static request builder is infallible");
     *inner.headers_mut() = headers;
     crate::execution::inherit_request_context(&extensions, inner.extensions_mut());
+    if let Some(intent) = count_tokens_intent {
+        inner.extensions_mut().insert(intent);
+    }
     gemini_api(State(app), ConnectInfo(peer), inner).await
 }
 
@@ -1768,6 +1782,7 @@ pub async fn gemini_messages_skin(
         parts.extensions,
         suffix,
         &translated,
+        None,
     )
     .await;
     if upstream.status() != StatusCode::OK {
@@ -1795,9 +1810,18 @@ pub async fn gemini_messages_count_tokens(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let translated = match translate_messages_request(value, false) {
+    let translated = match translate_messages_request(value.clone(), false) {
         Ok(translated) => translated,
         Err(response) => return response,
+    };
+    // Derive telemetry intent only after the universal parser accepts the entire request. The raw
+    // JSON remains local to this conversion seam and only this content-free typed value crosses it.
+    let intent = UniversalCountTokensIntent {
+        requested_model: value
+            .get("model")
+            .and_then(Value::as_str)
+            .and_then(bounded_request_fact_model),
+        classification: classify_anthropic_messages(&value),
     };
     let upstream = run_inner(
         app,
@@ -1806,12 +1830,26 @@ pub async fn gemini_messages_count_tokens(
         parts.extensions,
         "countTokens",
         &translated,
+        Some(intent),
     )
     .await;
-    if upstream.status() != StatusCode::OK {
-        return convert_error_response(upstream).await;
+    let mut upstream = upstream;
+    let fact_handoff = upstream
+        .extensions_mut()
+        .remove::<GeminiCountTokensFactHandoff>();
+    let native_success = upstream.status() == StatusCode::OK;
+    let response = if !native_success {
+        convert_error_response(upstream).await
+    } else {
+        count_tokens_json_response(upstream).await
+    };
+    if let Some(handoff) = fact_handoff {
+        handoff.finish(
+            response.status(),
+            native_success && response.status() != StatusCode::OK,
+        );
     }
-    count_tokens_json_response(upstream).await
+    response
 }
 
 #[cfg(test)]

@@ -520,6 +520,11 @@ function startRequest(frame) {
       try {
         socket.setKeepAlive(true, KEEPALIVE_MS);
         recordCalibrationDispatch(calibration);
+        if (frame.observeActualSend === true) {
+          emit({type: 'actual_send', id, actualSend: true});
+        } else if (frame.observeActualSend !== undefined) {
+          throw new Error('protocol');
+        }
       } catch (error) {
         request.destroy(error);
       }

@@ -2,15 +2,15 @@
 
 > **Status: v1 DECISIONS LOCKED; implementation is incomplete.** Registry S2, forward-core S3A,
 > the Caddy logical-ID perimeter, provider-plane logical/client context admission, router logical-ID
-> production, and the client-attribution slice of classifier stage 5 are implemented. The three
-> production request-fact producers are metered Codex/OpenAI universal Messages count, OpenAI native
-> Responses input-token count, and Anthropic native Messages count; all consume normalized client
-> attribution. The closed structural classifier contract is implemented: Anthropic and OpenAI native
-> counting consume their owning classifiers, while OpenAI Chat and canonical Gemini GenerateContent
-> remain dormant. A typed once-only lifecycle carrier, transparent final-public-body observation seam,
-> and nonwaiting atomic terminal seal are active. All three producers capture safely ordered first-byte
-> evidence or freeze `NULL` before any later outer body poll. Billable/TeeMeter/Codex-generation
-> integration and the remaining Gemini nonbillable producers remain incomplete in stage 6. No private
+> production, and the client-attribution slice of classifier stage 5 are implemented. The production
+> request-fact surfaces are metered Codex/OpenAI/Gemini universal Messages count,
+> OpenAI native Responses input-token count, Anthropic native Messages count, and native Gemini
+> countTokens; all consume normalized client attribution. The closed structural classifier contract is
+> implemented: Anthropic, OpenAI native, and both Gemini counting routes consume their owning
+> classifiers, while OpenAI Chat and Gemini generation remain dormant. A typed once-only lifecycle
+> carrier, transparent final-public-body observation seam, and nonwaiting atomic terminal seal are
+> active. All counting producers capture safely ordered first-byte evidence or freeze `NULL` before any later outer body poll. Billable/TeeMeter/Codex-generation
+> integration remains incomplete in stage 6; both Gemini count-token producers are now wired. No private
 > read surface, request-fact metric, or billable producer exists.
 >
 > This document is the owner-approved v1 implementation contract. It authorizes only the finite,
@@ -24,12 +24,12 @@
 > generate one for direct ingress, remove the wire header, and retain only a typed request extension
 > through internal adapters. The provider consumer's exact production SHA is GREEN, and the router
 > creates one canonical UUIDv4 after admission and sends it on every executable attempt, reusing it
-> across fallback. Codex universal and Anthropic native count_tokens consume the typed extensions only
-> after metered route/body admission and submit one already-terminal nullable-billing-ID fact through the fail-open
-> PostgreSQL inbox, persisting normalized explicit client attribution or unknown when malformed/absent.
-> Anthropic additionally consumes the privacy-bounded Messages classifier only after upstream success
-> proves native shape acceptance. The logical ID remains operator-only. Billable paths, native OpenAI
-> Responses token counting, Gemini, and every other plane caller remain absent.
+> across fallback. These counting routes consume typed extensions only after metered route/body
+> admission and submit one already-terminal nullable-billing-ID fact through the fail-open PostgreSQL
+> inbox, persisting normalized explicit client attribution or unknown when malformed/absent. Anthropic
+> additionally publishes its privacy-bounded Messages classifier only after upstream success proves
+> native shape acceptance; Gemini classifiers are parser-gated at their owning seams. The logical ID
+> remains operator-only. Billable paths, Gemini generation, and every other plane caller remain absent.
 
 ## 1. Purpose
 
@@ -297,7 +297,8 @@ input and Gemini functionResponse-only input do not implicitly become text. The 
 count_tokens producer releases its content-free candidate only after upstream success supplies the
 native owning-validation proof. OpenAI native input_tokens releases its candidate after the owning
 Responses parser succeeds and retains it across a later local preparation error. OpenAI Chat and
-Gemini classifiers remain dormant for Stage 6/7. `tool_calls_in_output` remains later terminal
+Gemini count-token producers consume the reviewed classifiers at their owning parser boundaries;
+other Gemini producers remain dormant for Stage 6/7. `tool_calls_in_output` remains later terminal
 producer evidence, and lifecycle clocks remain outside this structural slice.
 
 `web_search_requests` in `usage_events` remains the authoritative billable search counter. A request
@@ -338,10 +339,10 @@ from creating post-terminal evidence. It never waits, notifies, polls, spawns, p
 terminal work, and repeated seals are idempotent. Existing evidence is returned only when safely
 ordered inside inclusive `[admitted_at, terminal_at]`; invalid bounds or out-of-order evidence produce
 `NULL` without clamping or fabrication, and invalid bounds still seal an open clock. This seam does
-not itself write facts or settle money. The nonbillable Codex/OpenAI universal Messages count,
-OpenAI native Responses input-token count, and Anthropic native Messages count fact producers consume
-it. Billable/TeeMeter/Codex-generation integration and the remaining Gemini nonbillable producers
-remain incomplete, so producer coverage and Stage 5/6 remain incomplete.
+not itself write facts or settle money. The nonbillable Codex/OpenAI/Gemini universal Messages count,
+OpenAI native Responses input-token count, and Anthropic/Gemini native count fact producers consume
+it. Billable/TeeMeter/Codex-generation integration remains incomplete, so producer coverage and Stage
+5/6 remain incomplete.
 
 The read surface safely derives four durations and only when both endpoints are measured and ordered:
 admission-to-delivery, admission-to-first-public-byte, delivery-to-first-public-byte, and

@@ -486,6 +486,7 @@ impl GeminiProfile {
         idle_timeout: Option<Duration>,
         retry_policy: TransportRetryPolicy,
         calibration_not_after: Option<u64>,
+        actual_send_observer: Option<super::transport::ActualSendObserver>,
     ) -> Result<TransportResponse, super::transport::TransportError> {
         let mut headers = vec![
             (
@@ -527,6 +528,7 @@ impl GeminiProfile {
                 url,
                 headers,
                 body,
+                actual_send_observer,
                 idle_timeout,
                 retry_policy,
                 calibration_not_after,
@@ -639,6 +641,7 @@ impl GeminiProfile {
                 url: &credential.token_uri,
                 headers,
                 body: bytes::Bytes::copy_from_slice(form.as_bytes()),
+                actual_send_observer: None,
                 idle_timeout: Some(self.auxiliary_idle),
                 retry_policy,
                 calibration_not_after: None,
@@ -1318,6 +1321,7 @@ impl GeminiProfile {
                     Some(self.auxiliary_idle),
                     TransportRetryPolicy::RestartHelperOnce,
                     None,
+                    None,
                 )
                 .await;
             match response {
@@ -1387,6 +1391,7 @@ impl GeminiProfile {
                 Some(self.auxiliary_idle),
                 TransportRetryPolicy::RestartHelperOnce,
                 None,
+                None,
             )
             .await;
         let Ok(response) = response else {
@@ -1453,6 +1458,7 @@ impl GeminiProfile {
                 bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
                 Some(self.auxiliary_idle),
                 TransportRetryPolicy::RestartHelperOnce,
+                None,
                 None,
             )
             .await;
