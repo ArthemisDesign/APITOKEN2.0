@@ -174,6 +174,30 @@ read as authority the partner does not have. The maximum any ceiling may reach i
 pricing policy range. Every change is written to `sales_audit_log` — giving away margin is a
 decision that must be reconstructable, not just observable in the current row.
 
+### What a granted partner can actually do
+
+From **Referrals** in the cabinet, a granted partner gets one extra action per referral:
+"Make B2B" for a B2C referral, "Edit rates" for one already converted. It opens a base discount
+plus optional per-provider overrides (anthropic, openai, google, kimi, glm — the same closed list
+commerce accepts, so a typo cannot be stored and then silently never match a request). A blank
+provider field leaves that provider on the customer's base discount; clearing one drops it back.
+
+Converting requires a base discount: provider overrides alone would leave every other model on the
+ordinary B2C price. A partner without the grant sees none of this — the column does not render.
+
+The ceiling is enforced **twice, server-side, and never read from the request**:
+
+1. `apps/sales-api` checks the grant exists and that every requested percent — the base and each
+   provider override — is within `b2b_max_discount_bps` from the partner row;
+2. `apps/api` re-checks the ceiling AND proves the customer is attributed to the calling partner's
+   referral code before writing anything.
+
+The second check is not redundancy for its own sake: `/v1/internal/sales/partner-business-pricing`
+is authenticated only as "sales", so without an independent ownership proof a defect on the sales
+side would be enough to reprice any customer in the system. Writes go through the same
+`setBusinessPricingBundle` the admin editor uses — the account default on `customer_profiles`
+plus `customer_provider_discounts`, delivered by durable `engine_pricing_jobs`.
+
 Commission does not change with the customer's class. A referred B2B customer earns the partner the
 same percentage of the customer's own money as a referred B2C customer; a deeper discount simply
 means the customer pays less, so the commission is smaller in absolute terms. Converting a customer

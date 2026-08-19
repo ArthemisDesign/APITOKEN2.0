@@ -53,13 +53,14 @@ import type { Environment } from "./config.js";
 import { CurrentAuth, type RequestAuth, SessionAuthGuard } from "./auth.guard.js";
 import { AuthService, generateCode, partnerView } from "./auth.service.js";
 import { normalizeTelegramUsername } from "./telegram.js";
-import { CommerceService } from "./commerce.service.js";
+import { CommercePartnerPricingError, CommerceService } from "./commerce.service.js";
 import { SALES_DATABASE } from "./infrastructure.module.js";
 import {
   createDiscountLinkSchema,
   createInviteSchema,
   createPromoSchema,
   earningsQuerySchema,
+  partnerBusinessPricingSchema,
   referralUserRefSchema,
   setReferralDiscountSchema,
   updateSettingsSchema,
@@ -217,6 +218,88 @@ export class PartnerController {
       discountBps: parsed.data.discountBps,
       multiplierBp: result.multiplierBp,
       pricingAffected: false,
+    };
+  }
+
+  /**
+   * Price one of MY referrals as a B2B customer — available only to a partner an admin granted the
+   * right, and never deeper than the granted ceiling.
+   *
+   * Three things are checked here, and commerce independently re-checks the last two: the grant
+   * exists, every requested discount is within the ceiling, and the referral is actually this
+   * partner's. Deeper discounts are margin the company gives away, so the ceiling is the whole
+   * safety property — it is enforced server-side and is never taken from the request.
+   *
+   * Commission is unaffected: a B2B referral earns the partner the same percentage of the
+   * customer's own money, so a deeper discount simply means a smaller absolute commission.
+   */
+  @Post("referrals/:userRef/business-pricing")
+  @HttpCode(200)
+  async setReferralBusinessPricing(
+    @CurrentAuth() current: RequestAuth,
+    @Param("userRef") userRef: string,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    if (!current.partner.b2bEnabled) {
+      throw new ForbiddenException("your account is not allowed to create B2B customers");
+    }
+    const ref = referralUserRefSchema.safeParse(userRef);
+    if (!ref.success) throw new BadRequestException("invalid referral reference");
+    const parsed = partnerBusinessPricingSchema.safeParse(body ?? {});
+    if (!parsed.success) throw new BadRequestException("invalid business pricing request");
+
+    const ceilingPercent = Math.floor(current.partner.b2bMaxDiscountBps / 100);
+    const requested = [
+      ...(parsed.data.discountPercent === undefined ? [] : [parsed.data.discountPercent]),
+      ...Object.values(parsed.data.providers ?? {}).filter((value): value is number => value !== null),
+    ];
+    if (requested.some((value) => value > ceilingPercent)) {
+      throw new UnprocessableEntityException(`discount exceeds your maximum of ${ceilingPercent}%`);
+    }
+
+    const commerceUserId = await resolveReferredUserByPrefix(this.database, current.partner.id, ref.data);
+    if (commerceUserId === null) throw new NotFoundException("referral not found");
+    if (commerceUserId === "ambiguous") throw new UnprocessableEntityException("ambiguous referral reference");
+
+    let result;
+    try {
+      result = await this.commerce.setPartnerBusinessPricing({
+        userId: commerceUserId,
+        referralCode: current.partner.referralCode,
+        ceilingPercent,
+        ...(parsed.data.discountPercent === undefined ? {} : { discountPercent: parsed.data.discountPercent }),
+        ...(parsed.data.providers === undefined ? {} : { providers: parsed.data.providers }),
+      });
+    } catch (error) {
+      if (error instanceof CommercePartnerPricingError && error.status === 403) {
+        // Commerce disagreed about ownership or the ceiling. Surface it rather than retrying:
+        // the two sides must not quietly settle on the more generous reading.
+        throw new ForbiddenException("this referral cannot be priced by your account");
+      }
+      if (error instanceof CommercePartnerPricingError && error.status === 400) {
+        throw new UnprocessableEntityException("this referral cannot be converted yet");
+      }
+      throw error;
+    }
+
+    await insertSalesAudit(this.database, {
+      actorType: "partner", actorId: current.partner.id,
+      action: "referral.business_pricing_set", targetType: "referred_user", targetId: commerceUserId,
+      metadata: {
+        ceilingPercent,
+        converted: result.converted,
+        discountPercent: result.discountPercent,
+        providers: result.providers,
+      },
+    });
+
+    return {
+      userRef: ref.data,
+      converted: result.converted,
+      customerType: result.customerType,
+      discountPercent: result.discountPercent,
+      providers: result.providers,
+      ceilingPercent,
     };
   }
 

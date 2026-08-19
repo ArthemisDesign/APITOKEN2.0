@@ -677,6 +677,25 @@ export const providerSwitchHead = pgTable("provider_switch_head", {
   check("provider_switch_head_singleton_check", sql`${table.singleton} = 1`),
 ]);
 
+// ---------------------------------------------------------------------------
+// RETIRED — managed pricing policies. READ AND WRITTEN BY NOTHING.
+//
+// These tables (pricing_policies / pricing_policy_versions / pricing_policy_rules /
+// account_policy_* and the *_v2 release machinery below) belonged to the per-account policy
+// resolver that was removed. `crates/forward/src/pricing.rs` states it directly: the per-account
+// policy resolver, the shadow-evaluation pipeline and the release-v2 machinery are gone, because
+// they could leave a funded account unable to spend its own balance whenever the two funding
+// representations disagreed.
+//
+// LIVE B2B/B2C PRICING IS ELSEWHERE: the account default on `customer_profiles.multiplier_bp`
+// plus per-provider overrides in `customer_provider_discounts`, written through
+// `packages/db/src/pricing-discounts.ts` and delivered by `engine_pricing_jobs`.
+//
+// The definitions stay only so the schema still describes the rows that exist in production;
+// dropping them is a separate, deliberate migration. Do NOT read these tables to answer "what
+// does this customer pay" — their contents are a frozen snapshot of a retired system and will
+// disagree with what the engine actually charges. That mistake has already been made once.
+// ---------------------------------------------------------------------------
 export const pricingPolicies = pgTable("pricing_policies", {
   id: text("id").primaryKey(),
   ownerType: text("owner_type").notNull(),

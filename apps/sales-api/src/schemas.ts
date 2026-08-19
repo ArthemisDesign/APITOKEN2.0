@@ -96,6 +96,20 @@ export const setReferralDiscountSchema = z.object({
   discountBps: referralDiscountBpsSchema,
 });
 
+// Partner-set B2B pricing for their own referral. Percents, matching the admin editor; the
+// partner's granted ceiling narrows the range further and is checked on both sides.
+const partnerB2bPercentSchema = z.number().int().min(0).max(95);
+
+export const partnerBusinessPricingSchema = z.object({
+  discountPercent: partnerB2bPercentSchema.optional(),
+  // null removes a provider override so that provider falls back to the customer's default.
+  providers: z.record(z.string(), partnerB2bPercentSchema.nullable()).optional(),
+}).refine(
+  (value) => value.discountPercent !== undefined
+    || (value.providers !== undefined && Object.keys(value.providers).length > 0),
+  { message: "nothing to change" },
+);
+
 // Маскированная ссылка на реферала: первые 8 hex его uuid (ровно то, что в userMask/userRef).
 export const referralUserRefSchema = z.string().regex(/^[0-9a-f]{8}$/);
 

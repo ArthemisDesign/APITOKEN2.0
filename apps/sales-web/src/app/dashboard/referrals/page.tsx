@@ -8,13 +8,21 @@ import {
   formatUsd,
   type ReferralRow,
 } from "@/lib/api";
-import { Badge, EmptyState, Loading, Notice, StatusBadge, Table } from "@/components/ui";
+import { Badge, Button, EmptyState, Loading, Notice, StatusBadge, Table } from "@/components/ui";
 import { useI18n } from "@/components/i18n";
+import { usePartner } from "@/components/partner-context";
+import { BusinessPricingDialog } from "@/components/business-pricing-dialog";
 
 export default function ReferralsPage() {
   const { t } = useI18n();
+  const partner = usePartner();
   const [items, setItems] = useState<ReferralRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pricing, setPricing] = useState<ReferralRow | null>(null);
+  // The B2B column exists only for a partner an admin granted the right. Without the grant the
+  // cabinet looks exactly as it did — an ordinary partner has no business pricing to see.
+  const b2bAllowed = partner.b2bEnabled === true && (partner.b2bMaxDiscountBps ?? 0) > 0;
+  const ceilingPercent = Math.floor((partner.b2bMaxDiscountBps ?? 0) / 100);
 
   const load = useCallback(async () => {
     const res = await api<{ items: ReferralRow[] }>("/v1/partner/referrals");
@@ -68,6 +76,7 @@ export default function ReferralsPage() {
                 <th className="num">{t("Top-ups", "Пополнения")}</th>
                 <th className="num">{t("Spend", "Траты")}</th>
                 <th className="num">{t("You earned", "Вы заработали")}</th>
+                {b2bAllowed ? <th>{t("Pricing", "Условия")}</th> : null}
               </>
             }
           >
@@ -106,11 +115,28 @@ export default function ReferralsPage() {
                     {formatUsd(r.netNano)}
                     {BigInt(r.adjustmentNano) !== 0n ? <div className="field-hint">{formatUsd(r.adjustmentNano)} {t("returns", "возвраты")}</div> : null}
                   </td>
+                  {b2bAllowed ? (
+                    <td>
+                      {r.userRef ? (
+                        <Button size="sm" variant="ghost" onClick={() => setPricing(r)}>
+                          {r.customerType === "b2b" ? t("Edit rates", "Ставки") : t("Make B2B", "Сделать B2B")}
+                        </Button>
+                      ) : null}
+                    </td>
+                  ) : null}
                 </tr>
               );
             })}
           </Table>
         )
+      ) : null}
+      {pricing ? (
+        <BusinessPricingDialog
+          row={pricing}
+          ceilingPercent={ceilingPercent}
+          onClose={() => setPricing(null)}
+          onSaved={() => { void load(); }}
+        />
       ) : null}
     </>
   );

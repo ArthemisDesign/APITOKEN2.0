@@ -166,6 +166,22 @@ of reaching SQL as an out-of-range value.
   immutable audit evidence; the current partner/admin UI does not grant, edit or market them as a
   discount. Partner-facing additive responses that expose the old fields also return
   `pricingAffected:false`.
+- `POST /v1/internal/sales/partner-business-pricing` — a granted partner prices **their own**
+  referral as a B2B customer. Body
+  `{userId, referralCode, ceilingPercent, discountPercent?, providers?}` (whole percents; a
+  provider mapped to `null` drops its override back to the customer's default) →
+  `{userId, converted, customerType, discountPercent, providers}`. Two guards, both required:
+  the customer must be attributed to `referralCode` (first-touch attribution is the one ownership
+  fact commerce can verify by itself), and every requested percent must be within
+  `ceilingPercent`. The route is authenticated only as "sales", so the ownership proof is what
+  keeps a defect on the sales side from repricing an unrelated customer; the ceiling is re-checked
+  rather than trusted, and a disagreement fails closed instead of taking the more generous
+  reading. Conversion is idempotent and requires an explicit base discount — provider overrides
+  alone would leave the rest of the catalog at the B2C price. Writes reuse
+  `setBusinessPricingBundle`, the same durable lane as the admin editor. Provider ids are the
+  closed `DISCOUNT_PROVIDER_IDS` set; an unknown id is rejected instead of being stored and never
+  matching a request.
+
 - `POST /v1/internal/sales/referral-profiles` — referral profiles for the partner's storefront.
   Body `{userIds: uuid[] (max 500)}` → `{items:[{userId, customerType (b2c/b2b), multiplierBp,
   discountPercent, referralFloorBps, cumulativeTopupNano, balanceNano, status}]}`. Only for an

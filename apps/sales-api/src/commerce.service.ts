@@ -89,7 +89,55 @@ export class CommerceService {
     if (!body.success) throw new Error("referral-discount returned an unexpected payload");
     return body.data;
   }
+
+  async setPartnerBusinessPricing(input: {
+    userId: string;
+    referralCode: string;
+    ceilingPercent: number;
+    discountPercent?: number;
+    providers?: Record<string, number | null>;
+  }): Promise<PartnerBusinessPricingResult> {
+    const base = this.config.get("COMMERCE_BASE_URL", { infer: true });
+    const response = await fetch(new URL("/v1/internal/sales/partner-business-pricing", base), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": this.config.get("SALES_CONTROL_KEY", { infer: true }),
+      },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!response.ok) {
+      // 403 is the meaningful one: commerce disagreed about ownership or the ceiling.
+      throw new CommercePartnerPricingError(response.status, `partner-business-pricing responded ${response.status}`);
+    }
+    const body = partnerBusinessPricingResultSchema.safeParse(await response.json());
+    if (!body.success) throw new Error("partner-business-pricing returned an unexpected payload");
+    return body.data;
+  }
 }
+
+export class CommercePartnerPricingError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "CommercePartnerPricingError";
+  }
+}
+
+/**
+ * The partner-driven B2B write. Commerce re-checks the ceiling and proves the customer is this
+ * partner's referral, so a defect on this side cannot reprice someone else's customer. Errors are
+ * propagated, never swallowed: a partner must learn whether their pricing change actually landed.
+ */
+const partnerBusinessPricingResultSchema = z.object({
+  userId: z.string(),
+  converted: z.boolean(),
+  customerType: z.enum(["b2c", "b2b"]).nullable(),
+  discountPercent: z.number().nullable(),
+  providers: z.record(z.string(), z.number()),
+});
+
+export type PartnerBusinessPricingResult = z.infer<typeof partnerBusinessPricingResultSchema>;
 
 const referralDiscountResultSchema = z.object({
   applied: z.boolean(),
