@@ -346,6 +346,26 @@ remained ready. The consumed authorization and exact SHA must never be replayed;
 step was the separate publication commit. That publication adds the public/default/catalog surfaces
 without another admission call; only the final customer-path smoke may generate, under its own
 ordinary billing lifecycle.
+
+### Tool-result-final-turn controlled live
+
+`--gemini-37-tool-result-final-turn` is the closed admission for the tool-loop transcript shape
+that ordinary tool-calling clients (OpenCode and other portable AI SDKs) produce after executing a
+call: user text → model `functionCall` → final user content carrying ONLY a `functionResponse`
+with no text part. The leg sends one free UUIDv4/deadline-bound `countTokens` preflight, then one
+paid incremental SSE generation whose final turn is exactly that shape. The replayed
+`functionCall` carries the accepted stateless context-engineering thought-signature marker because
+portable clients do not retain Google's opaque response signatures; the run never persists or
+exposes a real one. The response must be the exact `CALIBRATION_OK` marker with terminal `STOP`,
+authoritative terminal usage and response/event parity; a second `functionCall` instead of an
+answer is a terminal coverage failure, not evidence.
+
+Unlike the other capability matrices the budget contract is the leg's own measured
+`countTokens`-preflight ceiling at the exact current compiled tariff (input tokens plus the
+512-token output cap), not the fleet worst-case long-context envelope: there is no sibling leg to
+dominate it, and `--budget-usd` must equal that exact value. A GREEN run is the sole evidence that
+permits admitting tool-result-only final turns on this model; image-only final turns and prefilled
+model turns stay fail-closed until their own exact-SHA gates.
 ## Offline verification
 
 ```bash

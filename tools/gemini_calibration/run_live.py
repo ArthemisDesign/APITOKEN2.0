@@ -52,6 +52,13 @@ GEMINI_37_ADMISSION_PROMPT = (
     "Output the integers 1 through 64, separated by single spaces, and nothing else."
 )
 GEMINI_37_ADMISSION_EXPECTED_TEXT = " ".join(str(value) for value in range(1, 65))
+# Output budget for the tool-result-final-turn admission leg. It must cover the default
+# medium thinking level plus the short visible marker answer; the 2026-08-15 default-surface
+# admission spent 478 of 512 output tokens on the same prompt family, so 512 is kept.
+GEMINI_37_TOOL_RESULT_FINAL_TURN_OUTPUT_TOKENS = 512
+# Exact visible answer the tool-result-final-turn leg requires: the model must consume a final
+# user turn that carries ONLY a functionResponse and still answer with this marker.
+GEMINI_37_TOOL_RESULT_FINAL_TURN_MARKER = "CALIBRATION_OK"
 # Smallest valid PNG (1x1 opaque blue pixel) for the bounded image-input admission leg.
 TINY_PNG_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
@@ -1329,6 +1336,61 @@ def body_for_gemini37_capability(leg: Leg, run_id: str) -> dict[str, Any]:
     raise CalibrationError(f"unknown Gemini 3.7 capability leg: {leg.name}")
 
 
+def body_for_gemini37_tool_result_final_turn(leg: Leg, run_id: str) -> dict[str, Any]:
+    """Admission body whose FINAL turn is a user content carrying only a functionResponse.
+
+    This is exactly the transcript shape a tool-calling client (e.g. OpenCode) produces after
+    it has executed a call: user text → model functionCall → user functionResponse. The
+    replayed functionCall carries the accepted stateless context-engineering thought signature
+    marker because portable clients do not retain Google's opaque response signatures. There
+    is intentionally no text part in the final turn: the leg exists to prove that wire shape.
+    """
+    return {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{
+                    "text": (
+                        f"Calibration {run_id}:{leg.name}. Call calibration_probe exactly "
+                        "once with marker CALIBRATION_OK. Do not answer with plain text."
+                    )
+                }],
+            },
+            {
+                "role": "model",
+                "parts": [{
+                    "functionCall": {
+                        "name": "calibration_probe",
+                        "args": {"marker": "CALIBRATION_OK"},
+                    },
+                    "thoughtSignature": "context_engineering_is_the_way_to_go",
+                }],
+            },
+            {
+                "role": "user",
+                "parts": [{
+                    "functionResponse": {
+                        "name": "calibration_probe",
+                        "response": {"marker": "CALIBRATION_OK"},
+                    }
+                }],
+            },
+        ],
+        "generationConfig": {"maxOutputTokens": leg.max_output_tokens},
+        "tools": [{
+            "functionDeclarations": [{
+                "name": "calibration_probe",
+                "description": "Return the supplied calibration marker.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {"marker": {"type": "STRING"}},
+                    "required": ["marker"],
+                },
+            }]
+        }],
+    }
+
+
 def body_for_media_leg(leg: Leg) -> dict[str, Any]:
     """Fleet media-matrix bodies: the same payloads and perception contract as the 3.7
     admission, keyed by leg kind instead of the admission-only name prefix."""
@@ -1853,6 +1915,25 @@ def verify_generation_response(
     if leg.kind == "tool":
         if evidence["function_calls"] <= 0:
             return evidence, "tool control returned no functionCall"
+    elif leg.kind == "tool-result-final-turn":
+        # The leg proves a final user turn that carries ONLY a functionResponse is admitted
+        # and answered. The response must be the exact marker text with terminal STOP/usage,
+        # not another function call and not an error.
+        joined = "".join(visible_text_parts)
+        if joined.strip() != GEMINI_37_TOOL_RESULT_FINAL_TURN_MARKER:
+            return evidence, (
+                "tool-result-final-turn admission answer did not match the exact "
+                f"{GEMINI_37_TOOL_RESULT_FINAL_TURN_MARKER} marker"
+            )
+        if evidence["function_calls"] > 0:
+            return evidence, (
+                "tool-result-final-turn admission re-invoked a functionCall instead of "
+                "answering the completed tool transcript"
+            )
+        if evidence["unexpected_plain_parts"]:
+            return evidence, "tool-result-final-turn generation returned an unrequested non-text part"
+        if event["output_tokens"] <= event["thinking_output_tokens"]:
+            return evidence, "immutable output has no billed non-thinking candidate tokens"
     elif leg.kind == "image":
         if evidence["inline_data_parts"] <= 0:
             return evidence, "image control returned no inlineData"
@@ -2177,7 +2258,24 @@ class Runner:
     def execute_leg(self, leg: Leg, profile_id: str) -> dict[str, Any]:
         if self.admission is not None and not self.media_matrix:
             levels = self.admission.thinking_levels if self.admission else ()
-            if self.admission.capability_matrix:
+            if leg.kind == "tool-result-final-turn":
+                expected_leg = (
+                    f"admission:{GEMINI_37_ADMISSION_MODEL}:tool-result-final-turn"
+                )
+                if (
+                    not self.admission.capability_matrix
+                    or profile_id != self.admission.profile_id
+                    or leg.model != GEMINI_37_ADMISSION_MODEL
+                    or not leg.stream
+                    or leg.thinking_level is not None
+                    or leg.max_output_tokens
+                        != GEMINI_37_TOOL_RESULT_FINAL_TURN_OUTPUT_TOKENS
+                    or leg.name != expected_leg
+                ):
+                    raise CalibrationError(
+                        "Gemini 3.7 admission plan is not the exact contract"
+                    )
+            elif self.admission.capability_matrix:
                 if (
                     profile_id != self.admission.profile_id
                     or leg.model != GEMINI_37_ADMISSION_MODEL
@@ -2224,7 +2322,9 @@ class Runner:
             raise CalibrationError("target Gemini profile has no stable cache scope")
         before_ids = set(recent_turn_events(before))
         body = (
-            body_for_gemini37_capability(leg, self.run_id)
+            body_for_gemini37_tool_result_final_turn(leg, self.run_id)
+            if leg.kind == "tool-result-final-turn"
+            else body_for_gemini37_capability(leg, self.run_id)
             if self.admission is not None and self.admission.capability_matrix
             else body_for_gemini37_admission(leg.thinking_level, self.admission.output_tokens if self.admission else GEMINI_37_ADMISSION_OUTPUT_TOKENS)
             if self.admission is not None
@@ -2324,7 +2424,17 @@ class Runner:
             # across the ~20-minute run without pinning a global schedule snapshot.
             pass
         elif self.admission is not None:
-            if leg.name == f"admission:{GEMINI_37_ADMISSION_MODEL}:search":
+            if leg.kind == "tool-result-final-turn":
+                # Single closed leg: the reserve is this leg's own measured countTokens plus
+                # its exact output cap, times the single planned generation. Unlike the other
+                # capability matrices there is no long-context sibling to dominate it.
+                if self.budget.limit_nano != upper:
+                    raise CalibrationError(
+                        "Gemini 3.7 tool-result-final-turn admission budget must equal the "
+                        f"leg's exact current-tariff ceiling {upper} nanoUSD, got "
+                        f"{self.budget.limit_nano}"
+                    )
+            elif leg.name == f"admission:{GEMINI_37_ADMISSION_MODEL}:search":
                 capability_legs = ["search"]
             elif leg.name.rsplit(":", 1)[-1] in GEMINI_37_MEDIA_KINDS:
                 capability_legs = list(GEMINI_37_MEDIA_KINDS)
@@ -2630,6 +2740,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--gemini-37-capabilities", action="store_true")
     parser.add_argument("--gemini-37-search", action="store_true")
     parser.add_argument("--gemini-37-media", action="store_true")
+    parser.add_argument("--gemini-37-tool-result-final-turn", action="store_true")
     parser.add_argument("--gemini-media-matrix", action="store_true")
     parser.add_argument("--media-profile", action="append", default=[])
     parser.add_argument("--admission-profile")
@@ -2658,6 +2769,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         bool(args.gemini_37_capabilities),
         bool(args.gemini_37_search),
         bool(args.gemini_37_media),
+        bool(args.gemini_37_tool_result_final_turn),
     ))
     if admission_mode_count:
         if admission_mode_count > 1:
@@ -2793,6 +2905,30 @@ def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
                 "pre-deadline-count-and-generation-dispatch-attestation",
                 "authoritative-webSearchQueries-count-in-immutable-event",
                 "raw-modelVersion-terminal-usage-and-response-event-parity",
+            ],
+        }
+    if args.gemini_37_tool_result_final_turn:
+        return {
+            "schema": "gemini-3.7-tool-result-final-turn-plan/v1",
+            "mode": "dry-run",
+            "paid_requests_sent": 0,
+            "planned_count_requests": 1,
+            "planned_paid_generation_requests": 1,
+            "budget_nanousd_total": str(budget_nano),
+            "model": GEMINI_37_ADMISSION_MODEL,
+            "profile_id": args.admission_profile,
+            "implementation_sha": args.implementation_sha,
+            "capability": "tool-result-final-turn",
+            "final_turn_shape": "tool-result-only",
+            "max_output_tokens": GEMINI_37_TOOL_RESULT_FINAL_TURN_OUTPUT_TOKENS,
+            "guards": [
+                "one-free-countTokens-then-one-paid-generation",
+                "no-resume-retry-reconnect-or-replay",
+                "exact-profile-and-uuidv4-attribution",
+                "budget-equals-the-leg's-own-exact-current-tariff-ceiling",
+                "pre-deadline-count-and-generation-dispatch-attestation",
+                "raw-modelVersion-terminal-usage-and-response-event-parity",
+                "exact-marker-answer-without-a-second-function-call",
             ],
         }
     if args.gemini_37_capabilities:
@@ -2951,7 +3087,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     profiles = (
         [args.admission_profile]
-        if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search or args.gemini_37_media
+        if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search or args.gemini_37_media or args.gemini_37_tool_result_final_turn
         else sorted(set(media_targets.values()))
         if args.gemini_media_matrix
         else (resume.profiles if resume else healthy_profiles)
@@ -2966,7 +3102,7 @@ def main(argv: list[str] | None = None) -> int:
     rates = rate_catalog(baseline)
     models = (
         [GEMINI_37_ADMISSION_MODEL]
-        if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search or args.gemini_37_media
+        if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search or args.gemini_37_media or args.gemini_37_tool_result_final_turn
         else sorted(MEDIA_MATRIX_MODELS)
         if args.gemini_media_matrix
         else (resume.models if resume else (args.models or sorted(rates)))
@@ -3037,6 +3173,12 @@ def main(argv: list[str] | None = None) -> int:
             capability_matrix=True,
         )
     elif args.gemini_37_media:
+        admission = Gemini37Admission(
+            profile_id=args.admission_profile,
+            implementation_sha=args.implementation_sha,
+            capability_matrix=True,
+        )
+    elif args.gemini_37_tool_result_final_turn:
         admission = Gemini37Admission(
             profile_id=args.admission_profile,
             implementation_sha=args.implementation_sha,
@@ -3157,6 +3299,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             for name in GEMINI_37_MEDIA_KINDS
         ]
+    elif args.gemini_37_tool_result_final_turn:
+        legs = [Leg(
+            f"admission:{GEMINI_37_ADMISSION_MODEL}:tool-result-final-turn",
+            GEMINI_37_ADMISSION_MODEL,
+            "tool-result-final-turn",
+            stream=True,
+            max_output_tokens=GEMINI_37_TOOL_RESULT_FINAL_TURN_OUTPUT_TOKENS,
+        )]
     elif args.gemini_media_matrix:
         legs = [
             Leg(
@@ -3352,7 +3502,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     if args.gemini_media_matrix:
         report["media_targets"] = media_targets
-    if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search or args.gemini_37_media:
+    if args.gemini_37_admission or args.gemini_37_thinking_levels or args.gemini_37_capabilities or args.gemini_37_search or args.gemini_37_media or args.gemini_37_tool_result_final_turn:
         if args.gemini_37_capabilities:
             generations = len(GEMINI_37_CAPABILITY_KINDS)
         else:
@@ -3367,6 +3517,9 @@ def main(argv: list[str] | None = None) -> int:
             ),
             "capabilities": (
                 list(GEMINI_37_CAPABILITY_KINDS) if args.gemini_37_capabilities else []
+            ),
+            "final_turn_shape": (
+                "tool-result-only" if args.gemini_37_tool_result_final_turn else None
             ),
             "planned_count_requests": generations,
             "planned_paid_generation_requests": generations,

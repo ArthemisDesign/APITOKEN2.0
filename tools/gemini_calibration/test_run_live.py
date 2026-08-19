@@ -459,6 +459,155 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         _evidence, error = run_live.verify_generation_response(leg, wrong, immutable)
         self.assertIn("perception marker", error)
 
+    def test_gemini_37_tool_result_final_turn_cli_is_a_single_closed_leg(self):
+        sha = "e" * 40
+        args = run_live.parse_args([
+            "--gemini-37-tool-result-final-turn",
+            "--admission-profile",
+            "profile-a",
+            "--implementation-sha",
+            sha,
+            "--production-capacity-port",
+            "18897",
+            "--production-api-port",
+            "18897",
+            "--budget-usd",
+            "1",
+        ])
+        plan = run_live.dry_run_plan(args, run_live.usd_to_nano(args.budget_usd))
+        self.assertEqual(plan["schema"], "gemini-3.7-tool-result-final-turn-plan/v1")
+        self.assertEqual(plan["planned_count_requests"], 1)
+        self.assertEqual(plan["planned_paid_generation_requests"], 1)
+        self.assertEqual(plan["final_turn_shape"], "tool-result-only")
+        self.assertEqual(plan["model"], run_live.GEMINI_37_ADMISSION_MODEL)
+        self.assertEqual(
+            plan["max_output_tokens"],
+            run_live.GEMINI_37_TOOL_RESULT_FINAL_TURN_OUTPUT_TOKENS,
+        )
+        self.assertIn("no-resume-retry-reconnect-or-replay", plan["guards"])
+
+        for other in (
+            "--gemini-37-admission",
+            "--gemini-37-thinking-levels",
+            "--gemini-37-capabilities",
+            "--gemini-37-search",
+            "--gemini-37-media",
+        ):
+            with self.subTest(other=other), self.assertRaises(SystemExit):
+                run_live.parse_args([
+                    "--gemini-37-tool-result-final-turn",
+                    other,
+                    "--admission-profile",
+                    "profile-a",
+                    "--implementation-sha",
+                    sha,
+                ])
+        for extra in (
+            ["--resume-report", "/tmp/old.json"],
+            ["--models", run_live.GEMINI_37_ADMISSION_MODEL],
+        ):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit):
+                run_live.parse_args([
+                    "--gemini-37-tool-result-final-turn",
+                    "--admission-profile",
+                    "profile-a",
+                    "--implementation-sha",
+                    sha,
+                    *extra,
+                ])
+
+    def test_gemini_37_tool_result_final_turn_body_has_no_final_text(self):
+        model = run_live.GEMINI_37_ADMISSION_MODEL
+        leg = run_live.Leg(
+            f"admission:{model}:tool-result-final-turn",
+            model,
+            "tool-result-final-turn",
+            stream=True,
+            max_output_tokens=run_live.GEMINI_37_TOOL_RESULT_FINAL_TURN_OUTPUT_TOKENS,
+        )
+        body = run_live.body_for_gemini37_tool_result_final_turn(leg, "run")
+        contents = body["contents"]
+        self.assertEqual([content["role"] for content in contents], ["user", "model", "user"])
+        # The wire contract under test: the FINAL turn carries only a functionResponse,
+        # never a text part. Adding text would make the leg prove nothing.
+        final_parts = contents[-1]["parts"]
+        self.assertEqual(len(final_parts), 1)
+        self.assertIn("functionResponse", final_parts[0])
+        self.assertNotIn("text", final_parts[0])
+        self.assertEqual(final_parts[0]["functionResponse"]["name"], "calibration_probe")
+        # The replayed model call must carry the accepted stateless context-engineering
+        # thought signature marker: portable clients do not retain opaque signatures.
+        call_part = contents[1]["parts"][0]
+        self.assertIn("functionCall", call_part)
+        self.assertEqual(
+            call_part["thoughtSignature"],
+            "context_engineering_is_the_way_to_go",
+        )
+        # countTokens consumes the same contents/tools shape.
+        counted = run_live.count_body(body)
+        self.assertEqual(set(counted), {"contents", "tools"})
+        self.assertEqual(counted["contents"], contents)
+
+    def test_gemini_37_tool_result_final_turn_response_requires_the_marker(self):
+        model = run_live.GEMINI_37_ADMISSION_MODEL
+        leg = run_live.Leg(
+            f"admission:{model}:tool-result-final-turn",
+            model,
+            "tool-result-final-turn",
+            stream=True,
+            max_output_tokens=run_live.GEMINI_37_TOOL_RESULT_FINAL_TURN_OUTPUT_TOKENS,
+        )
+        frames = (
+            {"modelVersion": "gemini-3.7-flash-tiered",
+             "candidates": [{"content": {"parts": [{"text": "CALIBRATION_"}]}}]},
+            {"modelVersion": "gemini-3.7-flash-tiered",
+             "candidates": [{
+                 "content": {"parts": [{"text": "OK"}]},
+                 "finishReason": "STOP",
+             }],
+             "usageMetadata": {"promptTokenCount": 60, "candidatesTokenCount": 3}},
+        )
+        response = run_live.GenerationResponse(frames=frames, stream=True)
+        immutable = event(model=model)
+        immutable.update({"input_tokens": 60, "output_tokens": 3})
+        immutable = run_live.recent_turn_events(capacity([immutable]))["req-1"]
+        evidence, error = run_live.verify_generation_response(leg, response, immutable)
+        self.assertIsNone(error)
+        self.assertTrue(evidence["terminal_finish"])
+        self.assertTrue(evidence["terminal_usage"])
+
+        reinvoked = dataclasses.replace(
+            response,
+            frames=(
+                frames[0],
+                {**frames[1],
+                 "candidates": [{
+                     "content": {"parts": [
+                         {"text": "OK"},
+                         {"functionCall": {"name": "calibration_probe", "args": {}}},
+                     ]},
+                     "finishReason": "STOP",
+                 }]},
+            ),
+        )
+        _evidence, error = run_live.verify_generation_response(leg, reinvoked, immutable)
+        self.assertIn("re-invoked a functionCall", error)
+
+        wrong_text = dataclasses.replace(
+            response,
+            frames=(
+                frames[0],
+                {**frames[1],
+                 "candidates": [{
+                     "content": {"parts": [{"text": "I ran the tool."}]},
+                     "finishReason": "STOP",
+                 }]},
+            ),
+        )
+        _evidence, error = run_live.verify_generation_response(leg, wrong_text, immutable)
+        self.assertIn("did not match the exact", error)
+
+
     def test_gemini_media_matrix_cli_covers_every_model_exactly_once(self):
         matrix_args = []
         for index, model in enumerate(sorted(run_live.MEDIA_MATRIX_MODELS), start=1):
