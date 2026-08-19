@@ -3061,6 +3061,22 @@ grep -Fxq 'TimeoutStopSec=660' "$ROOT/systemd/claude-router@.service" \
   || wd_die "router slots cannot drain provider-grade SSE sessions"
 grep -Fxq 'TimeoutStopSec=660' "$ROOT/systemd/claude-router.service" \
   || wd_die "first singleton-to-slot handoff still truncates long SSE sessions"
+router_payload_pins='CLAUDE_ROUTER_MAX_BODY_MIB=32 CLAUDE_ROUTER_BODY_MEMORY_BUDGET_MIB=128 CLAUDE_ROUTER_BODY_SPOOL_BUDGET_MIB=128 CLAUDE_ROUTER_BODY_MEMORY_THRESHOLD_MIB=32 CLAUDE_ROUTER_BODY_IDLE_SECS=60 CLAUDE_ROUTER_BODY_MAX_SECS=300'
+for router_unit in claude-router.service claude-router@.service; do
+  grep -Fq "$router_payload_pins" "$ROOT/systemd/$router_unit" \
+    || wd_die "$router_unit does not argv-pin the dormant current payload contract"
+  grep -Fxq 'MemoryMax=512M' "$ROOT/systemd/$router_unit" \
+    || wd_die "$router_unit changed memory before weighted admission"
+done
+provider_payload_pins='CLAUDE_API_TEXT_BODY_MAX_MIB=32 CLAUDE_API_BODY_MEMORY_BUDGET_MIB=2048 CLAUDE_API_BODY_SPOOL_BUDGET_MIB=2048 CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=32 CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=64'
+for provider_unit in claude-api.service claude-api@.service claude-api-anthropic@.service \
+  claude-api-openai.service claude-api-openai@.service claude-api-gemini.service \
+  claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service; do
+  grep -Fq "$provider_payload_pins" "$ROOT/systemd/$provider_unit" \
+    || wd_die "$provider_unit does not argv-pin the dormant current payload contract"
+  grep -Fxq 'MemoryMax=2G' "$ROOT/systemd/$provider_unit" \
+    || wd_die "$provider_unit changed memory before weighted admission"
+done
 grep -Fq 'router-bluegreen.sh' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die "router blue-green controller is never installed"
 grep -Fq 'router-promote.sh' "$ROOT/deploy/install-watchdog.sh" \

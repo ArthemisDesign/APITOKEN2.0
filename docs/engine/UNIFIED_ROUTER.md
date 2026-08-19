@@ -438,7 +438,11 @@ before reserve anyway. The deployment-only startup probe remains an eager concur
 probe of all three origins.
 
 After auth the consumer makes a fail-fast reservation against the 128 MiB budget in
-1 MiB steps. A valid `Content-Length` is rounded up; a chunked/unknown size first
+1 MiB steps. These current values now come from the dependency-free `crates/api-limits` typed
+contract and strict router composition (`CLAUDE_ROUTER_MAX_BODY_MIB`, memory budget and upload
+seconds). Startup rejects malformed, zero, inconsistent, or above-current values; the future
+256 MiB hard ceiling is not enablement before bounded spool storage and dual admission. A valid
+`Content-Length` is rounded up; a chunked/unknown size first
 gets 1 MiB and acquires more weight only when crossing the next MiB boundary. On
 exhaustion the router immediately returns a lane-shaped 503 with no queue and no
 billable call; a body without progress for 60 seconds or unfinished after 5 minutes

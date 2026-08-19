@@ -119,6 +119,11 @@ in the `registry←…←server` layers and does not import `pool`/`forward`/`se
 calibration, a safe live runner, and a compact admin control-room; a single successful request or a
 plausible number in the UI does not substitute for that gate.
 
+**Shared payload-limit contract.** `crates/api-limits` is a dependency-free leaf used by router,
+forward, and server for checked byte/admission units, current defaults, and hard ceilings. It reads
+no environment and enables no limit by itself; composition remains in router/server config and
+provider-owned narrower caps always win.
+
 **Invariants (check before committing):**
 1. **Transparency.** For the client the protocol = pure Anthropic API (body/response/stream/errors).
    The only thing we do under the hood is inject the Claude Code identity + oauth headers

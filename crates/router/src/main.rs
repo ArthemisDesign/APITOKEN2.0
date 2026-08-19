@@ -385,7 +385,14 @@ async fn main() -> anyhow::Result<()> {
         client: build_client()?,
         catalog: Catalog::new(),
         metrics: Arc::new(RouterMetrics::new()),
-        body_admission: Arc::new(Semaphore::new(routing::BODY_ADMISSION_UNITS)),
+        body_admission: Arc::new(Semaphore::new(
+            api_limits::AdmissionUnits::for_bytes(
+                cfg.body_limits.memory_budget,
+                api_limits::ByteLimit::from_bytes(api_limits::MIB),
+            )
+            .map_err(|error| anyhow::anyhow!("router body admission units: {error}"))?
+            .get() as usize,
+        )),
         cfg,
     });
     let addr: SocketAddr = format!("{}:{}", state.cfg.host, state.cfg.port).parse()?;

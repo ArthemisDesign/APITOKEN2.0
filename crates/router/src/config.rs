@@ -20,10 +20,33 @@ pub struct Config {
     /// Явный rollout-флаг advanced routing. По умолчанию выключен: `models` и
     /// `provider` отклоняются до catalog/policy/plane work.
     pub fallback_enabled: bool,
+    /// Dormant large-body settings. Defaults preserve the current 32 MiB/128 MiB behavior;
+    /// later stages may raise them only after bounded storage and dual admission exist.
+    pub body_limits: api_limits::BodyLimits,
+    pub body_idle_secs: u64,
+    pub body_max_secs: u64,
 }
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn parse_mib(key: &str, default: api_limits::ByteLimit) -> anyhow::Result<api_limits::ByteLimit> {
+    match std::env::var(key) {
+        Ok(value) => api_limits::parse_decimal_mib(&value)
+            .map_err(|error| anyhow::anyhow!("{key}={value:?}: {error}")),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(error) => Err(anyhow::anyhow!("{key}: {error}")),
+    }
+}
+
+fn parse_seconds(key: &str, default: u64) -> anyhow::Result<u64> {
+    match std::env::var(key) {
+        Ok(value) => api_limits::parse_decimal_seconds(&value)
+            .map_err(|error| anyhow::anyhow!("{key}={value:?}: {error}")),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(error) => Err(anyhow::anyhow!("{key}: {error}")),
+    }
 }
 
 fn parse_strict_bool(key: &str, value: Option<&str>, default: bool) -> anyhow::Result<bool> {
@@ -40,6 +63,60 @@ fn parse_strict_bool(key: &str, value: Option<&str>, default: bool) -> anyhow::R
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let anthropic_origin = env_or("CLAUDE_ROUTER_ANTHROPIC_ORIGIN", "http://127.0.0.1:8790");
+        let body_limits = api_limits::BodyLimits {
+            request: parse_mib(
+                "CLAUDE_ROUTER_MAX_BODY_MIB",
+                api_limits::current::ROUTER_REQUEST,
+            )?,
+            memory_budget: parse_mib(
+                "CLAUDE_ROUTER_BODY_MEMORY_BUDGET_MIB",
+                api_limits::current::ROUTER_MEMORY_BUDGET,
+            )?,
+            spool_budget: parse_mib(
+                "CLAUDE_ROUTER_BODY_SPOOL_BUDGET_MIB",
+                api_limits::current::ROUTER_SPOOL_BUDGET,
+            )?,
+            memory_threshold: parse_mib(
+                "CLAUDE_ROUTER_BODY_MEMORY_THRESHOLD_MIB",
+                api_limits::current::ROUTER_MEMORY_THRESHOLD,
+            )?,
+            response: api_limits::current::ROUTER_RESPONSE,
+        }
+        .validate(api_limits::hard::SPOOL)
+        .map_err(|error| anyhow::anyhow!("invalid router body limits: {error}"))?;
+        anyhow::ensure!(
+            body_limits.request <= api_limits::current::ROUTER_REQUEST,
+            "CLAUDE_ROUTER_MAX_BODY_MIB cannot exceed the current 32 MiB runtime ceiling before bounded storage is deployed"
+        );
+        anyhow::ensure!(
+            body_limits.memory_budget <= api_limits::current::ROUTER_MEMORY_BUDGET,
+            "CLAUDE_ROUTER_BODY_MEMORY_BUDGET_MIB cannot exceed the current 128 MiB runtime ceiling before dual admission is deployed"
+        );
+        anyhow::ensure!(
+            body_limits.spool_budget <= api_limits::current::ROUTER_SPOOL_BUDGET,
+            "CLAUDE_ROUTER_BODY_SPOOL_BUDGET_MIB cannot exceed the current 128 MiB in-memory envelope before spooling is deployed"
+        );
+        anyhow::ensure!(
+            body_limits.memory_threshold == body_limits.request,
+            "CLAUDE_ROUTER_BODY_MEMORY_THRESHOLD_MIB must equal the request limit before spooling is deployed"
+        );
+        let body_idle_secs = parse_seconds(
+            "CLAUDE_ROUTER_BODY_IDLE_SECS",
+            api_limits::current::ROUTER_BODY_IDLE_SECS,
+        )?;
+        let body_max_secs = parse_seconds(
+            "CLAUDE_ROUTER_BODY_MAX_SECS",
+            api_limits::current::ROUTER_BODY_MAX_SECS,
+        )?;
+        anyhow::ensure!(
+            body_idle_secs <= body_max_secs,
+            "router body idle timeout must not exceed the absolute timeout"
+        );
+        anyhow::ensure!(
+            body_idle_secs <= api_limits::current::ROUTER_BODY_IDLE_SECS
+                && body_max_secs <= api_limits::current::ROUTER_BODY_MAX_SECS,
+            "router upload timeouts cannot exceed current runtime ceilings before bounded storage is deployed"
+        );
         let cfg = Config {
             host: env_or("CLAUDE_ROUTER_HOST", "127.0.0.1"),
             port: env_or("CLAUDE_ROUTER_PORT", "8798")
@@ -56,6 +133,9 @@ impl Config {
                     .as_deref(),
                 false,
             )?,
+            body_limits,
+            body_idle_secs,
+            body_max_secs,
         };
         for (name, origin) in [
             ("CLAUDE_ROUTER_ANTHROPIC_ORIGIN", &cfg.anthropic_origin),

@@ -123,6 +123,11 @@ no database and uses the engine Control API read-only. It has its own release la
 Layers and invariants — `CLAUDE.md` (layer table) and `docs/engine/ARCHITECTURE.md`. Here
 is only what is needed to walk the relationships when making changes:
 
+- **`crates/api-limits` — checked customer payload contract.** A dependency-free leaf producing
+  byte/admission units, fixed route classes, current provider-specific defaults, future hard ceilings,
+  stable formatting and relationship validation. Consumers are `crates/router`, `crates/forward`, and
+  `crates/server`; environment stays in router/server composition. A hard ceiling never enables a
+  public limit, and the narrower Anthropic/Codex/Gemini-media contracts remain authoritative.
 - **`crates/elog` — the engine's unified error log.** A leaf crate (no dependencies) that
   every runtime layer that logs (`forward`, `server`, `router`, `authbot`, `registry`,
   `pool`) consumes. All runtime diagnostic lines flow through `elog::error/warn/info`

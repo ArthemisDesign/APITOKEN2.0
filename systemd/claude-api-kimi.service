@@ -22,7 +22,7 @@ EnvironmentFile=/srv/claude-api/data/engine-postgres.env
 # docs/engine/KIMI_PROVIDER.md). Disablement is the reverse reviewed unit change. The Anthropic
 # plane keeps KIMI off so exactly one process ever runs the maintenance writer. Both ClaudeStore
 # switches belong to other provider planes and must remain disabled here.
-ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=kimi CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8804 CLAUDE_API_INSTANCE_ID=%H:engine:kimi CLAUDE_API_KIMI_ENABLED=1 /srv/claude-api/releases/current/claude-api serve
+ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=kimi CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8804 CLAUDE_API_INSTANCE_ID=%H:engine:kimi CLAUDE_API_KIMI_ENABLED=1 CLAUDE_API_TEXT_BODY_MAX_MIB=32 CLAUDE_API_BODY_MEMORY_BUDGET_MIB=2048 CLAUDE_API_BODY_SPOOL_BUDGET_MIB=2048 CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=32 CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=64 /srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM

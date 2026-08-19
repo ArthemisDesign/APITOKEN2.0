@@ -13,6 +13,7 @@ members = [
     "crates/tripo3d-credential",
     "crates/suno-credential",
     "crates/elog",
+    "crates/api-limits",
     "crates/registry",
     "crates/pool",
     "crates/forward",

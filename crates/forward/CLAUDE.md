@@ -14,6 +14,9 @@ Never mix the three provider paths.
   there is no network media fetch and no general codec stack in the crate.
 - Does NOT read env and does NOT contain CLI/management routes (`/health`, `/pool`, `/balance`) — that is `server`.
 - Receives its config ready-made: [`ProxyConfig`] is populated by `server::config`; billing is the async DB actor `Option<Arc<AsyncBilling>>` in `AppState` (1 writer + N readers).
+- `api-limits` is the dependency-free checked payload contract. Current provider caps remain distinct:
+  Anthropic text 32 MiB, Codex text 8 MiB, Gemini text 32 MiB/media 20 MiB, translated response
+  32 MiB and Gemini native response 64 MiB. Hard 256 MiB ceilings are not runtime enablement.
 
 **Three authorization classes (secret separation, `proxy.rs`):** `authed` (forwarding-admin: `api_keys`
 /loopback) ⊂ `control_authed` (+`control_keys` — for commerce `/admin/*`) ⊂ `readonly_authed`

@@ -9,6 +9,7 @@ name = "claude-api"
 path = "src/main.rs"
 
 [dependencies]
+api-limits = { path = "../api-limits" }
 registry = { path = "../registry" }
 pool = { path = "../pool" }
 forward = { path = "../forward" }

@@ -30,12 +30,12 @@ use crate::policy::{
 };
 use crate::{proxy, AppState};
 
-const BODY_LIMIT: usize = 32 * 1024 * 1024;
-const BODY_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-const BODY_READ_MAX_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-pub const BODY_ADMISSION_UNIT_BYTES: usize = 1024 * 1024;
-pub const BODY_ADMISSION_UNITS: usize = 128;
-const MAX_BODY_ADMISSION_UNITS: u32 = (BODY_LIMIT / BODY_ADMISSION_UNIT_BYTES) as u32;
+#[cfg(test)]
+const BODY_LIMIT: usize = api_limits::current::ROUTER_REQUEST.bytes() as usize;
+pub const BODY_ADMISSION_UNIT_BYTES: usize = api_limits::MIB as usize;
+#[cfg(test)]
+pub const BODY_ADMISSION_UNITS: usize =
+    (api_limits::current::ROUTER_MEMORY_BUDGET.bytes() / api_limits::MIB) as usize;
 
 struct BodyAdmissionPermit {
     permit: OwnedSemaphorePermit,
@@ -527,7 +527,10 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
 /// A valid declared length reserves its complete weight before reading. Unknown/chunked requests
 /// start at one unit and fail-fast acquire further units only when their observed bytes cross each
 /// MiB boundary, so empty slow clients cannot pin half of the global budget each.
-fn declared_body_admission_units(headers: &HeaderMap) -> Result<Option<u32>, BodyReadError> {
+fn declared_body_admission_units(
+    headers: &HeaderMap,
+    body_limit: usize,
+) -> Result<Option<u32>, BodyReadError> {
     let Some(length) = headers
         .get(axum::http::header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
@@ -535,18 +538,19 @@ fn declared_body_admission_units(headers: &HeaderMap) -> Result<Option<u32>, Bod
     else {
         return Ok(None);
     };
-    if length > BODY_LIMIT {
+    if length > body_limit {
         return Err(BodyReadError::TooLarge);
     }
-    Ok(Some(body_units_for_len(length)))
+    Ok(Some(body_units_for_len(length, body_limit)))
 }
 
-fn body_units_for_len(length: usize) -> u32 {
+fn body_units_for_len(length: usize, body_limit: usize) -> u32 {
+    let max_units = body_limit.div_ceil(BODY_ADMISSION_UNIT_BYTES).max(1) as u32;
     length
         .saturating_add(BODY_ADMISSION_UNIT_BYTES - 1)
         .checked_div(BODY_ADMISSION_UNIT_BYTES)
-        .unwrap_or(MAX_BODY_ADMISSION_UNITS as usize)
-        .clamp(1, MAX_BODY_ADMISSION_UNITS as usize) as u32
+        .unwrap_or(max_units as usize)
+        .clamp(1, max_units as usize) as u32
 }
 
 async fn read_body(
@@ -558,8 +562,8 @@ async fn read_body(
         state,
         headers,
         body,
-        BODY_READ_IDLE_TIMEOUT,
-        BODY_READ_MAX_TIMEOUT,
+        Duration::from_secs(state.cfg.body_idle_secs),
+        Duration::from_secs(state.cfg.body_max_secs),
     )
     .await
 }
@@ -571,7 +575,13 @@ async fn read_body_with_timeouts(
     idle_timeout: Duration,
     max_timeout: Duration,
 ) -> Result<(Bytes, BodyAdmissionPermit), BodyReadError> {
-    let declared_units = declared_body_admission_units(headers)?;
+    let body_limit = state
+        .cfg
+        .body_limits
+        .request
+        .as_usize()
+        .map_err(|_| BodyReadError::TooLarge)?;
+    let declared_units = declared_body_admission_units(headers, body_limit)?;
     let initial_units = declared_units.unwrap_or(1);
     let permit = state
         .body_admission
@@ -595,7 +605,7 @@ async fn read_body_with_timeouts(
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(0)
-                .min(BODY_LIMIT),
+                .min(body_limit),
         );
         loop {
             let now = tokio::time::Instant::now();
@@ -623,10 +633,10 @@ async fn read_body_with_timeouts(
                 .len()
                 .checked_add(chunk.len())
                 .ok_or(BodyReadError::TooLarge)?;
-            if next_len > BODY_LIMIT {
+            if next_len > body_limit {
                 return Err(BodyReadError::TooLarge);
             }
-            let needed_units = body_units_for_len(next_len);
+            let needed_units = body_units_for_len(next_len, body_limit);
             if needed_units > admission.units {
                 let additional = needed_units - admission.units;
                 let permit = admission_pool
@@ -1052,26 +1062,35 @@ mod tests {
     #[test]
     fn body_admission_is_weighted_and_unknown_size_grows_dynamically() {
         let mut headers = HeaderMap::new();
-        assert_eq!(declared_body_admission_units(&headers), Ok(None));
+        assert_eq!(
+            declared_body_admission_units(&headers, BODY_LIMIT),
+            Ok(None)
+        );
 
         headers.insert(
             axum::http::header::CONTENT_LENGTH,
             HeaderValue::from_static("1"),
         );
-        assert_eq!(declared_body_admission_units(&headers), Ok(Some(1)));
+        assert_eq!(
+            declared_body_admission_units(&headers, BODY_LIMIT),
+            Ok(Some(1))
+        );
 
         headers.insert(
             axum::http::header::CONTENT_LENGTH,
             HeaderValue::from_static("1048577"),
         );
-        assert_eq!(declared_body_admission_units(&headers), Ok(Some(2)));
+        assert_eq!(
+            declared_body_admission_units(&headers, BODY_LIMIT),
+            Ok(Some(2))
+        );
 
         headers.insert(
             axum::http::header::CONTENT_LENGTH,
             HeaderValue::from_static("999999999"),
         );
         assert_eq!(
-            declared_body_admission_units(&headers),
+            declared_body_admission_units(&headers, BODY_LIMIT),
             Err(BodyReadError::TooLarge)
         );
     }
@@ -1107,6 +1126,9 @@ mod tests {
                 openai_origin: "http://127.0.0.1:2".into(),
                 gemini_origin: "http://127.0.0.1:3".into(),
                 fallback_enabled: false,
+                body_limits: api_limits::current::ROUTER,
+                body_idle_secs: api_limits::current::ROUTER_BODY_IDLE_SECS,
+                body_max_secs: api_limits::current::ROUTER_BODY_MAX_SECS,
             },
             client: crate::build_client().unwrap(),
             catalog: crate::catalog::Catalog::new(),
@@ -1146,6 +1168,9 @@ mod tests {
                 openai_origin: "http://127.0.0.1:2".into(),
                 gemini_origin: "http://127.0.0.1:3".into(),
                 fallback_enabled: false,
+                body_limits: api_limits::current::ROUTER,
+                body_idle_secs: api_limits::current::ROUTER_BODY_IDLE_SECS,
+                body_max_secs: api_limits::current::ROUTER_BODY_MAX_SECS,
             },
             client: crate::build_client().unwrap(),
             catalog: crate::catalog::Catalog::new(),

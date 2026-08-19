@@ -166,7 +166,9 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   identifiers bounded at 128 bytes of letters/digits/underscore/hyphen/dot — so a tool is never
   accepted on one model family and rejected on another. The 1024-tool ceiling is a sanity bound on
   a pathological body, not a model of the provider's own limit: the 8 MiB body cap bounds parsing
-  work and the backend stays the authority, so an MCP-heavy config with a few hundred declared
+  work and the backend stays the authority. `crates/api-limits` records that narrower current cap;
+  the common dormant 32 MiB provider envelope and future 256 MiB hard ceiling do not widen Codex
+  before a controlled private app-server proof. An MCP-heavy config with a few hundred declared
   tools is never failed locally first.
   History items follow the same principle: `message`, `reasoning`, the tool-call/-output pairs,
   `tool_search_*` and `agent_message` are translated, and an item type the gateway does not know is

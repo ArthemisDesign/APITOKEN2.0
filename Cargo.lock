@@ -117,6 +117,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
+name = "api-limits"
+version = "0.1.0"
+
+[[package]]
 name = "arc-swap"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -551,6 +555,7 @@ name = "claude-api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "api-limits",
  "axum",
  "base64",
  "clap",
@@ -579,6 +584,7 @@ name = "claude-router"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "api-limits",
  "axum",
  "elog",
  "futures-util",
@@ -1006,6 +1012,7 @@ name = "forward"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "api-limits",
  "axum",
  "base64",
  "blake3",

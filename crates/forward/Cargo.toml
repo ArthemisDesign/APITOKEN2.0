@@ -8,6 +8,7 @@ description = "Прозрачный форвардинг /v1/* на api.anthropi
 path = "src/lib.rs"
 
 [dependencies]
+api-limits = { path = "../api-limits" }
 registry = { path = "../registry" }
 pool = { path = "../pool" }
 metering = { path = "../metering" }

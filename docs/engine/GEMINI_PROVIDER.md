@@ -595,8 +595,11 @@ For every request the runtime:
   Assist wrapper fields, credits, private trace ids, unknown top-level fields and headers;
 - surfaces a mid-stream upstream error as a sanitized native error element rather than a clean
   truncation;
-- caps documented inline-media requests at 20 MiB and generated-image response bodies/pending
-  stream frames at 64 MiB. Published routes other than Flash Preview reject inline audio before
+- caps text requests at the current 32 MiB transport envelope, documented inline-media requests at
+  20 MiB, translated non-stream responses at 32 MiB, and generated-image response bodies/pending
+  stream frames at 64 MiB. These distinct current values are pinned in `crates/api-limits`; its
+  future 256 MiB hard ceiling is not enablement before binary IPC and weighted admission. Published
+  routes other than Flash Preview reject inline audio before
   both generation and `countTokens`: their generic Antigravity prompt total cannot distinguish the
   higher official audio-input rate. Published Flash Preview is the only exception, and only its
   strict integral-duration PCM WAV generation fallback may reconstruct a missing AUDIO row;

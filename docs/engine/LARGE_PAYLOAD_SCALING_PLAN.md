@@ -463,11 +463,21 @@ Exact candidate SHA допускается к повышенным defaults то
 Это один feature train, но не один огромный commit. Каждый шаг достигает production GREEN до
 следующего.
 
-### Commit 1 — observability и dormant config
+### Commit 1 — checked contract и dormant config
 
-- Добавить метрики, dashboards, alerts/runbooks и strict settings.
-- Production defaults оставить текущими 32/128/2G и OpenAI 8 MiB.
-- Собрать минимум 7 дней body-size/RSS/concurrency evidence.
+- Добавить dependency-free `api-limits`, strict settings и current-cap parity tests.
+- Production defaults оставить текущими 32/128/2G и OpenAI 8 MiB; hard ceilings не являются
+  enablement и выше-current значения fail-closed.
+- Не публиковать фиктивные spool/RSS/IPC series до появления соответствующих runtime-механизмов.
+
+### Commit 1b — честная baseline observability
+
+- Добавить fixed-cardinality histograms фактически materialized request bodies и реальные
+  oversize/read/admission rejection counters на текущих путях.
+- Обновить dashboards, alerts/runbooks и dependency map; spool/RSS/IPC gauges остаются за
+  commits, которые создают соответствующие authorities.
+- Собрать минимум 7 дней body-size/concurrency evidence; RSS coefficients отдельно доказываются
+  profiler/cgroup load harness перед raised defaults.
 
 ### Commit 2 — bounded storage и weighted admission
 

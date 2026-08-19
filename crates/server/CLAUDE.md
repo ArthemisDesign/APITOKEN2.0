@@ -122,7 +122,10 @@ background loops and the HTTP router. Here — and only here — everything is w
 **Invariants:**
 - At startup the PostgreSQL authority only read-only verifies the applied schema; DDL is executed
   by the separate `db migrate-engine` before a blue-green slot is started.
-- Introduce a new env variable ONLY here and pass it further down through config structures.
+- Introduce a new env variable ONLY here and pass it further down through config structures. The
+  dormant `CLAUDE_API_*BODY*_MIB` envelope is parsed strictly through `api-limits`: malformed, zero,
+  inconsistent, or above-current values stop startup. It cannot widen Anthropic 32 MiB, Codex 8 MiB,
+  Gemini text 32 MiB/media 20 MiB, translated 32 MiB, or Gemini-native 64 MiB caps before later stages.
 - `openai-image-canary` introduces no image key/origin/env. Dry-run validates the strict prompt,
   optional one-to-five PNG references, optional opaque profile, private target paths, numeric
   budget and the `low|medium|high` quality knob (default `low`), then prints a sanitized plan without
