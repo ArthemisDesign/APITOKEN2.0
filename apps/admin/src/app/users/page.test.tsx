@@ -11,9 +11,17 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-import UsersPage, { GIFT_CREDIT_REASON } from "./page";
+import UsersPage, { GIFT_CREDIT_REASON, UserProviderSpend } from "./page";
 import { parseBusinessDiscount } from "./business-conversion-dialog";
-import { buildUsersCsvRows, clampedOffset, tierLabel, usersQuery, INITIAL_USER_PAGE } from "./users-lib";
+import {
+  buildUsersCsvRows,
+  clampedOffset,
+  formatUserProviderNano,
+  tierLabel,
+  userProviderRails,
+  usersQuery,
+  INITIAL_USER_PAGE,
+} from "./users-lib";
 
 describe("Пользователи (users page)", () => {
   it("рендерится без падения: начальное состояние — скелетон загрузки", () => {
@@ -92,6 +100,63 @@ describe("tierLabel", () => {
   });
 });
 
+describe("provider rails", () => {
+  it("масштабирует пять rails относительно крупнейшего расхода без float-денег", () => {
+    const rails = userProviderRails({
+      anthropic_nano: "26630000000",
+      openai_nano: "1250000000",
+      google_nano: "812800000",
+      kimi_nano: "79100000",
+      other_nano: "0",
+    });
+    expect(rails.map(({ label, shareBp, available }) => ({ label, shareBp, available }))).toEqual([
+      { label: "Claude", shareBp: 10_000, available: true },
+      { label: "GPT", shareBp: 469, available: true },
+      { label: "Gemini", shareBp: 305, available: true },
+      { label: "Kimi", shareBp: 29, available: true },
+      { label: "Другие", shareBp: 0, available: true },
+    ]);
+  });
+
+  it("не превращает отсутствующий или malformed producer field в известный ноль", () => {
+    expect(userProviderRails(undefined).every((rail) => !rail.available)).toBe(true);
+    const rails = userProviderRails({ anthropic_nano: "not-money", openai_nano: "1000000000" });
+    expect(rails[0]).toMatchObject({ available: false, amountNano: null, shareBp: 0 });
+    expect(rails[1]).toMatchObject({ available: true, amountNano: "1000000000", shareBp: 10_000 });
+  });
+
+  it("форматирует крупные суммы компактно, а малые — с четырьмя знаками как в макете", () => {
+    expect(formatUserProviderNano("567000000000")).toBe("$567");
+    expect(formatUserProviderNano("92770000000")).toBe("$92.77");
+    expect(formatUserProviderNano("280000000")).toBe("$0.2800");
+    expect(formatUserProviderNano("40000000")).toBe("$0.0400");
+    expect(formatUserProviderNano("1")).toBe("<$0.0001");
+    expect(formatUserProviderNano("wrong")).toBe("—");
+  });
+
+  it("SSR выводит пять подписанных строк и честный residual вместо Images", () => {
+    const html = renderToString(<table><tbody><tr><UserProviderSpend user={{
+      email: "rail@example.com",
+      provider_spend_30d: {
+        anthropic_nano: "26630000000",
+        openai_nano: "1250000000",
+        google_nano: "812800000",
+        kimi_nano: "79100000",
+        other_nano: "0",
+      },
+    }} /></tr></tbody></table>);
+    expect(html).toContain("user-provider-stack");
+    expect(html).toContain("Claude");
+    expect(html).toContain("GPT");
+    expect(html).toContain("Gemini");
+    expect(html).toContain("Kimi");
+    expect(html).toContain("Другие");
+    expect(html).not.toContain("Images");
+    expect(html).toContain("$26.63");
+    expect(html).toContain("$0.0791");
+  });
+});
+
 describe("buildUsersCsvRows", () => {
   it("собирает колонки таблицы: деньги сырыми числами, даты ISO, пропуски пустыми", () => {
     const rows = buildUsersCsvRows([
@@ -106,6 +171,13 @@ describe("buildUsersCsvRows", () => {
         balance_usd: 12.5,
         spent_usd: 100,
         spent_30d_usd: 7,
+        provider_spend_30d: {
+          anthropic_nano: "6000000000",
+          openai_nano: "1000000000",
+          google_nano: "0",
+          kimi_nano: "0",
+          other_nano: "0",
+        },
         cumulative_topup_usd: 50,
         payments: { paid_total_usd: 49.99, paid_count: 2 },
         api_keys: { active: 1, total: 3 },
@@ -122,6 +194,11 @@ describe("buildUsersCsvRows", () => {
       12.5,
       100,
       7,
+      "'6000000000",
+      "'1000000000",
+      "'0",
+      "'0",
+      "'0",
       50,
       49.99,
       2,
@@ -131,6 +208,6 @@ describe("buildUsersCsvRows", () => {
       "2026-01-05T12:00:00Z",
     ]);
     // Минимальная строка: счётчики ключей — нули, остальные пропуски — "".
-    expect(rows[1]).toEqual(["c@d.e", "", "disabled", "B2B", "", "", "", "", "", "", 0, 0, "", ""]);
+    expect(rows[1]).toEqual(["c@d.e", "", "disabled", "B2B", "", "", "", "", "", "", "", "", "", "", "", 0, 0, "", ""]);
   });
 });

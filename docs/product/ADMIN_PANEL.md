@@ -290,6 +290,13 @@ existing 30-day spend. Its four named rails are Claude (`anthropic`), GPT (`open
 `other` rail. Every amount is a decimal nanoUSD string from commerce's immutable usage events. The
 API does not infer image generation from the provider id: OpenAI and Google image models remain in
 their actual provider totals until a producer-authored product-family attribution exists.
+The `apps/admin` consumer was wired only after GREEN exact producer SHA
+`51c591ddc9865972bc1514dc08e8c332297b1798`. It renders one compact five-line cell per user:
+Claude/GPT/Gemini/Kimi plus `Другие` ("Other"). Each colored rail is scaled against that user's
+largest provider amount so small secondary usage stays visible; it is not mislabeled as a share of
+the 30-day total. Known zero is a dash, an unavailable/malformed field remains unavailable, and the
+right-hand money label is computed from exact BigInt nanoUSD (up to four decimals below one dollar).
+The users CSV adds the same five exact nanoUSD text columns.
 
 ## Gift credits
 

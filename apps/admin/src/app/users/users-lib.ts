@@ -1,6 +1,7 @@
 // Типы и чистая логика страницы «Пользователи» — порт соответствующих кусков
 // users()/renderUsers()/usersCsv() из crates/server/src/admin-panel.js (строки 637-730).
 // Вынесено из page.tsx, чтобы юнит-тесты не тащили React-рендер.
+import { spreadsheetExactInteger } from "@/lib/csv";
 
 // Серверные сортировки /admin/users — ровно sort-enum apps/api admin.controller;
 // live-поля движка (balance/spent) сервер не сортирует, поэтому их в списке нет.
@@ -42,6 +43,24 @@ export interface AdminUserApiKeys {
   total?: number;
 }
 
+export type UserProviderId = "anthropic" | "openai" | "google" | "kimi" | "other";
+
+export interface AdminUserProviderSpend {
+  anthropic_nano?: string;
+  openai_nano?: string;
+  google_nano?: string;
+  kimi_nano?: string;
+  other_nano?: string;
+}
+
+export const USER_PROVIDER_RAILS = [
+  { id: "anthropic", label: "Claude", className: "claude" },
+  { id: "openai", label: "GPT", className: "gpt" },
+  { id: "google", label: "Gemini", className: "gemini" },
+  { id: "kimi", label: "Kimi", className: "kimi" },
+  { id: "other", label: "Другие", className: "other" },
+] as const satisfies ReadonlyArray<{ id: UserProviderId; label: string; className: string }>;
+
 export interface AdminUser {
   id?: string;
   email?: string;
@@ -56,6 +75,7 @@ export interface AdminUser {
   reserved_usd?: number | null;
   spent_usd?: number | null;
   spent_30d_usd?: number | null;
+  provider_spend_30d?: AdminUserProviderSpend;
   cumulative_topup_usd?: number | null;
   payments?: AdminUserPayments;
   api_keys?: AdminUserApiKeys;
@@ -141,8 +161,67 @@ export function tierLabel(user: Pick<AdminUser, "customer_type" | "multiplier_bp
   return user.multiplier_bp == null ? segment : `${segment} −${100 - user.multiplier_bp / 100}%`;
 }
 
-// CSV текущей загруженной страницы: колонки повторяют таблицу, деньги — сырыми
-// числами USD, даты — ISO, чтобы файл пригодился для сверки, а не только для просмотра.
+export interface UserProviderRail {
+  id: UserProviderId;
+  label: string;
+  className: string;
+  amountNano: string | null;
+  available: boolean;
+  shareBp: number;
+}
+
+function providerNano(value: string | undefined): bigint | null {
+  if (value === undefined || !/^\d+$/.test(value)) return null;
+  try {
+    return BigInt(value);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Five stable scan-lines for one user. Width is relative to that user's largest provider, not a
+ * share of total spend: a tiny secondary rail remains visible without turning money into floats.
+ */
+export function userProviderRails(spend: AdminUserProviderSpend | undefined): UserProviderRail[] {
+  const parsed = USER_PROVIDER_RAILS.map((provider) => {
+    const amount = providerNano(spend?.[`${provider.id}_nano`]);
+    return { ...provider, amount };
+  });
+  const maximum = parsed.reduce(
+    (max, provider) => provider.amount !== null && provider.amount > max ? provider.amount : max,
+    0n,
+  );
+  return parsed.map((provider) => ({
+    id: provider.id,
+    label: provider.label,
+    className: provider.className,
+    amountNano: provider.amount?.toString() ?? null,
+    available: provider.amount !== null,
+    shareBp: provider.amount !== null && provider.amount > 0n && maximum > 0n
+      ? Number((provider.amount * 10_000n) / maximum)
+      : 0,
+  }));
+}
+
+/** Screenshot-style money: whole/cent precision above $1, four decimals below $1. */
+export function formatUserProviderNano(value: string | null): string {
+  const amount = value === null ? null : providerNano(value);
+  if (amount === null) return "—";
+  const whole = amount / 1_000_000_000n;
+  const remainder = amount % 1_000_000_000n;
+  if (whole > 0n) {
+    const cents = remainder / 10_000_000n;
+    const fraction = remainder === 0n ? "" : `.${cents.toString().padStart(2, "0")}`;
+    return `$${whole.toLocaleString("en-US")}${fraction}`;
+  }
+  if (amount > 0n && amount < 100_000n) return "<$0.0001";
+  const tenThousandths = amount / 100_000n;
+  return `$0.${tenThousandths.toString().padStart(4, "0")}`;
+}
+
+// CSV текущей загруженной страницы: легаси-деньги остаются сырыми USD, новые provider-поля —
+// точными nanoUSD text, даты — ISO, чтобы файл пригодился для сверки, а не только просмотра.
 export const USERS_CSV_HEADER = [
   "email",
   "имя",
@@ -151,6 +230,11 @@ export const USERS_CSV_HEADER = [
   "баланс_usd",
   "потрачено_usd",
   "расход_30д_usd",
+  "claude_30д_nanoUSD_text",
+  "gpt_30д_nanoUSD_text",
+  "gemini_30д_nanoUSD_text",
+  "kimi_30д_nanoUSD_text",
+  "другие_30д_nanoUSD_text",
   "пополнено_всего_usd",
   "оплачено_usd",
   "платежей",
@@ -172,6 +256,10 @@ export function buildUsersCsvRows(users: AdminUser[]): unknown[][] {
       user.balance_usd ?? "",
       user.spent_usd ?? "",
       user.spent_30d_usd ?? "",
+      ...USER_PROVIDER_RAILS.map((provider) => {
+        const value = user.provider_spend_30d?.[`${provider.id}_nano`];
+        return value === undefined ? "" : spreadsheetExactInteger(value);
+      }),
       user.cumulative_topup_usd ?? "",
       pay.paid_total_usd ?? "",
       pay.paid_count ?? "",

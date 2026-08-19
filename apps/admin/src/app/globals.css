@@ -119,6 +119,20 @@ a.link{color:var(--accent-text);text-decoration:none;font-weight:550}a.link:hove
 footer{color:var(--faint);font-size:12px;padding:26px 2px 8px;line-height:1.6}
 .mono{font-family:var(--mono);font-size:12px}
 .table-action{padding:0;border:0;background:transparent;color:inherit;font:inherit;letter-spacing:inherit;text-transform:inherit;cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}.table-action:hover{color:var(--accent-text)}
+/* ── User provider receipt ─────────────────────────────── */
+.users-table{--user-claude:#d97757;--user-gpt:#0f9488;--user-gemini:#3579e8;--user-kimi:#b8348c;--user-other:#b7791f;min-width:1460px}
+[data-theme=dark] .users-table{--user-claude:#f19b78;--user-gpt:#45d6c7;--user-gemini:#7eafff;--user-kimi:#ef8fcd;--user-other:#e4ad52}
+.users-table th:first-child,.users-table td:first-child{position:sticky;left:0;z-index:2;background:var(--panel)}.users-table th:first-child{z-index:3;background:var(--panel2)}
+.users-table tbody tr:hover td:first-child{background:var(--panel2)}
+.user-provider-heading{display:flex;align-items:baseline;justify-content:flex-end;gap:5px}.user-provider-heading small{font:650 9px/1 var(--mono);letter-spacing:.04em;color:var(--muted)}
+.user-provider-cell{min-width:250px;padding-top:9px;padding-bottom:9px}.user-provider-stack{display:grid;gap:4px;min-width:222px}
+.user-provider-line{display:grid;grid-template-columns:54px minmax(82px,1fr) minmax(52px,auto);align-items:center;gap:8px;min-height:16px;color:var(--faint)}
+.user-provider-label{overflow:hidden;text-overflow:ellipsis;text-align:right;color:var(--faint);font:italic 650 10.5px/1.2 var(--sans)}
+.user-provider-rail{display:block;height:5px;overflow:hidden;border-radius:99px;background:var(--line2)}.user-provider-rail>i{display:block;width:0;height:100%;border-radius:inherit;background:currentColor}
+.user-provider-line.positive .user-provider-rail>i{min-width:2px}.user-provider-line.claude{color:var(--user-claude)}.user-provider-line.gpt{color:var(--user-gpt)}
+.user-provider-line.gemini{color:var(--user-gemini)}.user-provider-line.kimi{color:var(--user-kimi)}.user-provider-line.other{color:var(--user-other)}
+.user-provider-line>b{color:var(--text);font:700 11px/1.2 var(--mono);letter-spacing:-.02em;text-align:left}.user-provider-line>b.zero{color:var(--muted);font-family:var(--sans)}
+.user-provider-line>b.unavailable{color:var(--faint);font-family:var(--sans)}
 /* ── Dialogs, toast ──────────────────────────────────────── */
 .overlay{position:fixed;inset:0;z-index:90;display:flex;align-items:center;justify-content:center;background:rgba(12,14,18,.42);backdrop-filter:blur(3px)}
 .dialog{width:min(440px,92vw);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 20px 16px;box-shadow:0 24px 60px rgba(0,0,0,.3)}

@@ -26,12 +26,14 @@ import { BusinessConversionDialog, type BusinessConversionTarget } from "./busin
 import {
   clampedOffset,
   buildUsersCsvRows,
+  formatUserProviderNano,
   INITIAL_USER_PAGE,
   PANEL_REASON,
   tierLabel,
   USER_ACTION_LABELS,
   USER_SORTS,
   USERS_CSV_HEADER,
+  userProviderRails,
   usersQuery,
   type AdminUser,
   type AdminUsersPage,
@@ -47,6 +49,39 @@ export const GIFT_CREDIT_REASON = "admin panel gift credit (not an external paym
 type UsersOverview = EngineOverview & { demand?: EngineDemand };
 
 const show = (value: number | null | undefined): number | "—" => value ?? "—";
+
+export function UserProviderSpend({ user }: { user: AdminUser }): ReactElement {
+  const rails = userProviderRails(user.provider_spend_30d);
+  return (
+    <td className="user-provider-cell">
+      <div className="user-provider-stack">
+        {rails.map((provider) => {
+          const positive = provider.amountNano !== null && provider.amountNano !== "0";
+          const value = !provider.available
+            ? "данные недоступны"
+            : positive ? formatUserProviderNano(provider.amountNano) : "расхода не было";
+          return (
+            <div
+              key={provider.id}
+              className={`user-provider-line ${provider.className}${positive ? " positive" : ""}`}
+              role="img"
+              aria-label={`${provider.label}: ${value}`}
+              title={`${provider.label}: ${value}`}
+            >
+              <span className="user-provider-label">{provider.label}</span>
+              <span className="user-provider-rail" aria-hidden="true">
+                <i style={{ width: `${provider.shareBp / 100}%` }} />
+              </span>
+              <b className={!provider.available ? "unavailable" : positive ? "" : "zero"}>
+                {positive ? formatUserProviderNano(provider.amountNano) : "—"}
+              </b>
+            </div>
+          );
+        })}
+      </div>
+    </td>
+  );
+}
 
 interface RowProps {
   user: AdminUser;
@@ -86,6 +121,7 @@ const UserRow = memo(function UserRow({ user, busyAction, onCredit, onAction }: 
         <div className="sub">30д {money(user.spent_30d_usd)}</div>
         {user.cumulative_topup_usd != null ? <div className="sub">пополнено всего {money(user.cumulative_topup_usd)}</div> : null}
       </td>
+      <UserProviderSpend user={user} />
       <td>
         {pay.paid_count ? (
           <>
@@ -354,7 +390,7 @@ export default function UsersPage() {
     <>
       <PageHead
         title="Пользователи"
-        sub="серверный поиск, балансы, ключи и действия по клиентам"
+        sub="серверный поиск, балансы, расходы по провайдерам, ключи и действия по клиентам"
         badge={<Pill kind="ok">{count(total, "клиент", "клиента", "клиентов")}</Pill>}
       />
 
@@ -445,7 +481,7 @@ export default function UsersPage() {
       </form>
 
       <TableCard>
-        <table>
+        <table className="users-table">
           <thead>
             <tr>
               <th className="left">пользователь</th>
@@ -460,6 +496,9 @@ export default function UsersPage() {
                 >
                   потрачено
                 </button>
+              </th>
+              <th>
+                <span className="user-provider-heading">провайдеры <small>30д</small></span>
               </th>
               <th>пополнения</th>
               <th>ключи</th>
@@ -480,7 +519,7 @@ export default function UsersPage() {
                 />
               ))
             ) : (
-              <EmptyRow columns={9} />
+              <EmptyRow columns={10} />
             )}
           </tbody>
         </table>
