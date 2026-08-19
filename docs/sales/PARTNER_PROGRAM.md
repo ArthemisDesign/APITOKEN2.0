@@ -154,6 +154,33 @@ Already-paid commission above net is shown separately as partner debt.
 In detail (phases, formula, time zone, what the partner/admin sees) —
 `docs/sales/SALES_PAYOUT_PERIODS.md`.
 
+## 7a. B2B grant (off by default)
+
+By default a partner's link does one thing: the person who follows it becomes an ordinary **B2C**
+customer on the global discount, and the partner earns their commission on what that customer
+actually pays. No partner can change a customer's pricing.
+
+An admin may grant a specific partner the right to turn **their own** referrals into B2B customers,
+together with a **ceiling** — the deepest discount that partner may give. Both live on the partner
+row (`b2b_enabled`, `b2b_max_discount_bps`, migration 0023) and can be set two ways:
+
+- **at onboarding**, via the "B2B max discount %" field on the invite — the partner created from
+  that invite already holds the grant;
+- **later**, from the partner card in the partners admin ("B2B: off" / "B2B: up to N%").
+
+The right and the ceiling are inseparable. Revoking the grant zeroes the ceiling in the same
+statement, and an invite that does not grant the right stores no ceiling: a leftover number would
+read as authority the partner does not have. The maximum any ceiling may reach is 95%, matching the
+pricing policy range. Every change is written to `sales_audit_log` — giving away margin is a
+decision that must be reconstructable, not just observable in the current row.
+
+Commission does not change with the customer's class. A referred B2B customer earns the partner the
+same percentage of the customer's own money as a referred B2C customer; a deeper discount simply
+means the customer pays less, so the commission is smaller in absolute terms. Converting a customer
+to B2B — whether by the central admin or under a partner grant — leaves attribution, commission and
+the partner's referral list intact; the referral simply shows a `B2B` badge and its negotiated
+discount.
+
 ## 8. Partner dashboard (`partners.apitoken.sale`)
 
 - **Overview** — the rate and what the percentage comes from (a "How your commission works" card

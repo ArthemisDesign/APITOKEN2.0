@@ -331,6 +331,27 @@ function PartnerDrawer({
   const suspended = p.status !== "active";
   const dirty = bps !== String(p.commissionBps) || subBps !== String(p.subCommissionBps);
 
+  // Granting the B2B right also fixes the ceiling: the partner may give their own customers any
+  // discount up to it, and nothing beyond. Revoking clears the ceiling with it, so a stale number
+  // can never read as authority the partner no longer holds.
+  function editB2b() {
+    const current = p.b2bEnabled ? String(p.b2bMaxDiscountBps / 100) : "off";
+    const v = window.prompt(
+      `B2B rights for ${label}\n`
+      + "Max discount percent this partner may give their own customers (e.g. 70), or \"off\".\n"
+      + "Their referrals stay ordinary B2C customers unless the partner converts them.",
+      current,
+    );
+    if (v == null) return;
+    if (v.trim().toLowerCase() === "off") return void patch({ b2bEnabled: false, b2bMaxDiscountBps: 0 });
+    const m = /^\s*(\d{1,2}(?:\.\d)?)\s*%?\s*$/.exec(v);
+    const percent = m ? Number(m[1]) : Number.NaN;
+    if (!Number.isFinite(percent) || percent <= 0 || percent > 95) {
+      return setError("Enter a percent between 0 and 95, or \"off\".");
+    }
+    void patch({ b2bEnabled: true, b2bMaxDiscountBps: Math.round(percent * 100) });
+  }
+
   function editPromo() {
     const v = window.prompt(`Promo codes for ${label}\n"maxUSD/count" to enable (e.g. 20/10), or "off".`, p.promoEnabled ? "" : "off");
     if (v == null) return;
@@ -370,6 +391,9 @@ function PartnerDrawer({
           <Button size="sm" variant="ghost" disabled={!dirty || busy || !/^\d+$/.test(bps) || !/^\d+$/.test(subBps)} onClick={() => patch({ commissionBps: Number(bps), subCommissionBps: Number(subBps) })}>Save</Button>
           <Button size="sm" variant={suspended ? "primary" : "danger"} disabled={busy} onClick={() => patch({ status: suspended ? "active" : "suspended" })}>{suspended ? "Activate" : "Suspend"}</Button>
           <Button size="sm" variant="ghost" disabled={busy} onClick={editPromo}>{p.promoEnabled ? "Promo: on" : "Promo: off"}</Button>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={editB2b}>
+            {p.b2bEnabled ? `B2B: up to ${formatBps(p.b2bMaxDiscountBps)}` : "B2B: off"}
+          </Button>
           {p.referralDiscountEnabled ? (
             <Badge tone="yellow">Legacy marker {formatBps(p.referralDiscountBps)} · no price effect</Badge>
           ) : null}

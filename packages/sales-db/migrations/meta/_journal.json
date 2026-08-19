@@ -162,6 +162,13 @@
       "when": 1787000000000,
       "tag": "0022_spend_provider_dimension",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1787100000000,
+      "tag": "0023_partner_b2b_grant",
+      "breakpoints": true
     }
   ]
 }

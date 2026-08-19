@@ -33,6 +33,8 @@ export interface PartnerAnalyticsRow {
   commissionBps: number;
   subCommissionBps: number;
   referralDiscountEnabled: boolean;
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
   referralDiscountBps: number;
   promoEnabled: boolean;
   depositsTotalNano: string;
@@ -132,6 +134,7 @@ export async function listPartnerAnalytics(
       p.parent_partner_id AS parent_id,
       COALESCE(parent.telegram_username, parent.email) AS parent_label,
       p.commission_bps, p.sub_commission_bps, p.referral_discount_enabled, p.referral_discount_bps,
+      p.b2b_enabled, p.b2b_max_discount_bps,
       p.promo_enabled, p.created_at,
       COALESCE((SELECT SUM(rt.amount_nano) FROM referred_topups rt WHERE rt.partner_id = p.id), 0) AS deposits_total,
       COALESCE((SELECT SUM(rt.amount_nano) FROM referred_topups rt WHERE rt.partner_id = p.id AND rt.paid_at >= now() - interval '30 days'), 0) AS deposits_30d,
@@ -287,6 +290,8 @@ function serializeRow(r: Record<string, unknown>): PartnerAnalyticsRow {
     commissionBps: Number(r.commission_bps),
     subCommissionBps: Number(r.sub_commission_bps),
     referralDiscountEnabled: Boolean(r.referral_discount_enabled),
+    b2bEnabled: Boolean(r.b2b_enabled),
+    b2bMaxDiscountBps: Number(r.b2b_max_discount_bps ?? 0),
     referralDiscountBps: Number(r.referral_discount_bps),
     promoEnabled: Boolean(r.promo_enabled),
     depositsTotalNano: s(r.deposits_total),

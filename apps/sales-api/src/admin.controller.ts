@@ -137,6 +137,8 @@ export class AdminController {
         subCommissionBps: partner.subCommissionBps,
         referralDiscountBps: partner.referralDiscountBps,
         referralDiscountEnabled: partner.referralDiscountEnabled,
+        b2bEnabled: partner.b2bEnabled,
+        b2bMaxDiscountBps: partner.b2bMaxDiscountBps,
         parentPartnerId: partner.parentPartnerId,
         parentEmail: partner.parentEmail,
         parentTelegramUsername: partner.parentTelegramUsername,
@@ -353,6 +355,7 @@ export class AdminController {
     const promoMaxValueUsd = parsed.data.promoMaxValueUsd ?? 0;
     const promoEnabled = promoMaxCount > 0 && promoMaxValueUsd > 0;
     const referralDiscountEnabled = parsed.data.referralDiscountEnabled ?? false;
+    const b2bEnabled = parsed.data.b2bEnabled ?? false;
     for (let attempt = 0; ; attempt += 1) {
       try {
         const invite = await createPartnerInvite(this.database, {
@@ -366,6 +369,9 @@ export class AdminController {
           promoMaxCount,
           referralDiscountBps: parsed.data.referralDiscountBps ?? 0,
           referralDiscountEnabled,
+          // A ceiling only travels with an explicit grant; without it the invite carries none.
+          b2bEnabled,
+          b2bMaxDiscountBps: b2bEnabled ? (parsed.data.b2bMaxDiscountBps ?? 0) : 0,
           expiresAt,
         });
         return {
@@ -402,6 +408,8 @@ export class AdminController {
         subCommissionBps: invite.subCommissionBps,
         referralDiscountBps: invite.referralDiscountBps,
         referralDiscountEnabled: invite.referralDiscountEnabled,
+        b2bEnabled: invite.b2bEnabled,
+        b2bMaxDiscountBps: invite.b2bMaxDiscountBps,
         promoEnabled: invite.promoEnabled,
         promoMaxCount: invite.promoMaxCount,
         promoMaxValueNano: invite.promoMaxValueNano.toString(),
@@ -421,6 +429,8 @@ export class AdminController {
       ...(parsed.data.subCommissionBps !== undefined ? { subCommissionBps: parsed.data.subCommissionBps } : {}),
       ...(parsed.data.referralDiscountBps !== undefined ? { referralDiscountBps: parsed.data.referralDiscountBps } : {}),
       ...(parsed.data.referralDiscountEnabled !== undefined ? { referralDiscountEnabled: parsed.data.referralDiscountEnabled } : {}),
+      ...(parsed.data.b2bEnabled !== undefined ? { b2bEnabled: parsed.data.b2bEnabled } : {}),
+      ...(parsed.data.b2bMaxDiscountBps !== undefined ? { b2bMaxDiscountBps: parsed.data.b2bMaxDiscountBps } : {}),
       ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
       actorId: "sales-admin-key",
     });

@@ -39,6 +39,8 @@ function partnerFixture(id: string): Partner {
     promoMaxCount: 0,
     referralDiscountBps: 0,
     referralDiscountEnabled: false,
+    b2bEnabled: false,
+    b2bMaxDiscountBps: 0,
     createdAt: new Date(1_784_500_000_000),
   };
 }

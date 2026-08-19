@@ -55,6 +55,11 @@ export const partners = pgTable("partners", {
   referralDiscountBps: integer("referral_discount_bps").notNull().default(0),
   // Legacy writer permission. Current product UI does not grant or market it as a discount.
   referralDiscountEnabled: boolean("referral_discount_enabled").notNull().default(false),
+  // Право превращать СВОИХ рефералов в B2B-клиентов и потолок скидки, которую партнёр может им
+  // дать. По умолчанию выключено: обычный партнёр приводит обычного B2C-клиента на глобальной
+  // скидке. Потолок — предохранитель маржи, пишет только админ (миграция 0023).
+  b2bEnabled: boolean("b2b_enabled").notNull().default(false),
+  b2bMaxDiscountBps: integer("b2b_max_discount_bps").notNull().default(0),
   createdAt,
   updatedAt,
 }, (table) => [
@@ -65,6 +70,10 @@ export const partners = pgTable("partners", {
   check("partners_commission_bps_check", sql`${table.commissionBps} BETWEEN 0 AND 10000`),
   check("partners_sub_commission_bps_check", sql`${table.subCommissionBps} BETWEEN 0 AND 10000`),
   check("partners_referral_discount_check", sql`${table.referralDiscountBps} BETWEEN 0 AND 9500`),
+  check("partners_b2b_max_discount_check", sql`
+    ${table.b2bMaxDiscountBps} BETWEEN 0 AND 9500
+    AND (${table.b2bEnabled} OR ${table.b2bMaxDiscountBps} = 0)
+  `),
 ]);
 
 export const partnerSessions = pgTable("partner_sessions", {
@@ -136,6 +145,9 @@ export const partnerInvites = pgTable("partner_invites", {
   promoMaxCount: integer("promo_max_count").notNull().default(0),
   referralDiscountBps: integer("referral_discount_bps").notNull().default(0),
   referralDiscountEnabled: boolean("referral_discount_enabled").notNull().default(false),
+  // B2B-грант, зашитый в инвайт: партнёр получает его сразу при создании аккаунта (миграция 0023).
+  b2bEnabled: boolean("b2b_enabled").notNull().default(false),
+  b2bMaxDiscountBps: integer("b2b_max_discount_bps").notNull().default(0),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   consumedAt: timestamp("consumed_at", { withTimezone: true }),
   consumedByPartnerId: uuid("consumed_by_partner_id").references(() => partners.id, { onDelete: "restrict" }),
@@ -146,6 +158,10 @@ export const partnerInvites = pgTable("partner_invites", {
   check("partner_invites_commission_bps_check", sql`${table.commissionBps} IS NULL OR ${table.commissionBps} BETWEEN 0 AND 10000`),
   check("partner_invites_sub_commission_bps_check", sql`${table.subCommissionBps} IS NULL OR ${table.subCommissionBps} BETWEEN 0 AND 10000`),
   check("partner_invites_referral_discount_check", sql`${table.referralDiscountBps} BETWEEN 0 AND 9500`),
+  check("partner_invites_b2b_max_discount_check", sql`
+    ${table.b2bMaxDiscountBps} BETWEEN 0 AND 9500
+    AND (${table.b2bEnabled} OR ${table.b2bMaxDiscountBps} = 0)
+  `),
 ]);
 
 // Заявки «с улицы»: подписанный Telegram-вход без аккаунта и инвайта → заявка на

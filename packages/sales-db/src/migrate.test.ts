@@ -277,4 +277,34 @@ describe("sales multi-discount migration", () => {
       expect(statement).not.toContain("attribution_check");
     }
   });
+
+  it("adds the B2B grant off by default and ties the ceiling to it", () => {
+    const migration = readFileSync(
+      join(MIGRATIONS_FOLDER, "0023_partner_b2b_grant.sql"),
+      "utf8",
+    );
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; tag: string; when: number }> };
+    const previous = journal.entries.find((entry) => entry.idx === 22);
+    const current = journal.entries.find((entry) => entry.idx === 23);
+
+    expect(current).toMatchObject({ idx: 23, tag: "0023_partner_b2b_grant" });
+    expect(current!.when).toBeGreaterThan(previous!.when);
+    expect(migration).not.toMatch(/\b(?:DROP|UPDATE|DELETE|TRUNCATE)\b/i);
+    for (const table of ["partners", "partner_invites"]) {
+      // Existing partners must not acquire the right by migrating.
+      expect(migration).toContain(`ALTER TABLE "${table}" ADD COLUMN "b2b_enabled" boolean DEFAULT false NOT NULL;`);
+      expect(migration).toContain(`ALTER TABLE "${table}" ADD COLUMN "b2b_max_discount_bps" integer DEFAULT 0 NOT NULL;`);
+    }
+    // A ceiling may never outlive the grant, and never exceed the policy maximum.
+    const checks = migration.match(/CHECK \("b2b_max_discount_bps"[\s\S]*?\)\)/g) ?? [];
+    expect(checks).toHaveLength(2);
+    for (const check of checks) {
+      expect(check).toContain("BETWEEN 0 AND 9500");
+      expect(check).toContain('"b2b_enabled" OR "b2b_max_discount_bps" = 0');
+    }
+    // The retired marker columns stay retired rather than being overloaded a second time.
+    expect(migration).not.toMatch(/ALTER TABLE[\s\S]*referral_discount/);
+  });
 });

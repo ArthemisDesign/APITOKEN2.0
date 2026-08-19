@@ -174,6 +174,9 @@ export type Partner = {
   promoEnabled?: boolean;
   promoMaxValueNano?: string;
   promoMaxCount?: number;
+  /** Granted right to convert own referrals to B2B, and the discount ceiling for it. */
+  b2bEnabled?: boolean;
+  b2bMaxDiscountBps?: number;
 };
 
 export type PromoCodeRow = {
@@ -278,6 +281,8 @@ export type InviteRow = {
   subCommissionBps?: number | null;
   referralDiscountBps?: number;
   referralDiscountEnabled?: boolean;
+  b2bEnabled?: boolean;
+  b2bMaxDiscountBps?: number;
   promoEnabled?: boolean;
   promoMaxCount?: number;
   promoMaxValueNano?: string;
@@ -370,6 +375,8 @@ export type AdminPartnerRow = {
   subCommissionBps: number;
   referralDiscountBps?: number;
   referralDiscountEnabled?: boolean;
+  b2bEnabled?: boolean;
+  b2bMaxDiscountBps?: number;
   status: string;
   earnedNano?: string;
   referredUsers?: number;
@@ -408,6 +415,9 @@ export type PartnerAnalyticsRow = {
   subCommissionBps: number;
   referralDiscountEnabled: boolean;
   referralDiscountBps: number;
+  /** May convert own referrals to B2B, up to b2bMaxDiscountBps. Off by default. */
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
   promoEnabled: boolean;
   depositsTotalNano: string;
   deposits30dNano: string;

@@ -115,6 +115,8 @@ export interface AdminPartnerSummary {
   promoUsed: number;
   referralDiscountBps: number;
   referralDiscountEnabled: boolean;
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
   createdAt: Date;
 }
 
@@ -128,6 +130,7 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     paid: string; committed: string;
     promo_enabled: boolean; promo_max_value_nano: string; promo_max_count: number; promo_used: string;
     referral_discount_bps: number; referral_discount_enabled: boolean;
+    b2b_enabled: boolean; b2b_max_discount_bps: number;
     created_at: Date;
   }>(`
     SELECT p.id, p.email, p.telegram_username, p.display_name, p.status, p.email_verified, p.referral_code,
@@ -135,6 +138,7 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
       parent.telegram_username AS parent_telegram_username,
       p.promo_enabled, p.promo_max_value_nano::text AS promo_max_value_nano, p.promo_max_count,
       p.referral_discount_bps, p.referral_discount_enabled,
+      p.b2b_enabled, p.b2b_max_discount_bps,
       (SELECT count(*) FROM promo_codes pc WHERE pc.partner_id = p.id)::text AS promo_used,
       (SELECT count(*) FROM referred_users ru WHERE ru.partner_id = p.id)::text AS referred_users,
       (SELECT count(*) FROM partners child WHERE child.parent_partner_id = p.id)::text AS team_size,
@@ -186,6 +190,8 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     promoUsed: Number(row.promo_used),
     referralDiscountBps: row.referral_discount_bps,
     referralDiscountEnabled: row.referral_discount_enabled,
+    b2bEnabled: row.b2b_enabled,
+    b2bMaxDiscountBps: row.b2b_max_discount_bps,
       createdAt: row.created_at,
     };
   });
@@ -276,6 +282,12 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
   subCommissionBps?: number;
   referralDiscountBps?: number;
   referralDiscountEnabled?: boolean;
+  /**
+   * B2B grant. Turning it off also zeroes the ceiling in the same statement: a leftover ceiling
+   * on a revoked grant reads like authority that no longer exists, and the CHECK forbids the pair.
+   */
+  b2bEnabled?: boolean;
+  b2bMaxDiscountBps?: number;
   status?: PartnerStatus;
   actorId: string | null;
 }): Promise<boolean> {
@@ -288,11 +300,20 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
           sub_commission_bps = COALESCE($3, sub_commission_bps),
           referral_discount_bps = COALESCE($5, referral_discount_bps),
           referral_discount_enabled = COALESCE($6, referral_discount_enabled),
+          b2b_enabled = COALESCE($7, b2b_enabled),
+          b2b_max_discount_bps = CASE
+            WHEN COALESCE($7, b2b_enabled) THEN COALESCE($8, b2b_max_discount_bps)
+            ELSE 0
+          END,
           status = COALESCE($4::partner_status, status),
           updated_at = now()
       WHERE id = $1
       RETURNING id
-    `, [partnerId, input.commissionBps ?? null, input.subCommissionBps ?? null, input.status ?? null, input.referralDiscountBps ?? null, input.referralDiscountEnabled ?? null]);
+    `, [
+      partnerId, input.commissionBps ?? null, input.subCommissionBps ?? null, input.status ?? null,
+      input.referralDiscountBps ?? null, input.referralDiscountEnabled ?? null,
+      input.b2bEnabled ?? null, input.b2bMaxDiscountBps ?? null,
+    ]);
     if (!updated.rows[0]) {
       await client.query("ROLLBACK");
       return false;
@@ -307,6 +328,10 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
       // Retained marker permission/ceiling changes remain visible in the audit trail.
       referralDiscountBps: input.referralDiscountBps ?? null,
       referralDiscountEnabled: input.referralDiscountEnabled ?? null,
+      // Granting or revoking the right to create B2B customers is a margin decision: it must be
+      // reconstructable from the audit trail, not only from the partner's current row.
+      b2bEnabled: input.b2bEnabled ?? null,
+      b2bMaxDiscountBps: input.b2bMaxDiscountBps ?? null,
     })]);
     await client.query("COMMIT");
     return true;

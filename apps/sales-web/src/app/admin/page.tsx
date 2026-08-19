@@ -507,6 +507,8 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
   const [subPct, setSubPct] = useState("");
   const [promoCount, setPromoCount] = useState("");
   const [promoMaxUsd, setPromoMaxUsd] = useState("");
+  // Empty = no B2B right. A number grants it and fixes the ceiling in one step.
+  const [b2bMaxPct, setB2bMaxPct] = useState("");
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<{ inviteUrl: string; telegramUsername: string | null } | null>(null);
 
@@ -544,6 +546,15 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
       setError("Commission percent cannot exceed 100%.");
       return;
     }
+    const b2bMaxBps = pctToBpsOptional(b2bMaxPct);
+    if (b2bMaxBps === null) {
+      setError("B2B max discount must be a number like 70 or 72.5.");
+      return;
+    }
+    if ((b2bMaxBps ?? 0) > 9500) {
+      setError("B2B max discount cannot exceed 95%.");
+      return;
+    }
     const count = promoCount.trim() === "" ? 0 : Number(promoCount);
     const maxUsd = promoMaxUsd.trim() === "" ? 0 : Number(promoMaxUsd);
     if (!Number.isInteger(count) || count < 0 || !Number.isInteger(maxUsd) || maxUsd < 0) {
@@ -565,10 +576,16 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
           referralDiscountBps: 0,
           promoMaxCount: count,
           promoMaxValueUsd: maxUsd,
+          // The right and its ceiling travel together: a blank field onboards an ordinary partner
+          // whose referrals are plain B2C customers.
+          ...(b2bMaxBps !== undefined && b2bMaxBps > 0
+            ? { b2bEnabled: true, b2bMaxDiscountBps: b2bMaxBps }
+            : { b2bEnabled: false }),
         },
       });
       setCreated(res);
       setUsername("");
+      setB2bMaxPct("");
       void load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not create the invite.");
@@ -638,6 +655,14 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
               placeholder="0"
             />
           </Field>
+          <Field label="B2B max discount %" hint="Blank = no B2B right; their referrals stay B2C">
+            <Input
+              value={b2bMaxPct}
+              onChange={(e) => setB2bMaxPct(e.target.value.replace(/[^\d.]/g, ""))}
+              inputMode="decimal"
+              placeholder="off"
+            />
+          </Field>
         </div>
         <div className="row-actions" style={{ marginTop: 14, alignItems: "center", gap: 12 }}>
           <Button onClick={create} loading={busy}>
@@ -647,6 +672,10 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
             {promoOn
               ? `Promo: up to ${promoCount} code(s), max $${promoMaxUsd} each.`
               : "Promo: off (set both count and max $ to enable)."}
+            {" · "}
+            {Number(b2bMaxPct || "0") > 0
+              ? `B2B: may discount their own customers up to ${b2bMaxPct}%.`
+              : "B2B: off (referrals are ordinary B2C customers)."}
           </span>
         </div>
       </Card>

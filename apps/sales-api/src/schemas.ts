@@ -40,10 +40,17 @@ export const createInviteSchema = z.object({
   referralDiscountBps: referralDiscountBpsSchema.optional(),
 });
 
+// Ceiling on the discount a granted partner may give their own B2B customers. Same 0..9500 bps
+// range the pricing policies accept; the grant is what makes a non-zero value meaningful.
+export const b2bMaxDiscountBpsSchema = z.number().int().min(0).max(9_500);
+
 export const adminCreateInviteSchema = z.object({
   telegramUsername: telegramUsernameSchema,
   commissionBps: commissionBpsSchema.optional(),
   subCommissionBps: commissionBpsSchema.optional(),
+  // Onboarding-time B2B grant: the partner created from this invite already holds it.
+  b2bEnabled: z.boolean().optional(),
+  b2bMaxDiscountBps: b2bMaxDiscountBpsSchema.optional(),
   // Legacy marker permission/value; current UI always creates invites with this disabled.
   referralDiscountEnabled: z.boolean().optional(),
   referralDiscountBps: referralDiscountBpsSchema.optional(),
@@ -66,10 +73,18 @@ export const adminPatchPartnerSchema = z.object({
   subCommissionBps: commissionBpsSchema.optional(),
   referralDiscountBps: referralDiscountBpsSchema.optional(),
   referralDiscountEnabled: z.boolean().optional(),
+  // Grant/revoke the B2B right and its ceiling on an existing partner.
+  b2bEnabled: z.boolean().optional(),
+  b2bMaxDiscountBps: b2bMaxDiscountBpsSchema.optional(),
   status: z.enum(["active", "suspended", "pending"]).optional(),
 }).refine((value) => Object.values(value).some((item) => item !== undefined), {
   message: "at least one field is required",
-});
+}).refine(
+  // A ceiling without the grant is not a smaller permission — it is none at all, and storing it
+  // would read like authority the partner does not have. Ask for both, or neither.
+  (value) => !(value.b2bMaxDiscountBps !== undefined && value.b2bMaxDiscountBps > 0 && value.b2bEnabled === false),
+  { message: "a B2B ceiling cannot be set while revoking the B2B grant" },
+);
 
 // Legacy marker writer schema, retained for expand-only compatibility.
 export const partnerSetDiscountSchema = z.object({

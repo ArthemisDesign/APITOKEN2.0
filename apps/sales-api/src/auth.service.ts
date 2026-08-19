@@ -37,6 +37,9 @@ export interface PartnerView {
   subCommissionBps: number;
   referralDiscountBps: number;
   referralDiscountEnabled: boolean;
+  /** Whether this partner may turn their own referrals into B2B customers, and how deep. */
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
   payoutMethod: string | null;
   payoutDetails: unknown;
   promoEnabled: boolean;
@@ -296,6 +299,8 @@ export function partnerView(partner: Partner): PartnerView {
     commissionBps: partner.commissionBps,
     subCommissionBps: partner.subCommissionBps,
     referralDiscountBps: partner.referralDiscountBps,
+    b2bEnabled: partner.b2bEnabled,
+    b2bMaxDiscountBps: partner.b2bMaxDiscountBps,
     referralDiscountEnabled: partner.referralDiscountEnabled,
     payoutMethod: partner.payoutMethod,
     payoutDetails: partner.payoutDetails,

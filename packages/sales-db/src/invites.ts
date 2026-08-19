@@ -15,6 +15,8 @@ export interface PartnerInvite {
   promoMaxCount: number;
   referralDiscountBps: number;
   referralDiscountEnabled: boolean;
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
   expiresAt: Date | null;
   consumedAt: Date | null;
   consumedByPartnerId: string | null;
@@ -35,6 +37,8 @@ interface InviteRow {
   promo_max_count: number;
   referral_discount_bps: number;
   referral_discount_enabled: boolean;
+  b2b_enabled: boolean;
+  b2b_max_discount_bps: number;
   expires_at: Date | null;
   consumed_at: Date | null;
   consumed_by_partner_id: string | null;
@@ -45,6 +49,7 @@ const INVITE_COLUMNS = `
   id, partner_id, code, telegram_username, commission_bps, sub_commission_bps,
   promo_enabled, promo_max_value_nano::text AS promo_max_value_nano, promo_max_count,
   referral_discount_bps, referral_discount_enabled,
+  b2b_enabled, b2b_max_discount_bps,
   expires_at, consumed_at, consumed_by_partner_id, created_at
 `;
 
@@ -61,6 +66,8 @@ function mapInvite(row: InviteRow): PartnerInvite {
     promoMaxCount: row.promo_max_count,
     referralDiscountBps: row.referral_discount_bps,
     referralDiscountEnabled: row.referral_discount_enabled,
+    b2bEnabled: row.b2b_enabled,
+    b2bMaxDiscountBps: row.b2b_max_discount_bps,
     expiresAt: row.expires_at,
     consumedAt: row.consumed_at,
     consumedByPartnerId: row.consumed_by_partner_id,
@@ -79,6 +86,9 @@ export async function createPartnerInvite(database: SalesDatabase, input: {
   promoMaxCount: number;
   referralDiscountBps: number;
   referralDiscountEnabled: boolean;
+  /** B2B grant baked into the invite; the created partner holds it from the first sign-in. */
+  b2bEnabled?: boolean;
+  b2bMaxDiscountBps?: number;
   expiresAt: Date;
 }): Promise<PartnerInvite> {
   try {
@@ -86,14 +96,16 @@ export async function createPartnerInvite(database: SalesDatabase, input: {
       INSERT INTO partner_invites (
         partner_id, code, telegram_username, commission_bps, sub_commission_bps,
         promo_enabled, promo_max_value_nano, promo_max_count, referral_discount_bps,
-        referral_discount_enabled, expires_at
+        referral_discount_enabled, b2b_enabled, b2b_max_discount_bps, expires_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING ${INVITE_COLUMNS}
     `, [
       input.partnerId, input.code, input.telegramUsername, input.commissionBps, input.subCommissionBps,
       input.promoEnabled, input.promoMaxValueNano.toString(), input.promoMaxCount, input.referralDiscountBps,
-      input.referralDiscountEnabled, input.expiresAt,
+      input.referralDiscountEnabled,
+      input.b2bEnabled ?? false, input.b2bEnabled ? (input.b2bMaxDiscountBps ?? 0) : 0,
+      input.expiresAt,
     ]);
     return mapInvite(result.rows[0]!);
   } catch (error) {
