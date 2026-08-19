@@ -3873,6 +3873,84 @@
           "targetBlank": true
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" }
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 219 },
+      "id": 412,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le, surface) (rate(claude_router_request_body_bytes_bucket[15m])))", "legendFormat": "p50 {{surface}}", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum by (le, surface) (rate(claude_router_request_body_bytes_bucket[15m])))", "legendFormat": "p95 {{surface}}", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, sum by (le, surface) (rate(claude_router_request_body_bytes_bucket[15m])))", "legendFormat": "p99 {{surface}}", "refId": "C" }
+      ],
+      "title": "Universal materialized request body p50 / p95 / p99",
+      "type": "timeseries",
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#routerbodyoversizepressure",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" }
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 219 },
+      "id": 413,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "sum by (reason) (increase(claude_router_body_admission_rejections_total[1h]))", "legendFormat": "{{reason}}", "refId": "A" }
+      ],
+      "title": "Universal body rejections by reason (1h)",
+      "type": "timeseries",
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#routerbodyoversizepressure",
+          "targetBlank": true
+        }
+      ]
     }
   ],
   "refresh": "30s",

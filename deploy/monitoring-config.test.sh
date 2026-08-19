@@ -212,6 +212,8 @@ for router_metric in \
   claude_router_active_body_admission_units \
   claude_router_body_admission_overload_total \
   claude_router_body_read_timeout_total \
+  claude_router_request_body_bytes \
+  claude_router_body_admission_rejections_total \
   claude_router_auth_preflight_total \
   claude_router_catalog_refresh_total \
   claude_router_pricing_failure_total \
@@ -227,7 +229,8 @@ grep -Fq 'sum by (plane) (rate(claude_api_execution_not_started_total[5m]))' \
   "$ROOT/observability/prometheus/rules/application.yml" \
   || { printf 'no recording rule consumes exact not_started proofs by fixed plane\n' >&2; exit 1; }
 for router_alert in RouterMetricsDown RouterFallbackRateHigh RouterConnectionRefusedFallback \
-  RouterAdmissionFailures RouterAuthorityFailures RouterResponseHeaderTimeout; do
+  RouterAdmissionFailures RouterBodyOversizePressure RouterAuthorityFailures \
+  RouterResponseHeaderTimeout; do
   grep -Fq "alert: $router_alert" "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'missing router fallback alert %s\n' "$router_alert" >&2; exit 1; }
   anchor=$(printf '%s' "$router_alert" | tr '[:upper:]' '[:lower:]')
@@ -235,6 +238,29 @@ for router_alert in RouterMetricsDown RouterFallbackRateHigh RouterConnectionRef
     || { printf 'router alert %s has no runbook anchor\n' "$router_alert" >&2; exit 1; }
   grep -Fqi "## $router_alert" "$ROOT/docs/ops/MONITORING.md" \
     || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$router_alert" >&2; exit 1; }
+done
+for body_surface in chat responses messages messages_count_tokens; do
+  grep -Fq "$body_surface" "$ROOT/crates/router/src/metrics.rs" \
+    || { printf 'router body histogram lacks fixed surface %s\n' "$body_surface" >&2; exit 1; }
+done
+for rejection_reason in oversized read_timeout admission_overload; do
+  grep -Fq "$rejection_reason" "$ROOT/crates/router/src/metrics.rs" \
+    || { printf 'router body rejection metric lacks fixed reason %s\n' "$rejection_reason" >&2; exit 1; }
+done
+for forbidden_label in 'path=' 'key=' 'account=' 'model=' 'request_id='; do
+  ! grep -F 'claude_router_request_body_bytes' "$ROOT/crates/router/src/metrics.rs" \
+    | grep -Fq "$forbidden_label" \
+    || { printf 'router body histogram contains forbidden label %s\n' "$forbidden_label" >&2; exit 1; }
+done
+oversize_alert=$(awk '/- alert: RouterBodyOversizePressure/{flag=1} flag{print} flag && /runbook:/{exit}' "$ROOT/observability/prometheus/rules/application.yml")
+grep -Fq 'increase(claude_router_body_admission_rejections_total{reason="oversized"}[15m]) >= 10' <<<"$oversize_alert" \
+  || { printf 'router oversize alert does not consume the fixed rejection signal\n' >&2; exit 1; }
+! grep -Fq 'for:' <<<"$oversize_alert" \
+  || { printf 'router oversize rolling-window alert has a contradictory extra for duration\n' >&2; exit 1; }
+for quantile in 0.50 0.95 0.99; do
+  grep -Fq "histogram_quantile($quantile, sum by (le, surface) (rate(claude_router_request_body_bytes_bucket[15m])))" \
+    "$ROOT/observability/grafana/dashboards/production-overview.json" \
+    || { printf 'router body dashboard lacks quantile %s\n' "$quantile" >&2; exit 1; }
 done
 # The generic scrape alert must exclude jobs with their own scrape-health alerts:
 # claude-router -> RouterMetricsDown, devbot -> DevBotMetricsDown.

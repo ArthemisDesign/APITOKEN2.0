@@ -24,7 +24,7 @@ use crate::auth::{self, AuthError};
 use crate::catalog::{self, NS_ANTHROPIC, NS_GOOGLE, NS_KIMI, NS_OPENAI};
 use crate::error::{self, Lane};
 use crate::identity::{fresh_execution_group_id, LogicalRequestId};
-use crate::metrics::{AuthOutcome, PolicyFailure, RouterMetrics};
+use crate::metrics::{AuthOutcome, BodyRejectionReason, BodySurface, PolicyFailure, RouterMetrics};
 use crate::policy::{
     self, PolicyCandidate, PreflightError, ProviderNamespace, ProviderPreferences,
 };
@@ -88,6 +88,17 @@ impl Surface {
             Self::Responses => "responses",
             Self::Messages if path == "/v1/messages/count_tokens" => "messages_count_tokens",
             Self::Messages => "messages",
+        }
+    }
+
+    fn body_surface(self, path: &str) -> BodySurface {
+        match self {
+            Self::Chat => BodySurface::Chat,
+            Self::Responses => BodySurface::Responses,
+            Self::Messages if path == "/v1/messages/count_tokens" => {
+                BodySurface::MessagesCountTokens
+            }
+            Self::Messages => BodySurface::Messages,
         }
     }
 
@@ -177,6 +188,7 @@ struct ResolvedAttempt {
 /// Shared universal handler. The response body is never buffered; only the
 /// already-required 32 MiB request body is materialized.
 pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surface) -> Response {
+    let body_surface = surface.body_surface(req.uri().path());
     let _request_guard = state.metrics.universal_request();
     let auth_headers = proxy::auth_passthrough(req.headers());
     let auth_started = Instant::now();
@@ -201,17 +213,31 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
     let (bytes, body_permit) = match read_body(&state, &parts.headers, body).await {
         Ok(result) => result,
         Err(BodyReadError::TooLarge) => {
-            return surface.invalid("Request body exceeds the 32 MiB limit.", None)
+            state
+                .metrics
+                .body_admission_rejection(BodyRejectionReason::Oversized);
+            return surface.invalid("Request body exceeds the 32 MiB limit.", None);
         }
         Err(BodyReadError::Overloaded) => {
+            state
+                .metrics
+                .body_admission_rejection(BodyRejectionReason::AdmissionOverload);
             elog::warn("router", "body admission overload");
             return surface.overloaded();
         }
-        Err(BodyReadError::Timeout) => return surface.body_timeout(),
+        Err(BodyReadError::Timeout) => {
+            state
+                .metrics
+                .body_admission_rejection(BodyRejectionReason::ReadTimeout);
+            return surface.body_timeout();
+        }
         Err(BodyReadError::Transport) => {
             return surface.invalid("Failed to read request body.", None)
         }
     };
+    state
+        .metrics
+        .request_body_materialized(body_surface, bytes.len());
     let mut value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
         Ok(value) => value,
         Err(_) => return surface.invalid("Invalid JSON in request body.", None),

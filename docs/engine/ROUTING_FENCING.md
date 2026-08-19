@@ -290,9 +290,12 @@ the next attempt; label sets are compile-fixed (3×3 namespaces, two reasons). T
 increments `claude_api_execution_not_started_total{plane}` exactly for the exact `not_started` actually
 returned externally on a non-2xx. The same fixed dimensions cover active body units,
 overload/read timeout, auth outcomes/latency, catalog refresh/degradation, pricing/policy failure,
-response-header timeout, and read-only `/balance` failover. Credential/model/group/request IDs are
-forbidden in metrics; `RouterAdmissionFailures`, `RouterAuthorityFailures`, and
-`RouterResponseHeaderTimeout` map to the eponymous runbook sections.
+response-header timeout, and read-only `/balance` failover. Large-payload baseline additionally
+histograms only fully materialized universal bodies across four fixed surfaces and counts three fixed
+rejection reasons; partial/native streaming bytes are not inferred. Credential/model/path/account/
+group/request IDs are forbidden in metrics; `RouterAdmissionFailures`,
+`RouterBodyOversizePressure`, `RouterAuthorityFailures`, and `RouterResponseHeaderTimeout` map to the
+eponymous runbook sections.
 
 Activation order: producer 6.4a → consumer 6.4b at default-off → telemetry/Prometheus 6.4c
 at default-off → mock-load and live canary in a separate router process → unit flag in production.

@@ -456,15 +456,18 @@ is only what is needed to walk the relationships when making changes:
   produces an unauthenticated loopback `/metrics`; the Caddy stable origin 8802 directs
   the scrape to the same active router slot 8800/8801 as the public vhost, with exactly
   18 `claude_router_fallback_total{from_namespace,to_namespace,reason}` series plus
-  fixed-cardinality admission/auth/catalog/pricing/policy/header-timeout/balance
-  telemetry; the public Caddy allowlist does not pass this path. Each fixed
+  fixed-cardinality admission/auth/catalog/pricing/policy/header-timeout/balance telemetry. Large-
+  payload baseline adds a four-surface cumulative histogram of fully materialized universal body
+  bytes and three fixed rejection reasons (`oversized|read_timeout|admission_overload`); native
+  streaming bodies and partial/rejected byte counts are not fabricated. The public Caddy allowlist
+  does not pass this path. Each fixed
   `crates/server` plane produces three bounded
   `claude_api_execution_not_started_total{plane}` series through the existing
   authenticated `/metrics`, counting only the exact response actually returned by the
   plane. The consumer is `observability/prometheus/prometheus.yml` and the
   recording/alert rules; Alertmanager/operator use the runbooks `RouterMetricsDown`,
   `RouterFallbackRateHigh`, `RouterConnectionRefusedFallback`, `RouterAdmissionFailures`,
-  `RouterAuthorityFailures`, and `RouterResponseHeaderTimeout`, while money-regression
+  `RouterBodyOversizePressure`, `RouterAuthorityFailures`, and `RouterResponseHeaderTimeout`, while money-regression
   detectors stay separate. Model, credential, account, group, and request identity do not
   travel through this relationship. Contract — `docs/engine/ROUTING_FENCING.md` §§5.3–6
   and `docs/ops/MONITORING.md`.

@@ -124,8 +124,11 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   are checked fail closed. Personal rate cards exist only in request memory and are not
   cached.
 - `metrics.rs` — fixed-cardinality telemetry admission/auth/catalog/pricing/policy/balance-header-timeout/
-  balance and a compile-bounded `claude_router_fallback_total` (exactly 18 series). Model, credential,
-  group and request identity are forbidden in labels.
+  balance and a compile-bounded `claude_router_fallback_total` (exactly 18 series). Large-payload
+  baseline records only fully materialized universal bodies in fixed Chat/Responses/Messages/count
+  surfaces, plus fixed oversized/read-timeout/admission-overload rejections; partial/native stream
+  bytes are not fabricated. Model, credential, path, account, group and request identity are
+  forbidden in labels.
 - `chat.rs` and `responses.rs` — thin OpenAI-shaped entrypoints into `routing.rs`.
 - `messages.rs` — thin Anthropic-shaped entrypoint for `POST /v1/messages` and
   `POST /v1/messages/count_tokens`: namespaced `openai/*` goes to the Codex plane

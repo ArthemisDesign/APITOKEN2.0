@@ -286,6 +286,16 @@ groups:
           description: 'At least one universal request exhausted the bounded body budget or exceeded the idle/maximum body-read deadline.'
           runbook: 'docs/ops/MONITORING.md#routeradmissionfailures'
 
+      - alert: RouterBodyOversizePressure
+        expr: increase(claude_router_body_admission_rejections_total{reason="oversized"}[15m]) >= 10
+        labels:
+          severity: warning
+          component: claude-router
+        annotations:
+          summary: 'Universal requests are repeatedly hitting the current body contract'
+          description: 'At least ten universal request bodies were rejected as oversized in fifteen minutes; this is demand evidence, not permission to raise the current limit.'
+          runbook: 'docs/ops/MONITORING.md#routerbodyoversizepressure'
+
       - alert: RouterAuthorityFailures
         expr: |
           sum(increase(claude_router_auth_preflight_total{outcome="unavailable"}[10m]))

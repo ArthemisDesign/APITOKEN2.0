@@ -20,8 +20,24 @@ const AUTH_OUTCOME_COUNT: usize = 3;
 const CATALOG_REFRESH_OUTCOME_COUNT: usize = 4;
 const PRICING_FAILURE_COUNT: usize = 2;
 const POLICY_FAILURE_COUNT: usize = 3;
+const BODY_SURFACE_COUNT: usize = 4;
+const BODY_BUCKET_COUNT: usize = 10;
+const BODY_REJECTION_REASON_COUNT: usize = 3;
 const FALLBACK_SERIES_COUNT: usize = NAMESPACE_COUNT * NAMESPACE_COUNT * REASON_COUNT;
 const LANE_MATRIX_COUNT: usize = NAMESPACE_COUNT * NAMESPACE_COUNT;
+
+const BODY_BUCKETS: [u64; BODY_BUCKET_COUNT] = [
+    64 * 1024,
+    256 * 1024,
+    1024 * 1024,
+    4 * 1024 * 1024,
+    8 * 1024 * 1024,
+    16 * 1024 * 1024,
+    32 * 1024 * 1024,
+    64 * 1024 * 1024,
+    128 * 1024 * 1024,
+    256 * 1024 * 1024,
+];
 
 const NAMESPACES: [(Lane, &str); NAMESPACE_COUNT] = [
     (Lane::Anthropic, "anthropic"),
@@ -32,6 +48,55 @@ const REASONS: [(RetryReason, &str); REASON_COUNT] = [
     (RetryReason::NotStarted, "not_started"),
     (RetryReason::ConnectionRefused, "connect_refused"),
 ];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BodySurface {
+    Chat,
+    Responses,
+    Messages,
+    MessagesCountTokens,
+}
+
+impl BodySurface {
+    const ALL: [(Self, &'static str); BODY_SURFACE_COUNT] = [
+        (Self::Chat, "chat"),
+        (Self::Responses, "responses"),
+        (Self::Messages, "messages"),
+        (Self::MessagesCountTokens, "messages_count_tokens"),
+    ];
+
+    fn index(self) -> usize {
+        match self {
+            Self::Chat => 0,
+            Self::Responses => 1,
+            Self::Messages => 2,
+            Self::MessagesCountTokens => 3,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BodyRejectionReason {
+    Oversized,
+    ReadTimeout,
+    AdmissionOverload,
+}
+
+impl BodyRejectionReason {
+    const ALL: [(Self, &'static str); BODY_REJECTION_REASON_COUNT] = [
+        (Self::Oversized, "oversized"),
+        (Self::ReadTimeout, "read_timeout"),
+        (Self::AdmissionOverload, "admission_overload"),
+    ];
+
+    fn index(self) -> usize {
+        match self {
+            Self::Oversized => 0,
+            Self::ReadTimeout => 1,
+            Self::AdmissionOverload => 2,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthOutcome {
@@ -131,6 +196,10 @@ pub struct RouterMetrics {
     active_body_admission_units: AtomicU64,
     body_admission_overload: AtomicU64,
     body_read_timeout: AtomicU64,
+    request_body_bucket_counts: [[AtomicU64; BODY_BUCKET_COUNT]; BODY_SURFACE_COUNT],
+    request_body_sum_bytes: [AtomicU64; BODY_SURFACE_COUNT],
+    request_body_count: [AtomicU64; BODY_SURFACE_COUNT],
+    body_admission_rejections: [AtomicU64; BODY_REJECTION_REASON_COUNT],
     auth_outcomes: [AtomicU64; AUTH_OUTCOME_COUNT],
     auth_duration_micros: [AtomicU64; AUTH_OUTCOME_COUNT],
     catalog_cache_hits: [AtomicU64; PLANE_COUNT],
@@ -150,6 +219,11 @@ impl Default for RouterMetrics {
             active_body_admission_units: AtomicU64::new(0),
             body_admission_overload: AtomicU64::new(0),
             body_read_timeout: AtomicU64::new(0),
+            request_body_bucket_counts: [const { [const { AtomicU64::new(0) }; BODY_BUCKET_COUNT] };
+                BODY_SURFACE_COUNT],
+            request_body_sum_bytes: [const { AtomicU64::new(0) }; BODY_SURFACE_COUNT],
+            request_body_count: [const { AtomicU64::new(0) }; BODY_SURFACE_COUNT],
+            body_admission_rejections: [const { AtomicU64::new(0) }; BODY_REJECTION_REASON_COUNT],
             auth_outcomes: [const { AtomicU64::new(0) }; AUTH_OUTCOME_COUNT],
             auth_duration_micros: [const { AtomicU64::new(0) }; AUTH_OUTCOME_COUNT],
             catalog_cache_hits: [const { AtomicU64::new(0) }; PLANE_COUNT],
@@ -205,6 +279,27 @@ impl RouterMetrics {
 
     pub fn body_read_timeout(&self) {
         self.body_read_timeout.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn request_body_materialized(&self, surface: BodySurface, bytes: usize) {
+        let index = surface.index();
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+        self.request_body_count[index].fetch_add(1, Ordering::Relaxed);
+        let _ = self.request_body_sum_bytes[index].fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_add(bytes)),
+        );
+        for (bucket_index, upper) in BODY_BUCKETS.into_iter().enumerate() {
+            if bytes <= upper {
+                self.request_body_bucket_counts[index][bucket_index]
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    pub fn body_admission_rejection(&self, reason: BodyRejectionReason) {
+        self.body_admission_rejections[reason.index()].fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn auth(&self, outcome: AuthOutcome, duration: Duration) {
@@ -298,6 +393,49 @@ impl RouterMetrics {
             "claude_router_body_read_timeout_total",
             self.body_read_timeout.load(Ordering::Relaxed),
         );
+        metric_header(
+            &mut body,
+            "claude_router_request_body_bytes",
+            "histogram",
+            "Size in bytes of fully materialized universal request bodies.",
+        );
+        for (surface, label) in BodySurface::ALL {
+            let index = surface.index();
+            for (bucket_index, upper) in BODY_BUCKETS.into_iter().enumerate() {
+                let _ = writeln!(
+                    body,
+                    "claude_router_request_body_bytes_bucket{{surface=\"{label}\",le=\"{upper}\"}} {}",
+                    self.request_body_bucket_counts[index][bucket_index].load(Ordering::Relaxed)
+                );
+            }
+            let count = self.request_body_count[index].load(Ordering::Relaxed);
+            let _ = writeln!(
+                body,
+                "claude_router_request_body_bytes_bucket{{surface=\"{label}\",le=\"+Inf\"}} {count}"
+            );
+            let _ = writeln!(
+                body,
+                "claude_router_request_body_bytes_sum{{surface=\"{label}\"}} {}",
+                self.request_body_sum_bytes[index].load(Ordering::Relaxed)
+            );
+            let _ = writeln!(
+                body,
+                "claude_router_request_body_bytes_count{{surface=\"{label}\"}} {count}"
+            );
+        }
+        metric_header(
+            &mut body,
+            "claude_router_body_admission_rejections_total",
+            "counter",
+            "Universal request bodies rejected by size, read deadline, or body-budget admission.",
+        );
+        for (reason, label) in BodyRejectionReason::ALL {
+            let _ = writeln!(
+                body,
+                "claude_router_body_admission_rejections_total{{reason=\"{label}\"}} {}",
+                self.body_admission_rejections[reason.index()].load(Ordering::Relaxed)
+            );
+        }
 
         metric_header(
             &mut body,
@@ -479,6 +617,17 @@ mod tests {
         metrics.balance_failover(Lane::Anthropic, Lane::OpenAi);
         metrics.catalog_refresh(Plane::Gemini, CatalogRefreshOutcome::Oversized);
         metrics.auth(AuthOutcome::Success, Duration::from_millis(12));
+        metrics.request_body_materialized(BodySurface::Chat, 0);
+        metrics.request_body_materialized(BodySurface::Responses, 65_536);
+        metrics.request_body_materialized(BodySurface::Messages, 65_537);
+        metrics.request_body_materialized(BodySurface::MessagesCountTokens, 7);
+        for reason in [
+            BodyRejectionReason::Oversized,
+            BodyRejectionReason::ReadTimeout,
+            BodyRejectionReason::AdmissionOverload,
+        ] {
+            metrics.body_admission_rejection(reason);
+        }
 
         let body = metrics.render();
         assert_eq!(
@@ -503,7 +652,56 @@ mod tests {
             "claude_router_catalog_refresh_total{namespace=\"google\",outcome=\"oversized\"} 1"
         ));
         assert!(body.contains("claude_router_auth_preflight_total{outcome=\"success\"} 1"));
-        for forbidden in ["model=", "credential=", "group=", "request_id="] {
+        assert_eq!(
+            body.lines()
+                .filter(|line| line.starts_with("claude_router_request_body_bytes_bucket{"))
+                .count(),
+            BODY_SURFACE_COUNT * (BODY_BUCKET_COUNT + 1)
+        );
+        assert_eq!(
+            body.lines()
+                .filter(|line| line.starts_with("claude_router_request_body_bytes_sum{"))
+                .count(),
+            BODY_SURFACE_COUNT
+        );
+        assert_eq!(
+            body.lines()
+                .filter(|line| line.starts_with("claude_router_request_body_bytes_count{"))
+                .count(),
+            BODY_SURFACE_COUNT
+        );
+        assert_eq!(
+            body.lines()
+                .filter(|line| line.starts_with("claude_router_body_admission_rejections_total{"))
+                .count(),
+            BODY_REJECTION_REASON_COUNT
+        );
+        assert!(body.contains(
+            "claude_router_request_body_bytes_bucket{surface=\"responses\",le=\"65536\"} 1"
+        ));
+        assert!(body.contains(
+            "claude_router_request_body_bytes_bucket{surface=\"messages\",le=\"65536\"} 0"
+        ));
+        assert!(body.contains(
+            "claude_router_request_body_bytes_bucket{surface=\"messages\",le=\"262144\"} 1"
+        ));
+        assert!(body.contains("claude_router_request_body_bytes_sum{surface=\"messages\"} 65537"));
+        assert!(body.contains(
+            "claude_router_request_body_bytes_count{surface=\"messages_count_tokens\"} 1"
+        ));
+        assert!(body.contains("claude_router_request_body_bytes_bucket{surface=\"messages_count_tokens\",le=\"+Inf\"} 1"));
+        assert!(
+            body.contains("claude_router_body_admission_rejections_total{reason=\"oversized\"} 1")
+        );
+        for forbidden in [
+            "path=",
+            "key=",
+            "account=",
+            "model=",
+            "credential=",
+            "group=",
+            "request_id=",
+        ] {
             assert!(!body.contains(forbidden));
         }
     }

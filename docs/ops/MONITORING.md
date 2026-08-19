@@ -479,7 +479,28 @@ An overload with 128 active units means real buffered pressure. Repeated timeout
 usually clients that made no byte progress for 60 seconds; steady uploads may run for at most five
 minutes. Confirm Caddy/client upload behavior and abusive source patterns without logging
 credentials or request contents. Do not increase the budget until RSS headroom is measured, and do
-not add a waiting semaphore or provider execution ceiling.
+not add a waiting semaphore or provider execution ceiling. The additive
+`claude_router_body_admission_rejections_total` splits the same overload and timeout outcomes from
+`oversized`; the two legacy counters remain the compatibility source for this alert.
+
+## RouterBodyOversizePressure
+
+This is sustained demand evidence against the current 32 MiB universal router contract, not an
+instruction to raise a constant or `MemoryMax`. Use
+`claude_router_request_body_bytes_bucket{surface}` to compare p50/p95/p99 of bodies that were fully
+materialized and the fixed `surface` label to distinguish Chat, Responses, Messages and Messages
+count-tokens. These quantiles intentionally include every fully read attempt, including malformed
+JSON and requests rejected later by model/routing/policy admission; they measure materialization
+pressure, not successful or billable demand. Oversized attempts are not added to the histogram because their full bytes were never
+accepted; the rejection counter covers both declared and chunked overflow without retaining the
+attempted size.
+
+Confirm that the traffic is legitimate without logging bodies, keys, models, accounts, or request
+identities. Anthropic remains capped at its provider-owned 32 MiB request contract, Gemini media at
+20 MiB, and Codex at the currently proved 8 MiB transport boundary. Do not raise router/systemd
+limits before bounded spool storage, dual raw/RSS admission, cgroup headroom, and exact-SHA load
+proof are GREEN. If the pressure is abusive, mitigate at ingress/account controls rather than
+creating a waiting queue.
 
 ## RouterAuthorityFailures
 
