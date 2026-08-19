@@ -5,10 +5,11 @@ use forward::{
     glm::config::{GlmPlaneConfig, GlmPlaneInput},
     glm::transport::GlmIdentityHeaders,
     kimi::config::{KimiPlaneConfig, KimiPlaneInput},
-    suno::config::{SunoPlaneConfig, SunoPlaneInput},
     tripo3d::config::{Tripo3dPlaneConfig, Tripo3dPlaneInput},
-    ClaudeStoreFallbackConfig, CodexConfig, CodexModel, GeminiConfig, GeminiModel, ProviderMode,
-    ProxyConfig, CLAUDE_CODE_IDENTITY,
+    suno::config::{SunoPlaneConfig, SunoPlaneInput},
+    ClaudeStoreFallbackConfig, CodexConfig, CodexModel, GeminiConfig, GeminiModel,
+    ProviderMode, ProxyConfig,
+    CLAUDE_CODE_IDENTITY,
 };
 use std::{collections::BTreeMap, env, net::IpAddr};
 
@@ -114,7 +115,9 @@ fn strict_mib_value(
 }
 
 fn parse_body_limits(values: &BTreeMap<String, String>) -> Result<api_limits::BodyLimits, String> {
-    let read = |key, default| strict_mib_value(key, values.get(key).map(String::as_str), default);
+    let read = |key, default| {
+        strict_mib_value(key, values.get(key).map(String::as_str), default)
+    };
     let limits = api_limits::BodyLimits {
         request: read(
             "CLAUDE_API_TEXT_BODY_MAX_MIB",
@@ -312,6 +315,8 @@ fn validate_claudestore_credential_separation(
     Ok(())
 }
 
+
+
 const KIMI_ENV_KEYS: [&str; 7] = [
     "CLAUDE_API_KIMI_ENABLED",
     "CLAUDE_API_KIMI_ROSTER_DIR",
@@ -344,19 +349,19 @@ fn parse_kimi_config(values: &BTreeMap<String, String>) -> Result<Option<KimiPla
             })
         },
     )?;
-    let smooth_wait_ms =
-        values
-            .get("CLAUDE_API_SMOOTH_WAIT_MS")
-            .map_or(Ok(defaults.smooth_wait_ms), |value| {
-                value
-                    .parse::<u64>()
-                    .ok()
-                    .filter(|parsed| *parsed <= 60_000)
-                    .ok_or_else(|| {
-                        "CLAUDE_API_SMOOTH_WAIT_MS: expected an integer of milliseconds up to 60000"
-                            .to_string()
-                    })
-            })?;
+    let smooth_wait_ms = values.get("CLAUDE_API_SMOOTH_WAIT_MS").map_or(
+        Ok(defaults.smooth_wait_ms),
+        |value| {
+            value
+                .parse::<u64>()
+                .ok()
+                .filter(|parsed| *parsed <= 60_000)
+                .ok_or_else(|| {
+                    "CLAUDE_API_SMOOTH_WAIT_MS: expected an integer of milliseconds up to 60000"
+                        .to_string()
+                })
+        },
+    )?;
     let input = KimiPlaneInput {
         enabled,
         smooth_wait_ms,
@@ -627,7 +632,9 @@ const SUNO_ENV_KEYS: [&str; 6] = [
 /// with an explicit unknown-key error rather than being ignored as dormant input.
 const SUNO_REJECTED_ENV_KEYS: [&str; 1] = ["CLAUDE_API_SUNO_BASE_URL"];
 
-fn parse_suno_config(values: &BTreeMap<String, String>) -> Result<Option<SunoPlaneConfig>, String> {
+fn parse_suno_config(
+    values: &BTreeMap<String, String>,
+) -> Result<Option<SunoPlaneConfig>, String> {
     for rejected in SUNO_REJECTED_ENV_KEYS {
         if values.contains_key(rejected) {
             return Err(format!(
@@ -661,7 +668,9 @@ fn parse_suno_config(values: &BTreeMap<String, String>) -> Result<Option<SunoPla
             .cloned()
             .unwrap_or(defaults.roster_dir),
         credential_keys: values.get("CLAUDE_API_SUNO_CREDENTIAL_KEYS").cloned(),
-        credential_active_kid: values.get("CLAUDE_API_SUNO_CREDENTIAL_ACTIVE_KID").cloned(),
+        credential_active_kid: values
+            .get("CLAUDE_API_SUNO_CREDENTIAL_ACTIVE_KID")
+            .cloned(),
         quota_poll_secs,
         artifact_dir: values
             .get("CLAUDE_API_SUNO_ARTIFACT_DIR")
@@ -680,6 +689,7 @@ fn suno_config() -> Option<SunoPlaneConfig> {
         .collect::<BTreeMap<_, _>>();
     parse_suno_config(&values).unwrap_or_else(|message| panic!("{message}"))
 }
+
 
 fn bounded_u64(k: &str, default: u64, min: u64, max: u64) -> u64 {
     match ev(k).and_then(|value| value.parse::<u64>().ok()) {
@@ -944,13 +954,13 @@ fn gemini_config() -> Option<GeminiConfig> {
             60,
             86_400,
         ),
-        auth_blocked_cool_secs: bounded_i64("CLAUDE_API_GEMINI_AUTH_BLOCKED_COOL_SECS", 15, 1, 900),
-        min_probe_interval_secs: bounded_i64(
-            "CLAUDE_API_GEMINI_MIN_PROBE_INTERVAL_SECS",
+        auth_blocked_cool_secs: bounded_i64(
+            "CLAUDE_API_GEMINI_AUTH_BLOCKED_COOL_SECS",
             15,
-            5,
-            300,
+            1,
+            900,
         ),
+        min_probe_interval_secs: bounded_i64("CLAUDE_API_GEMINI_MIN_PROBE_INTERVAL_SECS", 15, 5, 300),
         transport_cool_secs: bounded_i64("CLAUDE_API_GEMINI_TRANSPORT_COOL_SECS", 5, 1, 300),
         model_failure_cool_secs: bounded_i64(
             "CLAUDE_API_GEMINI_MODEL_FAILURE_COOL_SECS",
@@ -1232,17 +1242,11 @@ fn clamp_frac(k: &str, v: &str, d: f64) -> f64 {
     match v.parse::<f64>() {
         Ok(x) if x.is_finite() && (0.0..=1.0).contains(&x) => x,
         Ok(x) if x.is_finite() => {
-            elog::warn(
-                "server",
-                format!("{k}={x} вне [0,1] — кламплю (это ДОЛЯ окна, не проценты)"),
-            );
+            elog::warn("server", format!("{k}={x} вне [0,1] — кламплю (это ДОЛЯ окна, не проценты)"));
             x.clamp(0.0, 1.0)
         }
         Ok(_) => {
-            elog::warn(
-                "server",
-                format!("{k} не может быть NaN/inf — беру дефолт {d}"),
-            );
+            elog::warn("server", format!("{k} не может быть NaN/inf — беру дефолт {d}"));
             d
         }
         Err(_) => {
@@ -1311,10 +1315,8 @@ impl Settings {
             if keys.iter().any(|k| k.len() < 24) {
                 elog::warn(
                     "server",
-                    format!(
-                        "{name}: есть ключ короче 24 символов — слабый для управляющего доступа. \
-                           Задай длинный случайный (напр. openssl rand -hex 24)."
-                    ),
+                    format!("{name}: есть ключ короче 24 символов — слабый для управляющего доступа. \
+                           Задай длинный случайный (напр. openssl rand -hex 24)."),
                 );
             }
         }
@@ -1535,21 +1537,13 @@ mod tests {
         assert_eq!(defaults, api_limits::current::PROVIDER);
         assert!(api_limits::current::OPENAI_TEXT_REQUEST < defaults.request);
         assert!(api_limits::current::GEMINI_MEDIA_REQUEST < defaults.request);
-        for invalid in ["", "0", " 32", "+32", "1.5", "256"] {
+        for invalid in ["", "0", " 32", "+32", "1.5", "8", "256"] {
             let values = BTreeMap::from([(
                 "CLAUDE_API_TEXT_BODY_MAX_MIB".to_owned(),
                 invalid.to_owned(),
             )]);
             assert!(parse_body_limits(&values).is_err(), "accepted {invalid:?}");
         }
-        let narrower = BTreeMap::from([
-            ("CLAUDE_API_TEXT_BODY_MAX_MIB".to_owned(), "8".to_owned()),
-            (
-                "CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB".to_owned(),
-                "8".to_owned(),
-            ),
-        ]);
-        assert!(parse_body_limits(&narrower).is_err());
     }
 
     #[test]
@@ -1919,14 +1913,8 @@ mod tests {
 
     #[test]
     fn tripo3d_provider_mode_parses() {
-        assert_eq!(
-            parse_provider_mode(Some("tripo3d")),
-            Ok(ProviderMode::Tripo3d)
-        );
-        assert_eq!(
-            parse_provider_mode(Some(" TRIPO3D ")),
-            Ok(ProviderMode::Tripo3d)
-        );
+        assert_eq!(parse_provider_mode(Some("tripo3d")), Ok(ProviderMode::Tripo3d));
+        assert_eq!(parse_provider_mode(Some(" TRIPO3D ")), Ok(ProviderMode::Tripo3d));
     }
 
     #[test]
@@ -1951,8 +1939,10 @@ mod tests {
             .unwrap()
             .is_none());
         for invalid in ["yes", "on", "2", " true "] {
-            let values =
-                BTreeMap::from([("CLAUDE_API_TRIPO3D_ENABLED".to_owned(), invalid.to_owned())]);
+            let values = BTreeMap::from([(
+                "CLAUDE_API_TRIPO3D_ENABLED".to_owned(),
+                invalid.to_owned(),
+            )]);
             assert!(parse_tripo3d_config(&values).is_err(), "{invalid}");
         }
     }
@@ -2015,10 +2005,7 @@ mod tests {
                 "CLAUDE_API_TRIPO3D_CREDENTIAL_KEYS".to_owned(),
                 format!("a1:{}", "11".repeat(32)),
             ),
-            (
-                "CLAUDE_API_TRIPO3D_CREDENTIAL_ACTIVE_KID".to_owned(),
-                "zz".to_owned(),
-            ),
+            ("CLAUDE_API_TRIPO3D_CREDENTIAL_ACTIVE_KID".to_owned(), "zz".to_owned()),
         ]);
         assert!(parse_tripo3d_config(&mismatched_kid).is_err());
 
@@ -2080,8 +2067,10 @@ mod tests {
             .unwrap()
             .is_none());
         for invalid in ["yes", "on", "2", " true "] {
-            let values =
-                BTreeMap::from([("CLAUDE_API_SUNO_ENABLED".to_owned(), invalid.to_owned())]);
+            let values = BTreeMap::from([(
+                "CLAUDE_API_SUNO_ENABLED".to_owned(),
+                invalid.to_owned(),
+            )]);
             assert!(parse_suno_config(&values).is_err(), "{invalid}");
         }
     }
@@ -2102,10 +2091,7 @@ mod tests {
                 "CLAUDE_API_SUNO_CREDENTIAL_ACTIVE_KID".to_owned(),
                 "a1".to_owned(),
             ),
-            (
-                "CLAUDE_API_SUNO_QUOTA_POLL_SECS".to_owned(),
-                "41".to_owned(),
-            ),
+            ("CLAUDE_API_SUNO_QUOTA_POLL_SECS".to_owned(), "41".to_owned()),
             (
                 "CLAUDE_API_SUNO_ARTIFACT_DIR".to_owned(),
                 "/srv/private/suno/artifacts".to_owned(),
@@ -2144,10 +2130,7 @@ mod tests {
                 "CLAUDE_API_SUNO_CREDENTIAL_KEYS".to_owned(),
                 format!("a1:{}", "11".repeat(32)),
             ),
-            (
-                "CLAUDE_API_SUNO_CREDENTIAL_ACTIVE_KID".to_owned(),
-                "zz".to_owned(),
-            ),
+            ("CLAUDE_API_SUNO_CREDENTIAL_ACTIVE_KID".to_owned(), "zz".to_owned()),
         ]);
         assert!(parse_suno_config(&mismatched_kid).is_err());
 
@@ -2287,6 +2270,9 @@ mod tests {
         values.insert("CLAUDE_API_INJECT_BILLING".to_owned(), "off".to_owned());
         assert!(parse_glm_config(&values).unwrap().is_none());
     }
+
+
+
 
     #[test]
     fn openai_slots_get_the_long_drain_and_other_providers_do_not() {
