@@ -105,8 +105,10 @@ empty_diagnostic=$(wd_validation_failure_summary "$TEMP/missing.log" 7 shadow-va
     || wd_die 'failure text omitted the excerpt'
   grep -Fq 'super-secret' "$WD_FAILURE_DIR/$desc_sha.text" \
     && wd_die 'failure text retained a secret'
-  [[ $(stat -f %A "$WD_FAILURE_DIR/$desc_sha.text" 2>/dev/null || stat -c %a "$WD_FAILURE_DIR/$desc_sha.text") == 600 ]] \
-    || wd_die 'failure text is not mode 0600'
+  text_mode=$(stat -c '%a' "$WD_FAILURE_DIR/$desc_sha.text" 2>/dev/null \
+    || stat -f '%OLp' "$WD_FAILURE_DIR/$desc_sha.text")
+  [[ $text_mode == 600 || $text_mode == 0600 ]] \
+    || wd_die "failure text is not mode 0600: $text_mode"
 )
 
 # A restrictive fetch umask must not strand the shared source history from the isolated reader.
