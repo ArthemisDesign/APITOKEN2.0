@@ -244,9 +244,11 @@ const MIGRATION_0058: &str =
     include_str!("../migrations_pg/0058_gemini_batch_second_profile_slot.sql");
 const MIGRATION_0059: &str =
     include_str!("../migrations_pg/0059_gemini_batch_ultra_profile_slots.sql");
+const MIGRATION_0060: &str =
+    include_str!("../migrations_pg/0060_gemini_batch_streaming_lifecycle.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 59;
+pub const CURRENT_SCHEMA_VERSION: i64 = 60;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -309,6 +311,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (57, MIGRATION_0057),
     (58, MIGRATION_0058),
     (59, MIGRATION_0059),
+    (60, MIGRATION_0060),
 ];
 
 #[cfg(test)]
