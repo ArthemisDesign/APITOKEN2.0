@@ -145,8 +145,10 @@ abort_cutover() {
 begin_cutover() {
   CUTOVER_ACTIVE=1
   trap 'abort_cutover "$?" ERR' ERR
-  # EXIT also fires on successful fall-through; abort_cutover coerces status 0 to failure. Recovery
-  # belongs on ERR/signals, while commit_cutover clears these traps after final verification.
+  # Bash never runs the ERR trap for an explicit `exit`, so every post-mutation `... || die` path
+  # would otherwise skip recovery entirely. Guard EXIT on a nonzero status: success falls through
+  # untouched, while an explicit die/exit failure still gets availability-first recovery.
+  trap 'rc=$?; (( rc == 0 )) || abort_cutover "$rc" EXIT' EXIT
   trap 'abort_cutover 130 INT' INT
   trap 'abort_cutover 143 TERM' TERM
 }

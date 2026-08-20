@@ -244,11 +244,29 @@ install_controller_definitions() {
   install -d -o root -g root -m 0755 \
     /usr/local/lib/apitoken-watchdog/controller /opt/apitoken-watchdog
   install -d -o root -g root -m 0700 /var/lib/apitoken/watchdog/large-payload
-  [[ ! -e /var/lib/apitoken/watchdog/router-proof \
-      || (-d /var/lib/apitoken/watchdog/router-proof && ! -L /var/lib/apitoken/watchdog/router-proof) ]] \
+  # The payload candidate gate executes this harness from its fixed installed root; publish it in
+  # the same controller transaction so a marker-bearing release can actually run its evidence gate.
+  install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/tests
+  install -o root -g root -m 0644 "$ROOT/tests/large_payload_mock_load.py" \
+    /usr/local/lib/apitoken-watchdog/tests/large_payload_mock_load.py
+  install -o root -g root -m 0644 "$ROOT/tests/large_payload_candidate_gate.py" \
+    /usr/local/lib/apitoken-watchdog/tests/large_payload_candidate_gate.py
+  [[ ! -L /var/lib/apitoken/watchdog/router-proof ]] \
+    || { echo 'router proof path must not be a symlink' >&2; return 1; }
+  mkdir -m 0700 /var/lib/apitoken/watchdog/router-proof 2>/dev/null || true
+  [[ -d /var/lib/apitoken/watchdog/router-proof && ! -L /var/lib/apitoken/watchdog/router-proof ]] \
     || { echo 'router proof path must be a real directory' >&2; return 1; }
-  install -d -o deploy -g deploy -m 0700 /var/lib/apitoken/watchdog/router-proof
-  rm -f -- /var/lib/apitoken/watchdog/router-proof/success
+  # The parent state root is deploy-owned, so pathname-based root chown could be redirected by a
+  # rename/symlink swap between check and mutation. Resolve the directory once with cd, prove the
+  # physical path, then operate only on the opened handle.
+  if ! (cd /var/lib/apitoken/watchdog/router-proof \
+      && [[ $(pwd -P) == /var/lib/apitoken/watchdog/router-proof ]] \
+      && chown deploy:deploy . \
+      && chmod 0700 . \
+      && rm -f -- ./success); then
+    echo 'router proof directory could not be securely provisioned' >&2
+    return 1
+  fi
   publish_authbot_runtime_helper
   install -o root -g root -m 0644 "$ROOT/deploy/watchdog-lib.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-lib.sh

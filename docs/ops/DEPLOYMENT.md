@@ -38,7 +38,10 @@ small-request p99 regression no greater than 10%. `tests/large_payload_candidate
 before/after cgroup snapshots plus load output for an exact SHA and fails unless OOM/max deltas and
 spool leaks are zero, peak is below MemoryHigh, and at least 20% MemoryMax headroom remains. The
 root-installed `large-payload-candidate-gate.sh` composes snapshot→load→snapshot→verdict for the
-8/32/64 MiB concurrency-4 canary and atomically publishes the exact-SHA verdict. A release carrying
+8/32/64 MiB concurrency-4 canary and atomically publishes the exact-SHA verdict. The controller
+installer publishes both Python harness files under
+`/usr/local/lib/apitoken-watchdog/tests/`, because the root gate resolves them from its own
+installed root rather than from a repository checkout. A release carrying
 the regular-file marker `.large-payload-canary-v1` must pass this gate on the inactive router slot
 after readiness and before enablement/Caddy promotion; failure leaves the old slot serving. It reads
 an authenticated header value only from the fixed root-owned mode-0600

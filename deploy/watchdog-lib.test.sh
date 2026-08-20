@@ -3160,11 +3160,21 @@ for provider_unit in claude-api.service claude-api@.service claude-api-anthropic
 done
 ! grep -Fq "trap 'abort_cutover \"\$?\" EXIT' EXIT" "$ROOT/deploy/router-bluegreen.sh" \
   || wd_die 'router success path is still converted into a cutover failure by EXIT trap'
-grep -Fq '|| (-d /var/lib/apitoken/watchdog/router-proof && ! -L /var/lib/apitoken/watchdog/router-proof) ]]' \
+grep -Fq "trap 'rc=\$?; (( rc == 0 )) || abort_cutover \"\$rc\" EXIT' EXIT" \
+  "$ROOT/deploy/router-bluegreen.sh" \
+  || wd_die 'explicit die/exit failures bypass router cutover recovery'
+grep -Fq '/usr/local/lib/apitoken-watchdog/tests/large_payload_mock_load.py' \
   "$ROOT/deploy/install-watchdog.sh" \
-  || wd_die 'router proof provisioning accepts a non-directory or symlink parent'
-grep -Fq 'install -d -o deploy -g deploy -m 0700 /var/lib/apitoken/watchdog/router-proof' \
+  || wd_die 'payload canary load harness is never installed for the candidate gate'
+grep -Fq '/usr/local/lib/apitoken-watchdog/tests/large_payload_candidate_gate.py' \
   "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'payload canary evaluator is never installed for the candidate gate'
+grep -Fq 'cd /var/lib/apitoken/watchdog/router-proof' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'router proof provisioning does not pin the opened directory handle'
+grep -Fq '[[ $(pwd -P) == /var/lib/apitoken/watchdog/router-proof ]]' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'router proof provisioning does not verify the physical directory path'
+grep -Fq 'chown deploy:deploy .' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'router proof directory is not securely provisioned for the deploy controller'
 grep -Fxq 'ROUTER_SUCCESS_PROOF=/var/lib/apitoken/watchdog/router-proof/success' \
   "$ROOT/deploy/router-bluegreen.sh" \
