@@ -10,7 +10,7 @@ use crate::upstream::Clients;
 use pool::{Pool, Reserve};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -529,13 +529,15 @@ fn input_tokens_proxy_config() -> Arc<ProxyConfig> {
 
 fn codex_test_body_storage(label: &str) -> Arc<crate::BodyStorage> {
     use std::os::unix::fs::PermissionsExt;
+    static BODY_STORAGE_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
     let root = std::env::temp_dir().join(format!(
-        "codex-body-storage-{}-{}-{label}",
+        "codex-body-storage-{}-{}-{}-{label}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        BODY_STORAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
     ));
     std::fs::create_dir(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
