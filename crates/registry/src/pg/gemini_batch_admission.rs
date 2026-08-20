@@ -503,4 +503,89 @@ mod tests {
         assert_eq!(GEMINI_BATCH_ADMISSION_PAGE_SIZE, 128);
         assert_eq!(GEMINI_BATCH_MAX_ITEMS, 100_000);
     }
+
+    #[test]
+    fn staged_publish_exactly_100k_postgres() {
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!("skipping 100k staged publish matrix");
+            return;
+        };
+        let mut pg = PgStore::connect(&url).unwrap();
+        pg.migrate().unwrap();
+        let id = "stage100k-admission";
+        let job = "stage100k-job";
+        let account = "stage100k-account";
+        pg.client.batch_execute("DELETE FROM gemini_batch_admissions WHERE admission_id='stage100k-admission';DELETE FROM gemini_batch_blobs WHERE job_id='stage100k-job';DELETE FROM gemini_batch_items WHERE job_id='stage100k-job';DELETE FROM gemini_batch_jobs WHERE job_id='stage100k-job';DELETE FROM api_keys WHERE key='stage100k-key';DELETE FROM accounts WHERE id='stage100k-account';").unwrap();
+        pg.client.execute("INSERT INTO accounts(id,balance_nano,spent_nano,reserved_nano,mult_bp,status,created_ts,created) VALUES($1,20000000,0,0,5000,'active',1,'x')", &[&account]).unwrap();
+        pg.client.execute("INSERT INTO api_keys(key,key_id,account_id,spent_nano,reserved_nano,status,created_ts,created) VALUES('stage100k-key','stage100k-key-id',$1,0,0,'active',1,'x')", &[&account]).unwrap();
+        let begin = GeminiBatchAdmissionBegin {
+            admission_id: id.into(),
+            job_id: job.into(),
+            account_id: account.into(),
+            creator_key_id: "stage100k-key-id".into(),
+            public_model: "gemini-2.5-flash".into(),
+            display_name: "100k".into(),
+            idempotency_digest: None,
+            priority: 0,
+            input_kind: crate::GeminiBatchInputKind::Inline,
+            input_file_id: None,
+            schema_version: 1,
+            encryption_policy_version: 1,
+            create_ts: 10,
+            deadline_ts: 100000,
+            expires_ts: 100000,
+        };
+        pg.gemini_batch_admission_begin(&begin).unwrap();
+        let blob = crate::GeminiBatchEncryptedBlob {
+            kind: "request".into(),
+            key_id: "kid".into(),
+            nonce: vec![1; 24],
+            ciphertext: vec![2; 18],
+            plaintext_len: 2,
+            plaintext_digest: [3; 32],
+            retention_ts: 100000,
+        };
+        let mut next = 0;
+        while next < GEMINI_BATCH_MAX_ITEMS {
+            let end = (next + GEMINI_BATCH_ADMISSION_PAGE_SIZE as i64).min(GEMINI_BATCH_MAX_ITEMS);
+            let page = (next..end)
+                .map(|i| {
+                    let rid = format!("stage100k-r-{i}");
+                    GeminiBatchAdmissionItem {
+                        requested_output_tokens: 1,
+                        item: crate::GeminiBatchCreateItem {
+                            item_index: i,
+                            request_id: rid.clone(),
+                            logical_request_id: format!("l-{rid}"),
+                            execution_group_id: format!("g-{rid}"),
+                            client_key: None,
+                            request_digest: [4; 32],
+                            input_file_id: None,
+                            referenced_file_ids: vec![],
+                            hold_nano: 100,
+                            payable_multiplier_bp: 5000,
+                            priced_ts: 10,
+                            tariff_family: "google/gemini/gemini-2.5-flash".into(),
+                            tariff_version: 1,
+                            tariff_schedule_id: "v1".into(),
+                            request_blob: blob.clone(),
+                            metadata_blob: None,
+                        },
+                    }
+                })
+                .collect::<Vec<_>>();
+            next = pg.gemini_batch_admission_append(id, next, &page).unwrap();
+        }
+        assert!(matches!(
+            pg.gemini_batch_admission_publish(id, 100000, [9; 32], "stage100k-key")
+                .unwrap(),
+            GeminiBatchCreateOutcome::Created { .. }
+        ));
+        let row=pg.client.query_one("SELECT (SELECT COUNT(*) FROM gemini_batch_items WHERE job_id=$1),(SELECT COUNT(*) FROM gemini_batch_blobs WHERE job_id=$1),(SELECT reserved_nano FROM accounts WHERE id=$2),(SELECT COUNT(*) FROM gemini_batch_admission_items WHERE admission_id=$3)",&[&job,&account,&id]).unwrap();
+        assert_eq!(row.get::<_, i64>(0), 100000);
+        assert_eq!(row.get::<_, i64>(1), 100000);
+        assert_eq!(row.get::<_, i64>(2), 10000000);
+        assert_eq!(row.get::<_, i64>(3), 0);
+        pg.client.batch_execute("DELETE FROM gemini_batch_blobs WHERE job_id='stage100k-job';DELETE FROM gemini_batch_items WHERE job_id='stage100k-job';DELETE FROM gemini_batch_jobs WHERE job_id='stage100k-job';DELETE FROM gemini_batch_admissions WHERE admission_id='stage100k-admission';DELETE FROM api_keys WHERE key='stage100k-key';DELETE FROM accounts WHERE id='stage100k-account';").unwrap();
+    }
 }
