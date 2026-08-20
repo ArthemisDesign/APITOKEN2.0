@@ -1412,6 +1412,21 @@ async fn metrics(
              claude_api_billing_write_queue_depth {}",
             b.write_queue_depth()
         );
+        let stuck = match b.request_facts_stuck_count(pool::now()).await {
+            Ok(stuck) => stuck,
+            Err(error) => {
+                elog::error(
+                    "server",
+                    format!("request-fact stuck-lifecycle query failed: {error:#}"),
+                );
+                None
+            }
+        };
+        crate::request_fact_metrics::write_request_fact_metrics(
+            &mut body,
+            b.request_fact_delivery_snapshot(),
+            stuck,
+        );
         if let Some(pg) = b.pg_command_stats() {
             let _ = writeln!(
                 body,

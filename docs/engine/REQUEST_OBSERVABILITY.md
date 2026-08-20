@@ -605,12 +605,15 @@ the prerequisite exact SHA is production GREEN.
    underlying leaf fact and never an extra Combined fact.
    Backend-only KIMI and GLM, Tripo3D, Suno, images, embeddings, files, and batches remain outside v1.
    Future private API/UI responses declare `scope_version=1` for this exact matrix.
-8. **Pass the producer coverage gate.** Prove the route manifest mechanically against server/router
-   dispatch, prove one and only one leaf fact per scoped plane attempt, prove all exclusions, and run
-   the full privacy, lifecycle, stream-transparency, fallback, persistence, and billing-invariant
-   suite. No read endpoint, metric completeness ratio, or UI may ship before this gate is GREEN.
-9. **Deliver fixed-cardinality operations surfaces.** Add the metrics, alert rules, dashboard panels,
-   and runbook anchors from §10 under the new metric checklist.
+8. **Pass the producer coverage gate — complete in the candidate gate, production GREEN pending.**
+   `deploy/request-observability-coverage.test.sh` pins the exact 15-scope manifest against
+   server/router dispatch, owning producer markers and explicit exclusions. Existing real-PostgreSQL
+   matrices prove one fact per reservation/leaf, no Combined duplicate, privacy and billing fences.
+   No read endpoint, metric completeness ratio, or UI ships in this stage.
+9. **Deliver fixed-cardinality operations surfaces — complete in the candidate, production GREEN pending.**
+   `/metrics` exports closed lifecycle totals, the four safely derived duration histograms, fixed inbox
+   capacity/depth/outcomes/persistence health and the PostgreSQL one-hour stuck count. The four exact
+   alerts, Grafana panels and runbook anchors from §10 ship under the new metric checklist.
 10. **Run the 24-hour observation gate.** Compare the instrumented exact SHA with its approved
     baseline and apply every threshold from §15. Any breach stops rollout and is fixed or rolled back
     before the private Control API or any cross-context consumer.

@@ -58,6 +58,7 @@ pub use billing::{
     AnthropicCalibrationDeliveryStatus, AsyncBilling, GeminiCalibrationDeliveryStatus,
     PgCommandLatencyStats, PgCommandOp, RequestFactDeliverySnapshot, RequestFactPersistenceHealth,
     TerminalRequestFactSubmission, PG_COMMAND_LATENCY_BUCKETS_MS,
+    TERMINAL_REQUEST_FACT_QUEUE_CAPACITY,
 };
 pub use breaker::Breaker;
 pub use codex::{

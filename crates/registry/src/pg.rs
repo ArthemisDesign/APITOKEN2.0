@@ -1594,6 +1594,7 @@ impl PgStore {
 
     fn process_outbox_request(&mut self, request_id: &str) -> Result<Option<i64>> {
         let ts = now();
+        let mut pending_request_fact_observation = None;
         let mut tx = self.client.transaction()?;
         tx.query_one(
             "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
@@ -1702,7 +1703,8 @@ impl PgStore {
                 } else {
                     BillingOutcome::Winner
                 };
-                request_facts::finalize_terminal(&mut tx, request_id, envelope, outcome)?;
+                pending_request_fact_observation =
+                    request_facts::finalize_terminal(&mut tx, request_id, envelope, outcome)?;
             }
             let balance = tx
                 .query_opt(
@@ -1716,6 +1718,17 @@ impl PgStore {
                 &[&request_id, &ts],
             )?;
             tx.commit()?;
+            if let Some(observation) = pending_request_fact_observation {
+                crate::request_facts::observe_terminal_request_fact(
+                    &observation.provider_plane,
+                    &observation.route_class,
+                    &observation.request_class,
+                    observation.stream,
+                    observation.admitted_at,
+                    observation.delivery_started_at,
+                    &observation.terminal,
+                );
+            }
             return Ok(balance);
         }
         let disposition: String = row.get(1);
@@ -1853,7 +1866,8 @@ impl PgStore {
             } else {
                 BillingOutcome::Winner
             };
-            request_facts::finalize_terminal(&mut tx, request_id, envelope, outcome)?;
+            pending_request_fact_observation =
+                request_facts::finalize_terminal(&mut tx, request_id, envelope, outcome)?;
         }
         tx.execute(
             "UPDATE reservations SET state=$2,actual_nano=$3,collected_nano=$4,uncollected_nano=$5, \
@@ -1867,6 +1881,17 @@ impl PgStore {
             &[&request_id, &ts],
         )?;
         tx.commit()?;
+        if let Some(observation) = pending_request_fact_observation {
+            crate::request_facts::observe_terminal_request_fact(
+                &observation.provider_plane,
+                &observation.route_class,
+                &observation.request_class,
+                observation.stream,
+                observation.admitted_at,
+                observation.delivery_started_at,
+                &observation.terminal,
+            );
+        }
         if let Some(winner_request_id) = losing_attempt {
             crate::record_execution_group_loser(
                 &effective_group_id,
@@ -1921,6 +1946,22 @@ impl PgStore {
         self.process_outbox_request(request_id)
     }
 
+    /// Count scoped lifecycles that have remained nonterminal past the fixed one-hour threshold.
+    /// This aggregate is operational health only and carries no customer/request dimensions.
+    pub fn request_facts_stuck_count(&mut self, now_ts: i64) -> Result<u64> {
+        let cutoff = now_ts
+            .checked_sub(crate::request_facts::REQUEST_FACT_STUCK_AFTER_SECONDS)
+            .ok_or_else(|| anyhow::anyhow!("request-fact stuck cutoff overflow"))?;
+        let count: i64 = self
+            .client
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM request_facts WHERE terminal_at IS NULL AND admitted_at < $1",
+                &[&cutoff],
+            )?
+            .get(0);
+        u64::try_from(count).map_err(|_| anyhow::anyhow!("negative request-fact stuck count"))
+    }
+
     /// Persist already-terminal post-auth/non-billable facts on a caller-owned low-priority
     /// connection. This primitive is deliberately independent from the money actor/FIFO.
     pub fn insert_terminal_request_facts(
@@ -1934,8 +1975,19 @@ impl PgStore {
             fact.validate()?;
         }
         let mut tx = self.client.transaction()?;
-        let inserted = request_facts::insert_terminal_batch(&mut tx, facts)?;
+        let (inserted, observations) = request_facts::insert_terminal_batch(&mut tx, facts)?;
         tx.commit()?;
+        for observation in observations {
+            crate::request_facts::observe_terminal_request_fact(
+                &observation.provider_plane,
+                &observation.route_class,
+                &observation.request_class,
+                observation.stream,
+                observation.admitted_at,
+                observation.delivery_started_at,
+                &observation.terminal,
+            );
+        }
         Ok(inserted)
     }
 

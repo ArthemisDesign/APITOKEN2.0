@@ -19,6 +19,7 @@ mod router_auth;
 mod router_catalog;
 mod router_policy;
 mod router_pricing;
+mod request_fact_metrics;
 mod tariff_admin;
 
 use anyhow::{bail, Context, Result};

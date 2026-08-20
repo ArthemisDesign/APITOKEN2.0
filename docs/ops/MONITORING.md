@@ -15,7 +15,8 @@ database state only. Grafana users are auto-provisioned as viewers.
 - Ingress: Caddy per-host request metrics plus TLS and HTTP synthetic probes.
 - Engine and router: request totals, upstream 429/auth/5xx failures, breaker state, in-flight work,
   Claude/Codex/Gemini pool health, serial fallback continuations and their bounded reasons,
-  exact per-plane `not_started` proofs, settlement backlog, and expired leases.
+  exact per-plane `not_started` proofs, request-fact lifecycle/duration and fail-open delivery health,
+  settlement backlog, and expired leases.
 - Commerce: database health plus the live scalar credit, adjustment, pricing, and email queues;
   webhook and checkout state; recent provider-attribution completeness; and aggregate
   commerce↔engine default/provider/status reconciliation. Retired release-v2 and catalog/switch
@@ -67,7 +68,7 @@ scrolling:
 - **Collapsed domain sections** below: Host & Platform · Database · Engine (pool, traffic &
   capacity) · Affinity, Redis & Codex History · Revenue & Business State · Codex (OpenAI) ·
   Gemini · Kimi & GLM (default-off) · Router & Unified API · Delivery Pipeline · Devbot &
-  Notification Delivery · Billing Writer · Logs & Journals.
+  Notification Delivery · Billing Writer · Request Fact Observability · Logs & Journals.
 - **`$provider` template variable** filters the engine pool/traffic panels
   (`claude_api_*{provider=~"$provider"}`); the default is all providers.
 - **Annotations** on every graph: firing alerts (red), `agent-merge` deploy events from Loki
@@ -419,6 +420,39 @@ symptom of a slow database — fix the database. If latency is normal, this is a
 burst outgrowing one writer; the queue absorbs it, but sustained growth eventually back-pressures
 request handling, so estimate the drain time (depth divided by commands per second from the
 histogram `_count`) and prepare to shed load if it exceeds the burst window.
+
+## RequestFactPersistenceUnhealthy
+
+`claude_api_request_fact_persistence_healthy` is one only after the separate low-priority PostgreSQL
+inbox has committed a terminal batch. Zero for five minutes means it has not established a healthy
+state or its last attempt failed. Customer responses and money settlement remain fail-open, so do not
+restart healthy provider slots merely to clear the process gauge. Check PostgreSQL connectivity,
+migrations 0053–0054 and `request-facts-pg-writer` errors; preserve the submission/persistence counters
+because a restart erases this runtime-only coverage evidence.
+
+## RequestFactQueuePressure
+
+The terminal inbox has a fixed 4096-entry capacity and never waits a customer request. At 75% for ten
+minutes, compare submission rate with persisted rate and PostgreSQL health. Restore the analytics
+connection or reduce the source of pressure; do not move the inbox onto the money writer, add waiting,
+or increase the bound without memory and loss evidence.
+
+## RequestFactDropsHigh
+
+The rule evaluates a fifteen-minute ratio only after at least 100 submissions. Its numerator is the
+closed set of invalid/full/closed/unsupported submissions plus failed persistence. Separate the reason
+using `claude_api_request_fact_submissions_total{outcome}` and
+`claude_api_request_fact_persistence_total{outcome}`. Analytics loss is fail-open for traffic but blocks
+coverage claims, the 24-hour gate, private reads and all consumers until a fresh observation window has
+no unexplained gap.
+
+## RequestFactLifecycleStuck
+
+`claude_api_request_fact_stuck_lifecycles` is an aggregate PostgreSQL read of facts still without
+`terminal_at` more than one hour after admission. Any value sustained for fifteen minutes is a billing
+lifecycle incident: inspect the matching reservation and settlement outbox through private authority
+tools, verify the reconciler and owner lease, and let the authoritative settlement/reconciliation path
+finish it. Never update the fact row or fabricate terminal evidence manually.
 
 ## ExecutionGroupDoubleWinner
 

@@ -37,6 +37,7 @@ use registry::{
 use request_facts::TerminalRequestFactInbox;
 pub use request_facts::{
     RequestFactDeliverySnapshot, RequestFactPersistenceHealth, TerminalRequestFactSubmission,
+    TERMINAL_REQUEST_FACT_QUEUE_CAPACITY,
 };
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -1606,6 +1607,7 @@ enum ReadCmd {
         String,
         oneshot::Sender<anyhow::Result<registry::SettlementHealth>>,
     ),
+    RequestFactsStuck(i64, oneshot::Sender<anyhow::Result<Option<u64>>>),
 }
 
 /// Latency of the single-writer PostgreSQL money commands, measured around `run_pg_with_retry`
@@ -3324,6 +3326,9 @@ impl AsyncBilling {
                                 let _ =
                                     r.send(registry::settlement_health(&conn, backlog, &consumer));
                             }
+                            ReadCmd::RequestFactsStuck(_, reply) => {
+                                let _ = reply.send(Ok(None));
+                            }
                         }
                     }
                     elog::info("billing", format!("billing-reader-{i} поток завершён"));
@@ -4552,6 +4557,9 @@ impl AsyncBilling {
                             ReadCmd::SettlementHealth(backlog, consumer, r) => {
                                 answer!(r, pg.settlement_health(backlog, &consumer))
                             }
+                            ReadCmd::RequestFactsStuck(now_ts, reply) => {
+                                answer!(reply, pg.request_facts_stuck_count(now_ts).map(Some))
+                            }
                         }
                     }
                 })?;
@@ -5306,6 +5314,17 @@ impl AsyncBilling {
         rx.await
             .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
     }
+    pub async fn request_facts_stuck_count(&self, now_ts: i64) -> anyhow::Result<Option<u64>> {
+        let (reply, receive) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::RequestFactsStuck(now_ts, reply))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        receive
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
     pub async fn topup(
         &self,
         account_id: &str,

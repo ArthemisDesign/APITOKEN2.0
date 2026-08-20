@@ -81,16 +81,18 @@ side effect. `serve` may only perform the read-only schema verification before c
   ignores stored priority, requires the account and creator key to remain active/unexpired, and caps
   each account at 16 claimed/dispatching/settlement-pending items. SQLite returns typed unsupported.
   No public HTTP route, env switch, scheduler loop or execution transport is composed here.
-- **Dormant request-observability S2 (migrations `0053` + `0054`) is PostgreSQL-only and opt-in.**
+- **Request-observability S2 (migrations `0053` + `0054`) is PostgreSQL-only and opt-in.**
   Fact-aware reservation and delivery methods insert/validate admission and first-delivery evidence in
   the owning money transaction. Terminal evidence is durably enqueued with settlement, then copied to
   the fact only during authoritative outbox APPLY; `billing_outcome` is derived there and is never a
   caller/outbox field. Reconciliation synthesizes only honest unknown/not-started/interrupted evidence.
   The bounded terminal batch is for a separate low-priority connection and always writes
   `not_applicable`; callers cannot supply a billing outcome and it never runs on the money FIFO.
-  Legacy methods remain fact-free wrappers, SQLite money behavior is unchanged, there is no read API,
-  and no forward/server/router caller exists yet.
-  Lifecycle maintenance prunes request facts first under the existing validated 30-day cutoff.
+  Legacy methods remain fact-free wrappers and SQLite money behavior is unchanged. Runtime terminal
+  commits update only compile-bounded in-process lifecycle counters after the PostgreSQL transaction
+  commits; a separate bounded read counts facts still nonterminal after one hour for operations.
+  There is still no private analytics read API. Lifecycle maintenance prunes request facts first under
+  the existing validated 30-day cutoff.
   Contract and staged rollout — `docs/engine/REQUEST_OBSERVABILITY.md`.
 - Public type [`Sub`] (email/token/proxy/fleet) — the contract for `pool`/`forward`. Change it —
   check both consumers.

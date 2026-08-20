@@ -37,7 +37,11 @@ background loops and the HTTP router. Here — and only here — everything is w
   transactional winner correctness does not depend on the process or Prometheus. The fixed-cardinality
   `claude_api_execution_not_started_total{plane}` in the same place counts only an exact single `not_started` on a
   non-2xx response actually returned by the concrete Anthropic/OpenAI/Gemini plane; the Combined bridge
-  attributes the old Caddy OpenAI marker, otherwise Anthropic.
+  attributes the old Caddy OpenAI marker, otherwise Anthropic. Request observability adds only
+  compile-bounded operational series: lifecycle totals and four safe duration histograms by fixed
+  provider/route/request/stream/terminal classes, inbox capacity/depth and closed outcomes,
+  persistence health, and the aggregate PostgreSQL count still nonterminal after one hour. Customer,
+  key, model and request identity never become labels; SQLite omits PostgreSQL-only series.
   Identical on all fixed planes, `POST /internal/router/policy/preflight` is a loopback-only
   producer contract of router phase 6.4a: it accepts up to 32 catalog candidates, authorizes the customer/admin
   credential and returns only an ordered allow-list without any account/policy/pricing identity.

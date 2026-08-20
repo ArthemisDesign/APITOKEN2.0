@@ -234,6 +234,58 @@ groups:
           description: 'Over half of the 4096-slot single-writer channel is occupied for 5 minutes. A full channel back-pressures every request; correlate with BillingPGCommandLatencyHigh to tell a slow database from a traffic burst.'
           runbook: 'docs/ops/MONITORING.md#billingwritequeuebacklog'
 
+      - alert: RequestFactPersistenceUnhealthy
+        expr: claude_api_request_fact_persistence_healthy == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: request-observability
+        annotations:
+          summary: 'Request-fact terminal persistence is unhealthy'
+          description: 'The fail-open terminal inbox has no successful persistence state or its last batch failed continuously for five minutes.'
+          runbook: 'docs/ops/MONITORING.md#requestfactpersistenceunhealthy'
+
+      - alert: RequestFactQueuePressure
+        expr: claude_api_request_fact_inbox_depth / claude_api_request_fact_inbox_capacity >= 0.75
+        for: 10m
+        labels:
+          severity: warning
+          component: request-observability
+        annotations:
+          summary: 'Request-fact terminal inbox is under sustained pressure'
+          description: 'At least 75% of the fixed 4096-entry fail-open inbox has remained occupied for ten minutes.'
+          runbook: 'docs/ops/MONITORING.md#requestfactqueuepressure'
+
+      - alert: RequestFactDropsHigh
+        expr: |
+          (
+            sum(increase(claude_api_request_fact_submissions_total{outcome=~"invalid|full|closed|unsupported"}[15m]))
+            + sum(increase(claude_api_request_fact_persistence_total{outcome="failed"}[15m]))
+          )
+          /
+          clamp_min(sum(increase(claude_api_request_fact_submissions_total[15m])), 1)
+          > 0.01
+          and
+          sum(increase(claude_api_request_fact_submissions_total[15m])) >= 100
+        labels:
+          severity: warning
+          component: request-observability
+        annotations:
+          summary: 'More than one percent of request facts are being lost'
+          description: 'The terminal inbox observed at least 100 submissions in fifteen minutes and more than one percent were rejected or failed persistence.'
+          runbook: 'docs/ops/MONITORING.md#requestfactdropshigh'
+
+      - alert: RequestFactLifecycleStuck
+        expr: claude_api_request_fact_stuck_lifecycles > 0
+        for: 15m
+        labels:
+          severity: critical
+          component: request-observability
+        annotations:
+          summary: 'A request-fact lifecycle has remained nonterminal for over one hour'
+          description: 'At least one scoped billable fact has no authoritative terminal evidence one hour after admission, sustained for fifteen minutes.'
+          runbook: 'docs/ops/MONITORING.md#requestfactlifecyclestuck'
+
   # Serial continuation is off by default. These rules make the canary and eventual GA observable
   # without adding request, model, credential or execution-group identities to Prometheus labels.
   - name: router-fallback

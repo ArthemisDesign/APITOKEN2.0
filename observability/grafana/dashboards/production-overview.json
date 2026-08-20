@@ -3708,10 +3708,70 @@
     },
     {
       "type": "row",
-      "title": "Logs & Journals",
+      "title": "Request Fact Observability",
       "collapsed": true,
       "panels": [],
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 195 },
+      "id": 414
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Fail-open terminal inbox depth versus its fixed capacity, persistence health, and durable nonterminal facts older than one hour.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 3072 }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 196 },
+      "id": 415,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "claude_api_request_fact_inbox_depth", "legendFormat": "inbox depth", "refId": "A" },
+        { "expr": "claude_api_request_fact_inbox_capacity", "legendFormat": "capacity", "refId": "B" },
+        { "expr": "claude_api_request_fact_stuck_lifecycles", "legendFormat": "stuck >1h", "refId": "C" },
+        { "expr": "claude_api_request_fact_persistence_healthy", "legendFormat": "persistence healthy", "refId": "D" }
+      ],
+      "title": "Request-fact delivery health",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Closed submission and persistence outcomes. Invalid/full/closed/unsupported and failed series are the numerator of RequestFactDropsHigh.",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "cps" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 196 },
+      "id": 416,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "sum by (outcome) (rate(claude_api_request_fact_submissions_total[5m]))", "legendFormat": "submit {{outcome}}", "refId": "A" },
+        { "expr": "sum by (outcome) (rate(claude_api_request_fact_persistence_total[5m]))", "legendFormat": "persist {{outcome}}", "refId": "B" },
+        { "expr": "sum by (provider_plane, route_class, request_class) (rate(claude_api_request_fact_lifecycle_total[5m]))", "legendFormat": "{{provider_plane}} {{route_class}}/{{request_class}}", "refId": "C" }
+      ],
+      "title": "Request-fact delivery outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "p99 of the four safely derived lifecycle durations. Missing or contradictory endpoints never enter a histogram.",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 196 },
+      "id": 417,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "targets": [{ "expr": "histogram_quantile(0.99, sum by (le, duration, provider_plane) (rate(claude_api_request_fact_duration_seconds_bucket[5m])))", "legendFormat": "{{provider_plane}} {{duration}}", "refId": "A" }],
+      "title": "Request-fact lifecycle p99",
+      "type": "timeseries"
+    },
+    {
+      "type": "row",
+      "title": "Logs & Journals",
+      "collapsed": true,
+      "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 203 },
       "id": 412
     },
     {

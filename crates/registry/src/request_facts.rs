@@ -5,6 +5,7 @@
 //! agents, credentials, full API keys, email addresses, or provider subjects.
 
 use anyhow::{bail, Result};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const REQUEST_FACT_ADMISSION_SCHEMA_VERSION: i32 = 1;
 pub const REQUEST_FACT_TERMINAL_SCHEMA_VERSION: i32 = 1;
@@ -19,6 +20,365 @@ pub const MAX_REQUEST_FACT_MODEL_LEN: usize = 256;
 pub const MAX_REQUEST_FACT_SERVICE_TIER_LEN: usize = 64;
 pub const MAX_REQUEST_FACT_UPSTREAM_ID_LEN: usize = 256;
 pub const MAX_REQUEST_FACT_FAILURE_CLASS_LEN: usize = 128;
+
+/// Fixed-cardinality lifecycle metrics. Provider/route/result labels are compile-bounded by the
+/// v1 manifest; customer, key, model and request identities never enter this surface.
+pub const REQUEST_FACT_DURATION_BUCKETS_SECONDS: [u64; 8] = [0, 1, 2, 5, 10, 30, 60, 300];
+pub const REQUEST_FACT_STUCK_AFTER_SECONDS: i64 = 3_600;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestFactV1Scope {
+    pub provider_plane: &'static str,
+    pub route_class: &'static str,
+    pub request_class: &'static str,
+}
+
+/// Exact locked v1 producer matrix. Stream is an orthogonal accepted flag for Chat/Responses/
+/// Messages; Gemini's two native methods retain distinct request classes.
+pub const REQUEST_FACT_V1_SCOPES: [RequestFactV1Scope; 15] = [
+    RequestFactV1Scope {
+        provider_plane: "anthropic",
+        route_class: "native",
+        request_class: "count_tokens",
+    },
+    RequestFactV1Scope {
+        provider_plane: "anthropic",
+        route_class: "native",
+        request_class: "messages",
+    },
+    RequestFactV1Scope {
+        provider_plane: "anthropic",
+        route_class: "universal",
+        request_class: "chat",
+    },
+    RequestFactV1Scope {
+        provider_plane: "anthropic",
+        route_class: "universal",
+        request_class: "responses",
+    },
+    RequestFactV1Scope {
+        provider_plane: "openai",
+        route_class: "native",
+        request_class: "input_tokens",
+    },
+    RequestFactV1Scope {
+        provider_plane: "openai",
+        route_class: "native",
+        request_class: "chat",
+    },
+    RequestFactV1Scope {
+        provider_plane: "openai",
+        route_class: "native",
+        request_class: "responses",
+    },
+    RequestFactV1Scope {
+        provider_plane: "openai",
+        route_class: "universal",
+        request_class: "count_tokens",
+    },
+    RequestFactV1Scope {
+        provider_plane: "openai",
+        route_class: "universal",
+        request_class: "messages",
+    },
+    RequestFactV1Scope {
+        provider_plane: "gemini",
+        route_class: "native",
+        request_class: "count_tokens",
+    },
+    RequestFactV1Scope {
+        provider_plane: "gemini",
+        route_class: "native",
+        request_class: "generate",
+    },
+    RequestFactV1Scope {
+        provider_plane: "gemini",
+        route_class: "native",
+        request_class: "stream_generate",
+    },
+    RequestFactV1Scope {
+        provider_plane: "gemini",
+        route_class: "universal",
+        request_class: "chat",
+    },
+    RequestFactV1Scope {
+        provider_plane: "gemini",
+        route_class: "universal",
+        request_class: "responses",
+    },
+    RequestFactV1Scope {
+        provider_plane: "gemini",
+        route_class: "universal",
+        request_class: "messages",
+    },
+];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestFactLifecycleObservation {
+    pub provider_plane: String,
+    pub route_class: String,
+    pub request_class: String,
+    pub stream: bool,
+    pub admitted_at: i64,
+    pub delivery_started_at: Option<i64>,
+    pub terminal: RequestFactTerminalEvidence,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestFactLifecycleMetric {
+    pub provider_plane: &'static str,
+    pub route_class: &'static str,
+    pub request_class: &'static str,
+    pub stream: bool,
+    pub provider_terminal_class: &'static str,
+    pub count: u64,
+    pub admission_to_delivery_buckets: [u64; REQUEST_FACT_DURATION_BUCKETS_SECONDS.len()],
+    pub admission_to_delivery_sum_seconds: u64,
+    pub admission_to_delivery_count: u64,
+    pub admission_to_first_public_byte_buckets: [u64; REQUEST_FACT_DURATION_BUCKETS_SECONDS.len()],
+    pub admission_to_first_public_byte_sum_seconds: u64,
+    pub admission_to_first_public_byte_count: u64,
+    pub delivery_to_first_public_byte_buckets: [u64; REQUEST_FACT_DURATION_BUCKETS_SECONDS.len()],
+    pub delivery_to_first_public_byte_sum_seconds: u64,
+    pub delivery_to_first_public_byte_count: u64,
+    pub admission_to_terminal_buckets: [u64; REQUEST_FACT_DURATION_BUCKETS_SECONDS.len()],
+    pub admission_to_terminal_sum_seconds: u64,
+    pub admission_to_terminal_count: u64,
+}
+
+#[derive(Default)]
+struct LifecycleMetricCounters {
+    count: AtomicU64,
+    admission_to_delivery_buckets: [AtomicU64; REQUEST_FACT_DURATION_BUCKETS_SECONDS.len()],
+    admission_to_delivery_sum_seconds: AtomicU64,
+    admission_to_delivery_count: AtomicU64,
+    admission_to_first_public_byte_buckets:
+        [AtomicU64; REQUEST_FACT_DURATION_BUCKETS_SECONDS.len()],
+    admission_to_first_public_byte_sum_seconds: AtomicU64,
+    admission_to_first_public_byte_count: AtomicU64,
+    delivery_to_first_public_byte_buckets: [AtomicU64; REQUEST_FACT_DURATION_BUCKETS_SECONDS.len()],
+    delivery_to_first_public_byte_sum_seconds: AtomicU64,
+    delivery_to_first_public_byte_count: AtomicU64,
+    admission_to_terminal_buckets: [AtomicU64; REQUEST_FACT_DURATION_BUCKETS_SECONDS.len()],
+    admission_to_terminal_sum_seconds: AtomicU64,
+    admission_to_terminal_count: AtomicU64,
+}
+
+const PROVIDER_PLANES: [&str; 3] = ["anthropic", "openai", "gemini"];
+const ROUTE_CLASSES: [&str; 2] = ["native", "universal"];
+const REQUEST_CLASSES: [&str; 7] = [
+    "messages",
+    "chat",
+    "responses",
+    "count_tokens",
+    "input_tokens",
+    "generate",
+    "stream_generate",
+];
+const TERMINAL_CLASSES: [&str; 9] = [
+    "success",
+    "client_error",
+    "quota",
+    "auth",
+    "timeout",
+    "transport",
+    "upstream_error",
+    "protocol_error",
+    "unknown",
+];
+const LIFECYCLE_METRIC_SERIES: usize = PROVIDER_PLANES.len()
+    * ROUTE_CLASSES.len()
+    * REQUEST_CLASSES.len()
+    * 2
+    * TERMINAL_CLASSES.len();
+static LIFECYCLE_METRICS: [LifecycleMetricCounters; LIFECYCLE_METRIC_SERIES] =
+    [const { LifecycleMetricCounters::new() }; LIFECYCLE_METRIC_SERIES];
+
+impl LifecycleMetricCounters {
+    const fn new() -> Self {
+        Self {
+            count: AtomicU64::new(0),
+            admission_to_delivery_buckets: [const { AtomicU64::new(0) };
+                REQUEST_FACT_DURATION_BUCKETS_SECONDS.len()],
+            admission_to_delivery_sum_seconds: AtomicU64::new(0),
+            admission_to_delivery_count: AtomicU64::new(0),
+            admission_to_first_public_byte_buckets: [const { AtomicU64::new(0) };
+                REQUEST_FACT_DURATION_BUCKETS_SECONDS.len()],
+            admission_to_first_public_byte_sum_seconds: AtomicU64::new(0),
+            admission_to_first_public_byte_count: AtomicU64::new(0),
+            delivery_to_first_public_byte_buckets: [const { AtomicU64::new(0) };
+                REQUEST_FACT_DURATION_BUCKETS_SECONDS.len()],
+            delivery_to_first_public_byte_sum_seconds: AtomicU64::new(0),
+            delivery_to_first_public_byte_count: AtomicU64::new(0),
+            admission_to_terminal_buckets: [const { AtomicU64::new(0) };
+                REQUEST_FACT_DURATION_BUCKETS_SECONDS.len()],
+            admission_to_terminal_sum_seconds: AtomicU64::new(0),
+            admission_to_terminal_count: AtomicU64::new(0),
+        }
+    }
+}
+
+fn closed_index(values: &[&str], value: &str) -> Option<usize> {
+    values.iter().position(|candidate| *candidate == value)
+}
+
+fn lifecycle_metric_index(
+    provider_plane: &str,
+    route_class: &str,
+    request_class: &str,
+    stream: bool,
+    provider_terminal_class: ProviderTerminalClass,
+) -> Option<usize> {
+    let provider = closed_index(&PROVIDER_PLANES, provider_plane)?;
+    let route = closed_index(&ROUTE_CLASSES, route_class)?;
+    let request = closed_index(&REQUEST_CLASSES, request_class)?;
+    let terminal = closed_index(&TERMINAL_CLASSES, provider_terminal_class.as_str())?;
+    Some(
+        (((provider * ROUTE_CLASSES.len() + route) * REQUEST_CLASSES.len() + request) * 2
+            + usize::from(stream))
+            * TERMINAL_CLASSES.len()
+            + terminal,
+    )
+}
+
+pub fn observe_terminal_request_fact(
+    provider_plane: &str,
+    route_class: &str,
+    request_class: &str,
+    stream: bool,
+    admitted_at: i64,
+    delivery_started_at: Option<i64>,
+    terminal: &RequestFactTerminalEvidence,
+) {
+    let Some(index) = lifecycle_metric_index(
+        provider_plane,
+        route_class,
+        request_class,
+        stream,
+        terminal.provider_terminal_class,
+    ) else {
+        return;
+    };
+    let counters = &LIFECYCLE_METRICS[index];
+    counters.count.fetch_add(1, Ordering::Relaxed);
+    let observe = |buckets: &[AtomicU64; REQUEST_FACT_DURATION_BUCKETS_SECONDS.len()],
+                   sum: &AtomicU64,
+                   count: &AtomicU64,
+                   start: i64,
+                   end: i64| {
+        if let Ok(duration) = u64::try_from(end - start) {
+            for (bucket, upper) in buckets.iter().zip(REQUEST_FACT_DURATION_BUCKETS_SECONDS) {
+                if duration <= upper {
+                    bucket.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            sum.fetch_add(duration, Ordering::Relaxed);
+            count.fetch_add(1, Ordering::Relaxed);
+        }
+    };
+    if let Some(delivery) = delivery_started_at {
+        observe(
+            &counters.admission_to_delivery_buckets,
+            &counters.admission_to_delivery_sum_seconds,
+            &counters.admission_to_delivery_count,
+            admitted_at,
+            delivery,
+        );
+    }
+    if let Some(first_byte) = terminal.first_public_byte_at {
+        observe(
+            &counters.admission_to_first_public_byte_buckets,
+            &counters.admission_to_first_public_byte_sum_seconds,
+            &counters.admission_to_first_public_byte_count,
+            admitted_at,
+            first_byte,
+        );
+        if let Some(delivery) = delivery_started_at {
+            observe(
+                &counters.delivery_to_first_public_byte_buckets,
+                &counters.delivery_to_first_public_byte_sum_seconds,
+                &counters.delivery_to_first_public_byte_count,
+                delivery,
+                first_byte,
+            );
+        }
+    }
+    observe(
+        &counters.admission_to_terminal_buckets,
+        &counters.admission_to_terminal_sum_seconds,
+        &counters.admission_to_terminal_count,
+        admitted_at,
+        terminal.terminal_at,
+    );
+}
+
+pub fn request_fact_lifecycle_metrics() -> Vec<RequestFactLifecycleMetric> {
+    let mut metrics = Vec::new();
+    for (index, counters) in LIFECYCLE_METRICS.iter().enumerate() {
+        let count = counters.count.load(Ordering::Relaxed);
+        if count == 0 {
+            continue;
+        }
+        let mut remaining = index;
+        let terminal = remaining % TERMINAL_CLASSES.len();
+        remaining /= TERMINAL_CLASSES.len();
+        let stream = remaining % 2 != 0;
+        remaining /= 2;
+        let request = remaining % REQUEST_CLASSES.len();
+        remaining /= REQUEST_CLASSES.len();
+        let route = remaining % ROUTE_CLASSES.len();
+        let provider = remaining / ROUTE_CLASSES.len();
+        metrics.push(RequestFactLifecycleMetric {
+            provider_plane: PROVIDER_PLANES[provider],
+            route_class: ROUTE_CLASSES[route],
+            request_class: REQUEST_CLASSES[request],
+            stream,
+            provider_terminal_class: TERMINAL_CLASSES[terminal],
+            count,
+            admission_to_delivery_buckets: counters
+                .admission_to_delivery_buckets
+                .each_ref()
+                .map(|value| value.load(Ordering::Relaxed)),
+            admission_to_delivery_sum_seconds: counters
+                .admission_to_delivery_sum_seconds
+                .load(Ordering::Relaxed),
+            admission_to_delivery_count: counters
+                .admission_to_delivery_count
+                .load(Ordering::Relaxed),
+            admission_to_first_public_byte_buckets: counters
+                .admission_to_first_public_byte_buckets
+                .each_ref()
+                .map(|value| value.load(Ordering::Relaxed)),
+            admission_to_first_public_byte_sum_seconds: counters
+                .admission_to_first_public_byte_sum_seconds
+                .load(Ordering::Relaxed),
+            admission_to_first_public_byte_count: counters
+                .admission_to_first_public_byte_count
+                .load(Ordering::Relaxed),
+            delivery_to_first_public_byte_buckets: counters
+                .delivery_to_first_public_byte_buckets
+                .each_ref()
+                .map(|value| value.load(Ordering::Relaxed)),
+            delivery_to_first_public_byte_sum_seconds: counters
+                .delivery_to_first_public_byte_sum_seconds
+                .load(Ordering::Relaxed),
+            delivery_to_first_public_byte_count: counters
+                .delivery_to_first_public_byte_count
+                .load(Ordering::Relaxed),
+            admission_to_terminal_buckets: counters
+                .admission_to_terminal_buckets
+                .each_ref()
+                .map(|value| value.load(Ordering::Relaxed)),
+            admission_to_terminal_sum_seconds: counters
+                .admission_to_terminal_sum_seconds
+                .load(Ordering::Relaxed),
+            admission_to_terminal_count: counters
+                .admission_to_terminal_count
+                .load(Ordering::Relaxed),
+        });
+    }
+    metrics
+}
 
 pub const TOOL_CLASS_CUSTOM_FUNCTION: i32 = 1;
 pub const TOOL_CLASS_CUSTOM_TOOL: i32 = 2;
@@ -450,6 +810,18 @@ mod tests {
             failure_class: None,
             tool_calls_in_output: None,
         }
+    }
+
+    #[test]
+    fn v1_scope_manifest_is_unique_and_closed() {
+        let mut unique = std::collections::BTreeSet::new();
+        for scope in REQUEST_FACT_V1_SCOPES {
+            assert!(closed_index(&PROVIDER_PLANES, scope.provider_plane).is_some());
+            assert!(closed_index(&ROUTE_CLASSES, scope.route_class).is_some());
+            assert!(closed_index(&REQUEST_CLASSES, scope.request_class).is_some());
+            assert!(unique.insert((scope.provider_plane, scope.route_class, scope.request_class,)));
+        }
+        assert_eq!(unique.len(), REQUEST_FACT_V1_SCOPES.len());
     }
 
     #[test]

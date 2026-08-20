@@ -165,6 +165,40 @@ for billing_alert in BillingPGCommandLatencyHigh BillingWriteQueueBacklog; do
   grep -Fqi "## $billing_alert" "$ROOT/docs/ops/MONITORING.md" \
     || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$billing_alert" >&2; exit 1; }
 done
+
+# Request-fact operations are one closed metric -> alert -> dashboard -> runbook loop. Labels stay
+# compile-bounded; a metric absent from the engine or an alert absent from the rules fails the gate.
+for request_fact_metric in \
+  claude_api_request_fact_inbox_capacity \
+  claude_api_request_fact_inbox_depth \
+  claude_api_request_fact_persistence_healthy \
+  claude_api_request_fact_submissions_total \
+  claude_api_request_fact_persistence_total \
+  claude_api_request_fact_stuck_lifecycles \
+  claude_api_request_fact_lifecycle_total \
+  claude_api_request_fact_duration_seconds; do
+  grep -Fq "$request_fact_metric" "$ROOT/crates/server/src/request_fact_metrics.rs" \
+    || { printf 'engine does not export %s\n' "$request_fact_metric" >&2; exit 1; }
+  grep -Fq "$request_fact_metric" "$ROOT/observability/grafana/dashboards/production-overview.json" \
+    || { printf 'request-fact dashboard does not consume %s\n' "$request_fact_metric" >&2; exit 1; }
+done
+for request_fact_alert in RequestFactPersistenceUnhealthy RequestFactQueuePressure \
+  RequestFactDropsHigh RequestFactLifecycleStuck; do
+  grep -Fq "alert: $request_fact_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'missing request-fact alert %s\n' "$request_fact_alert" >&2; exit 1; }
+  anchor=$(printf '%s' "$request_fact_alert" | tr '[:upper:]' '[:lower:]')
+  grep -Fq "docs/ops/MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'request-fact alert %s has no runbook anchor\n' "$request_fact_alert" >&2; exit 1; }
+  grep -Fqi "## $request_fact_alert" "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$request_fact_alert" >&2; exit 1; }
+done
+grep -Fq 'claude_api_request_fact_inbox_depth / claude_api_request_fact_inbox_capacity >= 0.75' \
+  "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'request-fact queue-pressure threshold drifted\n' >&2; exit 1; }
+grep -Fq 'sum(increase(claude_api_request_fact_submissions_total[15m])) >= 100' \
+  "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'request-fact drop alert lacks the minimum sample gate\n' >&2; exit 1; }
+
 grep -Fq 'GF_SERVER_HTTP_ADDR: 127.0.0.1' "$ROOT/observability/compose.yaml"
 grep -Fq 'GF_SERVER_HTTP_PORT: "3600"' "$ROOT/observability/compose.yaml"
 grep -Fq 'http_listen_address: 127.0.0.1' "$ROOT/observability/loki/loki.yml"

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-pub(super) const TERMINAL_REQUEST_FACT_QUEUE_CAPACITY: usize = 4_096;
+pub const TERMINAL_REQUEST_FACT_QUEUE_CAPACITY: usize = 4_096;
 const REQUEST_FACT_HEALTH_HEALTHY: u8 = 1;
 const REQUEST_FACT_HEALTH_FAILED: u8 = 2;
 

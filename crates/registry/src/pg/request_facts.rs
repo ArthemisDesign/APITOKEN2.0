@@ -231,17 +231,17 @@ pub(super) fn finalize_terminal(
     request_id: &str,
     envelope: &DurableTerminalEnvelope,
     outcome: BillingOutcome,
-) -> Result<()> {
+) -> Result<Option<crate::request_facts::RequestFactLifecycleObservation>> {
     let existing = tx.query_opt(
         r#"SELECT terminal_at,http_status_code,provider_terminal_class,delivery_state,
                 downstream_disconnect,upstream_request_id,first_public_byte_at,
                 internal_attempt_count,failure_class,tool_calls_in_output,billing_outcome,
-                admitted_at,delivery_started_at
+                admitted_at,delivery_started_at,provider_plane,route_class,request_class,stream_flag
            FROM request_facts WHERE billing_request_id=$1 FOR UPDATE"#,
         &[&request_id],
     )?;
     let Some(row) = existing else {
-        return Ok(());
+        return Ok(None);
     };
     envelope
         .evidence
@@ -270,7 +270,17 @@ pub(super) fn finalize_terminal(
                 &outcome.as_str(),
             ],
         )?;
-        return Ok(());
+        return Ok(Some(
+            crate::request_facts::RequestFactLifecycleObservation {
+                provider_plane: row.get(13),
+                route_class: row.get(14),
+                request_class: row.get(15),
+                stream: row.get(16),
+                admitted_at: row.get(11),
+                delivery_started_at: row.get(12),
+                terminal: envelope.evidence.clone(),
+            },
+        ));
     }
     let exact = terminal_at == Some(envelope.evidence.terminal_at)
         && row.get::<_, Option<i32>>(1) == envelope.evidence.http_status_code
@@ -289,13 +299,16 @@ pub(super) fn finalize_terminal(
     if !exact {
         bail!("terminal request fact conflicts with durable outbox outcome");
     }
-    Ok(())
+    Ok(None)
 }
 
 pub(super) fn insert_terminal_batch(
     tx: &mut Transaction<'_>,
     facts: &[TerminalRequestFact],
-) -> Result<usize> {
+) -> Result<(
+    usize,
+    Vec<crate::request_facts::RequestFactLifecycleObservation>,
+)> {
     if facts.len() > MAX_REQUEST_FACT_BATCH {
         bail!("request-fact terminal batch exceeds hard cap");
     }
@@ -303,9 +316,10 @@ pub(super) fn insert_terminal_batch(
         fact.validate()?;
     }
     let mut inserted = 0;
+    let mut observations = Vec::new();
     for fact in facts {
         let billing_outcome = BillingOutcome::NotApplicable.as_str();
-        inserted += tx.execute(
+        let row_inserted = tx.execute(
             r#"INSERT INTO request_facts(
                 logical_request_id,billing_request_id,execution_group_id,attempt,account_id,key_id,
                 client_kind,client_source,client_version,provider_plane,route_class,request_class,
@@ -359,8 +373,20 @@ pub(super) fn insert_terminal_batch(
                 &REQUEST_FACT_ADMISSION_SCHEMA_VERSION,
             ],
         )? as usize;
+        inserted += row_inserted;
+        if row_inserted == 1 {
+            observations.push(crate::request_facts::RequestFactLifecycleObservation {
+                provider_plane: fact.provider_plane.clone(),
+                route_class: fact.route_class.clone(),
+                request_class: fact.request_class.clone(),
+                stream: fact.stream_flag,
+                admitted_at: fact.admitted_at,
+                delivery_started_at: None,
+                terminal: fact.terminal.clone(),
+            });
+        }
     }
-    Ok(inserted)
+    Ok((inserted, observations))
 }
 
 pub(super) fn prune_first(tx: &mut Transaction<'_>, older_than_ts: i64) -> Result<usize> {
