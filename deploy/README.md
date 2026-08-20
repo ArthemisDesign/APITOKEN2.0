@@ -40,17 +40,20 @@ and the shared primary clone is refused without `--allow-primary-tree`. The beha
 
 `agent-worktree.sh` is the managed boundary around task worktrees:
 
-- `create <type/task> [name]` fetches `origin`, creates `${AGENT_WORKTREE_ROOT:-$HOME/wt}/<name>`
+- `create <type/task> [name]` fetches `origin`, fast-forwards local `master` to that
+  `origin/master` when the update is a fast-forward (merge `--ff-only` in a clean `master`
+  checkout, otherwise only the ref), creates `${AGENT_WORKTREE_ROOT:-$HOME/wt}/<name>`
   from the exact current `origin/master`, rejects protected/existing branches and paths, and records
   creation/owner metadata in Git's per-worktree administrative directory;
 - `finish [path]` requires one explicit non-primary, non-protected, unlocked, clean worktree whose
-  branch is an ancestor of fresh `origin/master`; it optionally fast-forwards a clean primary
-  `master`, removes only that worktree, and atomically deletes the branch only if its ref did not
-  change after validation;
+  branch is an ancestor of fresh `origin/master`; it fast-forwards local `master` the same way
+  even when primary is detached or on another branch, removes only that worktree, and atomically
+  deletes the branch only if its ref did not change after validation;
 - `doctor` refreshes `origin` and classifies primary/current, missing, locked, detached, protected,
   dirty, unmerged, recent-merged, and cleanup-eligible worktrees without deleting or rewriting any
   local worktree or branch;
-- `gc` is dry-run by default. `gc --apply` serializes with create/finish, prunes unlocked missing
+- `gc` is dry-run by default. `gc --apply` serializes with create/finish, fast-forwards local
+  `master` the same way as `create`/`finish`, prunes unlocked missing
   registrations without deleting unique branches, removes only clean merged worktrees older than
   the grace period (24 hours by default), and deletes only unchanged, unowned local branch refs
   already merged into `origin/master`. `master`, `main`, `comp/*`, dirty, unmerged, detached,

@@ -187,6 +187,40 @@ git -C "$PRIMARY" show-ref --verify --quiet refs/heads/docs/read-only \
 [[ $(git -C "$PRIMARY" rev-parse HEAD) == $(git -C "$PRIMARY" rev-parse origin/master) ]] \
   || fail 'finish did not fast-forward a clean primary master'
 
+behind_sync=$(run_manager create feat/behind-sync behind-sync)
+git_test -C "$behind_sync" commit --quiet --allow-empty -m 'behind sync work'
+git_test -C "$behind_sync" push --quiet origin HEAD:master
+old_primary_head=$(git -C "$PRIMARY" rev-parse HEAD)
+git_test -C "$PRIMARY" fetch --quiet origin
+[[ $(git -C "$PRIMARY" rev-parse refs/heads/master) == "$old_primary_head" ]] \
+  || fail 'fixture expected local master to stay behind until lifecycle sync'
+git_test -C "$PRIMARY" checkout --quiet --detach "$old_primary_head"
+printf 'untracked junk must not block a detached-primary catch-up\n' \
+  >"$PRIMARY/untracked-junk.txt"
+run_manager finish "$behind_sync"
+[[ $(git -C "$PRIMARY" rev-parse --abbrev-ref HEAD) == HEAD ]] \
+  || fail 'finish checked a branch out in a detached primary'
+[[ $(git -C "$PRIMARY" rev-parse HEAD) == "$old_primary_head" ]] \
+  || fail 'finish moved a detached primary working tree'
+[[ $(git -C "$PRIMARY" rev-parse refs/heads/master) == $(git -C "$PRIMARY" rev-parse origin/master) ]] \
+  || fail 'finish did not fast-forward local master while primary was detached'
+[[ $(git -C "$PRIMARY" rev-parse refs/heads/master) != "$old_primary_head" ]] \
+  || fail 'local master stayed behind origin while primary was detached'
+
+create_sync=$(run_manager create feat/create-sync create-sync)
+git_test -C "$create_sync" commit --quiet --allow-empty -m 'create sync work'
+git_test -C "$create_sync" push --quiet origin HEAD:master
+git_test -C "$PRIMARY" fetch --quiet origin
+[[ $(git -C "$PRIMARY" rev-parse refs/heads/master) != $(git -C "$PRIMARY" rev-parse origin/master) ]] \
+  || fail 'fixture expected local master to lag origin before create catch-up'
+create_sync_probe=$(run_manager create feat/create-sync-probe create-sync-probe)
+[[ $(git -C "$PRIMARY" rev-parse refs/heads/master) == $(git -C "$PRIMARY" rev-parse origin/master) ]] \
+  || fail 'create did not fast-forward local master while primary was detached'
+[[ $(git -C "$PRIMARY" rev-parse --abbrev-ref HEAD) == HEAD ]] \
+  || fail 'create checked a branch out in a detached primary'
+run_manager finish "$create_sync"
+run_manager finish "$create_sync_probe"
+
 expect_failure 'dirty finish' run_manager finish "$dirty"
 [[ -d $dirty ]] || fail 'finish removed a dirty worktree'
 

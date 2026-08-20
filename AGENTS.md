@@ -384,8 +384,13 @@ cd <primary_repo_dir>          # leave the worktree being deleted
 
 `finish` fetches `origin/master` again, refuses to touch primary, detached, locked, dirty,
 unmerged, and the protected `master`/`comp/*`, deletes exactly the worktree passed to it, and atomically deletes
-the branch only if its ref has not changed since the check. It catches up a clean local `master`
-with `--ff-only`; divergence or someone else's dirt produce a warning but do not block safe task cleanup.
+the branch only if its ref has not changed since the check. It always fast-forwards local `master` to
+`origin/master` when that is a fast-forward: if some worktree has `master` checked out and its
+tracked files are clean, that checkout is merged `--ff-only`; otherwise only `refs/heads/master`
+moves, so a detached or otherwise occupied primary is left alone. Divergence, a dirty `master`
+checkout, or a concurrent ref update produce a warning but do not block safe task cleanup.
+`create` and `gc --apply` perform the same catch-up after they fetch, so the local `master` ref
+matches GitHub after ordinary agent work even when nobody is sitting on the branch.
 
 The same applies to a read-only worktree used for studying code: once the task is closed, the worktree and scratch
 branch are deleted immediately, without waiting for anyone's merge, via the same `finish`. An agent does not

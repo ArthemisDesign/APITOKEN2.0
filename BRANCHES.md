@@ -76,8 +76,9 @@ git push -u origin HEAD
 ```
 
 Task finished — after a green `deploy/watchdog`, the agent runs `deploy/agent-worktree.sh finish
-<path>` from the primary clone. The script itself verifies clean+merged, performs the permissible
-ff-only fast-forward of the local `master`, and removes only the selected worktree/branch. Never
+<path>` from the primary clone. The script itself verifies clean+merged, fast-forwards local
+`master` to `origin/master` (checkout `--ff-only` when `master` is checked out and clean; otherwise
+only the ref, so a detached primary is not rewritten), and removes only the selected worktree/branch. Never
 touch other agents' worktrees: for global state use the safe `doctor` and dry-run `gc`, while
 `gc --apply` is left to the operator or the scheduled maintenance process. On macOS, missed cleanup
 can be safely picked up by the permanent LaunchAgent `DELETE_WORKTREE`

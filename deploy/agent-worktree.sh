@@ -294,6 +294,23 @@ aw_checked_out_branch() {
   grep -Fqx "branch refs/heads/$1" <<<"$listing"
 }
 
+# Path of the worktree that currently has `$1` checked out, if any. Empty / non-zero when the
+# branch exists only as a ref — that is the case we can fast-forward with update-ref.
+aw_branch_checkout_path() {
+  local want=$1 listing line path=''
+  listing=$(git -C "$ROOT" worktree list --porcelain 2>/dev/null) || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      'worktree '*) path=${line#worktree } ;;
+      "branch refs/heads/$want")
+        printf '%s\n' "$path"
+        return 0
+        ;;
+    esac
+  done <<<"$listing"
+  return 1
+}
+
 aw_branch_activity_epoch() {
   local branch=$1 value
   # Commit time is not branch age: a branch created today at an old merged commit must still receive
@@ -325,6 +342,7 @@ aw_create() {
   worktree_root=${AGENT_WORKTREE_ROOT:-${HOME:?HOME is required}/wt}
   aw_acquire_lock
   aw_fetch
+  aw_sync_local_master
   git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch" \
     && aw_die "local branch already exists: $branch"
   git -C "$ROOT" show-ref --verify --quiet "refs/remotes/$REMOTE/$branch" \
@@ -362,16 +380,49 @@ aw_resolve_target() {
   printf '%s\n' "$top"
 }
 
-aw_sync_primary() {
-  local main_branch main_status
-  main_branch=$(git -C "$MAIN_TOP" rev-parse --abbrev-ref HEAD 2>/dev/null || printf HEAD)
-  main_status=$(git -C "$MAIN_TOP" status --porcelain 2>/dev/null || printf unavailable)
-  if [[ $main_branch != master ]]; then
-    aw_log "WARNING: primary worktree is on $main_branch, not master; skipping its fast-forward"
-  elif [[ -n $main_status ]]; then
-    aw_log 'WARNING: primary worktree is not clean; skipping its fast-forward'
-  elif ! git -C "$MAIN_TOP" merge --ff-only "$TARGET_REF"; then
-    aw_log "WARNING: primary master could not fast-forward to $TARGET_REF; cleanup continues"
+# Fast-forward local `master` to `$TARGET_REF` (fresh origin/master after fetch).
+#
+# The working tree is updated only when some worktree actually has `master` checked out and
+# that tree's *tracked* files are clean. Untracked junk must not block the catch-up. If no
+# worktree is on `master` — the usual case when primary is detached — only the ref moves, so
+# a later `git checkout master` sees GitHub without rewriting someone else's checkout.
+aw_sync_local_master() {
+  local master_sha origin_sha checkout status
+  git -C "$ROOT" show-ref --verify --quiet refs/heads/master \
+    || { aw_log 'WARNING: local master ref is missing; skipping its fast-forward'; return 0; }
+  master_sha=$(git -C "$ROOT" rev-parse refs/heads/master)
+  origin_sha=$(git -C "$ROOT" rev-parse "$TARGET_REF")
+  [[ $master_sha != "$origin_sha" ]] || return 0
+
+  if git -C "$ROOT" merge-base --is-ancestor "$origin_sha" "$master_sha"; then
+    aw_log "WARNING: local master is ahead of $TARGET_REF; leaving it untouched"
+    return 0
+  fi
+  if ! git -C "$ROOT" merge-base --is-ancestor "$master_sha" "$origin_sha"; then
+    aw_log "WARNING: local master has diverged from $TARGET_REF; skipping its fast-forward"
+    return 0
+  fi
+
+  checkout=$(aw_branch_checkout_path master || true)
+  if [[ -n $checkout ]]; then
+    status=$(git -C "$checkout" status --porcelain --untracked-files=no 2>/dev/null || printf unavailable)
+    if [[ -n $status ]]; then
+      aw_log "WARNING: $checkout has master checked out with tracked changes; skipping its fast-forward"
+      return 0
+    fi
+    if git -C "$checkout" merge --ff-only "$TARGET_REF" >&2; then
+      aw_log "fast-forwarded checked-out master in $checkout to $origin_sha"
+    else
+      aw_log "WARNING: could not fast-forward checked-out master in $checkout to $TARGET_REF"
+    fi
+    return 0
+  fi
+
+  if git -C "$ROOT" update-ref -m "agent-worktree: fast-forward master to $TARGET_REF" \
+      refs/heads/master "$origin_sha" "$master_sha"; then
+    aw_log "fast-forwarded local master to $origin_sha"
+  else
+    aw_log 'WARNING: local master changed concurrently; leaving it untouched'
   fi
 }
 
@@ -410,7 +461,7 @@ aw_finish() {
     return 0
   fi
 
-  aw_sync_primary
+  aw_sync_local_master
   cd -- "$MAIN_TOP"
   git -C "$MAIN_TOP" worktree remove "$target"
   if ! git -C "$MAIN_TOP" update-ref -d "refs/heads/$branch" "$expected"; then
@@ -653,6 +704,7 @@ aw_gc() {
   if (( GC_APPLY == 1 )); then
     aw_acquire_lock
     aw_fetch
+    aw_sync_local_master
   else
     aw_fetch_for_report
     aw_log 'dry-run only; pass --apply to perform the reported cleanup'
