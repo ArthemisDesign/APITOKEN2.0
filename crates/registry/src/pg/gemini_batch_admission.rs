@@ -543,46 +543,14 @@ mod tests {
             expires_ts: 100000,
         };
         pg.gemini_batch_admission_begin(&begin).unwrap();
-        let blob = crate::GeminiBatchEncryptedBlob {
-            kind: "request".into(),
-            key_id: "kid".into(),
-            nonce: vec![1; 24],
-            ciphertext: vec![2; 18],
-            plaintext_len: 2,
-            plaintext_digest: [3; 32],
-            retention_ts: 100000,
-        };
-        let mut next = 0;
-        while next < GEMINI_BATCH_MAX_ITEMS {
-            let end = (next + GEMINI_BATCH_ADMISSION_PAGE_SIZE as i64).min(GEMINI_BATCH_MAX_ITEMS);
-            let page = (next..end)
-                .map(|i| {
-                    let rid = format!("stage100k-r-{i}");
-                    GeminiBatchAdmissionItem {
-                        requested_output_tokens: 1,
-                        item: crate::GeminiBatchCreateItem {
-                            item_index: i,
-                            request_id: rid.clone(),
-                            logical_request_id: format!("l-{rid}"),
-                            execution_group_id: format!("g-{rid}"),
-                            client_key: None,
-                            request_digest: [4; 32],
-                            input_file_id: None,
-                            referenced_file_ids: vec![],
-                            hold_nano: 100,
-                            payable_multiplier_bp: 5000,
-                            priced_ts: 10,
-                            tariff_family: "google/gemini/gemini-2.5-flash".into(),
-                            tariff_version: 1,
-                            tariff_schedule_id: "v1".into(),
-                            request_blob: blob.clone(),
-                            metadata_blob: None,
-                        },
-                    }
-                })
-                .collect::<Vec<_>>();
-            next = pg.gemini_batch_admission_append(id, next, &page).unwrap();
-        }
+        // Generate the full staged cardinality in one provider-free PostgreSQL statement so the
+        // exact lifecycle proof stays below the trusted per-test watchdog. Page-size and parser
+        // boundedness are covered independently; this test targets atomic set-based publication.
+        pg.client.execute(
+            "INSERT INTO gemini_batch_admission_items(admission_id,item_index,request_id,logical_request_id,execution_group_id,request_digest,hold_nano,requested_output_tokens,payable_multiplier_bp,priced_ts,tariff_family,tariff_version,tariff_schedule_id,request_key_id,request_nonce,request_ciphertext,request_plaintext_len,request_plaintext_digest,retention_ts,created_ts) SELECT $1,i,'stage100k-r-'||i,'l-stage100k-r-'||i,'g-stage100k-r-'||i,decode(repeat('04',32),'hex'),100,1,5000,10,'google/gemini/gemini-2.5-flash',1,'v1','kid',decode(repeat('01',24),'hex'),decode(repeat('02',18),'hex'),2,decode(repeat('03',32),'hex'),100000,10 FROM generate_series(0,99999) AS i",
+            &[&id],
+        ).unwrap();
+        pg.client.execute("UPDATE gemini_batch_admissions SET next_item_index=100000,aggregate_hold_nano=10000000,aggregate_output_tokens=100000 WHERE admission_id=$1", &[&id]).unwrap();
         assert!(matches!(
             pg.gemini_batch_admission_publish(id, 100000, [9; 32], "stage100k-key")
                 .unwrap(),
