@@ -142,3 +142,10 @@ SHA: фиксируется commit этой записи
 Отступления от плана: нет.
 Измерения: targeted `cargo test -p forward batch_`: 20/20 GREEN; `cargo check -p claude-api` GREEN. Live spend до нового distinct run остаётся `$0`; бюджет `$10`.
 Следующий шаг: merge/deploy exact SHA, затем controlled distribution run с новым job и предварительным worst-case hold calculation.
+
+## 2026-08-21 — Этап 5 (§6): controlled distribution и no-discount parity GREEN
+SHA: implementation `81ca422dbb1273f0dc9abe62ee577a64b34458a8`, `deploy/watchdog` GREEN
+Результат: transient exact-binary canary с provisioned remote-only test key/data keyring. Free diagnostic GREEN (13 opaque profiles, authority/runtime/public ready) и `countTokens` 8/8. Перед paid create worst-case holds рассчитаны `162,000 + 162,000 = 324,000 nanoUSD`, при budget `10,000,000,000`; run покрыт. Один distinct paid create выполнен, не replay: 2/2 items `succeeded`, outbox `done`, profiles `gemini_oauth_000011` и `gemini_oauth_000006`, exact actual `5,200 + 5,200 = 10,400 nanoUSD`. Затем identical ordinary generate request (9 input/1 output) exact charge/real `5,200`, совпадает с каждым Batch item: дополнительной batch discount нет. Transient canary остановлен.
+Отступления от плана: runner sanitizer `item_id` остановил local report after authoritative create, но read-only authority reconciliation recovered exact evidence; create не повторялся. Paid partial error не форсировался по safety contract; mock/fault gate остаётся доказательством. Cancel/headroom pre-dispatch доказаны предыдущим no-dispatch run и safe cancel; blue-green restart semantics — fault matrix + distinct fixed-SHA recovery, без ручного restart paid turn.
+Измерения: cumulative exact Stage 5 settlement `15,600 nanoUSD = $0.000015600`; остаток общего Stage 5+6 бюджета `9,999,984,400 nanoUSD = $9.999984400`. No stale holds после successful run.
+Следующий шаг: Этап 5 exit GREEN; Этап 6 отдельной веткой включает reviewed systemd/public discovery и выполняет direct+router public smoke с worst-case hold <= remaining budget.
