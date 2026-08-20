@@ -114,16 +114,17 @@ fn item_from_row(row: &Row) -> Result<GeminiBatchItem> {
         logical_request_id: row.get(3),
         execution_group_id: row.get(4),
         creator_key_id: row.get(5),
-        state: GeminiBatchItemState::parse(row.get::<_, String>(6).as_str())?,
+        client_key: row.get(6),
+        state: GeminiBatchItemState::parse(row.get::<_, String>(7).as_str())?,
         terminal_class: row
-            .get::<_, Option<String>>(7)
+            .get::<_, Option<String>>(8)
             .map(|value| GeminiBatchTerminalClass::parse(&value))
             .transpose()?,
-        claim_generation: row.get(8),
-        worker_instance: row.get(9),
-        worker_epoch: row.get(10),
-        lease_until: row.get(11),
-        selected_profile_id: row.get(12),
+        claim_generation: row.get(9),
+        worker_instance: row.get(10),
+        worker_epoch: row.get(11),
+        lease_until: row.get(12),
+        selected_profile_id: row.get(13),
     })
 }
 
@@ -501,7 +502,7 @@ impl PgStore {
         let items = tx
             .query(
                 "SELECT item.job_id,item.item_index,item.request_id,item.logical_request_id,item.execution_group_id,\
-                  item.creator_key_id,item.state,item.terminal_class,item.claim_generation,item.worker_instance,item.worker_epoch,\
+                  item.creator_key_id,item.client_key,item.state,item.terminal_class,item.claim_generation,item.worker_instance,item.worker_epoch,\
                   item.lease_until,item.selected_profile_id FROM gemini_batch_items item \
                   JOIN gemini_batch_jobs scoped ON scoped.job_id=item.job_id \
                   WHERE scoped.account_id=$1 AND item.job_id=$2 ORDER BY item.item_index",

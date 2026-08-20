@@ -1159,14 +1159,14 @@ outage, and no retry or rotation can change that.
 The published Gemini surface additionally provides `batchGenerateContent`, Google-shaped operation
 poll/list/cancel/delete routes, and an account-scoped Files API at `/v1beta/files` plus
 `/upload/v1beta/files`. This is the gateway's own encrypted storage, not Google Files: uploaded
-resources are visible only to the account that created them and expire after 48 hours. File-input
-Batch jobs return JSONL result files in the same storage under the Batch result-retention window.
+resources are visible only to the account that created them and expire after 48 hours. Files are
+currently supported as JSONL Batch input; terminal item results are returned inline from the
+operation's `response.inlinedResponses` array, including the exact decrypted Gemini response or
+per-item Google-shaped error.
 
-Batch accepts inline requests or `inputConfig.fileName` JSONL. Inside Batch items only, `fileData`
-may reference a file uploaded to this gateway under the same account; the scheduler resolves it
-before provider dispatch. This is an apiToken.sale extension to Google's Batch shape. Synchronous
-`generateContent` still requires `inlineData` and continues to return `FILE_URI_UNSUPPORTED` for
-file references.
+Batch accepts inline requests or `inputConfig.fileName` JSONL. Gateway `fileData` embedding is not
+currently supported: use JSONL `fileName` for Batch-scale input, or `inlineData` for synchronous
+`generateContent`. A resource uploaded to a Google project is never visible to the gateway.
 
 Batch uses the same standard Google token tariff and the account's normal Google multiplier as an
 ordinary generation. There is no separate Google Batch discount and no Google Batch SLA. The local

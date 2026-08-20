@@ -324,7 +324,7 @@ pub enum GeminiBatchCreateOutcome {
     RejectedFunds,
     RejectedLimit,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct GeminiBatchItem {
     pub job_id: String,
     pub item_index: i64,
@@ -332,6 +332,8 @@ pub struct GeminiBatchItem {
     pub logical_request_id: String,
     pub execution_group_id: String,
     pub creator_key_id: String,
+    /// Optional client correlation key from file-input JSONL. Never include it in `Debug` output.
+    pub client_key: Option<String>,
     pub state: GeminiBatchItemState,
     pub terminal_class: Option<GeminiBatchTerminalClass>,
     pub claim_generation: i64,
@@ -339,6 +341,27 @@ pub struct GeminiBatchItem {
     pub worker_epoch: Option<i64>,
     pub lease_until: Option<i64>,
     pub selected_profile_id: Option<String>,
+}
+impl std::fmt::Debug for GeminiBatchItem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GeminiBatchItem")
+            .field("job_id", &self.job_id)
+            .field("item_index", &self.item_index)
+            .field("request_id", &self.request_id)
+            .field("logical_request_id", &self.logical_request_id)
+            .field("execution_group_id", &self.execution_group_id)
+            .field("creator_key_id", &self.creator_key_id)
+            .field("client_key", &self.client_key.as_ref().map(|_| "[REDACTED]"))
+            .field("state", &self.state)
+            .field("terminal_class", &self.terminal_class)
+            .field("claim_generation", &self.claim_generation)
+            .field("worker_instance", &self.worker_instance)
+            .field("worker_epoch", &self.worker_epoch)
+            .field("lease_until", &self.lease_until)
+            .field("selected_profile_id", &self.selected_profile_id)
+            .finish()
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeminiBatchJob {

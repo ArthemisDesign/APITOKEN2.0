@@ -880,31 +880,191 @@ fn operation_pending(id: &str) -> Response {
     )
         .into_response()
 }
-fn job_value(d: &registry::GeminiBatchJobDetail) -> Value {
+fn decrypt_terminal_value(
+    facade: &GeminiBatchPublicFacade,
+    account_id: &str,
+    job_id: &str,
+    item_index: i64,
+    kind: &'static str,
+    blob: &registry::GeminiBatchEncryptedBlob,
+) -> Result<Value, ()> {
+    let plaintext = facade
+        .keys()
+        .decrypt_blob(
+            &GeminiBatchBlobIdentity {
+                account_id,
+                job_id,
+                item_index,
+                kind,
+                schema_version: SCHEMA_VERSION,
+            },
+            blob,
+        )
+        .map_err(|_| ())?;
+    serde_json::from_slice(&plaintext).map_err(|_| ())
+}
+
+fn project_terminal_payload(kind: &str, payload: Value) -> Result<Value, &'static str> {
+    if kind == "result" {
+        if !payload.is_object() {
+            return Err("Terminal Batch response is malformed.");
+        }
+        return Ok(json!({"response":payload}));
+    }
+    let status = payload.get("error").cloned().unwrap_or(payload);
+    let valid_status = status.as_object().is_some_and(|status| {
+        status.get("code").is_some_and(Value::is_number)
+            && status.get("message").is_some_and(Value::is_string)
+    });
+    if !valid_status {
+        return Err("Terminal Batch error is malformed.");
+    }
+    Ok(json!({"error":status}))
+}
+
+async fn terminal_item_value(
+    facade: &GeminiBatchPublicFacade,
+    account_id: &str,
+    job_id: &str,
+    item: &registry::GeminiBatchItem,
+) -> Result<Value, Response> {
+    let kind = if item.state == registry::GeminiBatchItemState::Succeeded {
+        "result"
+    } else {
+        "error"
+    };
+    let blob = facade
+        .authority()
+        .blob_get(
+            account_id.to_owned(),
+            job_id.to_owned(),
+            item.item_index,
+            kind.to_owned(),
+        )
+        .await
+        .map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "UNAVAILABLE",
+                "Batch authority is unavailable.",
+            )
+        })?
+        .ok_or_else(|| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DATA_LOSS",
+                "Terminal Batch output is missing.",
+            )
+        })?;
+    let payload = decrypt_terminal_value(
+        facade,
+        account_id,
+        job_id,
+        item.item_index,
+        kind,
+        &blob,
+    )
+    .map_err(|_| {
+        error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "DATA_LOSS",
+            "Terminal Batch output failed authentication.",
+        )
+    })?;
+    let mut projected = project_terminal_payload(kind, payload).map_err(|message| {
+        error(StatusCode::INTERNAL_SERVER_ERROR, "DATA_LOSS", message)
+    })?;
+    let mut metadata = None;
+    if let Some(metadata_blob) = facade
+        .authority()
+        .blob_get(
+            account_id.to_owned(),
+            job_id.to_owned(),
+            item.item_index,
+            "metadata".to_owned(),
+        )
+        .await
+        .map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "UNAVAILABLE",
+                "Batch authority is unavailable.",
+            )
+        })?
+    {
+        metadata = Some(
+            decrypt_terminal_value(
+                facade,
+                account_id,
+                job_id,
+                item.item_index,
+                "metadata",
+                &metadata_blob,
+            )
+            .map_err(|_| {
+                error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DATA_LOSS",
+                    "Batch item metadata failed authentication.",
+                )
+            })?,
+        );
+    }
+    if let Some(client_key) = item.client_key.as_ref() {
+        let metadata_value = metadata.get_or_insert_with(|| json!({}));
+        let Some(object) = metadata_value.as_object_mut() else {
+            return Err(error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DATA_LOSS",
+                "Batch item correlation metadata is malformed.",
+            ));
+        };
+        if object.get("key").is_some_and(|key| key.as_str() != Some(client_key)) {
+            return Err(error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DATA_LOSS",
+                "Batch item correlation metadata conflicts with its durable key.",
+            ));
+        }
+        object.insert("key".to_owned(), Value::String(client_key.clone()));
+    }
+    if let Some(metadata) = metadata {
+        projected["metadata"] = metadata;
+    }
+    Ok(projected)
+}
+
+async fn job_value(
+    facade: &GeminiBatchPublicFacade,
+    account_id: &str,
+    d: &registry::GeminiBatchJobDetail,
+) -> Result<Value, Response> {
     let j = &d.job;
     let done = j.completed_ts.is_some();
-    let responses = d
-        .items
-        .iter()
-        .map(|i| {
-            if i.state == registry::GeminiBatchItemState::Succeeded {
-                json!({"response":{"requestId":i.request_id}})
-            } else if i.state.is_terminal() {
-                json!({"error":{"code":500,"message":format!("{:?}",i.terminal_class)}})
-            } else {
-                Value::Null
-            }
-        })
-        .collect::<Vec<_>>();
     let mut value = json!({"name":format!("batches/{}",j.job_id),"done":done,"metadata":{"name":format!("batches/{}",j.job_id),"displayName":j.display_name,"model":format!("models/{}",j.public_model),"state":format!("BATCH_STATE_{:?}",j.state).to_uppercase(),"priority":j.priority.to_string(),"createTime":ts(j.create_ts),"updateTime":ts(j.update_ts),"endTime":j.completed_ts.map(ts),"batchStats":{"requestCount":j.stats.request_count.to_string(),"successfulRequestCount":j.stats.successful_request_count.to_string(),"failedRequestCount":j.stats.failed_request_count.to_string(),"pendingRequestCount":j.stats.pending_request_count.to_string()}}});
     if done {
+        let mut responses = Vec::with_capacity(d.items.len());
+        for item in &d.items {
+            if !item.state.is_terminal() {
+                return Err(error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DATA_LOSS",
+                    "Terminal Batch contains a nonterminal item.",
+                ));
+            }
+            responses.push(terminal_item_value(facade, account_id, &j.job_id, item).await?);
+        }
         value["response"] = json!({"inlinedResponses":responses});
     }
-    value
+    Ok(value)
 }
 async fn get(f: Arc<GeminiBatchPublicFacade>, a: MeteredAuth, id: String) -> Response {
-    match f.authority().get(a.account, id).await {
-        Ok(Some(v)) => (StatusCode::OK, axum::Json(job_value(&v))).into_response(),
+    let account_id = a.account;
+    match f.authority().get(account_id.clone(), id).await {
+        Ok(Some(v)) => match job_value(&f, &account_id, &v).await {
+            Ok(value) => (StatusCode::OK, axum::Json(value)).into_response(),
+            Err(response) => response,
+        },
         Ok(None) => error(
             StatusCode::NOT_FOUND,
             "NOT_FOUND",
@@ -1535,6 +1695,7 @@ async fn file_download(f: Arc<GeminiBatchPublicFacade>, a: MeteredAuth, id: Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::GeminiBatchDataKeyring;
     #[test]
     fn closed() {
         assert!(parse(
@@ -1547,6 +1708,57 @@ mod tests {
             Some(Route::Download("x".into()))
         );
         assert!(parse(&Method::GET, "/v1beta/batches/a/b").is_none());
+    }
+
+    #[test]
+    fn terminal_payload_projection_preserves_exact_response_and_google_status() {
+        let response = json!({
+            "candidates":[{"content":{"role":"model","parts":[{"text":"six"}]},"finishReason":"STOP"}],
+            "usageMetadata":{"promptTokenCount":9,"candidatesTokenCount":1,"totalTokenCount":10},
+            "modelVersion":"gemini-2.5-flash"
+        });
+        assert_eq!(
+            project_terminal_payload("result", response.clone()).unwrap(),
+            json!({"response":response})
+        );
+
+        let status = json!({"code":429,"message":"quota exhausted","status":"RESOURCE_EXHAUSTED","details":[{"reason":"QUOTA"}]});
+        assert_eq!(
+            project_terminal_payload("error", json!({"error":status.clone()})).unwrap(),
+            json!({"error":status})
+        );
+        assert!(project_terminal_payload("result", json!([1, 2])).is_err());
+        assert!(project_terminal_payload("error", json!({"error":{"code":500}})).is_err());
+    }
+
+    #[test]
+    fn terminal_blob_decryption_is_identity_bound_and_fail_closed() {
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0x33u8; 32]);
+        let keyring = GeminiBatchDataKeyring::parse(&format!("test;test:{encoded}")).unwrap();
+        let identity = GeminiBatchBlobIdentity {
+            account_id: "account-a",
+            job_id: "job-a",
+            item_index: 0,
+            kind: "result",
+            schema_version: SCHEMA_VERSION,
+        };
+        let exact = json!({"candidates":[{"finishReason":"STOP"}]});
+        let blob = keyring
+            .encrypt_blob(&identity, &serde_json::to_vec(&exact).unwrap(), now() + 60)
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&keyring.decrypt_blob(&identity, &blob).unwrap())
+                .unwrap(),
+            exact
+        );
+        let wrong = GeminiBatchBlobIdentity {
+            account_id: "account-b",
+            ..identity
+        };
+        assert!(keyring.decrypt_blob(&wrong, &blob).is_err());
+        let mut tampered = blob;
+        tampered.ciphertext[0] ^= 1;
+        assert!(keyring.decrypt_blob(&identity, &tampered).is_err());
     }
 
     #[test]

@@ -1,5 +1,8 @@
 use super::*;
-use crate::gemini::{GeminiBatchAuthority, GeminiBatchDataKeyring, GeminiBatchPublicFacade};
+use crate::gemini::{
+    GeminiBatchAuthority, GeminiBatchBlobIdentity, GeminiBatchDataKeyring,
+    GeminiBatchPublicFacade,
+};
 use crate::{AffinityStore, AsyncBilling, Breaker, Clients, ProxyConfig};
 use axum::http::Uri;
 use axum::routing::any;
@@ -6069,7 +6072,7 @@ fn gemini_batch_public_handlers_postgres_lifecycle_files_and_account_isolation()
         let facade = GeminiBatchPublicFacade::new(
             batch_authority.clone(),
             fixture.gateway.clone(),
-            keyring,
+            Arc::clone(&keyring),
         );
         let mut app = app_state(fixture.gateway.clone(), Some(Arc::clone(&billing)));
         app.authority = Arc::new(registry::authority::AuthorityConfig::Postgres { url: url.clone() });
@@ -6218,6 +6221,89 @@ fn gemini_batch_public_handlers_postgres_lifecycle_files_and_account_isolation()
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response_json(response).await["operations"][0]["name"], batch_name);
+
+        let seeded_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let exact_response = json!({
+            "candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],
+            "usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},
+            "modelVersion":"gemini-integration-model"
+        });
+        let metadata = json!({"trace":"client-metadata"});
+        let result_blob = keyring
+            .encrypt_blob(
+                &GeminiBatchBlobIdentity {
+                    account_id: ACCOUNT_A,
+                    job_id: &batch_id,
+                    item_index: 0,
+                    kind: "result",
+                    schema_version: 1,
+                },
+                &serde_json::to_vec(&exact_response).unwrap(),
+                seeded_now + 42 * 24 * 3600,
+            )
+            .unwrap();
+        let metadata_blob = keyring
+            .encrypt_blob(
+                &GeminiBatchBlobIdentity {
+                    account_id: ACCOUNT_A,
+                    job_id: &batch_id,
+                    item_index: 0,
+                    kind: "metadata",
+                    schema_version: 1,
+                },
+                &serde_json::to_vec(&metadata).unwrap(),
+                seeded_now + 42 * 24 * 3600,
+            )
+            .unwrap();
+        let seed_url = url.clone();
+        let seed_batch_id = batch_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut seeded = postgres::Client::connect(&seed_url, postgres::NoTls).unwrap();
+            for blob in [&result_blob, &metadata_blob] {
+                seeded.execute(
+                    "INSERT INTO gemini_batch_blobs(job_id,item_index,kind,key_id,nonce,ciphertext,plaintext_len,plaintext_digest,retention_ts,created_ts) VALUES($1,0,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(job_id,item_index,kind) DO UPDATE SET key_id=EXCLUDED.key_id,nonce=EXCLUDED.nonce,ciphertext=EXCLUDED.ciphertext,plaintext_len=EXCLUDED.plaintext_len,plaintext_digest=EXCLUDED.plaintext_digest,retention_ts=EXCLUDED.retention_ts",
+                    &[&seed_batch_id,&blob.kind,&blob.key_id,&blob.nonce,&blob.ciphertext,&blob.plaintext_len,&blob.plaintext_digest.as_slice(),&blob.retention_ts,&seeded_now],
+                ).unwrap();
+            }
+            seeded.execute(
+                "UPDATE gemini_batch_items SET state='succeeded',terminal_class='success',terminal_ts=$2,settlement_id=$3,client_key='first',worker_instance=NULL,worker_epoch=NULL,lease_until=NULL WHERE job_id=$1 AND item_index=0",
+                &[&seed_batch_id,&seeded_now,&format!("seeded-{seed_batch_id}")],
+            ).unwrap();
+            seeded.execute(
+                "UPDATE gemini_batch_jobs SET completed_ts=$2,update_ts=$2,result_expiration_ts=$3 WHERE job_id=$1",
+                &[&seed_batch_id,&seeded_now,&(seeded_now + 42 * 24 * 3600)],
+            ).unwrap();
+        }).await.unwrap();
+        let response = invoke_batch_request(
+            app.clone(), Method::GET, &format!("/v1beta/batches/{batch_id}"), KEY_A, &[], Body::empty(),
+        ).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let terminal = response_json(response).await;
+        assert_eq!(terminal["response"]["inlinedResponses"][0]["response"], exact_response);
+        assert_eq!(
+            terminal["response"]["inlinedResponses"][0]["metadata"],
+            json!({"trace":"client-metadata","key":"first"})
+        );
+        assert!(terminal.to_string().find("requestId").is_none());
+
+        let tamper_url = url.clone();
+        let tamper_batch_id = batch_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut tamper = postgres::Client::connect(&tamper_url, postgres::NoTls).unwrap();
+            tamper.execute(
+                "UPDATE gemini_batch_blobs SET ciphertext=set_byte(ciphertext,0,get_byte(ciphertext,0)#1) WHERE job_id=$1 AND item_index=0 AND kind='result'",
+                &[&tamper_batch_id],
+            ).unwrap();
+        }).await.unwrap();
+        let response = invoke_batch_request(
+            app.clone(), Method::GET, &format!("/v1beta/batches/{batch_id}"), KEY_A, &[], Body::empty(),
+        ).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let data_loss = response_json(response).await;
+        assert_eq!(data_loss["error"]["status"], "DATA_LOSS");
 
         let response = invoke_batch_request(
             app.clone(),
