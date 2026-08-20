@@ -490,9 +490,9 @@ pub fn is_exact_not_started_response(response: &Response) -> bool {
 // overflow/read-error ниже сохраняет нативный 413-контракт вместо ложного generic 400.
 const BODY_LIMIT: usize = api_limits::current::ANTHROPIC_TEXT_REQUEST.bytes() as usize;
 
-struct MaterializedAnthropicBody {
-    bytes: bytes::Bytes,
-    _lease: bounded_body::StoredBodyLease,
+pub(crate) struct MaterializedAnthropicBody {
+    pub(crate) bytes: bytes::Bytes,
+    pub(crate) _lease: bounded_body::StoredBodyLease,
 }
 
 pub(crate) enum BodyReadError {
@@ -516,7 +516,7 @@ pub(crate) async fn read_body_limited(
     Ok(out.freeze())
 }
 
-async fn read_anthropic_body_bounded(
+pub(crate) async fn read_anthropic_body_bounded(
     app: &AppState,
     body: Body,
 ) -> Result<MaterializedAnthropicBody, bounded_body::StorageError> {
@@ -1434,7 +1434,11 @@ pub async fn forward(
     };
     let url = format!("{}{}", app.cfg.upstream.trim_end_matches('/'), pq);
 
-    let bounded_native_messages = billable && app.provider.serves_anthropic();
+    // Universal adapters already admitted and retain the original customer body. Avoid charging a
+    // second full raw-body reservation for their synthesized internal Messages request; the
+    // translated Bytes still remain owned by this handler through rotation.
+    let bounded_native_messages =
+        billable && app.provider.serves_anthropic() && synthesized_messages_origin.is_none();
     let (raw, _body_lease) = if bounded_native_messages {
         let bounded = match read_anthropic_body_bounded(&app, body).await {
             Ok(body) => body,

@@ -128,12 +128,12 @@ use serde_json::{json, Map, Value};
 use crate::anthropic::{
     chat_error, convert_error_response, image_block, invalid_request, merge_or_push,
     native_max_output_tokens, translate_reasoning_effort_for_model, translate_tool_function,
-    unsupported_parameter, CHAT_BODY_LIMIT, RESPONSE_BODY_LIMIT,
+    unsupported_parameter, RESPONSE_BODY_LIMIT,
 };
 use crate::anthropic_stream::AnthropicStreamState;
 use crate::codex::new_id;
 use crate::openai_responses_stream::ResponsesEventEncoder;
-use crate::proxy::{forward, read_body_limited, without_not_started, BodyReadError};
+use crate::proxy::{forward, read_anthropic_body_bounded, without_not_started};
 use crate::request_classification::classify_openai_responses;
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
@@ -146,9 +146,10 @@ pub async fn anthropic_responses(
     request: Request,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    let raw = match read_body_limited(body, CHAT_BODY_LIMIT).await {
-        Ok(raw) => raw,
-        Err(BodyReadError::TooLarge) => {
+    let bounded_body = match read_anthropic_body_bounded(&app, body).await {
+        Ok(body) => body,
+        Err(bounded_body::StorageError::TooLarge)
+        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
             return chat_error(
                 StatusCode::BAD_REQUEST,
                 "Request body exceeds the 32 MiB limit.",
@@ -157,7 +158,7 @@ pub async fn anthropic_responses(
                 "invalid_responses_request",
             )
         }
-        Err(BodyReadError::Read) => {
+        Err(bounded_body::StorageError::Io) => {
             return chat_error(
                 StatusCode::BAD_REQUEST,
                 "Could not read request body.",
@@ -166,7 +167,18 @@ pub async fn anthropic_responses(
                 "invalid_responses_request",
             )
         }
+        Err(_) => {
+            return chat_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Request body storage is unavailable.",
+                None,
+                Value::Null,
+                "server_error",
+            )
+        }
     };
+    let raw = bounded_body.bytes.clone();
+    let _body_lease = bounded_body._lease;
     let value: Value = match serde_json::from_slice(&raw) {
         Ok(value) => value,
         Err(_) => {
@@ -215,7 +227,7 @@ pub async fn anthropic_responses(
                 None,
                 Value::Null,
                 "internal_response_error",
-            )
+            );
         }
     };
     let mut inner = Request::builder()
@@ -938,9 +950,14 @@ fn map_status(stop_reason: Option<&str>) -> (&'static str, Value) {
 /// `output_tokens_details.reasoning_tokens`.
 fn map_responses_usage(usage: &Value) -> Value {
     let tokens = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
-    if ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"]
-        .iter()
-        .any(|key| usage.get(key).and_then(Value::as_u64).is_none())
+    if [
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
+    ]
+    .iter()
+    .any(|key| usage.get(key).and_then(Value::as_u64).is_none())
     {
         elog::warn("forward", "anthropic usage fields missing; zero-filled");
     }
@@ -1080,23 +1097,20 @@ async fn json_responses_response(upstream: Response, requested_model: String) ->
                 None,
                 Value::Null,
                 "internal_response_error",
-            ))
+            ));
         }
     };
     let value: Value = match serde_json::from_slice(&bytes) {
         Ok(value) => value,
         Err(e) => {
-            elog::error(
-                "forward",
-                format!("anthropic response body not JSON: {e}"),
-            );
+            elog::error("forward", format!("anthropic response body not JSON: {e}"));
             return without_not_started(chat_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "The provider returned a malformed response.",
                 None,
                 Value::Null,
                 "internal_response_error",
-            ))
+            ));
         }
     };
     let model = value
@@ -1718,10 +1732,7 @@ impl ResponsesSseTranslator {
                 Ok(Some(data)) => self.handle_event(event, data),
                 Ok(None) => {}
                 Err(e) => {
-                    elog::error(
-                        "forward",
-                        format!("anthropic SSE protocol violation: {e}"),
-                    );
+                    elog::error("forward", format!("anthropic SSE protocol violation: {e}"));
                     self.push_failed(
                         "The provider stream contained a malformed event.",
                         Some("protocol_error"),

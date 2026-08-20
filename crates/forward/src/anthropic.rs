@@ -54,17 +54,12 @@ use serde_json::{json, Map, Value};
 use crate::anthropic_stream::AnthropicStreamState;
 use crate::codex::new_id;
 use crate::proxy::{
-    forward, read_body_limited, with_not_started, without_not_started, BodyReadError,
+    forward, read_anthropic_body_bounded, with_not_started, without_not_started,
     TerminalErrorReason, EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
 };
 use crate::request_classification::classify_openai_chat;
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
-
-/// Лимит тела chat-запроса — тот же 32 MiB, что у native `/v1/messages`
-/// (публичный предел Anthropic Messages; images этапа 3.4 в него вписываются).
-/// Общий с Responses-адаптером этапа 4.1 (`anthropic_responses.rs`).
-pub(crate) const CHAT_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
 /// Верхняя граница буферизации error/non-stream тел ответа `forward()`.
 /// Длинный non-stream completion укладывается в тот же 32 MiB предел.
@@ -143,9 +138,10 @@ pub async fn anthropic_chat_completions(
     request: Request,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    let raw = match read_body_limited(body, CHAT_BODY_LIMIT).await {
-        Ok(raw) => raw,
-        Err(BodyReadError::TooLarge) => {
+    let bounded_body = match read_anthropic_body_bounded(&app, body).await {
+        Ok(body) => body,
+        Err(bounded_body::StorageError::TooLarge)
+        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
             return chat_error(
                 StatusCode::BAD_REQUEST,
                 "Request body exceeds the 32 MiB limit.",
@@ -154,7 +150,7 @@ pub async fn anthropic_chat_completions(
                 "invalid_chat_request",
             )
         }
-        Err(BodyReadError::Read) => {
+        Err(bounded_body::StorageError::Io) => {
             return chat_error(
                 StatusCode::BAD_REQUEST,
                 "Could not read request body.",
@@ -163,7 +159,18 @@ pub async fn anthropic_chat_completions(
                 "invalid_chat_request",
             )
         }
+        Err(_) => {
+            return chat_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Request body storage is unavailable.",
+                None,
+                Value::Null,
+                "server_error",
+            )
+        }
     };
+    let raw = bounded_body.bytes.clone();
+    let _body_lease = bounded_body._lease;
     let value: Value = match serde_json::from_slice(&raw) {
         Ok(value) => value,
         Err(_) => {
@@ -212,7 +219,7 @@ pub async fn anthropic_chat_completions(
                 None,
                 Value::Null,
                 "internal_response_error",
-            )
+            );
         }
     };
     let mut inner = Request::builder()
@@ -1162,9 +1169,14 @@ fn map_finish_reason(stop_reason: Option<&str>) -> &'static str {
 /// суммарный prompt), cache read отражается в `prompt_tokens_details`.
 fn map_usage(usage: &Value) -> Value {
     let tokens = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
-    if ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"]
-        .iter()
-        .any(|key| usage.get(key).and_then(Value::as_u64).is_none())
+    if [
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
+    ]
+    .iter()
+    .any(|key| usage.get(key).and_then(Value::as_u64).is_none())
     {
         elog::warn("forward", "anthropic usage fields missing; zero-filled");
     }
@@ -1321,23 +1333,20 @@ async fn json_chat_response(upstream: Response) -> Response {
                 None,
                 Value::Null,
                 "internal_response_error",
-            ))
+            ));
         }
     };
     let value: Value = match serde_json::from_slice(&bytes) {
         Ok(value) => value,
         Err(e) => {
-            elog::error(
-                "forward",
-                format!("anthropic response body not JSON: {e}"),
-            );
+            elog::error("forward", format!("anthropic response body not JSON: {e}"));
             return without_not_started(chat_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "The provider returned a malformed response.",
                 None,
                 Value::Null,
                 "internal_response_error",
-            ))
+            ));
         }
     };
     let model = value
@@ -1377,7 +1386,10 @@ async fn json_chat_response(upstream: Response) -> Response {
                         .map(|i| i.to_string())
                         .unwrap_or_else(|| "{}".to_string());
                     if id.is_null() || name.is_null() {
-                        elog::warn("forward", "anthropic tool_use block missing id/name; degraded");
+                        elog::warn(
+                            "forward",
+                            "anthropic tool_use block missing id/name; degraded",
+                        );
                     }
                     tool_calls.push(json!({
                         "id": id,
@@ -1594,7 +1606,10 @@ impl ChatSseTranslator {
                         .and_then(Value::as_str)
                         .unwrap_or_default();
                     if id.is_empty() || name.is_empty() {
-                        elog::warn("forward", "anthropic tool_use block missing id/name; degraded");
+                        elog::warn(
+                            "forward",
+                            "anthropic tool_use block missing id/name; degraded",
+                        );
                     }
                     self.push_chunk(
                         json!({"tool_calls": [{
@@ -1739,10 +1754,7 @@ impl ChatSseTranslator {
                 Ok(Some(data)) => self.handle_event(event, data),
                 Ok(None) => {}
                 Err(e) => {
-                    elog::error(
-                        "forward",
-                        format!("anthropic SSE protocol violation: {e}"),
-                    );
+                    elog::error("forward", format!("anthropic SSE protocol violation: {e}"));
                     self.push_error(
                         "The provider stream contained a malformed event.",
                         Some("protocol_error"),
