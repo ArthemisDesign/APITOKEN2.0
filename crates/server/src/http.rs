@@ -1217,7 +1217,7 @@ fn write_gemini_batch_metrics(
     use std::fmt::Write as _;
     let empty = forward::gemini::GeminiBatchOperationalSnapshot::default();
     let snapshot = snapshot.unwrap_or(&empty);
-    let enabled = u8::from(snapshot.authority_available || snapshot.headroom_stops > 0 || snapshot.active_items > 0 || snapshot.queued_items > 0);
+    let enabled = u8::from(snapshot.authority_available || snapshot.headroom_stops > 0 || snapshot.claimed_items > 0 || snapshot.dispatching_items > 0 || snapshot.settlement_pending_items > 0 || snapshot.queued_items > 0);
     let _ = writeln!(
         body,
         "# HELP claude_api_gemini_batch_enabled Whether the default-off Gemini Batch runtime is composed.\n\
@@ -1252,17 +1252,38 @@ fn write_gemini_batch_metrics(
         u8::from(snapshot.authority_available),
         snapshot.queued_items,
         snapshot.oldest_queued_age_seconds,
-        snapshot.active_items,
-        snapshot.completed_items,
-        snapshot.error_items,
+        snapshot.claimed_items
+            .saturating_add(snapshot.dispatching_items)
+            .saturating_add(snapshot.settlement_pending_items),
+        snapshot.succeeded_items,
+        snapshot.failed_items.saturating_add(snapshot.canceled_items),
         snapshot.indeterminate_items,
         snapshot.headroom_stops,
         snapshot.settlement_pending,
         snapshot.settlement_oldest_age_seconds,
         snapshot.settlement_retries,
-        snapshot.file_bytes,
-        snapshot.file_chunks,
+        snapshot.active_file_bytes,
+        snapshot.active_file_chunks,
     );
+    let _ = writeln!(
+        body,
+        "# HELP claude_api_gemini_batch_jobs Current Batch jobs by bounded state.\n# TYPE claude_api_gemini_batch_jobs gauge\nclaude_api_gemini_batch_jobs{{state=\"pending\"}} {}\nclaude_api_gemini_batch_jobs{{state=\"running\"}} {}\n# HELP claude_api_gemini_batch_items Current Batch items by bounded state.\n# TYPE claude_api_gemini_batch_items gauge\nclaude_api_gemini_batch_items{{state=\"queued\"}} {}\nclaude_api_gemini_batch_items{{state=\"claimed\"}} {}\nclaude_api_gemini_batch_items{{state=\"dispatching\"}} {}\nclaude_api_gemini_batch_items{{state=\"settlement_pending\"}} {}\nclaude_api_gemini_batch_items{{state=\"succeeded\"}} {}\nclaude_api_gemini_batch_items{{state=\"failed\"}} {}\nclaude_api_gemini_batch_items{{state=\"canceled\"}} {}\nclaude_api_gemini_batch_items{{state=\"indeterminate\"}} {}\n# TYPE claude_api_gemini_batch_reserved_nanousd gauge\nclaude_api_gemini_batch_reserved_nanousd {}\n# TYPE claude_api_gemini_batch_leader_held gauge\nclaude_api_gemini_batch_leader_held {}",
+        snapshot.queued_jobs, snapshot.running_jobs, snapshot.queued_items,
+        snapshot.claimed_items, snapshot.dispatching_items, snapshot.settlement_pending_items,
+        snapshot.succeeded_items, snapshot.failed_items, snapshot.canceled_items,
+        snapshot.indeterminate_items, snapshot.reserved_hold_nano, u8::from(snapshot.leader_held),
+    );
+    for window in &snapshot.windows {
+        if !matches!(window.window.as_str(), "1h" | "24h" | "7d") { continue; }
+        let _ = writeln!(body,
+            "claude_api_gemini_batch_window_jobs_created{{window=\"{}\"}} {}\nclaude_api_gemini_batch_window_items_created{{window=\"{}\"}} {}\nclaude_api_gemini_batch_window_terminal_items{{window=\"{}\",outcome=\"succeeded\"}} {}\nclaude_api_gemini_batch_window_terminal_items{{window=\"{}\",outcome=\"failed\"}} {}\nclaude_api_gemini_batch_window_terminal_items{{window=\"{}\",outcome=\"canceled\"}} {}\nclaude_api_gemini_batch_window_terminal_items{{window=\"{}\",outcome=\"indeterminate\"}} {}\nclaude_api_gemini_batch_window_settled_nanousd{{window=\"{}\"}} {}\nclaude_api_gemini_batch_window_throughput_items_per_hour{{window=\"{}\"}} {}",
+            window.window, window.jobs_created, window.window, window.items_created,
+            window.window, window.succeeded, window.window, window.failed,
+            window.window, window.canceled, window.window, window.indeterminate,
+            window.window, window.settled_nano, window.window, window.throughput_items_per_hour);
+        if let Some(value) = window.avg_queue_wait_seconds { let _ = writeln!(body, "claude_api_gemini_batch_window_avg_queue_wait_seconds{{window=\"{}\"}} {value}", window.window); }
+        if let Some(value) = window.avg_execution_seconds { let _ = writeln!(body, "claude_api_gemini_batch_window_avg_execution_seconds{{window=\"{}\"}} {value}", window.window); }
+    }
 }
 
 /// Prometheus-метрики (admin-авторизация). Ключевое: `route_pin/place` = доля cache-hit,
@@ -6017,6 +6038,58 @@ async fn gemini_subs(
         Some(runtime) => Some(runtime.operational_snapshot().await),
         None => None,
     };
+    let batch_value = batch.as_ref().map_or_else(
+        || json!({"enabled": false}),
+        |batch| {
+            let active_items = batch.claimed_items
+                .saturating_add(batch.dispatching_items)
+                .saturating_add(batch.settlement_pending_items);
+            let history = batch.windows.iter().map(|window| json!({
+                "window": window.window,
+                "jobs_created": window.jobs_created,
+                "items_created": window.items_created,
+                "succeeded": window.succeeded,
+                "failed": window.failed,
+                "canceled": window.canceled,
+                "indeterminate": window.indeterminate,
+                "settled_nanousd": window.settled_nano.to_string(),
+                "avg_queue_wait_seconds": window.avg_queue_wait_seconds,
+                "avg_execution_seconds": window.avg_execution_seconds,
+                "throughput_items_per_hour": window.throughput_items_per_hour,
+            })).collect::<Vec<_>>();
+            json!({
+                "enabled": true,
+                "public_enabled": app.gemini_batch.is_some(),
+                "authority_available": batch.authority_available,
+                "jobs_pending": batch.queued_jobs,
+                "jobs_running": batch.running_jobs,
+                "queue_depth": batch.queued_items,
+                "queued_items": batch.queued_items,
+                "claimed_items": batch.claimed_items,
+                "dispatching_items": batch.dispatching_items,
+                "settlement_pending_items": batch.settlement_pending_items,
+                "succeeded_items": batch.succeeded_items,
+                "failed_items": batch.failed_items,
+                "canceled_items": batch.canceled_items,
+                "oldest_queued_age_seconds": batch.oldest_queued_age_seconds,
+                "active_items": active_items,
+                "completed_items": batch.succeeded_items,
+                "error_items": batch.failed_items.saturating_add(batch.canceled_items),
+                "indeterminate_items": batch.indeterminate_items,
+                "headroom_stops": batch.headroom_stops,
+                "settlement_backlog": batch.settlement_pending,
+                "settlement_failed": batch.settlement_failed,
+                "settlement_oldest_age_seconds": batch.settlement_oldest_age_seconds,
+                "settlement_retries": batch.settlement_retries,
+                "reserved_nanousd": batch.reserved_hold_nano.to_string(),
+                "leader_held": batch.leader_held,
+                "leader_expires_at": batch.leader_expires_at,
+                "file_bytes": batch.active_file_bytes.to_string(),
+                "file_chunks": batch.active_file_chunks,
+                "history": history,
+            })
+        },
+    );
     let profiles = gemini_profile_values(&status, capacity_available, now);
     let models = status
         .models
@@ -6073,26 +6146,7 @@ async fn gemini_subs(
             rows.iter().map(gemini_calibration_event_value).collect::<Vec<_>>()
         }),
         "window_totals": window_totals,
-        "batch": batch.as_ref().map_or_else(
-            || json!({"enabled": false}),
-            |batch| json!({
-                "enabled": true,
-                "public_enabled": app.gemini_batch.is_some(),
-                "authority_available": batch.authority_available,
-                "queue_depth": batch.queued_items,
-                "oldest_queued_age_seconds": batch.oldest_queued_age_seconds,
-                "active_items": batch.active_items,
-                "completed_items": batch.completed_items,
-                "error_items": batch.error_items,
-                "indeterminate_items": batch.indeterminate_items,
-                "headroom_stops": batch.headroom_stops,
-                "settlement_backlog": batch.settlement_pending,
-                "settlement_oldest_age_seconds": batch.settlement_oldest_age_seconds,
-                "settlement_retries": batch.settlement_retries,
-                "file_bytes": batch.file_bytes.to_string(),
-                "file_chunks": batch.file_chunks,
-            }),
-        ),
+        "batch": batch_value,
         "conversion_models": gemini_conversion_models(&gemini.config().models, now),
         "models": models,
         "profiles": profiles,

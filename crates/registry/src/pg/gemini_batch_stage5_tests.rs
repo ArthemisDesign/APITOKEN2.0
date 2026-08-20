@@ -428,7 +428,9 @@ fn stage5_postgres_load_and_fairness() {
     }
     let report = pg.gemini_batch_operational_report().unwrap();
     assert_eq!(report.queued_items, (item_count * 2) as i64);
-    assert_eq!(report.active_items, 0);
+    assert_eq!(report.claimed_items + report.dispatching_items + report.settlement_pending_items, 0);
+    assert_eq!(report.windows.len(), 3);
+    assert_eq!(report.reserved_hold_nano, (item_count * 2 * 100) as i64);
 
     stage5_cleanup(&mut pg);
     lock.client

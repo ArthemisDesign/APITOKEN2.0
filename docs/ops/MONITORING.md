@@ -824,6 +824,17 @@ envelope or restart the Gemini slot merely to reload it. If authentication and q
 healthy but exact-profile generation alone fails, use the transactional proxy replacement and
 rollback procedure in `docs/engine/GEMINI_PROVIDER.md` before replacing the subscription.
 
+## Gemini Batch control room
+
+The protected Admin **Subscriptions → Gemini → Gemini Batch · control room** is the operator-facing
+view of the same fixed-cardinality authority snapshot as `/gemini-subs.batch` and `/metrics`. Current
+state separates pending/running jobs and every item state, oldest runnable queue age, aggregate
+reserved holds, leader lease, settlement backlog/permanent failures and active encrypted storage.
+The 1h/24h/7d rows are PostgreSQL-derived rolling windows (not process-local counters): jobs/items
+created, terminal outcomes, exact settled nanoUSD, average queue/execution duration and normalized
+items/hour. They survive Gemini slot restart and contain no customer, job, model, file or profile ID.
+Unknown authority data is rendered as unavailable rather than inferred from customer traffic.
+
 ## GeminiBatchQueueStale
 
 Disable new Batch admission only; do not change interactive Gemini readiness. Check leader/profile availability, fresh `gemini-5h` summaries, queue age and account/key policy. Never edit authority rows manually; repair the cause and let fenced reconciliation drain.

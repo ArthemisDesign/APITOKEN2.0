@@ -194,47 +194,108 @@ impl PgStore {
         &mut self,
     ) -> Result<crate::GeminiBatchOperationalReport> {
         let ts = super::now();
-        let items = self.client.query_one(
+        let mut tx = self.client.build_transaction()
+            .isolation_level(postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()?;
+        let jobs = tx.query_one(
             "SELECT
-                COUNT(*) FILTER (WHERE state='queued')::bigint,
-                COALESCE($1 - MIN(created_ts) FILTER (WHERE state='queued'), 0)::bigint,
-                COUNT(*) FILTER (WHERE state IN ('claimed','dispatching','settlement_pending'))::bigint,
+                COUNT(*) FILTER (WHERE completed_ts IS NULL AND NOT EXISTS (
+                    SELECT 1 FROM gemini_batch_items item WHERE item.job_id=job.job_id
+                      AND item.state IN ('claimed','dispatching','settlement_pending')
+                ))::bigint,
+                COUNT(*) FILTER (WHERE completed_ts IS NULL AND EXISTS (
+                    SELECT 1 FROM gemini_batch_items item WHERE item.job_id=job.job_id
+                      AND item.state IN ('claimed','dispatching','settlement_pending')
+                ))::bigint
+             FROM gemini_batch_jobs job WHERE delete_ts IS NULL",
+            &[],
+        )?;
+        let items = tx.query_one(
+            "SELECT
+                COUNT(*) FILTER (WHERE state='queued' AND next_attempt_ts <= $1)::bigint,
+                COUNT(*) FILTER (WHERE state='claimed')::bigint,
+                COUNT(*) FILTER (WHERE state='dispatching')::bigint,
+                COUNT(*) FILTER (WHERE state='settlement_pending')::bigint,
                 COUNT(*) FILTER (WHERE state='succeeded')::bigint,
-                COUNT(*) FILTER (WHERE state IN ('failed','canceled'))::bigint,
-                COUNT(*) FILTER (WHERE state='indeterminate')::bigint
+                COUNT(*) FILTER (WHERE state='failed')::bigint,
+                COUNT(*) FILTER (WHERE state='canceled')::bigint,
+                COUNT(*) FILTER (WHERE state='indeterminate')::bigint,
+                COALESCE($1 - MIN(created_ts) FILTER (WHERE state='queued' AND next_attempt_ts <= $1), 0)::bigint,
+                COALESCE(SUM(hold_nano) FILTER (WHERE state IN ('queued','claimed','dispatching','settlement_pending')), 0)::bigint
              FROM gemini_batch_items",
             &[&ts],
         )?;
-        let settlement = self.client.query_one(
+        let settlement = tx.query_one(
             "SELECT
                 COUNT(*) FILTER (WHERE state='pending')::bigint,
+                COUNT(*) FILTER (WHERE state='failed')::bigint,
                 COALESCE($1 - MIN(created_ts) FILTER (WHERE state='pending'), 0)::bigint,
                 COALESCE(SUM(attempts) FILTER (WHERE state='pending'), 0)::bigint
              FROM gemini_batch_settlement_outbox",
             &[&ts],
         )?;
-        let files = self.client.query_one(
+        let leader = tx.query_opt(
+            "SELECT lease_until FROM leader_leases WHERE name=$1 AND lease_until >= $2",
+            &[&crate::GEMINI_BATCH_DISPATCH_LEADER, &ts],
+        )?;
+        let files = tx.query_one(
             "SELECT
                 COALESCE(SUM(chunk.plaintext_len), 0)::bigint,
                 COUNT(chunk.*)::bigint
              FROM gemini_batch_file_chunks chunk
              JOIN gemini_batch_files file ON file.file_id=chunk.file_id
-             WHERE file.expiration_ts > floor(EXTRACT(EPOCH FROM clock_timestamp()))::bigint",
-            &[],
+             WHERE file.state='active' AND file.expiration_ts > $1",
+            &[&ts],
         )?;
-        Ok(crate::GeminiBatchOperationalReport {
+        let window_rows = tx.query(
+            "WITH windows(label,seconds) AS (VALUES ('1h'::text,3600::bigint),('24h',86400),('7d',604800))
+             SELECT w.label,
+                (SELECT COUNT(*) FROM gemini_batch_jobs j WHERE j.create_ts >= $1-w.seconds)::bigint,
+                COUNT(*) FILTER (WHERE i.created_ts >= $1-w.seconds)::bigint,
+                COUNT(*) FILTER (WHERE i.terminal_ts >= $1-w.seconds AND i.state='succeeded')::bigint,
+                COUNT(*) FILTER (WHERE i.terminal_ts >= $1-w.seconds AND i.state='failed')::bigint,
+                COUNT(*) FILTER (WHERE i.terminal_ts >= $1-w.seconds AND i.state='canceled')::bigint,
+                COUNT(*) FILTER (WHERE i.terminal_ts >= $1-w.seconds AND i.state='indeterminate')::bigint,
+                COALESCE((SELECT SUM(o.actual_nano) FROM gemini_batch_settlement_outbox o WHERE o.state='done' AND o.committed_ts >= $1-w.seconds),0)::bigint,
+                AVG((i.dispatch_intent_ts-i.created_ts)::double precision) FILTER (WHERE i.dispatch_intent_ts >= $1-w.seconds AND i.dispatch_intent_ts >= i.created_ts),
+                AVG((i.terminal_ts-i.dispatch_intent_ts)::double precision) FILTER (WHERE i.terminal_ts >= $1-w.seconds AND i.dispatch_intent_ts IS NOT NULL AND i.terminal_ts >= i.dispatch_intent_ts),
+                (COUNT(*) FILTER (WHERE i.terminal_ts >= $1-w.seconds AND i.state IN ('succeeded','failed','canceled','indeterminate')))::double precision * 3600.0 / w.seconds::double precision
+             FROM windows w LEFT JOIN gemini_batch_items i ON true
+             GROUP BY w.label,w.seconds ORDER BY w.seconds",
+            &[&ts],
+        )?;
+        let windows = window_rows.into_iter().map(|row| crate::GeminiBatchOperationalWindow {
+            window: row.get(0), jobs_created: row.get(1), items_created: row.get(2),
+            succeeded: row.get(3), failed: row.get(4), canceled: row.get(5), indeterminate: row.get(6),
+            settled_nano: row.get(7), avg_queue_wait_seconds: row.get(8), avg_execution_seconds: row.get(9),
+            throughput_items_per_hour: row.get(10),
+        }).collect();
+        let report = crate::GeminiBatchOperationalReport {
+            queued_jobs: jobs.get(0),
+            running_jobs: jobs.get(1),
             queued_items: items.get(0),
-            oldest_queued_age_seconds: items.get::<_, i64>(1).max(0),
-            active_items: items.get(2),
-            completed_items: items.get(3),
-            error_items: items.get(4),
-            indeterminate_items: items.get(5),
+            claimed_items: items.get(1),
+            dispatching_items: items.get(2),
+            settlement_pending_items: items.get(3),
+            succeeded_items: items.get(4),
+            failed_items: items.get(5),
+            canceled_items: items.get(6),
+            indeterminate_items: items.get(7),
+            oldest_queued_age_seconds: items.get::<_, i64>(8).max(0),
+            reserved_hold_nano: items.get(9),
+            leader_held: leader.is_some(),
+            leader_expires_at: leader.as_ref().map(|row| row.get(0)),
             settlement_pending: settlement.get(0),
-            settlement_oldest_age_seconds: settlement.get::<_, i64>(1).max(0),
-            settlement_retries: settlement.get(2),
-            file_bytes: files.get(0),
-            file_chunks: files.get(1),
-        })
+            settlement_failed: settlement.get(1),
+            settlement_oldest_age_seconds: settlement.get::<_, i64>(2).max(0),
+            settlement_retries: settlement.get(3),
+            active_file_bytes: files.get(0),
+            active_file_chunks: files.get(1),
+            windows,
+        };
+        tx.commit()?;
+        Ok(report)
     }
     /// Create a complete batch and reserve its aggregate hold in one transaction.
     /// Locks are always acquired account first and raw access key second.

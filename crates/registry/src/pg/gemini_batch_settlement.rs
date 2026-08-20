@@ -467,7 +467,7 @@ impl PgStore {
                 Ok(None) => {}
                 Err(error) => {
                     let ts = now();
-                    let message = format!("{error:#}");
+                    let message = format!("{error:#}").chars().take(128).collect::<String>();
                     let permanent =
                         super::classify_failure(&error) == super::FailureClass::Permanent;
                     let state = if permanent { "failed" } else { "pending" };
@@ -489,7 +489,7 @@ impl PgStore {
                         .client
                         .query_opt(
                             "UPDATE gemini_batch_settlement_outbox SET state=$2,\
-                             attempts=attempts+1,last_error=$3,next_attempt_ts=$4,updated_ts=$5 \
+                             attempts=attempts+1,last_error_class=$3,next_attempt_ts=$4,updated_ts=$5 \
                              WHERE request_id=$1 AND state <> 'done' RETURNING attempts",
                             &[&id, &state, &message, &next_attempt, &ts],
                         )?

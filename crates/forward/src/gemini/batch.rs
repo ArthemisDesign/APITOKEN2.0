@@ -49,40 +49,77 @@ impl Default for GeminiBatchRuntimeConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GeminiBatchOperationalWindowSnapshot {
+    pub window: String,
+    pub jobs_created: u64,
+    pub items_created: u64,
+    pub succeeded: u64,
+    pub failed: u64,
+    pub canceled: u64,
+    pub indeterminate: u64,
+    pub settled_nano: u64,
+    pub avg_queue_wait_seconds: Option<f64>,
+    pub avg_execution_seconds: Option<f64>,
+    pub throughput_items_per_hour: f64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct GeminiBatchOperationalSnapshot {
     pub authority_available: bool,
+    pub queued_jobs: u64,
+    pub running_jobs: u64,
     pub queued_items: u64,
-    pub oldest_queued_age_seconds: u64,
-    pub active_items: u64,
-    pub completed_items: u64,
-    pub error_items: u64,
+    pub claimed_items: u64,
+    pub dispatching_items: u64,
+    pub settlement_pending_items: u64,
+    pub succeeded_items: u64,
+    pub failed_items: u64,
+    pub canceled_items: u64,
     pub indeterminate_items: u64,
+    pub oldest_queued_age_seconds: u64,
+    pub reserved_hold_nano: u64,
+    pub leader_held: bool,
+    pub leader_expires_at: Option<i64>,
     pub headroom_stops: u64,
     pub settlement_pending: u64,
+    pub settlement_failed: u64,
     pub settlement_oldest_age_seconds: u64,
     pub settlement_retries: u64,
-    pub file_bytes: u64,
-    pub file_chunks: u64,
+    pub active_file_bytes: u64,
+    pub active_file_chunks: u64,
+    pub windows: Vec<GeminiBatchOperationalWindowSnapshot>,
 }
 
 impl GeminiBatchOperationalSnapshot {
     fn from_report(report: GeminiBatchOperationalReport, headroom_stops: u64) -> Self {
         let nonnegative = |value: i64| u64::try_from(value.max(0)).unwrap_or(u64::MAX);
+        let windows = report.windows.into_iter().map(|window| GeminiBatchOperationalWindowSnapshot {
+            window: window.window,
+            jobs_created: nonnegative(window.jobs_created), items_created: nonnegative(window.items_created),
+            succeeded: nonnegative(window.succeeded), failed: nonnegative(window.failed),
+            canceled: nonnegative(window.canceled), indeterminate: nonnegative(window.indeterminate),
+            settled_nano: nonnegative(window.settled_nano), avg_queue_wait_seconds: window.avg_queue_wait_seconds,
+            avg_execution_seconds: window.avg_execution_seconds,
+            throughput_items_per_hour: window.throughput_items_per_hour.max(0.0),
+        }).collect();
         Self {
             authority_available: true,
-            queued_items: nonnegative(report.queued_items),
+            queued_jobs: nonnegative(report.queued_jobs), running_jobs: nonnegative(report.running_jobs),
+            queued_items: nonnegative(report.queued_items), claimed_items: nonnegative(report.claimed_items),
+            dispatching_items: nonnegative(report.dispatching_items),
+            settlement_pending_items: nonnegative(report.settlement_pending_items),
+            succeeded_items: nonnegative(report.succeeded_items), failed_items: nonnegative(report.failed_items),
+            canceled_items: nonnegative(report.canceled_items), indeterminate_items: nonnegative(report.indeterminate_items),
             oldest_queued_age_seconds: nonnegative(report.oldest_queued_age_seconds),
-            active_items: nonnegative(report.active_items),
-            completed_items: nonnegative(report.completed_items),
-            error_items: nonnegative(report.error_items),
-            indeterminate_items: nonnegative(report.indeterminate_items),
-            headroom_stops,
+            reserved_hold_nano: nonnegative(report.reserved_hold_nano), leader_held: report.leader_held,
+            leader_expires_at: report.leader_expires_at, headroom_stops,
             settlement_pending: nonnegative(report.settlement_pending),
+            settlement_failed: nonnegative(report.settlement_failed),
             settlement_oldest_age_seconds: nonnegative(report.settlement_oldest_age_seconds),
             settlement_retries: nonnegative(report.settlement_retries),
-            file_bytes: nonnegative(report.file_bytes),
-            file_chunks: nonnegative(report.file_chunks),
+            active_file_bytes: nonnegative(report.active_file_bytes),
+            active_file_chunks: nonnegative(report.active_file_chunks), windows,
         }
     }
 }
@@ -497,17 +534,19 @@ mod tests {
     fn operational_snapshot_clamps_authority_values_and_keeps_fixed_shape() {
         let snapshot = GeminiBatchOperationalSnapshot::from_report(
             GeminiBatchOperationalReport {
-                queued_items: 3,
-                oldest_queued_age_seconds: -1,
-                active_items: 2,
-                completed_items: 7,
-                error_items: 1,
-                indeterminate_items: 4,
-                settlement_pending: 5,
-                settlement_oldest_age_seconds: 11,
-                settlement_retries: 6,
-                file_bytes: 1024,
-                file_chunks: 8,
+                queued_jobs: 1, running_jobs: 2, queued_items: 3, claimed_items: 1,
+                dispatching_items: 1, settlement_pending_items: 0, succeeded_items: 7,
+                failed_items: 1, canceled_items: 2, indeterminate_items: 4,
+                oldest_queued_age_seconds: -1, reserved_hold_nano: 99,
+                leader_held: true, leader_expires_at: Some(123), settlement_pending: 5,
+                settlement_failed: 1, settlement_oldest_age_seconds: 11, settlement_retries: 6,
+                active_file_bytes: 1024, active_file_chunks: 8,
+                windows: vec![registry::GeminiBatchOperationalWindow {
+                    window: "1h".into(), jobs_created: 1, items_created: 2, succeeded: 1,
+                    failed: -1, canceled: 0, indeterminate: 0, settled_nano: 50,
+                    avg_queue_wait_seconds: Some(2.5), avg_execution_seconds: Some(3.5),
+                    throughput_items_per_hour: 1.0,
+                }],
             },
             9,
         );
@@ -515,6 +554,9 @@ mod tests {
         assert_eq!(snapshot.queued_items, 3);
         assert_eq!(snapshot.oldest_queued_age_seconds, 0);
         assert_eq!(snapshot.headroom_stops, 9);
-        assert_eq!(snapshot.file_chunks, 8);
+        assert_eq!(snapshot.active_file_chunks, 8);
+        assert_eq!(snapshot.windows.len(), 1);
+        assert_eq!(snapshot.windows[0].failed, 0);
+        assert_eq!(snapshot.reserved_hold_nano, 99);
     }
 }

@@ -65,7 +65,10 @@ side effect. `serve` may only perform the read-only schema verification before c
   nullable ledger/usage `key_id` preserves attribution after deletion. Result expiry starts only at
   completion, and outbox rows can carry the complete immutable Gemini calibration event. Migration
   0057 gives file rows an explicit `inline_legacy|chunked` storage shape without fake blob bytes.
-  Registry exposes atomic create/read/file/claim/cancel/settlement/prune primitives only. Interactive
+  Registry exposes atomic create/read/file/claim/cancel/settlement/prune primitives plus one
+  identity-free operational report. That report is read in one PostgreSQL `REPEATABLE READ`
+  transaction and owns the closed current state plus rolling `1h|24h|7d` aggregates; it never
+  returns account/job/item/model/profile identity or customer content. Interactive
   and batch APPLY share one private transaction-local account collection primitive, and provider-turn
   recording likewise has one transaction helper used by its public wrapper and batch APPLY. Exact
   calibration replay never advances spend twice; conflicting replay rolls back; subject tracking uses

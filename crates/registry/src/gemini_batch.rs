@@ -712,17 +712,43 @@ pub struct GeminiBatchPruneReport {
 /// The report deliberately contains no account, job, item, model, file, or profile identity. It is
 /// safe to expose through Prometheus and the protected fleet summary without cardinality growing
 /// with customer activity.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GeminiBatchOperationalWindow {
+    /// Closed label owned by server/metrics projection: exactly `1h`, `24h`, or `7d`.
+    pub window: String,
+    pub jobs_created: i64,
+    pub items_created: i64,
+    pub succeeded: i64,
+    pub failed: i64,
+    pub canceled: i64,
+    pub indeterminate: i64,
+    pub settled_nano: i64,
+    pub avg_queue_wait_seconds: Option<f64>,
+    pub avg_execution_seconds: Option<f64>,
+    pub throughput_items_per_hour: f64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct GeminiBatchOperationalReport {
+    pub queued_jobs: i64,
+    pub running_jobs: i64,
     pub queued_items: i64,
-    pub oldest_queued_age_seconds: i64,
-    pub active_items: i64,
-    pub completed_items: i64,
-    pub error_items: i64,
+    pub claimed_items: i64,
+    pub dispatching_items: i64,
+    pub settlement_pending_items: i64,
+    pub succeeded_items: i64,
+    pub failed_items: i64,
+    pub canceled_items: i64,
     pub indeterminate_items: i64,
+    pub oldest_queued_age_seconds: i64,
+    pub reserved_hold_nano: i64,
+    pub leader_held: bool,
+    pub leader_expires_at: Option<i64>,
     pub settlement_pending: i64,
+    pub settlement_failed: i64,
     pub settlement_oldest_age_seconds: i64,
     pub settlement_retries: i64,
-    pub file_bytes: i64,
-    pub file_chunks: i64,
+    pub active_file_bytes: i64,
+    pub active_file_chunks: i64,
+    pub windows: Vec<GeminiBatchOperationalWindow>,
 }
