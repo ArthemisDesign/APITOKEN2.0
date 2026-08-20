@@ -516,8 +516,9 @@ Exact candidate SHA допускается к повышенным defaults то
 
 ### Commit 3b — Gemini typed executor
 
-- Удалить synthetic internal HTTP request и повторный parse через shared typed executor native и
-  universal adapters.
+- Universal adapters передают один раз переведённый `NativeGeminiRequest` через trusted typed
+  extensions; synthetic body serialization и повторный parse удалены.
+- Shared native executor сохраняет HTTP shell только для route/auth/context/error/SSE contracts.
 - Exact transport fingerprint и money/error/SSE matrix должны быть GREEN.
 
 ### Commit 4 — systemd slices и resource headroom gate

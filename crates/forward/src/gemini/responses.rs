@@ -232,18 +232,7 @@ pub async fn gemini_responses(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
-    let body_bytes = match serde_json::to_vec(&translated.body) {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return chat_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to build the upstream request.",
-                None,
-                Value::Null,
-                "internal_response_error",
-            )
-        }
-    };
+    let native_value = translated.body;
     let suffix = if translated.stream {
         "streamGenerateContent?alt=sse"
     } else {
@@ -252,7 +241,7 @@ pub async fn gemini_responses(
     let mut inner = Request::builder()
         .method(Method::POST)
         .uri(format!("/v1beta/models/{}:{suffix}", translated.model))
-        .body(Body::from(body_bytes))
+        .body(Body::empty())
         .expect("static request builder is infallible");
     *inner.headers_mut() = headers;
     crate::execution::inherit_request_context(&parts.extensions, inner.extensions_mut());
@@ -262,6 +251,11 @@ pub async fn gemini_responses(
             requested_model,
             stream_flag: translated.stream,
             classification,
+        });
+    inner
+        .extensions_mut()
+        .insert(super::api::NativeGeminiRequest {
+            value: native_value,
         });
     let upstream = gemini_api(State(app), ConnectInfo(peer), inner).await;
 

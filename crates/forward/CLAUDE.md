@@ -26,6 +26,12 @@ Never mix the three provider paths.
   Native Gemini generate/stream/count paths use the shared bounded reader under their existing
   32 MiB text and 20 MiB image/media caps; universal Gemini adapters remain separate.
 
+**Gemini typed executor boundary.** Universal Chat, Responses and Messages adapters translate the
+validated public request once into `NativeGeminiRequest` and pass the native `serde_json::Value`
+through trusted request extensions. The shared native executor performs auth/reserve/affinity/
+rotation/wrapper/settlement without serializing and reparsing a synthetic HTTP body. Typed logical
+ID, lifecycle, attribution and fixed public error/SSE adapters remain on the surrounding HTTP shell.
+
 **Gemini helper IPC.** Rust and the embedded SHA-pinned Node helper use one binary framed protocol:
 13-byte big-endian headers (`kind`, request id, payload length), control JSON capped at 1 MiB,
 request bodies capped at the dormant 256 MiB envelope, and response data chunks capped at 1 MiB.

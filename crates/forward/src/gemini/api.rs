@@ -304,6 +304,14 @@ struct ParsedRoute {
 /// original client body. The native execution owner consumes it to admit exactly one fact under the
 /// public route semantics; no request JSON, tool name, arbitrary identifier, or header crosses this
 /// boundary.
+/// Typed adapter→executor payload. Universal adapters validate and translate exactly once, then
+/// pass the native JSON value through request extensions instead of serializing and reparsing it.
+/// The HTTP shell remains only for trusted headers/context and route selection.
+#[derive(Clone)]
+pub(crate) struct NativeGeminiRequest {
+    pub(crate) value: Value,
+}
+
 #[derive(Clone)]
 pub(crate) enum UniversalGenerationOrigin {
     Chat {
@@ -3906,22 +3914,36 @@ async fn api_inner_observed(
     } else {
         GEMINI_TEXT_REQUEST_BODY_LIMIT
     };
-    let (parts, body) = request.into_parts();
-    let request_limit = api_limits::ByteLimit::from_bytes(request_body_limit as u64);
-    let bounded_body = read_body_bounded(&app, body, request_limit, request_limit)
-        .await
-        .map_err(|error| match error {
-            bounded_body::StorageError::TooLarge
-            | bounded_body::StorageError::ArithmeticOverflow
-            | bounded_body::StorageError::Io => {
-                ApiError::invalid("The request body is invalid or too large.")
-            }
-            _ => ApiError::unavailable("gemini_body_storage_unavailable"),
-        })?;
-    let body = bounded_body.bytes.clone();
-    let _body_lease = bounded_body._lease;
-    let mut value: Value = serde_json::from_slice(&body)
-        .map_err(|_| ApiError::invalid("The request body is not valid JSON."))?;
+    let (mut parts, body) = request.into_parts();
+    let typed = parts.extensions.remove::<NativeGeminiRequest>();
+    let (mut value, _body_lease) = if let Some(typed) = typed {
+        // Preserve the native route/model envelope after translation. The typed boundary removes
+        // synthetic HTTP reparsing, not provider-owned size admission; serialization here is only
+        // a checked measurement and is dropped before execution.
+        let measured = serde_json::to_vec(&typed.value)
+            .map_err(|_| ApiError::invalid("The request body is not valid JSON."))?;
+        if measured.len() > request_body_limit {
+            return Err(ApiError::invalid(
+                "The request body is invalid or too large.",
+            ));
+        }
+        (typed.value, None)
+    } else {
+        let request_limit = api_limits::ByteLimit::from_bytes(request_body_limit as u64);
+        let bounded_body = read_body_bounded(&app, body, request_limit, request_limit)
+            .await
+            .map_err(|error| match error {
+                bounded_body::StorageError::TooLarge
+                | bounded_body::StorageError::ArithmeticOverflow
+                | bounded_body::StorageError::Io => {
+                    ApiError::invalid("The request body is invalid or too large.")
+                }
+                _ => ApiError::unavailable("gemini_body_storage_unavailable"),
+            })?;
+        let value = serde_json::from_slice(&bounded_body.bytes)
+            .map_err(|_| ApiError::invalid("The request body is not valid JSON."))?;
+        (value, Some(bounded_body._lease))
+    };
     if !value.is_object() {
         return Err(ApiError::invalid("The request body must be a JSON object."));
     }
