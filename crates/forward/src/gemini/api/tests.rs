@@ -1,4 +1,5 @@
 use super::*;
+use crate::gemini::{GeminiBatchAuthority, GeminiBatchDataKeyring, GeminiBatchPublicFacade};
 use crate::{AffinityStore, AsyncBilling, Breaker, Clients, ProxyConfig};
 use axum::http::Uri;
 use axum::routing::any;
@@ -673,6 +674,7 @@ fn app_state(gateway: Arc<GeminiGateway>, billing: Option<Arc<AsyncBilling>>) ->
         clients: Arc::new(Clients::new(&cfg)),
         codex: None,
         gemini: Some(gateway),
+        gemini_batch: None,
         kimi: None,
         glm: None,
         tripo3d: None,
@@ -5943,6 +5945,351 @@ async fn native_count_tokens_emits_one_fact_with_exact_401_resend_attempts() {
     assert!(!debug.contains(CUSTOMER_KEY));
     drop(billing_owned);
     let _ = fs::remove_file(path);
+}
+
+async fn invoke_batch_request(
+    app: AppState,
+    method: Method,
+    uri: &str,
+    key: &str,
+    headers: &[(&str, &str)],
+    body: impl Into<Body>,
+) -> Response {
+    let mut builder = axum::extract::Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("x-goog-api-key", key);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    api(
+        State(app),
+        ConnectInfo("198.51.100.10:12345".parse().unwrap()),
+        builder.body(body.into()).unwrap(),
+    )
+    .await
+}
+
+#[test]
+fn gemini_batch_public_handlers_postgres_lifecycle_files_and_account_isolation() {
+    const LOCK: i64 = 831_572_908_441;
+    const ACCOUNT_A: &str = "gemini-batch-http-account-a";
+    const ACCOUNT_B: &str = "gemini-batch-http-account-b";
+    const KEY_A: &str = "sk-pool-gemini-batch-http-a";
+    const KEY_B: &str = "sk-pool-gemini-batch-http-b";
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping Gemini Batch public handler lifecycle: test URL is unset");
+        return;
+    };
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let mut sql = postgres::Client::connect(&url, postgres::NoTls)
+        .expect("CLAUDE_API_TEST_DATABASE_URL was supplied but PostgreSQL is unavailable");
+    sql.batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+        .unwrap();
+    sql.query_one("SELECT pg_advisory_lock($1)", &[&LOCK])
+        .unwrap();
+    let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    sql.batch_execute(
+        "TRUNCATE gemini_batch_settlement_outbox,gemini_batch_profile_leases,gemini_batch_blobs,\
+         gemini_batch_item_files,gemini_batch_items,gemini_batch_jobs,gemini_batch_file_chunks,\
+         gemini_batch_files,request_facts,execution_group_winner,settlement_outbox,reservations,\
+         capacity_leases,leader_leases,engine_instances,usage_events,ledger,api_keys,accounts \
+         RESTART IDENTITY CASCADE",
+    )
+    .unwrap();
+    for (account, key, reference) in [
+        (ACCOUNT_A, KEY_A, "gemini-batch-http-seed-a"),
+        (ACCOUNT_B, KEY_B, "gemini-batch-http-seed-b"),
+    ] {
+        pg.account_create(account, None, 10_000).unwrap();
+        pg.account_topup(account, 100_000_000_000, Some(reference))
+            .unwrap();
+        pg.key_issue(key, account, None).unwrap();
+    }
+    let owner = pg
+        .claim_instance(
+            &format!("gemini-batch-http-{}-{unique}", std::process::id()),
+            600,
+        )
+        .unwrap();
+    drop(pg);
+
+    let billing = Arc::new(
+        AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+            Some(owner.clone()),
+            1,
+            0,
+        )
+        .unwrap(),
+    );
+    let batch_authority = GeminiBatchAuthority::start(
+        registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+        owner,
+    )
+    .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let fixture = gateway_fixture("http://127.0.0.1:1", &[None], 0);
+        let data_key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0x5au8; 32]);
+        let keyring = Arc::new(
+            GeminiBatchDataKeyring::parse(&format!("test;test:{data_key}")).unwrap(),
+        );
+        let facade = GeminiBatchPublicFacade::new(
+            batch_authority.clone(),
+            fixture.gateway.clone(),
+            keyring,
+        );
+        let mut app = app_state(fixture.gateway.clone(), Some(Arc::clone(&billing)));
+        app.authority = Arc::new(registry::authority::AuthorityConfig::Postgres { url: url.clone() });
+        app.gemini_batch = Some(facade);
+
+        let upload = b"{\"key\":\"first\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hello\"}]}]}}\n";
+        let response = invoke_batch_request(
+            app.clone(),
+            Method::POST,
+            "/upload/v1beta/files",
+            KEY_A,
+            &[
+                ("x-goog-upload-protocol", "resumable"),
+                ("x-goog-upload-command", "start"),
+                ("x-goog-upload-header-content-length", "84"),
+                ("x-goog-upload-file-name", "batch-input.jsonl"),
+                ("x-goog-upload-header-content-type", "application/jsonl"),
+            ],
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let upload_url = response.headers()["x-goog-upload-url"].to_str().unwrap().to_owned();
+        assert_eq!(response.headers()["x-goog-upload-status"], "active");
+        let response = invoke_batch_request(
+            app.clone(),
+            Method::POST,
+            &upload_url,
+            KEY_A,
+            &[
+                ("content-type", "application/jsonl"),
+                ("x-goog-upload-protocol", "resumable"),
+                ("x-goog-upload-command", "upload, finalize"),
+                ("x-goog-upload-offset", "0"),
+            ],
+            upload.as_slice(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["x-goog-upload-status"], "final");
+        let uploaded = response_json(response).await;
+        let file_name = uploaded["file"]["name"].as_str().unwrap().to_owned();
+        let file_id = file_name.strip_prefix("files/").unwrap().to_owned();
+
+        let response = invoke_batch_request(
+            app.clone(),
+            Method::GET,
+            &format!("/v1beta/files/{file_id}"),
+            KEY_A,
+            &[],
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["name"], file_name);
+        let response = invoke_batch_request(
+            app.clone(),
+            Method::GET,
+            "/v1beta/files",
+            KEY_A,
+            &[],
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["files"][0]["name"], file_name);
+        let response = invoke_batch_request(
+            app.clone(),
+            Method::GET,
+            &format!("/v1beta/files/{file_id}:download"),
+            KEY_A,
+            &[],
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            to_bytes(response.into_body(), GEMINI_BODY_LIMIT).await.unwrap(),
+            upload.as_slice()
+        );
+
+        for uri in [
+            format!("/v1beta/files/{file_id}"),
+            format!("/v1beta/files/{file_id}:download"),
+        ] {
+            let response = invoke_batch_request(
+                app.clone(),
+                Method::GET,
+                &uri,
+                KEY_B,
+                &[],
+                Body::empty(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+        let response = invoke_batch_request(
+            app.clone(),
+            Method::GET,
+            "/v1beta/files",
+            KEY_B,
+            &[],
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["files"], json!([]));
+
+        let create_body = json!({"batch":{"displayName":"HTTP lifecycle","inputConfig":{"fileName":file_name}}});
+        let response = invoke_batch_request(
+            app.clone(),
+            Method::POST,
+            "/v1beta/models/gemini-integration-model:batchGenerateContent",
+            KEY_A,
+            &[
+                ("content-type", "application/json"),
+                ("idempotency-key", "gemini-batch-http-lifecycle"),
+            ],
+            serde_json::to_vec(&create_body).unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let operation = response_json(response).await;
+        let batch_name = operation["name"].as_str().unwrap().to_owned();
+        let batch_id = batch_name.strip_prefix("batches/").unwrap().to_owned();
+
+        let response = invoke_batch_request(
+            app.clone(),
+            Method::GET,
+            &format!("/v1beta/batches/{batch_id}"),
+            KEY_A,
+            &[],
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["name"], batch_name);
+        let response = invoke_batch_request(
+            app.clone(),
+            Method::GET,
+            "/v1beta/batches?pageSize=1",
+            KEY_A,
+            &[],
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["operations"][0]["name"], batch_name);
+
+        let response = invoke_batch_request(
+            app.clone(),
+            Method::GET,
+            &format!("/v1beta/batches/{batch_id}"),
+            KEY_B,
+            &[],
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let response = invoke_batch_request(
+            app.clone(),
+            Method::GET,
+            "/v1beta/batches",
+            KEY_B,
+            &[],
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["operations"], json!([]));
+        for (method, suffix) in [
+            (Method::POST, ":cancel"),
+            (Method::DELETE, ""),
+        ] {
+            let response = invoke_batch_request(
+                app.clone(),
+                method,
+                &format!("/v1beta/batches/{batch_id}{suffix}"),
+                KEY_B,
+                &[],
+                Body::empty(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+
+        let response = invoke_batch_request(
+            app.clone(),
+            Method::POST,
+            &format!("/v1beta/batches/{batch_id}:cancel"),
+            KEY_A,
+            &[],
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = invoke_batch_request(
+            app.clone(),
+            Method::DELETE,
+            &format!("/v1beta/batches/{batch_id}"),
+            KEY_A,
+            &[],
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = invoke_batch_request(
+            app.clone(),
+            Method::GET,
+            &format!("/v1beta/batches/{batch_id}"),
+            KEY_A,
+            &[],
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let response = invoke_batch_request(
+            app.clone(),
+            Method::DELETE,
+            &format!("/v1beta/files/{file_id}"),
+            KEY_A,
+            &[],
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FAILED_DEPENDENCY);
+        let response = invoke_batch_request(
+            app,
+            Method::GET,
+            &format!("/v1beta/files/{file_id}"),
+            KEY_A,
+            &[],
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        batch_authority.shutdown().await.unwrap();
+    });
+    drop(billing);
+    assert!(sql
+        .query_one("SELECT pg_advisory_unlock($1)", &[&LOCK])
+        .unwrap()
+        .get::<_, bool>(0));
 }
 
 #[test]

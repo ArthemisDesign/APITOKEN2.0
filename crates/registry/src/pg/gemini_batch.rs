@@ -440,7 +440,7 @@ impl PgStore {
         let sql = format!(
             "SELECT {JOB_READ_COLUMNS} FROM gemini_batch_jobs j \
              LEFT JOIN gemini_batch_items i ON i.job_id=j.job_id \
-             WHERE j.account_id=$1 AND j.job_id=$2 \
+             WHERE j.account_id=$1 AND j.job_id=$2 AND j.delete_ts IS NULL \
              GROUP BY j.job_id"
         );
         let Some(row) = tx.query_opt(&sql, &[&account_id, &job_id])? else {
@@ -685,7 +685,9 @@ impl PgStore {
             return Ok(false);
         };
         let declared_digest = bytes32(file.get(2), "file digest")?;
-        if declared_digest != completion.whole_file_sha256_digest {
+        // Resumable start persists a zero digest because the whole plaintext does not exist yet.
+        // Completion supplies the authenticated streaming digest; nonzero declarations remain exact.
+        if declared_digest != [0; 32] && declared_digest != completion.whole_file_sha256_digest {
             bail!("Gemini Batch whole-file digest mismatch")
         }
         if file.get::<_, String>(0) == "active" {
@@ -734,7 +736,10 @@ impl PgStore {
         if total != file.get::<_, i64>(1) {
             bail!("Gemini Batch file size does not match its chunks")
         }
-        if chunks.len() == 1 && bytes32(chunks[0].get(2), "file chunk digest")? != declared_digest {
+        if declared_digest != [0; 32]
+            && chunks.len() == 1
+            && bytes32(chunks[0].get(2), "file chunk digest")? != declared_digest
+        {
             bail!("Gemini Batch single-chunk file digest mismatch")
         }
         tx.execute(
@@ -826,7 +831,7 @@ impl PgStore {
             "SELECT c.chunk_index,c.key_id,c.nonce,c.ciphertext,c.plaintext_len,\
                     c.plaintext_digest,c.created_ts \
              FROM gemini_batch_file_chunks c JOIN gemini_batch_files f USING(file_id) \
-             WHERE f.account_id=$1 AND c.file_id=$2 AND f.state='active' \
+             WHERE f.account_id=$1 AND c.file_id=$2 AND f.state IN ('processing','active') \
                AND f.storage_kind='chunked' AND f.expiration_ts>$3 \
                AND ($4::bigint IS NULL OR c.chunk_index>$4) \
              ORDER BY c.chunk_index LIMIT $5",

@@ -1773,6 +1773,7 @@ mod tests {
             clients: Arc::new(Clients::new(&cfg)),
             codex: None,
             gemini: None,
+            gemini_batch: None,
             kimi: None,
             glm: None,
             tripo3d: None,

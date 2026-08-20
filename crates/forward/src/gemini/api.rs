@@ -130,7 +130,7 @@ fn promote_aliases(object: &mut serde_json::Map<String, Value>, aliases: &[(&str
 /// Canonicalize a native request object in place: snake_case aliases become camelCase for the known
 /// top-level fields and recognized tool keys. When both spellings are present the camelCase value
 /// wins and the snake_case duplicate is discarded, matching Google's proto-JSON precedence.
-fn canonicalize_native_request(value: &mut Value) {
+pub(crate) fn canonicalize_native_request(value: &mut Value) {
     let Some(object) = value.as_object_mut() else {
         return;
     };
@@ -1173,6 +1173,13 @@ fn log_rate_limit_exhausted(
     );
 }
 
+pub(crate) fn batch_generation_controls(
+    body: &Value,
+    model: &GeminiModel,
+) -> (u64, u64, u64, bool) {
+    generation_controls(body, model, 0, AudioUsageHint::default())
+}
+
 fn generation_controls(
     body: &Value,
     model: &GeminiModel,
@@ -1983,6 +1990,17 @@ fn validate_native_request(
             }
         }
     }
+}
+
+pub(crate) fn validate_batch_generate_request(
+    body: &Value,
+    model: &GeminiModel,
+) -> Result<(), String> {
+    validate_generation_request(body, model, false).map_err(|error| error.message.to_owned())?;
+    if model.is_image_generation() {
+        return Err("Image-output models are not supported by Gemini Batch.".to_owned());
+    }
+    Ok(())
 }
 
 fn wire_model_for_request(
@@ -3606,6 +3624,19 @@ pub async fn api(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: axum::extract::Request,
 ) -> Response {
+    if let Some(route) = super::batch_handlers::parse(request.method(), request.uri().path()) {
+        if request.method() == Method::OPTIONS {
+            return super::batch_handlers::cors();
+        }
+        if app.gemini_batch.is_none() {
+            return (
+                StatusCode::NOT_FOUND,
+                axum::Json(json!({"error":{"code":404,"status":"NOT_FOUND"}})),
+            )
+                .into_response();
+        }
+        return super::batch_handlers::dispatch(app, peer, route, request).await;
+    }
     // A browser SDK (@google/genai) issues a CORS preflight before the cross-origin call; the real
     // endpoint answers it without auth. Handle it before routing, which otherwise 404s on OPTIONS.
     if request.method() == Method::OPTIONS {

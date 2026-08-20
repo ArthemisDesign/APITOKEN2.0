@@ -617,6 +617,12 @@ tool history use the same shared sanitizer/context-engineering marker as Chat/Re
 real opaque response signatures stay hidden per decision 4.
 Env for both is read only by `server::config`.
 
+**Default-off Gemini Batch public producer (`gemini/batch_handlers.rs`):** when composition supplies
+`AppState.gemini_batch`, exact native batch and Files routes authorize before reading any body,
+atomically submit inline item holds through the dedicated authority actor, scope every read/mutation
+by account, and encrypt/decrypt file chunks through the Stage 3 keyring. The facade remains absent
+by default; discovery publication and production systemd enablement belong only to Stage 6.
+
 **Cache-first routing without client opt-in (`affinity.rs`):** tenant = metered `account_id` (all keys
 of the account share the cache) or a separate admin scope. `AffinityStore::infer` is computed BEFORE identity injection.
 Strong session IDs are accepted from Claude Code/generic session-conversation-thread headers and the same-named

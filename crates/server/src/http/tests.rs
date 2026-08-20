@@ -908,6 +908,7 @@ fn admin_auth_test_app() -> AppState {
         clients,
         codex: None,
         gemini: None,
+        gemini_batch: None,
         kimi: None,
         glm: None,
         tripo3d: None,

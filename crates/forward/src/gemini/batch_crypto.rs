@@ -161,6 +161,37 @@ impl GeminiBatchDataKeyring {
         GeminiBatchFileEncryptor::new(self, account_id, file_id, schema_version)
     }
 
+    /// Encrypt one resumable-upload chunk at its durable explicit index.
+    pub fn encrypt_file_chunk(
+        &self,
+        identity: &GeminiBatchFileChunkIdentity<'_>,
+        plaintext: &[u8],
+        created_ts: i64,
+    ) -> Result<GeminiBatchFileChunk> {
+        identity.validate()?;
+        if plaintext.is_empty()
+            || plaintext.len() > registry::MAX_BATCH_FILE_CHUNK_BYTES as usize
+            || created_ts <= 0
+        {
+            bail!("invalid Gemini Batch resumable file chunk")
+        }
+        let plaintext_len =
+            i64::try_from(plaintext.len()).context("Gemini Batch chunk too large")?;
+        let plaintext_digest = Sha256::digest(plaintext).into();
+        let (key_id, nonce, ciphertext) = self.encrypt(identity.aad()?, plaintext)?;
+        let chunk = GeminiBatchFileChunk {
+            chunk_index: identity.chunk_index,
+            key_id,
+            nonce: nonce.to_vec(),
+            ciphertext,
+            plaintext_len,
+            plaintext_digest,
+            created_ts,
+        };
+        chunk.validate()?;
+        Ok(chunk)
+    }
+
     pub fn decrypt_file_chunk(
         &self,
         identity: &GeminiBatchFileChunkIdentity<'_>,

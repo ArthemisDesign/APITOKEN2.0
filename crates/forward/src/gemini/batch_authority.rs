@@ -15,6 +15,77 @@ const APPLICATION_NAME: &str = "gemini-batch-authority";
 type Reply<T> = oneshot::Sender<Result<T>>;
 
 enum Command {
+    Create {
+        create: registry::GeminiBatchCreate,
+        raw_key: String,
+        reply: Reply<registry::GeminiBatchCreateOutcome>,
+    },
+    Get {
+        account_id: String,
+        job_id: String,
+        reply: Reply<Option<registry::GeminiBatchJobDetail>>,
+    },
+    List {
+        account_id: String,
+        cursor: Option<registry::GeminiBatchPageCursor>,
+        limit: i64,
+        reply: Reply<registry::GeminiBatchJobPage>,
+    },
+    Cancel {
+        account_id: String,
+        job_id: String,
+        reply: Reply<Option<registry::GeminiBatchCancelResult>>,
+    },
+    Delete {
+        account_id: String,
+        job_id: String,
+        reply: Reply<bool>,
+    },
+    FileCreate {
+        create: registry::GeminiBatchFileCreate,
+        reply: Reply<registry::GeminiBatchFileCreateOutcome>,
+    },
+    FileAppend {
+        account_id: String,
+        file_id: String,
+        chunk: registry::GeminiBatchFileChunk,
+        reply: Reply<bool>,
+    },
+    FileComplete {
+        account_id: String,
+        file_id: String,
+        completion: registry::GeminiBatchFileCompletion,
+        reply: Reply<bool>,
+    },
+    FileGet {
+        account_id: String,
+        file_id: String,
+        reply: Reply<Option<registry::GeminiBatchFile>>,
+    },
+    FileList {
+        account_id: String,
+        limit: i64,
+        reply: Reply<Vec<registry::GeminiBatchFile>>,
+    },
+    FileDelete {
+        account_id: String,
+        file_id: String,
+        reply: Reply<bool>,
+    },
+    FileChunks {
+        account_id: String,
+        file_id: String,
+        after: Option<i64>,
+        limit: i64,
+        reply: Reply<registry::GeminiBatchFileChunkPage>,
+    },
+    BlobGet {
+        account_id: String,
+        job_id: String,
+        item_index: i64,
+        kind: String,
+        reply: Reply<Option<registry::GeminiBatchEncryptedBlob>>,
+    },
     AcquireLeader {
         ttl_secs: i64,
         reply: Reply<bool>,
@@ -103,6 +174,125 @@ impl GeminiBatchAuthority {
                 };
                 while let Some(command) = receiver.blocking_recv() {
                     match command {
+                        Command::Create {
+                            create,
+                            raw_key,
+                            reply,
+                        } => {
+                            let _ = reply.send(authority.gemini_batch_create(&create, &raw_key));
+                        }
+                        Command::Get {
+                            account_id,
+                            job_id,
+                            reply,
+                        } => {
+                            let _ = reply.send(authority.gemini_batch_get(&account_id, &job_id));
+                        }
+                        Command::List {
+                            account_id,
+                            cursor,
+                            limit,
+                            reply,
+                        } => {
+                            let _ = reply.send(authority.gemini_batch_list(
+                                &account_id,
+                                cursor.as_ref(),
+                                limit,
+                            ));
+                        }
+                        Command::Cancel {
+                            account_id,
+                            job_id,
+                            reply,
+                        } => {
+                            let _ = reply.send(authority.gemini_batch_cancel(&account_id, &job_id));
+                        }
+                        Command::Delete {
+                            account_id,
+                            job_id,
+                            reply,
+                        } => {
+                            let _ = reply.send(authority.gemini_batch_delete(&account_id, &job_id));
+                        }
+                        Command::FileCreate { create, reply } => {
+                            let _ = reply.send(authority.gemini_batch_file_create(&create));
+                        }
+                        Command::FileAppend {
+                            account_id,
+                            file_id,
+                            chunk,
+                            reply,
+                        } => {
+                            let _ = reply.send(authority.gemini_batch_file_append_chunk(
+                                &account_id,
+                                &file_id,
+                                &chunk,
+                            ));
+                        }
+                        Command::FileComplete {
+                            account_id,
+                            file_id,
+                            completion,
+                            reply,
+                        } => {
+                            let _ = reply.send(authority.gemini_batch_file_complete(
+                                &account_id,
+                                &file_id,
+                                &completion,
+                            ));
+                        }
+                        Command::FileGet {
+                            account_id,
+                            file_id,
+                            reply,
+                        } => {
+                            let _ =
+                                reply.send(authority.gemini_batch_file_get(&account_id, &file_id));
+                        }
+                        Command::FileList {
+                            account_id,
+                            limit,
+                            reply,
+                        } => {
+                            let _ =
+                                reply.send(authority.gemini_batch_file_list(&account_id, limit));
+                        }
+                        Command::FileDelete {
+                            account_id,
+                            file_id,
+                            reply,
+                        } => {
+                            let _ = reply
+                                .send(authority.gemini_batch_file_delete(&account_id, &file_id));
+                        }
+                        Command::FileChunks {
+                            account_id,
+                            file_id,
+                            after,
+                            limit,
+                            reply,
+                        } => {
+                            let _ = reply.send(authority.gemini_batch_file_chunk_page(
+                                &account_id,
+                                &file_id,
+                                after,
+                                limit,
+                            ));
+                        }
+                        Command::BlobGet {
+                            account_id,
+                            job_id,
+                            item_index,
+                            kind,
+                            reply,
+                        } => {
+                            let _ = reply.send(authority.gemini_batch_blob_get(
+                                &account_id,
+                                &job_id,
+                                item_index,
+                                &kind,
+                            ));
+                        }
                         Command::AcquireLeader { ttl_secs, reply } => {
                             let _ =
                                 reply.send(authority.acquire_gemini_batch_leader(&owner, ttl_secs));
@@ -211,6 +401,169 @@ impl GeminiBatchAuthority {
         result
             .await
             .map_err(|_| anyhow::anyhow!("Gemini Batch authority stopped"))?
+    }
+
+    pub async fn create(
+        &self,
+        create: registry::GeminiBatchCreate,
+        raw_key: String,
+    ) -> Result<registry::GeminiBatchCreateOutcome> {
+        self.call(|reply| Command::Create {
+            create,
+            raw_key,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn get(
+        &self,
+        account_id: String,
+        job_id: String,
+    ) -> Result<Option<registry::GeminiBatchJobDetail>> {
+        self.call(|reply| Command::Get {
+            account_id,
+            job_id,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn list(
+        &self,
+        account_id: String,
+        cursor: Option<registry::GeminiBatchPageCursor>,
+        limit: i64,
+    ) -> Result<registry::GeminiBatchJobPage> {
+        self.call(|reply| Command::List {
+            account_id,
+            cursor,
+            limit,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn cancel(
+        &self,
+        account_id: String,
+        job_id: String,
+    ) -> Result<Option<registry::GeminiBatchCancelResult>> {
+        self.call(|reply| Command::Cancel {
+            account_id,
+            job_id,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn delete(&self, account_id: String, job_id: String) -> Result<bool> {
+        self.call(|reply| Command::Delete {
+            account_id,
+            job_id,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn file_create(
+        &self,
+        create: registry::GeminiBatchFileCreate,
+    ) -> Result<registry::GeminiBatchFileCreateOutcome> {
+        self.call(|reply| Command::FileCreate { create, reply })
+            .await
+    }
+    pub async fn file_append(
+        &self,
+        account_id: String,
+        file_id: String,
+        chunk: registry::GeminiBatchFileChunk,
+    ) -> Result<bool> {
+        self.call(|reply| Command::FileAppend {
+            account_id,
+            file_id,
+            chunk,
+            reply,
+        })
+        .await
+    }
+    pub async fn file_complete(
+        &self,
+        account_id: String,
+        file_id: String,
+        completion: registry::GeminiBatchFileCompletion,
+    ) -> Result<bool> {
+        self.call(|reply| Command::FileComplete {
+            account_id,
+            file_id,
+            completion,
+            reply,
+        })
+        .await
+    }
+    pub async fn file_get(
+        &self,
+        account_id: String,
+        file_id: String,
+    ) -> Result<Option<registry::GeminiBatchFile>> {
+        self.call(|reply| Command::FileGet {
+            account_id,
+            file_id,
+            reply,
+        })
+        .await
+    }
+    pub async fn file_list(
+        &self,
+        account_id: String,
+        limit: i64,
+    ) -> Result<Vec<registry::GeminiBatchFile>> {
+        self.call(|reply| Command::FileList {
+            account_id,
+            limit,
+            reply,
+        })
+        .await
+    }
+    pub async fn file_delete(&self, account_id: String, file_id: String) -> Result<bool> {
+        self.call(|reply| Command::FileDelete {
+            account_id,
+            file_id,
+            reply,
+        })
+        .await
+    }
+    pub async fn file_chunks(
+        &self,
+        account_id: String,
+        file_id: String,
+        after: Option<i64>,
+        limit: i64,
+    ) -> Result<registry::GeminiBatchFileChunkPage> {
+        self.call(|reply| Command::FileChunks {
+            account_id,
+            file_id,
+            after,
+            limit,
+            reply,
+        })
+        .await
+    }
+    pub async fn blob_get(
+        &self,
+        account_id: String,
+        job_id: String,
+        item_index: i64,
+        kind: String,
+    ) -> Result<Option<registry::GeminiBatchEncryptedBlob>> {
+        self.call(|reply| Command::BlobGet {
+            account_id,
+            job_id,
+            item_index,
+            kind,
+            reply,
+        })
+        .await
     }
 
     pub async fn acquire_leader(&self, ttl_secs: i64) -> Result<bool> {

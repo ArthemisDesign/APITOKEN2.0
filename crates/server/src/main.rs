@@ -636,7 +636,10 @@ fn backup_cmd(out: Option<String>, keep: usize) -> Result<()> {
     if snaps.len() > keep {
         for old in &snaps[..snaps.len() - keep] {
             if let Err(e) = std::fs::remove_file(old) {
-                elog::warn("server", format!("backup cleanup failed to remove {}: {e}", old.display()));
+                elog::warn(
+                    "server",
+                    format!("backup cleanup failed to remove {}: {e}", old.display()),
+                );
             }
         }
         println!("  ротация: удалено {} старых", snaps.len() - keep);
@@ -1244,9 +1247,10 @@ async fn serve() -> Result<()> {
     }
     if let Some(result) = sqlite_reconcile {
         match result {
-            Ok(n) if n > 0 => {
-                elog::info("server", format!("реконсиляция резервов: возвращено {n} ключам (краш-остатки)"))
-            }
+            Ok(n) if n > 0 => elog::info(
+                "server",
+                format!("реконсиляция резервов: возвращено {n} ключам (краш-остатки)"),
+            ),
             Err(e) => elog::error("server", format!("reconcile резервов не удался: {e}")),
             _ => {}
         }
@@ -1357,7 +1361,10 @@ async fn serve() -> Result<()> {
             .preflight()
             .await
             .context("validate Gemini provider")?;
-        elog::info("server", "Gemini OAuth subscription provider preflight passed");
+        elog::info(
+            "server",
+            "Gemini OAuth subscription provider preflight passed",
+        );
         tokio::spawn(poller::gemini_health_loop(
             gateway.clone(),
             admin_changes.clone(),
@@ -1366,15 +1373,39 @@ async fn serve() -> Result<()> {
     } else {
         None
     };
+    let mut gemini_batch_public = None;
     let (gemini_batch_runtime, _gemini_batch_task) = if let Some(batch) = s.gemini_batch.clone() {
-        let owner = owner.clone().context("Gemini Batch requires PostgreSQL owner fencing")?;
-        let gateway = gemini.clone().context("Gemini Batch requires Gemini gateway")?;
-        let batch_authority = tokio::task::spawn_blocking({ let authority=authority.clone(); move || forward::gemini::GeminiBatchAuthority::start(authority, owner) })
-            .await.context("Gemini Batch authority startup task failed")??;
-        let runtime = forward::gemini::GeminiBatchRuntime::new(batch.runtime, batch_authority, gateway, Arc::new(batch.data_keys))?;
+        let owner = owner
+            .clone()
+            .context("Gemini Batch requires PostgreSQL owner fencing")?;
+        let gateway = gemini
+            .clone()
+            .context("Gemini Batch requires Gemini gateway")?;
+        let batch_authority = tokio::task::spawn_blocking({
+            let authority = authority.clone();
+            move || forward::gemini::GeminiBatchAuthority::start(authority, owner)
+        })
+        .await
+        .context("Gemini Batch authority startup task failed")??;
+        let data_keys = Arc::new(batch.data_keys);
+        if batch.public_enabled {
+            gemini_batch_public = Some(forward::gemini::GeminiBatchPublicFacade::new(
+                batch_authority.clone(),
+                gateway.clone(),
+                data_keys.clone(),
+            ));
+        }
+        let runtime = forward::gemini::GeminiBatchRuntime::new(
+            batch.runtime,
+            batch_authority,
+            gateway,
+            data_keys,
+        )?;
         let task = runtime.spawn();
         (Some(runtime), Some(task))
-    } else { (None, None) };
+    } else {
+        (None, None)
+    };
     let kimi = if let Some(config) = s.kimi.clone() {
         let calibration_store = billing.clone().context(
             "KIMI provider requires the durable billing authority for settlement and calibration",
@@ -1387,7 +1418,10 @@ async fn serve() -> Result<()> {
                 let gateway = Arc::new(gateway);
                 let live = gateway.preflight().await;
                 if live > 0 {
-                    elog::info("server", format!("KIMI backend preview preflight passed: live_profiles={live}"));
+                    elog::info(
+                        "server",
+                        format!("KIMI backend preview preflight passed: live_profiles={live}"),
+                    );
                 } else {
                     // KIMI is an optional backend inside the Anthropic service. Its cold roster or
                     // outage must not take unrelated Claude traffic out of readiness.
@@ -1440,7 +1474,10 @@ async fn serve() -> Result<()> {
                 let gateway = Arc::new(gateway);
                 let live = gateway.preflight().await;
                 if live > 0 {
-                    elog::info("server", format!("GLM backend preflight passed: live_profiles={live}"));
+                    elog::info(
+                        "server",
+                        format!("GLM backend preflight passed: live_profiles={live}"),
+                    );
                 } else {
                     // GLM is an optional backend inside the Anthropic service. Its cold roster or
                     // outage must not take unrelated Claude traffic out of readiness.
@@ -1488,7 +1525,10 @@ async fn serve() -> Result<()> {
             Ok(gateway) => {
                 let live = gateway.preflight().await;
                 if live > 0 {
-                    elog::info("server", format!("Tripo3D backend preflight passed: live_profiles={live}"));
+                    elog::info(
+                        "server",
+                        format!("Tripo3D backend preflight passed: live_profiles={live}"),
+                    );
                 } else {
                     // The dedicated plane's cold roster keeps the slot not-ready through the
                     // gateway readiness check rather than dying here.
@@ -1530,7 +1570,10 @@ async fn serve() -> Result<()> {
             Ok(gateway) => {
                 let live = gateway.preflight().await;
                 if live > 0 {
-                    elog::info("server", format!("Suno backend preflight passed: live_profiles={live}"));
+                    elog::info(
+                        "server",
+                        format!("Suno backend preflight passed: live_profiles={live}"),
+                    );
                 } else {
                     // The dedicated plane's cold roster keeps the slot not-ready through the
                     // gateway readiness check rather than dying here.
@@ -1576,6 +1619,7 @@ async fn serve() -> Result<()> {
         clients: Arc::new(Clients::new(&s.proxy)),
         codex,
         gemini,
+        gemini_batch: gemini_batch_public,
         kimi,
         glm,
         tripo3d,
@@ -1598,7 +1642,10 @@ async fn serve() -> Result<()> {
         0
     };
     if restored > 0 {
-        elog::info("server", format!("восстановлено состояние пула: {restored} подписок"));
+        elog::info(
+            "server",
+            format!("восстановлено состояние пула: {restored} подписок"),
+        );
     }
     if repaired_calibrations > 0 {
         elog::info(
@@ -1684,7 +1731,10 @@ async fn serve() -> Result<()> {
                 owner.clone(),
                 poke.clone(),
             ));
-            elog::info("server", "поллер лимитов: событийный (liveness + post-turn calibration)");
+            elog::info(
+                "server",
+                "поллер лимитов: событийный (liveness + post-turn calibration)",
+            );
         }
         // Коллектор истории метрик: снапшоты агрегата (спрос/предложение/headroom) в отдельную metrics.db.
         let mdir = std::path::Path::new(&s.db_path)
@@ -1699,20 +1749,28 @@ async fn serve() -> Result<()> {
         ));
         elog::info(
             "server",
-            format!("коллектор истории: metrics.db (снапшот/60с, retention {METRICS_RETENTION_DAYS}д)"),
+            format!(
+                "коллектор истории: metrics.db (снапшот/60с, retention {METRICS_RETENTION_DAYS}д)"
+            ),
         );
     }
     if s.proxy.api_keys.is_empty() {
         if s.proxy.trust_loopback {
             elog::warn(
                 "server",
-                format!("CLAUDE_API_KEYS не заданы — админ ТОЛЬКО с loopback (bind {})", s.bind),
+                format!(
+                    "CLAUDE_API_KEYS не заданы — админ ТОЛЬКО с loopback (bind {})",
+                    s.bind
+                ),
             );
         } else {
             elog::error(
                 "server",
-                format!("CLAUDE_API_KEYS не заданы, а bind {} НЕ loopback — сервер ОТКЛОНЯЕТ все \
-                       запросы (за реверс-прокси peer виден как 127.0.0.1). Задай CLAUDE_API_KEYS.", s.bind),
+                format!(
+                    "CLAUDE_API_KEYS не заданы, а bind {} НЕ loopback — сервер ОТКЛОНЯЕТ все \
+                       запросы (за реверс-прокси peer виден как 127.0.0.1). Задай CLAUDE_API_KEYS.",
+                    s.bind
+                ),
             );
         }
     }
@@ -1744,7 +1802,10 @@ async fn serve() -> Result<()> {
             shutdown_accepting.store(false, Ordering::Release);
             elog::info(
                 "server",
-                format!("graceful shutdown: readiness снята, жду {}с перед дренажем", readiness_delay.as_secs()),
+                format!(
+                    "graceful shutdown: readiness снята, жду {}с перед дренажем",
+                    readiness_delay.as_secs()
+                ),
             );
             let _ = shutdown_started_tx.send(());
             tokio::time::sleep(readiness_delay).await;
@@ -1790,7 +1851,12 @@ async fn serve() -> Result<()> {
         codex.shutdown_until(shutdown_deadline).await;
     }
     if let Some(batch) = &gemini_batch_runtime {
-        if let Err(error) = batch.shutdown(shutdown_deadline.unwrap_or_else(|| tokio::time::Instant::now() + std::time::Duration::from_secs(30))).await {
+        if let Err(error) = batch
+            .shutdown(shutdown_deadline.unwrap_or_else(|| {
+                tokio::time::Instant::now() + std::time::Duration::from_secs(30)
+            }))
+            .await
+        {
             elog::error("server", format!("Gemini Batch shutdown failed: {error:#}"));
         }
     }
@@ -1825,7 +1891,10 @@ async fn serve() -> Result<()> {
         // until every drain has crossed this barrier.
         suno.shutdown_until(shutdown_deadline).await;
     }
-    elog::info("server", "graceful shutdown: дренирую очередь биллинга + флаш пула");
+    elog::info(
+        "server",
+        "graceful shutdown: дренирую очередь биллинга + флаш пула",
+    );
     // Завершённые/оборванные стримы поставили settle в очередь DB-актора. Даже после deadline ждём
     // обязательный FIFO-барьер: ограничение дренажа не должно превращаться в потерянную выручку.
     if let Some(b) = &flush_app.billing {
@@ -1859,7 +1928,10 @@ async fn serve() -> Result<()> {
         if let Err(e) =
             poller::persist_state_cas(&flush_app, &flush_authority, flush_owner.as_ref(), 8).await
         {
-            elog::error("server", format!("финальный флаш не удался после CAS retry: {e}"));
+            elog::error(
+                "server",
+                format!("финальный флаш не удался после CAS retry: {e}"),
+            );
         }
     }
     drop(instance_lock);
@@ -1904,7 +1976,10 @@ fn spawn_pre_drain_signal(accepting: Arc<AtomicBool>) {
                     );
                 }
             }
-            Err(e) => elog::error("server", format!("SIGUSR1 pre-drain handler unavailable: {e}")),
+            Err(e) => elog::error(
+                "server",
+                format!("SIGUSR1 pre-drain handler unavailable: {e}"),
+            ),
         }
     });
 }
@@ -1930,7 +2005,10 @@ fn spawn_codex_reconcile_signal(
                     ));
                 }
             }
-            Err(e) => elog::error("server", format!("SIGUSR2 Codex reconcile handler unavailable: {e}")),
+            Err(e) => elog::error(
+                "server",
+                format!("SIGUSR2 Codex reconcile handler unavailable: {e}"),
+            ),
         }
     });
 }
