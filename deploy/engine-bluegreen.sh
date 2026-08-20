@@ -55,6 +55,7 @@ TARGET_COMMITTED=0
 OLD_SIGNALLED=0
 CUTOVER_ACTIVE=0
 CUTOVER_COMMITTED=0
+HEADROOM_HELPER=${LARGE_PAYLOAD_HEADROOM_HELPER:-/usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh}
 OPENAI_ACTIVE_PORT=
 OPENAI_ACTIVE_UNIT=
 OPENAI_TARGET_PORT=
@@ -982,6 +983,8 @@ for blocking_unit in "${BLOCKING_UNITS[@]}"; do
 done
 if ! slot_serves_current "$TARGET_PORT"; then
   systemctl_command stop "$TARGET_UNIT"
+  privileged_command "$HEADROOM_HELPER" "/run/claude-api-anthropic-$TARGET_PORT" claude-api-anthropic.slice \
+    || die "insufficient memory or spool headroom for $TARGET_UNIT"
   systemctl_command start "$TARGET_UNIT"
 fi
 wait_target || die "$TARGET_UNIT did not become ready on current release"

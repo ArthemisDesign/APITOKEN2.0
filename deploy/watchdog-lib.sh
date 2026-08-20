@@ -835,6 +835,7 @@ wd_path_is_systemd_definition() {
     systemd/claude-api-fingerprint.timer|systemd/apitoken-sales-api.service|\
     systemd/apitoken-sales-web.service|systemd/claude-authbot.service|\
     systemd/claude-router.service|systemd/claude-router@.service|\
+    systemd/claude-router.slice|systemd/claude-api-anthropic.slice|systemd/claude-api-openai.slice|systemd/claude-api-gemini.slice|\
     systemd/apitoken-openkeys.service|systemd/apitoken-admin.service|\
     systemd/apitoken-monitoring-collector.service|\
     systemd/apitoken-monitoring-collector.timer|systemd/journald-apitoken.conf|\

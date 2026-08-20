@@ -523,7 +523,10 @@ Exact candidate SHA допускается к повышенным defaults то
 ### Commit 4 — systemd slices и resource headroom gate
 
 - Установить per-slot и aggregate caps, spool directories, FD/task limits.
-- Candidate должен пройти mock large-payload load до cutover.
+- Перед стартом inactive router/Anthropic candidate проверять host MemAvailable, свободное место
+  private spool filesystem и current/max parent slice; fail-closed без cutover.
+- Candidate должен пройти mock large-payload load до cutover; raised public defaults остаются
+  отдельным последующим commit после нагрузочного evidence.
 
 ### Commit 5 — поднять router + Gemini text/response до 256 MiB
 

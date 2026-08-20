@@ -1,0 +1,7 @@
+[Unit]
+Description=Aggregate resource envelope for Gemini provider slots
+
+[Slice]
+MemoryHigh=18G
+MemoryMax=24G
+TasksMax=16384

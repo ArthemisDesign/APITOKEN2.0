@@ -6,6 +6,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+Slice=claude-router.slice
 Type=simple
 User=deploy
 Group=deploy
@@ -24,8 +25,12 @@ ProtectHome=true
 PrivateTmp=true
 RuntimeDirectory=claude-router-%i
 RuntimeDirectoryMode=0700
+LimitNOFILE=262144
+TasksMax=8192
+OOMPolicy=stop
 ReadWritePaths=/run/claude-router-%i
-MemoryMax=512M
+MemoryHigh=6G
+MemoryMax=8G
 
 [Install]
 WantedBy=multi-user.target

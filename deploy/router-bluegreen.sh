@@ -30,6 +30,7 @@ ACTIVE_UNIT=
 TARGET_PORT=
 TARGET_UNIT=
 TARGET_STARTED=0
+HEADROOM_HELPER=${LARGE_PAYLOAD_HEADROOM_HELPER:-/usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh}
 PROMOTED=0
 CUTOVER_ACTIVE=0
 
@@ -220,6 +221,8 @@ begin_cutover
 if [[ $TARGET_PORT != "$ACTIVE_PORT" ]]; then
   log "stopping inactive target $TARGET_UNIT before a fresh start"
   systemctl_command stop "$TARGET_UNIT"
+  privileged_command "$HEADROOM_HELPER" "/run/claude-router-$TARGET_PORT" claude-router.slice \
+    || die "insufficient memory or spool headroom for $TARGET_UNIT"
   log "starting $TARGET_UNIT from releases/current"
   systemctl_command start "$TARGET_UNIT"
   TARGET_STARTED=1

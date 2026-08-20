@@ -3099,9 +3099,27 @@ router_payload_pins='CLAUDE_ROUTER_MAX_BODY_MIB=32 CLAUDE_ROUTER_BODY_MEMORY_BUD
 for router_unit in claude-router.service claude-router@.service; do
   grep -Fq "$router_payload_pins" "$ROOT/systemd/$router_unit" \
     || wd_die "$router_unit does not argv-pin the dormant current payload contract"
-  grep -Fxq 'MemoryMax=512M' "$ROOT/systemd/$router_unit" \
-    || wd_die "$router_unit changed memory before weighted admission"
+  if [[ $router_unit == claude-router@.service ]]; then
+    grep -Fxq 'MemoryHigh=6G' "$ROOT/systemd/$router_unit"
+    grep -Fxq 'MemoryMax=8G' "$ROOT/systemd/$router_unit"
+  else
+    grep -Fxq 'MemoryMax=512M' "$ROOT/systemd/$router_unit"
+  fi
 done
+for resource_unit in claude-router@.service claude-api-anthropic@.service claude-api-openai@.service claude-api-gemini@.service; do
+  grep -Fxq 'LimitNOFILE=262144' "$ROOT/systemd/$resource_unit" \
+    || wd_die "$resource_unit lacks the large-payload fd envelope"
+  grep -Fxq 'TasksMax=8192' "$ROOT/systemd/$resource_unit" \
+    || wd_die "$resource_unit lacks the large-payload task envelope"
+  grep -Fxq 'OOMPolicy=stop' "$ROOT/systemd/$resource_unit" \
+    || wd_die "$resource_unit does not stop its cgroup after OOM"
+done
+grep -Fxq 'MemoryHigh=12G' "$ROOT/systemd/claude-api-gemini@.service"
+grep -Fxq 'MemoryMax=16G' "$ROOT/systemd/claude-api-gemini@.service"
+grep -Fq 'large-payload-headroom.sh' "$ROOT/deploy/router-bluegreen.sh" \
+  || wd_die 'router cutover lacks a fail-closed headroom gate'
+grep -Fq 'large-payload-headroom.sh' "$ROOT/deploy/engine-bluegreen.sh" \
+  || wd_die 'provider cutover lacks a fail-closed headroom gate'
 grep -Fq 'CLAUDE_ROUTER_BODY_SPOOL_ROOT=/run/claude-router-%i' "$ROOT/systemd/claude-router@.service" \
   || wd_die 'router slots do not use separate instance-private spool roots'
 grep -Fxq 'RuntimeDirectory=claude-router-%i' "$ROOT/systemd/claude-router@.service" \
@@ -3116,8 +3134,15 @@ for provider_unit in claude-api.service claude-api@.service claude-api-anthropic
   claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service; do
   grep -Fq "$provider_payload_pins" "$ROOT/systemd/$provider_unit" \
     || wd_die "$provider_unit does not argv-pin the dormant current payload contract"
-  grep -Fxq 'MemoryMax=2G' "$ROOT/systemd/$provider_unit" \
-    || wd_die "$provider_unit changed memory before weighted admission"
+  case "$provider_unit" in
+    claude-api-anthropic@.service|claude-api-openai@.service)
+      grep -Fxq 'MemoryHigh=6G' "$ROOT/systemd/$provider_unit"
+      grep -Fxq 'MemoryMax=8G' "$ROOT/systemd/$provider_unit" ;;
+    claude-api-gemini@.service)
+      grep -Fxq 'MemoryHigh=12G' "$ROOT/systemd/$provider_unit"
+      grep -Fxq 'MemoryMax=16G' "$ROOT/systemd/$provider_unit" ;;
+    *) grep -Fxq 'MemoryMax=2G' "$ROOT/systemd/$provider_unit" ;;
+  esac
   grep -Fq 'CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api' "$ROOT/systemd/$provider_unit" \
     || wd_die "$provider_unit does not argv-pin a private provider spool root"
   grep -Fxq 'RuntimeDirectoryMode=0700' "$ROOT/systemd/$provider_unit" \

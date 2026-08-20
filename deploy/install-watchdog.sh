@@ -306,6 +306,8 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/router-bluegreen.sh
   install -o root -g root -m 0755 "$ROOT/deploy/router-promote.sh" \
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/large-payload-headroom.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh
   install -o root -g root -m 0755 "$ROOT/deploy/engine-migrate.sh" \
     /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/codex-homes-migrate.sh" \
@@ -360,6 +362,7 @@ install_systemd_definitions() {
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
     claude-router.service claude-router@.service \
+    claude-router.slice claude-api-anthropic.slice claude-api-openai.slice claude-api-gemini.slice \
     apitoken-openkeys.service \
     apitoken-admin.service \
     apitoken-devbot.service \

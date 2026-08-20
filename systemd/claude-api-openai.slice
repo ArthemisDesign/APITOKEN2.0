@@ -1,0 +1,7 @@
+[Unit]
+Description=Aggregate resource envelope for OpenAI provider slots
+
+[Slice]
+MemoryHigh=9G
+MemoryMax=12G
+TasksMax=16384

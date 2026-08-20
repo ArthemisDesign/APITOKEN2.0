@@ -12,6 +12,19 @@ inside the inactive slot and must pass readiness before admission. It reports ev
 GitHub commit without using a paid Actions runner. The manual component controllers below are recovery and
 explicit operator tools, not the normal contributor workflow. See [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
 
+## Large-payload resource envelope
+
+Blue-green router and provider templates run inside provider-specific parent slices. Router,
+Anthropic and OpenAI slots use 6/8 GiB `MemoryHigh`/`MemoryMax`; Gemini uses 12/16 GiB. Parent
+slices cap simultaneous active+candidate generations at 9/12 GiB or 18/24 GiB respectively. Every
+large-payload slot pins `LimitNOFILE=262144`, `TasksMax=8192`, and `OOMPolicy=stop`.
+
+Before starting an inactive router or Anthropic slot, the controller runs the fixed
+`large-payload-headroom.sh`: at least 12 GiB host `MemAvailable`, 16 GiB free on the private spool
+filesystem, and parent `MemoryCurrent < MemoryMax` are mandatory. Failure leaves the serving slot
+and Caddy routing unchanged. These resource limits enable safe load testing; they do not raise any
+public body limit by themselves.
+
 ## Normal automatic delivery
 
 Contributors and AI agents only merge production-ready work to `master`, then watch these GitHub
