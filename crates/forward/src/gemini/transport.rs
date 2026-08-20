@@ -1549,6 +1549,7 @@ mod tests {
             HELPER_SOURCE.contains("agent: proxyAgent || (calibration ? directAgent : undefined)")
         );
         assert!(HELPER_SOURCE.contains("request.once('socket', onSocket)"));
+        assert!(HELPER_SOURCE.contains("MAX_REQUEST_BYTES = 256 * 1024 * 1024"));
         assert!(!HELPER_SOURCE.contains("if (request.socket)"));
     }
 

@@ -34,6 +34,10 @@ through trusted request extensions. The shared native executor performs auth/res
 rotation/wrapper/settlement without serializing and reparsing a synthetic HTTP body. Typed logical
 ID, lifecycle, attribution and fixed public error/SSE adapters remain on the surrounding HTTP shell.
 
+**Gemini media envelope.** Across native and universal Gemini text models, aggregate decoded
+`inlineData` stays bounded by the 20 MiB media contract independently of the larger text-body
+transport envelope. The check happens after typed parsing and before provider dispatch.
+
 **Gemini helper IPC.** Rust and the embedded SHA-pinned Node helper use one binary framed protocol:
 13-byte big-endian headers (`kind`, request id, payload length), control JSON capped at 1 MiB,
 request bodies capped at the dormant 256 MiB envelope, and response data chunks capped at 1 MiB.

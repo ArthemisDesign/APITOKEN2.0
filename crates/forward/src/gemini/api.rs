@@ -1851,6 +1851,34 @@ fn validate_image_generation_request(body: &Value, model: &GeminiModel) -> Resul
     Ok(())
 }
 
+fn validate_inline_media_envelope(body: &Value) -> Result<(), ApiError> {
+    let mut decoded_total = 0usize;
+    for inline in inline_image_data(body) {
+        let Some(object) = inline.as_object() else {
+            return Err(ApiError::invalid(
+                "The inlineData field must be a JSON object.",
+            ));
+        };
+        let data = object
+            .get("data")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiError::invalid("The inline media data must be a base64 string."))?;
+        let estimated = data
+            .len()
+            .checked_div(4)
+            .and_then(|units| units.checked_mul(3))
+            .and_then(|bytes| bytes.checked_add(3))
+            .ok_or_else(|| ApiError::invalid("The inline media data is too large."))?;
+        decoded_total = decoded_total
+            .checked_add(estimated)
+            .ok_or_else(|| ApiError::invalid("The inline media data is too large."))?;
+        if decoded_total > GEMINI_IMAGE_REQUEST_BODY_LIMIT {
+            return Err(ApiError::invalid("The inline media data is too large."));
+        }
+    }
+    Ok(())
+}
+
 fn validate_generation_request(
     body: &Value,
     model: &GeminiModel,
@@ -2021,6 +2049,7 @@ fn validate_native_request(
     model: &GeminiModel,
     exact_calibration: bool,
 ) -> Result<(), ApiError> {
+    validate_inline_media_envelope(body)?;
     if operation != Operation::CountTokens {
         validate_generation_request(body, model, exact_calibration)?;
         return if model.is_image_generation() {

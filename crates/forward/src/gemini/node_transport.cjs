@@ -15,7 +15,8 @@ const {Readable} = require('node:stream');
 const undici = require('internal/deps/undici/undici');
 
 const PROTOCOL = 2;
-const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
+// Framing ceiling, not public enablement. Rust enforces the route/model cap before IPC.
+const MAX_REQUEST_BYTES = 256 * 1024 * 1024;
 const MAX_CONTROL_BYTES = 1024 * 1024;
 const MAX_DATA_CHUNK_BYTES = 1024 * 1024;
 const FRAME_HEADER_BYTES = 13;
