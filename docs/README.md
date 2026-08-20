@@ -30,6 +30,7 @@ document, update this index.
 - [UNIFIED_ROUTER.md](engine/UNIFIED_ROUTER.md) — target architecture of the single endpoint for all providers (design).
 - [LARGE_PAYLOAD_SCALING_PLAN.md](engine/LARGE_PAYLOAD_SCALING_PLAN.md) — implementation plan for raising model API payload and concurrency limits through bounded spooling, weighted admission, binary Gemini IPC, resource envelopes, verification, and staged rollout (proposal; not implemented).
 - [QUOTA_DISTRIBUTION_ANALYSIS.md](engine/QUOTA_DISTRIBUTION_ANALYSIS.md) — принятый план эффективности трат подписочных квот (Claude 5h/7d, Codex weekly, Gemini per-model buckets, Kimi/GLM 5h+weekly): подтверждённые проблемы, принятые правки R2/R7/R1 без слома cache-аффинити, отклонённые предложения с причинами, порядок внедрения.
+- [QUOTA_DISTRIBUTION_PROGRESS.md](engine/QUOTA_DISTRIBUTION_PROGRESS.md) — рабочий журнал внедрения правок R2/R7/R1 и измерения (шаг 0) по плану QUOTA_DISTRIBUTION_ANALYSIS.
 - [ROUTING_FENCING.md](engine/ROUTING_FENCING.md) — detailed design of UNIFIED_ROUTER stage 6: routing with fallback lists and attempt fencing (execution group / single billable winner).
 - [REQUEST_OBSERVABILITY.md](engine/REQUEST_OBSERVABILITY.md) — owner-approved v1 request-lifecycle decision record, privacy boundary, exact producer/read/metrics scope, ordered rollout, and finite Definition of Done (first Codex count-token producer only; implementation incomplete).
 - [ELOG.md](../crates/elog/CLAUDE.md) — unified error logging contract (crate-level instruction: format, levels, scrubbing).
