@@ -21,7 +21,9 @@ Never mix the three provider paths.
   independent 2 GiB raw-storage and estimated-memory admission, the 32 MiB threshold keeps current
   requests memory-backed, and ownership spans parse/translation/reserve/rotation. Native auth remains
   before body read; universal adapters keep their existing outer auth semantics through `forward`.
-  Other provider adapters retain their prior readers until separate route-specific commits.
+  Codex native Responses uses the same shared bounded primitive under its narrower 8 MiB cap;
+  input_tokens/Chat/Messages skins and Gemini paths retain their prior readers until separate
+  route-specific commits.
 
 **Three authorization classes (secret separation, `proxy.rs`):** `authed` (forwarding-admin: `api_keys`
 /loopback) ⊂ `control_authed` (+`control_keys` — for commerce `/admin/*`) ⊂ `readonly_authed`

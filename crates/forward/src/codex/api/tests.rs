@@ -527,6 +527,21 @@ fn input_tokens_proxy_config() -> Arc<ProxyConfig> {
     })
 }
 
+fn codex_test_body_storage(label: &str) -> Arc<crate::BodyStorage> {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!(
+        "codex-body-storage-{}-{}-{label}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    Arc::new(crate::BodyStorage::new(api_limits::current::PROVIDER, root).unwrap())
+}
+
 async fn input_tokens_test_app(
     metered: bool,
     fact_sender: Option<mpsc::Sender<registry::request_facts::TerminalRequestFact>>,
@@ -567,11 +582,11 @@ async fn input_tokens_test_app(
         pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
         affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
         clients: Arc::new(Clients::new(&cfg)),
-        body_storage: None,
+        body_storage: Some(codex_test_body_storage("responses")),
         codex: Some(Arc::new(gateway())),
         gemini: None,
         gemini_batch: None,
-            gemini_batch_runtime: None,
+        gemini_batch_runtime: None,
         kimi: None,
         glm: None,
         tripo3d: None,
@@ -1183,11 +1198,11 @@ fn input_tokens_terminal_fact_persists_privacy_bounded_postgres_row() {
         pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
         affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
         clients: Arc::new(Clients::new(&cfg)),
-        body_storage: None,
+        body_storage: Some(codex_test_body_storage("responses")),
         codex: Some(Arc::new(gateway())),
         gemini: None,
         gemini_batch: None,
-            gemini_batch_runtime: None,
+        gemini_batch_runtime: None,
         kimi: None,
         glm: None,
         tripo3d: None,
@@ -2927,7 +2942,7 @@ fn generation_handlers_persist_apply_facts_for_all_routes_and_stream_modes_on_po
             pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
             affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
             clients: Arc::new(Clients::new(&cfg)),
-            body_storage: None,
+            body_storage: Some(codex_test_body_storage("generation")),
             codex: Some(Arc::new(gateway_at(&upstream))),
             gemini: None,
             gemini_batch: None,
@@ -3342,8 +3357,10 @@ async fn streamed_message_is_closed_before_the_next_output_item_opens() {
     assert_eq!(
         frames
             .iter()
-            .filter(|frame| frame.starts_with("event: response.output_item.done\n")
-                && frame.contains("\"msg_1\""))
+            .filter(
+                |frame| frame.starts_with("event: response.output_item.done\n")
+                    && frame.contains("\"msg_1\"")
+            )
             .count(),
         1,
         "one provider message must never be closed twice"

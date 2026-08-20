@@ -501,8 +501,10 @@ Exact candidate SHA допускается к повышенным defaults то
   независимых 2 GiB fail-fast budget и slot-private spool capability; cap/threshold остаются 32 MiB.
 - Anthropic universal Chat/Responses следующими удерживают те же reservations через parse,
   translation и внутренний native `forward`, сохраняя OpenAI-shaped errors и текущий 32 MiB cap.
-- Затем Codex и Gemini materializers route-by-route получают spooling и caller-supplied estimated
-  RSS с собственными узкими caps.
+- Codex native Responses следующим получает shared bounded reader под текущим 8 MiB cap; остальные
+  Chat/Messages/count paths мигрируют отдельно с собственными prepared/history weights.
+- Затем Gemini materializers получают spooling и caller-supplied estimated RSS после typed IPC,
+  сохраняя отдельные text/media caps.
 - Публичные пределы пока прежние; доказать отсутствие protocol/money изменений до raised default.
 
 ### Commit 3 — Gemini typed executor и binary IPC v2

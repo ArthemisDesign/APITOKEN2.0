@@ -7,7 +7,7 @@ use super::{
     new_id, CodexGateway, CodexModel, CodexTurnRequest, CodexTurnResult, CodexUsage, HistoryError,
     ProcessError, StoredHistory, TurnUpdate,
 };
-use crate::proxy::{authorize, with_not_started, Authz, TerminalErrorReason};
+use crate::proxy::{authorize, read_body_bounded, with_not_started, Authz, TerminalErrorReason};
 use crate::request_classification::{classify_openai_responses, RequestClassification};
 use crate::state::AppState;
 use crate::validation::{optional_bool as strict_optional_bool, optional_positive_u64};
@@ -289,13 +289,30 @@ pub async fn responses(
         Ok(pending) => pending,
         Err(error) => return ApiError::from(error).into_response(),
     };
-    let raw = match to_bytes(body, OPENAI_BODY_LIMIT).await {
-        Ok(raw) => raw,
-        Err(_) => {
+    let bounded_body = match read_body_bounded(
+        &app,
+        body,
+        api_limits::current::OPENAI_TEXT_REQUEST,
+        api_limits::current::OPENAI_TEXT_REQUEST,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(bounded_body::StorageError::TooLarge)
+        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
             return ApiError::invalid("Request body exceeds the 8 MiB limit.", None::<String>)
                 .into_response()
         }
+        Err(bounded_body::StorageError::Io) => {
+            return ApiError::invalid("Could not read request body.", None::<String>)
+                .into_response()
+        }
+        Err(_) => {
+            return ApiError::unavailable_for("codex_body_storage_unavailable").into_response()
+        }
     };
+    let raw = bounded_body.bytes.clone();
+    let _body_lease = bounded_body._lease;
     let value: Value = match serde_json::from_slice(&raw) {
         Ok(value) => value,
         Err(_) => {

@@ -495,6 +495,11 @@ pub(crate) struct MaterializedAnthropicBody {
     pub(crate) _lease: bounded_body::StoredBodyLease,
 }
 
+pub(crate) struct MaterializedBoundedBody {
+    pub(crate) bytes: bytes::Bytes,
+    pub(crate) _lease: bounded_body::StoredBodyLease,
+}
+
 pub(crate) enum BodyReadError {
     TooLarge,
     Read,
@@ -516,10 +521,12 @@ pub(crate) async fn read_body_limited(
     Ok(out.freeze())
 }
 
-pub(crate) async fn read_anthropic_body_bounded(
+pub(crate) async fn read_body_bounded(
     app: &AppState,
     body: Body,
-) -> Result<MaterializedAnthropicBody, bounded_body::StorageError> {
+    request_limit: api_limits::ByteLimit,
+    memory_threshold: api_limits::ByteLimit,
+) -> Result<MaterializedBoundedBody, bounded_body::StorageError> {
     let initial = api_limits::ByteLimit::from_bytes(api_limits::MIB);
     let body_storage = app.body_storage()?;
     let storage = body_storage
@@ -532,14 +539,8 @@ pub(crate) async fn read_anthropic_body_bounded(
         .map_err(|_| bounded_body::StorageError::MemoryExhausted)?;
     let mut store = bounded_body::BodyStore::start(
         bounded_body::StorageConfig {
-            request_limit: body_storage
-                .limits
-                .request
-                .min(api_limits::current::ANTHROPIC_TEXT_REQUEST),
-            memory_threshold: body_storage
-                .limits
-                .memory_threshold
-                .min(api_limits::current::ANTHROPIC_TEXT_REQUEST),
+            request_limit,
+            memory_threshold: memory_threshold.min(request_limit),
         },
         &body_storage.storage,
         &body_storage.memory,
@@ -556,9 +557,33 @@ pub(crate) async fn read_anthropic_body_bounded(
     let (bytes, lease) = stored
         .into_memory()
         .map_err(|_| bounded_body::StorageError::InvalidConfig)?;
-    Ok(MaterializedAnthropicBody {
+    Ok(MaterializedBoundedBody {
         bytes: bytes::Bytes::from(bytes),
         _lease: lease,
+    })
+}
+
+pub(crate) async fn read_anthropic_body_bounded(
+    app: &AppState,
+    body: Body,
+) -> Result<MaterializedAnthropicBody, bounded_body::StorageError> {
+    let body_storage = app.body_storage()?;
+    let body = read_body_bounded(
+        app,
+        body,
+        body_storage
+            .limits
+            .request
+            .min(api_limits::current::ANTHROPIC_TEXT_REQUEST),
+        body_storage
+            .limits
+            .memory_threshold
+            .min(api_limits::current::ANTHROPIC_TEXT_REQUEST),
+    )
+    .await?;
+    Ok(MaterializedAnthropicBody {
+        bytes: body.bytes,
+        _lease: body._lease,
     })
 }
 
