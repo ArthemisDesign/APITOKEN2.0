@@ -381,12 +381,8 @@ fn stage2_authority_postgres_matrix() {
         .gemini_batch_get("stage2-account", "stage2-job")
         .unwrap()
         .unwrap();
-    assert_eq!(detail.items[0].client_key, None);
-    let mut redacted = detail.items[0].clone();
-    redacted.client_key = Some("private-correlation-key".into());
-    let debug = format!("{redacted:?}");
-    assert!(debug.contains("[REDACTED]"));
-    assert!(!debug.contains("private-correlation-key"));
+    // Nonterminal operation reads are summary-only so 100k jobs never materialize every item.
+    assert!(detail.items.is_empty());
     let owner = pg.claim_instance("stage2-owner", 600).unwrap();
     assert!(pg.acquire_gemini_batch_leader(&owner, 60).unwrap());
     let claimed = pg

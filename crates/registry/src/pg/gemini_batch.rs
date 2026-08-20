@@ -6,8 +6,8 @@ use crate::gemini_batch::{
     GeminiBatchInputKind, GeminiBatchItem, GeminiBatchItemState, GeminiBatchJob,
     GeminiBatchJobDetail, GeminiBatchJobPage, GeminiBatchJobState, GeminiBatchPageCursor,
     GeminiBatchStats, GeminiBatchTerminalClass, MAX_BATCH_ACCOUNT_FILE_BYTES, MAX_BATCH_FILE_BYTES,
-    MAX_BATCH_FILE_CHUNK_PAGE_SIZE, MAX_BATCH_NONTERMINAL_JOBS, MAX_BATCH_PAGE_SIZE,
-    MAX_BATCH_REFERENCED_FILE_BYTES,
+    MAX_BATCH_FILE_CHUNK_BYTES, MAX_BATCH_FILE_CHUNK_PAGE_SIZE, MAX_BATCH_NONTERMINAL_JOBS,
+    MAX_BATCH_PAGE_SIZE, MAX_BATCH_REFERENCED_FILE_BYTES,
 };
 use crate::ACCOUNT_OVERDRAFT_NANO;
 use anyhow::{bail, Context, Result};
@@ -44,8 +44,8 @@ pub fn gemini_batch_file_chunk_manifest_digest(
 
 const JOB_READ_COLUMNS: &str = "j.job_id,j.account_id,j.creator_key_id,j.public_model,j.display_name,\
  j.priority,j.input_kind,j.input_file_id,j.output_file_id,j.cancel_requested_ts,j.create_ts,j.update_ts,\
- j.deadline_ts,j.completed_ts,j.delete_ts,j.result_expiration_ts,COUNT(i.*)::bigint,\
- COUNT(i.*) FILTER (WHERE i.state='succeeded')::bigint,\
+ j.deadline_ts,j.terminal_items_ts,j.output_state,j.completed_ts,j.delete_ts,j.result_expiration_ts,\
+ COUNT(i.*)::bigint,COUNT(i.*) FILTER (WHERE i.state='succeeded')::bigint,\
  COUNT(i.*) FILTER (WHERE i.state IN ('failed','indeterminate','canceled'))::bigint,\
  COUNT(i.*) FILTER (WHERE i.state NOT IN ('succeeded','failed','indeterminate','canceled'))::bigint";
 
@@ -56,13 +56,13 @@ fn bytes32(value: Vec<u8>, field: &str) -> Result<[u8; 32]> {
 }
 
 fn job_from_row(row: &Row) -> Result<GeminiBatchJob> {
-    let request_count: i64 = row.get(16);
-    let successful_request_count: i64 = row.get(17);
-    let failed_request_count: i64 = row.get(18);
-    let pending_request_count: i64 = row.get(19);
-    let completed_ts: Option<i64> = row.get(13);
-    let delete_ts: Option<i64> = row.get(14);
-    let result_expiration_ts: Option<i64> = row.get(15);
+    let request_count: i64 = row.get(18);
+    let successful_request_count: i64 = row.get(19);
+    let failed_request_count: i64 = row.get(20);
+    let pending_request_count: i64 = row.get(21);
+    let completed_ts: Option<i64> = row.get(15);
+    let delete_ts: Option<i64> = row.get(16);
+    let result_expiration_ts: Option<i64> = row.get(17);
     let state = if delete_ts.is_some() || result_expiration_ts.is_some_and(|ts| ts <= super::now())
     {
         GeminiBatchJobState::Expired
@@ -93,6 +93,8 @@ fn job_from_row(row: &Row) -> Result<GeminiBatchJob> {
         create_ts: row.get(10),
         update_ts: row.get(11),
         deadline_ts: row.get(12),
+        terminal_items_ts: row.get(13),
+        output_state: row.get(14),
         completed_ts,
         delete_ts,
         result_expiration_ts,
@@ -142,6 +144,14 @@ fn file_from_row(row: &Row) -> Result<GeminiBatchFile> {
         create_ts: row.get(9),
         update_ts: row.get(10),
         expiration_ts: row.get(11),
+        received_bytes: row.get(12),
+        next_chunk_index: row.get(13),
+        chunk_count: row.get(14),
+        chunk_manifest_digest: row
+            .get::<_, Option<Vec<u8>>>(15)
+            .map(|value| bytes32(value, "file chunk manifest digest"))
+            .transpose()?,
+        completed_ts: row.get(16),
     })
 }
 
@@ -194,7 +204,9 @@ impl PgStore {
         &mut self,
     ) -> Result<crate::GeminiBatchOperationalReport> {
         let ts = super::now();
-        let mut tx = self.client.build_transaction()
+        let mut tx = self
+            .client
+            .build_transaction()
             .isolation_level(postgres::IsolationLevel::RepeatableRead)
             .read_only(true)
             .start()?;
@@ -265,12 +277,22 @@ impl PgStore {
              GROUP BY w.label,w.seconds ORDER BY w.seconds",
             &[&ts],
         )?;
-        let windows = window_rows.into_iter().map(|row| crate::GeminiBatchOperationalWindow {
-            window: row.get(0), jobs_created: row.get(1), items_created: row.get(2),
-            succeeded: row.get(3), failed: row.get(4), canceled: row.get(5), indeterminate: row.get(6),
-            settled_nano: row.get(7), avg_queue_wait_seconds: row.get(8), avg_execution_seconds: row.get(9),
-            throughput_items_per_hour: row.get(10),
-        }).collect();
+        let windows = window_rows
+            .into_iter()
+            .map(|row| crate::GeminiBatchOperationalWindow {
+                window: row.get(0),
+                jobs_created: row.get(1),
+                items_created: row.get(2),
+                succeeded: row.get(3),
+                failed: row.get(4),
+                canceled: row.get(5),
+                indeterminate: row.get(6),
+                settled_nano: row.get(7),
+                avg_queue_wait_seconds: row.get(8),
+                avg_execution_seconds: row.get(9),
+                throughput_items_per_hour: row.get(10),
+            })
+            .collect();
         let report = crate::GeminiBatchOperationalReport {
             queued_jobs: jobs.get(0),
             running_jobs: jobs.get(1),
@@ -560,18 +582,21 @@ impl PgStore {
             return Ok(None);
         };
         let job = job_from_row(&row)?;
-        let items = tx
-            .query(
+        let items = if job.input_kind == GeminiBatchInputKind::Inline
+            && job.completed_ts.is_some()
+            && job.state != GeminiBatchJobState::Expired
+        {
+            tx.query(
                 "SELECT item.job_id,item.item_index,item.request_id,item.logical_request_id,item.execution_group_id,\
                   item.creator_key_id,item.client_key,item.state,item.terminal_class,item.claim_generation,item.worker_instance,item.worker_epoch,\
                   item.lease_until,item.selected_profile_id FROM gemini_batch_items item \
                   JOIN gemini_batch_jobs scoped ON scoped.job_id=item.job_id \
                   WHERE scoped.account_id=$1 AND item.job_id=$2 ORDER BY item.item_index",
                 &[&account_id, &job_id],
-            )?
-            .iter()
-            .map(item_from_row)
-            .collect::<Result<Vec<_>>>()?;
+            )?.iter().map(item_from_row).collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
         tx.commit()?;
         Ok(Some(GeminiBatchJobDetail { job, items }))
     }
@@ -690,91 +715,137 @@ impl PgStore {
         Ok(GeminiBatchFileCreateOutcome::Created)
     }
 
+    pub fn gemini_batch_file_progress(
+        &mut self,
+        account_id: &str,
+        file_id: &str,
+    ) -> Result<Option<crate::GeminiBatchFileProgress>> {
+        Ok(self.client.query_opt(
+            "SELECT received_bytes,next_chunk_index,chunk_count,size_bytes,state='active' FROM gemini_batch_files WHERE account_id=$1 AND file_id=$2 AND expiration_ts>$3",
+            &[&account_id,&file_id,&super::now()],
+        )?.map(|row| crate::GeminiBatchFileProgress {
+            received_bytes: row.get(0), next_chunk_index: row.get(1), chunk_count: row.get(2),
+            size_bytes: row.get(3), active: row.get(4),
+        }))
+    }
+
+    pub fn gemini_batch_file_append_chunk_at(
+        &mut self,
+        account_id: &str,
+        file_id: &str,
+        expected_offset: i64,
+        chunk: &GeminiBatchFileChunk,
+    ) -> Result<crate::GeminiBatchFileAppendOutcome> {
+        chunk.validate()?;
+        let mut tx = self.client.transaction()?;
+        let Some(file) = tx.query_opt(
+            "SELECT state,storage_kind,size_bytes,create_ts,received_bytes,next_chunk_index,chunk_count
+             FROM gemini_batch_files WHERE account_id=$1 AND file_id=$2 FOR UPDATE",
+            &[&account_id, &file_id],
+        )? else {
+            tx.rollback()?;
+            return Ok(crate::GeminiBatchFileAppendOutcome::Unavailable);
+        };
+        let progress = crate::GeminiBatchFileProgress {
+            received_bytes: file.get(4),
+            next_chunk_index: file.get(5),
+            chunk_count: file.get(6),
+            size_bytes: file.get(2),
+            active: file.get::<_, String>(0) == "active",
+        };
+        if file.get::<_, String>(0) != "processing" || file.get::<_, String>(1) != "chunked" {
+            tx.commit()?;
+            return Ok(crate::GeminiBatchFileAppendOutcome::OffsetConflict(
+                progress,
+            ));
+        }
+        if expected_offset != progress.received_bytes
+            || chunk.chunk_index != progress.next_chunk_index
+        {
+            tx.commit()?;
+            return Ok(crate::GeminiBatchFileAppendOutcome::OffsetConflict(
+                progress,
+            ));
+        }
+        if chunk.created_ts < file.get::<_, i64>(3) {
+            bail!("Gemini Batch file chunk predates its file")
+        }
+        let next_received = progress
+            .received_bytes
+            .checked_add(chunk.plaintext_len)
+            .context("Gemini Batch file size overflow")?;
+        if next_received > progress.size_bytes {
+            bail!("Gemini Batch file chunks exceed declared size")
+        }
+        // Every non-final physical chunk is exactly 8 MiB; at most 256 rows can represent 2 GiB.
+        if next_received < progress.size_bytes && chunk.plaintext_len != MAX_BATCH_FILE_CHUNK_BYTES
+        {
+            bail!("Gemini Batch non-final upload chunk must be exactly 8 MiB")
+        }
+        if progress.next_chunk_index >= 256 {
+            bail!("Gemini Batch file has too many chunks")
+        }
+        tx.execute(
+            "INSERT INTO gemini_batch_file_chunks(file_id,chunk_index,key_id,nonce,ciphertext,plaintext_len,plaintext_digest,created_ts)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+            &[&file_id,&chunk.chunk_index,&chunk.key_id,&chunk.nonce,&chunk.ciphertext,
+              &chunk.plaintext_len,&&chunk.plaintext_digest[..],&chunk.created_ts],
+        )?;
+        let next_index = progress.next_chunk_index + 1;
+        if tx.execute(
+            "UPDATE gemini_batch_files SET received_bytes=$3,next_chunk_index=$4,chunk_count=$4,
+             update_ts=GREATEST(update_ts,$5) WHERE account_id=$1 AND file_id=$2
+             AND state='processing' AND received_bytes=$6 AND next_chunk_index=$7",
+            &[
+                &account_id,
+                &file_id,
+                &next_received,
+                &next_index,
+                &chunk.created_ts,
+                &progress.received_bytes,
+                &progress.next_chunk_index,
+            ],
+        )? != 1
+        {
+            bail!("Gemini Batch upload progress CAS failed")
+        }
+        tx.commit()?;
+        Ok(crate::GeminiBatchFileAppendOutcome::Appended(
+            crate::GeminiBatchFileProgress {
+                received_bytes: next_received,
+                next_chunk_index: next_index,
+                chunk_count: next_index,
+                size_bytes: progress.size_bytes,
+                active: false,
+            },
+        ))
+    }
+
+    /// Compatibility wrapper for existing internal callers.
     pub fn gemini_batch_file_append_chunk(
         &mut self,
         account_id: &str,
         file_id: &str,
         chunk: &GeminiBatchFileChunk,
     ) -> Result<bool> {
-        chunk.validate()?;
-        let mut tx = self.client.transaction()?;
-        let file = tx.query_opt(
-            "SELECT state,storage_kind,size_bytes,create_ts FROM gemini_batch_files \
-             WHERE account_id=$1 AND file_id=$2 FOR UPDATE",
-            &[&account_id, &file_id],
-        )?;
-        let Some(file) = file else {
-            tx.rollback()?;
+        let Some(progress) = self.gemini_batch_file_progress(account_id, file_id)? else {
             return Ok(false);
         };
-        if file.get::<_, String>(0) != "processing" || file.get::<_, String>(1) != "chunked" {
-            bail!("Gemini Batch file is not appendable")
+        if chunk.chunk_index < progress.next_chunk_index {
+            return Ok(self.client.query_opt(
+                "SELECT 1 FROM gemini_batch_file_chunks c JOIN gemini_batch_files f USING(file_id) WHERE f.account_id=$1 AND c.file_id=$2 AND c.chunk_index=$3 AND c.key_id=$4 AND c.nonce=$5 AND c.ciphertext=$6 AND c.plaintext_len=$7 AND c.plaintext_digest=$8",
+                &[&account_id,&file_id,&chunk.chunk_index,&chunk.key_id,&chunk.nonce,&chunk.ciphertext,&chunk.plaintext_len,&&chunk.plaintext_digest[..]],
+            )?.is_some());
         }
-        if chunk.created_ts < file.get::<_, i64>(3) {
-            bail!("Gemini Batch file chunk predates its file")
-        }
-        let expected_index: i64 = tx
-            .query_one(
-                "SELECT COUNT(*)::bigint FROM gemini_batch_file_chunks WHERE file_id=$1",
-                &[&file_id],
-            )?
-            .get(0);
-        if chunk.chunk_index != expected_index {
-            if chunk.chunk_index < expected_index {
-                let row = tx.query_one(
-                    "SELECT key_id,nonce,ciphertext,plaintext_len,plaintext_digest \
-                     FROM gemini_batch_file_chunks c JOIN gemini_batch_files f USING(file_id) \
-                     WHERE f.account_id=$1 AND c.file_id=$2 AND c.chunk_index=$3",
-                    &[&account_id, &file_id, &chunk.chunk_index],
-                )?;
-                let exact = row.get::<_, String>(0) == chunk.key_id
-                    && row.get::<_, Vec<u8>>(1) == chunk.nonce
-                    && row.get::<_, Vec<u8>>(2) == chunk.ciphertext
-                    && row.get::<_, i64>(3) == chunk.plaintext_len
-                    && bytes32(row.get(4), "file chunk digest")? == chunk.plaintext_digest;
-                if exact {
-                    tx.commit()?;
-                    return Ok(true);
-                }
-            }
-            bail!("Gemini Batch file chunk is non-contiguous or conflicts with stored data")
-        }
-        let appended_size: i64 = tx
-            .query_one(
-                "SELECT COALESCE(SUM(plaintext_len),0)::bigint \
-                 FROM gemini_batch_file_chunks c JOIN gemini_batch_files f USING(file_id) \
-                 WHERE f.account_id=$1 AND c.file_id=$2",
-                &[&account_id, &file_id],
-            )?
-            .get(0);
-        if appended_size
-            .checked_add(chunk.plaintext_len)
-            .is_none_or(|total| total > file.get::<_, i64>(2))
-        {
-            bail!("Gemini Batch file chunks exceed the declared size")
-        }
-        tx.execute(
-            "INSERT INTO gemini_batch_file_chunks(\
-             file_id,chunk_index,key_id,nonce,ciphertext,plaintext_len,plaintext_digest,created_ts) \
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
-            &[
-                &file_id,
-                &chunk.chunk_index,
-                &chunk.key_id,
-                &chunk.nonce,
-                &chunk.ciphertext,
-                &chunk.plaintext_len,
-                &&chunk.plaintext_digest[..],
-                &chunk.created_ts,
-            ],
-        )?;
-        tx.execute(
-            "UPDATE gemini_batch_files SET update_ts=GREATEST(update_ts,$3) \
-             WHERE account_id=$1 AND file_id=$2",
-            &[&account_id, &file_id, &chunk.created_ts],
-        )?;
-        tx.commit()?;
-        Ok(true)
+        Ok(matches!(
+            self.gemini_batch_file_append_chunk_at(
+                account_id,
+                file_id,
+                progress.received_bytes,
+                chunk
+            )?,
+            crate::GeminiBatchFileAppendOutcome::Appended(_)
+        ))
     }
 
     pub fn gemini_batch_file_complete(
@@ -854,11 +925,13 @@ impl PgStore {
         {
             bail!("Gemini Batch single-chunk file digest mismatch")
         }
-        tx.execute(
-            "UPDATE gemini_batch_files SET state='active',update_ts=$3 \
-             WHERE account_id=$1 AND file_id=$2",
-            &[&account_id, &file_id, &completion.completed_ts],
-        )?;
+        if tx.execute(
+            "UPDATE gemini_batch_files SET state='active',sha256_digest=$3,chunk_manifest_digest=$4,completed_ts=$5,update_ts=$5 \
+              WHERE account_id=$1 AND file_id=$2 AND state='processing' AND received_bytes=size_bytes \
+                AND chunk_count=next_chunk_index",
+            &[&account_id, &file_id, &&completion.whole_file_sha256_digest[..],
+              &&completion.chunk_manifest_digest[..], &completion.completed_ts],
+        )? != 1 { bail!("Gemini Batch file completion CAS failed") }
         tx.commit()?;
         Ok(true)
     }
@@ -872,7 +945,7 @@ impl PgStore {
             .client
             .query_opt(
                 "SELECT file_id,account_id,display_name,mime_type,size_bytes,sha256_digest,\
-                 source_kind,state,storage_kind,create_ts,update_ts,expiration_ts \
+                 source_kind,state,storage_kind,create_ts,update_ts,expiration_ts,received_bytes,next_chunk_index,chunk_count,chunk_manifest_digest,completed_ts \
                  FROM gemini_batch_files \
                  WHERE account_id=$1 AND file_id=$2 AND expiration_ts>$3",
                 &[&account_id, &file_id, &super::now()],
@@ -891,7 +964,7 @@ impl PgStore {
             .client
             .query(
                 "SELECT file_id,account_id,display_name,mime_type,size_bytes,sha256_digest,\
-                 source_kind,state,storage_kind,create_ts,update_ts,expiration_ts \
+                 source_kind,state,storage_kind,create_ts,update_ts,expiration_ts,received_bytes,next_chunk_index,chunk_count,chunk_manifest_digest,completed_ts \
                  FROM gemini_batch_files WHERE account_id=$1 \
                  AND expiration_ts>$3 ORDER BY create_ts DESC,file_id DESC LIMIT $2",
                 &[

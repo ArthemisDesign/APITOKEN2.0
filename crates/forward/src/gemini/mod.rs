@@ -5,6 +5,7 @@ pub mod batch;
 pub mod batch_authority;
 pub mod batch_crypto;
 pub mod batch_handlers;
+pub mod batch_ingest;
 pub mod batch_public;
 mod billing;
 mod calibration;
@@ -28,6 +29,7 @@ pub use batch_crypto::{
     gemini_batch_chunk_manifest_digest, GeminiBatchBlobIdentity, GeminiBatchDataKeyring,
     GeminiBatchFileChunkIdentity, GeminiBatchFileEncryptor,
 };
+pub use batch_ingest::GeminiBatchIngest;
 pub use batch_public::GeminiBatchPublicFacade;
 pub use calibration::WindowCalibration;
 pub(crate) use calibration::{apply_observation_with_history, ESTIMATOR_VERSION};

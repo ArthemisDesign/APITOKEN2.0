@@ -4,13 +4,15 @@
 //! idempotency boundary; owner epochs fence stale instances. PostgreSQL is the recovery floor.
 
 mod gemini_batch;
+mod gemini_batch_admission;
 pub mod gemini_batch_claims;
 pub use gemini_batch_claims::GeminiBatchReconcileReport;
+mod gemini_batch_output;
 mod gemini_batch_settlement;
 #[cfg(test)]
-mod gemini_batch_tests;
-#[cfg(test)]
 mod gemini_batch_stage5_tests;
+#[cfg(test)]
+mod gemini_batch_tests;
 mod request_facts;
 
 use crate::request_facts::{
@@ -218,19 +220,14 @@ const MIGRATION_0042: &str =
 const MIGRATION_0043: &str = include_str!("../migrations_pg/0043_account_provider_discounts.sql");
 const MIGRATION_0044: &str =
     include_str!("../migrations_pg/0044_retire_pricing_design_triggers.sql");
-const MIGRATION_0045: &str =
-    include_str!("../migrations_pg/0045_retire_policy_runtime_floor.sql");
-const MIGRATION_0046: &str =
-    include_str!("../migrations_pg/0046_account_discount_contract.sql");
-const MIGRATION_0047: &str =
-    include_str!("../migrations_pg/0047_settlement_floor_accounting.sql");
+const MIGRATION_0045: &str = include_str!("../migrations_pg/0045_retire_policy_runtime_floor.sql");
+const MIGRATION_0046: &str = include_str!("../migrations_pg/0046_account_discount_contract.sql");
+const MIGRATION_0047: &str = include_str!("../migrations_pg/0047_settlement_floor_accounting.sql");
 const MIGRATION_0048: &str =
     include_str!("../migrations_pg/0048_settlement_floor_terminal_fence.sql");
 const MIGRATION_0049: &str = include_str!("../migrations_pg/0049_tripo3d_calibration.sql");
-const MIGRATION_0050: &str =
-    include_str!("../migrations_pg/0050_suno_window_calibration.sql");
-const MIGRATION_0051: &str =
-    include_str!("../migrations_pg/0051_tripo3d_pricing_provider.sql");
+const MIGRATION_0050: &str = include_str!("../migrations_pg/0050_suno_window_calibration.sql");
+const MIGRATION_0051: &str = include_str!("../migrations_pg/0051_tripo3d_pricing_provider.sql");
 const MIGRATION_0052: &str = include_str!("../migrations_pg/0052_suno_pricing_provider.sql");
 const MIGRATION_0053: &str = include_str!("../migrations_pg/0053_request_facts.sql");
 const MIGRATION_0054: &str =
@@ -704,8 +701,8 @@ pub fn classify_failure(error: &anyhow::Error) -> FailureClass {
     FailureClass::Permanent
 }
 
-pub(crate) fn retry_backoff_seconds(attempts_before_failure: i32) -> i64 {
-    1i64 << attempts_before_failure.clamp(0, 8)
+pub(crate) fn retry_backoff_seconds(attempts_before_failure: i64) -> i64 {
+    1i64 << u32::try_from(attempts_before_failure.clamp(0, 8)).expect("bounded retry exponent")
 }
 
 /// True only for PostgreSQL's server-side statement or lock timeout SQLSTATEs. Shadow workers use
@@ -1787,12 +1784,8 @@ impl PgStore {
             .or_else(|| (!provider.is_empty()).then_some(provider.as_str()));
         let usage_provider = reservation_provider.as_deref().unwrap_or(provider.as_str());
 
-        let collection = collect_account_settlement_tx(
-            &mut tx,
-            &account_id,
-            hold,
-            effective_actual,
-        )?;
+        let collection =
+            collect_account_settlement_tx(&mut tx, &account_id, hold, effective_actual)?;
         let balance = collection.balance_nano;
         let collected_nano = collection.collected_nano;
         let uncollected_nano = collection.uncollected_nano;

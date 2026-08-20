@@ -9,6 +9,10 @@ use anyhow::{bail, Context, Result};
 
 pub const GEMINI_BATCH_DISPATCH_LEADER: &str = "gemini_batch_dispatch";
 pub const MAX_BATCH_PAGE_SIZE: i64 = 1_000;
+/// Exact public ceiling for one Gemini Batch job.
+pub const MAX_BATCH_ITEMS: i64 = 100_000;
+/// Maximum ciphertext item count accepted by one staged-admission append transaction.
+pub const MAX_BATCH_ADMISSION_PAGE_SIZE: usize = 128;
 pub const MAX_BATCH_FILE_CHUNK_PAGE_SIZE: i64 = 128;
 pub const GEMINI_BATCH_STANDARD_PROFILE_CAPACITY: i16 = 2;
 pub const GEMINI_BATCH_ULTRA_PROFILE_CAPACITY: i16 = 20;
@@ -21,6 +25,11 @@ pub const MAX_BATCH_ACCOUNT_FILE_BYTES: i64 = 20 * 1024 * 1024 * 1024;
 pub const MAX_BATCH_NONTERMINAL_JOBS: i64 = 100;
 pub const MAX_BATCH_REFERENCED_FILE_BYTES: i64 = MAX_BATCH_FILE_BYTES;
 pub const BATCH_RESULT_RETENTION_SECS: i64 = 42 * 24 * 60 * 60;
+pub const BATCH_QUEUED_EXPIRY_SECS: i64 = 48 * 60 * 60;
+pub const MAX_BATCH_OUTPUT_PAGE_SIZE: i64 = 16;
+/// Conservative output-file admission envelope: JSON escaping, tool payload and response framing.
+pub const MAX_BATCH_OUTPUT_BYTES_PER_TOKEN: i64 = 64;
+pub const MAX_BATCH_OUTPUT_ITEM_OVERHEAD_BYTES: i64 = 1_024;
 
 #[derive(Debug)]
 pub struct GeminiBatchUnsupported;
@@ -273,6 +282,76 @@ impl GeminiBatchCreateItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeminiBatchAdmissionBegin {
+    pub admission_id: String,
+    pub job_id: String,
+    pub account_id: String,
+    pub creator_key_id: String,
+    pub public_model: String,
+    pub display_name: String,
+    pub idempotency_digest: Option<[u8; 32]>,
+    pub priority: i64,
+    pub input_kind: GeminiBatchInputKind,
+    pub input_file_id: Option<String>,
+    pub schema_version: i32,
+    pub encryption_policy_version: i32,
+    pub create_ts: i64,
+    pub deadline_ts: i64,
+    pub expires_ts: i64,
+}
+impl GeminiBatchAdmissionBegin {
+    pub fn validate(&self) -> Result<()> {
+        if self.admission_id.is_empty()
+            || self.job_id.is_empty()
+            || self.account_id.is_empty()
+            || self.creator_key_id.is_empty()
+            || self.public_model.is_empty()
+            || self.public_model.len() > 255
+            || self.display_name.is_empty()
+            || self.display_name.len() > 512
+            || self.schema_version <= 0
+            || self.encryption_policy_version <= 0
+            || self.create_ts <= 0
+            || self.deadline_ts <= self.create_ts
+            || self.expires_ts <= self.create_ts
+            || (self.input_kind == GeminiBatchInputKind::File) != self.input_file_id.is_some()
+        {
+            bail!("invalid Gemini Batch admission begin")
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GeminiBatchAdmissionBeginOutcome {
+    Started {
+        admission_id: String,
+        next_item_index: i64,
+    },
+    Replay {
+        job_id: String,
+        canonical_request_digest: [u8; 32],
+    },
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeminiBatchAdmissionItem {
+    pub item: GeminiBatchCreateItem,
+    pub requested_output_tokens: i64,
+}
+impl GeminiBatchAdmissionItem {
+    pub fn validate(&self, created_ts: i64) -> Result<()> {
+        self.item.validate(created_ts)?;
+        if self.requested_output_tokens <= 0 {
+            bail!("invalid Gemini Batch requested output tokens")
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeminiBatchAdmissionProgress {
+    pub next_item_index: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeminiBatchCreate {
     pub job_id: String,
     pub account_id: String,
@@ -384,6 +463,8 @@ pub struct GeminiBatchJob {
     pub create_ts: i64,
     pub update_ts: i64,
     pub deadline_ts: i64,
+    pub terminal_items_ts: Option<i64>,
+    pub output_state: Option<String>,
     pub completed_ts: Option<i64>,
     pub delete_ts: Option<i64>,
     pub result_expiration_ts: Option<i64>,
@@ -405,6 +486,56 @@ pub struct GeminiBatchJobPage {
     pub jobs: Vec<GeminiBatchJob>,
     pub next_cursor: Option<GeminiBatchPageCursor>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeminiBatchOutputClaim {
+    pub job_id: String,
+    pub account_id: String,
+    pub file_id: String,
+    pub generation: i64,
+    pub next_item_index: i64,
+    pub next_chunk_index: i64,
+    pub plaintext_bytes: i64,
+    pub result_expiration_ts: i64,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct GeminiBatchOutputItem {
+    pub item_index: i64,
+    pub client_key: Option<String>,
+    pub state: GeminiBatchItemState,
+    pub terminal_class: GeminiBatchTerminalClass,
+    pub blob: Option<GeminiBatchEncryptedBlob>,
+}
+impl std::fmt::Debug for GeminiBatchOutputItem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GeminiBatchOutputItem")
+            .field("item_index", &self.item_index)
+            .field(
+                "client_key",
+                &self.client_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("state", &self.state)
+            .field("terminal_class", &self.terminal_class)
+            .field("blob", &self.blob.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeminiBatchOutputItemPage {
+    pub items: Vec<GeminiBatchOutputItem>,
+    pub next_item_index: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GeminiBatchMaintenanceReport {
+    pub expired_queued_items: usize,
+    pub expired_processing_files: usize,
+    pub pruned: GeminiBatchPruneReport,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeminiBatchClaim {
     pub job_id: String,
@@ -560,6 +691,20 @@ pub struct GeminiBatchFileCompletion {
     /// durable chunk indices, plaintext lengths and per-chunk plaintext digests before activation.
     pub chunk_manifest_digest: [u8; 32],
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GeminiBatchFileProgress {
+    pub received_bytes: i64,
+    pub next_chunk_index: i64,
+    pub chunk_count: i64,
+    pub size_bytes: i64,
+    pub active: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeminiBatchFileAppendOutcome {
+    Appended(GeminiBatchFileProgress),
+    OffsetConflict(GeminiBatchFileProgress),
+    Unavailable,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeminiBatchFile {
     pub file_id: String,
@@ -574,6 +719,11 @@ pub struct GeminiBatchFile {
     pub create_ts: i64,
     pub update_ts: i64,
     pub expiration_ts: i64,
+    pub received_bytes: i64,
+    pub next_chunk_index: i64,
+    pub chunk_count: i64,
+    pub chunk_manifest_digest: Option<[u8; 32]>,
+    pub completed_ts: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

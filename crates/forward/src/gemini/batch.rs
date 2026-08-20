@@ -13,6 +13,7 @@ use registry::{
     GeminiBatchSettlementDisposition, GeminiBatchSettlementIntent, GeminiBatchTerminalClass,
     GeminiBatchUsage,
 };
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     sync::{
@@ -209,6 +210,23 @@ impl GeminiBatchRuntime {
                 continue;
             }
             let _ = self.authority.drain_settlements(64).await;
+            let _ = self.authority.maintain(pool::now(), 64).await;
+            if let Ok(Some(output)) = self
+                .authority
+                .claim_output(self.config.claim_lease_secs)
+                .await
+            {
+                if let Err(error) = self.build_output(output.clone()).await {
+                    let _ = self
+                        .authority
+                        .fail_output(output, "output_build_failed")
+                        .await;
+                    elog::warn(
+                        "gemini-batch",
+                        format!("batch output build failed: {error:#}"),
+                    );
+                }
+            }
             if let Ok(report) = self.authority.reconcile(64).await {
                 for recovery in report.recovery_candidates {
                     let completed = pool::now();
@@ -305,6 +323,141 @@ impl GeminiBatchRuntime {
                 tokio::time::sleep(self.config.idle_backoff).await
             }
         }
+    }
+
+    async fn build_output(&self, claim: registry::GeminiBatchOutputClaim) -> Result<()> {
+        let mut after = (claim.next_item_index > 0).then_some(claim.next_item_index - 1);
+        let mut whole = Sha256::new();
+        let mut manifest_chunks = Vec::new();
+        let mut existing_after = None;
+        loop {
+            let page = self
+                .authority
+                .file_chunks(
+                    claim.account_id.clone(),
+                    claim.file_id.clone(),
+                    existing_after,
+                    registry::MAX_BATCH_FILE_CHUNK_PAGE_SIZE,
+                )
+                .await?;
+            for chunk in page.chunks {
+                let plain = self.keys.decrypt_file_chunk(
+                    &super::GeminiBatchFileChunkIdentity {
+                        account_id: &claim.account_id,
+                        file_id: &claim.file_id,
+                        chunk_index: chunk.chunk_index,
+                        schema_version: 1,
+                    },
+                    &chunk,
+                )?;
+                whole.update(&*plain);
+                existing_after = Some(chunk.chunk_index);
+                manifest_chunks.push(chunk);
+            }
+            if page.next_chunk_index.is_none() {
+                break;
+            }
+        }
+        loop {
+            let page = self
+                .authority
+                .output_items(claim.clone(), after, registry::MAX_BATCH_OUTPUT_PAGE_SIZE)
+                .await?;
+            if page.items.is_empty() {
+                break;
+            }
+            let mut bytes = Vec::new();
+            let mut covered = after.unwrap_or(-1) + 1;
+            for item in page.items {
+                let kind = if item.state == GeminiBatchItemState::Succeeded {
+                    "result"
+                } else {
+                    "error"
+                };
+                let payload: serde_json::Value = if let Some(blob) = item.blob {
+                    let plain = self.keys.decrypt_blob(
+                        &GeminiBatchBlobIdentity {
+                            account_id: &claim.account_id,
+                            job_id: &claim.job_id,
+                            item_index: item.item_index,
+                            kind,
+                            schema_version: 1,
+                        },
+                        &blob,
+                    )?;
+                    serde_json::from_slice(&plain)?
+                } else if item.state == GeminiBatchItemState::Canceled {
+                    if item.terminal_class == GeminiBatchTerminalClass::Expired {
+                        serde_json::json!({"code":408,"status":"DEADLINE_EXCEEDED","message":"Batch item expired before dispatch."})
+                    } else {
+                        serde_json::json!({"code":499,"status":"CANCELLED","message":"Batch item was cancelled before dispatch."})
+                    }
+                } else {
+                    bail!("terminal output blob is missing")
+                };
+                let mut line = serde_json::Map::new();
+                if let Some(key) = item.client_key {
+                    line.insert("key".into(), serde_json::Value::String(key));
+                }
+                line.insert(
+                    if kind == "result" {
+                        "response".into()
+                    } else {
+                        "error".into()
+                    },
+                    if kind == "error" {
+                        payload.get("error").cloned().unwrap_or(payload)
+                    } else {
+                        payload
+                    },
+                );
+                bytes.extend_from_slice(&serde_json::to_vec(&line)?);
+                bytes.push(b'\n');
+                covered = item.item_index + 1;
+            }
+            whole.update(&bytes);
+            let pieces = bytes
+                .chunks(registry::MAX_BATCH_FILE_CHUNK_BYTES as usize)
+                .collect::<Vec<_>>();
+            for (piece_index, piece) in pieces.iter().enumerate() {
+                let chunk = self.keys.encrypt_file_chunk(
+                    &super::GeminiBatchFileChunkIdentity {
+                        account_id: &claim.account_id,
+                        file_id: &claim.file_id,
+                        chunk_index: manifest_chunks.len() as i64,
+                        schema_version: 1,
+                    },
+                    piece,
+                    pool::now(),
+                )?;
+                let checkpoint = if piece_index + 1 == pieces.len() {
+                    covered
+                } else {
+                    after.unwrap_or(-1) + 1
+                };
+                if !self
+                    .authority
+                    .append_output(claim.clone(), checkpoint, chunk.clone())
+                    .await?
+                {
+                    bail!("output append fence became stale")
+                }
+                manifest_chunks.push(chunk);
+            }
+            after = Some(covered - 1);
+            if page.next_item_index.is_none() {
+                break;
+            }
+        }
+        let completion = registry::GeminiBatchFileCompletion {
+            completed_ts: pool::now(),
+            whole_file_sha256_digest: whole.finalize().into(),
+            chunk_manifest_digest: super::gemini_batch_chunk_manifest_digest(&manifest_chunks)?,
+        };
+        if !self.authority.finalize_output(claim, completion).await? {
+            bail!("output finalize fence became stale")
+        }
+        Ok(())
     }
 
     async fn execute_item(&self, item: GeminiBatchClaimedItem) -> Result<()> {

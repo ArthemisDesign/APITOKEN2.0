@@ -12,15 +12,15 @@ mod admin;
 mod config;
 mod http;
 mod metrics_store;
-mod provider_quota_points;
 mod openai_image_canary;
 mod openai_image_public_smoke;
 mod poller;
+mod provider_quota_points;
+mod request_fact_metrics;
 mod router_auth;
 mod router_catalog;
 mod router_policy;
 mod router_pricing;
-mod request_fact_metrics;
 mod tariff_admin;
 
 use anyhow::{bail, Context, Result};
@@ -1394,8 +1394,15 @@ async fn serve() -> Result<()> {
         .context("Gemini Batch authority startup task failed")??;
         let data_keys = Arc::new(batch.data_keys);
         if batch.public_enabled {
+            let batch_ingest = tokio::task::spawn_blocking({
+                let authority = authority.clone();
+                move || forward::gemini::GeminiBatchIngest::start(authority)
+            })
+            .await
+            .context("Gemini Batch ingest startup task failed")??;
             gemini_batch_public = Some(forward::gemini::GeminiBatchPublicFacade::new(
                 batch_authority.clone(),
+                batch_ingest,
                 gateway.clone(),
                 data_keys.clone(),
             ));
@@ -1610,8 +1617,9 @@ async fn serve() -> Result<()> {
         None
     };
     let body_storage = Arc::new(
-        forward::BodyStorage::new(s.body_limits, &s.body_spool_root)
-            .map_err(|error| anyhow::anyhow!("private provider body spool unavailable: {error:?}"))?,
+        forward::BodyStorage::new(s.body_limits, &s.body_spool_root).map_err(|error| {
+            anyhow::anyhow!("private provider body spool unavailable: {error:?}")
+        })?,
     );
     let app = AppState {
         provider: s.provider,

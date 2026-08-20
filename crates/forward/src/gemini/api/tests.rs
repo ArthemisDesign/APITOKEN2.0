@@ -6081,8 +6081,13 @@ fn gemini_batch_public_handlers_postgres_lifecycle_files_and_account_isolation()
         let keyring = Arc::new(
             GeminiBatchDataKeyring::parse(&format!("test;test:{data_key}")).unwrap(),
         );
+        let batch_ingest = super::super::GeminiBatchIngest::start(
+            registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+        )
+        .unwrap();
         let facade = GeminiBatchPublicFacade::new(
             batch_authority.clone(),
+            batch_ingest,
             fixture.gateway.clone(),
             Arc::clone(&keyring),
         );

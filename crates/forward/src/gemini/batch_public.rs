@@ -1,9 +1,10 @@
 //! Default-off request-facing Gemini Batch dependencies.
-use super::{GeminiBatchAuthority, GeminiBatchDataKeyring, GeminiGateway};
+use super::{GeminiBatchAuthority, GeminiBatchDataKeyring, GeminiBatchIngest, GeminiGateway};
 use std::sync::Arc;
 #[derive(Clone)]
 pub struct GeminiBatchPublicFacade {
     authority: GeminiBatchAuthority,
+    ingest: GeminiBatchIngest,
     gateway: Arc<GeminiGateway>,
     keys: Arc<GeminiBatchDataKeyring>,
 }
@@ -18,17 +19,22 @@ impl std::fmt::Debug for GeminiBatchPublicFacade {
 impl GeminiBatchPublicFacade {
     pub fn new(
         authority: GeminiBatchAuthority,
+        ingest: GeminiBatchIngest,
         gateway: Arc<GeminiGateway>,
         keys: Arc<GeminiBatchDataKeyring>,
     ) -> Arc<Self> {
         Arc::new(Self {
             authority,
+            ingest,
             gateway,
             keys,
         })
     }
     pub(crate) fn authority(&self) -> &GeminiBatchAuthority {
         &self.authority
+    }
+    pub(crate) fn ingest(&self) -> &GeminiBatchIngest {
+        &self.ingest
     }
     pub(crate) fn gateway(&self) -> &GeminiGateway {
         &self.gateway

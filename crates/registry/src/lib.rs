@@ -270,7 +270,9 @@ pub fn validate_suno_calibration_row(row: &SunoCalibrationRow) -> Result<()> {
     if row.window_duration_secs <= 0 {
         bail!("Suno calibration row has an invalid window duration");
     }
-    if row.native_limit_millicredits.is_some_and(|limit| limit <= 0)
+    if row
+        .native_limit_millicredits
+        .is_some_and(|limit| limit <= 0)
         || row.native_used_millicredits.is_some_and(|used| used < 0)
         || match (row.native_used_millicredits, row.native_limit_millicredits) {
             (Some(used), Some(limit)) => used > limit,

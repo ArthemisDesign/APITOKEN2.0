@@ -539,6 +539,57 @@ impl Authority {
             .gemini_batch_create(create, creator_key)
     }
 
+    pub fn gemini_batch_admission_begin(
+        &mut self,
+        begin: &crate::GeminiBatchAdmissionBegin,
+    ) -> Result<crate::GeminiBatchAdmissionBeginOutcome> {
+        self.gemini_batch_postgres()?
+            .gemini_batch_admission_begin(begin)
+    }
+
+    pub fn gemini_batch_admission_append(
+        &mut self,
+        admission_id: &str,
+        expected_start: i64,
+        items: &[crate::GeminiBatchAdmissionItem],
+    ) -> Result<i64> {
+        self.gemini_batch_postgres()?.gemini_batch_admission_append(
+            admission_id,
+            expected_start,
+            items,
+        )
+    }
+
+    pub fn gemini_batch_admission_publish(
+        &mut self,
+        admission_id: &str,
+        expected_items: i64,
+        canonical_request_digest: [u8; 32],
+        creator_key: &str,
+    ) -> Result<crate::GeminiBatchCreateOutcome> {
+        self.gemini_batch_postgres()?
+            .gemini_batch_admission_publish(
+                admission_id,
+                expected_items,
+                canonical_request_digest,
+                creator_key,
+            )
+    }
+
+    pub fn gemini_batch_admission_abort(&mut self, admission_id: &str) -> Result<bool> {
+        self.gemini_batch_postgres()?
+            .gemini_batch_admission_abort(admission_id)
+    }
+
+    pub fn prune_expired_gemini_batch_admissions(
+        &mut self,
+        older_than: i64,
+        limit: usize,
+    ) -> Result<usize> {
+        self.gemini_batch_postgres()?
+            .prune_expired_gemini_batch_admissions(older_than, limit)
+    }
+
     pub fn gemini_batch_get(
         &mut self,
         account_id: &str,
@@ -573,6 +624,24 @@ impl Authority {
     ) -> Result<bool> {
         self.gemini_batch_postgres()?
             .gemini_batch_file_append_chunk(account_id, file_id, chunk)
+    }
+    pub fn gemini_batch_file_progress(
+        &mut self,
+        account_id: &str,
+        file_id: &str,
+    ) -> Result<Option<crate::GeminiBatchFileProgress>> {
+        self.gemini_batch_postgres()?
+            .gemini_batch_file_progress(account_id, file_id)
+    }
+    pub fn gemini_batch_file_append_chunk_at(
+        &mut self,
+        account_id: &str,
+        file_id: &str,
+        expected_offset: i64,
+        chunk: &crate::GeminiBatchFileChunk,
+    ) -> Result<crate::GeminiBatchFileAppendOutcome> {
+        self.gemini_batch_postgres()?
+            .gemini_batch_file_append_chunk_at(account_id, file_id, expected_offset, chunk)
     }
     pub fn gemini_batch_file_complete(
         &mut self,
@@ -635,6 +704,74 @@ impl Authority {
     ) -> Result<bool> {
         self.gemini_batch_postgres()?
             .gemini_batch_link_output_file(account_id, job_id, file_id)
+    }
+
+    pub fn claim_gemini_batch_output(
+        &mut self,
+        owner: &Owner,
+        lease_secs: i64,
+    ) -> Result<Option<crate::GeminiBatchOutputClaim>> {
+        self.gemini_batch_postgres()?
+            .claim_gemini_batch_output(owner, lease_secs)
+    }
+    pub fn renew_gemini_batch_output(
+        &mut self,
+        owner: &Owner,
+        claim: &crate::GeminiBatchOutputClaim,
+        lease_secs: i64,
+    ) -> Result<bool> {
+        self.gemini_batch_postgres()?
+            .renew_gemini_batch_output(owner, claim, lease_secs)
+    }
+    pub fn gemini_batch_output_item_page(
+        &mut self,
+        owner: &Owner,
+        claim: &crate::GeminiBatchOutputClaim,
+        after: Option<i64>,
+        limit: i64,
+    ) -> Result<crate::GeminiBatchOutputItemPage> {
+        self.gemini_batch_postgres()?
+            .gemini_batch_output_item_page(owner, claim, after, limit)
+    }
+    pub fn append_gemini_batch_output_chunk(
+        &mut self,
+        owner: &Owner,
+        claim: &crate::GeminiBatchOutputClaim,
+        next_item_index: i64,
+        chunk: &crate::GeminiBatchFileChunk,
+    ) -> Result<bool> {
+        self.gemini_batch_postgres()?
+            .append_gemini_batch_output_chunk(owner, claim, next_item_index, chunk)
+    }
+    pub fn fail_gemini_batch_output(
+        &mut self,
+        owner: &Owner,
+        claim: &crate::GeminiBatchOutputClaim,
+        class: &str,
+    ) -> Result<bool> {
+        self.gemini_batch_postgres()?
+            .fail_gemini_batch_output(owner, claim, class)
+    }
+    pub fn finalize_gemini_batch_output(
+        &mut self,
+        owner: &Owner,
+        claim: &crate::GeminiBatchOutputClaim,
+        completion: &crate::GeminiBatchFileCompletion,
+    ) -> Result<bool> {
+        self.gemini_batch_postgres()?
+            .finalize_gemini_batch_output(owner, claim, completion)
+    }
+    pub fn expire_queued_gemini_batch(&mut self, limit: usize) -> Result<usize> {
+        self.gemini_batch_postgres()?
+            .expire_queued_gemini_batch(limit)
+    }
+    pub fn maintain_gemini_batch(
+        &mut self,
+        older_than: i64,
+        limit: usize,
+    ) -> Result<crate::GeminiBatchMaintenanceReport> {
+        self.gemini_batch_postgres()?
+            .maintain_gemini_batch(older_than, limit)
     }
 
     pub fn acquire_gemini_batch_leader(&mut self, owner: &Owner, ttl_secs: i64) -> Result<bool> {

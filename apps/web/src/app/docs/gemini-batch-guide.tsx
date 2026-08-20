@@ -27,7 +27,7 @@ const endpointPurpose = {
   upload: ["Start or continue a resumable JSONL upload", "Начать или продолжить resumable-загрузку JSONL"],
   "files-list": ["List account-scoped gateway files", "Список account-scoped файлов шлюза"],
   "file-get": ["Read file metadata", "Получить метаданные файла"],
-  "file-download": ["Download an active file up to 20 MiB", "Скачать активный файл до 20 МиБ"],
+  "file-download": ["Stream or range-download an active file", "Потоково или диапазоном скачать активный файл"],
   "file-delete": ["Delete a file not referenced by live work", "Удалить файл без активных ссылок"],
 } as const;
 
@@ -49,7 +49,7 @@ const differences = [
   ["Inline schema", "inputConfig.requests is a direct array. Use the raw HTTP examples below; Google’s InlinedRequests wrapper is not accepted.", "inputConfig.requests — прямой массив. Используйте raw HTTP-примеры ниже; Google-обёртка InlinedRequests не принимается."],
   ["Files", "Files belong to your apiToken.sale account, not to a Google Cloud project. Foreign Google files are invisible.", "Файлы принадлежат аккаунту apiToken.sale, а не Google Cloud project. Чужие Google-файлы недоступны."],
   ["fileData", "Gateway files cannot currently be embedded with fileData. Use JSONL file input, or inlineData for synchronous generation.", "Сейчас gateway-файлы нельзя встраивать через fileData. Используйте JSONL file input, а для синхронной генерации — inlineData."],
-  ["File output", "File-input jobs currently return response.inlinedResponses when polled; responsesFile output is not implemented.", "Задания с файловым вводом сейчас возвращают response.inlinedResponses при polling; output responsesFile не реализован."],
+  ["File output", "File-input jobs publish an ordered encrypted JSONL responsesFile before done=true; inline jobs retain inlinedResponses.", "Задания с файловым вводом публикуют упорядоченный зашифрованный JSONL responsesFile до done=true; inline jobs сохраняют inlinedResponses."],
   ["Timestamps", "Operation timestamps are Unix-second strings, not RFC 3339.", "Времена operation — строки Unix seconds, не RFC 3339."],
   ["Unsupported", "No webhooks, embedding/update Batch methods, image-output models, Google IAM or stock Vertex resource semantics.", "Нет webhooks, embedding/update Batch, image-output моделей, Google IAM и Vertex resource semantics."],
 ] as const;
@@ -101,8 +101,8 @@ export function GeminiBatchGuide({ language }: { language: DocsLanguage }) {
         "key is required for file input and may be up to 512 bytes. Results remain in input order; keep the key in your own input-to-output mapping.",
         "Для file input поле key обязательно и может занимать до 512 байт. Результаты сохраняют порядок ввода; храните key в своей карте input→output.")} code={GEMINI_BATCH_JSONL} label="JSONL" />
       <BatchCodeCard language={language} title={tr(language, "Resumable upload and fileName create", "Resumable upload и create через fileName")} text={tr(language,
-        "The returned upload URL is relative. One upload request is limited to 8 MiB; larger inputs require exact offsets and multiple chunks. The current public download route is limited to 20 MiB, so use Files primarily for Batch JSONL input.",
-        "Возвращаемый upload URL относительный. Один upload request ограничен 8 МиБ; больший файл отправляйте несколькими chunks с точными offsets. Public download сейчас ограничен 20 МиБ, поэтому Files прежде всего предназначен для Batch JSONL input.")} code={GEMINI_BATCH_UPLOAD_CURL} label="Bash · upload" />
+        "The returned upload URL is relative. Non-final upload chunks are exactly 8 MiB and use exact offsets; after an ambiguous response issue command=query before retrying. Full output downloads stream without buffering, and Range supports resumable bounded reads.",
+        "Возвращаемый upload URL относительный. Нефинальные chunks имеют ровно 8 МиБ и точные offsets; после неоднозначного ответа выполните command=query перед повтором. Полный output скачивается потоком, а Range даёт возобновляемые ограниченные чтения.")} code={GEMINI_BATCH_UPLOAD_CURL} label="Bash · upload" />
     </div>
 
     <h3>{tr(language, "Limits and retention", "Лимиты и хранение")}</h3>
@@ -110,8 +110,8 @@ export function GeminiBatchGuide({ language }: { language: DocsLanguage }) {
       {limits.map(([enName, enValue, ruName, ruValue]) => <tr key={enName}><td><span>{tr(language, enName, ruName)}</span></td><td><code>{tr(language, enValue, ruValue)}</code></td></tr>)}
     </tbody></table></div>
     <p className="docs-note"><Prose text={tr(language,
-      "The account must have enough available balance for the complete conservative hold at create time. Accepted work is durable and may remain queued during temporary capacity pressure. Standard Gemini token pricing and your normal account discount apply; there is no separate Batch discount or completion-time SLA.",
-      "При создании на аккаунте должен быть доступен баланс для conservative hold всего Batch. Принятое задание сохраняется и может оставаться в очереди при временном дефиците мощности. Действуют обычные цены Gemini и скидка аккаунта; отдельной Batch-скидки и гарантии срока нет.")} /></p>
+      "The account must have enough available balance for the complete conservative hold at create time. Accepted work is durable and may remain queued during temporary capacity pressure. Ultra subscriptions use up to 20 durable Batch slots; every other plan uses 2, with a random durable 2–5 second interval between starts on one subscription. Standard Gemini token pricing and your normal account discount apply; there is no separate Batch discount or completion-time SLA.",
+      "При создании на аккаунте должен быть доступен баланс для conservative hold всего Batch. Принятое задание сохраняется и может оставаться в очереди при временном дефиците мощности. Ultra использует до 20 durable Batch slots, остальные планы — 2; старты на одной подписке разделены случайным durable интервалом 2–5 секунд. Действуют обычные цены Gemini и скидка аккаунта; отдельной Batch-скидки и гарантии срока нет.")} /></p>
 
     <h3>{tr(language, "How this differs from Google Batch", "Отличия от официального Google Batch")}</h3>
     <div className="table-scroll"><table className="mtable"><thead><tr><th>{tr(language, "Area", "Область")}</th><th>{tr(language, "apiToken.sale behavior", "Поведение apiToken.sale")}</th></tr></thead><tbody>

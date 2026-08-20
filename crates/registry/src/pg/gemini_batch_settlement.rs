@@ -84,14 +84,54 @@ fn blob_matches(tx: &mut Transaction<'_>, intent: &GeminiBatchSettlementIntent) 
         && row.get::<_, i64>(6) == intent.completed_ts)
 }
 
-fn complete_job_if_terminal(tx: &mut Transaction<'_>, job_id: &str, ts: i64) -> Result<()> {
-    let changed = tx.execute(
-        "UPDATE gemini_batch_jobs j SET completed_ts=COALESCE(completed_ts,$2),result_expiration_ts=COALESCE(result_expiration_ts,$2+$3),update_ts=$2 WHERE job_id=$1 AND NOT EXISTS(SELECT 1 FROM gemini_batch_items i WHERE i.job_id=j.job_id AND i.state NOT IN ('succeeded','failed','indeterminate','canceled'))",
-        &[&job_id, &ts, &BATCH_RESULT_RETENTION_SECS],
-    )?;
-    if changed > 1 {
-        bail!("Gemini Batch job completion changed multiple rows")
+pub(super) fn complete_job_if_terminal(
+    tx: &mut Transaction<'_>,
+    job_id: &str,
+    ts: i64,
+) -> Result<()> {
+    let Some(job) = tx.query_opt(
+        "SELECT account_id,input_kind,terminal_items_ts,completed_ts FROM gemini_batch_jobs j \
+         WHERE job_id=$1 AND NOT EXISTS(SELECT 1 FROM gemini_batch_items i WHERE i.job_id=j.job_id \
+         AND i.state NOT IN ('succeeded','failed','indeterminate','canceled')) FOR UPDATE",
+        &[&job_id],
+    )?
+    else {
+        return Ok(());
+    };
+    let input_kind: String = job.get(1);
+    if input_kind == "inline" {
+        tx.execute(
+            "UPDATE gemini_batch_jobs SET terminal_items_ts=COALESCE(terminal_items_ts,$2),\
+             completed_ts=COALESCE(completed_ts,$2),result_expiration_ts=COALESCE(result_expiration_ts,$2+$3),\
+             update_ts=GREATEST(update_ts,$2) WHERE job_id=$1",
+            &[&job_id, &ts, &BATCH_RESULT_RETENTION_SECS],
+        )?;
+        return Ok(());
     }
+    if job.get::<_, Option<i64>>(2).is_some() || job.get::<_, Option<i64>>(3).is_some() {
+        return Ok(());
+    }
+    let account_id: String = job.get(0);
+    let file_id = format!("batch-output-{job_id}");
+    tx.execute(
+        "INSERT INTO gemini_batch_files(file_id,account_id,display_name,mime_type,size_bytes,sha256_digest,\
+         source_kind,state,storage_kind,create_ts,update_ts,expiration_ts,received_bytes,next_chunk_index,chunk_count)\
+         VALUES($1,$2,'Gemini Batch output','application/jsonl',0,decode(repeat('00',32),'hex'),\
+         'batch_output','processing','chunked',$3,$3,$3+$4,0,0,0) ON CONFLICT(file_id) DO NOTHING",
+        &[&file_id, &account_id, &ts, &BATCH_RESULT_RETENTION_SECS],
+    )?;
+    tx.execute(
+        "INSERT INTO gemini_batch_output_builds(job_id,file_id,generation,state,next_item_index,next_chunk_index,\
+         plaintext_bytes,created_ts,updated_ts) VALUES($1,$2,1,'pending',0,0,0,$3,$3)\
+         ON CONFLICT(job_id) DO UPDATE SET state=CASE WHEN gemini_batch_output_builds.state='ready' THEN 'ready' ELSE 'pending' END,\
+         updated_ts=GREATEST(gemini_batch_output_builds.updated_ts,EXCLUDED.updated_ts)",
+        &[&job_id, &file_id, &ts],
+    )?;
+    tx.execute(
+        "UPDATE gemini_batch_jobs SET terminal_items_ts=$2,output_state='pending',update_ts=GREATEST(update_ts,$2)\
+         WHERE job_id=$1 AND completed_ts IS NULL",
+        &[&job_id, &ts],
+    )?;
     Ok(())
 }
 
@@ -558,7 +598,7 @@ impl PgStore {
                              WHERE request_id=$1 AND state <> 'done'",
                             &[&id],
                         )?
-                        .map(|row| row.get::<_, i32>(0))
+                        .map(|row| row.get::<_, i64>(0))
                         .unwrap_or_default();
                     let next_attempt = if permanent {
                         0
@@ -573,7 +613,7 @@ impl PgStore {
                              WHERE request_id=$1 AND state <> 'done' RETURNING attempts",
                             &[&id, &state, &message, &next_attempt, &ts],
                         )?
-                        .map(|row| row.get::<_, i32>(0));
+                        .map(|row| row.get::<_, i64>(0));
                     if permanent {
                         elog::error(
                             "registry",
@@ -603,7 +643,7 @@ impl PgStore {
         let mut tx = self.client.transaction()?;
         let blobs = tx.execute("DELETE FROM gemini_batch_blobs WHERE (job_id,item_index,kind) IN (SELECT b.job_id,b.item_index,b.kind FROM gemini_batch_blobs b JOIN gemini_batch_jobs j USING(job_id) WHERE b.retention_ts<$1 AND j.completed_ts IS NOT NULL ORDER BY b.retention_ts LIMIT $2)", &[&older_than, &limit])? as usize;
         let chunks = tx.execute("DELETE FROM gemini_batch_file_chunks WHERE file_id IN(SELECT f.file_id FROM gemini_batch_files f WHERE f.expiration_ts<$1 AND NOT EXISTS(SELECT 1 FROM gemini_batch_item_files r WHERE r.file_id=f.file_id) LIMIT $2)", &[&older_than, &limit])? as usize;
-        let files = tx.execute("DELETE FROM gemini_batch_files f WHERE f.expiration_ts<$1 AND NOT EXISTS(SELECT 1 FROM gemini_batch_file_chunks c WHERE c.file_id=f.file_id) AND NOT EXISTS(SELECT 1 FROM gemini_batch_item_files r WHERE r.file_id=f.file_id) AND NOT EXISTS(SELECT 1 FROM gemini_batch_jobs j WHERE j.input_file_id=f.file_id OR j.output_file_id=f.file_id)", &[&older_than])? as usize;
+        let files = tx.execute("DELETE FROM gemini_batch_files f WHERE f.file_id IN (SELECT candidate.file_id FROM gemini_batch_files candidate WHERE candidate.expiration_ts<$1 AND NOT EXISTS(SELECT 1 FROM gemini_batch_file_chunks c WHERE c.file_id=candidate.file_id) AND NOT EXISTS(SELECT 1 FROM gemini_batch_item_files r WHERE r.file_id=candidate.file_id) AND NOT EXISTS(SELECT 1 FROM gemini_batch_jobs j WHERE j.input_file_id=candidate.file_id OR j.output_file_id=candidate.file_id) ORDER BY candidate.expiration_ts,candidate.file_id LIMIT $2)", &[&older_than,&limit])? as usize;
         tx.commit()?;
         Ok(GeminiBatchPruneReport {
             blobs,

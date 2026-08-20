@@ -11,7 +11,7 @@ Gemini Batch runs independent non-streaming GenerateContent requests asynchronou
 | DELETE | \`/v1beta/batches/{id}\` | Delete a terminal operation |
 | POST | \`/upload/v1beta/files\` | Start/continue resumable JSONL upload |
 | GET/DELETE | \`/v1beta/files/{id}\` | Read/delete account-scoped file |
-| GET | \`/v1beta/files/{id}:download\` | Download an active file up to 20 MiB |
+| GET | \`/v1beta/files/{id}:download\` | Stream or range-download an active file |
 
 ### Create and poll inline requests
 
@@ -42,13 +42,13 @@ Each nonempty line is one object, not a JSON array:
 {"key":"product-b","request":{"contents":[{"parts":[{"text":"Summarize product B."}]}]}}
 \`\`\`
 
-Start a resumable upload with \`POST /upload/v1beta/files\`, \`X-Goog-Upload-Protocol: resumable\`, \`X-Goog-Upload-Command: start\`, and the required \`X-Goog-Upload-Header-Content-Length\`. Follow the relative \`X-Goog-Upload-URL\`; send chunks up to 8 MiB with exact \`X-Goog-Upload-Offset\`, and finalize with \`X-Goog-Upload-Command: upload, finalize\`. Pass the returned \`files/{id}\` as \`batch.inputConfig.fileName\`.
+Start a resumable upload with \`POST /upload/v1beta/files\`, \`X-Goog-Upload-Protocol: resumable\`, \`X-Goog-Upload-Command: start\`, and the required \`X-Goog-Upload-Header-Content-Length\`. Follow the relative \`X-Goog-Upload-URL\`; send non-final 8 MiB chunks with exact \`X-Goog-Upload-Offset\`, use zero-body command \`query\` after an ambiguous response, and finalize with \`upload, finalize\`. Pass the returned \`files/{id}\` as \`batch.inputConfig.fileName\`.
 
 ### Resource lifecycle
 
 - List jobs with \`GET /v1beta/batches?pageSize=20\`; pass the returned \`nextPageToken\` on the next call.
 - Read the complete \`batches/{id}\` with \`GET /v1beta/{name}\`. Request cancellation with \`POST /v1beta/{name}:cancel\`; already dispatched items may finish. Delete with \`DELETE /v1beta/{name}\` only after the operation becomes terminal.
-- List files with \`GET /v1beta/files?pageSize=20\`. Files list currently has no page token. Get metadata at \`GET /v1beta/files/{id}\`, download active content up to 20 MiB from \`GET /v1beta/files/{id}:download\`, and delete with \`DELETE /v1beta/files/{id}\` only while no live Batch references it.
+- List files with \`GET /v1beta/files?pageSize=20\`. Get metadata at \`GET /v1beta/files/{id}\`; full downloads stream without buffering and one standard \`Range: bytes=start-end\` request returns 206 for resumable bounded reads. Delete with \`DELETE /v1beta/files/{id}\` only while no live Batch references it.
 
 ### Limits and differences from Google
 
@@ -57,6 +57,7 @@ Start a resumable upload with \`POST /upload/v1beta/files\`, \`X-Goog-Upload-Pro
 - This is not Vertex AI Batch: no GCS, BigQuery, Google Cloud IAM, webhooks, embedding/update Batch methods, or image-output Batch models.
 - \`inputConfig.requests\` is a direct array; Google SDK serializers that send an \`InlinedRequests\` wrapper are not accepted. Use the documented raw HTTP schema.
 - Gateway files belong to the apiToken.sale account, not a Google project. Foreign Google \`files/...\` are invisible. \`fileData\` with gateway files is not currently supported; use JSONL \`fileName\`, or synchronous \`inlineData\`.
-- File-input jobs currently return \`response.inlinedResponses\` when polled; \`responsesFile\` output is not implemented.
-- Operation times are Unix-second strings, not RFC 3339. Batch list supports \`pageSize\`/\`pageToken\`; Files list currently supports \`pageSize\` only.
-- Download is limited to active files up to 20 MiB. A file referenced by live work cannot be deleted.`;
+- Inline jobs return \`response.inlinedResponses\`. File-input jobs remain \`done:false\` until an ordered encrypted JSONL output file is atomically published, then return \`metadata.output.responsesFile\`; download that file and correlate each line by \`key\`.
+- Operation times are Unix-second strings, not RFC 3339. Batch list supports \`pageSize\`/\`pageToken\`.
+- Ultra subscriptions use up to 20 durable Batch slots; every other plan uses 2. Starts on one subscription are separated by a random durable 2–5 second interval.
+- Full file downloads stream; single-range downloads support resumption. A file referenced by live work cannot be deleted.`;

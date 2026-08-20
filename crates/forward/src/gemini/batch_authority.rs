@@ -48,8 +48,14 @@ enum Command {
     FileAppend {
         account_id: String,
         file_id: String,
+        expected_offset: i64,
         chunk: registry::GeminiBatchFileChunk,
-        reply: Reply<bool>,
+        reply: Reply<registry::GeminiBatchFileAppendOutcome>,
+    },
+    FileProgress {
+        account_id: String,
+        file_id: String,
+        reply: Reply<Option<registry::GeminiBatchFileProgress>>,
     },
     FileComplete {
         account_id: String,
@@ -144,6 +150,42 @@ enum Command {
         limit: usize,
         reply: Reply<usize>,
     },
+    ClaimOutput {
+        lease_secs: i64,
+        reply: Reply<Option<registry::GeminiBatchOutputClaim>>,
+    },
+    RenewOutput {
+        claim: registry::GeminiBatchOutputClaim,
+        lease_secs: i64,
+        reply: Reply<bool>,
+    },
+    OutputItems {
+        claim: registry::GeminiBatchOutputClaim,
+        after: Option<i64>,
+        limit: i64,
+        reply: Reply<registry::GeminiBatchOutputItemPage>,
+    },
+    AppendOutput {
+        claim: registry::GeminiBatchOutputClaim,
+        next_item_index: i64,
+        chunk: registry::GeminiBatchFileChunk,
+        reply: Reply<bool>,
+    },
+    FailOutput {
+        claim: registry::GeminiBatchOutputClaim,
+        class: String,
+        reply: Reply<bool>,
+    },
+    FinalizeOutput {
+        claim: registry::GeminiBatchOutputClaim,
+        completion: registry::GeminiBatchFileCompletion,
+        reply: Reply<bool>,
+    },
+    Maintain {
+        older_than: i64,
+        limit: usize,
+        reply: Reply<registry::GeminiBatchMaintenanceReport>,
+    },
     OperationalReport(Reply<registry::GeminiBatchOperationalReport>),
     Shutdown(Reply<()>),
 }
@@ -227,14 +269,24 @@ impl GeminiBatchAuthority {
                         Command::FileAppend {
                             account_id,
                             file_id,
+                            expected_offset,
                             chunk,
                             reply,
                         } => {
-                            let _ = reply.send(authority.gemini_batch_file_append_chunk(
+                            let _ = reply.send(authority.gemini_batch_file_append_chunk_at(
                                 &account_id,
                                 &file_id,
+                                expected_offset,
                                 &chunk,
                             ));
+                        }
+                        Command::FileProgress {
+                            account_id,
+                            file_id,
+                            reply,
+                        } => {
+                            let _ = reply
+                                .send(authority.gemini_batch_file_progress(&account_id, &file_id));
                         }
                         Command::FileComplete {
                             account_id,
@@ -399,6 +451,69 @@ impl GeminiBatchAuthority {
                         Command::DrainSettlements { limit, reply } => {
                             let _ = reply.send(authority.drain_gemini_batch_settlements(limit));
                         }
+                        Command::ClaimOutput { lease_secs, reply } => {
+                            let _ =
+                                reply.send(authority.claim_gemini_batch_output(&owner, lease_secs));
+                        }
+                        Command::RenewOutput {
+                            claim,
+                            lease_secs,
+                            reply,
+                        } => {
+                            let _ = reply.send(
+                                authority.renew_gemini_batch_output(&owner, &claim, lease_secs),
+                            );
+                        }
+                        Command::OutputItems {
+                            claim,
+                            after,
+                            limit,
+                            reply,
+                        } => {
+                            let _ = reply.send(
+                                authority
+                                    .gemini_batch_output_item_page(&owner, &claim, after, limit),
+                            );
+                        }
+                        Command::AppendOutput {
+                            claim,
+                            next_item_index,
+                            chunk,
+                            reply,
+                        } => {
+                            let _ = reply.send(authority.append_gemini_batch_output_chunk(
+                                &owner,
+                                &claim,
+                                next_item_index,
+                                &chunk,
+                            ));
+                        }
+                        Command::FailOutput {
+                            claim,
+                            class,
+                            reply,
+                        } => {
+                            let _ = reply
+                                .send(authority.fail_gemini_batch_output(&owner, &claim, &class));
+                        }
+                        Command::FinalizeOutput {
+                            claim,
+                            completion,
+                            reply,
+                        } => {
+                            let _ = reply.send(authority.finalize_gemini_batch_output(
+                                &owner,
+                                &claim,
+                                &completion,
+                            ));
+                        }
+                        Command::Maintain {
+                            older_than,
+                            limit,
+                            reply,
+                        } => {
+                            let _ = reply.send(authority.maintain_gemini_batch(older_than, limit));
+                        }
                         Command::OperationalReport(reply) => {
                             let _ = reply.send(authority.gemini_batch_operational_report());
                         }
@@ -496,15 +611,29 @@ impl GeminiBatchAuthority {
         self.call(|reply| Command::FileCreate { create, reply })
             .await
     }
+    pub async fn file_progress(
+        &self,
+        account_id: String,
+        file_id: String,
+    ) -> Result<Option<registry::GeminiBatchFileProgress>> {
+        self.call(|reply| Command::FileProgress {
+            account_id,
+            file_id,
+            reply,
+        })
+        .await
+    }
     pub async fn file_append(
         &self,
         account_id: String,
         file_id: String,
+        expected_offset: i64,
         chunk: registry::GeminiBatchFileChunk,
-    ) -> Result<bool> {
+    ) -> Result<registry::GeminiBatchFileAppendOutcome> {
         self.call(|reply| Command::FileAppend {
             account_id,
             file_id,
+            expected_offset,
             chunk,
             reply,
         })
@@ -701,6 +830,90 @@ impl GeminiBatchAuthority {
     pub async fn drain_settlements(&self, limit: usize) -> Result<usize> {
         self.call(|reply| Command::DrainSettlements { limit, reply })
             .await
+    }
+
+    pub async fn claim_output(
+        &self,
+        lease_secs: i64,
+    ) -> Result<Option<registry::GeminiBatchOutputClaim>> {
+        self.call(|reply| Command::ClaimOutput { lease_secs, reply })
+            .await
+    }
+    pub async fn renew_output(
+        &self,
+        claim: registry::GeminiBatchOutputClaim,
+        lease_secs: i64,
+    ) -> Result<bool> {
+        self.call(|reply| Command::RenewOutput {
+            claim,
+            lease_secs,
+            reply,
+        })
+        .await
+    }
+    pub async fn output_items(
+        &self,
+        claim: registry::GeminiBatchOutputClaim,
+        after: Option<i64>,
+        limit: i64,
+    ) -> Result<registry::GeminiBatchOutputItemPage> {
+        self.call(|reply| Command::OutputItems {
+            claim,
+            after,
+            limit,
+            reply,
+        })
+        .await
+    }
+    pub async fn append_output(
+        &self,
+        claim: registry::GeminiBatchOutputClaim,
+        next_item_index: i64,
+        chunk: registry::GeminiBatchFileChunk,
+    ) -> Result<bool> {
+        self.call(|reply| Command::AppendOutput {
+            claim,
+            next_item_index,
+            chunk,
+            reply,
+        })
+        .await
+    }
+    pub async fn fail_output(
+        &self,
+        claim: registry::GeminiBatchOutputClaim,
+        class: impl Into<String>,
+    ) -> Result<bool> {
+        self.call(|reply| Command::FailOutput {
+            claim,
+            class: class.into(),
+            reply,
+        })
+        .await
+    }
+    pub async fn finalize_output(
+        &self,
+        claim: registry::GeminiBatchOutputClaim,
+        completion: registry::GeminiBatchFileCompletion,
+    ) -> Result<bool> {
+        self.call(|reply| Command::FinalizeOutput {
+            claim,
+            completion,
+            reply,
+        })
+        .await
+    }
+    pub async fn maintain(
+        &self,
+        older_than: i64,
+        limit: usize,
+    ) -> Result<registry::GeminiBatchMaintenanceReport> {
+        self.call(|reply| Command::Maintain {
+            older_than,
+            limit,
+            reply,
+        })
+        .await
     }
 
     pub async fn operational_report(&self) -> Result<registry::GeminiBatchOperationalReport> {

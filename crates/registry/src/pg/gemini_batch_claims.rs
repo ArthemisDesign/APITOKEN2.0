@@ -463,6 +463,9 @@ impl PgStore {
                 AND item.worker_instance=$4 AND item.worker_epoch=$5
                 AND item.claim_generation=$6 AND item.selected_profile_id=$9
                 AND item.state IN ('claimed','dispatching')
+                AND EXISTS (SELECT 1 FROM gemini_batch_jobs job WHERE job.job_id=item.job_id
+                    AND job.cancel_requested_ts IS NULL AND job.terminal_items_ts IS NULL
+                    AND job.completed_ts IS NULL AND job.delete_ts IS NULL AND job.deadline_ts>$7)
                 AND EXISTS (
                     SELECT 1 FROM gemini_batch_profile_leases lease
                      WHERE lease.profile_id=$9 AND lease.job_id=$1 AND lease.item_index=$2
@@ -540,8 +543,8 @@ impl PgStore {
         )? != 1
             || tx
                 .query_opt(
-                    "SELECT 1 FROM gemini_batch_items WHERE job_id=$1 AND item_index=$2 AND request_id=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6 AND selected_profile_id=$7 AND state='dispatching' AND dispatch_intent_ts IS NOT NULL FOR UPDATE",
-                    &[&claim.job_id,&claim.item_index,&claim.request_id,&owner.instance_id,&owner.epoch,&claim.claim_generation,&claim.profile_id],
+                    "SELECT 1 FROM gemini_batch_items item JOIN gemini_batch_jobs job USING(job_id) WHERE item.job_id=$1 AND item.item_index=$2 AND item.request_id=$3 AND item.worker_instance=$4 AND item.worker_epoch=$5 AND item.claim_generation=$6 AND item.selected_profile_id=$7 AND item.state='dispatching' AND item.dispatch_intent_ts IS NOT NULL AND job.cancel_requested_ts IS NULL AND job.terminal_items_ts IS NULL AND job.completed_ts IS NULL AND job.delete_ts IS NULL AND job.deadline_ts>$8 AND EXISTS(SELECT 1 FROM leader_leases leader WHERE leader.name=$9 AND leader.owner_instance=$4 AND leader.owner_epoch=$5 AND leader.lease_until >= $8) FOR UPDATE OF item,job",
+                    &[&claim.job_id,&claim.item_index,&claim.request_id,&owner.instance_id,&owner.epoch,&claim.claim_generation,&claim.profile_id,&(now_ms/1000),&GEMINI_BATCH_DISPATCH_LEADER],
                 )?
                 .is_none()
         {
@@ -592,6 +595,11 @@ impl PgStore {
                 AND item.worker_instance=$4 AND item.worker_epoch=$5
                 AND item.claim_generation=$6 AND item.selected_profile_id=$9
                 AND item.state='dispatching' AND item.dispatch_intent_ts IS NOT NULL
+                AND EXISTS (SELECT 1 FROM gemini_batch_jobs job WHERE job.job_id=item.job_id
+                    AND job.cancel_requested_ts IS NULL AND job.terminal_items_ts IS NULL
+                    AND job.completed_ts IS NULL AND job.delete_ts IS NULL AND job.deadline_ts>$7)
+                AND EXISTS (SELECT 1 FROM leader_leases leader WHERE leader.name=$10
+                    AND leader.owner_instance=$4 AND leader.owner_epoch=$5 AND leader.lease_until >= $7)
                 AND EXISTS (
                     SELECT 1 FROM gemini_batch_profile_leases lease
                      WHERE lease.profile_id=$9 AND lease.job_id=$1 AND lease.item_index=$2
@@ -618,6 +626,7 @@ impl PgStore {
                 &ts,
                 &lease_until,
                 &claim.profile_id,
+                &GEMINI_BATCH_DISPATCH_LEADER,
             ],
         )?;
         if changed == 1
