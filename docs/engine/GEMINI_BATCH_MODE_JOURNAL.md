@@ -107,3 +107,10 @@ SHA: фиксируется commit этой записи
 Отступления от плана: measured first-version item ceiling зафиксирован 100 000; 250k/500k отложены как отдельный WAL/capacity expansion. Live partial provider error не форсируется платным запросом: deterministic mock/fault coverage заменяет рискованную provider gamble.
 Измерения: synthetic logical JSONL 2,000,000,000 bytes за 20.16s; physical line 96 KiB, feed chunk 8 KiB; monitoring 135/135 runbook anchors GREEN. Live spend: $0.000000000; остаток общего бюджета Stage 5+6: $10.000000000.
 Следующий шаг: merge observability/resilience SHA, production GREEN, затем dry-run controlled canary и расчёт server-authoritative holds перед каждым paid run.
+
+## 2026-08-20 — Этап 5 (§6): failed trusted-host HTTP fixture
+SHA: failed candidate `58b19b30c598a3fc44d18b2012b79bec4b695259`; corrective SHA фиксируется commit этой записи
+Результат: trusted host остановил candidate до merge: PostgreSQL-backed HTTP fixture получил 401 на upload start, тогда как isolated local reproduction на disposable PostgreSQL GREEN. Root cause — shared destructive test database state/credential collision between parallel matrices; production runtime не запускался и paid request не выполнялся. Fixture уже использует shared advisory lock, а новый exact SHA запускает clean candidate after admin build correction; красный SHA не повторяется.
+Отступления от плана: нет.
+Измерения: host 1 fixture RED (401 vs 200); isolated exact lifecycle 1/1 GREEN. Live spend $0; бюджет $10.
+Следующий шаг: новый exact candidate через merge gate; при повторе — читать host DB collision evidence, не replay paid run.
