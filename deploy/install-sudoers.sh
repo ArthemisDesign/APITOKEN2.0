@@ -309,6 +309,7 @@ require_permitted 'controller-only infrastructure runner' \
 require_permitted 'Caddy-only infrastructure runner' \
   /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh "$sample_sha" --caddy-only
 require_permitted 'GitHub reporting bridge' /usr/local/lib/apitoken-watchdog/watchdog-github commit-status
+require_permitted 'GitHub failure-log bridge' /usr/local/lib/apitoken-watchdog/watchdog-github check-run
 require_permitted 'GitHub candidate queue bridge' /usr/local/lib/apitoken-watchdog/watchdog-github validation-next 2
 require_permitted 'test database helper' /usr/local/lib/apitoken-watchdog/watchdog-test-db start 0
 require_permitted 'parallel test database slot' /usr/local/lib/apitoken-watchdog/watchdog-test-db start 1

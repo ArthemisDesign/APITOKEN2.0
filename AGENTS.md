@@ -350,6 +350,12 @@ NEVER asks the person for a token or for proof of a green deploy: it fixes a bro
 locally and re-runs the command. Merging blind or manually is forbidden. Never retry a red SHA —
 fix it with a new commit on a new branch.
 
+When `deploy/watchdog` is red, the merge client prints the 140-character status description **and**
+the redacted host cycle excerpt from GitHub check run `deploy/watchdog-log` (compiler error, missing
+file, controller `wd_die`, payload-canary reason, last log lines). Diagnose from that text; do not
+ask for SSH, a token, or a screenshot of journald. If the check run is missing, the headline is
+still on the commit status; the host PAT may lack Checks: write until an operator adds it.
+
 ### When the merge stops on a conflict
 
 `master` moves while you work, so the script's rebase can stop on a conflict and exit, leaving the

@@ -56,6 +56,22 @@ case "${1:-}" in
     systemctl start apitoken-deploy-watchdog.service
     ;;
   logs)
+    failure_dir=/var/lib/apitoken/watchdog/failures
+    shopt -s nullglob
+    reports=("$failure_dir"/*.summary.md)
+    if (( ${#reports[@]} > 0 )); then
+      latest=$(ls -t -- "${reports[@]}" | head -n 1)
+      if [[ -f $latest && ! -L $latest ]]; then
+        printf '--- latest redacted failure report ---\n'
+        cat -- "$latest"
+        text=${latest%.summary.md}.text
+        if [[ -f $text && ! -L $text ]]; then
+          printf '\n--- excerpt ---\n'
+          cat -- "$text"
+        fi
+        printf '\n'
+      fi
+    fi
     journalctl -u apitoken-deploy-watchdog.service \
       -u apitoken-candidate-validator.service -n 250 --no-pager
     ;;

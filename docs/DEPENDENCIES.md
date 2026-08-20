@@ -109,7 +109,7 @@ no database and uses the engine Control API read-only. It has its own release la
 | Producer | Contract / channel | Consumers | Contract document |
 |---|---|---|---|
 | Alertmanager (`observability/alertmanager/alertmanager.yml.template`) | webhook `POST http://127.0.0.1:3800/alerts/{DEVBOT_AM_SECRET}` — receiver `devbot-telegram`, route with `continue: true` next to the email tree (expand-only); the block renders only with a provisioned `DEVBOT_AM_SECRET` from `/etc/apitoken/devbot.env` | `apps/devbot` | `docs/ops/DEVBOT.md` |
-| GitHub API | commit statuses `deploy/*`, deployments `production-*` (read-only PAT) | `apps/devbot` (poller, 30–60 s) | `docs/ops/DEVBOT.md` |
+| GitHub API | commit statuses `deploy/*`, deployments `production-*`, check run `deploy/watchdog-log` (redacted cycle excerpt on failure; host PAT: statuses + deployments + Checks: write) | `deploy/agent-merge.sh` (merge wait and red diagnosis), `apps/devbot` (poller, 30–60 s, statuses/deployments) | `docs/ops/DEPLOYMENT.md`, `docs/ops/DEVBOT.md` |
 | `crates/server` Control API | readonly/control GET (`/pool`, `/codex-subs`, `/gemini-subs`, `/settlement-health`, `/ready` slots) | `apps/devbot` (bot commands) | `docs/engine/CONTROL_API.md` |
 | journald | reading the unit journals of the deploy perimeter (prefixes `[watchdog]`, `[admin-deploy]`, etc.) | `apps/devbot` (stage 3) | `docs/ops/DEVBOT.md` |
 | `apps/devbot` | node-exporter textfile `devbot_heartbeat_timestamp_seconds` (`/var/lib/apitoken/monitoring/textfile/devbot.prom`, atomically every 60 s) | Prometheus → alert `DevBotHeartbeatMissing` | `docs/ops/MONITORING.md#devbotheartbeatmissing` |
@@ -594,4 +594,6 @@ controlled `simulate_failure` dispatch proves issue delivery without mutating pr
 
 `deploy/agent-merge.sh` — the only path into `master`; path-aware gate (classifiers in
 `deploy/watchdog-lib.sh`), machine merge lock, green `deploy/watchdog` on the production
-host. Full description — `deploy/README.md`, `CONTRIBUTING.md`.
+host. A red SHA's merge error includes the GitHub check run `deploy/watchdog-log` (redacted
+host cycle excerpt) in addition to the 140-character commit-status headline. Full description —
+`deploy/README.md`, `CONTRIBUTING.md`.

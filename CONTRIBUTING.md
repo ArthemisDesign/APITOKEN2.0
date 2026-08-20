@@ -185,7 +185,10 @@ commit in GitHub to see:
 
 `pending` means the host is testing, installing, or deploying the candidate. `failure`/`error`
 means the commit did not complete production delivery. A green component status never overrides a
-red overall status.
+red overall status. The 140-character description is the headline (payload-canary reason, a concrete
+transcript marker, or the last `wd_die` line). The same SHA's GitHub check run `deploy/watchdog-log`
+holds the redacted cycle excerpt; `deploy/agent-merge.sh` prints it on red so an agent can diagnose
+without production SSH.
 
 The same free GitHub API integration creates deployment records for the affected
 `production-database`, `production-engine`, `production-backend`, `production-sales`, and

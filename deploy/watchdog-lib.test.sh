@@ -65,6 +65,50 @@ empty_diagnostic=$(wd_validation_failure_summary "$TEMP/missing.log" 7 shadow-va
     || wd_die "GitHub description is not truncated to 140 characters: ${#long_desc}"
 )
 
+# A generic wrapper such as "lane failed (exit 1)" must lose to a concrete transcript marker so an
+# agent can see the compiler/controller cause in the 140-character GitHub description. The longer
+# redacted excerpt is what the Checks API carries.
+(
+  desc_sha=$(printf 'b%.0s' {1..40})
+  CANDIDATE_SHA=$desc_sha
+  WD_FAILURE_DIR=$TEMP/failures
+  mkdir -p "$WD_FAILURE_DIR"
+  WD_CYCLE_LOG=$WD_FAILURE_DIR/$desc_sha.cycle.log
+  WD_LAST_ERROR='TypeScript candidate lane failed (exit 1)'
+  printf '%s\n' \
+    'pnpm install: done' \
+    'error: could not compile crates/router' \
+    'Authorization: Bearer super-secret-header' \
+    'ENGINE_CONTROL_KEY=super-secret postgresql://user:pass@db/x' \
+    'github_pat_abcdefghijklmnopqrstuvwxyz123456' \
+    '    Finished test target' \
+    >"$WD_CYCLE_LOG"
+  marker_desc=$(wd_github_failure_description testing 1)
+  [[ $marker_desc == *'could not compile crates/router'* ]] \
+    || wd_die "transcript marker did not replace a generic lane wrapper: $marker_desc"
+  [[ $marker_desc != *'TypeScript candidate lane failed'* ]] \
+    || wd_die "generic wrapper still won the GitHub description: $marker_desc"
+  excerpt=$(wd_extract_failure_excerpt "$WD_CYCLE_LOG")
+  [[ $excerpt == *'could not compile crates/router'* ]] \
+    || wd_die "failure excerpt dropped the compiler cause: $excerpt"
+  [[ $excerpt == *'Authorization: REDACTED'* && $excerpt != *super-secret-header* ]] \
+    || wd_die "failure excerpt leaked an Authorization header: $excerpt"
+  [[ $excerpt == *REDACTED* && $excerpt != *user:pass* && $excerpt != *github_pat_* ]] \
+    || wd_die "failure excerpt leaked a DSN or PAT: $excerpt"
+  headline=$(wd_github_failure_description testing 1)
+  wd_write_failure_report "$desc_sha" testing 1 "$headline"
+  [[ -f $WD_FAILURE_DIR/$desc_sha.summary.md && -f $WD_FAILURE_DIR/$desc_sha.text ]] \
+    || wd_die 'failure report files were not written'
+  grep -Fq "$desc_sha" "$WD_FAILURE_DIR/$desc_sha.summary.md" \
+    || wd_die 'failure summary omitted the SHA'
+  grep -Fq 'could not compile' "$WD_FAILURE_DIR/$desc_sha.text" \
+    || wd_die 'failure text omitted the excerpt'
+  grep -Fq 'super-secret' "$WD_FAILURE_DIR/$desc_sha.text" \
+    && wd_die 'failure text retained a secret'
+  [[ $(stat -f %A "$WD_FAILURE_DIR/$desc_sha.text" 2>/dev/null || stat -c %a "$WD_FAILURE_DIR/$desc_sha.text") == 600 ]] \
+    || wd_die 'failure text is not mode 0600'
+)
+
 # A restrictive fetch umask must not strand the shared source history from the isolated reader.
 # Extract the production functions so this exercises the same normalization and CI read check that
 # the watchdog uses, while the test itself runs as the isolated account in the trusted host gate.
@@ -4692,6 +4736,8 @@ shadow_body=$(sed -n '/^shadow_validation_exit()/,/^final_verify_engine()/p' \
   "$ROOT/deploy/watchdog.sh")
 grep -Fq 'wd_validation_failure_summary "$SHADOW_LOG_FILE" "$rc"' <<<"$shadow_body" \
   || wd_die 'trusted candidate failures are published without a diagnostic summary'
+grep -Fq 'wd_publish_github_failure_log "$CANDIDATE_SHA"' <<<"$shadow_body" \
+  || wd_die 'trusted candidate failures are published without a redacted check-run log'
 grep -Fq 'candidate-validation-$TEST_DB_SLOT.log' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'trusted candidate validation does not retain its bounded slot transcript'
 grep -Fq 'previous_umask=$(umask)' <<<"$shadow_body" \
@@ -4724,6 +4770,23 @@ grep -Fq 'selected?.description' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge client discards trusted-host failure descriptions'
 grep -Fq 'wd_github_failure_description' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'production failures do not publish a bounded GitHub fail-closed reason'
+grep -Fq 'wd_publish_github_failure_log' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'production failures do not persist and publish a redacted cycle excerpt'
+grep -Fq 'wd_start_cycle_transcript' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'production watchdog does not capture a cycle transcript for failure reports'
+grep -Fq 'check-run)' "$ROOT/deploy/watchdog-github.sh" \
+  || wd_die 'GitHub bridge cannot upload a redacted failure check run'
+grep -Fq 'escaped its directory' "$ROOT/deploy/watchdog-github.sh" \
+  || wd_die 'GitHub check-run helper does not refuse a path-escaped failure report'
+grep -Fq '/var/lib/apitoken/watchdog/failures' "$ROOT/deploy/watchdog-github.sh" \
+  || wd_die 'GitHub check-run helper does not pin the failure-report directory'
+grep -Fq 'am_failure_log' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge client does not fetch the redacted host failure log'
+grep -Fq 'deploy/watchdog-log' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge client does not look up the deploy/watchdog-log check run'
+grep -Eq "GitHub failure-log bridge'.*watchdog-github check-run" \
+  "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die 'sudo policy installer does not verify failure-log check-run access'
 if grep -Fq 'diagnostic="phase=$failed_phase; line=$line; exit=$rc; candidate quarantined"' \
   "$ROOT/deploy/watchdog.sh"; then
   wd_die 'production failures still publish a bash wait line number as the GitHub reason'

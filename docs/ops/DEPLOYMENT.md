@@ -83,8 +83,23 @@ only after its migration and overall statuses are green may dependent applicatio
 
 A red status description is the bounded fail-closed reason, not a bash line number from joining
 parallel lanes. Payload-canary failures start with `payload-canary:` plus content-free
-`status_ok`/`statuses`, `load-driver missing`, or `oom`/`spool`/`headroom`. Bodies, credentials,
-and host paths never appear there.
+`status_ok`/`statuses`, `load-driver missing`, or `oom`/`spool`/`headroom`. Other failures prefer a
+concrete transcript marker (`error: could not compile`, `No such file or directory`, a `wd_die`
+line) over a generic `lane failed (exit N)` wrapper. Bodies, credentials, and DSNs never appear
+there.
+
+Every quarantined SHA also gets a GitHub check run named `deploy/watchdog-log`: a redacted excerpt
+of that cycle's watchdog transcript (at most 24 KiB, last 4000 lines, failure markers plus a short
+tail). The 140-character commit-status description is the headline; the check run is the log. The
+merge client prints that log when `deploy/watchdog` (or trusted-host validation) is red, so an agent
+does not need production SSH. Clicking a red `deploy/watchdog` status follows `target_url` to the
+same check run when Checks: write is granted on the host PAT. Publishing the check run is
+fail-open: a missing Checks permission still quarantines the SHA and still writes the 140-character
+status.
+
+Host copies live under `/var/lib/apitoken/watchdog/failures/<sha>.{summary.md,text}` (mode 0600).
+`apitoken-watchdog logs` prints the latest report before the journal tail. Cycle transcripts are
+deleted after a green delivery and leftover `*.cycle.log` files older than a day are pruned.
 
 Affected stages also appear as GitHub deployment records in the `production-database`,
 `production-engine`, `production-backend`, `production-sales`, `production-openkeys`,
@@ -349,9 +364,12 @@ the immutable candidate or production database by hand.
 
 ### One-time GitHub reporting credential
 
-Use a fine-grained personal access token limited to this repository with only **Commit statuses:
-read/write** and **Deployments: read/write** (GitHub adds metadata read automatically). No Actions
-permission, hosted runner, webhook, or paid GitHub feature is required. Store it only in the
+Use a fine-grained personal access token limited to this repository with **Commit statuses:
+read/write**, **Deployments: read/write**, and **Checks: write** (GitHub adds metadata read
+automatically). Checks: write is what lets the host attach a redacted cycle excerpt as
+`deploy/watchdog-log` on a failed SHA; without it the 140-character commit-status description still
+publishes and the SHA is still quarantined. No Actions permission, hosted runner, webhook, or paid
+GitHub feature is required. Store it only in the
 root-owned file consumed by the reporting bridge:
 
 ```bash

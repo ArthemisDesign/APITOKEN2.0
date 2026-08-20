@@ -346,6 +346,49 @@ am_read_status() {
   return 0
 }
 
+# Redacted host cycle excerpt published as GitHub check run `deploy/watchdog-log`. Agents diagnose
+# a red deploy from this text; they do not need production SSH. Missing Checks permission yields
+# an empty body and the 140-character commit-status description remains the headline.
+am_failure_log() {
+  if [[ -n ${AGENT_MERGE_FAILURE_LOG_CMD:-} ]]; then
+    eval "$AGENT_MERGE_FAILURE_LOG_CMD $1" || true
+    return
+  fi
+  local token
+  token=$(am_token)
+  [[ -n $token ]] || return 0
+  curl -fsSL --max-time 30 -K - \
+    "https://api.github.com/repos/$AGENT_MERGE_REPO/commits/$1/check-runs?per_page=20" 2>/dev/null <<EOF \
+    | node -e '
+let raw = "";
+process.stdin.on("data", (chunk) => { raw += chunk; });
+process.stdin.on("end", () => {
+  try {
+    const payload = JSON.parse(raw);
+    const run = (payload.check_runs || []).find((item) => item.name === "deploy/watchdog-log");
+    const summary = String(run?.output?.summary || "").replace(/\u0000/g, "");
+    const text = String(run?.output?.text || "").replace(/\u0000/g, "");
+    let out = [summary, text].filter(Boolean).join("\n\n");
+    if (out.length > 8000) out = out.slice(0, 8000);
+    process.stdout.write(out);
+  } catch {
+    process.stdout.write("");
+  }
+});
+' 2>/dev/null || true
+header = "Authorization: Bearer $token"
+header = "Accept: application/vnd.github+json"
+header = "X-GitHub-Api-Version: 2022-11-28"
+EOF
+}
+
+am_red_detail() {
+  local log
+  log=$(am_failure_log "$1" || true)
+  [[ -n $log ]] || return 0
+  printf '\n\nRedacted host failure log (deploy/watchdog-log):\n%s' "$log"
+}
+
 am_validation_request() {
   local sha=$1 token body response deployment_id
   if [[ -n ${AGENT_MERGE_VALIDATION_REQUEST_CMD:-} ]]; then
@@ -498,7 +541,7 @@ am_require_target_gateable() {
           am_log "WARNING: $AGENT_MERGE_TARGET is RED at $sha; proceeding because --fix-red was given"
           return
         fi
-        am_die "$AGENT_MERGE_TARGET is RED at $sha${AM_STATUS_DESCRIPTION:+: $AM_STATUS_DESCRIPTION}: land the repair for that failure with
+        am_die "$AGENT_MERGE_TARGET is RED at $sha${AM_STATUS_DESCRIPTION:+: $AM_STATUS_DESCRIPTION}$(am_red_detail "$sha"): land the repair for that failure with
   --fix-red, or wait. Never stack unrelated work on a red target, and never retry the red SHA."
         ;;
       unknown)
@@ -531,7 +574,7 @@ am_wait_for_target_ready() {
           am_log "WARNING: $AGENT_MERGE_TARGET is RED at $sha; proceeding because --fix-red was given"
           return
         fi
-        am_die "$AGENT_MERGE_TARGET is RED at $sha${AM_STATUS_DESCRIPTION:+: $AM_STATUS_DESCRIPTION}: land the repair for that failure with
+        am_die "$AGENT_MERGE_TARGET is RED at $sha${AM_STATUS_DESCRIPTION:+: $AM_STATUS_DESCRIPTION}$(am_red_detail "$sha"): land the repair for that failure with
   --fix-red, or wait. Never stack unrelated work on a red target, and never retry the red SHA." ;;
       pending)
         am_log "$AGENT_MERGE_TARGET is still deploying at $sha; waiting for $AGENT_MERGE_REQUIRED_CONTEXT autonomously (${waited}s)" ;;
@@ -614,7 +657,7 @@ else
   git -C "$ROOT" fetch "$AGENT_MERGE_REMOTE"
   latest_target=$(git -C "$ROOT" rev-parse "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET")
   if [[ $latest_target == "$previous" ]]; then
-    am_die "trusted host validation for $candidate $VALIDATION_FAILURE_DETAIL; no merge was attempted"
+    am_die "trusted host validation for $candidate $VALIDATION_FAILURE_DETAIL$(am_red_detail "$candidate"); no merge was attempted"
   fi
   am_log "discarding stale host validation for $candidate because $AGENT_MERGE_TARGET moved to $latest_target"
 fi
@@ -681,7 +724,7 @@ for attempt in $(seq 1 "$AGENT_MERGE_PUSH_ATTEMPTS"); do
     elif am_wait_for_validation "$validation_id" "$candidate"; then
       VALIDATED_SHA=$candidate
     else
-      am_die "trusted host validation for rebased SHA $candidate $VALIDATION_FAILURE_DETAIL"
+      am_die "trusted host validation for rebased SHA $candidate $VALIDATION_FAILURE_DETAIL$(am_red_detail "$candidate")"
     fi
   fi
   [[ $candidate == "$GATED_SHA" && $candidate == "$VALIDATED_SHA" ]] \
@@ -714,7 +757,7 @@ while (( waited < AGENT_MERGE_DEPLOY_WAIT_S )); do
       am_log "deploy/watchdog is GREEN for $pushed"
       exit 0 ;;
     failure|error)
-      am_die "deploy/watchdog is RED for $pushed${AM_STATUS_DESCRIPTION:+: $AM_STATUS_DESCRIPTION}: fix it on a NEW branch with a NEW commit;
+      am_die "deploy/watchdog is RED for $pushed${AM_STATUS_DESCRIPTION:+: $AM_STATUS_DESCRIPTION}$(am_red_detail "$pushed"): fix it on a NEW branch with a NEW commit;
   never retry this SHA" ;;
     unknown)
       am_log "deployment-status lookup for $pushed is temporarily unavailable; retrying autonomously (${waited}s)" ;;

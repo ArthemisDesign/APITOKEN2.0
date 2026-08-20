@@ -14,7 +14,8 @@ for the lanes your diff touches (TypeScript/Rust/deployment classifiers from
 `deploy/docs-check.sh`), takes the machine merge-lock, rebases onto the latest
 `origin/master`, re-runs the gate on the exact SHA it pushes, and holds the lock until the
 host reports a green `deploy/watchdog` on that SHA. A red SHA is never retried: fix forward
-with a new commit on a new branch. The full contributor workflow is in
+with a new commit on a new branch. The red error includes the 140-character status headline and
+the redacted host cycle excerpt from check run `deploy/watchdog-log`. The full contributor workflow is in
 [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 ### Recovering an interrupted merge (agent-merge-recover.sh)

@@ -265,29 +265,52 @@ status() {
 }
 
 github_phase_failure() {
-  local phase=$1 diagnostic=${2:-"deployment failed closed at $1"}
+  local phase=$1 diagnostic=${2:-"deployment failed closed at $1"} log_url=${3:-}
   [[ -x $GITHUB_HELPER ]] || return 0
   if [[ -n $ACTIVE_DEPLOYMENT_ID ]]; then
     sudo -n "$GITHUB_HELPER" deployment-status "$ACTIVE_DEPLOYMENT_ID" failure \
       "$diagnostic" "$ACTIVE_DEPLOYMENT_ENV" "$ACTIVE_DEPLOYMENT_URL" \
-      >/dev/null 2>&1 || true
+      "$log_url" >/dev/null 2>&1 || true
   fi
   case $phase in
-    testing) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/tests "$diagnostic" >/dev/null 2>&1 || true ;;
-    migrating) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/migration "$diagnostic" >/dev/null 2>&1 || true ;;
-    deploying-engine) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/engine "$diagnostic" >/dev/null 2>&1 || true ;;
-    deploying-backend) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/backend "$diagnostic" >/dev/null 2>&1 || true ;;
-    deploying-sales) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/sales "$diagnostic" >/dev/null 2>&1 || true ;;
-    deploying-openkeys) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/openkeys "$diagnostic" >/dev/null 2>&1 || true ;;
-    deploying-admin) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/admin "$diagnostic" >/dev/null 2>&1 || true ;;
-    deploying-devbot) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/devbot "$diagnostic" >/dev/null 2>&1 || true ;;
+    testing) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/tests "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
+    migrating) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/migration "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
+    deploying-engine) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/engine "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
+    deploying-backend) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/backend "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
+    deploying-sales) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/sales "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
+    deploying-openkeys) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/openkeys "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
+    deploying-admin) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/admin "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
+    deploying-devbot) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/devbot "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
   esac
+}
+
+# Persist a redacted cycle excerpt and, when the host PAT has Checks: write, upload it as a
+# GitHub check run. Never fail-closed on reporting: quarantine and the 140-character status are
+# the verdict, and a missing Checks permission must not hide them.
+wd_publish_github_failure_log() {
+  local sha=$1 phase=$2 rc=$3 diagnostic=$4 html_url=''
+  wd_write_failure_report "$sha" "$phase" "$rc" "$diagnostic" || return 1
+  [[ -x ${GITHUB_HELPER:-} ]] || return 1
+  html_url=$(sudo -n "$GITHUB_HELPER" check-run "$sha" failure deploy/watchdog-log "$diagnostic") \
+    || return 1
+  [[ $html_url == https://github.com/* ]] || return 1
+  printf '%s' "$html_url"
+}
+
+wd_start_cycle_transcript() {
+  local sha=$1
+  wd_prepare_cycle_log "$sha" >/dev/null
+  if command -v stdbuf >/dev/null 2>&1; then
+    exec > >(stdbuf -oL -eL tee -a "$WD_CYCLE_LOG") 2>&1
+  else
+    exec > >(tee -a "$WD_CYCLE_LOG") 2>&1
+  fi
 }
 
 fail() {
   local rc=$? line=${BASH_LINENO[0]:-unknown}
   local failed_phase=${CURRENT_PHASE_BEFORE_FAILURE:-$CURRENT_PHASE}
-  local diagnostic
+  local diagnostic failure_log_url=
   # Clear first: this handler is registered on EXIT as well as ERR, and must never re-enter itself
   # when it exits below.
   trap - ERR EXIT INT TERM
@@ -314,10 +337,12 @@ fail() {
   CURRENT_PHASE=failed
   diagnostic=$(wd_github_failure_description "$failed_phase" "$rc")
   status "candidate quarantined ($diagnostic)"
+  failure_log_url=$(wd_publish_github_failure_log "$CANDIDATE_SHA" "$failed_phase" "$rc" "$diagnostic" || true)
+  wd_discard_cycle_log || true
   if [[ -x $GITHUB_HELPER ]]; then
-    github_phase_failure "$failed_phase" "$diagnostic"
+    github_phase_failure "$failed_phase" "$diagnostic" "$failure_log_url"
     sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/watchdog \
-      "$diagnostic" >/dev/null 2>&1 || true
+      "$diagnostic" "$failure_log_url" >/dev/null 2>&1 || true
   fi
   wd_warn "candidate ${CANDIDATE_SHA:-unknown} failed ($diagnostic) and will not be retried automatically"
   exit "$rc"
@@ -1259,8 +1284,8 @@ shadow_validation_exit() {
   local rc=$1 summary
   trap - ERR EXIT INT TERM
 
-  # Preserve the full mode-0600 validator transcript in journald while keeping the GitHub-facing
-  # diagnostic deliberately short and limited to known non-secret failure markers.
+  # Preserve the full mode-0600 validator transcript in journald. The GitHub commit-status
+  # description stays short; the same transcript is also reduced into a redacted check-run log.
   if [[ -f ${SHADOW_LOG_FILE:-} && ! -L ${SHADOW_LOG_FILE:-} ]]; then
     cat -- "$SHADOW_LOG_FILE" >&8 || true
   fi
@@ -1271,11 +1296,14 @@ shadow_validation_exit() {
   fi
   summary=$(wd_validation_failure_summary "$SHADOW_LOG_FILE" "$rc" \
     "${CURRENT_PHASE_BEFORE_FAILURE:-${CURRENT_PHASE:-unknown}}")
+  WD_CYCLE_LOG=$SHADOW_LOG_FILE
+  failure_log_url=$(wd_publish_github_failure_log "$CANDIDATE_SHA" \
+    "${CURRENT_PHASE_BEFORE_FAILURE:-${CURRENT_PHASE:-unknown}}" "$rc" "$summary" || true)
   sudo -n "$GITHUB_HELPER" deployment-status "$SHADOW_DEPLOYMENT_ID" failure \
-    "$summary" candidate-validation "" \
+    "$summary" candidate-validation "" "$failure_log_url" \
     >/dev/null 2>&1 || true
   sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/tests \
-    "$summary" >/dev/null 2>&1 || true
+    "$summary" "$failure_log_url" >/dev/null 2>&1 || true
   wd_warn "trusted shadow validation failed for $CANDIDATE_SHA: $summary; production remains unchanged" >&8 2>&8
   exit "$rc"
 }
@@ -1293,6 +1321,7 @@ run_shadow_candidate_validation() (
   CI_CARGO_TARGET="$CI_HOME/cargo-target-shadow-$TEST_DB_SLOT"
   STATUS_FILE="$STATE_ROOT/candidate-validation-$TEST_DB_SLOT.status"
   SHADOW_LOG_FILE="$STATE_ROOT/candidate-validation-$TEST_DB_SLOT.log"
+  WD_CYCLE_LOG=$SHADOW_LOG_FILE
   VALIDATION_BASE_SHA=$PROCESSED_SHA
   TEST_DB_STARTED=0
   exec 8>&1 9>&2
@@ -2740,6 +2769,8 @@ main() {
   prune_expired_candidates
   prune_expired_releases_best_effort
   prune_expired_dumps
+  wd_prune_failure_cycle_logs
+  wd_start_cycle_transcript "$CANDIDATE_SHA"
 
   publish_pipeline_start_statuses
 
@@ -3062,6 +3093,7 @@ main() {
   fi
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"
+  wd_discard_cycle_log || true
   rm -f -- "$PENDING_MIGRATION_FILE"
   CURRENT_PHASE=idle
   status "candidate tested and all selected components verified in production"

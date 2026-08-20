@@ -17,10 +17,15 @@ wd_die() {
   exit 1
 }
 
-# Redact URLs/DSNs and common secret assignments so a public GitHub description cannot carry them.
+# Stream redaction for public GitHub text. URLs/DSNs, secret assignments, PATs, and auth headers
+# are stripped; control characters cannot create a second line in a commit-status description.
+wd_redact_public_stream() {
+  sed -E \
+    $'s/\x1b\[[0-9;]*[[:alpha:]]//g; s#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]+#URL_REDACTED#g; s/([A-Za-z_]*(TOKEN|KEY|SECRET|PASSWORD)[A-Za-z_]*)=[^[:space:]]+/\\1=REDACTED/g; s/(sk-[A-Za-z0-9_-]{8,})/TOKEN_REDACTED/g; s/github_pat_[A-Za-z0-9_]{20,}/TOKEN_REDACTED/g; s/[Aa]uthorization:.*$/Authorization: REDACTED/g; s/[Bb]earer[[:space:]]+[A-Za-z0-9._~+\/=-]{8,}/Bearer REDACTED/g; s/[[:cntrl:]]/ /g'
+}
+
 wd_redact_public_detail() {
-  printf '%s' "${1:-}" | sed -E \
-    $'s/\x1b\[[0-9;]*[[:alpha:]]//g; s#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]+#URL_REDACTED#g; s/([A-Za-z_]*(TOKEN|KEY|SECRET|PASSWORD)[A-Za-z_]*)=[^[:space:]]+/\\1=REDACTED/g; s/(sk-[A-Za-z0-9_-]{8,})/TOKEN_REDACTED/g; s/[[:cntrl:]]/ /g'
+  printf '%s' "${1:-}" | wd_redact_public_stream
 }
 
 # Exact-SHA payload-canary reason line written by large-payload-candidate-gate.sh. Content-free:
@@ -36,13 +41,49 @@ wd_payload_canary_reason() {
   printf '%s\n' "$reason"
 }
 
+# Wrapper messages that hide the inner compiler/controller cause. A transcript marker wins over these.
+wd_error_is_generic() {
+  local msg=${1:-}
+  [[ $msg == *'failed (exit '* || $msg == *'lanes failed'* || $msg == *'controller failed'* ]]
+}
+
+# First/last known failure marker from a private transcript. Prefer a concrete Rust cause over
+# Cargo's trailing rerun hint; operational markers remain last-wins. Only the last 4000 lines are
+# scanned so a huge cargo/pnpm log cannot stall fail-closed reporting.
+wd_failure_marker_line() {
+  local log_file=$1 window detail=''
+  [[ -f $log_file && ! -L $log_file ]] || return 0
+  window=$(tail -n 4000 "$log_file" 2>/dev/null || true)
+  [[ -n $window ]] || return 0
+  detail=$(printf '%s\n' "$window" | grep -E 'panicked at|error\[E[0-9]+\]|Connection refused|No such file or directory' \
+    | head -n 1 || true)
+  [[ -n $detail ]] || detail=$(printf '%s\n' "$window" | grep -E \
+    '\[watchdog\] ERROR:|ERR_PNPM|ELIFECYCLE|test lane\(s\) failed|migration failed|candidate lane failed|test result: FAILED|error: test failed|error: could not compile|payload-canary:|Job for .+\.service failed|AssertionError' \
+    | tail -n 1 || true)
+  detail=$(wd_redact_public_detail "$detail")
+  detail=$(printf '%s' "$detail" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
+  printf '%s' "$detail"
+}
+
 # GitHub commit/deployment descriptions are capped at 140 characters. Prefer the payload-canary
-# reason file, then the last wd_die message. Never publish a bash line number from `wait`.
+# reason file, then a concrete transcript marker, then the last wd_die message. Never publish a
+# bash line number from `wait`.
 wd_github_failure_description() {
   [[ $# -eq 2 ]] || wd_die "github failure description requires phase and exit code"
-  local phase=$1 rc=$2 detail='' out
+  local phase=$1 rc=$2 detail='' marker='' out
   detail=$(wd_payload_canary_reason 2>/dev/null || true)
-  [[ -n $detail ]] || detail=${WD_LAST_ERROR:-}
+  if [[ -z $detail && -n ${WD_CYCLE_LOG:-} ]]; then
+    marker=$(wd_failure_marker_line "$WD_CYCLE_LOG")
+  fi
+  if [[ -z $detail ]]; then
+    if [[ -n ${WD_LAST_ERROR:-} ]] && ! wd_error_is_generic "$WD_LAST_ERROR"; then
+      detail=$WD_LAST_ERROR
+    elif [[ -n $marker ]]; then
+      detail=$marker
+    else
+      detail=${WD_LAST_ERROR:-}
+    fi
+  fi
   detail=$(wd_redact_public_detail "$detail")
   detail=$(printf '%s' "$detail" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
   [[ -n $detail ]] || detail="exit $rc; candidate quarantined"
@@ -58,17 +99,102 @@ wd_github_failure_description() {
 wd_validation_failure_summary() {
   [[ $# -eq 3 ]] || wd_die "validation failure summary requires log path, exit code, and phase"
   local log_file=$1 rc=$2 phase=$3 detail=''
-  if [[ -f $log_file && ! -L $log_file ]]; then
-    # Prefer the first concrete Rust cause over Cargo's generic trailing rerun hint; operational
-    # markers remain last-wins because they are already bounded controller-authored messages.
-    detail=$(grep -E 'panicked at|error\[E[0-9]+\]|Connection refused|No such file or directory' \
-      "$log_file" | head -n 1 || true)
-    [[ -n $detail ]] || detail=$(grep -E '\[watchdog\] ERROR:|ERR_PNPM|ELIFECYCLE|test lane\(s\) failed|migration failed|candidate lane failed|test result: FAILED|error: test failed' \
-      "$log_file" | tail -n 1 || true)
-    detail=$(wd_redact_public_detail "$detail")
-  fi
+  detail=$(wd_failure_marker_line "$log_file")
   [[ -n $detail ]] || detail="validator exited with code $rc"
   printf 'phase=%s; %.100s' "$phase" "$detail"
+}
+
+# Private per-SHA directory for redacted failure reports. Not world-readable: the public channel
+# is the GitHub check run, not this host path.
+wd_failure_report_dir() {
+  printf '%s' "${WD_FAILURE_DIR:-${STATE_ROOT:-/var/lib/apitoken/watchdog}/failures}"
+}
+
+wd_prepare_cycle_log() {
+  local sha=$1 dir file
+  [[ $sha =~ ^[0-9a-f]{40}$ ]] || wd_die "cycle log requires a full SHA"
+  dir=$(wd_failure_report_dir)
+  mkdir -p -- "$dir"
+  chmod 0700 "$dir" 2>/dev/null || true
+  file=$dir/$sha.cycle.log
+  rm -f -- "$file"
+  : >"$file"
+  chmod 0600 "$file"
+  WD_CYCLE_LOG=$file
+  printf '%s' "$file"
+}
+
+# Redacted excerpt for a GitHub check-run text field: matching markers with one line of context,
+# plus the last 40 lines. Hard-capped at 24 KiB so the Checks API limit cannot be exceeded.
+wd_extract_failure_excerpt() {
+  local log_file=$1 window marks tail_lines
+  [[ -f $log_file && ! -L $log_file ]] || return 1
+  window=$(tail -n 4000 "$log_file" 2>/dev/null | tr -d '\000' || true)
+  [[ -n $window ]] || return 1
+  marks=$(printf '%s\n' "$window" | grep -E -C1 -- \
+    'panicked at|error\[E[0-9]+\]|Connection refused|No such file or directory|\[watchdog\] ERROR:|ERR_PNPM|ELIFECYCLE|test lane\(s\) failed|migration failed|candidate lane failed|test result: FAILED|error: test failed|error: could not compile|payload-canary:|Job for .+\.service failed|AssertionError' \
+    | head -n 160 || true)
+  tail_lines=$(printf '%s\n' "$window" | tail -n 40 || true)
+  {
+    [[ -z $marks ]] || printf '%s\n' "$marks"
+    printf '\n--- last 40 lines ---\n'
+    printf '%s\n' "$tail_lines"
+  } | wd_redact_public_stream | head -c 24000
+}
+
+# Write the exact files the root GitHub helper will upload. Paths are SHA-keyed under the failure
+# directory; the helper refuses symlinks and any path outside that directory.
+wd_write_failure_report() {
+  [[ $# -eq 4 ]] || wd_die "failure report requires sha, phase, exit code, and headline"
+  local sha=$1 phase=$2 rc=$3 headline=$4
+  local dir summary_file text_file excerpt='' marker='' previous_umask
+  [[ $sha =~ ^[0-9a-f]{40}$ ]] || wd_die "failure report requires a full SHA"
+  dir=$(wd_failure_report_dir)
+  mkdir -p -- "$dir"
+  chmod 0700 "$dir" 2>/dev/null || true
+  summary_file=$dir/$sha.summary.md
+  text_file=$dir/$sha.text
+  headline=$(wd_redact_public_detail "$headline")
+  if [[ -n ${WD_CYCLE_LOG:-} ]]; then
+    excerpt=$(wd_extract_failure_excerpt "$WD_CYCLE_LOG" || true)
+    marker=$(wd_failure_marker_line "$WD_CYCLE_LOG")
+  fi
+  previous_umask=$(umask)
+  umask 077
+  cat >"$summary_file" <<EOF
+## Deploy failure
+
+- **SHA:** \`$sha\`
+- **Phase:** \`$phase\`
+- **Exit:** \`$rc\`
+- **Headline:** \`$headline\`
+EOF
+  if [[ -n $marker ]]; then
+    printf '\nConcrete marker: `%s`\n' "$marker" >>"$summary_file"
+  fi
+  printf '\nRedacted cycle excerpt is attached as check-run text. Bodies, credentials, and DSNs are stripped.\n' \
+    >>"$summary_file"
+  if [[ -n $excerpt ]]; then
+    printf '%s\n' "$excerpt" >"$text_file"
+  else
+    printf '(no cycle transcript; headline only)\n' >"$text_file"
+  fi
+  chmod 0600 "$summary_file" "$text_file"
+  umask "$previous_umask"
+}
+
+wd_discard_cycle_log() {
+  local log=${WD_CYCLE_LOG:-}
+  [[ -n $log && -f $log && ! -L $log ]] || return 0
+  rm -f -- "$log"
+}
+
+# Leftover unbounded cycle transcripts from a killed watchdog must not fill the state volume.
+wd_prune_failure_cycle_logs() {
+  local dir
+  dir=$(wd_failure_report_dir)
+  [[ -d $dir && ! -L $dir ]] || return 0
+  find "$dir" -maxdepth 1 -type f -name '*.cycle.log' -mtime +0 -delete 2>/dev/null || true
 }
 
 wd_validate_sha() {

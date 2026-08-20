@@ -100,6 +100,7 @@ run_merge() {  # $1 = tree, rest = extra env assignments / flags
       AGENT_MERGE_DEPLOYMENT_GATE_CMD="${DEPLOYMENT_GATE_STUB-}" \
       AGENT_MERGE_STATIC_GATE_CMD="${STATIC_GATE_STUB-}" \
       AGENT_MERGE_STATUS_CMD="${STATUS_STUB-printf success}" \
+      AGENT_MERGE_FAILURE_LOG_CMD="${FAILURE_LOG_STUB-true}" \
       AGENT_MERGE_VALIDATION_REQUEST_CMD="${VALIDATION_REQUEST_STUB-printf 1}" \
       AGENT_MERGE_VALIDATION_STATUS_CMD="${VALIDATION_STATUS_STUB-printf success}" \
       "$@" bash "$tree/deploy/agent-merge.sh" ${MERGE_FLAGS-} ) 2>&1
@@ -216,6 +217,11 @@ GATE_STUB="printf gate >>$preflight_gate_log" \
   STATUS_STUB=$'printf "failure\tphase=migrating; line=1684; exit=1; candidate quarantined"' \
   expect_failure 'an explained red master' \
     'phase=migrating; line=1684; exit=1; candidate quarantined' run_merge "$tree_a"
+FAILURE_LOG_STUB='printf "error: could not compile crates/router"' \
+  GATE_STUB="printf gate >>$preflight_gate_log" \
+  STATUS_STUB=$'printf "failure\tphase=testing; TypeScript candidate lane failed (exit 1)"' \
+  expect_failure 'a red master includes the host failure log' \
+    'error: could not compile crates/router' run_merge "$tree_a"
 [[ ! -s $preflight_gate_log ]] || wd_die 'the full gate ran before the existing deployment was checked'
 GATE_STUB="printf gate >>$preflight_gate_log" STATUS_STUB='printf pending' \
   expect_failure 'pushing before a deploying parent is green' 'could not verify a green' \
