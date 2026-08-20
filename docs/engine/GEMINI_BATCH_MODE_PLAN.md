@@ -633,8 +633,10 @@ blue-green поколениям одновременно подбирать но
 - `FOR UPDATE SKIP LOCKED` и fenced `owner_instance + owner_epoch + claim_generation`;
 - fair order между account/job, а не полное выжигание первого большого batch;
 - внутри job сохраняется item order только для результата, выполнение может быть out-of-order;
-- bounded global batch concurrency;
-- не более двух активных batch items на один profile;
+- отдельного process-wide/global worker ceiling нет: fleet-wide ширина равна сумме свободных
+  durable profile slots;
+- не более двух активных batch items на один profile, то есть общий максимум равен
+  `2 × количество eligible активных подписок`;
 - отдельные per-account active-job/item limits защищают fleet от одного клиента;
 - queued item с будущим `next_attempt_at` не блокирует другие jobs.
 
@@ -1054,7 +1056,7 @@ router native passthrough tests, `cargo test --locked --workspace`, rotation and
 | Pricing | тот же normal tariff + account Google multiplier, без batch discount |
 | Admission | весь batch атомарно, per-item holds |
 | Affinity | выключена для независимых items; quota/inflight/cursor selection остается |
-| Concurrency | bounded global, до двух batch items на profile, interactive не блокируется |
+| Concurrency | без global ceiling; до двух batch items на каждый eligible profile (`2 × active eligible subscriptions`), interactive не блокируется |
 | Batch 5h headroom | ПОДТВЕРЖДЕНО: batch dispatch только при `gemini-5h` remaining > 15% (config, default 15); fail-closed при stale/missing snapshot; weekly-окно вне gate |
 | Модели | без allowlist: все опубликованные текстовые Gemini-модели; image-output model вне MVP |
 | Контрактные фактуры | без live captures: публичные источники (§2); места без данных помечены **[не подтверждено]** и реализуются как наш дизайн |

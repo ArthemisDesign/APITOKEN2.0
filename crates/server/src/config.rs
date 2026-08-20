@@ -33,7 +33,6 @@ fn gemini_batch_config() -> Option<GeminiBatchRuntimeSettings> {
         data_keys,
         runtime: forward::gemini::GeminiBatchRuntimeConfig {
             enabled: true,
-            global_concurrency: bounded_usize("CLAUDE_API_GEMINI_BATCH_CONCURRENCY", 4, 1, 64),
             leader_ttl_secs: bounded_i64("CLAUDE_API_GEMINI_BATCH_LEADER_TTL_SECS", 30, 5, 300),
             claim_lease_secs: bounded_i64(
                 "CLAUDE_API_GEMINI_BATCH_CLAIM_LEASE_SECS",

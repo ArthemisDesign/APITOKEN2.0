@@ -833,8 +833,9 @@ reserved holds, leader lease, settlement backlog/permanent failures and active e
 The 1h/24h/7d rows are PostgreSQL-derived rolling windows (not process-local counters): jobs/items
 created, terminal outcomes, exact settled nanoUSD, average queue/execution duration and normalized
 items/hour. They survive Gemini slot restart and contain no customer, job, model, file or profile ID.
-The durable scheduler admits up to two simultaneous Batch items per active subscription under the
-existing fleet-wide leader and global four-worker bound; ordinary Gemini traffic does not consume
+The durable scheduler admits up to two simultaneous Batch items per eligible active subscription
+under the existing fleet-wide leader. There is no separate global worker ceiling: maximum active
+Batch width is `2 × eligible active subscriptions`, while ordinary Gemini traffic does not consume
 these Batch profile slots. Unknown authority data is rendered as unavailable rather than inferred
 from customer traffic.
 

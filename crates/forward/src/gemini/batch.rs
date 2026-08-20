@@ -22,14 +22,13 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    sync::{Notify, Semaphore},
+    sync::Notify,
     time::Instant,
 };
 
 #[derive(Clone, Debug)]
 pub struct GeminiBatchRuntimeConfig {
     pub enabled: bool,
-    pub global_concurrency: usize,
     pub leader_ttl_secs: i64,
     pub claim_lease_secs: i64,
     pub idle_backoff: Duration,
@@ -40,7 +39,6 @@ impl Default for GeminiBatchRuntimeConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            global_concurrency: 4,
             leader_ttl_secs: 30,
             claim_lease_secs: 120,
             idle_backoff: Duration::from_secs(1),
@@ -133,7 +131,6 @@ pub struct GeminiBatchRuntime {
     active: AtomicUsize,
     headroom_stops: AtomicU64,
     notify: Notify,
-    permits: Arc<Semaphore>,
 }
 
 impl std::fmt::Debug for GeminiBatchRuntime {
@@ -156,13 +153,9 @@ impl GeminiBatchRuntime {
         if !config.enabled {
             bail!("Gemini Batch runtime is disabled")
         }
-        if config.global_concurrency == 0
-            || config.leader_ttl_secs <= 0
-            || config.claim_lease_secs <= 0
-        {
+        if config.leader_ttl_secs <= 0 || config.claim_lease_secs <= 0 {
             bail!("invalid Gemini Batch runtime bounds")
         }
-        let permits = Arc::new(Semaphore::new(config.global_concurrency));
         Ok(Arc::new(Self {
             config,
             authority,
@@ -172,7 +165,6 @@ impl GeminiBatchRuntime {
             active: AtomicUsize::new(0),
             headroom_stops: AtomicU64::new(0),
             notify: Notify::new(),
-            permits,
         }))
     }
 
@@ -260,10 +252,6 @@ impl GeminiBatchRuntime {
                 if !self.accepting.load(Ordering::Acquire) {
                     break;
                 }
-                let permit = match Arc::clone(&self.permits).try_acquire_owned() {
-                    Ok(permit) => permit,
-                    Err(_) => break,
-                };
                 let selection = self.gateway.select_batch(&model_id, &HashSet::new());
                 let Some(lease) = selection.lease else {
                     if selection.reason() == Some("batch_5h_headroom_stop") {
@@ -284,7 +272,6 @@ impl GeminiBatchRuntime {
                 let this = Arc::clone(&self);
                 tokio::spawn(async move {
                     this.active.fetch_add(1, Ordering::AcqRel);
-                    let _permit = permit;
                     if let Err(error) = this.execute_item(item).await {
                         elog::warn(
                             "gemini-batch",

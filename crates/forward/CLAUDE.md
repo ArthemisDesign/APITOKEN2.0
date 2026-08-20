@@ -1135,7 +1135,9 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    account. The separate scheduler-facing batch selector layers the same hard model/profile eligibility
    with a fresh exact `gemini-5h` summary whose fixed-point remaining fraction must be strictly above
    `batch_5h_headroom_percent`; missing, stale or exact-threshold evidence returns the bounded
-   `batch_5h_headroom_stop` reason without customer identity. Interactive selectors remain unchanged.
+   `batch_5h_headroom_stop` reason without customer identity. Batch has no process-wide worker
+   semaphore: fleet width is the sum of two durable slots per eligible active profile. Interactive
+   selectors remain unchanged.
    The deterministic soft reserve/jitter is preserved; if all eligible profiles are below the reserve,
    the service floor fails open to explicit zero. Local saturation never becomes a public
    error; native RetryInfo stays only for real provider quota/cooling.
