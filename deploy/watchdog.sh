@@ -312,14 +312,14 @@ fail() {
   fi
   wd_atomic_write "$REJECTED_FILE" "$CANDIDATE_SHA" 0644
   CURRENT_PHASE=failed
-  status "command failed at line $line (exit $rc); candidate quarantined"
-  diagnostic="phase=$failed_phase; line=$line; exit=$rc; candidate quarantined"
+  diagnostic=$(wd_github_failure_description "$failed_phase" "$rc")
+  status "candidate quarantined ($diagnostic)"
   if [[ -x $GITHUB_HELPER ]]; then
     github_phase_failure "$failed_phase" "$diagnostic"
     sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/watchdog \
       "$diagnostic" >/dev/null 2>&1 || true
   fi
-  wd_warn "candidate ${CANDIDATE_SHA:-unknown} failed at line $line and will not be retried automatically"
+  wd_warn "candidate ${CANDIDATE_SHA:-unknown} failed ($diagnostic) and will not be retried automatically"
   exit "$rc"
 }
 # Registered on EXIT as well as ERR. `wd_die` — used by 30+ validation call sites — terminates with
@@ -337,7 +337,7 @@ rollout_lane_exit() {
   trap - ERR EXIT INT TERM
   (( rc != 0 )) || return 0
   set +e
-  github_phase_failure "$phase"
+  github_phase_failure "$phase" "$(wd_github_failure_description "$phase" "$rc")"
   wd_warn "parallel rollout lane failed during $phase (exit $rc); waiting lanes will still be joined"
   exit "$rc"
 }
@@ -2343,7 +2343,8 @@ deploy_engine() {
   rm -f -- "$ROUTER_SUCCESS_PROOF"
   if (( controller_rc != 0 )); then
     rollback_engine || true
-    wd_die "unified router blue-green controller failed (exit $controller_rc)"
+    wd_die "$(wd_payload_canary_reason "$sha" \
+      || printf 'unified router blue-green controller failed (exit %s)' "$controller_rc")"
   fi
   # HTTP admission must never queue behind a stateful daemon roll. First prove that the committed
   # target is the sole ready/enabled gateway and can use the currently serving authenticated

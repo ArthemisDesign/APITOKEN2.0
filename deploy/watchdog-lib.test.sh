@@ -38,6 +38,33 @@ empty_diagnostic=$(wd_validation_failure_summary "$TEMP/missing.log" 7 shadow-va
 [[ $empty_diagnostic == 'phase=shadow-validation; validator exited with code 7' ]] \
   || wd_die "candidate diagnostic fallback is unstable: $empty_diagnostic"
 
+# Public GitHub failure text must name the fail-closed reason (payload-canary or last wd_die),
+# stay inside 140 characters, redact secrets, and never use a bash `wait` line number.
+(
+  desc_sha=$(printf 'a%.0s' {1..40})
+  CANDIDATE_SHA=$desc_sha
+  WD_PAYLOAD_EVIDENCE_DIR=$TEMP
+  WD_LAST_ERROR='unified router blue-green controller failed (exit 1)'
+  printf 'payload-canary: status_ok=0 statuses=404,413\n' >"$TEMP/$desc_sha.reason"
+  canary_desc=$(wd_github_failure_description deploying-components 1)
+  [[ $canary_desc == 'phase=deploying-components; payload-canary: status_ok=0 statuses=404,413' ]] \
+    || wd_die "payload-canary reason did not win the GitHub description: $canary_desc"
+  [[ $canary_desc != *line=* && ${#canary_desc} -le 140 ]] \
+    || wd_die "GitHub description still uses a line number or exceeds 140 characters"
+  rm -f -- "$TEMP/$desc_sha.reason"
+  fallback_desc=$(wd_github_failure_description deploying-engine 1)
+  [[ $fallback_desc == 'phase=deploying-engine; unified router blue-green controller failed (exit 1)' ]] \
+    || wd_die "GitHub description lost the last wd_die message: $fallback_desc"
+  WD_LAST_ERROR='ENGINE_CONTROL_KEY=super-secret postgresql://user:pass@db/x'
+  secret_desc=$(wd_github_failure_description deploying-engine 1)
+  [[ $secret_desc == *REDACTED* && $secret_desc != *super-secret* && $secret_desc != *user:pass* ]] \
+    || wd_die "GitHub description leaked a secret: $secret_desc"
+  WD_LAST_ERROR=$(python3 -c 'print("x"*200)')
+  long_desc=$(wd_github_failure_description testing 1)
+  [[ ${#long_desc} -eq 140 && $long_desc == phase=testing'; '* ]] \
+    || wd_die "GitHub description is not truncated to 140 characters: ${#long_desc}"
+)
+
 # A restrictive fetch umask must not strand the shared source history from the isolated reader.
 # Extract the production functions so this exercises the same normalization and CI read check that
 # the watchdog uses, while the test itself runs as the isolated account in the trusted host gate.
@@ -3175,6 +3202,12 @@ grep -Fq '{"messages":[{"role":"user","content":"' "$ROOT/tests/large_payload_mo
   || wd_die 'payload canary is not a router-local missing-model JSON body'
 grep -Fq 'verdict_rc' "$ROOT/deploy/large-payload-candidate-gate.sh" \
   || wd_die 'candidate gate drops the verdict when the evaluator fails'
+grep -Fq '$sha.reason' "$ROOT/deploy/large-payload-candidate-gate.sh" \
+  || wd_die 'candidate gate does not persist a content-free payload-canary reason'
+grep -Fq 'payload_canary_reason' "$ROOT/deploy/router-bluegreen.sh" \
+  || wd_die 'router cutover does not surface the payload-canary reason on failure'
+grep -Fq 'wd_payload_canary_reason' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'engine deploy does not promote the payload-canary reason into wd_die'
 bash "$ROOT/deploy/large-payload-candidate-gate.test.sh"
 grep -Fq 'cd /var/lib/apitoken/watchdog/router-proof' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'router proof provisioning does not pin the opened directory handle'
@@ -4525,7 +4558,7 @@ rollout_contract=(
   'wait "$openkeys_pid"'
   'wait "$admin_pid"'
   'component rollout lanes failed'
-  'github_phase_failure "$phase"'
+  'github_phase_failure "$phase" "$(wd_github_failure_description "$phase" "$rc")"'
 )
 for required_stage in "${rollout_contract[@]}"; do
   grep -Fq -- "$required_stage" "$ROOT/deploy/watchdog.sh" \
@@ -4689,9 +4722,12 @@ for conservative_field in \
 done
 grep -Fq 'selected?.description' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge client discards trusted-host failure descriptions'
-grep -Fq 'diagnostic="phase=$failed_phase; line=$line; exit=$rc; candidate quarantined"' \
-  "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'production failures do not publish their phase, line, and exit code'
+grep -Fq 'wd_github_failure_description' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'production failures do not publish a bounded GitHub fail-closed reason'
+if grep -Fq 'diagnostic="phase=$failed_phase; line=$line; exit=$rc; candidate quarantined"' \
+  "$ROOT/deploy/watchdog.sh"; then
+  wd_die 'production failures still publish a bash wait line number as the GitHub reason'
+fi
 if grep -Fq 'REJECTED_FILE' <<<"$shadow_body"; then
   wd_die 'a failed feature validation can quarantine production'
 fi

@@ -49,7 +49,10 @@ canary POSTs valid JSON **without** `model` to the sudoers-pinned
 fail locally (400 missing `model`). A namespaced or otherwise routable `model` is forwarded to a
 provider plane whose own cap is still 8 or 32 MiB; that plane's 413 is not router-admission
 evidence, and a 413/408/431 from the router itself is a size/timeout/header reject. The gate
-persists the exact-SHA verdict even when the evaluator rejects the candidate. It reads
+persists the exact-SHA verdict and a one-line `payload-canary:` reason even when the evaluator
+rejects the candidate. GitHub `deploy/engine` and `deploy/watchdog` failure descriptions copy that
+bounded line (at most 140 characters) instead of a bash `wait` line number, so a later agent can
+tell a plane 413 from a missing load-driver without host SSH. It reads
 an authenticated header value only from the fixed root-owned mode-0600
 `/srv/claude-api/data/large-payload-canary.authorization`; this lets auth preflight pass so the
 verdict proves body admission, without putting a credential in argv, evidence, logs, or repository.
@@ -77,6 +80,11 @@ only after its migration and overall statuses are green may dependent applicatio
 | `deploy/admin` | Exact tested admin panel release rollout, or no admin change |
 | `deploy/devbot` | Exact tested devbot release rollout, no devbot change, or devbot disabled (`/etc/apitoken/devbot.env` not yet provisioned) |
 | `deploy/watchdog` | End-to-end result |
+
+A red status description is the bounded fail-closed reason, not a bash line number from joining
+parallel lanes. Payload-canary failures start with `payload-canary:` plus content-free
+`status_ok`/`statuses`, `load-driver missing`, or `oom`/`spool`/`headroom`. Bodies, credentials,
+and host paths never appear there.
 
 Affected stages also appear as GitHub deployment records in the `production-database`,
 `production-engine`, `production-backend`, `production-sales`, `production-openkeys`,

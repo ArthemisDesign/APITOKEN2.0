@@ -11,6 +11,11 @@ def run(event_after=0,peak=100,spool=0,status=400):
    path=os.path.join(d,name);open(path,'w').write(json.dumps(value));paths.append(path)
   return subprocess.run([gate,'--sha','a'*40,'--before',paths[0],'--after',paths[1],'--load',paths[2],'--memory-high-bytes','900'],capture_output=True,text=True)
 assert run().returncode==0
+ok=json.loads(run().stdout); assert ok['reason']=='payload-canary: accepted'
+rejected=json.loads(run(status=413).stdout)
+assert run(status=413).returncode==1
+assert rejected['reason']=='payload-canary: status_ok=0 statuses=413'
+assert 'payload-canary:' in json.loads(run(event_after=1).stdout)['reason']
 assert run(event_after=1).returncode==1
 assert run(peak=850).returncode==1
 assert run(spool=1).returncode==1

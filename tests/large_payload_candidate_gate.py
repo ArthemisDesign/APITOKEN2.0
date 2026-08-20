@@ -6,6 +6,16 @@ def read(path):
  with open(path,encoding='utf-8') as f:return json.load(f)
 def events(raw):
  return {k:int(v) for k,v in (entry.split(':',1) for entry in raw.split(',') if entry)}
+def classify(accepted, status_ok, statuses, deltas, spool, peak, memory_high, headroom_ok):
+ parts=[]
+ if not status_ok: parts.append('status_ok=0 statuses='+','.join(str(s) for s in statuses[:8]))
+ for k in ('oom','oom_kill','max'):
+  if deltas.get(k,0): parts.append(f'{k}={deltas[k]}')
+ if spool: parts.append(f'spool={spool}')
+ if not peak<memory_high: parts.append('peak')
+ if not headroom_ok: parts.append('headroom')
+ if accepted: return 'payload-canary: accepted'
+ return 'payload-canary: '+('; '.join(parts) or 'rejected')
 def main():
  p=argparse.ArgumentParser();p.add_argument('--sha',required=True);p.add_argument('--before',required=True);p.add_argument('--after',required=True);p.add_argument('--load',required=True);p.add_argument('--memory-high-bytes',required=True,type=int);a=p.parse_args()
  if len(a.sha)!=40 or any(c not in '0123456789abcdef' for c in a.sha):raise SystemExit(2)
@@ -22,7 +32,8 @@ def main():
  # router-admission evidence. Size/timeout/header rejection (408/413/431) and 5xx cannot count.
  status_ok=bool(statuses) and all(400 <= status < 500 and status not in (408,413,431) for status in statuses)
  accepted=all(deltas.get(k,0)==0 for k in ('oom','oom_kill','max')) and after['spool_files']==0 and peak<a.memory_high_bytes and headroom_ok and status_ok
- result={'schema':'large-payload-acceptance-v1','sha':a.sha,'unit':after['unit'],'accepted':accepted,'memory_peak':peak,'memory_high':a.memory_high_bytes,'memory_max':maximum,'event_deltas':deltas,'spool_files':after['spool_files'],'requests':len(load['requests']),'statuses':statuses,'status_ok':status_ok}
+ reason=classify(accepted,status_ok,statuses,deltas,after['spool_files'],peak,a.memory_high_bytes,headroom_ok)
+ result={'schema':'large-payload-acceptance-v1','sha':a.sha,'unit':after['unit'],'accepted':accepted,'memory_peak':peak,'memory_high':a.memory_high_bytes,'memory_max':maximum,'event_deltas':deltas,'spool_files':after['spool_files'],'requests':len(load['requests']),'statuses':statuses,'status_ok':status_ok,'reason':reason}
  print(json.dumps(result,sort_keys=True,separators=(',',':')))
  return 0 if accepted else 1
 if __name__=='__main__':sys.exit(main())

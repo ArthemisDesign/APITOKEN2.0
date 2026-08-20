@@ -55,6 +55,14 @@ other_port() { [[ $1 == 8800 ]] && printf '8801\n' || printf '8800\n'; }
 slot_unit() { printf 'claude-router@%s.service\n' "$1"; }
 slot_url() { printf 'http://127.0.0.1:%s/ready\n' "$1"; }
 slot_startup_url() { printf 'http://127.0.0.1:%s/startup\n' "$1"; }
+payload_canary_reason() {
+  local sha=$1 file=$PAYLOAD_EVIDENCE_DIR/$sha.reason reason
+  [[ $sha =~ ^[0-9a-f]{40}$ && -f $file && ! -L $file ]] || return 1
+  reason=$(head -n 1 "$file" 2>/dev/null || true)
+  reason=${reason%$'\r'}
+  [[ $reason == payload-canary:* ]] || return 1
+  printf '%s\n' "$reason"
+}
 unit_active() { systemctl_raw is-active --quiet "$1" >/dev/null 2>&1; }
 ready_port() { curl --noproxy '*' --fail --silent --show-error --max-time 2 "$(slot_url "$1")" >/dev/null 2>&1; }
 startup_port() { curl --noproxy '*' --fail --silent --show-error --max-time 3 "$(slot_startup_url "$1")" >/dev/null 2>&1; }
@@ -245,11 +253,13 @@ if [[ $TARGET_PORT != "$ACTIVE_PORT" ]]; then
     [[ ! -L $CURRENT_RELEASE/.large-payload-canary-v1 ]] \
       && grep -Fxq large-payload-canary-v1 "$CURRENT_RELEASE/.large-payload-canary-v1" \
       || die 'large-payload canary marker is invalid'
-    privileged_command "$PAYLOAD_GATE" "$(basename -- "$CURRENT_RELEASE")" \
+    if ! privileged_command "$PAYLOAD_GATE" "$(basename -- "$CURRENT_RELEASE")" \
       "http://127.0.0.1:$TARGET_PORT/v1/chat/completions" "$TARGET_UNIT" \
       "/run/claude-router-$TARGET_PORT" "$PAYLOAD_MEMORY_HIGH_BYTES" "$PAYLOAD_EVIDENCE_DIR" \
-      /srv/claude-api/data/large-payload-canary.authorization \
-      || die "$TARGET_UNIT failed exact-SHA large-payload candidate evidence"
+      /srv/claude-api/data/large-payload-canary.authorization; then
+      die "$(payload_canary_reason "$(basename -- "$CURRENT_RELEASE")" \
+        || printf 'payload-canary: failed exact-SHA candidate evidence')"
+    fi
   fi
   # Make the verified target boot-durable before Caddy can commit traffic to it. Until promotion,
   # the still-enabled predecessor remains the reboot anchor; after promotion, the target is.

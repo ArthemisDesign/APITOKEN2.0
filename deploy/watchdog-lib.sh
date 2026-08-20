@@ -12,8 +12,45 @@ wd_warn() {
 }
 
 wd_die() {
+  WD_LAST_ERROR=$*
   printf '[watchdog] ERROR: %s\n' "$*" >&2
   exit 1
+}
+
+# Redact URLs/DSNs and common secret assignments so a public GitHub description cannot carry them.
+wd_redact_public_detail() {
+  printf '%s' "${1:-}" | sed -E \
+    $'s/\x1b\[[0-9;]*[[:alpha:]]//g; s#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]+#URL_REDACTED#g; s/([A-Za-z_]*(TOKEN|KEY|SECRET|PASSWORD)[A-Za-z_]*)=[^[:space:]]+/\\1=REDACTED/g; s/(sk-[A-Za-z0-9_-]{8,})/TOKEN_REDACTED/g; s/[[:cntrl:]]/ /g'
+}
+
+# Exact-SHA payload-canary reason line written by large-payload-candidate-gate.sh. Content-free:
+# statuses, oom/spool flags, or a load-driver class. Never a body, credential, or host path.
+wd_payload_canary_reason() {
+  local sha=${1:-${CANDIDATE_SHA:-}}
+  local file=${WD_PAYLOAD_EVIDENCE_DIR:-/var/lib/apitoken/watchdog/large-payload}/$sha.reason
+  local reason
+  [[ $sha =~ ^[0-9a-f]{40}$ && -f $file && ! -L $file ]] || return 1
+  reason=$(head -n 1 "$file" 2>/dev/null || true)
+  reason=${reason%$'\r'}
+  [[ $reason == payload-canary:* ]] || return 1
+  printf '%s\n' "$reason"
+}
+
+# GitHub commit/deployment descriptions are capped at 140 characters. Prefer the payload-canary
+# reason file, then the last wd_die message. Never publish a bash line number from `wait`.
+wd_github_failure_description() {
+  [[ $# -eq 2 ]] || wd_die "github failure description requires phase and exit code"
+  local phase=$1 rc=$2 detail='' out
+  detail=$(wd_payload_canary_reason 2>/dev/null || true)
+  [[ -n $detail ]] || detail=${WD_LAST_ERROR:-}
+  detail=$(wd_redact_public_detail "$detail")
+  detail=$(printf '%s' "$detail" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
+  [[ -n $detail ]] || detail="exit $rc; candidate quarantined"
+  printf -v out 'phase=%s; %s' "$phase" "$detail"
+  if (( ${#out} > 140 )); then
+    out=${out:0:140}
+  fi
+  printf '%s' "$out"
 }
 
 # Produce a GitHub-safe, bounded diagnostic from a private validator transcript. Only known
@@ -28,8 +65,7 @@ wd_validation_failure_summary() {
       "$log_file" | head -n 1 || true)
     [[ -n $detail ]] || detail=$(grep -E '\[watchdog\] ERROR:|ERR_PNPM|ELIFECYCLE|test lane\(s\) failed|migration failed|candidate lane failed|test result: FAILED|error: test failed' \
       "$log_file" | tail -n 1 || true)
-    detail=$(printf '%s' "$detail" | sed -E \
-      $'s/\x1b\[[0-9;]*[[:alpha:]]//g; s#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]+#URL_REDACTED#g; s/([A-Za-z_]*(TOKEN|KEY|SECRET|PASSWORD)[A-Za-z_]*)=[^[:space:]]+/\\1=REDACTED/g; s/(sk-[A-Za-z0-9_-]{8,})/TOKEN_REDACTED/g; s/[[:cntrl:]]/ /g')
+    detail=$(wd_redact_public_detail "$detail")
   fi
   [[ -n $detail ]] || detail="validator exited with code $rc"
   printf 'phase=%s; %.100s' "$phase" "$detail"
