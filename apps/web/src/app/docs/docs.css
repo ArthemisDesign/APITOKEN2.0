@@ -219,6 +219,9 @@
 .cache-card>header{padding:18px 20px}
 .cache-card .ib-code{margin:0;border:0;border-top:1px solid var(--line);border-radius:0;box-shadow:none}
 .docs-cache-stack{display:grid;gap:18px}
+.batch-guide-stack{margin:20px 0 30px}
+#gemini-batch>h3{margin:32px 4px 14px;font-family:var(--font-ui);font-size:19px;font-weight:680;letter-spacing:-.02em}
+#gemini-batch .mtable code{white-space:nowrap}
 
 /* Models & pricing: provider panels with official-vs-discount per-1M rates. */
 .mp-root{display:grid;gap:18px}

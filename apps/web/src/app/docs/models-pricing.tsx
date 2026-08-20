@@ -47,8 +47,8 @@ export function ModelsPricing({ language }: { language: Language }) {
       auth="x-goog-api-key"
       models={geminiModels}
       cacheNote={tr(language,
-        "Cached input bills at the cached-input rate (10% of input). Gemini Batch uses the same standard Google token tariff and your normal account discount: there is no separate Google Batch discount or SLA. Dispatch pauses operationally before pooled subscription 5-hour usage exceeds 85%; that protects interactive capacity and is not a per-customer usage allowance. `gemini-3.1-pro-preview` switches to long-context rates above 200K input tokens, and `gemini-3.1-flash-image` is synchronous-only.",
-        "Кешированный ввод тарифицируется по ставке кешированного ввода (10% от ввода). Gemini Batch использует тот же стандартный токен-тариф Google и обычную скидку аккаунта: отдельной Google Batch-скидки или SLA нет. Dispatch операционно приостанавливается до превышения 85% использования 5-часового окна подписки пула; это защита interactive-мощности, а не клиентский лимит. `gemini-3.1-pro-preview` переключается на long-context ставки свыше 200K входных токенов, а `gemini-3.1-flash-image` доступна только синхронно.")}
+        "Cached input bills at the cached-input rate (10% of input). Gemini Batch uses the same standard Google token tariff and your normal account discount: there is no separate Batch discount or completion-time SLA. Batch is asynchronous and accepted jobs may remain queued during temporary capacity pressure. `gemini-3.1-pro-preview` switches to long-context rates above 200K input tokens, and `gemini-3.1-flash-image` is synchronous-only.",
+        "Кешированный ввод тарифицируется по ставке кешированного ввода (10% от ввода). Gemini Batch использует тот же стандартный токен-тариф Google и обычную скидку аккаунта: отдельной Batch-скидки и гарантии срока выполнения нет. Batch работает асинхронно, а принятые задания могут оставаться в очереди при временном дефиците мощности. `gemini-3.1-pro-preview` переключается на long-context ставки свыше 200K входных токенов, а `gemini-3.1-flash-image` доступна только синхронно.")}
     />
 
     <ProviderPanel

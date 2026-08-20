@@ -11,6 +11,7 @@ import { IntegrationBuilder } from "./integration-builder";
 import { ROUTER_BASE_URL } from "./integration-builder-data";
 import { ApiReference } from "./api-reference";
 import { ModelsPricing } from "./models-pricing";
+import { GeminiBatchGuide } from "./gemini-batch-guide";
 import { HighlightedCode } from "./highlighted-code";
 import { Prose } from "./prose";
 
@@ -48,7 +49,7 @@ const GEMINI_INLINE_JSON = `{
 
 const AGENT_GUIDE_URL = "https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md";
 const SUPPORT_TELEGRAM_URL = "https://t.me/apitokensupportbot";
-const SECTION_IDS = ["overview", "agent-setup", "setup-support", "quickstart", "api", "models", "gemini-files", "errors", "caching", "next"] as const;
+const SECTION_IDS = ["overview", "agent-setup", "setup-support", "quickstart", "api", "models", "gemini-batch", "gemini-files", "errors", "caching", "next"] as const;
 
 const copy = {
   en: {
@@ -88,6 +89,9 @@ const copy = {
     models: "Models & pricing",
     modelsTitle: "Models & pricing",
     modelsText: "All providers, every available model, and exact per-1M-token rates — official list price vs. what you actually pay at the flat 50% discount.",
+    geminiBatch: "Gemini Batch",
+    geminiBatchTitle: "Gemini Batch API",
+    geminiBatchText: "Run many independent Gemini requests asynchronously, poll one durable operation, and retrieve every generated response or per-item error. The same native API works through the unified router and direct Gemini endpoint.",
     caching: "Prompt caching",
     cachingTitle: "Prompt caching",
     cachingText: "Cache the large stable prefix once — every later read of it bills at 10% of the input price.",
@@ -97,7 +101,7 @@ const copy = {
     cacheGptText: "No opt-in: repeated prefixes are cached server-side. `usage.prompt_tokens_details.cached_tokens` (Chat Completions) or `input_tokens_details.cached_tokens` (Responses) bills at 10% of input automatically.",
     geminiFiles: "Gemini files",
     geminiFilesTitle: "Sending files to Gemini",
-    geminiFilesText: "Synchronous generateContent still requires inline bytes: a files/… URI from your own Google project is invisible to our pooled subscriptions. Gemini Batch adds a separate account-scoped Files API on this gateway for Batch input and output only. Uploaded files expire after 48 hours; generated Batch result files follow the Batch result-retention window.",
+    geminiFilesText: "Synchronous generateContent requires inline bytes: files/… from any Google project is invisible to this gateway. For large Gemini Batch input, upload an account-scoped JSONL file to this gateway and pass its returned name as inputConfig.fileName. Uploaded files expire after 48 hours.",
     gfKind: "Input",
     gfStatus: "Supported",
     gfHow: "How to send it",
@@ -110,7 +114,7 @@ const copy = {
     gfAudio: "Audio",
     gfAudioHow: "Only `gemini-3-flash-preview`, as inline `audio/wav`.",
     gfFilesApi: "Files API (`file_uri` / `fileData`)",
-    gfFilesApiHow: "Batch only: upload to this gateway and reference the account-scoped file from Batch items. Uploaded-file TTL is 48 hours. For synchronous generateContent, inline the bytes instead.",
+    gfFilesApiHow: "Batch JSONL input only: upload to this gateway and pass the returned files/{id} as inputConfig.fileName. fileData embedding is not supported. For synchronous generateContent, inline the bytes.",
     gfCached: "`cachedContent`",
     gfCachedHow: "Not available. Send the content inline.",
     gfYes: "Yes",
@@ -183,6 +187,9 @@ const copy = {
     models: "Модели и цены",
     modelsTitle: "Модели и цены",
     modelsText: "Все провайдеры, все доступные модели и точные ставки за 1M токенов — официальная цена против той, что платите вы с единой скидкой 50%.",
+    geminiBatch: "Gemini Batch",
+    geminiBatchTitle: "Gemini Batch API",
+    geminiBatchText: "Запускайте множество независимых запросов Gemini асинхронно, опрашивайте одну durable operation и получайте каждый ответ модели или ошибку отдельного item. Один нативный API работает через unified router и прямой Gemini endpoint.",
     caching: "Кеширование промптов",
     cachingTitle: "Кеширование промптов",
     cachingText: "Закешируйте большой стабильный префикс один раз — каждое следующее чтение стоит 10% от цены входных токенов.",
@@ -192,7 +199,7 @@ const copy = {
     cacheGptText: "Ничего включать не нужно: повторяющиеся префиксы кешируются на стороне сервера. `usage.prompt_tokens_details.cached_tokens` (Chat Completions) или `input_tokens_details.cached_tokens` (Responses) автоматически тарифицируются как 10% от цены ввода.",
     geminiFiles: "Файлы в Gemini",
     geminiFilesTitle: "Как отправлять файлы в Gemini",
-    geminiFilesText: "Обычный синхронный generateContent по-прежнему требует inline-байты: URI files/… из вашего Google-проекта невидим нашему пулу подписок. Для Gemini Batch есть отдельный account-scoped Files API самого шлюза — только для batch-ввода и вывода. Загруженные файлы живут 48 часов; сгенерированные файлы результатов следуют сроку хранения Batch-результатов.",
+    geminiFilesText: "Синхронный generateContent требует inline-байты: files/… из любого Google-проекта невидим этому шлюзу. Для большого Gemini Batch input загрузите account-scoped JSONL в этот шлюз и передайте возвращённое имя как inputConfig.fileName. Загруженные файлы живут 48 часов.",
     gfKind: "Тип данных",
     gfStatus: "Поддержка",
     gfHow: "Как отправлять",
@@ -205,7 +212,7 @@ const copy = {
     gfAudio: "Аудио",
     gfAudioHow: "Только `gemini-3-flash-preview`, inline `audio/wav`.",
     gfFilesApi: "Files API (`file_uri` / `fileData`)",
-    gfFilesApiHow: "Только Batch: загрузите файл в этот шлюз и ссылайтесь на account-scoped файл из batch items. TTL загруженного файла — 48 часов. В синхронном generateContent передавайте байты inline.",
+    gfFilesApiHow: "Только JSONL input для Batch: загрузите файл в этот шлюз и передайте files/{id} как inputConfig.fileName. Встраивание через fileData не поддерживается. В синхронном generateContent передавайте байты inline.",
     gfCached: "`cachedContent`",
     gfCachedHow: "Недоступно. Передавайте содержимое inline.",
     gfYes: "Да",
@@ -255,6 +262,7 @@ export function DocsPortal() {
     { id: "quickstart", label: t.quickstart },
     { id: "api", label: t.api },
     { id: "models", label: t.models },
+    { id: "gemini-batch", label: t.geminiBatch },
     { id: "gemini-files", label: t.geminiFiles },
     { id: "errors", label: t.errors },
     { id: "caching", label: t.caching },
@@ -342,14 +350,19 @@ export function DocsPortal() {
           <ModelsPricing language={language} />
         </section>
 
+        <section className="docs-section" id="gemini-batch">
+          <div className="docs-section-heading"><span>05</span><div><h2>{t.geminiBatchTitle}</h2><p>{t.geminiBatchText}</p></div></div>
+          <GeminiBatchGuide language={language} />
+        </section>
+
         <section className="docs-section" id="gemini-files">
-          <div className="docs-section-heading"><span>05</span><div><h2>{t.geminiFilesTitle}</h2><p>{t.geminiFilesText}</p></div></div>
+          <div className="docs-section-heading"><span>06</span><div><h2>{t.geminiFilesTitle}</h2><p>{t.geminiFilesText}</p></div></div>
           <div className="table-scroll"><table className="mtable"><thead><tr><th>{t.gfKind}</th><th>{t.gfStatus}</th><th>{t.gfHow}</th></tr></thead><tbody>
             <FileRow kind={t.gfImages} status={t.gfYes} how={t.gfImagesHow} labels={t} />
             <FileRow kind={t.gfPdf} status={t.gfYes} how={t.gfPdfHow} labels={t} />
             <FileRow kind={t.gfText} status={t.gfYes} how={t.gfTextHow} labels={t} />
             <FileRow kind={t.gfAudio} status={t.gfPartial} how={t.gfAudioHow} labels={t} />
-            <FileRow kind={t.gfFilesApi} status={t.gfNo} how={t.gfFilesApiHow} labels={t} />
+            <FileRow kind={t.gfFilesApi} status={t.gfPartial} how={t.gfFilesApiHow} labels={t} />
             <FileRow kind={t.gfCached} status={t.gfNo} how={t.gfCachedHow} labels={t} />
           </tbody></table></div>
           <div className="docs-cache-stack">
@@ -359,12 +372,12 @@ export function DocsPortal() {
         </section>
 
         <section className="docs-section" id="errors">
-          <div className="docs-section-heading"><span>06</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div>
+          <div className="docs-section-heading"><span>07</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div>
           <div className="table-scroll"><table className="mtable docs-errors"><thead><tr><th>{t.status}</th><th>{t.meaning}</th><th>{t.action}</th></tr></thead><tbody><ErrorRow code="401" meaning={t.e401} action={t.a401} labels={t} /><ErrorRow code="402" meaning={t.e402} action={t.a402} labels={t} /><ErrorRow code="429" meaning={t.e429} action={t.a429} labels={t} /><ErrorRow code="5xx" meaning={t.e5xx} action={t.a5xx} labels={t} /></tbody></table></div>
         </section>
 
         <section className="docs-section" id="caching">
-          <div className="docs-section-heading"><span>07</span><div><h2>{t.cachingTitle}</h2><p>{t.cachingText}</p></div></div>
+          <div className="docs-section-heading"><span>08</span><div><h2>{t.cachingTitle}</h2><p>{t.cachingText}</p></div></div>
           <div className="docs-cache-stack">
             <CacheCard title={t.cacheClaude} text={t.cacheClaudeText} code={CLAUDE_CACHE_JSON} codeLabel="JSON · Request" copyLabel={t.copy} copiedLabel={t.copied} />
             <CacheCard title={t.cacheGpt} text={t.cacheGptText} code={GPT_CACHE_JSON} codeLabel="JSON · Response" copyLabel={t.copy} copiedLabel={t.copied} />
@@ -372,7 +385,7 @@ export function DocsPortal() {
         </section>
 
         <section className="docs-section docs-next" id="next">
-          <div className="docs-section-heading"><span>08</span><div><h2>{t.nextSteps}</h2><p>{t.nextStepsText}</p></div></div>
+          <div className="docs-section-heading"><span>09</span><div><h2>{t.nextSteps}</h2><p>{t.nextStepsText}</p></div></div>
           <div className="learn-related">
             <Link className="learn-related-card" href={localeHref("/models", language)}><strong>{t.nextModels}</strong><span>{t.nextModelsText}</span></Link>
             <Link className="learn-related-card" href={localeHref("/plans", language)}><strong>{t.nextPricing}</strong><span>{t.nextPricingText}</span></Link>

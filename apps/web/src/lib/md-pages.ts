@@ -19,6 +19,7 @@ import {
 import { B2C_DISCOUNT_PERCENT, B2C_VALUE_MULTIPLIER } from "./pricing-tiers";
 import { integrationGuideSeo, SITE_ORIGIN, type IntegrationGuideSlug } from "./seo";
 import { API_ERRORS } from "./api-errors";
+import { GEMINI_BATCH_MARKDOWN } from "./gemini-batch-markdown";
 
 // Every machine-readable page recommends the unified router endpoint; the
 // protocol-specific instructions below stay valid because each lane keeps its
@@ -414,11 +415,11 @@ apiToken.sale is an independent multi-provider gateway built as a **unified rout
 | OpenAI Responses (native) | \`POST /v1/responses\` · \`POST /v1/responses/input_tokens\` · \`GET /v1/responses/{id}\` | \`Authorization: Bearer\` |
 | OpenAI-compatible (universal) | \`POST /v1/chat/completions\` | \`Authorization: Bearer\` |
 | Unified catalog | \`GET /v1/models\` · \`GET /v1/models/{id}\` | any lane header |
-| Gemini (native) | \`GET /v1beta/models\` · \`POST /v1beta/models/{model}:generateContent\` · \`POST /v1beta/models/{model}:streamGenerateContent\` · \`POST /v1beta/models/{model}:countTokens\` | \`x-goog-api-key\` |
+| Gemini (native) | \`GET /v1beta/models\` · \`POST /v1beta/models/{model}:generateContent\` · \`POST /v1beta/models/{model}:streamGenerateContent\` · \`POST /v1beta/models/{model}:countTokens\` · \`POST /v1beta/models/{model}:batchGenerateContent\` · \`GET /v1beta/batches/{id}\` | \`x-goog-api-key\` |
 
 - **Model dispatch:** native lanes also serve models of the other providers — \`POST /v1/messages\` accepts GPT and Gemini models, \`POST /v1/responses\` and \`POST /v1/chat/completions\` accept Claude and Gemini models. One client protocol, the whole catalog.
 - **Namespaced model IDs:** the unified catalog publishes \`anthropic/claude-*\`, \`openai/gpt-*\` and \`google/gemini-*\`. Prefer namespaced IDs on shared lanes; bare native IDs keep working while they are globally unambiguous.
-- **Modalities:** text and image input, text output (Gemini Nano Banana models also output images). Audio, files, realtime, assistants, batches and fine-tuning are not available — this is an independent service, not the OpenAI Platform.
+- **Modalities:** text and image input, text output (Gemini Nano Banana models also output images). The OpenAI-compatible lane does not provide OpenAI Platform Batches, Files, audio, realtime, assistants or fine-tuning. Native Gemini Batch and its account-scoped Files subset are available through the Gemini \`/v1beta\` routes documented below.
 
 ## Claude models (Anthropic lane)
 
@@ -484,6 +485,7 @@ curl ${GEMINI_BASE_URL}/v1beta/models/gemini-3.6-flash:generateContent \\
     "contents": [{"parts": [{"text": "Reply with exactly: connected"}]}]
   }'
 \`\`\`
+${GEMINI_BATCH_MARKDOWN}
 
 ## Official SDKs
 
