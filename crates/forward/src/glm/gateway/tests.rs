@@ -394,7 +394,7 @@ async fn customer_generation_start_invalidates_a_concurrent_quota_snapshot_witho
     assert_eq!(poll.await.unwrap(), 0);
     drop(lease);
     assert_eq!(
-        profile.candidate("glm-5.2", now_unix()).used_fraction_units,
+        profile.candidate("glm-5.2", now_unix()).window_5h,
         None
     );
 }
@@ -421,7 +421,8 @@ async fn transient_observation_failure_keeps_the_previous_quota_generation() {
         .unwrap()
         .starts_with(b"GET /api/monitor/usage/quota/limit "));
     let candidate = profile.candidate("glm-5.2", now_unix());
-    assert_eq!(candidate.used_fraction_units, None);
+    assert_eq!(candidate.window_5h, None);
+    assert_eq!(candidate.window_weekly, None);
     assert_eq!(candidate.quota_age_secs, None);
 }
 
@@ -452,9 +453,21 @@ fn a_durable_snapshot_publishes_the_tightest_window_and_exact_full_reset() {
     ];
     profile.publish_quota(&snapshots, observed_at);
     let candidate = profile.candidate("glm-5.2", observed_at);
+    // R7: оба окна доходят до селектора раздельно — 5h на 25% и weekly на 100%, каждое со
+    // своим reset (в секундах до него), вместо прежней свёртки в одно max-число.
     assert_eq!(
-        candidate.used_fraction_units,
-        Some(registry::GLM_FRACTION_SCALE)
+        candidate.window_5h,
+        Some(WindowEvidence {
+            used_fraction_units: Some(registry::GLM_FRACTION_SCALE / 4),
+            reset_in_secs: Some(300),
+        })
+    );
+    assert_eq!(
+        candidate.window_weekly,
+        Some(WindowEvidence {
+            used_fraction_units: Some(registry::GLM_FRACTION_SCALE),
+            reset_in_secs: Some(600),
+        })
     );
     assert_eq!(candidate.quota_age_secs, Some(0));
     assert_eq!(candidate.ineligible, Some(Ineligible::QuotaWall));

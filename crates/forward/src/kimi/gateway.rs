@@ -24,7 +24,9 @@ use metering::kimi::{
     cost_nanodollars, kimi_matched_tariff_at, kimi_resolve_subscription_model, merge_stream_event,
     KimiPrices, KimiUsage, KIMI_TARIFF_SCHEDULE_ID,
 };
-use registry::{ExecutionAttempt, KimiTurnCalibrationEvent};
+use registry::{
+    ExecutionAttempt, KimiTurnCalibrationEvent, KIMI_ROLLING_WINDOW_SECS, KIMI_WEEKLY_WINDOW_SECS,
+};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
@@ -39,7 +41,7 @@ use super::config::{readiness, KimiPlaneConfig, NotReady};
 use super::pool::{decide, AttemptPolicy, Delivery, NextStep, ProfileEffect};
 use super::queue::{DeliveryHealth, TurnQueue, WriteOutcome, DEFAULT_QUEUE_CAPACITY};
 use super::roster::{load_roster, load_roster_for_reload, reseal_credential, KimiProfile};
-use super::selection::{ineligible_ids, select, Candidate, Ineligible};
+use super::selection::{ineligible_ids, select, Candidate, Ineligible, WindowEvidence};
 use super::transport::{
     classify_status, needs_refresh, probe_url, ProbeRoute, RefreshLocks, UpstreamVerdict,
 };
@@ -302,12 +304,31 @@ impl RuntimeProfile {
         Candidate {
             profile_id: self.id.clone(),
             ineligible,
-            used_fraction_units: health.quota_used_fraction_units,
+            window_5h: Self::window_evidence(&health, KIMI_ROLLING_WINDOW_SECS, now),
+            window_weekly: Self::window_evidence(&health, KIMI_WEEKLY_WINDOW_SECS, now),
             quota_age_secs: health
                 .quota_observed_at
                 .map(|observed| now.saturating_sub(observed).max(0)),
             inflight: self.inflight.load(Ordering::Acquire),
         }
+    }
+
+    /// R7: оба окна доходят до селектора раздельно. Идентичность окна — его длительность
+    /// (±10% допуск, как в наблюдательном срезе server): провайдер изредка сдвигает её на
+    /// минуты у границы reset. Reset передаём как секунды до него по часам движка; прошедший
+    /// reset клампится в 0 (окно у самого сброса почти бесплатно), отсутствующий — `None`,
+    /// и тогда селектор держит полный вес: «неизвестно» ≠ «скоро сбросится».
+    fn window_evidence(health: &ProfileHealth, duration_secs: i64, now: i64) -> Option<WindowEvidence> {
+        let tolerance = duration_secs / 10;
+        let window = health
+            .quota_windows
+            .iter()
+            .filter(|w| (w.duration_secs - duration_secs).abs() <= tolerance)
+            .min_by_key(|w| (w.duration_secs - duration_secs).abs())?;
+        Some(WindowEvidence {
+            used_fraction_units: Some(window.used_fraction_units),
+            reset_in_secs: Some(window.resets_at.saturating_sub(now).max(0)),
+        })
     }
 
     fn apply_effect(&self, effect: ProfileEffect, now: i64) {

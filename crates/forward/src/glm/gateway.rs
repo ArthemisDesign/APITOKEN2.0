@@ -39,7 +39,7 @@ use metering::glm::{
 };
 #[cfg(test)]
 use metering::glm::{glm_credit_rates_for_served_model, glm_prices_for_served_model};
-use registry::{ExecutionAttempt, GlmTurnCalibrationEvent};
+use registry::{ExecutionAttempt, GlmTurnCalibrationEvent, GLM_5H_WINDOW_SECS, GLM_WEEKLY_WINDOW_SECS};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
@@ -54,7 +54,7 @@ use super::config::{readiness, GlmPlaneConfig, NotReady};
 use super::pool::{decide, AttemptPolicy, Delivery, NextStep, ProfileEffect};
 use super::queue::{DeliveryHealth, TurnQueue, WriteOutcome, DEFAULT_QUEUE_CAPACITY};
 use super::roster::{load_roster, load_roster_for_reload, GlmProfile};
-use super::selection::{ineligible_ids, select, Candidate, Ineligible};
+use super::selection::{ineligible_ids, select, Candidate, Ineligible, WindowEvidence};
 use super::transport::{
     classify_status, error_business_code, probe_url, quota_authorization, ProbeRoute,
     UpstreamVerdict,
@@ -271,12 +271,31 @@ impl RuntimeProfile {
         Candidate {
             profile_id: self.id.clone(),
             ineligible,
-            used_fraction_units: health.quota_used_fraction_units,
+            window_5h: Self::window_evidence(&health, GLM_5H_WINDOW_SECS, now),
+            window_weekly: Self::window_evidence(&health, GLM_WEEKLY_WINDOW_SECS, now),
             quota_age_secs: health
                 .quota_observed_at
                 .map(|observed| now.saturating_sub(observed).max(0)),
             inflight: self.inflight.load(Ordering::Acquire),
         }
+    }
+
+    /// R7: оба окна доходят до селектора раздельно. Идентичность окна — его длительность
+    /// (±10% допуск, как в наблюдательном срезе server). Доля окна может отсутствовать
+    /// (сырые счётчики недоказанны, манифест §6.3) — тогда селектор видит окно без доли и
+    /// не выдумывает её. Reset передаём как секунды до него; rolling-окно без названного
+    /// reset → `None`, и селектор держит полный вес: «неизвестно» ≠ «скоро сбросится».
+    fn window_evidence(health: &ProfileHealth, duration_secs: i64, now: i64) -> Option<WindowEvidence> {
+        let tolerance = duration_secs / 10;
+        let window = health
+            .quota_windows
+            .iter()
+            .filter(|w| (w.duration_secs - duration_secs).abs() <= tolerance)
+            .min_by_key(|w| (w.duration_secs - duration_secs).abs())?;
+        Some(WindowEvidence {
+            used_fraction_units: window.used_fraction_units,
+            reset_in_secs: window.resets_at.map(|reset| reset.saturating_sub(now).max(0)),
+        })
     }
 
     fn apply_effect(

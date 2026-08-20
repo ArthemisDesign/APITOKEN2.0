@@ -296,7 +296,7 @@ async fn customer_generation_start_invalidates_a_concurrent_quota_snapshot_witho
     assert_eq!(
         profile
             .candidate("kimi-for-coding", now_unix())
-            .used_fraction_units,
+            .window_5h,
         None
     );
 }
@@ -318,7 +318,8 @@ async fn transient_observation_failure_keeps_the_previous_quota_generation() {
     assert_eq!(gateway.poll_quotas().await, 0);
     assert!(requests.recv().unwrap().starts_with(b"GET /usages "));
     let candidate = profile.candidate("kimi-for-coding", now_unix());
-    assert_eq!(candidate.used_fraction_units, None);
+    assert_eq!(candidate.window_5h, None);
+    assert_eq!(candidate.window_weekly, None);
     assert_eq!(candidate.quota_age_secs, None);
 }
 
@@ -355,9 +356,21 @@ fn a_durable_snapshot_publishes_the_tightest_window_and_exact_full_reset() {
     ];
     profile.publish_quota(&snapshots, observed_at);
     let candidate = profile.candidate("kimi-for-coding", observed_at);
+    // R7: оба окна доходят до селектора раздельно — 5h на 60% и weekly на 100%, каждое со
+    // своим reset (в секундах до него), вместо прежней свёртки в одно max-число.
     assert_eq!(
-        candidate.used_fraction_units,
-        Some(registry::KIMI_FRACTION_SCALE)
+        candidate.window_5h,
+        Some(WindowEvidence {
+            used_fraction_units: Some(60_000_000),
+            reset_in_secs: Some(300),
+        })
+    );
+    assert_eq!(
+        candidate.window_weekly,
+        Some(WindowEvidence {
+            used_fraction_units: Some(registry::KIMI_FRACTION_SCALE),
+            reset_in_secs: Some(600),
+        })
     );
     assert_eq!(candidate.quota_age_secs, Some(0));
     assert_eq!(candidate.ineligible, Some(Ineligible::QuotaWall));
