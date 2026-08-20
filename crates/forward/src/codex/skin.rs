@@ -81,7 +81,7 @@ use super::chat::{
     enforce_output_limits, output_chars_for, send_chat_bytes, ChatReceiverStream, StopFilter,
 };
 use super::{new_id, CodexGateway, CodexTurnResult, CodexUsage, TurnUpdate};
-use crate::proxy::{with_not_started, without_not_started, TerminalErrorReason};
+use crate::proxy::{read_body_bounded, with_not_started, without_not_started, TerminalErrorReason};
 use crate::request_classification::classify_anthropic_messages;
 use crate::state::AppState;
 use crate::validation::optional_bool;
@@ -1565,10 +1565,21 @@ async fn stream_messages(
 // ---------- handlers ----------
 
 /// Buffered JSON request body under the OpenAI-plane limit; failures are Anthropic-envelope 400s.
-async fn read_messages_body(body: Body) -> Result<Value, Response> {
-    let raw = match to_bytes(body, OPENAI_BODY_LIMIT).await {
-        Ok(raw) => raw,
-        Err(_) => {
+async fn read_messages_body(
+    app: &AppState,
+    body: Body,
+) -> Result<(Value, bounded_body::StoredBodyLease), Response> {
+    let bounded = match read_body_bounded(
+        app,
+        body,
+        api_limits::current::OPENAI_TEXT_REQUEST,
+        api_limits::current::OPENAI_TEXT_REQUEST,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(bounded_body::StorageError::TooLarge)
+        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
             return Err(skin_error(
                 StatusCode::BAD_REQUEST,
                 "invalid_request_error",
@@ -1577,9 +1588,18 @@ async fn read_messages_body(body: Body) -> Result<Value, Response> {
                 None,
             ))
         }
+        Err(_) => {
+            return Err(skin_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "api_error",
+                "Request body storage is unavailable.",
+                "body_storage_unavailable",
+                None,
+            ))
+        }
     };
-    match serde_json::from_slice(&raw) {
-        Ok(value) => Ok(value),
+    match serde_json::from_slice(&bounded.bytes) {
+        Ok(value) => Ok((value, bounded._lease)),
         Err(_) => Err(skin_error(
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
@@ -1617,7 +1637,7 @@ pub async fn messages(
             return anthropic_error(ApiError::from(error));
         }
     };
-    let value = match read_messages_body(body).await {
+    let (value, _body_lease) = match read_messages_body(&app, body).await {
         Ok(value) => value,
         Err(response) => return response,
     };
@@ -1801,9 +1821,37 @@ async fn count_tokens_after_admission(
     tenant_scope: &str,
     body: Body,
 ) -> (Response, Option<String>, Option<String>) {
-    let value = match read_messages_body(body).await {
+    let raw = match to_bytes(body, OPENAI_BODY_LIMIT).await {
+        Ok(raw) => raw,
+        Err(_) => {
+            return (
+                skin_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_error",
+                    "Request body exceeds the 8 MiB limit.",
+                    "invalid_request_body",
+                    None,
+                ),
+                None,
+                None,
+            )
+        }
+    };
+    let value = match serde_json::from_slice(&raw) {
         Ok(value) => value,
-        Err(response) => return (response, None, None),
+        Err(_) => {
+            return (
+                skin_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_error",
+                    "Invalid JSON in request body.",
+                    "invalid_request_body",
+                    None,
+                ),
+                None,
+                None,
+            )
+        }
     };
     let translated = match translate_messages_request(value, false) {
         Ok(translated) => translated,

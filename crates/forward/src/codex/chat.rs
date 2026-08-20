@@ -7,14 +7,15 @@
 
 use super::api::{
     json_response, normalize_output_item, parse_responses_request, prepare_turn, ApiError,
-    PreparedTurn, MAX_INSTRUCTIONS_BYTES, OPENAI_BODY_LIMIT, STREAM_FRAME_SEND_TIMEOUT,
+    PreparedTurn, MAX_INSTRUCTIONS_BYTES, STREAM_FRAME_SEND_TIMEOUT,
 };
 use super::billing::{begin_admission, CodexBillableRequestSpec};
 use super::{new_id, CodexGateway, CodexTurnResult, CodexUsage, TurnUpdate};
+use crate::proxy::read_body_bounded;
 use crate::request_classification::classify_openai_chat;
 use crate::state::AppState;
 use crate::validation::optional_positive_u64;
-use axum::body::{to_bytes, Body};
+use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -56,13 +57,28 @@ pub async fn completions(
         Ok(pending) => pending,
         Err(error) => return ApiError::from(error).into_response(),
     };
-    let raw = match to_bytes(body, OPENAI_BODY_LIMIT).await {
-        Ok(raw) => raw,
-        Err(_) => {
+    let bounded_body = match read_body_bounded(
+        &app,
+        body,
+        api_limits::current::OPENAI_TEXT_REQUEST,
+        api_limits::current::OPENAI_TEXT_REQUEST,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(bounded_body::StorageError::TooLarge)
+        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
             return ApiError::invalid("Request body exceeds the 8 MiB limit.", None::<String>)
                 .into_response()
         }
+        Err(bounded_body::StorageError::Io) => {
+            return ApiError::invalid("Could not read request body.", None::<String>)
+                .into_response()
+        }
+        Err(_) => return ApiError::unavailable().into_response(),
     };
+    let raw = bounded_body.bytes.clone();
+    let _body_lease = bounded_body._lease;
     let value: Value = match serde_json::from_slice(&raw) {
         Ok(value) => value,
         Err(_) => {
@@ -1484,6 +1500,7 @@ impl Stream for ChatReceiverStream {
 mod tests {
     use super::*;
     use crate::codex::{CodexConfig, CodexModel, CodexPrices};
+    use axum::body::to_bytes;
     use std::collections::BTreeMap;
 
     fn gateway() -> CodexGateway {
