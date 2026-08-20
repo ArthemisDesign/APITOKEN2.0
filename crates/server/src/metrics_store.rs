@@ -31,7 +31,11 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
          CREATE TABLE IF NOT EXISTS sub_peaks(
             email TEXT PRIMARY KEY,
             max_cap5h REAL DEFAULT 0, max_cap7d REAL DEFAULT 0,
-            samples INTEGER DEFAULT 0, updated_ts INTEGER DEFAULT 0);",
+            samples INTEGER DEFAULT 0, updated_ts INTEGER DEFAULT 0);
+         CREATE TABLE IF NOT EXISTS provider_sub_snapshots(
+            plane TEXT NOT NULL, sub_id TEXT NOT NULL, ts INTEGER NOT NULL,
+            used5h REAL, used7d REAL, reset5h_in INTEGER, reset7d_in INTEGER,
+            PRIMARY KEY(plane, sub_id, ts));",
     )?;
     Ok(c)
 }
@@ -58,6 +62,48 @@ pub fn insert_sub_snapshots(
                max_cap7d=MAX(max_cap7d,excluded.max_cap7d), \
                samples=samples+1, updated_ts=excluded.updated_ts",
             rusqlite::params![email, cap5h, cap7d, ts])?;
+    }
+    Ok(())
+}
+
+/// Per-профильная точка распределения квот НЕ-Клодовых плоскостей (Codex/Kimi/GLM/Gemini) —
+/// измерение шага 0 из `docs/engine/QUOTA_DISTRIBUTION_ANALYSIS.md` §6. Доли 0..1, секунды до
+/// reset; NULL — «окно не наблюдалось / провайдер его не публикует», никогда не синтезируем 0.
+/// `sub_id` — opaque roster/home id плоскости (документированно безопасен для метрик: не email и
+/// не subject). Селекторы это не читают — таблица чисто наблюдательная, дашборды и SQL-анализ
+/// (распределение по флоту, синхронность weekly-reset, доля «5h пустой при 7d на резерве»).
+pub struct ProviderQuotaPoint<'a> {
+    pub plane: &'a str,
+    pub sub_id: &'a str,
+    /// Доля использования короткого окна (5h/primary): Codex primary,
+    /// Kimi/GLM 18 000с-окно, Gemini — max(1 − remaining_fraction) по бакетам.
+    pub used5h: Option<f64>,
+    /// Доля использования длинного окна (7d/secondary/weekly). У Gemini бакеты не сводятся к
+    /// одной неделе — оставляем NULL и не выдумываем.
+    pub used7d: Option<f64>,
+    pub reset5h_in: Option<i64>,
+    pub reset7d_in: Option<i64>,
+}
+
+pub fn insert_provider_sub_snapshots(
+    c: &Connection,
+    ts: i64,
+    rows: &[ProviderQuotaPoint<'_>],
+) -> rusqlite::Result<()> {
+    for row in rows {
+        c.execute(
+            "INSERT OR REPLACE INTO provider_sub_snapshots(plane,sub_id,ts,used5h,used7d,reset5h_in,reset7d_in) \
+             VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params![
+                row.plane,
+                row.sub_id,
+                ts,
+                row.used5h,
+                row.used7d,
+                row.reset5h_in,
+                row.reset7d_in
+            ],
+        )?;
     }
     Ok(())
 }
@@ -113,6 +159,10 @@ pub fn prune(c: &Connection, older_than_ts: i64) -> rusqlite::Result<usize> {
     )?;
     let _ = c.execute(
         "DELETE FROM sub_snapshots WHERE ts < ?1",
+        rusqlite::params![older_than_ts],
+    );
+    let _ = c.execute(
+        "DELETE FROM provider_sub_snapshots WHERE ts < ?1",
         rusqlite::params![older_than_ts],
     );
     Ok(n)

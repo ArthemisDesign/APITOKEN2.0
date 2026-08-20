@@ -634,6 +634,26 @@ pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64
         } else {
             0
         };
+        // Шаг 0 QUOTA_DISTRIBUTION_ANALYSIS §6: per-профильное распределение квот по всем
+        // плоскостям из уже кэшированных статусов (ни одного сетевого вызова). Ошибка сбора
+        // одной плоскости не роняет снапшот остальных — это наблюдательный путь, не селектор.
+        let mut provider_points = Vec::new();
+        if let Some(codex) = &app.codex {
+            provider_points
+                .extend(crate::provider_quota_points::codex_points(&codex.operational_status().await, now));
+        }
+        if let Some(kimi) = &app.kimi {
+            provider_points
+                .extend(crate::provider_quota_points::kimi_points(&kimi.operational_status(), now));
+        }
+        if let Some(glm) = &app.glm {
+            provider_points
+                .extend(crate::provider_quota_points::glm_points(&glm.operational_status(), now));
+        }
+        if let Some(gemini) = &app.gemini {
+            provider_points
+                .extend(crate::provider_quota_points::gemini_points(&gemini.operational_status().await));
+        }
         // Примерно раз в час.
         let do_prune = retention_days > 0 && ticks.is_multiple_of(60);
         // Запись в SQLite — на blocking-потоке (не блокируем async-воркер). Открываем per-write:
@@ -642,6 +662,7 @@ pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64
             let c = crate::metrics_store::open(&db)?;
             crate::metrics_store::insert_snapshot(&c, &snap)?;
             crate::metrics_store::insert_sub_snapshots(&c, now, &subs)?;
+            crate::metrics_store::insert_provider_sub_snapshots(&c, now, &provider_points)?;
             if do_prune {
                 crate::metrics_store::prune(&c, cutoff)?;
             }

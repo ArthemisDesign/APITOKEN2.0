@@ -68,3 +68,34 @@ steering(≥50% от свёртки) + курсор. Sticky выигрывает
   новой таблицы — рунбук добавим в docs в коммите шага 0.
 
 (дальше журнал пополняется по мере коммитов)
+
+## Шаг 0 — наблюдаемость распределения квот (без правок селекторов)
+
+**Коммит:** `feat(server): per-профильные снапшоты квот Codex/Kimi/GLM/Gemini в metrics.db`.
+
+Что сделано:
+
+- `metrics_store`: новая таблица `provider_sub_snapshots(plane, sub_id, ts, used5h, used7d,
+  reset5h_in, reset7d_in)` (expand-only `CREATE TABLE IF NOT EXISTS`, prune вместе с остальными
+  рядами по retention) + `ProviderQuotaPoint`/`insert_provider_sub_snapshots`.
+- Новый модуль `server/src/provider_quota_points.rs` — чистые функции сбора из уже кэшированных
+  `operational_status()` плоскостей (ни одного сетевого вызова):
+  - **Codex**: primary → used5h, secondary → used7d, resets_at обоих окон → секунды до reset;
+  - **Kimi/GLM**: окна разделяются по ближайшей длительности к опорным константам
+    (`KIMI_ROLLING_WINDOW_SECS=18 000` / `KIMI_WEEKLY_WINDOW_SECS=604 800`, GLM-аналоги) с
+    допуском ±10%; у GLM доля окна `Option`al — нет доли, есть только факт наблюдения;
+  - **Gemini**: `used5h = max(1 − remaining_fraction)` по бакетам (худший остаток), `used7d`/reset
+    остаются NULL — per-модельный каталог Google не сводится к одной паре окон, ничего не выдумываем.
+- `poller::metrics_loop` пишет точки каждые 60с вместе с существующими снапшотами.
+
+Что это даёт из §6 шага 0 (и как читать поверх metrics.db, все запросы — SQLite):
+- гистограммы распределения: `SELECT plane, ROUND(used7d,1), COUNT(*) FROM
+  provider_sub_snapshots WHERE ts>=:t GROUP BY 1,2` (аналогично used5h; Claude — из `sub_snapshots`);
+- синхронность weekly-reset по флоту: разброс `reset7d_in` в одном ts;
+- доля «5h пустой при 7d на резерве» (теряемая ёмкость): `used5h < 0.5 AND used7d > 0.90`
+  (0.90/0.97 — типичные джиттерованные потолки Codex 10%/3%);
+- доли pin/spill/rebind и cache-hit — уже публикуются: `Pool::route_stats()` (RouteStats) → `/metrics`;
+  частота провайдерских 429 — существующие счётчики `upstream_429` в `forward::Metrics`.
+Проверки: `cargo build -p claude-api`, `cargo test -p claude-api provider_quota_points` (2 теста:
+раздельные окна + допуск длительности/кламп прошедшего reset), `cargo test -p claude-api
+metrics_store` (6 существующих тестов зелёные).

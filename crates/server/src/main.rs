@@ -12,6 +12,7 @@ mod admin;
 mod config;
 mod http;
 mod metrics_store;
+mod provider_quota_points;
 mod openai_image_canary;
 mod openai_image_public_smoke;
 mod poller;
