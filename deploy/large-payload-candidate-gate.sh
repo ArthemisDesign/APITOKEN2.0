@@ -14,5 +14,7 @@ before=$evidence_dir/$sha.before.json; load=$evidence_dir/$sha.load.json; after=
 "$collector" "$unit" "$spool" "$before"
 python3 "$script_dir/tests/large_payload_mock_load.py" --url "$url" --sizes-mib "8,32,64" --concurrency 4 --authorization-file "$authorization_file" >"$load"
 "$collector" "$unit" "$spool" "$after"
-python3 "$script_dir/tests/large_payload_candidate_gate.py" --sha "$sha" --before "$before" --after "$after" --load "$load" --memory-high-bytes "$memory_high" >"$verdict.tmp"
+verdict_rc=0
+python3 "$script_dir/tests/large_payload_candidate_gate.py" --sha "$sha" --before "$before" --after "$after" --load "$load" --memory-high-bytes "$memory_high" >"$verdict.tmp" || verdict_rc=$?
 mv -f -- "$verdict.tmp" "$verdict"
+exit "$verdict_rc"

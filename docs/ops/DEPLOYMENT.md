@@ -43,7 +43,13 @@ installer publishes both Python harness files under
 `/usr/local/lib/apitoken-watchdog/tests/`, because the root gate resolves them from its own
 installed root rather than from a repository checkout. A release carrying
 the regular-file marker `.large-payload-canary-v1` must pass this gate on the inactive router slot
-after readiness and before enablement/Caddy promotion; failure leaves the old slot serving. It reads
+after readiness and before enablement/Caddy promotion; failure leaves the old slot serving. The
+canary POSTs valid JSON **without** `model` to the sudoers-pinned
+`/v1/chat/completions` URL so every 8/32/64 MiB body must cross raised router admission and then
+fail locally (400 missing `model`). A namespaced or otherwise routable `model` is forwarded to a
+provider plane whose own cap is still 8 or 32 MiB; that plane's 413 is not router-admission
+evidence, and a 413/408/431 from the router itself is a size/timeout/header reject. The gate
+persists the exact-SHA verdict even when the evaluator rejects the candidate. It reads
 an authenticated header value only from the fixed root-owned mode-0600
 `/srv/claude-api/data/large-payload-canary.authorization`; this lets auth preflight pass so the
 verdict proves body admission, without putting a credential in argv, evidence, logs, or repository.

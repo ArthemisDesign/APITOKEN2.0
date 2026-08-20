@@ -20,8 +20,9 @@ pub struct Config {
     /// Явный rollout-флаг advanced routing. По умолчанию выключен: `models` и
     /// `provider` отклоняются до catalog/policy/plane work.
     pub fallback_enabled: bool,
-    /// Dormant large-body settings. Defaults preserve the current 32 MiB/128 MiB behavior;
-    /// later stages may raise them only after bounded storage and dual admission exist.
+    /// Composed large-body settings. Defaults preserve the current 64 MiB request and independent
+    /// 512 MiB raw-storage/estimated-memory budgets; later stages may raise them only after
+    /// bounded storage and dual admission exist.
     pub body_limits: api_limits::BodyLimits,
     pub body_idle_secs: u64,
     pub body_max_secs: u64,

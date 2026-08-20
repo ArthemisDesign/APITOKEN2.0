@@ -373,7 +373,7 @@ plane — the router only adapts client input.
    see `docs/engine/ARCHITECTURE.md`). The router adds no global limit — otherwise an
    overloaded plane would eat the capacity of the others. Router readiness is never a
    conjunction of all planes' health; there are no synchronous health checks on the
-    request path. The single exception is the fail-fast 128 MiB memory admission for
+    request path. The single exception is the fail-fast 512 MiB memory admission for
     materialized universal request bodies: a known size is rounded up in 1 MiB steps;
     an unknown/chunked size starts with one unit and fail-fast acquires more units as
     bytes are actually read. Admission never waits in a queue, is bounded by a
@@ -413,7 +413,7 @@ plane — the router only adapts client input.
 ### Early auth and the request-body memory boundary
 
 Universal model dispatch must read the JSON request body for `model`, but has no
-right to materialize up to 32 MiB from an unauthenticated client. The producer-first
+right to materialize up to 64 MiB from an unauthenticated client. The producer-first
 contract on each fixed plane is a bodyless `POST /internal/router/auth/preflight`:
 the forwarding admin is checked with the same in-memory `authed`, a customer
 credential with the same active-key `AsyncBilling` resolver as live admission. The
@@ -440,12 +440,12 @@ outcome received wins, and actual provider-plane admission re-checks the credent
 before reserve anyway. The deployment-only startup probe remains an eager concurrent
 probe of all three origins.
 
-After auth the consumer makes fail-fast reservations against independent 128 MiB raw-storage and
+After auth the consumer makes fail-fast reservations against independent 512 MiB raw-storage and
 estimated-memory budgets in 1 MiB steps. Both are owned by `crates/bounded-body` RAII reservations;
 no wait queue exists. These current values come from the dependency-free `crates/api-limits` typed
 contract and strict router composition. Startup additionally requires the absolute private
 `CLAUDE_ROUTER_BODY_SPOOL_ROOT`; each systemd slot owns a separate mode-0700 RuntimeDirectory and the
-path is never logged. The current memory threshold still equals the 32 MiB request limit, preserving
+path is never logged. The current memory threshold still equals the 64 MiB request limit, preserving
 memory-first production behavior while the spill path remains exercised under smaller test configs.
 Malformed, zero, inconsistent, or above-current values fail startup; the future 256 MiB hard ceiling
 is not enablement. A valid
@@ -908,11 +908,11 @@ Two clarifying caveats from the audit:
    matrix. Subpackages: **3.0** — fixing the decisions in this document
    (IMPLEMENTED); **3.1** — router model-routing + Anthropic plane adapter (text,
    streaming, usage) — **IMPLEMENTED**: `POST /v1/chat/completions` in the router
-   (`crates/router/src/chat.rs`) buffers only the request body (32 MiB — the ceiling
-   of the largest plane), extracts `model`, and selects the plane by namespace prefix
+   (`crates/router/src/chat.rs`) buffers only the request body (64 MiB — the current
+   composed router request cap), extracts `model`, and selects the plane by namespace prefix
    without querying the catalog or by alias through the cached catalog; the body is
-   proxied unchanged, and dispatch errors (400 invalid JSON/no `model`, 404
-   `model_not_found`, 503 `catalog_unavailable`, unified 401) come in the OpenAI
+   proxied unchanged, and dispatch errors (400 invalid JSON/no `model`, 413 oversized
+   body, 404 `model_not_found`, 503 `catalog_unavailable`, unified 401) come in the OpenAI
    envelope. The Anthropic plane adapter (`crates/forward/src/anthropic.rs`, a route
    in `ProviderMode::Anthropic`) translates chat→Messages (system/developer →
    top-level `system`, merging consecutive same-role messages,
@@ -1101,10 +1101,10 @@ Two clarifying caveats from the audit:
    Anthropic plane adapter (core: text, usage, stream; tools in the request and
    function_call in the response) — **IMPLEMENTED**: `POST /v1/responses` in the
    router (`crates/router/src/responses.rs`) repeats the stage-3.1 chat dispatch —
-   only the request body is buffered (32 MiB), `model` is extracted, the plane is
+   only the request body is buffered (64 MiB), `model` is extracted, the plane is
    selected by namespace prefix without querying the catalog or by alias through the
    cached catalog, the body is proxied unchanged, and dispatch errors (400 invalid
-   JSON/no `model`, 404 `model_not_found`, 503 `catalog_unavailable`, unified 401)
+   JSON/no `model`, 413 oversized body, 404 `model_not_found`, 503 `catalog_unavailable`, unified 401)
    come in the OpenAI envelope. Stored endpoints (`POST /v1/responses/input_tokens`,
    `GET/DELETE /v1/responses/{id}`, `GET /v1/responses/{id}/input_items`) do NOT use
    dispatch and remain the native OpenAI lane (decision 5; token counting is also
@@ -1258,7 +1258,7 @@ Two clarifying caveats from the audit:
    Anthropic Skin for `openai/*` models (Codex plane) — IMPLEMENTED.** In the router
    `POST /v1/messages` gained model-based dispatch (`crates/router/src/messages.rs`)
    under the same rules as the chat/responses dispatches of 3.1/4.1: only the request
-   body is buffered (32 MiB), the `openai/` namespace prefix selects the Codex plane
+   body is buffered (64 MiB), the `openai/` namespace prefix selects the Codex plane
    without querying the catalog (the shared `catalog::namespace_lane`; `anthropic/`
    and `google/` go to their own planes — the Gemini Messages skin is implemented in
    5.2 below), the rest — by alias through the cached catalog; the body is proxied

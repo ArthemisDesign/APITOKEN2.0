@@ -3169,6 +3169,13 @@ grep -Fq '/usr/local/lib/apitoken-watchdog/tests/large_payload_mock_load.py' \
 grep -Fq '/usr/local/lib/apitoken-watchdog/tests/large_payload_candidate_gate.py' \
   "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'payload canary evaluator is never installed for the candidate gate'
+! grep -Fq 'anthropic/test' "$ROOT/tests/large_payload_mock_load.py" \
+  || wd_die 'payload canary still forwards a namespaced model to a narrower plane'
+grep -Fq '{"messages":[{"role":"user","content":"' "$ROOT/tests/large_payload_mock_load.py" \
+  || wd_die 'payload canary is not a router-local missing-model JSON body'
+grep -Fq 'verdict_rc' "$ROOT/deploy/large-payload-candidate-gate.sh" \
+  || wd_die 'candidate gate drops the verdict when the evaluator fails'
+bash "$ROOT/deploy/large-payload-candidate-gate.test.sh"
 grep -Fq 'cd /var/lib/apitoken/watchdog/router-proof' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'router proof provisioning does not pin the opened directory handle'
 grep -Fq '[[ $(pwd -P) == /var/lib/apitoken/watchdog/router-proof ]]' \

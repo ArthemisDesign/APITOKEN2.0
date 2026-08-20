@@ -114,6 +114,13 @@ impl Surface {
         }
     }
 
+    fn payload_too_large(self, message: &str) -> Response {
+        match self {
+            Self::Chat | Self::Responses => error::chat_payload_too_large(message),
+            Self::Messages => error::messages_payload_too_large(message),
+        }
+    }
+
     fn model_not_found(self, model: &str) -> Response {
         match self {
             Self::Chat | Self::Responses => error::model_not_found(model),
@@ -184,7 +191,7 @@ struct ResolvedAttempt {
 }
 
 /// Shared universal handler. The response body is never buffered; only the
-/// already-required 32 MiB request body is materialized.
+/// already-required request body (current 64 MiB cap) is materialized.
 pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surface) -> Response {
     let body_surface = surface.body_surface(req.uri().path());
     let _request_guard = state.metrics.universal_request();
@@ -214,7 +221,10 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
             state
                 .metrics
                 .body_admission_rejection(BodyRejectionReason::Oversized);
-            return surface.invalid("Request body exceeds the 32 MiB limit.", None);
+            return surface.payload_too_large(&format!(
+                "Request body exceeds the {} limit.",
+                state.cfg.body_limits.request
+            ));
         }
         Err(BodyReadError::Overloaded) => {
             state

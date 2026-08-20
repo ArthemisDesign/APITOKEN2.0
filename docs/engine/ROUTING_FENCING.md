@@ -182,7 +182,7 @@ the signal works. The durable guarantee against a bug/desync is group identity:
   the cached aggregate catalog. An explicit fallback chain is fully validated against a single
   aggregate snapshot BEFORE the first attempt; an alias and a namespaced ID of the same catalog entry count as
   a duplicate. Then `models` is removed and `model` is replaced for each attempt.
-- The router buffers only the request body (as today, 32 MiB), selects the plane for each
+- The router buffers only the request body (as today, 64 MiB), selects the plane for each
   attempt independently (namespace/alias — the existing `catalog::namespace_lane`); retry —
   only per the §3.3 rules; the client gets the last attempt's response (its success or its error);
   the in-flight response is NOT buffered (the byte-passthrough invariant is untouched: retry

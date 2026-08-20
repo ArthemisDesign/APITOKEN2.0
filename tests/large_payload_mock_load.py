@@ -3,6 +3,10 @@
 
 Bodies are generated while streaming; no giant fixture is stored in the repository or retained in
 memory. The target must be a loopback mock/candidate URL. Results are content-free JSON evidence.
+
+The body is valid JSON without `model`, so the router must admit it and then reject it locally.
+A namespaced model would be forwarded to a provider plane whose own cap is still 8 or 32 MiB;
+that plane's 413 is not router-admission evidence.
 """
 import argparse, concurrent.futures, http.client, json, os, statistics, time, urllib.parse
 
@@ -24,7 +28,7 @@ def send(url, size, chunked, timeout, authorization):
     else: conn.putheader("content-length", str(size))
     conn.endheaders()
     remaining = size
-    prefix = b'{"model":"anthropic/test","messages":[{"role":"user","content":"'
+    prefix = b'{"messages":[{"role":"user","content":"'
     suffix = b'"}]}'
     sent = 0
     for piece in (prefix,):

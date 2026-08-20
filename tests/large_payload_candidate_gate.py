@@ -17,8 +17,9 @@ def main():
  max_raw=after['memory']['max']; maximum=int(max_raw) if str(max_raw).isdigit() else 0
  peak=int(after['memory']['peak']); headroom_ok=maximum>0 and peak*100<=maximum*80
  statuses=[int(row.get('status',0)) for row in load['requests']]
- # Every body must cross raised router admission before the deliberately invalid model/credential
- # seam. Size/timeout/header rejection and transport/server failures cannot count as evidence.
+ # Every body must cross raised router admission before a router-local 4xx. A namespaced model
+ # would be forwarded to a plane whose own cap is still 8 or 32 MiB; that plane's 413 is not
+ # router-admission evidence. Size/timeout/header rejection (408/413/431) and 5xx cannot count.
  status_ok=bool(statuses) and all(400 <= status < 500 and status not in (408,413,431) for status in statuses)
  accepted=all(deltas.get(k,0)==0 for k in ('oom','oom_kill','max')) and after['spool_files']==0 and peak<a.memory_high_bytes and headroom_ok and status_ok
  result={'schema':'large-payload-acceptance-v1','sha':a.sha,'unit':after['unit'],'accepted':accepted,'memory_peak':peak,'memory_high':a.memory_high_bytes,'memory_max':maximum,'event_deltas':deltas,'spool_files':after['spool_files'],'requests':len(load['requests']),'statuses':statuses,'status_ok':status_ok}

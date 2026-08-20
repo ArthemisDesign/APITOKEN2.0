@@ -90,15 +90,27 @@ pub fn method_not_allowed(path: &str) -> Response {
     json_response(StatusCode::METHOD_NOT_ALLOWED, body)
 }
 
-/// 400 universal chat-пути: тело не JSON, превышает лимит или не содержит
-/// валидный `model`. Конверт зеркалит 400-е OpenAI-плоскости на этом пути
+/// 400 universal chat-пути: тело не JSON или не содержит валидный `model`.
+/// Конверт зеркалит 400-е OpenAI-плоскости на этом пути
 /// (`invalid_request_error`, `code: null`), чтобы router-local отказ был
-/// неотличим от отказа адаптера плоскости.
+/// неотличим от отказа адаптера плоскости. Oversized bodies use 413 below so the
+/// exact-SHA canary can tell admission failure from a local schema rejection.
 pub fn invalid_chat_request(message: &str, param: Option<&str>) -> Response {
     json_response(
         StatusCode::BAD_REQUEST,
         json!({"error": {"message": message, "type": "invalid_request_error",
             "param": param, "code": serde_json::Value::Null}}),
+    )
+}
+
+/// 413: declared or materialized body exceeded the composed router request cap.
+/// Status is Payload Too Large so admission evidence can distinguish this from a
+/// 400 after a fully admitted body. The envelope stays OpenAI-shaped.
+pub fn chat_payload_too_large(message: &str) -> Response {
+    json_response(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        json!({"error": {"message": message, "type": "invalid_request_error",
+            "param": serde_json::Value::Null, "code": "payload_too_large"}}),
     )
 }
 
@@ -188,11 +200,19 @@ pub fn policy_restricted() -> Response {
 // формат оборачивать нельзя (см. «Совместимость с harness-агентами»). Зеркало
 // OpenAI-конверта chat/responses dispatch'ей выше.
 
-/// 400 universal messages-пути: тело не JSON, превышает лимит или не содержит
-/// валидный `model`. Имя параметра — в тексте (в конверте поля param нет).
+/// 400 universal messages-пути: тело не JSON или не содержит валидный `model`.
+/// Имя параметра — в тексте (в конверте поля param нет). Oversized bodies use 413.
 pub fn invalid_messages_request(message: &str) -> Response {
     json_response(
         StatusCode::BAD_REQUEST,
+        json!({"type": "error", "error": {"type": "invalid_request_error", "message": message}}),
+    )
+}
+
+/// 413 messages-пути: тело превысило составленный request cap router'а.
+pub fn messages_payload_too_large(message: &str) -> Response {
+    json_response(
+        StatusCode::PAYLOAD_TOO_LARGE,
         json!({"type": "error", "error": {"type": "invalid_request_error", "message": message}}),
     )
 }
@@ -344,6 +364,19 @@ mod tests {
         let response = invalid_chat_request("Invalid JSON in request body.", None);
         let json = body_json(response).await;
         assert!(json["error"]["param"].is_null());
+    }
+
+    #[tokio::test]
+    async fn chat_payload_too_large_is_openai_shaped_413() {
+        let response = chat_payload_too_large("Request body exceeds the 64 MiB limit.");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["type"], "invalid_request_error");
+        assert_eq!(json["error"]["code"], "payload_too_large");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("64 MiB"));
     }
 
     #[tokio::test]

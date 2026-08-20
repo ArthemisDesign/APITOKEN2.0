@@ -35,7 +35,7 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   never receive an ID even when a spoofed value arrives. The header is stripped from provider responses,
   never returned publicly, and does not replace `x-request-id`, billing identity, or execution group/attempt.
 - **No execution queues, semaphores, circuit breakers, rate limits** (invariant 3).
-  The only exception is a 128 MiB fail-fast budget in 1 MiB steps on buffered universal request
+  The only exception is a 512 MiB fail-fast budget in 1 MiB steps on buffered universal request
   bodies: a known `Content-Length` is rounded up, an unknown/chunked one starts at 1 MiB and
   fail-fast adds units as bytes are actually read. Read deadline — 60 seconds without
   progress and 5 minutes of absolute time.
@@ -49,7 +49,7 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   (default-features off) so that bytes and Content-Encoding pass unchanged.
   The only exception is the shared `routing.rs`: the REQUEST body of
   `/v1/chat/completions`, `/v1/responses` and
-  `/v1/messages{,/count_tokens}` is read in full (32 MiB limit) for the sake of the
+  `/v1/messages{,/count_tokens}` is read in full (64 MiB limit) for the sake of the
   `model` field; the response body stays a stream. An additional exception is the router-owned
   `x-apitoken-service-tier: fast|priority` and the OpenAI-compatible body alias
   `serviceTier:"fast"|"priority"`: on executable GPT Chat/Responses requests the router
@@ -73,7 +73,7 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
 - `config.rs` — the only place env is read (`CLAUDE_ROUTER_*`), including
   the strict off-by-default flag `CLAUDE_ROUTER_FALLBACK_ENABLED` (`0|1|false|true`). The dormant
   body settings use `api-limits` strict decimal MiB/seconds parsing and fail startup on malformed,
-  zero, inconsistent, or above-current values. They preserve the 32 MiB request, independent 128 MiB
+  zero, inconsistent, or above-current values. They preserve the 64 MiB request, independent 512 MiB
   raw-storage and estimated-memory budgets, and 60/300-second deadlines. A required absolute
   `CLAUDE_ROUTER_BODY_SPOOL_ROOT` is opened as a private directory capability; systemd gives every
   slot a separate mode-0700 RuntimeDirectory. The current threshold equals the request cap, so public
@@ -98,7 +98,7 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   `x-apitoken-service-tier` is stripped as well.
 - `routing.rs` — shared model dispatch and serial fallback for all universal
   surfaces. It first performs the bodyless auth, then dynamically reserves the actual
-  body size in the shared 128 MiB budget; overload/slow body return lane-shaped 503/408 without a billable call.
+  body size in the shared 512 MiB budget; overload/slow body return lane-shaped 503/408 without a billable call.
   An ordinary request without `models` and `provider` keeps the original bytes and direct
   namespaced dispatch. The extended planner obtains one aggregate catalog snapshot, canonically
   deduplicates the explicit chain, applies provider filters/order and `allow_fallbacks`, then the
@@ -191,7 +191,7 @@ cargo build && bash tests/router_fallback_smoke.sh  # concurrent 6.4c mock-load 
 
 The integration tests bring up mock planes on real loopback sockets and
 cover: bodyless early auth ahead of an unfinished large body, terminal 401 and mixed-version,
-dynamic weighted 128 MiB overload without a queue, the slow-body deadline, permit release on parse error,
+dynamic weighted 512 MiB overload without a queue, the slow-body deadline, permit release on parse error,
 outbound EOF with an open SSE,
 absence of a data-plane pre-header deadline and a bounded `/balance` deadline without retry, passthrough
 of body/headers, unbuffered SSE, transitive
@@ -200,7 +200,7 @@ uncached key-scoped pricing for two
 keys over one shared cache, terminal pricing 401/503, canonical wire validation, alias
 resolution of models, 404/405, model-based dispatch of chat-, responses- and
 messages- and messages/count_tokens requests (namespaced without a catalog fetch,
-alias via the catalog, 400 on an invalid/oversized body, unbuffered
+alias via the catalog, 400 on an invalid body, 413 on an oversized body, unbuffered
 chat SSE), as well as off-by-default fallback, preflight of the whole chain, the exact
 retry matrix (`not_started`, 429, 4xx/5xx, ConnectionRefused/timeout), rewrite
 of the per-attempt body, provider preferences, removed-sort rejection, mixed-version policy

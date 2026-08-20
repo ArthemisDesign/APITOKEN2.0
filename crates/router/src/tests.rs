@@ -27,7 +27,7 @@ type SharedLog = Arc<StdMutex<Vec<Recorded>>>;
 
 fn oversized_pending_body() -> reqwest::Body {
     // Keep the upload pending after headers. The router rejects the declared length before
-    // reading, so the test observes the 400 deterministically instead of racing a 32 MiB
+    // reading, so the test observes the 413 deterministically instead of racing a 64 MiB
     // client write against the server closing the HTTP/1 connection.
     reqwest::Body::wrap_stream(futures_util::stream::pending::<Result<Bytes, std::io::Error>>())
 }
@@ -2541,7 +2541,7 @@ async fn chat_alias_with_auth_rejected_catalog_is_unified_401() {
 }
 
 #[tokio::test]
-async fn chat_oversized_body_is_400_and_never_reaches_plane() {
+async fn chat_oversized_body_is_413_and_never_reaches_plane() {
     let (a, log_a) = echo_plane().await;
     let router = spawn(make_router(
         &a,
@@ -2557,13 +2557,14 @@ async fn chat_oversized_body_is_400_and_never_reaches_plane() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     let json: serde_json::Value = response.json().await.unwrap();
     assert_eq!(json["error"]["type"], "invalid_request_error");
+    assert_eq!(json["error"]["code"], "payload_too_large");
     assert!(json["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("32 MiB"));
+        .contains("64 MiB"));
     assert!(log_a.lock().unwrap().is_empty());
 }
 
@@ -2768,7 +2769,7 @@ async fn responses_invalid_json_and_missing_model_are_400_without_plane_call() {
 }
 
 #[tokio::test]
-async fn responses_oversized_body_is_400_and_never_reaches_plane() {
+async fn responses_oversized_body_is_413_and_never_reaches_plane() {
     let (a, log_a) = echo_plane().await;
     let router = spawn(make_router(
         &a,
@@ -2784,13 +2785,14 @@ async fn responses_oversized_body_is_400_and_never_reaches_plane() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     let json: serde_json::Value = response.json().await.unwrap();
     assert_eq!(json["error"]["type"], "invalid_request_error");
+    assert_eq!(json["error"]["code"], "payload_too_large");
     assert!(json["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("32 MiB"));
+        .contains("64 MiB"));
     assert!(log_a.lock().unwrap().is_empty());
 }
 
@@ -3071,7 +3073,7 @@ async fn messages_alias_with_auth_rejected_catalog_is_anthropic_shaped_401() {
 }
 
 #[tokio::test]
-async fn messages_oversized_body_is_400_and_never_reaches_plane() {
+async fn messages_oversized_body_is_413_and_never_reaches_plane() {
     let (a, log_a) = echo_plane().await;
     let router = spawn(make_router(
         &a,
@@ -3087,13 +3089,14 @@ async fn messages_oversized_body_is_400_and_never_reaches_plane() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     let json: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(json["type"], "error");
     assert_eq!(json["error"]["type"], "invalid_request_error");
     assert!(json["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("32 MiB"));
+        .contains("64 MiB"));
     assert!(log_a.lock().unwrap().is_empty());
 }
 
