@@ -194,6 +194,20 @@ const HEALTHY_IDLE_PROBE_MIN_SECS: i64 = 60;
 /// evidence rather than a routine event. The threshold is jittered deterministically per profile
 /// so the fleet does not cut at one percent; under peak the filter relaxes to FULL (fail open:
 /// serving at 99% beats a synthetic 429 for the client).
+///
+/// **Pace-aware decay (R1 v1 of `docs/engine/QUOTA_DISTRIBUTION_ANALYSIS.md`).** A static reserve
+/// strands quota in the window's tail: hours before the reset the headroom is no longer needed,
+/// but the window still refuses traffic and the quota expires unused. The effective reserve
+/// therefore decays linearly from the full jittered base to `DECAY_FLOOR` of it over the last
+/// `DECAY_SPAN` of the window's own lifetime (the last ~6 hours of a weekly window, the last hour
+/// of a five-hour one). Two safeguards are load-bearing:
+/// - the **jittered per-home threshold** is what decays, not a shared clock — a fleet of
+///   subscriptions bought together (synchronous weekly resets) never stampedes into the wall at
+///   one moment;
+/// - the **pace guard** refuses to relax when the current burn rate cannot reach the reset:
+///   if `pace · time_to_reset > remaining + margin` (margin = the still-standing decayed
+///   reserve), the base threshold stays. Time-decay alone does not prove the reset arrives
+///   before the wall.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct WindowReserve {
     pub base5h: f64,
@@ -207,6 +221,13 @@ impl WindowReserve {
         base7d: 0.0,
         jitter: 0.0,
     };
+
+    /// Fraction of the window's own lifetime over which the reserve decays (last 1/28: the last
+    /// ~6 hours of a 7d window, the last ~39 minutes of a 5h one — close to the accepted "~6h /
+    /// last hour" guidance without inventing per-window constants).
+    const DECAY_SPAN_RECIPROCAL: f64 = 28.0;
+    /// The reserve never decays below this share of its jittered base (accepted floor ~0.15).
+    const DECAY_FLOOR: f64 = 0.15;
 
     /// Per-profile (cap_5h, cap_7d) as fractions in (0, 1]. The jitter is deterministic by
     /// (home id, window), stable over time, so each subscription has its own cutoff.
@@ -228,6 +249,74 @@ impl WindowReserve {
 
     /// Cap for one reported window: durations up to a day take the 5h reserve, longer windows
     /// (the weekly bucket) take the 7d reserve.
+    ///
+    /// With `now` and the snapshot age known the static cap becomes pace-aware (R1 v1): the
+    /// jittered reserve decays linearly to `DECAY_FLOOR` of itself across the last
+    /// `1/DECAY_SPAN_RECIPROCAL` of the window's lifetime, but the pace guard reinstates the full
+    /// base when the observed burn rate would hit the wall before the reset even after relaxing.
+    /// Windows without a reset or a duration keep the static cap — decay needs both ends of the
+    /// window.
+    fn window_cap_at(
+        &self,
+        window: &CodexRateLimitWindow,
+        home_id: &str,
+        now: i64,
+        snapshot_observed_at: i64,
+    ) -> f64 {
+        let (c5, c7) = self.caps(home_id);
+        let (cap, base) = match window.window_duration_mins {
+            Some(duration) if duration > 24 * 60 => (c7, self.base7d),
+            _ => (c5, self.base5h),
+        };
+        let Some(duration_mins) = window.window_duration_mins.filter(|d| *d > 0) else {
+            return cap;
+        };
+        let Some(resets_at) = window.resets_at else {
+            return cap;
+        };
+        let time_to_reset_secs = resets_at.saturating_sub(now).max(0) as f64;
+        let duration_secs = duration_mins as f64 * 60.0;
+        let decay_span_secs = duration_secs / Self::DECAY_SPAN_RECIPROCAL;
+        // Outside the tail the cap is untouched; inside it the reserve decays linearly to the
+        // floor exactly at the reset.
+        let factor = if time_to_reset_secs >= decay_span_secs {
+            1.0
+        } else {
+            Self::DECAY_FLOOR
+                + (1.0 - Self::DECAY_FLOOR) * (time_to_reset_secs / decay_span_secs)
+        };
+        // Decay scales the jittered threshold: the per-home reserve is `1 − cap`, so relaxing it
+        // raises the cap. If the jittered reserve is zero (cap at 1.0), there is nothing to decay.
+        let jittered_reserve = 1.0 - cap;
+        if jittered_reserve <= 0.0 {
+            return cap;
+        }
+        // Pace guard: the observed burn rate since the snapshot must reach the reset with the
+        // still-standing decayed reserve to spare. `used_fraction()` is what selection compares
+        // against the cap, so the guard is expressed in the same unit. The average window pace
+        // (used / elapsed-since-window-start) needs the window's start, which the provider does
+        // not report; the conservative local pace `used / max(observed_age, 1)` overstates the
+        // burn (all observed usage is charged to the age of the newest snapshot), so a passing
+        // guard is trustworthy and a failing one merely keeps the base reserve.
+        let used = window.used_fraction().clamp(0.0, 1.0);
+        let observed_age_secs = (now - snapshot_observed_at).max(0) as f64;
+        if time_to_reset_secs <= 0.0 {
+            // The reset is due right now: the provider is about to refill, relax fully.
+            return 1.0;
+        }
+        if used > 0.0 {
+            let pace_per_sec = used / observed_age_secs.max(1.0);
+            let remaining = (1.0 - used).max(0.0);
+            let decayed_reserve = jittered_reserve * factor;
+            if pace_per_sec * time_to_reset_secs > (remaining - decayed_reserve).max(0.0) + 1e-12 {
+                return cap; // burn rate cannot survive until the reset: keep the base reserve
+            }
+        }
+        1.0 - jittered_reserve * factor
+    }
+
+    /// Static cap without a clock, kept for contexts that never had a time source (tests of the
+    /// jitter shape).
     fn window_cap(&self, window: &CodexRateLimitWindow, home_id: &str) -> f64 {
         let (c5, c7) = self.caps(home_id);
         match window.window_duration_mins {
@@ -1368,13 +1457,15 @@ impl CodexHome {
     }
 
     /// Soft-reserve verdict: the earliest reset among windows that already sit at or above their
-    /// jittered cap for this home, if any. Selection treats it as a rejection until that reset.
+    /// jittered (pace-aware, R1) cap for this home, if any. Selection treats it as a rejection
+    /// until that reset.
     fn reserve_blocked_until(
         &self,
         limits: Option<&CodexRateLimits>,
         reserve: &WindowReserve,
+        now: i64,
     ) -> Option<i64> {
-        reserve_blocked(limits, self.id(), reserve)
+        reserve_blocked(limits, self.id(), reserve, now)
     }
 
     /// Only an explicit provider verdict blocks selection: `limit_reached` or `allowed: false`.
@@ -1852,6 +1943,8 @@ mod admission_tests {
             base7d: 0.03,
             jitter: 0.0,
         };
+        // Far from every reset the pace-aware decay is inert and the static caps rule.
+        let now = 100;
         // 99% of the 5h window (cap 98%) blocks even though the provider wall (100%) is near.
         let reserve98 = WindowReserve {
             base5h: 0.02,
@@ -1859,33 +1952,34 @@ mod admission_tests {
             jitter: 0.0,
         };
         assert_eq!(
-            reserve_blocked(Some(&reserve_limits(99, 10)), "home-a", &reserve98),
+            reserve_blocked(Some(&reserve_limits(99, 10)), "home-a", &reserve98, now),
             Some(4_102_444_800)
         );
         assert_eq!(
-            reserve_blocked(Some(&reserve_limits(98, 10)), "home-a", &reserve98),
+            reserve_blocked(Some(&reserve_limits(98, 10)), "home-a", &reserve98, now),
             None
         );
         // 98% of the weekly window (cap 97%) blocks on the weekly reset.
         assert_eq!(
-            reserve_blocked(Some(&reserve_limits(20, 98)), "home-a", &reserve),
+            reserve_blocked(Some(&reserve_limits(20, 98)), "home-a", &reserve, now),
             Some(4_102_500_000)
         );
         // At or below both caps the home stays routable; FULL never blocks, even at the wall.
         assert_eq!(
-            reserve_blocked(Some(&reserve_limits(90, 97)), "home-a", &reserve),
+            reserve_blocked(Some(&reserve_limits(90, 97)), "home-a", &reserve, now),
             None
         );
         assert_eq!(
             reserve_blocked(
                 Some(&reserve_limits(100, 100)),
                 "home-a",
-                &WindowReserve::FULL
+                &WindowReserve::FULL,
+                now
             ),
             None
         );
         // No evidence and missing resets never invent a block.
-        assert_eq!(reserve_blocked(None, "home-a", &reserve), None);
+        assert_eq!(reserve_blocked(None, "home-a", &reserve, now), None);
     }
 
     #[test]
@@ -1915,6 +2009,134 @@ mod admission_tests {
             a5 != b5 || a7 != b7,
             "jitter spreads thresholds across homes"
         );
+    }
+
+    /// R1 v1: в хвосте окна резерв спадает (квота не должна пропадать у самого reset), но pace
+    /// guard возвращает базовый порог, если текущий темп не доживает до reset. Консервативный
+    /// темп считается как «весь расход окна за возраст snapshot»: свежий snapshot почти полного
+    /// окна выглядит как бурный темп и держит базовый резерв, старый snapshot той же
+    /// утилизации — как медленный темп, которому спад безопасен.
+    #[test]
+    fn reserve_decays_near_the_reset_and_the_pace_guard_holds() {
+        let reserve = WindowReserve {
+            base5h: 0.10,
+            base7d: 0.03,
+            jitter: 0.0,
+        };
+        let t0 = 4_102_500_000; // weekly reset из reserve_limits
+        // Еженедельное окно 10 080 мин = 604 800 с; хвост спада = 604 800 / 28 = 21 600 с (6ч).
+        // За 3ч до reset: статичный cap 0.97 заблокировал бы 98%; в хвосте cap спал до
+        // 1 − 0.03·0.575 ≈ 0.9828 → 98% всё ещё выше, блок остаётся уже по спавшему порогу.
+        let still_over = CodexRateLimits {
+            observed_at: t0 - 10_800 - 500_000,
+            ..reserve_limits(20, 98)
+        };
+        assert_eq!(
+            reserve_blocked(Some(&still_over), "home-a", &reserve, t0 - 10_800),
+            Some(t0),
+            "98% выше даже спавшего порога хвоста (~98.28%)"
+        );
+        // 96% при медленном темпе (snapshot 500 000 с): pace = 0.96/500 000; за 10 800 с сожжёт
+        // 0.0207 < remaining−decayed = 0.04−0.0173 = 0.0227 → guard отпускает, 96% < 98.28% → дом
+        // снова роутится в хвосте (это и есть недотраченная раньше квота).
+        let mut p96 = reserve_limits(20, 96);
+        p96.secondary = p96.secondary.map(|mut w| {
+            w.used_fraction_units = 96_000_000;
+            w.used_percent = 96;
+            w
+        });
+        let slow_tail = CodexRateLimits {
+            observed_at: t0 - 10_800 - 500_000,
+            ..p96
+        };
+        assert_eq!(
+            reserve_blocked(Some(&slow_tail), "home-a", &reserve, t0 - 10_800),
+            None,
+            "медленный темп доживает до reset — спавший резерв пропускает дом"
+        );
+        // Те же 96% при свежем snapshot (600 с): консервативный темп 0.96/600 сожжёт 17.3 ≫
+        // remaining → pace guard возвращает базовый cap 0.97… который 96% не блокирует! Guard
+        // проявляется на значениях МЕЖДУ базовым и спавшим порогом: 97.5% при бурном темпе
+        // держит блок (базовый 0.97 < 0.975), при медленном — отпускает (спавший ≈0.9828 > 0.975).
+        // Консервативный темп = весь расход за возраст snapshot: 97.5% за 2 000 000 с наблюдения
+        // → 4.875e-8/с, за 10 800 с сожжёт 0.000527 < remaining−decayed = 0.025−0.01725 = 0.00775.
+        let mut hot_975 = reserve_limits(20, 0);
+        hot_975.primary = None; // 5h-окно не мешает проверке weekly
+        hot_975.secondary = hot_975.secondary.map(|mut w| {
+            w.used_fraction_units = 97_500_000;
+            w.used_percent = 97;
+            w
+        });
+        let hot_tail = CodexRateLimits {
+            observed_at: t0 - 10_800 - 600,
+            ..hot_975.clone()
+        };
+        assert_eq!(
+            reserve_blocked(Some(&hot_tail), "home-a", &reserve, t0 - 10_800),
+            Some(t0),
+            "бурный темп: pace guard держит базовый резерв, 97.5% > 97% заблокировано"
+        );
+        let calm_tail = CodexRateLimits {
+            observed_at: t0 - 10_800 - 2_000_000,
+            ..hot_975
+        };
+        assert_eq!(
+            reserve_blocked(Some(&calm_tail), "home-a", &reserve, t0 - 10_800),
+            None,
+            "медленный темп: pace guard отпускает, спавший порог ~98.28% пропускает 97.5%"
+        );
+        // Вне хвоста (сутки до reset) cap не двигается даже при медленном темпе.
+        let early = CodexRateLimits {
+            observed_at: t0 - 86_400 - 500_000,
+            ..reserve_limits(20, 98)
+        };
+        assert_eq!(
+            reserve_blocked(Some(&early), "home-a", &reserve, t0 - 86_400),
+            Some(t0),
+            "вне хвоста статичный cap 97% блокирует 98%"
+        );
+        // У самого reset (reset наступил) резерв отпускает полностью: провайдер уже наполняет.
+        let at_reset = CodexRateLimits {
+            observed_at: t0 - 60,
+            ..reserve_limits(20, 98)
+        };
+        assert_eq!(
+            reserve_blocked(Some(&at_reset), "home-a", &reserve, t0 + 1),
+            None,
+            "после reset окно снова обслуживает"
+        );
+    }
+
+    /// R1 v1: джиттерованный порог спадает per-home, а не по общему clock — два дома с разным
+    /// джиттером не получают «стадо в стену» на синхронном weekly-reset.
+    #[test]
+    fn reserve_decay_scales_the_jittered_threshold_per_home() {
+        let reserve = WindowReserve {
+            base5h: 0.10,
+            base7d: 0.03,
+            jitter: 0.02,
+        };
+        let t0 = 4_102_500_000;
+        let now = t0 - 10_800; // середина хвоста weekly-окна: factor = 0.15 + 0.85·0.5 = 0.575
+        // Медленный темп, чтобы pace guard не вмешивался.
+        let slow = |weekly: i64| CodexRateLimits {
+            observed_at: now - 500_000,
+            ..reserve_limits(20, weekly)
+        };
+        let cap_a = reserve.window_cap_at(&slow(0).secondary.clone().unwrap(), "home-a", now, now - 500_000);
+        let cap_b = reserve.window_cap_at(&slow(0).secondary.clone().unwrap(), "home-b", now, now - 500_000);
+        let (static_a5, static_a7) = reserve.caps("home-a");
+        let (_, static_b7) = reserve.caps("home-b");
+        assert!(
+            cap_a > static_a7 && cap_b > static_b7,
+            "хвост спада ослабляет оба дома: {cap_a} vs {static_a7}, {cap_b} vs {static_b7}"
+        );
+        assert_ne!(
+            cap_a, cap_b,
+            "спад масштабирует джиттерованный порог каждого дома, не общий clock"
+        );
+        // static_a5 взят для полноты: 5h-окно тоже должно спадать, но по своему хвосту.
+        assert!(static_a5 > 0.0);
     }
 }
 
@@ -3050,17 +3272,23 @@ mod calibration_integration_tests {
 
 /// Pure soft-reserve core (testable without a home): earliest reset among windows at or above
 /// their jittered cap, `None` when every reported window is below its cap or no evidence exists.
+/// `now` feeds the pace-aware decay of R1: near a window's reset the reserve shrinks unless the
+/// observed burn rate cannot survive until it.
 fn reserve_blocked(
     limits: Option<&CodexRateLimits>,
     home_id: &str,
     reserve: &WindowReserve,
+    now: i64,
 ) -> Option<i64> {
     let limits = limits?;
     limits
         .primary
         .iter()
         .chain(limits.secondary.iter())
-        .filter(|window| window.used_fraction() > reserve.window_cap(window, home_id))
+        .filter(|window| {
+            window.used_fraction()
+                > reserve.window_cap_at(window, home_id, now, limits.observed_at)
+        })
         .filter_map(|window| window.resets_at)
         .min()
 }
@@ -3612,7 +3840,7 @@ impl CodexGateway {
             match verdict {
                 health::Admission::Admit { snapshot_stale } => {
                     if let Some(blocked_until) =
-                        home.reserve_blocked_until(limits.as_ref(), reserve)
+                        home.reserve_blocked_until(limits.as_ref(), reserve, now)
                     {
                         soonest =
                             Some(soonest.map_or(blocked_until, |v: i64| v.min(blocked_until)));
