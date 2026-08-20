@@ -16,6 +16,7 @@ document, update this index.
 - [ARCHITECTURE.md](engine/ARCHITECTURE.md) — claude-api architecture: layers, pool, rotation, affinity.
 - [CONTROL_API.md](engine/CONTROL_API.md) — engine integration guide for the site backend and payments.
 - [CODEX_PROVIDER.md](engine/CODEX_PROVIDER.md) — Codex (ChatGPT) OAuth subscription provider.
+- [CODEX_FLEET_FAILURE_ISOLATION.md](engine/CODEX_FLEET_FAILURE_ISOLATION.md) — accepted implementation plan preventing one request/model failure from poisoning Codex shared health, exhausting the roster, or producing synthetic quota errors.
 - [CLAUDESTORE_FALLBACK.md](engine/CLAUDESTORE_FALLBACK.md) — dormant emergency Claude/GPT transports via ClaudeStore and their compliance/live gates.
 - [GEMINI_PROVIDER.md](engine/GEMINI_PROVIDER.md) — Gemini OAuth subscription provider.
 - [GEMINI_BATCH_MODE_PLAN.md](engine/GEMINI_BATCH_MODE_PLAN.md) — implementation plan for a durable, subscription-distributed Gemini-compatible batch mode without an extra batch discount.
