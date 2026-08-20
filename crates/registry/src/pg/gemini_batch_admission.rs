@@ -57,7 +57,7 @@ impl PgStore {
             }
             if let Some(row) = tx.query_opt(
                 "SELECT admission_id,job_id,creator_key_id,public_model,display_name,priority,input_kind,input_file_id,\
-                 schema_version,encryption_policy_version,state,next_item_index FROM gemini_batch_admissions \
+                 schema_version,encryption_policy_version,state,next_item_index,create_ts,deadline_ts,expires_ts FROM gemini_batch_admissions \
                  WHERE account_id=$1 AND idempotency_digest=$2 FOR UPDATE",
                 &[&begin.account_id, &&digest[..]],
             )? {
@@ -90,9 +90,16 @@ impl PgStore {
                 if state != "staging" {
                     return Err(GeminiBatchIdempotencyConflict.into());
                 }
+                let admission_id: String = row.get(0);
+                // Restart incomplete staging from zero under the persisted identity. A retry can
+                // never publish a hybrid of old and new customer prompts or file references.
+                tx.execute("DELETE FROM gemini_batch_admission_items WHERE admission_id=$1", &[&admission_id])?;
+                tx.execute("UPDATE gemini_batch_admissions SET next_item_index=0,aggregate_hold_nano=0,aggregate_output_tokens=0,update_ts=$2 WHERE admission_id=$1 AND state='staging'", &[&admission_id,&super::now()])?;
                 let outcome = GeminiBatchAdmissionBeginOutcome::Started {
-                    admission_id: row.get(0),
-                    next_item_index: row.get(11),
+                    admission_id,
+                    job_id: row.get(1),
+                    next_item_index: 0,
+                    create_ts: row.get(12), deadline_ts: row.get(13), expires_ts: row.get(14),
                 };
                 tx.commit()?;
                 return Ok(outcome);
@@ -124,6 +131,10 @@ impl PgStore {
         tx.commit()?;
         Ok(GeminiBatchAdmissionBeginOutcome::Started {
             admission_id: begin.admission_id.clone(),
+            job_id: begin.job_id.clone(),
+            create_ts: begin.create_ts,
+            deadline_ts: begin.deadline_ts,
+            expires_ts: begin.expires_ts,
             next_item_index: 0,
         })
     }

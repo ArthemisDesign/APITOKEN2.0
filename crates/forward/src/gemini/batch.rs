@@ -326,6 +326,27 @@ impl GeminiBatchRuntime {
     }
 
     async fn build_output(&self, claim: registry::GeminiBatchOutputClaim) -> Result<()> {
+        let renewing = Arc::new(AtomicBool::new(true));
+        let renewal = {
+            let authority = self.authority.clone();
+            let claim = claim.clone();
+            let renewing = Arc::clone(&renewing);
+            let lease = self.config.claim_lease_secs;
+            tokio::spawn(async move {
+                while renewing.load(Ordering::Acquire) {
+                    tokio::time::sleep(Duration::from_secs((lease / 3).max(1) as u64)).await;
+                    if renewing.load(Ordering::Acquire)
+                        && !authority
+                            .renew_output(claim.clone(), lease)
+                            .await
+                            .unwrap_or(false)
+                    {
+                        break;
+                    }
+                }
+            })
+        };
+        let result: Result<()> = async {
         let mut after = (claim.next_item_index > 0).then_some(claim.next_item_index - 1);
         let mut whole = Sha256::new();
         let mut manifest_chunks = Vec::new();
@@ -458,6 +479,10 @@ impl GeminiBatchRuntime {
             bail!("output finalize fence became stale")
         }
         Ok(())
+        }.await;
+        renewing.store(false, Ordering::Release);
+        renewal.abort();
+        result
     }
 
     async fn execute_item(&self, item: GeminiBatchClaimedItem) -> Result<()> {

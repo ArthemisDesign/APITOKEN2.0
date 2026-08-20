@@ -26,7 +26,7 @@ pub const MAX_BATCH_NONTERMINAL_JOBS: i64 = 100;
 pub const MAX_BATCH_REFERENCED_FILE_BYTES: i64 = MAX_BATCH_FILE_BYTES;
 pub const BATCH_RESULT_RETENTION_SECS: i64 = 42 * 24 * 60 * 60;
 pub const BATCH_QUEUED_EXPIRY_SECS: i64 = 48 * 60 * 60;
-pub const MAX_BATCH_OUTPUT_PAGE_SIZE: i64 = 16;
+pub const MAX_BATCH_OUTPUT_PAGE_SIZE: i64 = 1;
 /// Conservative output-file admission envelope: JSON escaping, tool payload and response framing.
 pub const MAX_BATCH_OUTPUT_BYTES_PER_TOKEN: i64 = 64;
 pub const MAX_BATCH_OUTPUT_ITEM_OVERHEAD_BYTES: i64 = 1_024;
@@ -325,6 +325,10 @@ impl GeminiBatchAdmissionBegin {
 pub enum GeminiBatchAdmissionBeginOutcome {
     Started {
         admission_id: String,
+        job_id: String,
+        create_ts: i64,
+        deadline_ts: i64,
+        expires_ts: i64,
         next_item_index: i64,
     },
     Replay {

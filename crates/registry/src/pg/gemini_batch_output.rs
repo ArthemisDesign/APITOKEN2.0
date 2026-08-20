@@ -208,6 +208,19 @@ impl PgStore {
         let new_bytes = bytes
             .checked_add(chunk.plaintext_len)
             .context("output size overflow")?;
+        if new_bytes > crate::MAX_BATCH_FILE_BYTES {
+            bail!("Gemini Batch output exceeds the 2 GiB file limit")
+        }
+        let stored: i64 = tx.query_one(
+            "SELECT COALESCE(SUM(size_bytes),0)::bigint FROM gemini_batch_files WHERE account_id=$1 AND expiration_ts>$2 AND file_id<>$3 FOR UPDATE",
+            &[&claim.account_id,&ts,&claim.file_id],
+        )?.get(0);
+        if stored
+            .checked_add(new_bytes)
+            .is_none_or(|total| total > crate::MAX_BATCH_ACCOUNT_FILE_BYTES)
+        {
+            bail!("Gemini Batch account output storage quota exceeded")
+        }
         tx.execute("INSERT INTO gemini_batch_file_chunks(file_id,chunk_index,key_id,nonce,ciphertext,plaintext_len,plaintext_digest,created_ts) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", &[&claim.file_id,&chunk.chunk_index,&chunk.key_id,&chunk.nonce,&chunk.ciphertext,&chunk.plaintext_len,&&chunk.plaintext_digest[..],&chunk.created_ts])?;
         tx.execute("UPDATE gemini_batch_files SET size_bytes=$2,received_bytes=$2,next_chunk_index=$3,chunk_count=$3,update_ts=GREATEST(update_ts,$4) WHERE file_id=$1 AND state='processing' AND source_kind='batch_output'", &[&claim.file_id,&new_bytes,&(expected_chunk+1),&ts])?;
         tx.execute("UPDATE gemini_batch_output_builds SET next_item_index=$2,next_chunk_index=$3,plaintext_bytes=$4,updated_ts=$5 WHERE job_id=$1", &[&claim.job_id,&next_item_index,&(expected_chunk+1),&new_bytes,&ts])?;

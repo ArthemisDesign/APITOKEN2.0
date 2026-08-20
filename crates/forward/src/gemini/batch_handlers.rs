@@ -735,9 +735,10 @@ async fn create(
             "Image-output models are unsupported in batch.",
         );
     }
-    let created = now();
-    let job = fresh("batch");
-    let admission = fresh("batch-admission");
+    let mut created = now();
+    let mut job = fresh("batch");
+    let mut admission = fresh("batch-admission");
+    let mut resume_at = 0i64;
     let begin = registry::GeminiBatchAdmissionBegin {
         admission_id: admission.clone(),
         job_id: job.clone(),
@@ -761,15 +762,16 @@ async fn create(
         }
         Ok(registry::GeminiBatchAdmissionBeginOutcome::Started {
             admission_id,
+            job_id,
+            create_ts,
+            deadline_ts: _,
+            expires_ts: _,
             next_item_index,
         }) => {
-            if next_item_index != 0 || admission_id != admission {
-                return error(
-                    StatusCode::CONFLICT,
-                    "ABORTED",
-                    "Idempotency key conflicts with an incomplete request.",
-                );
-            }
+            admission = admission_id;
+            job = job_id;
+            created = create_ts;
+            resume_at = next_item_index;
         }
         Err(e) if registry::is_gemini_batch_idempotency_conflict(&e) => {
             return error(
@@ -786,7 +788,8 @@ async fn create(
             )
         }
     }
-    let mut next = 0i64;
+    let mut next = resume_at;
+    let mut source_index = 0i64;
     let mut total = 0i64;
     let mut request_digests = Sha256::new();
     request_digests.update(b"apitoken:gemini-batch-request-digests:v1\0");
@@ -797,7 +800,7 @@ async fn create(
                              entries: Vec<Value>|
      -> Result<Vec<registry::GeminiBatchAdmissionItem>, Response> {
         let mut page = Vec::with_capacity(entries.len());
-        for entry in entries {
+        for (entry_offset, entry) in entries.into_iter().enumerate() {
             let file_input = input_kind == registry::GeminiBatchInputKind::File;
             let Some(object) = entry.as_object() else {
                 return Err(error(
@@ -883,7 +886,7 @@ async fn create(
                 ));
             }
             let idx = page_start
-                + i64::try_from(page.len()).map_err(|_| {
+                + i64::try_from(entry_offset).map_err(|_| {
                     error(
                         StatusCode::BAD_REQUEST,
                         "INVALID_ARGUMENT",
@@ -929,6 +932,9 @@ async fn create(
                 });
             let request_digest = digest(&plain);
             request_digests.update(request_digest);
+            if idx < resume_at {
+                continue;
+            }
             page.push(registry::GeminiBatchAdmissionItem {
                 requested_output_tokens: i64::try_from(output).unwrap_or(i64::MAX),
                 item: registry::GeminiBatchCreateItem {
@@ -956,18 +962,21 @@ async fn create(
     let result: Result<(), Response> = async {
         if let Some(entries) = inline {
             for chunk in entries.chunks(registry::MAX_BATCH_ADMISSION_PAGE_SIZE) {
-                let page = stage_entries(next, chunk.to_vec())?;
-                next = f
-                    .ingest()
-                    .append(admission.clone(), next, page)
-                    .await
-                    .map_err(|_| {
-                        error(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "UNAVAILABLE",
-                            "Batch ingest authority is unavailable.",
-                        )
-                    })?;
+                let page = stage_entries(source_index, chunk.to_vec())?;
+                source_index += chunk.len() as i64;
+                if !page.is_empty() {
+                    next = f
+                        .ingest()
+                        .append(admission.clone(), next, page)
+                        .await
+                        .map_err(|_| {
+                            error(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "UNAVAILABLE",
+                                "Batch ingest authority is unavailable.",
+                            )
+                        })?;
+                }
             }
         } else {
             let file_id = input_file_id.as_deref().expect("file input");
@@ -1069,18 +1078,23 @@ async fn create(
                     );
                     while pending.len() >= registry::MAX_BATCH_ADMISSION_PAGE_SIZE {
                         let tail = pending.split_off(registry::MAX_BATCH_ADMISSION_PAGE_SIZE);
-                        let page = stage_entries(next, std::mem::replace(&mut pending, tail))?;
-                        next = f
-                            .ingest()
-                            .append(admission.clone(), next, page)
-                            .await
-                            .map_err(|_| {
-                                error(
-                                    StatusCode::SERVICE_UNAVAILABLE,
-                                    "UNAVAILABLE",
-                                    "Batch ingest authority is unavailable.",
-                                )
-                            })?;
+                        let entry_count = pending.len() as i64;
+                        let page =
+                            stage_entries(source_index, std::mem::replace(&mut pending, tail))?;
+                        source_index += entry_count;
+                        if !page.is_empty() {
+                            next = f
+                                .ingest()
+                                .append(admission.clone(), next, page)
+                                .await
+                                .map_err(|_| {
+                                    error(
+                                        StatusCode::SERVICE_UNAVAILABLE,
+                                        "UNAVAILABLE",
+                                        "Batch ingest authority is unavailable.",
+                                    )
+                                })?;
+                        }
                     }
                 }
                 match page.next_chunk_index {
@@ -1110,18 +1124,22 @@ async fn create(
                     .map_err(|m| error(StatusCode::BAD_REQUEST, "INVALID_ARGUMENT", m))?,
             );
             if !pending.is_empty() {
-                let page = stage_entries(next, pending)?;
-                next = f
-                    .ingest()
-                    .append(admission.clone(), next, page)
-                    .await
-                    .map_err(|_| {
-                        error(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "UNAVAILABLE",
-                            "Batch ingest authority is unavailable.",
-                        )
-                    })?;
+                let entry_count = pending.len() as i64;
+                let page = stage_entries(source_index, pending)?;
+                source_index += entry_count;
+                if !page.is_empty() {
+                    next = f
+                        .ingest()
+                        .append(admission.clone(), next, page)
+                        .await
+                        .map_err(|_| {
+                            error(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "UNAVAILABLE",
+                                "Batch ingest authority is unavailable.",
+                            )
+                        })?;
+                }
             }
         }
         Ok(())
