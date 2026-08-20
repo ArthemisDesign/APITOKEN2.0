@@ -26,6 +26,14 @@ diagnostic=$(wd_validation_failure_summary "$diagnostic_log" 1 testing)
 [[ $diagnostic != *'user:pass'* && $diagnostic != *'super-secret'* \
     && $diagnostic == *'URL_REDACTED'* && $diagnostic == *'REDACTED'* ]] \
   || wd_die "candidate diagnostic leaked a secret or skipped redaction: $diagnostic"
+rust_diagnostic_log="$TEMP/rust-candidate.log"
+printf '%s\n' \
+  'thread '\''pg_test'\'' panicked at crates/forward/src/proxy/tests.rs:42: ENGINE_CONTROL_KEY=sk-secret-abc123 host detail' \
+  'error: test failed, to rerun pass `-p forward --lib`' >"$rust_diagnostic_log"
+rust_diagnostic=$(wd_validation_failure_summary "$rust_diagnostic_log" 101 testing)
+[[ $rust_diagnostic == *'panicked at'* && $rust_diagnostic == *'ENGINE_CONTROL_KEY=REDACTED'* \
+    && $rust_diagnostic != *'sk-secret'* ]] \
+  || wd_die "candidate diagnostic hid the concrete Rust failure or leaked a secret: $rust_diagnostic"
 empty_diagnostic=$(wd_validation_failure_summary "$TEMP/missing.log" 7 shadow-validation)
 [[ $empty_diagnostic == 'phase=shadow-validation; validator exited with code 7' ]] \
   || wd_die "candidate diagnostic fallback is unstable: $empty_diagnostic"

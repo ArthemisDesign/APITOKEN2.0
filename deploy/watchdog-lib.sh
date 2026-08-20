@@ -22,10 +22,14 @@ wd_validation_failure_summary() {
   [[ $# -eq 3 ]] || wd_die "validation failure summary requires log path, exit code, and phase"
   local log_file=$1 rc=$2 phase=$3 detail=''
   if [[ -f $log_file && ! -L $log_file ]]; then
-    detail=$(grep -E '\[watchdog\] ERROR:|ERR_PNPM|ELIFECYCLE|test lane\(s\) failed|migration failed|candidate lane failed' \
+    # Prefer the first concrete Rust cause over Cargo's generic trailing rerun hint; operational
+    # markers remain last-wins because they are already bounded controller-authored messages.
+    detail=$(grep -E 'panicked at|error\[E[0-9]+\]|Connection refused|No such file or directory' \
+      "$log_file" | head -n 1 || true)
+    [[ -n $detail ]] || detail=$(grep -E '\[watchdog\] ERROR:|ERR_PNPM|ELIFECYCLE|test lane\(s\) failed|migration failed|candidate lane failed|test result: FAILED|error: test failed' \
       "$log_file" | tail -n 1 || true)
     detail=$(printf '%s' "$detail" | sed -E \
-      $'s/\x1b\[[0-9;]*[[:alpha:]]//g; s#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]+#URL_REDACTED#g; s/([A-Z_]*(TOKEN|KEY|SECRET|PASSWORD)[A-Z_]*)=[^[:space:]]+/\1=REDACTED/g; s/[[:cntrl:]]/ /g')
+      $'s/\x1b\[[0-9;]*[[:alpha:]]//g; s#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]+#URL_REDACTED#g; s/([A-Za-z_]*(TOKEN|KEY|SECRET|PASSWORD)[A-Za-z_]*)=[^[:space:]]+/\\1=REDACTED/g; s/(sk-[A-Za-z0-9_-]{8,})/TOKEN_REDACTED/g; s/[[:cntrl:]]/ /g')
   fi
   [[ -n $detail ]] || detail="validator exited with code $rc"
   printf 'phase=%s; %.100s' "$phase" "$detail"
