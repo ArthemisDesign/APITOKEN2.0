@@ -510,6 +510,13 @@ mod tests {
             eprintln!("skipping 100k staged publish matrix");
             return;
         };
+        let mut lock = PgStore::connect(&url).unwrap();
+        lock.client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&super::super::POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
         let mut pg = PgStore::connect(&url).unwrap();
         pg.migrate().unwrap();
         let id = "stage100k-admission";
@@ -587,5 +594,11 @@ mod tests {
         assert_eq!(row.get::<_, i64>(2), 10000000);
         assert_eq!(row.get::<_, i64>(3), 0);
         pg.client.batch_execute("DELETE FROM gemini_batch_blobs WHERE job_id='stage100k-job';DELETE FROM gemini_batch_items WHERE job_id='stage100k-job';DELETE FROM gemini_batch_jobs WHERE job_id='stage100k-job';DELETE FROM gemini_batch_admissions WHERE admission_id='stage100k-admission';DELETE FROM api_keys WHERE key='stage100k-key';DELETE FROM accounts WHERE id='stage100k-account';").unwrap();
+        lock.client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&super::super::POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
     }
 }
