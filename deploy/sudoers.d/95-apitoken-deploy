@@ -45,6 +45,8 @@ Cmnd_Alias APITOKEN_HELPERS = \
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8798, \
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8800, \
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8801, \
+    /usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh /run/claude-router-[0-9]* claude-router.slice, \
+    /usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh /run/claude-api-anthropic-[0-9]* claude-api-anthropic.slice, \
     /usr/local/lib/apitoken-watchdog/watchdog-github *, \
     /usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh [0-9a-f]*, \

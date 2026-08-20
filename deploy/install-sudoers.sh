@@ -293,6 +293,10 @@ require_permitted 'router promotion rollback to legacy singleton' \
   /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8798
 require_permitted 'router promotion helper probe' \
   /usr/bin/test -x /usr/local/lib/apitoken-watchdog/controller/router-promote.sh
+require_permitted 'router payload headroom gate' \
+  /usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh /run/claude-router-8800 claude-router.slice
+require_permitted 'Anthropic payload headroom gate' \
+  /usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh /run/claude-api-anthropic-8788 claude-api-anthropic.slice
 require_permitted 'retention helper' /usr/local/lib/apitoken-watchdog/watchdog-retention.sh 10
 require_permitted 'infrastructure runner' /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh "$sample_sha"
 require_permitted 'controller-only infrastructure runner' \
