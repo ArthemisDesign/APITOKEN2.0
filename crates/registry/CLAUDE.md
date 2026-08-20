@@ -56,7 +56,7 @@ side effect. `serve` may only perform the read-only schema verification before c
   into actual spend or releases it. Mutable policy replacement is account-scoped and atomic with
   reservations; a non-null new limit must cover both settled and reserved usage.
   Soft migration of the old "key=wallet" model → account per-key (`migrate_legacy_keys`).
-- **Gemini Batch authority (migrations `0055`–`0057`) is PostgreSQL-only; SQLite returns typed unsupported.**
+- **Gemini Batch authority (migrations `0055`–`0058`) is PostgreSQL-only; SQLite returns typed unsupported.**
   It owns isolated job/item/blob/file/outbox/profile-lease authorities plus normalized item→file
   references. Request, metadata and result bytes have only opaque `bytea` ciphertext storage; files
   use bounded encrypted chunks so the later 2 GiB logical contract never requires one giant value.
@@ -65,6 +65,10 @@ side effect. `serve` may only perform the read-only schema verification before c
   nullable ledger/usage `key_id` preserves attribution after deletion. Result expiry starts only at
   completion, and outbox rows can carry the complete immutable Gemini calibration event. Migration
   0057 gives file rows an explicit `inline_legacy|chunked` storage shape without fake blob bytes.
+  Migration 0058 adds a second profile-lease table without changing schema-57 slot 1; its promotion
+  trigger moves a surviving slot-2 claim into slot 1 after deletion so an old rollback runtime can
+  still renew/reconcile/settle it. The dependent runtime may therefore admit exactly two Batch items
+  per active profile while interactive Gemini traffic remains unchanged.
   Registry exposes atomic create/read/file/claim/cancel/settlement/prune primitives plus one
   identity-free operational report. That report is read in one PostgreSQL `REPEATABLE READ`
   transaction and owns the closed current state plus rolling `1h|24h|7d` aggregates; it never

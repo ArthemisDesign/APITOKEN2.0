@@ -12,8 +12,35 @@ fn engine_migration_plan_is_contiguous() {
 }
 
 #[test]
+fn gemini_batch_second_profile_slot_migration_is_expand_only_and_rollback_safe() {
+    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
+    assert_eq!(
+        ENGINE_MIGRATIONS
+            .iter()
+            .find(|(version, _)| *version == 58)
+            .map(|(_, sql)| *sql),
+        Some(MIGRATION_0058),
+    );
+    let normalized = MIGRATION_0058
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(normalized.contains("CREATE TABLE IF NOT EXISTS gemini_batch_profile_leases_slot2"));
+    assert!(normalized.contains("CREATE TRIGGER gemini_batch_profile_slot2_promote"));
+    assert!(normalized.contains("AFTER DELETE ON gemini_batch_profile_leases"));
+    assert!(normalized.contains("ON CONFLICT (profile_id) DO NOTHING"));
+    assert!(normalized.contains("VALUES (58)"));
+    for forbidden in ["ALTER TABLE", "DROP TABLE", "DROP COLUMN", "TRUNCATE"] {
+        assert!(!normalized.contains(forbidden), "0058 contains {forbidden}");
+    }
+}
+
+#[test]
 fn gemini_batch_chunked_file_shape_migration_replaces_only_the_narrow_check() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
     assert_eq!(
         ENGINE_MIGRATIONS
             .iter()
@@ -33,7 +60,7 @@ fn gemini_batch_chunked_file_shape_migration_replaces_only_the_narrow_check() {
 
 #[test]
 fn gemini_batch_authority_correction_migration_is_expand_only() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
     assert_eq!(
         ENGINE_MIGRATIONS
             .iter()
@@ -63,7 +90,7 @@ fn gemini_batch_authority_correction_migration_is_expand_only() {
 
 #[test]
 fn gemini_batch_foundation_migration_is_dormant_expand_only() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
     assert_eq!(
         ENGINE_MIGRATIONS
             .iter()
@@ -669,7 +696,7 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
@@ -774,7 +801,7 @@ fn tripo3d_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn tripo3d_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 49)
@@ -894,7 +921,7 @@ fn suno_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn suno_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 50)
@@ -1005,7 +1032,7 @@ fn tripo3d_pricing_provider_migration_widens_both_closed_sets() {
 
 #[test]
 fn tripo3d_pricing_provider_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 51)
@@ -1054,7 +1081,7 @@ fn suno_pricing_provider_migration_widens_both_closed_sets() {
 
 #[test]
 fn suno_pricing_provider_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 52)
@@ -1337,7 +1364,7 @@ fn request_fact_terminal_envelope_migration_postgres_matrix() {
     let mut pg = PgStore::connect(&url).unwrap();
     pg.migrate().unwrap();
     assert_eq!(pg.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 57);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
     assert_eq!(
         ENGINE_MIGRATIONS
             .iter()
