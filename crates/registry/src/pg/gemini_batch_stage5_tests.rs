@@ -623,13 +623,16 @@ fn stage5_postgres_load_and_fairness() {
         assert_eq!(row.get::<_, i64>(3), item_count as i64 - 1);
     }
     let report = pg.gemini_batch_operational_report().unwrap();
-    assert_eq!(report.queued_items, (item_count * 2) as i64);
+    // The pacing proof terminalized one of the load items through the normal zero-charge
+    // indeterminate settlement path; every other item remains queued and reserved.
+    assert_eq!(report.queued_items, (item_count * 2 - 1) as i64);
+    assert_eq!(report.indeterminate_items, 1);
     assert_eq!(
         report.claimed_items + report.dispatching_items + report.settlement_pending_items,
         0
     );
     assert_eq!(report.windows.len(), 3);
-    assert_eq!(report.reserved_hold_nano, (item_count * 2 * 100) as i64);
+    assert_eq!(report.reserved_hold_nano, (item_count * 2 - 1) as i64 * 100);
 
     stage5_cleanup(&mut pg);
     lock.client

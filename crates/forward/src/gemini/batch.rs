@@ -330,6 +330,20 @@ impl GeminiBatchRuntime {
                 .await?;
             return Ok(());
         };
+        let model = self
+            .gateway
+            .config()
+            .model(&item.public_model)
+            .context("batch model unavailable")?
+            .clone();
+        let request = prepare_nonstream_generate_request(
+            &model,
+            item.public_model.clone(),
+            value,
+            None,
+            item.claim.request_id.clone(),
+            item.claim.request_id.clone(),
+        );
         if !self
             .authority
             .mark_dispatching(item.claim.clone(), self.config.claim_lease_secs)
@@ -352,43 +366,7 @@ impl GeminiBatchRuntime {
                 }
             })
         };
-        loop {
-            let mut random = [0u8; 4];
-            getrandom::fill(&mut random).context("Gemini Batch dispatch CSPRNG unavailable")?;
-            let span = (registry::GEMINI_BATCH_DISPATCH_DELAY_MAX_MS
-                - registry::GEMINI_BATCH_DISPATCH_DELAY_MIN_MS
-                + 1) as u32;
-            let delay = registry::GEMINI_BATCH_DISPATCH_DELAY_MIN_MS
-                + i64::from(u32::from_be_bytes(random) % span);
-            match self
-                .authority
-                .reserve_dispatch(item.claim.clone(), delay)
-                .await?
-            {
-                registry::GeminiBatchDispatchReservation::Granted { .. } => break,
-                registry::GeminiBatchDispatchReservation::WaitUntil { not_before_ms } => {
-                    let now_ms = pool::now().saturating_mul(1_000);
-                    let wait_ms = not_before_ms.saturating_sub(now_ms).max(1) as u64;
-                    tokio::time::sleep(Duration::from_millis(wait_ms)).await;
-                }
-                registry::GeminiBatchDispatchReservation::Stale => return Ok(()),
-            }
-        }
         let send_observer = ActualSendObserver::acknowledged();
-        let model = self
-            .gateway
-            .config()
-            .model(&item.public_model)
-            .context("batch model unavailable")?
-            .clone();
-        let request = prepare_nonstream_generate_request(
-            &model,
-            item.public_model.clone(),
-            value,
-            None,
-            item.claim.request_id.clone(),
-            item.claim.request_id.clone(),
-        );
         let execution_future = super::api::execute_nonstream_generate_observed(
             &self.gateway,
             &lease,
@@ -401,13 +379,48 @@ impl GeminiBatchRuntime {
         let execution = tokio::select! {
             result = &mut execution_future => Some(result),
             _ = send_observer.observed() => {
-                let marked = self
-                    .authority
-                    .mark_actual_send(item.claim.clone(), self.config.claim_lease_secs)
-                    .await;
+                // The helper is paused at the exact socket-send seam after OAuth acquisition. Pace
+                // this real start, not an earlier scheduler reservation that could bunch behind the
+                // token mutex. The renewal task remains live while this branch sleeps.
+                let paced: Result<()> = async {
+                    loop {
+                        let mut random = [0u8; 4];
+                        getrandom::fill(&mut random)
+                            .context("Gemini Batch dispatch CSPRNG unavailable")?;
+                        let span = (registry::GEMINI_BATCH_DISPATCH_DELAY_MAX_MS
+                            - registry::GEMINI_BATCH_DISPATCH_DELAY_MIN_MS
+                            + 1) as u32;
+                        let delay = registry::GEMINI_BATCH_DISPATCH_DELAY_MIN_MS
+                            + i64::from(u32::from_be_bytes(random) % span);
+                        match self
+                            .authority
+                            .reserve_dispatch(item.claim.clone(), delay)
+                            .await?
+                        {
+                            registry::GeminiBatchDispatchReservation::Granted { .. } => break,
+                            registry::GeminiBatchDispatchReservation::WaitUntil { not_before_ms } => {
+                                let now_ms = pool::now().saturating_mul(1_000);
+                                let wait_ms = not_before_ms.saturating_sub(now_ms).max(1) as u64;
+                                tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+                            }
+                            registry::GeminiBatchDispatchReservation::Stale => {
+                                anyhow::bail!("Gemini Batch dispatch pacing claim became stale")
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+                .await;
+                let marked = match paced {
+                    Ok(()) => self
+                        .authority
+                        .mark_actual_send(item.claim.clone(), self.config.claim_lease_secs)
+                        .await,
+                    Err(error) => Err(error),
+                };
                 // The shared helper reader is blocked on this acknowledgement. Release it on every
-                // authority outcome before returning, otherwise one Batch fence failure can wedge
-                // ordinary Gemini traffic on the same profile.
+                // authority outcome before common cleanup, otherwise one Batch fence failure can
+                // wedge ordinary Gemini traffic on the same profile.
                 send_observer.acknowledge();
                 match marked {
                     Ok(true) => Some(execution_future.await),
@@ -416,7 +429,7 @@ impl GeminiBatchRuntime {
                         None
                     }
                     Err(error) => {
-                        fence_error = Some(error.context("persist Gemini Batch actual-send boundary"));
+                        fence_error = Some(error.context("persist Gemini Batch dispatch boundary"));
                         None
                     }
                 }
