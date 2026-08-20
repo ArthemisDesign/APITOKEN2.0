@@ -219,12 +219,14 @@ impl GeminiBatchRuntime {
                 .iter()
                 .filter(|model| !model.is_image_generation())
                 .map(|model| model.id.clone())
-                .cycle()
-                .take(self.config.global_concurrency)
             {
                 if !self.accepting.load(Ordering::Acquire) {
                     break;
                 }
+                let permit = match Arc::clone(&self.permits).try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => break,
+                };
                 let selection = self.gateway.select_batch(&model_id, &HashSet::new());
                 let Some(lease) = selection.lease else {
                     if selection.reason() == Some("batch_5h_headroom_stop") {
@@ -240,10 +242,6 @@ impl GeminiBatchRuntime {
                     .await
                 else {
                     continue;
-                };
-                let permit = match Arc::clone(&self.permits).try_acquire_owned() {
-                    Ok(permit) => permit,
-                    Err(_) => break,
                 };
                 started = true;
                 let this = Arc::clone(&self);

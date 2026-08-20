@@ -135,3 +135,10 @@ SHA: implementation `f8dc95ebc2144f03ac2ef6cc46d3a0f3ac1653c2`, runner base `56c
 Отступления от плана: runner local sanitizers дважды остановили evidence collection после authoritative create (`batches/` и `item_id ':'` grammar); create не повторялся. Root cause scheduler no-progress требует отдельного fix before next paid run. Accidental dryRun jobs не имели provider spend и были safely canceled pre-dispatch.
 Измерения: planned worst-case `324,000 nanoUSD = $0.000324`; exact settlement actual `$0.000000000`; customer balance unchanged; budget accounting conservatively reserves observed provider spend `$0`, остаток `$10.000000000`. Один paid create attempt, no replay.
 Следующий шаг: исправить runner ID grammar/release check и scheduler no-progress visibility; production-GREEN SHA, затем новый distinct scenario only if root cause proven and holds fit budget.
+
+## 2026-08-21 — Этап 5 (§6): scheduler model-starvation root cause
+SHA: фиксируется commit этой записи
+Результат: no-progress root cause доказан: scheduler связывал ширину model scan с `global_concurrency=4`, поэтому каждый sweep проверял только первые четыре text models и никогда не вызывал claim для queued `gemini-2.5-flash`. Исправление сканирует весь bounded configured text catalog, а semaphore отдельно ограничивает активных workers; permit берётся до claim, чтобы не оставлять claimed item без worker. Provider/settlement money не меняются.
+Отступления от плана: нет.
+Измерения: targeted `cargo test -p forward batch_`: 20/20 GREEN; `cargo check -p claude-api` GREEN. Live spend до нового distinct run остаётся `$0`; бюджет `$10`.
+Следующий шаг: merge/deploy exact SHA, затем controlled distribution run с новым job и предварительным worst-case hold calculation.
