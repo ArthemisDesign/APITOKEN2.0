@@ -503,6 +503,155 @@ pub struct PgStore {
     pub(crate) client: Client,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AccountCollection {
+    pub balance_nano: i64,
+    pub collected_nano: i64,
+    pub uncollected_nano: i64,
+}
+
+/// Apply the shared account-floor settlement equation inside the caller's transaction.
+///
+/// Both interactive and Gemini Batch settlement use this primitive so the hold release, full billed
+/// spend, collection cap, and explicit pool-funded shortfall cannot drift between paths.
+pub(crate) fn collect_account_settlement_tx(
+    tx: &mut Transaction<'_>,
+    account_id: &str,
+    hold_nano: i64,
+    actual_nano: i64,
+) -> Result<AccountCollection> {
+    let collection_floor = -ACCOUNT_OVERDRAFT_NANO;
+    let account_update = tx
+        .query_opt(
+            "WITH current AS MATERIALIZED ( \
+               SELECT id,LEAST( \
+                 $2::bigint::numeric, \
+                 GREATEST( \
+                   0::numeric, \
+                   balance_nano::numeric+$1::bigint::numeric \
+                     -LEAST(balance_nano::numeric,$4::bigint::numeric) \
+                 ) \
+               )::bigint AS collected_nano \
+               FROM accounts WHERE id=$3 AND reserved_nano >= $1 FOR UPDATE \
+             ) \
+             UPDATE accounts account SET \
+               balance_nano=(account.balance_nano::numeric+$1::bigint::numeric-current.collected_nano::numeric)::bigint, \
+               spent_nano=(account.spent_nano::numeric+$2::bigint::numeric)::bigint, \
+               reserved_nano=account.reserved_nano-$1, \
+               uncollected_nano=(account.uncollected_nano::numeric+$2::bigint::numeric-current.collected_nano::numeric)::bigint \
+             FROM current WHERE account.id=current.id \
+             RETURNING account.balance_nano,current.collected_nano",
+            &[&hold_nano, &actual_nano, &account_id, &collection_floor],
+        )?
+        .context("reservation/account aggregate invariant failed")?;
+    let balance_nano = account_update.get(0);
+    let collected_nano = account_update.get(1);
+    let uncollected_nano = actual_nano
+        .checked_sub(collected_nano)
+        .context("settlement collection exceeds billed amount")?;
+    Ok(AccountCollection {
+        balance_nano,
+        collected_nano,
+        uncollected_nano,
+    })
+}
+
+pub(crate) fn record_provider_turn_calibration_event_tx(
+    tx: &mut Transaction<'_>,
+    event: &ProviderTurnCalibrationEvent,
+) -> Result<ProviderCalibrationSubjectSpend> {
+    crate::validate_provider_turn_calibration_event(event)?;
+    let inserted = tx.execute(
+        "INSERT INTO provider_turn_calibration_events(\
+           provider,request_id,subject_id,model_id,service_tier,inference_geo,\
+           tariff_schedule_id,priced_ts,completed_at,input_tokens,audio_input_tokens,\
+           cache_read_tokens,cached_audio_input_tokens,cache_write_5m_tokens,\
+           cache_write_1h_tokens,output_tokens,thinking_output_tokens,image_output_tokens,\
+           tool_prompt_tokens,search_queries,grounded_search_prompts,api_input_nanousd,\
+           api_audio_input_nanousd,api_cache_read_nanousd,api_cached_audio_input_nanousd,\
+           api_cache_write_5m_nanousd,api_cache_write_1h_nanousd,api_output_nanousd,\
+           api_image_output_nanousd,api_search_nanousd,api_total_nanousd) \
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,\
+                $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31) \
+         ON CONFLICT(provider,request_id) DO NOTHING",
+        &[
+            &event.provider,
+            &event.request_id,
+            &event.subject_id,
+            &event.model_id,
+            &event.service_tier,
+            &event.inference_geo,
+            &event.tariff_schedule_id,
+            &event.priced_ts,
+            &event.completed_at,
+            &event.input_tokens,
+            &event.audio_input_tokens,
+            &event.cache_read_tokens,
+            &event.cached_audio_input_tokens,
+            &event.cache_write_5m_tokens,
+            &event.cache_write_1h_tokens,
+            &event.output_tokens,
+            &event.thinking_output_tokens,
+            &event.image_output_tokens,
+            &event.tool_prompt_tokens,
+            &event.search_queries,
+            &event.grounded_search_prompts,
+            &event.api_input_nanousd,
+            &event.api_audio_input_nanousd,
+            &event.api_cache_read_nanousd,
+            &event.api_cached_audio_input_nanousd,
+            &event.api_cache_write_5m_nanousd,
+            &event.api_cache_write_1h_nanousd,
+            &event.api_output_nanousd,
+            &event.api_image_output_nanousd,
+            &event.api_search_nanousd,
+            &event.api_total_nanousd,
+        ],
+    )? == 1;
+    if inserted {
+        tx.execute(
+            "INSERT INTO provider_calibration_subject_spend(\
+               provider,subject_id,spent_nano,tracking_started_ts,updated_ts) \
+             VALUES($1,$2,$3,$4,$4) ON CONFLICT(provider,subject_id) DO UPDATE SET \
+               spent_nano=provider_calibration_subject_spend.spent_nano+EXCLUDED.spent_nano, \
+               tracking_started_ts=LEAST(\
+                   provider_calibration_subject_spend.tracking_started_ts,\
+                   EXCLUDED.tracking_started_ts), \
+               updated_ts=GREATEST(\
+                   provider_calibration_subject_spend.updated_ts,EXCLUDED.updated_ts)",
+            &[
+                &event.provider,
+                &event.subject_id,
+                &event.api_total_nanousd,
+                &event.completed_at,
+            ],
+        )?;
+    } else {
+        let row = tx.query_one(
+            &format!(
+                "SELECT {} FROM provider_turn_calibration_events \
+                 WHERE provider=$1 AND request_id=$2",
+                crate::PROVIDER_TURN_EVENT_COLUMNS
+            ),
+            &[&event.provider, &event.request_id],
+        )?;
+        if pg_provider_turn_event(&row) != *event {
+            return Err(crate::ProviderTurnCalibrationReplayConflict.into());
+        }
+    }
+    let row = tx.query_one(
+        "SELECT spent_nano,tracking_started_ts,updated_ts \
+         FROM provider_calibration_subject_spend WHERE provider=$1 AND subject_id=$2",
+        &[&event.provider, &event.subject_id],
+    )?;
+    Ok(ProviderCalibrationSubjectSpend {
+        spent_nano: row.get(0),
+        tracking_started_ts: Some(row.get(1)),
+        updated_ts: Some(row.get(2)),
+        inserted,
+    })
+}
+
 /// Error class used by the async actor. Logical/invariant failures must never be retried forever;
 /// transport and PostgreSQL concurrency failures may be retried within a bounded deadline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -544,6 +693,10 @@ pub fn classify_failure(error: &anyhow::Error) -> FailureClass {
         }
     }
     FailureClass::Permanent
+}
+
+pub(crate) fn retry_backoff_seconds(attempts_before_failure: i32) -> i64 {
+    1i64 << attempts_before_failure.clamp(0, 8)
 }
 
 /// True only for PostgreSQL's server-side statement or lock timeout SQLSTATEs. Shadow workers use
@@ -1612,39 +1765,15 @@ impl PgStore {
             .or_else(|| (!provider.is_empty()).then_some(provider.as_str()));
         let usage_provider = reservation_provider.as_deref().unwrap_or(provider.as_str());
 
-        // The account row is the one shared settlement fence. Refund this reservation's hold, then
-        // collect no more than the amount that leaves the aggregate balance at the same -$1 floor
-        // admission uses. If an explicit adjustment already recorded deeper debt, that pre-settle
-        // balance becomes the floor: settlement may neither worsen it nor forgive a reserved hold.
-        // Numeric intermediates avoid overflowing while evaluating a very large balance; the
-        // stored aggregates remain checked bigint values.
-        let collection_floor = -ACCOUNT_OVERDRAFT_NANO;
-        let account_update = tx.query_opt(
-            "WITH current AS MATERIALIZED ( \
-               SELECT id,LEAST( \
-                 $2::bigint::numeric, \
-                 GREATEST( \
-                   0::numeric, \
-                   balance_nano::numeric+$1::bigint::numeric \
-                     -LEAST(balance_nano::numeric,$4::bigint::numeric) \
-                 ) \
-               )::bigint AS collected_nano \
-               FROM accounts WHERE id=$3 AND reserved_nano >= $1 FOR UPDATE \
-             ) \
-             UPDATE accounts account SET \
-               balance_nano=(account.balance_nano::numeric+$1::bigint::numeric-current.collected_nano::numeric)::bigint, \
-               spent_nano=(account.spent_nano::numeric+$2::bigint::numeric)::bigint, \
-               reserved_nano=account.reserved_nano-$1, \
-               uncollected_nano=(account.uncollected_nano::numeric+$2::bigint::numeric-current.collected_nano::numeric)::bigint \
-             FROM current WHERE account.id=current.id \
-             RETURNING account.balance_nano,current.collected_nano",
-            &[&hold, &effective_actual, &account_id, &collection_floor],
-        )?.context("reservation/account aggregate invariant failed")?;
-        let balance: i64 = account_update.get(0);
-        let collected_nano: i64 = account_update.get(1);
-        let uncollected_nano = effective_actual
-            .checked_sub(collected_nano)
-            .context("settlement collection exceeds billed amount")?;
+        let collection = collect_account_settlement_tx(
+            &mut tx,
+            &account_id,
+            hold,
+            effective_actual,
+        )?;
+        let balance = collection.balance_nano;
+        let collected_nano = collection.collected_nano;
+        let uncollected_nano = collection.uncollected_nano;
         {
             let key_updated = tx.execute(
                 "UPDATE api_keys SET spent_nano=spent_nano+$1,reserved_nano=reserved_nano-$2 \
@@ -3222,97 +3351,8 @@ impl PgStore {
         &mut self,
         event: &ProviderTurnCalibrationEvent,
     ) -> Result<ProviderCalibrationSubjectSpend> {
-        crate::validate_provider_turn_calibration_event(event)?;
         let mut tx = self.client.transaction()?;
-        let inserted = tx.execute(
-            "INSERT INTO provider_turn_calibration_events(\
-               provider,request_id,subject_id,model_id,service_tier,inference_geo,\
-               tariff_schedule_id,priced_ts,completed_at,input_tokens,audio_input_tokens,\
-               cache_read_tokens,cached_audio_input_tokens,cache_write_5m_tokens,\
-               cache_write_1h_tokens,output_tokens,thinking_output_tokens,image_output_tokens,\
-               tool_prompt_tokens,search_queries,grounded_search_prompts,api_input_nanousd,\
-               api_audio_input_nanousd,api_cache_read_nanousd,api_cached_audio_input_nanousd,\
-               api_cache_write_5m_nanousd,api_cache_write_1h_nanousd,api_output_nanousd,\
-               api_image_output_nanousd,api_search_nanousd,api_total_nanousd) \
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,\
-                    $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31) \
-             ON CONFLICT(provider,request_id) DO NOTHING",
-            &[
-                &event.provider,
-                &event.request_id,
-                &event.subject_id,
-                &event.model_id,
-                &event.service_tier,
-                &event.inference_geo,
-                &event.tariff_schedule_id,
-                &event.priced_ts,
-                &event.completed_at,
-                &event.input_tokens,
-                &event.audio_input_tokens,
-                &event.cache_read_tokens,
-                &event.cached_audio_input_tokens,
-                &event.cache_write_5m_tokens,
-                &event.cache_write_1h_tokens,
-                &event.output_tokens,
-                &event.thinking_output_tokens,
-                &event.image_output_tokens,
-                &event.tool_prompt_tokens,
-                &event.search_queries,
-                &event.grounded_search_prompts,
-                &event.api_input_nanousd,
-                &event.api_audio_input_nanousd,
-                &event.api_cache_read_nanousd,
-                &event.api_cached_audio_input_nanousd,
-                &event.api_cache_write_5m_nanousd,
-                &event.api_cache_write_1h_nanousd,
-                &event.api_output_nanousd,
-                &event.api_image_output_nanousd,
-                &event.api_search_nanousd,
-                &event.api_total_nanousd,
-            ],
-        )? == 1;
-        if inserted {
-            tx.execute(
-                "INSERT INTO provider_calibration_subject_spend(\
-                   provider,subject_id,spent_nano,tracking_started_ts,updated_ts) \
-                 VALUES($1,$2,$3,$4,$4) ON CONFLICT(provider,subject_id) DO UPDATE SET \
-                   spent_nano=provider_calibration_subject_spend.spent_nano+EXCLUDED.spent_nano, \
-                   tracking_started_ts=LEAST(\
-                       provider_calibration_subject_spend.tracking_started_ts,\
-                       EXCLUDED.tracking_started_ts), \
-                   updated_ts=GREATEST(\
-                       provider_calibration_subject_spend.updated_ts,EXCLUDED.updated_ts)",
-                &[
-                    &event.provider,
-                    &event.subject_id,
-                    &event.api_total_nanousd,
-                    &event.completed_at,
-                ],
-            )?;
-        } else {
-            let row = tx.query_one(
-                &format!(
-                    "SELECT {} FROM provider_turn_calibration_events \
-                     WHERE provider=$1 AND request_id=$2",
-                    crate::PROVIDER_TURN_EVENT_COLUMNS
-                ),
-                &[&event.provider, &event.request_id],
-            )?;
-            if pg_provider_turn_event(&row) != *event {
-                return Err(crate::ProviderTurnCalibrationReplayConflict.into());
-            }
-        }
-        let row = tx.query_one(
-            "SELECT spent_nano,tracking_started_ts,updated_ts \
-             FROM provider_calibration_subject_spend WHERE provider=$1 AND subject_id=$2",
-            &[&event.provider, &event.subject_id],
-        )?;
-        let spend = ProviderCalibrationSubjectSpend {
-            spent_nano: row.get(0),
-            tracking_started_ts: Some(row.get(1)),
-            updated_ts: Some(row.get(2)),
-            inserted,
-        };
+        let spend = record_provider_turn_calibration_event_tx(&mut tx, event)?;
         tx.commit()?;
         Ok(spend)
     }

@@ -65,7 +65,14 @@ side effect. `serve` may only perform the read-only schema verification before c
   nullable ledger/usage `key_id` preserves attribution after deletion. Result expiry starts only at
   completion, and outbox rows can carry the complete immutable Gemini calibration event. Migration
   0057 gives file rows an explicit `inline_legacy|chunked` storage shape without fake blob bytes.
-  Registry exposes atomic create/read/file/claim/cancel/settlement/prune primitives only; Stage 3
+  Registry exposes atomic create/read/file/claim/cancel/settlement/prune primitives only. Interactive
+  and batch APPLY share one private transaction-local account collection primitive, and provider-turn
+  recording likewise has one transaction helper used by its public wrapper and batch APPLY. Exact
+  calibration replay never advances spend twice; conflicting replay rolls back; subject tracking uses
+  `LEAST(tracking_started_ts)` and `GREATEST(updated_ts)` for out-of-order completion. Batch drains
+  isolate every row: failures persist attempts/error plus bounded exponential backoff, permanent
+  failures become `failed`, and later rows continue. A `done` replay validates terminal item,
+  ledger/usage/calibration evidence before returning the balance. Stage 3
   claim reads return the encrypted execution payload under the same owner/generation fence, blob and
   chunk reads stay account-scoped, chunk pages are ordered and capped at 128, and secret-bearing types
   redact ciphertext/nonces/digests from `Debug`. Completed jobs remain explicit as `Expired` metadata

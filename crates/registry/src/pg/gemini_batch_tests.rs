@@ -180,6 +180,125 @@ fn recovery_candidate_preserves_settlement_policy() {
     );
 }
 
+fn calibration_event(
+    request_id: &str,
+    subject_id: &str,
+    completed_at: i64,
+    total: i64,
+) -> crate::ProviderTurnCalibrationEvent {
+    crate::ProviderTurnCalibrationEvent {
+        provider: "google".into(),
+        request_id: request_id.into(),
+        subject_id: subject_id.into(),
+        model_id: "gemini-2.5-flash".into(),
+        service_tier: "standard".into(),
+        inference_geo: "global".into(),
+        tariff_schedule_id: "google/gemini/gemini-2.5-flash/v1".into(),
+        priced_ts: completed_at,
+        completed_at,
+        input_tokens: 2,
+        audio_input_tokens: 0,
+        cache_read_tokens: 0,
+        cached_audio_input_tokens: 0,
+        cache_write_5m_tokens: 0,
+        cache_write_1h_tokens: 0,
+        output_tokens: 3,
+        thinking_output_tokens: 0,
+        image_output_tokens: 0,
+        tool_prompt_tokens: 0,
+        search_queries: 0,
+        grounded_search_prompts: 0,
+        api_input_nanousd: total,
+        api_audio_input_nanousd: 0,
+        api_cache_read_nanousd: 0,
+        api_cached_audio_input_nanousd: 0,
+        api_cache_write_5m_nanousd: 0,
+        api_cache_write_1h_nanousd: 0,
+        api_output_nanousd: 0,
+        api_image_output_nanousd: 0,
+        api_search_nanousd: 0,
+        api_total_nanousd: total,
+    }
+}
+
+#[test]
+fn settlement_safety_postgres_matrix() {
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping settlement safety PostgreSQL matrix");
+        return;
+    };
+    let mut lock = PgStore::connect(&url).unwrap();
+    lock.client
+        .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+        .unwrap();
+    lock.client
+        .query_one("SELECT pg_advisory_lock($1)", &[&POSTGRES_DESTRUCTIVE_TEST_LOCK])
+        .unwrap();
+    let mut pg = PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+
+    pg.client
+        .batch_execute(
+            "DELETE FROM provider_turn_calibration_events WHERE request_id LIKE 'safety-%';
+             DELETE FROM provider_calibration_subject_spend WHERE subject_id='safety-subject';
+             DELETE FROM accounts WHERE id LIKE 'safety-collection-%';",
+        )
+        .unwrap();
+    for (suffix, balance, hold, actual, expected) in [
+        ("funded", 900i64, 100i64, 50i64, (950i64, 50i64, 0i64)),
+        ("over-hold", 900, 100, 150, (850, 150, 0)),
+        ("floor", -999_999_950, 100, 150, (-1_000_000_000, 150, 0)),
+        ("shortfall", -1_000_000_000, 100, 150, (-1_000_000_000, 100, 50)),
+        ("deep-debt", -1_000_000_050, 100, 150, (-1_000_000_050, 100, 50)),
+    ] {
+        let account_id = format!("safety-collection-{suffix}");
+        pg.client
+            .execute(
+                "INSERT INTO accounts(id,balance_nano,spent_nano,reserved_nano,uncollected_nano,mult_bp,status,created_ts,created) \
+                 VALUES($1,$2,0,$3,0,5000,'active',1,'x')",
+                &[&account_id, &balance, &hold],
+            )
+            .unwrap();
+        let mut tx = pg.client.transaction().unwrap();
+        let result = super::collect_account_settlement_tx(&mut tx, &account_id, hold, actual).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            (result.balance_nano, result.collected_nano, result.uncollected_nano),
+            expected,
+            "collection case {suffix}"
+        );
+    }
+
+    let newest = calibration_event("safety-newest", "safety-subject", 300, 30);
+    let oldest = calibration_event("safety-oldest", "safety-subject", 100, 10);
+    let middle = calibration_event("safety-middle", "safety-subject", 200, 20);
+    assert!(pg.record_provider_turn_calibration_event(&newest).unwrap().inserted);
+    assert!(pg.record_provider_turn_calibration_event(&oldest).unwrap().inserted);
+    let replay = pg.record_provider_turn_calibration_event(&oldest).unwrap();
+    assert!(!replay.inserted);
+    assert_eq!(replay.spent_nano, 40);
+    let conflict_total = replay.spent_nano;
+    let mut conflict = oldest.clone();
+    conflict.model_id = "gemini-conflict".into();
+    assert!(crate::is_provider_turn_calibration_replay_conflict(
+        &pg.record_provider_turn_calibration_event(&conflict).unwrap_err()
+    ));
+    assert_eq!(
+        pg.provider_calibration_subject_spend("google", "safety-subject")
+            .unwrap()
+            .spent_nano,
+        conflict_total
+    );
+    let final_spend = pg.record_provider_turn_calibration_event(&middle).unwrap();
+    assert_eq!(final_spend.spent_nano, 60);
+    assert_eq!(final_spend.tracking_started_ts, Some(100));
+    assert_eq!(final_spend.updated_ts, Some(300));
+
+    assert_eq!(super::retry_backoff_seconds(0), 1);
+    assert_eq!(super::retry_backoff_seconds(3), 8);
+    assert_eq!(super::retry_backoff_seconds(100), 256);
+}
+
 #[test]
 fn stage2_authority_postgres_matrix() {
     let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {

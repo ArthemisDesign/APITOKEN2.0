@@ -5,7 +5,7 @@ use crate::gemini_batch::{
     GeminiBatchCancelResult, GeminiBatchPruneReport, GeminiBatchSettlementIntent, GeminiBatchUsage,
     BATCH_RESULT_RETENTION_SECS, MAX_BATCH_PRUNE_LIMIT,
 };
-use crate::{ProviderTurnCalibrationEvent, ACCOUNT_OVERDRAFT_NANO, PROVIDER_GOOGLE};
+use crate::{ProviderTurnCalibrationEvent, PROVIDER_GOOGLE};
 use anyhow::{bail, Context, Result};
 use postgres::{Row, Transaction};
 
@@ -296,6 +296,55 @@ impl PgStore {
         };
         let account_id: String = r.get(9);
         if r.get::<_, String>(7) == "done" {
+            let job_id: String = r.get(0);
+            let item_index: i64 = r.get(1);
+            let actual: i64 = r.get(2);
+            let measured = r.get::<_, String>(5) == "settle";
+            let terminal: String = r.get(6);
+            let result_kind: String = r.get(24);
+            let usage = usage_from_row(&r, 14);
+            let calibration = calibration_from_row(&r, 26, request_id);
+            let item = tx.query_one(
+                "SELECT state,settlement_id,terminal_ts FROM gemini_batch_items \
+                 WHERE job_id=$1 AND item_index=$2 AND request_id=$3",
+                &[&job_id, &item_index, &request_id],
+            )?;
+            if item.get::<_, String>(0) != terminal
+                || item.get::<_, Option<String>>(1).as_deref() != Some(request_id)
+                || item.get::<_, Option<i64>>(2).is_none()
+                || measured != (terminal == "succeeded" && result_kind == "response")
+            {
+                bail!("Gemini Batch done replay terminal integrity mismatch")
+            }
+            let ledger_count: i64 = tx
+                .query_one(
+                    "SELECT COUNT(*)::bigint FROM ledger WHERE kind='charge' AND request_id=$1",
+                    &[&request_id],
+                )?
+                .get(0);
+            if ledger_count != i64::from(actual > 0) {
+                bail!("Gemini Batch done replay ledger integrity mismatch")
+            }
+            let usage_count: i64 = tx
+                .query_one(
+                    "SELECT COUNT(*)::bigint FROM usage_events WHERE request_id=$1",
+                    &[&request_id],
+                )?
+                .get(0);
+            let calibration_count: i64 = tx
+                .query_one(
+                    "SELECT COUNT(*)::bigint FROM provider_turn_calibration_events \
+                     WHERE provider='google' AND request_id=$1",
+                    &[&request_id],
+                )?
+                .get(0);
+            if usage_count != i64::from(measured)
+                || calibration_count != i64::from(measured)
+                || measured != usage.is_some()
+                || measured != calibration.is_some()
+            {
+                bail!("Gemini Batch done replay evidence integrity mismatch")
+            }
             let balance = tx
                 .query_one(
                     "SELECT balance_nano FROM accounts WHERE id=$1",
@@ -348,16 +397,10 @@ impl PgStore {
         let key_id: String = r.get(10);
         let mult: i64 = r.get(11);
         let model: String = r.get(12);
-        let floor = -ACCOUNT_OVERDRAFT_NANO;
-        let account = tx.query_opt("WITH c AS MATERIALIZED(SELECT id,LEAST($2::bigint::numeric,GREATEST(0::numeric,balance_nano::numeric+$1::bigint::numeric-LEAST(balance_nano::numeric,$4::bigint::numeric)))::bigint collected FROM accounts WHERE id=$3 AND reserved_nano >= $1 FOR UPDATE) UPDATE accounts a SET balance_nano=(a.balance_nano::numeric+$1-current.collected::numeric)::bigint,spent_nano=(a.spent_nano::numeric+$2)::bigint,reserved_nano=a.reserved_nano-$1,uncollected_nano=(a.uncollected_nano::numeric+$2-current.collected::numeric)::bigint FROM c current WHERE a.id=current.id RETURNING a.balance_nano,current.collected", &[&hold, &actual, &account_id, &floor])?;
-        let Some(account) = account else {
-            bail!("Gemini Batch settlement account reservation mismatch")
-        };
-        let balance: i64 = account.get(0);
-        let collected: i64 = account.get(1);
-        let uncollected = actual
-            .checked_sub(collected)
-            .context("batch collection exceeds actual")?;
+        let collection = super::collect_account_settlement_tx(&mut tx, &account_id, hold, actual)
+            .context("Gemini Batch settlement account reservation mismatch")?;
+        let balance = collection.balance_nano;
+        let uncollected = collection.uncollected_nano;
         let key_changed = tx.execute("UPDATE api_keys SET spent_nano=(spent_nano::numeric+$1::bigint::numeric)::bigint,reserved_nano=reserved_nano-$2 WHERE key_id=$3 AND account_id=$4 AND reserved_nano >= $2", &[&actual, &hold, &key_id, &account_id])?;
         if key_changed != 1 && tx.query_opt("SELECT 1 FROM api_keys WHERE key_id=$1", &[&key_id])?.is_some() {
             bail!("Gemini Batch settlement key reservation mismatch")
@@ -384,8 +427,11 @@ impl PgStore {
             let usage_output = usage.output_tokens.checked_add(usage.image_output_tokens).context("Gemini Batch usage output overflow")?;
             let usage_search = usage.search_queries.max(usage.grounded_search_prompts);
             if tx.execute("INSERT INTO usage_events(request_id,account_id,key_id,model,input_tokens,output_tokens,cache_read_tokens,web_search_requests,real_nano,charge_nano,ts,provider,payable_multiplier_bp,uncollected_nano,charge_basis_nano) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'google',$12,$13,$14) ON CONFLICT(request_id) DO NOTHING", &[&request_id, &account_id, &key_id, &model, &usage_input, &usage_output, &usage_cache, &usage_search, &real, &actual, &ts, &mult, &uncollected, &charge_basis])? != 1 { bail!("Gemini Batch settlement usage key survived with inconsistent replay") }
-            if tx.execute("INSERT INTO provider_turn_calibration_events(provider,request_id,subject_id,model_id,service_tier,inference_geo,tariff_schedule_id,priced_ts,completed_at,input_tokens,audio_input_tokens,cache_read_tokens,cached_audio_input_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,thinking_output_tokens,image_output_tokens,tool_prompt_tokens,search_queries,grounded_search_prompts,api_input_nanousd,api_audio_input_nanousd,api_cache_read_nanousd,api_cached_audio_input_nanousd,api_cache_write_5m_nanousd,api_cache_write_1h_nanousd,api_output_nanousd,api_image_output_nanousd,api_search_nanousd,api_total_nanousd) VALUES('google',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30) ON CONFLICT(provider,request_id) DO NOTHING", &[&request_id, &calibration.subject_id, &calibration.model_id, &calibration.service_tier, &calibration.inference_geo, &calibration.tariff_schedule_id, &calibration.priced_ts, &calibration.completed_at, &calibration.input_tokens, &calibration.audio_input_tokens, &calibration.cache_read_tokens, &calibration.cached_audio_input_tokens, &calibration.cache_write_5m_tokens, &calibration.cache_write_1h_tokens, &calibration.output_tokens, &calibration.thinking_output_tokens, &calibration.image_output_tokens, &calibration.tool_prompt_tokens, &calibration.search_queries, &calibration.grounded_search_prompts, &calibration.api_input_nanousd, &calibration.api_audio_input_nanousd, &calibration.api_cache_read_nanousd, &calibration.api_cached_audio_input_nanousd, &calibration.api_cache_write_5m_nanousd, &calibration.api_cache_write_1h_nanousd, &calibration.api_output_nanousd, &calibration.api_image_output_nanousd, &calibration.api_search_nanousd, &calibration.api_total_nanousd])? != 1 { bail!("Gemini Batch settlement calibration key survived with inconsistent replay") }
-            if tx.execute("INSERT INTO provider_calibration_subject_spend(provider,subject_id,spent_nano,tracking_started_ts,updated_ts) VALUES('google',$1,$2,$3,$3) ON CONFLICT(provider,subject_id) DO UPDATE SET spent_nano=provider_calibration_subject_spend.spent_nano+EXCLUDED.spent_nano,updated_ts=GREATEST(provider_calibration_subject_spend.updated_ts,EXCLUDED.updated_ts)", &[&calibration.subject_id, &calibration.api_total_nanousd, &calibration.completed_at])? != 1 { bail!("Gemini Batch settlement calibration spend update failed") }
+            let calibration_spend =
+                super::record_provider_turn_calibration_event_tx(&mut tx, calibration)?;
+            if !calibration_spend.inserted {
+                bail!("Gemini Batch settlement calibration already existed before APPLY")
+            }
         }
         let terminal_class = match terminal.as_str() { "succeeded" => "success", "canceled" => "canceled", "indeterminate" => "indeterminate", _ => "expired" };
         if tx.execute("UPDATE gemini_batch_items SET state=$3,terminal_class=$4,terminal_ts=$5,updated_ts=$5,usage_input_tokens=$6,usage_tool_prompt_tokens=$7,usage_audio_input_tokens=$8,usage_cached_input_tokens=$9,usage_cached_audio_input_tokens=$10,usage_output_tokens=$11,usage_thinking_output_tokens=$12,usage_image_output_tokens=$13,usage_search_queries=$14,usage_grounded_search_prompts=$15,worker_instance=NULL,worker_epoch=NULL,lease_until=NULL,selected_profile_id=NULL WHERE job_id=$1 AND item_index=$2 AND request_id=$16 AND state='settlement_pending' AND settlement_id=$16", &[&job_id,&item_index,&terminal,&terminal_class,&ts,&usage.as_ref().map(|v|v.input_tokens),&usage.as_ref().map(|v|v.tool_prompt_tokens),&usage.as_ref().map(|v|v.audio_input_tokens),&usage.as_ref().map(|v|v.cached_input_tokens),&usage.as_ref().map(|v|v.cached_audio_input_tokens),&usage.as_ref().map(|v|v.output_tokens),&usage.as_ref().map(|v|v.thinking_output_tokens),&usage.as_ref().map(|v|v.image_output_tokens),&usage.as_ref().map(|v|v.search_queries),&usage.as_ref().map(|v|v.grounded_search_prompts),&request_id])? != 1 { bail!("Gemini Batch settlement item terminalization failed") }
@@ -416,8 +462,48 @@ impl PgStore {
             .collect();
         let mut processed = 0;
         for id in ids {
-            if self.process_gemini_batch_settlement(&id)?.is_some() {
-                processed += 1;
+            match self.process_gemini_batch_settlement(&id) {
+                Ok(Some(_)) => processed += 1,
+                Ok(None) => {}
+                Err(error) => {
+                    let ts = now();
+                    let message = format!("{error:#}");
+                    let permanent =
+                        super::classify_failure(&error) == super::FailureClass::Permanent;
+                    let state = if permanent { "failed" } else { "pending" };
+                    let attempts_before_failure = self
+                        .client
+                        .query_opt(
+                            "SELECT attempts FROM gemini_batch_settlement_outbox \
+                             WHERE request_id=$1 AND state <> 'done'",
+                            &[&id],
+                        )?
+                        .map(|row| row.get::<_, i32>(0))
+                        .unwrap_or_default();
+                    let next_attempt = if permanent {
+                        0
+                    } else {
+                        ts + super::retry_backoff_seconds(attempts_before_failure)
+                    };
+                    let attempts = self
+                        .client
+                        .query_opt(
+                            "UPDATE gemini_batch_settlement_outbox SET state=$2,\
+                             attempts=attempts+1,last_error=$3,next_attempt_ts=$4,updated_ts=$5 \
+                             WHERE request_id=$1 AND state <> 'done' RETURNING attempts",
+                            &[&id, &state, &message, &next_attempt, &ts],
+                        )?
+                        .map(|row| row.get::<_, i32>(0));
+                    if permanent {
+                        elog::error(
+                            "registry",
+                            format!(
+                                "Gemini Batch settlement {id} moved to failed after {} attempts: {message}",
+                                attempts.unwrap_or_default()
+                            ),
+                        );
+                    }
+                }
             }
         }
         Ok(processed)
