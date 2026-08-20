@@ -50,9 +50,15 @@ pub(super) fn write_request_fact_metrics(
     delivery: RequestFactDeliverySnapshot,
     stuck_lifecycles: Option<u64>,
 ) {
+    if !delivery.enabled {
+        return;
+    }
+    // A freshly started PostgreSQL inbox has not committed a batch yet, but it is available and has
+    // no failure evidence. Only an observed persistence failure is unhealthy; the next successful
+    // batch restores the gauge. SQLite never enables the inbox and publishes no PostgreSQL series.
     let health = match delivery.persistence_health {
-        RequestFactPersistenceHealth::Healthy => 1,
-        RequestFactPersistenceHealth::Unknown | RequestFactPersistenceHealth::Failed => 0,
+        RequestFactPersistenceHealth::Unknown | RequestFactPersistenceHealth::Healthy => 1,
+        RequestFactPersistenceHealth::Failed => 0,
     };
     let _ = writeln!(
         body,
@@ -171,5 +177,36 @@ mod tests {
         assert!(!body.contains("account"));
         assert!(!body.contains("key_id"));
         assert!(!body.contains("model="));
+    }
+
+    #[test]
+    fn fresh_postgres_is_healthy_and_disabled_authority_is_absent() {
+        let fresh = RequestFactDeliverySnapshot {
+            enabled: true,
+            queue_depth: 0,
+            accepted: 0,
+            persisted: 0,
+            deduplicated: 0,
+            dropped_invalid: 0,
+            dropped_full: 0,
+            dropped_closed: 0,
+            dropped_unsupported: 0,
+            persistence_failed: 0,
+            persistence_health: RequestFactPersistenceHealth::Unknown,
+        };
+        let mut body = String::new();
+        write_request_fact_metrics(&mut body, fresh, Some(0));
+        assert!(body.contains("claude_api_request_fact_persistence_healthy 1"));
+
+        body.clear();
+        write_request_fact_metrics(
+            &mut body,
+            RequestFactDeliverySnapshot {
+                enabled: false,
+                ..fresh
+            },
+            None,
+        );
+        assert!(body.is_empty());
     }
 }

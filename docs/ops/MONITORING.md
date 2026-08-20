@@ -423,9 +423,9 @@ histogram `_count`) and prepare to shed load if it exceeds the burst window.
 
 ## RequestFactPersistenceUnhealthy
 
-`claude_api_request_fact_persistence_healthy` is one only after the separate low-priority PostgreSQL
-inbox has committed a terminal batch. Zero for five minutes means it has not established a healthy
-state or its last attempt failed. Customer responses and money settlement remain fail-open, so do not
+`claude_api_request_fact_persistence_healthy` is one while the separate low-priority PostgreSQL inbox
+has no observed persistence failure, including the fresh state before its first batch. Zero for five
+minutes means its last attempted batch failed; the next successful batch restores one. Customer responses and money settlement remain fail-open, so do not
 restart healthy provider slots merely to clear the process gauge. Check PostgreSQL connectivity,
 migrations 0053–0054 and `request-facts-pg-writer` errors; preserve the submission/persistence counters
 because a restart erases this runtime-only coverage evidence.
