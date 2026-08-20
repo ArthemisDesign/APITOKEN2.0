@@ -771,7 +771,8 @@ async fn create(
             admission = admission_id;
             job = job_id;
             created = create_ts;
-            resume_at = next_item_index;
+            debug_assert_eq!(next_item_index, 0);
+            resume_at = 0;
         }
         Err(e) if registry::is_gemini_batch_idempotency_conflict(&e) => {
             return error(
@@ -932,9 +933,6 @@ async fn create(
                 });
             let request_digest = digest(&plain);
             request_digests.update(request_digest);
-            if idx < resume_at {
-                continue;
-            }
             page.push(registry::GeminiBatchAdmissionItem {
                 requested_output_tokens: i64::try_from(output).unwrap_or(i64::MAX),
                 item: registry::GeminiBatchCreateItem {

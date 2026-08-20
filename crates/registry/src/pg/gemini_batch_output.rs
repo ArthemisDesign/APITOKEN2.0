@@ -211,8 +211,14 @@ impl PgStore {
         if new_bytes > crate::MAX_BATCH_FILE_BYTES {
             bail!("Gemini Batch output exceeds the 2 GiB file limit")
         }
+        // Serialize storage accounting on the owning account row; PostgreSQL forbids FOR UPDATE
+        // on aggregate queries, and the row lock composes with upload/file creation quota.
+        tx.query_one(
+            "SELECT 1 FROM accounts WHERE id=$1 FOR UPDATE",
+            &[&claim.account_id],
+        )?;
         let stored: i64 = tx.query_one(
-            "SELECT COALESCE(SUM(size_bytes),0)::bigint FROM gemini_batch_files WHERE account_id=$1 AND expiration_ts>$2 AND file_id<>$3 FOR UPDATE",
+            "SELECT COALESCE(SUM(size_bytes),0)::bigint FROM gemini_batch_files WHERE account_id=$1 AND expiration_ts>$2 AND file_id<>$3",
             &[&claim.account_id,&ts,&claim.file_id],
         )?.get(0);
         if stored
