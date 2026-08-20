@@ -11,7 +11,7 @@ use crate::proxy::{authorize, read_body_bounded, with_not_started, Authz, Termin
 use crate::request_classification::{classify_openai_responses, RequestClassification};
 use crate::state::AppState;
 use crate::validation::{optional_bool as strict_optional_bool, optional_positive_u64};
-use axum::body::{to_bytes, Body};
+use axum::body::Body;
 use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -792,7 +792,8 @@ pub async fn input_tokens(
         admitted_at,
     );
     let tenant_scope = pending.tenant_scope().to_owned();
-    let (response, evidence) = input_tokens_after_admission(gateway, &tenant_scope, body).await;
+    let (response, evidence) =
+        input_tokens_after_admission(&app, gateway, &tenant_scope, body).await;
     submit_input_tokens_fact(
         app.billing.as_deref(),
         fact_seed,
@@ -810,20 +811,43 @@ struct InputTokensFactEvidence {
 }
 
 async fn input_tokens_after_admission(
+    app: &AppState,
     gateway: Arc<CodexGateway>,
     tenant_scope: &str,
     body: Body,
 ) -> (Response, InputTokensFactEvidence) {
-    let raw = match to_bytes(body, OPENAI_BODY_LIMIT).await {
-        Ok(raw) => raw,
-        Err(_) => {
+    let bounded = match read_body_bounded(
+        app,
+        body,
+        api_limits::current::OPENAI_TEXT_REQUEST,
+        api_limits::current::OPENAI_TEXT_REQUEST,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(bounded_body::StorageError::TooLarge)
+        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
             return (
                 ApiError::invalid("Request body exceeds the 8 MiB limit.", None::<String>)
                     .into_response(),
                 InputTokensFactEvidence::default(),
             )
         }
+        Err(bounded_body::StorageError::Io) => {
+            return (
+                ApiError::invalid("Could not read request body.", None::<String>).into_response(),
+                InputTokensFactEvidence::default(),
+            )
+        }
+        Err(_) => {
+            return (
+                ApiError::unavailable().into_response(),
+                InputTokensFactEvidence::default(),
+            )
+        }
     };
+    let raw = bounded.bytes.clone();
+    let _body_lease = bounded._lease;
     let value: Value = match serde_json::from_slice(&raw) {
         Ok(value) => value,
         Err(_) => {

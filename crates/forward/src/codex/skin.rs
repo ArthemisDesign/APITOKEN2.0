@@ -1797,7 +1797,7 @@ pub async fn count_tokens(
     );
     let tenant_scope = pending.tenant_scope().to_owned();
     let (response, requested_model, executable_model) =
-        count_tokens_after_admission(gateway, &tenant_scope, body).await;
+        count_tokens_after_admission(&app, gateway, &tenant_scope, body).await;
     submit_count_tokens_fact(
         app.billing.as_deref(),
         fact_seed,
@@ -1817,13 +1817,22 @@ fn bounded_request_fact_model(value: &str) -> Option<String> {
 }
 
 async fn count_tokens_after_admission(
+    app: &AppState,
     gateway: Arc<CodexGateway>,
     tenant_scope: &str,
     body: Body,
 ) -> (Response, Option<String>, Option<String>) {
-    let raw = match to_bytes(body, OPENAI_BODY_LIMIT).await {
-        Ok(raw) => raw,
-        Err(_) => {
+    let bounded = match read_body_bounded(
+        app,
+        body,
+        api_limits::current::OPENAI_TEXT_REQUEST,
+        api_limits::current::OPENAI_TEXT_REQUEST,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(bounded_body::StorageError::TooLarge)
+        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
             return (
                 skin_error(
                     StatusCode::BAD_REQUEST,
@@ -1836,7 +1845,22 @@ async fn count_tokens_after_admission(
                 None,
             )
         }
+        Err(_) => {
+            return (
+                skin_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "api_error",
+                    "Request body storage is unavailable.",
+                    "body_storage_unavailable",
+                    None,
+                ),
+                None,
+                None,
+            )
+        }
     };
+    let raw = bounded.bytes.clone();
+    let _body_lease = bounded._lease;
     let value = match serde_json::from_slice(&raw) {
         Ok(value) => value,
         Err(_) => {
@@ -2068,6 +2092,14 @@ mod tests {
         Arc::new(gateway)
     }
 
+    fn test_body_storage() -> Arc<crate::BodyStorage> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = unique_path("body-storage");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Arc::new(crate::BodyStorage::new(api_limits::current::PROVIDER, root).unwrap())
+    }
+
     async fn count_tokens_test_app(
         metered: bool,
         fact_sender: Option<mpsc::Sender<registry::request_facts::TerminalRequestFact>>,
@@ -2101,7 +2133,7 @@ mod tests {
             pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
             affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
             clients: Arc::new(Clients::new(&cfg)),
-            body_storage: None,
+            body_storage: Some(test_body_storage()),
             codex: Some(test_gateway(&path)),
             gemini: None,
             gemini_batch: None,

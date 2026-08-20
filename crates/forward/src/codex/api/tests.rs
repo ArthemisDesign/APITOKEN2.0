@@ -7,6 +7,7 @@ use crate::config::ProxyConfig;
 use crate::metrics::Metrics;
 use crate::state::ProviderMode;
 use crate::upstream::Clients;
+use axum::body::to_bytes;
 use pool::{Pool, Reserve};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
