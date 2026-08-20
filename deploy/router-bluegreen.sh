@@ -293,4 +293,7 @@ else
   log "router blue-green cutover complete; $TARGET_UNIT serves $(basename -- "$CURRENT_RELEASE")"
 fi
 # The controller contract is explicit: reaching this point means every final verification passed.
+proof=${ROUTER_SUCCESS_PROOF:-/run/apitoken-router-bluegreen.success}
+printf '%s\n' "$(basename -- "$CURRENT_RELEASE")" >"$proof.tmp"
+mv -f -- "$proof.tmp" "$proof"
 exit 0

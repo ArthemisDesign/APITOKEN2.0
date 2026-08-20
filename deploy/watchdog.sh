@@ -2321,11 +2321,18 @@ deploy_engine() {
     rollback_engine || true
     wd_die "engine provider controller failed (exit $controller_rc)"
   fi
+  router_proof=/run/apitoken-router-bluegreen.success
+  rm -f -- "$router_proof"
   if "$CONTROLLER_ROOT/router-bluegreen.sh"; then
     controller_rc=0
   else
     controller_rc=$?
   fi
+  if (( controller_rc != 0 )) && [[ -f $router_proof && $(<"$router_proof") == "$sha" ]]; then
+    warn "router controller returned $controller_rc after publishing exact success proof; accepting proof"
+    controller_rc=0
+  fi
+  rm -f -- "$router_proof"
   if (( controller_rc != 0 )); then
     rollback_engine || true
     wd_die "unified router blue-green controller failed (exit $controller_rc)"
