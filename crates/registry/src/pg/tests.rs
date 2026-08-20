@@ -211,6 +211,7 @@ fn gemini_batch_foundation_migration_postgres_matrix() {
             "gemini_batch_items",
             "gemini_batch_jobs",
             "gemini_batch_profile_leases",
+            "gemini_batch_profile_leases_slot2",
             "gemini_batch_settlement_outbox",
         ],
     );
@@ -223,7 +224,8 @@ fn gemini_batch_foundation_migration_postgres_matrix() {
     // restrictive owner so rerunning the matrix proves replay instead of tripping on its own residue.
     pg.client
         .batch_execute(&format!(
-            "DELETE FROM gemini_batch_profile_leases WHERE job_id='{job}'; \
+            "DELETE FROM gemini_batch_profile_leases_slot2 WHERE job_id='{job}'; \
+             DELETE FROM gemini_batch_profile_leases WHERE job_id='{job}'; \
              DELETE FROM gemini_batch_settlement_outbox WHERE job_id='{job}'; \
              DELETE FROM gemini_batch_blobs WHERE job_id='{job}'; \
              DELETE FROM gemini_batch_item_files WHERE job_id='{job}'; \
