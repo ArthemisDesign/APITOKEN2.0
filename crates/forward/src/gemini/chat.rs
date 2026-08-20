@@ -64,7 +64,7 @@ use crate::codex::new_id;
 use crate::gemini_schema;
 use crate::gemini_stream::GeminiStreamState;
 use crate::proxy::{
-    read_body_limited, with_not_started, without_not_started, BodyReadError, TerminalErrorReason,
+    read_body_bounded, with_not_started, without_not_started, TerminalErrorReason,
     EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
 };
 use crate::request_classification::classify_openai_chat;
@@ -87,9 +87,17 @@ pub async fn gemini_chat_completions(
     request: Request,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    let raw = match read_body_limited(body, CHAT_BODY_LIMIT).await {
-        Ok(raw) => raw,
-        Err(BodyReadError::TooLarge) => {
+    let bounded = match read_body_bounded(
+        &app,
+        body,
+        api_limits::current::GEMINI_TEXT_REQUEST,
+        api_limits::current::GEMINI_TEXT_REQUEST,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(bounded_body::StorageError::TooLarge)
+        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
             return chat_error(
                 StatusCode::BAD_REQUEST,
                 "Request body exceeds the 32 MiB limit.",
@@ -98,7 +106,7 @@ pub async fn gemini_chat_completions(
                 "invalid_chat_request",
             )
         }
-        Err(BodyReadError::Read) => {
+        Err(bounded_body::StorageError::Io) => {
             return chat_error(
                 StatusCode::BAD_REQUEST,
                 "Could not read request body.",
@@ -107,7 +115,18 @@ pub async fn gemini_chat_completions(
                 "invalid_chat_request",
             )
         }
+        Err(_) => {
+            return chat_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Request body storage is unavailable.",
+                None,
+                Value::Null,
+                "body_storage_unavailable",
+            )
+        }
     };
+    let raw = bounded.bytes.clone();
+    let _body_lease = bounded._lease;
     let value: Value = match serde_json::from_slice(&raw) {
         Ok(value) => value,
         Err(_) => {
