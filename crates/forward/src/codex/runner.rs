@@ -76,6 +76,11 @@ impl CodexAttemptObserver {
             .then_some(count)
             .and_then(|count| i32::try_from(count).ok())
     }
+
+    #[cfg(test)]
+    pub(crate) fn set_count_for_test(&self, count: usize) {
+        self.0.store(count, Ordering::Release);
+    }
 }
 
 impl std::fmt::Debug for CodexAttemptObserver {
@@ -491,7 +496,10 @@ impl CodexGateway {
                 Metrics::inc(&self.metrics.claudestore_fallback_failures);
                 elog::error(
                     "codex",
-                    format!("ClaudeStore Codex fallback failed [{}]", error.diagnostic_class()),
+                    format!(
+                        "ClaudeStore Codex fallback failed [{}]",
+                        error.diagnostic_class()
+                    ),
                 );
                 Err(ProcessError::ExternalFallbackFailed {
                     local: Box::new(local),

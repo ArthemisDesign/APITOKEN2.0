@@ -219,7 +219,10 @@ impl From<ProcessError> for ApiError {
             other => {
                 elog::error(
                     "codex",
-                    format!("Codex provider request failed [{}]", other.diagnostic_class()),
+                    format!(
+                        "Codex provider request failed [{}]",
+                        other.diagnostic_class()
+                    ),
                 );
                 Self::unavailable()
             }
@@ -387,7 +390,13 @@ pub async fn responses(
         }
     };
     if let Err(error) = admission.mark_delivering().await {
-        elog::error("codex", "codex delivery marker failed");
+        elog::error("codex", "codex delivery marker failed after completed turn");
+        admission.settle_after_delivery_marker_failure(
+            &prepared.request.public_model,
+            &result,
+            prepared.request.max_output_tokens,
+            result.effective_service_tier.as_deref() == Some("priority"),
+        );
         return ApiError::from(error).into_response();
     }
     let response = build_completed_response(&prepared.request, &result, &response_id, created_at);
@@ -595,7 +604,10 @@ fn history_read_error(response_id: &str, error: HistoryError) -> Response {
     match error {
         HistoryError::NotFound | HistoryError::WrongTenant => response_not_found(response_id),
         error @ (HistoryError::TooLarge | HistoryError::Corrupt | HistoryError::Unavailable) => {
-            elog::error("codex", format!("codex history unavailable for read: {error}"));
+            elog::error(
+                "codex",
+                format!("codex history unavailable for read: {error}"),
+            );
             ApiError::unavailable().into_response()
         }
     }
@@ -1199,8 +1211,8 @@ pub(super) fn parse_responses_request(
     // `bounded_cache_key`, which hashes anything the native backend would not take. So an
     // unusual key is normalized there, never rejected here — an empty one simply means "no key",
     // and the client keeps seeing its own value echoed in the response.
-    let prompt_cache_key = optional_string(object, "prompt_cache_key")?
-        .filter(|key| !key.trim().is_empty());
+    let prompt_cache_key =
+        optional_string(object, "prompt_cache_key")?.filter(|key| !key.trim().is_empty());
     // `client_metadata` and `safety_identifier` are the caller's own diagnostic fields. The
     // transport rebuilds `client_metadata` from OUR wire identity and the public response pins
     // `safety_identifier` to null, so neither one can leave the gateway. Validating a discarded
@@ -1971,7 +1983,10 @@ fn normalize_agent_message_item(
                 Some(format!("input.{index}.content")),
             )
         })?;
-    let author = object.get("author").and_then(Value::as_str).unwrap_or("agent");
+    let author = object
+        .get("author")
+        .and_then(Value::as_str)
+        .unwrap_or("agent");
     let recipient = object
         .get("recipient")
         .and_then(Value::as_str)
@@ -2578,7 +2593,10 @@ async fn persist_history(
         )
         .await
     {
-        elog::warn("codex", format!("Codex response history persistence degraded: {error}"));
+        elog::warn(
+            "codex",
+            format!("Codex response history persistence degraded: {error}"),
+        );
     }
 }
 
@@ -2624,7 +2642,7 @@ async fn stream_responses(
         )
         .await
         {
-            admission.record_downstream_disconnect();
+            admission.record_downstream_disconnect_if_closed(&frame_tx);
             return;
         }
         sequence += 1;
@@ -2639,7 +2657,7 @@ async fn stream_responses(
         )
         .await
         {
-            admission.record_downstream_disconnect();
+            admission.record_downstream_disconnect_if_closed(&frame_tx);
             return;
         }
         sequence += 1;
@@ -2678,7 +2696,7 @@ async fn stream_responses(
                     )
                     .await
                     {
-                        admission.record_downstream_disconnect();
+                        admission.record_downstream_disconnect_if_closed(&frame_tx);
                     downstream_closed = true;
                         break;
                     }
@@ -2720,7 +2738,7 @@ async fn stream_responses(
                         )
                         .await
                         {
-                            admission.record_downstream_disconnect();
+                            admission.record_downstream_disconnect_if_closed(&frame_tx);
                             downstream_closed = true;
                             break 'updates;
                         }
@@ -2739,7 +2757,7 @@ async fn stream_responses(
                         )
                         .await
                         {
-                            admission.record_downstream_disconnect();
+                            admission.record_downstream_disconnect_if_closed(&frame_tx);
                     downstream_closed = true;
                             break 'updates;
                         }
@@ -2761,7 +2779,7 @@ async fn stream_responses(
                     )
                     .await
                     {
-                        admission.record_downstream_disconnect();
+                        admission.record_downstream_disconnect_if_closed(&frame_tx);
                         downstream_closed = true;
                         break 'updates;
                     }
@@ -2795,7 +2813,7 @@ async fn stream_responses(
                         )
                         .await
                     {
-                        admission.record_downstream_disconnect();
+                        admission.record_downstream_disconnect_if_closed(&frame_tx);
                         downstream_closed = true;
                         break 'updates;
                     }
@@ -2816,7 +2834,7 @@ async fn stream_responses(
                         )
                         .await
                     {
-                        admission.record_downstream_disconnect();
+                        admission.record_downstream_disconnect_if_closed(&frame_tx);
                         downstream_closed = true;
                         break 'updates;
                     }
@@ -2850,7 +2868,7 @@ async fn stream_responses(
                         )
                         .await
                     {
-                        admission.record_downstream_disconnect();
+                        admission.record_downstream_disconnect_if_closed(&frame_tx);
                         downstream_closed = true;
                         break 'updates;
                     }
@@ -2871,7 +2889,7 @@ async fn stream_responses(
                         )
                         .await
                     {
-                        admission.record_downstream_disconnect();
+                        admission.record_downstream_disconnect_if_closed(&frame_tx);
                         downstream_closed = true;
                         break 'updates;
                     }
@@ -2894,7 +2912,7 @@ async fn stream_responses(
                     )
                     .await
                     {
-                        admission.record_downstream_disconnect();
+                        admission.record_downstream_disconnect_if_closed(&frame_tx);
                         downstream_closed = true;
                         break 'updates;
                     }
@@ -2924,7 +2942,7 @@ async fn stream_responses(
                                 )
                                 .await
                                 {
-                                    admission.record_downstream_disconnect();
+                                    admission.record_downstream_disconnect_if_closed(&frame_tx);
                                     downstream_closed = true;
                                     break 'updates;
                                 }
@@ -2937,7 +2955,7 @@ async fn stream_responses(
                                 )
                                 .await
                                 {
-                                    admission.record_downstream_disconnect();
+                                    admission.record_downstream_disconnect_if_closed(&frame_tx);
                                     downstream_closed = true;
                                     break 'updates;
                                 }
@@ -2963,7 +2981,7 @@ async fn stream_responses(
                             )
                             .await
                             {
-                                admission.record_downstream_disconnect();
+                                admission.record_downstream_disconnect_if_closed(&frame_tx);
                                 downstream_closed = true;
                                 break 'updates;
                             }
@@ -3003,6 +3021,7 @@ async fn stream_responses(
             }
             Err(error) => {
                 elog::error("codex", format!("codex stream task failed: {error}"));
+                admission.settle_join_error();
                 if !downstream_closed {
                     emit_stream_failure(
                         &frame_tx,
@@ -3035,7 +3054,7 @@ async fn stream_responses(
             &result,
             prepared.request.max_output_tokens,
             result.effective_service_tier.as_deref() == Some("priority"),
-            downstream_closed.then_some(true),
+            None,
         );
         if downstream_closed || frame_tx.is_closed() {
             return;
@@ -3489,8 +3508,16 @@ async fn send_sse(sender: &mpsc::Sender<Bytes>, event: &str, value: Value) -> bo
 }
 
 async fn send_sse_bytes(sender: &mpsc::Sender<Bytes>, frame: Bytes) -> bool {
+    send_sse_bytes_with_timeout(sender, frame, STREAM_FRAME_SEND_TIMEOUT).await
+}
+
+async fn send_sse_bytes_with_timeout(
+    sender: &mpsc::Sender<Bytes>,
+    frame: Bytes,
+    timeout: std::time::Duration,
+) -> bool {
     matches!(
-        tokio::time::timeout(STREAM_FRAME_SEND_TIMEOUT, sender.send(frame)).await,
+        tokio::time::timeout(timeout, sender.send(frame)).await,
         Ok(Ok(()))
     )
 }

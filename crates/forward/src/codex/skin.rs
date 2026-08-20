@@ -1295,7 +1295,7 @@ async fn stream_messages(
         )
         .await
         {
-            admission.record_downstream_disconnect();
+            admission.record_downstream_disconnect_if_closed(&frame_tx);
             return;
         }
 
@@ -1350,7 +1350,7 @@ async fn stream_messages(
                 }
                 _ = heartbeat.tick() => {
                     if !send_chat_bytes(&frame_tx, Bytes::from_static(b"event: ping\ndata: {}\n\n")).await {
-                        admission.record_downstream_disconnect();
+                        admission.record_downstream_disconnect_if_closed(&frame_tx);
                     downstream_closed = true;
                         break;
                     }
@@ -1421,7 +1421,7 @@ async fn stream_messages(
                     let mut failed = false;
                     for (event, data) in frames {
                         if !send_skin_frame(&frame_tx, &event, data).await {
-                            admission.record_downstream_disconnect();
+                            admission.record_downstream_disconnect_if_closed(&frame_tx);
                     downstream_closed = true;
                             failed = true;
                             break;
@@ -1459,7 +1459,7 @@ async fn stream_messages(
                     if !shaped.is_empty() {
                         for (event, data) in emitter.text_delta(&shaped) {
                             if !send_skin_frame(&frame_tx, &event, data).await {
-                                admission.record_downstream_disconnect();
+                                admission.record_downstream_disconnect_if_closed(&frame_tx);
                                 downstream_closed = true;
                                 break;
                             }
@@ -1491,6 +1491,7 @@ async fn stream_messages(
             }
             Err(_) => {
                 elog::error("codex", "Codex messages skin stream task failed [join]");
+                admission.settle_join_error();
                 let _ = send_skin_error(&frame_tx).await;
                 return;
             }
@@ -1511,7 +1512,7 @@ async fn stream_messages(
             &result,
             prepared.request.max_output_tokens,
             result.effective_service_tier.as_deref() == Some("priority"),
-            downstream_closed.then_some(true),
+            None,
         );
         if downstream_closed {
             return;
@@ -1715,7 +1716,13 @@ pub async fn messages(
         }
     };
     if let Err(error) = admission.mark_delivering().await {
-        elog::error("codex", "codex delivery marker failed");
+        elog::error("codex", "codex delivery marker failed after completed turn");
+        admission.settle_after_delivery_marker_failure(
+            &prepared.request.public_model,
+            &result,
+            prepared.request.max_output_tokens,
+            result.effective_service_tier.as_deref() == Some("priority"),
+        );
         return anthropic_error(ApiError::from(error));
     }
     let response = completed_message(

@@ -120,6 +120,13 @@ attribution extension still records client `unknown`. Codex records
 models. OpenAI native input-token counting records `openai`/`native`/`input_tokens`, no upstream
 attempt, and publishes bounded model plus content-free structural candidates only after its owning
 Responses parser accepts them; a later preparation/history error retains that accepted evidence.
+OpenAI/Codex generation owns PostgreSQL fact-aware reserve/delivery/settlement for native Responses,
+native Chat, and universal Messages. Its shared overflow-checked observer counts actual generation
+POSTs across retry/fallback. Runner join/panic terminalization preserves an exhaustive exact count
+when representable but leaves HTTP/provider/delivery/tool evidence unknown; only an explicitly closed
+receiver is a downstream disconnect, never a frame timeout. A completed nonstream turn whose durable
+delivery marker fails still settles authoritative success/usage/tool evidence once, returns a
+conservative 503, and keeps delivery unknown.
 Anthropic records `anthropic`/`native`/`count_tokens`; bounded client model and structural classifier
 evidence remain untrusted candidates until an upstream 2xx proves the owning native shape accepted.
 Rejection discards both, executable model stays absent without exact execution proof, and no producer
@@ -276,10 +283,10 @@ The production consumers are the nonbillable Codex/OpenAI/Gemini universal Messa
 native Responses input-token count, and Anthropic/Gemini native count fact producers; each seals at
 terminal-fact construction without waiting for a later body poll. Gemini universal first transfers
 its still-unsubmitted native owner through a typed response extension and seals only after outer
-response conversion. Billable integration remains incomplete: native Anthropic Messages and
-Anthropic-plane universal OpenAI Chat/Responses are the Stage-7 generation producers; Codex/OpenAI generation, Gemini
-generation and the rest of the locked route matrix remain future slices. Producer coverage is
-therefore incomplete.
+response conversion. Billable integration remains incomplete: native Anthropic Messages,
+Anthropic-plane universal OpenAI Chat/Responses, and Codex/OpenAI native Responses, native Chat, and
+universal Messages are the Stage-7 generation producers; Gemini generation and the rest of the
+locked route matrix remain future slices. Producer coverage is therefore incomplete.
 
 **Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** every
 successful Anthropic turn, including unmetered admin traffic, after authoritative usage builds one

@@ -164,7 +164,13 @@ pub async fn completions(
         }
     };
     if let Err(error) = admission.mark_delivering().await {
-        elog::error("codex", "codex delivery marker failed");
+        elog::error("codex", "codex delivery marker failed after completed turn");
+        admission.settle_after_delivery_marker_failure(
+            &prepared.request.public_model,
+            &result,
+            prepared.request.max_output_tokens,
+            result.effective_service_tier.as_deref() == Some("priority"),
+        );
         return ApiError::from(error).into_response();
     }
     let response = completed_chat(
@@ -1119,7 +1125,7 @@ async fn stream_chat(
         )
         .await
         {
-            admission.record_downstream_disconnect();
+            admission.record_downstream_disconnect_if_closed(&frame_tx);
             return;
         }
 
@@ -1185,7 +1191,7 @@ async fn stream_chat(
                     )
                     .await
                     {
-                        admission.record_downstream_disconnect();
+                        admission.record_downstream_disconnect_if_closed(&frame_tx);
                     downstream_closed = true;
                         break;
                     }
@@ -1243,7 +1249,7 @@ async fn stream_chat(
                     )
                     .await
                     {
-                        admission.record_downstream_disconnect();
+                        admission.record_downstream_disconnect_if_closed(&frame_tx);
                     downstream_closed = true;
                         break;
                     }
@@ -1286,7 +1292,7 @@ async fn stream_chat(
                         )
                         .await
                     {
-                        admission.record_downstream_disconnect();
+                        admission.record_downstream_disconnect_if_closed(&frame_tx);
                         downstream_closed = true;
                     }
                 }
@@ -1313,6 +1319,7 @@ async fn stream_chat(
             }
             Err(_) => {
                 elog::error("codex", "Codex chat stream task failed [join]");
+                admission.settle_join_error();
                 let _ = send_chat_error(&frame_tx).await;
                 return;
             }
@@ -1330,7 +1337,7 @@ async fn stream_chat(
             &result,
             prepared.request.max_output_tokens,
             result.effective_service_tier.as_deref() == Some("priority"),
-            downstream_closed.then_some(true),
+            None,
         );
         if downstream_closed {
             return;
@@ -1420,8 +1427,16 @@ async fn send_chat_frame(sender: &mpsc::Sender<Bytes>, value: Value) -> bool {
 /// SSE byte-frame sender with the shared frame timeout. Shared with the Messages skin
 /// adapter (`skin.rs`, stage 5.1).
 pub(crate) async fn send_chat_bytes(sender: &mpsc::Sender<Bytes>, frame: Bytes) -> bool {
+    send_chat_bytes_with_timeout(sender, frame, STREAM_FRAME_SEND_TIMEOUT).await
+}
+
+pub(crate) async fn send_chat_bytes_with_timeout(
+    sender: &mpsc::Sender<Bytes>,
+    frame: Bytes,
+    timeout: std::time::Duration,
+) -> bool {
     matches!(
-        tokio::time::timeout(STREAM_FRAME_SEND_TIMEOUT, sender.send(frame)).await,
+        tokio::time::timeout(timeout, sender.send(frame)).await,
         Ok(Ok(()))
     )
 }

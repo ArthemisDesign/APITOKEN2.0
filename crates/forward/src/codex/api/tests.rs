@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 #[test]
@@ -390,6 +391,10 @@ fn model() -> CodexModel {
 }
 
 fn gateway() -> CodexGateway {
+    gateway_at(codex_credential::CODEX_DEFAULT_BASE_URL)
+}
+
+fn gateway_at(base_url: &str) -> CodexGateway {
     let root = std::env::temp_dir().join(format!("claude-api-codex-api-test-{}", new_id("roster")));
     let credentials = root.join("credentials");
     std::fs::create_dir_all(&credentials).unwrap();
@@ -430,7 +435,7 @@ fn gateway() -> CodexGateway {
     CodexGateway::new(CodexConfig {
         smooth_wait_ms: 0,
         enabled: true,
-        base_url: codex_credential::CODEX_DEFAULT_BASE_URL.to_string(),
+        base_url: base_url.to_string(),
         profiles_file: root.join("profiles.json").to_str().unwrap().to_string(),
         credential_keys: keyring,
         cli_version: codex_credential::CODEX_CLI_VERSION.to_string(),
@@ -854,7 +859,10 @@ async fn input_tokens_parser_gate_discards_models_and_classifier_on_rejection() 
 #[test]
 fn input_tokens_fact_model_bound_omits_overlong_or_unsafe_values() {
     let maximum = "m".repeat(registry::request_facts::MAX_REQUEST_FACT_MODEL_LEN);
-    assert_eq!(bounded_request_fact_model(&maximum).as_deref(), Some(maximum.as_str()));
+    assert_eq!(
+        bounded_request_fact_model(&maximum).as_deref(),
+        Some(maximum.as_str())
+    );
     assert_eq!(
         bounded_request_fact_model(&format!("{maximum}x")),
         None,
@@ -1405,20 +1413,16 @@ async fn replayed_reasoning_without_encrypted_content_never_reaches_upstream() {
         .map(|item| item["type"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(injected_types, vec!["message", "message"]);
-    assert!(
-        prepared
-            .turn
-            .injected_items
-            .iter()
-            .all(|item| item.get("encrypted_content").is_none())
-    );
+    assert!(prepared
+        .turn
+        .injected_items
+        .iter()
+        .all(|item| item.get("encrypted_content").is_none()));
     // The canonical history (what a later store=true chain would persist) still holds the item.
-    assert!(
-        prepared
-            .full_history_prefix
-            .iter()
-            .any(|item| item["id"] == "rs_bare")
-    );
+    assert!(prepared
+        .full_history_prefix
+        .iter()
+        .any(|item| item["id"] == "rs_bare"));
 }
 
 /// A reasoning item that does carry its encrypted continuation key is replayable and must stay.
@@ -1495,7 +1499,10 @@ async fn codex_agent_message_history_roundtrips_as_plain_messages() {
         .unwrap()
         .contains("Retry the fallback probe."));
     // The new turn input stays exactly the final user message.
-    assert_eq!(prepared.turn.turn_input, vec![json!({"type": "text", "text": "Continue."})]);
+    assert_eq!(
+        prepared.turn.turn_input,
+        vec![json!({"type": "text", "text": "Continue."})]
+    );
 }
 
 #[test]
@@ -2209,7 +2216,10 @@ fn discarded_caller_identity_fields_never_fail_a_turn() {
         }),
     )
     .unwrap();
-    assert_eq!(parsed.prompt_cache_key.as_deref(), Some(&*"session\n".repeat(64)));
+    assert_eq!(
+        parsed.prompt_cache_key.as_deref(),
+        Some(&*"session\n".repeat(64))
+    );
 
     let empty = parse_responses_request(
         &gateway(),
@@ -2688,4 +2698,593 @@ async fn sse_send_stops_immediately_after_downstream_disconnect() {
     let (sender, receiver) = mpsc::channel(1);
     drop(receiver);
     assert!(!send_sse(&sender, "response.test", json!({"type": "response.test"})).await);
+}
+
+async fn generation_mock_upstream() -> (String, Arc<AtomicU64>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let sends = Arc::new(AtomicU64::new(0));
+    let observed = Arc::clone(&sends);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            let observed = Arc::clone(&observed);
+            tokio::spawn(async move {
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let header_end = loop {
+                    let read = socket.read(&mut chunk).await.unwrap();
+                    if read == 0 {
+                        return;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if let Some(offset) =
+                        request.windows(4).position(|window| window == b"\r\n\r\n")
+                    {
+                        break offset + 4;
+                    }
+                };
+                let head = String::from_utf8_lossy(&request[..header_end]);
+                assert!(head.starts_with("POST /responses HTTP/1.1"));
+                let content_length = head
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                while request.len() < header_end + content_length {
+                    let read = socket.read(&mut chunk).await.unwrap();
+                    if read == 0 {
+                        return;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                }
+                observed.fetch_add(1, Ordering::Relaxed);
+                let body = concat!(
+                    "event: response.output_item.done\n",
+                    "data: {\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",",
+                    "\"call_id\":\"call_1\",\"name\":\"private_tool_name\",",
+                    "\"arguments\":\"{\\\"private_argument\\\":\\\"secret\\\"}\"}}\n\n",
+                    "event: response.completed\n",
+                    "data: {\"response\":{\"service_tier\":\"default\",\"usage\":{",
+                    "\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":20,",
+                    "\"cache_write_tokens\":10},\"output_tokens\":20,",
+                    "\"output_tokens_details\":{\"reasoning_tokens\":5},",
+                    "\"total_tokens\":120}}}\n\n"
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            });
+        }
+    });
+    (format!("http://{address}"), sends)
+}
+
+fn generation_request(
+    body: Value,
+    key: &str,
+    logical_id: Option<&str>,
+    with_lifecycle: bool,
+) -> axum::extract::Request {
+    let mut request = axum::extract::Request::builder()
+        .header("x-api-key", key)
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    if let Some(logical_id) = logical_id {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            crate::execution::LOGICAL_REQUEST_ID_HEADER,
+            logical_id.parse().unwrap(),
+        );
+        request
+            .extensions_mut()
+            .insert(crate::execution::admit_logical_request_id(&mut headers).unwrap());
+    }
+    request.extensions_mut().insert({
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            crate::execution::CLIENT_ATTRIBUTION_HEADER,
+            "opencode/1.2.3".parse().unwrap(),
+        );
+        crate::execution::admit_client_attribution(&mut headers)
+    });
+    if with_lifecycle {
+        request
+            .extensions_mut()
+            .insert(crate::execution::RequestLifecycleClock::default());
+    }
+    request
+}
+
+async fn invoke_generation_handler(
+    app: AppState,
+    route: &str,
+    body: Value,
+    key: &str,
+    logical_id: Option<&str>,
+    with_lifecycle: bool,
+) -> (StatusCode, Bytes) {
+    let request = generation_request(body, key, logical_id, with_lifecycle);
+    let peer = ConnectInfo("192.0.2.10:443".parse().unwrap());
+    let response = match route {
+        "responses" => responses(State(app), peer, request).await,
+        "chat" => super::super::chat::completions(State(app), peer, request).await,
+        "messages" => super::super::skin::messages(State(app), peer, request).await,
+        _ => unreachable!(),
+    };
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), OPENAI_BODY_LIMIT)
+        .await
+        .unwrap();
+    (status, bytes)
+}
+
+fn generation_body(route: &str, stream: bool) -> Value {
+    match route {
+        "responses" => json!({
+            "model": "openai/gpt-5.6",
+            "input": "private prompt marker",
+            "stream": stream,
+            "tools": [{"type":"function","name":"private_tool_name","parameters":{"type":"object","properties":{"private_schema_name":{"type":"string"}}}}]
+        }),
+        "chat" => json!({
+            "model": "openai/gpt-5.6",
+            "messages": [{"role":"user","content":"private prompt marker"}],
+            "stream": stream,
+            "tools": [{"type":"function","function":{"name":"private_tool_name","parameters":{"type":"object","properties":{"private_schema_name":{"type":"string"}}}}}]
+        }),
+        "messages" => json!({
+            "model": "openai/gpt-5.6",
+            "max_tokens": 32,
+            "messages": [{"role":"user","content":"private prompt marker"}],
+            "stream": stream,
+            "tools": [{"name":"private_tool_name","input_schema":{"type":"object","properties":{"private_schema_name":{"type":"string"}}}}]
+        }),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn generation_handlers_persist_apply_facts_for_all_routes_and_stream_modes_on_postgres() {
+    const LOCK: i64 = 831_572_908_441;
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping Codex generation route PostgreSQL matrix: test URL is unset");
+        return;
+    };
+    const ACCOUNT: &str = "codex-generation-route-account";
+    const KEY: &str = "sk-pool-codex-generation-private-key";
+    let mut sql = postgres::Client::connect(&url, postgres::NoTls)
+        .expect("CLAUDE_API_TEST_DATABASE_URL was supplied but PostgreSQL is unavailable");
+    sql.query_one("SELECT pg_advisory_lock($1)", &[&LOCK])
+        .unwrap();
+    let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    sql.batch_execute(
+        "TRUNCATE request_facts,execution_group_winner,settlement_outbox,reservations, \
+         capacity_leases,leader_leases,engine_instances,usage_events,ledger,api_keys,accounts \
+         RESTART IDENTITY CASCADE",
+    )
+    .unwrap();
+    pg.account_create(ACCOUNT, None, 10_000).unwrap();
+    pg.account_topup(ACCOUNT, 100_000_000_000, Some("generation-route-seed"))
+        .unwrap();
+    pg.key_issue(KEY, ACCOUNT, None).unwrap();
+    let key_id = pg.key_get(KEY).unwrap().unwrap().key_id;
+    let owner = pg
+        .claim_instance(
+            &format!("codex-generation-route-{}", std::process::id()),
+            600,
+        )
+        .unwrap();
+    drop(pg);
+
+    let billing = Arc::new(
+        AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+            Some(owner),
+            1,
+            0,
+        )
+        .unwrap(),
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let sends = runtime.block_on(async {
+        let (upstream, sends) = generation_mock_upstream().await;
+        let mut cfg = input_tokens_proxy_config();
+        Arc::get_mut(&mut cfg)
+            .unwrap()
+            .api_keys
+            .push("generation-admin-key".into());
+        let app = AppState {
+            provider: ProviderMode::OpenAi,
+            authority: Arc::new(registry::authority::AuthorityConfig::Postgres {
+                url: url.clone(),
+            }),
+            data_db_path: Arc::new("codex-generation-route-pg".into()),
+            pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
+            affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
+            clients: Arc::new(Clients::new(&cfg)),
+            codex: Some(Arc::new(gateway_at(&upstream))),
+            gemini: None,
+            kimi: None,
+            glm: None,
+            tripo3d: None,
+            suno: None,
+            billing: Some(Arc::clone(&billing)),
+            authority_ready: Arc::new(AtomicBool::new(true)),
+            breaker: Arc::new(Breaker::new(1)),
+            metrics: Arc::new(Metrics::new()),
+            probe_poke: None,
+            admin_changes: tokio::sync::broadcast::channel(16).0,
+            cfg,
+        };
+        // Excluded paths exercise the owning handlers but must not admit a request fact.
+        assert_eq!(
+            invoke_generation_handler(
+                app.clone(),
+                "responses",
+                generation_body("responses", false),
+                "unknown-key",
+                Some("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+                true,
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED,
+        );
+        assert_eq!(
+            invoke_generation_handler(
+                app.clone(),
+                "responses",
+                json!({"model": 7, "input": []}),
+                KEY,
+                Some("dddddddd-dddd-4ddd-8ddd-dddddddddddd"),
+                true,
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST,
+        );
+        assert_eq!(
+            invoke_generation_handler(
+                app.clone(),
+                "responses",
+                generation_body("responses", false),
+                KEY,
+                Some("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
+                false,
+            )
+            .await
+            .0,
+            StatusCode::OK,
+        );
+        assert_eq!(
+            invoke_generation_handler(
+                app.clone(),
+                "chat",
+                generation_body("chat", false),
+                KEY,
+                None,
+                true,
+            )
+            .await
+            .0,
+            StatusCode::OK,
+        );
+        assert_eq!(
+            invoke_generation_handler(
+                app.clone(),
+                "messages",
+                generation_body("messages", false),
+                "generation-admin-key",
+                Some("99999999-9999-4999-8999-999999999999"),
+                true,
+            )
+            .await
+            .0,
+            StatusCode::OK,
+        );
+
+        super::super::billing::fail_next_codex_delivery_marker_for_test();
+        let marker_failed = invoke_generation_handler(
+            app.clone(),
+            "responses",
+            generation_body("responses", false),
+            KEY,
+            Some("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            true,
+        )
+        .await;
+        assert_eq!(marker_failed.0, StatusCode::SERVICE_UNAVAILABLE);
+
+        for (index, (route, stream)) in [
+            ("responses", false),
+            ("responses", true),
+            ("chat", false),
+            ("chat", true),
+            ("messages", false),
+            ("messages", true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let logical = format!("aaaaaaaa-aaaa-4aaa-8aaa-{index:012x}");
+            let (status, body) = invoke_generation_handler(
+                app.clone(),
+                route,
+                generation_body(route, stream),
+                KEY,
+                Some(&logical),
+                true,
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "{route} stream={stream}: {}",
+                String::from_utf8_lossy(&body)
+            );
+            assert!(!body.is_empty());
+        }
+        // Return a stream and drop it without ever polling the public body. The background turn
+        // must still settle and the explicit closed receiver must be retained as disconnect=true.
+        let never_polled = responses(
+            State(app.clone()),
+            ConnectInfo("192.0.2.10:443".parse().unwrap()),
+            generation_request(
+                generation_body("responses", true),
+                KEY,
+                Some("ffffffff-ffff-4fff-8fff-ffffffffffff"),
+                true,
+            ),
+        )
+        .await;
+        assert_eq!(never_polled.status(), StatusCode::OK);
+        drop(never_polled);
+        app.codex.as_ref().unwrap().shutdown().await;
+        billing.flush().await.unwrap();
+        sends
+    });
+    assert_eq!(
+        sends.load(Ordering::Relaxed),
+        10,
+        "only generation POSTs were expected"
+    );
+
+    let excluded_fact_count: i64 = sql.query_one(
+        "SELECT COUNT(*)::bigint FROM request_facts WHERE logical_request_id IN          ('cccccccc-cccc-4ccc-8ccc-cccccccccccc','dddddddd-dddd-4ddd-8ddd-dddddddddddd',           'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','99999999-9999-4999-8999-999999999999')",
+        &[],
+    ).unwrap().get(0);
+    assert_eq!(excluded_fact_count, 0);
+
+    let marker_failed = sql.query_one(
+        "SELECT f.http_status_code,f.provider_terminal_class,f.delivery_state,                 f.internal_attempt_count,f.tool_calls_in_output,f.billing_outcome,                 f.delivery_started_at,o.state,r.state,u.provider            FROM request_facts f JOIN settlement_outbox o ON o.request_id=f.billing_request_id            JOIN reservations r ON r.request_id=f.billing_request_id            JOIN usage_events u ON u.request_id=f.billing_request_id           WHERE f.logical_request_id=$1",
+        &[&"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
+    ).unwrap();
+    assert_eq!(marker_failed.get::<_, Option<i32>>(0), Some(503));
+    assert_eq!(marker_failed.get::<_, String>(1), "success");
+    assert_eq!(marker_failed.get::<_, String>(2), "unknown");
+    assert_eq!(marker_failed.get::<_, Option<i32>>(3), Some(1));
+    assert_eq!(marker_failed.get::<_, Option<bool>>(4), Some(true));
+    assert_eq!(marker_failed.get::<_, String>(5), "winner");
+    assert_eq!(marker_failed.get::<_, Option<i64>>(6), None);
+    assert_eq!(marker_failed.get::<_, String>(7), "done");
+    assert_eq!(marker_failed.get::<_, String>(8), "settled");
+    assert_eq!(marker_failed.get::<_, String>(9), "openai");
+
+    let rows = sql.query(
+        "SELECT logical_request_id,billing_request_id,provider_plane,route_class,request_class,stream_flag, \
+                tools_declared_count,http_status_code,provider_terminal_class,delivery_state,billing_outcome, \
+                downstream_disconnect,first_public_byte_at,internal_attempt_count,tool_calls_in_output, \
+                delivery_started_at \
+           FROM request_facts WHERE logical_request_id LIKE 'aaaaaaaa-%' ORDER BY logical_request_id",
+        &[],
+    ).unwrap();
+    assert_eq!(rows.len(), 6);
+    assert_eq!(
+        sql.query_one(
+            "SELECT COUNT(*)::bigint FROM request_facts WHERE key_id=$1 AND key_id<>$2              AND logical_request_id LIKE 'aaaaaaaa-%'",
+            &[&key_id, &KEY],
+        )
+        .unwrap()
+        .get::<_, i64>(0),
+        6,
+    );
+    for (index, row) in rows.iter().enumerate() {
+        let route = [
+            "responses",
+            "responses",
+            "chat",
+            "chat",
+            "messages",
+            "messages",
+        ][index];
+        let stream = index % 2 == 1;
+        assert_eq!(
+            row.get::<_, String>(0),
+            format!("aaaaaaaa-aaaa-4aaa-8aaa-{index:012x}")
+        );
+        let request_id = row.get::<_, String>(1);
+        assert_eq!(row.get::<_, String>(2), "openai");
+        assert_eq!(
+            row.get::<_, String>(3),
+            if route == "messages" {
+                "universal"
+            } else {
+                "native"
+            }
+        );
+        assert_eq!(row.get::<_, String>(4), route);
+        assert_eq!(row.get::<_, bool>(5), stream);
+        assert_eq!(row.get::<_, Option<i32>>(6), Some(1));
+        assert_eq!(row.get::<_, Option<i32>>(7), Some(200));
+        assert_eq!(row.get::<_, String>(8), "success");
+        assert_eq!(row.get::<_, String>(9), "completed");
+        assert_eq!(row.get::<_, String>(10), "winner");
+        assert_eq!(row.get::<_, Option<bool>>(11), None);
+        assert_eq!(row.get::<_, Option<i64>>(12), None);
+        assert_eq!(row.get::<_, Option<i32>>(13), Some(1));
+        assert_eq!(row.get::<_, Option<bool>>(14), Some(true));
+        assert!(row.get::<_, Option<i64>>(15).is_some());
+        let linked = sql
+            .query_one(
+                "SELECT o.state,r.state,r.provider,u.provider, \
+                    (SELECT COUNT(*)::bigint FROM request_facts WHERE billing_request_id=$1) \
+               FROM settlement_outbox o JOIN reservations r USING(request_id) \
+               JOIN usage_events u USING(request_id) WHERE o.request_id=$1",
+                &[&request_id],
+            )
+            .unwrap();
+        assert_eq!(linked.get::<_, String>(0), "done");
+        assert_eq!(linked.get::<_, String>(1), "settled");
+        assert_eq!(
+            linked.get::<_, Option<String>>(2).as_deref(),
+            Some("openai")
+        );
+        assert_eq!(linked.get::<_, String>(3), "openai");
+        assert_eq!(linked.get::<_, i64>(4), 1);
+    }
+    let never_polled = sql.query_one(
+        "SELECT provider_terminal_class,delivery_state,downstream_disconnect,internal_attempt_count,                 tool_calls_in_output,billing_outcome FROM request_facts WHERE logical_request_id=$1",
+        &[&"ffffffff-ffff-4fff-8fff-ffffffffffff"],
+    ).unwrap();
+    assert_eq!(
+        never_polled.get::<_, Option<String>>(0).as_deref(),
+        Some("unknown")
+    );
+    assert_eq!(
+        never_polled.get::<_, Option<String>>(1).as_deref(),
+        Some("unknown")
+    );
+    assert_eq!(never_polled.get::<_, Option<bool>>(2), Some(true));
+    assert_eq!(never_polled.get::<_, Option<i32>>(3), None);
+    assert_eq!(never_polled.get::<_, Option<bool>>(4), None);
+    assert_eq!(never_polled.get::<_, String>(5), "canceled");
+
+    let private_scan: String = sql
+        .query_one(
+            "SELECT COALESCE(string_agg(row_to_json(f)::text || row_to_json(o)::text, ''), '') \
+           FROM request_facts f JOIN settlement_outbox o ON o.request_id=f.billing_request_id",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    for secret in [
+        "private prompt marker",
+        "private_tool_name",
+        "private_schema_name",
+        "private_argument",
+        KEY,
+    ] {
+        assert!(
+            !private_scan.contains(secret),
+            "request fact/outbox leaked {secret:?}"
+        );
+    }
+    assert!(sql
+        .query_one("SELECT pg_advisory_unlock($1)", &[&LOCK])
+        .unwrap()
+        .get::<_, bool>(0));
+    drop(billing);
+}
+
+#[tokio::test]
+async fn frame_timeout_is_not_misclassified_as_a_downstream_disconnect() {
+    let (sender, mut receiver) = mpsc::channel(1);
+    sender.send(Bytes::from_static(b"occupied")).await.unwrap();
+    assert!(
+        !send_sse_bytes_with_timeout(
+            &sender,
+            Bytes::from_static(b"blocked"),
+            std::time::Duration::from_millis(1),
+        )
+        .await
+    );
+    assert!(
+        !sender.is_closed(),
+        "full-but-open Responses receiver is not disconnected"
+    );
+    assert!(
+        !super::super::chat::send_chat_bytes_with_timeout(
+            &sender,
+            Bytes::from_static(b"blocked-chat"),
+            std::time::Duration::from_millis(1),
+        )
+        .await
+    );
+    assert!(
+        !sender.is_closed(),
+        "full-but-open Chat/Messages receiver is not disconnected"
+    );
+    assert_eq!(
+        receiver.recv().await.unwrap(),
+        Bytes::from_static(b"occupied")
+    );
+    drop(receiver);
+    assert!(
+        !send_sse_bytes_with_timeout(
+            &sender,
+            Bytes::from_static(b"closed"),
+            std::time::Duration::from_millis(50),
+        )
+        .await
+    );
+    assert!(
+        sender.is_closed(),
+        "closed receiver is explicit disconnect evidence"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_generation_handlers_emit_no_request_fact() {
+    let (upstream, sends) = generation_mock_upstream().await;
+    let test = input_tokens_test_app(true, None, ProviderMode::OpenAi).await;
+    let app = AppState {
+        codex: Some(Arc::new(gateway_at(&upstream))),
+        ..test.app.clone()
+    };
+    app.billing
+        .as_ref()
+        .unwrap()
+        .topup(
+            INPUT_TOKENS_ACCOUNT_ID,
+            100_000_000_000,
+            Some("sqlite-generation-seed"),
+        )
+        .await
+        .unwrap();
+    for route in ["responses", "chat", "messages"] {
+        let (status, _) = invoke_generation_handler(
+            app.clone(),
+            route,
+            generation_body(route, false),
+            INPUT_TOKENS_RAW_KEY,
+            Some(INPUT_TOKENS_LOGICAL_ID),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{route}");
+    }
+    app.billing.as_ref().unwrap().flush().await.unwrap();
+    assert_eq!(sends.load(Ordering::Relaxed), 3);
+    assert_eq!(
+        app.billing
+            .as_ref()
+            .unwrap()
+            .request_fact_delivery_snapshot()
+            .dropped_unsupported,
+        0,
+        "billable SQLite omission must not use the terminal-only inbox",
+    );
 }

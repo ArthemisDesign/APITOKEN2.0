@@ -18,7 +18,11 @@
 > Anthropic-wire fallback. The OpenAI/Codex generation slice admits facts only with PostgreSQL money reservations,
 > shares one overflow-checked count across every actual generation POST (including retries and the
 > configured ClaudeStore fallback), and seals success, provider failure, cancellation, explicit
-> downstream disconnect, and reviewed tool-call output evidence conservatively. Legacy/admin,
+> downstream disconnect, and reviewed tool-call output evidence conservatively. Runner join/panic
+> terminalization retains an exhaustive observed attempt count but leaves provider, delivery, HTTP,
+> and tool evidence unknown; a frame-send timeout alone is not a disconnect. If a completed
+> nonstream turn cannot durably mark delivery, its authoritative success/usage/tool evidence still
+> settles exactly once while the client receives a conservative 503 and delivery remains unknown. Legacy/admin,
 > SQLite, image, and missing-context paths remain fact-free. All other billable producers, the
 > private read surface, and request-fact metrics remain incomplete.
 >

@@ -1078,6 +1078,14 @@ impl CodexBillableFactContext {
     }
 }
 
+#[cfg(test)]
+static FAIL_CODEX_DELIVERY_MARKER_FOR_TEST: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) fn fail_next_codex_delivery_marker_for_test() {
+    FAIL_CODEX_DELIVERY_MARKER_FOR_TEST.store(true, Ordering::Release);
+}
+
 impl CodexAdmission {
     pub(crate) fn attempt_observer(&self) -> Option<super::CodexAttemptObserver> {
         self.reservation
@@ -1096,7 +1104,22 @@ impl CodexAdmission {
         }
     }
 
+    /// Record only an explicit receiver closure. A frame-send timeout is backpressure evidence,
+    /// not proof that the downstream disconnected, and must therefore remain `NULL` in the fact.
+    pub(crate) fn record_downstream_disconnect_if_closed<T>(
+        &self,
+        sender: &tokio::sync::mpsc::Sender<T>,
+    ) {
+        if sender.is_closed() {
+            self.record_downstream_disconnect();
+        }
+    }
+
     pub(crate) async fn mark_delivering(&self) -> Result<(), AdmissionError> {
+        #[cfg(test)]
+        if FAIL_CODEX_DELIVERY_MARKER_FOR_TEST.swap(false, Ordering::AcqRel) {
+            return Err(AdmissionError::Unavailable);
+        }
         let Some(reservation) = &self.reservation else {
             return Ok(());
         };
@@ -1127,30 +1150,80 @@ impl CodexAdmission {
         let (provider_class, delivery_state) = codex_process_error_terminal(error);
         let evidence =
             context.terminal_evidence(None, provider_class, delivery_state, None, true, None);
-        if let Err(error) = reservation.billing.settle_detached_with_request_fact(
-            &reservation.request_id,
-            &reservation.account_id,
-            &reservation.key,
-            reservation.hold,
-            0,
+        submit_fact_aware_refund(&mut reservation, evidence, "error");
+    }
+
+    /// Terminalize a panicked/cancelled runner task without pretending that its JoinError came
+    /// from the provider. The shared observer remains exhaustive because the joined task is over;
+    /// provider status, delivery and tool output stay unknown, while an already observed receiver
+    /// closure is retained by `terminal_evidence`.
+    pub(crate) fn settle_join_error(mut self) {
+        let Some(mut reservation) = self.reservation.take() else {
+            return;
+        };
+        let Some(context) = reservation.request_fact.take() else {
+            return;
+        };
+        let evidence = context.terminal_evidence(
             None,
+            ProviderTerminalClass::Unknown,
+            DeliveryState::Unknown,
             None,
-            evidence,
-        ) {
-            elog::error(
-                "codex-billing",
-                format!("Codex request-fact error settlement rejected: {error:#}"),
-            );
-        }
-        reservation.guard.disarm();
+            true,
+            None,
+        );
+        submit_fact_aware_refund(&mut reservation, evidence, "join-error");
     }
 
     pub(crate) fn settle(
+        self,
+        model: &CodexModel,
+        result: &super::CodexTurnResult,
+        requested_output_tokens: Option<u64>,
+        fast: bool,
+        downstream_disconnect: Option<bool>,
+    ) {
+        self.settle_success(
+            model,
+            result,
+            requested_output_tokens,
+            fast,
+            Some(200),
+            DeliveryState::Completed,
+            downstream_disconnect,
+        );
+    }
+
+    /// A completed provider turn remains authoritative even if the durable delivery marker fails.
+    /// Settle exact usage once, but report the actual conservative 503 and unknown delivery state;
+    /// no success response was handed to the caller and no delivery fact is invented.
+    pub(crate) fn settle_after_delivery_marker_failure(
+        self,
+        model: &CodexModel,
+        result: &super::CodexTurnResult,
+        requested_output_tokens: Option<u64>,
+        fast: bool,
+    ) {
+        self.settle_success(
+            model,
+            result,
+            requested_output_tokens,
+            fast,
+            Some(503),
+            DeliveryState::Unknown,
+            None,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn settle_success(
         mut self,
         model: &CodexModel,
         result: &super::CodexTurnResult,
         requested_output_tokens: Option<u64>,
         fast: bool,
+        http_status_code: Option<i32>,
+        delivery_state: DeliveryState,
         downstream_disconnect: Option<bool>,
     ) {
         let usage = &result.usage;
@@ -1208,9 +1281,9 @@ impl CodexAdmission {
         let settlement = match reservation.request_fact.take() {
             Some(context) => {
                 let evidence = context.terminal_evidence(
-                    Some(200),
+                    http_status_code,
                     ProviderTerminalClass::Success,
-                    DeliveryState::Completed,
+                    delivery_state,
                     downstream_disconnect,
                     true,
                     codex_tool_calls_in_output(result),
@@ -1257,6 +1330,29 @@ impl CodexAdmission {
             );
         }
     }
+}
+
+fn submit_fact_aware_refund(
+    reservation: &mut Reservation,
+    evidence: RequestFactTerminalEvidence,
+    reason: &'static str,
+) {
+    if let Err(error) = reservation.billing.settle_detached_with_request_fact(
+        &reservation.request_id,
+        &reservation.account_id,
+        &reservation.key,
+        reservation.hold,
+        0,
+        None,
+        None,
+        evidence,
+    ) {
+        elog::error(
+            "codex-billing",
+            format!("Codex request-fact {reason} settlement rejected: {error:#}"),
+        );
+    }
+    reservation.guard.disarm();
 }
 
 impl Drop for CodexAdmission {
@@ -1686,13 +1782,8 @@ fn apply_fast_multiplier(prices: metering::CodexPrices, amount: i128, fast: bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::affinity::AffinityStore;
     use crate::billing::AsyncBilling;
-    use crate::breaker::Breaker;
     use crate::codex::CodexPrices;
-    use crate::config::ProxyConfig;
-    use crate::upstream::Clients;
-    use pool::{Pool, Reserve};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
@@ -2599,11 +2690,8 @@ mod tests {
                 RequestLifecycleClock::default(),
             )
         };
-        let universal = seed().terminal_fact(
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            None,
-            None,
-        );
+        let universal =
+            seed().terminal_fact(axum::http::StatusCode::SERVICE_UNAVAILABLE, None, None);
         let native = seed().terminal_input_tokens_fact(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             None,
@@ -2623,5 +2711,145 @@ mod tests {
         assert_eq!(universal.request_class, "count_tokens");
         assert_eq!(native.route_class, "native");
         assert_eq!(native.request_class, "input_tokens");
+    }
+
+    fn fact_context() -> CodexBillableFactContext {
+        CodexBillableFactContext {
+            admitted_at: pool::now(),
+            lifecycle_clock: RequestLifecycleClock::default(),
+            attempts: super::super::CodexAttemptObserver::default(),
+            downstream_disconnect: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[test]
+    fn process_error_terminal_mapping_is_conservative_and_total() {
+        let cases = [
+            (
+                super::super::ProcessError::BadRequest,
+                ProviderTerminalClass::ClientError,
+                DeliveryState::Unknown,
+            ),
+            (
+                super::super::ProcessError::ContextWindowExceeded,
+                ProviderTerminalClass::ClientError,
+                DeliveryState::Unknown,
+            ),
+            (
+                super::super::ProcessError::UsageLimitExceeded { retry_after: None },
+                ProviderTerminalClass::Quota,
+                DeliveryState::Unknown,
+            ),
+            (
+                super::super::ProcessError::AuthenticationRequired,
+                ProviderTerminalClass::Auth,
+                DeliveryState::Unknown,
+            ),
+            (
+                super::super::ProcessError::SubscriptionRequired,
+                ProviderTerminalClass::Auth,
+                DeliveryState::Unknown,
+            ),
+            (
+                super::super::ProcessError::Timeout("test"),
+                ProviderTerminalClass::Timeout,
+                DeliveryState::Interrupted,
+            ),
+            (
+                super::super::ProcessError::Closed,
+                ProviderTerminalClass::Transport,
+                DeliveryState::Interrupted,
+            ),
+            (
+                super::super::ProcessError::Protocol("test".into()),
+                ProviderTerminalClass::ProtocolError,
+                DeliveryState::Interrupted,
+            ),
+            (
+                super::super::ProcessError::Disabled,
+                ProviderTerminalClass::Unknown,
+                DeliveryState::NotStarted,
+            ),
+            (
+                super::super::ProcessError::InvalidConfig("test".into()),
+                ProviderTerminalClass::Unknown,
+                DeliveryState::NotStarted,
+            ),
+        ];
+        for (error, provider, delivery) in cases {
+            assert_eq!(codex_process_error_terminal(&error), (provider, delivery));
+        }
+        let fallback = super::super::ProcessError::ExternalFallbackFailed {
+            local: Box::new(super::super::ProcessError::BadRequest),
+        };
+        assert_eq!(
+            codex_process_error_terminal(&fallback),
+            (ProviderTerminalClass::Unknown, DeliveryState::Unknown)
+        );
+    }
+
+    #[test]
+    fn successful_output_tool_evidence_is_true_false_or_unknown_only_when_exhaustive() {
+        let result = |output| super::super::CodexTurnResult {
+            output,
+            usage: CodexUsage::default(),
+            effective_service_tier: None,
+            provider_reported_service_tier: None,
+        };
+        assert_eq!(codex_tool_calls_in_output(&result(Vec::new())), Some(false));
+        assert_eq!(
+            codex_tool_calls_in_output(&result(vec![serde_json::json!({"type":"message"})])),
+            Some(false)
+        );
+        assert_eq!(
+            codex_tool_calls_in_output(&result(vec![serde_json::json!({"type":"function_call"})])),
+            Some(true)
+        );
+        assert_eq!(
+            codex_tool_calls_in_output(&result(vec![serde_json::json!({"type":"future_output"})])),
+            None
+        );
+    }
+
+    #[test]
+    fn attempt_observer_overflow_and_join_terminalization_preserve_only_exact_evidence() {
+        let context = fact_context();
+        context.attempts.record_send();
+        context.attempts.record_send();
+        context.downstream_disconnect.store(true, Ordering::Release);
+        let join = context.terminal_evidence(
+            None,
+            ProviderTerminalClass::Unknown,
+            DeliveryState::Unknown,
+            None,
+            true,
+            None,
+        );
+        assert_eq!(join.internal_attempt_count, Some(2));
+        assert_eq!(join.http_status_code, None);
+        assert_eq!(join.provider_terminal_class, ProviderTerminalClass::Unknown);
+        assert_eq!(join.delivery_state, DeliveryState::Unknown);
+        assert_eq!(join.downstream_disconnect, Some(true));
+        assert_eq!(join.tool_calls_in_output, None);
+
+        let overflow = fact_context();
+        overflow.attempts.set_count_for_test(i32::MAX as usize + 1);
+        assert_eq!(
+            overflow
+                .terminal_evidence(
+                    None,
+                    ProviderTerminalClass::Unknown,
+                    DeliveryState::Unknown,
+                    None,
+                    true,
+                    None
+                )
+                .internal_attempt_count,
+            None
+        );
+        let saturated = fact_context();
+        saturated.attempts.set_count_for_test(usize::MAX);
+        saturated.attempts.record_send();
+        assert_eq!(saturated.attempts.exhaustive_i32(), None);
     }
 }
