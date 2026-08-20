@@ -739,6 +739,7 @@ async fn create(
     let mut job = fresh("batch");
     let mut admission = fresh("batch-admission");
     let mut resume_at = 0i64;
+    let mut committed_replay: Option<(String, [u8; 32])> = None;
     let begin = registry::GeminiBatchAdmissionBegin {
         admission_id: admission.clone(),
         job_id: job.clone(),
@@ -757,8 +758,11 @@ async fn create(
         expires_ts: created + JOB_TTL,
     };
     match f.ingest().begin(begin).await {
-        Ok(registry::GeminiBatchAdmissionBeginOutcome::Replay { job_id, .. }) => {
-            return operation_pending(&job_id)
+        Ok(registry::GeminiBatchAdmissionBeginOutcome::Replay {
+            job_id,
+            canonical_request_digest,
+        }) => {
+            committed_replay = Some((job_id, canonical_request_digest));
         }
         Ok(registry::GeminiBatchAdmissionBeginOutcome::Started {
             admission_id,
@@ -962,7 +966,7 @@ async fn create(
             for chunk in entries.chunks(registry::MAX_BATCH_ADMISSION_PAGE_SIZE) {
                 let page = stage_entries(source_index, chunk.to_vec())?;
                 source_index += chunk.len() as i64;
-                if !page.is_empty() {
+                if committed_replay.is_none() && !page.is_empty() {
                     next = f
                         .ingest()
                         .append(admission.clone(), next, page)
@@ -1080,7 +1084,7 @@ async fn create(
                         let page =
                             stage_entries(source_index, std::mem::replace(&mut pending, tail))?;
                         source_index += entry_count;
-                        if !page.is_empty() {
+                        if committed_replay.is_none() && !page.is_empty() {
                             next = f
                                 .ingest()
                                 .append(admission.clone(), next, page)
@@ -1125,7 +1129,7 @@ async fn create(
                 let entry_count = pending.len() as i64;
                 let page = stage_entries(source_index, pending)?;
                 source_index += entry_count;
-                if !page.is_empty() {
+                if committed_replay.is_none() && !page.is_empty() {
                     next = f
                         .ingest()
                         .append(admission.clone(), next, page)
@@ -1157,6 +1161,17 @@ async fn create(
     }
     let item_digest: [u8; 32] = request_digests.finalize().into();
     let canonical=digest(&serde_json::to_vec(&json!({"model":model_id,"displayName":display,"priority":priority,"inputKind":if input_kind==registry::GeminiBatchInputKind::Inline{"inline"}else{"file"},"itemCount":next,"itemDigest":hex_digest(&item_digest)})).unwrap());
+    if let Some((replay_job, stored_digest)) = committed_replay {
+        return if stored_digest == canonical {
+            operation_pending(&replay_job)
+        } else {
+            error(
+                StatusCode::CONFLICT,
+                "ABORTED",
+                "Idempotency key conflicts with another request.",
+            )
+        };
+    }
     match f
         .ingest()
         .publish(admission, next, canonical, a.raw_key)
