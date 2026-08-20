@@ -216,7 +216,11 @@ function GeminiBatchSummaryCard({ batch }: { batch: GeminiBatchSummary }): React
   const indeterminate = Number(batch.indeterminate_items ?? 0);
   const authorityOk = batch.authority_available === true;
   return (
-    <ProviderSection title="Gemini Batch · сводка">
+    <ProviderSection
+      overline="Batch"
+      title="Gemini Batch · сводка"
+      meta={batch.enabled ? "runtime включён" : "runtime выключен"}
+    >
       <ProviderCapacityStrip
         ariaLabel="Состояние Gemini Batch"
         items={[
