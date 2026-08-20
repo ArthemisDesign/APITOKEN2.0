@@ -1,7 +1,6 @@
 use super::*;
 use crate::gemini::{
-    GeminiBatchAuthority, GeminiBatchBlobIdentity, GeminiBatchDataKeyring,
-    GeminiBatchPublicFacade,
+    GeminiBatchAuthority, GeminiBatchBlobIdentity, GeminiBatchDataKeyring, GeminiBatchPublicFacade,
 };
 use crate::{AffinityStore, AsyncBilling, Breaker, Clients, ProxyConfig};
 use axum::http::Uri;
@@ -6304,6 +6303,47 @@ fn gemini_batch_public_handlers_postgres_lifecycle_files_and_account_isolation()
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let data_loss = response_json(response).await;
         assert_eq!(data_loss["error"]["status"], "DATA_LOSS");
+
+        let exact_status = json!({"error":{"code":429,"message":"quota exhausted","status":"RESOURCE_EXHAUSTED","details":[{"reason":"QUOTA"}]}});
+        let error_blob = keyring
+            .encrypt_blob(
+                &GeminiBatchBlobIdentity {
+                    account_id: ACCOUNT_A,
+                    job_id: &batch_id,
+                    item_index: 0,
+                    kind: "error",
+                    schema_version: 1,
+                },
+                &serde_json::to_vec(&exact_status).unwrap(),
+                seeded_now + 42 * 24 * 3600,
+            )
+            .unwrap();
+        let error_url = url.clone();
+        let error_batch_id = batch_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut seeded = postgres::Client::connect(&error_url, postgres::NoTls).unwrap();
+            seeded.execute(
+                "INSERT INTO gemini_batch_blobs(job_id,item_index,kind,key_id,nonce,ciphertext,plaintext_len,plaintext_digest,retention_ts,created_ts) VALUES($1,0,'error',$2,$3,$4,$5,$6,$7,$8)",
+                &[&error_batch_id,&error_blob.key_id,&error_blob.nonce,&error_blob.ciphertext,&error_blob.plaintext_len,&error_blob.plaintext_digest.as_slice(),&error_blob.retention_ts,&seeded_now],
+            ).unwrap();
+            seeded.execute(
+                "UPDATE gemini_batch_items SET state='failed',terminal_class='upstream_error' WHERE job_id=$1 AND item_index=0",
+                &[&error_batch_id],
+            ).unwrap();
+        }).await.unwrap();
+        let response = invoke_batch_request(
+            app.clone(), Method::GET, &format!("/v1beta/batches/{batch_id}"), KEY_A, &[], Body::empty(),
+        ).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let terminal_error = response_json(response).await;
+        assert_eq!(
+            terminal_error["response"]["inlinedResponses"][0]["error"],
+            exact_status["error"]
+        );
+        assert_eq!(
+            terminal_error["response"]["inlinedResponses"][0]["metadata"]["key"],
+            "first"
+        );
 
         let response = invoke_batch_request(
             app.clone(),
