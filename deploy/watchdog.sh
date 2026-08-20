@@ -2321,6 +2321,7 @@ deploy_engine() {
     rollback_engine || true
     wd_die "engine provider controller failed (exit $controller_rc)"
   fi
+  controller_rc=0
   "$CONTROLLER_ROOT/router-bluegreen.sh" || controller_rc=$?
   if (( controller_rc != 0 )); then
     rollback_engine || true
