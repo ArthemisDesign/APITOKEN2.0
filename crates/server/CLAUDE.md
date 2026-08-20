@@ -133,8 +133,9 @@ background loops and the HTTP router. Here — and only here — everything is w
   by the separate `db migrate-engine` before a blue-green slot is started.
 - Introduce a new env variable ONLY here and pass it further down through config structures. The
   dormant `CLAUDE_API_*BODY*_MIB` envelope is parsed strictly through `api-limits`: malformed, zero,
-  inconsistent, or above-current values stop startup. It cannot widen Anthropic 32 MiB, Codex 8 MiB,
-  Gemini text 32 MiB/media 20 MiB, translated 32 MiB, or Gemini-native 64 MiB caps before later stages.
+  inconsistent, or above-current values stop startup. Provider-mode ceilings are independent:
+  Anthropic remains 32 MiB, Codex 8 MiB and only Gemini may stage a 64 MiB text canary; Gemini media
+  remains 20 MiB, translated response 32 MiB, and Gemini-native response 64 MiB.
   `CLAUDE_API_BODY_SPOOL_ROOT` is a required absolute, never-logged path provisioned as a distinct
   mode-0700 RuntimeDirectory by every provider/rollback unit; server opens the `bounded-body`
   authorities once and installs them into forward state.

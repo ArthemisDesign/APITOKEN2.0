@@ -162,7 +162,10 @@ fn strict_mib_value(
     })
 }
 
-fn parse_body_limits(values: &BTreeMap<String, String>) -> Result<api_limits::BodyLimits, String> {
+fn parse_body_limits(
+    values: &BTreeMap<String, String>,
+    provider: ProviderMode,
+) -> Result<api_limits::BodyLimits, String> {
     let read = |key, default| strict_mib_value(key, values.get(key).map(String::as_str), default);
     let limits = api_limits::BodyLimits {
         request: read(
@@ -188,8 +191,15 @@ fn parse_body_limits(values: &BTreeMap<String, String>) -> Result<api_limits::Bo
     }
     .validate(api_limits::hard::SPOOL)
     .map_err(|error| format!("invalid provider body limits: {error}"))?;
-    if limits.request != api_limits::current::PROVIDER_TEXT_REQUEST {
-        return Err("CLAUDE_API_TEXT_BODY_MAX_MIB must equal the current 32 MiB envelope until provider readers consume typed limits".to_owned());
+    let request_ceiling = if provider == ProviderMode::Gemini {
+        api_limits::ByteLimit::from_bytes(64 * api_limits::MIB)
+    } else {
+        api_limits::current::PROVIDER_TEXT_REQUEST
+    };
+    if limits.request > request_ceiling {
+        return Err(format!(
+            "CLAUDE_API_TEXT_BODY_MAX_MIB exceeds the {provider:?} runtime ceiling"
+        ));
     }
     if limits.memory_budget != api_limits::current::PROVIDER_MEMORY_BUDGET
         || limits.spool_budget != api_limits::current::PROVIDER_SPOOL_BUDGET
@@ -201,7 +211,7 @@ fn parse_body_limits(values: &BTreeMap<String, String>) -> Result<api_limits::Bo
     Ok(limits)
 }
 
-fn body_limits_from_env() -> api_limits::BodyLimits {
+fn body_limits_from_env(provider: ProviderMode) -> api_limits::BodyLimits {
     let keys = [
         "CLAUDE_API_TEXT_BODY_MAX_MIB",
         "CLAUDE_API_BODY_MEMORY_BUDGET_MIB",
@@ -213,7 +223,7 @@ fn body_limits_from_env() -> api_limits::BodyLimits {
         .into_iter()
         .filter_map(|key| ev(key).map(|value| (key.to_owned(), value)))
         .collect::<BTreeMap<_, _>>();
-    parse_body_limits(&values).unwrap_or_else(|message| panic!("{message}"))
+    parse_body_limits(&values, provider).unwrap_or_else(|message| panic!("{message}"))
 }
 
 const OPENAI_SHARED_DRAIN_DEADLINE_SECS: u64 = 620;
@@ -1325,7 +1335,7 @@ impl Settings {
         });
         let db_path = ev("SUBS_DB").unwrap_or_else(|| format!("{cfg_dir}/subscriptions.db"));
         let database_url = ev("CLAUDE_API_DATABASE_URL");
-        let body_limits = body_limits_from_env();
+        let body_limits = body_limits_from_env(provider);
         let body_spool_root = ev("CLAUDE_API_BODY_SPOOL_ROOT")
             .map(std::path::PathBuf::from)
             .unwrap_or_default();
@@ -1603,16 +1613,35 @@ mod tests {
 
     #[test]
     fn dormant_body_limits_are_strict_and_preserve_current_provider_caps() {
-        let defaults = parse_body_limits(&BTreeMap::new()).unwrap();
+        let defaults = parse_body_limits(&BTreeMap::new(), ProviderMode::Combined).unwrap();
         assert_eq!(defaults, api_limits::current::PROVIDER);
         assert!(api_limits::current::OPENAI_TEXT_REQUEST < defaults.request);
         assert!(api_limits::current::GEMINI_MEDIA_REQUEST < defaults.request);
+        let gemini_64 = BTreeMap::from([
+            ("CLAUDE_API_TEXT_BODY_MAX_MIB".to_owned(), "64".to_owned()),
+            (
+                "CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB".to_owned(),
+                "64".to_owned(),
+            ),
+        ]);
+        assert_eq!(
+            parse_body_limits(&gemini_64, ProviderMode::Gemini)
+                .unwrap()
+                .request
+                .bytes(),
+            64 * api_limits::MIB
+        );
+        assert!(parse_body_limits(&gemini_64, ProviderMode::Anthropic).is_err());
+        assert!(parse_body_limits(&gemini_64, ProviderMode::OpenAi).is_err());
         for invalid in ["", "0", " 32", "+32", "1.5", "8", "256"] {
             let values = BTreeMap::from([(
                 "CLAUDE_API_TEXT_BODY_MAX_MIB".to_owned(),
                 invalid.to_owned(),
             )]);
-            assert!(parse_body_limits(&values).is_err(), "accepted {invalid:?}");
+            assert!(
+                parse_body_limits(&values, ProviderMode::Combined).is_err(),
+                "accepted {invalid:?}"
+            );
         }
     }
 
