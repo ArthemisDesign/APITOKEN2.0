@@ -132,14 +132,14 @@ use serde_json::{json, Map, Value};
 use super::api::{GeminiCountTokensFactHandoff, UniversalCountTokensIntent};
 use super::chat::{
     function_response_value, map_finish_reason, merge_or_push, replayed_function_call_part,
-    CHAT_BODY_LIMIT, RESPONSE_BODY_LIMIT,
+    RESPONSE_BODY_LIMIT,
 };
 use super::gemini_api;
 use crate::codex::new_id;
 use crate::gemini_schema;
 use crate::gemini_stream::GeminiStreamState;
 use crate::proxy::{
-    read_body_limited, with_not_started, without_not_started, BodyReadError, TerminalErrorReason,
+    read_body_bounded, with_not_started, without_not_started, TerminalErrorReason,
     EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
 };
 use crate::request_classification::classify_anthropic_messages;
@@ -1695,16 +1695,38 @@ fn bounded_request_fact_model(value: &str) -> Option<String> {
 
 /// Буферизованное JSON-тело Messages-запроса под лимитом плоскости (32 MiB — общий
 /// `CHAT_BODY_LIMIT` universal lanes Gemini); ошибки — Anthropic-конверт 400.
-async fn read_messages_body(body: Body) -> Result<Value, Response> {
-    let raw = match read_body_limited(body, CHAT_BODY_LIMIT).await {
-        Ok(raw) => raw,
-        Err(BodyReadError::TooLarge) => {
+async fn read_messages_body(
+    app: &AppState,
+    body: Body,
+) -> Result<(Value, bounded_body::StoredBodyLease), Response> {
+    let bounded = match read_body_bounded(
+        app,
+        body,
+        api_limits::current::GEMINI_TEXT_REQUEST,
+        api_limits::current::GEMINI_TEXT_REQUEST,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(bounded_body::StorageError::TooLarge)
+        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
             return Err(invalid_request("Request body exceeds the 32 MiB limit."))
         }
-        Err(BodyReadError::Read) => return Err(invalid_request("Could not read request body.")),
+        Err(bounded_body::StorageError::Io) => {
+            return Err(invalid_request("Could not read request body."))
+        }
+        Err(_) => {
+            return Err(skin_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "api_error",
+                "Request body storage is unavailable.",
+                "body_storage_unavailable",
+                None,
+            ))
+        }
     };
-    match serde_json::from_slice(&raw) {
-        Ok(value) => Ok(value),
+    match serde_json::from_slice(&bounded.bytes) {
+        Ok(value) => Ok((value, bounded._lease)),
         Err(_) => Err(invalid_request("Invalid JSON in request body.")),
     }
 }
@@ -1760,7 +1782,7 @@ pub async fn gemini_messages_skin(
     request: Request,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    let value = match read_messages_body(body).await {
+    let (value, _body_lease) = match read_messages_body(&app, body).await {
         Ok(value) => value,
         Err(response) => return response,
     };
@@ -1814,7 +1836,7 @@ pub async fn gemini_messages_count_tokens(
     request: Request,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    let value = match read_messages_body(body).await {
+    let (value, _body_lease) = match read_messages_body(&app, body).await {
         Ok(value) => value,
         Err(response) => return response,
     };

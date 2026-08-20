@@ -71,11 +71,6 @@ use crate::request_classification::classify_openai_chat;
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
 
-/// Лимит тела chat-запроса — как у нативного text-пути плоскости
-/// (`GEMINI_TEXT_REQUEST_BODY_LIMIT`). Общий с Responses-адаптером этапа 4.3
-/// (`responses.rs`).
-pub(crate) const CHAT_BODY_LIMIT: usize = 32 * 1024 * 1024;
-
 /// Верхняя граница буферизации error/non-stream тел ответа `gemini_api()`.
 pub(crate) const RESPONSE_BODY_LIMIT: usize = 32 * 1024 * 1024;
 

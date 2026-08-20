@@ -25,8 +25,8 @@ Never mix the three provider paths.
   Chat and billable Messages also use bounded ownership under 8 MiB. Quota-free `input_tokens` and
   `count_tokens` use the same body authorities after auth/admission while retaining terminal-fact
   evidence and response semantics.
-  Native Gemini generate/stream/count plus universal Chat/Responses use the shared bounded reader
-  under existing 32 MiB text and 20 MiB image/media caps; Messages migrates separately.
+  Native Gemini generate/stream/count plus all universal Chat/Responses/Messages/count paths use
+  the shared bounded reader under existing 32 MiB text and 20 MiB image/media caps.
 
 **Gemini typed executor boundary.** Universal Chat, Responses and Messages adapters translate the
 validated public request once into `NativeGeminiRequest` and pass the native `serde_json::Value`
