@@ -1929,7 +1929,7 @@ mod tests {
     use pool::{Pool, Reserve};
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::mpsc;
 
@@ -1952,14 +1952,17 @@ mod tests {
         }
     }
 
+    static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
+
     fn unique_path(label: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "claude-api-codex-{label}-{}-{unique}.sqlite",
-            std::process::id()
+            "claude-api-codex-{label}-{}-{unique}-{}.sqlite",
+            std::process::id(),
+            NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
         ))
     }
 
@@ -2625,7 +2628,7 @@ mod tests {
             pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
             affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
             clients: Arc::new(Clients::new(&cfg)),
-            body_storage: None,
+            body_storage: Some(test_body_storage()),
             codex: Some(test_gateway(&gateway_path)),
             gemini: None,
             gemini_batch: None,
