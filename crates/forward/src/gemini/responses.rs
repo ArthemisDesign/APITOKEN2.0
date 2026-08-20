@@ -160,13 +160,13 @@ use super::chat::{
     chat_error, code_assist_schema, convert_error_response, function_declaration,
     function_response_value, gemini_image_part, image_url_part, invalid_request, map_finish_reason,
     merge_or_push, parse_tool_arguments, replayed_function_call_part, synthetic_call_id,
-    translate_reasoning_effort, unsupported_parameter, CHAT_BODY_LIMIT, RESPONSE_BODY_LIMIT,
+    translate_reasoning_effort, unsupported_parameter, RESPONSE_BODY_LIMIT,
 };
 use super::gemini_api;
 use crate::codex::new_id;
 use crate::gemini_stream::GeminiStreamState;
 use crate::openai_responses_stream::ResponsesEventEncoder;
-use crate::proxy::{read_body_limited, without_not_started, BodyReadError};
+use crate::proxy::{read_body_bounded, without_not_started};
 use crate::request_classification::classify_openai_responses;
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
@@ -179,9 +179,17 @@ pub async fn gemini_responses(
     request: Request,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    let raw = match read_body_limited(body, CHAT_BODY_LIMIT).await {
-        Ok(raw) => raw,
-        Err(BodyReadError::TooLarge) => {
+    let bounded = match read_body_bounded(
+        &app,
+        body,
+        api_limits::current::GEMINI_TEXT_REQUEST,
+        api_limits::current::GEMINI_TEXT_REQUEST,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(bounded_body::StorageError::TooLarge)
+        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
             return chat_error(
                 StatusCode::BAD_REQUEST,
                 "Request body exceeds the 32 MiB limit.",
@@ -190,7 +198,7 @@ pub async fn gemini_responses(
                 "invalid_responses_request",
             )
         }
-        Err(BodyReadError::Read) => {
+        Err(bounded_body::StorageError::Io) => {
             return chat_error(
                 StatusCode::BAD_REQUEST,
                 "Could not read request body.",
@@ -199,7 +207,18 @@ pub async fn gemini_responses(
                 "invalid_responses_request",
             )
         }
+        Err(_) => {
+            return chat_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Request body storage is unavailable.",
+                None,
+                Value::Null,
+                "body_storage_unavailable",
+            )
+        }
     };
+    let raw = bounded.bytes.clone();
+    let _body_lease = bounded._lease;
     let value: Value = match serde_json::from_slice(&raw) {
         Ok(value) => value,
         Err(_) => {
