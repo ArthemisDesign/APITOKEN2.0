@@ -91,6 +91,39 @@ curl -fsS \
   -H "content-type: application/json" \
   -d "{\"batch\":{\"displayName\":\"JSONL summaries\",\"inputConfig\":{\"fileName\":\"$FILE_NAME\"}}}"`;
 
+export const GEMINI_BATCH_MANAGE_CURL = `# List Batches (save nextPageToken for the next page).
+curl -fsS "$GEMINI_BASE/v1beta/batches?pageSize=20" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"
+
+# Read one operation. BATCH_NAME is the complete batches/{id} from create.
+curl -fsS "$GEMINI_BASE/v1beta/$BATCH_NAME" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"
+
+# Request cancellation. Items already dispatched may still finish.
+curl -fsS -X POST "$GEMINI_BASE/v1beta/$BATCH_NAME:cancel" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY" \
+  -H "content-type: application/json" -d '{}'
+
+# Delete only after the operation is terminal.
+curl -fsS -X DELETE "$GEMINI_BASE/v1beta/$BATCH_NAME" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"
+
+# Files list supports pageSize, but currently has no pageToken.
+curl -fsS "$GEMINI_BASE/v1beta/files?pageSize=20" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"
+
+FILE_ID="file-…" # ID without the files/ prefix
+curl -fsS "$GEMINI_BASE/v1beta/files/$FILE_ID" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"
+
+# Public download supports active files up to 20 MiB.
+curl -fsS "$GEMINI_BASE/v1beta/files/$FILE_ID:download" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY" -o downloaded.bin
+
+# Deletion fails while a live Batch references the file.
+curl -fsS -X DELETE "$GEMINI_BASE/v1beta/files/$FILE_ID" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"`;
+
 export const GEMINI_BATCH_PARSE_TS = `const operation = await response.json();
 if (!operation.done) {
   console.log("Still running:", operation.metadata?.state);

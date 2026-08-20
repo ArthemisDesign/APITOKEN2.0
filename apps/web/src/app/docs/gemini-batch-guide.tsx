@@ -8,6 +8,7 @@ import {
   GEMINI_BATCH_DIRECT_BASE,
   GEMINI_BATCH_ENDPOINTS,
   GEMINI_BATCH_JSONL,
+  GEMINI_BATCH_MANAGE_CURL,
   GEMINI_BATCH_PARSE_TS,
   GEMINI_BATCH_POLL_CURL,
   GEMINI_BATCH_ROUTER_BASE,
@@ -86,6 +87,9 @@ export function GeminiBatchGuide({ language }: { language: DocsLanguage }) {
       <BatchCodeCard language={language} title={tr(language, "3. Parse the terminal operation", "3. Разберите terminal operation")} text={tr(language,
         "Treat counters as decimal strings and parse them with BigInt. Do not treat done=true alone as proof that every item succeeded.",
         "Счётчики приходят десятичными строками — разбирайте их через BigInt. Само по себе done=true не означает успех каждого item.")} code={GEMINI_BATCH_PARSE_TS} label="TypeScript" />
+      <BatchCodeCard language={language} title={tr(language, "4. List, cancel and delete resources", "4. List, cancel и delete ресурсов")} text={tr(language,
+        "Use the complete batches/{id} name returned by create. Cancellation is best effort for already dispatched items; delete a Batch only after terminal state. Files are account-scoped and cannot be deleted while referenced by live work.",
+        "Используйте полное имя batches/{id} из create. Для уже отправленных items отмена работает best effort; удаляйте Batch только после terminal state. Файлы account-scoped и не удаляются, пока на них ссылается активное задание.")} code={GEMINI_BATCH_MANAGE_CURL} label="Bash · lifecycle" />
     </div>
 
     <h3>{tr(language, "Large input with JSONL", "Большой ввод через JSONL")}</h3>

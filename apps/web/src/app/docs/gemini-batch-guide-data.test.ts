@@ -4,6 +4,7 @@ import {
   GEMINI_BATCH_DIRECT_BASE,
   GEMINI_BATCH_ENDPOINTS,
   GEMINI_BATCH_JSONL,
+  GEMINI_BATCH_MANAGE_CURL,
   GEMINI_BATCH_PARSE_TS,
   GEMINI_BATCH_ROUTER_BASE,
   GEMINI_BATCH_UPLOAD_CURL,
@@ -34,6 +35,10 @@ describe("Gemini Batch public documentation contract", () => {
     expect(GEMINI_BATCH_UPLOAD_CURL).toContain('"fileName"');
     expect(GEMINI_BATCH_PARSE_TS).toContain("inlinedResponses");
     expect(GEMINI_BATCH_PARSE_TS).toContain("item.error");
+    expect(GEMINI_BATCH_MANAGE_CURL).toContain("$BATCH_NAME:cancel");
+    expect(GEMINI_BATCH_MANAGE_CURL).toContain("-X DELETE");
+    expect(GEMINI_BATCH_MANAGE_CURL).toContain(":download");
+    expect(GEMINI_BATCH_MANAGE_CURL).toContain("currently has no pageToken");
   });
 
   it("keeps machine-readable docs in parity with the HTML guide", () => {
