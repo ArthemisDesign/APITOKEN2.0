@@ -121,11 +121,17 @@ impl PgStore {
                 .context("Gemini Batch canceled hold overflow")
         })?;
         for row in &canceled {
-            if tx.execute(
+            let item_index = row.get::<_, i64>(0);
+            // Slot 2 first: deleting slot 1 may promote the peer slot-2 row into slot 1.
+            let mut deleted = tx.execute(
+                "DELETE FROM gemini_batch_profile_leases_slot2 WHERE job_id=$1 AND item_index=$2",
+                &[&job_id, &item_index],
+            )?;
+            deleted += tx.execute(
                 "DELETE FROM gemini_batch_profile_leases WHERE job_id=$1 AND item_index=$2",
-                &[&job_id, &row.get::<_, i64>(0)],
-            )? > 1
-            {
+                &[&job_id, &item_index],
+            )?;
+            if deleted > 1 {
                 bail!("Gemini Batch cancel deleted multiple profile leases")
             }
         }
@@ -175,13 +181,26 @@ impl PgStore {
         recovery: &crate::GeminiBatchRecoveryCandidate,
         intent: &GeminiBatchSettlementIntent,
     ) -> Result<()> {
-        if recovery.job_id != intent.job_id || recovery.item_index != intent.item_index
-            || recovery.request_id != intent.request_id || recovery.claim_generation != intent.claim_generation
-            || recovery.profile_id.is_empty() || recovery.disposition != intent.disposition
-            || recovery.terminal_state != intent.terminal_state || recovery.terminal_class != intent.terminal_class {
+        if recovery.job_id != intent.job_id
+            || recovery.item_index != intent.item_index
+            || recovery.request_id != intent.request_id
+            || recovery.claim_generation != intent.claim_generation
+            || recovery.profile_id.is_empty()
+            || recovery.disposition != intent.disposition
+            || recovery.terminal_state != intent.terminal_state
+            || recovery.terminal_class != intent.terminal_class
+        {
             bail!("Gemini Batch recovery settlement mismatch")
         }
-        let claim = crate::GeminiBatchClaim { job_id: recovery.job_id.clone(), account_id: recovery.account_id.clone(), item_index: recovery.item_index, request_id: recovery.request_id.clone(), claim_generation: recovery.claim_generation, lease_until: 0, profile_id: recovery.profile_id.clone() };
+        let claim = crate::GeminiBatchClaim {
+            job_id: recovery.job_id.clone(),
+            account_id: recovery.account_id.clone(),
+            item_index: recovery.item_index,
+            request_id: recovery.request_id.clone(),
+            claim_generation: recovery.claim_generation,
+            lease_until: 0,
+            profile_id: recovery.profile_id.clone(),
+        };
         self.enqueue_gemini_batch_settlement_inner(None, &claim, intent)
     }
 
@@ -204,15 +223,21 @@ impl PgStore {
             "SELECT pg_advisory_xact_lock(hashtextextended($1, 8485412))",
             &[&intent.request_id],
         )?;
-        if let Some(owner) = owner { Self::assert_owner_locked(&mut tx, owner, now())?; }
+        if let Some(owner) = owner {
+            Self::assert_owner_locked(&mut tx, owner, now())?;
+        }
         let Some(item) = tx.query_opt(
             "SELECT state,claim_generation,worker_instance,worker_epoch,selected_profile_id FROM gemini_batch_items WHERE job_id=$1 AND item_index=$2 AND request_id=$3 FOR UPDATE",
             &[&intent.job_id, &intent.item_index, &intent.request_id],
         )? else {
             bail!("Gemini Batch settlement item does not exist")
         };
-        let worker_instance: String = item.get::<_, Option<String>>(2).context("Gemini Batch settlement worker is missing")?;
-        let worker_epoch: i64 = item.get::<_, Option<i64>>(3).context("Gemini Batch settlement epoch is missing")?;
+        let worker_instance: String = item
+            .get::<_, Option<String>>(2)
+            .context("Gemini Batch settlement worker is missing")?;
+        let worker_epoch: i64 = item
+            .get::<_, Option<i64>>(3)
+            .context("Gemini Batch settlement epoch is missing")?;
         if let Some(owner) = owner {
             if worker_instance != owner.instance_id || worker_epoch != owner.epoch { bail!("Gemini Batch settlement owner fence is stale") }
         } else if tx.query_opt("SELECT 1 FROM engine_instances WHERE instance_id=$1 AND owner_epoch=$2 AND lease_until >= $3", &[&worker_instance,&worker_epoch,&now()])?.is_some() {
@@ -227,11 +252,13 @@ impl PgStore {
         {
             bail!("Gemini Batch settlement fence is stale")
         }
-        let lease = tx.query_opt(
-            "SELECT lease_until FROM gemini_batch_profile_leases WHERE profile_id=$1 AND job_id=$2 AND item_index=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6 FOR UPDATE",
-            &[&claim.profile_id, &claim.job_id, &claim.item_index, &worker_instance, &worker_epoch, &claim.claim_generation],
+        let lease_count = super::gemini_batch_claims::lock_gemini_batch_profile_lease(
+            &mut tx,
+            claim,
+            &worker_instance,
+            worker_epoch,
         )?;
-        if lease.is_none() {
+        if lease_count != 1 {
             bail!("Gemini Batch settlement profile lease is stale")
         }
         let blob = &intent.result_blob;
@@ -291,7 +318,7 @@ impl PgStore {
             "SELECT pg_advisory_xact_lock(hashtextextended($1, 8485412))",
             &[&request_id],
         )?;
-        let Some(r) = tx.query_opt("SELECT o.job_id,o.item_index,o.actual_nano,o.charge_basis_nano,o.real_nano,o.disposition,o.terminal_state,o.state,i.hold_nano,j.account_id,i.creator_key_id,i.payable_multiplier_bp,j.public_model,i.selected_profile_id,o.usage_input_tokens,o.usage_tool_prompt_tokens,o.usage_audio_input_tokens,o.usage_cached_input_tokens,o.usage_cached_audio_input_tokens,o.usage_output_tokens,o.usage_thinking_output_tokens,o.usage_image_output_tokens,o.usage_search_queries,o.usage_grounded_search_prompts,o.result_kind,o.created_ts,o.calibration_profile_id,o.calibration_model_id,o.calibration_service_tier,o.calibration_inference_geo,o.calibration_tariff_schedule_id,o.calibration_priced_ts,o.calibration_completed_at,o.calibration_input_tokens,o.calibration_audio_input_tokens,o.calibration_cache_read_tokens,o.calibration_cached_audio_input_tokens,o.calibration_cache_write_5m_tokens,o.calibration_cache_write_1h_tokens,o.calibration_output_tokens,o.calibration_thinking_output_tokens,o.calibration_image_output_tokens,o.calibration_tool_prompt_tokens,o.calibration_search_queries,o.calibration_grounded_search_prompts,o.calibration_api_input_nanousd,o.calibration_api_audio_input_nanousd,o.calibration_api_cache_read_nanousd,o.calibration_api_cached_audio_input_nanousd,o.calibration_api_cache_write_5m_nanousd,o.calibration_api_cache_write_1h_nanousd,o.calibration_api_output_nanousd,o.calibration_api_image_output_nanousd,o.calibration_api_search_nanousd,o.calibration_api_total_nanousd FROM gemini_batch_settlement_outbox o JOIN gemini_batch_items i ON(i.job_id=o.job_id AND i.item_index=o.item_index AND i.request_id=o.request_id) JOIN gemini_batch_jobs j ON j.job_id=o.job_id WHERE o.request_id=$1 FOR UPDATE OF o,i,j", &[&request_id])? else {
+        let Some(r) = tx.query_opt("SELECT o.job_id,o.item_index,o.actual_nano,o.charge_basis_nano,o.real_nano,o.disposition,o.terminal_state,o.state,i.hold_nano,j.account_id,i.creator_key_id,i.payable_multiplier_bp,j.public_model,i.selected_profile_id,o.usage_input_tokens,o.usage_tool_prompt_tokens,o.usage_audio_input_tokens,o.usage_cached_input_tokens,o.usage_cached_audio_input_tokens,o.usage_output_tokens,o.usage_thinking_output_tokens,o.usage_image_output_tokens,o.usage_search_queries,o.usage_grounded_search_prompts,o.result_kind,o.created_ts,o.calibration_profile_id,o.calibration_model_id,o.calibration_service_tier,o.calibration_inference_geo,o.calibration_tariff_schedule_id,o.calibration_priced_ts,o.calibration_completed_at,o.calibration_input_tokens,o.calibration_audio_input_tokens,o.calibration_cache_read_tokens,o.calibration_cached_audio_input_tokens,o.calibration_cache_write_5m_tokens,o.calibration_cache_write_1h_tokens,o.calibration_output_tokens,o.calibration_thinking_output_tokens,o.calibration_image_output_tokens,o.calibration_tool_prompt_tokens,o.calibration_search_queries,o.calibration_grounded_search_prompts,o.calibration_api_input_nanousd,o.calibration_api_audio_input_nanousd,o.calibration_api_cache_read_nanousd,o.calibration_api_cached_audio_input_nanousd,o.calibration_api_cache_write_5m_nanousd,o.calibration_api_cache_write_1h_nanousd,o.calibration_api_output_nanousd,o.calibration_api_image_output_nanousd,o.calibration_api_search_nanousd,o.calibration_api_total_nanousd,i.worker_instance,i.worker_epoch,i.claim_generation FROM gemini_batch_settlement_outbox o JOIN gemini_batch_items i ON(i.job_id=o.job_id AND i.item_index=o.item_index AND i.request_id=o.request_id) JOIN gemini_batch_jobs j ON j.job_id=o.job_id WHERE o.request_id=$1 FOR UPDATE OF o,i,j", &[&request_id])? else {
             return Ok(None);
         };
         let account_id: String = r.get(9);
@@ -367,10 +394,16 @@ impl PgStore {
         let usage = usage_from_row(&r, 14);
         let calibration = calibration_from_row(&r, 26, request_id);
         if measured {
-            let usage = usage.as_ref().context("Gemini Batch settlement usage is missing")?;
-            let calibration = calibration.as_ref().context("Gemini Batch settlement calibration is missing")?;
+            let usage = usage
+                .as_ref()
+                .context("Gemini Batch settlement usage is missing")?;
+            let calibration = calibration
+                .as_ref()
+                .context("Gemini Batch settlement calibration is missing")?;
             crate::validate_provider_turn_calibration_event(calibration)?;
-            if calibration.subject_id != r.get::<_, Option<String>>(13).context("Gemini Batch settlement profile is missing")?
+            if calibration.subject_id
+                != r.get::<_, Option<String>>(13)
+                    .context("Gemini Batch settlement profile is missing")?
                 || calibration.model_id != r.get::<_, String>(12)
                 || calibration.tariff_schedule_id.is_empty()
                 || calibration.completed_at != r.get::<_, i64>(25)
@@ -384,7 +417,9 @@ impl PgStore {
                 || calibration.image_output_tokens != usage.image_output_tokens
                 || calibration.search_queries != usage.search_queries
                 || calibration.grounded_search_prompts != usage.grounded_search_prompts
-            { bail!("Gemini Batch settlement usage/calibration mismatch") }
+            {
+                bail!("Gemini Batch settlement usage/calibration mismatch")
+            }
         } else if usage.is_some() || calibration.is_some() {
             bail!("Gemini Batch unmeasured settlement carries measured evidence")
         }
@@ -402,7 +437,11 @@ impl PgStore {
         let balance = collection.balance_nano;
         let uncollected = collection.uncollected_nano;
         let key_changed = tx.execute("UPDATE api_keys SET spent_nano=(spent_nano::numeric+$1::bigint::numeric)::bigint,reserved_nano=reserved_nano-$2 WHERE key_id=$3 AND account_id=$4 AND reserved_nano >= $2", &[&actual, &hold, &key_id, &account_id])?;
-        if key_changed != 1 && tx.query_opt("SELECT 1 FROM api_keys WHERE key_id=$1", &[&key_id])?.is_some() {
+        if key_changed != 1
+            && tx
+                .query_opt("SELECT 1 FROM api_keys WHERE key_id=$1", &[&key_id])?
+                .is_some()
+        {
             bail!("Gemini Batch settlement key reservation mismatch")
         }
         if actual > 0 {
@@ -421,10 +460,21 @@ impl PgStore {
         }
         if measured {
             let usage = usage.as_ref().expect("measured usage validated");
-            let calibration = calibration.as_ref().expect("measured calibration validated");
-            let usage_input = usage.input_tokens.checked_add(usage.audio_input_tokens).context("Gemini Batch usage input overflow")?;
-            let usage_cache = usage.cached_input_tokens.checked_add(usage.cached_audio_input_tokens).context("Gemini Batch usage cache overflow")?;
-            let usage_output = usage.output_tokens.checked_add(usage.image_output_tokens).context("Gemini Batch usage output overflow")?;
+            let calibration = calibration
+                .as_ref()
+                .expect("measured calibration validated");
+            let usage_input = usage
+                .input_tokens
+                .checked_add(usage.audio_input_tokens)
+                .context("Gemini Batch usage input overflow")?;
+            let usage_cache = usage
+                .cached_input_tokens
+                .checked_add(usage.cached_audio_input_tokens)
+                .context("Gemini Batch usage cache overflow")?;
+            let usage_output = usage
+                .output_tokens
+                .checked_add(usage.image_output_tokens)
+                .context("Gemini Batch usage output overflow")?;
             let usage_search = usage.search_queries.max(usage.grounded_search_prompts);
             if tx.execute("INSERT INTO usage_events(request_id,account_id,key_id,model,input_tokens,output_tokens,cache_read_tokens,web_search_requests,real_nano,charge_nano,ts,provider,payable_multiplier_bp,uncollected_nano,charge_basis_nano) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'google',$12,$13,$14) ON CONFLICT(request_id) DO NOTHING", &[&request_id, &account_id, &key_id, &model, &usage_input, &usage_output, &usage_cache, &usage_search, &real, &actual, &ts, &mult, &uncollected, &charge_basis])? != 1 { bail!("Gemini Batch settlement usage key survived with inconsistent replay") }
             let calibration_spend =
@@ -433,11 +483,37 @@ impl PgStore {
                 bail!("Gemini Batch settlement calibration already existed before APPLY")
             }
         }
-        let terminal_class = match terminal.as_str() { "succeeded" => "success", "canceled" => "canceled", "indeterminate" => "indeterminate", _ => "expired" };
+        let terminal_class = match terminal.as_str() {
+            "succeeded" => "success",
+            "canceled" => "canceled",
+            "indeterminate" => "indeterminate",
+            _ => "expired",
+        };
         if tx.execute("UPDATE gemini_batch_items SET state=$3,terminal_class=$4,terminal_ts=$5,updated_ts=$5,usage_input_tokens=$6,usage_tool_prompt_tokens=$7,usage_audio_input_tokens=$8,usage_cached_input_tokens=$9,usage_cached_audio_input_tokens=$10,usage_output_tokens=$11,usage_thinking_output_tokens=$12,usage_image_output_tokens=$13,usage_search_queries=$14,usage_grounded_search_prompts=$15,worker_instance=NULL,worker_epoch=NULL,lease_until=NULL,selected_profile_id=NULL WHERE job_id=$1 AND item_index=$2 AND request_id=$16 AND state='settlement_pending' AND settlement_id=$16", &[&job_id,&item_index,&terminal,&terminal_class,&ts,&usage.as_ref().map(|v|v.input_tokens),&usage.as_ref().map(|v|v.tool_prompt_tokens),&usage.as_ref().map(|v|v.audio_input_tokens),&usage.as_ref().map(|v|v.cached_input_tokens),&usage.as_ref().map(|v|v.cached_audio_input_tokens),&usage.as_ref().map(|v|v.output_tokens),&usage.as_ref().map(|v|v.thinking_output_tokens),&usage.as_ref().map(|v|v.image_output_tokens),&usage.as_ref().map(|v|v.search_queries),&usage.as_ref().map(|v|v.grounded_search_prompts),&request_id])? != 1 { bail!("Gemini Batch settlement item terminalization failed") }
-        if tx.execute(
-            "DELETE FROM gemini_batch_profile_leases WHERE job_id=$1 AND item_index=$2",
-            &[&job_id, &item_index],
+        let claim = crate::GeminiBatchClaim {
+            job_id: job_id.clone(),
+            account_id: account_id.clone(),
+            item_index,
+            request_id: request_id.to_owned(),
+            claim_generation: r
+                .get::<_, Option<i64>>(57)
+                .context("Gemini Batch settlement claim generation is missing")?,
+            lease_until: 0,
+            profile_id: r
+                .get::<_, Option<String>>(13)
+                .context("Gemini Batch settlement profile is missing")?,
+        };
+        let worker_instance: String = r
+            .get::<_, Option<String>>(55)
+            .context("Gemini Batch settlement worker is missing")?;
+        let worker_epoch: i64 = r
+            .get::<_, Option<i64>>(56)
+            .context("Gemini Batch settlement epoch is missing")?;
+        if super::gemini_batch_claims::delete_gemini_batch_profile_lease(
+            &mut tx,
+            &claim,
+            &worker_instance,
+            worker_epoch,
         )? != 1
         {
             bail!("Gemini Batch settlement profile lease is missing")

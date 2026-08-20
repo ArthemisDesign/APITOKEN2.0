@@ -7,6 +7,93 @@ use crate::gemini_batch::{
     GEMINI_BATCH_DISPATCH_LEADER, MAX_BATCH_ACTIVE_ITEMS_PER_ACCOUNT,
 };
 use anyhow::{bail, Result};
+use postgres::Transaction;
+
+pub(super) fn lock_gemini_batch_profile_lease(
+    tx: &mut Transaction<'_>,
+    claim: &GeminiBatchClaim,
+    worker_instance: &str,
+    worker_epoch: i64,
+) -> Result<usize> {
+    let params: [&(dyn postgres::types::ToSql + Sync); 6] = [
+        &claim.profile_id,
+        &claim.job_id,
+        &claim.item_index,
+        &worker_instance,
+        &worker_epoch,
+        &claim.claim_generation,
+    ];
+    let mut count = usize::from(
+        tx.query_opt(
+            "SELECT 1 FROM gemini_batch_profile_leases WHERE profile_id=$1 AND job_id=$2 AND item_index=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6 FOR UPDATE",
+            &params,
+        )?
+        .is_some(),
+    );
+    count += usize::from(
+        tx.query_opt(
+            "SELECT 1 FROM gemini_batch_profile_leases_slot2 WHERE profile_id=$1 AND job_id=$2 AND item_index=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6 FOR UPDATE",
+            &params,
+        )?
+        .is_some(),
+    );
+    Ok(count)
+}
+
+pub(super) fn renew_gemini_batch_profile_lease(
+    tx: &mut Transaction<'_>,
+    claim: &GeminiBatchClaim,
+    worker_instance: &str,
+    worker_epoch: i64,
+    lease_until: i64,
+    ts: i64,
+) -> Result<usize> {
+    let params: [&(dyn postgres::types::ToSql + Sync); 8] = [
+        &claim.profile_id,
+        &claim.job_id,
+        &claim.item_index,
+        &worker_instance,
+        &worker_epoch,
+        &claim.claim_generation,
+        &lease_until,
+        &ts,
+    ];
+    let mut changed = tx.execute(
+        "UPDATE gemini_batch_profile_leases SET lease_until=$7,updated_ts=$8 WHERE profile_id=$1 AND job_id=$2 AND item_index=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6",
+        &params,
+    )? as usize;
+    changed += tx.execute(
+        "UPDATE gemini_batch_profile_leases_slot2 SET lease_until=$7,updated_ts=$8 WHERE profile_id=$1 AND job_id=$2 AND item_index=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6",
+        &params,
+    )? as usize;
+    Ok(changed)
+}
+
+pub(super) fn delete_gemini_batch_profile_lease(
+    tx: &mut Transaction<'_>,
+    claim: &GeminiBatchClaim,
+    worker_instance: &str,
+    worker_epoch: i64,
+) -> Result<usize> {
+    let params: [&(dyn postgres::types::ToSql + Sync); 6] = [
+        &claim.profile_id,
+        &claim.job_id,
+        &claim.item_index,
+        &worker_instance,
+        &worker_epoch,
+        &claim.claim_generation,
+    ];
+    // Slot 2 first: deleting slot 1 may promote the peer slot-2 lease into slot 1.
+    let mut changed = tx.execute(
+        "DELETE FROM gemini_batch_profile_leases_slot2 WHERE profile_id=$1 AND job_id=$2 AND item_index=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6",
+        &params,
+    )? as usize;
+    changed += tx.execute(
+        "DELETE FROM gemini_batch_profile_leases WHERE profile_id=$1 AND job_id=$2 AND item_index=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6",
+        &params,
+    )? as usize;
+    Ok(changed)
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GeminiBatchReconcileReport {
@@ -65,50 +152,53 @@ impl PgStore {
             return Ok(None);
         }
 
-        let profile_available = tx
+        // Reclaim only leases whose exact owner generation no longer has a live heartbeat. Slot 2
+        // is deleted first because deleting slot 1 can promote a surviving slot-2 lease into it.
+        for table in [
+            "gemini_batch_profile_leases_slot2",
+            "gemini_batch_profile_leases",
+        ] {
+            tx.execute(
+                &format!(
+                    "DELETE FROM {table} lease WHERE lease.profile_id=$1
+                       AND NOT EXISTS (
+                         SELECT 1 FROM engine_instances instance
+                          WHERE instance.instance_id=lease.worker_instance
+                            AND instance.owner_epoch=lease.worker_epoch
+                            AND instance.lease_until >= $2)
+                       AND NOT EXISTS (
+                         SELECT 1 FROM gemini_batch_items item
+                          WHERE item.job_id=lease.job_id
+                            AND item.item_index=lease.item_index
+                            AND item.worker_instance=lease.worker_instance
+                            AND item.worker_epoch=lease.worker_epoch
+                            AND item.claim_generation=lease.claim_generation
+                            AND item.state IN ('dispatching','settlement_pending'))"
+                ),
+                &[&profile_id, &ts],
+            )?;
+        }
+        let slot1_exists = tx
             .query_opt(
-                "SELECT 1
-                   FROM gemini_batch_profile_leases lease
-              LEFT JOIN engine_instances instance
-                     ON instance.instance_id=lease.worker_instance
-                    AND instance.owner_epoch=lease.worker_epoch
-                  WHERE lease.profile_id=$1
-                    AND NOT (
-                        lease.worker_instance=$2
-                        AND lease.worker_epoch=$3
-                        AND lease.job_id IN (
-                            SELECT item.job_id
-                              FROM gemini_batch_items item
-                             WHERE item.job_id=lease.job_id
-                               AND item.item_index=lease.item_index
-                               AND item.worker_instance=$2
-                               AND item.worker_epoch=$3
-                               AND item.claim_generation=lease.claim_generation
-                               AND item.state IN ('claimed','dispatching','settlement_pending')
-                        )
-                    )
-                    AND (instance.instance_id IS NULL OR instance.lease_until < $4)
-                  FOR UPDATE OF lease",
-                &[&profile_id, &owner.instance_id, &owner.epoch, &ts],
-            )?
-            .is_some();
-        let profile_exists = tx
-            .query_opt(
-                "SELECT 1 FROM gemini_batch_profile_leases WHERE profile_id=$1",
+                "SELECT 1 FROM gemini_batch_profile_leases WHERE profile_id=$1 FOR UPDATE",
                 &[&profile_id],
             )?
             .is_some();
-        if profile_exists && !profile_available {
+        let slot2_exists = tx
+            .query_opt(
+                "SELECT 1 FROM gemini_batch_profile_leases_slot2 WHERE profile_id=$1 FOR UPDATE",
+                &[&profile_id],
+            )?
+            .is_some();
+        if slot1_exists && slot2_exists {
             tx.rollback()?;
             return Ok(None);
         }
-
-        if profile_exists {
-            tx.execute(
-                "DELETE FROM gemini_batch_profile_leases WHERE profile_id=$1",
-                &[&profile_id],
-            )?;
-        }
+        let lease_table = if slot1_exists {
+            "gemini_batch_profile_leases_slot2"
+        } else {
+            "gemini_batch_profile_leases"
+        };
 
         // The row lock and SKIP LOCKED make claims concurrent; the account/job round-robin key
         // prevents one large old batch from monopolizing every claim.
@@ -214,10 +304,12 @@ impl PgStore {
             bail!("Gemini Batch item claim lost its locked row");
         }
         tx.execute(
-            "INSERT INTO gemini_batch_profile_leases(
-                 profile_id,job_id,item_index,worker_instance,worker_epoch,
-                 claim_generation,lease_until,created_ts,updated_ts)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8)",
+            &format!(
+                "INSERT INTO {lease_table}(
+                     profile_id,job_id,item_index,worker_instance,worker_epoch,
+                     claim_generation,lease_until,created_ts,updated_ts)
+                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8)"
+            ),
             &[
                 &profile_id,
                 &job_id,
@@ -315,6 +407,11 @@ impl PgStore {
                      WHERE lease.profile_id=$9 AND lease.job_id=$1 AND lease.item_index=$2
                        AND lease.worker_instance=$4 AND lease.worker_epoch=$5
                        AND lease.claim_generation=$6
+                    UNION ALL
+                    SELECT 1 FROM gemini_batch_profile_leases_slot2 lease
+                     WHERE lease.profile_id=$9 AND lease.job_id=$1 AND lease.item_index=$2
+                       AND lease.worker_instance=$4 AND lease.worker_epoch=$5
+                       AND lease.claim_generation=$6
                 )",
             &[
                 &claim.job_id,
@@ -328,23 +425,18 @@ impl PgStore {
                 &claim.profile_id,
             ],
         )?;
-        if changed == 1 {
-            tx.execute(
-                "UPDATE gemini_batch_profile_leases
-                    SET lease_until=$7,updated_ts=$8
-                  WHERE profile_id=$1 AND job_id=$2 AND item_index=$3
-                    AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6",
-                &[
-                    &claim.profile_id,
-                    &claim.job_id,
-                    &claim.item_index,
-                    &owner.instance_id,
-                    &owner.epoch,
-                    &claim.claim_generation,
-                    &lease_until,
-                    &ts,
-                ],
-            )?;
+        if changed == 1
+            && renew_gemini_batch_profile_lease(
+                &mut tx,
+                claim,
+                &owner.instance_id,
+                owner.epoch,
+                lease_until,
+                ts,
+            )? != 1
+        {
+            tx.rollback()?;
+            return Ok(false);
         }
         tx.commit()?;
         Ok(changed == 1)
@@ -374,6 +466,11 @@ impl PgStore {
                      WHERE lease.profile_id=$9 AND lease.job_id=$1 AND lease.item_index=$2
                        AND lease.worker_instance=$4 AND lease.worker_epoch=$5
                        AND lease.claim_generation=$6
+                    UNION ALL
+                    SELECT 1 FROM gemini_batch_profile_leases_slot2 lease
+                     WHERE lease.profile_id=$9 AND lease.job_id=$1 AND lease.item_index=$2
+                       AND lease.worker_instance=$4 AND lease.worker_epoch=$5
+                       AND lease.claim_generation=$6
                 )",
             &[
                 &claim.job_id,
@@ -387,23 +484,18 @@ impl PgStore {
                 &claim.profile_id,
             ],
         )?;
-        if changed == 1 {
-            tx.execute(
-                "UPDATE gemini_batch_profile_leases
-                    SET lease_until=$7,updated_ts=$8
-                  WHERE profile_id=$1 AND job_id=$2 AND item_index=$3
-                    AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6",
-                &[
-                    &claim.profile_id,
-                    &claim.job_id,
-                    &claim.item_index,
-                    &owner.instance_id,
-                    &owner.epoch,
-                    &claim.claim_generation,
-                    &lease_until,
-                    &ts,
-                ],
-            )?;
+        if changed == 1
+            && renew_gemini_batch_profile_lease(
+                &mut tx,
+                claim,
+                &owner.instance_id,
+                owner.epoch,
+                lease_until,
+                ts,
+            )? != 1
+        {
+            tx.rollback()?;
+            return Ok(false);
         }
         tx.commit()?;
         Ok(changed == 1)
@@ -420,21 +512,13 @@ impl PgStore {
         let lease_until = ts.saturating_add(lease_secs.max(1));
         let mut tx = self.client.transaction()?;
         Self::assert_owner_locked(&mut tx, owner, ts)?;
-        let profile_changed = tx.execute(
-            "UPDATE gemini_batch_profile_leases
-                SET lease_until=$7,updated_ts=$8
-              WHERE profile_id=$1 AND job_id=$2 AND item_index=$3
-                AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6",
-            &[
-                &claim.profile_id,
-                &claim.job_id,
-                &claim.item_index,
-                &owner.instance_id,
-                &owner.epoch,
-                &claim.claim_generation,
-                &lease_until,
-                &ts,
-            ],
+        let profile_changed = renew_gemini_batch_profile_lease(
+            &mut tx,
+            claim,
+            &owner.instance_id,
+            owner.epoch,
+            lease_until,
+            ts,
         )?;
         if profile_changed != 1 {
             tx.rollback()?;
@@ -498,20 +582,11 @@ impl PgStore {
                 &claim.profile_id,
             ],
         )?;
-        if changed == 1 {
-            tx.execute(
-                "DELETE FROM gemini_batch_profile_leases
-                  WHERE profile_id=$1 AND job_id=$2 AND item_index=$3
-                    AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6",
-                &[
-                    &claim.profile_id,
-                    &claim.job_id,
-                    &claim.item_index,
-                    &owner.instance_id,
-                    &owner.epoch,
-                    &claim.claim_generation,
-                ],
-            )?;
+        if changed == 1
+            && delete_gemini_batch_profile_lease(&mut tx, claim, &owner.instance_id, owner.epoch)?
+                != 1
+        {
+            bail!("Gemini Batch requeue profile lease is missing")
         }
         tx.commit()?;
         Ok(changed == 1)
@@ -526,28 +601,29 @@ impl PgStore {
         let ts = now();
         let mut tx = self.client.transaction()?;
         Self::assert_owner_locked(&mut tx, owner, ts)?;
-        let changed = tx.execute(
-            "DELETE FROM gemini_batch_profile_leases lease
-              WHERE lease.profile_id=$1 AND lease.job_id=$2 AND lease.item_index=$3
-                AND lease.worker_instance=$4 AND lease.worker_epoch=$5
-                AND lease.claim_generation=$6
-                AND EXISTS (
-                    SELECT 1 FROM gemini_batch_items item
-                     WHERE item.job_id=$2 AND item.item_index=$3 AND item.request_id=$7
-                       AND item.worker_instance=$4 AND item.worker_epoch=$5
-                       AND item.claim_generation=$6 AND item.selected_profile_id=$1
-                       AND item.state IN ('settlement_pending','succeeded','failed','indeterminate','canceled')
-                )",
-            &[
-                &claim.profile_id,
-                &claim.job_id,
-                &claim.item_index,
-                &owner.instance_id,
-                &owner.epoch,
-                &claim.claim_generation,
-                &claim.request_id,
-            ],
-        )?;
+        let releasable = tx
+            .query_opt(
+                "SELECT 1 FROM gemini_batch_items item
+                  WHERE item.job_id=$1 AND item.item_index=$2 AND item.request_id=$3
+                    AND item.worker_instance=$4 AND item.worker_epoch=$5
+                    AND item.claim_generation=$6 AND item.selected_profile_id=$7
+                    AND item.state IN ('settlement_pending','succeeded','failed','indeterminate','canceled')",
+                &[
+                    &claim.job_id,
+                    &claim.item_index,
+                    &claim.request_id,
+                    &owner.instance_id,
+                    &owner.epoch,
+                    &claim.claim_generation,
+                    &claim.profile_id,
+                ],
+            )?
+            .is_some();
+        let changed = if releasable {
+            delete_gemini_batch_profile_lease(&mut tx, claim, &owner.instance_id, owner.epoch)?
+        } else {
+            0
+        };
         tx.commit()?;
         Ok(changed == 1)
     }
@@ -576,18 +652,25 @@ impl PgStore {
           LEFT JOIN engine_instances instance
                  ON instance.instance_id=item.worker_instance
                 AND instance.owner_epoch=item.worker_epoch
-               JOIN gemini_batch_profile_leases lease
-                 ON lease.job_id=item.job_id AND lease.item_index=item.item_index
-                AND lease.profile_id=item.selected_profile_id
-                AND lease.worker_instance=item.worker_instance
-                AND lease.worker_epoch=item.worker_epoch
-                AND lease.claim_generation=item.claim_generation
+               JOIN LATERAL (
+                    SELECT worker_instance,worker_epoch,claim_generation,lease_until
+                      FROM gemini_batch_profile_leases slot1
+                     WHERE slot1.job_id=item.job_id AND slot1.item_index=item.item_index
+                       AND slot1.profile_id=item.selected_profile_id
+                    UNION ALL
+                    SELECT worker_instance,worker_epoch,claim_generation,lease_until
+                      FROM gemini_batch_profile_leases_slot2 slot2
+                     WHERE slot2.job_id=item.job_id AND slot2.item_index=item.item_index
+                       AND slot2.profile_id=item.selected_profile_id
+                ) lease ON lease.worker_instance=item.worker_instance
+                       AND lease.worker_epoch=item.worker_epoch
+                       AND lease.claim_generation=item.claim_generation
               WHERE item.state IN ('claimed','dispatching')
                 AND item.lease_until < $1
                 AND lease.lease_until < $1
                 AND (instance.instance_id IS NULL OR instance.lease_until < $1)
               ORDER BY item.updated_ts,item.job_id,item.item_index
-              FOR UPDATE OF item,lease SKIP LOCKED
+              FOR UPDATE OF item SKIP LOCKED
               LIMIT $2",
             &[&ts, &(limit.clamp(1, 10_000) as i64)],
         )?;
@@ -617,6 +700,24 @@ impl PgStore {
             if !complete_profile_fence {
                 continue;
             }
+            let exact_claim = GeminiBatchClaim {
+                job_id: job_id.clone(),
+                account_id: account_id.clone(),
+                item_index,
+                request_id: request_id.clone(),
+                claim_generation,
+                lease_until: 0,
+                profile_id: profile_id.clone(),
+            };
+            if lock_gemini_batch_profile_lease(
+                &mut tx,
+                &exact_claim,
+                &lease_worker_instance,
+                lease_worker_epoch,
+            )? != 1
+            {
+                continue;
+            }
             let safe_before_dispatch = state == "claimed"
                 && dispatch_intent_ts.is_none()
                 && actual_send_ts.is_none()
@@ -637,6 +738,11 @@ impl PgStore {
                              WHERE lease.profile_id=$5 AND lease.job_id=$1 AND lease.item_index=$2
                                AND lease.worker_instance=$7 AND lease.worker_epoch=$8
                                AND lease.claim_generation=$4
+                            UNION ALL
+                            SELECT 1 FROM gemini_batch_profile_leases_slot2 lease
+                             WHERE lease.profile_id=$5 AND lease.job_id=$1 AND lease.item_index=$2
+                               AND lease.worker_instance=$7 AND lease.worker_epoch=$8
+                               AND lease.claim_generation=$4
                         )",
                     &[
                         &job_id,
@@ -650,19 +756,15 @@ impl PgStore {
                     ],
                 )?;
                 if changed == 1 {
-                    tx.execute(
-                        "DELETE FROM gemini_batch_profile_leases
-                          WHERE profile_id=$1 AND job_id=$2 AND item_index=$3
-                            AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6",
-                        &[
-                            &profile_id,
-                            &job_id,
-                            &item_index,
-                            &lease_worker_instance,
-                            &lease_worker_epoch,
-                            &claim_generation,
-                        ],
-                    )?;
+                    if delete_gemini_batch_profile_lease(
+                        &mut tx,
+                        &exact_claim,
+                        &lease_worker_instance,
+                        lease_worker_epoch,
+                    )? != 1
+                    {
+                        bail!("Gemini Batch reconcile profile lease is missing")
+                    }
                     report.requeued_before_dispatch += 1;
                 }
                 continue;

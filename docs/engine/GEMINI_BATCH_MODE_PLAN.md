@@ -276,7 +276,7 @@ PostgreSQL batch authority
   v
 batch scheduler leader
   | fair job selection
-  | one active batch item per Gemini profile
+  | two active batch items per Gemini profile
   | batch 5h headroom gate: remaining > 15% (§4.6)
   v
 existing Gemini pool/transport execution primitive
@@ -634,7 +634,7 @@ blue-green поколениям одновременно подбирать но
 - fair order между account/job, а не полное выжигание первого большого batch;
 - внутри job сохраняется item order только для результата, выполнение может быть out-of-order;
 - bounded global batch concurrency;
-- не более одного активного batch item на один profile;
+- не более двух активных batch items на один profile;
 - отдельные per-account active-job/item limits защищают fleet от одного клиента;
 - queued item с будущим `next_attempt_at` не блокирует другие jobs.
 
@@ -690,8 +690,8 @@ authenticated, freshness) дополнительно фильтрует канд
 Interactive `select_routed` остается байт-в-байт прежним: batch policy не течет в общий path.
 `GeminiGateway::select_routed` без affinity hints переиспользуется как база: batch items
 независимы, а цель режима — распределение. Hard quota/model cooling, authenticated status, fresh
-quota preference, inflight rank и round-robin сохраняются. Batch-specific per-profile active fence
-заставляет burst покрывать разные подписки; обычные interactive requests по-прежнему могут идти на
+quota preference, inflight rank и round-robin сохраняются. Batch-specific per-profile active fence допускает два item на подписку, после чего
+заставляет дальнейший burst покрывать другие подписки; обычные interactive requests по-прежнему могут идти на
 эти профили и не ждут batch semaphore. Когда все кандидаты отсеяны 5h-gate, scheduler не возвращает
 клиентскую ошибку: items остаются `queued`, а `next_attempt_at` выставляется по минимальному
 `resets_at` среди свежих 5h-snapshot'ов (или по bounded backoff, если ни один snapshot не свеж),
@@ -886,7 +886,7 @@ Exit gate: все money equations и restart cases доказаны на real Po
 - Реализовать batch 5h headroom gate (§4.6) как отдельный, unit-тестируемый предикат поверх
   profile eligibility: fixed-point порог, fail-closed stale/missing snapshot, bounded backoff по
   `resets_at`.
-- Подключить scheduler leader, fair claims, one-batch-item-per-profile и shutdown drain.
+- Подключить scheduler leader, fair claims, two-batch-items-per-profile и shutdown drain.
 - Реализовать Files API upload/get/list/delete/download с зашифрованным blob-хранилищем.
 - Оставить feature default-off; public parser продолжает возвращать 404.
 
@@ -1054,7 +1054,7 @@ router native passthrough tests, `cargo test --locked --workspace`, rotation and
 | Pricing | тот же normal tariff + account Google multiplier, без batch discount |
 | Admission | весь batch атомарно, per-item holds |
 | Affinity | выключена для независимых items; quota/inflight/cursor selection остается |
-| Concurrency | bounded global, один batch item на profile, interactive не блокируется |
+| Concurrency | bounded global, до двух batch items на profile, interactive не блокируется |
 | Batch 5h headroom | ПОДТВЕРЖДЕНО: batch dispatch только при `gemini-5h` remaining > 15% (config, default 15); fail-closed при stale/missing snapshot; weekly-окно вне gate |
 | Модели | без allowlist: все опубликованные текстовые Gemini-модели; image-output model вне MVP |
 | Контрактные фактуры | без live captures: публичные источники (§2); места без данных помечены **[не подтверждено]** и реализуются как наш дизайн |

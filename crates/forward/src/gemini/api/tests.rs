@@ -6033,7 +6033,7 @@ fn gemini_batch_public_handlers_postgres_lifecycle_files_and_account_isolation()
     let mut pg = registry::pg::PgStore::connect(&url).unwrap();
     pg.migrate().unwrap();
     sql.batch_execute(
-        "TRUNCATE gemini_batch_settlement_outbox,gemini_batch_profile_leases,gemini_batch_blobs,\
+        "TRUNCATE gemini_batch_settlement_outbox,gemini_batch_profile_leases_slot2,gemini_batch_profile_leases,gemini_batch_blobs,\
          gemini_batch_item_files,gemini_batch_items,gemini_batch_jobs,gemini_batch_file_chunks,\
          gemini_batch_files,request_facts,execution_group_winner,settlement_outbox,reservations,\
          capacity_leases,leader_leases,engine_instances,usage_events,ledger,api_keys,accounts \

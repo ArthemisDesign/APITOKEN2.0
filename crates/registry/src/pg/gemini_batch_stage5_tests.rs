@@ -106,7 +106,8 @@ fn stage5_lock_and_store() -> Option<(PgStore, PgStore)> {
 fn stage5_cleanup(pg: &mut PgStore) {
     pg.client
         .batch_execute(
-            "DELETE FROM gemini_batch_profile_leases WHERE job_id LIKE 'stage5-%';
+            "DELETE FROM gemini_batch_profile_leases_slot2 WHERE job_id LIKE 'stage5-%';
+             DELETE FROM gemini_batch_profile_leases WHERE job_id LIKE 'stage5-%';
              DELETE FROM gemini_batch_settlement_outbox WHERE job_id LIKE 'stage5-%';
              DELETE FROM gemini_batch_blobs WHERE job_id LIKE 'stage5-%';
              DELETE FROM gemini_batch_items WHERE job_id LIKE 'stage5-%';
@@ -160,7 +161,12 @@ fn stage5_resilience_postgres_matrix() {
             crate::GeminiBatchCreateOutcome::Created { .. }
         ));
         let owner = pg.claim_instance(&owner_name, 600).unwrap();
-        pg.client.execute("DELETE FROM leader_leases WHERE name=$1", &[&crate::GEMINI_BATCH_DISPATCH_LEADER]).unwrap();
+        pg.client
+            .execute(
+                "DELETE FROM leader_leases WHERE name=$1",
+                &[&crate::GEMINI_BATCH_DISPATCH_LEADER],
+            )
+            .unwrap();
         assert!(pg.acquire_gemini_batch_leader(&owner, 600).unwrap());
         let claimed = pg
             .claim_gemini_batch_item(&owner, &profile, "gemini-2.5-flash", 600)
@@ -243,6 +249,12 @@ fn stage5_resilience_postgres_matrix() {
             .unwrap();
         pg.client
             .execute(
+                "UPDATE gemini_batch_profile_leases_slot2 SET lease_until=0 WHERE profile_id=$1",
+                &[&claim.profile_id],
+            )
+            .unwrap();
+        pg.client
+            .execute(
                 "UPDATE engine_instances SET lease_until=0 WHERE instance_id=$1",
                 &[&owner.instance_id],
             )
@@ -260,7 +272,12 @@ fn stage5_resilience_postgres_matrix() {
                 assert_eq!(report.requeued_before_dispatch, 1);
                 assert!(report.recovery_candidates.is_empty());
                 let restart_owner = pg.claim_instance(&replacement_name, 600).unwrap();
-                pg.client.execute("UPDATE leader_leases SET lease_until=0 WHERE name=$1", &[&crate::GEMINI_BATCH_DISPATCH_LEADER]).unwrap();
+                pg.client
+                    .execute(
+                        "UPDATE leader_leases SET lease_until=0 WHERE name=$1",
+                        &[&crate::GEMINI_BATCH_DISPATCH_LEADER],
+                    )
+                    .unwrap();
                 assert!(pg.acquire_gemini_batch_leader(&restart_owner, 600).unwrap());
                 let restarted = pg
                     .claim_gemini_batch_item(
@@ -315,7 +332,12 @@ fn stage5_resilience_postgres_matrix() {
     let cancel_create = stage5_create(cancel_job, &account, &key_id, cancel_job, ts, 2);
     pg.gemini_batch_create(&cancel_create, &raw_key).unwrap();
     let owner = pg.claim_instance("stage5-owner-cancel", 600).unwrap();
-    pg.client.execute("DELETE FROM leader_leases WHERE name=$1", &[&crate::GEMINI_BATCH_DISPATCH_LEADER]).unwrap();
+    pg.client
+        .execute(
+            "DELETE FROM leader_leases WHERE name=$1",
+            &[&crate::GEMINI_BATCH_DISPATCH_LEADER],
+        )
+        .unwrap();
     assert!(pg.acquire_gemini_batch_leader(&owner, 600).unwrap());
     let claimed = pg
         .claim_gemini_batch_item(&owner, "stage5-profile-cancel", "gemini-2.5-flash", 600)
@@ -386,6 +408,48 @@ fn stage5_postgres_load_and_fairness() {
 
     let owner = pg.claim_instance("stage5-owner-load", 600).unwrap();
     assert!(pg.acquire_gemini_batch_leader(&owner, 600).unwrap());
+
+    let first = pg
+        .claim_gemini_batch_item(&owner, "stage5-profile-two-slot", "gemini-2.5-flash", 600)
+        .unwrap()
+        .unwrap();
+    let second = pg
+        .claim_gemini_batch_item(&owner, "stage5-profile-two-slot", "gemini-2.5-flash", 600)
+        .unwrap()
+        .unwrap();
+    assert_ne!(first.claim.request_id, second.claim.request_id);
+    assert!(pg
+        .claim_gemini_batch_item(&owner, "stage5-profile-two-slot", "gemini-2.5-flash", 600,)
+        .unwrap()
+        .is_none());
+    let occupied: i64 = pg
+        .client
+        .query_one(
+            "SELECT (SELECT COUNT(*) FROM gemini_batch_profile_leases WHERE profile_id=$1)
+                  + (SELECT COUNT(*) FROM gemini_batch_profile_leases_slot2 WHERE profile_id=$1)",
+            &[&"stage5-profile-two-slot"],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(occupied, 2);
+    assert!(pg
+        .requeue_gemini_batch_claim(&owner, &first.claim, 0)
+        .unwrap());
+    let replacement = pg
+        .claim_gemini_batch_item(&owner, "stage5-profile-two-slot", "gemini-2.5-flash", 600)
+        .unwrap()
+        .unwrap();
+    assert_ne!(replacement.claim.request_id, second.claim.request_id);
+    assert!(pg
+        .renew_gemini_batch_claim(&owner, &second.claim, 600)
+        .unwrap());
+    assert!(pg
+        .requeue_gemini_batch_claim(&owner, &second.claim, 0)
+        .unwrap());
+    assert!(pg
+        .requeue_gemini_batch_claim(&owner, &replacement.claim, 0)
+        .unwrap());
+
     let mut claims = Vec::new();
     for index in 0..32 {
         let profile = if index % 2 == 0 {
@@ -428,7 +492,10 @@ fn stage5_postgres_load_and_fairness() {
     }
     let report = pg.gemini_batch_operational_report().unwrap();
     assert_eq!(report.queued_items, (item_count * 2) as i64);
-    assert_eq!(report.claimed_items + report.dispatching_items + report.settlement_pending_items, 0);
+    assert_eq!(
+        report.claimed_items + report.dispatching_items + report.settlement_pending_items,
+        0
+    );
     assert_eq!(report.windows.len(), 3);
     assert_eq!(report.reserved_hold_nano, (item_count * 2 * 100) as i64);
 
