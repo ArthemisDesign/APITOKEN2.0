@@ -614,9 +614,15 @@ the prerequisite exact SHA is production GREEN.
    `/metrics` exports closed lifecycle totals, the four safely derived duration histograms, fixed inbox
    capacity/depth/outcomes/persistence health and the PostgreSQL one-hour stuck count. The four exact
    alerts, Grafana panels and runbook anchors from §10 ship under the new metric checklist.
-10. **Run the 24-hour observation gate.** Compare the instrumented exact SHA with its approved
-    baseline and apply every threshold from §15. Any breach stops rollout and is fixed or rolled back
-    before the private Control API or any cross-context consumer.
+10. **Run the 24-hour observation gate — active.** Corrective production-GREEN SHA
+    `f35c841d1f82abe962ded6381da8b6e53f6109a6` began a fresh continuous window at
+    `2026-08-20 08:32:34 UTC` (`1787219554`). The first operations SHA was rejected because its fresh
+    inbox state falsely rendered unhealthy; it is not baseline evidence. After the full window,
+    `tests/request_observability_24h_gate.sh` requires the exact active SHA, continuous samples, healthy
+    persistence, zero stuck/lost facts, unchanged winner/balance invariants and no RequestFact alert.
+    It also refuses to compare latency or attributable error rate until the operator supplies the
+    approved baseline PromQL expressions, preventing absent baseline evidence from becoming a false
+    pass. Any breach restarts the window before private Control API or cross-context consumers.
 11. **Deliver private Control API producers.** Only after step 10 passes, add the three endpoints and
     coverage semantics from §9; update `docs/engine/CONTROL_API.md` and `docs/DEPENDENCIES.md` in the
     same producer commit, then wait for its exact SHA to be production GREEN.
