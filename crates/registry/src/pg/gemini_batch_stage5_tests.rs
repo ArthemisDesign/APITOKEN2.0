@@ -315,6 +315,7 @@ fn stage5_resilience_postgres_matrix() {
     let cancel_create = stage5_create(cancel_job, &account, &key_id, cancel_job, ts, 2);
     pg.gemini_batch_create(&cancel_create, &raw_key).unwrap();
     let owner = pg.claim_instance("stage5-owner-cancel", 600).unwrap();
+    pg.client.execute("DELETE FROM leader_leases WHERE name=$1", &[&crate::GEMINI_BATCH_DISPATCH_LEADER]).unwrap();
     assert!(pg.acquire_gemini_batch_leader(&owner, 600).unwrap());
     let claimed = pg
         .claim_gemini_batch_item(&owner, "stage5-profile-cancel", "gemini-2.5-flash", 600)

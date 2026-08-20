@@ -218,7 +218,7 @@ impl PgStore {
                 COUNT(chunk.*)::bigint
              FROM gemini_batch_file_chunks chunk
              JOIN gemini_batch_files file ON file.file_id=chunk.file_id
-             WHERE file.delete_ts IS NULL",
+             WHERE file.expiration_ts > floor(EXTRACT(EPOCH FROM clock_timestamp()))::bigint",
             &[],
         )?;
         Ok(crate::GeminiBatchOperationalReport {
