@@ -257,16 +257,15 @@ missing typed lifecycle extension, like a missing logical extension, omits the f
 fabricating evidence. No metric, public response/header identity, billing identity, execution-group
 semantics, or billable producer changes in this slice.
 
-**Request-observability structural definitions (stage 5 partial, dormant):**
+**Request-observability structural definitions (stage 5 complete):**
 `request_classification.rs` freezes the privacy-bounded v1 value contract and pure classifiers for
 already validated client shapes: Anthropic Messages, OpenAI Chat/Responses and canonical native
 Gemini GenerateContent. Anthropic native count_tokens classifies original client JSON before
 namespace/identity mutation but publishes those closed fields only after an upstream 2xx proves the
 native owning shape accepted. Gemini universal Messages consumes the Anthropic classifier only after
 its owning parser accepts; native Gemini consumes its canonical classifier only after native
-validation. Other classifiers
-remain dormant. Universal Chat/Responses must use their OpenAI classifiers before translation;
-Messages uses its Anthropic classifier before translation. Stage 6/7 producers must preserve that
+validation. Universal Chat/Responses use their OpenAI classifiers before translation; Messages uses
+its Anthropic classifier before translation. Every scoped Stage 6/7 producer preserves that
 client-intent boundary rather than classifying a degraded or gateway-injected translated shape. Evidence is limited to
 checked `i32` tool count, the seven registry-defined closed bits, closed choice mode with named choices
 stripped of the name, explicit parallel/result/structured/reasoning flags, reviewed Standard/Priority
@@ -283,10 +282,9 @@ top-level count. Native Responses selects a single validated `input.additional_t
 present (including beside an explicit empty top-level list); it is classified once and the later
 synthetic dynamic functions are never counted. The classifier stores no content, names, schemas, arguments, results, MCP labels,
 raw JSON, headers, metadata or other arbitrary strings; its fields are private, `Debug` is redacted and it has no
-serialization implementation. The narrow Anthropic/Gemini count_tokens and OpenAI native input_tokens producers are wired;
-remaining producer integration stays stage 6/7 and must preserve
-response/upstream bytes.
-Lifecycle clocks and output tool-call evidence remain separate later-producer work.
+serialization implementation. Every scoped count and text-generation producer is wired and preserves
+response/upstream bytes. Lifecycle clocks and output tool-call evidence stay separate from the pure
+classification values and are supplied only at their owning terminal seams.
 
 **Request lifecycle clock carrier (`execution.rs`, `crates/server/src/http.rs`):** each successfully
 admitted customer provider request owns a typed, redacted, once-only clock shared through the same

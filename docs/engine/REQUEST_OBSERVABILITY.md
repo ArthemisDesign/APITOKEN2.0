@@ -568,25 +568,24 @@ the prerequisite exact SHA is production GREEN.
    Gemini/Combined provider consumers/direct generators, and typed adapter propagation are deployed.
 4. **Router producer — complete.** Routed executable requests receive one operator-only logical ID,
    reused across fallback attempts and kept separate from billing and execution-group identities.
-5. **Freeze v1 classifiers — structural definitions and lifecycle observation seams complete; stage remains incomplete.**
+5. **Freeze v1 classifiers — complete.**
    The exact client-header grammar, fail-open normalization, empty reviewed-positive heuristic v1,
    typed adapter propagation, Codex count_tokens consumption, privacy-negative tests, closed structural
    contract, and pure already-validated Anthropic/OpenAI/Gemini shape classifiers are implemented.
-   Structural classifiers have narrow owning consumers for the completed count-token slices and native
-   billable Anthropic Messages; unowned route classifiers remain dormant. `tool_calls_in_output` is
-   terminal evidence only. The typed once-only lifecycle carrier, transparent final-public-body
+   Structural classifiers have owning consumers for every scoped count and generation route.
+   `tool_calls_in_output` remains terminal evidence only. The typed once-only lifecycle carrier, transparent final-public-body
    observer and nonwaiting atomic terminal seal are active. The seal closes an unobserved clock against
    later DATA without indefinite holding and accepts only safely ordered first-byte evidence. Native
-   Anthropic Messages now passes its carrier through TeeMeter settlement. Stage 7 still owns the
-   remaining billable producers, so this slice does not complete coverage or add a public response.
-6. **Complete nonbillable producers.** Cover exactly Anthropic native Messages
+   Anthropic Messages passes its carrier through TeeMeter settlement; the scoped OpenAI and Gemini
+   producers consume the same frozen contract without exposing a public response.
+6. **Complete nonbillable producers — complete.** Cover exactly Anthropic native Messages
    `POST /v1/messages/count_tokens`; OpenAI universal Messages `POST /v1/messages/count_tokens` plus
    native Responses `POST /v1/responses/input_tokens`; and Gemini universal Messages
    `POST /v1/messages/count_tokens` plus native `POST /v1beta/models/{model}:countTokens`. The
-   Codex/OpenAI universal Messages, OpenAI native Responses, and Anthropic native Messages callers
-   are the three completed slices. Discovery, stored-response
+   Codex/OpenAI universal Messages, OpenAI native Responses, Anthropic native Messages, Gemini
+   universal Messages, and Gemini native countTokens callers are complete. Discovery, stored-response
    reads, health, balance, catalogs, router/provider preflights, and auth helpers remain excluded.
-7. **Complete billable producers — started, Anthropic/OpenAI/Gemini text slices.** Native
+7. **Complete billable producers — complete.** Native
    Anthropic `POST /v1/messages` plus Anthropic-plane universal OpenAI Chat
    `POST /v1/chat/completions` and Responses `POST /v1/responses` now cover stream/nonstream local
    subscription attempts and the configured ClaudeStore Anthropic-wire fallback. Their immutable
@@ -602,8 +601,8 @@ the prerequisite exact SHA is production GREEN.
    Native Gemini `generateContent`/`streamGenerateContent` and its universal Chat/Responses/Messages
    adapters are also covered: each accepted outer adapter passes one typed content-free public origin
    into the synthesized native leaf, which admits one `universal` fact and never an extra native fact.
-   Remaining work must cover every other scoped customer-facing text-generation leaf route. A Combined
-   route creates only the underlying leaf fact and never an extra Combined fact.
+   This completes the locked v1 text-generation leaf matrix. A Combined route creates only the
+   underlying leaf fact and never an extra Combined fact.
    Backend-only KIMI and GLM, Tripo3D, Suno, images, embeddings, files, and batches remain outside v1.
    Future private API/UI responses declare `scope_version=1` for this exact matrix.
 8. **Pass the producer coverage gate.** Prove the route manifest mechanically against server/router
