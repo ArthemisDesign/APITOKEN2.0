@@ -114,3 +114,10 @@ SHA: failed candidate `58b19b30c598a3fc44d18b2012b79bec4b695259`; corrective SHA
 Отступления от плана: нет.
 Измерения: host 1 fixture RED (401 vs 200); isolated exact lifecycle 1/1 GREEN. Live spend $0; бюджет $10.
 Следующий шаг: новый exact candidate через merge gate; при повторе — читать host DB collision evidence, не replay paid run.
+
+## 2026-08-20 — Этап 5 (§6): controlled canary preflight blocked before spend
+SHA: runner `1643d28882d639c4f19ae966bcd34298345b1995`, production `deploy/watchdog` GREEN
+Результат: network-free dry-run GREEN и показал полный бюджет `10,000,000,000 nanoUSD`. Remote read-only prerequisite check через documented SSH target выполнен без вывода secret values: Gemini credential keyring присутствует, но `GEMINI_BATCH_STAGE5_API_KEY`, dedicated Batch data keyring и Batch-accessible database env отсутствуют в доступном `server.env`. Paid create не запускался; попытка и бюджет не потрачены.
+Отступления от плана: controlled live evidence заблокировано внешним provisioning test account/data keyring/DB env. Обход через forwarding-admin key запрещён: producer требует metered account и authoritative holds.
+Измерения: worst-case paid spend не вычислялся, потому что authoritative holds нельзя создать/прочитать без prerequisites. Settlement `$0.000000000`; остаток `$10.000000000`.
+Следующий шаг: provision remote-only test key, Batch data keyring и documented engine PostgreSQL env; затем exact-SHA free preflight и один paid create attempt.
