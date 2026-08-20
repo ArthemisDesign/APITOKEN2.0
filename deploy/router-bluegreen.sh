@@ -238,6 +238,7 @@ if [[ $TARGET_PORT != "$ACTIVE_PORT" ]]; then
     privileged_command "$PAYLOAD_GATE" "$(basename -- "$CURRENT_RELEASE")" \
       "http://127.0.0.1:$TARGET_PORT/v1/chat/completions" "$TARGET_UNIT" \
       "/run/claude-router-$TARGET_PORT" "$PAYLOAD_MEMORY_HIGH_BYTES" "$PAYLOAD_EVIDENCE_DIR" \
+      /srv/claude-api/data/large-payload-canary.authorization \
       || die "$TARGET_UNIT failed exact-SHA large-payload candidate evidence"
   fi
   # Make the verified target boot-durable before Caddy can commit traffic to it. Until promotion,

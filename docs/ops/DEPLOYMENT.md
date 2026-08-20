@@ -40,8 +40,11 @@ spool leaks are zero, peak is below MemoryHigh, and at least 20% MemoryMax headr
 root-installed `large-payload-candidate-gate.sh` composes snapshot→load→snapshot→verdict for the
 8/32/64 MiB concurrency-4 canary and atomically publishes the exact-SHA verdict. A release carrying
 the regular-file marker `.large-payload-canary-v1` must pass this gate on the inactive router slot
-after readiness and before enablement/Caddy promotion; failure leaves the old slot serving. The
-harness existing in a release is not evidence that these acceptance conditions passed.
+after readiness and before enablement/Caddy promotion; failure leaves the old slot serving. It reads
+an authenticated header value only from the fixed root-owned mode-0600
+`/srv/claude-api/data/large-payload-canary.authorization`; this lets auth preflight pass so the
+verdict proves body admission, without putting a credential in argv, evidence, logs, or repository.
+The harness existing in a release is not evidence that these acceptance conditions passed.
 
 ## Normal automatic delivery
 

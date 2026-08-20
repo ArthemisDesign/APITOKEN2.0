@@ -300,7 +300,8 @@ require_permitted 'Anthropic payload headroom gate' \
 require_permitted 'router large-payload candidate gate' \
   /usr/local/lib/apitoken-watchdog/controller/large-payload-candidate-gate.sh "$sample_sha" \
   http://127.0.0.1:8801/v1/chat/completions claude-router@8801.service \
-  /run/claude-router-8801 6442450944 /var/lib/apitoken/watchdog/large-payload
+  /run/claude-router-8801 6442450944 /var/lib/apitoken/watchdog/large-payload \
+  /srv/claude-api/data/large-payload-canary.authorization
 require_permitted 'retention helper' /usr/local/lib/apitoken-watchdog/watchdog-retention.sh 10
 require_permitted 'infrastructure runner' /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh "$sample_sha"
 require_permitted 'controller-only infrastructure runner' \
