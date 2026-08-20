@@ -479,7 +479,7 @@ impl PgStore {
         Self::assert_owner_locked(&mut tx, owner, ts)?;
         let changed = tx.execute(
             "UPDATE gemini_batch_items
-                SET state='queued',next_attempt_ts=GREATEST($7,0),worker_instance=NULL,
+                SET state='queued',next_attempt_ts=GREATEST($7::bigint,0::bigint),worker_instance=NULL,
                     worker_epoch=NULL,lease_until=NULL,selected_profile_id=NULL,updated_ts=$8
               WHERE job_id=$1 AND item_index=$2 AND request_id=$3
                 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6
