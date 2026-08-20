@@ -139,7 +139,8 @@ abort_cutover() {
 begin_cutover() {
   CUTOVER_ACTIVE=1
   trap 'abort_cutover "$?" ERR' ERR
-  trap 'abort_cutover "$?" EXIT' EXIT
+  # EXIT also fires on successful fall-through; abort_cutover coerces status 0 to failure. Recovery
+  # belongs on ERR/signals, while commit_cutover clears these traps after final verification.
   trap 'abort_cutover 130 INT' INT
   trap 'abort_cutover 143 TERM' TERM
 }

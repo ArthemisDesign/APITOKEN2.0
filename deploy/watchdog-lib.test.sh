@@ -3148,6 +3148,8 @@ for provider_unit in claude-api.service claude-api@.service claude-api-anthropic
   grep -Fxq 'RuntimeDirectoryMode=0700' "$ROOT/systemd/$provider_unit" \
     || wd_die "$provider_unit spool root is not mode 0700"
 done
+! grep -Fq "trap 'abort_cutover \"\$?\" EXIT' EXIT" "$ROOT/deploy/router-bluegreen.sh" \
+  || wd_die 'router success path is still converted into a cutover failure by EXIT trap'
 grep -Fq 'router-bluegreen.sh' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die "router blue-green controller is never installed"
 grep -Fq 'router-promote.sh' "$ROOT/deploy/install-watchdog.sh" \
