@@ -47,8 +47,8 @@ export function ModelsPricing({ language }: { language: Language }) {
       auth="x-goog-api-key"
       models={geminiModels}
       cacheNote={tr(language,
-        "Cached input bills at the cached-input rate (10% of input). `gemini-3.1-pro-preview` switches to long-context rates above 200K input tokens: 2× input and 1.5× output on the whole request. `gemini-3.1-flash-image` bills image output at $60 per 1M image tokens.",
-        "Кешированный ввод тарифицируется по ставке кешированного ввода (10% от ввода). `gemini-3.1-pro-preview` переключается на ставки длинного контекста свыше 200K входных токенов: 2× ввод и 1,5× вывод на весь запрос. `gemini-3.1-flash-image` тарифицирует вывод изображений по $60 за 1M токенов изображения.")}
+        "Cached input bills at the cached-input rate (10% of input). Gemini Batch uses the same standard Google token tariff and your normal account discount: there is no separate Google Batch discount or SLA. Dispatch pauses operationally before pooled subscription 5-hour usage exceeds 85%; that protects interactive capacity and is not a per-customer usage allowance. `gemini-3.1-pro-preview` switches to long-context rates above 200K input tokens, and `gemini-3.1-flash-image` is synchronous-only.",
+        "Кешированный ввод тарифицируется по ставке кешированного ввода (10% от ввода). Gemini Batch использует тот же стандартный токен-тариф Google и обычную скидку аккаунта: отдельной Google Batch-скидки или SLA нет. Dispatch операционно приостанавливается до превышения 85% использования 5-часового окна подписки пула; это защита interactive-мощности, а не клиентский лимит. `gemini-3.1-pro-preview` переключается на long-context ставки свыше 200K входных токенов, а `gemini-3.1-flash-image` доступна только синхронно.")}
     />
 
     <ProviderPanel

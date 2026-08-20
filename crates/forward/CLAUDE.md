@@ -621,7 +621,9 @@ Env for both is read only by `server::config`.
 `AppState.gemini_batch`, exact native batch and Files routes authorize before reading any body,
 atomically submit inline item holds through the dedicated authority actor, scope every read/mutation
 by account, and encrypt/decrypt file chunks through the Stage 3 keyring. The facade remains absent
-by default; discovery publication and production systemd enablement belong only to Stage 6.
+by default. Stage 6 composes it only in `claude-api-gemini@.service`; native ListModels/GetModel add
+`batchGenerateContent` only while `AppState.gemini_batch` contains that public facade, and never for
+the image-output model.
 
 **Cache-first routing without client opt-in (`affinity.rs`):** tenant = metered `account_id` (all keys
 of the account share the cache) or a separate admin scope. `AffinityStore::infer` is computed BEFORE identity injection.

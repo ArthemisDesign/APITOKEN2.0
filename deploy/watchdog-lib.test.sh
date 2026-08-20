@@ -2006,9 +2006,18 @@ grep -Fq 'CLAUDE_API_GEMINI_UPSTREAM=https://daily-cloudcode-pa.sandbox.googleap
 grep -Fxq 'ReadOnlyPaths=/srv/claude-api/data/gemini' \
   "$ROOT/systemd/claude-api-gemini.service"
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-gemini@.service"
+grep -Fq 'CLAUDE_API_GEMINI_BATCH_ENABLED=1 CLAUDE_API_GEMINI_BATCH_PUBLIC_ENABLED=1 CLAUDE_API_PRICING_BRIDGE_ENABLED=1' \
+  "$ROOT/systemd/claude-api-gemini@.service" \
+  || wd_die 'Gemini slot template does not compose reviewed Batch runtime/public flags'
 grep -Fq 'CLAUDE_API_PROVIDER=gemini CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i' \
   "$ROOT/systemd/claude-api-gemini@.service" \
   || wd_die 'Gemini slot template does not pin fixed provider mode and its instance port'
+! grep -Fq 'CLAUDE_API_GEMINI_BATCH_ENABLED=' "$ROOT/systemd/claude-api-gemini.service" \
+  || wd_die 'legacy Gemini rollback unit must not activate Batch'
+! grep -Fq 'CLAUDE_API_GEMINI_BATCH_PUBLIC_ENABLED=' "$ROOT/systemd/claude-api-gemini.service" \
+  || wd_die 'legacy Gemini rollback unit must not publish Batch'
+! grep -Fq 'CLAUDE_API_GEMINI_BATCH_DATA_KEYS=' "$ROOT/systemd/claude-api-gemini@.service" \
+  || wd_die 'Gemini slot template must rely on the server.env Batch data keyring'
 grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:gemini:%i' \
   "$ROOT/systemd/claude-api-gemini@.service" \
   || wd_die 'Gemini slot identities are not process-fenced by port'
@@ -2030,9 +2039,10 @@ grep -Fxq 'ReadOnlyPaths=/srv/claude-api/data/gemini' \
 legacy_gemini_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-gemini.service" \
   | sed -e 's/CLAUDE_API_PORT=8795/CLAUDE_API_PORT=%i/' \
     -e 's/CLAUDE_API_INSTANCE_ID=%H:engine:gemini /CLAUDE_API_INSTANCE_ID=%H:engine:gemini:%i /')
-slot_gemini_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-gemini@.service")
+slot_gemini_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-gemini@.service" \
+  | sed 's/CLAUDE_API_GEMINI_BATCH_ENABLED=1 CLAUDE_API_GEMINI_BATCH_PUBLIC_ENABLED=1 //')
 [[ $slot_gemini_exec == "$legacy_gemini_exec" ]] \
-  || wd_die 'Gemini slots drifted from the reviewed roster, catalog, upstream, or wire identity pins'
+  || wd_die 'Gemini slots drifted from the reviewed roster, catalog, upstream, or wire identity pins beyond Batch activation'
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-kimi.service"
 grep -Fq 'CLAUDE_API_PROVIDER=kimi CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8804' \
   "$ROOT/systemd/claude-api-kimi.service"
@@ -2386,7 +2396,9 @@ grep -Fq 'import openai_engine_backend' <<<"$openai_api_vhost"
 ! grep -Fq '/upload/v1beta/*' <<<"$openai_api_vhost" \
   || wd_die 'OpenAI public vhost exposes the Gemini upload perimeter'
 grep -Fq '@public_core path /v1beta/* /upload/v1beta/* /health /balance' <<<"$gemini_api_vhost" \
-  || wd_die 'Gemini public vhost lost its native upload perimeter'
+  || wd_die 'Gemini public vhost lost its native Batch/Files perimeter'
+grep -Fq 'import gemini_engine_backend' <<<"$gemini_api_vhost" \
+  || wd_die 'Gemini Batch/Files public paths bypass the stable Gemini backend'
 [[ $(grep -Fc 'encode zstd gzip {' <<<"$openai_api_vhost") == 1 ]] \
   || wd_die 'OpenAI public TLS boundary must have exactly one compression policy'
 grep -Fq 'minimum_length 512' <<<"$openai_api_vhost" \
@@ -2403,7 +2415,7 @@ grep -Fq '@public_core path /v1/messages* /v1/responses* /v1/chat/completions /v
   <<<"$router_vhost" \
   || wd_die 'unified router must forward exactly the documented public contract'
 grep -Fq 'import router_backend' <<<"$router_vhost" \
-  || wd_die 'unified router does not consume the atomically selected backend'
+  || wd_die 'unified router does not consume the atomically selected backend for Batch/Files paths'
 ! grep -Fq 'reverse_proxy' <<<"$router_vhost" \
   || wd_die 'public router vhost bypasses the runtime backend selector'
 grep -Fq 'import /etc/caddy/router-active.caddy' "$ROOT/deploy/Caddyfile" \

@@ -103,6 +103,11 @@ background loops and the HTTP router. Here — and only here — everything is w
   A separate Gemini health loop every 15 seconds discovers new roster profiles and, on the configured
   cadence, checks health/quota. After a durable-settled admin-only exact-target turn it receives a
   coalesced `Notify` and immediately performs a free probe; ordinary customer turns do not send this wake.
+  Gemini Batch stays independently default-off in config. Stage 6 activates both runtime and public
+  facade only through `systemd/claude-api-gemini@.service`; the dedicated encrypted data keyring is
+  read from root-owned `server.env`, never embedded in the unit, and the legacy singleton rollback
+  unit does not enable Batch. Discovery advertises `batchGenerateContent` only when that public
+  facade was actually composed.
   A separate KIMI maintenance loop every 15 seconds discovers the Auth Bot's atomic publication, and
   on `CLAUDE_API_KIMI_QUOTA_POLL_SECS` runs a free `/usages` sweep (the first anchor — immediately
   after preflight). The gateway itself validates roster generation, the idle/epoch boundary of a quota snapshot,

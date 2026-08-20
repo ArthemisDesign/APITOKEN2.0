@@ -675,7 +675,7 @@ fn app_state(gateway: Arc<GeminiGateway>, billing: Option<Arc<AsyncBilling>>) ->
         codex: None,
         gemini: Some(gateway),
         gemini_batch: None,
-            gemini_batch_runtime: None,
+        gemini_batch_runtime: None,
         kimi: None,
         glm: None,
         tripo3d: None,
@@ -1522,10 +1522,23 @@ fn model_value_is_native_shaped() {
             search: metering::GeminiSearchBilling::PerGroundedPrompt { nano: 1 },
         },
     };
-    let value = model_value(&model);
+    let value = model_value(&model, false);
     assert_eq!(value["name"], "models/gemini-2.5-flash");
     assert_eq!(value["version"], "2.5");
     assert_eq!(value["created"], 1_750_118_400);
+    assert_eq!(
+        value["supportedGenerationMethods"],
+        json!(["generateContent", "streamGenerateContent", "countTokens"])
+    );
+    assert_eq!(
+        model_value(&model, true)["supportedGenerationMethods"],
+        json!([
+            "generateContent",
+            "streamGenerateContent",
+            "countTokens",
+            "batchGenerateContent"
+        ])
+    );
     assert_ne!(value["description"], value["displayName"]);
     assert!(value["temperature"].is_number());
     assert!(value["topP"].is_number());
@@ -1551,8 +1564,12 @@ fn model_value_is_native_shaped() {
     model.id = "gemini-3.1-flash-image".to_string();
     model.display_name = "Gemini 3.1 Flash Image".to_string();
     model.created = 1_779_926_400;
-    let image = model_value(&model);
+    let image = model_value(&model, true);
     assert_eq!(image["created"], 1_779_926_400);
+    assert_eq!(
+        image["supportedGenerationMethods"],
+        json!(["generateContent", "streamGenerateContent", "countTokens"])
+    );
     assert_eq!(
         image["apitoken"]["capabilities"],
         json!({
@@ -1568,7 +1585,7 @@ fn model_value_is_native_shaped() {
 
     model.id = "gemini-3-flash-preview".to_string();
     model.created = 1_765_929_600;
-    let audio = model_value(&model);
+    let audio = model_value(&model, false);
     assert_eq!(audio["created"], 1_765_929_600);
     assert_eq!(
         audio["apitoken"]["capabilities"]["input_modalities"],
@@ -1577,7 +1594,7 @@ fn model_value_is_native_shaped() {
 
     model.id = "gemini-3.7-flash".to_string();
     model.created = 1_786_579_200;
-    let dormant = model_value(&model);
+    let dormant = model_value(&model, false);
     assert_eq!(dormant["created"], 1_786_579_200);
     for removed in ["temperature", "topP", "topK", "maxTemperature"] {
         assert!(dormant.get(removed).is_none());
@@ -5979,7 +5996,9 @@ fn gemini_batch_public_handlers_postgres_lifecycle_files_and_account_isolation()
     const KEY_A: &str = "sk-pool-gemini-batch-http-a";
     const KEY_B: &str = "sk-pool-gemini-batch-http-b";
     if std::env::var("CLAUDE_API_GEMINI_BATCH_HTTP_LIFECYCLE").as_deref() != Ok("1") {
-        eprintln!("skipping Gemini Batch public handler lifecycle: explicit serial marker is unset");
+        eprintln!(
+            "skipping Gemini Batch public handler lifecycle: explicit serial marker is unset"
+        );
         return;
     }
     let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {

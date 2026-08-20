@@ -109,7 +109,8 @@ pub struct Settings {
     pub claudestore_codex_fallback: Option<ClaudeStoreFallbackConfig>,
     /// Native Gemini provider. It is instantiated only by the startup-fixed Gemini service.
     pub gemini: Option<GeminiConfig>,
-    /// Dormant Gemini Batch core. No public route is mounted until Stage 4.
+    /// Startup-fixed Gemini Batch composition. Default-off; the reviewed Gemini slot unit enables
+    /// runtime/public admission while the legacy rollback unit keeps both absent.
     pub gemini_batch: Option<GeminiBatchRuntimeSettings>,
     /// Backend-only KIMI plane. Exact aliases dispatch through its private runtime only when this
     /// validated, default-off switch is enabled; it is never inferred from the shipped binary.

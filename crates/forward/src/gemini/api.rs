@@ -924,9 +924,19 @@ fn model_version(id: &str) -> String {
     id.to_string()
 }
 
-fn model_value(model: &GeminiModel) -> Value {
+fn model_value(model: &GeminiModel, batch_public: bool) -> Value {
     // Mirror the native ListModels/GetModel resource shape, including the sampling defaults Google
     // publishes for the Gemini families, so the catalogue is not a thin, obviously-synthetic subset.
+    let supported_generation_methods = if batch_public && !model.is_image_generation() {
+        json!([
+            "generateContent",
+            "streamGenerateContent",
+            "countTokens",
+            "batchGenerateContent"
+        ])
+    } else {
+        json!(["generateContent", "streamGenerateContent", "countTokens"])
+    };
     let mut value = json!({
         "name": format!("models/{}", model.id),
         "version": model_version(&model.id),
@@ -935,9 +945,7 @@ fn model_value(model: &GeminiModel) -> Value {
         "created": model.created,
         "inputTokenLimit": model.input_token_limit,
         "outputTokenLimit": model.output_token_limit,
-        "supportedGenerationMethods": [
-            "generateContent", "streamGenerateContent", "countTokens"
-        ],
+        "supportedGenerationMethods": supported_generation_methods,
         "apitoken": {
             "limits": {
                 "context": model.input_token_limit,
@@ -3775,10 +3783,11 @@ async fn api_inner_observed(
         let all = gateway.config().models.iter().collect::<Vec<_>>();
         let start = page.start.min(all.len());
         let end = start.saturating_add(page.size).min(all.len());
+        let batch_public = app.gemini_batch.is_some();
         let models = all[start..end]
             .iter()
             .copied()
-            .map(model_value)
+            .map(|model| model_value(model, batch_public))
             .collect::<Vec<_>>();
         let mut body = serde_json::Map::new();
         body.insert("models".to_string(), json!(models));
@@ -3800,7 +3809,11 @@ async fn api_inner_observed(
         }
         // A native GetModel ignores query parameters entirely.
         let _admission = pending.without_reserve();
-        return Ok((StatusCode::OK, axum::Json(model_value(&model))).into_response());
+        return Ok((
+            StatusCode::OK,
+            axum::Json(model_value(&model, app.gemini_batch.is_some())),
+        )
+            .into_response());
     }
     // A supplied exact-profile calibration for 3.7 retains the one-shot deadline fence used by
     // the admitted evidence path. Ordinary customer traffic carries neither header and follows

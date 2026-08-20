@@ -1149,10 +1149,31 @@ before dispatch as `400 INVALID_ARGUMENT` carrying a `google.rpc.ErrorInfo` deta
 | `API_KEY_INVALID` | key not accepted | check the `x-goog-api-key` header |
 | `RATE_LIMIT_EXCEEDED` | pool quota; carries `RetryInfo` | honour the retry delay |
 
-A Files API reference deserves the explicit note: the uploaded resource belongs to the caller's own
-Google project, while this gateway calls the provider under a pooled subscription. The file is
-invisible to us, so every profile answers `PERMISSION_DENIED` identically. It is an unsupported
-input, not an outage, and no retry or rotation can change that.
+A Files API reference deserves the explicit note: for synchronous `generateContent`, a resource
+uploaded to the caller's own Google project remains invisible to the gateway's pooled subscription,
+so every profile would answer `PERMISSION_DENIED` identically. It is an unsupported input, not an
+outage, and no retry or rotation can change that.
+
+## Gemini Batch and the gateway Files API
+
+The published Gemini surface additionally provides `batchGenerateContent`, Google-shaped operation
+poll/list/cancel/delete routes, and an account-scoped Files API at `/v1beta/files` plus
+`/upload/v1beta/files`. This is the gateway's own encrypted storage, not Google Files: uploaded
+resources are visible only to the account that created them and expire after 48 hours. File-input
+Batch jobs return JSONL result files in the same storage under the Batch result-retention window.
+
+Batch accepts inline requests or `inputConfig.fileName` JSONL. Inside Batch items only, `fileData`
+may reference a file uploaded to this gateway under the same account; the scheduler resolves it
+before provider dispatch. This is an apiToken.sale extension to Google's Batch shape. Synchronous
+`generateContent` still requires `inlineData` and continues to return `FILE_URI_UNSUPPORTED` for
+file references.
+
+Batch uses the same standard Google token tariff and the account's normal Google multiplier as an
+ordinary generation. There is no separate Google Batch discount and no Google Batch SLA. The local
+scheduler protects interactive pool capacity by dispatching Batch only while a fresh subscription
+5-hour quota summary has more than 15% remaining—an operational 85% usage ceiling, not a customer
+allowance or job-level quota. A stale or missing summary pauses dispatch until fresh headroom is
+available; accepted jobs remain durable and may therefore take longer.
 
 **Every error response carries `x-request-id`.** The same id appears in the journal, so a customer
 quoting it lets an operator find their exact request:
