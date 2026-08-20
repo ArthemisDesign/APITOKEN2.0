@@ -20,3 +20,4 @@ export GEMINI_BATCH_STAGE5_LOGICAL_JSONL_BYTES="${GEMINI_BATCH_STAGE5_LOGICAL_JS
 cargo test -p registry pg::gemini_batch_tests::stage5_resilience_postgres_matrix -- --exact --nocapture
 cargo test -p registry pg::gemini_batch_tests::stage5_postgres_load_and_fairness -- --exact --nocapture
 cargo test -p forward gemini::batch_handlers::tests::stage5_synthetic_near_2gb_jsonl_is_streamed_in_order -- --exact --nocapture
+CLAUDE_API_GEMINI_BATCH_HTTP_LIFECYCLE=1 cargo test -p forward gemini::api::tests::gemini_batch_public_handlers_postgres_lifecycle_files_and_account_isolation -- --exact --nocapture

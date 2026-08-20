@@ -5978,6 +5978,10 @@ fn gemini_batch_public_handlers_postgres_lifecycle_files_and_account_isolation()
     const ACCOUNT_B: &str = "gemini-batch-http-account-b";
     const KEY_A: &str = "sk-pool-gemini-batch-http-a";
     const KEY_B: &str = "sk-pool-gemini-batch-http-b";
+    if std::env::var("CLAUDE_API_GEMINI_BATCH_HTTP_LIFECYCLE").as_deref() != Ok("1") {
+        eprintln!("skipping Gemini Batch public handler lifecycle: explicit serial marker is unset");
+        return;
+    }
     let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
         eprintln!("skipping Gemini Batch public handler lifecycle: test URL is unset");
         return;
