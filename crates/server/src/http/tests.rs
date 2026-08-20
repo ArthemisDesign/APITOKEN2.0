@@ -927,6 +927,19 @@ fn admin_auth_test_app() -> AppState {
 fn provider_test_app(provider: forward::ProviderMode) -> AppState {
     let mut app = admin_auth_test_app();
     app.provider = provider;
+    if provider.serves_anthropic() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "server-provider-body-{}-{:p}",
+            std::process::id(),
+            Arc::as_ptr(&app.metrics)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        app.body_storage = Some(Arc::new(
+            forward::BodyStorage::new(api_limits::current::PROVIDER, root).unwrap(),
+        ));
+    }
     app
 }
 
