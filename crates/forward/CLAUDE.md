@@ -55,7 +55,8 @@ the env admin is checked FIRST in memory; otherwise the client key → `key_acco
 carries both the raw secret `key` for every existing reserve/settle flow and the authoritative non-secret
 `key_id`. The request-fact producers consume only that non-secret identity for metered
 Codex/OpenAI/Gemini universal Messages count, OpenAI native Responses input-token count, Anthropic
-native Messages count, and native Gemini countTokens; every money path still receives the raw key,
+native Messages count, native Gemini countTokens, and billable native Gemini text generation; every
+money path still receives the raw key,
 and the two identities must never be substituted
 for one another. A zero multiplier is
 free but metered on every provider: admission holds zero, settlement debits zero and still persists
@@ -80,8 +81,15 @@ native `POST /v1/responses/input_tokens`, Anthropic native Messages count, Gemin
 count, native Gemini `:countTokens`, and the first billable Stage-7 slices: native Anthropic
 `POST /v1/messages` plus the Anthropic-plane universal OpenAI Chat `POST /v1/chat/completions` and
 Responses `POST /v1/responses`, on a real Claude subscription or the configured Anthropic-wire
-ClaudeStore fallback. Each accepted universal adapter creates a private typed synthesized-Messages
-carrier only after its owning parser/translator accepts the original client shape. The carrier holds
+ClaudeStore fallback, plus native Gemini text `:generateContent`/`:streamGenerateContent`. Gemini
+facts enter only with a successful PostgreSQL money reservation and follow fact-aware delivery and
+settlement; SQLite, admin, image, count, batch, catalog, health, and missing logical/lifecycle context
+stay outside this billable producer. The Gemini Chat, Responses, and Messages adapters place a typed
+suppression marker on their synthesized native generation leaf; they remain fact-free until their
+public owners have a typed universal generation-origin contract. Missing client attribution is not an
+exclusion: an otherwise valid fact records `client_kind=unknown` and `client_source=unknown`. Each
+accepted universal adapter creates a private typed synthesized-Messages carrier only after its owning
+parser/translator accepts the original client shape. The carrier holds
 only route `universal`, exact request class `chat` or `responses`, bounded original model spelling,
 accepted stream boolean, and the pure original OpenAI structural classifier; raw content, tool
 names/schemas/arguments and headers are absent by type. The inner Messages proxy consumes it instead
@@ -134,8 +142,14 @@ retains raw JSON. Gemini count facts are owned once at native execution: the uni
 accepted client intent and receives an ownership handoff for the final public mapping; native parsing
 classifies only after validation. A content-free transport observer counts profile rotation, 401
 resends and helper replay at the actual submission seam, with checked conversion and conservative
-NULL on uncertainty. Admin, unauthorized, other Gemini routes, billable paths except native Anthropic
-Messages, metrics, read APIs, and every other production request-fact surface remain absent. Dropped
+NULL on uncertainty. Native Gemini text generation reuses that observer across its PostgreSQL-owned
+reservation lifecycle, seals nonstream and background-drained stream terminal evidence through money
+settlement, and explicitly terminalizes every exhausted ordinary post-reservation return with its exact
+representable send count. Drop owns only cancellation, panic, or otherwise non-exhaustive ownership
+loss. The producer records only explicit receiver closure as disconnect and preserves success usage
+when a delivery marker fails while returning 503 with unknown delivery. Admin, unauthorized, Gemini image,
+batch/catalog/health, translated universal generation, metrics, read APIs, and every other production
+request-fact surface remain absent. Dropped
 coverage is visible
 only through the existing internal delivery snapshot, not a public metric.
 For policy keys the cap takes the minimum of the account balance and the remaining lifetime limit. Such keys
@@ -284,8 +298,9 @@ native Responses input-token count, and Anthropic/Gemini native count fact produ
 terminal-fact construction without waiting for a later body poll. Gemini universal first transfers
 its still-unsubmitted native owner through a typed response extension and seals only after outer
 response conversion. Billable integration remains incomplete: native Anthropic Messages,
-Anthropic-plane universal OpenAI Chat/Responses, and Codex/OpenAI native Responses, native Chat, and
-universal Messages are the Stage-7 generation producers; Gemini generation and the rest of the
+Anthropic-plane universal OpenAI Chat/Responses, Codex/OpenAI native Responses, native Chat, and
+universal Messages, and billable native Gemini text generation are the Stage-7 generation producers;
+translated Gemini universal generation and the rest of the
 locked route matrix remain future slices. Producer coverage is therefore incomplete.
 
 **Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** every

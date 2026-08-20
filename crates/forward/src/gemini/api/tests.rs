@@ -6182,9 +6182,34 @@ fn native_generation_fact_is_owned_by_postgres_reservation_and_settlement() {
     let mut replies = vec![MockReply::json(StatusCode::OK, response_body.clone()); 4];
     replies.push(stream_reply);
     replies.push(MockReply::json(StatusCode::OK, response_body.clone()));
+    replies.push(MockReply::json(StatusCode::OK, response_body.clone()));
+    replies.push(MockReply::json(StatusCode::OK, response_body.clone()));
+    replies.push(MockReply::json(StatusCode::OK, json!({"totalTokens": 0})));
+    replies.push(MockReply::json(
+        StatusCode::OK,
+        json!({
+            "candidates": [{
+                "content": {"parts": [{
+                    "inlineData": {"mimeType": "image/png", "data": "AQID"}
+                }]},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        }),
+    ));
+    replies.push(MockReply::json(StatusCode::OK, response_body.clone()));
     replies.push(MockReply::json(
         StatusCode::BAD_REQUEST,
         json!({"error": {"message": "private provider error"}}),
+    ));
+    replies.push(MockReply::json(
+        StatusCode::OK,
+        json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "missing usage"}]},
+                "finishReason": "STOP"
+            }]
+        }),
     ));
     let server = start_mock(MockState::with_replies([
         (
@@ -6197,7 +6222,15 @@ fn native_generation_fact_is_owned_by_postgres_reservation_and_settlement() {
         (PROFILE_B_KEY, replies),
     ]))
     .await;
-    let fixture = gateway_fixture(&server.upstream, &[None, None], 1);
+    let fixture = gateway_fixture_with_models(
+        &server.upstream,
+        &[None, None],
+        1,
+        None,
+        OAuthKind::LegacyGeminiCli,
+        64,
+        &["gemini-integration-model", "gemini-3.1-flash-image"],
+    );
     let app = app_state(fixture.gateway.clone(), Some(Arc::clone(&billing)));
     let mut request = axum::extract::Request::builder()
         .method(Method::POST)
@@ -6334,6 +6367,215 @@ fn native_generation_fact_is_owned_by_postgres_reservation_and_settlement() {
     .await;
     assert_eq!(marker_response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
+    for (case, include_logical, include_lifecycle) in [
+        ("missing-logical", false, true),
+        ("missing-lifecycle", true, false),
+    ] {
+        let mut excluded_request = axum::extract::Request::builder()
+            .method(Method::POST)
+            .uri("/v1beta/models/gemini-integration-model:generateContent")
+            .header("content-type", "application/json")
+            .header("x-goog-api-key", CUSTOMER_KEY)
+            .body(Body::from(json!({"contents": []}).to_string()))
+            .unwrap();
+        if include_logical {
+            excluded_request.headers_mut().insert(
+                crate::execution::LOGICAL_REQUEST_ID_HEADER,
+                "123e4567-e89b-42d3-a456-426614174076".parse().unwrap(),
+            );
+            let logical = crate::execution::admit_logical_request_id(excluded_request.headers_mut()).unwrap();
+            excluded_request.extensions_mut().insert(logical);
+        }
+        if include_lifecycle {
+            excluded_request
+                .extensions_mut()
+                .insert(crate::execution::RequestLifecycleClock::default());
+        }
+        let excluded_response = api(
+            State(app.clone()),
+            ConnectInfo("198.51.100.10:12345".parse().unwrap()),
+            excluded_request,
+        )
+        .await;
+        assert_eq!(excluded_response.status(), StatusCode::OK, "{case}");
+    }
+    let mut unauthorized = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri("/v1beta/models/gemini-integration-model:generateContent")
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", "sk-pool-invalid-gemini-key")
+        .body(Body::from(json!({"contents": []}).to_string()))
+        .unwrap();
+    unauthorized.headers_mut().insert(
+        crate::execution::LOGICAL_REQUEST_ID_HEADER,
+        "123e4567-e89b-42d3-a456-426614174077".parse().unwrap(),
+    );
+    let unauthorized_logical = crate::execution::admit_logical_request_id(unauthorized.headers_mut()).unwrap();
+    unauthorized.extensions_mut().insert(unauthorized_logical);
+    unauthorized
+        .extensions_mut()
+        .insert(crate::execution::RequestLifecycleClock::default());
+    let unauthorized_response = api(
+        State(app.clone()),
+        ConnectInfo("198.51.100.10:12345".parse().unwrap()),
+        unauthorized,
+    )
+    .await;
+    assert_eq!(unauthorized_response.status(), StatusCode::BAD_REQUEST);
+    let mut malformed = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri("/v1beta/models/gemini-integration-model:generateContent")
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .body(Body::from("not-json"))
+        .unwrap();
+    malformed.headers_mut().insert(
+        crate::execution::LOGICAL_REQUEST_ID_HEADER,
+        "123e4567-e89b-42d3-a456-426614174078".parse().unwrap(),
+    );
+    let malformed_logical = crate::execution::admit_logical_request_id(malformed.headers_mut()).unwrap();
+    malformed.extensions_mut().insert(malformed_logical);
+    malformed
+        .extensions_mut()
+        .insert(crate::execution::RequestLifecycleClock::default());
+    let malformed_response = api(
+        State(app.clone()),
+        ConnectInfo("198.51.100.10:12345".parse().unwrap()),
+        malformed,
+    )
+    .await;
+    assert_eq!(malformed_response.status(), StatusCode::BAD_REQUEST);
+
+    let mut count_request = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri("/v1beta/models/gemini-integration-model:countTokens")
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .body(Body::from(json!({"contents": []}).to_string()))
+        .unwrap();
+    count_request.headers_mut().insert(
+        crate::execution::LOGICAL_REQUEST_ID_HEADER,
+        "123e4567-e89b-42d3-a456-426614174080".parse().unwrap(),
+    );
+    let count_logical =
+        crate::execution::admit_logical_request_id(count_request.headers_mut()).unwrap();
+    count_request.extensions_mut().insert(count_logical);
+    count_request
+        .extensions_mut()
+        .insert(crate::execution::RequestLifecycleClock::default());
+    let count_response = api(
+        State(app.clone()),
+        ConnectInfo("198.51.100.10:12345".parse().unwrap()),
+        count_request,
+    )
+    .await;
+    assert_eq!(count_response.status(), StatusCode::OK);
+    let _ = axum::body::to_bytes(count_response.into_body(), GEMINI_BODY_LIMIT)
+        .await
+        .unwrap();
+
+    let mut image_request = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri("/v1beta/models/gemini-3.1-flash-image:generateContent")
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .body(Body::from(
+            json!({
+                "contents": [{"parts": [{"text": "private image prompt"}]}],
+                "generationConfig": {
+                    "responseModalities": ["TEXT", "IMAGE"],
+                    "imageConfig": {"aspectRatio": "1:1", "imageSize": "1K"}
+                }
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    image_request.headers_mut().insert(
+        crate::execution::LOGICAL_REQUEST_ID_HEADER,
+        "123e4567-e89b-42d3-a456-426614174081".parse().unwrap(),
+    );
+    let image_logical =
+        crate::execution::admit_logical_request_id(image_request.headers_mut()).unwrap();
+    image_request.extensions_mut().insert(image_logical);
+    image_request
+        .extensions_mut()
+        .insert(crate::execution::RequestLifecycleClock::default());
+    let image_response = api(
+        State(app.clone()),
+        ConnectInfo("198.51.100.10:12345".parse().unwrap()),
+        image_request,
+    )
+    .await;
+    let image_status = image_response.status();
+    let image_body = axum::body::to_bytes(image_response.into_body(), GEMINI_BODY_LIMIT)
+        .await
+        .unwrap();
+    assert_eq!(
+        image_status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&image_body)
+    );
+
+    let admin_app = AppState {
+        cfg: proxy_config(true),
+        ..app.clone()
+    };
+    let mut admin_request = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri("/v1beta/models/gemini-integration-model:generateContent")
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .body(Body::from(
+            json!({"contents": [{"parts": [{"text": "admin private prompt"}]}]}).to_string(),
+        ))
+        .unwrap();
+    admin_request.headers_mut().insert(
+        crate::execution::LOGICAL_REQUEST_ID_HEADER,
+        "123e4567-e89b-42d3-a456-426614174082".parse().unwrap(),
+    );
+    let admin_logical =
+        crate::execution::admit_logical_request_id(admin_request.headers_mut()).unwrap();
+    admin_request.extensions_mut().insert(admin_logical);
+    admin_request
+        .extensions_mut()
+        .insert(crate::execution::RequestLifecycleClock::default());
+    let admin_response = api(
+        State(admin_app),
+        ConnectInfo("198.51.100.10:12345".parse().unwrap()),
+        admin_request,
+    )
+    .await;
+    assert_eq!(admin_response.status(), StatusCode::OK);
+    let _ = axum::body::to_bytes(admin_response.into_body(), GEMINI_BODY_LIMIT)
+        .await
+        .unwrap();
+
+    let mut batch_request = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri("/v1beta/batches")
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .body(Body::from(json!({"requests": []}).to_string()))
+        .unwrap();
+    batch_request.headers_mut().insert(
+        crate::execution::LOGICAL_REQUEST_ID_HEADER,
+        "123e4567-e89b-42d3-a456-426614174083".parse().unwrap(),
+    );
+    let batch_logical =
+        crate::execution::admit_logical_request_id(batch_request.headers_mut()).unwrap();
+    batch_request.extensions_mut().insert(batch_logical);
+    batch_request
+        .extensions_mut()
+        .insert(crate::execution::RequestLifecycleClock::default());
+    let batch_response = api(
+        State(app.clone()),
+        ConnectInfo("198.51.100.10:12345".parse().unwrap()),
+        batch_request,
+    )
+    .await;
+    assert_eq!(batch_response.status(), StatusCode::NOT_FOUND);
+
     let failure_logical_id = "123e4567-e89b-42d3-a456-426614174075";
     let mut failure_request = axum::extract::Request::builder()
         .method(Method::POST)
@@ -6352,12 +6594,43 @@ fn native_generation_fact_is_owned_by_postgres_reservation_and_settlement() {
         .extensions_mut()
         .insert(crate::execution::RequestLifecycleClock::default());
     let failure_response = api(
-        State(app),
+        State(app.clone()),
         ConnectInfo("198.51.100.10:12345".parse().unwrap()),
         failure_request,
     )
     .await;
     assert_eq!(failure_response.status(), StatusCode::BAD_REQUEST);
+
+    let mut missing_usage_request = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri("/v1beta/models/gemini-integration-model:generateContent")
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .body(Body::from(json!({"contents": []}).to_string()))
+        .unwrap();
+    missing_usage_request.headers_mut().insert(
+        crate::execution::LOGICAL_REQUEST_ID_HEADER,
+        "123e4567-e89b-42d3-a456-426614174086".parse().unwrap(),
+    );
+    let missing_usage_logical =
+        crate::execution::admit_logical_request_id(missing_usage_request.headers_mut()).unwrap();
+    missing_usage_request
+        .extensions_mut()
+        .insert(missing_usage_logical);
+    missing_usage_request
+        .extensions_mut()
+        .insert(crate::execution::RequestLifecycleClock::default());
+    let missing_usage_response = api(
+        State(app.clone()),
+        ConnectInfo("198.51.100.10:12345".parse().unwrap()),
+        missing_usage_request,
+    )
+    .await;
+    assert_eq!(
+        missing_usage_response.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+
     billing.flush().await.unwrap();
     server.state.seen().len()
     });
@@ -6404,10 +6677,98 @@ fn native_generation_fact_is_owned_by_postgres_reservation_and_settlement() {
     assert_eq!(stream_row.get::<_, String>(5), "completed");
     assert_eq!(stream_row.get::<_, Option<i32>>(6), Some(1));
     let fact_count = lock
-        .query_one("SELECT count(*) FROM request_facts", &[])
+        .query_one(
+            "SELECT count(*) FROM request_facts WHERE request_class IN ('generate','stream_generate')",
+            &[],
+        )
         .unwrap()
         .get::<_, i64>(0);
-    assert_eq!(fact_count, 4, "universal adapters must remain fact-free");
+    assert_eq!(
+        fact_count, 5,
+        "universal and excluded adapters must create zero additional generation facts"
+    );
+    let excluded_ids = [
+        "123e4567-e89b-42d3-a456-426614174072",
+        "123e4567-e89b-42d3-a456-426614174076",
+        "123e4567-e89b-42d3-a456-426614174077",
+        "123e4567-e89b-42d3-a456-426614174078",
+        "123e4567-e89b-42d3-a456-426614174080",
+        "123e4567-e89b-42d3-a456-426614174081",
+        "123e4567-e89b-42d3-a456-426614174082",
+        "123e4567-e89b-42d3-a456-426614174083",
+    ];
+    for excluded_id in excluded_ids {
+        let excluded_count = lock
+            .query_one(
+                "SELECT count(*) FROM request_facts WHERE logical_request_id=$1 AND request_class IN ('generate','stream_generate')",
+                &[&excluded_id],
+            )
+            .unwrap()
+            .get::<_, i64>(0);
+        assert_eq!(excluded_count, 0, "excluded request {excluded_id}");
+    }
+    let count_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let count_fact = lock
+            .query_one(
+                "SELECT count(*) FROM request_facts WHERE logical_request_id=$1 AND request_class='count_tokens'",
+                &[&"123e4567-e89b-42d3-a456-426614174080"],
+            )
+            .unwrap()
+            .get::<_, i64>(0);
+        if count_fact == 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < count_deadline,
+            "countTokens must remain owned only by its Stage-6 producer"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let ownership = lock
+        .query(
+            "SELECT f.logical_request_id,f.billing_request_id,f.client_kind,f.client_source,                    r.state,r.provider,o.state,o.disposition,                    (SELECT count(*) FROM request_facts d WHERE d.billing_request_id=f.billing_request_id),                    (SELECT count(*) FROM usage_events u WHERE u.request_id=f.billing_request_id AND u.provider='google'),                    (SELECT count(*) FROM ledger l WHERE l.request_id=f.billing_request_id)             FROM request_facts f             JOIN reservations r ON r.request_id=f.billing_request_id             JOIN settlement_outbox o ON o.request_id=f.billing_request_id             ORDER BY f.logical_request_id",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(ownership.len(), 5);
+    for row in &ownership {
+        assert!(row.get::<_, Option<String>>(1).is_some());
+        assert_eq!(row.get::<_, String>(2), "unknown");
+        assert_eq!(row.get::<_, String>(3), "unknown");
+        assert!(matches!(
+            row.get::<_, String>(4).as_str(),
+            "settled" | "canceled"
+        ));
+        assert_eq!(row.get::<_, String>(5), registry::PROVIDER_GOOGLE);
+        assert_eq!(row.get::<_, String>(6), "done");
+        assert_eq!(row.get::<_, i64>(8), 1, "one fact per billing reservation");
+    }
+    // Three provider-success turns (ordinary, streaming and marker-failure) own usage and charge
+    // ledger rows; the provider-rejected turn owns an applied cancellation with neither.
+    for row in &ownership[..3] {
+        assert_eq!(row.get::<_, String>(4), "settled");
+        assert_eq!(row.get::<_, String>(7), "settle");
+        assert_eq!(row.get::<_, i64>(9), 1);
+        assert_eq!(row.get::<_, i64>(10), 1);
+    }
+    for rejected_owner in &ownership[3..] {
+        assert_eq!(rejected_owner.get::<_, String>(4), "canceled");
+        assert_eq!(rejected_owner.get::<_, String>(7), "cancel");
+        assert_eq!(rejected_owner.get::<_, i64>(9), 0);
+        assert_eq!(rejected_owner.get::<_, i64>(10), 0);
+    }
+    let missing_usage_row = lock
+        .query_one(
+            "SELECT http_status_code,provider_terminal_class,delivery_state,internal_attempt_count,billing_outcome FROM request_facts WHERE logical_request_id=$1",
+            &[&"123e4567-e89b-42d3-a456-426614174086"],
+        )
+        .unwrap();
+    assert_eq!(missing_usage_row.get::<_, Option<i32>>(0), Some(503));
+    assert_eq!(missing_usage_row.get::<_, String>(1), "protocol_error");
+    assert_eq!(missing_usage_row.get::<_, String>(2), "interrupted");
+    assert_eq!(missing_usage_row.get::<_, Option<i32>>(3), Some(1));
+    assert_eq!(missing_usage_row.get::<_, String>(4), "canceled");
     let failure_row = lock
         .query_one(
             "SELECT http_status_code,provider_terminal_class,delivery_state,internal_attempt_count,billing_outcome FROM request_facts WHERE logical_request_id=$1",
@@ -6430,20 +6791,60 @@ fn native_generation_fact_is_owned_by_postgres_reservation_and_settlement() {
     assert_eq!(marker_row.get::<_, String>(2), "unknown");
     assert_eq!(marker_row.get::<_, Option<i32>>(3), Some(1));
     assert_eq!(marker_row.get::<_, String>(4), "winner");
-    let debug = format!("{row:?}");
+    let persisted_json = lock
+        .query_one(
+            "SELECT json_build_object(                'facts',(SELECT coalesce(json_agg(row_to_json(f)),'[]'::json) FROM request_facts f),                'outbox',(SELECT coalesce(json_agg(row_to_json(o)),'[]'::json) FROM settlement_outbox o)             )::text",
+            &[],
+        )
+        .unwrap()
+        .get::<_, String>(0);
     for forbidden in [
         "private prompt",
         "private_tool",
         "secret",
+        "private provider error",
+        "private image prompt",
+        "admin private prompt",
         CUSTOMER_KEY,
         PROFILE_A_KEY,
+        PROFILE_B_KEY,
     ] {
-        assert!(!debug.contains(forbidden));
+        assert!(!persisted_json.contains(forbidden));
     }
-    assert_eq!(seen_count, 8);
+    assert_eq!(seen_count, 15);
     drop(billing);
     lock.query_one("SELECT pg_advisory_unlock($1)", &[&831_572_908_442_i64])
         .unwrap();
     lock.query_one("SELECT pg_advisory_unlock($1)", &[&LOCK])
         .unwrap();
+}
+
+#[test]
+fn native_generation_fact_surface_excludes_non_stage7_routes() {
+    assert!(!super::super::GeminiBatchRuntimeConfig::default().enabled);
+    assert!(native_billable_generation_fact_eligible(
+        Operation::Generate,
+        false,
+        false
+    ));
+    assert!(native_billable_generation_fact_eligible(
+        Operation::StreamGenerate,
+        false,
+        false
+    ));
+    for operation in [Operation::CountTokens, Operation::Models, Operation::Model] {
+        assert!(!native_billable_generation_fact_eligible(
+            operation, false, false
+        ));
+    }
+    assert!(!native_billable_generation_fact_eligible(
+        Operation::Generate,
+        true,
+        false
+    ));
+    assert!(!native_billable_generation_fact_eligible(
+        Operation::Generate,
+        false,
+        true
+    ));
 }

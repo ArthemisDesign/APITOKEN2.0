@@ -374,6 +374,16 @@ impl CountTokensTerminalEvidence {
     }
 }
 
+fn native_billable_generation_fact_eligible(
+    operation: Operation,
+    image_generation: bool,
+    universal_suppressed: bool,
+) -> bool {
+    matches!(operation, Operation::Generate | Operation::StreamGenerate)
+        && !image_generation
+        && !universal_suppressed
+}
+
 fn settle_billable_failure(
     admission: &mut Option<GeminiAdmission>,
     http_status: StatusCode,
@@ -383,6 +393,23 @@ fn settle_billable_failure(
     if let Some(admission) = admission.take() {
         admission.settle_failure(http_status, provider_terminal_class, delivery_state);
     }
+}
+
+fn settle_observed_billable_failure(
+    admission: &mut Option<GeminiAdmission>,
+    http_status: StatusCode,
+    provider_terminal_class: ProviderTerminalClass,
+) {
+    let delivery_state = admission
+        .as_ref()
+        .map(GeminiAdmission::observed_failure_delivery)
+        .unwrap_or(DeliveryState::Unknown);
+    settle_billable_failure(
+        admission,
+        http_status,
+        provider_terminal_class,
+        delivery_state,
+    );
 }
 
 fn provider_status_class(status: StatusCode) -> ProviderTerminalClass {
@@ -3805,15 +3832,14 @@ async fn api_inner_observed(
     }
     // Native billable request facts are admitted only for validated text generation. Counting owns
     // its separate already-terminal producer, while image generation/batch/admin stay excluded.
-    let mut billable_fact = if matches!(
+    let mut billable_fact = if native_billable_generation_fact_eligible(
         route.operation,
-        Operation::Generate | Operation::StreamGenerate
-    ) && !model.is_image_generation()
-        && parts
+        model.is_image_generation(),
+        parts
             .extensions
             .get::<SuppressedPendingUniversalGeneration>()
-            .is_none()
-    {
+            .is_some(),
+    ) {
         let admitted_at = pool::now();
         pending
             .request_fact_seed(
@@ -3862,9 +3888,11 @@ async fn api_inner_observed(
         route.operation,
         Operation::Generate | Operation::StreamGenerate
     );
-    // Every exact-profile calibration operation is intentionally non-replayable. `countTokens` is
-    // free, but it is the admission fence for the paid turn and therefore must prove exactly one
-    // upstream attempt too: no helper restart, OAuth 401 resend, profile rotation or smooth retry.
+    // Every exact-profile calibration operation is intentionally non-replayable. Admission accepts
+    // a calibration target only for Authz::Admin, and request_fact_seed rejects admin, so every
+    // one-shot return below is fact-free by construction. `countTokens` is free, but it is the
+    // admission fence for the paid turn and therefore must prove exactly one upstream attempt too:
+    // no helper restart, OAuth 401 resend, profile rotation or smooth retry.
     // Pre-send token acquisition failures still retain a not-started proof. Paid generation keeps
     // its stricter post-dispatch billing/delivery semantics through `one_shot_generation` below.
     let one_shot_upstream = calibration_target.is_some();
@@ -4088,7 +4116,15 @@ async fn api_inner_observed(
                 // Always write the validated ceiling: this also clamps a hostile value above the
                 // model limit even when the account can afford the complete request.
                 if !model.is_image_generation() {
-                    cap_generation_output(&mut value, effective_output)?;
+                    if let Err(error) = cap_generation_output(&mut value, effective_output) {
+                        let mut admission = Some(admission);
+                        settle_observed_billable_failure(
+                            &mut admission,
+                            error.status,
+                            ProviderTerminalClass::Unknown,
+                        );
+                        return Err(error);
+                    }
                 }
                 admission
             } else {
@@ -4194,6 +4230,11 @@ async fn api_inner_observed(
                                             elog::error(
                                                 "gemini",
                                                 "gemini request failed: usage metadata missing",
+                                            );
+                                            settle_observed_billable_failure(
+                                                &mut admission,
+                                                StatusCode::SERVICE_UNAVAILABLE,
+                                                ProviderTerminalClass::ProtocolError,
                                             );
                                             return Err(ApiError::unavailable(
                                                 "gemini_usage_metadata_missing",
@@ -4481,11 +4522,10 @@ async fn api_inner_observed(
                     retry_failures += 1;
                     if retry_failures > gateway.config().max_transport_retries {
                         elog::error("gemini", "gemini request failed: transport unavailable");
-                        settle_billable_failure(
+                        settle_observed_billable_failure(
                             &mut admission,
                             StatusCode::SERVICE_UNAVAILABLE,
                             ProviderTerminalClass::Transport,
-                            DeliveryState::Interrupted,
                         );
                         return Err(ApiError::unavailable("gemini_transport_unavailable"));
                     }
@@ -4510,6 +4550,11 @@ async fn api_inner_observed(
                             )
                         };
                         elog::error("gemini", message);
+                        settle_observed_billable_failure(
+                            &mut admission,
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            ProviderTerminalClass::Transport,
+                        );
                         return Err(ApiError::unavailable(reason));
                     }
                     continue;
@@ -4526,11 +4571,10 @@ async fn api_inner_observed(
                             "gemini",
                             "gemini request failed: audio usage metadata missing",
                         );
-                        settle_billable_failure(
+                        settle_observed_billable_failure(
                             &mut admission,
                             StatusCode::SERVICE_UNAVAILABLE,
                             ProviderTerminalClass::ProtocolError,
-                            DeliveryState::Interrupted,
                         );
                         return Err(ApiError::unavailable("gemini_audio_usage_metadata_missing"));
                     }
@@ -4558,7 +4602,7 @@ async fn api_inner_observed(
         }
 
         let project = profile.project_id().await;
-        let upstream_body = wrap_code_assist_request(
+        let upstream_body = match wrap_code_assist_request(
             route.operation,
             oauth_kind,
             &wire_model_id,
@@ -4567,7 +4611,17 @@ async fn api_inner_observed(
             &user_prompt_id,
             upstream_session_id.as_deref(),
             upstream_request_id.as_deref(),
-        )?;
+        ) {
+            Ok(body) => body,
+            Err(error) => {
+                settle_observed_billable_failure(
+                    &mut admission,
+                    error.status,
+                    ProviderTerminalClass::Unknown,
+                );
+                return Err(error);
+            }
+        };
         let (mut response, rejected_token) = match send_upstream(
             &profile,
             &url,
@@ -4616,11 +4670,10 @@ async fn api_inner_observed(
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
                     elog::error("gemini", "gemini request failed: transport unavailable");
-                    settle_billable_failure(
+                    settle_observed_billable_failure(
                         &mut admission,
                         StatusCode::SERVICE_UNAVAILABLE,
                         ProviderTerminalClass::Transport,
-                        DeliveryState::Interrupted,
                     );
                     return Err(ApiError::unavailable("gemini_transport_unavailable"));
                 }
@@ -4642,17 +4695,21 @@ async fn api_inner_observed(
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
                     elog::error("gemini", "gemini request failed: transport unavailable");
-                    settle_billable_failure(
+                    settle_observed_billable_failure(
                         &mut admission,
                         StatusCode::SERVICE_UNAVAILABLE,
                         ProviderTerminalClass::Transport,
-                        DeliveryState::Interrupted,
                     );
                     return Err(ApiError::unavailable("gemini_transport_unavailable"));
                 }
                 continue;
             }
             Err(SendError::CalibrationExpired) => {
+                settle_observed_billable_failure(
+                    &mut admission,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    ProviderTerminalClass::Timeout,
+                );
                 return Err(ApiError::unavailable("gemini_calibration_dispatch_expired"));
             }
         };
@@ -4717,6 +4774,11 @@ async fn api_inner_observed(
                     retry_failures += 1;
                     if retry_failures > gateway.config().max_transport_retries {
                         elog::error("gemini", "gemini request failed: token refresh unavailable");
+                        settle_observed_billable_failure(
+                            &mut admission,
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            ProviderTerminalClass::Transport,
+                        );
                         return Err(ApiError::unavailable("gemini_token_refresh_unavailable"));
                     }
                     continue;
@@ -4725,6 +4787,11 @@ async fn api_inner_observed(
         }
         let calibration_dispatch_ms = response.calibration_dispatch_ms();
         if deadline_bound_exact && calibration_dispatch_ms.is_none() {
+            settle_observed_billable_failure(
+                &mut admission,
+                StatusCode::SERVICE_UNAVAILABLE,
+                ProviderTerminalClass::ProtocolError,
+            );
             return Err(
                 ApiError::unavailable("gemini_calibration_dispatch_attestation_missing")
                     .after_dispatch(),
@@ -4792,6 +4859,11 @@ async fn api_inner_observed(
                         "gemini request failed: audio usage metadata missing",
                     );
                     let error = ApiError::unavailable("gemini_audio_usage_metadata_missing");
+                    settle_observed_billable_failure(
+                        &mut admission,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        ProviderTerminalClass::ProtocolError,
+                    );
                     return Err(if one_shot_generation {
                         error.after_dispatch()
                     } else {
@@ -5160,6 +5232,11 @@ async fn api_inner_observed(
                             "gemini request failed: audio usage metadata missing",
                         );
                         let error = ApiError::unavailable("gemini_audio_usage_metadata_missing");
+                        settle_observed_billable_failure(
+                            &mut admission,
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            ProviderTerminalClass::ProtocolError,
+                        );
                         return Err(if one_shot_generation {
                             error.after_dispatch()
                         } else {
@@ -5246,6 +5323,11 @@ async fn api_inner_observed(
                     profile.mark_model_failure(&wire_model_id, "usage_metadata", gateway.config());
                     elog::error("gemini", "gemini request failed: usage metadata missing");
                     let error = ApiError::unavailable("gemini_usage_metadata_missing");
+                    settle_observed_billable_failure(
+                        &mut admission,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        ProviderTerminalClass::ProtocolError,
+                    );
                     return Err(if one_shot_generation {
                         error.after_dispatch()
                     } else {

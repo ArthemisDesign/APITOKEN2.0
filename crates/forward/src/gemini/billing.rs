@@ -15,6 +15,8 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 
 const CALIBRATION_PROFILE_HEADER: &str = "x-apitoken-calibration-profile";
 const CALIBRATION_REQUEST_ID_HEADER: &str = "x-apitoken-calibration-request-id";
@@ -397,11 +399,15 @@ async fn reserve_gemini_metered(
 }
 
 #[cfg(test)]
-static FAIL_GEMINI_DELIVERY_MARKER_FOR_TEST: AtomicBool = AtomicBool::new(false);
+static FAIL_GEMINI_DELIVERY_MARKER_FOR_TEST: OnceLock<Mutex<Option<std::thread::ThreadId>>> =
+    OnceLock::new();
 
 #[cfg(test)]
 pub(crate) fn fail_next_gemini_delivery_marker_for_test() {
-    FAIL_GEMINI_DELIVERY_MARKER_FOR_TEST.store(true, Ordering::Release);
+    *FAIL_GEMINI_DELIVERY_MARKER_FOR_TEST
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap() = Some(std::thread::current().id());
 }
 
 impl GeminiBillableFactContext {
@@ -494,7 +500,18 @@ impl GeminiAdmission {
 
     pub(crate) async fn mark_delivering(&self) -> Result<(), AdmissionError> {
         #[cfg(test)]
-        if FAIL_GEMINI_DELIVERY_MARKER_FOR_TEST.swap(false, Ordering::AcqRel) {
+        if FAIL_GEMINI_DELIVERY_MARKER_FOR_TEST
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap()
+            .as_ref()
+            == Some(&std::thread::current().id())
+        {
+            *FAIL_GEMINI_DELIVERY_MARKER_FOR_TEST
+                .get()
+                .unwrap()
+                .lock()
+                .unwrap() = None;
             return Err(AdmissionError::Unavailable);
         }
         let Some(reservation) = &self.reservation else {
@@ -1575,6 +1592,134 @@ mod tests {
         );
         assert_eq!(evidence.internal_attempt_count, None);
         assert_eq!(evidence.http_status_code, None);
+    }
+
+    #[tokio::test]
+    async fn sqlite_money_reservation_never_owns_a_generation_fact() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gemini-generation-fact-sqlite-{}-{unique}.sqlite",
+            std::process::id()
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let billing =
+            Arc::new(crate::billing::AsyncBilling::start(path_string.clone(), 1).unwrap());
+        billing
+            .create_account("gemini-fact-sqlite-account", None, 10_000)
+            .await
+            .unwrap();
+        billing
+            .topup("gemini-fact-sqlite-account", 1_000_000, Some("seed"))
+            .await
+            .unwrap();
+        billing
+            .issue_key(
+                "gemini-fact-sqlite-key",
+                "gemini-fact-sqlite-account",
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let app = app_state(Arc::clone(&billing), &path_string);
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            crate::execution::LOGICAL_REQUEST_ID_HEADER,
+            "123e4567-e89b-42d3-a456-426614174084".parse().unwrap(),
+        );
+        let logical = crate::execution::admit_logical_request_id(&mut headers).unwrap();
+        let lifecycle = RequestLifecycleClock::default();
+        let pending = PendingGeminiAdmission {
+            authz: Authz::Metered {
+                account_id: "gemini-fact-sqlite-account".to_owned(),
+                key_id: "key_123e4567e89b42d3a456426614174084".to_owned(),
+                key: "gemini-fact-sqlite-key".to_owned(),
+                available_nano: 1_000_000,
+                mult_bp: 10_000,
+                provider_mult_bp: Vec::new(),
+            },
+            execution: registry::ExecutionAttempt::direct(),
+            calibration_request_id: "123e4567-e89b-42d3-a456-426614174085".to_owned(),
+            calibration_target: None,
+            calibration_not_after: None,
+        };
+        let seed = pending
+            .request_fact_seed(Some(&logical), None, Some(&lifecycle), pool::now())
+            .unwrap();
+        let spec = GeminiBillableRequestSpec::native(
+            Some("gemini-2.5-flash".to_owned()),
+            Some("gemini-2.5-flash".to_owned()),
+            false,
+            RequestClassification::default(),
+        );
+        let (admission, _) = pending
+            .reserve(&app, &model(), 1, 1, 0, false, true, Some((seed, spec)))
+            .await
+            .unwrap();
+        assert!(admission.actual_send_observer().is_none());
+        let _ = admission.settle(&model(), None, "profile-sqlite");
+        billing.flush().await.unwrap();
+        let connection = registry::open(&path_string).unwrap();
+        assert!(!connection
+            .prepare("SELECT count(*) FROM request_facts")
+            .is_ok());
+        drop(app);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn admin_and_missing_context_do_not_create_billable_fact_seeds() {
+        let admin = PendingGeminiAdmission {
+            authz: Authz::Admin {
+                affinity_scope: "admin".to_owned(),
+            },
+            execution: registry::ExecutionAttempt::direct(),
+            calibration_request_id: "admin-request".to_owned(),
+            calibration_target: None,
+            calibration_not_after: None,
+        };
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            crate::execution::LOGICAL_REQUEST_ID_HEADER,
+            "123e4567-e89b-42d3-a456-426614174079".parse().unwrap(),
+        );
+        let logical = crate::execution::admit_logical_request_id(&mut headers).unwrap();
+        let lifecycle = RequestLifecycleClock::default();
+        assert!(admin
+            .request_fact_seed(Some(&logical), None, Some(&lifecycle), pool::now())
+            .is_none());
+        let metered = PendingGeminiAdmission {
+            authz: Authz::Metered {
+                account_id: "gemini-fact-test-account".to_owned(),
+                key_id: "key_123e4567e89b42d3a456426614174079".to_owned(),
+                key: "gemini-fact-test-key".to_owned(),
+                available_nano: 1_000_000,
+                mult_bp: 10_000,
+                provider_mult_bp: Vec::new(),
+            },
+            execution: registry::ExecutionAttempt::direct(),
+            calibration_request_id: "metered-request".to_owned(),
+            calibration_target: None,
+            calibration_not_after: None,
+        };
+        assert!(metered
+            .request_fact_seed(None, None, Some(&lifecycle), pool::now())
+            .is_none());
+        assert!(metered
+            .request_fact_seed(Some(&logical), None, None, pool::now())
+            .is_none());
+        let seed = metered
+            .request_fact_seed(Some(&logical), None, Some(&lifecycle), pool::now())
+            .expect("client attribution is optional and normalizes to unknown");
+        assert_eq!(
+            seed.client_attribution.kind(),
+            registry::request_facts::ClientKind::Unknown
+        );
     }
 
     fn proxy_config() -> Arc<ProxyConfig> {
