@@ -566,6 +566,23 @@ export interface GeminiCalibrationDelivery {
   queue_limit?: number;
 }
 
+export type GeminiBatchHistoryWindowName = "1h" | "24h" | "7d";
+
+export interface GeminiBatchHistoryWindow {
+  window?: GeminiBatchHistoryWindowName;
+  jobs_created?: number;
+  items_created?: number;
+  succeeded?: number;
+  failed?: number;
+  canceled?: number;
+  indeterminate?: number;
+  /** Decimal nanoUSD string; never coerce to JavaScript number. */
+  settled_nanousd?: string;
+  avg_queue_wait_seconds?: number | null;
+  avg_execution_seconds?: number | null;
+  throughput_items_per_hour?: number | null;
+}
+
 export interface GeminiBatchSummary {
   enabled?: boolean;
   public_enabled?: boolean;
@@ -578,11 +595,26 @@ export interface GeminiBatchSummary {
   indeterminate_items?: number;
   headroom_stops?: number;
   settlement_backlog?: number;
+  settlement_failed?: number;
   settlement_oldest_age_seconds?: number;
   settlement_retries?: number;
   /** Decimal string: aggregate plaintext bytes can outgrow JavaScript's exact integer range. */
   file_bytes?: string;
   file_chunks?: number;
+  /** Additive Stage 5 operational snapshot fields. */
+  jobs_pending?: number;
+  jobs_running?: number;
+  queued_items?: number;
+  claimed_items?: number;
+  dispatching_items?: number;
+  settlement_pending_items?: number;
+  succeeded_items?: number;
+  failed_items?: number;
+  canceled_items?: number;
+  reserved_nanousd?: string;
+  leader_held?: boolean;
+  leader_expires_at?: number | null;
+  history?: GeminiBatchHistoryWindow[];
 }
 
 export interface GeminiSubsResponse {

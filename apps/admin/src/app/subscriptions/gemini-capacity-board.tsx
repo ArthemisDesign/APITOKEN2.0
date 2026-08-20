@@ -1,15 +1,22 @@
 "use client";
 
 import { type ReactElement, useState } from "react";
-import { Pill, TableCard } from "@/components/ui";
+import { Banner, Pill, TableCard } from "@/components/ui";
 import { apiErrorMessage, send } from "@/lib/api";
 import { dialog } from "@/lib/dialog";
 import { duration, nanoMoney } from "@/lib/format";
 import { providerInteger, usedPercentFromNano } from "./provider-calibration";
 import { ProviderCapacityStrip, ProviderQuotaMeter, ProviderSection } from "./provider-board-ui";
 import { geminiProfileStatus } from "./logic";
+import {
+  batchCount,
+  geminiBatchWarnings,
+  historyThroughputPercent,
+  orderedBatchHistory,
+} from "./gemini-batch-summary";
 import { SubscriptionExpiry } from "./subscription-lifecycle";
 import type {
+  GeminiBatchHistoryWindow,
   GeminiBatchSummary,
   GeminiProfile,
   GeminiProfileWindow,
@@ -211,50 +218,155 @@ function GeminiSubscriptions({ profiles: allProfiles, modelCount, nowSec, author
 }
 
 function GeminiBatchSummaryCard({ batch }: { batch: GeminiBatchSummary }): ReactElement {
-  const queueDepth = Number(batch.queue_depth ?? 0);
-  const settlementBacklog = Number(batch.settlement_backlog ?? 0);
-  const indeterminate = Number(batch.indeterminate_items ?? 0);
   const authorityOk = batch.authority_available === true;
+  const queued = batchCount(batch.queued_items, batch.queue_depth);
+  const claimed = batchCount(batch.claimed_items);
+  const dispatching = batchCount(batch.dispatching_items, batch.active_items);
+  const settlementPending = batchCount(batch.settlement_pending_items, batch.settlement_backlog);
+  const succeeded = batchCount(batch.succeeded_items, batch.completed_items);
+  const failed = batchCount(batch.failed_items, batch.error_items);
+  const canceled = batchCount(batch.canceled_items);
+  const indeterminate = batchCount(batch.indeterminate_items);
+  const currentInFlight = queued + claimed + dispatching + settlementPending;
+  const warnings = geminiBatchWarnings(batch);
+  const history = orderedBatchHistory(batch.history);
+  const leader = batch.leader_held == null
+    ? "—"
+    : batch.leader_held
+      ? "удерживается"
+      : "отсутствует";
+  const leaderExpiry = batch.leader_expires_at == null
+    ? "нет срока"
+    : `ещё ${duration(Math.max(0, batch.leader_expires_at - Math.floor(Date.now() / 1000)))}`;
+
   return (
     <ProviderSection
       overline="Batch"
-      title="Gemini Batch · сводка"
-      meta={batch.enabled ? "runtime включён" : "runtime выключен"}
+      title="Gemini Batch · control room"
+      meta={batch.enabled ? (batch.public_enabled ? "runtime + public" : "только runtime") : "runtime выключён"}
     >
       <ProviderCapacityStrip
-        ariaLabel="Состояние Gemini Batch"
+        ariaLabel="Текущее состояние Gemini Batch"
         items={[
           {
-            label: "Очередь",
-            value: authorityOk ? String(queueDepth) : "—",
-            caption: authorityOk
-              ? `старейшая ${duration(Number(batch.oldest_queued_age_seconds ?? 0))}`
-              : "authority недоступна",
+            label: "Jobs pending / running",
+            value: authorityOk ? `${batchCount(batch.jobs_pending)} / ${batchCount(batch.jobs_running)}` : "—",
+            caption: `${currentInFlight} item в pipeline`,
           },
           {
-            label: "Активно",
-            value: authorityOk ? String(batch.active_items ?? 0) : "—",
-            caption: batch.public_enabled ? "public включён" : "public выключен",
+            label: "Queued / claimed",
+            value: authorityOk ? `${queued} / ${claimed}` : "—",
+            caption: queued ? `старейший ${duration(batch.oldest_queued_age_seconds)}` : "очередь пуста",
           },
           {
-            label: "Settlement backlog",
-            value: authorityOk ? String(settlementBacklog) : "—",
+            label: "Dispatch / settlement",
+            value: authorityOk ? `${dispatching} / ${settlementPending}` : "—",
             caption: `${batch.settlement_retries ?? 0} retry`,
           },
           {
-            label: "Ошибки / indeterminate",
-            value: authorityOk ? `${batch.error_items ?? 0} / ${indeterminate}` : "—",
-            caption: `${batch.completed_items ?? 0} завершено`,
+            label: "Reserved",
+            value: authorityOk ? moneyOrDash(batch.reserved_nanousd) : "—",
+            caption: "customer holds",
+            usd: true,
           },
           {
-            label: "5ч headroom stops",
-            value: String(batch.headroom_stops ?? 0),
-            caption: queueDepth > 0 ? "batch защищает interactive пул" : "очередь пуста",
+            label: "Leader",
+            value: authorityOk ? leader : "—",
+            caption: batch.leader_held ? leaderExpiry : "dispatch остановлен",
           },
         ]}
       />
+
+      {warnings.length ? <div className="gemini-batch-warning-stack" aria-label="Предупреждения Gemini Batch">
+        {warnings.map((warning) => (
+          <Banner key={warning.code} kind={warning.kind} title={warning.title}>{warning.detail}</Banner>
+        ))}
+      </div> : null}
+
+      <GeminiBatchStateTable
+        states={[
+          ["queued", queued],
+          ["claimed", claimed],
+          ["dispatching", dispatching],
+          ["settlement pending", settlementPending],
+          ["succeeded", succeeded],
+          ["failed", failed],
+          ["canceled", canceled],
+          ["indeterminate", indeterminate],
+        ]}
+        fileBytes={batch.file_bytes}
+        fileChunks={batch.file_chunks}
+      />
+      <GeminiBatchHistoryTable history={history} />
     </ProviderSection>
   );
+}
+
+function GeminiBatchStateTable({
+  states,
+  fileBytes,
+  fileChunks,
+}: {
+  states: Array<[string, number]>;
+  fileBytes: string | undefined;
+  fileChunks: number | undefined;
+}): ReactElement {
+  const peak = Math.max(1, ...states.map(([, count]) => count));
+  return (
+    <TableCard>
+      <table className="gemini-batch-state-table">
+        <thead><tr><th className="left">Item state</th><th>Количество</th><th className="left">Доля от максимума</th></tr></thead>
+        <tbody>
+          {states.map(([state, count]) => (
+            <tr key={state}>
+              <td className="left"><b>{state}</b></td>
+              <td><b>{count.toLocaleString("ru-RU")}</b></td>
+              <td className="left"><GeminiBatchBar percent={(count / peak) * 100} label={`${count} / ${peak}`} /></td>
+            </tr>
+          ))}
+          <tr>
+            <td className="left"><b>encrypted files</b></td>
+            <td><b>{fileChunks ?? 0} chunks</b></td>
+            <td className="left"><small>{fileBytes == null ? "—" : `${BigInt(fileBytes).toLocaleString("ru-RU")} bytes`}</small></td>
+          </tr>
+        </tbody>
+      </table>
+    </TableCard>
+  );
+}
+
+function GeminiBatchHistoryTable({ history }: { history: GeminiBatchHistoryWindow[] }): ReactElement {
+  if (!history.length) {
+    return <div className="gemini-batch-history-empty">История 1ч / 24ч / 7д появится после расширения `/gemini-subs.batch`.</div>;
+  }
+  return (
+    <TableCard>
+      <table className="gemini-batch-history-table">
+        <thead><tr>
+          <th className="left">Окно</th><th>Jobs / items</th><th>Успех / ошибки</th><th>Cancel / indeterminate</th>
+          <th>Settled</th><th>Queue avg</th><th>Execution avg</th><th className="left">Throughput / ч</th>
+        </tr></thead>
+        <tbody>{history.map((row) => {
+          const throughput = Math.max(0, Number(row.throughput_items_per_hour) || 0);
+          return <tr key={row.window}>
+            <td className="left"><b>{row.window}</b></td>
+            <td><b>{batchCount(row.jobs_created).toLocaleString("ru-RU")}</b><small>{batchCount(row.items_created).toLocaleString("ru-RU")} items</small></td>
+            <td><b>{batchCount(row.succeeded).toLocaleString("ru-RU")}</b><small>{batchCount(row.failed).toLocaleString("ru-RU")} failed</small></td>
+            <td><b>{batchCount(row.canceled).toLocaleString("ru-RU")}</b><small>{batchCount(row.indeterminate).toLocaleString("ru-RU")} indeterminate</small></td>
+            <td className="provider-usd-ink"><b>{moneyOrDash(row.settled_nanousd)}</b></td>
+            <td>{row.avg_queue_wait_seconds == null ? "—" : duration(row.avg_queue_wait_seconds)}</td>
+            <td>{row.avg_execution_seconds == null ? "—" : duration(row.avg_execution_seconds)}</td>
+            <td className="left"><GeminiBatchBar percent={historyThroughputPercent(row, history)} label={throughput.toLocaleString("ru-RU", { maximumFractionDigits: 1 })} /></td>
+          </tr>;
+        })}</tbody>
+      </table>
+    </TableCard>
+  );
+}
+
+function GeminiBatchBar({ percent, label }: { percent: number; label: string }): ReactElement {
+  const bounded = Math.min(100, Math.max(0, Number(percent) || 0));
+  return <div className="gemini-batch-bar"><span className="bar" aria-hidden="true"><i style={{ width: `${bounded}%` }} /></span><b>{label}</b></div>;
 }
 
 export function GeminiCapacityBoard({

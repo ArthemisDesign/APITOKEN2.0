@@ -1112,6 +1112,63 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(html).toContain("provider-quota-meter");
   });
 
+  it("GeminiCapacityBoard: показывает fleet-only Batch control room без identities", () => {
+    const nowSec = 1_800_000_000;
+    const html = renderToString(
+      <GeminiCapacityBoard
+        nowMs={nowSec * 1000}
+        response={{
+          calibration_authority_available: true,
+          calibration_delivery: { pending_events: 0, dropped_events: 0, persistence_ok: true },
+          profiles: [],
+          models: [],
+          batch: {
+            enabled: true,
+            public_enabled: true,
+            authority_available: true,
+            jobs_pending: 4,
+            jobs_running: 2,
+            queued_items: 7,
+            claimed_items: 2,
+            dispatching_items: 3,
+            settlement_pending_items: 1,
+            succeeded_items: 120,
+            failed_items: 4,
+            canceled_items: 3,
+            indeterminate_items: 1,
+            reserved_nanousd: "1234000000",
+            leader_held: false,
+            leader_expires_at: nowSec + 60,
+            oldest_queued_age_seconds: 3600,
+            settlement_oldest_age_seconds: 600,
+            file_bytes: "90071992547409930",
+            file_chunks: 17,
+            history: [
+              { window: "7d", jobs_created: 70, items_created: 700, succeeded: 680, failed: 8, canceled: 10, indeterminate: 2, settled_nanousd: "7000000000", avg_queue_wait_seconds: 90, avg_execution_seconds: 45, throughput_items_per_hour: 20 },
+              { window: "1h", jobs_created: 4, items_created: 40, succeeded: 36, failed: 1, canceled: 2, indeterminate: 1, settled_nanousd: "400000000", avg_queue_wait_seconds: 30, avg_execution_seconds: 12, throughput_items_per_hour: 40 },
+              { window: "24h", jobs_created: 24, items_created: 240, succeeded: 230, failed: 3, canceled: 5, indeterminate: 2, settled_nanousd: "2400000000", avg_queue_wait_seconds: 60, avg_execution_seconds: 25, throughput_items_per_hour: 10 },
+            ],
+          },
+        }}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("Gemini Batch · control room");
+    expect(text).toContain("4 / 2");
+    expect(text).toContain("$1.23");
+    expect(text).toContain("Settlement backlog");
+    expect(text.indexOf("Settlement backlog")).toBeLessThan(text.indexOf("Indeterminate execution"));
+    expect(text.indexOf("Indeterminate execution")).toBeLessThan(text.indexOf("Нет Batch leader"));
+    expect(text.indexOf("Нет Batch leader")).toBeLessThan(text.indexOf("Очередь не двигается"));
+    expect(text).toContain("90 071 992 547 409 930 bytes");
+    expect(text.indexOf("1h")).toBeLessThan(text.indexOf("24h"));
+    expect(text.indexOf("24h")).toBeLessThan(text.indexOf("7d"));
+    expect(text).toContain("$7.00");
+    expect(html).not.toContain("account_id");
+    expect(html).not.toContain("job_id");
+    expect(html).not.toContain("profile_id");
+  });
+
   it("GeminiCapacityBoard: pending authority скрывает stale API-$, а не показывает их как доступные", () => {
     const html = renderToString(
       <GeminiCapacityBoard
