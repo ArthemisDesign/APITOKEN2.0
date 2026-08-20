@@ -136,6 +136,9 @@ GET  /v1beta/models                               Gemini native
 POST /v1beta/models/{id}:generateContent
 POST /v1beta/models/{id}:streamGenerateContent    (alt=sse and alt=json)
 POST /v1beta/models/{id}:countTokens
+POST /upload/v1beta/files                           Gemini native file upload passthrough;
+                                                    the Gemini plane owns auth, admission,
+                                                    and upload semantics
 
 GET  /balance                                    bodyless shared-authority read: Anthropic →
                                                   OpenAI → Gemini only after transport,

@@ -145,8 +145,9 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   (stored responses only for `openai/*`, decision 5). The Images API
   (`POST /v1/images/generations`, `/v1/images/edits`) is likewise a native OpenAI lane:
   a byte-faithful proxy to the OpenAI plane, which owns admission, billing, and the proved
-  narrow GPT Image 2 contract. These native wrappers and `/v1beta/*` create logical identity immediately
-  before their single proxy attempt; `/balance`, health, catalog, startup, and fallback 404/405 do not.
+  narrow GPT Image 2 contract. Gemini `/v1beta/*` and `/upload/v1beta/*` are byte-faithful native
+  wrappers to the Gemini plane only. These native wrappers create logical identity immediately before
+  their single proxy attempt; `/balance`, health, catalog, startup, and fallback 404/405 do not.
 - `catalog.rs` — the unified `/v1/models`: aggregation of the three planes, namespaced IDs
   + only globally unambiguous aliases, per-plane singleflight refresh sharing the result of a
   successful or failed in-flight attempt, a deterministically

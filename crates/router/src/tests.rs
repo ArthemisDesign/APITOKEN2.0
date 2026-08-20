@@ -1093,6 +1093,7 @@ async fn native_wrapper_routes_inject_logical_identity_only_for_executable_proxy
         ),
         ("GET", "/v1beta/models"),
         ("OPTIONS", "/v1beta/models"),
+        ("POST", "/upload/v1beta/files?uploadType=resumable"),
     ] {
         let response = client
             .request(method.parse().unwrap(), format!("{router}{path}"))
@@ -1146,7 +1147,7 @@ async fn native_wrapper_routes_inject_logical_identity_only_for_executable_proxy
         .unwrap();
 
     let gemini_requests = log_g.lock().unwrap().clone();
-    assert_eq!(gemini_requests.len(), 4);
+    assert_eq!(gemini_requests.len(), 5);
     for request in &gemini_requests {
         assert_eq!(request.logical_request_ids.len(), 1, "{}", request.path);
         assert_canonical_uuid_v4(&request.logical_request_ids[0]);
@@ -1162,7 +1163,7 @@ async fn native_wrapper_routes_inject_logical_identity_only_for_executable_proxy
         .chain(openai_requests.iter())
         .map(|request| request.logical_request_ids[0].as_str())
         .collect();
-    assert_eq!(distinct.len(), 12);
+    assert_eq!(distinct.len(), 13);
     let anthropic_paths: Vec<String> = log_a
         .lock()
         .unwrap()
@@ -1171,6 +1172,13 @@ async fn native_wrapper_routes_inject_logical_identity_only_for_executable_proxy
         .collect();
     assert_eq!(anthropic_paths, ["/balance"]);
     assert!(log_a.lock().unwrap()[0].logical_request_ids.is_empty());
+    assert_eq!(
+        gemini_requests.last().unwrap().path,
+        "/upload/v1beta/files?uploadType=resumable"
+    );
+    assert!(openai_requests
+        .iter()
+        .all(|request| !request.path.starts_with("/upload/")));
 }
 
 #[tokio::test]

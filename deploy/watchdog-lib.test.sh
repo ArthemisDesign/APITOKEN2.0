@@ -2376,9 +2376,17 @@ claude_api_vhost=$(sed -n '/^api\.apitoken\.sale {$/,/^openai\.api\.apitoken\.sa
   "$ROOT/deploy/Caddyfile")
 openai_api_vhost=$(sed -n '/^openai\.api\.apitoken\.sale {$/,/^gemini\.api\.apitoken\.sale {$/p' \
   "$ROOT/deploy/Caddyfile")
+gemini_api_vhost=$(sed -n '/^gemini\.api\.apitoken\.sale {$/,/^router\.apitoken\.sale {$/p' \
+  "$ROOT/deploy/Caddyfile")
 grep -Fq 'import engine_backend' <<<"$claude_api_vhost"
 ! grep -Fq 'openai_engine_backend' <<<"$claude_api_vhost"
+! grep -Fq '/upload/v1beta/*' <<<"$claude_api_vhost" \
+  || wd_die 'Anthropic public vhost exposes the Gemini upload perimeter'
 grep -Fq 'import openai_engine_backend' <<<"$openai_api_vhost"
+! grep -Fq '/upload/v1beta/*' <<<"$openai_api_vhost" \
+  || wd_die 'OpenAI public vhost exposes the Gemini upload perimeter'
+grep -Fq '@public_core path /v1beta/* /upload/v1beta/* /health /balance' <<<"$gemini_api_vhost" \
+  || wd_die 'Gemini public vhost lost its native upload perimeter'
 [[ $(grep -Fc 'encode zstd gzip {' <<<"$openai_api_vhost") == 1 ]] \
   || wd_die 'OpenAI public TLS boundary must have exactly one compression policy'
 grep -Fq 'minimum_length 512' <<<"$openai_api_vhost" \
@@ -2391,7 +2399,7 @@ grep -Fq 'header Content-Type application/json*' <<<"$openai_api_vhost" \
 # The blue-green controller replaces that snippet atomically; the public path never lists slots or
 # gains compression, and Prometheus never has to discover the active slot.
 router_vhost=$(sed -n '/^router\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
-grep -Fq '@public_core path /v1/messages* /v1/responses* /v1/chat/completions /v1/images/* /v1/models* /v1beta/* /health /balance' \
+grep -Fq '@public_core path /v1/messages* /v1/responses* /v1/chat/completions /v1/images/* /v1/models* /v1beta/* /upload/v1beta/* /health /balance' \
   <<<"$router_vhost" \
   || wd_die 'unified router must forward exactly the documented public contract'
 grep -Fq 'import router_backend' <<<"$router_vhost" \

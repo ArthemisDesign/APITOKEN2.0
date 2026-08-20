@@ -76,6 +76,7 @@ fn build_client() -> anyhow::Result<Client> {
 /// Stored responses endpoints остаются native OpenAI lane (решение 5);
 /// `/v1/images/generations` и `/v1/images/edits` — тоже native OpenAI lane
 /// (байт-в-байт прокси на OpenAI-плоскость, биллинг и admission — в плоскости).
+/// `/v1beta/*` и `/upload/v1beta/*` — native Gemini lane без body parsing.
 /// Собственные поверхности router'а — агрегированный каталог /v1/models и
 /// dispatch universal-запросов.
 pub fn app(state: Arc<AppState>) -> Router {
@@ -98,6 +99,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/images/edits", post(proxy_openai))
         .route("/v1/chat/completions", post(chat::proxy_chat))
         .route("/v1beta/{*rest}", any(proxy_gemini))
+        .route("/upload/v1beta/{*rest}", any(proxy_gemini))
         .fallback(error_fallback)
         .method_not_allowed_fallback(method_not_allowed_fallback)
         .with_state(state)

@@ -128,7 +128,8 @@ origin `127.0.0.1:8794`, which health-gates slots `127.0.0.1:8795` and `127.0.0.
 cutover: the preferred ready slot takes new requests, while the readiness-drained predecessor keeps
 only established streams. It never participates in the 8792
 bridge and never accepts the request-level API-plane marker. Its public matcher allows `/v1beta/*`,
-`/health`, and `/balance`; an earlier exact `/oauth/callback` handler routes the no-store official
+`/upload/v1beta/*`, `/health`, and `/balance`; the upload prefix is not exposed on the Anthropic or
+OpenAI provider hosts. An earlier exact `/oauth/callback` handler routes the no-store official
 CLI code-entry form and its POST only to Auth Bot on `127.0.0.1:8796`, so OAuth codes never enter
 the engine or Caddy access log. The vhost redacts `X-Goog-Api-Key` in access logs. The watchdog probes the
 public hostname for a native unauthenticated Gemini envelope before committing the provider cohort.
@@ -184,12 +185,13 @@ The retry window applies only while Caddy is selecting and connecting to an upst
 - an ungraceful process death still disconnects that stream and requires client/application retry.
 
 The Claude/OpenAI matchers remain restricted to `/v1/*`, `/health`, and `/balance`; Gemini is
-restricted to `/v1beta/*`, `/health`, and `/balance`. Every other path returns `404`.
+restricted to `/v1beta/*`, `/upload/v1beta/*`, `/health`, and `/balance`. Every other path returns
+`404`.
 
 `router.apitoken.sale` is the unified multi-provider entry point (stage 1b of
 `docs/engine/UNIFIED_ROUTER.md`). The vhost only terminates TLS: the whole public contract
 (`/v1/messages*`, `/v1/responses*`, `/v1/chat/completions`, `/v1/images/*`, `/v1/models*`, `/v1beta/*`,
-`/health`, `/balance`) imports the root-owned `router_backend` runtime snippet. In steady state it
+`/upload/v1beta/*`, `/health`, `/balance`) imports the root-owned `router_backend` runtime snippet. In steady state it
 names exactly one `claude-router@` slot on loopback 8800 or 8801; the same snippet backs the
 loopback-only stable origin `127.0.0.1:8802` used by Prometheus and verification. The router owns path-shape routing to the
 three provider planes, the aggregated namespaced `/v1/models` catalog with its degradation
