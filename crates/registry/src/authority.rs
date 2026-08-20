@@ -646,26 +646,69 @@ impl Authority {
         owner: &Owner,
         profile_id: &str,
         model_id: &str,
+        profile_capacity: i16,
         lease_secs: i64,
     ) -> Result<Option<crate::GeminiBatchClaimedItem>> {
-        self.gemini_batch_postgres()?
-            .claim_gemini_batch_item(owner, profile_id, model_id, lease_secs)
+        self.gemini_batch_postgres()?.claim_gemini_batch_item(
+            owner,
+            profile_id,
+            model_id,
+            profile_capacity,
+            lease_secs,
+        )
     }
 
-    pub fn mark_gemini_batch_dispatching(&mut self, owner: &Owner, claim: &crate::GeminiBatchClaim, lease_secs: i64) -> Result<bool> {
-        self.gemini_batch_postgres()?.mark_gemini_batch_dispatching(owner, claim, lease_secs)
+    pub fn mark_gemini_batch_dispatching(
+        &mut self,
+        owner: &Owner,
+        claim: &crate::GeminiBatchClaim,
+        lease_secs: i64,
+    ) -> Result<bool> {
+        self.gemini_batch_postgres()?
+            .mark_gemini_batch_dispatching(owner, claim, lease_secs)
     }
-    pub fn mark_gemini_batch_actual_send(&mut self, owner: &Owner, claim: &crate::GeminiBatchClaim, lease_secs: i64) -> Result<bool> {
-        self.gemini_batch_postgres()?.mark_gemini_batch_actual_send(owner, claim, lease_secs)
+    pub fn reserve_gemini_batch_dispatch(
+        &mut self,
+        owner: &Owner,
+        claim: &crate::GeminiBatchClaim,
+        random_delay_ms: i64,
+    ) -> Result<crate::GeminiBatchDispatchReservation> {
+        self.gemini_batch_postgres()?
+            .reserve_gemini_batch_dispatch(owner, claim, random_delay_ms)
     }
-    pub fn renew_gemini_batch_claim(&mut self, owner: &Owner, claim: &crate::GeminiBatchClaim, lease_secs: i64) -> Result<bool> {
-        self.gemini_batch_postgres()?.renew_gemini_batch_claim(owner, claim, lease_secs)
+    pub fn mark_gemini_batch_actual_send(
+        &mut self,
+        owner: &Owner,
+        claim: &crate::GeminiBatchClaim,
+        lease_secs: i64,
+    ) -> Result<bool> {
+        self.gemini_batch_postgres()?
+            .mark_gemini_batch_actual_send(owner, claim, lease_secs)
     }
-    pub fn requeue_gemini_batch_claim(&mut self, owner: &Owner, claim: &crate::GeminiBatchClaim, next_attempt_ts: i64) -> Result<bool> {
-        self.gemini_batch_postgres()?.requeue_gemini_batch_claim(owner, claim, next_attempt_ts)
+    pub fn renew_gemini_batch_claim(
+        &mut self,
+        owner: &Owner,
+        claim: &crate::GeminiBatchClaim,
+        lease_secs: i64,
+    ) -> Result<bool> {
+        self.gemini_batch_postgres()?
+            .renew_gemini_batch_claim(owner, claim, lease_secs)
     }
-    pub fn reconcile_expired_gemini_batch_claims(&mut self, limit: usize) -> Result<crate::pg::gemini_batch_claims::GeminiBatchReconcileReport> {
-        self.gemini_batch_postgres()?.reconcile_expired_gemini_batch_claims(limit)
+    pub fn requeue_gemini_batch_claim(
+        &mut self,
+        owner: &Owner,
+        claim: &crate::GeminiBatchClaim,
+        next_attempt_ts: i64,
+    ) -> Result<bool> {
+        self.gemini_batch_postgres()?
+            .requeue_gemini_batch_claim(owner, claim, next_attempt_ts)
+    }
+    pub fn reconcile_expired_gemini_batch_claims(
+        &mut self,
+        limit: usize,
+    ) -> Result<crate::pg::gemini_batch_claims::GeminiBatchReconcileReport> {
+        self.gemini_batch_postgres()?
+            .reconcile_expired_gemini_batch_claims(limit)
     }
 
     pub fn gemini_batch_cancel(

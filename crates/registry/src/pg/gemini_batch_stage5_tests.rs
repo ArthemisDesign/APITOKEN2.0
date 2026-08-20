@@ -106,8 +106,10 @@ fn stage5_lock_and_store() -> Option<(PgStore, PgStore)> {
 fn stage5_cleanup(pg: &mut PgStore) {
     pg.client
         .batch_execute(
-            "DELETE FROM gemini_batch_profile_leases_slot2 WHERE job_id LIKE 'stage5-%';
+            "DELETE FROM gemini_batch_profile_leases_extra WHERE job_id LIKE 'stage5-%';
+             DELETE FROM gemini_batch_profile_leases_slot2 WHERE job_id LIKE 'stage5-%';
              DELETE FROM gemini_batch_profile_leases WHERE job_id LIKE 'stage5-%';
+             DELETE FROM gemini_batch_profile_dispatch_state WHERE profile_id LIKE 'stage5-%';
              DELETE FROM gemini_batch_settlement_outbox WHERE job_id LIKE 'stage5-%';
              DELETE FROM gemini_batch_blobs WHERE job_id LIKE 'stage5-%';
              DELETE FROM gemini_batch_items WHERE job_id LIKE 'stage5-%';
@@ -169,7 +171,13 @@ fn stage5_resilience_postgres_matrix() {
             .unwrap();
         assert!(pg.acquire_gemini_batch_leader(&owner, 600).unwrap());
         let claimed = pg
-            .claim_gemini_batch_item(&owner, &profile, "gemini-2.5-flash", 600)
+            .claim_gemini_batch_item(
+                &owner,
+                &profile,
+                "gemini-2.5-flash",
+                crate::GEMINI_BATCH_STANDARD_PROFILE_CAPACITY,
+                600,
+            )
             .unwrap()
             .unwrap();
         let claim = claimed.claim;
@@ -284,6 +292,7 @@ fn stage5_resilience_postgres_matrix() {
                         &restart_owner,
                         &format!("{profile}-restart"),
                         "gemini-2.5-flash",
+                        crate::GEMINI_BATCH_STANDARD_PROFILE_CAPACITY,
                         600,
                     )
                     .unwrap()
@@ -340,7 +349,13 @@ fn stage5_resilience_postgres_matrix() {
         .unwrap();
     assert!(pg.acquire_gemini_batch_leader(&owner, 600).unwrap());
     let claimed = pg
-        .claim_gemini_batch_item(&owner, "stage5-profile-cancel", "gemini-2.5-flash", 600)
+        .claim_gemini_batch_item(
+            &owner,
+            "stage5-profile-cancel",
+            "gemini-2.5-flash",
+            crate::GEMINI_BATCH_STANDARD_PROFILE_CAPACITY,
+            600,
+        )
         .unwrap()
         .unwrap();
     assert!(pg
@@ -410,16 +425,34 @@ fn stage5_postgres_load_and_fairness() {
     assert!(pg.acquire_gemini_batch_leader(&owner, 600).unwrap());
 
     let first = pg
-        .claim_gemini_batch_item(&owner, "stage5-profile-two-slot", "gemini-2.5-flash", 600)
+        .claim_gemini_batch_item(
+            &owner,
+            "stage5-profile-two-slot",
+            "gemini-2.5-flash",
+            crate::GEMINI_BATCH_STANDARD_PROFILE_CAPACITY,
+            600,
+        )
         .unwrap()
         .unwrap();
     let second = pg
-        .claim_gemini_batch_item(&owner, "stage5-profile-two-slot", "gemini-2.5-flash", 600)
+        .claim_gemini_batch_item(
+            &owner,
+            "stage5-profile-two-slot",
+            "gemini-2.5-flash",
+            crate::GEMINI_BATCH_STANDARD_PROFILE_CAPACITY,
+            600,
+        )
         .unwrap()
         .unwrap();
     assert_ne!(first.claim.request_id, second.claim.request_id);
     assert!(pg
-        .claim_gemini_batch_item(&owner, "stage5-profile-two-slot", "gemini-2.5-flash", 600,)
+        .claim_gemini_batch_item(
+            &owner,
+            "stage5-profile-two-slot",
+            "gemini-2.5-flash",
+            crate::GEMINI_BATCH_STANDARD_PROFILE_CAPACITY,
+            600,
+        )
         .unwrap()
         .is_none());
     let occupied: i64 = pg
@@ -432,11 +465,104 @@ fn stage5_postgres_load_and_fairness() {
         .unwrap()
         .get(0);
     assert_eq!(occupied, 2);
+
+    let ultra_profile = "stage5-profile-ultra";
+    let mut ultra_claims = Vec::new();
+    for _ in 0..crate::GEMINI_BATCH_ULTRA_PROFILE_CAPACITY {
+        ultra_claims.push(
+            pg.claim_gemini_batch_item(
+                &owner,
+                ultra_profile,
+                "gemini-2.5-flash",
+                crate::GEMINI_BATCH_ULTRA_PROFILE_CAPACITY,
+                600,
+            )
+            .unwrap()
+            .unwrap()
+            .claim,
+        );
+    }
+    assert!(pg
+        .claim_gemini_batch_item(
+            &owner,
+            ultra_profile,
+            "gemini-2.5-flash",
+            crate::GEMINI_BATCH_ULTRA_PROFILE_CAPACITY,
+            600,
+        )
+        .unwrap()
+        .is_none());
+    let ultra_occupied: i64 = pg
+        .client
+        .query_one(
+            "SELECT (SELECT COUNT(*) FROM gemini_batch_profile_leases WHERE profile_id=$1)
+                  + (SELECT COUNT(*) FROM gemini_batch_profile_leases_slot2 WHERE profile_id=$1)
+                  + (SELECT COUNT(*) FROM gemini_batch_profile_leases_extra WHERE profile_id=$1)",
+            &[&ultra_profile],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(ultra_occupied, 20);
+    let paced_claim = ultra_claims.remove(0);
+    for claim in &ultra_claims {
+        assert!(pg.requeue_gemini_batch_claim(&owner, claim, 0).unwrap());
+    }
+
+    assert!(pg
+        .mark_gemini_batch_dispatching(&owner, &paced_claim, 600)
+        .unwrap());
+    let first_grant = pg
+        .reserve_gemini_batch_dispatch(&owner, &paced_claim, 2_000)
+        .unwrap();
+    let next = match first_grant {
+        crate::GeminiBatchDispatchReservation::Granted {
+            dispatch_at_ms,
+            next_not_before_ms,
+        } => {
+            assert_eq!(next_not_before_ms - dispatch_at_ms, 2_000);
+            next_not_before_ms
+        }
+        other => panic!("unexpected first dispatch reservation: {other:?}"),
+    };
+    assert_eq!(
+        pg.reserve_gemini_batch_dispatch(&owner, &paced_claim, 5_000)
+            .unwrap(),
+        crate::GeminiBatchDispatchReservation::WaitUntil {
+            not_before_ms: next
+        }
+    );
+    let paced_intent = crate::GeminiBatchSettlementIntent {
+        job_id: paced_claim.job_id.clone(),
+        item_index: paced_claim.item_index,
+        request_id: paced_claim.request_id.clone(),
+        claim_generation: paced_claim.claim_generation,
+        disposition: crate::GeminiBatchSettlementDisposition::Indeterminate,
+        actual_nano: 0,
+        charge_basis_nano: 0,
+        real_nano: 0,
+        usage: None,
+        result_blob: stage5_blob("error", now()),
+        terminal_state: crate::GeminiBatchItemState::Indeterminate,
+        terminal_class: crate::GeminiBatchTerminalClass::Indeterminate,
+        calibration: None,
+        completed_ts: now(),
+    };
+    pg.enqueue_gemini_batch_settlement(&owner, &paced_claim, &paced_intent)
+        .unwrap();
+    pg.process_gemini_batch_settlement(&paced_claim.request_id)
+        .unwrap();
+
     assert!(pg
         .requeue_gemini_batch_claim(&owner, &first.claim, 0)
         .unwrap());
     let replacement = pg
-        .claim_gemini_batch_item(&owner, "stage5-profile-two-slot", "gemini-2.5-flash", 600)
+        .claim_gemini_batch_item(
+            &owner,
+            "stage5-profile-two-slot",
+            "gemini-2.5-flash",
+            crate::GEMINI_BATCH_STANDARD_PROFILE_CAPACITY,
+            600,
+        )
         .unwrap()
         .unwrap();
     assert_ne!(replacement.claim.request_id, second.claim.request_id);
@@ -458,7 +584,13 @@ fn stage5_postgres_load_and_fairness() {
             "stage5-profile-b"
         };
         let claimed = pg
-            .claim_gemini_batch_item(&owner, profile, "gemini-2.5-flash", 600)
+            .claim_gemini_batch_item(
+                &owner,
+                profile,
+                "gemini-2.5-flash",
+                crate::GEMINI_BATCH_STANDARD_PROFILE_CAPACITY,
+                600,
+            )
             .unwrap()
             .unwrap();
         claims.push(claimed.claim);

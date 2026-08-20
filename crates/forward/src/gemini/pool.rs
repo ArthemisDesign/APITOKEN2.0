@@ -2034,7 +2034,17 @@ pub struct GeminiLease {
 }
 
 impl GeminiLease {
-    pub fn profile_id(&self) -> &str { self.profile.id() }
+    pub fn profile_id(&self) -> &str {
+        self.profile.id()
+    }
+    pub fn batch_profile_capacity(&self) -> i16 {
+        match self.profile.plan.as_str() {
+            "google_ai_ultra" | "workspace_ai_ultra" => {
+                registry::GEMINI_BATCH_ULTRA_PROFILE_CAPACITY
+            }
+            _ => registry::GEMINI_BATCH_STANDARD_PROFILE_CAPACITY,
+        }
+    }
     pub(crate) fn profile(&self) -> &Arc<GeminiProfile> {
         &self.profile
     }
@@ -2491,13 +2501,40 @@ impl GeminiGateway {
     }
 
     pub fn select_batch_profile(&self, model_id: &str, profile_id: &str) -> Option<GeminiLease> {
-        if self.shutting_down.load(Ordering::Acquire) { return None; }
-        let now=pool::now();let stale=self.cfg.health_probe_interval_secs.saturating_mul(2).clamp(60,3600)as i64;let threshold=i64::from(self.cfg.batch_5h_headroom_percent)*FRACTION_SCALE/100;
-        let profile=self.routable_profiles().into_iter().find(|p|p.id()==profile_id)?;
-        if !profile.authenticated.load(Ordering::Acquire)||profile.hard_cooling_until_for(model_id,&self.cfg,now,true)>now{return None}
-        let summary=profile.quota_summary.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if summary.updated_at<=0||now.saturating_sub(summary.updated_at)>stale||!summary.buckets.iter().any(|b|b.contract.id==calibration::BUCKET_5H&&b.remaining_fraction_units>threshold){return None}
-        drop(summary);profile.inflight.fetch_add(1,Ordering::AcqRel);Some(GeminiLease{profile})
+        if self.shutting_down.load(Ordering::Acquire) {
+            return None;
+        }
+        let now = pool::now();
+        let stale = self
+            .cfg
+            .health_probe_interval_secs
+            .saturating_mul(2)
+            .clamp(60, 3600) as i64;
+        let threshold = i64::from(self.cfg.batch_5h_headroom_percent) * FRACTION_SCALE / 100;
+        let profile = self
+            .routable_profiles()
+            .into_iter()
+            .find(|p| p.id() == profile_id)?;
+        if !profile.authenticated.load(Ordering::Acquire)
+            || profile.hard_cooling_until_for(model_id, &self.cfg, now, true) > now
+        {
+            return None;
+        }
+        let summary = profile
+            .quota_summary
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if summary.updated_at <= 0
+            || now.saturating_sub(summary.updated_at) > stale
+            || !summary.buckets.iter().any(|b| {
+                b.contract.id == calibration::BUCKET_5H && b.remaining_fraction_units > threshold
+            })
+        {
+            return None;
+        }
+        drop(summary);
+        profile.inflight.fetch_add(1, Ordering::AcqRel);
+        Some(GeminiLease { profile })
     }
 
     /// Last-resort selection that ignores the soft, environment-derived cooling axis.

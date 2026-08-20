@@ -93,6 +93,7 @@ enum Command {
     Claim {
         profile_id: String,
         model_id: String,
+        profile_capacity: i16,
         lease_secs: i64,
         reply: Reply<Option<GeminiBatchClaimedItem>>,
     },
@@ -100,6 +101,11 @@ enum Command {
         claim: GeminiBatchClaim,
         lease_secs: i64,
         reply: Reply<bool>,
+    },
+    ReserveDispatch {
+        claim: GeminiBatchClaim,
+        random_delay_ms: i64,
+        reply: Reply<registry::GeminiBatchDispatchReservation>,
     },
     MarkActualSend {
         claim: GeminiBatchClaim,
@@ -301,6 +307,7 @@ impl GeminiBatchAuthority {
                         Command::Claim {
                             profile_id,
                             model_id,
+                            profile_capacity,
                             lease_secs,
                             reply,
                         } => {
@@ -308,6 +315,7 @@ impl GeminiBatchAuthority {
                                 &owner,
                                 &profile_id,
                                 &model_id,
+                                profile_capacity,
                                 lease_secs,
                             ));
                         }
@@ -319,6 +327,17 @@ impl GeminiBatchAuthority {
                             let _ = reply.send(
                                 authority.mark_gemini_batch_dispatching(&owner, &claim, lease_secs),
                             );
+                        }
+                        Command::ReserveDispatch {
+                            claim,
+                            random_delay_ms,
+                            reply,
+                        } => {
+                            let _ = reply.send(authority.reserve_gemini_batch_dispatch(
+                                &owner,
+                                &claim,
+                                random_delay_ms,
+                            ));
                         }
                         Command::MarkActualSend {
                             claim,
@@ -579,11 +598,13 @@ impl GeminiBatchAuthority {
         &self,
         profile_id: impl Into<String>,
         model_id: impl Into<String>,
+        profile_capacity: i16,
         lease_secs: i64,
     ) -> Result<Option<GeminiBatchClaimedItem>> {
         self.call(|reply| Command::Claim {
             profile_id: profile_id.into(),
             model_id: model_id.into(),
+            profile_capacity,
             lease_secs,
             reply,
         })
@@ -594,6 +615,19 @@ impl GeminiBatchAuthority {
         self.call(|reply| Command::MarkDispatching {
             claim,
             lease_secs,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn reserve_dispatch(
+        &self,
+        claim: GeminiBatchClaim,
+        random_delay_ms: i64,
+    ) -> Result<registry::GeminiBatchDispatchReservation> {
+        self.call(|reply| Command::ReserveDispatch {
+            claim,
+            random_delay_ms,
             reply,
         })
         .await

@@ -122,8 +122,12 @@ impl PgStore {
         })?;
         for row in &canceled {
             let item_index = row.get::<_, i64>(0);
-            // Slot 2 first: deleting slot 1 may promote the peer slot-2 row into slot 1.
+            // Extras first, then slot 2: either legacy delete may promote a surviving extra row.
             let mut deleted = tx.execute(
+                "DELETE FROM gemini_batch_profile_leases_extra WHERE job_id=$1 AND item_index=$2",
+                &[&job_id, &item_index],
+            )?;
+            deleted += tx.execute(
                 "DELETE FROM gemini_batch_profile_leases_slot2 WHERE job_id=$1 AND item_index=$2",
                 &[&job_id, &item_index],
             )?;

@@ -276,7 +276,8 @@ PostgreSQL batch authority
   v
 batch scheduler leader
   | fair job selection
-  | two active batch items per Gemini profile
+  | 20 active items for reviewed Ultra profiles; 2 for every other plan
+  | durable random 2–5 second pacing between starts on one profile
   | batch 5h headroom gate: remaining > 15% (§4.6)
   v
 existing Gemini pool/transport execution primitive
@@ -692,9 +693,10 @@ authenticated, freshness) дополнительно фильтрует канд
 Interactive `select_routed` остается байт-в-байт прежним: batch policy не течет в общий path.
 `GeminiGateway::select_routed` без affinity hints переиспользуется как база: batch items
 независимы, а цель режима — распределение. Hard quota/model cooling, authenticated status, fresh
-quota preference, inflight rank и round-robin сохраняются. Batch-specific per-profile active fence допускает два item на подписку, после чего
-заставляет дальнейший burst покрывать другие подписки; обычные interactive requests по-прежнему могут идти на
-эти профили и не ждут batch semaphore. Когда все кандидаты отсеяны 5h-gate, scheduler не возвращает
+quota preference, inflight rank и round-robin сохраняются. Batch-specific per-profile active fence допускает до 20 items для reviewed
+`google_ai_ultra|workspace_ai_ultra` и два для любого другого или неизвестного платного плана.
+Последовательные старты на одном профиле разделены durable случайным интервалом 2–5 секунд; обычные
+interactive requests по-прежнему могут идти на эти профили и не ждут Batch pacing. Когда все кандидаты отсеяны 5h-gate, scheduler не возвращает
 клиентскую ошибку: items остаются `queued`, а `next_attempt_at` выставляется по минимальному
 `resets_at` среди свежих 5h-snapshot'ов (или по bounded backoff, если ни один snapshot не свеж),
 плюс jitter, чтобы флот не просыпался синхронно.

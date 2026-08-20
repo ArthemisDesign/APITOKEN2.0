@@ -833,11 +833,13 @@ reserved holds, leader lease, settlement backlog/permanent failures and active e
 The 1h/24h/7d rows are PostgreSQL-derived rolling windows (not process-local counters): jobs/items
 created, terminal outcomes, exact settled nanoUSD, average queue/execution duration and normalized
 items/hour. They survive Gemini slot restart and contain no customer, job, model, file or profile ID.
-The durable scheduler admits up to two simultaneous Batch items per eligible active subscription
-under the existing fleet-wide leader. There is no separate global worker ceiling: maximum active
-Batch width is `2 × eligible active subscriptions`, while ordinary Gemini traffic does not consume
-these Batch profile slots. Unknown authority data is rendered as unavailable rather than inferred
-from customer traffic.
+The durable scheduler admits up to twenty simultaneous Batch items on each reviewed Google AI Ultra
+or Workspace AI Ultra subscription and two on every other or unknown paid plan under the existing
+fleet-wide leader. There is no separate global worker or account-wide active-item ceiling; the fleet
+width is the sum of those plan-specific durable slots. Successive starts on one profile are fenced by
+a durable independently sampled 2–5 second interval. Ordinary Gemini traffic does not consume Batch
+profile slots. Unknown authority data is rendered as unavailable rather than inferred from customer
+traffic.
 
 ## GeminiBatchQueueStale
 

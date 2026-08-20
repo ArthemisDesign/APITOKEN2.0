@@ -1170,9 +1170,11 @@ currently supported: use JSONL `fileName` for Batch-scale input, or `inlineData`
 
 Batch uses the same standard Google token tariff and the account's normal Google multiplier as an
 ordinary generation. There is no separate Google Batch discount and no Google Batch SLA. The local
-scheduler permits at most two simultaneously executing Batch items per eligible active subscription,
-with no separate global worker ceiling. Fleet Batch width is therefore `2 × eligible active
-subscriptions`; ordinary synchronous Gemini traffic is unchanged.
+scheduler permits at most twenty simultaneously executing Batch items on each reviewed Google AI
+Ultra or Workspace AI Ultra subscription and two on every other or unknown paid plan, with no
+separate global worker or account-wide active-item ceiling. Successive Batch dispatch starts on the
+same subscription are durably paced by an independently sampled 2–5 second interval. Ordinary
+synchronous Gemini traffic is unchanged.
 The scheduler protects interactive pool capacity by dispatching Batch only while a fresh subscription
 5-hour quota summary has more than 15% remaining—an operational 85% usage ceiling, not a customer
 allowance or job-level quota. A stale or missing summary pauses dispatch until fresh headroom is

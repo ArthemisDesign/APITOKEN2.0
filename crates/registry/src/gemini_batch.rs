@@ -10,7 +10,10 @@ use anyhow::{bail, Context, Result};
 pub const GEMINI_BATCH_DISPATCH_LEADER: &str = "gemini_batch_dispatch";
 pub const MAX_BATCH_PAGE_SIZE: i64 = 1_000;
 pub const MAX_BATCH_FILE_CHUNK_PAGE_SIZE: i64 = 128;
-pub const MAX_BATCH_ACTIVE_ITEMS_PER_ACCOUNT: i64 = 16;
+pub const GEMINI_BATCH_STANDARD_PROFILE_CAPACITY: i16 = 2;
+pub const GEMINI_BATCH_ULTRA_PROFILE_CAPACITY: i16 = 20;
+pub const GEMINI_BATCH_DISPATCH_DELAY_MIN_MS: i64 = 2_000;
+pub const GEMINI_BATCH_DISPATCH_DELAY_MAX_MS: i64 = 5_000;
 pub const MAX_BATCH_PRUNE_LIMIT: usize = 5_000;
 pub const MAX_BATCH_FILE_CHUNK_BYTES: i64 = 8 * 1024 * 1024;
 pub const MAX_BATCH_FILE_BYTES: i64 = 2 * 1024 * 1024 * 1024;
@@ -352,7 +355,10 @@ impl std::fmt::Debug for GeminiBatchItem {
             .field("logical_request_id", &self.logical_request_id)
             .field("execution_group_id", &self.execution_group_id)
             .field("creator_key_id", &self.creator_key_id)
-            .field("client_key", &self.client_key.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "client_key",
+                &self.client_key.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("state", &self.state)
             .field("terminal_class", &self.terminal_class)
             .field("claim_generation", &self.claim_generation)
@@ -408,6 +414,18 @@ pub struct GeminiBatchClaim {
     pub claim_generation: i64,
     pub lease_until: i64,
     pub profile_id: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeminiBatchDispatchReservation {
+    Granted {
+        dispatch_at_ms: i64,
+        next_not_before_ms: i64,
+    },
+    WaitUntil {
+        not_before_ms: i64,
+    },
+    Stale,
 }
 
 /// Complete secret-bearing worker input returned only by the atomic claim transaction.

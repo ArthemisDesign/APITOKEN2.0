@@ -92,8 +92,10 @@ side effect. `serve` may only perform the read-only schema verification before c
   redact ciphertext/nonces/digests from `Debug`. Completed jobs remain explicit as `Expired` metadata
   after result expiry while result/error payload reads close. Output-file linkage accepts only active
   same-account `batch_output` files and extends file expiry through the job result lifetime. Dispatch
-  ignores stored priority, requires the account and creator key to remain active/unexpired, and caps
-  each account at 16 claimed/dispatching/settlement-pending items. SQLite returns typed unsupported.
+  ignores stored priority, requires the account and creator key to remain active/unexpired, admits
+  20 durable slots only for reviewed Ultra plans and two otherwise, and has no separate account-wide
+  active-item ceiling. Each profile's consecutive Batch starts use the durable 2–5 second pacing
+  authority. SQLite returns typed unsupported.
   No public HTTP route, env switch, scheduler loop or execution transport is composed here.
 - **Request-observability S2 (migrations `0053` + `0054`) is PostgreSQL-only and opt-in.**
   Fact-aware reservation and delivery methods insert/validate admission and first-delivery evidence in

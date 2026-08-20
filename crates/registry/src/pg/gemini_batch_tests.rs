@@ -232,7 +232,10 @@ fn settlement_safety_postgres_matrix() {
         .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
         .unwrap();
     lock.client
-        .query_one("SELECT pg_advisory_lock($1)", &[&POSTGRES_DESTRUCTIVE_TEST_LOCK])
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
         .unwrap();
     let mut pg = PgStore::connect(&url).unwrap();
     pg.migrate().unwrap();
@@ -248,8 +251,20 @@ fn settlement_safety_postgres_matrix() {
         ("funded", 900i64, 100i64, 50i64, (950i64, 50i64, 0i64)),
         ("over-hold", 900, 100, 150, (850, 150, 0)),
         ("floor", -999_999_950, 100, 150, (-1_000_000_000, 150, 0)),
-        ("shortfall", -1_000_000_000, 100, 150, (-1_000_000_000, 100, 50)),
-        ("deep-debt", -1_000_000_050, 100, 150, (-1_000_000_050, 100, 50)),
+        (
+            "shortfall",
+            -1_000_000_000,
+            100,
+            150,
+            (-1_000_000_000, 100, 50),
+        ),
+        (
+            "deep-debt",
+            -1_000_000_050,
+            100,
+            150,
+            (-1_000_000_050, 100, 50),
+        ),
     ] {
         let account_id = format!("safety-collection-{suffix}");
         pg.client
@@ -260,10 +275,15 @@ fn settlement_safety_postgres_matrix() {
             )
             .unwrap();
         let mut tx = pg.client.transaction().unwrap();
-        let result = super::collect_account_settlement_tx(&mut tx, &account_id, hold, actual).unwrap();
+        let result =
+            super::collect_account_settlement_tx(&mut tx, &account_id, hold, actual).unwrap();
         tx.commit().unwrap();
         assert_eq!(
-            (result.balance_nano, result.collected_nano, result.uncollected_nano),
+            (
+                result.balance_nano,
+                result.collected_nano,
+                result.uncollected_nano
+            ),
             expected,
             "collection case {suffix}"
         );
@@ -272,8 +292,16 @@ fn settlement_safety_postgres_matrix() {
     let newest = calibration_event("safety-newest", "safety-subject", 300, 30);
     let oldest = calibration_event("safety-oldest", "safety-subject", 100, 10);
     let middle = calibration_event("safety-middle", "safety-subject", 200, 20);
-    assert!(pg.record_provider_turn_calibration_event(&newest).unwrap().inserted);
-    assert!(pg.record_provider_turn_calibration_event(&oldest).unwrap().inserted);
+    assert!(
+        pg.record_provider_turn_calibration_event(&newest)
+            .unwrap()
+            .inserted
+    );
+    assert!(
+        pg.record_provider_turn_calibration_event(&oldest)
+            .unwrap()
+            .inserted
+    );
     let replay = pg.record_provider_turn_calibration_event(&oldest).unwrap();
     assert!(!replay.inserted);
     assert_eq!(replay.spent_nano, 40);
@@ -281,7 +309,8 @@ fn settlement_safety_postgres_matrix() {
     let mut conflict = oldest.clone();
     conflict.model_id = "gemini-conflict".into();
     assert!(crate::is_provider_turn_calibration_replay_conflict(
-        &pg.record_provider_turn_calibration_event(&conflict).unwrap_err()
+        &pg.record_provider_turn_calibration_event(&conflict)
+            .unwrap_err()
     ));
     assert_eq!(
         pg.provider_calibration_subject_spend("google", "safety-subject")
@@ -348,7 +377,10 @@ fn stage2_authority_postgres_matrix() {
         .gemini_batch_get("foreign", "stage2-job")
         .unwrap()
         .is_none());
-    let detail = pg.gemini_batch_get("stage2-account", "stage2-job").unwrap().unwrap();
+    let detail = pg
+        .gemini_batch_get("stage2-account", "stage2-job")
+        .unwrap()
+        .unwrap();
     assert_eq!(detail.items[0].client_key, None);
     let mut redacted = detail.items[0].clone();
     redacted.client_key = Some("private-correlation-key".into());
@@ -358,7 +390,13 @@ fn stage2_authority_postgres_matrix() {
     let owner = pg.claim_instance("stage2-owner", 600).unwrap();
     assert!(pg.acquire_gemini_batch_leader(&owner, 60).unwrap());
     let claimed = pg
-        .claim_gemini_batch_item(&owner, "stage2-profile", "gemini-2.5-flash", 60)
+        .claim_gemini_batch_item(
+            &owner,
+            "stage2-profile",
+            "gemini-2.5-flash",
+            crate::GEMINI_BATCH_STANDARD_PROFILE_CAPACITY,
+            60,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(claimed.public_model, "gemini-2.5-flash");

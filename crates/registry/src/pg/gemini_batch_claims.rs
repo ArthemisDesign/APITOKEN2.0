@@ -2,9 +2,11 @@
 
 use super::{now, Owner, PgStore};
 use crate::gemini_batch::{
-    GeminiBatchClaim, GeminiBatchClaimedItem, GeminiBatchEncryptedBlob, GeminiBatchItemState,
-    GeminiBatchRecoveryCandidate, GeminiBatchSettlementDisposition, GeminiBatchTerminalClass,
-    GEMINI_BATCH_DISPATCH_LEADER, MAX_BATCH_ACTIVE_ITEMS_PER_ACCOUNT,
+    GeminiBatchClaim, GeminiBatchClaimedItem, GeminiBatchDispatchReservation,
+    GeminiBatchEncryptedBlob, GeminiBatchItemState, GeminiBatchRecoveryCandidate,
+    GeminiBatchSettlementDisposition, GeminiBatchTerminalClass, GEMINI_BATCH_DISPATCH_DELAY_MAX_MS,
+    GEMINI_BATCH_DISPATCH_DELAY_MIN_MS, GEMINI_BATCH_DISPATCH_LEADER,
+    GEMINI_BATCH_STANDARD_PROFILE_CAPACITY, GEMINI_BATCH_ULTRA_PROFILE_CAPACITY,
 };
 use anyhow::{bail, Result};
 use postgres::Transaction;
@@ -33,6 +35,13 @@ pub(super) fn lock_gemini_batch_profile_lease(
     count += usize::from(
         tx.query_opt(
             "SELECT 1 FROM gemini_batch_profile_leases_slot2 WHERE profile_id=$1 AND job_id=$2 AND item_index=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6 FOR UPDATE",
+            &params,
+        )?
+        .is_some(),
+    );
+    count += usize::from(
+        tx.query_opt(
+            "SELECT 1 FROM gemini_batch_profile_leases_extra WHERE profile_id=$1 AND job_id=$2 AND item_index=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6 FOR UPDATE",
             &params,
         )?
         .is_some(),
@@ -66,6 +75,10 @@ pub(super) fn renew_gemini_batch_profile_lease(
         "UPDATE gemini_batch_profile_leases_slot2 SET lease_until=$7,updated_ts=$8 WHERE profile_id=$1 AND job_id=$2 AND item_index=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6",
         &params,
     )? as usize;
+    changed += tx.execute(
+        "UPDATE gemini_batch_profile_leases_extra SET lease_until=$7,updated_ts=$8 WHERE profile_id=$1 AND job_id=$2 AND item_index=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6",
+        &params,
+    )? as usize;
     Ok(changed)
 }
 
@@ -83,8 +96,12 @@ pub(super) fn delete_gemini_batch_profile_lease(
         &worker_epoch,
         &claim.claim_generation,
     ];
-    // Slot 2 first: deleting slot 1 may promote the peer slot-2 lease into slot 1.
+    // Extras first, then slot 2: deleting either legacy slot may promote a surviving extra lease.
     let mut changed = tx.execute(
+        "DELETE FROM gemini_batch_profile_leases_extra WHERE profile_id=$1 AND job_id=$2 AND item_index=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6",
+        &params,
+    )? as usize;
+    changed += tx.execute(
         "DELETE FROM gemini_batch_profile_leases_slot2 WHERE profile_id=$1 AND job_id=$2 AND item_index=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6",
         &params,
     )? as usize;
@@ -116,10 +133,17 @@ impl PgStore {
         owner: &Owner,
         profile_id: &str,
         model_id: &str,
+        profile_capacity: i16,
         lease_secs: i64,
     ) -> Result<Option<GeminiBatchClaimedItem>> {
         if profile_id.is_empty() || model_id.is_empty() {
             bail!("Gemini Batch profile/model ID is empty");
+        }
+        if !matches!(
+            profile_capacity,
+            GEMINI_BATCH_STANDARD_PROFILE_CAPACITY | GEMINI_BATCH_ULTRA_PROFILE_CAPACITY
+        ) {
+            bail!("Gemini Batch profile capacity is invalid");
         }
         let ts = now();
         let lease_until = ts.saturating_add(lease_secs.max(1));
@@ -155,6 +179,7 @@ impl PgStore {
         // Reclaim only leases whose exact owner generation no longer has a live heartbeat. Slot 2
         // is deleted first because deleting slot 1 can promote a surviving slot-2 lease into it.
         for table in [
+            "gemini_batch_profile_leases_extra",
             "gemini_batch_profile_leases_slot2",
             "gemini_batch_profile_leases",
         ] {
@@ -190,14 +215,29 @@ impl PgStore {
                 &[&profile_id],
             )?
             .is_some();
-        if slot1_exists && slot2_exists {
+        let extra_slots: Vec<i16> = tx
+            .query(
+                "SELECT slot_number FROM gemini_batch_profile_leases_extra WHERE profile_id=$1 ORDER BY slot_number FOR UPDATE",
+                &[&profile_id],
+            )?
+            .into_iter()
+            .map(|row| row.get(0))
+            .collect();
+        let occupied = usize::from(slot1_exists) + usize::from(slot2_exists) + extra_slots.len();
+        if occupied >= profile_capacity as usize {
             tx.rollback()?;
             return Ok(None);
         }
-        let lease_table = if slot1_exists {
-            "gemini_batch_profile_leases_slot2"
+        let lease_slot = if !slot1_exists {
+            1i16
+        } else if !slot2_exists {
+            2i16
         } else {
-            "gemini_batch_profile_leases"
+            (3i16..=profile_capacity)
+                .find(|slot| !extra_slots.contains(slot))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Gemini Batch profile slot inventory is inconsistent")
+                })?
         };
 
         // The row lock and SKIP LOCKED make claims concurrent; the account/job round-robin key
@@ -212,7 +252,7 @@ impl PgStore {
                JOIN gemini_batch_jobs job ON job.job_id=item.job_id
               WHERE item.state='queued'
                 AND item.next_attempt_ts <= $1
-                AND job.public_model=$3
+                AND job.public_model=$2
                 AND job.cancel_requested_ts IS NULL
                 AND job.completed_ts IS NULL
                 AND job.delete_ts IS NULL
@@ -223,10 +263,6 @@ impl PgStore {
                              WHERE key.account_id=job.account_id
                                AND key.key_id=item.creator_key_id AND key.status='active'
                                AND (key.expires_ts IS NULL OR key.expires_ts>$1))
-                AND (SELECT COUNT(*) FROM gemini_batch_items peer
-                     JOIN gemini_batch_jobs peer_job ON peer_job.job_id=peer.job_id
-                     WHERE peer_job.account_id=job.account_id
-                       AND peer.state IN ('claimed','dispatching','settlement_pending')) < $2
               ORDER BY
                        COALESCE((
                            SELECT MAX(peer.updated_ts)
@@ -244,7 +280,7 @@ impl PgStore {
                        job.create_ts,job.job_id,item.item_index
               FOR UPDATE OF item SKIP LOCKED
               LIMIT 1",
-            &[&ts, &MAX_BATCH_ACTIVE_ITEMS_PER_ACCOUNT, &model_id],
+            &[&ts, &model_id],
         )?
         else {
             tx.rollback()?;
@@ -303,24 +339,49 @@ impl PgStore {
         if changed != 1 {
             bail!("Gemini Batch item claim lost its locked row");
         }
-        tx.execute(
-            &format!(
-                "INSERT INTO {lease_table}(
-                     profile_id,job_id,item_index,worker_instance,worker_epoch,
+        if lease_slot <= 2 {
+            let lease_table = if lease_slot == 1 {
+                "gemini_batch_profile_leases"
+            } else {
+                "gemini_batch_profile_leases_slot2"
+            };
+            tx.execute(
+                &format!(
+                    "INSERT INTO {lease_table}(
+                         profile_id,job_id,item_index,worker_instance,worker_epoch,
+                         claim_generation,lease_until,created_ts,updated_ts)
+                     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8)"
+                ),
+                &[
+                    &profile_id,
+                    &job_id,
+                    &item_index,
+                    &owner.instance_id,
+                    &owner.epoch,
+                    &claim_generation,
+                    &lease_until,
+                    &ts,
+                ],
+            )?;
+        } else {
+            tx.execute(
+                "INSERT INTO gemini_batch_profile_leases_extra(
+                     profile_id,slot_number,job_id,item_index,worker_instance,worker_epoch,
                      claim_generation,lease_until,created_ts,updated_ts)
-                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8)"
-            ),
-            &[
-                &profile_id,
-                &job_id,
-                &item_index,
-                &owner.instance_id,
-                &owner.epoch,
-                &claim_generation,
-                &lease_until,
-                &ts,
-            ],
-        )?;
+                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)",
+                &[
+                    &profile_id,
+                    &lease_slot,
+                    &job_id,
+                    &item_index,
+                    &owner.instance_id,
+                    &owner.epoch,
+                    &claim_generation,
+                    &lease_until,
+                    &ts,
+                ],
+            )?;
+        }
         let blobs = tx.query(
             "SELECT kind,key_id,nonce,ciphertext,plaintext_len,plaintext_digest,retention_ts \
              FROM gemini_batch_blobs WHERE job_id=$1 AND item_index=$2 \
@@ -412,6 +473,11 @@ impl PgStore {
                      WHERE lease.profile_id=$9 AND lease.job_id=$1 AND lease.item_index=$2
                        AND lease.worker_instance=$4 AND lease.worker_epoch=$5
                        AND lease.claim_generation=$6
+                    UNION ALL
+                    SELECT 1 FROM gemini_batch_profile_leases_extra lease
+                     WHERE lease.profile_id=$9 AND lease.job_id=$1 AND lease.item_index=$2
+                       AND lease.worker_instance=$4 AND lease.worker_epoch=$5
+                       AND lease.claim_generation=$6
                 )",
             &[
                 &claim.job_id,
@@ -442,6 +508,71 @@ impl PgStore {
         Ok(changed == 1)
     }
 
+    /// Reserve the fleet-wide per-profile dispatch cadence after intent and before socket send.
+    pub fn reserve_gemini_batch_dispatch(
+        &mut self,
+        owner: &Owner,
+        claim: &GeminiBatchClaim,
+        random_delay_ms: i64,
+    ) -> Result<GeminiBatchDispatchReservation> {
+        if !(GEMINI_BATCH_DISPATCH_DELAY_MIN_MS..=GEMINI_BATCH_DISPATCH_DELAY_MAX_MS)
+            .contains(&random_delay_ms)
+        {
+            bail!("Gemini Batch dispatch delay is outside the reviewed interval");
+        }
+        let mut tx = self.client.transaction()?;
+        let now_ms: i64 = tx
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                &[],
+            )?
+            .get(0);
+        Self::assert_owner_locked(&mut tx, owner, now_ms / 1000)?;
+        tx.query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 552966749))",
+            &[&claim.profile_id],
+        )?;
+        if lock_gemini_batch_profile_lease(
+            &mut tx,
+            claim,
+            &owner.instance_id,
+            owner.epoch,
+        )? != 1
+            || tx
+                .query_opt(
+                    "SELECT 1 FROM gemini_batch_items WHERE job_id=$1 AND item_index=$2 AND request_id=$3 AND worker_instance=$4 AND worker_epoch=$5 AND claim_generation=$6 AND selected_profile_id=$7 AND state='dispatching' AND dispatch_intent_ts IS NOT NULL FOR UPDATE",
+                    &[&claim.job_id,&claim.item_index,&claim.request_id,&owner.instance_id,&owner.epoch,&claim.claim_generation,&claim.profile_id],
+                )?
+                .is_none()
+        {
+            tx.rollback()?;
+            return Ok(GeminiBatchDispatchReservation::Stale);
+        }
+        let next = tx
+            .query_opt(
+                "SELECT next_dispatch_not_before_ms FROM gemini_batch_profile_dispatch_state WHERE profile_id=$1 FOR UPDATE",
+                &[&claim.profile_id],
+            )?
+            .map(|row| row.get::<_, i64>(0))
+            .unwrap_or(0);
+        if now_ms < next {
+            tx.commit()?;
+            return Ok(GeminiBatchDispatchReservation::WaitUntil {
+                not_before_ms: next,
+            });
+        }
+        let next_not_before_ms = now_ms.saturating_add(random_delay_ms);
+        tx.execute(
+            "INSERT INTO gemini_batch_profile_dispatch_state(profile_id,next_dispatch_not_before_ms,updated_ts_ms) VALUES($1,$2,$3) ON CONFLICT(profile_id) DO UPDATE SET next_dispatch_not_before_ms=EXCLUDED.next_dispatch_not_before_ms,updated_ts_ms=EXCLUDED.updated_ts_ms",
+            &[&claim.profile_id,&next_not_before_ms,&now_ms],
+        )?;
+        tx.commit()?;
+        Ok(GeminiBatchDispatchReservation::Granted {
+            dispatch_at_ms: now_ms,
+            next_not_before_ms,
+        })
+    }
+
     /// Persist the irreversible actual-send boundary. A reconciler will never replay this claim.
     pub fn mark_gemini_batch_actual_send(
         &mut self,
@@ -468,6 +599,11 @@ impl PgStore {
                        AND lease.claim_generation=$6
                     UNION ALL
                     SELECT 1 FROM gemini_batch_profile_leases_slot2 lease
+                     WHERE lease.profile_id=$9 AND lease.job_id=$1 AND lease.item_index=$2
+                       AND lease.worker_instance=$4 AND lease.worker_epoch=$5
+                       AND lease.claim_generation=$6
+                    UNION ALL
+                    SELECT 1 FROM gemini_batch_profile_leases_extra lease
                      WHERE lease.profile_id=$9 AND lease.job_id=$1 AND lease.item_index=$2
                        AND lease.worker_instance=$4 AND lease.worker_epoch=$5
                        AND lease.claim_generation=$6
@@ -662,6 +798,11 @@ impl PgStore {
                       FROM gemini_batch_profile_leases_slot2 slot2
                      WHERE slot2.job_id=item.job_id AND slot2.item_index=item.item_index
                        AND slot2.profile_id=item.selected_profile_id
+                    UNION ALL
+                    SELECT worker_instance,worker_epoch,claim_generation,lease_until
+                      FROM gemini_batch_profile_leases_extra extra
+                     WHERE extra.job_id=item.job_id AND extra.item_index=item.item_index
+                       AND extra.profile_id=item.selected_profile_id
                 ) lease ON lease.worker_instance=item.worker_instance
                        AND lease.worker_epoch=item.worker_epoch
                        AND lease.claim_generation=item.claim_generation
@@ -740,6 +881,11 @@ impl PgStore {
                                AND lease.claim_generation=$4
                             UNION ALL
                             SELECT 1 FROM gemini_batch_profile_leases_slot2 lease
+                             WHERE lease.profile_id=$5 AND lease.job_id=$1 AND lease.item_index=$2
+                               AND lease.worker_instance=$7 AND lease.worker_epoch=$8
+                               AND lease.claim_generation=$4
+                            UNION ALL
+                            SELECT 1 FROM gemini_batch_profile_leases_extra lease
                              WHERE lease.profile_id=$5 AND lease.job_id=$1 AND lease.item_index=$2
                                AND lease.worker_instance=$7 AND lease.worker_epoch=$8
                                AND lease.claim_generation=$4
