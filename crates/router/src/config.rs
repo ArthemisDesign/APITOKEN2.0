@@ -88,15 +88,15 @@ impl Config {
         .map_err(|error| anyhow::anyhow!("invalid router body limits: {error}"))?;
         anyhow::ensure!(
             body_limits.request <= api_limits::current::ROUTER_REQUEST,
-            "CLAUDE_ROUTER_MAX_BODY_MIB cannot exceed the current 32 MiB runtime ceiling before bounded storage is deployed"
+            "CLAUDE_ROUTER_MAX_BODY_MIB cannot exceed the compiled runtime ceiling"
         );
         anyhow::ensure!(
             body_limits.memory_budget <= api_limits::current::ROUTER_MEMORY_BUDGET,
-            "CLAUDE_ROUTER_BODY_MEMORY_BUDGET_MIB cannot exceed the current 128 MiB runtime ceiling before dual admission is deployed"
+            "CLAUDE_ROUTER_BODY_MEMORY_BUDGET_MIB cannot exceed the compiled runtime ceiling"
         );
         anyhow::ensure!(
             body_limits.spool_budget <= api_limits::current::ROUTER_SPOOL_BUDGET,
-            "CLAUDE_ROUTER_BODY_SPOOL_BUDGET_MIB cannot exceed the current 128 MiB in-memory envelope before spooling is deployed"
+            "CLAUDE_ROUTER_BODY_SPOOL_BUDGET_MIB cannot exceed the compiled runtime ceiling"
         );
         anyhow::ensure!(
             body_limits.memory_threshold == body_limits.request,

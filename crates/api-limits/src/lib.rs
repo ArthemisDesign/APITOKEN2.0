@@ -237,9 +237,9 @@ pub mod hard {
 pub mod current {
     use super::{BodyLimits, ByteLimit, MIB};
 
-    pub const ROUTER_REQUEST: ByteLimit = ByteLimit::from_bytes(32 * MIB);
-    pub const ROUTER_MEMORY_BUDGET: ByteLimit = ByteLimit::from_bytes(128 * MIB);
-    pub const ROUTER_SPOOL_BUDGET: ByteLimit = ByteLimit::from_bytes(128 * MIB);
+    pub const ROUTER_REQUEST: ByteLimit = ByteLimit::from_bytes(64 * MIB);
+    pub const ROUTER_MEMORY_BUDGET: ByteLimit = ByteLimit::from_bytes(512 * MIB);
+    pub const ROUTER_SPOOL_BUDGET: ByteLimit = ByteLimit::from_bytes(512 * MIB);
     pub const ROUTER_MEMORY_THRESHOLD: ByteLimit = ROUTER_REQUEST;
     pub const ROUTER_RESPONSE: ByteLimit = ByteLimit::from_bytes(32 * MIB);
     pub const ROUTER_BODY_IDLE_SECS: u64 = 60;

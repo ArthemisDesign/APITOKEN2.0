@@ -376,6 +376,12 @@ prepare_engine_release() {
     printf '%s\n' openai-bluegreen-v1 >"$ENGINE_STAGE/.openai-bluegreen-v1"
     printf '%s\n' kimi-provider-v1 >"$ENGINE_STAGE/.kimi-provider-v1"
     printf '%s\n' kimi-bluegreen-v1 >"$ENGINE_STAGE/.kimi-bluegreen-v1"
+    if [[ -n "$TESTED_CANDIDATE" && -f "$TESTED_CANDIDATE/.large-payload-canary-v1" ]]; then
+      [[ ! -L "$TESTED_CANDIDATE/.large-payload-canary-v1" ]] \
+        && grep -Fxq large-payload-canary-v1 "$TESTED_CANDIDATE/.large-payload-canary-v1" \
+        || die 'large-payload candidate marker is invalid'
+      printf '%s\n' large-payload-canary-v1 >"$ENGINE_STAGE/.large-payload-canary-v1"
+    fi
     if [[ -n "$TESTED_CANDIDATE" ]]; then
       compatibility_source=$TESTED_CANDIDATE/deploy/engine-commerce-compatibility.contract
       pricing_retirement_source=$TESTED_CANDIDATE

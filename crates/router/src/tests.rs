@@ -2321,7 +2321,7 @@ async fn universal_body_budget_fails_fast_without_becoming_an_execution_queue() 
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         tx.try_send(Ok::<Bytes, std::io::Error>(Bytes::from(vec![
             b' ';
-            32 * 1024
+            64 * 1024
                 * 1024
         ])))
         .unwrap();
@@ -2329,9 +2329,8 @@ async fn universal_body_budget_fails_fast_without_becoming_an_execution_queue() 
     };
     let mut held_senders = Vec::new();
     let mut held_tasks = Vec::new();
-    // The 128 MiB budget admits at most four maximal 32 MiB bodies; each is
-    // streamed in one shot so its declared weight is pinned before the next one.
-    for _ in 0..4 {
+    // The 512 MiB budget admits eight maximal 64 MiB bodies before fail-fast overload.
+    for _ in 0..8 {
         let (body, tx) = held_body();
         let held_router = router.clone();
         held_tasks.push(tokio::spawn(async move {
@@ -2353,7 +2352,7 @@ async fn universal_body_budget_fails_fast_without_becoming_an_execution_queue() 
             .text()
             .await
             .unwrap();
-        if metrics.contains("claude_router_active_body_admission_units 128") {
+        if metrics.contains("claude_router_active_body_admission_units 512") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2553,7 +2552,7 @@ async fn chat_oversized_body_is_400_and_never_reaches_plane() {
     .await;
     let response = reqwest::Client::new()
         .post(format!("{router}/v1/chat/completions"))
-        .header(reqwest::header::CONTENT_LENGTH, 32 * 1024 * 1024 + 1)
+        .header(reqwest::header::CONTENT_LENGTH, 64 * 1024 * 1024 + 1)
         .body(oversized_pending_body())
         .send()
         .await
@@ -2780,7 +2779,7 @@ async fn responses_oversized_body_is_400_and_never_reaches_plane() {
     .await;
     let response = reqwest::Client::new()
         .post(format!("{router}/v1/responses"))
-        .header(reqwest::header::CONTENT_LENGTH, 32 * 1024 * 1024 + 1)
+        .header(reqwest::header::CONTENT_LENGTH, 64 * 1024 * 1024 + 1)
         .body(oversized_pending_body())
         .send()
         .await
@@ -3083,7 +3082,7 @@ async fn messages_oversized_body_is_400_and_never_reaches_plane() {
     .await;
     let response = reqwest::Client::new()
         .post(format!("{router}/v1/messages"))
-        .header(reqwest::header::CONTENT_LENGTH, 32 * 1024 * 1024 + 1)
+        .header(reqwest::header::CONTENT_LENGTH, 64 * 1024 * 1024 + 1)
         .body(oversized_pending_body())
         .send()
         .await

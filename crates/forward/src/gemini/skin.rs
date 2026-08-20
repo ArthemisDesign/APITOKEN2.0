@@ -1710,7 +1710,7 @@ async fn read_messages_body(
         Ok(body) => body,
         Err(bounded_body::StorageError::TooLarge)
         | Err(bounded_body::StorageError::ArithmeticOverflow) => {
-            return Err(invalid_request("Request body exceeds the 32 MiB limit."))
+            return Err(invalid_request("Request body exceeds the 64 MiB limit."))
         }
         Err(bounded_body::StorageError::Io) => {
             return Err(invalid_request("Could not read request body."))

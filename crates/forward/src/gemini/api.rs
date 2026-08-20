@@ -41,7 +41,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // Preserve the existing text-request envelope. Gemini's documented inline-media request ceiling is
 // lower, so image generation is bounded independently after the route model is resolved. Generated
 // 4K images are returned as base64 inside JSON and need a larger, still bounded response envelope.
-const GEMINI_TEXT_REQUEST_BODY_LIMIT: usize = 32 * 1024 * 1024;
+const GEMINI_TEXT_REQUEST_BODY_LIMIT: usize = 64 * 1024 * 1024;
 const GEMINI_IMAGE_REQUEST_BODY_LIMIT: usize = 20 * 1024 * 1024;
 const GEMINI_BODY_LIMIT: usize = 64 * 1024 * 1024;
 const DOWNSTREAM_SEND_TIMEOUT: Duration = Duration::from_secs(5);

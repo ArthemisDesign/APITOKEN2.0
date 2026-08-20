@@ -95,7 +95,7 @@ pub async fn gemini_chat_completions(
         | Err(bounded_body::StorageError::ArithmeticOverflow) => {
             return chat_error(
                 StatusCode::BAD_REQUEST,
-                "Request body exceeds the 32 MiB limit.",
+                "Request body exceeds the 64 MiB limit.",
                 None,
                 Value::Null,
                 "invalid_chat_request",

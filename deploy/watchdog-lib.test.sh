@@ -2049,7 +2049,9 @@ legacy_gemini_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-gemini.servi
     -e 's/CLAUDE_API_INSTANCE_ID=%H:engine:gemini /CLAUDE_API_INSTANCE_ID=%H:engine:gemini:%i /' \
     -e 's#CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api-gemini #CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api-gemini-%i #')
 slot_gemini_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-gemini@.service" \
-  | sed 's/CLAUDE_API_GEMINI_BATCH_ENABLED=1 CLAUDE_API_GEMINI_BATCH_PUBLIC_ENABLED=1 //')
+  | sed -e 's/CLAUDE_API_GEMINI_BATCH_ENABLED=1 CLAUDE_API_GEMINI_BATCH_PUBLIC_ENABLED=1 //' \
+    -e 's/CLAUDE_API_TEXT_BODY_MAX_MIB=64/CLAUDE_API_TEXT_BODY_MAX_MIB=32/' \
+    -e 's/CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=64/CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=32/')
 [[ $slot_gemini_exec == "$legacy_gemini_exec" ]] \
   || wd_die 'Gemini slots drifted from the reviewed roster, catalog, upstream, or wire identity pins beyond Batch activation'
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-kimi.service"
@@ -3095,10 +3097,13 @@ grep -Fxq 'TimeoutStopSec=660' "$ROOT/systemd/claude-router@.service" \
   || wd_die "router slots cannot drain provider-grade SSE sessions"
 grep -Fxq 'TimeoutStopSec=660' "$ROOT/systemd/claude-router.service" \
   || wd_die "first singleton-to-slot handoff still truncates long SSE sessions"
-router_payload_pins='CLAUDE_ROUTER_MAX_BODY_MIB=32 CLAUDE_ROUTER_BODY_MEMORY_BUDGET_MIB=128 CLAUDE_ROUTER_BODY_SPOOL_BUDGET_MIB=128 CLAUDE_ROUTER_BODY_MEMORY_THRESHOLD_MIB=32 CLAUDE_ROUTER_BODY_IDLE_SECS=60 CLAUDE_ROUTER_BODY_MAX_SECS=300'
+router_payload_pins='CLAUDE_ROUTER_MAX_BODY_MIB=64 CLAUDE_ROUTER_BODY_MEMORY_BUDGET_MIB=512 CLAUDE_ROUTER_BODY_SPOOL_BUDGET_MIB=512 CLAUDE_ROUTER_BODY_MEMORY_THRESHOLD_MIB=64 CLAUDE_ROUTER_BODY_IDLE_SECS=60 CLAUDE_ROUTER_BODY_MAX_SECS=300'
 for router_unit in claude-router.service claude-router@.service; do
-  grep -Fq "$router_payload_pins" "$ROOT/systemd/$router_unit" \
-    || wd_die "$router_unit does not argv-pin the dormant current payload contract"
+  if [[ $router_unit == claude-router@.service ]]; then
+    grep -Fq "$router_payload_pins" "$ROOT/systemd/$router_unit"
+  else
+    grep -Fq 'CLAUDE_ROUTER_MAX_BODY_MIB=32' "$ROOT/systemd/$router_unit"
+  fi
   if [[ $router_unit == claude-router@.service ]]; then
     grep -Fxq 'MemoryHigh=6G' "$ROOT/systemd/$router_unit"
     grep -Fxq 'MemoryMax=8G' "$ROOT/systemd/$router_unit"
@@ -3132,8 +3137,13 @@ provider_payload_pins='CLAUDE_API_TEXT_BODY_MAX_MIB=32 CLAUDE_API_BODY_MEMORY_BU
 for provider_unit in claude-api.service claude-api@.service claude-api-anthropic@.service \
   claude-api-openai.service claude-api-openai@.service claude-api-gemini.service \
   claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service; do
-  grep -Fq "$provider_payload_pins" "$ROOT/systemd/$provider_unit" \
-    || wd_die "$provider_unit does not argv-pin the dormant current payload contract"
+  if [[ $provider_unit == claude-api-gemini@.service ]]; then
+    grep -Fq 'CLAUDE_API_TEXT_BODY_MAX_MIB=64 CLAUDE_API_BODY_MEMORY_BUDGET_MIB=2048 CLAUDE_API_BODY_SPOOL_BUDGET_MIB=2048 CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=64 CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=64' "$ROOT/systemd/$provider_unit" \
+      || wd_die "$provider_unit does not argv-pin the controlled 64 MiB canary"
+  else
+    grep -Fq "$provider_payload_pins" "$ROOT/systemd/$provider_unit" \
+      || wd_die "$provider_unit changed outside the Gemini canary"
+  fi
   case "$provider_unit" in
     claude-api-anthropic@.service|claude-api-openai@.service)
       grep -Fxq 'MemoryHigh=6G' "$ROOT/systemd/$provider_unit"
