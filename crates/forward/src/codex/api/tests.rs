@@ -2705,6 +2705,24 @@ async fn sse_send_stops_immediately_after_downstream_disconnect() {
 }
 
 async fn generation_mock_upstream() -> (String, Arc<AtomicU64>) {
+    mock_upstream_serving(concat!(
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",",
+        "\"call_id\":\"call_1\",\"name\":\"private_tool_name\",",
+        "\"arguments\":\"{\\\"private_argument\\\":\\\"secret\\\"}\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"service_tier\":\"default\",\"usage\":{",
+        "\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":20,",
+        "\"cache_write_tokens\":10},\"output_tokens\":20,",
+        "\"output_tokens_details\":{\"reasoning_tokens\":5},",
+        "\"total_tokens\":120}}}\n\n"
+    ))
+    .await
+}
+
+/// One-shot Responses upstream that replays a fixed SSE turn. The body is a parameter so a test
+/// can pin the provider's own item ordering, not just its content.
+async fn mock_upstream_serving(body: &'static str) -> (String, Arc<AtomicU64>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let sends = Arc::new(AtomicU64::new(0));
@@ -2749,18 +2767,6 @@ async fn generation_mock_upstream() -> (String, Arc<AtomicU64>) {
                     request.extend_from_slice(&chunk[..read]);
                 }
                 observed.fetch_add(1, Ordering::Relaxed);
-                let body = concat!(
-                    "event: response.output_item.done\n",
-                    "data: {\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",",
-                    "\"call_id\":\"call_1\",\"name\":\"private_tool_name\",",
-                    "\"arguments\":\"{\\\"private_argument\\\":\\\"secret\\\"}\"}}\n\n",
-                    "event: response.completed\n",
-                    "data: {\"response\":{\"service_tier\":\"default\",\"usage\":{",
-                    "\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":20,",
-                    "\"cache_write_tokens\":10},\"output_tokens\":20,",
-                    "\"output_tokens_details\":{\"reasoning_tokens\":5},",
-                    "\"total_tokens\":120}}}\n\n"
-                );
                 let response = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
@@ -3249,6 +3255,104 @@ async fn frame_timeout_is_not_misclassified_as_a_downstream_disconnect() {
     assert!(
         sender.is_closed(),
         "closed receiver is explicit disconnect evidence"
+    );
+}
+
+/// A turn where the model narrates an answer and then calls a tool. The provider closes the
+/// message before opening the tool item; a client renders the streamed answer as a live cell and
+/// finalizes that cell the moment the next item opens. Closing the message afterwards therefore
+/// arrives as a *second* assistant message and the answer is rendered twice.
+const NARRATE_THEN_TOOL_CALL_SSE: &str = concat!(
+    "event: response.output_item.added\n",
+    "data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,",
+    "\"item\":{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",",
+    "\"status\":\"in_progress\",\"content\":[]}}\n\n",
+    "event: response.output_text.delta\n",
+    "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":2,\"output_index\":0,",
+    "\"item_id\":\"msg_1\",\"delta\":\"I will check the weather.\"}\n\n",
+    "event: response.output_item.done\n",
+    "data: {\"type\":\"response.output_item.done\",\"sequence_number\":3,\"output_index\":0,",
+    "\"item\":{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"status\":\"completed\",",
+    "\"content\":[{\"type\":\"output_text\",\"text\":\"I will check the weather.\"}]}}\n\n",
+    "event: response.output_item.added\n",
+    "data: {\"type\":\"response.output_item.added\",\"sequence_number\":4,\"output_index\":1,",
+    "\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",",
+    "\"name\":\"private_tool_name\",\"arguments\":\"\"}}\n\n",
+    "event: response.output_item.done\n",
+    "data: {\"type\":\"response.output_item.done\",\"sequence_number\":5,\"output_index\":1,",
+    "\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",",
+    "\"name\":\"private_tool_name\",\"arguments\":\"{}\"}}\n\n",
+    "event: response.completed\n",
+    "data: {\"type\":\"response.completed\",\"sequence_number\":6,\"response\":{",
+    "\"service_tier\":\"default\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5,",
+    "\"total_tokens\":15}}}\n\n"
+);
+
+#[tokio::test]
+async fn streamed_message_is_closed_before_the_next_output_item_opens() {
+    let (upstream, _) = mock_upstream_serving(NARRATE_THEN_TOOL_CALL_SSE).await;
+    let test = input_tokens_test_app(true, None, ProviderMode::OpenAi).await;
+    let app = AppState {
+        codex: Some(Arc::new(gateway_at(&upstream))),
+        ..test.app.clone()
+    };
+    app.billing
+        .as_ref()
+        .unwrap()
+        .topup(
+            INPUT_TOKENS_ACCOUNT_ID,
+            100_000_000_000,
+            Some("stream-order-seed"),
+        )
+        .await
+        .unwrap();
+    let (status, bytes) = invoke_generation_handler(
+        app,
+        "responses",
+        generation_body("responses", true),
+        INPUT_TOKENS_RAW_KEY,
+        Some(INPUT_TOKENS_LOGICAL_ID),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let stream = String::from_utf8(bytes.to_vec()).unwrap();
+    let frames = stream
+        .split("\n\n")
+        .filter(|frame| !frame.trim().is_empty())
+        .collect::<Vec<_>>();
+
+    let message_done = frames
+        .iter()
+        .position(|frame| {
+            frame.starts_with("event: response.output_item.done\n") && frame.contains("\"msg_1\"")
+        })
+        .expect("the streamed message must be closed downstream");
+    let tool_opened = frames
+        .iter()
+        .position(|frame| frame.contains("\"fc_1\""))
+        .expect("the tool call must reach the client");
+    assert!(
+        message_done < tool_opened,
+        "message must close before the tool item opens, got frames: {frames:#?}"
+    );
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|frame| frame.starts_with("event: response.output_item.done\n")
+                && frame.contains("\"msg_1\""))
+            .count(),
+        1,
+        "one provider message must never be closed twice"
+    );
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|frame| frame.contains("I will check the weather.")
+                && frame.starts_with("event: response.output_item.done\n"))
+            .count(),
+        1,
+        "the answer text must be delivered as exactly one completed message"
     );
 }
 

@@ -2671,6 +2671,7 @@ async fn stream_responses(
         let mut reasoning_states = HashMap::<String, StreamReasoningState>::new();
         let mut next_output_index = 0usize;
         let mut emitted_non_messages = HashSet::<String>::new();
+        let mut emitted_messages = HashSet::<String>::new();
         let mut downstream_closed = false;
         let mut heartbeat = tokio::time::interval(SSE_HEARTBEAT_INTERVAL);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -2989,7 +2990,53 @@ async fn stream_responses(
                         }
                     }
                 }
-                TurnUpdate::RawItem(_) => {}
+                // Message items are the remaining case. Closing them here — at the provider's
+                // own item boundary — is what keeps one streamed answer one message downstream.
+                TurnUpdate::RawItem(item) => {
+                    let Some(normalized) = normalize_output_item(&item) else {
+                        continue;
+                    };
+                    let item_id = normalized
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    if item_id.is_empty() || !emitted_messages.insert(item_id.clone()) {
+                        continue;
+                    }
+                    match text_states.remove(&item_id) {
+                        Some(state) => {
+                            if !emit_completed_message_item(
+                                &frame_tx,
+                                &mut sequence,
+                                &item_id,
+                                &state,
+                                &normalized,
+                            )
+                            .await
+                            {
+                                downstream_closed = true;
+                                break 'updates;
+                            }
+                        }
+                        // A message the provider produced without any delta still owes the client
+                        // a full lifecycle, in the position the provider gave it.
+                        None => {
+                            if !emit_completed_item(
+                                &frame_tx,
+                                &mut sequence,
+                                next_output_index,
+                                &normalized,
+                            )
+                            .await
+                            {
+                                downstream_closed = true;
+                                break 'updates;
+                            }
+                            next_output_index += 1;
+                        }
+                    }
+                }
             }
         }
         if downstream_closed || frame_tx.is_closed() {
@@ -3060,6 +3107,9 @@ async fn stream_responses(
             return;
         }
 
+        // Backfill only what the provider never closed for us: a message whose raw completion
+        // never arrived (a truncated or non-conforming upstream turn). Everything the provider did
+        // close was already emitted in order inside the loop above.
         let mut ordered_text_states = text_states.iter().collect::<Vec<_>>();
         ordered_text_states.sort_by_key(|(_, state)| state.output_index);
         for (item_id, state) in ordered_text_states {
@@ -3083,56 +3133,10 @@ async fn stream_responses(
                     }]
                 })
             });
-            if !send_sse(
-                &frame_tx,
-                "response.output_text.done",
-                json!({
-                    "type": "response.output_text.done",
-                    "sequence_number": sequence,
-                    "item_id": item_id,
-                    "output_index": state.output_index,
-                    "content_index": 0,
-                    "text": state.text,
-                    "logprobs": []
-                }),
-            )
-            .await
-            {
+            if !emit_completed_message_item(&frame_tx, &mut sequence, item_id, state, &item).await {
                 return;
             }
-            sequence += 1;
-            if !send_sse(
-                &frame_tx,
-                "response.content_part.done",
-                json!({
-                    "type": "response.content_part.done",
-                    "sequence_number": sequence,
-                    "item_id": item_id,
-                    "output_index": state.output_index,
-                    "content_index": 0,
-                    "part": item.pointer("/content/0").cloned().unwrap_or(Value::Null)
-                }),
-            )
-            .await
-            {
-                return;
-            }
-            sequence += 1;
-            if !send_sse(
-                &frame_tx,
-                "response.output_item.done",
-                json!({
-                    "type": "response.output_item.done",
-                    "sequence_number": sequence,
-                    "output_index": state.output_index,
-                    "item": item
-                }),
-            )
-            .await
-            {
-                return;
-            }
-            sequence += 1;
+            emitted_messages.insert(item_id.clone());
         }
 
         // A zero-delta message still needs lifecycle events.
@@ -3148,7 +3152,7 @@ async fn stream_responses(
             .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
         {
             let id = item.get("id").and_then(Value::as_str).unwrap_or("");
-            if !text_states.contains_key(id) {
+            if !text_states.contains_key(id) && emitted_messages.insert(id.to_string()) {
                 if !emit_completed_item(&frame_tx, &mut sequence, next_output_index, &item).await {
                     return;
                 }
@@ -3287,6 +3291,73 @@ async fn emit_reasoning_summary_part_added(
             "output_index": output_index,
             "summary_index": summary_index,
             "part": {"type": "summary_text", "text": ""}
+        }),
+    )
+    .await
+    {
+        return false;
+    }
+    *sequence += 1;
+    true
+}
+
+/// Close one streamed assistant message: the text/part/item terminators the Responses
+/// protocol owes an item that was opened by `response.output_item.added` and fed by deltas.
+///
+/// Callers must emit this at the provider's own item boundary. A client renders a streamed
+/// message as a live cell and finalizes that cell as soon as the next output item opens; a
+/// message closed after a later item has already come and gone therefore arrives as a *second*
+/// message and is rendered twice.
+async fn emit_completed_message_item(
+    sender: &mpsc::Sender<Bytes>,
+    sequence: &mut u64,
+    item_id: &str,
+    state: &StreamTextState,
+    item: &Value,
+) -> bool {
+    if !send_sse(
+        sender,
+        "response.output_text.done",
+        json!({
+            "type": "response.output_text.done",
+            "sequence_number": *sequence,
+            "item_id": item_id,
+            "output_index": state.output_index,
+            "content_index": 0,
+            "text": state.text,
+            "logprobs": []
+        }),
+    )
+    .await
+    {
+        return false;
+    }
+    *sequence += 1;
+    if !send_sse(
+        sender,
+        "response.content_part.done",
+        json!({
+            "type": "response.content_part.done",
+            "sequence_number": *sequence,
+            "item_id": item_id,
+            "output_index": state.output_index,
+            "content_index": 0,
+            "part": item.pointer("/content/0").cloned().unwrap_or(Value::Null)
+        }),
+    )
+    .await
+    {
+        return false;
+    }
+    *sequence += 1;
+    if !send_sse(
+        sender,
+        "response.output_item.done",
+        json!({
+            "type": "response.output_item.done",
+            "sequence_number": *sequence,
+            "output_index": state.output_index,
+            "item": item
         }),
     )
     .await

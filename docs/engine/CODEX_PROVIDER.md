@@ -373,6 +373,13 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   identity observed for an `output_index` is canonical through delta and completion; a missing or
   drifted upstream `item_id` is normalized to that identity. Content is never compared or removed,
   so intentionally repeated text with distinct event sequence numbers remains byte-for-byte intact.
+- Output items are closed downstream at the provider's own item boundary: a streamed assistant
+  message emits `response.output_text.done`/`response.content_part.done`/`response.output_item.done`
+  when its upstream completion arrives, before the next item opens. Deferring that close to the end
+  of the turn made a client that finalizes its live answer cell on the next item render the answer a
+  second time when the message came back at the end (typical narrate-then-call-a-tool turn). The
+  end-of-turn pass now only backfills a message the upstream never closed. Regression gate:
+  `codex::api::tests::streamed_message_is_closed_before_the_next_output_item_opens`.
 - Client disconnect detaches the upstream read; the turn drains to its authoritative final
   usage before settlement, and the shutdown deadline aborts the read, settles the last snapshot
   and only then releases the background task guard.
