@@ -26,8 +26,11 @@ available_kib=$(awk '$1=="MemAvailable:" {print $2}' /proc/meminfo)
 [[ $available_kib =~ ^[0-9]+$ ]] || exit 1
 available_bytes=$((available_kib * 1024))
 (( available_bytes >= MIN_AVAILABLE_BYTES )) || exit 1
-spool_bytes=$(df -PB1 --output=avail -- "$spool_probe" | awk 'NR==2 {print $1}')
-[[ $spool_bytes =~ ^[0-9]+$ ]] || exit 1
+# GNU df rejects combining POSIX -P with --output. Use the portable POSIX column shape; with one
+# filesystem the available 1K blocks are field 4 on the final line.
+spool_kib=$(df -Pk -- "$spool_probe" | awk 'END {print $4}')
+[[ $spool_kib =~ ^[0-9]+$ ]] || exit 1
+spool_bytes=$((spool_kib * 1024))
 (( spool_bytes >= MIN_SPOOL_BYTES )) || exit 1
 if [[ -n $PARENT_SLICE ]]; then
   [[ $PARENT_SLICE =~ ^[A-Za-z0-9@_.-]+\.slice$ ]] || exit 2
