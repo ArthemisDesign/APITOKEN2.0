@@ -2927,6 +2927,7 @@ fn generation_handlers_persist_apply_facts_for_all_routes_and_stream_modes_on_po
             pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
             affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
             clients: Arc::new(Clients::new(&cfg)),
+            body_storage: None,
             codex: Some(Arc::new(gateway_at(&upstream))),
             gemini: None,
             gemini_batch: None,
