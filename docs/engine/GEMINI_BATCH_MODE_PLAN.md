@@ -922,7 +922,10 @@ Exit gate: official SDK compatibility tests проходят на direct Gemini 
 - Проверить no-discount charge parity с теми же requests через ordinary generateContent (считается
   в тот же $10 бюджет).
 - Сохранить sanitized exact-SHA evidence; failed paid run не replay — сначала root cause, затем
-  новый run в пределах остатка бюджета.
+  новый run в пределах остатка бюджета. Канонический credential-safe operator runner и процедура —
+  `tools/gemini_batch/run_live.py` и `docs/ops/GEMINI_BATCH_STAGE5_CANARY.md`: dry-run default,
+  production SSH remote-only key loading, exact GREEN implementation SHA + original/previous spend
+  checkpoint, одна paid-create попытка и fail-closed secret-free projection holds сразу после create.
 
 Exit gate: provider output/usage, profile distribution, 5h headroom gate behavior, customer ledger,
 quota calibration и restart recovery сходятся на production-GREEN implementation SHA.

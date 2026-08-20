@@ -76,6 +76,7 @@ document, update this index.
 - [DELETE_WORKTREE.md](ops/DELETE_WORKTREE.md) — permanent fail-closed cleanup of merged worktrees and explicitly registered clones on macOS.
 - [CLAUDE_CALIBRATION.md](ops/CLAUDE_CALIBRATION.md) — bounded live calibration run of Claude: models, token classes, sticky subscriptions, and a hard nanoUSD budget.
 - [GEMINI_CALIBRATION.md](ops/GEMINI_CALIBRATION.md) — exact-profile live calibration run of Gemini: immutable backend evidence, capability matrix, and a shared $40 limit.
+- [GEMINI_BATCH_STAGE5_CANARY.md](ops/GEMINI_BATCH_STAGE5_CANARY.md) — dry-run-by-default, SSH credential-safe controlled Stage 5 Batch runner with an original $10 aggregate nanoUSD checkpoint and nonresumable paid-create boundary.
 - [KIMI_CALIBRATION.md](ops/KIMI_CALIBRATION.md) — dry-run-by-default live calibration run of KIMI: exact request-id attribution, $0.0001 aggregate cap, paid only with explicit permission.
 - [GLM_CALIBRATION.md](ops/GLM_CALIBRATION.md) — fail-closed live calibration run of GLM Coding Plan directly against the provider: quota anchor, 3 models × stream/non-stream matrix, hard cap $0.05.
 - [TRIPO3D_CALIBRATION.md](ops/TRIPO3D_CALIBRATION.md) — dry-run-by-default live calibration run of the Tripo3D plane: single-profile no-spill attribution, version/option/refund matrix, explicit budget with a $5.00 hard cap.
