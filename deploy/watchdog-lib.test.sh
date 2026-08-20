@@ -3160,6 +3160,31 @@ for provider_unit in claude-api.service claude-api@.service claude-api-anthropic
 done
 ! grep -Fq "trap 'abort_cutover \"\$?\" EXIT' EXIT" "$ROOT/deploy/router-bluegreen.sh" \
   || wd_die 'router success path is still converted into a cutover failure by EXIT trap'
+grep -Fq '|| (-d /var/lib/apitoken/watchdog/router-proof && ! -L /var/lib/apitoken/watchdog/router-proof) ]]' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'router proof provisioning accepts a non-directory or symlink parent'
+grep -Fq 'install -d -o deploy -g deploy -m 0700 /var/lib/apitoken/watchdog/router-proof' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'router proof directory is not securely provisioned for the deploy controller'
+grep -Fxq 'ROUTER_SUCCESS_PROOF=/var/lib/apitoken/watchdog/router-proof/success' \
+  "$ROOT/deploy/router-bluegreen.sh" \
+  || wd_die 'router controller proof does not use the fixed deploy-writable state path'
+grep -Fq 'mv -fT -- "$PROOF_CANDIDATE" "$ROUTER_SUCCESS_PROOF"' \
+  "$ROOT/deploy/router-bluegreen.sh" \
+  || wd_die 'router success proof is not atomically published in its secure parent'
+grep -Fq '[[ -z $PROOF_CANDIDATE ]] || rm -f -- "$PROOF_CANDIDATE"' \
+  "$ROOT/deploy/router-bluegreen.sh" \
+  || wd_die 'router proof staging file is not removed by cutover recovery'
+proof_publish_line=$(grep -nF 'mv -fT -- "$PROOF_CANDIDATE" "$ROUTER_SUCCESS_PROOF"' \
+  "$ROOT/deploy/router-bluegreen.sh" | cut -d: -f1)
+proof_commit_line=$(grep -nF 'commit_cutover' "$ROOT/deploy/router-bluegreen.sh" | tail -n 1 | cut -d: -f1)
+[[ -n $proof_publish_line && -n $proof_commit_line && $proof_publish_line -lt $proof_commit_line ]] \
+  || wd_die 'router controller clears recovery traps before exact success proof is durable'
+grep -Fxq 'ROUTER_SUCCESS_PROOF=$STATE_ROOT/router-proof/success' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog and router controller disagree on the exact proof path'
+grep -Fq '[[ $proof_mode == 600 && $proof_owner == "$controller_identity"' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog accepts router proof without ownership and mode validation'
 grep -Fq 'router-bluegreen.sh' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die "router blue-green controller is never installed"
 grep -Fq 'router-promote.sh' "$ROOT/deploy/install-watchdog.sh" \

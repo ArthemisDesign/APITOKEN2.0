@@ -79,6 +79,7 @@ DEVBOT_FILE=$STATE_ROOT/devbot.sha
 DEVBOT_ENV_FILE=/etc/apitoken/devbot.env
 REJECTED_FILE=$STATE_ROOT/rejected.sha
 PENDING_MIGRATION_FILE=$STATE_ROOT/pending-migration.sha
+ROUTER_SUCCESS_PROOF=$STATE_ROOT/router-proof/success
 DB_MANIFEST=$STATE_ROOT/database-migrations.manifest
 STATUS_FILE=$STATE_ROOT/status
 IDLE_MAINTENANCE_FILE=$STATE_ROOT/last-idle-maintenance.epoch
@@ -2308,7 +2309,7 @@ rollback_backend() {
 
 deploy_engine() {
   local sha=$1 codex_changed=$2
-  local controller_rc=0
+  local controller_rc=0 proof_mode proof_owner controller_identity
   local deploy_args=(--engine-bluegreen --tested-candidate "$(candidate_for "$sha")")
   CURRENT_PHASE=deploying-engine
   CURRENT_PHASE_BEFORE_FAILURE=deploying-engine
@@ -2321,18 +2322,25 @@ deploy_engine() {
     rollback_engine || true
     wd_die "engine provider controller failed (exit $controller_rc)"
   fi
-  router_proof=/run/apitoken-router-bluegreen.success
-  rm -f -- "$router_proof"
+  rm -f -- "$ROUTER_SUCCESS_PROOF"
   if "$CONTROLLER_ROOT/router-bluegreen.sh"; then
     controller_rc=0
   else
     controller_rc=$?
   fi
-  if (( controller_rc != 0 )) && [[ -f $router_proof && $(<"$router_proof") == "$sha" ]]; then
-    warn "router controller returned $controller_rc after publishing exact success proof; accepting proof"
-    controller_rc=0
+  if (( controller_rc != 0 )) && [[ -f $ROUTER_SUCCESS_PROOF && ! -L $ROUTER_SUCCESS_PROOF ]] \
+      && [[ $(<"$ROUTER_SUCCESS_PROOF") == "$sha" ]]; then
+    proof_mode=$(stat -c '%a' -- "$ROUTER_SUCCESS_PROOF" 2>/dev/null || true)
+    proof_owner=$(stat -c '%u:%g' -- "$ROUTER_SUCCESS_PROOF" 2>/dev/null || true)
+    controller_identity=$(id -u):$(id -g)
+    if [[ $proof_mode == 600 && $proof_owner == "$controller_identity" \
+        && $(stat -c '%u:%g:%a' -- "${ROUTER_SUCCESS_PROOF%/*}" 2>/dev/null) \
+          == "$controller_identity:700" ]]; then
+      wd_warn "router controller returned $controller_rc after publishing exact success proof; accepting proof"
+      controller_rc=0
+    fi
   fi
-  rm -f -- "$router_proof"
+  rm -f -- "$ROUTER_SUCCESS_PROOF"
   if (( controller_rc != 0 )); then
     rollback_engine || true
     wd_die "unified router blue-green controller failed (exit $controller_rc)"

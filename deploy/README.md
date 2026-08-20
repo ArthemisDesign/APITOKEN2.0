@@ -248,7 +248,11 @@ The router controller independently rolls fixed 8800/8801 slots: exact binary, d
 the exact unauthenticated provider contract on loopback-only `/startup` precede an atomic root-owned
 Caddy backend promotion. Stable origin 8802 repeats `/ready` and `/startup` after promotion; only
 then is the predecessor SIGTERM-drained. Public traffic and stable metrics origin 8802 share that
-one backend.
+one backend. After every final check and before disarming recovery traps, the controller atomically
+publishes a mode-0600 exact-release proof below the deploy-owned mode-0700
+`/var/lib/apitoken/watchdog/router-proof` directory. The parent watchdog clears stale proof before
+invocation and accepts it only when the controller's process verdict is anomalously nonzero and the
+file owner, mode, non-symlink shape, secure parent, and exact candidate SHA all match.
 Paid Gemini project/key provisioning is outside release artifacts and is documented in
 [`docs/engine/GEMINI_PROVIDER.md`](../docs/engine/GEMINI_PROVIDER.md).
 `api-bluegreen.sh` similarly owns commerce slots; `--with-worker` restarts the single worker and

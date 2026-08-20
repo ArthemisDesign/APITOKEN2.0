@@ -513,8 +513,13 @@ starts the inactive slot, proves direct readiness and the exact selected `claude
 then invokes the fixed root helper to atomically publish `/etc/caddy/router-active.caddy`, validate
 and gracefully reload Caddy. Both the public hostname and stable loopback `127.0.0.1:8802` now send
 new requests only to the target. The predecessor remains alive for established connections until a
-post-cutover SIGTERM completes Axum's bounded drain. The first run uses the still-serving singleton
-on 8798 as its old anchor; infrastructure installation never restarts it.
+post-cutover SIGTERM completes Axum's bounded drain. Once final exact-binary/readiness/startup and
+single-enabled-slot verification all pass, the controller atomically publishes the candidate SHA in
+`/var/lib/apitoken/watchdog/router-proof/success` before disarming recovery traps. That transient
+mode-0600 file lives under a deploy-owned mode-0700 directory; the watchdog clears stale state before
+each invocation and may override an anomalous nonzero process verdict only after owner/mode,
+non-symlink, parent-mode, and exact-SHA validation. The first run uses the still-serving singleton on
+8798 as its old anchor; infrastructure installation never restarts it.
 
 ```bash
 curl -fsS http://127.0.0.1:8790/ready

@@ -244,6 +244,11 @@ install_controller_definitions() {
   install -d -o root -g root -m 0755 \
     /usr/local/lib/apitoken-watchdog/controller /opt/apitoken-watchdog
   install -d -o root -g root -m 0700 /var/lib/apitoken/watchdog/large-payload
+  [[ ! -e /var/lib/apitoken/watchdog/router-proof \
+      || (-d /var/lib/apitoken/watchdog/router-proof && ! -L /var/lib/apitoken/watchdog/router-proof) ]] \
+    || { echo 'router proof path must be a real directory' >&2; return 1; }
+  install -d -o deploy -g deploy -m 0700 /var/lib/apitoken/watchdog/router-proof
+  rm -f -- /var/lib/apitoken/watchdog/router-proof/success
   publish_authbot_runtime_helper
   install -o root -g root -m 0644 "$ROOT/deploy/watchdog-lib.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-lib.sh

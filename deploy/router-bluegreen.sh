@@ -34,8 +34,10 @@ HEADROOM_HELPER=${LARGE_PAYLOAD_HEADROOM_HELPER:-/usr/local/lib/apitoken-watchdo
 PAYLOAD_GATE=${LARGE_PAYLOAD_CANDIDATE_GATE:-/usr/local/lib/apitoken-watchdog/controller/large-payload-candidate-gate.sh}
 PAYLOAD_EVIDENCE_DIR=${LARGE_PAYLOAD_EVIDENCE_DIR:-/var/lib/apitoken/watchdog/large-payload}
 PAYLOAD_MEMORY_HIGH_BYTES=${LARGE_PAYLOAD_ROUTER_MEMORY_HIGH_BYTES:-6442450944}
+ROUTER_SUCCESS_PROOF=/var/lib/apitoken/watchdog/router-proof/success
 PROMOTED=0
 CUTOVER_ACTIVE=0
+PROOF_CANDIDATE=
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -132,6 +134,7 @@ abort_cutover() {
   trap - ERR EXIT INT TERM
   (( status != 0 )) || status=1
   set +e
+  [[ -z $PROOF_CANDIDATE ]] || rm -f -- "$PROOF_CANDIDATE"
   if [[ $CUTOVER_ACTIVE == 1 ]]; then
     warn "router cutover aborted by $reason; starting availability-first recovery"
     recover || warn 'automatic router recovery was incomplete'
@@ -164,6 +167,11 @@ validate_timeout "$READINESS_TIMEOUT"
   || die 'stable router readiness URL is fixed at 127.0.0.1:8802'
 [[ $STABLE_STARTUP_URL == http://127.0.0.1:8802/startup ]] \
   || die 'stable router startup URL is fixed at 127.0.0.1:8802'
+[[ -d ${ROUTER_SUCCESS_PROOF%/*} && ! -L ${ROUTER_SUCCESS_PROOF%/*} ]] \
+  || die 'router success proof directory is missing or unsafe'
+[[ $(stat -c '%u:%g:%a' -- "${ROUTER_SUCCESS_PROOF%/*}" 2>/dev/null) \
+    == "$(id -u):$(id -g):700" ]] \
+  || die 'router success proof directory must be controller-owned mode 0700'
 validate_service_unit "$LEGACY_UNIT"
 validate_service_unit "$(slot_unit 8800)"
 validate_service_unit "$(slot_unit 8801)"
@@ -286,15 +294,21 @@ if [[ $DRY_RUN == 0 ]]; then
     || die "router target is not enabled after cutover: $TARGET_UNIT"
 fi
 
-commit_cutover
-# Publish proof before the final log: the host anomaly occurs after the log line, so this ordering
-# ensures a parent can distinguish that anomaly from a failed final verification.
-proof=${ROUTER_SUCCESS_PROOF:-/run/apitoken-router-bluegreen.success}
-printf '%s\n' "$(basename -- "$CURRENT_RELEASE")" >"$proof.tmp"
-mv -f -- "$proof.tmp" "$proof"
 if [[ $DRY_RUN == 1 ]]; then
-  log 'dry-run complete; no router, Caddy, or systemd state changed'
+  commit_cutover
+  log 'dry-run complete; no router, Caddy, proof, or systemd state changed'
 else
+  # Publish the exact-release proof before committing the controller traps. The watchdog clears
+  # stale state before every invocation and accepts this proof only for the candidate it is
+  # deploying. Keep both files in the fixed deploy-owned state directory so the atomic rename
+  # cannot cross filesystems.
+  umask 077
+  PROOF_CANDIDATE=$(mktemp "${ROUTER_SUCCESS_PROOF}.tmp.XXXXXX")
+  printf '%s\n' "$(basename -- "$CURRENT_RELEASE")" >"$PROOF_CANDIDATE"
+  chmod 0600 "$PROOF_CANDIDATE"
+  mv -fT -- "$PROOF_CANDIDATE" "$ROUTER_SUCCESS_PROOF"
+  PROOF_CANDIDATE=
+  commit_cutover
   log "router blue-green cutover complete; $TARGET_UNIT serves $(basename -- "$CURRENT_RELEASE")"
 fi
 exit 0
