@@ -2321,8 +2321,11 @@ deploy_engine() {
     rollback_engine || true
     wd_die "engine provider controller failed (exit $controller_rc)"
   fi
-  controller_rc=0
-  "$CONTROLLER_ROOT/router-bluegreen.sh" || controller_rc=$?
+  if "$CONTROLLER_ROOT/router-bluegreen.sh"; then
+    controller_rc=0
+  else
+    controller_rc=$?
+  fi
   if (( controller_rc != 0 )); then
     rollback_engine || true
     wd_die "unified router blue-green controller failed (exit $controller_rc)"

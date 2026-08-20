@@ -3444,8 +3444,8 @@ grep -Fq 'PROVIDER_CAPABILITY_MARKER=.provider-runtime-v1' "$provider_controller
   || wd_die "provider controller can accept a release without fixed-provider rollback support"
 grep -Fq 'exit 2' "$provider_controller" \
   || wd_die "post-admission provider failures are not distinguishable for rollback"
-grep -Fq 'controller_rc=0' "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'engine rollout leaks provider controller status into the router verdict'
+grep -Fq 'if "$CONTROLLER_ROOT/router-bluegreen.sh"; then' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'engine rollout does not capture router verdict directly'
 grep -Fq 'if (( controller_rc != 0 )); then' "$ROOT/deploy/watchdog.sh" \
   || wd_die "watchdog does not detect provider controller failure"
 controller_failure_body=$(sed -n '/if (( controller_rc != 0 )); then/,/^[[:space:]]*fi$/p' \
