@@ -243,6 +243,7 @@ install_controller_definitions() {
   local watchdog_staged=${watchdog_target}.tmp.$$
   install -d -o root -g root -m 0755 \
     /usr/local/lib/apitoken-watchdog/controller /opt/apitoken-watchdog
+  install -d -o root -g root -m 0700 /var/lib/apitoken/watchdog/large-payload
   publish_authbot_runtime_helper
   install -o root -g root -m 0644 "$ROOT/deploy/watchdog-lib.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-lib.sh

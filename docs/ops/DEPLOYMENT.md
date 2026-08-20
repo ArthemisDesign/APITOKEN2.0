@@ -38,8 +38,10 @@ small-request p99 regression no greater than 10%. `tests/large_payload_candidate
 before/after cgroup snapshots plus load output for an exact SHA and fails unless OOM/max deltas and
 spool leaks are zero, peak is below MemoryHigh, and at least 20% MemoryMax headroom remains. The
 root-installed `large-payload-candidate-gate.sh` composes snapshot→load→snapshot→verdict for the
-8/32/64 MiB concurrency-4 canary and atomically publishes the exact-SHA verdict. The harness
-existing in a release is not evidence that these acceptance conditions passed.
+8/32/64 MiB concurrency-4 canary and atomically publishes the exact-SHA verdict. A release carrying
+the regular-file marker `.large-payload-canary-v1` must pass this gate on the inactive router slot
+after readiness and before enablement/Caddy promotion; failure leaves the old slot serving. The
+harness existing in a release is not evidence that these acceptance conditions passed.
 
 ## Normal automatic delivery
 

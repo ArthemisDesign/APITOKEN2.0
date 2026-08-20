@@ -31,6 +31,9 @@ TARGET_PORT=
 TARGET_UNIT=
 TARGET_STARTED=0
 HEADROOM_HELPER=${LARGE_PAYLOAD_HEADROOM_HELPER:-/usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh}
+PAYLOAD_GATE=${LARGE_PAYLOAD_CANDIDATE_GATE:-/usr/local/lib/apitoken-watchdog/controller/large-payload-candidate-gate.sh}
+PAYLOAD_EVIDENCE_DIR=${LARGE_PAYLOAD_EVIDENCE_DIR:-/var/lib/apitoken/watchdog/large-payload}
+PAYLOAD_MEMORY_HIGH_BYTES=${LARGE_PAYLOAD_ROUTER_MEMORY_HIGH_BYTES:-6442450944}
 PROMOTED=0
 CUTOVER_ACTIVE=0
 
@@ -228,6 +231,15 @@ if [[ $TARGET_PORT != "$ACTIVE_PORT" ]]; then
   systemctl_command start "$TARGET_UNIT"
   TARGET_STARTED=1
   wait_target || die "$TARGET_UNIT never became ready on the exact current release"
+  if [[ -f $CURRENT_RELEASE/.large-payload-canary-v1 ]]; then
+    [[ ! -L $CURRENT_RELEASE/.large-payload-canary-v1 ]] \
+      && grep -Fxq large-payload-canary-v1 "$CURRENT_RELEASE/.large-payload-canary-v1" \
+      || die 'large-payload canary marker is invalid'
+    privileged_command "$PAYLOAD_GATE" "$(basename -- "$CURRENT_RELEASE")" \
+      "http://127.0.0.1:$TARGET_PORT/v1/chat/completions" "$TARGET_UNIT" \
+      "/run/claude-router-$TARGET_PORT" "$PAYLOAD_MEMORY_HIGH_BYTES" "$PAYLOAD_EVIDENCE_DIR" \
+      || die "$TARGET_UNIT failed exact-SHA large-payload candidate evidence"
+  fi
   # Make the verified target boot-durable before Caddy can commit traffic to it. Until promotion,
   # the still-enabled predecessor remains the reboot anchor; after promotion, the target is.
   systemctl_command enable "$TARGET_UNIT"
