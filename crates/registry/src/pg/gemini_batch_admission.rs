@@ -272,7 +272,7 @@ impl PgStore {
             .query_opt(
                 "SELECT job_id,account_id,creator_key_id,public_model,display_name,idempotency_digest,priority,\
                  input_kind,input_file_id,schema_version,encryption_policy_version,state,next_item_index,\
-                 aggregate_hold_nano,aggregate_output_tokens,create_ts,deadline_ts,expires_ts,canonical_request_digest\
+                 aggregate_hold_nano,aggregate_output_tokens,create_ts,deadline_ts,expires_ts,canonical_request_digest \
                  FROM gemini_batch_admissions WHERE admission_id=$1 FOR UPDATE",
                 &[&admission_id],
             )?
@@ -392,12 +392,12 @@ impl PgStore {
             return Ok(GeminiBatchCreateOutcome::RejectedLimit);
         }
         let file_check = tx.query_one(
-            "WITH refs AS (\
-               SELECT input_file_id AS file_id FROM gemini_batch_admissions WHERE admission_id=$1 AND input_file_id IS NOT NULL\
-               UNION SELECT input_file_id FROM gemini_batch_admission_items WHERE admission_id=$1 AND input_file_id IS NOT NULL\
-               UNION SELECT file_id FROM gemini_batch_admission_item_files WHERE admission_id=$1),\
-             checked AS (SELECT r.file_id,f.size_bytes FROM refs r LEFT JOIN gemini_batch_files f ON f.file_id=r.file_id\
-               AND f.account_id=$2 AND f.state='active' AND f.expiration_ts>$3)\
+            "WITH refs AS (
+               SELECT input_file_id AS file_id FROM gemini_batch_admissions WHERE admission_id=$1 AND input_file_id IS NOT NULL
+               UNION SELECT input_file_id FROM gemini_batch_admission_items WHERE admission_id=$1 AND input_file_id IS NOT NULL
+               UNION SELECT file_id FROM gemini_batch_admission_item_files WHERE admission_id=$1),
+             checked AS (SELECT r.file_id,f.size_bytes FROM refs r LEFT JOIN gemini_batch_files f ON f.file_id=r.file_id
+               AND f.account_id=$2 AND f.state='active' AND f.expiration_ts>$3)
              SELECT COUNT(*)::bigint,COUNT(size_bytes)::bigint,COALESCE(SUM(size_bytes),0)::bigint FROM checked",
             &[&admission_id, &account_id, &now],
         )?;
@@ -426,9 +426,9 @@ impl PgStore {
         tx.execute(
             "INSERT INTO gemini_batch_jobs(job_id,account_id,creator_key_id,public_model,display_name,\
              canonical_request_digest,idempotency_digest,priority,input_kind,input_file_id,schema_version,\
-             encryption_policy_version,create_ts,update_ts,deadline_ts,result_expiration_ts)\
+             encryption_policy_version,create_ts,update_ts,deadline_ts,result_expiration_ts) \
              SELECT job_id,account_id,creator_key_id,public_model,display_name,$2,idempotency_digest,priority,\
-             input_kind,input_file_id,schema_version,encryption_policy_version,create_ts,create_ts,deadline_ts,NULL\
+             input_kind,input_file_id,schema_version,encryption_policy_version,create_ts,create_ts,deadline_ts,NULL \
              FROM gemini_batch_admissions WHERE admission_id=$1",
             &[&admission_id, &&canonical_request_digest[..]],
         )?;
@@ -438,22 +438,22 @@ impl PgStore {
              tariff_version,tariff_schedule_id,state,creator_key_id,created_ts,updated_ts)\
              SELECT $2,item_index,request_id,logical_request_id,execution_group_id,client_key,request_digest,\
              input_file_id,hold_nano,payable_multiplier_bp,priced_ts,tariff_family,tariff_version,\
-             tariff_schedule_id,'queued',$3,created_ts,created_ts FROM gemini_batch_admission_items\
+             tariff_schedule_id,'queued',$3,created_ts,created_ts FROM gemini_batch_admission_items \
              WHERE admission_id=$1 ORDER BY item_index",
             &[&admission_id, &job_id, &creator_key_id],
         )?;
         tx.execute(
             "INSERT INTO gemini_batch_blobs(job_id,item_index,kind,key_id,nonce,ciphertext,plaintext_len,\
-             plaintext_digest,retention_ts,created_ts)\
+             plaintext_digest,retention_ts,created_ts) \
              SELECT $2,item_index,'request',request_key_id,request_nonce,request_ciphertext,request_plaintext_len,\
-             request_plaintext_digest,retention_ts,created_ts FROM gemini_batch_admission_items WHERE admission_id=$1\
+             request_plaintext_digest,retention_ts,created_ts FROM gemini_batch_admission_items WHERE admission_id=$1 \
              UNION ALL SELECT $2,item_index,'metadata',metadata_key_id,metadata_nonce,metadata_ciphertext,\
-             metadata_plaintext_len,metadata_plaintext_digest,retention_ts,created_ts\
+             metadata_plaintext_len,metadata_plaintext_digest,retention_ts,created_ts \
              FROM gemini_batch_admission_items WHERE admission_id=$1 AND metadata_key_id IS NOT NULL",
             &[&admission_id, &job_id],
         )?;
         tx.execute(
-            "INSERT INTO gemini_batch_item_files(job_id,item_index,ordinal,file_id)\
+            "INSERT INTO gemini_batch_item_files(job_id,item_index,ordinal,file_id) \
              SELECT $2,item_index,ordinal,file_id FROM gemini_batch_admission_item_files WHERE admission_id=$1",
             &[&admission_id, &job_id],
         )?;
