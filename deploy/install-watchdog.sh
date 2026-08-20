@@ -499,6 +499,7 @@ install_systemd_definitions
 # stable across engine restarts. Provision them once without printing secret values. The engine
 # keeps working from local memory if this service is unavailable.
 server_env=/srv/claude-api/data/server.env
+payload_canary_authorization=/srv/claude-api/data/large-payload-canary.authorization
 install -d -o deploy -g deploy -m 0750 /srv/claude-api/data
 install -d -o deploy -g deploy -m 0700 \
   /srv/claude-api/data/gemini /srv/claude-api/data/gemini/credentials \
@@ -509,6 +510,20 @@ if [[ ! -e $server_env ]]; then
 fi
 chown deploy:deploy "$server_env"
 chmod 0600 "$server_env"
+[[ ! -L $payload_canary_authorization ]] \
+  || { echo "$payload_canary_authorization must not be a symlink" >&2; exit 1; }
+if [[ ! -e $payload_canary_authorization ]]; then
+  canary_keys=$(sed -n 's/^CLAUDE_API_KEYS=//p' "$server_env" | tail -n 1)
+  canary_key=${canary_keys%%,*}
+  [[ -n $canary_key && ${#canary_key} -le 480 && $canary_key != *[$'\r\n']* ]] \
+    || { echo 'a bounded CLAUDE_API_KEYS entry is required for payload canary auth' >&2; exit 1; }
+  umask 077
+  printf 'Bearer %s\n' "$canary_key" \
+    | install -o root -g root -m 0600 /dev/stdin "$payload_canary_authorization"
+fi
+[[ -f $payload_canary_authorization && $(stat -c '%a' -- "$payload_canary_authorization") == 600 ]] \
+  || { echo "$payload_canary_authorization must be a mode-0600 regular file" >&2; exit 1; }
+unset canary_keys canary_key
 if ! grep -Eq '^CLAUDE_API_REDIS_PASSWORD=.+$' "$server_env"; then
   printf 'CLAUDE_API_REDIS_PASSWORD=%s\n' "$(openssl rand -hex 32)" >>"$server_env"
   REDIS_RESTART_REQUIRED=1

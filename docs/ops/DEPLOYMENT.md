@@ -44,7 +44,9 @@ after readiness and before enablement/Caddy promotion; failure leaves the old sl
 an authenticated header value only from the fixed root-owned mode-0600
 `/srv/claude-api/data/large-payload-canary.authorization`; this lets auth preflight pass so the
 verdict proves body admission, without putting a credential in argv, evidence, logs, or repository.
-The harness existing in a release is not evidence that these acceptance conditions passed.
+The installer derives this header once from the first already-valid `CLAUDE_API_KEYS` entry without
+printing it; it never invents an unregistered key. The harness existing in a release is not evidence
+that these acceptance conditions passed.
 
 ## Normal automatic delivery
 
