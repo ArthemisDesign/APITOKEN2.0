@@ -31,6 +31,7 @@ use registry::request_facts::{
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::convert::Infallible;
+use std::fmt;
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -299,13 +300,71 @@ struct ParsedRoute {
     model: Option<String>,
 }
 
-/// Content-free accepted-origin intent created only after the universal Messages owner accepts the
-/// original body. No request JSON or arbitrary identifier crosses into the native execution owner.
-/// Typed marker placed by universal adapters after their public request parser accepts the
-/// original body. Stage 7 intentionally keeps those synthesized native executions fact-free until
-/// their public route owners can hand off a complete, privacy-bounded generation origin.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct SuppressedPendingUniversalGeneration;
+/// Content-free accepted public-route intent created only after a universal adapter accepts the
+/// original client body. The native execution owner consumes it to admit exactly one fact under the
+/// public route semantics; no request JSON, tool name, arbitrary identifier, or header crosses this
+/// boundary.
+#[derive(Clone)]
+pub(crate) enum UniversalGenerationOrigin {
+    Chat {
+        requested_model: Option<String>,
+        stream_flag: bool,
+        classification: RequestClassification,
+    },
+    Responses {
+        requested_model: Option<String>,
+        stream_flag: bool,
+        classification: RequestClassification,
+    },
+    Messages {
+        requested_model: Option<String>,
+        stream_flag: bool,
+        classification: RequestClassification,
+    },
+}
+
+impl fmt::Debug for UniversalGenerationOrigin {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("UniversalGenerationOrigin(<redacted>)")
+    }
+}
+
+impl UniversalGenerationOrigin {
+    fn into_spec(self, executable_model: Option<String>) -> GeminiBillableRequestSpec {
+        match self {
+            Self::Chat {
+                requested_model,
+                stream_flag,
+                classification,
+            } => GeminiBillableRequestSpec::universal_chat(
+                requested_model,
+                executable_model,
+                stream_flag,
+                classification,
+            ),
+            Self::Responses {
+                requested_model,
+                stream_flag,
+                classification,
+            } => GeminiBillableRequestSpec::universal_responses(
+                requested_model,
+                executable_model,
+                stream_flag,
+                classification,
+            ),
+            Self::Messages {
+                requested_model,
+                stream_flag,
+                classification,
+            } => GeminiBillableRequestSpec::universal_messages(
+                requested_model,
+                executable_model,
+                stream_flag,
+                classification,
+            ),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct UniversalCountTokensIntent {
@@ -374,14 +433,8 @@ impl CountTokensTerminalEvidence {
     }
 }
 
-fn native_billable_generation_fact_eligible(
-    operation: Operation,
-    image_generation: bool,
-    universal_suppressed: bool,
-) -> bool {
-    matches!(operation, Operation::Generate | Operation::StreamGenerate)
-        && !image_generation
-        && !universal_suppressed
+fn billable_generation_fact_eligible(operation: Operation, image_generation: bool) -> bool {
+    matches!(operation, Operation::Generate | Operation::StreamGenerate) && !image_generation
 }
 
 fn settle_billable_failure(
@@ -638,7 +691,7 @@ fn submit_gemini_count_tokens_fact(
     let _ = state.billing.try_submit_terminal_request_fact(fact);
 }
 
-fn bounded_request_fact_model(value: &str) -> Option<String> {
+pub(crate) fn bounded_request_fact_model(value: &str) -> Option<String> {
     (!value.is_empty()
         && value.len() <= MAX_REQUEST_FACT_MODEL_LEN
         && value.is_ascii()
@@ -3874,40 +3927,40 @@ async fn api_inner_observed(
     if let Some(guard) = fact_guard.as_mut() {
         guard.resolve_executable_model(&wire_model_id);
     }
-    // Native billable request facts are admitted only for validated text generation. Counting owns
-    // its separate already-terminal producer, while image generation/batch/admin stay excluded.
-    let mut billable_fact = if native_billable_generation_fact_eligible(
-        route.operation,
-        model.is_image_generation(),
-        parts
-            .extensions
-            .get::<SuppressedPendingUniversalGeneration>()
-            .is_some(),
-    ) {
-        let admitted_at = pool::now();
-        pending
-            .request_fact_seed(
-                parts.extensions.get::<crate::execution::LogicalRequestId>(),
-                parts
-                    .extensions
-                    .get::<crate::execution::ClientAttribution>(),
-                parts
-                    .extensions
-                    .get::<crate::execution::RequestLifecycleClock>(),
-                admitted_at,
-            )
-            .map(|seed| {
-                let spec = GeminiBillableRequestSpec::native(
-                    bounded_request_fact_model(model_id),
-                    bounded_request_fact_model(&wire_model_id),
-                    route.operation == Operation::StreamGenerate,
-                    classify_gemini_generate_content(&value),
-                );
-                (seed, spec)
-            })
-    } else {
-        None
-    };
+    // Billable request facts are admitted only for validated text generation. A typed universal
+    // origin replaces the native route semantics rather than suppressing the leaf, so every public
+    // adapter still owns exactly one reservation/fact. Counting has its separate terminal producer;
+    // image generation, batch and admin remain excluded.
+    let mut billable_fact =
+        if billable_generation_fact_eligible(route.operation, model.is_image_generation()) {
+            let admitted_at = pool::now();
+            pending
+                .request_fact_seed(
+                    parts.extensions.get::<crate::execution::LogicalRequestId>(),
+                    parts
+                        .extensions
+                        .get::<crate::execution::ClientAttribution>(),
+                    parts
+                        .extensions
+                        .get::<crate::execution::RequestLifecycleClock>(),
+                    admitted_at,
+                )
+                .map(|seed| {
+                    let executable_model = bounded_request_fact_model(&wire_model_id);
+                    let spec = match parts.extensions.get::<UniversalGenerationOrigin>().cloned() {
+                        Some(origin) => origin.into_spec(executable_model),
+                        None => GeminiBillableRequestSpec::native(
+                            bounded_request_fact_model(model_id),
+                            executable_model,
+                            route.operation == Operation::StreamGenerate,
+                            classify_gemini_generate_content(&value),
+                        ),
+                    };
+                    (seed, spec)
+                })
+        } else {
+            None
+        };
     let affinity_input = pending.affinity_scope().and_then(|scope| {
         app.affinity
             .infer_gemini(scope, &parts.headers, model_id, &value)

@@ -1721,6 +1721,7 @@ async fn run_inner(
     extensions: axum::http::Extensions,
     suffix: &str,
     translated: &Translated,
+    generation_origin: Option<super::api::UniversalGenerationOrigin>,
     count_tokens_intent: Option<UniversalCountTokensIntent>,
 ) -> Response {
     let mut headers = headers;
@@ -1748,10 +1749,8 @@ async fn run_inner(
         .expect("static request builder is infallible");
     *inner.headers_mut() = headers;
     crate::execution::inherit_request_context(&extensions, inner.extensions_mut());
-    if suffix != "countTokens" {
-        inner
-            .extensions_mut()
-            .insert(super::api::SuppressedPendingUniversalGeneration);
+    if let Some(origin) = generation_origin {
+        inner.extensions_mut().insert(origin);
     }
     if let Some(intent) = count_tokens_intent {
         inner.extensions_mut().insert(intent);
@@ -1771,6 +1770,11 @@ pub async fn gemini_messages_skin(
         Ok(value) => value,
         Err(response) => return response,
     };
+    let classification = classify_anthropic_messages(&value);
+    let requested_model = value
+        .get("model")
+        .and_then(Value::as_str)
+        .and_then(bounded_request_fact_model);
     let translated = match translate_messages_request(value, true) {
         Ok(translated) => translated,
         Err(response) => return response,
@@ -1787,6 +1791,11 @@ pub async fn gemini_messages_skin(
         parts.extensions,
         suffix,
         &translated,
+        Some(super::api::UniversalGenerationOrigin::Messages {
+            requested_model,
+            stream_flag: translated.stream,
+            classification,
+        }),
         None,
     )
     .await;
@@ -1835,6 +1844,7 @@ pub async fn gemini_messages_count_tokens(
         parts.extensions,
         "countTokens",
         &translated,
+        None,
         Some(intent),
     )
     .await;

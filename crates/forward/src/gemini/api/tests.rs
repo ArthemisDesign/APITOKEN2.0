@@ -6771,10 +6771,16 @@ fn native_generation_fact_is_owned_by_postgres_reservation_and_settlement() {
             .header("x-goog-api-key", CUSTOMER_KEY)
             .body(Body::from(body.to_string()))
             .unwrap();
+        let logical_id = match route {
+            "chat" => "123e4567-e89b-42d3-a456-426614174084",
+            "responses" => "123e4567-e89b-42d3-a456-426614174085",
+            "messages" => "123e4567-e89b-42d3-a456-426614174087",
+            _ => unreachable!(),
+        };
         let mut logical_headers = HeaderMap::new();
         logical_headers.insert(
             crate::execution::LOGICAL_REQUEST_ID_HEADER,
-            "123e4567-e89b-42d3-a456-426614174072".parse().unwrap(),
+            logical_id.parse().unwrap(),
         );
         let logical = crate::execution::admit_logical_request_id(&mut logical_headers).unwrap();
         inner.extensions_mut().insert(logical);
@@ -7176,17 +7182,43 @@ fn native_generation_fact_is_owned_by_postgres_reservation_and_settlement() {
     assert_eq!(stream_row.get::<_, Option<i32>>(6), Some(1));
     let fact_count = lock
         .query_one(
-            "SELECT count(*) FROM request_facts WHERE request_class IN ('generate','stream_generate')",
+            "SELECT count(*) FROM request_facts WHERE billing_request_id IS NOT NULL",
             &[],
         )
         .unwrap()
         .get::<_, i64>(0);
     assert_eq!(
-        fact_count, 5,
-        "universal and excluded adapters must create zero additional generation facts"
+        fact_count, 8,
+        "native and universal generation routes must each create exactly one leaf fact"
     );
+    let universal_rows = lock
+        .query(
+            "SELECT logical_request_id,route_class,request_class,requested_model,executable_model,stream_flag,billing_outcome FROM request_facts WHERE logical_request_id IN ($1,$2,$3) ORDER BY request_class",
+            &[
+                &"123e4567-e89b-42d3-a456-426614174084",
+                &"123e4567-e89b-42d3-a456-426614174085",
+                &"123e4567-e89b-42d3-a456-426614174087",
+            ],
+        )
+        .unwrap();
+    assert_eq!(universal_rows.len(), 3);
+    for row in &universal_rows {
+        assert_eq!(row.get::<_, String>(1), "universal");
+        assert_eq!(
+            row.get::<_, Option<String>>(3).as_deref(),
+            Some("google/gemini-integration-model")
+        );
+        assert_eq!(
+            row.get::<_, Option<String>>(4).as_deref(),
+            Some("gemini-integration-model")
+        );
+        assert!(!row.get::<_, bool>(5));
+        assert_eq!(row.get::<_, String>(6), "winner");
+    }
+    assert_eq!(universal_rows[0].get::<_, String>(2), "chat");
+    assert_eq!(universal_rows[1].get::<_, String>(2), "messages");
+    assert_eq!(universal_rows[2].get::<_, String>(2), "responses");
     let excluded_ids = [
-        "123e4567-e89b-42d3-a456-426614174072",
         "123e4567-e89b-42d3-a456-426614174076",
         "123e4567-e89b-42d3-a456-426614174077",
         "123e4567-e89b-42d3-a456-426614174078",
@@ -7229,7 +7261,7 @@ fn native_generation_fact_is_owned_by_postgres_reservation_and_settlement() {
             &[],
         )
         .unwrap();
-    assert_eq!(ownership.len(), 5);
+    assert_eq!(ownership.len(), 8);
     for row in &ownership {
         assert!(row.get::<_, Option<String>>(1).is_some());
         assert_eq!(row.get::<_, String>(2), "unknown");
@@ -7242,19 +7274,21 @@ fn native_generation_fact_is_owned_by_postgres_reservation_and_settlement() {
         assert_eq!(row.get::<_, String>(6), "done");
         assert_eq!(row.get::<_, i64>(8), 1, "one fact per billing reservation");
     }
-    // Three provider-success turns (ordinary, streaming and marker-failure) own usage and charge
-    // ledger rows; the provider-rejected turn owns an applied cancellation with neither.
-    for row in &ownership[..3] {
-        assert_eq!(row.get::<_, String>(4), "settled");
-        assert_eq!(row.get::<_, String>(7), "settle");
-        assert_eq!(row.get::<_, i64>(9), 1);
-        assert_eq!(row.get::<_, i64>(10), 1);
-    }
-    for rejected_owner in &ownership[3..] {
-        assert_eq!(rejected_owner.get::<_, String>(4), "canceled");
-        assert_eq!(rejected_owner.get::<_, String>(7), "cancel");
-        assert_eq!(rejected_owner.get::<_, i64>(9), 0);
-        assert_eq!(rejected_owner.get::<_, i64>(10), 0);
+    // Every provider-success turn, including all three universal adapters, owns one usage and
+    // charge row. Provider rejection and missing terminal usage own applied cancellations only.
+    for row in &ownership {
+        let logical_id = row.get::<_, String>(0);
+        let canceled = logical_id.ends_with("4075") || logical_id.ends_with("4086");
+        assert_eq!(
+            row.get::<_, String>(4),
+            if canceled { "canceled" } else { "settled" }
+        );
+        assert_eq!(
+            row.get::<_, String>(7),
+            if canceled { "cancel" } else { "settle" }
+        );
+        assert_eq!(row.get::<_, i64>(9), if canceled { 0 } else { 1 });
+        assert_eq!(row.get::<_, i64>(10), if canceled { 0 } else { 1 });
     }
     let missing_usage_row = lock
         .query_one(
@@ -7318,31 +7352,21 @@ fn native_generation_fact_is_owned_by_postgres_reservation_and_settlement() {
 }
 
 #[test]
-fn native_generation_fact_surface_excludes_non_stage7_routes() {
+fn generation_fact_surface_excludes_non_stage7_routes() {
     assert!(!super::super::GeminiBatchRuntimeConfig::default().enabled);
-    assert!(native_billable_generation_fact_eligible(
+    assert!(billable_generation_fact_eligible(
         Operation::Generate,
-        false,
         false
     ));
-    assert!(native_billable_generation_fact_eligible(
+    assert!(billable_generation_fact_eligible(
         Operation::StreamGenerate,
-        false,
         false
     ));
     for operation in [Operation::CountTokens, Operation::Models, Operation::Model] {
-        assert!(!native_billable_generation_fact_eligible(
-            operation, false, false
-        ));
+        assert!(!billable_generation_fact_eligible(operation, false));
     }
-    assert!(!native_billable_generation_fact_eligible(
+    assert!(!billable_generation_fact_eligible(
         Operation::Generate,
-        true,
-        false
-    ));
-    assert!(!native_billable_generation_fact_eligible(
-        Operation::Generate,
-        false,
         true
     ));
 }

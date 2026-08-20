@@ -167,6 +167,7 @@ use crate::codex::new_id;
 use crate::gemini_stream::GeminiStreamState;
 use crate::openai_responses_stream::ResponsesEventEncoder;
 use crate::proxy::{read_body_limited, without_not_started, BodyReadError};
+use crate::request_classification::classify_openai_responses;
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
 
@@ -211,6 +212,11 @@ pub async fn gemini_responses(
             )
         }
     };
+    let classification = classify_openai_responses(&value);
+    let requested_model = value
+        .get("model")
+        .and_then(Value::as_str)
+        .and_then(super::api::bounded_request_fact_model);
     let translated = match translate_responses_request(value) {
         Ok(translated) => translated,
         Err(response) => return response,
@@ -252,7 +258,11 @@ pub async fn gemini_responses(
     crate::execution::inherit_request_context(&parts.extensions, inner.extensions_mut());
     inner
         .extensions_mut()
-        .insert(super::api::SuppressedPendingUniversalGeneration);
+        .insert(super::api::UniversalGenerationOrigin::Responses {
+            requested_model,
+            stream_flag: translated.stream,
+            classification,
+        });
     let upstream = gemini_api(State(app), ConnectInfo(peer), inner).await;
 
     if upstream.status() != StatusCode::OK {

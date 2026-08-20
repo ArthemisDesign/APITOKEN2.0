@@ -92,6 +92,7 @@ pub(crate) struct GeminiRequestFactSeed {
 /// validator accept the original customer body. The observer counts physical generation POSTs at
 /// the transport seam; no request JSON, tool name, provider credential or header is retained.
 pub(crate) struct GeminiBillableRequestSpec {
+    route: GeminiBillableRoute,
     request_class: GeminiBillableRequestClass,
     requested_model: Option<String>,
     executable_model: Option<String>,
@@ -102,9 +103,18 @@ pub(crate) struct GeminiBillableRequestSpec {
 }
 
 #[derive(Clone, Copy)]
+enum GeminiBillableRoute {
+    Native,
+    Universal,
+}
+
+#[derive(Clone, Copy)]
 enum GeminiBillableRequestClass {
     Generate,
     StreamGenerate,
+    Chat,
+    Responses,
+    Messages,
 }
 
 struct GeminiBillableFactContext {
@@ -143,12 +153,79 @@ impl GeminiBillableRequestSpec {
         stream_flag: bool,
         classification: RequestClassification,
     ) -> Self {
-        Self {
-            request_class: if stream_flag {
+        Self::new(
+            GeminiBillableRoute::Native,
+            if stream_flag {
                 GeminiBillableRequestClass::StreamGenerate
             } else {
                 GeminiBillableRequestClass::Generate
             },
+            requested_model,
+            executable_model,
+            stream_flag,
+            classification,
+        )
+    }
+
+    pub(crate) fn universal_chat(
+        requested_model: Option<String>,
+        executable_model: Option<String>,
+        stream_flag: bool,
+        classification: RequestClassification,
+    ) -> Self {
+        Self::new(
+            GeminiBillableRoute::Universal,
+            GeminiBillableRequestClass::Chat,
+            requested_model,
+            executable_model,
+            stream_flag,
+            classification,
+        )
+    }
+
+    pub(crate) fn universal_responses(
+        requested_model: Option<String>,
+        executable_model: Option<String>,
+        stream_flag: bool,
+        classification: RequestClassification,
+    ) -> Self {
+        Self::new(
+            GeminiBillableRoute::Universal,
+            GeminiBillableRequestClass::Responses,
+            requested_model,
+            executable_model,
+            stream_flag,
+            classification,
+        )
+    }
+
+    pub(crate) fn universal_messages(
+        requested_model: Option<String>,
+        executable_model: Option<String>,
+        stream_flag: bool,
+        classification: RequestClassification,
+    ) -> Self {
+        Self::new(
+            GeminiBillableRoute::Universal,
+            GeminiBillableRequestClass::Messages,
+            requested_model,
+            executable_model,
+            stream_flag,
+            classification,
+        )
+    }
+
+    fn new(
+        route: GeminiBillableRoute,
+        request_class: GeminiBillableRequestClass,
+        requested_model: Option<String>,
+        executable_model: Option<String>,
+        stream_flag: bool,
+        classification: RequestClassification,
+    ) -> Self {
+        Self {
+            route,
+            request_class,
             requested_model,
             executable_model,
             stream_flag,
@@ -158,10 +235,20 @@ impl GeminiBillableRequestSpec {
         }
     }
 
+    fn route_class(&self) -> &'static str {
+        match self.route {
+            GeminiBillableRoute::Native => "native",
+            GeminiBillableRoute::Universal => "universal",
+        }
+    }
+
     fn request_class(&self) -> &'static str {
         match self.request_class {
             GeminiBillableRequestClass::Generate => "generate",
             GeminiBillableRequestClass::StreamGenerate => "stream_generate",
+            GeminiBillableRequestClass::Chat => "chat",
+            GeminiBillableRequestClass::Responses => "responses",
+            GeminiBillableRequestClass::Messages => "messages",
         }
     }
 }
@@ -183,7 +270,7 @@ impl GeminiRequestFactSeed {
             client_source: self.client_attribution.source(),
             client_version: self.client_attribution.version().map(str::to_owned),
             provider_plane: "gemini".into(),
-            route_class: "native".into(),
+            route_class: spec.route_class().into(),
             request_class: spec.request_class().into(),
             requested_model: spec.requested_model.clone(),
             executable_model: spec.executable_model.clone(),

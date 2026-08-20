@@ -1,8 +1,8 @@
 //! Privacy-bounded v1 structural request classification.
 //!
 //! Classifiers in this module are pure. Native Anthropic count-tokens, OpenAI Responses input-token
-//! counting and Anthropic-plane OpenAI Chat/Responses generation are their narrow runtime consumers;
-//! all other stage 6/7 producer integration remains incomplete. They accept only request values
+//! counting, Anthropic-plane OpenAI Chat/Responses, and Gemini native/universal generation are their
+//! narrow runtime consumers; remaining stage 6/7 producer integration is incomplete. They accept only request values
 //! already admitted by the owning parser; they
 //! never retain arbitrary strings or request content.
 
