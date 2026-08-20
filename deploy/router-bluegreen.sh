@@ -279,3 +279,5 @@ if [[ $DRY_RUN == 1 ]]; then
 else
   log "router blue-green cutover complete; $TARGET_UNIT serves $(basename -- "$CURRENT_RELEASE")"
 fi
+# The controller contract is explicit: reaching this point means every final verification passed.
+exit 0
