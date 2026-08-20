@@ -39,7 +39,7 @@ fn crashing_node_helper() -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let spawns = directory.join("spawns");
     let attempts = directory.join("attempts");
     let script = format!(
-        "#!/bin/sh\nprintf 'spawn\\n' >> '{}'\nIFS= read -r _configure || exit 1\nprintf '%s\\n' '{{\"type\":\"ready\",\"protocol\":1,\"node\":\"v24.18.0\",\"platform\":\"linux\",\"arch\":\"x64\",\"undici\":\"node-internal\"}}'\nIFS= read -r _request || exit 1\nprintf 'attempt\\n' >> '{}'\nprintf '%s\\n' '{{\"type\":\"error\",\"id\":1,\"kind\":\"protocol\"}}'\nexit 1\n",
+        "#!/bin/sh\nprintf 'spawn\\n' >> '{}'\ndd bs=13 count=1 of=/dev/null 2>/dev/null || exit 1\nprintf '\\001\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000o{{\"type\":\"ready\",\"protocol\":2,\"node\":\"v24.18.0\",\"platform\":\"linux\",\"arch\":\"x64\",\"undici\":\"node-internal\"}}'\ndd bs=13 count=1 of=/dev/null 2>/dev/null || exit 1\ndd bs=1 count=1 of=/dev/null 2>/dev/null || exit 1\nprintf 'attempt\\n' >> '{}'\nprintf '\\001\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000-{{\"type\":\"error\",\"id\":1,\"kind\":\"protocol\"}}'\nexit 1\n",
         spawns.display(),
         attempts.display()
     );

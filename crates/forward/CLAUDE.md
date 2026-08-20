@@ -25,6 +25,13 @@ Never mix the three provider paths.
   input_tokens/Chat/Messages skins and Gemini paths retain their prior readers until separate
   route-specific commits.
 
+**Gemini helper IPC.** Rust and the embedded SHA-pinned Node helper use one binary framed protocol:
+13-byte big-endian headers (`kind`, request id, payload length), control JSON capped at 1 MiB,
+request bodies capped at the dormant 256 MiB envelope, and response data chunks capped at 1 MiB.
+Body/data bytes are raw, never base64; one writer mutex keeps request metadata+body atomic while
+response IDs preserve multiplexing, cancellation tombstones, and backpressure. There is no v1
+compatibility branch because helper source ships inside the same immutable engine binary.
+
 **Three authorization classes (secret separation, `proxy.rs`):** `authed` (forwarding-admin: `api_keys`
 /loopback) ⊂ `control_authed` (+`control_keys` — for commerce `/admin/*`) ⊂ `readonly_authed`
 (+`panel_keys` — read-only dashboards). All comparisons are constant-time (`ct_eq`, fold without short-circuit). A control

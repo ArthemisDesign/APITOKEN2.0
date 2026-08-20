@@ -15,6 +15,7 @@ mod rate_limit;
 mod responses;
 mod skin;
 mod transport;
+mod transport_v2;
 
 pub use api::{
     api as gemini_api, execute_nonstream_generate, prepare_nonstream_generate_request,

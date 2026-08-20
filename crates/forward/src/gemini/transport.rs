@@ -7,8 +7,6 @@
 
 use super::config::GeminiConfig;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine as _;
 use bytes::Bytes;
 use futures_util::stream::BoxStream;
 use futures_util::{Stream, StreamExt, TryStreamExt};
@@ -24,13 +22,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-const IPC_PROTOCOL: u8 = 1;
-const MAX_IPC_LINE_BYTES: usize = 48 * 1024 * 1024;
+use super::transport_v2::{read_raw_frame, write_raw_frame_locked};
+
+const IPC_PROTOCOL: u8 = 2;
+pub(super) const IPC_KIND_CONTROL: u8 = 1;
+pub(super) const IPC_KIND_DATA: u8 = 2;
+pub(super) const IPC_HEADER_BYTES: usize = 13;
+pub(super) const MAX_IPC_CONTROL_BYTES: usize = 1024 * 1024;
+pub(super) const MAX_IPC_BODY_BYTES: usize = 256 * 1024 * 1024;
+pub(super) const MAX_IPC_DATA_CHUNK_BYTES: usize = 1024 * 1024;
 const BODY_CHANNEL_CHUNKS: usize = 256;
 const CANCELED_TOMBSTONE_TTL: Duration = Duration::from_secs(300);
 const MAX_CANCELED_TOMBSTONES: usize = 8_192;
@@ -54,7 +59,7 @@ struct RequestFrame<'a> {
     method: &'static str,
     url: &'a str,
     headers: &'a [(&'a str, &'a str)],
-    body: &'a str,
+    body_length: u64,
     /// Ask the pinned helper to return a content-free proof at its final socket submission seam.
     /// Omitted for every non-observed call so the ordinary protocol remains byte-identical.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -185,10 +190,17 @@ pub struct ActualSendObserver {
 const ACTUAL_SEND_OVERFLOW: u64 = u64::MAX;
 
 impl ActualSendObserver {
-    pub fn acknowledged() -> Self { Self { require_ack:true, ..Self::default() } }
+    pub fn acknowledged() -> Self {
+        Self {
+            require_ack: true,
+            ..Self::default()
+        }
+    }
     pub(crate) async fn record(&self) {
         self.record_now();
-        if self.require_ack && !self.acknowledged.load(Ordering::Acquire) { self.ack_notify.notified().await; }
+        if self.require_ack && !self.acknowledged.load(Ordering::Acquire) {
+            self.ack_notify.notified().await;
+        }
     }
     fn record_now(&self) {
         let _ = self
@@ -200,8 +212,15 @@ impl ActualSendObserver {
         self.notify.notify_waiters();
     }
 
-    pub async fn observed(&self) { if self.count().unwrap_or(0)==0 { self.notify.notified().await; } }
-    pub fn acknowledge(&self) { self.acknowledged.store(true,Ordering::Release);self.ack_notify.notify_waiters(); }
+    pub async fn observed(&self) {
+        if self.count().unwrap_or(0) == 0 {
+            self.notify.notified().await;
+        }
+    }
+    pub fn acknowledge(&self) {
+        self.acknowledged.store(true, Ordering::Release);
+        self.ack_notify.notify_waiters();
+    }
 
     pub fn count(&self) -> Option<u64> {
         match self.count.load(Ordering::Relaxed) {
@@ -703,21 +722,25 @@ impl NodeProcess {
             .iter()
             .map(|(name, value)| (*name, value.as_str()))
             .collect::<Vec<_>>();
-        let encoded_body = Zeroizing::new(BASE64.encode(&request.body));
+        let body_length =
+            u64::try_from(request.body.len()).map_err(|_| TransportError::Protocol)?;
+        if request.body.len() > MAX_IPC_BODY_BYTES {
+            return Err(TransportError::Protocol);
+        }
         let frame = RequestFrame {
             r#type: "request",
             id,
             method: "POST",
             url: request.url,
             headers: &headers,
-            body: encoded_body.as_str(),
+            body_length,
             observe_actual_send: request.actual_send_observer.is_some(),
             read_timeout_ms: Some(request.idle_timeout.map_or(0, |idle| {
                 u64::try_from(idle.as_millis()).unwrap_or(u64::MAX)
             })),
             calibration_not_after: request.calibration_not_after,
         };
-        if let Err(error) = self.write_frame(&frame).await {
+        if let Err(error) = self.write_request_frame(id, &frame, &request.body).await {
             return Err(error);
         }
         let head = headers_rx.await.map_err(|_| TransportError::Closed)??;
@@ -737,18 +760,34 @@ impl NodeProcess {
     async fn write_frame(&self, frame: &(impl Serialize + ?Sized)) -> Result<(), TransportError> {
         let encoded =
             Zeroizing::new(serde_json::to_vec(frame).map_err(|_| TransportError::Protocol)?);
-        if encoded.len() > MAX_IPC_LINE_BYTES {
+        self.write_raw_frame(IPC_KIND_CONTROL, 0, &encoded).await
+    }
+
+    async fn write_request_frame(
+        &self,
+        id: u64,
+        frame: &(impl Serialize + ?Sized),
+        body: &[u8],
+    ) -> Result<(), TransportError> {
+        let encoded =
+            Zeroizing::new(serde_json::to_vec(frame).map_err(|_| TransportError::Protocol)?);
+        if encoded.len() > MAX_IPC_CONTROL_BYTES || body.len() > MAX_IPC_BODY_BYTES {
             return Err(TransportError::Protocol);
         }
         let mut writer = self.writer.lock().await;
-        writer
-            .write_all(&encoded)
-            .await
-            .map_err(|_| TransportError::Closed)?;
-        writer
-            .write_all(b"\n")
-            .await
-            .map_err(|_| TransportError::Closed)?;
+        write_raw_frame_locked(&mut *writer, IPC_KIND_CONTROL, 0, &encoded).await?;
+        write_raw_frame_locked(&mut *writer, IPC_KIND_DATA, id, body).await?;
+        writer.flush().await.map_err(|_| TransportError::Closed)
+    }
+
+    async fn write_raw_frame(
+        &self,
+        kind: u8,
+        id: u64,
+        payload: &[u8],
+    ) -> Result<(), TransportError> {
+        let mut writer = self.writer.lock().await;
+        write_raw_frame_locked(&mut *writer, kind, id, payload).await?;
         writer.flush().await.map_err(|_| TransportError::Closed)
     }
 
@@ -898,22 +937,18 @@ struct InboundFrame {
     actual_send: Option<bool>,
     #[serde(default)]
     headers: Vec<String>,
-    #[serde(default)]
-    data: Option<String>,
     #[serde(default, rename = "kind")]
     error_kind: Option<String>,
 }
 
 async fn reader_loop<R>(mut reader: R, shared: Arc<ProcessShared>)
 where
-    R: AsyncBufRead + Unpin,
+    R: tokio::io::AsyncRead + Unpin,
 {
-    let mut line = Zeroizing::new(Vec::new());
     loop {
-        line.zeroize();
-        match read_bounded_line(&mut reader, &mut line).await {
-            Ok(true) => {}
-            Ok(false) => {
+        let (kind, id, payload) = match read_raw_frame(&mut reader).await {
+            Ok(Some(frame)) => frame,
+            Ok(None) => {
                 elog::error("gemini", "gemini helper reader failed: EOF");
                 shared.close(TransportError::Closed);
                 return;
@@ -923,8 +958,22 @@ where
                 shared.close(error);
                 return;
             }
+        };
+        if kind == IPC_KIND_DATA {
+            if dispatch_data_frame(&shared, id, Bytes::from(payload))
+                .await
+                .is_err()
+            {
+                shared.close(TransportError::Protocol);
+                return;
+            }
+            continue;
         }
-        let value: InboundFrame = match serde_json::from_slice(&line) {
+        if kind != IPC_KIND_CONTROL || id != 0 {
+            shared.close(TransportError::Protocol);
+            return;
+        }
+        let value: InboundFrame = match serde_json::from_slice(&payload) {
             Ok(value) => value,
             Err(_) => {
                 elog::error("gemini", "gemini helper reader failed: malformed frame");
@@ -938,6 +987,31 @@ where
             return;
         }
     }
+}
+
+async fn dispatch_data_frame(
+    shared: &Arc<ProcessShared>,
+    id: u64,
+    bytes: Bytes,
+) -> Result<(), TransportError> {
+    if shared.consume_canceled_frame(id, false) {
+        return Ok(());
+    }
+    let sender = {
+        let pending = shared
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let request = pending.get(&id).ok_or(TransportError::Protocol)?;
+        if request.headers.is_some() {
+            return Err(TransportError::Protocol);
+        }
+        request.body.clone()
+    };
+    sender
+        .send(Ok(bytes))
+        .await
+        .map_err(|_| TransportError::Closed)
 }
 
 async fn dispatch_frame(
@@ -1020,27 +1094,6 @@ async fn dispatch_frame(
                 calibration_dispatch_ms,
             }));
         }
-        "data" => {
-            let encoded = value.data.as_deref().ok_or(TransportError::Protocol)?;
-            let decoded = Zeroizing::new(
-                BASE64
-                    .decode(encoded)
-                    .map_err(|_| TransportError::Protocol)?,
-            );
-            let bytes = Bytes::copy_from_slice(&decoded);
-            let sender = {
-                let pending = shared
-                    .pending
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let request = pending.get(&id).ok_or(TransportError::Protocol)?;
-                if request.headers.is_some() {
-                    return Err(TransportError::Protocol);
-                }
-                request.body.clone()
-            };
-            let _ = sender.send(Ok(bytes)).await;
-        }
         "end" => {
             let request = shared
                 .pending
@@ -1101,35 +1154,6 @@ fn validate_dispatch_attestation(
         }
         // An attestation is mandatory on the deadline-bound lane and forbidden everywhere else.
         (None, Some(_)) | (Some(_), None) => Err(TransportError::Protocol),
-    }
-}
-
-async fn read_bounded_line<R>(reader: &mut R, line: &mut Vec<u8>) -> Result<bool, TransportError>
-where
-    R: AsyncBufRead + Unpin,
-{
-    loop {
-        let available = reader
-            .fill_buf()
-            .await
-            .map_err(|_| TransportError::Closed)?;
-        if available.is_empty() {
-            return Ok(!line.is_empty());
-        }
-        if let Some(newline) = available.iter().position(|byte| *byte == b'\n') {
-            if line.len().saturating_add(newline) > MAX_IPC_LINE_BYTES {
-                return Err(TransportError::Protocol);
-            }
-            line.extend_from_slice(&available[..newline]);
-            reader.consume(newline + 1);
-            return Ok(true);
-        }
-        if line.len().saturating_add(available.len()) > MAX_IPC_LINE_BYTES {
-            return Err(TransportError::Protocol);
-        }
-        let len = available.len();
-        line.extend_from_slice(available);
-        reader.consume(len);
     }
 }
 
@@ -1239,7 +1263,7 @@ mod tests {
             method: "POST",
             url: "https://example.invalid/v1",
             headers: &headers,
-            body: "",
+            body_length: 0,
             observe_actual_send: false,
             read_timeout_ms: Some(1_800_000),
             calibration_not_after: Some(1_800_000_000),
@@ -1258,7 +1282,7 @@ mod tests {
             method: "POST",
             url: "https://example.invalid/v1",
             headers: &headers,
-            body: "",
+            body_length: 0,
             observe_actual_send: false,
             read_timeout_ms: None,
             calibration_not_after: None,
@@ -1375,7 +1399,6 @@ mod tests {
                 calibration_dispatch_ms: dispatch_ms,
                 actual_send: None,
                 headers: vec!["content-type".to_string(), "application/json".to_string()],
-                data: None,
                 error_kind: None,
             }
         }
@@ -1488,7 +1511,6 @@ mod tests {
             calibration_dispatch_ms: None,
             actual_send: None,
             headers: Vec::new(),
-            data: Some("bGF0ZQ==".to_string()),
             error_kind: None,
         };
         assert!(dispatch_frame(&shared, late_data).await.is_ok());
@@ -1506,7 +1528,6 @@ mod tests {
             calibration_dispatch_ms: None,
             actual_send: None,
             headers: Vec::new(),
-            data: None,
             error_kind: None,
         };
         assert!(dispatch_frame(&shared, late_end).await.is_ok());
@@ -1602,7 +1623,6 @@ mod tests {
                 calibration_dispatch_ms: None,
                 actual_send: Some(true),
                 headers: Vec::new(),
-                data: None,
                 error_kind: None,
             },
         )

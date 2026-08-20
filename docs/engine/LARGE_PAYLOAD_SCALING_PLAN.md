@@ -507,11 +507,18 @@ Exact candidate SHA допускается к повышенным defaults то
   сохраняя отдельные text/media caps.
 - Публичные пределы пока прежние; доказать отсутствие protocol/money изменений до raised default.
 
-### Commit 3 — Gemini typed executor и binary IPC v2
+### Commit 3a — Gemini binary IPC v2
 
-- Удалить internal reparse и base64 request/response chunks.
-- Limits пока 32/20/64 MiB.
-- Exact transport fingerprint, multiplex/cancel/no-replay matrix должны быть GREEN.
+- Единый binary framed stdin/stdout protocol заменяет NDJSON/readline и base64 request/response
+  data: bounded JSON control, raw exact-length request frame и raw response chunks.
+- Multiplex/cancel/no-replay/actual-send semantics и SHA-pinned Node fingerprint неизменны.
+- Limits пока 32/20/64 MiB; 256 MiB остаётся только transport ceiling.
+
+### Commit 3b — Gemini typed executor
+
+- Удалить synthetic internal HTTP request и повторный parse через shared typed executor native и
+  universal adapters.
+- Exact transport fingerprint и money/error/SSE matrix должны быть GREEN.
 
 ### Commit 4 — systemd slices и resource headroom gate
 

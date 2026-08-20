@@ -8,16 +8,17 @@ const https = require('node:https');
 const net = require('node:net');
 const tls = require('node:tls');
 const zlib = require('node:zlib');
-const readline = require('node:readline');
 const {Readable} = require('node:stream');
 // The executable SHA pin makes this internal module a stable, attested part of the selected Node
 // runtime. It is the same dispatcher implementation consumed by Node's global fetch; using it
 // avoids substituting the gaxios HTTPS profile for Gemini CLI's distinct userinfo fetch profile.
 const undici = require('internal/deps/undici/undici');
 
-const PROTOCOL = 1;
+const PROTOCOL = 2;
 const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
-const MAX_LINE_CHARS = 48 * 1024 * 1024;
+const MAX_CONTROL_BYTES = 1024 * 1024;
+const MAX_DATA_CHUNK_BYTES = 1024 * 1024;
+const FRAME_HEADER_BYTES = 13;
 // Liveness comes from TCP probes, not from a wall-clock deadline. A rebooted proxy, a dead peer or
 // an expired NAT mapping is indistinguishable from a model that is still thinking if the only
 // signal we watch is silence on the socket — which is exactly why the read timeout had to double
@@ -38,13 +39,29 @@ const active = new Map();
 const responseStreams = new Set();
 let stdoutBlocked = false;
 
-function emit(frame) {
-  const writable = process.stdout.write(`${JSON.stringify(frame)}\n`);
+function emitRaw(kind, id, payload) {
+  const header = Buffer.allocUnsafe(FRAME_HEADER_BYTES);
+  header.writeUInt8(kind, 0);
+  header.writeBigUInt64BE(BigInt(id), 1);
+  header.writeUInt32BE(payload.length, 9);
+  const writable = process.stdout.write(Buffer.concat([header, payload]));
   if (!writable && !stdoutBlocked) {
     stdoutBlocked = true;
     for (const stream of responseStreams) stream.pause();
   }
   return writable;
+}
+
+function emit(frame) {
+  const payload = Buffer.from(JSON.stringify(frame));
+  if (payload.length > MAX_CONTROL_BYTES) process.exit(70);
+  return emitRaw(1, 0, payload);
+}
+
+function emitData(id, chunk) {
+  const payload = Buffer.from(chunk);
+  if (payload.length > MAX_DATA_CHUNK_BYTES) process.exit(70);
+  return emitRaw(2, id, payload);
 }
 
 process.stdout.on('drain', () => {
@@ -381,11 +398,9 @@ function startUndiciFetch(frame) {
   try {
     if (frame.calibrationNotAfter !== undefined || frame.method !== 'GET' ||
         typeof frame.url !== 'string' || frame.url.length > 8192 ||
-        typeof frame.body !== 'string') throw new Error('request');
+        !Number.isSafeInteger(frame.bodyLength) || frame.bodyLength !== 0) throw new Error('request');
     const url = new URL(frame.url);
     if (url.protocol !== 'https:') throw new Error('scheme');
-    const body = Buffer.from(frame.body, 'base64');
-    if (body.length !== 0 || body.toString('base64') !== frame.body) throw new Error('body');
     const headers = exactHeaders(frame.headers);
     const controller = new AbortController();
     active.set(id, {destroy: reason => controller.abort(reason)});
@@ -408,7 +423,7 @@ function startUndiciFetch(frame) {
       });
       responseStreams.add(stream);
       if (stdoutBlocked) stream.pause();
-      stream.on('data', chunk => emit({type: 'data', id, data: Buffer.from(chunk).toString('base64')}));
+      stream.on('data', chunk => emitData(id, chunk));
       stream.once('end', () => {
         responseStreams.delete(stream);
         if (!active.delete(id)) return;
@@ -440,7 +455,7 @@ function startRequest(frame) {
     if (frame.wireProfile !== undefined ||
         (frame.method !== 'POST' && frame.method !== 'GET') ||
         typeof frame.url !== 'string' || frame.url.length > 8192 ||
-        typeof frame.body !== 'string') throw new Error('request');
+        !Number.isSafeInteger(frame.bodyLength) || frame.bodyLength < 0 || frame.bodyLength > MAX_REQUEST_BYTES) throw new Error('request');
     // Absent means the process-wide value from the configure frame; an explicit 0 means no
     // deadline, which is what customer generation sends — liveness there comes from the keepalive
     // probes below, and any wall-clock value would just be a bet on how long a model may think.
@@ -451,15 +466,13 @@ function startRequest(frame) {
     const idleTimeoutMs = frame.readTimeoutMs === undefined ? readTimeoutMs : frame.readTimeoutMs;
     const url = new URL(frame.url);
     if (url.protocol !== 'https:') throw new Error('scheme');
-    const body = Buffer.from(frame.body, 'base64');
-    if (body.length > MAX_REQUEST_BYTES || body.toString('base64') !== frame.body) {
-      throw new Error('body');
-    }
+    const body = frame.__body;
+    if (!Buffer.isBuffer(body) || body.length !== frame.bodyLength) throw new Error('body');
     if (frame.method === 'GET' && body.length !== 0) throw new Error('body');
     const headers = normalizeHeaders(frame.headers, body.length, frame.method);
     const calibration = calibrationAttestation(frame.calibrationNotAfter);
     // Re-check after all synchronous decode/validation work and immediately before https.request.
-    // This catches a frame that expired in the IPC/readline queue without touching any socket.
+    // This catches a frame that expired in the framed IPC queue without touching any socket.
     checkCalibrationDeadline(calibration);
     const request = https.request(url, {
       method: frame.method,
@@ -499,7 +512,7 @@ function startRequest(frame) {
         head.calibrationDispatchMs = calibration.dispatchMs;
       }
       emit(head);
-      stream.on('data', chunk => emit({type: 'data', id, data: Buffer.from(chunk).toString('base64')}));
+      stream.on('data', chunk => emitData(id, chunk));
       stream.once('end', () => {
         responseStreams.delete(stream);
         if (!active.delete(id)) return;
@@ -546,48 +559,62 @@ function startRequest(frame) {
   }
 }
 
-const lines = readline.createInterface({input: process.stdin, crlfDelay: Infinity});
-lines.on('line', line => {
-  if (line.length > MAX_LINE_CHARS) process.exit(70);
-  let frame;
-  try { frame = JSON.parse(line); } catch (_) { process.exit(70); }
-  if (!configured) {
-    if (!frame || frame.type !== 'configure' || frame.protocol !== PROTOCOL ||
-        !boundedInteger(frame.connectTimeoutMs, 1000, 120000) ||
-        !boundedInteger(frame.readTimeoutMs, 1000, 600000)) process.exit(70);
-    try {
-      proxyAgent = frame.proxy ? new GeminiProxyAgent(frame.proxy) : undefined;
-      directAgent = frame.proxy ? undefined : new GeminiDirectAgent();
-      if (frame.proxy) {
-        // Exact defaults from Gemini CLI 0.53.0 setGlobalProxy(). env_clear plus an explicit empty
-        // noProxy prevent another subscription or host environment from bypassing this profile.
-        undici.setGlobalDispatcher(new undici.EnvHttpProxyAgent({
-          httpProxy: frame.proxy,
-          httpsProxy: frame.proxy,
-          noProxy: '',
-          headersTimeout: 60000,
-          bodyTimeout: 300000,
-        }));
-      }
-    } catch (_) {
-      process.exit(70);
+let inputBuffer = Buffer.alloc(0);
+let pendingControl;
+function processInput() {
+  while (inputBuffer.length >= FRAME_HEADER_BYTES) {
+    const kind = inputBuffer.readUInt8(0);
+    const id = Number(inputBuffer.readBigUInt64BE(1));
+    const length = inputBuffer.readUInt32BE(9);
+    const max = kind === 1 ? MAX_CONTROL_BYTES : (kind === 2 ? MAX_REQUEST_BYTES : -1);
+    if (!Number.isSafeInteger(id) || length > max) process.exit(70);
+    if (inputBuffer.length < FRAME_HEADER_BYTES + length) return;
+    const payload = inputBuffer.subarray(FRAME_HEADER_BYTES, FRAME_HEADER_BYTES + length);
+    inputBuffer = inputBuffer.subarray(FRAME_HEADER_BYTES + length);
+    if (kind === 2) {
+      if (!pendingControl || pendingControl.id !== id || pendingControl.bodyLength !== payload.length) process.exit(70);
+      pendingControl.__body = Buffer.from(payload);
+      const frame = pendingControl;
+      pendingControl = undefined;
+      startRequest(frame);
+      continue;
     }
-    connectTimeoutMs = frame.connectTimeoutMs;
-    readTimeoutMs = frame.readTimeoutMs;
-    configured = true;
-    emit({type: 'ready', protocol: PROTOCOL, node: process.version, platform: process.platform, arch: process.arch,
-      undici: 'node-internal'});
-    return;
+    let frame;
+    try { frame = JSON.parse(payload.toString('utf8')); } catch (_) { process.exit(70); }
+    if (!configured) {
+      if (!frame || frame.type !== 'configure' || frame.protocol !== PROTOCOL ||
+          !boundedInteger(frame.connectTimeoutMs, 1000, 120000) ||
+          !boundedInteger(frame.readTimeoutMs, 1000, 600000)) process.exit(70);
+      try {
+        proxyAgent = frame.proxy ? new GeminiProxyAgent(frame.proxy) : undefined;
+        directAgent = frame.proxy ? undefined : new GeminiDirectAgent();
+        if (frame.proxy) undici.setGlobalDispatcher(new undici.EnvHttpProxyAgent({
+          httpProxy: frame.proxy, httpsProxy: frame.proxy, noProxy: '', headersTimeout: 60000, bodyTimeout: 300000,
+        }));
+      } catch (_) { process.exit(70); }
+      connectTimeoutMs = frame.connectTimeoutMs;
+      readTimeoutMs = frame.readTimeoutMs;
+      configured = true;
+      emit({type: 'ready', protocol: PROTOCOL, node: process.version, platform: process.platform, arch: process.arch,
+        undici: 'node-internal'});
+      continue;
+    }
+    if (frame && frame.type === 'request') {
+      if (pendingControl || !Number.isSafeInteger(frame.id) || frame.id <= 0) process.exit(70);
+      pendingControl = frame;
+      if (frame.bodyLength === 0) { frame.__body = Buffer.alloc(0); pendingControl = undefined; startRequest(frame); }
+    } else if (frame && frame.type === 'cancel' && Number.isSafeInteger(frame.id)) {
+      const request = active.get(frame.id);
+      if (request && active.delete(frame.id)) request.destroy(new Error('cancelled'));
+    } else process.exit(70);
   }
-  if (frame && frame.type === 'request') startRequest(frame);
-  else if (frame && frame.type === 'cancel' && Number.isSafeInteger(frame.id)) {
-    const request = active.get(frame.id);
-    // Delete first so the destroy-induced error/end callbacks stay silent. Rust intentionally
-    // removed this pre-header request and would correctly treat a late frame as protocol drift.
-    if (request && active.delete(frame.id)) request.destroy(new Error('cancelled'));
-  } else process.exit(70);
+}
+process.stdin.on('data', chunk => {
+  inputBuffer = Buffer.concat([inputBuffer, chunk]);
+  if (inputBuffer.length > MAX_REQUEST_BYTES + MAX_CONTROL_BYTES + FRAME_HEADER_BYTES) process.exit(70);
+  processInput();
 });
-lines.once('close', () => {
+process.stdin.once('end', () => {
   for (const request of active.values()) request.destroy(new Error('closed'));
   process.exit(0);
 });
