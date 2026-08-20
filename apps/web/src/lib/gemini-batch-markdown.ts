@@ -44,6 +44,12 @@ Each nonempty line is one object, not a JSON array:
 
 Start a resumable upload with \`POST /upload/v1beta/files\`, \`X-Goog-Upload-Protocol: resumable\`, \`X-Goog-Upload-Command: start\`, and the required \`X-Goog-Upload-Header-Content-Length\`. Follow the relative \`X-Goog-Upload-URL\`; send chunks up to 8 MiB with exact \`X-Goog-Upload-Offset\`, and finalize with \`X-Goog-Upload-Command: upload, finalize\`. Pass the returned \`files/{id}\` as \`batch.inputConfig.fileName\`.
 
+### Resource lifecycle
+
+- List jobs with \`GET /v1beta/batches?pageSize=20\`; pass the returned \`nextPageToken\` on the next call.
+- Read the complete \`batches/{id}\` with \`GET /v1beta/{name}\`. Request cancellation with \`POST /v1beta/{name}:cancel\`; already dispatched items may finish. Delete with \`DELETE /v1beta/{name}\` only after the operation becomes terminal.
+- List files with \`GET /v1beta/files?pageSize=20\`. Files list currently has no page token. Get metadata at \`GET /v1beta/files/{id}\`, download active content up to 20 MiB from \`GET /v1beta/files/{id}:download\`, and delete with \`DELETE /v1beta/files/{id}\` only while no live Batch references it.
+
 ### Limits and differences from Google
 
 - Inline create body and one JSONL line: 20 MiB. Up to 100,000 items, 100 nonterminal jobs/account, 8 MiB per upload chunk, 48-hour upload TTL, 48-hour queue deadline, 42-day terminal-result retention.

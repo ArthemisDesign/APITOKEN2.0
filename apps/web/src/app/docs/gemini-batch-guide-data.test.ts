@@ -47,6 +47,8 @@ describe("Gemini Batch public documentation contract", () => {
     expect(markdown).toContain("/upload/v1beta/files");
     expect(markdown).toContain("fileData");
     expect(markdown).toContain("responsesFile");
+    expect(markdown).toContain("### Resource lifecycle");
+    expect(markdown).toContain("POST /v1beta/{name}:cancel");
     expect(markdown).not.toContain("batches and fine-tuning are not available");
   });
 });
