@@ -662,6 +662,18 @@ fn proxy_config(admin_key: bool) -> Arc<ProxyConfig> {
     })
 }
 
+fn gemini_test_body_storage() -> Arc<crate::BodyStorage> {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!(
+        "gemini-body-storage-{}-{}",
+        std::process::id(),
+        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    Arc::new(crate::BodyStorage::new(api_limits::current::PROVIDER, root).unwrap())
+}
+
 fn app_state(gateway: Arc<GeminiGateway>, billing: Option<Arc<AsyncBilling>>) -> AppState {
     let cfg = proxy_config(billing.is_none());
     AppState {
@@ -674,7 +686,7 @@ fn app_state(gateway: Arc<GeminiGateway>, billing: Option<Arc<AsyncBilling>>) ->
         pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
         affinity: Arc::new(AffinityStore::new(None, None, 3600, 60, 10).unwrap()),
         clients: Arc::new(Clients::new(&cfg)),
-        body_storage: None,
+        body_storage: Some(gemini_test_body_storage()),
         codex: None,
         gemini: Some(gateway),
         gemini_batch: None,

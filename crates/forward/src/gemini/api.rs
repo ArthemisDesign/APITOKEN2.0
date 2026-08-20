@@ -12,7 +12,7 @@ use super::transport::{
 };
 use super::REPLAYED_FUNCTION_CALL_THOUGHT_SIGNATURE;
 use crate::metrics::Metrics;
-use crate::proxy::{with_not_started, TerminalErrorReason};
+use crate::proxy::{read_body_bounded, with_not_started, TerminalErrorReason};
 use crate::request_classification::{classify_gemini_generate_content, RequestClassification};
 use crate::state::AppState;
 use crate::{AffinityInput, AffinityResolution};
@@ -3907,9 +3907,19 @@ async fn api_inner_observed(
         GEMINI_TEXT_REQUEST_BODY_LIMIT
     };
     let (parts, body) = request.into_parts();
-    let body = to_bytes(body, request_body_limit)
+    let request_limit = api_limits::ByteLimit::from_bytes(request_body_limit as u64);
+    let bounded_body = read_body_bounded(&app, body, request_limit, request_limit)
         .await
-        .map_err(|_| ApiError::invalid("The request body is invalid or too large."))?;
+        .map_err(|error| match error {
+            bounded_body::StorageError::TooLarge
+            | bounded_body::StorageError::ArithmeticOverflow
+            | bounded_body::StorageError::Io => {
+                ApiError::invalid("The request body is invalid or too large.")
+            }
+            _ => ApiError::unavailable("gemini_body_storage_unavailable"),
+        })?;
+    let body = bounded_body.bytes.clone();
+    let _body_lease = bounded_body._lease;
     let mut value: Value = serde_json::from_slice(&body)
         .map_err(|_| ApiError::invalid("The request body is not valid JSON."))?;
     if !value.is_object() {

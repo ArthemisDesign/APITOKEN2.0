@@ -22,8 +22,9 @@ Never mix the three provider paths.
   requests memory-backed, and ownership spans parse/translation/reserve/rotation. Native auth remains
   before body read; universal adapters keep their existing outer auth semantics through `forward`.
   Codex native Responses uses the same shared bounded primitive under its narrower 8 MiB cap;
-  input_tokens/Chat/Messages skins and Gemini paths retain their prior readers until separate
-  route-specific commits.
+  input_tokens/Chat/Messages skins retain their prior readers until separate route-specific commits.
+  Native Gemini generate/stream/count paths use the shared bounded reader under their existing
+  32 MiB text and 20 MiB image/media caps; universal Gemini adapters remain separate.
 
 **Gemini helper IPC.** Rust and the embedded SHA-pinned Node helper use one binary framed protocol:
 13-byte big-endian headers (`kind`, request id, payload length), control JSON capped at 1 MiB,
