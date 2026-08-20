@@ -397,18 +397,37 @@ impl GeminiBatchRuntime {
             Some(send_observer.clone()),
         );
         tokio::pin!(execution_future);
+        let mut fence_error = None;
         let execution = tokio::select! {
-            result = &mut execution_future => result,
+            result = &mut execution_future => Some(result),
             _ = send_observer.observed() => {
-                if !self.authority.mark_actual_send(item.claim.clone(), self.config.claim_lease_secs).await? {
-                    return Ok(())
-                }
+                let marked = self
+                    .authority
+                    .mark_actual_send(item.claim.clone(), self.config.claim_lease_secs)
+                    .await;
+                // The shared helper reader is blocked on this acknowledgement. Release it on every
+                // authority outcome before returning, otherwise one Batch fence failure can wedge
+                // ordinary Gemini traffic on the same profile.
                 send_observer.acknowledge();
-                execution_future.await
+                match marked {
+                    Ok(true) => Some(execution_future.await),
+                    Ok(false) => {
+                        fence_error = Some(anyhow::anyhow!("Gemini Batch actual-send claim became stale"));
+                        None
+                    }
+                    Err(error) => {
+                        fence_error = Some(error.context("persist Gemini Batch actual-send boundary"));
+                        None
+                    }
+                }
             }
         };
         renewing.store(false, Ordering::Release);
         renewal.abort();
+        if let Some(error) = fence_error {
+            return Err(error);
+        }
+        let execution = execution.context("Gemini Batch execution result is missing")?;
         match execution {
             Ok(raw) if raw.status.is_success() && raw.usage.is_some() => {
                 let usage = raw.usage.unwrap();
