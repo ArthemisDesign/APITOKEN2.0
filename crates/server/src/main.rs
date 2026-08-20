@@ -1366,6 +1366,15 @@ async fn serve() -> Result<()> {
     } else {
         None
     };
+    let (gemini_batch_runtime, _gemini_batch_task) = if let Some(batch) = s.gemini_batch.clone() {
+        let owner = owner.clone().context("Gemini Batch requires PostgreSQL owner fencing")?;
+        let gateway = gemini.clone().context("Gemini Batch requires Gemini gateway")?;
+        let batch_authority = tokio::task::spawn_blocking({ let authority=authority.clone(); move || forward::gemini::GeminiBatchAuthority::start(authority, owner) })
+            .await.context("Gemini Batch authority startup task failed")??;
+        let runtime = forward::gemini::GeminiBatchRuntime::new(batch.runtime, batch_authority, gateway, Arc::new(batch.data_keys))?;
+        let task = runtime.spawn();
+        (Some(runtime), Some(task))
+    } else { (None, None) };
     let kimi = if let Some(config) = s.kimi.clone() {
         let calibration_store = billing.clone().context(
             "KIMI provider requires the durable billing authority for settlement and calibration",
@@ -1779,6 +1788,11 @@ async fn serve() -> Result<()> {
     if let Some(codex) = &flush_app.codex {
         elog::info("server", "graceful shutdown: жду Codex settlement tasks");
         codex.shutdown_until(shutdown_deadline).await;
+    }
+    if let Some(batch) = &gemini_batch_runtime {
+        if let Err(error) = batch.shutdown(shutdown_deadline.unwrap_or_else(|| tokio::time::Instant::now() + std::time::Duration::from_secs(30))).await {
+            elog::error("server", format!("Gemini Batch shutdown failed: {error:#}"));
+        }
     }
     if let Some(gemini) = &flush_app.gemini {
         // Detached Gemini streams continue draining to the authoritative final usageMetadata after

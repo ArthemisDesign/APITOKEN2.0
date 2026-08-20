@@ -601,6 +601,7 @@ fn gateway_fixture_with_models_calibration_and_node(
             cooldown_state_file: String::new(),
             quota_reserve_fraction: 0.05,
             quota_reserve_jitter: 0.01,
+            batch_5h_headroom_percent: 20,
             health_probe_interval_secs: 60,
             reserve_overhead_tokens: 10,
             antigravity_version: gemini_credential::ANTIGRAVITY_VERSION.to_string(),
@@ -715,10 +716,12 @@ async fn invoke_with_identity(
     let request = builder
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
         .unwrap();
-    match api_inner(app, "198.51.100.10:12345".parse().unwrap(), request).await {
+    let mut response = match api_inner(app, "198.51.100.10:12345".parse().unwrap(), request).await {
         Ok(response) => response,
         Err(error) => error.into_response(),
-    }
+    };
+    apply_native_response_headers(&mut response);
+    response
 }
 
 async fn invoke_exact_calibration(
@@ -883,7 +886,9 @@ fn canonicalize_promotes_snake_case_and_normalizes_tools() {
     assert!(tool.get("googleSearch").is_some());
     assert!(tool.get("google_search").is_none());
     // The normalized tool must pass validation just like its camelCase form.
-    assert!(validate_generation_request(&value, &catalog_model("gemini-2.5-flash-lite"), false).is_ok());
+    assert!(
+        validate_generation_request(&value, &catalog_model("gemini-2.5-flash-lite"), false).is_ok()
+    );
 }
 
 #[test]
@@ -1470,7 +1475,9 @@ fn nano_banana_defaults_are_explicit_and_unsupported_controls_fail_closed() {
     let too_many_references = json!({
         "contents": [{"parts": [{"text": "x"}]} , {"parts": references}]
     });
-    assert!(validate_native_request(Operation::Generate, &too_many_references, &model, false).is_err());
+    assert!(
+        validate_native_request(Operation::Generate, &too_many_references, &model, false).is_err()
+    );
 }
 
 #[test]
@@ -3383,6 +3390,20 @@ async fn quota_rotates_to_the_next_project_and_client_credential_never_reaches_g
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/json; charset=UTF-8")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|value| value.to_str().ok()),
+        Some("*")
+    );
     let public = response_json(response).await;
     assert!(public.get("response").is_none());
     assert!(public.get("consumedCredits").is_none());
@@ -4421,13 +4442,15 @@ fn count_tokens_rejects_ambiguous_input_and_unsupported_semantic_controls() {
             "contents": [],
             "generateContentRequest": {"contents": []}
         }),
-        &catalog_model("gemini-2.5-flash"), false
+        &catalog_model("gemini-2.5-flash"),
+        false
     )
     .is_err());
     assert!(validate_native_request(
         Operation::CountTokens,
         &json!({"generateContentRequest": []}),
-        &catalog_model("gemini-2.5-flash"), false
+        &catalog_model("gemini-2.5-flash"),
+        false
     )
     .is_err());
     for body in [
@@ -4446,7 +4469,8 @@ fn count_tokens_rejects_ambiguous_input_and_unsupported_semantic_controls() {
     assert!(validate_native_request(
         Operation::Generate,
         &json!({"contents": [], "serviceTier": "standard"}),
-        &catalog_model("gemini-2.5-flash"), false
+        &catalog_model("gemini-2.5-flash"),
+        false
     )
     .is_err());
 }
@@ -4552,7 +4576,22 @@ async fn deterministic_client_400_is_returned_without_pool_rotation() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let public = response_json(response).await.to_string();
+    assert!(response.headers().get("retry-after").is_none());
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/json; charset=UTF-8")
+    );
+    let public_value = response_json(response).await;
+    assert_eq!(public_value["error"]["code"], 400);
+    assert_eq!(public_value["error"]["status"], "INVALID_ARGUMENT");
+    assert_eq!(
+        public_value["error"]["message"],
+        "The model service rejected this request."
+    );
+    let public = public_value.to_string();
     for secret in [
         "cloudcode-pa",
         "Code Assist",
@@ -5343,7 +5382,9 @@ fn audio_input_fails_closed_until_usage_reports_authoritative_modality_tokens() 
         }]
     });
     canonicalize_native_request(&mut snake_case_audio);
-    assert!(validate_native_request(Operation::Generate, &snake_case_audio, &model, false).is_err());
+    assert!(
+        validate_native_request(Operation::Generate, &snake_case_audio, &model, false).is_err()
+    );
 
     assert!(validate_native_request(
         Operation::Generate,
@@ -5628,6 +5669,7 @@ fn cool_test_config() -> super::super::config::GeminiConfig {
         )
         .unwrap(),
         models: Vec::new(),
+        batch_5h_headroom_percent: 15,
         connect_timeout_secs: 5,
         read_timeout_secs: 5,
         generation_idle_timeout_secs: 5,
@@ -5709,8 +5751,8 @@ fn unhinted_without_quota_remaining_uses_default_cool() {
     assert_eq!(generation_429_cool_secs(None, &diagnostic, false, &cfg), 60);
 }
 
-#[test]
-fn count_tokens_fact_handoff_is_exactly_once_privacy_bounded_and_parser_gated() {
+#[tokio::test]
+async fn count_tokens_fact_handoff_is_exactly_once_privacy_bounded_and_parser_gated() {
     let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
     let mut billing = AsyncBilling::start(":memory:".to_string(), 1).unwrap();
     billing.replace_request_fact_inbox_for_test(sender);
@@ -5731,8 +5773,8 @@ fn count_tokens_fact_handoff_is_exactly_once_privacy_bounded_and_parser_gated() 
     };
     let guard = GeminiCountTokensFactGuard::new(billing, seed, Some(intent));
     let observer = guard.actual_send_observer();
-    observer.record();
-    observer.record();
+    observer.record().await;
+    observer.record().await;
     let mut response = (StatusCode::OK, "native").into_response();
     guard.terminal_response(&mut response);
     let handoff = response

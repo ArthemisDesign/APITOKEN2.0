@@ -1054,7 +1054,6 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-
 /// Decide how long to cool a model after an upstream 429.
 ///
 /// Two independent safety valves keep a healthy profile from being parked too long:
@@ -2792,6 +2791,268 @@ async fn read_upstream_body(response: TransportResponse) -> Result<Bytes, Transp
     Ok(Bytes::from(body))
 }
 
+/// Sanitized native GenerateContent input for the common non-stream execution primitive.
+///
+/// Construction is intentionally private to this module: HTTP admission and a future batch parser
+/// must validate/canonicalize first, then call [`prepare_nonstream_generate_request`]. This type
+/// cannot carry API authentication, request headers, billing state or a customer reserve.
+pub struct GeminiNonstreamGenerateRequest {
+    native: Value,
+    public_model: String,
+    wire_model: String,
+    session_id: Option<String>,
+    user_prompt_id: String,
+    request_id: String,
+    image_output_tokens: u64,
+    audio_usage_hint: AudioUsageHint,
+}
+
+/// Build a batch-callable, transport-ready non-stream request from an already sanitized canonical
+/// GenerateContent request. HTTP body parsing/authentication and money admission stay outside.
+pub fn prepare_nonstream_generate_request(
+    model: &GeminiModel,
+    wire_model: impl Into<String>,
+    native: Value,
+    session_id: Option<String>,
+    user_prompt_id: String,
+    request_id: String,
+) -> GeminiNonstreamGenerateRequest {
+    let image_output_tokens = if model.is_image_generation() {
+        image_output_tokens(&native)
+    } else {
+        0
+    };
+    let audio_usage_hint = if model.id == "gemini-3-flash-preview" {
+        flash_preview_audio_usage_hint(&native).unwrap_or_default()
+    } else {
+        AudioUsageHint::default()
+    };
+    GeminiNonstreamGenerateRequest {
+        native,
+        public_model: model.id.clone(),
+        wire_model: wire_model.into(),
+        session_id,
+        user_prompt_id,
+        request_id,
+        image_output_tokens,
+        audio_usage_hint,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeminiNonstreamTerminalClass {
+    Success,
+    Auth,
+    Quota,
+    Client,
+    Backend,
+    Transport,
+    Protocol,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GeminiNonstreamTransportEvidence {
+    pub status: Option<StatusCode>,
+    pub terminal_class: GeminiNonstreamTerminalClass,
+    pub response_headers_received: bool,
+    pub response_body_complete: bool,
+}
+
+pub struct GeminiNonstreamRawResponse {
+    pub status: StatusCode,
+    pub headers: HeaderMap,
+    pub body: Bytes,
+    pub usage: Option<metering::GeminiUsage>,
+    pub evidence: GeminiNonstreamTransportEvidence,
+    rejected_token: gemini_credential::SecretString,
+}
+
+#[derive(Debug)]
+pub enum GeminiNonstreamProtocolError {
+    Malformed,
+    AudioUsage,
+}
+
+#[derive(Debug)]
+pub enum GeminiNonstreamExecuteError {
+    Token,
+    Transport {
+        evidence: GeminiNonstreamTransportEvidence,
+    },
+    Protocol {
+        kind: GeminiNonstreamProtocolError,
+        evidence: GeminiNonstreamTransportEvidence,
+    },
+}
+
+fn nonstream_status_class(status: StatusCode) -> GeminiNonstreamTerminalClass {
+    match status.as_u16() {
+        200..=299 => GeminiNonstreamTerminalClass::Success,
+        401 | 403 => GeminiNonstreamTerminalClass::Auth,
+        429 => GeminiNonstreamTerminalClass::Quota,
+        400..=499 => GeminiNonstreamTerminalClass::Client,
+        _ => GeminiNonstreamTerminalClass::Backend,
+    }
+}
+
+/// Execute exactly one non-stream GenerateContent attempt on a preselected lease/profile/model.
+///
+/// This owns only provider execution: Code Assist identity wrapping, OAuth token acquisition,
+/// upstream send, bounded body read, public-envelope decoding, authoritative usage parsing and
+/// typed terminal evidence. It deliberately performs no HTTP authentication/body parsing, profile
+/// selection, affinity, customer reserve, mark-delivering or settlement.
+pub async fn execute_nonstream_generate(
+    gateway: &GeminiGateway,
+    lease: &GeminiLease,
+    model: &GeminiModel,
+    request: &GeminiNonstreamGenerateRequest,
+) -> Result<GeminiNonstreamRawResponse, GeminiNonstreamExecuteError> {
+    execute_nonstream_generate_observed(gateway, lease, model, request, None).await
+}
+
+pub(crate) async fn execute_nonstream_generate_observed(
+    gateway: &GeminiGateway,
+    lease: &GeminiLease,
+    model: &GeminiModel,
+    request: &GeminiNonstreamGenerateRequest,
+    actual_send_observer: Option<ActualSendObserver>,
+) -> Result<GeminiNonstreamRawResponse, GeminiNonstreamExecuteError> {
+    execute_nonstream_generate_with_rejected_token(gateway, lease, model, request, None, actual_send_observer).await
+}
+
+async fn execute_nonstream_generate_with_rejected_token(
+    gateway: &GeminiGateway,
+    lease: &GeminiLease,
+    model: &GeminiModel,
+    request: &GeminiNonstreamGenerateRequest,
+    rejected_token: Option<&str>,
+    actual_send_observer: Option<ActualSendObserver>,
+) -> Result<GeminiNonstreamRawResponse, GeminiNonstreamExecuteError> {
+    let profile = lease.profile();
+    let oauth_kind = profile.oauth_kind();
+    let project = profile.project_id().await;
+    let body = wrap_code_assist_request(
+        Operation::Generate,
+        oauth_kind,
+        &request.wire_model,
+        &project,
+        &request.native,
+        &request.user_prompt_id,
+        request.session_id.as_deref(),
+        Some(&request.request_id),
+    )
+    .map_err(|_| GeminiNonstreamExecuteError::Protocol {
+        kind: GeminiNonstreamProtocolError::Malformed,
+        evidence: GeminiNonstreamTransportEvidence {
+            status: None,
+            terminal_class: GeminiNonstreamTerminalClass::Protocol,
+            response_headers_received: false,
+            response_body_complete: false,
+        },
+    })?;
+    let url = format!(
+        "{}/v1internal:generateContent",
+        gateway.config().generation_upstream_for(
+            oauth_kind,
+            model.is_image_generation(),
+            &request.wire_model,
+        )
+    );
+    let (response, rejected_token) = send_upstream(
+        profile,
+        &url,
+        &HeaderMap::new(),
+        body,
+        rejected_token,
+        &gateway.config().user_agent(oauth_kind, &request.wire_model),
+        include_antigravity_metadata(model, profile),
+        TransportRetryPolicy::RestartHelperOnce,
+        TokenAcquisitionPolicy::Normal,
+        None,
+        actual_send_observer,
+    )
+    .await
+    .map_err(|error| match error {
+        SendError::Token(_) | SendError::CalibrationExpired => GeminiNonstreamExecuteError::Token,
+        SendError::Transport(_) => GeminiNonstreamExecuteError::Transport {
+            evidence: GeminiNonstreamTransportEvidence {
+                status: None,
+                terminal_class: GeminiNonstreamTerminalClass::Transport,
+                response_headers_received: false,
+                response_body_complete: false,
+            },
+        },
+    })?;
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body =
+        read_upstream_body(response)
+            .await
+            .map_err(|_| GeminiNonstreamExecuteError::Transport {
+                evidence: GeminiNonstreamTransportEvidence {
+                    status: Some(status),
+                    terminal_class: GeminiNonstreamTerminalClass::Transport,
+                    response_headers_received: true,
+                    response_body_complete: false,
+                },
+            })?;
+    if !status.is_success() {
+        return Ok(GeminiNonstreamRawResponse {
+            status,
+            headers,
+            body,
+            usage: None,
+            evidence: GeminiNonstreamTransportEvidence {
+                status: Some(status),
+                terminal_class: nonstream_status_class(status),
+                response_headers_received: true,
+                response_body_complete: true,
+            },
+            rejected_token,
+        });
+    }
+    let body = unwrap_code_assist_response(
+        Operation::Generate,
+        &body,
+        &request.public_model,
+        request.audio_usage_hint,
+        false,
+    )
+    .map_err(|decode| GeminiNonstreamExecuteError::Protocol {
+        kind: match decode {
+            ResponseDecodeError::Malformed => GeminiNonstreamProtocolError::Malformed,
+            ResponseDecodeError::AudioUsage => GeminiNonstreamProtocolError::AudioUsage,
+        },
+        evidence: GeminiNonstreamTransportEvidence {
+            status: Some(status),
+            terminal_class: GeminiNonstreamTerminalClass::Protocol,
+            response_headers_received: true,
+            response_body_complete: true,
+        },
+    })?;
+    let usage = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|value| settlement_usage_from_response(&value, request.image_output_tokens))
+        .filter(|usage| !usage.is_zero());
+    Ok(GeminiNonstreamRawResponse {
+        status,
+        headers,
+        body,
+        usage,
+        evidence: GeminiNonstreamTransportEvidence {
+            status: Some(status),
+            terminal_class: GeminiNonstreamTerminalClass::Success,
+            response_headers_received: true,
+            response_body_complete: true,
+        },
+        rejected_token,
+    })
+}
+
+fn include_antigravity_metadata(model: &GeminiModel, profile: &GeminiProfile) -> bool {
+    !(profile.oauth_kind() == OAuthKind::Antigravity && model.id == "gemini-3-flash-preview")
+}
+
 async fn stream_response(
     gateway: Arc<GeminiGateway>,
     metrics: Arc<Metrics>,
@@ -2990,7 +3251,11 @@ async fn stream_response(
                     let delay = generation_429_cool_secs(
                         translator.provider_retry_after,
                         &diagnostic,
-                        profile.quota_reports_remaining(&wire_model_id, gateway.config(), pool::now()),
+                        profile.quota_reports_remaining(
+                            &wire_model_id,
+                            gateway.config(),
+                            pool::now(),
+                        ),
                         gateway.config(),
                     );
                     log_rate_limit_attempt(
@@ -3303,12 +3568,16 @@ async fn api_inner_observed(
             "gemini_calibration_deadline_required",
         ));
     }
-    if model.id != GEMINI_37_MODEL && calibration_not_after.is_some() && calibration_target.is_none() {
+    if model.id != GEMINI_37_MODEL
+        && calibration_not_after.is_some()
+        && calibration_target.is_none()
+    {
         return Err(ApiError::unavailable("gemini_calibration_deadline_scope"));
     }
-    let deadline_bound_exact = media_matrix_exact || (model.id == GEMINI_37_MODEL
-        && calibration_target.is_some()
-        && calibration_not_after.is_some());
+    let deadline_bound_exact = media_matrix_exact
+        || (model.id == GEMINI_37_MODEL
+            && calibration_target.is_some()
+            && calibration_not_after.is_some());
     let rate_limit_request_id = pending.request_id().to_string();
 
     // Only the upstream-bound operations carry an alt query; validate it here rather than for the
@@ -3601,6 +3870,326 @@ async fn api_inner_observed(
             url.push('?');
             url.push_str(&query);
         }
+        if route.operation == Operation::Generate && !one_shot_upstream {
+            let primitive_request = prepare_nonstream_generate_request(
+                &model,
+                wire_model_id.clone(),
+                value.clone(),
+                upstream_session_id.clone(),
+                user_prompt_id.clone(),
+                upstream_request_id
+                    .clone()
+                    .expect("generation requests always carry an upstream request id"),
+            );
+            match execute_nonstream_generate(&gateway, &lease, &model, &primitive_request).await {
+                Ok(raw) => {
+                    let status = raw.status;
+                    let response_headers = raw.headers;
+                    let response_body = raw.body;
+                    let rejected_token = raw.rejected_token;
+                    match status.as_u16() {
+                        401 => {
+                            Metrics::inc(&app.metrics.upstream_auth);
+                            match execute_nonstream_generate_with_rejected_token(
+                                &gateway,
+                                &lease,
+                                &model,
+                                &primitive_request,
+                                Some(&rejected_token),
+                                None,
+                            )
+                            .await
+                            {
+                                Ok(retried) if retried.status != StatusCode::UNAUTHORIZED => {
+                                    if retried.status.is_success() {
+                                        profile.mark_model_success(&wire_model_id);
+                                        record_affinity_success(
+                                            &app.affinity,
+                                            affinity_input.as_ref(),
+                                            &mut affinity_resolution,
+                                            &affinity_warm_homes,
+                                            profile.id(),
+                                        )
+                                        .await;
+                                        let usage = retried.usage;
+                                        if admission
+                                            .as_ref()
+                                            .expect(
+                                                "Gemini admission exists after upstream selection",
+                                            )
+                                            .requires_usage()
+                                            && usage.is_none()
+                                        {
+                                            Metrics::inc(&app.metrics.gemini_usage_missing);
+                                            Metrics::inc(&app.metrics.gemini_malformed_responses);
+                                            profile.mark_model_failure(
+                                                &wire_model_id,
+                                                "usage_metadata",
+                                                gateway.config(),
+                                            );
+                                            elog::error(
+                                                "gemini",
+                                                "gemini request failed: usage metadata missing",
+                                            );
+                                            return Err(ApiError::unavailable(
+                                                "gemini_usage_metadata_missing",
+                                            ));
+                                        }
+                                        let admission = admission.take().expect(
+                                            "Gemini admission exists after upstream selection",
+                                        );
+                                        admission
+                                            .mark_delivering()
+                                            .await
+                                            .map_err(ApiError::from)?;
+                                        let request_probe = admission.requests_post_turn_probe();
+                                        if let Some(event) =
+                                            admission.settle(&model, usage.as_ref(), profile.id())
+                                        {
+                                            profile.record_turn(event);
+                                            if request_probe {
+                                                gateway.request_probe();
+                                            }
+                                        }
+                                        return Ok(translated_response(
+                                            retried.status,
+                                            &retried.headers,
+                                            retried.body,
+                                        ));
+                                    }
+                                }
+                                _ => {}
+                            }
+                            saw_auth = true;
+                            excluded.insert(profile.id().to_string());
+                            profile.mark_auth_blocked(gateway.config());
+                            continue;
+                        }
+                        403 => {
+                            Metrics::inc(&app.metrics.upstream_auth);
+                            excluded.insert(profile.id().to_string());
+                            if google_error_status(&response_body).as_deref()
+                                == Some("PERMISSION_DENIED")
+                            {
+                                saw_permission_denied = true;
+                            } else {
+                                saw_auth = true;
+                                profile.mark_auth_blocked(gateway.config());
+                            }
+                            continue;
+                        }
+                        429 => {
+                            Metrics::inc(&app.metrics.upstream_429);
+                            saw_quota = true;
+                            rate_limit_attempts = rate_limit_attempts.saturating_add(1);
+                            excluded.insert(profile.id().to_string());
+                            let diagnostic = RateLimitDiagnostic::from_body(
+                                Some(&response_headers),
+                                &response_body,
+                            );
+                            let hint =
+                                rate_limit::retry_after_header_delay(Some(&response_headers))
+                                    .or_else(|| {
+                                        serde_json::from_slice::<Value>(&response_body)
+                                            .ok()
+                                            .and_then(|value| rate_limit::retry_info_delay(&value))
+                                    });
+                            let delay = generation_429_cool_secs(
+                                hint,
+                                &diagnostic,
+                                profile.quota_reports_remaining(
+                                    &wire_model_id,
+                                    gateway.config(),
+                                    pool::now(),
+                                ),
+                                gateway.config(),
+                            );
+                            log_rate_limit_attempt(
+                                &rate_limit_request_id,
+                                route.operation.diagnostic_name(),
+                                "http_response",
+                                attempt,
+                                &model.id,
+                                &wire_model_id,
+                                profile.id(),
+                                oauth_kind,
+                                &diagnostic,
+                                delay,
+                                &profile.rate_limit_quota_evidence(
+                                    &wire_model_id,
+                                    gateway.config(),
+                                    pool::now(),
+                                ),
+                            );
+                            profile.cool_model_until(&wire_model_id, pool::now() + delay);
+                            continue;
+                        }
+                        408 | 409 | 425 => {
+                            Metrics::inc(&app.metrics.upstream_5xx);
+                            Metrics::inc(&app.metrics.gemini_transport_failures);
+                            excluded.insert(profile.id().to_string());
+                            profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+                            retry_failures += 1;
+                            if retry_failures > gateway.config().max_transport_retries {
+                                elog::error("gemini", "gemini request failed: backend unavailable");
+                                return Err(ApiError::unavailable("gemini_backend_unavailable"));
+                            }
+                            continue;
+                        }
+                        500..=599 => {
+                            Metrics::inc(&app.metrics.upstream_5xx);
+                            Metrics::inc(&app.metrics.gemini_backend_failures);
+                            excluded.insert(profile.id().to_string());
+                            profile.mark_model_failure(&wire_model_id, "backend", gateway.config());
+                            saw_backend = true;
+                            retry_failures += 1;
+                            if retry_failures > gateway.config().max_transport_retries {
+                                elog::error("gemini", "gemini request failed: backend unavailable");
+                                return Err(ApiError::unavailable("gemini_backend_unavailable"));
+                            }
+                            continue;
+                        }
+                        _ if status.is_success() => {
+                            profile.mark_model_success(&wire_model_id);
+                            record_affinity_success(
+                                &app.affinity,
+                                affinity_input.as_ref(),
+                                &mut affinity_resolution,
+                                &affinity_warm_homes,
+                                profile.id(),
+                            )
+                            .await;
+                            let usage = raw.usage;
+                            if admission
+                                .as_ref()
+                                .expect("Gemini admission exists after upstream selection")
+                                .requires_usage()
+                                && usage.is_none()
+                            {
+                                Metrics::inc(&app.metrics.gemini_usage_missing);
+                                Metrics::inc(&app.metrics.gemini_malformed_responses);
+                                profile.mark_model_failure(
+                                    &wire_model_id,
+                                    "usage_metadata",
+                                    gateway.config(),
+                                );
+                                elog::error(
+                                    "gemini",
+                                    "gemini request failed: usage metadata missing",
+                                );
+                                return Err(ApiError::unavailable("gemini_usage_metadata_missing"));
+                            }
+                            let admission = admission
+                                .take()
+                                .expect("Gemini admission exists after upstream selection");
+                            admission.mark_delivering().await.map_err(ApiError::from)?;
+                            let request_probe = admission.requests_post_turn_probe();
+                            if let Some(event) =
+                                admission.settle(&model, usage.as_ref(), profile.id())
+                            {
+                                profile.record_turn(event);
+                                if request_probe {
+                                    gateway.request_probe();
+                                }
+                            }
+                            return Ok(translated_response(
+                                status,
+                                &response_headers,
+                                response_body,
+                            ));
+                        }
+                        _ if status.is_client_error() => {
+                            profile.mark_authenticated();
+                            return Err(ApiError::provider_rejected(status));
+                        }
+                        _ => {
+                            Metrics::inc(&app.metrics.upstream_5xx);
+                            Metrics::inc(&app.metrics.gemini_backend_failures);
+                            excluded.insert(profile.id().to_string());
+                            profile.mark_model_failure(
+                                &wire_model_id,
+                                "protocol",
+                                gateway.config(),
+                            );
+                            saw_backend = true;
+                            retry_failures += 1;
+                            if retry_failures > gateway.config().max_transport_retries {
+                                elog::error(
+                                    "gemini",
+                                    "gemini request failed: backend protocol error",
+                                );
+                                return Err(ApiError::unavailable("gemini_backend_protocol_error"));
+                            }
+                            continue;
+                        }
+                    }
+                }
+                Err(GeminiNonstreamExecuteError::Token) => {
+                    Metrics::inc(&app.metrics.upstream_5xx);
+                    Metrics::inc(&app.metrics.gemini_transport_failures);
+                    excluded.insert(profile.id().to_string());
+                    profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+                    retry_failures += 1;
+                    if retry_failures > gateway.config().max_transport_retries {
+                        elog::error("gemini", "gemini request failed: transport unavailable");
+                        return Err(ApiError::unavailable("gemini_transport_unavailable"));
+                    }
+                    continue;
+                }
+                Err(GeminiNonstreamExecuteError::Transport { evidence }) => {
+                    Metrics::inc(&app.metrics.upstream_5xx);
+                    Metrics::inc(&app.metrics.gemini_transport_failures);
+                    excluded.insert(profile.id().to_string());
+                    profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+                    retry_failures += 1;
+                    if retry_failures > gateway.config().max_transport_retries {
+                        let (message, reason) = if evidence.response_headers_received {
+                            (
+                                "gemini request failed: response read failed",
+                                "gemini_response_read_failed",
+                            )
+                        } else {
+                            (
+                                "gemini request failed: transport unavailable",
+                                "gemini_transport_unavailable",
+                            )
+                        };
+                        elog::error("gemini", message);
+                        return Err(ApiError::unavailable(reason));
+                    }
+                    continue;
+                }
+                Err(GeminiNonstreamExecuteError::Protocol { kind, .. }) => match kind {
+                    GeminiNonstreamProtocolError::AudioUsage => {
+                        Metrics::inc(&app.metrics.gemini_usage_missing);
+                        profile.mark_model_failure(
+                            &wire_model_id,
+                            "usage_metadata",
+                            gateway.config(),
+                        );
+                        elog::error(
+                            "gemini",
+                            "gemini request failed: audio usage metadata missing",
+                        );
+                        return Err(ApiError::unavailable("gemini_audio_usage_metadata_missing"));
+                    }
+                    GeminiNonstreamProtocolError::Malformed => {
+                        Metrics::inc(&app.metrics.upstream_5xx);
+                        Metrics::inc(&app.metrics.gemini_malformed_responses);
+                        excluded.insert(profile.id().to_string());
+                        profile.mark_model_failure(&wire_model_id, "malformed", gateway.config());
+                        saw_backend = true;
+                        retry_failures += 1;
+                        if retry_failures > gateway.config().max_transport_retries {
+                            elog::error("gemini", "gemini request failed: malformed response");
+                            return Err(ApiError::unavailable("gemini_malformed_response"));
+                        }
+                        continue;
+                    }
+                },
+            }
+        }
+
         let project = profile.project_id().await;
         let upstream_body = wrap_code_assist_request(
             route.operation,
@@ -3724,13 +4313,11 @@ async fn api_inner_observed(
                     continue;
                 }
                 Err(
-                    error
-                    @ (SendError::Token(TokenError::Temporary | TokenError::Blocked)
+                    error @ (SendError::Token(TokenError::Temporary | TokenError::Blocked)
                     | SendError::Transport(_)
                     | SendError::CalibrationExpired),
                 ) => {
-                    if let (Some(guard), SendError::Transport(error)) =
-                        (fact_guard.as_mut(), error)
+                    if let (Some(guard), SendError::Transport(error)) = (fact_guard.as_mut(), error)
                     {
                         guard.observe(CountTokensTerminalEvidence::transport(error));
                     }
@@ -3872,8 +4459,11 @@ async fn api_inner_observed(
                         let delay = generation_429_cool_secs(
                             translator.provider_retry_after,
                             &diagnostic,
-                            profile
-                                .quota_reports_remaining(&wire_model_id, gateway.config(), pool::now()),
+                            profile.quota_reports_remaining(
+                                &wire_model_id,
+                                gateway.config(),
+                                pool::now(),
+                            ),
                             gateway.config(),
                         );
                         log_rate_limit_attempt(
@@ -4053,8 +4643,8 @@ async fn api_inner_observed(
                 excluded.insert(profile.id().to_string());
                 let diagnostic =
                     RateLimitDiagnostic::from_body(Some(&response_headers), &response_body);
-                let hint = rate_limit::retry_after_header_delay(Some(&response_headers))
-                    .or_else(|| {
+                let hint =
+                    rate_limit::retry_after_header_delay(Some(&response_headers)).or_else(|| {
                         serde_json::from_slice::<Value>(&response_body)
                             .ok()
                             .and_then(|value| rate_limit::retry_info_delay(&value))

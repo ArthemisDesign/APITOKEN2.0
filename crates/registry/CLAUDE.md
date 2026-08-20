@@ -65,8 +65,15 @@ side effect. `serve` may only perform the read-only schema verification before c
   nullable ledger/usage `key_id` preserves attribution after deletion. Result expiry starts only at
   completion, and outbox rows can carry the complete immutable Gemini calibration event. Migration
   0057 gives file rows an explicit `inline_legacy|chunked` storage shape without fake blob bytes.
-  Registry now exposes atomic create/read/file/claim/cancel/settlement/prune primitives only; no
-  public HTTP route, env switch, scheduler loop or execution transport is composed before later stages.
+  Registry exposes atomic create/read/file/claim/cancel/settlement/prune primitives only; Stage 3
+  claim reads return the encrypted execution payload under the same owner/generation fence, blob and
+  chunk reads stay account-scoped, chunk pages are ordered and capped at 128, and secret-bearing types
+  redact ciphertext/nonces/digests from `Debug`. Completed jobs remain explicit as `Expired` metadata
+  after result expiry while result/error payload reads close. Output-file linkage accepts only active
+  same-account `batch_output` files and extends file expiry through the job result lifetime. Dispatch
+  ignores stored priority, requires the account and creator key to remain active/unexpired, and caps
+  each account at 16 claimed/dispatching/settlement-pending items. SQLite returns typed unsupported.
+  No public HTTP route, env switch, scheduler loop or execution transport is composed here.
 - **Dormant request-observability S2 (migrations `0053` + `0054`) is PostgreSQL-only and opt-in.**
   Fact-aware reservation and delivery methods insert/validate admission and first-delivery evidence in
   the owning money transaction. Terminal evidence is durably enqueued with settlement, then copied to

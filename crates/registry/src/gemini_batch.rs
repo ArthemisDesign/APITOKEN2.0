@@ -9,6 +9,8 @@ use anyhow::{bail, Context, Result};
 
 pub const GEMINI_BATCH_DISPATCH_LEADER: &str = "gemini_batch_dispatch";
 pub const MAX_BATCH_PAGE_SIZE: i64 = 1_000;
+pub const MAX_BATCH_FILE_CHUNK_PAGE_SIZE: i64 = 128;
+pub const MAX_BATCH_ACTIVE_ITEMS_PER_ACCOUNT: i64 = 16;
 pub const MAX_BATCH_PRUNE_LIMIT: usize = 5_000;
 pub const MAX_BATCH_FILE_CHUNK_BYTES: i64 = 8 * 1024 * 1024;
 pub const MAX_BATCH_FILE_BYTES: i64 = 2 * 1024 * 1024 * 1024;
@@ -176,7 +178,7 @@ pub struct GeminiBatchStats {
     pub pending_request_count: i64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct GeminiBatchEncryptedBlob {
     pub kind: String,
     pub key_id: String,
@@ -185,6 +187,20 @@ pub struct GeminiBatchEncryptedBlob {
     pub plaintext_len: i64,
     pub plaintext_digest: [u8; 32],
     pub retention_ts: i64,
+}
+impl std::fmt::Debug for GeminiBatchEncryptedBlob {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GeminiBatchEncryptedBlob")
+            .field("kind", &self.kind)
+            .field("key_id", &self.key_id)
+            .field("nonce", &"[REDACTED]")
+            .field("ciphertext", &"[REDACTED]")
+            .field("plaintext_len", &self.plaintext_len)
+            .field("plaintext_digest", &"[REDACTED]")
+            .field("retention_ts", &self.retention_ts)
+            .finish()
+    }
 }
 impl GeminiBatchEncryptedBlob {
     pub fn validate(&self, created: i64) -> Result<()> {
@@ -333,6 +349,8 @@ pub struct GeminiBatchJob {
     pub display_name: String,
     pub priority: i64,
     pub input_kind: GeminiBatchInputKind,
+    pub input_file_id: Option<String>,
+    pub output_file_id: Option<String>,
     pub cancel_requested_ts: Option<i64>,
     pub create_ts: i64,
     pub update_ts: i64,
@@ -369,6 +387,52 @@ pub struct GeminiBatchClaim {
     pub profile_id: String,
 }
 
+/// Complete secret-bearing worker input returned only by the atomic claim transaction.
+///
+/// Its custom `Debug` deliberately omits request/metadata ciphertext and opaque file identifiers.
+#[derive(Clone, PartialEq, Eq)]
+pub struct GeminiBatchClaimedItem {
+    pub claim: GeminiBatchClaim,
+    pub public_model: String,
+    pub request_blob: GeminiBatchEncryptedBlob,
+    pub metadata_blob: Option<GeminiBatchEncryptedBlob>,
+    pub hold_nano: i64,
+    pub payable_multiplier_bp: i64,
+    pub priced_ts: i64,
+    pub tariff_family: String,
+    pub tariff_version: i64,
+    pub tariff_schedule_id: String,
+    pub creator_key_id: String,
+    pub input_file_id: Option<String>,
+    pub referenced_file_ids: Vec<String>,
+}
+impl std::fmt::Debug for GeminiBatchClaimedItem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GeminiBatchClaimedItem")
+            .field("claim", &self.claim)
+            .field("public_model", &self.public_model)
+            .field("request_blob", &"[REDACTED]")
+            .field(
+                "metadata_blob",
+                &self.metadata_blob.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("hold_nano", &self.hold_nano)
+            .field("payable_multiplier_bp", &self.payable_multiplier_bp)
+            .field("priced_ts", &self.priced_ts)
+            .field("tariff_family", &self.tariff_family)
+            .field("tariff_version", &self.tariff_version)
+            .field("tariff_schedule_id", &self.tariff_schedule_id)
+            .field("creator_key_id", &self.creator_key_id)
+            .field(
+                "input_file_id",
+                &self.input_file_id.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("referenced_file_count", &self.referenced_file_ids.len())
+            .finish()
+    }
+}
+
 /// A stale claim whose money must be resolved by the ordinary settlement authority.
 ///
 /// Recovery never releases a hold or terminalizes an item directly. The consumer chooses the
@@ -389,7 +453,7 @@ pub struct GeminiBatchRecoveryCandidate {
     pub actual_send_evidence: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct GeminiBatchFileChunk {
     pub chunk_index: i64,
     pub key_id: String,
@@ -398,6 +462,20 @@ pub struct GeminiBatchFileChunk {
     pub plaintext_len: i64,
     pub plaintext_digest: [u8; 32],
     pub created_ts: i64,
+}
+impl std::fmt::Debug for GeminiBatchFileChunk {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GeminiBatchFileChunk")
+            .field("chunk_index", &self.chunk_index)
+            .field("key_id", &self.key_id)
+            .field("nonce", &"[REDACTED]")
+            .field("ciphertext", &"[REDACTED]")
+            .field("plaintext_len", &self.plaintext_len)
+            .field("plaintext_digest", &"[REDACTED]")
+            .field("created_ts", &self.created_ts)
+            .finish()
+    }
 }
 impl GeminiBatchFileChunk {
     pub fn validate(&self) -> Result<()> {
@@ -448,10 +526,19 @@ pub struct GeminiBatchFile {
     pub display_name: String,
     pub mime_type: String,
     pub size_bytes: i64,
+    pub sha256_digest: [u8; 32],
     pub source_kind: String,
     pub state: String,
+    pub storage_kind: String,
     pub create_ts: i64,
+    pub update_ts: i64,
     pub expiration_ts: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeminiBatchFileChunkPage {
+    pub chunks: Vec<GeminiBatchFileChunk>,
+    pub next_chunk_index: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -567,8 +654,7 @@ impl GeminiBatchSettlementIntent {
             || self.result_blob.kind != expected_blob
             || measured != self.usage.is_some()
             || measured != self.calibration.is_some()
-            || (!measured
-                && (self.actual_nano != 0 || self.charge_basis_nano != 0 || self.real_nano != 0))
+            || (!measured && (self.charge_basis_nano != 0 || self.real_nano != 0))
         {
             bail!("settlement disposition shape mismatch")
         }

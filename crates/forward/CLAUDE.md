@@ -1081,7 +1081,11 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    system/tools cache-root first warms two competing profiles, then prefers the warm
    copy. Unbound routing puts fresh quota evidence ahead of stale, then inflight, coarse quota
    steering only above 50% used and a rotating cursor: exact fractions never herd a burst onto one
-   account. The deterministic soft reserve/jitter is preserved; if all eligible profiles are below the reserve,
+   account. The separate scheduler-facing batch selector layers the same hard model/profile eligibility
+   with a fresh exact `gemini-5h` summary whose fixed-point remaining fraction must be strictly above
+   `batch_5h_headroom_percent`; missing, stale or exact-threshold evidence returns the bounded
+   `batch_5h_headroom_stop` reason without customer identity. Interactive selectors remain unchanged.
+   The deterministic soft reserve/jitter is preserved; if all eligible profiles are below the reserve,
    the service floor fails open to explicit zero. Local saturation never becomes a public
    error; native RetryInfo stays only for real provider quota/cooling.
    `/gemini-subs` separates quota presence from generation health via the failure streak and last

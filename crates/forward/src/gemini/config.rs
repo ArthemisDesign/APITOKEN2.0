@@ -310,6 +310,9 @@ pub struct GeminiConfig {
     /// is preserved: if every eligible profile is below its reserve, routing fails open to them.
     pub quota_reserve_fraction: f64,
     pub quota_reserve_jitter: f64,
+    /// Batch-only minimum remaining share of the exact `gemini-5h` quota summary. Interactive
+    /// routing does not consume this gate. The server supplies the deployment default.
+    pub batch_5h_headroom_percent: u8,
     pub health_probe_interval_secs: u64,
     pub reserve_overhead_tokens: u64,
     /// Public Antigravity release used to shape the Cloud Code User-Agent. Legacy credentials keep

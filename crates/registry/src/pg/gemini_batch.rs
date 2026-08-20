@@ -1,12 +1,13 @@
 use super::PgStore;
 use crate::gemini_batch::{
-    GeminiBatchCreate, GeminiBatchCreateOutcome, GeminiBatchFile, GeminiBatchFileChunk,
-    GeminiBatchFileCompletion, GeminiBatchFileCreate, GeminiBatchFileCreateOutcome,
-    GeminiBatchIdempotencyConflict, GeminiBatchInputKind, GeminiBatchItem, GeminiBatchItemState,
-    GeminiBatchJob, GeminiBatchJobDetail, GeminiBatchJobPage, GeminiBatchJobState,
-    GeminiBatchPageCursor, GeminiBatchStats, GeminiBatchTerminalClass,
-    MAX_BATCH_ACCOUNT_FILE_BYTES, MAX_BATCH_FILE_BYTES, MAX_BATCH_NONTERMINAL_JOBS,
-    MAX_BATCH_PAGE_SIZE, MAX_BATCH_REFERENCED_FILE_BYTES,
+    GeminiBatchCreate, GeminiBatchCreateOutcome, GeminiBatchEncryptedBlob, GeminiBatchFile,
+    GeminiBatchFileChunk, GeminiBatchFileChunkPage, GeminiBatchFileCompletion,
+    GeminiBatchFileCreate, GeminiBatchFileCreateOutcome, GeminiBatchIdempotencyConflict,
+    GeminiBatchInputKind, GeminiBatchItem, GeminiBatchItemState, GeminiBatchJob,
+    GeminiBatchJobDetail, GeminiBatchJobPage, GeminiBatchJobState, GeminiBatchPageCursor,
+    GeminiBatchStats, GeminiBatchTerminalClass, MAX_BATCH_ACCOUNT_FILE_BYTES, MAX_BATCH_FILE_BYTES,
+    MAX_BATCH_FILE_CHUNK_PAGE_SIZE, MAX_BATCH_NONTERMINAL_JOBS, MAX_BATCH_PAGE_SIZE,
+    MAX_BATCH_REFERENCED_FILE_BYTES,
 };
 use crate::ACCOUNT_OVERDRAFT_NANO;
 use anyhow::{bail, Context, Result};
@@ -22,10 +23,16 @@ pub fn gemini_batch_file_chunk_manifest_digest(
 ) -> Result<[u8; 32]> {
     let mut hasher = Sha256::new();
     hasher.update(FILE_CHUNK_MANIFEST_DOMAIN);
-    hasher.update(u64::try_from(chunks.len()).context("Gemini Batch chunk count overflow")?.to_be_bytes());
+    hasher.update(
+        u64::try_from(chunks.len())
+            .context("Gemini Batch chunk count overflow")?
+            .to_be_bytes(),
+    );
     for (expected, chunk) in chunks.iter().enumerate() {
         chunk.validate()?;
-        if chunk.chunk_index != i64::try_from(expected).context("Gemini Batch chunk index overflow")? {
+        if chunk.chunk_index
+            != i64::try_from(expected).context("Gemini Batch chunk index overflow")?
+        {
             bail!("Gemini Batch file chunks are not contiguous")
         }
         hasher.update(chunk.chunk_index.to_be_bytes());
@@ -36,8 +43,8 @@ pub fn gemini_batch_file_chunk_manifest_digest(
 }
 
 const JOB_READ_COLUMNS: &str = "j.job_id,j.account_id,j.creator_key_id,j.public_model,j.display_name,\
- j.priority,j.input_kind,j.cancel_requested_ts,j.create_ts,j.update_ts,j.deadline_ts,j.completed_ts,\
- j.delete_ts,j.result_expiration_ts,COUNT(i.*)::bigint,\
+ j.priority,j.input_kind,j.input_file_id,j.output_file_id,j.cancel_requested_ts,j.create_ts,j.update_ts,\
+ j.deadline_ts,j.completed_ts,j.delete_ts,j.result_expiration_ts,COUNT(i.*)::bigint,\
  COUNT(i.*) FILTER (WHERE i.state='succeeded')::bigint,\
  COUNT(i.*) FILTER (WHERE i.state IN ('failed','indeterminate','canceled'))::bigint,\
  COUNT(i.*) FILTER (WHERE i.state NOT IN ('succeeded','failed','indeterminate','canceled'))::bigint";
@@ -49,13 +56,13 @@ fn bytes32(value: Vec<u8>, field: &str) -> Result<[u8; 32]> {
 }
 
 fn job_from_row(row: &Row) -> Result<GeminiBatchJob> {
-    let request_count: i64 = row.get(14);
-    let successful_request_count: i64 = row.get(15);
-    let failed_request_count: i64 = row.get(16);
-    let pending_request_count: i64 = row.get(17);
-    let completed_ts: Option<i64> = row.get(11);
-    let delete_ts: Option<i64> = row.get(12);
-    let result_expiration_ts: Option<i64> = row.get(13);
+    let request_count: i64 = row.get(16);
+    let successful_request_count: i64 = row.get(17);
+    let failed_request_count: i64 = row.get(18);
+    let pending_request_count: i64 = row.get(19);
+    let completed_ts: Option<i64> = row.get(13);
+    let delete_ts: Option<i64> = row.get(14);
+    let result_expiration_ts: Option<i64> = row.get(15);
     let state = if delete_ts.is_some() || result_expiration_ts.is_some_and(|ts| ts <= super::now())
     {
         GeminiBatchJobState::Expired
@@ -65,7 +72,7 @@ fn job_from_row(row: &Row) -> Result<GeminiBatchJob> {
         } else {
             GeminiBatchJobState::Running
         }
-    } else if row.get::<_, Option<i64>>(7).is_some() {
+    } else if row.get::<_, Option<i64>>(9).is_some() {
         GeminiBatchJobState::Cancelled
     } else {
         // Per-item errors remain a successfully processed operation whose output carries those
@@ -80,10 +87,12 @@ fn job_from_row(row: &Row) -> Result<GeminiBatchJob> {
         display_name: row.get(4),
         priority: row.get(5),
         input_kind: GeminiBatchInputKind::parse(row.get::<_, String>(6).as_str())?,
-        cancel_requested_ts: row.get(7),
-        create_ts: row.get(8),
-        update_ts: row.get(9),
-        deadline_ts: row.get(10),
+        input_file_id: row.get(7),
+        output_file_id: row.get(8),
+        cancel_requested_ts: row.get(9),
+        create_ts: row.get(10),
+        update_ts: row.get(11),
+        deadline_ts: row.get(12),
         completed_ts,
         delete_ts,
         result_expiration_ts,
@@ -118,18 +127,33 @@ fn item_from_row(row: &Row) -> Result<GeminiBatchItem> {
     })
 }
 
-fn file_from_row(row: &Row) -> GeminiBatchFile {
-    GeminiBatchFile {
+fn file_from_row(row: &Row) -> Result<GeminiBatchFile> {
+    Ok(GeminiBatchFile {
         file_id: row.get(0),
         account_id: row.get(1),
         display_name: row.get(2),
         mime_type: row.get(3),
         size_bytes: row.get(4),
-        source_kind: row.get(5),
-        state: row.get(6),
-        create_ts: row.get(7),
-        expiration_ts: row.get(8),
-    }
+        sha256_digest: bytes32(row.get(5), "file digest")?,
+        source_kind: row.get(6),
+        state: row.get(7),
+        storage_kind: row.get(8),
+        create_ts: row.get(9),
+        update_ts: row.get(10),
+        expiration_ts: row.get(11),
+    })
+}
+
+fn encrypted_blob_from_row(row: &Row) -> Result<GeminiBatchEncryptedBlob> {
+    Ok(GeminiBatchEncryptedBlob {
+        kind: row.get(0),
+        key_id: row.get(1),
+        nonce: row.get(2),
+        ciphertext: row.get(3),
+        plaintext_len: row.get(4),
+        plaintext_digest: bytes32(row.get(5), "encrypted blob digest")?,
+        retention_ts: row.get(6),
+    })
 }
 
 fn validate_file_create(create: &GeminiBatchFileCreate) -> Result<()> {
@@ -249,8 +273,18 @@ impl PgStore {
         let mut referenced_files = create
             .input_file_id
             .iter()
-            .chain(create.items.iter().filter_map(|item| item.input_file_id.as_ref()))
-            .chain(create.items.iter().flat_map(|item| item.referenced_file_ids.iter()))
+            .chain(
+                create
+                    .items
+                    .iter()
+                    .filter_map(|item| item.input_file_id.as_ref()),
+            )
+            .chain(
+                create
+                    .items
+                    .iter()
+                    .flat_map(|item| item.referenced_file_ids.iter()),
+            )
             .cloned()
             .collect::<Vec<_>>();
         referenced_files.sort();
@@ -262,7 +296,8 @@ impl PgStore {
                  WHERE account_id=$1 AND file_id=$2 AND state='active' AND expiration_ts>$3 \
                  FOR KEY SHARE",
                 &[&create.account_id, file_id, &super::now()],
-            )? else {
+            )?
+            else {
                 bail!("Gemini Batch referenced file is unavailable");
             };
             referenced_size = referenced_size
@@ -405,11 +440,10 @@ impl PgStore {
         let sql = format!(
             "SELECT {JOB_READ_COLUMNS} FROM gemini_batch_jobs j \
              LEFT JOIN gemini_batch_items i ON i.job_id=j.job_id \
-             WHERE j.account_id=$1 AND j.job_id=$2 AND j.delete_ts IS NULL \
-               AND (j.result_expiration_ts IS NULL OR j.result_expiration_ts>$3) \
+             WHERE j.account_id=$1 AND j.job_id=$2 \
              GROUP BY j.job_id"
         );
-        let Some(row) = tx.query_opt(&sql, &[&account_id, &job_id, &super::now()])? else {
+        let Some(row) = tx.query_opt(&sql, &[&account_id, &job_id])? else {
             tx.commit()?;
             return Ok(None);
         };
@@ -442,7 +476,6 @@ impl PgStore {
             "SELECT {JOB_READ_COLUMNS} FROM gemini_batch_jobs j \
              LEFT JOIN gemini_batch_items i ON i.job_id=j.job_id \
              WHERE j.account_id=$1 AND j.delete_ts IS NULL \
-               AND (j.result_expiration_ts IS NULL OR j.result_expiration_ts>$5) \
                AND ($2::bigint IS NULL OR (j.create_ts,j.job_id)<($2,$3)) \
              GROUP BY j.job_id ORDER BY j.create_ts DESC,j.job_id DESC LIMIT $4"
         );
@@ -453,7 +486,6 @@ impl PgStore {
                 &cursor.map(|v| v.create_ts),
                 &cursor.map(|v| v.job_id.as_str()),
                 &query_limit,
-                &super::now(),
             ],
         )?;
         let has_more = rows.len() as i64 > page_size;
@@ -483,7 +515,8 @@ impl PgStore {
         let Some(_) = tx.query_opt(
             "SELECT 1 FROM accounts WHERE id=$1 FOR UPDATE",
             &[&create.account_id],
-        )? else {
+        )?
+        else {
             tx.rollback()?;
             return Ok(GeminiBatchFileCreateOutcome::Unavailable);
         };
@@ -672,19 +705,27 @@ impl PgStore {
         )?;
         let mut manifest = Sha256::new();
         manifest.update(FILE_CHUNK_MANIFEST_DOMAIN);
-        manifest.update(u64::try_from(chunks.len()).context("Gemini Batch chunk count overflow")?.to_be_bytes());
+        manifest.update(
+            u64::try_from(chunks.len())
+                .context("Gemini Batch chunk count overflow")?
+                .to_be_bytes(),
+        );
         let mut total = 0i64;
         for (expected, chunk) in chunks.iter().enumerate() {
             let chunk_index: i64 = chunk.get(0);
             let plaintext_len: i64 = chunk.get(1);
-            if chunk_index != i64::try_from(expected).context("Gemini Batch chunk index overflow")? {
+            if chunk_index
+                != i64::try_from(expected).context("Gemini Batch chunk index overflow")?
+            {
                 bail!("Gemini Batch file chunks are not contiguous")
             }
             let digest = bytes32(chunk.get(2), "file chunk digest")?;
             manifest.update(chunk_index.to_be_bytes());
             manifest.update(plaintext_len.to_be_bytes());
             manifest.update(digest);
-            total = total.checked_add(plaintext_len).context("Gemini Batch file size overflow")?;
+            total = total
+                .checked_add(plaintext_len)
+                .context("Gemini Batch file size overflow")?;
         }
         let durable_manifest: [u8; 32] = manifest.finalize().into();
         if durable_manifest != completion.chunk_manifest_digest {
@@ -693,9 +734,7 @@ impl PgStore {
         if total != file.get::<_, i64>(1) {
             bail!("Gemini Batch file size does not match its chunks")
         }
-        if chunks.len() == 1
-            && bytes32(chunks[0].get(2), "file chunk digest")? != declared_digest
-        {
+        if chunks.len() == 1 && bytes32(chunks[0].get(2), "file chunk digest")? != declared_digest {
             bail!("Gemini Batch single-chunk file digest mismatch")
         }
         tx.execute(
@@ -715,13 +754,15 @@ impl PgStore {
         Ok(self
             .client
             .query_opt(
-                "SELECT file_id,account_id,display_name,mime_type,size_bytes,source_kind,state,\
-                 create_ts,expiration_ts FROM gemini_batch_files \
+                "SELECT file_id,account_id,display_name,mime_type,size_bytes,sha256_digest,\
+                 source_kind,state,storage_kind,create_ts,update_ts,expiration_ts \
+                 FROM gemini_batch_files \
                  WHERE account_id=$1 AND file_id=$2 AND expiration_ts>$3",
                 &[&account_id, &file_id, &super::now()],
             )?
             .as_ref()
-            .map(file_from_row))
+            .map(file_from_row)
+            .transpose()?)
     }
 
     pub fn gemini_batch_file_list(
@@ -732,14 +773,147 @@ impl PgStore {
         Ok(self
             .client
             .query(
-                "SELECT file_id,account_id,display_name,mime_type,size_bytes,source_kind,state,\
-                 create_ts,expiration_ts FROM gemini_batch_files WHERE account_id=$1 \
+                "SELECT file_id,account_id,display_name,mime_type,size_bytes,sha256_digest,\
+                 source_kind,state,storage_kind,create_ts,update_ts,expiration_ts \
+                 FROM gemini_batch_files WHERE account_id=$1 \
                  AND expiration_ts>$3 ORDER BY create_ts DESC,file_id DESC LIMIT $2",
-                &[&account_id, &limit.clamp(1, MAX_BATCH_PAGE_SIZE), &super::now()],
+                &[
+                    &account_id,
+                    &limit.clamp(1, MAX_BATCH_PAGE_SIZE),
+                    &super::now(),
+                ],
             )?
             .iter()
             .map(file_from_row)
-            .collect())
+            .collect::<Result<Vec<_>>>()?)
+    }
+
+    /// Read one encrypted item blob through its owning account boundary.
+    pub fn gemini_batch_blob_get(
+        &mut self,
+        account_id: &str,
+        job_id: &str,
+        item_index: i64,
+        kind: &str,
+    ) -> Result<Option<GeminiBatchEncryptedBlob>> {
+        if item_index < 0 || !matches!(kind, "request" | "metadata" | "result" | "error") {
+            bail!("invalid Gemini Batch blob read")
+        }
+        let row = self.client.query_opt(
+            "SELECT b.kind,b.key_id,b.nonce,b.ciphertext,b.plaintext_len,b.plaintext_digest,b.retention_ts \
+             FROM gemini_batch_blobs b JOIN gemini_batch_jobs j USING(job_id) \
+             WHERE j.account_id=$1 AND b.job_id=$2 AND b.item_index=$3 AND b.kind=$4 \
+               AND j.delete_ts IS NULL AND ($4 IN ('request','metadata') \
+                    OR (j.result_expiration_ts IS NOT NULL AND j.result_expiration_ts>$5))",
+            &[&account_id, &job_id, &item_index, &kind, &super::now()],
+        )?;
+        row.as_ref().map(encrypted_blob_from_row).transpose()
+    }
+
+    /// Read a bounded ascending page of encrypted chunks; never materializes a logical file.
+    pub fn gemini_batch_file_chunk_page(
+        &mut self,
+        account_id: &str,
+        file_id: &str,
+        after_chunk_index: Option<i64>,
+        limit: i64,
+    ) -> Result<GeminiBatchFileChunkPage> {
+        if after_chunk_index.is_some_and(|index| index < 0) {
+            bail!("invalid Gemini Batch file chunk cursor")
+        }
+        let page_size = limit.clamp(1, MAX_BATCH_FILE_CHUNK_PAGE_SIZE);
+        let rows = self.client.query(
+            "SELECT c.chunk_index,c.key_id,c.nonce,c.ciphertext,c.plaintext_len,\
+                    c.plaintext_digest,c.created_ts \
+             FROM gemini_batch_file_chunks c JOIN gemini_batch_files f USING(file_id) \
+             WHERE f.account_id=$1 AND c.file_id=$2 AND f.state='active' \
+               AND f.storage_kind='chunked' AND f.expiration_ts>$3 \
+               AND ($4::bigint IS NULL OR c.chunk_index>$4) \
+             ORDER BY c.chunk_index LIMIT $5",
+            &[
+                &account_id,
+                &file_id,
+                &super::now(),
+                &after_chunk_index,
+                &(page_size + 1),
+            ],
+        )?;
+        let has_more = rows.len() as i64 > page_size;
+        let chunks = rows
+            .iter()
+            .take(page_size as usize)
+            .map(|row| {
+                Ok(GeminiBatchFileChunk {
+                    chunk_index: row.get(0),
+                    key_id: row.get(1),
+                    nonce: row.get(2),
+                    ciphertext: row.get(3),
+                    plaintext_len: row.get(4),
+                    plaintext_digest: bytes32(row.get(5), "file chunk digest")?,
+                    created_ts: row.get(6),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let next_chunk_index =
+            has_more.then(|| chunks.last().expect("nonempty bounded page").chunk_index);
+        Ok(GeminiBatchFileChunkPage {
+            chunks,
+            next_chunk_index,
+        })
+    }
+
+    /// Link an active batch-output file and extend it through the job result lifetime.
+    pub fn gemini_batch_link_output_file(
+        &mut self,
+        account_id: &str,
+        job_id: &str,
+        file_id: &str,
+    ) -> Result<bool> {
+        let mut tx = self.client.transaction()?;
+        let Some(job) = tx.query_opt(
+            "SELECT completed_ts,result_expiration_ts,output_file_id FROM gemini_batch_jobs \
+             WHERE account_id=$1 AND job_id=$2 AND delete_ts IS NULL FOR UPDATE",
+            &[&account_id, &job_id],
+        )?
+        else {
+            tx.rollback()?;
+            return Ok(false);
+        };
+        let completed_ts: Option<i64> = job.get(0);
+        let expiration_ts: Option<i64> = job.get(1);
+        let existing: Option<String> = job.get(2);
+        if existing.as_deref() == Some(file_id) {
+            tx.commit()?;
+            return Ok(true);
+        }
+        if existing.is_some() {
+            bail!("Gemini Batch output file linkage conflicts with stored data")
+        }
+        let completed_ts =
+            completed_ts.context("Gemini Batch output file requires a completed job")?;
+        let expiration_ts =
+            expiration_ts.context("Gemini Batch completed job has no result expiration")?;
+        if tx.execute(
+            "UPDATE gemini_batch_files SET expiration_ts=GREATEST(expiration_ts,$3),\
+                    update_ts=GREATEST(update_ts,$4) \
+             WHERE account_id=$1 AND file_id=$2 AND source_kind='batch_output' \
+               AND state='active' AND storage_kind='chunked' AND expiration_ts>$4",
+            &[&account_id, &file_id, &expiration_ts, &super::now()],
+        )? != 1
+        {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        if tx.execute(
+            "UPDATE gemini_batch_jobs SET output_file_id=$3,update_ts=GREATEST(update_ts,$4) \
+             WHERE account_id=$1 AND job_id=$2 AND output_file_id IS NULL",
+            &[&account_id, &job_id, &file_id, &completed_ts],
+        )? != 1
+        {
+            bail!("Gemini Batch output file linkage lost its locked job")
+        }
+        tx.commit()?;
+        Ok(true)
     }
 
     pub fn gemini_batch_file_delete(&mut self, account_id: &str, file_id: &str) -> Result<bool> {

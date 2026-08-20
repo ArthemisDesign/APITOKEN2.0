@@ -11,7 +11,29 @@ use forward::{
     ProviderMode, ProxyConfig,
     CLAUDE_CODE_IDENTITY,
 };
-use std::{collections::BTreeMap, env, net::IpAddr};
+use std::{collections::BTreeMap, env, net::IpAddr, time::Duration};
+
+#[derive(Clone, Debug)]
+pub struct GeminiBatchRuntimeSettings {
+    pub data_keys: forward::gemini::GeminiBatchDataKeyring,
+    pub runtime: forward::gemini::GeminiBatchRuntimeConfig,
+}
+
+fn gemini_batch_config() -> Option<GeminiBatchRuntimeSettings> {
+    if !ev_bool("CLAUDE_API_GEMINI_BATCH_ENABLED", false) { return None; }
+    let specification = ev("CLAUDE_API_GEMINI_BATCH_DATA_KEYS")
+        .unwrap_or_else(|| panic!("CLAUDE_API_GEMINI_BATCH_DATA_KEYS is required when Gemini Batch is enabled"));
+    let data_keys = forward::gemini::GeminiBatchDataKeyring::parse(&specification)
+        .unwrap_or_else(|_| panic!("CLAUDE_API_GEMINI_BATCH_DATA_KEYS is invalid"));
+    Some(GeminiBatchRuntimeSettings { data_keys, runtime: forward::gemini::GeminiBatchRuntimeConfig {
+        enabled: true,
+        global_concurrency: bounded_usize("CLAUDE_API_GEMINI_BATCH_CONCURRENCY", 4, 1, 64),
+        leader_ttl_secs: bounded_i64("CLAUDE_API_GEMINI_BATCH_LEADER_TTL_SECS", 30, 5, 300),
+        claim_lease_secs: bounded_i64("CLAUDE_API_GEMINI_BATCH_CLAIM_LEASE_SECS", 120, 30, 1800),
+        idle_backoff: Duration::from_secs(bounded_u64("CLAUDE_API_GEMINI_BATCH_IDLE_SECS", 1, 1, 60)),
+        retry_backoff: Duration::from_secs(bounded_u64("CLAUDE_API_GEMINI_BATCH_RETRY_SECS", 5, 1, 3600)),
+    }})
+}
 
 pub struct Settings {
     pub provider: ProviderMode,
@@ -65,6 +87,8 @@ pub struct Settings {
     pub claudestore_codex_fallback: Option<ClaudeStoreFallbackConfig>,
     /// Native Gemini provider. It is instantiated only by the startup-fixed Gemini service.
     pub gemini: Option<GeminiConfig>,
+    /// Dormant Gemini Batch core. No public route is mounted until Stage 4.
+    pub gemini_batch: Option<GeminiBatchRuntimeSettings>,
     /// Backend-only KIMI plane. Exact aliases dispatch through its private runtime only when this
     /// validated, default-off switch is enabled; it is never inferred from the shipped binary.
     pub kimi: Option<KimiPlaneConfig>,
@@ -935,6 +959,13 @@ fn gemini_config() -> Option<GeminiConfig> {
         credential_layout,
         credential_keys,
         models,
+        batch_5h_headroom_percent: u8::try_from(bounded_i64(
+            "CLAUDE_API_GEMINI_BATCH_5H_HEADROOM_PERCENT",
+            15,
+            0,
+            100,
+        ))
+        .expect("bounded Gemini Batch headroom percent must fit u8"),
         connect_timeout_secs: bounded_u64("CLAUDE_API_GEMINI_CONNECT_TIMEOUT_SECS", 30, 1, 120),
         read_timeout_secs: bounded_u64("CLAUDE_API_GEMINI_READ_TIMEOUT_SECS", 120, 15, 600),
         // 0 = no deadline on customer generation, which is the intended production state. A
@@ -1351,6 +1382,10 @@ impl Settings {
         } else {
             None
         };
+        let gemini_batch = if provider.serves_gemini() { gemini_batch_config() } else { None };
+        if gemini_batch.is_some() && database_url.is_none() {
+            panic!("CLAUDE_API_GEMINI_BATCH_ENABLED=1 requires CLAUDE_API_DATABASE_URL");
+        }
         let kimi = if provider.serves_kimi() {
             kimi_config()
         } else {
@@ -1451,6 +1486,7 @@ impl Settings {
             codex,
             claudestore_codex_fallback,
             gemini,
+            gemini_batch,
             kimi,
             glm,
             tripo3d,

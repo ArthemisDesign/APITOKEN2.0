@@ -432,7 +432,7 @@ fn gemini_calibration_event(
 /// vector admission pinned (or the book's current resolution for unmetered turns), with the
 /// compiled schedule id preserved when no override applies.
 #[allow(clippy::too_many_arguments)]
-fn gemini_calibration_event_with_prices(
+pub(crate) fn gemini_calibration_event_with_prices(
     request_id: &str,
     profile_id: &str,
     model: &GeminiModel,
@@ -951,7 +951,7 @@ fn settled_charge(
 
 /// `settled_charge` under one explicit rate card.
 #[allow(clippy::too_many_arguments)]
-fn settled_charge_with_prices(
+pub(crate) fn settled_charge_with_prices(
     model: &GeminiModel,
     usage: &metering::GeminiUsage,
     _hold: i64,

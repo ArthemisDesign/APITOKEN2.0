@@ -461,7 +461,12 @@ impl GeminiProfile {
     /// RPM/concurrency stall rather than exhaustion. Fail-closed: a missing/stale catalogue, no
     /// matching bucket, or any non-positive/unknown remainder returns `false`, so the long
     /// exhaustion cooling stays the default unless the catalogue positively disproves it.
-    pub(crate) fn quota_reports_remaining(&self, model_id: &str, cfg: &GeminiConfig, now: i64) -> bool {
+    pub(crate) fn quota_reports_remaining(
+        &self,
+        model_id: &str,
+        cfg: &GeminiConfig,
+        now: i64,
+    ) -> bool {
         let evidence = self.rate_limit_quota_evidence(model_id, cfg, now);
         evidence.snapshot_state == "fresh"
             && evidence.matching_buckets > 0
@@ -2024,11 +2029,12 @@ fn credential_generation_digest(profiles: &[Arc<GeminiProfile>]) -> String {
     format!("blake3:{}", digest.finalize().to_hex())
 }
 
-pub(crate) struct GeminiLease {
+pub struct GeminiLease {
     profile: Arc<GeminiProfile>,
 }
 
 impl GeminiLease {
+    pub fn profile_id(&self) -> &str { self.profile.id() }
     pub(crate) fn profile(&self) -> &Arc<GeminiProfile> {
         &self.profile
     }
@@ -2037,6 +2043,46 @@ impl GeminiLease {
 impl Drop for GeminiLease {
     fn drop(&mut self) {
         self.profile.inflight.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeminiBatchSelectionStop {
+    Batch5hHeadroom,
+    NoEligibleProfile,
+}
+
+impl GeminiBatchSelectionStop {
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::Batch5hHeadroom => "batch_5h_headroom_stop",
+            Self::NoEligibleProfile => "batch_no_eligible_profile",
+        }
+    }
+}
+
+pub struct GeminiBatchSelection {
+    pub lease: Option<GeminiLease>,
+    pub stop: Option<GeminiBatchSelectionStop>,
+}
+
+impl GeminiBatchSelection {
+    fn selected(lease: GeminiLease) -> Self {
+        Self {
+            lease: Some(lease),
+            stop: None,
+        }
+    }
+
+    fn stopped(stop: GeminiBatchSelectionStop) -> Self {
+        Self {
+            lease: None,
+            stop: Some(stop),
+        }
+    }
+
+    pub fn reason(&self) -> Option<&'static str> {
+        self.stop.map(GeminiBatchSelectionStop::reason)
     }
 }
 
@@ -2088,6 +2134,7 @@ impl GeminiGateway {
             || !(0.0..=1.0).contains(&cfg.quota_reserve_fraction)
             || !cfg.quota_reserve_jitter.is_finite()
             || !(0.0..=1.0).contains(&cfg.quota_reserve_jitter)
+            || cfg.batch_5h_headroom_percent > 100
         {
             bail!("Gemini pool routing configuration is invalid");
         }
@@ -2372,6 +2419,85 @@ impl GeminiGateway {
             generation,
             false,
         )
+    }
+
+    /// Select a profile for batch work without changing the interactive router. Eligibility first
+    /// reuses the same hard model/profile gates as ordinary routing, then requires a fresh exact
+    /// `gemini-5h` summary strictly above the configured integer threshold. Missing or stale batch
+    /// evidence fails closed and is reported without profile or customer identity.
+    pub fn select_batch(&self, model_id: &str, excluded: &HashSet<String>) -> GeminiBatchSelection {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return GeminiBatchSelection::stopped(GeminiBatchSelectionStop::NoEligibleProfile);
+        }
+        let now = pool::now();
+        let summary_stale_secs = self
+            .cfg
+            .health_probe_interval_secs
+            .saturating_mul(2)
+            .clamp(60, 3_600) as i64;
+        let threshold_units =
+            i64::from(self.cfg.batch_5h_headroom_percent).saturating_mul(FRACTION_SCALE) / 100;
+        let mut eligible = Vec::new();
+        let mut headroom_stopped = false;
+        for (index, profile) in self.routable_profiles().iter().enumerate() {
+            if excluded.contains(profile.id())
+                || profile.hard_cooling_until_for(model_id, &self.cfg, now, true) > now
+                || !profile.authenticated.load(Ordering::Acquire)
+            {
+                continue;
+            }
+            let summary = profile
+                .quota_summary
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let fresh = summary.updated_at > 0
+                && now.saturating_sub(summary.updated_at) <= summary_stale_secs;
+            let above_threshold = fresh
+                && summary.buckets.iter().any(|bucket| {
+                    bucket.contract.id == calibration::BUCKET_5H
+                        && bucket.remaining_fraction_units > threshold_units
+                });
+            if above_threshold {
+                eligible.push((index, profile.clone()));
+            } else {
+                headroom_stopped = true;
+            }
+        }
+        if eligible.is_empty() {
+            return GeminiBatchSelection::stopped(if headroom_stopped {
+                GeminiBatchSelectionStop::Batch5hHeadroom
+            } else {
+                GeminiBatchSelectionStop::NoEligibleProfile
+            });
+        }
+        let offset = self.cursor.fetch_add(1, Ordering::Relaxed) as usize;
+        let profile_count = self.routable_profiles().len();
+        eligible.sort_by(|left, right| {
+            left.1
+                .inflight
+                .load(Ordering::Acquire)
+                .cmp(&right.1.inflight.load(Ordering::Acquire))
+                .then_with(|| {
+                    let left_order =
+                        (left.0 + profile_count - offset % profile_count) % profile_count;
+                    let right_order =
+                        (right.0 + profile_count - offset % profile_count) % profile_count;
+                    left_order.cmp(&right_order)
+                })
+        });
+        let profile = eligible.remove(0).1;
+        profile.inflight.fetch_add(1, Ordering::AcqRel);
+        GeminiBatchSelection::selected(GeminiLease { profile })
+    }
+
+    pub fn select_batch_profile(&self, model_id: &str, profile_id: &str) -> Option<GeminiLease> {
+        if self.shutting_down.load(Ordering::Acquire) { return None; }
+        let now=pool::now();let stale=self.cfg.health_probe_interval_secs.saturating_mul(2).clamp(60,3600)as i64;let threshold=i64::from(self.cfg.batch_5h_headroom_percent)*FRACTION_SCALE/100;
+        let profile=self.routable_profiles().into_iter().find(|p|p.id()==profile_id)?;
+        if !profile.authenticated.load(Ordering::Acquire)||profile.hard_cooling_until_for(model_id,&self.cfg,now,true)>now{return None}
+        let summary=profile.quota_summary.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if summary.updated_at<=0||now.saturating_sub(summary.updated_at)>stale||!summary.buckets.iter().any(|b|b.contract.id==calibration::BUCKET_5H&&b.remaining_fraction_units>threshold){return None}
+        drop(summary);profile.inflight.fetch_add(1,Ordering::AcqRel);Some(GeminiLease{profile})
     }
 
     /// Last-resort selection that ignores the soft, environment-derived cooling axis.
@@ -3089,9 +3215,10 @@ mod tests {
             default_rate_limit_cool_secs: 60,
             rate_limit_rpm_cool_secs: 2,
             rate_limit_unknown_cool_secs: 60,
-        cooldown_state_file: String::new(),
+            cooldown_state_file: String::new(),
             quota_reserve_fraction: 0.05,
             quota_reserve_jitter: 0.01,
+            batch_5h_headroom_percent: 20,
             health_probe_interval_secs: 60,
             reserve_overhead_tokens: 10,
             antigravity_version: gemini_credential::ANTIGRAVITY_VERSION.to_string(),
@@ -3124,6 +3251,21 @@ mod tests {
                 remaining_fraction: Some(remaining_fraction),
                 reset_time: None,
                 token_type: Some("antigravity_model".to_string()),
+            }],
+        };
+    }
+
+    fn set_batch_5h_summary(profile: &GeminiProfile, updated_at: i64, remaining_units: i64) {
+        *profile
+            .quota_summary
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = GeminiQuotaSummarySnapshot {
+            updated_at,
+            buckets: vec![GeminiSummaryBucket {
+                contract: calibration::FIVE_HOUR,
+                remaining_fraction_units: remaining_units,
+                measurement_resolution_fraction_units: 1,
+                resets_at: updated_at + 300 * 60,
             }],
         };
     }
@@ -4180,6 +4322,99 @@ mod tests {
     }
 
     #[test]
+    fn batch_headroom_missing_stale_and_exact_threshold_stop() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first)]);
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        let profile = &gateway.profiles_snapshot()[0];
+
+        let missing = gateway.select_batch("gemini-test", &HashSet::new());
+        assert!(missing.lease.is_none());
+        assert_eq!(missing.reason(), Some("batch_5h_headroom_stop"));
+
+        set_batch_5h_summary(profile, pool::now() - 121, 90_000_000);
+        let stale = gateway.select_batch("gemini-test", &HashSet::new());
+        assert!(stale.lease.is_none());
+        assert_eq!(stale.reason(), Some("batch_5h_headroom_stop"));
+
+        set_batch_5h_summary(profile, pool::now(), 20_000_000);
+        let exact = gateway.select_batch("gemini-test", &HashSet::new());
+        assert!(exact.lease.is_none());
+        assert_eq!(exact.reason(), Some("batch_5h_headroom_stop"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn batch_headroom_strictly_above_threshold_returns_lease() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first)]);
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        set_batch_5h_summary(&gateway.profiles_snapshot()[0], pool::now(), 20_000_001);
+
+        let selected = gateway.select_batch("gemini-test", &HashSet::new());
+        assert!(selected.lease.is_some());
+        assert_eq!(selected.reason(), None);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn batch_headroom_does_not_change_interactive_selection() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first)]);
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+
+        assert_eq!(
+            gateway
+                .select_routed(
+                    "gemini-test",
+                    &HashSet::new(),
+                    None,
+                    &HashSet::new(),
+                    false,
+                    true,
+                )
+                .unwrap()
+                .profile()
+                .id(),
+            "profile_a",
+        );
+        assert_eq!(
+            gateway
+                .select_routed_ignoring_env_cooling(
+                    "gemini-test",
+                    &HashSet::new(),
+                    None,
+                    &HashSet::new(),
+                    false,
+                    true,
+                )
+                .unwrap()
+                .profile()
+                .id(),
+            "profile_a",
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn invalid_batch_headroom_percent_is_rejected() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first)]);
+        let mut cfg = config(&roster, ring);
+        cfg.batch_5h_headroom_percent = 101;
+        assert!(GeminiGateway::new(cfg).is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn quarantined_auth_is_not_reported_as_retryable_quota_cooling() {
         let (dir, ring) = fixture();
         let first = write_credential(&dir, &ring, "profile_a", "subject-a");
@@ -4395,11 +4630,9 @@ mod tests {
             Some(&(now + 3_600))
         );
         // Expired deadlines are dropped on read, so a stale file never resurrects elapsed cooling.
-        assert!(
-            !active
-                .get("profile_a")
-                .is_some_and(|m| m.contains_key("model_expired"))
-        );
+        assert!(!active
+            .get("profile_a")
+            .is_some_and(|m| m.contains_key("model_expired")));
         let _ = fs::remove_dir_all(&dir);
     }
 

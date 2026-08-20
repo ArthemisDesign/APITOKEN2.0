@@ -4,7 +4,8 @@
 //! idempotency boundary; owner epochs fence stale instances. PostgreSQL is the recovery floor.
 
 mod gemini_batch;
-mod gemini_batch_claims;
+pub mod gemini_batch_claims;
+pub use gemini_batch_claims::GeminiBatchReconcileReport;
 mod gemini_batch_settlement;
 #[cfg(test)]
 mod gemini_batch_tests;

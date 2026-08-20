@@ -2,8 +2,9 @@
 
 use super::{now, Owner, PgStore};
 use crate::gemini_batch::{
-    GeminiBatchClaim, GeminiBatchItemState, GeminiBatchRecoveryCandidate,
-    GeminiBatchSettlementDisposition, GeminiBatchTerminalClass, GEMINI_BATCH_DISPATCH_LEADER,
+    GeminiBatchClaim, GeminiBatchClaimedItem, GeminiBatchEncryptedBlob, GeminiBatchItemState,
+    GeminiBatchRecoveryCandidate, GeminiBatchSettlementDisposition, GeminiBatchTerminalClass,
+    GEMINI_BATCH_DISPATCH_LEADER, MAX_BATCH_ACTIVE_ITEMS_PER_ACCOUNT,
 };
 use anyhow::{bail, Result};
 
@@ -27,10 +28,11 @@ impl PgStore {
         &mut self,
         owner: &Owner,
         profile_id: &str,
+        model_id: &str,
         lease_secs: i64,
-    ) -> Result<Option<GeminiBatchClaim>> {
-        if profile_id.is_empty() {
-            bail!("Gemini Batch profile ID is empty");
+    ) -> Result<Option<GeminiBatchClaimedItem>> {
+        if profile_id.is_empty() || model_id.is_empty() {
+            bail!("Gemini Batch profile/model ID is empty");
         }
         let ts = now();
         let lease_until = ts.saturating_add(lease_secs.max(1));
@@ -112,16 +114,30 @@ impl PgStore {
         // prevents one large old batch from monopolizing every claim.
         let Some(row) = tx.query_opt(
             "SELECT item.job_id,job.account_id,item.item_index,item.request_id,
-                    item.claim_generation+1
+                    item.claim_generation+1,job.public_model,item.hold_nano,
+                    item.payable_multiplier_bp,item.priced_ts,item.tariff_family,
+                    item.tariff_version,item.tariff_schedule_id,item.creator_key_id,
+                    item.input_file_id
                FROM gemini_batch_items item
                JOIN gemini_batch_jobs job ON job.job_id=item.job_id
               WHERE item.state='queued'
                 AND item.next_attempt_ts <= $1
+                AND job.public_model=$3
                 AND job.cancel_requested_ts IS NULL
                 AND job.completed_ts IS NULL
                 AND job.delete_ts IS NULL
                 AND job.deadline_ts > $1
-              ORDER BY job.priority DESC,
+                AND EXISTS (SELECT 1 FROM accounts account
+                             WHERE account.id=job.account_id AND account.status='active')
+                AND EXISTS (SELECT 1 FROM api_keys key
+                             WHERE key.account_id=job.account_id
+                               AND key.key_id=item.creator_key_id AND key.status='active'
+                               AND (key.expires_ts IS NULL OR key.expires_ts>$1))
+                AND (SELECT COUNT(*) FROM gemini_batch_items peer
+                     JOIN gemini_batch_jobs peer_job ON peer_job.job_id=peer.job_id
+                     WHERE peer_job.account_id=job.account_id
+                       AND peer.state IN ('claimed','dispatching','settlement_pending')) < $2
+              ORDER BY
                        COALESCE((
                            SELECT MAX(peer.updated_ts)
                              FROM gemini_batch_items peer
@@ -135,10 +151,10 @@ impl PgStore {
                             WHERE active.job_id=item.job_id
                               AND active.state IN ('claimed','dispatching','settlement_pending')
                        ),0),
-                       job.create_ts,item.item_index
+                       job.create_ts,job.job_id,item.item_index
               FOR UPDATE OF item SKIP LOCKED
               LIMIT 1",
-            &[&ts],
+            &[&ts, &MAX_BATCH_ACTIVE_ITEMS_PER_ACCOUNT, &model_id],
         )?
         else {
             tx.rollback()?;
@@ -149,6 +165,15 @@ impl PgStore {
         let item_index: i64 = row.get(2);
         let request_id: String = row.get(3);
         let claim_generation: i64 = row.get(4);
+        let public_model: String = row.get(5);
+        let hold_nano: i64 = row.get(6);
+        let payable_multiplier_bp: i64 = row.get(7);
+        let priced_ts: i64 = row.get(8);
+        let tariff_family: String = row.get(9);
+        let tariff_version: i64 = row.get(10);
+        let tariff_schedule_id: String = row.get(11);
+        let creator_key_id: String = row.get(12);
+        let input_file_id: Option<String> = row.get(13);
 
         Self::assert_owner_locked(&mut tx, owner, now())?;
         let leader_still_valid = tx
@@ -204,16 +229,63 @@ impl PgStore {
                 &ts,
             ],
         )?;
+        let blobs = tx.query(
+            "SELECT kind,key_id,nonce,ciphertext,plaintext_len,plaintext_digest,retention_ts \
+             FROM gemini_batch_blobs WHERE job_id=$1 AND item_index=$2 \
+               AND kind IN ('request','metadata') ORDER BY kind",
+            &[&job_id, &item_index],
+        )?;
+        let mut request_blob = None;
+        let mut metadata_blob = None;
+        for blob in blobs {
+            let value = GeminiBatchEncryptedBlob {
+                kind: blob.get(0),
+                key_id: blob.get(1),
+                nonce: blob.get(2),
+                ciphertext: blob.get(3),
+                plaintext_len: blob.get(4),
+                plaintext_digest: blob
+                    .get::<_, Vec<u8>>(5)
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("invalid Gemini Batch blob digest length"))?,
+                retention_ts: blob.get(6),
+            };
+            match value.kind.as_str() {
+                "request" => request_blob = Some(value),
+                "metadata" => metadata_blob = Some(value),
+                _ => unreachable!("query limits blob kinds"),
+            }
+        }
+        let request_blob = request_blob
+            .ok_or_else(|| anyhow::anyhow!("claimed Gemini Batch item has no request blob"))?;
+        let referenced_file_ids = tx.query(
+            "SELECT file_id FROM gemini_batch_item_files WHERE job_id=$1 AND item_index=$2 ORDER BY ordinal",
+            &[&job_id, &item_index],
+        )?.into_iter().map(|row| row.get(0)).collect();
         Self::assert_owner_locked(&mut tx, owner, now())?;
         tx.commit()?;
-        Ok(Some(GeminiBatchClaim {
-            job_id,
-            account_id,
-            item_index,
-            request_id,
-            claim_generation,
-            lease_until,
-            profile_id: profile_id.to_owned(),
+        Ok(Some(GeminiBatchClaimedItem {
+            claim: GeminiBatchClaim {
+                job_id,
+                account_id,
+                item_index,
+                request_id,
+                claim_generation,
+                lease_until,
+                profile_id: profile_id.to_owned(),
+            },
+            public_model,
+            request_blob,
+            metadata_blob,
+            hold_nano,
+            payable_multiplier_bp,
+            priced_ts,
+            tariff_family,
+            tariff_version,
+            tariff_schedule_id,
+            creator_key_id,
+            input_file_id,
+            referenced_file_ids,
         }))
     }
 
@@ -611,29 +683,34 @@ impl PgStore {
                     GeminiBatchTerminalClass::Indeterminate,
                 )
             };
-            report.recovery_candidates.push(GeminiBatchRecoveryCandidate {
-                job_id,
-                account_id,
-                item_index,
-                request_id,
-                claim_generation,
-                profile_id,
-                hold_nano,
-                disposition,
-                terminal_state: if matches!(disposition, GeminiBatchSettlementDisposition::Indeterminate) {
-                    GeminiBatchItemState::Indeterminate
-                } else {
-                    GeminiBatchItemState::Canceled
-                },
-                terminal_class,
-                actual_send_evidence: if actual_send_ts.is_some() {
-                    Some("sent".to_owned())
-                } else if dispatch_intent_ts.is_some() {
-                    Some("ambiguous".to_owned())
-                } else {
-                    actual_send_evidence
-                },
-            });
+            report
+                .recovery_candidates
+                .push(GeminiBatchRecoveryCandidate {
+                    job_id,
+                    account_id,
+                    item_index,
+                    request_id,
+                    claim_generation,
+                    profile_id,
+                    hold_nano,
+                    disposition,
+                    terminal_state: if matches!(
+                        disposition,
+                        GeminiBatchSettlementDisposition::Indeterminate
+                    ) {
+                        GeminiBatchItemState::Indeterminate
+                    } else {
+                        GeminiBatchItemState::Canceled
+                    },
+                    terminal_class,
+                    actual_send_evidence: if actual_send_ts.is_some() {
+                        Some("sent".to_owned())
+                    } else if dispatch_intent_ts.is_some() {
+                        Some("ambiguous".to_owned())
+                    } else {
+                        actual_send_evidence
+                    },
+                });
         }
         tx.commit()?;
         Ok(report)

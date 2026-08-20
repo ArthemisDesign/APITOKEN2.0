@@ -174,22 +174,37 @@ impl TransportResponse {
 /// the transport's final actual-submission boundary; overflow is sticky and renders the result
 /// unknown rather than publishing a guessed count.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ActualSendObserver(Arc<AtomicU64>);
+pub struct ActualSendObserver {
+    count: Arc<AtomicU64>,
+    notify: Arc<tokio::sync::Notify>,
+    require_ack: bool,
+    acknowledged: Arc<AtomicBool>,
+    ack_notify: Arc<tokio::sync::Notify>,
+}
 
 const ACTUAL_SEND_OVERFLOW: u64 = u64::MAX;
 
 impl ActualSendObserver {
-    pub(crate) fn record(&self) {
+    pub fn acknowledged() -> Self { Self { require_ack:true, ..Self::default() } }
+    pub(crate) async fn record(&self) {
+        self.record_now();
+        if self.require_ack && !self.acknowledged.load(Ordering::Acquire) { self.ack_notify.notified().await; }
+    }
+    fn record_now(&self) {
         let _ = self
-            .0
+            .count
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 (current != ACTUAL_SEND_OVERFLOW)
                     .then(|| current.checked_add(1).unwrap_or(ACTUAL_SEND_OVERFLOW))
             });
+        self.notify.notify_waiters();
     }
 
-    pub(crate) fn count(&self) -> Option<u64> {
-        match self.0.load(Ordering::Relaxed) {
+    pub async fn observed(&self) { if self.count().unwrap_or(0)==0 { self.notify.notified().await; } }
+    pub fn acknowledge(&self) { self.acknowledged.store(true,Ordering::Release);self.ack_notify.notify_waiters(); }
+
+    pub fn count(&self) -> Option<u64> {
+        match self.count.load(Ordering::Relaxed) {
             ACTUAL_SEND_OVERFLOW => None,
             count => Some(count),
         }
@@ -290,7 +305,7 @@ impl ProfileTransport {
                     .map(calibration_dispatch_ms)
                     .transpose()?;
                 if let Some(observer) = &request.actual_send_observer {
-                    observer.record();
+                    observer.record().await;
                 }
                 let response = builder
                     .body(request.body)
@@ -965,7 +980,7 @@ async fn dispatch_frame(
                     .and_then(|request| request.actual_send_observer.clone())
                     .ok_or(TransportError::Protocol)?
             };
-            observer.record();
+            observer.record().await;
         }
         "headers" => {
             let status = value

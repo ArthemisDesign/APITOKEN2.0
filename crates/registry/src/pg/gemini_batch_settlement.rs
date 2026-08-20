@@ -336,7 +336,7 @@ impl PgStore {
                 || calibration.search_queries != usage.search_queries
                 || calibration.grounded_search_prompts != usage.grounded_search_prompts
             { bail!("Gemini Batch settlement usage/calibration mismatch") }
-        } else if usage.is_some() || calibration.is_some() || r.get::<_, i64>(2) != 0 {
+        } else if usage.is_some() || calibration.is_some() {
             bail!("Gemini Batch unmeasured settlement carries measured evidence")
         }
         let job_id: String = r.get(0);

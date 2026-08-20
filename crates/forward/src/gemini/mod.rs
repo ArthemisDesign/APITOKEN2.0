@@ -1,6 +1,9 @@
 //! Native Gemini-compatible surface backed by encrypted paid Antigravity OAuth profiles.
 
 mod api;
+pub mod batch;
+pub mod batch_authority;
+pub mod batch_crypto;
 mod billing;
 mod calibration;
 mod chat;
@@ -11,7 +14,17 @@ mod responses;
 mod skin;
 mod transport;
 
-pub use api::api as gemini_api;
+pub use api::{
+    api as gemini_api, execute_nonstream_generate, prepare_nonstream_generate_request,
+    GeminiNonstreamExecuteError, GeminiNonstreamGenerateRequest, GeminiNonstreamProtocolError, GeminiNonstreamRawResponse,
+    GeminiNonstreamTerminalClass, GeminiNonstreamTransportEvidence,
+};
+pub use batch::{GeminiBatchRuntime, GeminiBatchRuntimeConfig};
+pub use batch_authority::GeminiBatchAuthority;
+pub use batch_crypto::{
+    gemini_batch_chunk_manifest_digest, GeminiBatchBlobIdentity, GeminiBatchDataKeyring,
+    GeminiBatchFileChunkIdentity, GeminiBatchFileEncryptor,
+};
 pub use calibration::WindowCalibration;
 pub(crate) use calibration::{apply_observation_with_history, ESTIMATOR_VERSION};
 pub use chat::gemini_chat_completions;
@@ -22,11 +35,12 @@ pub use config::{
     GEMINI_NODE_FETCH_TRANSPORT_PROFILE, GEMINI_NODE_TRANSPORT_PROFILE,
 };
 pub use pool::{
-    GeminiGateway, GeminiModelStatus, GeminiOperationalStatus, GeminiProfileStatus,
-    GeminiWindowCapacityReport,
+    GeminiBatchSelection, GeminiBatchSelectionStop, GeminiGateway, GeminiLease, GeminiModelStatus,
+    GeminiOperationalStatus, GeminiProfileStatus, GeminiWindowCapacityReport,
 };
 pub use responses::gemini_responses;
 pub use skin::{gemini_messages_count_tokens, gemini_messages_skin};
+pub use transport::ActualSendObserver;
 
 /// Google Code Assist's accepted stateless marker for replayed Gemini function calls.
 ///

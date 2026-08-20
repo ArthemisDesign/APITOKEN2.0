@@ -79,3 +79,17 @@ SHA: failed candidate `8304c186702f1c950e8f4164b9d1a1d691537eaf`; corrective SHA
 Отступления от плана: нет; изменен только real-PG test harness, runtime authority неизменна.
 Измерения: host matrix ждала общий lock 5 секунд и была отменена; локальный isolated matrix GREEN.
 Следующий шаг: новый exact SHA через `agent-merge.sh`, затем production GREEN Stage 2.
+
+## 2026-08-20 — Этап 2 (§6): production GREEN authority
+SHA: `adea69de0552f39bf83caf7eecab0c7715df0776`
+Результат: trusted tests, `deploy/engine` и `deploy/watchdog` GREEN; Stage 2 PostgreSQL authority production-live, public routes/flags/discovery отсутствуют, worktree очищен.
+Отступления от плана: нет.
+Измерения: overall watchdog GREEN через 400 секунд после push.
+Следующий шаг: Этап 3 default-off encryption/execution core.
+
+## 2026-08-20 — Этап 3 (§6): encryption, execution и default-off scheduler core
+SHA: фиксируется commit этой записи
+Результат: dedicated XChaCha20-Poly1305 batch data keyring с read-old/write-active rotation, identity-bound AAD, redacted Debug и chunk/whole/manifest integrity; отдельный integer 5h headroom gate (`remaining > 15%`, stale/missing fail-closed) без изменений interactive selector; native non-stream path использует общий batch-callable primitive с characterization regression tests. Добавлены fenced claimed payload/chunk reads, model-scoped fair claim, bounded authority actor, restart reconciliation, leader/profile leases, transport-acknowledged actual-send barrier, lease renewal, pinned tariff settlement, recovery/unknown-usage policy и shutdown drain. Config default-off; public parser/routes/discovery/systemd не добавлены.
+Отступления от плана: Stage 3 предоставляет internal encrypted Files core и registry paging, но HTTP Files routes сознательно остаются Этапом 4. Mock multi-profile end-to-end gate ограничен unit/authority/transport fixtures; live spend отсутствует.
+Измерения: `cargo test -p forward batch_` 12/12 GREEN; registry batch tests 7/7 GREEN; full forward suite 1503/1505 затем два header regressions исправлены и targeted GREEN; final P0 audit — no P0.
+Следующий шаг: полный local gate, merge Stage 3 и production GREEN; затем Этап 4 public producer default-off.
