@@ -287,13 +287,14 @@ if [[ $DRY_RUN == 0 ]]; then
 fi
 
 commit_cutover
+# Publish proof before the final log: the host anomaly occurs after the log line, so this ordering
+# ensures a parent can distinguish that anomaly from a failed final verification.
+proof=${ROUTER_SUCCESS_PROOF:-/run/apitoken-router-bluegreen.success}
+printf '%s\n' "$(basename -- "$CURRENT_RELEASE")" >"$proof.tmp"
+mv -f -- "$proof.tmp" "$proof"
 if [[ $DRY_RUN == 1 ]]; then
   log 'dry-run complete; no router, Caddy, or systemd state changed'
 else
   log "router blue-green cutover complete; $TARGET_UNIT serves $(basename -- "$CURRENT_RELEASE")"
 fi
-# The controller contract is explicit: reaching this point means every final verification passed.
-proof=${ROUTER_SUCCESS_PROOF:-/run/apitoken-router-bluegreen.success}
-printf '%s\n' "$(basename -- "$CURRENT_RELEASE")" >"$proof.tmp"
-mv -f -- "$proof.tmp" "$proof"
 exit 0
