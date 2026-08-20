@@ -29,6 +29,7 @@ document, update this index.
 - [STAGE2_POSTGRES_AUTHORITY.md](engine/STAGE2_POSTGRES_AUTHORITY.md) — PostgreSQL authority model and Stage 2 fencing.
 - [UNIFIED_ROUTER.md](engine/UNIFIED_ROUTER.md) — target architecture of the single endpoint for all providers (design).
 - [LARGE_PAYLOAD_SCALING_PLAN.md](engine/LARGE_PAYLOAD_SCALING_PLAN.md) — implementation plan for raising model API payload and concurrency limits through bounded spooling, weighted admission, binary Gemini IPC, resource envelopes, verification, and staged rollout (proposal; not implemented).
+- [QUOTA_DISTRIBUTION_ANALYSIS.md](engine/QUOTA_DISTRIBUTION_ANALYSIS.md) — аналитический снапшот: распределение запросов по подписочным квотам (Claude 5h/7d, Codex weekly) и предложения по эффективности трат при сохранении cache-аффинити.
 - [ROUTING_FENCING.md](engine/ROUTING_FENCING.md) — detailed design of UNIFIED_ROUTER stage 6: routing with fallback lists and attempt fencing (execution group / single billable winner).
 - [REQUEST_OBSERVABILITY.md](engine/REQUEST_OBSERVABILITY.md) — owner-approved v1 request-lifecycle decision record, privacy boundary, exact producer/read/metrics scope, ordered rollout, and finite Definition of Done (first Codex count-token producer only; implementation incomplete).
 - [ELOG.md](../crates/elog/CLAUDE.md) — unified error logging contract (crate-level instruction: format, levels, scrubbing).
