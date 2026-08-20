@@ -63,6 +63,21 @@ fn proxy_test_config() -> Arc<ProxyConfig> {
     })
 }
 
+fn test_body_storage(label: &str) -> Arc<crate::BodyStorage> {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!(
+        "forward-body-storage-{}-{}-{label}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    Arc::new(crate::BodyStorage::new(api_limits::current::PROVIDER, root).unwrap())
+}
+
 fn proxy_test_app(billing: Arc<AsyncBilling>, path: &str) -> AppState {
     let cfg = proxy_test_config();
     AppState {
@@ -75,7 +90,7 @@ fn proxy_test_app(billing: Arc<AsyncBilling>, path: &str) -> AppState {
         pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
         affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
         clients: Arc::new(Clients::new(&cfg)),
-        body_storage: None,
+        body_storage: Some(test_body_storage("proxy-test-app")),
         codex: None,
         gemini: None,
         gemini_batch: None,
@@ -1801,7 +1816,7 @@ data: {"type":"message_stop"}
         )),
         affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
         clients: Arc::new(Clients::new(&cfg)),
-        body_storage: None,
+        body_storage: Some(test_body_storage("universal-facts-pg")),
         codex: None,
         gemini: None,
         gemini_batch: None,
@@ -2139,7 +2154,7 @@ fn native_billable_messages_admission_delivery_and_terminal_share_postgres_money
         )),
         affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
         clients: Arc::new(Clients::new(&cfg)),
-        body_storage: None,
+        body_storage: Some(test_body_storage("native-billable-pg")),
         codex: None,
         gemini: None,
         gemini_batch: None,
