@@ -1210,6 +1210,61 @@ fn unsupported_openai_endpoint_error() -> serde_json::Value {
     })
 }
 
+fn write_gemini_batch_metrics(
+    body: &mut String,
+    snapshot: Option<&forward::gemini::GeminiBatchOperationalSnapshot>,
+) {
+    use std::fmt::Write as _;
+    let empty = forward::gemini::GeminiBatchOperationalSnapshot::default();
+    let snapshot = snapshot.unwrap_or(&empty);
+    let enabled = u8::from(snapshot.authority_available || snapshot.headroom_stops > 0 || snapshot.active_items > 0 || snapshot.queued_items > 0);
+    let _ = writeln!(
+        body,
+        "# HELP claude_api_gemini_batch_enabled Whether the default-off Gemini Batch runtime is composed.\n\
+         # TYPE claude_api_gemini_batch_enabled gauge\n\
+         claude_api_gemini_batch_enabled {enabled}\n\
+         # TYPE claude_api_gemini_batch_authority_available gauge\n\
+         claude_api_gemini_batch_authority_available {}\n\
+         # TYPE claude_api_gemini_batch_queue_depth gauge\n\
+         claude_api_gemini_batch_queue_depth {}\n\
+         # TYPE claude_api_gemini_batch_oldest_queued_age_seconds gauge\n\
+         claude_api_gemini_batch_oldest_queued_age_seconds {}\n\
+         # TYPE claude_api_gemini_batch_active_items gauge\n\
+         claude_api_gemini_batch_active_items {}\n\
+         # TYPE claude_api_gemini_batch_completed_items gauge\n\
+         claude_api_gemini_batch_completed_items {}\n\
+         # TYPE claude_api_gemini_batch_error_items gauge\n\
+         claude_api_gemini_batch_error_items {}\n\
+         # TYPE claude_api_gemini_batch_indeterminate_items gauge\n\
+         claude_api_gemini_batch_indeterminate_items {}\n\
+         # TYPE claude_api_gemini_batch_headroom_stops_total counter\n\
+         claude_api_gemini_batch_headroom_stops_total {}\n\
+         # TYPE claude_api_gemini_batch_settlement_backlog gauge\n\
+         claude_api_gemini_batch_settlement_backlog {}\n\
+         # TYPE claude_api_gemini_batch_settlement_oldest_age_seconds gauge\n\
+         claude_api_gemini_batch_settlement_oldest_age_seconds {}\n\
+         # TYPE claude_api_gemini_batch_settlement_retries gauge\n\
+         claude_api_gemini_batch_settlement_retries {}\n\
+         # TYPE claude_api_gemini_batch_file_bytes gauge\n\
+         claude_api_gemini_batch_file_bytes {}\n\
+         # TYPE claude_api_gemini_batch_file_chunks gauge\n\
+         claude_api_gemini_batch_file_chunks {}",
+        u8::from(snapshot.authority_available),
+        snapshot.queued_items,
+        snapshot.oldest_queued_age_seconds,
+        snapshot.active_items,
+        snapshot.completed_items,
+        snapshot.error_items,
+        snapshot.indeterminate_items,
+        snapshot.headroom_stops,
+        snapshot.settlement_pending,
+        snapshot.settlement_oldest_age_seconds,
+        snapshot.settlement_retries,
+        snapshot.file_bytes,
+        snapshot.file_chunks,
+    );
+}
+
 /// Prometheus-метрики (admin-авторизация). Ключевое: `route_pin/place` = доля cache-hit,
 /// `inflight` (растёт при простое → утечка слота), 429/auth/5xx, состояние circuit breaker.
 async fn metrics(
@@ -1410,6 +1465,11 @@ async fn metrics(
             m.execution_not_started_count(plane),
         );
     }
+    let gemini_batch = match &app.gemini_batch_runtime {
+        Some(runtime) => Some(runtime.operational_snapshot().await),
+        None => None,
+    };
+    write_gemini_batch_metrics(&mut body, gemini_batch.as_ref());
     let _ = writeln!(
         body,
         "# TYPE claude_api_gemini_usage_metadata_missing_total counter\n\
@@ -5938,6 +5998,10 @@ async fn gemini_subs(
         gemini_calibration_persistence_ok(&status, calibration_delivery);
     let capacity_available = calibration_report.is_some() && calibration_persistence_ok;
     let affinity = app.affinity.stats();
+    let batch = match &app.gemini_batch_runtime {
+        Some(runtime) => Some(runtime.operational_snapshot().await),
+        None => None,
+    };
     let profiles = gemini_profile_values(&status, capacity_available, now);
     let models = status
         .models
@@ -5994,6 +6058,26 @@ async fn gemini_subs(
             rows.iter().map(gemini_calibration_event_value).collect::<Vec<_>>()
         }),
         "window_totals": window_totals,
+        "batch": batch.as_ref().map_or_else(
+            || json!({"enabled": false}),
+            |batch| json!({
+                "enabled": true,
+                "public_enabled": app.gemini_batch.is_some(),
+                "authority_available": batch.authority_available,
+                "queue_depth": batch.queued_items,
+                "oldest_queued_age_seconds": batch.oldest_queued_age_seconds,
+                "active_items": batch.active_items,
+                "completed_items": batch.completed_items,
+                "error_items": batch.error_items,
+                "indeterminate_items": batch.indeterminate_items,
+                "headroom_stops": batch.headroom_stops,
+                "settlement_backlog": batch.settlement_pending,
+                "settlement_oldest_age_seconds": batch.settlement_oldest_age_seconds,
+                "settlement_retries": batch.settlement_retries,
+                "file_bytes": batch.file_bytes.to_string(),
+                "file_chunks": batch.file_chunks,
+            }),
+        ),
         "conversion_models": gemini_conversion_models(&gemini.config().models, now),
         "models": models,
         "profiles": profiles,

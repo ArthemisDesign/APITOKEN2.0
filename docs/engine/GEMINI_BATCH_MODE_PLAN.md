@@ -710,8 +710,10 @@ Batch — lower-priority workload:
 Лимиты целимся в Google-масштаб, а не в локальный MVP-envelope: inline create body ограничен
 общим 20 MiB лимитом тела Gemini plane (у Google — 20 MB, §2.5); файловый ввод — до 2 GB на файл
 и 20 GB суммарно на аккаунт (как у Google Files API); публично документированного максимума числа
-items на batch у Google нет **[не подтверждено]**, поэтому наш предел — config-driven, цель «не
-ниже практических Google-объемов», и его финальное значение фиксируется измерением. File-based
+items на batch у Google нет **[не подтверждено]**. Этап 5 зафиксировал безопасный предел
+**100 000 items на batch**: generated 100k JSONL проходит bounded streaming/memory gate; 250k/500k
+остаются вне первой версии до отдельного PostgreSQL/WAL capacity expansion. Предел config-driven,
+default 100k, превышение атомарно возвращает `RESOURCE_EXHAUSTED`. File-based
 result set не ограничен 64 MiB, потому что результат отдается файлом, а не одним JSON;
 ограничение 64 MiB остается только для inline-формы. Per-account ограничения: до 100 nonterminal
 jobs и 20 GB файлов — единственные флот-защитные лимиты сверх Google. Все bounds — config-driven,

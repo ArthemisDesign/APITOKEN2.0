@@ -137,6 +137,9 @@ pub struct AppState {
     /// Optional native Gemini surface backed by encrypted paid Code Assist OAuth profiles.
     pub gemini: Option<Arc<GeminiGateway>>,
     pub gemini_batch: Option<Arc<crate::gemini::GeminiBatchPublicFacade>>,
+    /// Optional scheduler runtime behind the public facade. Server-owned observability reads its
+    /// fleet aggregate only; customer/job/profile identities never enter metrics or admin JSON.
+    pub gemini_batch_runtime: Option<Arc<crate::gemini::GeminiBatchRuntime>>,
     /// Optional backend-only KIMI subscription pool. Anthropic-serving modes embed it to dispatch
     /// exact KIMI aliases inside the Messages plane; the dedicated `Kimi` mode serves only those
     /// aliases. It intentionally has no public hostname or catalogue.

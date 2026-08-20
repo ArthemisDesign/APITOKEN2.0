@@ -790,6 +790,22 @@ envelope or restart the Gemini slot merely to reload it. If authentication and q
 healthy but exact-profile generation alone fails, use the transactional proxy replacement and
 rollback procedure in `docs/engine/GEMINI_PROVIDER.md` before replacing the subscription.
 
+## GeminiBatchQueueStale
+
+Disable new Batch admission only; do not change interactive Gemini readiness. Check leader/profile availability, fresh `gemini-5h` summaries, queue age and account/key policy. Never edit authority rows manually; repair the cause and let fenced reconciliation drain.
+
+## GeminiBatchSettlementBacklog
+
+Preserve jobs, holds and outbox rows. Check PostgreSQL, batch keyring and settlement worker health. Never replay post-send items or delete the outbox; exact replay applies money/result once after recovery.
+
+## GeminiBatchIndeterminateItems
+
+Do not replay an item that may have crossed actual-send. Verify unknown-usage policy and ledger conservation, then retain the encrypted error/evidence for incident review.
+
+## GeminiBatchHeadroomStopped
+
+This is the intentional five-hour reserve floor. Interactive Gemini remains protected. Verify snapshot freshness and wait for provider reset; do not lower the floor without owner approval.
+
 ## GeminiUpstreamRateLimited
 
 Start with `gemini-rate-limit` journal lines and group generation attempts by `request_id`:

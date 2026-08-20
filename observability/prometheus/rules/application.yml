@@ -481,6 +481,50 @@ groups:
           description: 'More than ten project-scoped RESOURCE_EXHAUSTED responses were observed in ten minutes.'
           runbook: 'docs/ops/MONITORING.md#geminiupstreamratelimited'
 
+      - alert: GeminiBatchQueueStale
+        expr: claude_api_gemini_batch_enabled{provider="gemini"} == 1 and claude_api_gemini_batch_queue_depth{provider="gemini"} > 0 and claude_api_gemini_batch_oldest_queued_age_seconds{provider="gemini"} > 900
+        for: 10m
+        labels:
+          severity: warning
+          component: gemini-batch
+        annotations:
+          summary: 'Gemini Batch queue is not draining'
+          description: 'The oldest queued item has remained queued for more than fifteen minutes.'
+          runbook: 'docs/ops/MONITORING.md#geminibatchqueuestale'
+
+      - alert: GeminiBatchSettlementBacklog
+        expr: claude_api_gemini_batch_enabled{provider="gemini"} == 1 and claude_api_gemini_batch_settlement_backlog{provider="gemini"} > 0 and claude_api_gemini_batch_settlement_oldest_age_seconds{provider="gemini"} > 300
+        for: 5m
+        labels:
+          severity: critical
+          component: gemini-batch
+        annotations:
+          summary: 'Gemini Batch settlement is blocked'
+          description: 'A batch result and its money settlement have remained pending for more than five minutes.'
+          runbook: 'docs/ops/MONITORING.md#geminibatchsettlementbacklog'
+
+      - alert: GeminiBatchIndeterminateItems
+        expr: claude_api_gemini_batch_enabled{provider="gemini"} == 1 and claude_api_gemini_batch_indeterminate_items{provider="gemini"} > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: gemini-batch
+        annotations:
+          summary: 'Gemini Batch has indeterminate execution outcomes'
+          description: 'At least one retained item crossed the actual-send boundary without authoritative terminal usage.'
+          runbook: 'docs/ops/MONITORING.md#geminibatchindeterminateitems'
+
+      - alert: GeminiBatchHeadroomStopped
+        expr: claude_api_gemini_batch_enabled{provider="gemini"} == 1 and claude_api_gemini_batch_queue_depth{provider="gemini"} > 0 and increase(claude_api_gemini_batch_headroom_stops_total{provider="gemini"}[30m]) > 0
+        for: 30m
+        labels:
+          severity: warning
+          component: gemini-batch
+        annotations:
+          summary: 'Gemini Batch is persistently stopped by the 5h reserve floor'
+          description: 'Queued batch work cannot dispatch without crossing the configured 5-hour headroom policy; interactive Gemini remains protected.'
+          runbook: 'docs/ops/MONITORING.md#geminibatchheadroomstopped'
+
   # The backend-only KIMI (Kimi Code) plane is optional and fail-closed. Every rule below is
   # gated on claude_api_kimi_enabled so a deployment with the provider switched off stays silent.
   # KIMI series are scraped on the anthropic target and deliberately carry no provider label;

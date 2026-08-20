@@ -9,11 +9,22 @@ use super::{
 };
 use anyhow::{bail, Context, Result};
 use registry::{
-    GeminiBatchClaimedItem, GeminiBatchItemState, GeminiBatchSettlementDisposition,
-    GeminiBatchSettlementIntent, GeminiBatchTerminalClass, GeminiBatchUsage,
+    GeminiBatchClaimedItem, GeminiBatchItemState, GeminiBatchOperationalReport,
+    GeminiBatchSettlementDisposition, GeminiBatchSettlementIntent, GeminiBatchTerminalClass,
+    GeminiBatchUsage,
 };
-use std::{collections::HashSet, sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc}, time::Duration};
-use tokio::{sync::{Notify, Semaphore}, time::Instant};
+use std::{
+    collections::HashSet,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+use tokio::{
+    sync::{Notify, Semaphore},
+    time::Instant,
+};
 
 #[derive(Clone, Debug)]
 pub struct GeminiBatchRuntimeConfig {
@@ -24,7 +35,57 @@ pub struct GeminiBatchRuntimeConfig {
     pub idle_backoff: Duration,
     pub retry_backoff: Duration,
 }
-impl Default for GeminiBatchRuntimeConfig { fn default()->Self{Self{enabled:false,global_concurrency:4,leader_ttl_secs:30,claim_lease_secs:120,idle_backoff:Duration::from_secs(1),retry_backoff:Duration::from_secs(5)}} }
+
+impl Default for GeminiBatchRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            global_concurrency: 4,
+            leader_ttl_secs: 30,
+            claim_lease_secs: 120,
+            idle_backoff: Duration::from_secs(1),
+            retry_backoff: Duration::from_secs(5),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GeminiBatchOperationalSnapshot {
+    pub authority_available: bool,
+    pub queued_items: u64,
+    pub oldest_queued_age_seconds: u64,
+    pub active_items: u64,
+    pub completed_items: u64,
+    pub error_items: u64,
+    pub indeterminate_items: u64,
+    pub headroom_stops: u64,
+    pub settlement_pending: u64,
+    pub settlement_oldest_age_seconds: u64,
+    pub settlement_retries: u64,
+    pub file_bytes: u64,
+    pub file_chunks: u64,
+}
+
+impl GeminiBatchOperationalSnapshot {
+    fn from_report(report: GeminiBatchOperationalReport, headroom_stops: u64) -> Self {
+        let nonnegative = |value: i64| u64::try_from(value.max(0)).unwrap_or(u64::MAX);
+        Self {
+            authority_available: true,
+            queued_items: nonnegative(report.queued_items),
+            oldest_queued_age_seconds: nonnegative(report.oldest_queued_age_seconds),
+            active_items: nonnegative(report.active_items),
+            completed_items: nonnegative(report.completed_items),
+            error_items: nonnegative(report.error_items),
+            indeterminate_items: nonnegative(report.indeterminate_items),
+            headroom_stops,
+            settlement_pending: nonnegative(report.settlement_pending),
+            settlement_oldest_age_seconds: nonnegative(report.settlement_oldest_age_seconds),
+            settlement_retries: nonnegative(report.settlement_retries),
+            file_bytes: nonnegative(report.file_bytes),
+            file_chunks: nonnegative(report.file_chunks),
+        }
+    }
+}
 
 pub struct GeminiBatchRuntime {
     config: GeminiBatchRuntimeConfig,
@@ -33,20 +94,429 @@ pub struct GeminiBatchRuntime {
     keys: Arc<GeminiBatchDataKeyring>,
     accepting: AtomicBool,
     active: AtomicUsize,
+    headroom_stops: AtomicU64,
     notify: Notify,
     permits: Arc<Semaphore>,
 }
-impl std::fmt::Debug for GeminiBatchRuntime { fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{f.debug_struct("GeminiBatchRuntime").field("enabled",&self.config.enabled).field("active",&self.active.load(Ordering::Acquire)).field("secrets",&"REDACTED").finish()} }
+
+impl std::fmt::Debug for GeminiBatchRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeminiBatchRuntime")
+            .field("enabled", &self.config.enabled)
+            .field("active", &self.active.load(Ordering::Acquire))
+            .field("secrets", &"REDACTED")
+            .finish()
+    }
+}
 
 impl GeminiBatchRuntime {
-    pub fn new(config:GeminiBatchRuntimeConfig,authority:GeminiBatchAuthority,gateway:Arc<GeminiGateway>,keys:Arc<GeminiBatchDataKeyring>)->Result<Arc<Self>>{
-        if !config.enabled { bail!("Gemini Batch runtime is disabled") }
-        if config.global_concurrency==0||config.leader_ttl_secs<=0||config.claim_lease_secs<=0{bail!("invalid Gemini Batch runtime bounds")}
-        let permits=Arc::new(Semaphore::new(config.global_concurrency));
-        Ok(Arc::new(Self{config,authority,gateway,keys,accepting:AtomicBool::new(true),active:AtomicUsize::new(0),notify:Notify::new(),permits}))
+    pub fn new(
+        config: GeminiBatchRuntimeConfig,
+        authority: GeminiBatchAuthority,
+        gateway: Arc<GeminiGateway>,
+        keys: Arc<GeminiBatchDataKeyring>,
+    ) -> Result<Arc<Self>> {
+        if !config.enabled {
+            bail!("Gemini Batch runtime is disabled")
+        }
+        if config.global_concurrency == 0
+            || config.leader_ttl_secs <= 0
+            || config.claim_lease_secs <= 0
+        {
+            bail!("invalid Gemini Batch runtime bounds")
+        }
+        let permits = Arc::new(Semaphore::new(config.global_concurrency));
+        Ok(Arc::new(Self {
+            config,
+            authority,
+            gateway,
+            keys,
+            accepting: AtomicBool::new(true),
+            active: AtomicUsize::new(0),
+            headroom_stops: AtomicU64::new(0),
+            notify: Notify::new(),
+            permits,
+        }))
     }
-    pub fn spawn(self:&Arc<Self>)->tokio::task::JoinHandle<()> { let this=Arc::clone(self);tokio::spawn(async move{this.run().await}) }
-    async fn run(self:Arc<Self>){while self.accepting.load(Ordering::Acquire){if !self.authority.acquire_leader(self.config.leader_ttl_secs).await.unwrap_or(false){tokio::time::sleep(self.config.idle_backoff).await;continue}let _=self.authority.drain_settlements(64).await;if let Ok(report)=self.authority.reconcile(64).await{for recovery in report.recovery_candidates{let completed=pool::now();let identity=GeminiBatchBlobIdentity{account_id:&recovery.account_id,job_id:&recovery.job_id,item_index:recovery.item_index,kind:"error",schema_version:1};if let Ok(blob)=self.keys.encrypt_blob(&identity,b"{\"error\":{\"code\":500,\"message\":\"execution outcome indeterminate\"}}",completed+42*24*3600){let intent=GeminiBatchSettlementIntent{job_id:recovery.job_id.clone(),item_index:recovery.item_index,request_id:recovery.request_id.clone(),claim_generation:recovery.claim_generation,disposition:recovery.disposition,actual_nano:0,charge_basis_nano:0,real_nano:0,usage:None,result_blob:blob,terminal_state:recovery.terminal_state,terminal_class:recovery.terminal_class,calibration:None,completed_ts:completed};let request_id=recovery.request_id.clone();if self.authority.enqueue_recovery_settlement(recovery,intent).await.is_ok(){let _=self.authority.process_settlement(request_id).await;}}}}let mut started=false;for model_id in self.gateway.config().models.iter().filter(|m|!m.is_image_generation()).map(|m|m.id.clone()).cycle().take(self.config.global_concurrency){if !self.accepting.load(Ordering::Acquire){break}let selection=self.gateway.select_batch(&model_id,&HashSet::new());let Some(lease)=selection.lease else{continue};let profile=lease.profile_id().to_owned();drop(lease);let Ok(Some(item))=self.authority.claim(profile,model_id,self.config.claim_lease_secs).await else{continue};let permit=match Arc::clone(&self.permits).try_acquire_owned(){Ok(v)=>v,Err(_)=>break};started=true;let this=Arc::clone(&self);tokio::spawn(async move{this.active.fetch_add(1,Ordering::AcqRel);let _permit=permit;if let Err(error)=this.execute_item(item).await{elog::warn("gemini-batch",format!("batch worker failed before terminal apply: {error:#}"));}if this.active.fetch_sub(1,Ordering::AcqRel)==1{this.notify.notify_waiters();}});}if !started{tokio::time::sleep(self.config.idle_backoff).await}}}
-    async fn execute_item(&self,item:GeminiBatchClaimedItem)->Result<()>{let identity=GeminiBatchBlobIdentity{account_id:&item.claim.account_id,job_id:&item.claim.job_id,item_index:item.claim.item_index,kind:"request",schema_version:1};let plain=self.keys.decrypt_blob(&identity,&item.request_blob)?;let value:serde_json::Value=serde_json::from_slice(&plain).context("decode encrypted batch request")?;let Some(lease)=self.gateway.select_batch_profile(&item.public_model,&item.claim.profile_id) else{self.authority.requeue(item.claim,pool::now()+self.config.retry_backoff.as_secs() as i64).await?;return Ok(())};if !self.authority.mark_dispatching(item.claim.clone(),self.config.claim_lease_secs).await?{return Ok(())}let send_observer=ActualSendObserver::acknowledged();let renewing=Arc::new(AtomicBool::new(true));let renewal={let authority=self.authority.clone();let claim=item.claim.clone();let renewing=Arc::clone(&renewing);let lease=self.config.claim_lease_secs;tokio::spawn(async move{while renewing.load(Ordering::Acquire){tokio::time::sleep(Duration::from_secs((lease/3).max(1)as u64)).await;if renewing.load(Ordering::Acquire){let _=authority.renew(claim.clone(),lease).await;}}})};let model=self.gateway.config().model(&item.public_model).context("batch model unavailable")?.clone();let request=prepare_nonstream_generate_request(&model,item.public_model.clone(),value,None,item.claim.request_id.clone(),item.claim.request_id.clone());let execution_future=super::api::execute_nonstream_generate_observed(&self.gateway,&lease,&model,&request,Some(send_observer.clone()));tokio::pin!(execution_future);let execution=tokio::select!{result=&mut execution_future=>result,_=send_observer.observed()=>{if !self.authority.mark_actual_send(item.claim.clone(),self.config.claim_lease_secs).await?{return Ok(())}send_observer.acknowledge();execution_future.await}};renewing.store(false,Ordering::Release);renewal.abort();match execution{Ok(raw) if raw.status.is_success()&&raw.usage.is_some()=>{let usage=raw.usage.unwrap();let completed=pool::now();let result_identity=GeminiBatchBlobIdentity{kind:"result",..identity};let result=self.keys.encrypt_blob(&result_identity,&raw.body,completed+42*24*3600)?;let prices = crate::pricing::tariff_book::snapshot().version_payload(&item.tariff_family,item.tariff_version).as_ref().and_then(crate::pricing::tariff_book::as_gemini).or_else(|| (item.tariff_version==1).then(||metering::gemini_prices_at(&model.id,item.priced_ts).unwrap_or(model.prices))).context("pinned Gemini Batch tariff unavailable")?;let (actual,event)=super::billing::settled_charge_with_prices(&model,&usage,item.hold_nano,item.payable_multiplier_bp,item.priced_ts,prices);let calibration=super::billing::gemini_calibration_event_with_prices(&item.claim.request_id,&item.claim.profile_id,&model,&usage,item.priced_ts,completed,prices,Some(item.tariff_schedule_id.clone())).context("batch calibration event missing")?;let intent=GeminiBatchSettlementIntent{job_id:item.claim.job_id.clone(),item_index:item.claim.item_index,request_id:item.claim.request_id.clone(),claim_generation:item.claim.claim_generation,disposition:GeminiBatchSettlementDisposition::Settle,actual_nano:actual,charge_basis_nano:event.as_ref().map_or(0,|v|v.charge_basis_nano),real_nano:event.as_ref().map_or(0,|v|v.real_nano),usage:Some(GeminiBatchUsage{input_tokens:usage.input_tokens as i64,tool_prompt_tokens:usage.tool_prompt_tokens as i64,audio_input_tokens:usage.audio_input_tokens as i64,cached_input_tokens:usage.cached_input_tokens as i64,cached_audio_input_tokens:usage.cached_audio_input_tokens as i64,output_tokens:usage.output_tokens as i64,thinking_output_tokens:usage.thinking_output_tokens as i64,image_output_tokens:usage.image_output_tokens as i64,search_queries:usage.search_queries as i64,grounded_search_prompts:usage.grounded_search_prompts as i64}),result_blob:result,terminal_state:GeminiBatchItemState::Succeeded,terminal_class:GeminiBatchTerminalClass::Success,calibration:Some(calibration),completed_ts:completed};self.authority.enqueue_live_settlement(item.claim.clone(),intent).await?;let _=self.authority.process_settlement(item.claim.request_id).await?;}Ok(raw)=>{let completed=pool::now();let error_identity=GeminiBatchBlobIdentity{kind:"error",..identity};let blob=self.keys.encrypt_blob(&error_identity,&raw.body,completed+42*24*3600)?;let intent=GeminiBatchSettlementIntent{job_id:item.claim.job_id.clone(),item_index:item.claim.item_index,request_id:item.claim.request_id.clone(),claim_generation:item.claim.claim_generation,disposition:GeminiBatchSettlementDisposition::Indeterminate,actual_nano:crate::settlement_policy::unknown_usage_charge(item.hold_nano),charge_basis_nano:0,real_nano:0,usage:None,result_blob:blob,terminal_state:GeminiBatchItemState::Indeterminate,terminal_class:GeminiBatchTerminalClass::Indeterminate,calibration:None,completed_ts:completed};self.authority.enqueue_live_settlement(item.claim.clone(),intent).await?;let _=self.authority.process_settlement(item.claim.request_id).await?;}Err(_)=>{let completed=pool::now();let error_identity=GeminiBatchBlobIdentity{kind:"error",..identity};let blob=self.keys.encrypt_blob(&error_identity,b"{\"error\":{\"code\":500,\"message\":\"execution outcome indeterminate\"}}",completed+42*24*3600)?;let intent=GeminiBatchSettlementIntent{job_id:item.claim.job_id.clone(),item_index:item.claim.item_index,request_id:item.claim.request_id.clone(),claim_generation:item.claim.claim_generation,disposition:GeminiBatchSettlementDisposition::Indeterminate,actual_nano:crate::settlement_policy::unknown_usage_charge(item.hold_nano),charge_basis_nano:0,real_nano:0,usage:None,result_blob:blob,terminal_state:GeminiBatchItemState::Indeterminate,terminal_class:GeminiBatchTerminalClass::Indeterminate,calibration:None,completed_ts:completed};self.authority.enqueue_live_settlement(item.claim.clone(),intent).await?;let _=self.authority.process_settlement(item.claim.request_id).await?;}}Ok(())}
-    pub async fn shutdown(&self,deadline:Instant)->Result<()>{self.accepting.store(false,Ordering::Release);while self.active.load(Ordering::Acquire)>0&&Instant::now()<deadline{let remain=deadline.saturating_duration_since(Instant::now());let _=tokio::time::timeout(remain,self.notify.notified()).await;}let _=self.authority.drain_settlements(1024).await?;self.authority.shutdown().await}
+
+    pub fn spawn(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let this = Arc::clone(self);
+        tokio::spawn(async move { this.run().await })
+    }
+
+    pub async fn operational_snapshot(&self) -> GeminiBatchOperationalSnapshot {
+        let headroom_stops = self.headroom_stops.load(Ordering::Relaxed);
+        self.authority
+            .operational_report()
+            .await
+            .map(|report| GeminiBatchOperationalSnapshot::from_report(report, headroom_stops))
+            .unwrap_or(GeminiBatchOperationalSnapshot {
+                headroom_stops,
+                ..GeminiBatchOperationalSnapshot::default()
+            })
+    }
+
+    async fn run(self: Arc<Self>) {
+        while self.accepting.load(Ordering::Acquire) {
+            if !self
+                .authority
+                .acquire_leader(self.config.leader_ttl_secs)
+                .await
+                .unwrap_or(false)
+            {
+                tokio::time::sleep(self.config.idle_backoff).await;
+                continue;
+            }
+            let _ = self.authority.drain_settlements(64).await;
+            if let Ok(report) = self.authority.reconcile(64).await {
+                for recovery in report.recovery_candidates {
+                    let completed = pool::now();
+                    let identity = GeminiBatchBlobIdentity {
+                        account_id: &recovery.account_id,
+                        job_id: &recovery.job_id,
+                        item_index: recovery.item_index,
+                        kind: "error",
+                        schema_version: 1,
+                    };
+                    if let Ok(blob) = self.keys.encrypt_blob(
+                        &identity,
+                        b"{\"error\":{\"code\":500,\"message\":\"execution outcome indeterminate\"}}",
+                        completed + 42 * 24 * 3600,
+                    ) {
+                        let intent = GeminiBatchSettlementIntent {
+                            job_id: recovery.job_id.clone(),
+                            item_index: recovery.item_index,
+                            request_id: recovery.request_id.clone(),
+                            claim_generation: recovery.claim_generation,
+                            disposition: recovery.disposition,
+                            actual_nano: 0,
+                            charge_basis_nano: 0,
+                            real_nano: 0,
+                            usage: None,
+                            result_blob: blob,
+                            terminal_state: recovery.terminal_state,
+                            terminal_class: recovery.terminal_class,
+                            calibration: None,
+                            completed_ts: completed,
+                        };
+                        let request_id = recovery.request_id.clone();
+                        if self
+                            .authority
+                            .enqueue_recovery_settlement(recovery, intent)
+                            .await
+                            .is_ok()
+                        {
+                            let _ = self.authority.process_settlement(request_id).await;
+                        }
+                    }
+                }
+            }
+            let mut started = false;
+            for model_id in self
+                .gateway
+                .config()
+                .models
+                .iter()
+                .filter(|model| !model.is_image_generation())
+                .map(|model| model.id.clone())
+                .cycle()
+                .take(self.config.global_concurrency)
+            {
+                if !self.accepting.load(Ordering::Acquire) {
+                    break;
+                }
+                let selection = self.gateway.select_batch(&model_id, &HashSet::new());
+                let Some(lease) = selection.lease else {
+                    if selection.reason() == Some("batch_5h_headroom_stop") {
+                        self.headroom_stops.fetch_add(1, Ordering::Relaxed);
+                    }
+                    continue;
+                };
+                let profile = lease.profile_id().to_owned();
+                drop(lease);
+                let Ok(Some(item)) = self
+                    .authority
+                    .claim(profile, model_id, self.config.claim_lease_secs)
+                    .await
+                else {
+                    continue;
+                };
+                let permit = match Arc::clone(&self.permits).try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => break,
+                };
+                started = true;
+                let this = Arc::clone(&self);
+                tokio::spawn(async move {
+                    this.active.fetch_add(1, Ordering::AcqRel);
+                    let _permit = permit;
+                    if let Err(error) = this.execute_item(item).await {
+                        elog::warn(
+                            "gemini-batch",
+                            format!("batch worker failed before terminal apply: {error:#}"),
+                        );
+                    }
+                    if this.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+                        this.notify.notify_waiters();
+                    }
+                });
+            }
+            if !started {
+                tokio::time::sleep(self.config.idle_backoff).await
+            }
+        }
+    }
+
+    async fn execute_item(&self, item: GeminiBatchClaimedItem) -> Result<()> {
+        let identity = GeminiBatchBlobIdentity {
+            account_id: &item.claim.account_id,
+            job_id: &item.claim.job_id,
+            item_index: item.claim.item_index,
+            kind: "request",
+            schema_version: 1,
+        };
+        let plain = self.keys.decrypt_blob(&identity, &item.request_blob)?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&plain).context("decode encrypted batch request")?;
+        let Some(lease) = self
+            .gateway
+            .select_batch_profile(&item.public_model, &item.claim.profile_id)
+        else {
+            self.authority
+                .requeue(
+                    item.claim,
+                    pool::now() + self.config.retry_backoff.as_secs() as i64,
+                )
+                .await?;
+            return Ok(());
+        };
+        if !self
+            .authority
+            .mark_dispatching(item.claim.clone(), self.config.claim_lease_secs)
+            .await?
+        {
+            return Ok(());
+        }
+        let send_observer = ActualSendObserver::acknowledged();
+        let renewing = Arc::new(AtomicBool::new(true));
+        let renewal = {
+            let authority = self.authority.clone();
+            let claim = item.claim.clone();
+            let renewing = Arc::clone(&renewing);
+            let lease = self.config.claim_lease_secs;
+            tokio::spawn(async move {
+                while renewing.load(Ordering::Acquire) {
+                    tokio::time::sleep(Duration::from_secs((lease / 3).max(1) as u64)).await;
+                    if renewing.load(Ordering::Acquire) {
+                        let _ = authority.renew(claim.clone(), lease).await;
+                    }
+                }
+            })
+        };
+        let model = self
+            .gateway
+            .config()
+            .model(&item.public_model)
+            .context("batch model unavailable")?
+            .clone();
+        let request = prepare_nonstream_generate_request(
+            &model,
+            item.public_model.clone(),
+            value,
+            None,
+            item.claim.request_id.clone(),
+            item.claim.request_id.clone(),
+        );
+        let execution_future = super::api::execute_nonstream_generate_observed(
+            &self.gateway,
+            &lease,
+            &model,
+            &request,
+            Some(send_observer.clone()),
+        );
+        tokio::pin!(execution_future);
+        let execution = tokio::select! {
+            result = &mut execution_future => result,
+            _ = send_observer.observed() => {
+                if !self.authority.mark_actual_send(item.claim.clone(), self.config.claim_lease_secs).await? {
+                    return Ok(())
+                }
+                send_observer.acknowledge();
+                execution_future.await
+            }
+        };
+        renewing.store(false, Ordering::Release);
+        renewal.abort();
+        match execution {
+            Ok(raw) if raw.status.is_success() && raw.usage.is_some() => {
+                let usage = raw.usage.unwrap();
+                let completed = pool::now();
+                let result_identity = GeminiBatchBlobIdentity {
+                    kind: "result",
+                    ..identity
+                };
+                let result = self.keys.encrypt_blob(
+                    &result_identity,
+                    &raw.body,
+                    completed + 42 * 24 * 3600,
+                )?;
+                let prices = crate::pricing::tariff_book::snapshot()
+                    .version_payload(&item.tariff_family, item.tariff_version)
+                    .as_ref()
+                    .and_then(crate::pricing::tariff_book::as_gemini)
+                    .or_else(|| {
+                        (item.tariff_version == 1).then(|| {
+                            metering::gemini_prices_at(&model.id, item.priced_ts)
+                                .unwrap_or(model.prices)
+                        })
+                    })
+                    .context("pinned Gemini Batch tariff unavailable")?;
+                let (actual, event) = super::billing::settled_charge_with_prices(
+                    &model,
+                    &usage,
+                    item.hold_nano,
+                    item.payable_multiplier_bp,
+                    item.priced_ts,
+                    prices,
+                );
+                let calibration = super::billing::gemini_calibration_event_with_prices(
+                    &item.claim.request_id,
+                    &item.claim.profile_id,
+                    &model,
+                    &usage,
+                    item.priced_ts,
+                    completed,
+                    prices,
+                    Some(item.tariff_schedule_id.clone()),
+                )
+                .context("batch calibration event missing")?;
+                let intent = GeminiBatchSettlementIntent {
+                    job_id: item.claim.job_id.clone(),
+                    item_index: item.claim.item_index,
+                    request_id: item.claim.request_id.clone(),
+                    claim_generation: item.claim.claim_generation,
+                    disposition: GeminiBatchSettlementDisposition::Settle,
+                    actual_nano: actual,
+                    charge_basis_nano: event.as_ref().map_or(0, |event| event.charge_basis_nano),
+                    real_nano: event.as_ref().map_or(0, |event| event.real_nano),
+                    usage: Some(GeminiBatchUsage {
+                        input_tokens: usage.input_tokens as i64,
+                        tool_prompt_tokens: usage.tool_prompt_tokens as i64,
+                        audio_input_tokens: usage.audio_input_tokens as i64,
+                        cached_input_tokens: usage.cached_input_tokens as i64,
+                        cached_audio_input_tokens: usage.cached_audio_input_tokens as i64,
+                        output_tokens: usage.output_tokens as i64,
+                        thinking_output_tokens: usage.thinking_output_tokens as i64,
+                        image_output_tokens: usage.image_output_tokens as i64,
+                        search_queries: usage.search_queries as i64,
+                        grounded_search_prompts: usage.grounded_search_prompts as i64,
+                    }),
+                    result_blob: result,
+                    terminal_state: GeminiBatchItemState::Succeeded,
+                    terminal_class: GeminiBatchTerminalClass::Success,
+                    calibration: Some(calibration),
+                    completed_ts: completed,
+                };
+                self.authority
+                    .enqueue_live_settlement(item.claim.clone(), intent)
+                    .await?;
+                let _ = self
+                    .authority
+                    .process_settlement(item.claim.request_id)
+                    .await?;
+            }
+            Ok(raw) => {
+                self.settle_indeterminate(&item, identity, &raw.body).await?;
+            }
+            Err(_) => {
+                self.settle_indeterminate(
+                    &item,
+                    identity,
+                    b"{\"error\":{\"code\":500,\"message\":\"execution outcome indeterminate\"}}",
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn settle_indeterminate(
+        &self,
+        item: &GeminiBatchClaimedItem,
+        identity: GeminiBatchBlobIdentity<'_>,
+        body: &[u8],
+    ) -> Result<()> {
+        let completed = pool::now();
+        let error_identity = GeminiBatchBlobIdentity {
+            kind: "error",
+            ..identity
+        };
+        let blob = self
+            .keys
+            .encrypt_blob(&error_identity, body, completed + 42 * 24 * 3600)?;
+        let intent = GeminiBatchSettlementIntent {
+            job_id: item.claim.job_id.clone(),
+            item_index: item.claim.item_index,
+            request_id: item.claim.request_id.clone(),
+            claim_generation: item.claim.claim_generation,
+            disposition: GeminiBatchSettlementDisposition::Indeterminate,
+            actual_nano: crate::settlement_policy::unknown_usage_charge(item.hold_nano),
+            charge_basis_nano: 0,
+            real_nano: 0,
+            usage: None,
+            result_blob: blob,
+            terminal_state: GeminiBatchItemState::Indeterminate,
+            terminal_class: GeminiBatchTerminalClass::Indeterminate,
+            calibration: None,
+            completed_ts: completed,
+        };
+        self.authority
+            .enqueue_live_settlement(item.claim.clone(), intent)
+            .await?;
+        let _ = self
+            .authority
+            .process_settlement(item.claim.request_id.clone())
+            .await?;
+        Ok(())
+    }
+
+    pub async fn shutdown(&self, deadline: Instant) -> Result<()> {
+        self.accepting.store(false, Ordering::Release);
+        while self.active.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
+            let remain = deadline.saturating_duration_since(Instant::now());
+            let _ = tokio::time::timeout(remain, self.notify.notified()).await;
+        }
+        let _ = self.authority.drain_settlements(1024).await?;
+        self.authority.shutdown().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operational_snapshot_clamps_authority_values_and_keeps_fixed_shape() {
+        let snapshot = GeminiBatchOperationalSnapshot::from_report(
+            GeminiBatchOperationalReport {
+                queued_items: 3,
+                oldest_queued_age_seconds: -1,
+                active_items: 2,
+                completed_items: 7,
+                error_items: 1,
+                indeterminate_items: 4,
+                settlement_pending: 5,
+                settlement_oldest_age_seconds: 11,
+                settlement_retries: 6,
+                file_bytes: 1024,
+                file_chunks: 8,
+            },
+            9,
+        );
+        assert!(snapshot.authority_available);
+        assert_eq!(snapshot.queued_items, 3);
+        assert_eq!(snapshot.oldest_queued_age_seconds, 0);
+        assert_eq!(snapshot.headroom_stops, 9);
+        assert_eq!(snapshot.file_chunks, 8);
+    }
 }

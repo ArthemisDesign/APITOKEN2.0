@@ -150,7 +150,9 @@ fn fresh(prefix: &str) -> String {
 fn ts(v: i64) -> String {
     format!("{v}")
 }
-fn hex_digest(v:&[u8;32])->String{v.iter().map(|b|format!("{b:02x}")).collect()}
+fn hex_digest(v: &[u8; 32]) -> String {
+    v.iter().map(|b| format!("{b:02x}")).collect()
+}
 fn digest(v: &[u8]) -> [u8; 32] {
     Sha256::digest(v).into()
 }
@@ -286,6 +288,8 @@ struct JsonlParser {
     pending: Vec<u8>,
     entries: Vec<Value>,
     line_number: usize,
+    #[cfg(test)]
+    peak_pending_bytes: usize,
 }
 
 async fn file_requests(
@@ -454,6 +458,10 @@ impl JsonlParser {
                 return Err("A JSONL line is too large.");
             }
             self.pending.extend_from_slice(part);
+            #[cfg(test)]
+            {
+                self.peak_pending_bytes = self.peak_pending_bytes.max(self.pending.len());
+            }
             if part.last() == Some(&b'\n') {
                 self.finish_line()?;
             }
@@ -493,7 +501,9 @@ impl JsonlParser {
                     "Each nonempty JSONL line must contain bounded string key and object request.",
                 );
             }
-            if self.entries.len() >= MAX_BATCH_ITEMS { return Err("Batch contains too many requests."); }
+            if self.entries.len() >= MAX_BATCH_ITEMS {
+                return Err("Batch contains too many requests.");
+            }
             self.entries.push(entry);
         }
         self.pending.clear();
@@ -698,7 +708,26 @@ async fn create(
                 "Each request must be an object.",
             );
         }
-        let mut refs=Vec::new();if let Some(contents)=req.get_mut("contents").and_then(Value::as_array_mut){for content in contents{if let Some(parts)=content.get_mut("parts").and_then(Value::as_array_mut){for part in parts{if let Some(fd)=part.get_mut("fileData").and_then(Value::as_object_mut){if let Some(uri)=fd.get("fileUri").and_then(Value::as_str).and_then(file_id_from_name){refs.push(uri.to_owned());fd.insert("fileUri".into(),Value::String(format!("files/{uri}")));}}}}}}api::canonicalize_native_request(&mut req);
+        let mut refs = Vec::new();
+        if let Some(contents) = req.get_mut("contents").and_then(Value::as_array_mut) {
+            for content in contents {
+                if let Some(parts) = content.get_mut("parts").and_then(Value::as_array_mut) {
+                    for part in parts {
+                        if let Some(fd) = part.get_mut("fileData").and_then(Value::as_object_mut) {
+                            if let Some(uri) = fd
+                                .get("fileUri")
+                                .and_then(Value::as_str)
+                                .and_then(file_id_from_name)
+                            {
+                                refs.push(uri.to_owned());
+                                fd.insert("fileUri".into(), Value::String(format!("files/{uri}")));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        api::canonicalize_native_request(&mut req);
         if let Err(msg) = api::validate_batch_generate_request(&req, &model) {
             return error(StatusCode::BAD_REQUEST, "INVALID_ARGUMENT", msg);
         }
@@ -820,8 +849,7 @@ async fn create(
         items,
     };
     match f.authority().create(create, a.raw_key).await {
-        Ok(registry::GeminiBatchCreateOutcome::Created { .. })
-        => operation_pending(&job),
+        Ok(registry::GeminiBatchCreateOutcome::Created { .. }) => operation_pending(&job),
         Ok(registry::GeminiBatchCreateOutcome::Replay { job_id }) => operation_pending(&job_id),
         Ok(registry::GeminiBatchCreateOutcome::RejectedFunds) => error(
             StatusCode::PAYMENT_REQUIRED,
@@ -853,8 +881,26 @@ fn operation_pending(id: &str) -> Response {
         .into_response()
 }
 fn job_value(d: &registry::GeminiBatchJobDetail) -> Value {
-    let j=&d.job;let done=j.completed_ts.is_some();let responses=d.items.iter().map(|i|if i.state==registry::GeminiBatchItemState::Succeeded{json!({"response":{"requestId":i.request_id}})}else if i.state.is_terminal(){json!({"error":{"code":500,"message":format!("{:?}",i.terminal_class)}})}else{Value::Null}).collect::<Vec<_>>();
-    let mut value=json!({"name":format!("batches/{}",j.job_id),"done":done,"metadata":{"name":format!("batches/{}",j.job_id),"displayName":j.display_name,"model":format!("models/{}",j.public_model),"state":format!("BATCH_STATE_{:?}",j.state).to_uppercase(),"priority":j.priority.to_string(),"createTime":ts(j.create_ts),"updateTime":ts(j.update_ts),"endTime":j.completed_ts.map(ts),"batchStats":{"requestCount":j.stats.request_count.to_string(),"successfulRequestCount":j.stats.successful_request_count.to_string(),"failedRequestCount":j.stats.failed_request_count.to_string(),"pendingRequestCount":j.stats.pending_request_count.to_string()}}});if done{value["response"]=json!({"inlinedResponses":responses});}value
+    let j = &d.job;
+    let done = j.completed_ts.is_some();
+    let responses = d
+        .items
+        .iter()
+        .map(|i| {
+            if i.state == registry::GeminiBatchItemState::Succeeded {
+                json!({"response":{"requestId":i.request_id}})
+            } else if i.state.is_terminal() {
+                json!({"error":{"code":500,"message":format!("{:?}",i.terminal_class)}})
+            } else {
+                Value::Null
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut value = json!({"name":format!("batches/{}",j.job_id),"done":done,"metadata":{"name":format!("batches/{}",j.job_id),"displayName":j.display_name,"model":format!("models/{}",j.public_model),"state":format!("BATCH_STATE_{:?}",j.state).to_uppercase(),"priority":j.priority.to_string(),"createTime":ts(j.create_ts),"updateTime":ts(j.update_ts),"endTime":j.completed_ts.map(ts),"batchStats":{"requestCount":j.stats.request_count.to_string(),"successfulRequestCount":j.stats.successful_request_count.to_string(),"failedRequestCount":j.stats.failed_request_count.to_string(),"pendingRequestCount":j.stats.pending_request_count.to_string()}}});
+    if done {
+        value["response"] = json!({"inlinedResponses":responses});
+    }
+    value
 }
 async fn get(f: Arc<GeminiBatchPublicFacade>, a: MeteredAuth, id: String) -> Response {
     match f.authority().get(a.account, id).await {
@@ -1427,7 +1473,13 @@ async fn file_download(f: Arc<GeminiBatchPublicFacade>, a: MeteredAuth, id: Stri
         }
     };
     let mut after = None;
-    if file.size_bytes > BODY_LIMIT as i64 { return error(StatusCode::PAYLOAD_TOO_LARGE,"RESOURCE_EXHAUSTED","Use paged download for large files."); }
+    if file.size_bytes > BODY_LIMIT as i64 {
+        return error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "RESOURCE_EXHAUSTED",
+            "Use paged download for large files.",
+        );
+    }
     let mut out = Vec::with_capacity(file.size_bytes as usize);
     loop {
         let page = match f
@@ -1556,5 +1608,50 @@ mod tests {
         let line = format!("{{\"key\":\"{key}\",\"request\":{{}}}}\n");
         let mut parser = JsonlParser::default();
         assert!(parser.push(line.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn stage5_synthetic_near_2gb_jsonl_is_streamed_in_order() {
+        const FEED_CHUNK_BYTES: usize = 8 * 1024;
+        const PHYSICAL_LINE_BYTES: usize = 96 * 1024;
+        let logical_bytes = std::env::var("GEMINI_BATCH_STAGE5_LOGICAL_JSONL_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(2_147_483_000);
+        assert!(logical_bytes > 1_900_000_000);
+
+        let mut parser = JsonlParser::default();
+        let mut generated = 0u64;
+        let mut sequence = 0usize;
+        let mut line = Vec::with_capacity(PHYSICAL_LINE_BYTES + 256);
+        while generated < logical_bytes {
+            line.clear();
+            line.extend_from_slice(format!("{{\"key\":\"item-{sequence:08}\",\"request\":{{\"contents\":[],\"syntheticPadding\":\"").as_bytes());
+            line.resize(line.len() + PHYSICAL_LINE_BYTES, b'x');
+            line.extend_from_slice(b"\"}}\n");
+            for chunk in line.chunks(FEED_CHUNK_BYTES) {
+                parser.push(chunk).unwrap();
+            }
+            generated = generated.saturating_add(line.len() as u64);
+            sequence += 1;
+            if sequence >= MAX_BATCH_ITEMS {
+                break;
+            }
+        }
+
+        assert!(generated >= logical_bytes);
+        assert!(sequence > 10_000);
+        assert!(parser.peak_pending_bytes <= PHYSICAL_LINE_BYTES + 256);
+        assert_eq!(parser.entries.len(), sequence);
+        for (index, entry) in parser.entries.iter().enumerate() {
+            assert_eq!(entry["key"], format!("item-{index:08}"));
+        }
+        let entries = parser.finish().unwrap();
+        assert_eq!(entries.len(), sequence);
+        assert_eq!(entries.first().unwrap()["key"], "item-00000000");
+        assert_eq!(
+            entries.last().unwrap()["key"],
+            format!("item-{:08}", sequence - 1)
+        );
     }
 }

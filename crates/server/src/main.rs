@@ -1620,6 +1620,7 @@ async fn serve() -> Result<()> {
         codex,
         gemini,
         gemini_batch: gemini_batch_public,
+        gemini_batch_runtime: gemini_batch_runtime.clone(),
         kimi,
         glm,
         tripo3d,

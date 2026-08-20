@@ -21,7 +21,7 @@ pub use api::{
     GeminiNonstreamExecuteError, GeminiNonstreamGenerateRequest, GeminiNonstreamProtocolError,
     GeminiNonstreamRawResponse, GeminiNonstreamTerminalClass, GeminiNonstreamTransportEvidence,
 };
-pub use batch::{GeminiBatchRuntime, GeminiBatchRuntimeConfig};
+pub use batch::{GeminiBatchOperationalSnapshot, GeminiBatchRuntime, GeminiBatchRuntimeConfig};
 pub use batch_authority::GeminiBatchAuthority;
 pub use batch_crypto::{
     gemini_batch_chunk_manifest_digest, GeminiBatchBlobIdentity, GeminiBatchDataKeyring,

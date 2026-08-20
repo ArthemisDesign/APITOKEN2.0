@@ -1774,6 +1774,7 @@ mod tests {
             codex: None,
             gemini: None,
             gemini_batch: None,
+            gemini_batch_runtime: None,
             kimi: None,
             glm: None,
             tripo3d: None,

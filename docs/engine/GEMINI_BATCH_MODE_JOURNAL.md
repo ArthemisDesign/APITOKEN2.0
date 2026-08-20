@@ -100,3 +100,10 @@ SHA: фиксируется commit этой записи
 Отступления от плана: upload chunk body ограничен 8 MiB, но число chunks проходит paged authority traversal до logical 2 GiB; download >20 MiB требует paged client transfer вместо giant in-memory response. Discovery и systemd activation сознательно отложены до Этапа 6.
 Измерения: real PostgreSQL HTTP lifecycle 1/1 GREEN; handler parser tests 6/6 GREEN; batch crypto 5/5 GREEN; registry batch 7/7 GREEN; `cargo check -p forward` и `cargo check -p claude-api` GREEN; request body 20 MiB, logical file 2 GiB, encrypted upload chunk 8 MiB, chunk page/session bound 128.
 Следующий шаг: Этап 4 готов к merge без публичной production активации; Этап 5 выполняет controlled mock/live verification.
+
+## 2026-08-20 — Этап 5 (§6): resilience/load gate до live
+SHA: фиксируется commit этой записи
+Результат: добавлены coherent operational snapshot/evidence reads, fixed-cardinality runtime metrics, additive admin Batch summary, alerts и runbooks. Real-PG multi-owner/fault matrices и synthetic JSONL gate проверяют fencing/replay/conservation; generated logical ~2 GB JSONL проходит chunked parser без giant fixture/allocation. Первый запуск `tests/gemini_batch_stage5_gate.sh` провалился на лишней JSON brace в synthetic generator; root cause исправлен, paid run не выполнялся, повтор targeted 2,000,000,000-byte gate GREEN.
+Отступления от плана: measured first-version item ceiling зафиксирован 100 000; 250k/500k отложены как отдельный WAL/capacity expansion. Live partial provider error не форсируется платным запросом: deterministic mock/fault coverage заменяет рискованную provider gamble.
+Измерения: synthetic logical JSONL 2,000,000,000 bytes за 20.16s; physical line 96 KiB, feed chunk 8 KiB; monitoring 135/135 runbook anchors GREEN. Live spend: $0.000000000; остаток общего бюджета Stage 5+6: $10.000000000.
+Следующий шаг: merge observability/resilience SHA, production GREEN, затем dry-run controlled canary и расчёт server-authoritative holds перед каждым paid run.

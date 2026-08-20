@@ -683,3 +683,23 @@ pub struct GeminiBatchPruneReport {
     pub items: usize,
     pub jobs: usize,
 }
+
+/// Fleet-wide, fixed-cardinality operational snapshot for Gemini Batch.
+///
+/// The report deliberately contains no account, job, item, model, file, or profile identity. It is
+/// safe to expose through Prometheus and the protected fleet summary without cardinality growing
+/// with customer activity.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GeminiBatchOperationalReport {
+    pub queued_items: i64,
+    pub oldest_queued_age_seconds: i64,
+    pub active_items: i64,
+    pub completed_items: i64,
+    pub error_items: i64,
+    pub indeterminate_items: i64,
+    pub settlement_pending: i64,
+    pub settlement_oldest_age_seconds: i64,
+    pub settlement_retries: i64,
+    pub file_bytes: i64,
+    pub file_chunks: i64,
+}

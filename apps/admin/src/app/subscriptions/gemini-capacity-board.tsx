@@ -10,6 +10,7 @@ import { ProviderCapacityStrip, ProviderQuotaMeter, ProviderSection } from "./pr
 import { geminiProfileStatus } from "./logic";
 import { SubscriptionExpiry } from "./subscription-lifecycle";
 import type {
+  GeminiBatchSummary,
   GeminiProfile,
   GeminiProfileWindow,
   GeminiSubsResponse,
@@ -209,6 +210,49 @@ function GeminiSubscriptions({ profiles: allProfiles, modelCount, nowSec, author
   );
 }
 
+function GeminiBatchSummaryCard({ batch }: { batch: GeminiBatchSummary }): ReactElement {
+  const queueDepth = Number(batch.queue_depth ?? 0);
+  const settlementBacklog = Number(batch.settlement_backlog ?? 0);
+  const indeterminate = Number(batch.indeterminate_items ?? 0);
+  const authorityOk = batch.authority_available === true;
+  return (
+    <ProviderSection title="Gemini Batch · сводка">
+      <ProviderCapacityStrip
+        ariaLabel="Состояние Gemini Batch"
+        items={[
+          {
+            label: "Очередь",
+            value: authorityOk ? String(queueDepth) : "—",
+            caption: authorityOk
+              ? `старейшая ${duration(Number(batch.oldest_queued_age_seconds ?? 0))}`
+              : "authority недоступна",
+          },
+          {
+            label: "Активно",
+            value: authorityOk ? String(batch.active_items ?? 0) : "—",
+            caption: batch.public_enabled ? "public включён" : "public выключен",
+          },
+          {
+            label: "Settlement backlog",
+            value: authorityOk ? String(settlementBacklog) : "—",
+            caption: `${batch.settlement_retries ?? 0} retry`,
+          },
+          {
+            label: "Ошибки / indeterminate",
+            value: authorityOk ? `${batch.error_items ?? 0} / ${indeterminate}` : "—",
+            caption: `${batch.completed_items ?? 0} завершено`,
+          },
+          {
+            label: "5ч headroom stops",
+            value: String(batch.headroom_stops ?? 0),
+            caption: queueDepth > 0 ? "batch защищает interactive пул" : "очередь пуста",
+          },
+        ]}
+      />
+    </ProviderSection>
+  );
+}
+
 export function GeminiCapacityBoard({
   response,
   nowMs,
@@ -268,6 +312,7 @@ export function GeminiCapacityBoard({
           ]}
         />
       ) : null}
+      {response.batch?.enabled ? <GeminiBatchSummaryCard batch={response.batch} /> : null}
       <GeminiSubscriptions
         profiles={response.profiles ?? []}
         modelCount={response.models?.length ?? response.conversion_models?.length ?? 0}

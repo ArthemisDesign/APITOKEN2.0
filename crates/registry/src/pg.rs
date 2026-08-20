@@ -9,6 +9,8 @@ pub use gemini_batch_claims::GeminiBatchReconcileReport;
 mod gemini_batch_settlement;
 #[cfg(test)]
 mod gemini_batch_tests;
+#[cfg(test)]
+mod gemini_batch_stage5_tests;
 mod request_facts;
 
 use crate::request_facts::{

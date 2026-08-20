@@ -185,6 +185,56 @@ fn lock_account<'a>(tx: &mut Transaction<'a>, account_id: &str) -> Result<()> {
 }
 
 impl PgStore {
+    /// Aggregate operational state for the bounded Gemini Batch metrics/admin surface.
+    ///
+    /// Every value is fleet-wide. No customer or workload identity leaves PostgreSQL, and one
+    /// snapshot requires a fixed number of aggregate queries regardless of queue size.
+    pub fn gemini_batch_operational_report(
+        &mut self,
+    ) -> Result<crate::GeminiBatchOperationalReport> {
+        let ts = super::now();
+        let items = self.client.query_one(
+            "SELECT
+                COUNT(*) FILTER (WHERE state='queued')::bigint,
+                COALESCE($1 - MIN(created_ts) FILTER (WHERE state='queued'), 0)::bigint,
+                COUNT(*) FILTER (WHERE state IN ('claimed','dispatching','settlement_pending'))::bigint,
+                COUNT(*) FILTER (WHERE state='succeeded')::bigint,
+                COUNT(*) FILTER (WHERE state IN ('failed','canceled'))::bigint,
+                COUNT(*) FILTER (WHERE state='indeterminate')::bigint
+             FROM gemini_batch_items",
+            &[&ts],
+        )?;
+        let settlement = self.client.query_one(
+            "SELECT
+                COUNT(*) FILTER (WHERE state='pending')::bigint,
+                COALESCE($1 - MIN(created_ts) FILTER (WHERE state='pending'), 0)::bigint,
+                COALESCE(SUM(attempts) FILTER (WHERE state='pending'), 0)::bigint
+             FROM gemini_batch_settlement_outbox",
+            &[&ts],
+        )?;
+        let files = self.client.query_one(
+            "SELECT
+                COALESCE(SUM(chunk.plaintext_len), 0)::bigint,
+                COUNT(chunk.*)::bigint
+             FROM gemini_batch_file_chunks chunk
+             JOIN gemini_batch_files file ON file.file_id=chunk.file_id
+             WHERE file.delete_ts IS NULL",
+            &[],
+        )?;
+        Ok(crate::GeminiBatchOperationalReport {
+            queued_items: items.get(0),
+            oldest_queued_age_seconds: items.get::<_, i64>(1).max(0),
+            active_items: items.get(2),
+            completed_items: items.get(3),
+            error_items: items.get(4),
+            indeterminate_items: items.get(5),
+            settlement_pending: settlement.get(0),
+            settlement_oldest_age_seconds: settlement.get::<_, i64>(1).max(0),
+            settlement_retries: settlement.get(2),
+            file_bytes: files.get(0),
+            file_chunks: files.get(1),
+        })
+    }
     /// Create a complete batch and reserve its aggregate hold in one transaction.
     /// Locks are always acquired account first and raw access key second.
     pub fn gemini_batch_create(

@@ -698,6 +698,12 @@ impl Authority {
         self.gemini_batch_postgres()?
             .gemini_batch_delete(account_id, job_id)
     }
+    pub fn gemini_batch_operational_report(
+        &mut self,
+    ) -> Result<crate::GeminiBatchOperationalReport> {
+        self.gemini_batch_postgres()?
+            .gemini_batch_operational_report()
+    }
 
     pub fn prune_gemini_batch(
         &mut self,

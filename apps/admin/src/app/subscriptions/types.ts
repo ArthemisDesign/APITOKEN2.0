@@ -566,6 +566,25 @@ export interface GeminiCalibrationDelivery {
   queue_limit?: number;
 }
 
+export interface GeminiBatchSummary {
+  enabled?: boolean;
+  public_enabled?: boolean;
+  authority_available?: boolean;
+  queue_depth?: number;
+  oldest_queued_age_seconds?: number;
+  active_items?: number;
+  completed_items?: number;
+  error_items?: number;
+  indeterminate_items?: number;
+  headroom_stops?: number;
+  settlement_backlog?: number;
+  settlement_oldest_age_seconds?: number;
+  settlement_retries?: number;
+  /** Decimal string: aggregate plaintext bytes can outgrow JavaScript's exact integer range. */
+  file_bytes?: string;
+  file_chunks?: number;
+}
+
 export interface GeminiSubsResponse {
   enabled?: boolean;
   available?: number;
@@ -579,6 +598,7 @@ export interface GeminiSubsResponse {
   models?: GeminiModel[];
   profiles?: GeminiProfile[];
   window_totals?: GeminiWindowTotal[];
+  batch?: GeminiBatchSummary;
   conversion_models?: GeminiConversionModel[];
   transport?: GeminiTransport;
   affinity?: GeminiAffinity;

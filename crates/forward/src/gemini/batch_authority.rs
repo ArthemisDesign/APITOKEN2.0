@@ -138,6 +138,7 @@ enum Command {
         limit: usize,
         reply: Reply<usize>,
     },
+    OperationalReport(Reply<registry::GeminiBatchOperationalReport>),
     Shutdown(Reply<()>),
 }
 
@@ -378,6 +379,9 @@ impl GeminiBatchAuthority {
                         }
                         Command::DrainSettlements { limit, reply } => {
                             let _ = reply.send(authority.drain_gemini_batch_settlements(limit));
+                        }
+                        Command::OperationalReport(reply) => {
+                            let _ = reply.send(authority.gemini_batch_operational_report());
                         }
                         Command::Shutdown(reply) => {
                             let _ = reply.send(Ok(()));
@@ -663,6 +667,10 @@ impl GeminiBatchAuthority {
     pub async fn drain_settlements(&self, limit: usize) -> Result<usize> {
         self.call(|reply| Command::DrainSettlements { limit, reply })
             .await
+    }
+
+    pub async fn operational_report(&self) -> Result<registry::GeminiBatchOperationalReport> {
+        self.call(Command::OperationalReport).await
     }
 
     /// FIFO barrier: success means every command submitted before shutdown finished processing.

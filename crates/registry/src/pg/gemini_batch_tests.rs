@@ -20,6 +20,19 @@ fn create(
     idem: u8,
     ts: i64,
 ) -> crate::GeminiBatchCreate {
+    create_many(job, account, key_id, request, digest, idem, ts, 1)
+}
+
+fn create_many(
+    job: &str,
+    account: &str,
+    key_id: &str,
+    request_prefix: &str,
+    digest: u8,
+    idem: u8,
+    ts: i64,
+    item_count: usize,
+) -> crate::GeminiBatchCreate {
     crate::GeminiBatchCreate {
         job_id: job.into(),
         account_id: account.into(),
@@ -35,24 +48,33 @@ fn create(
         encryption_policy_version: 1,
         create_ts: ts,
         deadline_ts: ts + 10_000,
-        items: vec![crate::GeminiBatchCreateItem {
-            item_index: 0,
-            request_id: request.into(),
-            logical_request_id: format!("logical-{request}"),
-            execution_group_id: format!("group-{request}"),
-            client_key: None,
-            request_digest: [4; 32],
-            input_file_id: None,
-            referenced_file_ids: vec![],
-            hold_nano: 100,
-            payable_multiplier_bp: 5000,
-            priced_ts: ts,
-            tariff_family: "google/gemini/gemini-2.5-flash".into(),
-            tariff_version: 1,
-            tariff_schedule_id: "google/gemini/gemini-2.5-flash/v1".into(),
-            request_blob: blob("request", ts),
-            metadata_blob: None,
-        }],
+        items: (0..item_count)
+            .map(|index| {
+                let request_id = if item_count == 1 {
+                    request_prefix.to_owned()
+                } else {
+                    format!("{request_prefix}-{index:06}")
+                };
+                crate::GeminiBatchCreateItem {
+                    item_index: index as i64,
+                    request_id: request_id.clone(),
+                    logical_request_id: format!("logical-{request_id}"),
+                    execution_group_id: format!("group-{request_id}"),
+                    client_key: None,
+                    request_digest: [4; 32],
+                    input_file_id: None,
+                    referenced_file_ids: vec![],
+                    hold_nano: 100,
+                    payable_multiplier_bp: 5000,
+                    priced_ts: ts,
+                    tariff_family: "google/gemini/gemini-2.5-flash".into(),
+                    tariff_version: 1,
+                    tariff_schedule_id: "google/gemini/gemini-2.5-flash/v1".into(),
+                    request_blob: blob("request", ts),
+                    metadata_blob: None,
+                }
+            })
+            .collect(),
     }
 }
 

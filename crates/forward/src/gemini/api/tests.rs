@@ -675,6 +675,7 @@ fn app_state(gateway: Arc<GeminiGateway>, billing: Option<Arc<AsyncBilling>>) ->
         codex: None,
         gemini: Some(gateway),
         gemini_batch: None,
+            gemini_batch_runtime: None,
         kimi: None,
         glm: None,
         tripo3d: None,
