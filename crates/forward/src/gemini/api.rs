@@ -1,6 +1,9 @@
 //! Native Gemini-compatible surface backed by encrypted paid-subscription OAuth profiles.
 
-use super::billing::{begin_admission, AdmissionError, GeminiAdmission, GeminiRequestFactSeed};
+use super::billing::{
+    begin_admission, AdmissionError, GeminiAdmission, GeminiBillableRequestSpec,
+    GeminiRequestFactSeed,
+};
 use super::config::{GeminiConfig, GeminiModel};
 use super::pool::{GeminiGateway, GeminiLease, GeminiProfile, TokenAcquisitionPolicy, TokenError};
 use super::rate_limit::{self, RateLimitDiagnostic};
@@ -298,6 +301,12 @@ struct ParsedRoute {
 
 /// Content-free accepted-origin intent created only after the universal Messages owner accepts the
 /// original body. No request JSON or arbitrary identifier crosses into the native execution owner.
+/// Typed marker placed by universal adapters after their public request parser accepts the
+/// original body. Stage 7 intentionally keeps those synthesized native executions fact-free until
+/// their public route owners can hand off a complete, privacy-bounded generation origin.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SuppressedPendingUniversalGeneration;
+
 #[derive(Clone)]
 pub(crate) struct UniversalCountTokensIntent {
     pub(crate) requested_model: Option<String>,
@@ -362,6 +371,17 @@ impl CountTokensTerminalEvidence {
             delivery_state: DeliveryState::Unknown,
             attempts_exhaustive: true,
         }
+    }
+}
+
+fn settle_billable_failure(
+    admission: &mut Option<GeminiAdmission>,
+    http_status: StatusCode,
+    provider_terminal_class: ProviderTerminalClass,
+    delivery_state: DeliveryState,
+) {
+    if let Some(admission) = admission.take() {
+        admission.settle_failure(http_status, provider_terminal_class, delivery_state);
     }
 }
 
@@ -2437,6 +2457,91 @@ fn settlement_usage_from_response(
     Some(usage)
 }
 
+fn gemini_tool_calls_in_output(value: &Value) -> Option<bool> {
+    let object = value.as_object()?;
+    if object.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "candidates" | "promptFeedback" | "usageMetadata" | "modelVersion" | "responseId"
+        )
+    }) {
+        return None;
+    }
+    let Some(candidates) = object.get("candidates") else {
+        return Some(false);
+    };
+    let candidates = candidates.as_array()?;
+    let mut saw_call = false;
+    for candidate in candidates {
+        let candidate = candidate.as_object()?;
+        if candidate.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "content"
+                    | "finishReason"
+                    | "safetyRatings"
+                    | "citationMetadata"
+                    | "tokenCount"
+                    | "groundingAttributions"
+                    | "groundingMetadata"
+                    | "avgLogprobs"
+                    | "logprobsResult"
+                    | "urlContextMetadata"
+                    | "finishMessage"
+                    | "index"
+            )
+        }) {
+            return None;
+        }
+        let Some(content) = candidate.get("content") else {
+            continue;
+        };
+        let content = content.as_object()?;
+        if content
+            .keys()
+            .any(|key| !matches!(key.as_str(), "role" | "parts"))
+        {
+            return None;
+        }
+        let Some(parts) = content.get("parts") else {
+            continue;
+        };
+        for part in parts.as_array()? {
+            let part = part.as_object()?;
+            if part.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "text"
+                        | "inlineData"
+                        | "functionCall"
+                        | "executableCode"
+                        | "codeExecutionResult"
+                        | "fileData"
+                        | "thought"
+                        | "thoughtSignature"
+                )
+            }) {
+                return None;
+            }
+            if let Some(call) = part.get("functionCall") {
+                if !call.is_object() {
+                    return None;
+                }
+                saw_call = true;
+            }
+        }
+    }
+    Some(saw_call)
+}
+
+fn merge_tool_call_evidence(current: Option<bool>, observed: Option<bool>) -> Option<bool> {
+    match (current, observed) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (Some(false), Some(false)) => Some(false),
+        _ => None,
+    }
+}
+
 struct SseTranslator {
     pending: Vec<u8>,
     usage: metering::GeminiUsage,
@@ -2452,6 +2557,7 @@ struct SseTranslator {
     image_delivered: bool,
     audio_usage_hint: AudioUsageHint,
     audio_usage_failed: bool,
+    tool_calls_in_output: Option<bool>,
     /// Content-free shape of the stream, kept only so a turn that ends without usage can say why in
     /// one journal line instead of leaving the operator with a bare counter. No customer text, no
     /// tool arguments, no identifiers — frame counts and the terminal finish reason.
@@ -2505,6 +2611,7 @@ impl SseTranslator {
             image_delivered: false,
             audio_usage_hint,
             audio_usage_failed: false,
+            tool_calls_in_output: Some(false),
             shape: StreamShape::default(),
         }
     }
@@ -2643,6 +2750,10 @@ impl SseTranslator {
                 "modelVersion",
             ],
         )?;
+        self.tool_calls_in_output = merge_tool_call_evidence(
+            self.tool_calls_in_output,
+            gemini_tool_calls_in_output(&native),
+        );
         if apply_audio_usage_fallback(&mut native, self.audio_usage_hint).is_err() {
             self.audio_usage_failed = true;
             return Err(());
@@ -2917,7 +3028,15 @@ pub(crate) async fn execute_nonstream_generate_observed(
     request: &GeminiNonstreamGenerateRequest,
     actual_send_observer: Option<ActualSendObserver>,
 ) -> Result<GeminiNonstreamRawResponse, GeminiNonstreamExecuteError> {
-    execute_nonstream_generate_with_rejected_token(gateway, lease, model, request, None, actual_send_observer).await
+    execute_nonstream_generate_with_rejected_token(
+        gateway,
+        lease,
+        model,
+        request,
+        None,
+        actual_send_observer,
+    )
+    .await
 }
 
 async fn execute_nonstream_generate_with_rejected_token(
@@ -3088,27 +3207,22 @@ async fn stream_response(
                 error
             }
         })?;
-    admission
-        .mark_delivering()
-        .await
-        .map_err(ApiError::from)
-        .map_err(|error| {
-            if post_dispatch_ambiguous {
-                error.after_dispatch()
-            } else {
-                error
-            }
-        })?;
+    let delivery_marker_failed = admission.mark_delivering().await.is_err();
     let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
     tokio::spawn(async move {
         let _background = background;
         let _lease = lease;
-        let mut deliver = true;
+        // A failed durable delivery transition must not expose a 200 or abandon the private
+        // provider stream. Drain and settle authoritative usage in this same actor, but never try
+        // the intentionally unreturned receiver and therefore never misclassify it as a client
+        // disconnect.
+        let mut deliver = !delivery_marker_failed;
         let mut clean_eof = true;
         let mut aborted = false;
         let mut private_bytes = 0usize;
         let mut private_chunks = 0usize;
         let mut malformed = false;
+        let mut transport_failed = false;
 
         for chunk in initial {
             if deliver {
@@ -3120,7 +3234,11 @@ async fn stream_response(
                     result = tokio::time::timeout(DOWNSTREAM_SEND_TIMEOUT, sender.send(chunk)) => {
                         match result {
                             Ok(Ok(())) => {}
-                            Ok(Err(_)) | Err(_) => deliver = false,
+                            Ok(Err(_)) => {
+                                admission.record_downstream_disconnect();
+                                deliver = false;
+                            }
+                            Err(_) => deliver = false,
                         }
                     }
                 }
@@ -3183,13 +3301,18 @@ async fn stream_response(
                             .await
                             {
                                 Ok(Ok(())) => {}
-                                Ok(Err(_)) | Err(_) => deliver = false,
+                                Ok(Err(_)) => {
+                                    admission.record_downstream_disconnect();
+                                    deliver = false;
+                                }
+                                Err(_) => deliver = false,
                             }
                         }
                     }
                 }
                 Err(error) => {
                     clean_eof = false;
+                    transport_failed = true;
                     Metrics::inc(&metrics.upstream_5xx);
                     Metrics::inc(&metrics.gemini_transport_failures);
                     profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
@@ -3206,9 +3329,16 @@ async fn stream_response(
                 Ok(chunks) => {
                     for chunk in chunks {
                         if deliver {
-                            let _ =
-                                tokio::time::timeout(DOWNSTREAM_SEND_TIMEOUT, sender.send(chunk))
-                                    .await;
+                            match tokio::time::timeout(DOWNSTREAM_SEND_TIMEOUT, sender.send(chunk))
+                                .await
+                            {
+                                Ok(Ok(())) => {}
+                                Ok(Err(_)) => {
+                                    admission.record_downstream_disconnect();
+                                    deliver = false;
+                                }
+                                Err(_) => deliver = false,
+                            }
                         }
                     }
                 }
@@ -3223,7 +3353,11 @@ async fn stream_response(
         if clean_eof && !aborted {
             if let Some(close) = translator.finish_stream() {
                 if deliver {
-                    let _ = tokio::time::timeout(DOWNSTREAM_SEND_TIMEOUT, sender.send(close)).await;
+                    match tokio::time::timeout(DOWNSTREAM_SEND_TIMEOUT, sender.send(close)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(_)) => admission.record_downstream_disconnect(),
+                        Err(_) => {}
+                    }
                 }
             }
         }
@@ -3325,13 +3459,68 @@ async fn stream_response(
             }
         }
         let request_probe = admission.requests_post_turn_probe();
-        if let Some(event) = admission.settle(&model, usage, profile.id()) {
+        let (provider_terminal_class, mut delivery_state, tool_calls_in_output) = if aborted {
+            (
+                ProviderTerminalClass::Unknown,
+                DeliveryState::Interrupted,
+                None,
+            )
+        } else if let Some(code) = translator.provider_error {
+            (
+                StatusCode::from_u16(code)
+                    .map(provider_status_class)
+                    .unwrap_or(ProviderTerminalClass::Unknown),
+                DeliveryState::Interrupted,
+                None,
+            )
+        } else if transport_failed {
+            (
+                ProviderTerminalClass::Transport,
+                DeliveryState::Interrupted,
+                None,
+            )
+        } else if malformed || translator.audio_usage_failed {
+            (
+                ProviderTerminalClass::ProtocolError,
+                DeliveryState::Interrupted,
+                None,
+            )
+        } else if clean_eof && !usage_missing {
+            (
+                ProviderTerminalClass::Success,
+                DeliveryState::Completed,
+                translator.tool_calls_in_output,
+            )
+        } else {
+            (
+                ProviderTerminalClass::ProtocolError,
+                DeliveryState::Interrupted,
+                None,
+            )
+        };
+        if delivery_marker_failed {
+            delivery_state = DeliveryState::Unknown;
+        }
+        if let Some(event) = admission.settle_terminal(
+            &model,
+            usage,
+            profile.id(),
+            Some(if delivery_marker_failed { 503 } else { 200 }),
+            provider_terminal_class,
+            delivery_state,
+            None,
+            true,
+            tool_calls_in_output,
+        ) {
             profile.record_turn(event);
             if request_probe {
                 gateway.request_probe();
             }
         }
     });
+    if delivery_marker_failed {
+        return Err(ApiError::unavailable("gemini_delivery_marker_failed").after_dispatch());
+    }
     let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
         receiver
             .recv()
@@ -3614,6 +3803,41 @@ async fn api_inner_observed(
     if let Some(guard) = fact_guard.as_mut() {
         guard.resolve_executable_model(&wire_model_id);
     }
+    // Native billable request facts are admitted only for validated text generation. Counting owns
+    // its separate already-terminal producer, while image generation/batch/admin stay excluded.
+    let mut billable_fact = if matches!(
+        route.operation,
+        Operation::Generate | Operation::StreamGenerate
+    ) && !model.is_image_generation()
+        && parts
+            .extensions
+            .get::<SuppressedPendingUniversalGeneration>()
+            .is_none()
+    {
+        let admitted_at = pool::now();
+        pending
+            .request_fact_seed(
+                parts.extensions.get::<crate::execution::LogicalRequestId>(),
+                parts
+                    .extensions
+                    .get::<crate::execution::ClientAttribution>(),
+                parts
+                    .extensions
+                    .get::<crate::execution::RequestLifecycleClock>(),
+                admitted_at,
+            )
+            .map(|seed| {
+                let spec = GeminiBillableRequestSpec::native(
+                    bounded_request_fact_model(model_id),
+                    bounded_request_fact_model(&wire_model_id),
+                    route.operation == Operation::StreamGenerate,
+                    classify_gemini_generate_content(&value),
+                );
+                (seed, spec)
+            })
+    } else {
+        None
+    };
     let affinity_input = pending.affinity_scope().and_then(|scope| {
         app.affinity
             .infer_gemini(scope, &parts.headers, model_id, &value)
@@ -3796,10 +4020,27 @@ async fn api_inner_observed(
             // verdict so the caller can stop — a synthetic retryable 503 sent clients into an
             // endless retry of something no retry can fix.
             if saw_permission_denied && !saw_quota {
+                let delivery = admission
+                    .as_ref()
+                    .map(GeminiAdmission::observed_failure_delivery)
+                    .unwrap_or(DeliveryState::Unknown);
+                settle_billable_failure(
+                    &mut admission,
+                    StatusCode::FORBIDDEN,
+                    ProviderTerminalClass::Auth,
+                    delivery,
+                );
                 return Err(ApiError::provider_rejected(StatusCode::FORBIDDEN));
             }
-            return if !gateway.has_authenticated_profiles() {
-                Err(ApiError::unavailable("gemini_profiles_unauthenticated"))
+            let delivery = admission
+                .as_ref()
+                .map(GeminiAdmission::observed_failure_delivery)
+                .unwrap_or(DeliveryState::Unknown);
+            let (terminal_class, error) = if !gateway.has_authenticated_profiles() {
+                (
+                    ProviderTerminalClass::Auth,
+                    ApiError::unavailable("gemini_profiles_unauthenticated"),
+                )
             } else if saw_quota {
                 log_rate_limit_exhausted(
                     &rate_limit_request_id,
@@ -3810,12 +4051,22 @@ async fn api_inner_observed(
                     attempted_profiles.len(),
                     retry.unwrap_or(gateway.config().default_rate_limit_cool_secs.max(1) as u64),
                 );
-                Err(ApiError::rate_limited(retry))
-            } else if saw_auth || saw_backend || retry_failures > 0 {
-                Err(ApiError::unavailable("gemini_profiles_unavailable"))
+                (ProviderTerminalClass::Quota, ApiError::rate_limited(retry))
+            } else if saw_auth {
+                (
+                    ProviderTerminalClass::Auth,
+                    ApiError::unavailable("gemini_profiles_unavailable"),
+                )
+            } else if saw_backend || retry_failures > 0 {
+                (
+                    ProviderTerminalClass::UpstreamError,
+                    ApiError::unavailable("gemini_profiles_unavailable"),
+                )
             } else {
-                Err(ApiError::rate_limited(retry))
+                (ProviderTerminalClass::Quota, ApiError::rate_limited(retry))
             };
+            settle_billable_failure(&mut admission, error.status, terminal_class, delivery);
+            return Err(error);
         };
         if admission.is_none() {
             let pending = pending
@@ -3831,6 +4082,7 @@ async fn api_inner_observed(
                         requested_image_output_tokens,
                         grounding,
                         !model.is_image_generation(),
+                        billable_fact.take(),
                     )
                     .await?;
                 // Always write the validated ceiling: this also clamps a hostile value above the
@@ -3881,7 +4133,17 @@ async fn api_inner_observed(
                     .clone()
                     .expect("generation requests always carry an upstream request id"),
             );
-            match execute_nonstream_generate(&gateway, &lease, &model, &primitive_request).await {
+            match execute_nonstream_generate_observed(
+                &gateway,
+                &lease,
+                &model,
+                &primitive_request,
+                admission
+                    .as_ref()
+                    .and_then(GeminiAdmission::actual_send_observer),
+            )
+            .await
+            {
                 Ok(raw) => {
                     let status = raw.status;
                     let response_headers = raw.headers;
@@ -3896,7 +4158,9 @@ async fn api_inner_observed(
                                 &model,
                                 &primitive_request,
                                 Some(&rejected_token),
-                                None,
+                                admission
+                                    .as_ref()
+                                    .and_then(GeminiAdmission::actual_send_observer),
                             )
                             .await
                             {
@@ -3935,17 +4199,45 @@ async fn api_inner_observed(
                                                 "gemini_usage_metadata_missing",
                                             ));
                                         }
+                                        let tool_calls_in_output =
+                                            serde_json::from_slice::<Value>(&retried.body)
+                                                .ok()
+                                                .as_ref()
+                                                .and_then(gemini_tool_calls_in_output);
                                         let admission = admission.take().expect(
                                             "Gemini admission exists after upstream selection",
                                         );
-                                        admission
-                                            .mark_delivering()
-                                            .await
-                                            .map_err(ApiError::from)?;
                                         let request_probe = admission.requests_post_turn_probe();
-                                        if let Some(event) =
-                                            admission.settle(&model, usage.as_ref(), profile.id())
-                                        {
+                                        if admission.mark_delivering().await.is_err() {
+                                            if let Some(event) = admission
+                                                .settle_after_delivery_marker_failure(
+                                                    &model,
+                                                    usage.as_ref(),
+                                                    profile.id(),
+                                                    tool_calls_in_output,
+                                                )
+                                            {
+                                                profile.record_turn(event);
+                                                if request_probe {
+                                                    gateway.request_probe();
+                                                }
+                                            }
+                                            return Err(ApiError::unavailable(
+                                                "gemini_delivery_marker_failed",
+                                            )
+                                            .after_dispatch());
+                                        }
+                                        if let Some(event) = admission.settle_terminal(
+                                            &model,
+                                            usage.as_ref(),
+                                            profile.id(),
+                                            Some(200),
+                                            ProviderTerminalClass::Success,
+                                            DeliveryState::Completed,
+                                            None,
+                                            true,
+                                            tool_calls_in_output,
+                                        ) {
                                             profile.record_turn(event);
                                             if request_probe {
                                                 gateway.request_probe();
@@ -4032,6 +4324,12 @@ async fn api_inner_observed(
                             retry_failures += 1;
                             if retry_failures > gateway.config().max_transport_retries {
                                 elog::error("gemini", "gemini request failed: backend unavailable");
+                                settle_billable_failure(
+                                    &mut admission,
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    ProviderTerminalClass::UpstreamError,
+                                    DeliveryState::Interrupted,
+                                );
                                 return Err(ApiError::unavailable("gemini_backend_unavailable"));
                             }
                             continue;
@@ -4045,6 +4343,12 @@ async fn api_inner_observed(
                             retry_failures += 1;
                             if retry_failures > gateway.config().max_transport_retries {
                                 elog::error("gemini", "gemini request failed: backend unavailable");
+                                settle_billable_failure(
+                                    &mut admission,
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    ProviderTerminalClass::UpstreamError,
+                                    DeliveryState::Interrupted,
+                                );
                                 return Err(ApiError::unavailable("gemini_backend_unavailable"));
                             }
                             continue;
@@ -4077,16 +4381,49 @@ async fn api_inner_observed(
                                     "gemini",
                                     "gemini request failed: usage metadata missing",
                                 );
+                                settle_billable_failure(
+                                    &mut admission,
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    ProviderTerminalClass::ProtocolError,
+                                    DeliveryState::Interrupted,
+                                );
                                 return Err(ApiError::unavailable("gemini_usage_metadata_missing"));
                             }
+                            let tool_calls_in_output =
+                                serde_json::from_slice::<Value>(&response_body)
+                                    .ok()
+                                    .as_ref()
+                                    .and_then(gemini_tool_calls_in_output);
                             let admission = admission
                                 .take()
                                 .expect("Gemini admission exists after upstream selection");
-                            admission.mark_delivering().await.map_err(ApiError::from)?;
                             let request_probe = admission.requests_post_turn_probe();
-                            if let Some(event) =
-                                admission.settle(&model, usage.as_ref(), profile.id())
-                            {
+                            if admission.mark_delivering().await.is_err() {
+                                if let Some(event) = admission.settle_after_delivery_marker_failure(
+                                    &model,
+                                    usage.as_ref(),
+                                    profile.id(),
+                                    tool_calls_in_output,
+                                ) {
+                                    profile.record_turn(event);
+                                    if request_probe {
+                                        gateway.request_probe();
+                                    }
+                                }
+                                return Err(ApiError::unavailable("gemini_delivery_marker_failed")
+                                    .after_dispatch());
+                            }
+                            if let Some(event) = admission.settle_terminal(
+                                &model,
+                                usage.as_ref(),
+                                profile.id(),
+                                Some(200),
+                                ProviderTerminalClass::Success,
+                                DeliveryState::Completed,
+                                None,
+                                true,
+                                tool_calls_in_output,
+                            ) {
                                 profile.record_turn(event);
                                 if request_probe {
                                     gateway.request_probe();
@@ -4100,6 +4437,12 @@ async fn api_inner_observed(
                         }
                         _ if status.is_client_error() => {
                             profile.mark_authenticated();
+                            settle_billable_failure(
+                                &mut admission,
+                                status,
+                                provider_status_class(status),
+                                DeliveryState::Interrupted,
+                            );
                             return Err(ApiError::provider_rejected(status));
                         }
                         _ => {
@@ -4118,6 +4461,12 @@ async fn api_inner_observed(
                                     "gemini",
                                     "gemini request failed: backend protocol error",
                                 );
+                                settle_billable_failure(
+                                    &mut admission,
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    ProviderTerminalClass::ProtocolError,
+                                    DeliveryState::Interrupted,
+                                );
                                 return Err(ApiError::unavailable("gemini_backend_protocol_error"));
                             }
                             continue;
@@ -4132,6 +4481,12 @@ async fn api_inner_observed(
                     retry_failures += 1;
                     if retry_failures > gateway.config().max_transport_retries {
                         elog::error("gemini", "gemini request failed: transport unavailable");
+                        settle_billable_failure(
+                            &mut admission,
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            ProviderTerminalClass::Transport,
+                            DeliveryState::Interrupted,
+                        );
                         return Err(ApiError::unavailable("gemini_transport_unavailable"));
                     }
                     continue;
@@ -4171,6 +4526,12 @@ async fn api_inner_observed(
                             "gemini",
                             "gemini request failed: audio usage metadata missing",
                         );
+                        settle_billable_failure(
+                            &mut admission,
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            ProviderTerminalClass::ProtocolError,
+                            DeliveryState::Interrupted,
+                        );
                         return Err(ApiError::unavailable("gemini_audio_usage_metadata_missing"));
                     }
                     GeminiNonstreamProtocolError::Malformed => {
@@ -4182,6 +4543,12 @@ async fn api_inner_observed(
                         retry_failures += 1;
                         if retry_failures > gateway.config().max_transport_retries {
                             elog::error("gemini", "gemini request failed: malformed response");
+                            settle_billable_failure(
+                                &mut admission,
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                ProviderTerminalClass::ProtocolError,
+                                DeliveryState::Interrupted,
+                            );
                             return Err(ApiError::unavailable("gemini_malformed_response"));
                         }
                         continue;
@@ -4218,7 +4585,12 @@ async fn api_inner_observed(
             deadline_bound_exact.then_some(admitted_not_after).flatten(),
             fact_guard
                 .as_ref()
-                .map(GeminiCountTokensFactGuard::actual_send_observer),
+                .map(GeminiCountTokensFactGuard::actual_send_observer)
+                .or_else(|| {
+                    admission
+                        .as_ref()
+                        .and_then(GeminiAdmission::actual_send_observer)
+                }),
         )
         .await
         {
@@ -4244,6 +4616,12 @@ async fn api_inner_observed(
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
                     elog::error("gemini", "gemini request failed: transport unavailable");
+                    settle_billable_failure(
+                        &mut admission,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        ProviderTerminalClass::Transport,
+                        DeliveryState::Interrupted,
+                    );
                     return Err(ApiError::unavailable("gemini_transport_unavailable"));
                 }
                 continue;
@@ -4264,6 +4642,12 @@ async fn api_inner_observed(
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
                     elog::error("gemini", "gemini request failed: transport unavailable");
+                    settle_billable_failure(
+                        &mut admission,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        ProviderTerminalClass::Transport,
+                        DeliveryState::Interrupted,
+                    );
                     return Err(ApiError::unavailable("gemini_transport_unavailable"));
                 }
                 continue;
@@ -4295,7 +4679,12 @@ async fn api_inner_observed(
                 None,
                 fact_guard
                     .as_ref()
-                    .map(GeminiCountTokensFactGuard::actual_send_observer),
+                    .map(GeminiCountTokensFactGuard::actual_send_observer)
+                    .or_else(|| {
+                        admission
+                            .as_ref()
+                            .and_then(GeminiAdmission::actual_send_observer)
+                    }),
             )
             .await
             {
@@ -4422,6 +4811,12 @@ async fn api_inner_observed(
                     retry_failures += 1;
                     if retry_failures > gateway.config().max_transport_retries {
                         elog::error("gemini", "gemini request failed: stream start failed");
+                        settle_billable_failure(
+                            &mut admission,
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            ProviderTerminalClass::ProtocolError,
+                            DeliveryState::Interrupted,
+                        );
                         return Err(ApiError::unavailable("gemini_stream_start_failed"));
                     }
                     continue;
@@ -4500,6 +4895,12 @@ async fn api_inner_observed(
                         retry_failures += 1;
                         if retry_failures > gateway.config().max_transport_retries {
                             elog::error("gemini", "gemini request failed: stream start failed");
+                            settle_billable_failure(
+                                &mut admission,
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                ProviderTerminalClass::ProtocolError,
+                                DeliveryState::Interrupted,
+                            );
                             return Err(ApiError::unavailable("gemini_stream_start_failed"));
                         }
                         continue;
@@ -4513,6 +4914,12 @@ async fn api_inner_observed(
                         retry_failures += 1;
                         if retry_failures > gateway.config().max_transport_retries {
                             elog::error("gemini", "gemini request failed: stream start failed");
+                            settle_billable_failure(
+                                &mut admission,
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                ProviderTerminalClass::ProtocolError,
+                                DeliveryState::Interrupted,
+                            );
                             return Err(ApiError::unavailable("gemini_stream_start_failed"));
                         }
                         continue;
@@ -4537,6 +4944,12 @@ async fn api_inner_observed(
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
                     elog::error("gemini", "gemini request failed: stream start failed");
+                    settle_billable_failure(
+                        &mut admission,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        ProviderTerminalClass::ProtocolError,
+                        DeliveryState::Interrupted,
+                    );
                     return Err(ApiError::unavailable("gemini_stream_start_failed"));
                 }
                 continue;
@@ -4597,6 +5010,12 @@ async fn api_inner_observed(
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
                     elog::error("gemini", "gemini request failed: response read failed");
+                    settle_billable_failure(
+                        &mut admission,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        ProviderTerminalClass::Transport,
+                        DeliveryState::Interrupted,
+                    );
                     return Err(ApiError::unavailable("gemini_response_read_failed"));
                 }
                 continue;
@@ -4689,6 +5108,12 @@ async fn api_inner_observed(
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
                     elog::error("gemini", "gemini request failed: backend unavailable");
+                    settle_billable_failure(
+                        &mut admission,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        ProviderTerminalClass::UpstreamError,
+                        DeliveryState::Interrupted,
+                    );
                     return Err(ApiError::unavailable("gemini_backend_unavailable"));
                 }
                 continue;
@@ -4704,6 +5129,12 @@ async fn api_inner_observed(
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
                     elog::error("gemini", "gemini request failed: backend unavailable");
+                    settle_billable_failure(
+                        &mut admission,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        ProviderTerminalClass::UpstreamError,
+                        DeliveryState::Interrupted,
+                    );
                     return Err(ApiError::unavailable("gemini_backend_unavailable"));
                 }
                 continue;
@@ -4757,6 +5188,12 @@ async fn api_inner_observed(
                         retry_failures += 1;
                         if retry_failures > gateway.config().max_transport_retries {
                             elog::error("gemini", "gemini request failed: malformed response");
+                            settle_billable_failure(
+                                &mut admission,
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                ProviderTerminalClass::ProtocolError,
+                                DeliveryState::Interrupted,
+                            );
                             return Err(ApiError::unavailable("gemini_malformed_response"));
                         }
                         continue;
@@ -4815,22 +5252,42 @@ async fn api_inner_observed(
                         error
                     });
                 }
+                let tool_calls_in_output = (route.operation == Operation::Generate)
+                    .then(|| serde_json::from_slice::<Value>(&native_body).ok())
+                    .flatten()
+                    .as_ref()
+                    .and_then(gemini_tool_calls_in_output);
                 let admission = admission
                     .take()
                     .expect("Gemini admission exists after upstream selection");
-                admission
-                    .mark_delivering()
-                    .await
-                    .map_err(ApiError::from)
-                    .map_err(|error| {
-                        if one_shot_generation {
-                            error.after_dispatch()
-                        } else {
-                            error
-                        }
-                    })?;
                 let request_probe = admission.requests_post_turn_probe();
-                if let Some(event) = admission.settle(&model, usage.as_ref(), profile.id()) {
+                if admission.mark_delivering().await.is_err() {
+                    if let Some(event) = admission.settle_after_delivery_marker_failure(
+                        &model,
+                        usage.as_ref(),
+                        profile.id(),
+                        tool_calls_in_output,
+                    ) {
+                        profile.record_turn(event);
+                        if request_probe {
+                            gateway.request_probe();
+                        }
+                    }
+                    return Err(
+                        ApiError::unavailable("gemini_delivery_marker_failed").after_dispatch()
+                    );
+                }
+                if let Some(event) = admission.settle_terminal(
+                    &model,
+                    usage.as_ref(),
+                    profile.id(),
+                    Some(200),
+                    ProviderTerminalClass::Success,
+                    DeliveryState::Completed,
+                    None,
+                    true,
+                    tool_calls_in_output,
+                ) {
                     profile.record_turn(event);
                     if request_probe {
                         gateway.request_probe();
@@ -4844,6 +5301,12 @@ async fn api_inner_observed(
                 // The private Code Assist error envelope can contain account, project, plan or
                 // internal endpoint details. Preserve only the public status class.
                 profile.mark_authenticated();
+                settle_billable_failure(
+                    &mut admission,
+                    status,
+                    provider_status_class(status),
+                    DeliveryState::Interrupted,
+                );
                 return Err(ApiError::provider_rejected(status));
             }
             _ => {
@@ -4862,6 +5325,12 @@ async fn api_inner_observed(
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
                     elog::error("gemini", "gemini request failed: backend protocol error");
+                    settle_billable_failure(
+                        &mut admission,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        ProviderTerminalClass::ProtocolError,
+                        DeliveryState::Interrupted,
+                    );
                     return Err(ApiError::unavailable("gemini_backend_protocol_error"));
                 }
                 continue;

@@ -5,11 +5,11 @@
 > production, and the client-attribution slice of classifier stage 5 are implemented. The production
 > request-fact surfaces are metered Codex/OpenAI/Gemini universal Messages count,
 > OpenAI native Responses input-token count, Anthropic native Messages count, native Gemini
-> countTokens, and OpenAI/Codex generation through native Responses, native Chat Completions, and
-> universal Messages; all consume normalized client attribution. The closed structural classifier contract is
-> implemented: Anthropic, OpenAI native, both Gemini counting routes, and Anthropic-plane OpenAI
-> Chat/Responses consume their owning classifiers; remaining OpenAI Chat and Gemini generation routes
-> remain dormant. A typed once-only lifecycle
+> countTokens, OpenAI/Codex generation through native Responses, native Chat Completions, and universal
+> Messages, and billable native Gemini text `generateContent`/`streamGenerateContent`; all consume
+> normalized client attribution. The closed structural classifier contract is implemented: Anthropic,
+> OpenAI native, both Gemini counting routes, native Gemini text generation, and Anthropic-plane OpenAI
+> Chat/Responses consume their owning classifiers; remaining OpenAI Chat routes remain dormant. A typed once-only lifecycle
 > carrier, transparent final-public-body observation seam, and nonwaiting atomic terminal seal are
 > active. All counting producers capture safely ordered first-byte evidence or freeze `NULL` before
 > any later outer body poll. Stage 7 now covers the native billable Anthropic `POST /v1/messages` leaf
@@ -22,8 +22,13 @@
 > terminalization retains an exhaustive observed attempt count but leaves provider, delivery, HTTP,
 > and tool evidence unknown; a frame-send timeout alone is not a disconnect. If a completed
 > nonstream turn cannot durably mark delivery, its authoritative success/usage/tool evidence still
-> settles exactly once while the client receives a conservative 503 and delivery remains unknown. Legacy/admin,
-> SQLite, image, and missing-context paths remain fact-free. All other billable producers, the
+> settles exactly once while the client receives a conservative 503 and delivery remains unknown.
+> Native Gemini text generation follows the same PostgreSQL-owned reserve/delivery/settlement contract,
+> sharing one physical-send observer across helper restart, 401 resend, and profile rotation. Its
+> background stream drain seals terminal usage/tool/disconnect evidence independently of public body
+> polling. The three Gemini universal generation adapters explicitly suppress their synthesized native
+> leaf until a typed universal origin contract is implemented. Legacy/admin, SQLite, image, batch,
+> counting, and missing-context generation paths remain fact-free. All other billable producers, the
 > private read surface, and request-fact metrics remain incomplete.
 >
 > This document is the owner-approved v1 implementation contract. It authorizes only the finite,
@@ -43,9 +48,10 @@
 > additionally publishes its privacy-bounded Messages classifier only after upstream success proves
 > native shape acceptance; Gemini classifiers are parser-gated at their owning seams. The logical ID
 > remains operator-only. The native Anthropic billable Messages, Anthropic-plane universal OpenAI Chat/Responses, and
-> OpenAI/Codex native Responses, native Chat Completions, and universal Messages slices now admit
-> facts in the PostgreSQL reserve transaction, mark delivery with money, and seal terminal evidence
-> through their authoritative settlements. Every other billable plane caller remains absent.
+> OpenAI/Codex native Responses, native Chat Completions, and universal Messages slices, plus billable
+> native Gemini text generation, now admit facts in the PostgreSQL reserve transaction, mark delivery
+> with money, and seal terminal evidence through their authoritative settlements. Every other billable
+> plane caller remains absent.
 
 ## 1. Purpose
 

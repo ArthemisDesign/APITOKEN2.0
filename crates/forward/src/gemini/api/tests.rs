@@ -5914,7 +5914,7 @@ async fn native_count_tokens_emits_one_fact_with_exact_401_resend_attempts() {
         .extensions_mut()
         .insert(crate::execution::RequestLifecycleClock::default());
     let response = api(
-        State(app),
+        State(app.clone()),
         ConnectInfo("198.51.100.10:12345".parse().unwrap()),
         request,
     )
@@ -6071,6 +6071,379 @@ fn gemini_count_tokens_facts_persist_universal_and_native_postgres_rows() {
         Some("gemini-integration-model")
     );
     drop(billing);
+    lock.query_one("SELECT pg_advisory_unlock($1)", &[&LOCK])
+        .unwrap();
+}
+
+#[test]
+fn native_generation_tool_output_evidence_is_closed_and_conservative() {
+    assert_eq!(
+        gemini_tool_calls_in_output(&json!({
+            "candidates": [{"content": {"parts": [{"text": "safe"}]}}],
+            "usageMetadata": {}
+        })),
+        Some(false)
+    );
+    assert_eq!(
+        gemini_tool_calls_in_output(&json!({
+            "candidates": [{"content": {"parts": [{"functionCall": {"name": "redacted", "args": {}}}]}}],
+            "usageMetadata": {}
+        })),
+        Some(true)
+    );
+    assert_eq!(
+        gemini_tool_calls_in_output(&json!({
+            "candidates": [{"content": {"parts": [{"futurePart": {}}]}}],
+            "usageMetadata": {}
+        })),
+        None
+    );
+    assert_eq!(
+        gemini_tool_calls_in_output(&json!({"candidates": "bad"})),
+        None
+    );
+}
+
+#[test]
+fn streaming_tool_output_evidence_merges_without_inventing_false() {
+    assert_eq!(
+        merge_tool_call_evidence(Some(false), Some(false)),
+        Some(false)
+    );
+    assert_eq!(merge_tool_call_evidence(None, Some(false)), None);
+    assert_eq!(merge_tool_call_evidence(None, Some(true)), Some(true));
+    assert_eq!(merge_tool_call_evidence(Some(true), None), Some(true));
+}
+
+#[test]
+fn native_generation_fact_is_owned_by_postgres_reservation_and_settlement() {
+    const LOCK: i64 = 831_572_908_441;
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping native Gemini generation fact matrix: test URL is unset");
+        return;
+    };
+    let mut lock = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    lock.query_one("SELECT pg_advisory_lock($1)", &[&LOCK])
+        .unwrap();
+    lock.query_one("SELECT pg_advisory_lock($1)", &[&831_572_908_442_i64])
+        .unwrap();
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    lock.batch_execute(
+        "TRUNCATE request_facts,execution_group_winner,settlement_outbox,reservations,         capacity_leases,leader_leases,engine_instances,usage_events,ledger,api_keys,accounts         RESTART IDENTITY CASCADE",
+    )
+    .unwrap();
+    pg.account_create(ACCOUNT_ID, None, 10_000).unwrap();
+    pg.account_topup(ACCOUNT_ID, 1_000_000_000, Some("gemini-generation-facts"))
+        .unwrap();
+    pg.key_issue(CUSTOMER_KEY, ACCOUNT_ID, None).unwrap();
+    let owner = pg
+        .claim_instance(
+            &format!("gemini-generation-facts-{}-{unique}", std::process::id()),
+            600,
+        )
+        .unwrap();
+    drop(pg);
+
+    let logical_id = "123e4567-e89b-42d3-a456-426614174071";
+    let billing = Arc::new(
+        AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+            Some(owner),
+            1,
+            0,
+        )
+        .unwrap(),
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let seen_count = runtime.block_on(async {
+    let response_body = json!({
+        "candidates": [{
+            "content": {"role": "model", "parts": [{
+                "functionCall": {"name": "redacted", "args": {"private": "never persisted"}}
+            }]},
+            "finishReason": "STOP",
+            "index": 0
+        }],
+        "usageMetadata": {"promptTokenCount": 2, "candidatesTokenCount": 3, "totalTokenCount": 5}
+    });
+    let (stream_reply, stream_drained) = MockReply::stream(vec![MockChunk::Data(
+        Bytes::from_static(
+            b"data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"stream\"}]}}],\"usageMetadata\":{\"promptTokenCount\":2,\"candidatesTokenCount\":3,\"totalTokenCount\":5}}}\n\n",
+        ),
+    )]);
+    let mut replies = vec![MockReply::json(StatusCode::OK, response_body.clone()); 4];
+    replies.push(stream_reply);
+    replies.push(MockReply::json(StatusCode::OK, response_body.clone()));
+    replies.push(MockReply::json(
+        StatusCode::BAD_REQUEST,
+        json!({"error": {"message": "private provider error"}}),
+    ));
+    let server = start_mock(MockState::with_replies([
+        (
+            PROFILE_A_KEY,
+            vec![MockReply::json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({"error": {"message": "rotate"}}),
+            )],
+        ),
+        (PROFILE_B_KEY, replies),
+    ]))
+    .await;
+    let fixture = gateway_fixture(&server.upstream, &[None, None], 1);
+    let app = app_state(fixture.gateway.clone(), Some(Arc::clone(&billing)));
+    let mut request = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri("/v1beta/models/gemini-integration-model:generateContent")
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .body(Body::from(
+            json!({
+                "contents": [{"role": "user", "parts": [{"text": "private prompt"}]}],
+                "tools": [{"functionDeclarations": [{"name": "private_tool", "description": "secret"}]}]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    request.headers_mut().insert(
+        crate::execution::LOGICAL_REQUEST_ID_HEADER,
+        logical_id.parse().unwrap(),
+    );
+    let logical = crate::execution::admit_logical_request_id(request.headers_mut()).unwrap();
+    request.extensions_mut().insert(logical);
+    request
+        .extensions_mut()
+        .insert(crate::execution::RequestLifecycleClock::default());
+    let response = api(
+        State(app.clone()),
+        ConnectInfo("198.51.100.10:12345".parse().unwrap()),
+        request,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = axum::body::to_bytes(response.into_body(), GEMINI_BODY_LIMIT)
+        .await
+        .unwrap();
+
+    async fn invoke_universal_generation(app: AppState, route: &str, body: Value) -> Response {
+        let mut inner = axum::extract::Request::builder()
+            .method(Method::POST)
+            .uri(format!("/test-{route}"))
+            .header("content-type", "application/json")
+            .header("x-goog-api-key", CUSTOMER_KEY)
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let mut logical_headers = HeaderMap::new();
+        logical_headers.insert(
+            crate::execution::LOGICAL_REQUEST_ID_HEADER,
+            "123e4567-e89b-42d3-a456-426614174072".parse().unwrap(),
+        );
+        let logical = crate::execution::admit_logical_request_id(&mut logical_headers).unwrap();
+        inner.extensions_mut().insert(logical);
+        inner
+            .extensions_mut()
+            .insert(crate::execution::RequestLifecycleClock::default());
+        let state = State(app);
+        let peer = ConnectInfo("198.51.100.10:12345".parse().unwrap());
+        match route {
+            "chat" => crate::gemini::chat::gemini_chat_completions(state, peer, inner).await,
+            "responses" => crate::gemini::responses::gemini_responses(state, peer, inner).await,
+            "messages" => crate::gemini::skin::gemini_messages_skin(state, peer, inner).await,
+            _ => unreachable!(),
+        }
+    }
+    for (route, body) in [
+        (
+            "chat",
+            json!({"model": "google/gemini-integration-model", "messages": [{"role": "user", "content": "chat secret"}]}),
+        ),
+        (
+            "responses",
+            json!({"model": "google/gemini-integration-model", "input": "responses secret"}),
+        ),
+        (
+            "messages",
+            json!({"model": "google/gemini-integration-model", "max_tokens": 8, "messages": [{"role": "user", "content": "messages secret"}]}),
+        ),
+    ] {
+        let wrapped = invoke_universal_generation(app.clone(), route, body).await;
+        assert_eq!(wrapped.status(), StatusCode::OK, "{route}");
+        let _ = axum::body::to_bytes(wrapped.into_body(), GEMINI_BODY_LIMIT)
+            .await
+            .unwrap();
+    }
+    let stream_logical_id = "123e4567-e89b-42d3-a456-426614174073";
+    let mut stream_request = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri("/v1beta/models/gemini-integration-model:streamGenerateContent?alt=sse")
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .body(Body::from(json!({"contents": []}).to_string()))
+        .unwrap();
+    stream_request.headers_mut().insert(
+        crate::execution::LOGICAL_REQUEST_ID_HEADER,
+        stream_logical_id.parse().unwrap(),
+    );
+    let stream_logical = crate::execution::admit_logical_request_id(stream_request.headers_mut()).unwrap();
+    stream_request.extensions_mut().insert(stream_logical);
+    stream_request
+        .extensions_mut()
+        .insert(crate::execution::RequestLifecycleClock::default());
+    let stream_response = api(
+        State(app.clone()),
+        ConnectInfo("198.51.100.10:12345".parse().unwrap()),
+        stream_request,
+    )
+    .await;
+    assert_eq!(stream_response.status(), StatusCode::OK);
+    let _ = axum::body::to_bytes(stream_response.into_body(), GEMINI_BODY_LIMIT)
+        .await
+        .unwrap();
+    assert!(stream_drained.load(Ordering::Acquire));
+
+    super::super::billing::fail_next_gemini_delivery_marker_for_test();
+    let marker_logical_id = "123e4567-e89b-42d3-a456-426614174074";
+    let mut marker_request = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri("/v1beta/models/gemini-integration-model:generateContent")
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .body(Body::from(json!({"contents": []}).to_string()))
+        .unwrap();
+    marker_request.headers_mut().insert(
+        crate::execution::LOGICAL_REQUEST_ID_HEADER,
+        marker_logical_id.parse().unwrap(),
+    );
+    let marker_logical = crate::execution::admit_logical_request_id(marker_request.headers_mut()).unwrap();
+    marker_request.extensions_mut().insert(marker_logical);
+    marker_request
+        .extensions_mut()
+        .insert(crate::execution::RequestLifecycleClock::default());
+    let marker_response = api(
+        State(app.clone()),
+        ConnectInfo("198.51.100.10:12345".parse().unwrap()),
+        marker_request,
+    )
+    .await;
+    assert_eq!(marker_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let failure_logical_id = "123e4567-e89b-42d3-a456-426614174075";
+    let mut failure_request = axum::extract::Request::builder()
+        .method(Method::POST)
+        .uri("/v1beta/models/gemini-integration-model:generateContent")
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", CUSTOMER_KEY)
+        .body(Body::from(json!({"contents": []}).to_string()))
+        .unwrap();
+    failure_request.headers_mut().insert(
+        crate::execution::LOGICAL_REQUEST_ID_HEADER,
+        failure_logical_id.parse().unwrap(),
+    );
+    let failure_logical = crate::execution::admit_logical_request_id(failure_request.headers_mut()).unwrap();
+    failure_request.extensions_mut().insert(failure_logical);
+    failure_request
+        .extensions_mut()
+        .insert(crate::execution::RequestLifecycleClock::default());
+    let failure_response = api(
+        State(app),
+        ConnectInfo("198.51.100.10:12345".parse().unwrap()),
+        failure_request,
+    )
+    .await;
+    assert_eq!(failure_response.status(), StatusCode::BAD_REQUEST);
+    billing.flush().await.unwrap();
+    server.state.seen().len()
+    });
+
+    let row = lock
+        .query_one(
+            "SELECT logical_request_id,billing_request_id,provider_plane,route_class,request_class,                    requested_model,executable_model,stream_flag,tools_declared_count,                    tool_calls_in_output,http_status_code,provider_terminal_class,delivery_state,                    upstream_request_id,internal_attempt_count,billing_outcome             FROM request_facts WHERE logical_request_id=$1",
+            &[&logical_id],
+        )
+        .unwrap();
+    assert_eq!(row.get::<_, String>(0), logical_id);
+    assert!(row.get::<_, Option<String>>(1).is_some());
+    assert_eq!(row.get::<_, String>(2), "gemini");
+    assert_eq!(row.get::<_, String>(3), "native");
+    assert_eq!(row.get::<_, String>(4), "generate");
+    assert_eq!(
+        row.get::<_, Option<String>>(5).as_deref(),
+        Some("gemini-integration-model")
+    );
+    assert_eq!(
+        row.get::<_, Option<String>>(6).as_deref(),
+        Some("gemini-integration-model")
+    );
+    assert!(!row.get::<_, bool>(7));
+    assert_eq!(row.get::<_, Option<i32>>(8), Some(1));
+    assert_eq!(row.get::<_, Option<bool>>(9), Some(true));
+    assert_eq!(row.get::<_, Option<i32>>(10), Some(200));
+    assert_eq!(row.get::<_, String>(11), "success");
+    assert_eq!(row.get::<_, String>(12), "completed");
+    assert_eq!(row.get::<_, Option<String>>(13), None);
+    assert_eq!(row.get::<_, Option<i32>>(14), Some(2));
+    assert_eq!(row.get::<_, String>(15), "winner");
+    let stream_row = lock
+        .query_one(
+            "SELECT request_class,stream_flag,tool_calls_in_output,http_status_code,provider_terminal_class,delivery_state,internal_attempt_count FROM request_facts WHERE logical_request_id=$1",
+            &[&"123e4567-e89b-42d3-a456-426614174073"],
+        )
+        .unwrap();
+    assert_eq!(stream_row.get::<_, String>(0), "stream_generate");
+    assert!(stream_row.get::<_, bool>(1));
+    assert_eq!(stream_row.get::<_, Option<bool>>(2), Some(false));
+    assert_eq!(stream_row.get::<_, Option<i32>>(3), Some(200));
+    assert_eq!(stream_row.get::<_, String>(4), "success");
+    assert_eq!(stream_row.get::<_, String>(5), "completed");
+    assert_eq!(stream_row.get::<_, Option<i32>>(6), Some(1));
+    let fact_count = lock
+        .query_one("SELECT count(*) FROM request_facts", &[])
+        .unwrap()
+        .get::<_, i64>(0);
+    assert_eq!(fact_count, 4, "universal adapters must remain fact-free");
+    let failure_row = lock
+        .query_one(
+            "SELECT http_status_code,provider_terminal_class,delivery_state,internal_attempt_count,billing_outcome FROM request_facts WHERE logical_request_id=$1",
+            &[&"123e4567-e89b-42d3-a456-426614174075"],
+        )
+        .unwrap();
+    assert_eq!(failure_row.get::<_, Option<i32>>(0), Some(400));
+    assert_eq!(failure_row.get::<_, String>(1), "client_error");
+    assert_eq!(failure_row.get::<_, String>(2), "interrupted");
+    assert_eq!(failure_row.get::<_, Option<i32>>(3), Some(1));
+    assert_eq!(failure_row.get::<_, String>(4), "canceled");
+    let marker_row = lock
+        .query_one(
+            "SELECT http_status_code,provider_terminal_class,delivery_state,internal_attempt_count,billing_outcome FROM request_facts WHERE logical_request_id=$1",
+            &[&"123e4567-e89b-42d3-a456-426614174074"],
+        )
+        .unwrap();
+    assert_eq!(marker_row.get::<_, Option<i32>>(0), Some(503));
+    assert_eq!(marker_row.get::<_, String>(1), "success");
+    assert_eq!(marker_row.get::<_, String>(2), "unknown");
+    assert_eq!(marker_row.get::<_, Option<i32>>(3), Some(1));
+    assert_eq!(marker_row.get::<_, String>(4), "winner");
+    let debug = format!("{row:?}");
+    for forbidden in [
+        "private prompt",
+        "private_tool",
+        "secret",
+        CUSTOMER_KEY,
+        PROFILE_A_KEY,
+    ] {
+        assert!(!debug.contains(forbidden));
+    }
+    assert_eq!(seen_count, 8);
+    drop(billing);
+    lock.query_one("SELECT pg_advisory_unlock($1)", &[&831_572_908_442_i64])
+        .unwrap();
     lock.query_one("SELECT pg_advisory_unlock($1)", &[&LOCK])
         .unwrap();
 }

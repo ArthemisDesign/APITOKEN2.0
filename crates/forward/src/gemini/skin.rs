@@ -1748,6 +1748,11 @@ async fn run_inner(
         .expect("static request builder is infallible");
     *inner.headers_mut() = headers;
     crate::execution::inherit_request_context(&extensions, inner.extensions_mut());
+    if suffix != "countTokens" {
+        inner
+            .extensions_mut()
+            .insert(super::api::SuppressedPendingUniversalGeneration);
+    }
     if let Some(intent) = count_tokens_intent {
         inner.extensions_mut().insert(intent);
     }

@@ -5,10 +5,16 @@ use crate::execution::{ClientAttribution, LogicalRequestId, RequestLifecycleCloc
 use crate::metrics::Metrics;
 use crate::pricing::{tariff_book, EnginePricingRequestId};
 use crate::proxy::{authorize, Authz, HoldGuard};
+use crate::request_classification::RequestClassification;
 use crate::state::AppState;
-use axum::http::{HeaderMap, HeaderValue};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use registry::request_facts::{
+    DeliveryState, ProviderTerminalClass, RequestFactAdmission, RequestFactTerminalEvidence,
+};
+use std::fmt;
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 const CALIBRATION_PROFILE_HEADER: &str = "x-apitoken-calibration-profile";
 const CALIBRATION_REQUEST_ID_HEADER: &str = "x-apitoken-calibration-request-id";
@@ -27,7 +33,14 @@ pub(crate) enum AdmissionError {
 /// Which pricing authority produced the admission hold; selects the settlement rounding
 /// contract. Release-v2 settles with the exact contract floor (matching its reserve); the
 /// legacy scalar keeps its immutable half-up arithmetic. Legacy strict Gemini is rejected at
-type GeminiReserveResult = (u64, i64, i64, i64, Option<tariff_book::PinnedTariff>);
+type GeminiReserveResult = (
+    u64,
+    i64,
+    i64,
+    i64,
+    Option<tariff_book::PinnedTariff>,
+    Option<GeminiBillableFactContext>,
+);
 
 struct Reservation {
     billing: std::sync::Arc<crate::billing::AsyncBilling>,
@@ -43,6 +56,7 @@ struct Reservation {
     pinned_tariff: Option<tariff_book::PinnedTariff>,
     request_id: String,
     guard: HoldGuard,
+    request_fact: Option<GeminiBillableFactContext>,
 }
 
 pub(crate) struct GeminiAdmission {
@@ -70,6 +84,128 @@ pub(crate) struct GeminiRequestFactSeed {
     pub(super) key_id: String,
     pub(super) admitted_at: i64,
     pub(super) lifecycle_clock: RequestLifecycleClock,
+}
+
+/// Closed, content-free native generation evidence created only after the owning Gemini parser and
+/// validator accept the original customer body. The observer counts physical generation POSTs at
+/// the transport seam; no request JSON, tool name, provider credential or header is retained.
+pub(crate) struct GeminiBillableRequestSpec {
+    request_class: GeminiBillableRequestClass,
+    requested_model: Option<String>,
+    executable_model: Option<String>,
+    stream_flag: bool,
+    classification: RequestClassification,
+    actual_sends: super::ActualSendObserver,
+    downstream_disconnect: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy)]
+enum GeminiBillableRequestClass {
+    Generate,
+    StreamGenerate,
+}
+
+struct GeminiBillableFactContext {
+    admitted_at: i64,
+    lifecycle_clock: RequestLifecycleClock,
+    actual_sends: super::ActualSendObserver,
+    downstream_disconnect: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy)]
+struct GeminiTerminalFact {
+    http_status_code: Option<i32>,
+    provider_terminal_class: ProviderTerminalClass,
+    delivery_state: DeliveryState,
+    downstream_disconnect: Option<bool>,
+    attempts_exhaustive: bool,
+    tool_calls_in_output: Option<bool>,
+}
+
+impl fmt::Debug for GeminiBillableRequestSpec {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("GeminiBillableRequestSpec(<redacted>)")
+    }
+}
+
+impl fmt::Debug for GeminiBillableFactContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("GeminiBillableFactContext(<redacted>)")
+    }
+}
+
+impl GeminiBillableRequestSpec {
+    pub(crate) fn native(
+        requested_model: Option<String>,
+        executable_model: Option<String>,
+        stream_flag: bool,
+        classification: RequestClassification,
+    ) -> Self {
+        Self {
+            request_class: if stream_flag {
+                GeminiBillableRequestClass::StreamGenerate
+            } else {
+                GeminiBillableRequestClass::Generate
+            },
+            requested_model,
+            executable_model,
+            stream_flag,
+            classification,
+            actual_sends: super::ActualSendObserver::default(),
+            downstream_disconnect: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn request_class(&self) -> &'static str {
+        match self.request_class {
+            GeminiBillableRequestClass::Generate => "generate",
+            GeminiBillableRequestClass::StreamGenerate => "stream_generate",
+        }
+    }
+}
+
+impl GeminiRequestFactSeed {
+    fn into_billable_admission(
+        self,
+        billing_request_id: String,
+        spec: &GeminiBillableRequestSpec,
+    ) -> (RequestFactAdmission, GeminiBillableFactContext) {
+        let admission = RequestFactAdmission {
+            logical_request_id: self.logical_request_id,
+            billing_request_id,
+            execution_group_id: self.execution.group_id().map(str::to_owned),
+            attempt: self.execution.attempt(),
+            account_id: self.account_id,
+            key_id: self.key_id,
+            client_kind: self.client_attribution.kind(),
+            client_source: self.client_attribution.source(),
+            client_version: self.client_attribution.version().map(str::to_owned),
+            provider_plane: "gemini".into(),
+            route_class: "native".into(),
+            request_class: spec.request_class().into(),
+            requested_model: spec.requested_model.clone(),
+            executable_model: spec.executable_model.clone(),
+            stream_flag: spec.stream_flag,
+            tools_declared_count: spec.classification.tools_declared_count(),
+            tool_classes: spec.classification.tool_classes(),
+            tool_choice_mode: spec.classification.tool_choice_mode(),
+            parallel_tools_requested: spec.classification.parallel_tools_requested(),
+            tool_results_in_input: spec.classification.tool_results_in_input(),
+            structured_output_flag: spec.classification.structured_output_flag(),
+            reasoning_flag: spec.classification.reasoning_flag(),
+            service_tier: spec.classification.service_tier().map(str::to_owned),
+            input_modalities: spec.classification.input_modalities(),
+            output_modalities: spec.classification.output_modalities(),
+            admitted_at: self.admitted_at,
+        };
+        let context = GeminiBillableFactContext {
+            admitted_at: self.admitted_at,
+            lifecycle_clock: self.lifecycle_clock,
+            actual_sends: spec.actual_sends.clone(),
+            downstream_disconnect: Arc::clone(&spec.downstream_disconnect),
+        };
+        (admission, context)
+    }
 }
 
 impl PendingGeminiAdmission {
@@ -132,6 +268,7 @@ impl PendingGeminiAdmission {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn reserve(
         self,
         app: &AppState,
@@ -141,6 +278,7 @@ impl PendingGeminiAdmission {
         image_output_tokens: u64,
         grounding_enabled: bool,
         allow_output_cap: bool,
+        billable_fact: Option<(GeminiRequestFactSeed, GeminiBillableRequestSpec)>,
     ) -> Result<(GeminiAdmission, u64), AdmissionError> {
         let mut effective_output_tokens = requested_output_tokens.max(1);
         let reservation = match (&self.authz, &app.billing) {
@@ -154,12 +292,20 @@ impl PendingGeminiAdmission {
                 Some(billing),
             ) => {
                 let request_id = self.calibration_request_id.clone();
+                // SQLite intentionally preserves the legacy money path and never admits analytics.
+                // PostgreSQL is identified by its owned command-metrics carrier.
+                let billable_fact = billing
+                    .pg_command_stats()
+                    .is_some()
+                    .then_some(billable_fact)
+                    .flatten();
                 let (
                     affordable_output_tokens,
                     hold,
                     reservation_mult_bp,
                     tariff_priced_ts,
                     pinned_tariff,
+                    request_fact,
                 ) = reserve_gemini_metered(
                     billing,
                     account_id,
@@ -174,6 +320,7 @@ impl PendingGeminiAdmission {
                     *available_nano,
                     &request_id,
                     &self.execution,
+                    billable_fact,
                 )
                 .await?;
                 effective_output_tokens = affordable_output_tokens;
@@ -186,6 +333,7 @@ impl PendingGeminiAdmission {
                     tariff_priced_ts,
                     pinned_tariff,
                     request_id: request_id.clone(),
+                    request_fact,
                     guard: HoldGuard::new(
                         Some(billing.clone()),
                         account_id.clone(),
@@ -224,6 +372,7 @@ async fn reserve_gemini_metered(
     available_nano: i64,
     request_id: &str,
     execution: &registry::ExecutionAttempt,
+    billable_fact: Option<(GeminiRequestFactSeed, GeminiBillableRequestSpec)>,
 ) -> Result<GeminiReserveResult, AdmissionError> {
     if available_nano <= 0 {
         return Err(AdmissionError::LowBalance);
@@ -242,8 +391,55 @@ async fn reserve_gemini_metered(
         available_nano,
         request_id,
         execution,
+        billable_fact,
     )
     .await
+}
+
+#[cfg(test)]
+static FAIL_GEMINI_DELIVERY_MARKER_FOR_TEST: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) fn fail_next_gemini_delivery_marker_for_test() {
+    FAIL_GEMINI_DELIVERY_MARKER_FOR_TEST.store(true, Ordering::Release);
+}
+
+impl GeminiBillableFactContext {
+    fn terminal_evidence(
+        &self,
+        http_status_code: Option<i32>,
+        provider_terminal_class: ProviderTerminalClass,
+        delivery_state: DeliveryState,
+        downstream_disconnect: Option<bool>,
+        attempts_exhaustive: bool,
+        tool_calls_in_output: Option<bool>,
+    ) -> RequestFactTerminalEvidence {
+        let terminal_at = pool::now().max(self.admitted_at);
+        RequestFactTerminalEvidence {
+            terminal_at,
+            http_status_code,
+            provider_terminal_class,
+            delivery_state,
+            downstream_disconnect: downstream_disconnect.filter(|observed| *observed).or_else(
+                || {
+                    self.downstream_disconnect
+                        .load(Ordering::Acquire)
+                        .then_some(true)
+                },
+            ),
+            // The private Antigravity requestId is generated locally and is not provider evidence.
+            upstream_request_id: None,
+            first_public_byte_at: self
+                .lifecycle_clock
+                .seal_first_public_byte_for_terminal(self.admitted_at, terminal_at),
+            internal_attempt_count: attempts_exhaustive
+                .then(|| self.actual_sends.count())
+                .flatten()
+                .and_then(|count| i32::try_from(count).ok()),
+            failure_class: None,
+            tool_calls_in_output,
+        }
+    }
 }
 
 impl GeminiAdmission {
@@ -266,15 +462,56 @@ impl GeminiAdmission {
         self.calibration_not_after
     }
 
+    pub(crate) fn actual_send_observer(&self) -> Option<super::ActualSendObserver> {
+        self.reservation
+            .as_ref()
+            .and_then(|reservation| reservation.request_fact.as_ref())
+            .map(|context| context.actual_sends.clone())
+    }
+
+    pub(crate) fn observed_failure_delivery(&self) -> DeliveryState {
+        match self
+            .reservation
+            .as_ref()
+            .and_then(|reservation| reservation.request_fact.as_ref())
+            .and_then(|context| context.actual_sends.count())
+        {
+            Some(0) => DeliveryState::NotStarted,
+            Some(_) => DeliveryState::Interrupted,
+            None => DeliveryState::Unknown,
+        }
+    }
+
+    pub(crate) fn record_downstream_disconnect(&self) {
+        if let Some(context) = self
+            .reservation
+            .as_ref()
+            .and_then(|reservation| reservation.request_fact.as_ref())
+        {
+            context.downstream_disconnect.store(true, Ordering::Release);
+        }
+    }
+
     pub(crate) async fn mark_delivering(&self) -> Result<(), AdmissionError> {
+        #[cfg(test)]
+        if FAIL_GEMINI_DELIVERY_MARKER_FOR_TEST.swap(false, Ordering::AcqRel) {
+            return Err(AdmissionError::Unavailable);
+        }
         let Some(reservation) = &self.reservation else {
             return Ok(());
         };
-        match reservation
-            .billing
-            .mark_delivering(&reservation.request_id, 3_600)
-            .await
-        {
+        let result = if reservation.request_fact.is_some() {
+            reservation
+                .billing
+                .mark_delivering_with_request_fact(&reservation.request_id, 3_600)
+                .await
+        } else {
+            reservation
+                .billing
+                .mark_delivering(&reservation.request_id, 3_600)
+                .await
+        };
+        match result {
             Ok(true) => Ok(()),
             Ok(false) | Err(_) => Err(AdmissionError::Unavailable),
         }
@@ -282,13 +519,111 @@ impl GeminiAdmission {
 
     /// Settle customer money when present and return one exact immutable provider event. Admin
     /// admissions have no reservation but keep the same request identity and calibration vector.
+    #[cfg(test)]
     pub(crate) fn settle(
         self,
         model: &GeminiModel,
         usage: Option<&metering::GeminiUsage>,
         profile_id: &str,
     ) -> Option<registry::ProviderTurnCalibrationEvent> {
-        self.settle_at(model, usage, profile_id, pool::now())
+        self.settle_terminal(
+            model,
+            usage,
+            profile_id,
+            Some(200),
+            ProviderTerminalClass::Success,
+            DeliveryState::Completed,
+            None,
+            true,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn settle_terminal(
+        self,
+        model: &GeminiModel,
+        usage: Option<&metering::GeminiUsage>,
+        profile_id: &str,
+        http_status_code: Option<i32>,
+        provider_terminal_class: ProviderTerminalClass,
+        delivery_state: DeliveryState,
+        downstream_disconnect: Option<bool>,
+        attempts_exhaustive: bool,
+        tool_calls_in_output: Option<bool>,
+    ) -> Option<registry::ProviderTurnCalibrationEvent> {
+        self.settle_at(
+            model,
+            usage,
+            profile_id,
+            pool::now(),
+            Some(GeminiTerminalFact {
+                http_status_code,
+                provider_terminal_class,
+                delivery_state,
+                downstream_disconnect,
+                attempts_exhaustive,
+                tool_calls_in_output,
+            }),
+        )
+    }
+
+    pub(crate) fn settle_failure(
+        mut self,
+        http_status: StatusCode,
+        provider_terminal_class: ProviderTerminalClass,
+        delivery_state: DeliveryState,
+    ) {
+        let Some(reservation) = self.reservation.as_mut() else {
+            return;
+        };
+        let Some(context) = reservation.request_fact.take() else {
+            return;
+        };
+        let evidence = context.terminal_evidence(
+            Some(i32::from(http_status.as_u16())),
+            provider_terminal_class,
+            delivery_state,
+            None,
+            true,
+            None,
+        );
+        if let Err(error) = reservation.billing.settle_detached_with_request_fact(
+            &reservation.request_id,
+            &reservation.account_id,
+            &reservation.key,
+            reservation.hold,
+            0,
+            None,
+            None,
+            evidence,
+        ) {
+            elog::error(
+                "gemini-billing",
+                format!("Gemini request-fact failure settlement rejected: {error:#}"),
+            );
+        }
+        reservation.guard.disarm();
+    }
+
+    pub(crate) fn settle_after_delivery_marker_failure(
+        self,
+        model: &GeminiModel,
+        usage: Option<&metering::GeminiUsage>,
+        profile_id: &str,
+        tool_calls_in_output: Option<bool>,
+    ) -> Option<registry::ProviderTurnCalibrationEvent> {
+        self.settle_terminal(
+            model,
+            usage,
+            profile_id,
+            Some(503),
+            ProviderTerminalClass::Success,
+            DeliveryState::Unknown,
+            None,
+            true,
+            tool_calls_in_output,
+        )
     }
 
     fn settle_at(
@@ -297,6 +632,7 @@ impl GeminiAdmission {
         usage: Option<&metering::GeminiUsage>,
         profile_id: &str,
         completed_at: i64,
+        terminal: Option<GeminiTerminalFact>,
     ) -> Option<registry::ProviderTurnCalibrationEvent> {
         if let Some(mut reservation) = self.reservation.take() {
             let priced_ts = reservation.tariff_priced_ts;
@@ -349,15 +685,66 @@ impl GeminiAdmission {
                 priced_ts,
                 prices,
             );
-            reservation.billing.settle_detached(
-                &reservation.request_id,
-                &reservation.account_id,
-                &reservation.key,
-                reservation.hold,
-                charge,
-                None,
-                event,
-            );
+            let settlement = match (reservation.request_fact.take(), terminal) {
+                (Some(context), Some(terminal)) => {
+                    let evidence = context.terminal_evidence(
+                        terminal.http_status_code,
+                        terminal.provider_terminal_class,
+                        terminal.delivery_state,
+                        terminal.downstream_disconnect,
+                        terminal.attempts_exhaustive,
+                        terminal.tool_calls_in_output,
+                    );
+                    reservation.billing.settle_detached_with_request_fact(
+                        &reservation.request_id,
+                        &reservation.account_id,
+                        &reservation.key,
+                        reservation.hold,
+                        charge,
+                        None,
+                        event,
+                        evidence,
+                    )
+                }
+                (Some(context), None) => {
+                    let evidence = context.terminal_evidence(
+                        None,
+                        ProviderTerminalClass::Unknown,
+                        DeliveryState::Unknown,
+                        None,
+                        false,
+                        None,
+                    );
+                    reservation.billing.settle_detached_with_request_fact(
+                        &reservation.request_id,
+                        &reservation.account_id,
+                        &reservation.key,
+                        reservation.hold,
+                        charge,
+                        None,
+                        event,
+                        evidence,
+                    )
+                }
+                (None, _) => {
+                    reservation.billing.settle_detached(
+                        &reservation.request_id,
+                        &reservation.account_id,
+                        &reservation.key,
+                        reservation.hold,
+                        charge,
+                        None,
+                        event,
+                    );
+                    Ok(())
+                }
+            };
+            if let Err(error) = settlement {
+                elog::error(
+                    "gemini-billing",
+                    format!("Gemini request-fact settlement rejected: {error:#}"),
+                );
+            }
             reservation.guard.disarm();
             if charge > 0 {
                 elog::info(
@@ -411,6 +798,41 @@ impl GeminiAdmission {
                 schedule_id,
             )
         })
+    }
+}
+
+impl Drop for GeminiAdmission {
+    fn drop(&mut self) {
+        let Some(reservation) = self.reservation.as_mut() else {
+            return;
+        };
+        let Some(context) = reservation.request_fact.take() else {
+            return;
+        };
+        let evidence = context.terminal_evidence(
+            None,
+            ProviderTerminalClass::Unknown,
+            DeliveryState::Unknown,
+            None,
+            false,
+            None,
+        );
+        if let Err(error) = reservation.billing.settle_detached_with_request_fact(
+            &reservation.request_id,
+            &reservation.account_id,
+            &reservation.key,
+            reservation.hold,
+            0,
+            None,
+            None,
+            evidence,
+        ) {
+            elog::error(
+                "gemini-billing",
+                format!("Gemini request-fact cancellation evidence rejected: {error:#}"),
+            );
+        }
+        reservation.guard.disarm();
     }
 }
 
@@ -841,6 +1263,7 @@ async fn reserve_gemini_legacy(
     available_nano: i64,
     request_id: &str,
     execution: &registry::ExecutionAttempt,
+    billable_fact: Option<(GeminiRequestFactSeed, GeminiBillableRequestSpec)>,
 ) -> Result<GeminiReserveResult, AdmissionError> {
     reserve_gemini_legacy_at(
         billing,
@@ -857,6 +1280,7 @@ async fn reserve_gemini_legacy(
         request_id,
         execution,
         pool::now(),
+        billable_fact,
     )
     .await
 }
@@ -877,6 +1301,7 @@ async fn reserve_gemini_legacy_at(
     request_id: &str,
     execution: &registry::ExecutionAttempt,
     priced_ts: i64,
+    billable_fact: Option<(GeminiRequestFactSeed, GeminiBillableRequestSpec)>,
 ) -> Result<GeminiReserveResult, AdmissionError> {
     // Hot tariff override: the matched catalog family resolves against the process-wide book; an
     // override replaces only the base vector (the conservative maximum/long-context selection
@@ -907,24 +1332,50 @@ async fn reserve_gemini_legacy_at(
     ) else {
         return Err(AdmissionError::LowBalance);
     };
-    match billing
-        .reserve_priced_request_for_execution(
-            request_id,
-            account_id,
-            key,
-            hold,
-            execution.clone(),
-            registry::PROVIDER_GOOGLE,
-            mult_bp,
-        )
-        .await
-    {
+    let (request_fact_admission, request_fact_context) = match billable_fact {
+        Some((seed, spec)) => {
+            let (admission, context) = seed.into_billable_admission(request_id.to_owned(), &spec);
+            (Some(admission), Some(context))
+        }
+        None => (None, None),
+    };
+    let reserved = match request_fact_admission {
+        Some(admission) => {
+            billing
+                .reserve_priced_request_for_execution_with_fact(
+                    request_id,
+                    account_id,
+                    key,
+                    hold,
+                    execution.clone(),
+                    registry::PROVIDER_GOOGLE,
+                    mult_bp,
+                    admission,
+                )
+                .await
+        }
+        None => {
+            billing
+                .reserve_priced_request_for_execution(
+                    request_id,
+                    account_id,
+                    key,
+                    hold,
+                    execution.clone(),
+                    registry::PROVIDER_GOOGLE,
+                    mult_bp,
+                )
+                .await
+        }
+    };
+    match reserved {
         Ok(Some(_)) => Ok((
             effective_output_tokens,
             hold,
             mult_bp,
             priced_ts,
             resolved.pin,
+            request_fact_context,
         )),
         Ok(None) => Err(AdmissionError::LowBalance),
         Err(error) => {
@@ -1052,6 +1503,79 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[tokio::test]
+    async fn billable_terminal_evidence_keeps_exact_attempts_and_delivery_classes() {
+        for (attempts, provider, delivery) in [
+            (
+                0,
+                ProviderTerminalClass::Transport,
+                DeliveryState::NotStarted,
+            ),
+            (
+                1,
+                ProviderTerminalClass::ClientError,
+                DeliveryState::Interrupted,
+            ),
+            (
+                2,
+                ProviderTerminalClass::UpstreamError,
+                DeliveryState::Interrupted,
+            ),
+            (
+                3,
+                ProviderTerminalClass::ProtocolError,
+                DeliveryState::Interrupted,
+            ),
+            (4, ProviderTerminalClass::Success, DeliveryState::Completed),
+        ] {
+            let observer = super::super::ActualSendObserver::default();
+            for _ in 0..attempts {
+                observer.record().await;
+            }
+            let context = GeminiBillableFactContext {
+                admitted_at: pool::now(),
+                lifecycle_clock: RequestLifecycleClock::default(),
+                actual_sends: observer,
+                downstream_disconnect: Arc::new(AtomicBool::new(false)),
+            };
+            let evidence = context.terminal_evidence(
+                Some(if provider == ProviderTerminalClass::Success {
+                    200
+                } else {
+                    503
+                }),
+                provider,
+                delivery,
+                None,
+                true,
+                Some(provider == ProviderTerminalClass::Success),
+            );
+            assert_eq!(evidence.internal_attempt_count, Some(attempts));
+            assert_eq!(evidence.provider_terminal_class, provider);
+            assert_eq!(evidence.delivery_state, delivery);
+        }
+    }
+
+    #[test]
+    fn cancellation_terminal_evidence_keeps_attempt_count_unknown() {
+        let context = GeminiBillableFactContext {
+            admitted_at: pool::now(),
+            lifecycle_clock: RequestLifecycleClock::default(),
+            actual_sends: super::super::ActualSendObserver::default(),
+            downstream_disconnect: Arc::new(AtomicBool::new(false)),
+        };
+        let evidence = context.terminal_evidence(
+            None,
+            ProviderTerminalClass::Unknown,
+            DeliveryState::Unknown,
+            None,
+            false,
+            None,
+        );
+        assert_eq!(evidence.internal_attempt_count, None);
+        assert_eq!(evidence.http_status_code, None);
+    }
 
     fn proxy_config() -> Arc<ProxyConfig> {
         Arc::new(ProxyConfig {
@@ -1200,6 +1724,7 @@ mod tests {
             0,
             REQUEST_ID,
             &registry::ExecutionAttempt::direct(),
+            None,
         )
         .await;
         assert!(matches!(result, Err(AdmissionError::LowBalance)));
@@ -1523,29 +2048,32 @@ mod tests {
         };
         let priced_ts = CUTOFF - 1;
         let completion_ts = CUTOFF;
-        let (_, hold, mult_bp, reserved_priced_ts, pinned_tariff) = reserve_gemini_legacy_at(
-            &billing,
-            ACCOUNT,
-            KEY,
-            &model,
-            usage.input_tokens,
-            usage.output_tokens,
-            0,
-            false,
-            false,
-            10_000,
-            TOPUP,
-            REQUEST_ID,
-            &registry::ExecutionAttempt::direct(),
-            priced_ts,
-        )
-        .await
-        .unwrap();
+        let (_, hold, mult_bp, reserved_priced_ts, pinned_tariff, request_fact) =
+            reserve_gemini_legacy_at(
+                &billing,
+                ACCOUNT,
+                KEY,
+                &model,
+                usage.input_tokens,
+                usage.output_tokens,
+                0,
+                false,
+                false,
+                10_000,
+                TOPUP,
+                REQUEST_ID,
+                &registry::ExecutionAttempt::direct(),
+                priced_ts,
+                None,
+            )
+            .await
+            .unwrap();
         let promo_hold = 1_000 * 750 + 100 * 3_750;
         assert_eq!(hold, promo_hold);
         assert_eq!(mult_bp, 10_000);
         assert_eq!(reserved_priced_ts, priced_ts);
         assert!(pinned_tariff.is_none());
+        assert!(request_fact.is_none());
         let admission = GeminiAdmission {
             reservation: Some(Reservation {
                 billing: Arc::clone(&billing),
@@ -1556,6 +2084,7 @@ mod tests {
                 tariff_priced_ts: reserved_priced_ts,
                 pinned_tariff,
                 request_id: REQUEST_ID.to_owned(),
+                request_fact: None,
                 guard: HoldGuard::new(
                     Some(Arc::clone(&billing)),
                     ACCOUNT.to_owned(),
@@ -1569,7 +2098,7 @@ mod tests {
             calibration_not_after: None,
         };
         let calibration_event = admission
-            .settle_at(&model, Some(&usage), "profile-1", completion_ts)
+            .settle_at(&model, Some(&usage), "profile-1", completion_ts, None)
             .unwrap();
         billing.flush().await.unwrap();
         let account = billing.account(ACCOUNT).await.unwrap().unwrap();
@@ -1658,6 +2187,7 @@ mod tests {
                     schedule_id: "google/gemini/gemini-2.5-flash/v2".to_owned(),
                 }),
                 request_id: REQUEST_ID.to_owned(),
+                request_fact: None,
                 guard: HoldGuard::new(
                     Some(Arc::clone(&billing)),
                     ACCOUNT.to_owned(),
@@ -1736,6 +2266,7 @@ mod tests {
                     schedule_id: "google/gemini/gemini-2.5-flash/v7".to_owned(),
                 }),
                 request_id: REQUEST_ID.to_owned(),
+                request_fact: None,
                 guard: HoldGuard::new(
                     Some(Arc::clone(&billing)),
                     ACCOUNT.to_owned(),
@@ -1753,7 +2284,7 @@ mod tests {
             output_tokens: 100,
             ..metering::GeminiUsage::default()
         };
-        let event = admission.settle_at(&model(), Some(&usage), "profile-1", 1);
+        let event = admission.settle_at(&model(), Some(&usage), "profile-1", 1, None);
         billing.flush().await.unwrap();
         let account = billing.account(ACCOUNT).await.unwrap().unwrap();
         drop(billing);

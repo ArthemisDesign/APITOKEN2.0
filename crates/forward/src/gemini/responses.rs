@@ -250,6 +250,9 @@ pub async fn gemini_responses(
         .expect("static request builder is infallible");
     *inner.headers_mut() = headers;
     crate::execution::inherit_request_context(&parts.extensions, inner.extensions_mut());
+    inner
+        .extensions_mut()
+        .insert(super::api::SuppressedPendingUniversalGeneration);
     let upstream = gemini_api(State(app), ConnectInfo(peer), inner).await;
 
     if upstream.status() != StatusCode::OK {
