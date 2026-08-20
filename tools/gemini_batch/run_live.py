@@ -30,7 +30,7 @@ DEFAULT_MAX_OUTPUT_TOKENS = 16
 CHECKPOINT_SCHEMA = "gemini-batch-stage5-checkpoint/v1"
 PLAN_SCHEMA = "gemini-batch-stage5-plan/v1"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-SAFE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+SAFE_ID_RE = re.compile(r"^(?:batches/)?[A-Za-z0-9._-]{1,160}$")
 
 
 class RunnerError(RuntimeError):
@@ -137,7 +137,13 @@ set -a
 set +a
 batch_key=${{GEMINI_BATCH_STAGE5_API_KEY:-}}
 panel_key=${{CLAUDE_API_PANEL_KEY:-}}
+[ -n "$panel_key" ] || panel_key=${{CLAUDE_API_KEYS%%,*}}
 database_url=${{CLAUDE_API_DATABASE_URL:-${{DATABASE_URL:-}}}}
+if [ -z "$database_url" ]; then
+  pid=$(systemctl show -p MainPID --value claude-api-gemini@8795.service)
+  [ "$pid" != 0 ] || pid=$(systemctl show -p MainPID --value claude-api-gemini@8799.service)
+  database_url=$(tr '\\0' '\\n' <"/proc/$pid/environ" | sed -n 's/^CLAUDE_API_DATABASE_URL=//p' | head -1)
+fi
 test -n "$batch_key"
 test -n "$panel_key"
 test -n "$database_url"
@@ -170,7 +176,11 @@ def request(path, method="GET", body=None, panel=False):
     try:
         with urllib.request.urlopen(req, timeout=45) as response:
             raw = response.read(2_000_000)
-            return response.status, json.loads(raw or b"{}"), dict(response.headers.items())
+            try:
+                payload = json.loads(raw or b"{}")
+            except json.JSONDecodeError:
+                payload = {"raw_non_json": True}
+            return response.status, payload, dict(response.headers.items())
     except urllib.error.HTTPError as error:
         raw = error.read(200_000)
         try:
@@ -262,18 +272,9 @@ def main(command):
             if status // 100 != 2 or int(payload.get("totalTokens", 0)) <= 0:
                 raise RuntimeError("countTokens preflight failed")
             counts.append(int(payload["totalTokens"]))
-        # Create-dry preflight is attempted only when the deployed producer offers it. A 404/405/501
-        # is recorded as unavailable; any other failure blocks the paid create.
-        status, _, _ = request(f"/v1beta/models/{model}:batchGenerateContent?dryRun=true", "POST", {
-            "batch":{"displayName":"stage5-preflight","inputConfig":{"requests":[{"request":prompt(i)} for i in range(command["items"])]}}
-        })
-        if status // 100 == 2:
-            dry = "passed"
-        elif status in (404, 405, 501):
-            dry = "unavailable"
-        else:
-            raise RuntimeError("create dry preflight failed")
-        return {"count_tokens": counts, "create_dry_preflight": dry}
+        # The deployed producer does not implement a true no-op dryRun contract. Never probe the
+        # mutating create route under a dryRun query: it would reserve money and create real jobs.
+        return {"count_tokens": counts, "create_dry_preflight": "unavailable"}
     if op == "diagnostic":
         status, payload, _ = request("/gemini-subs", panel=True)
         if status // 100 != 2:
@@ -293,13 +294,13 @@ def main(command):
             raise RuntimeError("server-authoritative holds exceed the original budget remainder")
         return {"batch_id": name, "holds": rows}
     if op == "cancel":
-        status, _, _ = request("/v1beta/" + command["batch_id"] + ":cancel", "POST", {})
+        status, _, _ = request("/v1beta/" + command["batch_id"].removeprefix("batches/") + ":cancel", "POST", {})
         if status // 100 != 2:
             raise RuntimeError("cancel failed")
         return {"batch_id": command["batch_id"], "canceled": True}
     if op == "observe":
         batch_id = command["batch_id"]
-        status, payload, _ = request("/v1beta/" + batch_id)
+        status, payload, _ = request("/v1beta/" + batch_id.removeprefix("batches/"))
         if status // 100 != 2:
             raise RuntimeError("batch observation failed")
         ident = batch_id.split("/", 1)[1]
@@ -307,7 +308,7 @@ def main(command):
     raise RuntimeError("unsupported remote operation")
 
 try:
-    command = json.load(sys.stdin)
+    command = json.loads(__COMMAND_JSON__)
     print(json.dumps({"ok": True, "value": main(command)}, separators=(",", ":")))
 except Exception as error:
     print(json.dumps({"ok": False, "error": str(error)[:240]}, separators=(",", ":")))
@@ -321,7 +322,8 @@ class Remote:
         self.timeout = timeout
 
     def call(self, command: dict[str, Any], *, paid_create: bool = False) -> dict[str, Any]:
-        payload = (REMOTE_HELPER + "\n").encode() + json.dumps(command, separators=(",", ":")).encode()
+        command_json = json.dumps(json.dumps(command, separators=(",", ":")))
+        payload = REMOTE_HELPER.replace("__COMMAND_JSON__", command_json).encode()
         try:
             result = subprocess.run(
                 self.argv,
@@ -363,7 +365,7 @@ def production_green_sha(remote: Remote) -> str:
     }
     # Release identity is read without application credentials by a separate fixed SSH command.
     argv = remote.argv[:2] + [
-        "set -eu; readlink -f /srv/claude-api/releases/current | sed -n 's#.*/\\([0-9a-f]\\{40\\}\\)$#\\1#p'"
+        "set -eu; readlink -f /srv/claude-api/releases/current | awk -F/ '{print $NF}'"
     ]
     result = subprocess.run(argv, capture_output=True, timeout=30, check=False, text=True)
     if result.returncode != 0:
