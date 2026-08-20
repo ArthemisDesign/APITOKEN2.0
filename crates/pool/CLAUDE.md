@@ -25,8 +25,11 @@ read-only hint before the distributed claim; `route_affinity` revalidates it and
   loaded profile via `select_best`, **the binding is preserved**; if the healthy home is the only one,
   load-threshold fail-open keeps the request on it with no waiting/rejection;
 - **(re)binding** — no home / home is dead, at ≥100% hard cap or deeply unavailable →
-  `place_best`: capacity-weighted placement (max free USD capacity), where `MAX_INFLIGHT` is only
-  a soft routing threshold; if the whole fleet is above it, selection continues by minimum in-flight.
+  `place_best`: normalized placement scoring (R2 of `docs/engine/QUOTA_DISTRIBUTION_ANALYSIS.md`):
+  `min(free5/cap5, free7/cap7) − 0.5·util7` — the tight window still decides through `min`, but a
+  "5h-fresh, 7d-burnt" home no longer absorbs every new session (the old absolute-USD
+  `min(free5, free7)` produced a self-sustaining weekly drain of the same homes). `MAX_INFLIGHT`
+  is only a soft routing threshold; if the whole fleet is above it, selection continues by minimum in-flight.
 
 A shared cache-root is NOT a lineage: `peek_affinity_home_with_warm` receives several opaque warm homes,
 warms at least two competing homes (if the second has ≥70% of the best's free capacity), then
@@ -113,6 +116,10 @@ verdict is issued ONLY by the poller with a clean probe — forward on a live 40
 - `pick`: non-cooling first, then those under the `util_cap` ceiling; sorting
   **eff7 → eff5 → warn(allowed<warning) → inflight → LRU**. Strategy: protect the weekly (7d)
   budget, spread out the 5h one.
+- `place_best` (new-session placement): `placement_score = min(free5/cap5, free7/cap7) − 0.5·util7`
+  (normalized, λ from the accepted R2 range [0.5; 1.0]); ties break by fewer in-flight, then LRU.
+  The weekly penalty is what keeps new sessions off 5h-fresh/7d-burnt homes; continuations
+  (pin/spill) never see this score.
 - Filters relax gradually (if empty — take the least hot one); the pool NEVER "stalls".
 - `mark_used` = +1 in-flight (fan of parallel streams); `mark_ok`/`mark_cooling` = −1 (clamped at 0).
   `cool` — cooling WITHOUT touching in-flight (for the background poller, which did not call `mark_used`).

@@ -99,3 +99,32 @@ steering(≥50% от свёртки) + курсор. Sticky выигрывает
 Проверки: `cargo build -p claude-api`, `cargo test -p claude-api provider_quota_points` (2 теста:
 раздельные окна + допуск длительности/кламп прошедшего reset), `cargo test -p claude-api
 metrics_store` (6 существующих тестов зелёные).
+
+## R2 — Claude: 7d учитывается в placement новых сессий
+
+**Коммит:** `fix(pool): нормированный placement-скоринг новых сессий с учётом 7d (R2)`.
+
+Проблема П2 подтверждена кодом: `placement_free = min(free5h, free7d)` в абсолютных USD
+максимизировал свежий 5h даже при выжженной неделе — новые сессии концентрировались на
+«5h-свежих, 7d-выжженных» домах и дожигали их же неделю. `conserves_weekly_budget` покрывал
+только `pick`/`select_best`, где 7d и так решает первым ключом.
+
+Реализация (ровно по плану §4 R2):
+- `placement_free` заменён на `placement_score = min(free5/cap5, free7/cap7) − λ·util7`,
+  λ = 0.5 (середина принятого диапазона 0.5–1.0). Нормировка на cap обязательна — абсолютный
+  штраф λ·cap7 ~$750–1500 забил бы free5 ~$50.
+- Применён в обоих местах, где работал `placement_free`: `place_best` и
+  `peek_affinity_home_with_warm` (выбор тёплого cache-root) — иначе cache-root продолжал бы
+  налипать на 7d-выжженные дома.
+- Пин/спилл продолжений не затронуты: `route_affinity` для продолжений по-прежнему использует
+  жёсткий 100% потолок, без скоринга.
+
+Тесты рядом с `conserves_weekly_budget` (crates/pool/src/lib.rs):
+- `placement_conserves_weekly_budget_for_new_sessions` — 5h-свежий/7d-выжженный дом проигрывает
+  новое размещение;
+- `placement_still_respects_the_tight_5h_window` — 5h-дефицит решает через min;
+- `placement_score_is_normalized_across_plans` — равные доли при разных планах (Max20 vs Pro) дают
+  равный скоринг (старый абсолютный вариант всегда выигрывал у Max20).
+
+Обновлён `crates/pool/CLAUDE.md` (живой контракт: описание place_best и placement_score).
+Проверки: `cargo build -p pool`, `cargo test -p pool` — 59 тестов зелёные (включая 3 новых).

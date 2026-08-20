@@ -676,12 +676,22 @@ fn select_best_non_cooling(
     select_best_with_policy(g, exclude, now, rsv, p5, p7, false)
 }
 
-/// Capacity-weighted placement НОВОЙ сессии: среди здоровых персон под потолком util И под
-/// конвертом конкуррентности (`inflight < max_inflight()`) — та, где больше свободной ёмкости (USD).
-/// Так новые сессии наливаются в самые пустые аккаунты, но не сверх человеческого конверта; когда
-/// эмптейший упёрся в конверт — перелив на следующий по ёмкости. Никого под конвертом → не зависаем
-/// (обычный `select_best`, эффект — краткая деградация естественности под пиком).
-fn placement_free(g: &Inner, s: &Sub, now: i64, p5: f64, p7: f64) -> f64 {
+/// Штраф за 7d-утилизацию в скоринге placement новых сессий (R2 из
+/// `docs/engine/QUOTA_DISTRIBUTION_ANALYSIS.md`): в нормированных долях окна, поэтому
+/// сопоставим с `min(free5/cap5, free7/cap7)` ∈ [0, 1]. Значение 0.5 — середина принятого
+/// диапазона λ ∈ [0.5; 1.0]: 7d-порядок уже наследуется из `select_best` (где 7d — главный
+/// ключ), здесь достаточно снять самоподдерживающийся «недельный слив» 5h-свежих домов,
+/// не делая 5h-окно безучастным.
+const PLACEMENT_UTIL7_PENALTY: f64 = 0.5;
+
+/// Скоринг placement НОВОЙ сессии (R2): `min(free5/cap5, free7/cap7) − λ·util7`, где
+/// `freeW = capW·(1−utilW)`. Нормировка на cap обязательна: абсолютный штраф `λ·cap7`~$750–1500
+/// забил бы `free5`~$50, а абсолютный `min(free5, free7)` наливал новые сессии на «5h-свежие,
+/// 7d-выжженные» дома (максимум `placement_free` выигрывал у подписки с только что сброшенным
+/// 5h даже при высоком util7d — дома дожигали сами себя по неделе). Здесь 5h-дефицит по-прежнему
+/// решает через min, а 7d-выжженность отодвигает дом штрафом. Пин/спилл продолжений это не
+/// касается: скоринг участвует только в размещении новых сессий и в выборе тёплых cache-root.
+fn placement_score(g: &Inner, s: &Sub, now: i64, p5: f64, p7: f64) -> f64 {
     let l = g.live.get(&s.email);
     let sc = plan_scale(&s.plan); // прайор по тарифу (Pro/Max5 меньше Max20) до калибровки
     let cap5 = l
@@ -692,8 +702,19 @@ fn placement_free(g: &Inner, s: &Sub, now: i64, p5: f64, p7: f64) -> f64 {
         .map(|l| l.cap7d_usd)
         .filter(|c| *c > 0.0)
         .unwrap_or(p7 * sc);
-    (cap5 * (1.0 - live_util(g, &s.email, sc, 5, now, p5, p7)))
-        .min(cap7 * (1.0 - live_util(g, &s.email, sc, 7, now, p5, p7)))
+    let util5 = live_util(g, &s.email, sc, 5, now, p5, p7);
+    let util7 = live_util(g, &s.email, sc, 7, now, p5, p7);
+    let free5_norm = if cap5 > 0.0 {
+        (cap5 * (1.0 - util5) / cap5).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let free7_norm = if cap7 > 0.0 {
+        (cap7 * (1.0 - util7) / cap7).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    free5_norm.min(free7_norm) - PLACEMENT_UTIL7_PENALTY * util7.clamp(0.0, 1.0)
 }
 
 fn placement_eligible(
@@ -728,9 +749,9 @@ fn place_best(
         .iter()
         .filter(|s| placement_eligible(g, s, exclude, now, rsv, p5, p7));
     let best = eligible.max_by(|a, b| {
-        placement_free(g, a, now, p5, p7)
-            .partial_cmp(&placement_free(g, b, now, p5, p7))
-            .unwrap_or(Equal) // больше свободной ёмкости
+        placement_score(g, a, now, p5, p7)
+            .partial_cmp(&placement_score(g, b, now, p5, p7))
+            .unwrap_or(Equal) // больше нормированного скоринга (свободная доля минус штраф 7d)
             .then(inflight_of(g, &b.email).cmp(&inflight_of(g, &a.email))) // при равенстве — меньше in-flight (веер)
             .then(lru(&b.email).cmp(&lru(&a.email)))
     }); // затем давнее использование
@@ -956,8 +977,8 @@ impl Pool {
         let warm_ids: HashSet<&str> = warm_homes.iter().map(String::as_str).collect();
         let is_warm = |sub: &Sub| warm_ids.contains(identify(&sub.email).as_str());
         let better = |a: &&Sub, b: &&Sub| {
-            placement_free(&g, a, now, p5, p7)
-                .partial_cmp(&placement_free(&g, b, now, p5, p7))
+            placement_score(&g, a, now, p5, p7)
+                .partial_cmp(&placement_score(&g, b, now, p5, p7))
                 .unwrap_or(Equal)
                 .then(inflight_of(&g, &b.email).cmp(&inflight_of(&g, &a.email)))
         };
@@ -968,7 +989,7 @@ impl Pool {
             .collect();
         let warm_count = eligible.iter().filter(|sub| is_warm(sub)).count();
         let ratio = min_capacity_ratio.clamp(0.0, 1.0);
-        let global_free = placement_free(&g, &global, now, p5, p7).max(0.0);
+        let global_score = placement_score(&g, &global, now, p5, p7).max(0.0);
 
         // A common root must not collapse every independent session onto its first home. Seed a
         // second competitive home once, after which both can receive cache-preserving placements.
@@ -979,7 +1000,7 @@ impl Pool {
                 .filter(|sub| !is_warm(sub))
                 .max_by(better)
             {
-                if placement_free(&g, unwarmed, now, p5, p7) >= global_free * ratio {
+                if placement_score(&g, unwarmed, now, p5, p7) >= global_score * ratio {
                     return Some((*unwarmed).clone());
                 }
             }
@@ -991,7 +1012,7 @@ impl Pool {
             .filter(|sub| is_warm(sub))
             .max_by(better)
         {
-            if placement_free(&g, warm, now, p5, p7) >= global_free * ratio {
+            if placement_score(&g, warm, now, p5, p7) >= global_score * ratio {
                 return Some((*warm).clone());
             }
         }
@@ -1914,6 +1935,64 @@ mod tests {
         p.set_util("a", Some(0.10), Some(0.50), None, None, None); // низкий 5h, высокий 7d
         p.set_util("b", Some(0.90), Some(0.10), None, None, None); // высокий 5h, низкий 7d
         assert_eq!(picked(&p), "b"); // 7d решает: b бережём неделю лучше
+    }
+
+    /// R2 (П2 из QUOTA_DISTRIBUTION_ANALYSIS): тот же принцип обязан действовать в placement
+    /// НОВЫХ сессий, а не только в `pick`. Старый `min(free5, free7)` в абсолютных USD наливал
+    /// новые сессии на «5h-свежие, 7d-выжженные» дома — самоподдерживающийся недельный слив.
+    #[test]
+    fn placement_conserves_weekly_budget_for_new_sessions() {
+        let p = pool(&["a", "b"]);
+        // a: 5h только что сброшено, но неделя выжжена; b: 5h занято наполовину, неделя почти пустая.
+        p.set_util("a", Some(0.0), Some(0.80), None, None, None);
+        p.set_util("b", Some(0.50), Some(0.10), None, None, None);
+        let placed = p.route(1).expect("placement новой сессии");
+        assert_eq!(
+            placed.email, "b",
+            "новая сессия не должна налипать на 7d-выжженный дом со свежим 5h"
+        );
+    }
+
+    /// R2: 5h-дефицит всё ещё решает через min — дом с почти полным 5h проигрывает даже при
+    /// пустой неделе (placement не должен мгновенно переполнить короткое окно).
+    #[test]
+    fn placement_still_respects_the_tight_5h_window() {
+        let p = pool(&["a", "b"]);
+        // a: 5h почти на мягком потолке (0.94 при caps 0.95), неделя пустая; b: середина обоих.
+        p.set_util("a", Some(0.94), Some(0.0), None, None, None);
+        p.set_util("b", Some(0.40), Some(0.40), None, None, None);
+        let placed = p.route(1).expect("placement новой сессии");
+        assert_eq!(placed.email, "b", "5h-дефицит решает через min даже при пустом 7d");
+    }
+
+    /// R2: ёмкости нормированы на свой cap — при равных долях утилизации дома разных планов
+    /// получают равный скоринг и размещение уходит по tie-break (in-flight, LRU), а не к тому,
+    /// чей cap абсолютно больше, как со старым `min(free5, free7)` в USD.
+    #[test]
+    fn placement_score_is_normalized_across_plans() {
+        let p = pool(&["a", "b"]);
+        // a — Max20 (прайор cap5 $50, cap7 $1500), b — Pro (×0.05). Старый абсолютный скоринг
+        // ставил a выше при ЛЮБЫХ равных долях ($45/$1350 против $2.25/$67.5 свободных).
+        p.replace_subs(vec![
+            Sub { email: "a".into(), token: "t".into(), proxy: String::new(), fleet: "prod".into(), plan: "max20".into() },
+            Sub { email: "b".into(), token: "t".into(), proxy: String::new(), fleet: "prod".into(), plan: "pro".into() },
+        ]);
+        p.set_util("a", Some(0.10), Some(0.10), None, None, None);
+        p.set_util("b", Some(0.10), Some(0.10), None, None, None);
+        let g = p.inner.read().unwrap();
+        let now = now();
+        let (a, b) = (
+            g.subs.iter().find(|s| s.email == "a").unwrap(),
+            g.subs.iter().find(|s| s.email == "b").unwrap(),
+        );
+        let (sa, sb) = (
+            placement_score(&g, a, now, 50.0, 1500.0),
+            placement_score(&g, b, now, 50.0, 1500.0),
+        );
+        assert!(
+            (sa - sb).abs() < 1e-9,
+            "равные доли при разных планах → равный нормированный скоринг: {sa} vs {sb}"
+        );
     }
 
     /// Rollover: если reset уже прошёл — окно обнулилось, util трактуем как 0.
