@@ -12,8 +12,41 @@ fn engine_migration_plan_is_contiguous() {
 }
 
 #[test]
+fn gemini_batch_ultra_profile_slots_migration_is_expand_only_and_rollback_safe() {
+    assert_eq!(CURRENT_SCHEMA_VERSION, 59);
+    assert_eq!(
+        ENGINE_MIGRATIONS
+            .iter()
+            .find(|(version, _)| *version == 59)
+            .map(|(_, sql)| *sql),
+        Some(MIGRATION_0059),
+    );
+    let normalized = MIGRATION_0059
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(normalized.contains("CREATE TABLE IF NOT EXISTS gemini_batch_profile_leases_extra"));
+    assert!(normalized.contains("slot_number smallint NOT NULL CHECK (slot_number BETWEEN 3 AND 20)"));
+    assert!(normalized.contains("CREATE TABLE IF NOT EXISTS gemini_batch_profile_dispatch_state"));
+    assert!(normalized.contains("next_dispatch_not_before_ms bigint"));
+    assert!(normalized.contains("updated_ts_ms bigint"));
+    assert!(normalized.contains("pg_advisory_xact_lock(hashtextextended(OLD.profile_id, 552966749))"));
+    assert!(normalized.contains("AFTER DELETE ON gemini_batch_profile_leases"));
+    assert!(normalized.contains("AFTER DELETE ON gemini_batch_profile_leases_slot2"));
+    assert!(normalized.contains("ON CONFLICT (profile_id) DO NOTHING"));
+    assert!(normalized.contains("VALUES (59)"));
+    for forbidden in ["ALTER TABLE", "DROP TABLE", "DROP COLUMN", "TRUNCATE"] {
+        assert!(!normalized.contains(forbidden), "0059 contains {forbidden}");
+    }
+}
+
+#[test]
 fn gemini_batch_second_profile_slot_migration_is_expand_only_and_rollback_safe() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 59);
     assert_eq!(
         ENGINE_MIGRATIONS
             .iter()
@@ -60,7 +93,7 @@ fn gemini_batch_chunked_file_shape_migration_replaces_only_the_narrow_check() {
 
 #[test]
 fn gemini_batch_authority_correction_migration_is_expand_only() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 59);
     assert_eq!(
         ENGINE_MIGRATIONS
             .iter()
@@ -90,7 +123,7 @@ fn gemini_batch_authority_correction_migration_is_expand_only() {
 
 #[test]
 fn gemini_batch_foundation_migration_is_dormant_expand_only() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 59);
     assert_eq!(
         ENGINE_MIGRATIONS
             .iter()
@@ -210,7 +243,9 @@ fn gemini_batch_foundation_migration_postgres_matrix() {
             "gemini_batch_item_files",
             "gemini_batch_items",
             "gemini_batch_jobs",
+            "gemini_batch_profile_dispatch_state",
             "gemini_batch_profile_leases",
+            "gemini_batch_profile_leases_extra",
             "gemini_batch_profile_leases_slot2",
             "gemini_batch_settlement_outbox",
         ],
@@ -224,7 +259,8 @@ fn gemini_batch_foundation_migration_postgres_matrix() {
     // restrictive owner so rerunning the matrix proves replay instead of tripping on its own residue.
     pg.client
         .batch_execute(&format!(
-            "DELETE FROM gemini_batch_profile_leases_slot2 WHERE job_id='{job}'; \
+            "DELETE FROM gemini_batch_profile_leases_extra WHERE job_id='{job}'; \
+             DELETE FROM gemini_batch_profile_leases_slot2 WHERE job_id='{job}'; \
              DELETE FROM gemini_batch_profile_leases WHERE job_id='{job}'; \
              DELETE FROM gemini_batch_settlement_outbox WHERE job_id='{job}'; \
              DELETE FROM gemini_batch_blobs WHERE job_id='{job}'; \
@@ -698,7 +734,7 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 59);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
@@ -803,7 +839,7 @@ fn tripo3d_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn tripo3d_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 59);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 49)
@@ -923,7 +959,7 @@ fn suno_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn suno_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 59);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 50)
@@ -1034,7 +1070,7 @@ fn tripo3d_pricing_provider_migration_widens_both_closed_sets() {
 
 #[test]
 fn tripo3d_pricing_provider_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 59);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 51)
@@ -1083,7 +1119,7 @@ fn suno_pricing_provider_migration_widens_both_closed_sets() {
 
 #[test]
 fn suno_pricing_provider_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 59);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 52)
@@ -1366,7 +1402,7 @@ fn request_fact_terminal_envelope_migration_postgres_matrix() {
     let mut pg = PgStore::connect(&url).unwrap();
     pg.migrate().unwrap();
     assert_eq!(pg.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 58);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 59);
     assert_eq!(
         ENGINE_MIGRATIONS
             .iter()
