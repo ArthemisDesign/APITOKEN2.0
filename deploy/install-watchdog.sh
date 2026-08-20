@@ -308,6 +308,8 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh
   install -o root -g root -m 0755 "$ROOT/deploy/large-payload-headroom.sh" \
     /usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/large-payload-evidence.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/large-payload-evidence.sh
   install -o root -g root -m 0755 "$ROOT/deploy/engine-migrate.sh" \
     /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/codex-homes-migrate.sh" \

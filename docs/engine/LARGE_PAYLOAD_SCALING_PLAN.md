@@ -428,7 +428,12 @@ Buckets доходят до 256 MiB, но labels не содержат key/accou
 
 ### 6.2 Mock integration/load harness
 
-Новый harness генерирует, не сохраняя в git:
+`tests/large_payload_mock_load.py` потоково генерирует declared/chunked тела для loopback
+mock/candidate без giant fixture или retained full body. `deploy/large-payload-evidence.sh` снимает
+content-free cgroup memory/events, FD и leaked-spool evidence для указанного slot unit. Raised-default
+commit обязан хранить exact-SHA output этих инструментов во внешнем deployment evidence journal.
+
+Harness генерирует, не сохраняя в git:
 
 - body 8/32/64/128/256 MiB и отдельный compressed-request rejection matrix;
 - ASCII text, escaped Unicode, base64 and large tool schemas;
