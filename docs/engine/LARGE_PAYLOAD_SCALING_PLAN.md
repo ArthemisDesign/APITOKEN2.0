@@ -1,6 +1,7 @@
 # План масштабирования больших API payloads
 
-Статус: **commit 5 в этом train: router и Gemini text/response 256 MiB, disk-backed 8 MiB spill.
+Статус: **commit 5 в master (`0e822c9d`), но engine cutover RED: headroom 16 GiB + tmpfs-reject
+нельзя применять к Anthropic `/run`. Этот hotfix делает headroom path-aware.
 Public OpenAI остаётся 8 MiB. Commits 7/8 ждут private app-server proof и Anthropic response
 admission.**
 
@@ -506,6 +507,9 @@ Router `@` 256 MiB request, 8 MiB spill, 4 GiB estimated-RSS, 16 GiB disk spool,
 Gemini `@` 256 MiB text/response, 8 MiB spill, 8 GiB estimated-RSS, 16 GiB disk spool.
 Candidate gate sizes `8,32,64,128,256`. OpenAI public 8 MiB и Anthropic request 32 MiB не меняются.
 Caddy 256 MiB остаётся потолком, теперь совпадает с router default.
+`large-payload-headroom.sh` различает disk `/var/lib/apitoken/spool/*` (16 GiB, tmpfs reject) и
+Anthropic `/run/claude-api-anthropic-*` (8 GiB, tmpfs allowed). Единый 16 GiB + tmpfs-reject
+сломал Anthropic start на `0e822c9d`.
 
 ### Commit 6 — Codex transport/history capacity — **сделано в этом train**
 

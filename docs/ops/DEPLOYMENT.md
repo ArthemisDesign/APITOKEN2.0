@@ -19,9 +19,17 @@ Anthropic and OpenAI slots use 6/8 GiB `MemoryHigh`/`MemoryMax`; Gemini uses 12/
 slices cap simultaneous active+candidate generations at 9/12 GiB or 18/24 GiB respectively. Every
 large-payload slot pins `LimitNOFILE=262144`, `TasksMax=8192`, and `OOMPolicy=stop`.
 
-Before starting an inactive router or Anthropic slot, the controller runs the fixed
-`large-payload-headroom.sh`: at least 12 GiB host `MemAvailable`, 16 GiB free on the disk-backed
-`/var/lib/apitoken/spool` filesystem (tmpfs is rejected), and parent `MemoryCurrent < MemoryMax` are mandatory.
+Before starting an inactive slot the controller runs the fixed `large-payload-headroom.sh`.
+Every call requires at least 12 GiB host `MemAvailable` and parent `MemoryCurrent < MemoryMax`.
+The spool floor is path-aware:
+
+- router `@` (`/var/lib/apitoken/spool/router-$PORT`): 16 GiB free on that disk filesystem;
+  `tmpfs`/`ramfs` is rejected.
+- Anthropic `@` (`/run/claude-api-anthropic-$PORT`): 8 GiB free on the host `/run` tmpfs;
+  volatile filesystems are allowed. Anthropic stays memory-first (`threshold=request`) and
+  must not inherit the disk 16 GiB / tmpfs-reject policy — that combination failed engine
+  cutover on `0e822c9d`.
+
 Failure leaves the serving slot and Caddy routing unchanged.
 
 ## Large-payload load evidence

@@ -3277,6 +3277,7 @@ grep -Fq 'payload_canary_reason' "$ROOT/deploy/router-bluegreen.sh" \
 grep -Fq 'wd_payload_canary_reason' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'engine deploy does not promote the payload-canary reason into wd_die'
 bash "$ROOT/deploy/large-payload-candidate-gate.test.sh"
+bash "$ROOT/deploy/large-payload-headroom.test.sh"
 grep -Fq 'cd /var/lib/apitoken/watchdog/router-proof' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'router proof provisioning does not pin the opened directory handle'
 grep -Fq '[[ $(pwd -P) == /var/lib/apitoken/watchdog/router-proof ]]' \
