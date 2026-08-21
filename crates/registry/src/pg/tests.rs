@@ -1393,15 +1393,14 @@ fn request_facts_migration_postgres_matrix() {
     assert!(billing_unique.contains("CREATE UNIQUE INDEX"));
     assert!(billing_unique.ends_with("(billing_request_id)"));
 
+    let fixture_logical = format!("request-facts-migration-matrix-{:016x}", now());
+    let fixture_invalid = format!("request-facts-migration-invalid-client-{:016x}", now());
+    let fixture_billing = format!("request-facts-migration-billing-{:016x}", now());
     pg.client
         .execute(
             "DELETE FROM request_facts \
               WHERE logical_request_id IN ($1,$2) OR billing_request_id=$3",
-            &[
-                &"request-facts-migration-matrix",
-                &"request-facts-migration-invalid-client",
-                &"request-facts-migration-billing",
-            ],
+            &[&fixture_logical, &fixture_invalid, &fixture_billing],
         )
         .unwrap();
     pg.client
@@ -1412,8 +1411,8 @@ fn request_facts_migration_postgres_matrix() {
                  provider_terminal_class,billing_outcome,admitted_at \
              ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
             &[
-                &"request-facts-migration-matrix",
-                &"request-facts-migration-billing",
+                &fixture_logical,
+                &fixture_billing,
                 &"request-facts-migration-account",
                 &"request-facts-migration-key",
                 &"opencode",
@@ -1435,7 +1434,7 @@ fn request_facts_migration_postgres_matrix() {
              provider_plane,route_class,request_class,admitted_at \
          ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
         &[
-            &"request-facts-migration-invalid-client",
+            &fixture_invalid,
             &"request-facts-migration-account",
             &"request-facts-migration-key",
             &"fabricated-client",
@@ -1462,7 +1461,7 @@ fn request_facts_migration_postgres_matrix() {
         .client
         .query_one(
             "SELECT COUNT(*)::bigint FROM request_facts WHERE logical_request_id=$1",
-            &[&"request-facts-migration-matrix"],
+            &[&fixture_logical],
         )
         .unwrap()
         .get(0);
@@ -1472,11 +1471,7 @@ fn request_facts_migration_postgres_matrix() {
         .execute(
             "DELETE FROM request_facts \
               WHERE logical_request_id IN ($1,$2) OR billing_request_id=$3",
-            &[
-                &"request-facts-migration-matrix",
-                &"request-facts-migration-invalid-client",
-                &"request-facts-migration-billing",
-            ],
+            &[&fixture_logical, &fixture_invalid, &fixture_billing],
         )
         .unwrap();
     lock_holder
