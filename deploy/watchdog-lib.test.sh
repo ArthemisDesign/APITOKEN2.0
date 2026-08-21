@@ -2635,6 +2635,9 @@ grep -Fq 'host_postgres_ready' "$ROOT/deploy/watchdog-test-db.sh" \
   || wd_die 'test database helper never proves the published host listener'
 grep -Fq '"/dev/tcp/127.0.0.1/$PORT"' "$ROOT/deploy/watchdog-test-db.sh" \
   || wd_die 'test database helper does not probe the published host listener'
+grep -Fq -- '--tmpfs /var/lib/postgresql:rw,noexec,nosuid,size=2g' \
+  "$ROOT/deploy/watchdog-test-db.sh" \
+  || wd_die 'test database data volume cannot hold the full candidate WAL and analytical matrices'
 grep -Fq -- '--shm-size=256m' "$ROOT/deploy/watchdog-test-db.sh" \
   || wd_die 'test database lacks bounded shared memory for parallel analytical tests'
 

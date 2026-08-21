@@ -89,7 +89,7 @@ case "$COMMAND" in
       --label apitoken.watchdog=test-database \
       --label "apitoken.watchdog.slot=$SLOT" \
       --publish "127.0.0.1:${PORT}:5432" \
-      --tmpfs /var/lib/postgresql:rw,noexec,nosuid,size=512m \
+      --tmpfs /var/lib/postgresql:rw,noexec,nosuid,size=2g \
       --shm-size=256m \
       --env "POSTGRES_DB=$DATABASE" \
       --env "POSTGRES_USER=$USER_NAME" \
