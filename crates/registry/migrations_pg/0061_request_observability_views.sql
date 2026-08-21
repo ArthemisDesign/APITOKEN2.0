@@ -4,7 +4,7 @@
 -- The views preserve exact model text only as a database report dimension; they are never exported
 -- as Prometheus labels.
 
-CREATE OR REPLACE VIEW request_fact_usage_daily AS
+CREATE VIEW request_fact_usage_daily AS
 WITH facts AS (
     SELECT
         (to_timestamp(f.admitted_at) AT TIME ZONE 'UTC')::date AS usage_day,
@@ -82,7 +82,7 @@ GROUP BY
     tool_classes, tool_choice_mode, parallel_tools_requested, tool_results_in_input,
     tool_calls_in_output, structured_output, reasoning;
 
-CREATE OR REPLACE VIEW request_fact_tool_usage_daily AS
+CREATE VIEW request_fact_tool_usage_daily AS
 WITH tool_classes(tool_class, bit) AS (
     VALUES
         ('custom_function', 1),
