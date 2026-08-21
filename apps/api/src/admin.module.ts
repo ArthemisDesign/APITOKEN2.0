@@ -8,6 +8,8 @@ import { AdminFinanceController } from "./admin-finance.controller.js";
 import { AdminFinanceService } from "./admin-finance.service.js";
 import { AdminGuard } from "./admin.guard.js";
 import { AdminOperationsController } from "./admin-operations.controller.js";
+import { AdminRequestAnalyticsController } from "./admin-request-analytics.controller.js";
+import { AdminRequestAnalyticsService } from "./admin-request-analytics.service.js";
 import { AdminOperationsService } from "./admin-operations.service.js";
 import { AdminPipelinesController } from "./admin-pipelines.controller.js";
 import { AdminPipelinesService } from "./admin-pipelines.service.js";
@@ -22,6 +24,7 @@ import { InternalAdminAuthController } from "./internal-admin-auth.controller.js
     AdminOperationsController,
     AdminAccountsController,
     AdminFinanceController,
+    AdminRequestAnalyticsController,
     AdminPipelinesController,
     InternalAdminAuthController,
   ],
@@ -33,6 +36,7 @@ import { InternalAdminAuthController } from "./internal-admin-auth.controller.js
     AdminOperationsService,
     AdminAccountsService,
     AdminFinanceService,
+    AdminRequestAnalyticsService,
     AdminPipelinesService,
   ],
 })

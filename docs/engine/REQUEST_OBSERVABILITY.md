@@ -636,8 +636,10 @@ the prerequisite exact SHA is production GREEN.
 13. **Deliver `packages/engine-client` — implemented in this consumer.** After production-GREEN
     contracts producer `1541c1fefcaa84c4e87ecd5b2d1a0a67b2b21138`, add the three validated GET
     methods with local window/limit/cursor/UUID bounds; wait for this exact SHA to be GREEN.
-14. **Deliver `apps/api`.** Only after the step-13 engine-client producer is GREEN, add the private
-    admin-backend identity join and request-analytics projection; wait for the exact SHA to be GREEN.
+14. **Deliver `apps/api` — implemented in this producer.** After production-GREEN engine-client
+    consumer `97ef2f2f9f7bf5feb2c90b9fb9d0522487370b91`, expose three guarded no-store admin routes
+    that validate bounds and forward only through EngineClient. Engine rows intentionally omit account/key
+    identities, so v1 performs no fabricated commerce identity join; wait for this exact SHA to be GREEN.
 15. **Deliver `apps/admin`.** Only after the step-14 API producer is GREEN, add the dedicated
     **Request Analytics** area, linked from but not mixed into Engine Spend. It consumes only the
     private producer chain. There is no customer API or UI.

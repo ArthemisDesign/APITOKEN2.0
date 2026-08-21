@@ -174,6 +174,13 @@ is why their spend is invisible to every other finance endpoint. Amounts here ar
 USD numbers (`charge_usd` — after the account multiplier, `real_usd` — provider list price), not
 commerce nanoUSD strings: this endpoint is an operator projection, not a money authority.
 
+`GET /admin/request-analytics/summary`, `GET /admin/request-analytics`, and
+`GET /admin/request-analytics/logical/:id` are dedicated managed-admin request analytics producers.
+They use `AdminGuard`, return `Cache-Control: no-store`, validate half-open 30-day windows/keyset bounds,
+and call the engine only through `packages/engine-client`. The engine privacy projection contains no
+account/key identity in v1, so commerce does not invent an owner join. These routes are separate from
+Engine Spend and are never public/customer APIs.
+
 `GET /admin/finance/paying-users` is the read-only producer for the paid-customer control room.
 It includes a user with at least one `payments.status='paid'` row **or** at least one manual engine
 top-up (`pricing_usage_topups.source='manual'`) whose ref is not `admin-credit:*`: these are explicit
