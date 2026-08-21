@@ -158,13 +158,31 @@ Exact `@openai/codex@0.149.0 --profile apitoken` completed one ephemeral read-on
   reasoning output `0`;
 - temporary workdir was deleted after the process exited.
 
-This is GREEN evidence for the **public named custom-provider boundary**. It is not native ChatGPT
-identity evidence: the deployed gateway still reconstructs its private upstream request under the
-reviewed `0.146.0` identity. Therefore this run does not authorize `CODEX_CLI_VERSION` bump.
+This is GREEN evidence for the **public named custom-provider boundary**.
 
-The attempted direct native device flow returned HTTP 530 before a code was issued. No generation,
-refresh, or spend occurred in that failed attempt. Native 0.149 proof remains pending on a working
-throwaway ChatGPT device-login path.
+## Native ChatGPT identity 0.149 proof — 2026-08-21
+
+A separate official `@openai/codex@0.149.0 login --device-auth` completed in an isolated mode-0700
+`CODEX_HOME` on a throwaway ChatGPT Pro account. The credential was read only inside the proof
+process and deleted immediately after the run; refresh-family rotation and WebSocket were not run.
+
+Direct private-backend evidence under exact `originator: codex_cli_rs`, User-Agent/version `0.149.0`:
+
+- `GET /backend-api/codex/models?client_version=0.149.0` → HTTP 200, 9 entries;
+  `gpt-5.6-luna` advertises current `priority` and legacy `fast`;
+- `GET /backend-api/wham/usage` → HTTP 200, paid Pro plan, `allowed:true`, no reached quota wall;
+- one `POST /backend-api/codex/responses` on Luna → HTTP 200, incremental SSE sequence
+  `created → in_progress → output item/content/text deltas/done → completed`;
+- exact request controls accepted: `parallel_tool_calls:false`, reasoning effort `low`,
+  summary `auto`, context `all_turns`, `store:false`, `stream:true`, no tools;
+- authoritative terminal usage: input `14`, cached `0`, output `6`, reasoning `0`, total `20`;
+- response headers contained the reviewed `x-codex-*` quota families and `x-codex-turn-state`;
+- requested priority reported completed tier `default`, the already documented ChatGPT-auth diagnostic
+  behavior and not proof of a Fast downgrade.
+
+This closes native identity admission for `CODEX_CLI_VERSION=0.149.0`. The earlier direct Python
+device-flow HTTP 530 was a fingerprint limitation of the hand-written login request, not a backend
+wire refusal; official CLI device auth succeeded.
 
 The paid-turn authorization target was `100000 nanoUSD` (`$0.0001`), but actual Codex system/tool
 context produced 14157 input tokens. At the current Luna official card that is approximately

@@ -93,7 +93,7 @@ token on every refresh with strict family reuse detection. The pool therefore:
 | `CLAUDE_API_CODEX_PROFILES_FILE` | `/srv/claude-api/data/codex/profiles.json` | roster location |
 | `CLAUDE_API_CODEX_CREDENTIAL_KEYS` | — (required when enabled) | AEAD keyring `kid:64hex[,...]` |
 | `CLAUDE_API_CODEX_BASE_URL` | `https://chatgpt.com/backend-api/codex` | native backend (loopback only with explicit opt-in) |
-| `CLAUDE_API_CODEX_CLI_VERSION` | `0.146.0` | pinned official-client wire identity |
+| `CLAUDE_API_CODEX_CLI_VERSION` | `0.149.0` | pinned official-client wire identity; native models/usage/Responses proof recorded 2026-08-21 |
 | `CLAUDE_API_CODEX_MODELS` | `gpt-5.6,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5,gpt-5.4` | enabled ids from the pinned price catalog |
 | `CLAUDE_API_CODEX_REQUEST_TIMEOUT_MS` | `15000` | connect/control bound (`CLAUDE_API_CODEX_RPC_TIMEOUT_MS` is accepted as a legacy alias) |
 | `CLAUDE_API_CODEX_TURN_TIMEOUT_MS` | `0` | no total turn deadline; non-zero is an operator escape hatch (max `3600000`) |

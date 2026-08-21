@@ -285,7 +285,7 @@ schema, but the router keeps them in `apitoken.pricing.long_context` and
 `cache_write_1h` for clients with a more precise metering model.
 
 The control run of 2026-08-02 is green on Cline 3.0.49, Continue CLI 1.5.47, OpenCode
-1.18.11, Kilo 7.4.17, Codex CLI 0.146.0, Claude Code 2.1.220, Gemini CLI 0.53.1,
+1.18.11, Kilo 7.4.17, Codex CLI 0.149.0, Claude Code 2.1.220, Gemini CLI 0.53.1,
 Hermes 0.19.1, and Aider 0.86.2: the base 19 executable cases are green, including a
 real multi-turn OpenCode→Gemini bash tool cycle and a clean OpenCode Claude
 main/title cycle without request rewrite. The current matrix contains 21 executable

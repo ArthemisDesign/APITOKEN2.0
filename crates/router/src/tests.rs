@@ -3352,7 +3352,7 @@ async fn catalog_returns_codex_native_overlay_after_plane_auth() {
     let response = reqwest::Client::new()
         .get(format!("{router}/v1/models"))
         .header("x-api-key", "sk-pool-secret")
-        .header("user-agent", "codex_cli_rs/0.146.0")
+        .header("user-agent", "codex_cli_rs/0.149.0")
         .send()
         .await
         .unwrap();

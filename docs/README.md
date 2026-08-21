@@ -109,7 +109,8 @@ document, update this index.
 - [2026-08-12-PRICING-ROLLBACK-REMEDIATION-CLOSEOUT.md](audits/2026-08-12-PRICING-ROLLBACK-REMEDIATION-CLOSEOUT.md) — resumable finding→SHA→production-evidence closeout for pricing rollback remediation, with the exact retention, payout-funding, debt-decision and external failure-domain gates still preventing final completion.
 - [2026-08-12-PRICING-ROLLBACK-EXTERNAL-GATES-CLOSEOUT.md](audits/2026-08-12-PRICING-ROLLBACK-EXTERNAL-GATES-CLOSEOUT.md) — append-only continuation with exact debt causality, payout funding requirement, Borg contents, live off-host incident/recovery evidence and the four remaining external/retention gates.
 - [2026-08-21-CODEX-CLI-0.149-COMPATIBILITY.md](audits/2026-08-21-CODEX-CLI-0.149-COMPATIBILITY.md) — exact-source and paired-wire audit of Codex CLI 0.149.0 against the current GPT/Codex custom-provider path, including the 128-byte MCP-name delta, preserved correctness gaps and the controlled baseline-upgrade plan.
-- [2026-08-21-CODEX-CLI-0.149-LIVE-ACCEPTANCE.md](audits/2026-08-21-CODEX-CLI-0.149-LIVE-ACCEPTANCE.md) — exact 0.149 `--profile apitoken` live acceptance, terminal usage and cost evidence, public-vs-native proof boundary, and the reason the internal 0.146 pin remains.
+- [2026-08-21-CODEX-CLI-0.149-LIVE-ACCEPTANCE.md](audits/2026-08-21-CODEX-CLI-0.149-LIVE-ACCEPTANCE.md) — exact 0.149 `--profile apitoken` live acceptance, terminal usage and cost evidence, and the public-vs-native proof boundary at that checkpoint.
+- [2026-08-21-CODEX-NATIVE-0.149-PIN-ADMISSION.md](audits/2026-08-21-CODEX-NATIVE-0.149-PIN-ADMISSION.md) — official device-flow private ChatGPT models/usage/Responses proof admitting the internal 0.149 wire identity pin.
 
 ## Next to the code (do not move here)
 

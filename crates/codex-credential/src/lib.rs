@@ -22,7 +22,7 @@ const SECRET_AAD_PREFIX: &[u8] = b"apitoken/codex-oauth-pending-secret/v1\0";
 /// Pinned wire identity of the official Codex client. The native transport presents exactly
 /// this identity; the version moves only through a reviewed commit after a live wire probe
 /// (`research/CODEX_NATIVE_WIRE.md`).
-pub const CODEX_CLI_VERSION: &str = "0.146.0";
+pub const CODEX_CLI_VERSION: &str = "0.149.0";
 pub const CODEX_ORIGINATOR: &str = "codex_cli_rs";
 /// Public installed-application identity embedded in the official Codex client. The ChatGPT
 /// OAuth client is a public client without a secret; pinning the id prevents a sealed profile

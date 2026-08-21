@@ -236,7 +236,7 @@ fn codex_catalog_clients_get_their_native_models_envelope() {
     for (header, value) in [
         ("originator", "codex_exec"),
         ("originator", "codex_cli_rs"),
-        ("user-agent", "codex_cli_rs/0.146.0"),
+        ("user-agent", "codex_cli_rs/0.149.0"),
     ] {
         let mut headers = HeaderMap::new();
         headers.insert(header, HeaderValue::from_static(value));

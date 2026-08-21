@@ -305,12 +305,24 @@ def probe_usage(opener, tokens, client_version):
         print(f"== wham/usage: HTTP {error.code}: {error.read(200).decode(errors='replace')}")
         return
     payload = json.loads(response.read())
+    rate_limit = payload.get("rate_limit") if isinstance(payload.get("rate_limit"), dict) else {}
+    additional = payload.get("additional_rate_limits")
+    credits = payload.get("credits") if isinstance(payload.get("credits"), dict) else {}
     redacted = {
-        key: ("<redacted>" if "email" in key.lower() else value)
-        for key, value in payload.items()
+        "plan_type": payload.get("plan_type"),
+        "rate_limit_keys": sorted(rate_limit),
+        "primary_window_keys": sorted(
+            rate_limit.get("primary_window", {})
+            if isinstance(rate_limit.get("primary_window"), dict)
+            else {}
+        ),
+        "secondary_window_present": isinstance(rate_limit.get("secondary_window"), dict),
+        "additional_rate_limit_count": len(additional) if isinstance(additional, list) else 0,
+        "credit_keys": sorted(credits),
+        "spend_control_present": isinstance(payload.get("spend_control"), dict),
     }
     print(f"== wham/usage: HTTP {response.status}")
-    print(json.dumps(redacted, indent=2)[:2000])
+    print(json.dumps(redacted, indent=2))
 
 
 def probe_refresh_rotation(opener, tokens):
