@@ -9,6 +9,9 @@ import {
   engineLedgerSchema,
   engineSpendStatsSchema,
   engineUsageSchema,
+  engineRequestFactSummarySchema,
+  engineRequestFactPageSchema,
+  engineRequestFactLogicalSchema,
   issuedEngineApiKeySchema,
   type CreateEngineAccount,
   type EngineAccount,
@@ -17,6 +20,9 @@ import {
   type EngineLedgerEntry,
   type EngineSpendStats,
   type EngineUsage,
+  type EngineRequestFactSummary,
+  type EngineRequestFactPage,
+  type EngineRequestFactLogical,
   type IssuedEngineApiKey,
 } from "@claude-api/contracts";
 import { z } from "zod";
@@ -324,6 +330,58 @@ export class EngineClient {
   async getSpendStats(): Promise<EngineSpendStats> {
     const { payload } = await this.request("/spend-stats");
     return engineSpendStatsSchema.parse(payload);
+  }
+
+  private requestFactQuery(input: {
+    from: number;
+    to: number;
+    accountId?: string;
+    cursor?: string;
+    limit?: number;
+  }): string {
+    if (!Number.isInteger(input.from) || !Number.isInteger(input.to) || input.from < 0
+      || input.to <= input.from || input.to - input.from > 30 * 86_400) {
+      throw new RangeError("request-fact window must be an explicit half-open interval up to 30 days");
+    }
+    if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 200)) {
+      throw new RangeError("request-fact limit must be an integer from 1 to 200");
+    }
+    if (input.cursor !== undefined && (input.cursor.length < 1 || input.cursor.length > 64)) {
+      throw new RangeError("request-fact cursor is invalid");
+    }
+    const query = new URLSearchParams({ from: String(input.from), to: String(input.to) });
+    if (input.accountId !== undefined) query.set("account_id", input.accountId);
+    if (input.cursor !== undefined) query.set("cursor", input.cursor);
+    if (input.limit !== undefined) query.set("limit", String(input.limit));
+    return query.toString();
+  }
+
+  async getRequestFactSummary(input: {
+    from: number;
+    to: number;
+    accountId?: string;
+  }): Promise<EngineRequestFactSummary> {
+    const { payload } = await this.request(`/admin/request-facts/summary?${this.requestFactQuery(input)}`);
+    return engineRequestFactSummarySchema.parse(payload);
+  }
+
+  async listRequestFacts(input: {
+    from: number;
+    to: number;
+    accountId?: string;
+    cursor?: string;
+    limit?: number;
+  }): Promise<EngineRequestFactPage> {
+    const { payload } = await this.request(`/admin/request-facts?${this.requestFactQuery(input)}`);
+    return engineRequestFactPageSchema.parse(payload);
+  }
+
+  async getRequestFactsByLogicalId(logicalRequestId: string): Promise<EngineRequestFactLogical> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(logicalRequestId)) {
+      throw new RangeError("logical request ID must be canonical lowercase UUIDv4");
+    }
+    const { payload } = await this.request(`/admin/request-facts/logical/${encodeURIComponent(logicalRequestId)}`);
+    return engineRequestFactLogicalSchema.parse(payload);
   }
 
   async getLedgerAfter(accountId: string, afterId: bigint, limit = 1000): Promise<EngineLedgerEntry[]> {    if (afterId < 0n) throw new RangeError("afterId must not be negative");

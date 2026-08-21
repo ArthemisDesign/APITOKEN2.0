@@ -633,8 +633,9 @@ the prerequisite exact SHA is production GREEN.
     producer `899bb0a10e8b977aa775f996cced53491264a39c`, add typed private summary/page/logical schemas
     with bounded rows/axes and honest nullable coverage/runtime semantics; update
     `docs/DEPENDENCIES.md` and wait for this exact SHA to be GREEN.
-13. **Deliver `packages/engine-client`.** Only after the step-12 contract producer is GREEN, consume
-    those schemas in the sole TypeScript Control API transport; wait for the exact SHA to be GREEN.
+13. **Deliver `packages/engine-client` — implemented in this consumer.** After production-GREEN
+    contracts producer `1541c1fefcaa84c4e87ecd5b2d1a0a67b2b21138`, add the three validated GET
+    methods with local window/limit/cursor/UUID bounds; wait for this exact SHA to be GREEN.
 14. **Deliver `apps/api`.** Only after the step-13 engine-client producer is GREEN, add the private
     admin-backend identity join and request-analytics projection; wait for the exact SHA to be GREEN.
 15. **Deliver `apps/admin`.** Only after the step-14 API producer is GREEN, add the dedicated
