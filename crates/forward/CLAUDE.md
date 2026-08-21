@@ -653,7 +653,10 @@ by account, and encrypt/decrypt file chunks through the Stage 3 keyring. The fac
 by default. A terminal GET must read the account-scoped `result`/`error` blob, authenticate and
 decrypt it with the exact account/job/item/kind identity, and return the real Gemini response or
 Google-shaped per-item error in input order; missing, malformed or tampered terminal blobs are
-`DATA_LOSS`, never request-id placeholders. Stage 6 composes the facade only in
+`DATA_LOSS`, never request-id placeholders. A panic in one synchronous authority command drops only
+that command's reply and is logged through `elog`; the actor remains available for later lifecycle
+commands. Cancellation authority failures also emit a bounded internal diagnostic while the public
+Google-shaped 424 response stays secret-free. Stage 6 composes the facade only in
 `claude-api-gemini@.service`; native ListModels/GetModel add `batchGenerateContent` only while
 `AppState.gemini_batch` contains that public facade, and never for the image-output model.
 

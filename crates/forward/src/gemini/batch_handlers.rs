@@ -1471,11 +1471,17 @@ async fn cancel(f: Arc<GeminiBatchPublicFacade>, a: MeteredAuth, id: String) -> 
             "NOT_FOUND",
             "Requested entity was not found.",
         ),
-        Err(_) => error(
-            StatusCode::FAILED_DEPENDENCY,
-            "FAILED_PRECONDITION",
-            "Batch cannot be canceled.",
-        ),
+        Err(authority_error) => {
+            elog::error(
+                "gemini-batch",
+                format!("Gemini Batch cancel authority failed: {authority_error:#}"),
+            );
+            error(
+                StatusCode::FAILED_DEPENDENCY,
+                "FAILED_PRECONDITION",
+                "Batch cannot be canceled.",
+            )
+        }
     }
 }
 async fn delete(f: Arc<GeminiBatchPublicFacade>, a: MeteredAuth, id: String) -> Response {

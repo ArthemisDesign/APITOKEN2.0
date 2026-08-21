@@ -187,6 +187,8 @@ enum Command {
         reply: Reply<registry::GeminiBatchMaintenanceReport>,
     },
     OperationalReport(Reply<registry::GeminiBatchOperationalReport>),
+    #[cfg(test)]
+    Panic(Reply<()>),
     Shutdown(Reply<()>),
 }
 
@@ -222,305 +224,332 @@ impl GeminiBatchAuthority {
                     }
                 };
                 while let Some(command) = receiver.blocking_recv() {
-                    match command {
-                        Command::Create {
-                            create,
-                            raw_key,
-                            reply,
-                        } => {
-                            let _ = reply.send(authority.gemini_batch_create(&create, &raw_key));
-                        }
-                        Command::Get {
-                            account_id,
-                            job_id,
-                            reply,
-                        } => {
-                            let _ = reply.send(authority.gemini_batch_get(&account_id, &job_id));
-                        }
-                        Command::List {
-                            account_id,
-                            cursor,
-                            limit,
-                            reply,
-                        } => {
-                            let _ = reply.send(authority.gemini_batch_list(
-                                &account_id,
-                                cursor.as_ref(),
-                                limit,
-                            ));
-                        }
-                        Command::Cancel {
-                            account_id,
-                            job_id,
-                            reply,
-                        } => {
-                            let _ = reply.send(authority.gemini_batch_cancel(&account_id, &job_id));
-                        }
-                        Command::Delete {
-                            account_id,
-                            job_id,
-                            reply,
-                        } => {
-                            let _ = reply.send(authority.gemini_batch_delete(&account_id, &job_id));
-                        }
-                        Command::FileCreate { create, reply } => {
-                            let _ = reply.send(authority.gemini_batch_file_create(&create));
-                        }
-                        Command::FileAppend {
-                            account_id,
-                            file_id,
-                            expected_offset,
-                            chunk,
-                            reply,
-                        } => {
-                            let _ = reply.send(authority.gemini_batch_file_append_chunk_at(
-                                &account_id,
-                                &file_id,
-                                expected_offset,
-                                &chunk,
-                            ));
-                        }
-                        Command::FileProgress {
-                            account_id,
-                            file_id,
-                            reply,
-                        } => {
-                            let _ = reply
-                                .send(authority.gemini_batch_file_progress(&account_id, &file_id));
-                        }
-                        Command::FileComplete {
-                            account_id,
-                            file_id,
-                            completion,
-                            reply,
-                        } => {
-                            let _ = reply.send(authority.gemini_batch_file_complete(
-                                &account_id,
-                                &file_id,
-                                &completion,
-                            ));
-                        }
-                        Command::FileGet {
-                            account_id,
-                            file_id,
-                            reply,
-                        } => {
-                            let _ =
-                                reply.send(authority.gemini_batch_file_get(&account_id, &file_id));
-                        }
-                        Command::FileList {
-                            account_id,
-                            limit,
-                            reply,
-                        } => {
-                            let _ =
-                                reply.send(authority.gemini_batch_file_list(&account_id, limit));
-                        }
-                        Command::FileDelete {
-                            account_id,
-                            file_id,
-                            reply,
-                        } => {
-                            let _ = reply
-                                .send(authority.gemini_batch_file_delete(&account_id, &file_id));
-                        }
-                        Command::FileChunks {
-                            account_id,
-                            file_id,
-                            after,
-                            limit,
-                            reply,
-                        } => {
-                            let _ = reply.send(authority.gemini_batch_file_chunk_page(
-                                &account_id,
-                                &file_id,
-                                after,
-                                limit,
-                            ));
-                        }
-                        Command::BlobGet {
-                            account_id,
-                            job_id,
-                            item_index,
-                            kind,
-                            reply,
-                        } => {
-                            let _ = reply.send(authority.gemini_batch_blob_get(
-                                &account_id,
-                                &job_id,
-                                item_index,
-                                &kind,
-                            ));
-                        }
-                        Command::AcquireLeader { ttl_secs, reply } => {
-                            let _ =
-                                reply.send(authority.acquire_gemini_batch_leader(&owner, ttl_secs));
-                        }
-                        Command::Claim {
-                            profile_id,
-                            model_id,
-                            profile_capacity,
-                            lease_secs,
-                            reply,
-                        } => {
-                            let _ = reply.send(authority.claim_gemini_batch_item(
-                                &owner,
-                                &profile_id,
-                                &model_id,
-                                profile_capacity,
-                                lease_secs,
-                            ));
-                        }
-                        Command::MarkDispatching {
-                            claim,
-                            lease_secs,
-                            reply,
-                        } => {
-                            let _ = reply.send(
-                                authority.mark_gemini_batch_dispatching(&owner, &claim, lease_secs),
-                            );
-                        }
-                        Command::ReserveDispatch {
-                            claim,
-                            random_delay_ms,
-                            reply,
-                        } => {
-                            let _ = reply.send(authority.reserve_gemini_batch_dispatch(
-                                &owner,
-                                &claim,
-                                random_delay_ms,
-                            ));
-                        }
-                        Command::MarkActualSend {
-                            claim,
-                            lease_secs,
-                            reply,
-                        } => {
-                            let _ = reply.send(
-                                authority.mark_gemini_batch_actual_send(&owner, &claim, lease_secs),
-                            );
-                        }
-                        Command::Renew {
-                            claim,
-                            lease_secs,
-                            reply,
-                        } => {
-                            let _ = reply.send(
-                                authority.renew_gemini_batch_claim(&owner, &claim, lease_secs),
-                            );
-                        }
-                        Command::Requeue {
-                            claim,
-                            next_attempt_ts,
-                            reply,
-                        } => {
-                            let _ = reply.send(authority.requeue_gemini_batch_claim(
-                                &owner,
-                                &claim,
-                                next_attempt_ts,
-                            ));
-                        }
-                        Command::Reconcile { limit, reply } => {
-                            let _ =
-                                reply.send(authority.reconcile_expired_gemini_batch_claims(limit));
-                        }
-                        Command::EnqueueLiveSettlement {
-                            claim,
-                            intent,
-                            reply,
-                        } => {
-                            let _ = reply.send(
-                                authority.enqueue_gemini_batch_settlement(&owner, &claim, &intent),
-                            );
-                        }
-                        Command::EnqueueRecoverySettlement {
-                            recovery,
-                            intent,
-                            reply,
-                        } => {
-                            let result = authority.postgres().and_then(|postgres| {
-                                postgres
-                                    .enqueue_gemini_batch_recovery_settlement(&recovery, &intent)
-                            });
-                            let _ = reply.send(result);
-                        }
-                        Command::ProcessSettlement { request_id, reply } => {
-                            let _ =
-                                reply.send(authority.process_gemini_batch_settlement(&request_id));
-                        }
-                        Command::DrainSettlements { limit, reply } => {
-                            let _ = reply.send(authority.drain_gemini_batch_settlements(limit));
-                        }
-                        Command::ClaimOutput { lease_secs, reply } => {
-                            let _ =
-                                reply.send(authority.claim_gemini_batch_output(&owner, lease_secs));
-                        }
-                        Command::RenewOutput {
-                            claim,
-                            lease_secs,
-                            reply,
-                        } => {
-                            let _ = reply.send(
-                                authority.renew_gemini_batch_output(&owner, &claim, lease_secs),
-                            );
-                        }
-                        Command::OutputItems {
-                            claim,
-                            after,
-                            limit,
-                            reply,
-                        } => {
-                            let _ = reply.send(
-                                authority
-                                    .gemini_batch_output_item_page(&owner, &claim, after, limit),
-                            );
-                        }
-                        Command::AppendOutput {
-                            claim,
-                            next_item_index,
-                            chunk,
-                            reply,
-                        } => {
-                            let _ = reply.send(authority.append_gemini_batch_output_chunk(
-                                &owner,
-                                &claim,
-                                next_item_index,
-                                &chunk,
-                            ));
-                        }
-                        Command::FailOutput {
-                            claim,
-                            class,
-                            reply,
-                        } => {
-                            let _ = reply
-                                .send(authority.fail_gemini_batch_output(&owner, &claim, &class));
-                        }
-                        Command::FinalizeOutput {
-                            claim,
-                            completion,
-                            reply,
-                        } => {
-                            let _ = reply.send(authority.finalize_gemini_batch_output(
-                                &owner,
-                                &claim,
-                                &completion,
-                            ));
-                        }
-                        Command::Maintain {
-                            older_than,
-                            limit,
-                            reply,
-                        } => {
-                            let _ = reply.send(authority.maintain_gemini_batch(older_than, limit));
-                        }
-                        Command::OperationalReport(reply) => {
-                            let _ = reply.send(authority.gemini_batch_operational_report());
-                        }
+                    let command = match command {
                         Command::Shutdown(reply) => {
                             let _ = reply.send(Ok(()));
                             break;
                         }
+                        command => command,
+                    };
+                    let outcome =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match command {
+                            Command::Create {
+                                create,
+                                raw_key,
+                                reply,
+                            } => {
+                                let _ =
+                                    reply.send(authority.gemini_batch_create(&create, &raw_key));
+                            }
+                            Command::Get {
+                                account_id,
+                                job_id,
+                                reply,
+                            } => {
+                                let _ =
+                                    reply.send(authority.gemini_batch_get(&account_id, &job_id));
+                            }
+                            Command::List {
+                                account_id,
+                                cursor,
+                                limit,
+                                reply,
+                            } => {
+                                let _ = reply.send(authority.gemini_batch_list(
+                                    &account_id,
+                                    cursor.as_ref(),
+                                    limit,
+                                ));
+                            }
+                            Command::Cancel {
+                                account_id,
+                                job_id,
+                                reply,
+                            } => {
+                                let _ =
+                                    reply.send(authority.gemini_batch_cancel(&account_id, &job_id));
+                            }
+                            Command::Delete {
+                                account_id,
+                                job_id,
+                                reply,
+                            } => {
+                                let _ =
+                                    reply.send(authority.gemini_batch_delete(&account_id, &job_id));
+                            }
+                            Command::FileCreate { create, reply } => {
+                                let _ = reply.send(authority.gemini_batch_file_create(&create));
+                            }
+                            Command::FileAppend {
+                                account_id,
+                                file_id,
+                                expected_offset,
+                                chunk,
+                                reply,
+                            } => {
+                                let _ = reply.send(authority.gemini_batch_file_append_chunk_at(
+                                    &account_id,
+                                    &file_id,
+                                    expected_offset,
+                                    &chunk,
+                                ));
+                            }
+                            Command::FileProgress {
+                                account_id,
+                                file_id,
+                                reply,
+                            } => {
+                                let _ = reply.send(
+                                    authority.gemini_batch_file_progress(&account_id, &file_id),
+                                );
+                            }
+                            Command::FileComplete {
+                                account_id,
+                                file_id,
+                                completion,
+                                reply,
+                            } => {
+                                let _ = reply.send(authority.gemini_batch_file_complete(
+                                    &account_id,
+                                    &file_id,
+                                    &completion,
+                                ));
+                            }
+                            Command::FileGet {
+                                account_id,
+                                file_id,
+                                reply,
+                            } => {
+                                let _ = reply
+                                    .send(authority.gemini_batch_file_get(&account_id, &file_id));
+                            }
+                            Command::FileList {
+                                account_id,
+                                limit,
+                                reply,
+                            } => {
+                                let _ = reply
+                                    .send(authority.gemini_batch_file_list(&account_id, limit));
+                            }
+                            Command::FileDelete {
+                                account_id,
+                                file_id,
+                                reply,
+                            } => {
+                                let _ = reply.send(
+                                    authority.gemini_batch_file_delete(&account_id, &file_id),
+                                );
+                            }
+                            Command::FileChunks {
+                                account_id,
+                                file_id,
+                                after,
+                                limit,
+                                reply,
+                            } => {
+                                let _ = reply.send(authority.gemini_batch_file_chunk_page(
+                                    &account_id,
+                                    &file_id,
+                                    after,
+                                    limit,
+                                ));
+                            }
+                            Command::BlobGet {
+                                account_id,
+                                job_id,
+                                item_index,
+                                kind,
+                                reply,
+                            } => {
+                                let _ = reply.send(authority.gemini_batch_blob_get(
+                                    &account_id,
+                                    &job_id,
+                                    item_index,
+                                    &kind,
+                                ));
+                            }
+                            Command::AcquireLeader { ttl_secs, reply } => {
+                                let _ = reply
+                                    .send(authority.acquire_gemini_batch_leader(&owner, ttl_secs));
+                            }
+                            Command::Claim {
+                                profile_id,
+                                model_id,
+                                profile_capacity,
+                                lease_secs,
+                                reply,
+                            } => {
+                                let _ = reply.send(authority.claim_gemini_batch_item(
+                                    &owner,
+                                    &profile_id,
+                                    &model_id,
+                                    profile_capacity,
+                                    lease_secs,
+                                ));
+                            }
+                            Command::MarkDispatching {
+                                claim,
+                                lease_secs,
+                                reply,
+                            } => {
+                                let _ = reply.send(
+                                    authority
+                                        .mark_gemini_batch_dispatching(&owner, &claim, lease_secs),
+                                );
+                            }
+                            Command::ReserveDispatch {
+                                claim,
+                                random_delay_ms,
+                                reply,
+                            } => {
+                                let _ = reply.send(authority.reserve_gemini_batch_dispatch(
+                                    &owner,
+                                    &claim,
+                                    random_delay_ms,
+                                ));
+                            }
+                            Command::MarkActualSend {
+                                claim,
+                                lease_secs,
+                                reply,
+                            } => {
+                                let _ = reply.send(
+                                    authority
+                                        .mark_gemini_batch_actual_send(&owner, &claim, lease_secs),
+                                );
+                            }
+                            Command::Renew {
+                                claim,
+                                lease_secs,
+                                reply,
+                            } => {
+                                let _ = reply.send(
+                                    authority.renew_gemini_batch_claim(&owner, &claim, lease_secs),
+                                );
+                            }
+                            Command::Requeue {
+                                claim,
+                                next_attempt_ts,
+                                reply,
+                            } => {
+                                let _ = reply.send(authority.requeue_gemini_batch_claim(
+                                    &owner,
+                                    &claim,
+                                    next_attempt_ts,
+                                ));
+                            }
+                            Command::Reconcile { limit, reply } => {
+                                let _ = reply
+                                    .send(authority.reconcile_expired_gemini_batch_claims(limit));
+                            }
+                            Command::EnqueueLiveSettlement {
+                                claim,
+                                intent,
+                                reply,
+                            } => {
+                                let _ = reply.send(
+                                    authority
+                                        .enqueue_gemini_batch_settlement(&owner, &claim, &intent),
+                                );
+                            }
+                            Command::EnqueueRecoverySettlement {
+                                recovery,
+                                intent,
+                                reply,
+                            } => {
+                                let result = authority.postgres().and_then(|postgres| {
+                                    postgres.enqueue_gemini_batch_recovery_settlement(
+                                        &recovery, &intent,
+                                    )
+                                });
+                                let _ = reply.send(result);
+                            }
+                            Command::ProcessSettlement { request_id, reply } => {
+                                let _ = reply
+                                    .send(authority.process_gemini_batch_settlement(&request_id));
+                            }
+                            Command::DrainSettlements { limit, reply } => {
+                                let _ = reply.send(authority.drain_gemini_batch_settlements(limit));
+                            }
+                            Command::ClaimOutput { lease_secs, reply } => {
+                                let _ = reply
+                                    .send(authority.claim_gemini_batch_output(&owner, lease_secs));
+                            }
+                            Command::RenewOutput {
+                                claim,
+                                lease_secs,
+                                reply,
+                            } => {
+                                let _ = reply.send(
+                                    authority.renew_gemini_batch_output(&owner, &claim, lease_secs),
+                                );
+                            }
+                            Command::OutputItems {
+                                claim,
+                                after,
+                                limit,
+                                reply,
+                            } => {
+                                let _ =
+                                    reply.send(authority.gemini_batch_output_item_page(
+                                        &owner, &claim, after, limit,
+                                    ));
+                            }
+                            Command::AppendOutput {
+                                claim,
+                                next_item_index,
+                                chunk,
+                                reply,
+                            } => {
+                                let _ = reply.send(authority.append_gemini_batch_output_chunk(
+                                    &owner,
+                                    &claim,
+                                    next_item_index,
+                                    &chunk,
+                                ));
+                            }
+                            Command::FailOutput {
+                                claim,
+                                class,
+                                reply,
+                            } => {
+                                let _ = reply.send(
+                                    authority.fail_gemini_batch_output(&owner, &claim, &class),
+                                );
+                            }
+                            Command::FinalizeOutput {
+                                claim,
+                                completion,
+                                reply,
+                            } => {
+                                let _ = reply.send(authority.finalize_gemini_batch_output(
+                                    &owner,
+                                    &claim,
+                                    &completion,
+                                ));
+                            }
+                            Command::Maintain {
+                                older_than,
+                                limit,
+                                reply,
+                            } => {
+                                let _ =
+                                    reply.send(authority.maintain_gemini_batch(older_than, limit));
+                            }
+                            Command::OperationalReport(reply) => {
+                                let _ = reply.send(authority.gemini_batch_operational_report());
+                            }
+                            #[cfg(test)]
+                            Command::Panic(_reply) => panic!("Gemini Batch authority test panic"),
+                            Command::Shutdown(_) => {
+                                unreachable!("shutdown handled before command execution")
+                            }
+                        }));
+                    if outcome.is_err() {
+                        elog::error(
+                            "gemini-batch-authority",
+                            "Gemini Batch authority command panicked; actor remains available",
+                        );
                     }
                 }
             })?;
@@ -948,6 +977,17 @@ mod tests {
     async fn sqlite_returns_typed_unsupported_from_authority() {
         let actor = sqlite_actor(4);
         let error = actor.acquire_leader(30).await.unwrap_err();
+        assert!(registry::is_gemini_batch_unsupported(&error));
+        actor.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_panicking_command_does_not_kill_the_authority_actor() {
+        let actor = sqlite_actor(4);
+        let error = actor.call(Command::Panic).await.unwrap_err();
+        assert_eq!(error.to_string(), "Gemini Batch authority stopped");
+
+        let error = actor.operational_report().await.unwrap_err();
         assert!(registry::is_gemini_batch_unsupported(&error));
         actor.shutdown().await.unwrap();
     }
