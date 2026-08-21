@@ -69,6 +69,51 @@ def tool_name(tool: Any) -> str | None:
     return None
 
 
+def bounded_tool_inventory(value: Any) -> dict[str, Any]:
+    """Collect bounded, content-free tool facts from top-level and additional tools."""
+    types: list[str] = []
+    namespace_count = 0
+    child_count = 0
+    length_buckets: list[str] = []
+
+    def visit(tool: Any, *, child: bool = False) -> None:
+        nonlocal namespace_count, child_count
+        if not isinstance(tool, dict):
+            return
+        kind = tool.get("type")
+        if isinstance(kind, str) and len(types) < 32:
+            types.append(kind)
+        if child:
+            child_count += 1
+        name = tool.get("name")
+        if isinstance(name, str):
+            size = len(name.encode("utf-8"))
+            if size <= 64:
+                length_buckets.append("1-64")
+            elif size <= 128:
+                length_buckets.append("65-128")
+            else:
+                length_buckets.append("129+")
+        if kind == "namespace":
+            namespace_count += 1
+            for nested in tool.get("tools", []) if isinstance(tool.get("tools"), list) else []:
+                visit(nested, child=True)
+
+    if isinstance(value, dict):
+        for tool in value.get("tools", []) if isinstance(value.get("tools"), list) else []:
+            visit(tool)
+        for item in value.get("input", []) if isinstance(value.get("input"), list) else []:
+            if isinstance(item, dict) and item.get("type") == "additional_tools":
+                for tool in item.get("tools", []) if isinstance(item.get("tools"), list) else []:
+                    visit(tool)
+    return {
+        "types": sorted(set(types)),
+        "namespace_count": namespace_count,
+        "child_count": child_count,
+        "length_buckets": sorted(set(length_buckets)),
+    }
+
+
 def has_replayed_chat_tool_history(value: Any) -> bool:
     if not isinstance(value, dict) or not isinstance(value.get("messages"), list):
         return False
@@ -271,6 +316,7 @@ def main() -> None:
                 }
             ) if request_json is not None else []
             request_tool_types = []
+            request_tool_inventory = bounded_tool_inventory(request_json)
             request_control_fields = []
             request_cache_control_types = []
             request_output_config_fields = []
@@ -320,6 +366,11 @@ def main() -> None:
                     "status": status,
                     "request_tiers": request_tiers,
                     "request_tool_types": request_tool_types,
+                     "request_tool_inventory": request_tool_inventory,
+                     "request_parallel_tool_calls": request_json.get("parallel_tool_calls") if isinstance(request_json, dict) and isinstance(request_json.get("parallel_tool_calls"), bool) else None,
+                     "request_reasoning_context": request_json.get("reasoning", {}).get("context") if isinstance(request_json, dict) and isinstance(request_json.get("reasoning"), dict) and isinstance(request_json.get("reasoning", {}).get("context"), str) else None,
+                     "request_has_client_metadata": isinstance(request_json, dict) and "client_metadata" in request_json,
+                     "response_terminal_usage": any(isinstance(value, dict) and value.get("type") == "response.completed" and isinstance(value.get("response"), dict) and isinstance(value["response"].get("usage"), dict) for value in response_values),
                     "request_control_fields": request_control_fields,
                     "request_cache_control_types": request_cache_control_types,
                     "request_output_config_fields": request_output_config_fields,

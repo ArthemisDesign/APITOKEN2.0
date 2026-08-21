@@ -10,6 +10,8 @@ set +x
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ROUTER_BASE_URL=${APITOKEN_ROUTER_BASE_URL:-https://router.apitoken.sale}
 CASE_TIMEOUT_SECONDS=${APITOKEN_HARNESS_CASE_TIMEOUT_SECONDS:-240}
+CODEX_BIN=${APITOKEN_HARNESS_CODEX_BIN:-codex}
+CODEX_EXPECTED_VERSION=${APITOKEN_HARNESS_CODEX_VERSION:-0.149.0}
 OPENAI_MODEL=${APITOKEN_HARNESS_OPENAI_MODEL:-openai/gpt-5.4}
 GEMINI_MODEL=${APITOKEN_HARNESS_GEMINI_MODEL:-gemini-2.5-flash-lite}
 OPENCODE_GEMINI_MODEL=${APITOKEN_HARNESS_OPENCODE_GEMINI_MODEL:-google/gemini-3.1-flash-lite}
@@ -74,9 +76,15 @@ require_command() {
   }
 }
 
-for command_name in python3 perl cline cn opencode kilo codex claude gemini hermes aider jq; do
+for command_name in python3 perl cline cn opencode kilo claude gemini hermes aider jq; do
   require_command "$command_name"
 done
+require_command "$CODEX_BIN"
+CODEX_VERSION_OUTPUT=$($CODEX_BIN --version 2>/dev/null || true)
+[[ $CODEX_VERSION_OUTPUT == "codex-cli $CODEX_EXPECTED_VERSION" ]] || {
+  printf 'Codex harness requires codex-cli %s, got: %s\n' "$CODEX_EXPECTED_VERSION" "$CODEX_VERSION_OUTPUT" >&2
+  exit 2
+}
 
 run_quiet() {
   perl -e '
@@ -196,6 +204,18 @@ for attempt in attempts:
             raise SystemExit(f"{label}: Fast attempt {sequence} lacks the camelCase Fast selector")
         if "priority" not in response_tiers:
             raise SystemExit(f"{label}: Fast attempt {sequence} lacks authoritative priority evidence")
+        if label.startswith("codex-0149-sol"):
+            if attempt.get("request_parallel_tool_calls") is not False:
+                raise SystemExit(f"{label}: Responses Lite request did not preserve parallel_tool_calls=false")
+            if attempt.get("request_reasoning_context") != "all_turns":
+                raise SystemExit(f"{label}: Responses Lite request did not preserve reasoning.context=all_turns")
+            if not attempt.get("request_has_client_metadata"):
+                raise SystemExit(f"{label}: request has no client_metadata")
+            if not attempt.get("response_terminal_usage"):
+                raise SystemExit(f"{label}: response has no terminal usage")
+            inventory = attempt.get("request_tool_inventory") or {}
+            if not {"namespace", "function", "custom"}.issubset(set(inventory.get("types") or [])):
+                raise SystemExit(f"{label}: missing bounded Responses Lite tool inventory")
         if label == "opencode-fast" and attempt.get("request_reasoning_effort") != "low":
             raise SystemExit(f"{label}: Fast model did not preserve its reasoning variant")
 
@@ -526,7 +546,7 @@ run_codex() {
     tier_args=(-c 'service_tier="fast"')
   fi
   run_quiet env OPENAI_API_KEY="$PLACEHOLDER_API_KEY" \
-    codex exec \
+    "$CODEX_BIN" exec \
       --ignore-user-config \
       --ignore-rules \
       --ephemeral \
@@ -683,6 +703,12 @@ run_matrix_case kilo-standard openai_chat /v1/chat/completions "$OPENAI_MODEL" s
 run_matrix_case kilo-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast camel_body run_kilo
 run_matrix_case codex-standard openai_responses /v1/responses "$OPENAI_MODEL" standard none run_codex
 run_matrix_case codex-fast openai_responses /v1/responses "$OPENAI_MODEL" fast body run_codex
+# Exact 0.149 Sol coverage is opt-in because it is a paid live case. The default matrix remains
+# on the established gpt-5.4 case; operators can select the Sol cases explicitly.
+if [[ -z $CASE_FILTER || $CASE_FILTER == *codex-0149-sol-standard* || $CASE_FILTER == *codex-0149-sol-fast* ]]; then
+  run_matrix_case codex-0149-sol-standard openai_responses /v1/responses "${APITOKEN_HARNESS_CODEX_SOL_MODEL:-openai/gpt-5.6-sol}" standard none run_codex
+  run_matrix_case codex-0149-sol-fast openai_responses /v1/responses "${APITOKEN_HARNESS_CODEX_SOL_MODEL:-openai/gpt-5.6-sol}" fast body run_codex
+fi
 run_matrix_case claude-code-standard anthropic_messages /v1/messages "$OPENAI_MODEL" standard none run_claude
 run_matrix_case claude-code-fast anthropic_messages /v1/messages "$OPENAI_MODEL" fast header run_claude
 run_matrix_case gemini-cli-standard gemini_native "/v1beta/models/$GEMINI_MODEL:streamGenerateContent" "$GEMINI_MODEL" standard none run_gemini
