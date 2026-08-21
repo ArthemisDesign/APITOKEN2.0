@@ -107,6 +107,8 @@ fn all_public_errors() -> Vec<ApiError> {
             retry_after: Some(60),
         },
         ProcessError::BadRequest,
+        ProcessError::PolicyViolation,
+        ProcessError::MissingAuthoritativeUsage,
         ProcessError::AuthenticationRequired,
         ProcessError::SubscriptionRequired,
     ] {
