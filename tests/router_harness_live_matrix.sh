@@ -541,6 +541,7 @@ run_kilo() {
 
 run_codex() {
   local tier=$1
+  local selected_model=${CODEX_MODEL_OVERRIDE:-$OPENAI_MODEL}
   local tier_args=()
   if [[ $tier == fast ]]; then
     tier_args=(-c 'service_tier="fast"')
@@ -555,7 +556,7 @@ run_codex() {
       --color never \
       --sandbox read-only \
       --cd "$CASE_DIR/work" \
-      --model "$OPENAI_MODEL" \
+      --model "$selected_model" \
       -c 'model_provider="apitoken"' \
       -c 'model_providers.apitoken.name="API Token Router"' \
       -c "model_providers.apitoken.base_url=\"$PROXY_BASE_URL/v1\"" \
@@ -706,8 +707,10 @@ run_matrix_case codex-fast openai_responses /v1/responses "$OPENAI_MODEL" fast b
 # Exact 0.149 Sol coverage is opt-in because it is a paid live case. The default matrix remains
 # on the established gpt-5.4 case; operators can select the Sol cases explicitly.
 if [[ $CASE_FILTER == *codex-0149-sol-standard* || $CASE_FILTER == *codex-0149-sol-fast* ]]; then
-  run_matrix_case codex-0149-sol-standard openai_responses /v1/responses "${APITOKEN_HARNESS_CODEX_SOL_MODEL:-openai/gpt-5.6-sol}" standard none run_codex
-  run_matrix_case codex-0149-sol-fast openai_responses /v1/responses "${APITOKEN_HARNESS_CODEX_SOL_MODEL:-openai/gpt-5.6-sol}" fast body run_codex
+  CODEX_MODEL_OVERRIDE=${APITOKEN_HARNESS_CODEX_SOL_MODEL:-openai/gpt-5.6-sol} \
+    run_matrix_case codex-0149-sol-standard openai_responses /v1/responses "${APITOKEN_HARNESS_CODEX_SOL_MODEL:-openai/gpt-5.6-sol}" standard none run_codex
+  CODEX_MODEL_OVERRIDE=${APITOKEN_HARNESS_CODEX_SOL_MODEL:-openai/gpt-5.6-sol} \
+    run_matrix_case codex-0149-sol-fast openai_responses /v1/responses "${APITOKEN_HARNESS_CODEX_SOL_MODEL:-openai/gpt-5.6-sol}" fast body run_codex
 fi
 run_matrix_case claude-code-standard anthropic_messages /v1/messages "$OPENAI_MODEL" standard none run_claude
 run_matrix_case claude-code-fast anthropic_messages /v1/messages "$OPENAI_MODEL" fast header run_claude
