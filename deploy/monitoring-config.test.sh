@@ -82,18 +82,25 @@ for forbidden_dimension in logical_request_id billing_request_id execution_group
 done
 grep -Fq 'authbot|router)).service' "$ROOT/observability/grafana/dashboards/production-overview.json"
 ! grep -Fq 'authbot|router))\\.service' "$ROOT/observability/grafana/dashboards/production-overview.json"
-# Migration 0062 rollups exist in the tree, but monitoring install runs before engine migrate.
-# Overview cards and the installer canary must keep using the already-granted 0061 views.
+# Schema 62 is GREEN in production. Overview cards consume the narrow 0062 rollups.
+# The installer still grants them only when to_regclass finds the views, and the canary
+# prefers request_fact_usage_top_model_daily with a 0061 fallback for first-boot hosts.
 for reporting_view in request_fact_usage_top_customer_model_daily \
   request_fact_usage_top_client_daily request_fact_usage_top_model_daily \
   request_fact_usage_top_tool_daily; do
   grep -Fq "CREATE VIEW $reporting_view" \
     "$ROOT/crates/registry/migrations_pg/0062_request_usage_grafana_rollups.sql"
-  ! grep -Fq "$reporting_view" \
+  grep -Fq "$reporting_view" \
     "$ROOT/observability/grafana/dashboards/production-overview.json" \
-    || { printf 'production overview queries %s before schema 62 is applied and granted\n' \
+    || { printf 'production overview omits schema-62 rollup %s\n' \
       "$reporting_view" >&2; exit 1; }
 done
+! grep -Fq 'request_fact_usage_daily' \
+  "$ROOT/observability/grafana/dashboards/production-overview.json" \
+  || { printf 'production overview still queries the broad 0061 daily view\n' >&2; exit 1; }
+! grep -Fq 'request_fact_tool_usage_daily' \
+  "$ROOT/observability/grafana/dashboards/production-overview.json" \
+  || { printf 'production overview still queries the broad 0061 tool view\n' >&2; exit 1; }
 for overview_dimension in account_id key_id client_kind requested_model executable_model tool_class; do
   grep -Fq "$overview_dimension" \
     "$ROOT/observability/grafana/dashboards/production-overview.json" \
@@ -110,12 +117,14 @@ grep -Fq 'grafana_query=$(jq -nc --arg sql "$grafana_sql"' \
   "$ROOT/deploy/install-monitoring.sh"
 grep -Fq 'grafana_response=$(curl --noproxy' "$ROOT/deploy/install-monitoring.sh"
 ! grep -Fq "grafana_query='" "$ROOT/deploy/install-monitoring.sh"
-! grep -Fq 'request_fact_usage_top_model_daily WHERE' "$ROOT/deploy/install-monitoring.sh"
-grafana_sql="SELECT COUNT(*)::bigint AS rows, COALESCE(SUM(request_count),0)::bigint AS requests FROM request_fact_usage_daily WHERE usage_day >= CURRENT_DATE - INTERVAL '30 days'"
+grep -Fq 'FROM request_fact_usage_top_model_daily WHERE usage_day' "$ROOT/deploy/install-monitoring.sh"
+grep -Fq 'FROM request_fact_usage_daily WHERE usage_day' "$ROOT/deploy/install-monitoring.sh"
+grep -Fq 'grafana_sql=$grafana_sql_0062' "$ROOT/deploy/install-monitoring.sh"
+grafana_sql="SELECT COUNT(*)::bigint AS rows, COALESCE(SUM(request_count),0)::bigint AS requests FROM request_fact_usage_top_model_daily WHERE usage_day >= CURRENT_DATE - INTERVAL '30 days'"
 grafana_query=$(jq -nc --arg sql "$grafana_sql" \
   '{"from":"now-30d","to":"now","queries":[{"refId":"A","datasource":{"uid":"engine-request-analytics","type":"grafana-postgresql-datasource"},"format":"table","rawQuery":true,"rawSql":$sql,"intervalMs":30000,"maxDataPoints":100}]}')
-jq --exit-status --arg needle "INTERVAL '30 days'" \
-  '.queries[0].datasource.type == "grafana-postgresql-datasource" and (.queries[0].rawSql | contains("request_fact_usage_daily")) and (.queries[0].rawSql | contains($needle))' \
+jq --exit-status --arg needle "INTERVAL '30 days'" --arg sql "$grafana_sql" \
+  '.queries[0].datasource.type == "grafana-postgresql-datasource" and .queries[0].rawSql == $sql and (.queries[0].rawSql | contains("request_fact_usage_top_model_daily")) and (.queries[0].rawSql | contains($needle))' \
   >/dev/null <<<"$grafana_query"
 
 for pinned_image in \

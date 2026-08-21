@@ -240,14 +240,23 @@ wait_prometheus_result monitoring-targets \
 # Provisioning success alone does not prove the private request-analytics datasource can query its
 # granted views. Exercise the same Grafana backend path as the dashboard and require real rows before
 # committing this monitoring activation. jq owns JSON encoding so SQL quotes cannot break the body.
-# This installer runs before engine migrate, so the canary must use the already-deployed 0061 view
-# `request_fact_usage_daily`; 0062 rollups are granted only when they already exist.
-grafana_sql="SELECT COUNT(*)::bigint AS rows, COALESCE(SUM(request_count),0)::bigint AS requests FROM request_fact_usage_daily WHERE usage_day >= CURRENT_DATE - INTERVAL '30 days'"
+# This installer still runs before engine migrate. Prefer the 0062 overview rollup when it already
+# exists (production after schema 62); otherwise canary the granted 0061 view so a first-boot host
+# can activate monitoring before migrate creates the rollups.
+grafana_sql_0061="SELECT COUNT(*)::bigint AS rows, COALESCE(SUM(request_count),0)::bigint AS requests FROM request_fact_usage_daily WHERE usage_day >= CURRENT_DATE - INTERVAL '30 days'"
+grafana_sql_0062="SELECT COUNT(*)::bigint AS rows, COALESCE(SUM(request_count),0)::bigint AS requests FROM request_fact_usage_top_model_daily WHERE usage_day >= CURRENT_DATE - INTERVAL '30 days'"
+grafana_sql=$grafana_sql_0061
+if docker compose --env-file "$POSTGRES_ENV" -f "$POSTGRES_COMPOSE" exec -T commerce-postgres \
+  psql -U commerce -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname='claude_engine'" | grep -qx 1 \
+  && docker compose --env-file "$POSTGRES_ENV" -f "$POSTGRES_COMPOSE" exec -T commerce-postgres \
+  psql -U commerce -d claude_engine -Atqc "SELECT to_regclass('public.request_fact_usage_top_model_daily') IS NOT NULL" | grep -qx t; then
+  grafana_sql=$grafana_sql_0062
+fi
 grafana_query=$(jq -nc --arg sql "$grafana_sql" \
   '{"from":"now-30d","to":"now","queries":[{"refId":"A","datasource":{"uid":"engine-request-analytics","type":"grafana-postgresql-datasource"},"format":"table","rawQuery":true,"rawSql":$sql,"intervalMs":30000,"maxDataPoints":100}]}') \
   || die 'Grafana request-analytics canary payload is not valid JSON'
-jq --exit-status --arg needle "INTERVAL '30 days'" \
-  '.queries[0].datasource.type == "grafana-postgresql-datasource" and (.queries[0].rawSql | contains("request_fact_usage_daily")) and (.queries[0].rawSql | contains($needle))' \
+jq --exit-status --arg needle "INTERVAL '30 days'" --arg sql "$grafana_sql" \
+  '.queries[0].datasource.type == "grafana-postgresql-datasource" and .queries[0].rawSql == $sql and (.queries[0].rawSql | contains($needle))' \
   >/dev/null <<<"$grafana_query" \
   || die 'Grafana request-analytics canary payload is not valid JSON'
 grafana_response=$(curl --noproxy '*' --fail --silent --show-error \

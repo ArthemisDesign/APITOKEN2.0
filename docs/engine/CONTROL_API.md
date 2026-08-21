@@ -535,9 +535,11 @@ rows and an opaque versioned keyset cursor. Logical lookup returns at most 200 a
 
 The monitoring stack also provisions a separate PostgreSQL datasource against two read-only aggregate
 views in engine migration 0061: `request_fact_usage_daily` and `request_fact_tool_usage_daily`.
-Migration 0062 adds narrow rollup views for later overview cards. Grafana currently reads the 0061
-views: monitoring install runs before engine migrate, so the installer canary cannot require 0062.
-Grafana can read only the granted reporting views through the `apitoken_monitoring` role. The views join
+The full `apitoken-request-usage` dashboard reads those views. Production overview panels 435-438
+read the migration-0062 rollups. The installer grants 0062 only when the views already exist and
+canaries the model rollup with a 0061 fallback because monitoring install still runs before engine
+migrate. Grafana can read only the granted reporting views through the `apitoken_monitoring` role.
+The views join
 `request_facts.billing_request_id` to authoritative `usage_events.request_id`, retain exact token and
 nanoUSD totals, and expose the opaque engine `account_id`, non-secret `key_id`, and closed
 client/model/tool dimensions. They never grant access to base request, ledger, prompt, email, key

@@ -78,10 +78,12 @@ scrolling:
 - The main Production Overview contains an expanded **Request Usage: Customers, Models & Tools**
   section after Request Fact Observability. It shows the top 30-day customer/key/client/model and
   closed-tool-class groups immediately on the page operators already use. Every panel and the
-  dashboard header link to the full drilldown. These overview cards still read the migration-0061
-  views `request_fact_usage_daily` and `request_fact_tool_usage_daily`. Monitoring install runs
-  before engine migrate, so the installer canary and the always-open cards cannot name the
-  migration-0062 rollups until a follow-up consumer commit after those views exist and are granted.
+  dashboard header link to the full drilldown. These overview cards read the migration-0062
+  rollups `request_fact_usage_top_customer_model_daily`, `request_fact_usage_top_client_daily`,
+  `request_fact_usage_top_model_daily`, and `request_fact_usage_top_tool_daily`. Monitoring install
+  still runs before engine migrate: it grants those views only when they already exist, and the
+  installer canary prefers the model rollup with a fallback to `request_fact_usage_daily` so a
+  first-boot host can activate monitoring before schema 62 is applied.
 - `observability/grafana/dashboards/request-usage-dimensions.json` (uid
   `apitoken-request-usage`) is the private full 30-day request-analytics dashboard. It shows grouped
   request/billable counts, authoritative tokens and nanoUSD by opaque engine account, non-secret key
