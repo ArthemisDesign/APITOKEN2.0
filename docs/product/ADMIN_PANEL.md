@@ -45,6 +45,12 @@ calibration until the plan has its own live measurement.
   `admin` context with root `apps/admin` (like `web` → `apps/web`).
 - Health endpoint: `GET /api/health` → 200 `{"ok":true}`.
 
+The dedicated `/request-analytics` page consumes only the managed-admin backend routes
+`/admin/request-analytics/summary`, `/admin/request-analytics`, and
+`/admin/request-analytics/logical/:id`. It is linked from but not combined with Engine Spend. It
+renders bounded request-fact lifecycle and route evidence, preserves unknown coverage and process-local
+runtime semantics, and never shows request content or account/key/billing/execution/upstream identities.
+
 The `/system` page obtains supply from `/overview`, which uses the same exact Claude
 authority as `/capacity`. If canonical remaining is unavailable, the UI shows `—` and a
 warning rather than `$0` or an old pool prior/EMA; the separate duplicate browser request

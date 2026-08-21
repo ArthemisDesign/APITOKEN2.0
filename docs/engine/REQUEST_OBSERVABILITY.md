@@ -640,9 +640,10 @@ the prerequisite exact SHA is production GREEN.
     consumer `97ef2f2f9f7bf5feb2c90b9fb9d0522487370b91`, expose three guarded no-store admin routes
     that validate bounds and forward only through EngineClient. Engine rows intentionally omit account/key
     identities, so v1 performs no fabricated commerce identity join; wait for this exact SHA to be GREEN.
-15. **Deliver `apps/admin`.** Only after the step-14 API producer is GREEN, add the dedicated
-    **Request Analytics** area, linked from but not mixed into Engine Spend. It consumes only the
-    private producer chain. There is no customer API or UI.
+15. **Deliver `apps/admin` — implemented on preview.** After production-GREEN apps/api producer
+    `3fe2baebfe8ccca22a974974154a83cb2af27600`, add the dedicated **Request Analytics** area,
+    linked from but not mixed into Engine Spend. It consumes only the private producer chain and
+    preserves unknown coverage/runtime evidence. There is no customer API or UI.
 16. **Record final proof.** Capture exact producer and consumer SHAs, migration/watchdog verdicts,
     route-manifest coverage, exclusion tests, privacy-negative tests, metric/alert/runbook checks,
     24-hour thresholds, and bounded live smoke results. Live-smoke credentials and budget records may

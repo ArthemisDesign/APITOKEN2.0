@@ -85,6 +85,11 @@ No secrets, and there never will be: the browser uses same-origin relative paths
   non-removed warehouse and delivered key with an explicit lifecycle, shows lifetime spend separately
   from selected-window usage, and provides global server sorting by spend/nominal/dates/status in both
   directions. Exact local wire types and the same expandable model-usage pattern are mandatory.
+- `src/app/request-analytics` — отдельный операторский control room над приватной цепочкой
+  request facts: фиксированные окна 24ч/7д/30д, summary и newest-first keyset page как независимые
+  ресурсы, честный unknown coverage, process-local runtime health и bounded logical-attempt detail.
+  Страница не смешивается с Engine Spend и не показывает account/key/billing/execution/upstream IDs,
+  содержимое запросов или raw errors.
 - `src/app/subscriptions/codex-capacity-board.tsx` — compact GPT summary of shared-plan capacity,
   native-credit/API-$ windows, and masked-email homes. Raw calibration, token-capacity, and
   profitability matrices are intentionally not surfaced in the operator UI.

@@ -39,6 +39,7 @@ describe("NAV", () => {
     expect(navLabelForPath("/proxies")).toBe("Прокси");
     expect(navLabelForPath("/paying-users")).toBe("Платящие");
     expect(navLabelForPath("/engine-spend")).toBe("Расход движка");
+    expect(navLabelForPath("/request-analytics")).toBe("Request Analytics");
     expect(navLabelForPath("/sales/calculator")).toBe("Калькулятор");
     expect(navLabelForPath("/")).toBe("Сводка");
     expect(navLabelForPath("/no-such-page")).toBe("Сводка");
