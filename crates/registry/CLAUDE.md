@@ -83,7 +83,9 @@ side effect. `serve` may only perform the read-only schema verification before c
   and batch APPLY share one private transaction-local account collection primitive. Terminal job
   deletion also removes its redundant committed staging replay marker in the same transaction, so
   that marker cannot pin the account-scoped input file after the live job becomes deleted; the job
-  row remains the canonical idempotency authority. Provider-turn recording likewise has one
+  row remains the canonical idempotency authority. Files DELETE clears ciphertext chunks and sets
+  `payload_deleted_ts`; GET/list/storage accounting exclude that tombstone while the minimal row stays
+  available for expand-only job/item foreign keys and audit retention. Provider-turn recording likewise has one
   transaction helper used by its public wrapper and batch APPLY. Exact
   calibration replay never advances spend twice; conflicting replay rolls back; subject tracking uses
   `LEAST(tracking_started_ts)` and `GREATEST(updated_ts)` for out-of-order completion. Batch drains

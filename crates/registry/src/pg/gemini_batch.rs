@@ -257,7 +257,7 @@ impl PgStore {
                 COUNT(chunk.*)::bigint
              FROM gemini_batch_file_chunks chunk
              JOIN gemini_batch_files file ON file.file_id=chunk.file_id
-             WHERE file.state='active' AND file.expiration_ts > $1",
+             WHERE file.state='active' AND file.expiration_ts > $1 AND file.payload_deleted_ts IS NULL",
             &[&ts],
         )?;
         let window_rows = tx.query(
@@ -683,7 +683,7 @@ impl PgStore {
         let stored_bytes: i64 = tx
             .query_one(
                 "SELECT COALESCE(SUM(size_bytes),0)::bigint FROM gemini_batch_files \
-                 WHERE account_id=$1 AND expiration_ts>$2",
+                 WHERE account_id=$1 AND expiration_ts>$2 AND payload_deleted_ts IS NULL",
                 &[&create.account_id, &super::now()],
             )?
             .get(0);
@@ -721,7 +721,7 @@ impl PgStore {
         file_id: &str,
     ) -> Result<Option<crate::GeminiBatchFileProgress>> {
         Ok(self.client.query_opt(
-            "SELECT received_bytes,next_chunk_index,chunk_count,size_bytes,state='active' FROM gemini_batch_files WHERE account_id=$1 AND file_id=$2 AND expiration_ts>$3",
+            "SELECT received_bytes,next_chunk_index,chunk_count,size_bytes,state='active' FROM gemini_batch_files WHERE account_id=$1 AND file_id=$2 AND expiration_ts>$3 AND payload_deleted_ts IS NULL",
             &[&account_id,&file_id,&super::now()],
         )?.map(|row| crate::GeminiBatchFileProgress {
             received_bytes: row.get(0), next_chunk_index: row.get(1), chunk_count: row.get(2),
@@ -947,7 +947,7 @@ impl PgStore {
                 "SELECT file_id,account_id,display_name,mime_type,size_bytes,sha256_digest,\
                  source_kind,state,storage_kind,create_ts,update_ts,expiration_ts,received_bytes,next_chunk_index,chunk_count,chunk_manifest_digest,completed_ts \
                  FROM gemini_batch_files \
-                 WHERE account_id=$1 AND file_id=$2 AND expiration_ts>$3",
+                 WHERE account_id=$1 AND file_id=$2 AND expiration_ts>$3 AND payload_deleted_ts IS NULL",
                 &[&account_id, &file_id, &super::now()],
             )?
             .as_ref()
@@ -966,7 +966,7 @@ impl PgStore {
                 "SELECT file_id,account_id,display_name,mime_type,size_bytes,sha256_digest,\
                  source_kind,state,storage_kind,create_ts,update_ts,expiration_ts,received_bytes,next_chunk_index,chunk_count,chunk_manifest_digest,completed_ts \
                  FROM gemini_batch_files WHERE account_id=$1 \
-                 AND expiration_ts>$3 ORDER BY create_ts DESC,file_id DESC LIMIT $2",
+                 AND expiration_ts>$3 AND payload_deleted_ts IS NULL ORDER BY create_ts DESC,file_id DESC LIMIT $2",
                 &[
                     &account_id,
                     &limit.clamp(1, MAX_BATCH_PAGE_SIZE),
@@ -1107,16 +1107,20 @@ impl PgStore {
     }
 
     pub fn gemini_batch_file_delete(&mut self, account_id: &str, file_id: &str) -> Result<bool> {
+        let ts = super::now();
         let mut tx = self.client.transaction()?;
         let Some(file) = tx.query_opt(
-            "SELECT 1 FROM gemini_batch_files WHERE account_id=$1 AND file_id=$2 FOR UPDATE",
+            "SELECT payload_deleted_ts FROM gemini_batch_files WHERE account_id=$1 AND file_id=$2 FOR UPDATE",
             &[&account_id, &file_id],
         )?
         else {
             tx.rollback()?;
             return Ok(false);
         };
-        let _ = file;
+        if file.get::<_, Option<i64>>(0).is_some() {
+            tx.commit()?;
+            return Ok(true);
+        }
         let referenced: bool = tx
             .query_one(
                 "SELECT EXISTS(\
@@ -1134,7 +1138,7 @@ impl PgStore {
                   WHERE j.account_id=$1 AND j.delete_ts IS NULL \
                     AND (j.completed_ts IS NULL OR j.result_expiration_ts>$3) \
                     AND r.file_id=$2)",
-                &[&account_id, &file_id, &super::now()],
+                &[&account_id, &file_id, &ts],
             )?
             .get(0);
         if referenced {
@@ -1146,8 +1150,8 @@ impl PgStore {
             &[&account_id, &file_id],
         )?;
         tx.execute(
-            "DELETE FROM gemini_batch_files WHERE account_id=$1 AND file_id=$2",
-            &[&account_id, &file_id],
+            "UPDATE gemini_batch_files SET payload_deleted_ts=$3,update_ts=GREATEST(update_ts,$3),received_bytes=0,next_chunk_index=0,chunk_count=0 WHERE account_id=$1 AND file_id=$2 AND payload_deleted_ts IS NULL",
+            &[&account_id, &file_id, &ts],
         )?;
         tx.commit()?;
         Ok(true)

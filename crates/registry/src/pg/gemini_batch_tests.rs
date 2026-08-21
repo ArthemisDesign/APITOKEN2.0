@@ -704,6 +704,19 @@ fn stage2_authority_postgres_matrix() {
     assert!(pg
         .gemini_batch_file_delete("stage2-account", "stage2-delete-input")
         .unwrap());
+    assert!(pg
+        .gemini_batch_file_get("stage2-account", "stage2-delete-input")
+        .unwrap()
+        .is_none());
+    let payload_deleted: Option<i64> = pg
+        .client
+        .query_one(
+            "SELECT payload_deleted_ts FROM gemini_batch_files WHERE file_id='stage2-delete-input'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert!(payload_deleted.is_some());
 
     let mut sqlite = crate::authority::Authority::Sqlite(crate::open(":memory:").unwrap());
     assert!(crate::is_gemini_batch_unsupported(

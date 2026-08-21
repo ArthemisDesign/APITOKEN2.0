@@ -218,7 +218,7 @@ impl PgStore {
             &[&claim.account_id],
         )?;
         let stored: i64 = tx.query_one(
-            "SELECT COALESCE(SUM(size_bytes),0)::bigint FROM gemini_batch_files WHERE account_id=$1 AND expiration_ts>$2 AND file_id<>$3",
+            "SELECT COALESCE(SUM(size_bytes),0)::bigint FROM gemini_batch_files WHERE account_id=$1 AND expiration_ts>$2 AND payload_deleted_ts IS NULL AND file_id<>$3",
             &[&claim.account_id,&ts,&claim.file_id],
         )?.get(0);
         if stored
