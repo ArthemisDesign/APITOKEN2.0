@@ -1637,6 +1637,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn codex_composition_default_tracks_the_live_admitted_wire_identity() {
+        assert_eq!(codex_credential::CODEX_CLI_VERSION, "0.149.0");
+        let selected = std::env::var("CLAUDE_API_CODEX_CLI_VERSION")
+            .unwrap_or_else(|_| codex_credential::CODEX_CLI_VERSION.to_string());
+        if std::env::var_os("CLAUDE_API_CODEX_CLI_VERSION").is_none() {
+            assert_eq!(selected, "0.149.0");
+        }
+    }
+
+    #[test]
     fn dormant_body_limits_are_strict_and_preserve_current_provider_caps() {
         let defaults = parse_body_limits(&BTreeMap::new(), ProviderMode::Combined).unwrap();
         assert_eq!(defaults, api_limits::current::PROVIDER);
