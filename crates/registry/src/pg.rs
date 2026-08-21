@@ -1948,6 +1948,60 @@ impl PgStore {
         self.process_outbox_request(request_id)
     }
 
+    pub fn request_facts_summary(
+        &mut self,
+        window: crate::request_facts::RequestFactReadWindow,
+        account_id: Option<&str>,
+    ) -> Result<crate::request_facts::RequestFactSummary> {
+        let window = window.validate()?;
+        let mut tx = self
+            .client
+            .build_transaction()
+            .isolation_level(postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()?;
+        let result = request_facts::summary(&mut tx, window, account_id)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    pub fn request_facts_page(
+        &mut self,
+        window: crate::request_facts::RequestFactReadWindow,
+        account_id: Option<&str>,
+        cursor: Option<crate::request_facts::RequestFactCursor>,
+        limit: usize,
+    ) -> Result<crate::request_facts::RequestFactPage> {
+        let window = window.validate()?;
+        let mut tx = self
+            .client
+            .build_transaction()
+            .isolation_level(postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()?;
+        let result = request_facts::page(&mut tx, window, account_id, cursor, limit)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    pub fn request_facts_logical(
+        &mut self,
+        logical_request_id: &str,
+    ) -> Result<crate::request_facts::RequestFactLogicalRows> {
+        if !crate::request_facts::is_canonical_uuid_v4(logical_request_id) {
+            bail!("logical request ID must be canonical lowercase UUIDv4");
+        }
+        let mut tx = self
+            .client
+            .build_transaction()
+            .isolation_level(postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()?;
+        let result = request_facts::logical(&mut tx, logical_request_id)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
     /// Count scoped lifecycles that have remained nonterminal past the fixed one-hour threshold.
     /// This aggregate is operational health only and carries no customer/request dimensions.
     pub fn request_facts_stuck_count(&mut self, now_ts: i64) -> Result<u64> {

@@ -5,6 +5,7 @@
 //! agents, credentials, full API keys, email addresses, or provider subjects.
 
 use anyhow::{bail, Result};
+use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const REQUEST_FACT_ADMISSION_SCHEMA_VERSION: i32 = 1;
@@ -112,6 +113,122 @@ pub const REQUEST_FACT_V1_SCOPES: [RequestFactV1Scope; 15] = [
         request_class: "messages",
     },
 ];
+
+pub const REQUEST_FACT_SCOPE_VERSION: i32 = 1;
+pub const MAX_REQUEST_FACT_READ_LIMIT: usize = 200;
+pub const MAX_REQUEST_FACT_SUMMARY_GROUPS: i64 = 512;
+pub const MAX_REQUEST_FACT_WINDOW_SECS: i64 = 30 * 86_400;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestFactReadWindow {
+    pub from: i64,
+    pub to: i64,
+}
+
+impl RequestFactReadWindow {
+    pub fn validate(self) -> Result<Self> {
+        if self.from < 0 || self.to <= self.from {
+            bail!("request-fact window must be a positive half-open interval");
+        }
+        if self.to - self.from > MAX_REQUEST_FACT_WINDOW_SECS {
+            bail!("request-fact window exceeds 30 days");
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestFactCursor {
+    pub admitted_at: i64,
+    pub fact_id: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct RequestFactReadRow {
+    pub fact_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logical_request_id: Option<String>,
+    pub attempt: i32,
+    pub client_kind: String,
+    pub client_source: String,
+    pub client_version: Option<String>,
+    pub provider_plane: String,
+    pub route_class: String,
+    pub request_class: String,
+    pub requested_model: Option<String>,
+    pub executable_model: Option<String>,
+    pub stream: bool,
+    pub tools_declared_count: Option<i32>,
+    pub tool_classes: Option<i32>,
+    pub tool_choice_mode: Option<String>,
+    pub parallel_tools_requested: Option<bool>,
+    pub tool_results_in_input: Option<bool>,
+    pub structured_output: Option<bool>,
+    pub reasoning: Option<bool>,
+    pub service_tier: Option<String>,
+    pub input_modalities: Option<i32>,
+    pub output_modalities: Option<i32>,
+    pub admitted_at: i64,
+    pub delivery_started_at: Option<i64>,
+    pub first_public_byte_at: Option<i64>,
+    pub terminal_at: Option<i64>,
+    pub http_status_code: Option<i32>,
+    pub provider_terminal_class: Option<String>,
+    pub delivery_state: Option<String>,
+    pub billing_outcome: Option<String>,
+    pub downstream_disconnect: Option<bool>,
+    pub internal_attempt_count: Option<i32>,
+    pub tool_calls_in_output: Option<bool>,
+    pub admission_to_delivery_seconds: Option<i64>,
+    pub admission_to_first_public_byte_seconds: Option<i64>,
+    pub delivery_to_first_public_byte_seconds: Option<i64>,
+    pub admission_to_terminal_seconds: Option<i64>,
+    pub schema_version: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct RequestFactDimensionCount {
+    pub values: Vec<Option<String>>,
+    pub count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct RequestFactAxis {
+    pub groups: Vec<RequestFactDimensionCount>,
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct RequestFactSummaryTotals {
+    pub persisted: u64,
+    pub terminal: u64,
+    pub nonterminal: u64,
+    pub required_evidence_unknown: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct RequestFactSummary {
+    pub totals: RequestFactSummaryTotals,
+    pub clients: RequestFactAxis,
+    pub routes: RequestFactAxis,
+    pub requested_models: RequestFactAxis,
+    pub executable_models: RequestFactAxis,
+    pub terminal_classes: RequestFactAxis,
+    pub delivery_states: RequestFactAxis,
+    pub billing_outcomes: RequestFactAxis,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestFactPage {
+    pub rows: Vec<RequestFactReadRow>,
+    pub next: Option<RequestFactCursor>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestFactLogicalRows {
+    pub rows: Vec<RequestFactReadRow>,
+    pub truncated: bool,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RequestFactLifecycleObservation {
@@ -810,6 +927,21 @@ mod tests {
             failure_class: None,
             tool_calls_in_output: None,
         }
+    }
+
+    #[test]
+    fn read_window_and_duration_contract_is_fail_closed() {
+        assert!(RequestFactReadWindow { from: 1, to: 2 }.validate().is_ok());
+        assert!(RequestFactReadWindow { from: -1, to: 2 }
+            .validate()
+            .is_err());
+        assert!(RequestFactReadWindow { from: 2, to: 2 }.validate().is_err());
+        assert!(RequestFactReadWindow {
+            from: 0,
+            to: MAX_REQUEST_FACT_WINDOW_SECS + 1,
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]

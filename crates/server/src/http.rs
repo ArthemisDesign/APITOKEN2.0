@@ -288,6 +288,27 @@ define_admin_routes!(
         "/admin/pricing/tariffs/seed",
         admin::seed_tariff_overrides
     ),
+    (
+        get,
+        GET,
+        "/admin/request-facts/summary",
+        "/admin/request-facts/summary?from=1&to=2",
+        admin::request_facts_summary
+    ),
+    (
+        get,
+        GET,
+        "/admin/request-facts",
+        "/admin/request-facts?from=1&to=2",
+        admin::request_facts_page
+    ),
+    (
+        get,
+        GET,
+        "/admin/request-facts/logical/{id}",
+        "/admin/request-facts/logical/00000000-0000-4000-8000-000000000000",
+        admin::request_facts_logical
+    ),
 );
 
 async fn require_control_auth(

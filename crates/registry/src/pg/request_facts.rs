@@ -1,11 +1,243 @@
 use crate::request_facts::{
-    BillingOutcome, RequestFactAdmission, RequestFactTerminalEvidence, TerminalRequestFact,
-    MAX_REQUEST_FACT_BATCH, REQUEST_FACT_ADMISSION_SCHEMA_VERSION,
+    BillingOutcome, RequestFactAdmission, RequestFactAxis, RequestFactCursor,
+    RequestFactDimensionCount, RequestFactLogicalRows, RequestFactPage, RequestFactReadRow,
+    RequestFactReadWindow, RequestFactSummary, RequestFactSummaryTotals,
+    RequestFactTerminalEvidence, TerminalRequestFact, MAX_REQUEST_FACT_BATCH,
+    MAX_REQUEST_FACT_READ_LIMIT, MAX_REQUEST_FACT_SUMMARY_GROUPS,
+    REQUEST_FACT_ADMISSION_SCHEMA_VERSION,
 };
 use anyhow::{bail, Result};
 use postgres::{Row, Transaction};
 
 const ADMISSION_COLUMNS: &str = "logical_request_id,billing_request_id,execution_group_id,attempt,account_id,key_id,client_kind,client_source,client_version,provider_plane,route_class,request_class,requested_model,executable_model,stream_flag,tools_declared_count,tool_classes,tool_choice_mode,parallel_tools_requested,tool_results_in_input,structured_output_flag,reasoning_flag,service_tier,input_modalities,output_modalities,admitted_at,schema_version";
+
+const READ_COLUMNS: &str = "fact_id,logical_request_id,attempt,client_kind,client_source,client_version,provider_plane,route_class,request_class,requested_model,executable_model,stream_flag,tools_declared_count,tool_classes,tool_choice_mode,parallel_tools_requested,tool_results_in_input,structured_output_flag,reasoning_flag,service_tier,input_modalities,output_modalities,admitted_at,delivery_started_at,first_public_byte_at,terminal_at,http_status_code,provider_terminal_class,delivery_state,billing_outcome,downstream_disconnect,internal_attempt_count,tool_calls_in_output,schema_version";
+
+fn safe_duration(start: Option<i64>, end: Option<i64>) -> Option<i64> {
+    match (start, end) {
+        (Some(start), Some(end)) if end >= start => Some(end - start),
+        _ => None,
+    }
+}
+
+fn read_row(row: Row, include_logical: bool) -> RequestFactReadRow {
+    let admitted_at: i64 = row.get(22);
+    let delivery_started_at: Option<i64> = row.get(23);
+    let first_public_byte_at: Option<i64> = row.get(24);
+    let terminal_at: Option<i64> = row.get(25);
+    RequestFactReadRow {
+        fact_id: row.get(0),
+        logical_request_id: include_logical.then(|| row.get(1)),
+        attempt: row.get(2),
+        client_kind: row.get(3),
+        client_source: row.get(4),
+        client_version: row.get(5),
+        provider_plane: row.get(6),
+        route_class: row.get(7),
+        request_class: row.get(8),
+        requested_model: row.get(9),
+        executable_model: row.get(10),
+        stream: row.get(11),
+        tools_declared_count: row.get(12),
+        tool_classes: row.get(13),
+        tool_choice_mode: row.get(14),
+        parallel_tools_requested: row.get(15),
+        tool_results_in_input: row.get(16),
+        structured_output: row.get(17),
+        reasoning: row.get(18),
+        service_tier: row.get(19),
+        input_modalities: row.get(20),
+        output_modalities: row.get(21),
+        admitted_at,
+        delivery_started_at,
+        first_public_byte_at,
+        terminal_at,
+        http_status_code: row.get(26),
+        provider_terminal_class: row.get(27),
+        delivery_state: row.get(28),
+        billing_outcome: row.get(29),
+        downstream_disconnect: row.get(30),
+        internal_attempt_count: row.get(31),
+        tool_calls_in_output: row.get(32),
+        admission_to_delivery_seconds: safe_duration(Some(admitted_at), delivery_started_at),
+        admission_to_first_public_byte_seconds: safe_duration(
+            Some(admitted_at),
+            first_public_byte_at,
+        ),
+        delivery_to_first_public_byte_seconds: safe_duration(
+            delivery_started_at,
+            first_public_byte_at,
+        ),
+        admission_to_terminal_seconds: safe_duration(Some(admitted_at), terminal_at),
+        schema_version: row.get(33),
+    }
+}
+
+fn count(row: &Row, index: usize) -> Result<u64> {
+    u64::try_from(row.get::<_, i64>(index))
+        .map_err(|_| anyhow::anyhow!("request-fact aggregate is negative"))
+}
+
+fn axis(rows: Vec<Row>, dimensions: usize) -> Result<RequestFactAxis> {
+    let truncated = rows.len() > MAX_REQUEST_FACT_SUMMARY_GROUPS as usize;
+    let mut groups = Vec::with_capacity(rows.len().min(MAX_REQUEST_FACT_SUMMARY_GROUPS as usize));
+    for row in rows
+        .into_iter()
+        .take(MAX_REQUEST_FACT_SUMMARY_GROUPS as usize)
+    {
+        let mut values = Vec::with_capacity(dimensions);
+        for index in 0..dimensions {
+            values.push(row.get(index));
+        }
+        groups.push(RequestFactDimensionCount {
+            values,
+            count: count(&row, dimensions)?,
+        });
+    }
+    Ok(RequestFactAxis { groups, truncated })
+}
+
+fn account_clause(account_id: Option<&str>, parameter: usize) -> String {
+    if account_id.is_some() {
+        format!(" AND account_id=${parameter}")
+    } else {
+        String::new()
+    }
+}
+
+pub(super) fn summary(
+    tx: &mut Transaction<'_>,
+    window: RequestFactReadWindow,
+    account_id: Option<&str>,
+) -> Result<RequestFactSummary> {
+    let account = account_clause(account_id, 3);
+    let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![&window.from, &window.to];
+    if let Some(ref account_id) = account_id {
+        params.push(account_id);
+    }
+    let totals_sql = format!(
+        r#"SELECT COUNT(*)::bigint,
+                  COUNT(*) FILTER (WHERE terminal_at IS NOT NULL)::bigint,
+                  COUNT(*) FILTER (WHERE terminal_at IS NULL)::bigint,
+                  COUNT(*) FILTER (
+                    WHERE terminal_at IS NOT NULL
+                      AND (schema_version<>1 OR provider_terminal_class IS NULL
+                           OR delivery_state IS NULL OR billing_outcome IS NULL)
+                  )::bigint
+             FROM request_facts
+            WHERE admitted_at >= $1 AND admitted_at < $2{account}"#
+    );
+    let totals = tx.query_one(&totals_sql, &params)?;
+    let grouped = |tx: &mut Transaction<'_>, select: &str, group: &str, dimensions: usize| {
+        let sql = format!(
+            "SELECT {select},COUNT(*)::bigint FROM request_facts WHERE admitted_at >= $1 AND admitted_at < $2{account} GROUP BY {group} ORDER BY COUNT(*) DESC,{group} LIMIT {}",
+            MAX_REQUEST_FACT_SUMMARY_GROUPS + 1
+        );
+        axis(tx.query(&sql, &params)?, dimensions)
+    };
+    Ok(RequestFactSummary {
+        totals: RequestFactSummaryTotals {
+            persisted: count(&totals, 0)?,
+            terminal: count(&totals, 1)?,
+            nonterminal: count(&totals, 2)?,
+            required_evidence_unknown: count(&totals, 3)?,
+        },
+        clients: grouped(
+            tx,
+            "client_kind,client_source",
+            "client_kind,client_source",
+            2,
+        )?,
+        routes: grouped(
+            tx,
+            "provider_plane,route_class,request_class",
+            "provider_plane,route_class,request_class",
+            3,
+        )?,
+        requested_models: grouped(tx, "requested_model", "requested_model", 1)?,
+        executable_models: grouped(tx, "executable_model", "executable_model", 1)?,
+        terminal_classes: grouped(tx, "provider_terminal_class", "provider_terminal_class", 1)?,
+        delivery_states: grouped(tx, "delivery_state", "delivery_state", 1)?,
+        billing_outcomes: grouped(tx, "billing_outcome", "billing_outcome", 1)?,
+    })
+}
+
+pub(super) fn page(
+    tx: &mut Transaction<'_>,
+    window: RequestFactReadWindow,
+    account_id: Option<&str>,
+    cursor: Option<RequestFactCursor>,
+    limit: usize,
+) -> Result<RequestFactPage> {
+    if !(1..=MAX_REQUEST_FACT_READ_LIMIT).contains(&limit) {
+        bail!("request-fact limit is outside 1..200");
+    }
+    let account = account_clause(account_id, 3);
+    let cursor_clause = if account_id.is_some() { 4 } else { 3 };
+    let mut sql = format!(
+        "SELECT {READ_COLUMNS} FROM request_facts WHERE admitted_at >= $1 AND admitted_at < $2{account}"
+    );
+    let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![&window.from, &window.to];
+    if let Some(ref account_id) = account_id {
+        params.push(account_id);
+    }
+    let cursor_ts;
+    let cursor_id;
+    if let Some(cursor) = cursor {
+        cursor_ts = cursor.admitted_at;
+        cursor_id = cursor.fact_id;
+        sql.push_str(&format!(
+            " AND (admitted_at < ${cursor_clause} OR (admitted_at = ${cursor_clause} AND fact_id < ${}))",
+            cursor_clause + 1
+        ));
+        params.push(&cursor_ts);
+        params.push(&cursor_id);
+    }
+    let page_limit = i64::try_from(limit + 1)?;
+    sql.push_str(&format!(
+        " ORDER BY admitted_at DESC,fact_id DESC LIMIT ${}",
+        params.len() + 1
+    ));
+    params.push(&page_limit);
+    let mut rows = tx
+        .query(&sql, &params)?
+        .into_iter()
+        .map(|row| read_row(row, false))
+        .collect::<Vec<_>>();
+    let has_more = rows.len() > limit;
+    if has_more {
+        rows.truncate(limit);
+    }
+    let next = has_more && !rows.is_empty();
+    let next = next.then(|| {
+        let last = rows.last().expect("nonempty page");
+        RequestFactCursor {
+            admitted_at: last.admitted_at,
+            fact_id: last.fact_id,
+        }
+    });
+    Ok(RequestFactPage { rows, next })
+}
+
+pub(super) fn logical(
+    tx: &mut Transaction<'_>,
+    logical_request_id: &str,
+) -> Result<RequestFactLogicalRows> {
+    let limit = i64::try_from(MAX_REQUEST_FACT_READ_LIMIT + 1)?;
+    let sql = format!(
+        "SELECT {READ_COLUMNS} FROM request_facts WHERE logical_request_id=$1 ORDER BY attempt ASC,fact_id ASC LIMIT $2"
+    );
+    let mut rows = tx
+        .query(&sql, &[&logical_request_id, &limit])?
+        .into_iter()
+        .map(|row| read_row(row, true))
+        .collect::<Vec<_>>();
+    let truncated = rows.len() > MAX_REQUEST_FACT_READ_LIMIT;
+    if truncated {
+        rows.truncate(MAX_REQUEST_FACT_READ_LIMIT);
+    }
+    Ok(RequestFactLogicalRows { rows, truncated })
+}
 
 pub(super) fn validate_reservation_fact(
     fact: &RequestFactAdmission,

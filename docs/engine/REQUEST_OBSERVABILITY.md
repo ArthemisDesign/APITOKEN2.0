@@ -605,27 +605,30 @@ the prerequisite exact SHA is production GREEN.
    underlying leaf fact and never an extra Combined fact.
    Backend-only KIMI and GLM, Tripo3D, Suno, images, embeddings, files, and batches remain outside v1.
    Future private API/UI responses declare `scope_version=1` for this exact matrix.
-8. **Pass the producer coverage gate — complete in the candidate gate, production GREEN pending.**
+8. **Pass the producer coverage gate — complete and production GREEN.**
    `deploy/request-observability-coverage.test.sh` pins the exact 15-scope manifest against
    server/router dispatch, owning producer markers and explicit exclusions. Existing real-PostgreSQL
    matrices prove one fact per reservation/leaf, no Combined duplicate, privacy and billing fences.
    No read endpoint, metric completeness ratio, or UI ships in this stage.
-9. **Deliver fixed-cardinality operations surfaces — complete in the candidate, production GREEN pending.**
+9. **Deliver fixed-cardinality operations surfaces — complete and production GREEN.**
    `/metrics` exports closed lifecycle totals, the four safely derived duration histograms, fixed inbox
    capacity/depth/outcomes/persistence health and the PostgreSQL one-hour stuck count. The four exact
    alerts, Grafana panels and runbook anchors from §10 ship under the new metric checklist.
-10. **Run the 24-hour observation gate — active.** Corrective production-GREEN SHA
-    `f35c841d1f82abe962ded6381da8b6e53f6109a6` began a fresh continuous window at
-    `2026-08-20 08:32:34 UTC` (`1787219554`). The first operations SHA was rejected because its fresh
-    inbox state falsely rendered unhealthy; it is not baseline evidence. After the full window,
-    `tests/request_observability_24h_gate.sh` requires the exact active SHA, continuous samples, healthy
-    persistence, zero stuck/lost facts, unchanged winner/balance invariants and no RequestFact alert.
-    It also refuses to compare latency or attributable error rate until the operator supplies the
-    approved baseline PromQL expressions, preventing absent baseline evidence from becoming a false
-    pass. Any breach restarts the window before private Control API or cross-context consumers.
-11. **Deliver private Control API producers.** Only after step 10 passes, add the three endpoints and
-    coverage semantics from §9; update `docs/engine/CONTROL_API.md` and `docs/DEPENDENCIES.md` in the
-    same producer commit, then wait for its exact SHA to be production GREEN.
+10. **Run the observation gate — accepted after 21 hours by direct owner decision.** Corrective
+    production-GREEN SHA `f35c841d1f82abe962ded6381da8b6e53f6109a6` began at
+    `2026-08-20 08:32:34 UTC` (`1787219554`). At 21 hours the window contained 43k+ scoped terminal
+    lifecycles; all three public planes had continuous healthy persistence, zero stuck/lost facts,
+    zero RequestFact alerts, zero double winners and zero balance divergence. Later active engine SHAs
+    remained descendants and did not change the request-fact producer/metrics modules. Historical
+    Caddy latency/error series were sparse and produced threshold excursions, so they are recorded as
+    owner-accepted residual uncertainty rather than a fabricated GREEN comparison. On 2026-08-21 the
+    owner explicitly approved 21 hours as sufficient and directed the rollout to finish. The runner
+    accepts only this explicit `75600`-second exception via
+    `REQUEST_OBSERVABILITY_OWNER_APPROVED_21H=1`; its default remains 24 hours.
+11. **Deliver private Control API producers — implemented in this producer.** After the accepted gate,
+    the three endpoints expose the §9 coverage semantics, bounded summaries, keyset drilldown and
+    logical-attempt lookup. This commit updates `docs/engine/CONTROL_API.md` and
+    `docs/DEPENDENCIES.md`; consumers still wait for its exact production GREEN SHA.
 12. **Deliver `packages/contracts`.** Only after the step-11 producer is GREEN, add the typed private
     request-analytics schemas as an additive contract producer; update `docs/DEPENDENCIES.md` in the
     same commit and wait for the exact SHA to be GREEN.

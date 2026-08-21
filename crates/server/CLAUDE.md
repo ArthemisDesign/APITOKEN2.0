@@ -61,7 +61,13 @@ background loops and the HTTP router. Here — and only here — everything is w
   (the control key, SEPARATE from forwarding-admin). All writes go through the single-writer actor `AsyncBilling`
   (the same discipline as reserve/settle). The engine remains the authority on the LIVE balance; commerce only
   creates accounts/keys and credits (idempotently by `ref`). The full contract is `docs/engine/CONTROL_API.md`.
-  Account pricing is updated by `/admin/account/{id}/pricing` (the default discount) and
+  Private request analytics adds exactly `GET /admin/request-facts/summary`,
+  `GET /admin/request-facts` and `GET /admin/request-facts/logical/{id}` under the same control-key
+  middleware. Windows are explicit half-open and at most 30 days, pages use an opaque versioned
+  `(admitted_at,fact_id)` cursor and return at most 200 rows, logical lookup is canonical UUIDv4 and
+  bounded to 200 attempts. Coverage keeps denominator/drop history unknown; runtime health is a
+  separate process-local object. Responses omit customer content and account/key/billing/execution/
+  upstream identities. Account pricing is updated by `/admin/account/{id}/pricing` (the default discount) and
   `GET|POST /admin/account/{id}/discounts` (per-provider overrides — the whole B2B pricing
   surface, `docs/commerce/PRICING_MODEL.md`); cursor ledger reads use `after_id` for
   the commercial pricing worker. Charge rows additively expose non-negative

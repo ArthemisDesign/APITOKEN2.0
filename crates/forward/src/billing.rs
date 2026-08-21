@@ -1608,6 +1608,22 @@ enum ReadCmd {
         oneshot::Sender<anyhow::Result<registry::SettlementHealth>>,
     ),
     RequestFactsStuck(i64, oneshot::Sender<anyhow::Result<Option<u64>>>),
+    RequestFactsSummary {
+        window: registry::request_facts::RequestFactReadWindow,
+        account_id: Option<String>,
+        reply: oneshot::Sender<anyhow::Result<registry::request_facts::RequestFactSummary>>,
+    },
+    RequestFactsPage {
+        window: registry::request_facts::RequestFactReadWindow,
+        account_id: Option<String>,
+        cursor: Option<registry::request_facts::RequestFactCursor>,
+        limit: usize,
+        reply: oneshot::Sender<anyhow::Result<registry::request_facts::RequestFactPage>>,
+    },
+    RequestFactsLogical {
+        logical_request_id: String,
+        reply: oneshot::Sender<anyhow::Result<registry::request_facts::RequestFactLogicalRows>>,
+    },
 }
 
 /// Latency of the single-writer PostgreSQL money commands, measured around `run_pg_with_retry`
@@ -3329,6 +3345,21 @@ impl AsyncBilling {
                             ReadCmd::RequestFactsStuck(_, reply) => {
                                 let _ = reply.send(Ok(None));
                             }
+                            ReadCmd::RequestFactsSummary { reply, .. } => {
+                                let _ = reply.send(Err(anyhow::anyhow!(
+                                    "request-fact Control API requires PostgreSQL"
+                                )));
+                            }
+                            ReadCmd::RequestFactsPage { reply, .. } => {
+                                let _ = reply.send(Err(anyhow::anyhow!(
+                                    "request-fact Control API requires PostgreSQL"
+                                )));
+                            }
+                            ReadCmd::RequestFactsLogical { reply, .. } => {
+                                let _ = reply.send(Err(anyhow::anyhow!(
+                                    "request-fact Control API requires PostgreSQL"
+                                )));
+                            }
                         }
                     }
                     elog::info("billing", format!("billing-reader-{i} поток завершён"));
@@ -4560,6 +4591,28 @@ impl AsyncBilling {
                             ReadCmd::RequestFactsStuck(now_ts, reply) => {
                                 answer!(reply, pg.request_facts_stuck_count(now_ts).map(Some))
                             }
+                            ReadCmd::RequestFactsSummary {
+                                window,
+                                account_id,
+                                reply,
+                            } => {
+                                answer!(reply, pg.request_facts_summary(window, account_id.as_deref()))
+                            }
+                            ReadCmd::RequestFactsPage {
+                                window,
+                                account_id,
+                                cursor,
+                                limit,
+                                reply,
+                            } => {
+                                answer!(reply, pg.request_facts_page(window, account_id.as_deref(), cursor, limit))
+                            }
+                            ReadCmd::RequestFactsLogical {
+                                logical_request_id,
+                                reply,
+                            } => {
+                                answer!(reply, pg.request_facts_logical(&logical_request_id))
+                            }
                         }
                     }
                 })?;
@@ -5318,6 +5371,65 @@ impl AsyncBilling {
         let (reply, receive) = oneshot::channel();
         self.reader()
             .send(ReadCmd::RequestFactsStuck(now_ts, reply))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        receive
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn request_facts_summary(
+        &self,
+        window: registry::request_facts::RequestFactReadWindow,
+        account_id: Option<String>,
+    ) -> anyhow::Result<registry::request_facts::RequestFactSummary> {
+        let (reply, receive) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::RequestFactsSummary {
+                window,
+                account_id,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        receive
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn request_facts_page(
+        &self,
+        window: registry::request_facts::RequestFactReadWindow,
+        account_id: Option<String>,
+        cursor: Option<registry::request_facts::RequestFactCursor>,
+        limit: usize,
+    ) -> anyhow::Result<registry::request_facts::RequestFactPage> {
+        let (reply, receive) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::RequestFactsPage {
+                window,
+                account_id,
+                cursor,
+                limit,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        receive
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn request_facts_logical(
+        &self,
+        logical_request_id: String,
+    ) -> anyhow::Result<registry::request_facts::RequestFactLogicalRows> {
+        let (reply, receive) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::RequestFactsLogical {
+                logical_request_id,
+                reply,
+            })
             .await
             .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
         receive

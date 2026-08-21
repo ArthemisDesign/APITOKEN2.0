@@ -3972,6 +3972,45 @@ fn request_fact_outcomes_batch_and_prune_postgres_matrix() {
     ];
     assert_eq!(pg.insert_terminal_request_facts(&batch).unwrap(), 2);
     assert_eq!(pg.insert_terminal_request_facts(&batch).unwrap(), 1);
+
+    let window = crate::request_facts::RequestFactReadWindow {
+        from: admitted_at,
+        to: admitted_at + 1,
+    };
+    let summary = pg.request_facts_summary(window, None).unwrap();
+    assert!(summary.totals.persisted >= 8);
+    assert_eq!(summary.totals.nonterminal, 0);
+    assert!(summary
+        .routes
+        .groups
+        .iter()
+        .any(|group| group.values == vec![Some("anthropic".into()), Some("direct".into()), Some("messages".into())]));
+    let first_page = pg.request_facts_page(window, None, None, 2).unwrap();
+    assert_eq!(first_page.rows.len(), 2);
+    assert!(first_page.next.is_some());
+    assert!(first_page.rows[0].admitted_at >= first_page.rows[1].admitted_at);
+    let second_page = pg
+        .request_facts_page(window, None, first_page.next, 2)
+        .unwrap();
+    assert!(second_page
+        .rows
+        .iter()
+        .all(|row| !first_page.rows.iter().any(|first| first.fact_id == row.fact_id)));
+    let account_summary = pg
+        .request_facts_summary(window, Some("rf2-account"))
+        .unwrap();
+    assert!(account_summary.totals.persisted >= 6);
+    let logical = pg
+        .request_facts_logical("66666666-6666-4666-8666-666666666666")
+        .unwrap();
+    assert_eq!(logical.rows.len(), 2);
+    assert_eq!(logical.rows[0].attempt, 1);
+    assert_eq!(logical.rows[1].attempt, 2);
+    assert!(!logical.truncated);
+    assert!(pg.request_facts_logical("not-a-uuid").is_err());
+    assert!(pg
+        .request_facts_page(window, None, None, crate::request_facts::MAX_REQUEST_FACT_READ_LIMIT + 1)
+        .is_err());
     let oversized = vec![batch[0].clone(); crate::request_facts::MAX_REQUEST_FACT_BATCH + 1];
     assert!(pg.insert_terminal_request_facts(&oversized).is_err());
 

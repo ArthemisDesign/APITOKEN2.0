@@ -112,8 +112,11 @@ side effect. `serve` may only perform the read-only schema verification before c
   Legacy methods remain fact-free wrappers and SQLite money behavior is unchanged. Runtime terminal
   commits update only compile-bounded in-process lifecycle counters after the PostgreSQL transaction
   commits; a separate bounded read counts facts still nonterminal after one hour for operations.
-  There is still no private analytics read API. Lifecycle maintenance prunes request facts first under
-  the existing validated 30-day cutoff.
+  Private analytics reads are PostgreSQL-only, read-only Repeatable Read snapshots: bounded summary,
+  newest-first `(admitted_at,fact_id)` keyset pages, and canonical logical-ID attempts. Read DTOs omit
+  account/key/billing/execution/upstream identities and raw failure prose; coverage never derives a
+  denominator from persisted rows. Lifecycle maintenance prunes request facts first under the existing
+  validated 30-day cutoff.
   Contract and staged rollout — `docs/engine/REQUEST_OBSERVABILITY.md`.
 - Public type [`Sub`] (email/token/proxy/fleet) — the contract for `pool`/`forward`. Change it —
   check both consumers.

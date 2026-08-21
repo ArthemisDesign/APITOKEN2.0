@@ -9,6 +9,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
+use base64::Engine as _;
 use forward::AppState;
 use registry::pricing::{
     parse_tariff_override_payload, validate_tariff_family, TariffOverrideInsert,
@@ -44,6 +45,289 @@ fn authority_unavailable(context: &str, error: anyhow::Error) -> Response {
         Json(json!({"error": "billing authority unavailable"})),
     )
         .into_response()
+}
+
+const REQUEST_FACT_CURSOR_VERSION: u8 = 1;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestFactsQuery {
+    from: Option<i64>,
+    to: Option<i64>,
+    account_id: Option<String>,
+    cursor: Option<String>,
+    limit: Option<usize>,
+}
+
+fn request_fact_window(
+    from: Option<i64>,
+    to: Option<i64>,
+) -> Result<registry::request_facts::RequestFactReadWindow, Response> {
+    let (Some(from), Some(to)) = (from, to) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"from and to are required"})),
+        )
+            .into_response());
+    };
+    let window = registry::request_facts::RequestFactReadWindow { from, to };
+    if window.validate().is_err() || to > pool::now().saturating_add(1) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid request-fact window"})),
+        )
+            .into_response());
+    }
+    Ok(window)
+}
+
+fn validate_account_filter(account_id: Option<String>) -> Result<Option<String>, Response> {
+    if account_id.as_deref().is_some_and(|id| {
+        id.is_empty()
+            || id.len() > registry::request_facts::MAX_REQUEST_FACT_ACCOUNT_ID_LEN
+            || !id.is_ascii()
+            || id.bytes().any(|byte| byte.is_ascii_control())
+    }) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid account_id"})),
+        )
+            .into_response());
+    }
+    Ok(account_id)
+}
+
+fn encode_request_fact_cursor(cursor: registry::request_facts::RequestFactCursor) -> String {
+    let mut bytes = [0u8; 17];
+    bytes[0] = REQUEST_FACT_CURSOR_VERSION;
+    bytes[1..9].copy_from_slice(&cursor.admitted_at.to_be_bytes());
+    bytes[9..17].copy_from_slice(&cursor.fact_id.to_be_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn decode_request_fact_cursor(
+    value: Option<&str>,
+) -> Result<Option<registry::request_facts::RequestFactCursor>, Response> {
+    let Some(value) = value else { return Ok(None) };
+    if value.len() > 64 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid cursor"})),
+        )
+            .into_response());
+    }
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid cursor"})),
+            )
+                .into_response()
+        })?;
+    if bytes.len() != 17 || bytes[0] != REQUEST_FACT_CURSOR_VERSION {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid cursor"})),
+        )
+            .into_response());
+    }
+    let admitted_at = i64::from_be_bytes(bytes[1..9].try_into().expect("fixed cursor slice"));
+    let fact_id = i64::from_be_bytes(bytes[9..17].try_into().expect("fixed cursor slice"));
+    if admitted_at < 0 || fact_id <= 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid cursor"})),
+        )
+            .into_response());
+    }
+    Ok(Some(registry::request_facts::RequestFactCursor {
+        admitted_at,
+        fact_id,
+    }))
+}
+
+fn runtime_request_fact_health(app: &AppState, stuck_nonterminal: Option<u64>) -> Value {
+    let Some(billing) = app.billing.as_ref() else {
+        return Value::Null;
+    };
+    let snapshot = billing.request_fact_delivery_snapshot();
+    json!({
+        "observed_at": pool::now(),
+        "process_started_at": snapshot.process_started_at,
+        "continuity": if snapshot.process_started_at.is_some() { "process_local" } else { "unknown" },
+        "queue_capacity": forward::TERMINAL_REQUEST_FACT_QUEUE_CAPACITY,
+        "queue_depth": snapshot.queue_depth,
+        "accepted_total": snapshot.accepted,
+        "persisted_total": snapshot.persisted,
+        "deduplicated_total": snapshot.deduplicated,
+        "dropped_invalid_total": snapshot.dropped_invalid,
+        "dropped_full_total": snapshot.dropped_full,
+        "dropped_closed_total": snapshot.dropped_closed,
+        "dropped_unsupported_total": snapshot.dropped_unsupported,
+        "persistence_failed_total": snapshot.persistence_failed,
+        "persistence_health": match snapshot.persistence_health {
+            forward::RequestFactPersistenceHealth::Unknown => "unknown",
+            forward::RequestFactPersistenceHealth::Healthy => "healthy",
+            forward::RequestFactPersistenceHealth::Failed => "failed",
+        },
+        "stuck_nonterminal_count": stuck_nonterminal,
+    })
+}
+
+fn request_fact_coverage(
+    window: registry::request_facts::RequestFactReadWindow,
+    totals: &registry::request_facts::RequestFactSummaryTotals,
+) -> Value {
+    json!({
+        "scope_version": registry::request_facts::REQUEST_FACT_SCOPE_VERSION,
+        "from": window.from,
+        "to": window.to,
+        "persisted_facts": totals.persisted,
+        "terminal_facts": totals.terminal,
+        "nonterminal_facts": totals.nonterminal,
+        "required_evidence_unknown_facts": totals.required_evidence_unknown,
+        "drops": {"value": Value::Null, "reason":"no_durable_window_attribution"},
+        "persistence_failures": {"value": Value::Null, "reason":"no_durable_window_attribution"},
+        "admitted_denominator": Value::Null,
+        "coverage_percentage": Value::Null,
+        "status": "unknown",
+    })
+}
+
+pub async fn request_facts_summary(
+    State(app): State<AppState>,
+    Query(query): Query<RequestFactsQuery>,
+) -> Response {
+    let window = match request_fact_window(query.from, query.to) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let account_id = match validate_account_filter(query.account_id) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    if query.cursor.is_some() || query.limit.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"cursor and limit are not valid for summary"})),
+        )
+            .into_response();
+    }
+    let billing = match billing(&app) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let summary = match billing.request_facts_summary(window, account_id).await {
+        Ok(value) => value,
+        Err(error) => return authority_unavailable("request-fact summary", error),
+    };
+    let stuck = match billing.request_facts_stuck_count(pool::now()).await {
+        Ok(value) => value,
+        Err(error) => return authority_unavailable("request-fact health", error),
+    };
+    Json(json!({
+        "scope_version": registry::request_facts::REQUEST_FACT_SCOPE_VERSION,
+        "from": window.from,
+        "to": window.to,
+        "summary": summary,
+        "coverage": request_fact_coverage(window, &summary.totals),
+        "runtime": runtime_request_fact_health(&app, stuck),
+    }))
+    .into_response()
+}
+
+pub async fn request_facts_page(
+    State(app): State<AppState>,
+    Query(query): Query<RequestFactsQuery>,
+) -> Response {
+    let window = match request_fact_window(query.from, query.to) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let account_id = match validate_account_filter(query.account_id) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let limit = query
+        .limit
+        .unwrap_or(registry::request_facts::MAX_REQUEST_FACT_READ_LIMIT);
+    if !(1..=registry::request_facts::MAX_REQUEST_FACT_READ_LIMIT).contains(&limit) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"limit must be between 1 and 200"})),
+        )
+            .into_response();
+    }
+    let cursor = match decode_request_fact_cursor(query.cursor.as_deref()) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let billing = match billing(&app) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let page = match billing
+        .request_facts_page(window, account_id.clone(), cursor, limit)
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => return authority_unavailable("request-fact page", error),
+    };
+    let summary = match billing.request_facts_summary(window, account_id).await {
+        Ok(value) => value,
+        Err(error) => return authority_unavailable("request-fact coverage", error),
+    };
+    let stuck = match billing.request_facts_stuck_count(pool::now()).await {
+        Ok(value) => value,
+        Err(error) => return authority_unavailable("request-fact health", error),
+    };
+    Json(json!({
+        "scope_version": registry::request_facts::REQUEST_FACT_SCOPE_VERSION,
+        "from": window.from,
+        "to": window.to,
+        "rows": page.rows,
+        "next_cursor": page.next.map(encode_request_fact_cursor),
+        "coverage": request_fact_coverage(window, &summary.totals),
+        "runtime": runtime_request_fact_health(&app, stuck),
+    }))
+    .into_response()
+}
+
+pub async fn request_facts_logical(
+    State(app): State<AppState>,
+    Path(logical_request_id): Path<String>,
+) -> Response {
+    if !registry::request_facts::is_canonical_uuid_v4(&logical_request_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid logical request ID"})),
+        )
+            .into_response();
+    }
+    let billing = match billing(&app) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let result = match billing
+        .request_facts_logical(logical_request_id.clone())
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => return authority_unavailable("request-fact logical lookup", error),
+    };
+    let stuck = match billing.request_facts_stuck_count(pool::now()).await {
+        Ok(value) => value,
+        Err(error) => return authority_unavailable("request-fact health", error),
+    };
+    Json(json!({
+        "scope_version": registry::request_facts::REQUEST_FACT_SCOPE_VERSION,
+        "logical_request_id": logical_request_id,
+        "rows": result.rows,
+        "truncated": result.truncated,
+        "runtime": runtime_request_fact_health(&app, stuck),
+    }))
+    .into_response()
 }
 
 fn is_control_conflict(error: &anyhow::Error) -> bool {

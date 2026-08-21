@@ -6,7 +6,7 @@
 use registry::request_facts::{TerminalRequestFact, MAX_REQUEST_FACT_BATCH};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
 pub const TERMINAL_REQUEST_FACT_QUEUE_CAPACITY: usize = 4_096;
@@ -42,6 +42,7 @@ pub struct RequestFactDeliverySnapshot {
     pub dropped_unsupported: u64,
     pub persistence_failed: u64,
     pub persistence_health: RequestFactPersistenceHealth,
+    pub process_started_at: Option<i64>,
 }
 
 #[derive(Default)]
@@ -55,6 +56,7 @@ pub(super) struct RequestFactDeliveryState {
     dropped_unsupported: AtomicU64,
     persistence_failed: AtomicU64,
     persistence_health: AtomicU8,
+    process_started_at: i64,
 }
 
 pub(super) struct TerminalRequestFactInbox {
@@ -72,7 +74,15 @@ impl TerminalRequestFactInbox {
 
     pub(super) fn start_postgres(url: String, retry_deadline: Duration) -> Self {
         let (sender, receiver) = mpsc::channel(TERMINAL_REQUEST_FACT_QUEUE_CAPACITY);
-        let state = Arc::new(RequestFactDeliveryState::default());
+        let process_started_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+            .unwrap_or(0);
+        let state = Arc::new(RequestFactDeliveryState {
+            process_started_at,
+            ..RequestFactDeliveryState::default()
+        });
         let worker_state = Arc::clone(&state);
         if let Err(error) = std::thread::Builder::new()
             .name("request-facts-pg-writer".into())
@@ -143,6 +153,11 @@ impl TerminalRequestFactInbox {
             dropped_unsupported: load(&self.state.dropped_unsupported),
             persistence_failed: load(&self.state.persistence_failed),
             persistence_health,
+            process_started_at: self
+                .sender
+                .is_some()
+                .then_some(self.state.process_started_at)
+                .filter(|timestamp| *timestamp > 0),
         }
     }
 
@@ -362,6 +377,7 @@ mod tests {
                 dropped_unsupported: 0,
                 persistence_failed: 0,
                 persistence_health: RequestFactPersistenceHealth::Unknown,
+                process_started_at: None,
             }
         );
     }

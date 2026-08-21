@@ -514,6 +514,37 @@ buckets always equals `total_official_nano`. `total_charged_nano` is how much wa
 account after the multiplier. `models`, `daily`, `daily_providers` and `keys` give the same breakdown
 by models, days, providers and masked keys.
 
+### Private request analytics
+
+All three routes require the Control key and are unavailable on SQLite. They are operator/private
+contracts, not customer APIs. Every window is explicit, half-open `[from,to)`, rejects future `to`,
+and is no wider than 30 days. Optional `account_id` filters one exact engine account but is not echoed
+in the response.
+
+```text
+GET /admin/request-facts/summary?from=<epoch>&to=<epoch>[&account_id=<id>]
+GET /admin/request-facts?from=<epoch>&to=<epoch>[&account_id=<id>][&limit=1..200][&cursor=<opaque>]
+GET /admin/request-facts/logical/{canonical-lowercase-uuidv4}
+```
+
+Every response declares `scope_version:1`. Summary returns durable totals and bounded, explicitly
+truncated axes for client/source, provider/route/request, requested/executable model and terminal
+classes. Drilldown orders newest first by `(admitted_at,fact_id)`, returns at most 200 privacy-bounded
+rows and an opaque versioned keyset cursor. Logical lookup returns at most 200 attempts ordered by
+`(attempt,fact_id)` and an explicit `truncated` flag.
+
+Rows omit account/key/billing/execution/upstream identities and failure prose. They never contain raw
+keys, key labels, email, prompt/content, tool names/schemas/arguments, provider subject/profile or raw
+errors. Nullable structural and lifecycle evidence remains `null`; four derived durations are present
+only when both endpoints are measured and ordered.
+
+Window coverage is separate from runtime health. It reports persisted/terminal/nonterminal and
+required-terminal-evidence-unknown facts. Durable attribution for inbox drops and persistence failures
+does not exist, so their window values and the admitted denominator/percentage remain `null` with an
+explicit reason/status rather than false zero or 100%. Runtime counters are process-local and carry
+`process_started_at`, `observed_at`, continuity, queue state, persistence state and the durable
+one-hour stuck count; they are never presented as historical coverage.
+
 ### Access keys
 ```
 POST /admin/key                         {"account_id", "label"?,

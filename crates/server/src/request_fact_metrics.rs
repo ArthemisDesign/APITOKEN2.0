@@ -164,6 +164,7 @@ mod tests {
                 dropped_unsupported: 5,
                 persistence_failed: 6,
                 persistence_health: RequestFactPersistenceHealth::Failed,
+                process_started_at: Some(1),
             },
             Some(9),
         );
@@ -193,6 +194,7 @@ mod tests {
             dropped_unsupported: 0,
             persistence_failed: 0,
             persistence_health: RequestFactPersistenceHealth::Unknown,
+            process_started_at: Some(1),
         };
         let mut body = String::new();
         write_request_fact_metrics(&mut body, fresh, Some(0));
