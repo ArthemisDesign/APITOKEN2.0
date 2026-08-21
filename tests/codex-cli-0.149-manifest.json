@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "version": "0.149.0",
+  "npm_package": "@openai/codex@0.149.0",
+  "npm_integrity": "sha512-i4dryj2Y1j+00Mb5n+0n71EYnTK9/KDc2cdFo/dXD0d1oTog2bhUssKDEIOnKmnEf51P0Z/HJTWvTKw/UHyOvQ==",
+  "github_tag": "rust-v0.149.0",
+  "github_commit": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0"
+}
