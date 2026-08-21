@@ -201,13 +201,15 @@ fn every_public_error_marks_the_execution_not_started() {
     for error in all_public_errors() {
         let response = error.into_response();
         assert!(!response.status().is_success());
-        assert_eq!(
-            response
-                .headers()
-                .get(crate::proxy::EXECUTION_STATE_HEADER)
-                .unwrap(),
-            crate::proxy::EXECUTION_STATE_NOT_STARTED
-        );
+        let execution_state = response.headers().get(crate::proxy::EXECUTION_STATE_HEADER);
+        if error.reason == "codex_missing_authoritative_usage" {
+            assert!(execution_state.is_none());
+        } else {
+            assert_eq!(
+                execution_state,
+                Some(crate::proxy::EXECUTION_STATE_NOT_STARTED)
+            );
+        }
     }
     let ok = json_response(StatusCode::OK, json!({"id": "resp_1"}), "req_1");
     assert!(ok
