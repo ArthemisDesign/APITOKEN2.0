@@ -147,6 +147,15 @@ GPT-5.6 стал `2x`, но подписочный Fast по-прежнему с
 - https://learn.chatgpt.com/docs/agent-configuration/speed#fast-mode
 - https://developers.openai.com/api/docs/changelog#july-2026
 
+## Pending 0.149 controlled proof
+
+The source and synthetic custom-provider matrix target is `rust-v0.149.0`. Native ChatGPT identity
+remains pinned at `0.146.0` until a throwaway-profile proof completes. The live runner now defaults
+to no generation and no refresh-family rotation. One paid turn requires both
+`--execute-paid-turn` and an exact matching `--confirm-paid-budget`; the hard repository ceiling is
+`100000 nanoUSD` (`$0.0001`). A failed or missing-usage generation is a withdrawal and does not
+authorize a pin bump.
+
 ## Открытые вопросы (не блокеры)
 
 1. Появляется ли `codex.rate_limits` в стриме при исчерпании/429 — парсер принимает обе формы.

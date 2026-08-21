@@ -14,9 +14,12 @@ the Rust transport depends on, and prints them REDACTED (no tokens, no account i
      reject the FIRST refresh token (strict family reuse detection);
   5. optional WebSocket reachability check for `wss://chatgpt.com/backend-api/codex/responses`.
 
-Usage:
-    python3 tools/codex-native/probe-live.py --service-tier priority \
-      [--expect-served-tier priority] [--proxy http://user:pass@host:port] [--no-ws]
+Usage (safe default: no generation, no refresh rotation):
+    python3 tools/codex-native/probe-live.py --service-tier priority --no-ws
+
+One paid micro-turn on a throwaway profile only:
+    python3 tools/codex-native/probe-live.py --service-tier priority --no-ws \
+      --execute-paid-turn --max-nanousd 100000 --confirm-paid-budget 100000
 
 Findings belong in research/CODEX_NATIVE_WIRE.md. Never commit the captured tokens or ids.
 """
@@ -37,7 +40,8 @@ DEVICETOKEN_URL = "https://auth.openai.com/api/accounts/deviceauth/token"
 VERIFICATION_URL = "https://auth.openai.com/codex/device"
 BASE_URL = "https://chatgpt.com/backend-api/codex"
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
-CLI_VERSION = "0.146.0"
+CLI_VERSION = "0.149.0"
+DEFAULT_MAX_NANOUSD = 100_000
 ORIGINATOR = "codex_cli_rs"
 
 TIMEOUT = 30
@@ -366,12 +370,35 @@ def main():
         help="exit non-zero unless response.completed reports this exact tier (diagnostic only)",
     )
     parser.add_argument(
-        "--no-refresh",
+        "--execute-paid-turn",
         action="store_true",
-        help="skip destructive refresh-family rotation (required for production credentials)",
+        help="allow exactly one paid Responses generation after the free checks",
+    )
+    parser.add_argument(
+        "--confirm-paid-budget",
+        type=int,
+        default=0,
+        help="required with --execute-paid-turn; exact aggregate nanoUSD authorization",
+    )
+    parser.add_argument(
+        "--max-nanousd",
+        type=int,
+        default=DEFAULT_MAX_NANOUSD,
+        help="hard aggregate paid-turn ceiling (default: 100000 nanoUSD)",
+    )
+    parser.add_argument(
+        "--rotate-refresh-family",
+        action="store_true",
+        help="destructive throwaway-profile-only refresh rotation proof",
     )
     parser.add_argument("--no-ws", action="store_true")
     args = parser.parse_args()
+    if args.max_nanousd <= 0 or args.max_nanousd > DEFAULT_MAX_NANOUSD:
+        parser.error(f"--max-nanousd must be 1-{DEFAULT_MAX_NANOUSD}")
+    if args.execute_paid_turn and args.confirm_paid_budget != args.max_nanousd:
+        parser.error("paid turn requires --confirm-paid-budget equal to --max-nanousd")
+    if not args.execute_paid_turn and args.confirm_paid_budget:
+        parser.error("--confirm-paid-budget requires --execute-paid-turn")
     opener = make_opener(args.proxy)
     device = device_login(opener)
     tokens = exchange_code(opener, device)
@@ -379,19 +406,29 @@ def main():
     print(f"== plan claim: {plan.get('chatgpt_plan_type')!r} (account id redacted)")
     identity = request_identity()
     probe_models(opener, tokens, args.client_version, args.model)
-    ok, served_tier = probe_responses(
-        opener,
-        tokens,
-        args.client_version,
-        args.model,
-        args.service_tier,
-        identity,
-    )
+    ok, served_tier = True, None
+    if args.execute_paid_turn:
+        print(f"== paid turn authorized: cap={args.max_nanousd} nanoUSD; exactly one dispatch")
+        ok, served_tier = probe_responses(
+            opener,
+            tokens,
+            args.client_version,
+            args.model,
+            args.service_tier,
+            identity,
+        )
+    else:
+        print("== paid turn skipped (add --execute-paid-turn and exact --confirm-paid-budget)")
     probe_usage(opener, tokens, args.client_version)
-    if not args.no_refresh:
+    if args.rotate_refresh_family:
         tokens = probe_refresh_rotation(opener, tokens)
+    else:
+        print("== refresh-family rotation skipped")
     if not args.no_ws:
         probe_ws(tokens)
+    if args.expect_served_tier and not args.execute_paid_turn:
+        print("!! --expect-served-tier requires --execute-paid-turn")
+        return 2
     if args.expect_served_tier and served_tier != args.expect_served_tier:
         print(
             f"!! served-tier mismatch: expected {args.expect_served_tier!r}, "
