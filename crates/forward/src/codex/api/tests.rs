@@ -207,7 +207,7 @@ fn every_public_error_marks_the_execution_not_started() {
         } else {
             assert_eq!(
                 execution_state.map(axum::http::HeaderValue::as_bytes),
-                Some(crate::proxy::EXECUTION_STATE_NOT_STARTED)
+                Some(crate::proxy::EXECUTION_STATE_NOT_STARTED.as_bytes())
             );
         }
     }
