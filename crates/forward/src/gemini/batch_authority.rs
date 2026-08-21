@@ -567,7 +567,7 @@ impl GeminiBatchAuthority {
             .map_err(|_| anyhow::anyhow!("Gemini Batch authority unavailable"))?;
         result
             .await
-            .map_err(|_| anyhow::anyhow!("Gemini Batch authority stopped"))?
+            .map_err(|_| anyhow::anyhow!("Gemini Batch authority command aborted"))?
     }
 
     pub async fn create(
@@ -985,7 +985,7 @@ mod tests {
     async fn a_panicking_command_does_not_kill_the_authority_actor() {
         let actor = sqlite_actor(4);
         let error = actor.call(Command::Panic).await.unwrap_err();
-        assert_eq!(error.to_string(), "Gemini Batch authority stopped");
+        assert_eq!(error.to_string(), "Gemini Batch authority command aborted");
 
         let error = actor.operational_report().await.unwrap_err();
         assert!(registry::is_gemini_batch_unsupported(&error));
@@ -1011,7 +1011,7 @@ mod tests {
         let after = actor.acquire_leader(30).await.unwrap_err();
         assert!(matches!(
             after.to_string().as_str(),
-            "Gemini Batch authority unavailable" | "Gemini Batch authority stopped"
+            "Gemini Batch authority unavailable" | "Gemini Batch authority command aborted"
         ));
     }
 }
