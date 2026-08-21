@@ -185,7 +185,8 @@ The controlled production matrix of real harness clients is launched manually on
 (every successful generation is billed):
 
 ```bash
-APITOKEN_API_KEY=... bash tests/router_harness_live_matrix.sh
+APITOKEN_API_KEY=... APITOKEN_HARNESS_CODEX_BIN=/path/to/codex-0.149.0 \
+bash tests/router_harness_live_matrix.sh
 ```
 
 The script brings up a loopback evidence proxy for each case: the real key is given
@@ -196,12 +197,12 @@ model, status, request/response tier, and SSE/control types; credential/general-
 values, prompts, tool arguments, and generated content are never written to evidence.
 Each client's transient state is isolated in a single-use temp-root and removed by a
 trap. For a targeted rerun, pass a list of labels via
-`APITOKEN_HARNESS_CASES=cline-fast,codex-fast`. Harness-internal retries are allowed,
+`APITOKEN_HARNESS_CASES=cline-fast,codex-0149-sol-standard,codex-0149-sol-fast`. The Codex cases require an exact `codex-cli 0.149.0` binary. Harness-internal retries are allowed,
 but every accepted executable attempt must yield HTTP 200 with the expected tier; Fast
 requires an authoritative response `service_tier=priority`. Claude Code additionally
 proves the full Messages SSE lifecycle and the current
 structured-output/context/cache controls; Codex — the Responses lifecycle and current
-tool forms; Gemini CLI — native `streamGenerateContent`. A separate
+tool forms, exact `codex-cli 0.149.0` identity and bounded terminal usage evidence; Gemini CLI — native `streamGenerateContent`. A separate
 `opencode-gemini-tools` case runs OpenCode without user plugins/sanitizer, requires a
 real bash call and a second Chat turn, and bounded evidence confirms the raw AI SDK
 `$schema`/exclusive bounds, the tool-call response, and the replayed tool history.

@@ -705,7 +705,7 @@ run_matrix_case codex-standard openai_responses /v1/responses "$OPENAI_MODEL" st
 run_matrix_case codex-fast openai_responses /v1/responses "$OPENAI_MODEL" fast body run_codex
 # Exact 0.149 Sol coverage is opt-in because it is a paid live case. The default matrix remains
 # on the established gpt-5.4 case; operators can select the Sol cases explicitly.
-if [[ -z $CASE_FILTER || $CASE_FILTER == *codex-0149-sol-standard* || $CASE_FILTER == *codex-0149-sol-fast* ]]; then
+if [[ $CASE_FILTER == *codex-0149-sol-standard* || $CASE_FILTER == *codex-0149-sol-fast* ]]; then
   run_matrix_case codex-0149-sol-standard openai_responses /v1/responses "${APITOKEN_HARNESS_CODEX_SOL_MODEL:-openai/gpt-5.6-sol}" standard none run_codex
   run_matrix_case codex-0149-sol-fast openai_responses /v1/responses "${APITOKEN_HARNESS_CODEX_SOL_MODEL:-openai/gpt-5.6-sol}" fast body run_codex
 fi
