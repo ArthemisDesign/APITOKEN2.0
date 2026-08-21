@@ -173,7 +173,10 @@ impl ApiError {
         // Once the external fallback send started, execution is ambiguous even without a public
         // byte, so that one stable reason must return the same sanitized local error without the
         // `not_started` header.
-        if self.reason == "claudestore_fallback_failed" {
+        if matches!(
+            self.reason,
+            "claudestore_fallback_failed" | "codex_missing_authoritative_usage"
+        ) {
             response
         } else {
             with_not_started(response)
