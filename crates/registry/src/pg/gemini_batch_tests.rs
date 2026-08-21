@@ -681,11 +681,11 @@ fn stage2_authority_postgres_matrix() {
         )
         .unwrap());
     pg.client.execute(
-        "INSERT INTO gemini_batch_admissions(admission_id,job_id,account_id,creator_key_id,public_model,display_name,priority,input_kind,input_file_id,schema_version,encryption_policy_version,state,next_item_index,aggregate_hold_nano,aggregate_output_tokens,create_ts,deadline_ts,expires_ts,update_ts,canonical_request_digest) VALUES($1,$2,'stage2-account','stage2-key-id','gemini-2.5-flash','delete',0,'file',$3,1,1,'committed',1,0,1,$4,$4+100,$4+100,$4,decode(repeat('01',32),'hex'))",
+        "INSERT INTO gemini_batch_admissions(admission_id,job_id,account_id,creator_key_id,public_model,display_name,priority,input_kind,input_file_id,schema_version,encryption_policy_version,state,next_item_index,aggregate_hold_nano,aggregate_output_tokens,create_ts,deadline_ts,expires_ts,update_ts,canonical_request_digest) VALUES($1,$2,'stage2-account','stage2-key-id','gemini-2.5-flash','delete',0,'file',$3,1,1,'committed',1,0,1,$4,$4+100::bigint,$4+100::bigint,$4,decode(repeat('01',32),'hex'))",
         &[&admission, &file_job, &"stage2-delete-input", &ts],
     ).unwrap();
     pg.client.execute(
-        "INSERT INTO gemini_batch_jobs(job_id,account_id,creator_key_id,public_model,display_name,canonical_request_digest,priority,input_kind,input_file_id,schema_version,encryption_policy_version,create_ts,update_ts,deadline_ts,completed_ts,result_expiration_ts,terminal_items_ts,output_state) VALUES($1,'stage2-account','stage2-key-id','gemini-2.5-flash','delete',decode(repeat('01',32),'hex'),0,'file',$2,1,1,$3,$3,$3+100,$3,$3+3628800,$3,'ready')",
+        "INSERT INTO gemini_batch_jobs(job_id,account_id,creator_key_id,public_model,display_name,canonical_request_digest,priority,input_kind,input_file_id,schema_version,encryption_policy_version,create_ts,update_ts,deadline_ts,completed_ts,result_expiration_ts,terminal_items_ts,output_state) VALUES($1,'stage2-account','stage2-key-id','gemini-2.5-flash','delete',decode(repeat('01',32),'hex'),0,'file',$2,1,1,$3,$3,$3+100::bigint,$3,$3+3628800::bigint,$3,'ready')",
         &[&file_job, &"stage2-delete-input", &ts],
     ).unwrap();
     pg.client.execute(

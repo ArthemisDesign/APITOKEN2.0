@@ -511,6 +511,10 @@ mod tests {
             return;
         };
         let mut lock = PgStore::connect(&url).unwrap();
+        // The complete workspace test binary runs destructive real-PG matrices in parallel. This
+        // proof may legitimately wait behind another holder; a connection-level inherited
+        // lock_timeout would otherwise turn correct serialization into a flaky RED candidate.
+        lock.client.batch_execute("SET lock_timeout=0").unwrap();
         lock.client
             .query_one(
                 "SELECT pg_advisory_lock($1)",
