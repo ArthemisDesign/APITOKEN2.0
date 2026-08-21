@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
-/// 256 MiB payload plus JSON/SSE framing overhead. Public OpenAI body stays 8 MiB.
+/// 256 MiB payload plus JSON/SSE framing overhead. Public OpenAI body is 256 MiB.
 const MAX_SSE_LINE_BYTES: usize = 384 * 1024 * 1024;
 
 fn sse_chunk_exceeds_bound(buffered: usize, chunk_len: usize) -> bool {

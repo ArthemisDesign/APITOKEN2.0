@@ -25,6 +25,8 @@ The spool floor is path-aware:
 
 - router `@` (`/var/lib/apitoken/spool/router-$PORT`): 16 GiB free on that disk filesystem;
   `tmpfs`/`ramfs` is rejected.
+- Gemini `@` (`/var/lib/apitoken/spool/gemini-$PORT`) and OpenAI `@`
+  (`/var/lib/apitoken/spool/openai-$PORT`): same 16 GiB disk floor and tmpfs reject.
 - Anthropic `@` (`/run/claude-api-anthropic-$PORT`): 8 GiB free on the host `/run` tmpfs;
   volatile filesystems are allowed. Anthropic stays memory-first (`threshold=request`) and
   must not inherit the disk 16 GiB / tmpfs-reject policy — that combination failed engine

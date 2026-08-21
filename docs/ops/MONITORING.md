@@ -534,9 +534,8 @@ attempted size. Compressed request bodies are counted separately as
 
 Confirm that the traffic is legitimate without logging bodies, keys, models, accounts, or request
 identities. Anthropic remains capped at its provider-owned 32 MiB request contract, Gemini media at
-20 MiB, Gemini text/response at 256 MiB, and Codex at the currently proved 8 MiB transport boundary. Do not raise
-OpenAI public 8 MiB or Anthropic request 32 MiB without private app-server proof and weighted
-response admission. If the pressure is abusive, mitigate at ingress/account controls rather than
+20 MiB, Gemini text/response at 256 MiB, and Codex/OpenAI at the 256 MiB local envelope. Do not raise
+Anthropic request 32 MiB. If the pressure is abusive, mitigate at ingress/account controls rather than
 creating a waiting queue.
 
 ## RouterBodySpoolLeak
@@ -550,7 +549,7 @@ that leaks files across idle.
 ## ProviderBodyAdmissionFailures
 
 Compare `claude_api_body_admission_rejections_total{reason}` on the scraping job already labeled
-`provider`. `oversized` is demand against the current plane contract (Anthropic 32 MiB, OpenAI 8 MiB,
+`provider`. `oversized` is demand against the current plane contract (Anthropic request 32 MiB, OpenAI 256 MiB,
 Gemini text/response 256 MiB). `content_encoding` is a compressed request that was
 fail-closed with 415 before materialization. `admission_overload` is the fail-fast storage or
 estimated-RSS budget. None of these is permission to raise a public cap. Confirm Caddy still
@@ -559,9 +558,9 @@ enforces the 256 MiB streaming ceiling without buffering SSE, and do not log bod
 ## ProviderBodySpoolLeak
 
 Same idle-only contract as `RouterBodySpoolLeak` on the provider planes:
-`claude_api_body_spool_files > 0 AND claude_api_active_requests == 0`. Gemini `@` slots spill above
-8 MiB onto `/var/lib/apitoken/spool/gemini-*`. Anthropic/OpenAI still pin threshold=request on
-`/run` tmpfs and must not create spool files. Leftover files after idle are a leak.
+`claude_api_body_spool_files > 0 AND claude_api_active_requests == 0`. Gemini `@` and OpenAI `@` slots
+spill above 8 MiB onto `/var/lib/apitoken/spool/{gemini,openai}-*`. Anthropic still pins
+threshold=request on `/run` tmpfs and must not create spool files. Leftover files after idle are a leak.
 
 ## GeminiIpcProtocolFailures
 

@@ -191,20 +191,19 @@ fn parse_body_limits(
     }
     .validate(api_limits::hard::SPOOL)
     .map_err(|error| format!("invalid provider body limits: {error}"))?;
-    let request_ceiling = if provider == ProviderMode::Gemini {
-        api_limits::current::GEMINI_TEXT_REQUEST
-    } else {
-        api_limits::current::ANTHROPIC_TEXT_REQUEST
+    let request_ceiling = match provider {
+        ProviderMode::Gemini => api_limits::current::GEMINI_TEXT_REQUEST,
+        ProviderMode::OpenAi => api_limits::current::OPENAI_TEXT_REQUEST,
+        _ => api_limits::current::ANTHROPIC_TEXT_REQUEST,
     };
     let memory_ceiling = if provider == ProviderMode::Gemini {
         api_limits::current::GEMINI_MEMORY_BUDGET
     } else {
         api_limits::current::PROVIDER_MEMORY_BUDGET
     };
-    let response_ceiling = if provider == ProviderMode::Gemini {
-        api_limits::current::GEMINI_NATIVE_RESPONSE
-    } else {
-        api_limits::current::PROVIDER_NONSTREAM_RESPONSE
+    let response_ceiling = match provider {
+        ProviderMode::Gemini => api_limits::current::GEMINI_NATIVE_RESPONSE,
+        _ => api_limits::current::PROVIDER_NONSTREAM_RESPONSE,
     };
     if limits.request > request_ceiling {
         return Err(format!(
@@ -1641,7 +1640,10 @@ mod tests {
     fn dormant_body_limits_are_strict_and_preserve_current_provider_caps() {
         let defaults = parse_body_limits(&BTreeMap::new(), ProviderMode::Combined).unwrap();
         assert_eq!(defaults, api_limits::current::PROVIDER);
-        assert!(api_limits::current::OPENAI_TEXT_REQUEST < defaults.request);
+        assert_eq!(
+            api_limits::current::OPENAI_TEXT_REQUEST.bytes(),
+            256 * api_limits::MIB
+        );
         assert!(api_limits::current::GEMINI_MEDIA_REQUEST < defaults.request);
         let gemini_64 = BTreeMap::from([
             ("CLAUDE_API_TEXT_BODY_MAX_MIB".to_owned(), "64".to_owned()),
@@ -1658,7 +1660,13 @@ mod tests {
             64 * api_limits::MIB
         );
         assert!(parse_body_limits(&gemini_64, ProviderMode::Anthropic).is_err());
-        assert!(parse_body_limits(&gemini_64, ProviderMode::OpenAi).is_err());
+        assert_eq!(
+            parse_body_limits(&gemini_64, ProviderMode::OpenAi)
+                .unwrap()
+                .request
+                .bytes(),
+            64 * api_limits::MIB
+        );
         let gemini_256 = BTreeMap::from([
             ("CLAUDE_API_TEXT_BODY_MAX_MIB".to_owned(), "256".to_owned()),
             (
@@ -1683,6 +1691,29 @@ mod tests {
         assert_eq!(gemini.memory_threshold.bytes(), 8 * api_limits::MIB);
         assert!(parse_body_limits(&gemini_256, ProviderMode::Anthropic).is_err());
         assert!(parse_body_limits(&gemini_256, ProviderMode::OpenAi).is_err());
+        let openai_256 = BTreeMap::from([
+            ("CLAUDE_API_TEXT_BODY_MAX_MIB".to_owned(), "256".to_owned()),
+            (
+                "CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB".to_owned(),
+                "8".to_owned(),
+            ),
+            (
+                "CLAUDE_API_BODY_MEMORY_BUDGET_MIB".to_owned(),
+                "4096".to_owned(),
+            ),
+            (
+                "CLAUDE_API_BODY_SPOOL_BUDGET_MIB".to_owned(),
+                "16384".to_owned(),
+            ),
+            (
+                "CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB".to_owned(),
+                "256".to_owned(),
+            ),
+        ]);
+        let openai = parse_body_limits(&openai_256, ProviderMode::OpenAi).unwrap();
+        assert_eq!(openai.request.bytes(), 256 * api_limits::MIB);
+        assert_eq!(openai.memory_budget.bytes(), 4096 * api_limits::MIB);
+        assert!(parse_body_limits(&openai_256, ProviderMode::Anthropic).is_err());
         for invalid in ["", "0", " 32", "+32", "1.5", "256"] {
             let values = BTreeMap::from([(
                 "CLAUDE_API_TEXT_BODY_MAX_MIB".to_owned(),

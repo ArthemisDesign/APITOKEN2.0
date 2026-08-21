@@ -295,6 +295,10 @@ require_permitted 'router promotion helper probe' \
   /usr/bin/test -x /usr/local/lib/apitoken-watchdog/controller/router-promote.sh
 require_permitted 'router payload headroom gate' \
   /usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh /var/lib/apitoken/spool/router-8800 claude-router.slice
+require_permitted 'Gemini payload headroom gate' \
+  /usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh /var/lib/apitoken/spool/gemini-8799 claude-api-gemini.slice
+require_permitted 'OpenAI payload headroom gate' \
+  /usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh /var/lib/apitoken/spool/openai-8797 claude-api-openai.slice
 require_permitted 'Anthropic payload headroom gate' \
   /usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh /run/claude-api-anthropic-8788 claude-api-anthropic.slice
 require_permitted 'router large-payload candidate gate' \

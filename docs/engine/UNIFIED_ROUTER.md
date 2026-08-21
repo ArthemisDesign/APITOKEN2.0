@@ -1331,8 +1331,8 @@ Two clarifying caveats from the audit:
    Code recovers based on the error text). `POST /v1/messages/count_tokens` on the
    plane — the same parse + `parse_responses_request`/`prepare_turn` → a reserve-grade
    `input_tokens` estimate without network (`max_tokens` is optional there, as in the
-   official endpoint). 5.1 limitations: the body limit is 8 MiB (the plane's shared
-   `OPENAI_BODY_LIMIT`, not 32); there is no end-to-end e2e smoke of the Codex plane
+   official endpoint). 5.1 limitations: the body limit is 256 MiB (the plane's shared
+   `OPENAI_BODY_LIMIT`); there is no end-to-end e2e smoke of the Codex plane
    (the harness cannot do encrypted OAuth profiles — coverage by unit/contract tests,
    as in 3.3/4.3). **5.2 — Anthropic Skin for `google/*` models (Gemini plane) —
    IMPLEMENTED.** The Gemini mirror of 5.1 (`crates/forward/src/gemini/skin.rs`,

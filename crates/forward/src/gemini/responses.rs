@@ -148,7 +148,9 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use axum::body::{to_bytes, Body, Bytes};
+use axum::body::{Body, Bytes};
+#[cfg(test)]
+use axum::body::to_bytes;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -157,17 +159,20 @@ use futures_util::{Stream, StreamExt};
 use serde_json::{json, Map, Value};
 
 use super::chat::{
-    chat_error, code_assist_schema, convert_error_response, function_declaration,
+    chat_error, code_assist_schema, convert_error_response_admitted, function_declaration,
     function_response_value, gemini_image_part, image_url_part, invalid_request, map_finish_reason,
     merge_or_push, parse_tool_arguments, replayed_function_call_part, synthetic_call_id,
-    translate_reasoning_effort, unsupported_parameter, RESPONSE_BODY_LIMIT,
+    translate_reasoning_effort, unsupported_parameter,
 };
+#[cfg(test)]
+use super::chat::convert_error_response;
 use super::gemini_api;
 use crate::codex::new_id;
 use crate::gemini_stream::GeminiStreamState;
 use crate::openai_responses_stream::ResponsesEventEncoder;
 use crate::proxy::{
-    read_body_bounded, without_not_started, BodyAdmitError, UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
+    collect_response_bytes, read_body_bounded, without_not_started, BodyAdmitError,
+    UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
 };
 use crate::request_classification::classify_openai_responses;
 use crate::state::AppState;
@@ -290,15 +295,15 @@ pub async fn gemini_responses(
         .insert(super::api::NativeGeminiRequest {
             value: native_value,
         });
-    let upstream = gemini_api(State(app), ConnectInfo(peer), inner).await;
+    let upstream = gemini_api(State(app.clone()), ConnectInfo(peer), inner).await;
 
     if upstream.status() != StatusCode::OK {
-        return convert_error_response(upstream).await;
+        return convert_error_response_admitted(upstream, Some(&app)).await;
     }
     if translated.stream {
         stream_responses_response(upstream, translated.model)
     } else {
-        json_responses_response(upstream, translated.model).await
+        json_responses_response_admitted(upstream, translated.model, Some(&app)).await
     }
 }
 
@@ -1150,10 +1155,25 @@ fn output_items(parts: Option<&Vec<Value>>) -> Vec<Value> {
 
 /// Перевод non-stream ответа GenerateContentResponse в Response object
 /// (словарь 4.1, общий с Anthropic-зеркалом).
+#[cfg(test)]
 async fn json_responses_response(upstream: Response, requested_model: String) -> Response {
+    json_responses_response_admitted(upstream, requested_model, None).await
+}
+
+async fn json_responses_response_admitted(
+    upstream: Response,
+    requested_model: String,
+    app: Option<&AppState>,
+) -> Response {
     let request_id = upstream.headers().get("request-id").cloned();
-    let bytes = match to_bytes(upstream.into_body(), RESPONSE_BODY_LIMIT).await {
-        Ok(bytes) => bytes,
+    let (bytes, _lease) = match collect_response_bytes(
+        app,
+        upstream.into_body(),
+        api_limits::current::GEMINI_NATIVE_RESPONSE,
+    )
+    .await
+    {
+        Ok(collected) => collected,
         Err(_) => {
             return without_not_started(chat_error(
                 StatusCode::INTERNAL_SERVER_ERROR,

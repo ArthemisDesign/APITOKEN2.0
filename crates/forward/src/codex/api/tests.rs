@@ -829,8 +829,31 @@ async fn input_tokens_submits_one_content_free_fact_after_owning_parse() {
 
 #[tokio::test]
 async fn input_tokens_parser_gate_discards_models_and_classifier_on_rejection() {
+    let (sender, mut receiver) = mpsc::channel(1);
+    let test = input_tokens_test_app(true, Some(sender), ProviderMode::OpenAi).await;
+    let mut oversized = input_tokens_request(
+        b"x".to_vec(),
+        Some(INPUT_TOKENS_RAW_KEY),
+        Some(INPUT_TOKENS_LOGICAL_ID),
+        None,
+        Some(3),
+        Some(crate::execution::RequestLifecycleClock::default()),
+    );
+    oversized.headers_mut().insert(
+        axum::http::header::CONTENT_LENGTH,
+        (OPENAI_BODY_LIMIT as u64 + 1)
+            .to_string()
+            .parse()
+            .unwrap(),
+    );
+    let response = call_input_tokens(test.app.clone(), oversized).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let fact = receiver.try_recv().expect("post-admission error fact");
+    assert_native_input_terminal(&fact, StatusCode::BAD_REQUEST);
+    assert_eq!(fact.requested_model, None);
+    assert_eq!(fact.executable_model, None);
+
     let peer_cases = [
-        (vec![b'x'; OPENAI_BODY_LIMIT + 1], StatusCode::BAD_REQUEST),
         (b"{".to_vec(), StatusCode::BAD_REQUEST),
         (
             serde_json::to_vec(&json!({

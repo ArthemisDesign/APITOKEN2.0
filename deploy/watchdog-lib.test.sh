@@ -3235,9 +3235,23 @@ for provider_unit in claude-api.service claude-api@.service claude-api-anthropic
       || wd_die "$provider_unit does not argv-pin a disk-backed Gemini spool root"
     grep -Fxq 'StateDirectoryMode=0700' "$ROOT/systemd/$provider_unit" \
       || wd_die "$provider_unit spool root is not mode 0700"
+  elif [[ $provider_unit == claude-api-openai@.service ]]; then
+    grep -Fq 'CLAUDE_API_TEXT_BODY_MAX_MIB=256 CLAUDE_API_BODY_MEMORY_BUDGET_MIB=4096 CLAUDE_API_BODY_SPOOL_BUDGET_MIB=16384 CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=8 CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=256' "$ROOT/systemd/$provider_unit" \
+      || wd_die "$provider_unit does not argv-pin the 256 MiB OpenAI envelope"
+    grep -Fq 'CLAUDE_API_BODY_SPOOL_ROOT=/var/lib/apitoken/spool/openai-%i' "$ROOT/systemd/$provider_unit" \
+      || wd_die "$provider_unit does not argv-pin a disk-backed OpenAI spool root"
+    grep -Fxq 'StateDirectoryMode=0700' "$ROOT/systemd/$provider_unit" \
+      || wd_die "$provider_unit spool root is not mode 0700"
+  elif [[ $provider_unit == claude-api-anthropic@.service ]]; then
+    grep -Fq 'CLAUDE_API_TEXT_BODY_MAX_MIB=32 CLAUDE_API_BODY_MEMORY_BUDGET_MIB=2048 CLAUDE_API_BODY_SPOOL_BUDGET_MIB=2048 CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=32 CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=256' "$ROOT/systemd/$provider_unit" \
+      || wd_die "$provider_unit does not argv-pin the Anthropic 32 MiB request / 256 MiB response envelope"
+    grep -Fq 'CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api' "$ROOT/systemd/$provider_unit" \
+      || wd_die "$provider_unit does not argv-pin a private provider spool root"
+    grep -Fxq 'RuntimeDirectoryMode=0700' "$ROOT/systemd/$provider_unit" \
+      || wd_die "$provider_unit spool root is not mode 0700"
   else
     grep -Fq "$provider_payload_pins" "$ROOT/systemd/$provider_unit" \
-      || wd_die "$provider_unit changed outside the Gemini canary"
+      || wd_die "$provider_unit changed outside the Gemini/OpenAI canary"
     grep -Fq 'CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api' "$ROOT/systemd/$provider_unit" \
       || wd_die "$provider_unit does not argv-pin a private provider spool root"
     grep -Fxq 'RuntimeDirectoryMode=0700' "$ROOT/systemd/$provider_unit" \

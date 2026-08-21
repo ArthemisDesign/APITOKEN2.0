@@ -30,10 +30,12 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
-pub(super) const OPENAI_BODY_LIMIT: usize = 8 * 1024 * 1024;
+pub(super) const OPENAI_BODY_LIMIT: usize =
+    api_limits::current::OPENAI_TEXT_REQUEST.bytes() as usize;
+const _: () = assert!(OPENAI_BODY_LIMIT == 256 * 1024 * 1024);
 pub(super) const MAX_INSTRUCTIONS_BYTES: usize = 16 * 1024 * 1024;
 /// Sanity bound against a pathological body, not a model of the provider's own tool-count limit —
-/// the 8 MiB body cap is what really bounds parsing work, and the backend is the authority on how
+/// the 256 MiB body cap is what really bounds parsing work, and the backend is the authority on how
 /// many tools it accepts. It sits far above any real client: a Codex config wiring several MCP
 /// servers routinely declares a few hundred tools (namespace children included), and the old
 /// 128-tool cap would have failed those turns locally with a deterministic 400 before the provider
@@ -75,6 +77,16 @@ impl ApiError {
             retry_after: None,
             reason: "invalid_request",
         }
+    }
+
+    pub(super) fn request_body_too_large() -> Self {
+        Self::invalid(
+            format!(
+                "Request body exceeds the {} limit.",
+                api_limits::current::OPENAI_TEXT_REQUEST
+            ),
+            None::<String>,
+        )
     }
 
     pub(super) fn unsupported_content_encoding() -> Self {
@@ -318,8 +330,7 @@ pub async fn responses(
         }
         Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge))
         | Err(BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)) => {
-            return ApiError::invalid("Request body exceeds the 8 MiB limit.", None::<String>)
-                .into_response()
+            return ApiError::request_body_too_large().into_response()
         }
         Err(BodyAdmitError::Storage(bounded_body::StorageError::Io)) => {
             return ApiError::invalid("Could not read request body.", None::<String>)
@@ -853,7 +864,7 @@ async fn input_tokens_after_admission(
         Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge))
         | Err(BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)) => {
             return (
-                ApiError::invalid("Request body exceeds the 8 MiB limit.", None::<String>)
+                ApiError::request_body_too_large()
                     .into_response(),
                 InputTokensFactEvidence::default(),
             )

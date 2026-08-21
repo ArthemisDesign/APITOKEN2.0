@@ -43,7 +43,9 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use axum::body::{to_bytes, Body, Bytes};
+use axum::body::{Body, Bytes};
+#[cfg(test)]
+use axum::body::to_bytes;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -54,17 +56,19 @@ use serde_json::{json, Map, Value};
 use crate::anthropic_stream::AnthropicStreamState;
 use crate::codex::new_id;
 use crate::proxy::{
-    forward, read_anthropic_body_bounded, with_not_started, without_not_started, BodyAdmitError,
-    TerminalErrorReason, EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
-    UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
+    collect_response_bytes, forward, read_anthropic_body_bounded, with_not_started,
+    without_not_started, BodyAdmitError, TerminalErrorReason, EXECUTION_STATE_HEADER,
+    EXECUTION_STATE_NOT_STARTED, UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
 };
 use crate::request_classification::classify_openai_chat;
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
 
 /// Верхняя граница буферизации error/non-stream тел ответа `forward()`.
-/// Длинный non-stream completion укладывается в тот же 32 MiB предел.
-pub(crate) const RESPONSE_BODY_LIMIT: usize = 32 * 1024 * 1024;
+/// Weighted response admission materializes this envelope against the process memory budget.
+pub(crate) const RESPONSE_BODY_LIMIT: usize =
+    api_limits::current::TRANSLATED_NONSTREAM_RESPONSE.bytes() as usize;
+const _: () = assert!(RESPONSE_BODY_LIMIT == 256 * 1024 * 1024);
 
 const LEGACY_MAX_OUTPUT_TOKENS: u64 = 64_000;
 const CURRENT_MAX_OUTPUT_TOKENS: u64 = 128_000;
@@ -240,15 +244,15 @@ pub async fn anthropic_chat_completions(
     *inner.headers_mut() = headers;
     crate::execution::inherit_request_context(&parts.extensions, inner.extensions_mut());
     inner.extensions_mut().insert(synthesized_origin);
-    let upstream = forward(State(app), ConnectInfo(peer), inner).await;
+    let upstream = forward(State(app.clone()), ConnectInfo(peer), inner).await;
 
     if upstream.status() != StatusCode::OK {
-        return convert_error_response(upstream).await;
+        return convert_error_response_admitted(upstream, Some(&app)).await;
     }
     if translated.stream {
         stream_chat_response(upstream, translated.model, translated.include_usage)
     } else {
-        json_chat_response(upstream).await
+        json_chat_response_admitted(upstream, Some(&app)).await
     }
 }
 
@@ -1272,7 +1276,15 @@ pub(crate) fn unsupported_parameter(param: &str) -> Response {
 /// апстрима) из Anthropic-конверта в OpenAI-конверт. Статус и `Retry-After`
 /// сохраняются; audit-reason `local_err` пробрасывается в extension.
 /// Общая с Responses-адаптером этапа 4.1 (`anthropic_responses.rs`).
+#[cfg(test)]
 pub(crate) async fn convert_error_response(upstream: Response) -> Response {
+    convert_error_response_admitted(upstream, None).await
+}
+
+pub(crate) async fn convert_error_response_admitted(
+    upstream: Response,
+    app: Option<&AppState>,
+) -> Response {
     let status = upstream.status();
     let not_started = !status.is_success()
         && upstream
@@ -1285,12 +1297,18 @@ pub(crate) async fn convert_error_response(upstream: Response) -> Response {
         .map(|r| r.0)
         .unwrap_or("upstream_error_response");
     let retry_after = upstream.headers().get(header::RETRY_AFTER).cloned();
-    let bytes = match to_bytes(upstream.into_body(), RESPONSE_BODY_LIMIT).await {
-        Ok(bytes) => bytes,
+    let bytes = match collect_response_bytes(
+        app,
+        upstream.into_body(),
+        api_limits::current::TRANSLATED_NONSTREAM_RESPONSE,
+    )
+    .await
+    {
+        Ok((bytes, _lease)) => bytes,
         Err(e) => {
             elog::warn(
                 "forward",
-                format!("upstream error body unreadable or not JSON: {e}"),
+                format!("upstream error body unreadable or not JSON: {e:?}"),
             );
             Bytes::new()
         }
@@ -1328,14 +1346,25 @@ pub(crate) async fn convert_error_response(upstream: Response) -> Response {
 }
 
 /// Перевод non-stream Messages-ответа в `chat.completion`.
+#[cfg(test)]
 async fn json_chat_response(upstream: Response) -> Response {
+    json_chat_response_admitted(upstream, None).await
+}
+
+async fn json_chat_response_admitted(upstream: Response, app: Option<&AppState>) -> Response {
     let request_id = upstream.headers().get("request-id").cloned();
-    let bytes = match to_bytes(upstream.into_body(), RESPONSE_BODY_LIMIT).await {
-        Ok(bytes) => bytes,
+    let (bytes, _lease) = match collect_response_bytes(
+        app,
+        upstream.into_body(),
+        api_limits::current::TRANSLATED_NONSTREAM_RESPONSE,
+    )
+    .await
+    {
+        Ok(collected) => collected,
         Err(e) => {
             elog::error(
                 "forward",
-                format!("anthropic response body read failed: {e}"),
+                format!("anthropic response body read failed: {e:?}"),
             );
             return without_not_started(chat_error(
                 StatusCode::INTERNAL_SERVER_ERROR,

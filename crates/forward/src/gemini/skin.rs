@@ -121,7 +121,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use axum::body::{to_bytes, Body, Bytes};
+use axum::body::{Body, Bytes};
+#[cfg(test)]
+use axum::body::to_bytes;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -132,15 +134,15 @@ use serde_json::{json, Map, Value};
 use super::api::{GeminiCountTokensFactHandoff, UniversalCountTokensIntent};
 use super::chat::{
     function_response_value, map_finish_reason, merge_or_push, replayed_function_call_part,
-    RESPONSE_BODY_LIMIT,
 };
 use super::gemini_api;
 use crate::codex::new_id;
 use crate::gemini_schema;
 use crate::gemini_stream::GeminiStreamState;
 use crate::proxy::{
-    read_body_bounded, with_not_started, without_not_started, BodyAdmitError, TerminalErrorReason,
-    EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED, UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
+    collect_response_bytes, read_body_bounded, with_not_started, without_not_started,
+    BodyAdmitError, TerminalErrorReason, EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
+    UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
 };
 use crate::request_classification::classify_anthropic_messages;
 use crate::state::AppState;
@@ -230,7 +232,15 @@ fn anthropic_error_parts(
 /// Перевод не-200 ответа `gemini_api()` из Google-конверта в Anthropic-конверт. Статус и
 /// `Retry-After` сохраняются; audit-reason пробрасывается в extension. Особый случай — как в
 /// chat.rs: нативный `400 API_KEY_INVALID` (reason `invalid_key`) → `401 authentication_error`.
+#[cfg(test)]
 async fn convert_error_response(upstream: Response) -> Response {
+    convert_error_response_admitted(upstream, None).await
+}
+
+async fn convert_error_response_admitted(
+    upstream: Response,
+    app: Option<&AppState>,
+) -> Response {
     let status = upstream.status();
     let not_started = !status.is_success()
         && upstream
@@ -247,9 +257,14 @@ async fn convert_error_response(upstream: Response) -> Response {
         .get(header::RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok());
-    let bytes = to_bytes(upstream.into_body(), RESPONSE_BODY_LIMIT)
-        .await
-        .unwrap_or_default();
+    let bytes = collect_response_bytes(
+        app,
+        upstream.into_body(),
+        api_limits::current::GEMINI_NATIVE_RESPONSE,
+    )
+    .await
+    .map(|(bytes, _lease)| bytes)
+    .unwrap_or_default();
     let parsed = serde_json::from_slice::<Value>(&bytes).ok();
     let message = parsed
         .as_ref()
@@ -1114,10 +1129,25 @@ fn content_blocks(parts: Option<&Vec<Value>>) -> (Vec<Value>, bool) {
 }
 
 /// Перевод non-stream ответа GenerateContentResponse → Messages message (словарь 5.1).
+#[cfg(test)]
 async fn json_messages_response(upstream: Response, requested_model: String) -> Response {
+    json_messages_response_admitted(upstream, requested_model, None).await
+}
+
+async fn json_messages_response_admitted(
+    upstream: Response,
+    requested_model: String,
+    app: Option<&AppState>,
+) -> Response {
     let request_id = upstream.headers().get("request-id").cloned();
-    let bytes = match to_bytes(upstream.into_body(), RESPONSE_BODY_LIMIT).await {
-        Ok(bytes) => bytes,
+    let (bytes, _lease) = match collect_response_bytes(
+        app,
+        upstream.into_body(),
+        api_limits::current::GEMINI_NATIVE_RESPONSE,
+    )
+    .await
+    {
+        Ok(collected) => collected,
         Err(_) => {
             return without_not_started(skin_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1190,10 +1220,24 @@ async fn json_messages_response(upstream: Response, requested_model: String) -> 
 /// Перевод ответа native `:countTokens` (`{"totalTokens": N, …}`) → Messages-ответ
 /// `{"input_tokens": N}`. Остальные поля native-ответа (cachedContentTokenCount и пр.) у
 /// Messages count_tokens контракта нет — опускаются.
+#[cfg(test)]
 async fn count_tokens_json_response(upstream: Response) -> Response {
+    count_tokens_json_response_admitted(upstream, None).await
+}
+
+async fn count_tokens_json_response_admitted(
+    upstream: Response,
+    app: Option<&AppState>,
+) -> Response {
     let request_id = upstream.headers().get("request-id").cloned();
-    let bytes = match to_bytes(upstream.into_body(), RESPONSE_BODY_LIMIT).await {
-        Ok(bytes) => bytes,
+    let (bytes, _lease) = match collect_response_bytes(
+        app,
+        upstream.into_body(),
+        api_limits::current::GEMINI_NATIVE_RESPONSE,
+    )
+    .await
+    {
+        Ok(collected) => collected,
         Err(_) => {
             return without_not_started(skin_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1814,7 +1858,7 @@ pub async fn gemini_messages_skin(
         "generateContent"
     };
     let upstream = run_inner(
-        app,
+        app.clone(),
         peer,
         parts.headers,
         parts.extensions,
@@ -1829,12 +1873,12 @@ pub async fn gemini_messages_skin(
     )
     .await;
     if upstream.status() != StatusCode::OK {
-        return convert_error_response(upstream).await;
+        return convert_error_response_admitted(upstream, Some(&app)).await;
     }
     if translated.stream {
         stream_messages_response(upstream, translated.model)
     } else {
-        json_messages_response(upstream, translated.model).await
+        json_messages_response_admitted(upstream, translated.model, Some(&app)).await
     }
 }
 
@@ -1867,7 +1911,7 @@ pub async fn gemini_messages_count_tokens(
         classification: classify_anthropic_messages(&value),
     };
     let upstream = run_inner(
-        app,
+        app.clone(),
         peer,
         parts.headers,
         parts.extensions,
@@ -1883,9 +1927,9 @@ pub async fn gemini_messages_count_tokens(
         .remove::<GeminiCountTokensFactHandoff>();
     let native_success = upstream.status() == StatusCode::OK;
     let response = if !native_success {
-        convert_error_response(upstream).await
+        convert_error_response_admitted(upstream, Some(&app)).await
     } else {
-        count_tokens_json_response(upstream).await
+        count_tokens_json_response_admitted(upstream, Some(&app)).await
     };
     if let Some(handoff) = fact_handoff {
         handoff.finish(

@@ -500,11 +500,19 @@ pub(crate) struct MaterializedBoundedBody {
     pub(crate) _lease: bounded_body::StoredBodyLease,
 }
 
+fn declared_content_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
+}
+
 pub(crate) enum BodyReadError {
     TooLarge,
     Read,
 }
 
+#[derive(Debug)]
 pub(crate) enum BodyAdmitError {
     Storage(bounded_body::StorageError),
     ContentEncoding,
@@ -553,6 +561,10 @@ pub(crate) async fn read_body_bounded(
     if request_content_encoding_forbidden(headers) {
         crate::metrics::Metrics::inc(&app.metrics.body_admission_content_encoding);
         return Err(BodyAdmitError::ContentEncoding);
+    }
+    if declared_content_length(headers).is_some_and(|declared| declared > request_limit.bytes()) {
+        crate::metrics::Metrics::inc(&app.metrics.body_admission_oversized);
+        return Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge));
     }
     let initial = api_limits::ByteLimit::from_bytes(api_limits::MIB);
     let body_storage = app
@@ -636,6 +648,30 @@ pub(crate) async fn read_anthropic_body_bounded(
         bytes: body.bytes,
         _lease: body._lease,
     })
+}
+
+/// Materialize a non-stream upstream body under the same weighted memory/storage budgets as
+/// request admission. Tests may pass `None` and keep the historical `to_bytes` cap.
+pub(crate) async fn collect_response_bytes(
+    app: Option<&AppState>,
+    body: Body,
+    limit: api_limits::ByteLimit,
+) -> Result<(bytes::Bytes, Option<bounded_body::StoredBodyLease>), BodyAdmitError> {
+    match app {
+        Some(app) => {
+            let admitted = read_body_bounded(app, &HeaderMap::new(), body, limit).await?;
+            Ok((admitted.bytes, Some(admitted._lease)))
+        }
+        None => {
+            let limit = limit
+                .as_usize()
+                .map_err(|_| BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow))?;
+            axum::body::to_bytes(body, limit)
+                .await
+                .map(|bytes| (bytes, None))
+                .map_err(|_| BodyAdmitError::Storage(bounded_body::StorageError::Io))
+        }
+    }
 }
 
 // Заголовки клиента, которые НЕ пробрасываем апстриму (перезаписываем или служебные).

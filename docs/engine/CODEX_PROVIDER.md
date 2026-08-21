@@ -165,10 +165,9 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   the same descriptor — unknown descriptor fields ignored, `strict` degraded rather than rejected,
   identifiers bounded at 128 bytes of letters/digits/underscore/hyphen/dot — so a tool is never
   accepted on one model family and rejected on another. The 1024-tool ceiling is a sanity bound on
-  a pathological body, not a model of the provider's own limit: the 8 MiB body cap bounds parsing
-  work and the backend stays the authority. `crates/api-limits` records that narrower current cap;
-  the common dormant 32 MiB provider envelope and future 256 MiB hard ceiling do not widen Codex
-  before a controlled private app-server proof. Internal transport already admits a 384 MiB JSONL/SSE
+  a pathological body, not a model of the provider's own limit: the 256 MiB body cap bounds parsing
+  work and the backend stays the authority. `crates/api-limits` records that public OpenAI text cap;
+  Codex `@` pins 256 MiB with 8 MiB disk spill. Internal transport admits a 384 MiB JSONL/SSE
   frame (cap-before-allocation) and 256 MiB stored history entries on the dedicated 8 GiB history
   Redis; combined instructions are 16 MiB and custom tool grammar 4 MiB. An MCP-heavy config with a few hundred declared
   tools is never failed locally first.

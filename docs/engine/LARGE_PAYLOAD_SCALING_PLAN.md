@@ -1,15 +1,16 @@
 # План масштабирования больших API payloads
 
-Статус: **commit 5 в master (`0e822c9d`), но engine cutover RED: headroom 16 GiB + tmpfs-reject
-нельзя применять к Anthropic `/run`. Этот hotfix делает headroom path-aware.
-Public OpenAI остаётся 8 MiB. Commits 7/8 ждут private app-server proof и Anthropic response
-admission.**
+Статус: **train закрыт.** Commits 1–6 и hotfix `e6993439` (path-aware Anthropic `/run` headroom)
+уже в `master`. Этот шаг закрывает commits 7 и 8: OpenAI public 256 MiB на disk spool,
+translated non-stream response 256 MiB с weighted admission, Gemini/OpenAI pre-start disk headroom.
+Anthropic request остаётся 32 MiB.
 
 Commits 1–4 уже в `master`: `api-limits`, `bounded-body`, dual admission, Gemini binary IPC,
 typed executor, systemd slices и headroom gate. Commit 4b (Caddy streaming ceiling,
 Content-Encoding fail-closed, spill `into_bytes`, plane telemetry) и commit 6 (Codex
-JSONL/history/Redis capacity) закрыли transport/capacity на прежних caps. Commit 5 поднимает
-публичный router envelope и Gemini text/response до 256 MiB на disk-backed spool.
+JSONL/history/Redis capacity) закрыли transport/capacity. Commit 5 поднял router и Gemini
+text/response до 256 MiB. Codex уже native HTTPS, не local app-server: прежний commit-7
+blocker больше не действует.
 
 Область: публичные model API endpoints `router.apitoken.sale`, `api.apitoken.sale`,
 `openai.api.apitoken.sale`, `gemini.api.apitoken.sale` и их внутренний путь
@@ -79,11 +80,11 @@ escaped Unicode, base64 и глубоко вложенных tool schemas. До 
 |---|---:|---:|---|
 | Anthropic native Messages request | 32 MiB | **32 MiB, оставить** | Provider-owned public Anthropic contract |
 | Anthropic-compatible Chat/Responses request | 32 MiB | 32 MiB effective | Локальное увеличение не создаёт upstream capacity |
-| Anthropic translated non-stream response | 32 MiB | 256 MiB local envelope | Только weighted response admission; output-token contract не меняется |
-| OpenAI/Codex Chat/Responses/Messages request | 8 MiB | 256 MiB local envelope, staged provider proof | Нынешние 8 MiB — локальный parsing bound, но upstream acceptance надо доказать |
-| Codex combined instructions | 16 MiB | 16 MiB | Отдельный structural cap внутри будущего 256 MiB body; public OpenAI остаётся 8 MiB |
+| OpenAI/Codex Chat/Responses/Messages request | **256 MiB** | 256 MiB local envelope | Disk-backed 8 MiB spill; upstream context window остаётся effective cap |
+| Codex combined instructions | 16 MiB | 16 MiB | Отдельный structural cap внутри 256 MiB body |
 | Codex custom tool grammar | 4 MiB | 4 MiB | Bounded независимо от body max |
-| Codex app-server JSONL frame | 384 MiB | 384 MiB | Cap-before-allocation; public body 8 MiB |
+| Codex app-server JSONL frame | 384 MiB | 384 MiB | Cap-before-allocation; public body 256 MiB |
+| Anthropic translated non-stream response | **256 MiB** | 256 MiB local envelope | Weighted response admission; output-token contract не меняется |
 | Codex stored history entry | 256 MiB | 256 MiB | History Redis 8 GiB; affinity 128 MiB не тронут |
 | Gemini text native request | **256 MiB** | 256 MiB | Native generate совпадает с `api-limits` |
 | Gemini text universal Chat/Responses/Messages | **256 MiB** | 256 MiB | Binary IPC и Gemini weighted admission |
@@ -93,7 +94,7 @@ escaped Unicode, base64 и глубоко вложенных tool schemas. До 
 | Gemini Rust↔Node metadata frame | 1 MiB | 1 MiB | Headers/URL/control только; body идёт отдельным binary frame |
 | Gemini IPC binary body frame | 256 MiB ceiling | 256 MiB | Length-prefixed, exact request ID, bounded before allocation |
 | Provider process memory | Anthropic/OpenAI `High=6G Max=8G`; Gemini `High=12G Max=16G` | те же | Нужны parent-slice caps для blue-green overlap |
-| Provider request spool | Anthropic/OpenAI `/run` 2 GiB memory-first; Gemini **16 GiB** disk | 16 GiB/active plane | Gemini `@` на StateDirectory; Anthropic/OpenAI без public cap raise |
+| Provider request spool | Anthropic `/run` 2 GiB memory-first; OpenAI/Gemini **16 GiB** disk | 16 GiB/active disk plane | Gemini/OpenAI `@` на StateDirectory; Anthropic без public request raise |
 
 ### 3.3 Намеренно не увеличивать
 
@@ -266,15 +267,16 @@ error envelope должны сохраниться без обходного п�
 
 ### 4.7 Codex large-body path
 
-До поднятия `OPENAI_BODY_LIMIT`:
+До поднятия `OPENAI_BODY_LIMIT` (сделано):
 
 - JSONL/SSE reader bound поднят до 384 MiB с cap-before-allocation (доказано без giant fixture);
 - stored history entry 256 MiB; history Redis `--maxmemory` **8 GiB** на первом rollout
   (`deploy/affinity-redis.compose.yaml`); следующий шаг — **16 GiB**, только если eviction
   остаётся после production cardinality/size evidence;
 - affinity Redis 128 MiB не увеличен: он не хранит conversation bodies;
-- private Codex app-server acceptance остаётся отдельным controlled canary. До него production
-  OpenAI public cap остаётся 8 MiB, даже если transport готов к 256 MiB.
+- Codex generation is native HTTPS to the ChatGPT backend, not a local app-server child.
+  The public OpenAI cap is the local 256 MiB envelope; upstream context window remains the
+  effective content limit.
 
 ### 4.8 Process и host resource envelope
 
@@ -501,26 +503,31 @@ Exact candidate SHA допускается к повышенным defaults то
 - Provider `/metrics` exports admission/storage/RSS/spool and Gemini IPC series; alerts/runbooks/dashboard land in the same commit.
 - Публичные request caps не меняются. 8 MiB spill на `/run` tmpfs по-прежнему запрещён.
 
-### Commit 5 — поднять router + Gemini text/response до 256 MiB — **в этом commit**
+### Commit 5 — поднять router + Gemini text/response до 256 MiB — **сделано** (`0e822c9d` + hotfix `e6993439`)
 
 Router `@` 256 MiB request, 8 MiB spill, 4 GiB estimated-RSS, 16 GiB disk spool, 120/1800 s.
 Gemini `@` 256 MiB text/response, 8 MiB spill, 8 GiB estimated-RSS, 16 GiB disk spool.
-Candidate gate sizes `8,32,64,128,256`. OpenAI public 8 MiB и Anthropic request 32 MiB не меняются.
-Caddy 256 MiB остаётся потолком, теперь совпадает с router default.
+Candidate gate sizes `8,32,64,128,256`. Caddy 256 MiB совпадает с router default.
 `large-payload-headroom.sh` различает disk `/var/lib/apitoken/spool/*` (16 GiB, tmpfs reject) и
-Anthropic `/run/claude-api-anthropic-*` (8 GiB, tmpfs allowed). Единый 16 GiB + tmpfs-reject
-сломал Anthropic start на `0e822c9d`.
+Anthropic `/run/claude-api-anthropic-*` (8 GiB, tmpfs allowed).
 
-### Commit 6 — Codex transport/history capacity — **сделано в этом train**
+### Commit 6 — Codex transport/history capacity — **сделано**
 
 - JSONL/SSE reader bound 384 MiB with cap-before-allocation; history entry 256 MiB;
   history Redis 8 GiB; instructions 16 MiB; custom grammar 4 MiB.
-- OpenAI public body default остаётся 8 MiB до private app-server acceptance (commit 7).
 - Affinity Redis 128 MiB не увеличен.
 
-### Commit 7 — поднять OpenAI public text envelope — **заблокировано** (нужен private app-server proof)
+### Commit 7 — поднять OpenAI public text envelope — **сделано**
 
-### Commit 8 — Anthropic response envelope — **заблокировано** (после 5/7 и weighted response admission)
+OpenAI `@` 256 MiB request/response, 8 MiB spill, 4 GiB estimated-RSS, 16 GiB disk spool.
+Pre-start headroom на `/var/lib/apitoken/spool/openai-$PORT`. Rollback unit остаётся на `/run`.
+Declared `Content-Length` above the cap fails closed without a giant fixture.
+
+### Commit 8 — Anthropic response envelope — **сделано**
+
+Translated non-stream Chat/Responses (и Gemini universal adapters) materialize under weighted
+response admission against the process memory budget. Anthropic **request** stays 32 MiB.
+Anthropic `@` argv-pins `NONSTREAM=256`.
 
 Rollback каждого шага — предыдущий immutable release/config; нельзя откатывать billing/schema
 историю. Oversized requests снова получают прежний deterministic 4xx/413, уже начатые billable

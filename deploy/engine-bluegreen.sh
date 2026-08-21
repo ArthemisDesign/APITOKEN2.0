@@ -1109,6 +1109,10 @@ if openai_target_serves_current; then OPENAI_TARGET_PREEXISTING=1; fi
 OPENAI_TARGET_STARTED=1
 if ! openai_target_serves_current; then
   systemctl_command stop "$OPENAI_TARGET_UNIT"
+  if [[ $OPENAI_LEGACY_TARGET != 1 ]]; then
+    privileged_command "$HEADROOM_HELPER" "/var/lib/apitoken/spool/openai-$OPENAI_TARGET_PORT" claude-api-openai.slice \
+      || post_admission_die "insufficient memory or spool headroom for $OPENAI_TARGET_UNIT"
+  fi
   systemctl_command start "$OPENAI_TARGET_UNIT" \
     || post_admission_die "could not start OpenAI target $OPENAI_TARGET_UNIT"
 fi
@@ -1291,6 +1295,10 @@ if [[ $GEMINI_SUPPORTED == 1 ]]; then
   GEMINI_TARGET_STARTED=1
   if ! gemini_target_serves_current; then
     systemctl_command stop "$GEMINI_TARGET_UNIT"
+    if [[ $GEMINI_LEGACY_TARGET != 1 ]]; then
+      privileged_command "$HEADROOM_HELPER" "/var/lib/apitoken/spool/gemini-$GEMINI_TARGET_PORT" claude-api-gemini.slice \
+        || post_admission_die "insufficient memory or spool headroom for $GEMINI_TARGET_UNIT"
+    fi
     systemctl_command start "$GEMINI_TARGET_UNIT" \
       || post_admission_die "could not start Gemini target $GEMINI_TARGET_UNIT"
   fi

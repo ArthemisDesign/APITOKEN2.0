@@ -46,6 +46,8 @@ Cmnd_Alias APITOKEN_HELPERS = \
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8800, \
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8801, \
     /usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh /var/lib/apitoken/spool/router-[0-9]* claude-router.slice, \
+    /usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh /var/lib/apitoken/spool/gemini-[0-9]* claude-api-gemini.slice, \
+    /usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh /var/lib/apitoken/spool/openai-[0-9]* claude-api-openai.slice, \
     /usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh /run/claude-api-anthropic-[0-9]* claude-api-anthropic.slice, \
     /usr/local/lib/apitoken-watchdog/controller/large-payload-candidate-gate.sh [0-9a-f]* http\://127.0.0.1\:[0-9]*/v1/chat/completions claude-router@[0-9]*.service /var/lib/apitoken/spool/router-[0-9]* 6442450944 /var/lib/apitoken/watchdog/large-payload /srv/claude-api/data/large-payload-canary.authorization, \
     /usr/local/lib/apitoken-watchdog/watchdog-github *, \

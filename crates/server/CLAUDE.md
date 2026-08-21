@@ -140,11 +140,11 @@ background loops and the HTTP router. Here — and only here — everything is w
 - Introduce a new env variable ONLY here and pass it further down through config structures. The
   dormant `CLAUDE_API_*BODY*_MIB` envelope is parsed strictly through `api-limits`: malformed, zero,
   inconsistent, or above-current values stop startup. Provider-mode ceilings are independent:
-  Anthropic remains 32 MiB, Codex 8 MiB, and Gemini text/response 256 MiB; Gemini media
-  remains 20 MiB and translated Anthropic response 32 MiB.
-  `CLAUDE_API_BODY_SPOOL_ROOT` is a required absolute, never-logged path; Gemini `@` slots use a
-  mode-0700 StateDirectory under `/var/lib/apitoken/spool`, while Anthropic/OpenAI/rollback units
-  keep a mode-0700 RuntimeDirectory on `/run`. Server opens the `bounded-body`
+  Anthropic request remains 32 MiB, Codex/OpenAI text 256 MiB, and Gemini text/response 256 MiB; Gemini media
+  remains 20 MiB and translated Anthropic/Gemini non-stream response 256 MiB.
+  `CLAUDE_API_BODY_SPOOL_ROOT` is a required absolute, never-logged path; Gemini `@` and OpenAI `@`
+  slots use a mode-0700 StateDirectory under `/var/lib/apitoken/spool`, while Anthropic/rollback
+  units keep a mode-0700 RuntimeDirectory on `/run`. Server opens the `bounded-body`
   authorities once and installs them into forward state.
 - `openai-image-canary` introduces no image key/origin/env. Dry-run validates the strict prompt,
   optional one-to-five PNG references, optional opaque profile, private target paths, numeric

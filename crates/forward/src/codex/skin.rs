@@ -74,8 +74,10 @@
 
 use super::api::{
     normalize_output_item, parse_responses_request, prepare_turn, ApiError, PreparedTurn,
-    MAX_INSTRUCTIONS_BYTES, OPENAI_BODY_LIMIT,
+    MAX_INSTRUCTIONS_BYTES,
 };
+#[cfg(test)]
+use super::api::OPENAI_BODY_LIMIT;
 use super::billing::{begin_admission, CodexBillableRequestSpec, CodexRequestFactSeed};
 use super::chat::{
     enforce_output_limits, output_chars_for, send_chat_bytes, ChatReceiverStream, StopFilter,
@@ -88,7 +90,9 @@ use crate::proxy::{
 use crate::request_classification::classify_anthropic_messages;
 use crate::state::AppState;
 use crate::validation::optional_bool;
-use axum::body::{to_bytes, Body};
+use axum::body::Body;
+#[cfg(test)]
+use axum::body::to_bytes;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -1596,7 +1600,7 @@ async fn read_messages_body(
             return Err(skin_error(
                 StatusCode::BAD_REQUEST,
                 "invalid_request_error",
-                "Request body exceeds the 8 MiB limit.",
+                ApiError::request_body_too_large().message,
                 "invalid_request_body",
                 None,
             ))
@@ -1864,7 +1868,7 @@ async fn count_tokens_after_admission(
                 skin_error(
                     StatusCode::BAD_REQUEST,
                     "invalid_request_error",
-                    "Request body exceeds the 8 MiB limit.",
+                    ApiError::request_body_too_large().message,
                     "invalid_request_body",
                     None,
                 ),

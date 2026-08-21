@@ -117,7 +117,9 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use axum::body::{to_bytes, Body, Bytes};
+use axum::body::{Body, Bytes};
+#[cfg(test)]
+use axum::body::to_bytes;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -126,16 +128,18 @@ use futures_util::{Stream, StreamExt};
 use serde_json::{json, Map, Value};
 
 use crate::anthropic::{
-    chat_error, convert_error_response, image_block, invalid_request, merge_or_push,
+    chat_error, convert_error_response_admitted, image_block, invalid_request, merge_or_push,
     native_max_output_tokens, translate_reasoning_effort_for_model, translate_tool_function,
-    unsupported_parameter, RESPONSE_BODY_LIMIT,
+    unsupported_parameter,
 };
+#[cfg(test)]
+use crate::anthropic::convert_error_response;
 use crate::anthropic_stream::AnthropicStreamState;
 use crate::codex::new_id;
 use crate::openai_responses_stream::ResponsesEventEncoder;
 use crate::proxy::{
-    forward, read_anthropic_body_bounded, without_not_started, BodyAdmitError,
-    UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
+    collect_response_bytes, forward, read_anthropic_body_bounded, without_not_started,
+    BodyAdmitError, UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
 };
 use crate::request_classification::classify_openai_responses;
 use crate::state::AppState;
@@ -250,15 +254,15 @@ pub async fn anthropic_responses(
     *inner.headers_mut() = headers;
     crate::execution::inherit_request_context(&parts.extensions, inner.extensions_mut());
     inner.extensions_mut().insert(synthesized_origin);
-    let upstream = forward(State(app), ConnectInfo(peer), inner).await;
+    let upstream = forward(State(app.clone()), ConnectInfo(peer), inner).await;
 
     if upstream.status() != StatusCode::OK {
-        return convert_error_response(upstream).await;
+        return convert_error_response_admitted(upstream, Some(&app)).await;
     }
     if translated.stream {
         stream_responses_response(upstream, translated.model)
     } else {
-        json_responses_response(upstream, translated.model).await
+        json_responses_response_admitted(upstream, translated.model, Some(&app)).await
     }
 }
 
@@ -1094,14 +1098,29 @@ fn output_items(blocks: Option<&Vec<Value>>) -> Vec<Value> {
 }
 
 /// Перевод non-stream Messages-ответа в Response object (словарь 4.1).
+#[cfg(test)]
 async fn json_responses_response(upstream: Response, requested_model: String) -> Response {
+    json_responses_response_admitted(upstream, requested_model, None).await
+}
+
+async fn json_responses_response_admitted(
+    upstream: Response,
+    requested_model: String,
+    app: Option<&AppState>,
+) -> Response {
     let request_id = upstream.headers().get("request-id").cloned();
-    let bytes = match to_bytes(upstream.into_body(), RESPONSE_BODY_LIMIT).await {
-        Ok(bytes) => bytes,
+    let (bytes, _lease) = match collect_response_bytes(
+        app,
+        upstream.into_body(),
+        api_limits::current::TRANSLATED_NONSTREAM_RESPONSE,
+    )
+    .await
+    {
+        Ok(collected) => collected,
         Err(e) => {
             elog::error(
                 "forward",
-                format!("anthropic response body read failed: {e}"),
+                format!("anthropic response body read failed: {e:?}"),
             );
             return without_not_started(chat_error(
                 StatusCode::INTERNAL_SERVER_ERROR,

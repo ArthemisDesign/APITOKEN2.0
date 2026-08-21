@@ -71,8 +71,7 @@ pub async fn completions(
         }
         Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge))
         | Err(BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)) => {
-            return ApiError::invalid("Request body exceeds the 8 MiB limit.", None::<String>)
-                .into_response()
+            return ApiError::request_body_too_large().into_response()
         }
         Err(BodyAdmitError::Storage(bounded_body::StorageError::Io)) => {
             return ApiError::invalid("Could not read request body.", None::<String>)

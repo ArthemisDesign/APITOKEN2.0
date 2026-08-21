@@ -50,7 +50,9 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use axum::body::{to_bytes, Body, Bytes};
+use axum::body::{Body, Bytes};
+#[cfg(test)]
+use axum::body::to_bytes;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -64,15 +66,18 @@ use crate::codex::new_id;
 use crate::gemini_schema;
 use crate::gemini_stream::GeminiStreamState;
 use crate::proxy::{
-    read_body_bounded, with_not_started, without_not_started, BodyAdmitError, TerminalErrorReason,
-    EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED, UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
+    collect_response_bytes, read_body_bounded, with_not_started, without_not_started,
+    BodyAdmitError, TerminalErrorReason, EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
+    UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
 };
 use crate::request_classification::classify_openai_chat;
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
 
 /// Верхняя граница буферизации error/non-stream тел ответа `gemini_api()`.
-pub(crate) const RESPONSE_BODY_LIMIT: usize = 32 * 1024 * 1024;
+pub(crate) const RESPONSE_BODY_LIMIT: usize =
+    api_limits::current::GEMINI_NATIVE_RESPONSE.bytes() as usize;
+const _: () = assert!(RESPONSE_BODY_LIMIT == 256 * 1024 * 1024);
 
 /// Хендлер `POST /v1/chat/completions` (роут регистрируется в server только в
 /// `ProviderMode::Gemini`).
@@ -191,15 +196,15 @@ pub async fn gemini_chat_completions(
         .insert(super::api::NativeGeminiRequest {
             value: native_value,
         });
-    let upstream = gemini_api(State(app), ConnectInfo(peer), inner).await;
+    let upstream = gemini_api(State(app.clone()), ConnectInfo(peer), inner).await;
 
     if upstream.status() != StatusCode::OK {
-        return convert_error_response(upstream).await;
+        return convert_error_response_admitted(upstream, Some(&app)).await;
     }
     if translated.stream {
         stream_chat_response(upstream, translated.model, translated.include_usage)
     } else {
-        json_chat_response(upstream, translated.model).await
+        json_chat_response_admitted(upstream, translated.model, Some(&app)).await
     }
 }
 
@@ -1224,7 +1229,15 @@ pub(crate) fn unsupported_parameter(param: &str) -> Response {
 /// `invalid_key`) → `401 authentication_error` — поведение, которого
 /// OpenAI-клиент ждёт на невалидный ключ. Общий с Responses-адаптером
 /// этапа 4.3 (`responses.rs`).
+#[cfg(test)]
 pub(crate) async fn convert_error_response(upstream: Response) -> Response {
+    convert_error_response_admitted(upstream, None).await
+}
+
+pub(crate) async fn convert_error_response_admitted(
+    upstream: Response,
+    app: Option<&AppState>,
+) -> Response {
     let status = upstream.status();
     let not_started = !status.is_success()
         && upstream
@@ -1237,9 +1250,14 @@ pub(crate) async fn convert_error_response(upstream: Response) -> Response {
         .map(|r| r.0)
         .unwrap_or("upstream_error_response");
     let retry_after = upstream.headers().get(header::RETRY_AFTER).cloned();
-    let bytes = to_bytes(upstream.into_body(), RESPONSE_BODY_LIMIT)
-        .await
-        .unwrap_or_default();
+    let bytes = collect_response_bytes(
+        app,
+        upstream.into_body(),
+        api_limits::current::GEMINI_NATIVE_RESPONSE,
+    )
+    .await
+    .map(|(bytes, _lease)| bytes)
+    .unwrap_or_default();
     let parsed = serde_json::from_slice::<Value>(&bytes).ok();
     let inner = parsed.as_ref().and_then(|v| v.get("error"));
     let message = inner
@@ -1271,10 +1289,25 @@ pub(crate) async fn convert_error_response(upstream: Response) -> Response {
 type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
 
 /// Перевод non-stream ответа GenerateContentResponse → `chat.completion`.
+#[cfg(test)]
 async fn json_chat_response(upstream: Response, requested_model: String) -> Response {
+    json_chat_response_admitted(upstream, requested_model, None).await
+}
+
+async fn json_chat_response_admitted(
+    upstream: Response,
+    requested_model: String,
+    app: Option<&AppState>,
+) -> Response {
     let request_id = upstream.headers().get("request-id").cloned();
-    let bytes = match to_bytes(upstream.into_body(), RESPONSE_BODY_LIMIT).await {
-        Ok(bytes) => bytes,
+    let (bytes, _lease) = match collect_response_bytes(
+        app,
+        upstream.into_body(),
+        api_limits::current::GEMINI_NATIVE_RESPONSE,
+    )
+    .await
+    {
+        Ok(collected) => collected,
         Err(_) => {
             return without_not_started(chat_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
