@@ -173,6 +173,16 @@ pub fn body_read_timeout() -> Response {
     )
 }
 
+/// 415 compressed request bodies are forbidden on materializing text routes. The wire cap is
+/// counted on uncompressed JSON; gzip/br must not become a decompression-bomb bypass.
+pub fn unsupported_content_encoding() -> Response {
+    json_response(
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        json!({"error": {"message": "Request Content-Encoding is not supported.",
+            "type": "invalid_request_error", "code": "unsupported_content_encoding"}}),
+    )
+}
+
 /// 503 account-policy authority unavailable before execution.
 pub fn policy_unavailable() -> Response {
     json_response(
@@ -286,6 +296,15 @@ pub fn messages_body_read_timeout() -> Response {
         StatusCode::REQUEST_TIMEOUT,
         json!({"type": "error", "error": {"type": "invalid_request_error",
             "message": "The request body was not received in time."}}),
+    )
+}
+
+/// 415 compressed request bodies are forbidden on the Anthropic Messages envelope.
+pub fn messages_unsupported_content_encoding() -> Response {
+    json_response(
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        json!({"type": "error", "error": {"type": "invalid_request_error",
+            "message": "Request Content-Encoding is not supported."}}),
     )
 }
 

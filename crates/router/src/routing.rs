@@ -163,6 +163,13 @@ impl Surface {
         }
     }
 
+    fn unsupported_content_encoding(self) -> Response {
+        match self {
+            Self::Chat | Self::Responses => error::unsupported_content_encoding(),
+            Self::Messages => error::messages_unsupported_content_encoding(),
+        }
+    }
+
     fn policy_unavailable(self) -> Response {
         match self {
             Self::Chat | Self::Responses => error::policy_unavailable(),
@@ -215,6 +222,12 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         }
     }
     let (mut parts, body) = req.into_parts();
+    if request_content_encoding_forbidden(&parts.headers) {
+        state
+            .metrics
+            .body_admission_rejection(BodyRejectionReason::ContentEncoding);
+        return surface.unsupported_content_encoding();
+    }
     let (bytes, body_permit) = match read_body(&state, &parts.headers, body).await {
         Ok(result) => result,
         Err(BodyReadError::TooLarge) => {
@@ -246,34 +259,37 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
     state
         .metrics
         .request_body_materialized(body_surface, bytes.len());
-    let mut value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
-        Ok(value) => value,
-        Err(_) => return surface.invalid("Invalid JSON in request body.", None),
-    };
-    let model = match value.get("model").and_then(|model| model.as_str()) {
-        Some(model) if !model.is_empty() => model.to_string(),
-        _ => {
+    let selectors = match crate::selectors::extract_routing_selectors(&bytes) {
+        Ok(selectors) => selectors,
+        Err(crate::selectors::SelectorError::InvalidJson) => {
+            return surface.invalid("Invalid JSON in request body.", None)
+        }
+        Err(crate::selectors::SelectorError::DuplicateField) => {
+            return surface.invalid("Duplicate routing field in request body.", None)
+        }
+        Err(
+            crate::selectors::SelectorError::MissingModel
+            | crate::selectors::SelectorError::InvalidModel,
+        ) => {
             return surface.invalid(
                 "Missing or invalid required parameter: model.",
                 Some("model"),
             );
         }
     };
+    let model = selectors.model;
     let fast_header =
         match take_fast_service_tier_header(&mut parts.headers, surface, parts.uri.path()) {
             Ok(present) => present,
             Err(response) => return response,
         };
-    let fast_body_alias = has_fast_service_tier_alias(&value);
+    let fast_body_alias = selectors.has_service_tier_alias;
 
-    let has_models = value.get("models").is_some();
-    let has_provider = value.get("provider").is_some();
-    if !has_models && !has_provider {
+    if !selectors.has_models && !selectors.has_provider {
         return proxy_single(
             &state,
             parts,
             bytes,
-            value,
             &model,
             surface,
             fast_header,
@@ -282,11 +298,15 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         )
         .await;
     }
+    let mut value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(value) => value,
+        Err(_) => return surface.invalid("Invalid JSON in request body.", None),
+    };
 
     // Fail before catalog, policy, or billable network work when rollout is disabled. Early auth
     // has already run so an unauthenticated caller cannot use this parse path as a memory oracle.
     if !state.cfg.fallback_enabled {
-        let (message, param) = if has_models {
+        let (message, param) = if selectors.has_models {
             ("Parameter `models` is disabled on this router.", "models")
         } else {
             (
@@ -695,7 +715,7 @@ async fn read_body_with_timeouts(
         }
         let stored = store.finish().map_err(|_| BodyReadError::Overloaded)?;
         let (bytes, stored) = stored
-            .into_memory()
+            .into_bytes()
             .map_err(|_| BodyReadError::Overloaded)?;
         let units = body_units_for_len(bytes.len(), body_limit);
         let bytes = Bytes::from(bytes);
@@ -732,7 +752,6 @@ async fn proxy_single(
     state: &AppState,
     parts: Parts,
     bytes: Bytes,
-    mut value: serde_json::Value,
     model: &str,
     surface: Surface,
     fast_header: bool,
@@ -771,32 +790,35 @@ async fn proxy_single(
         }
     };
     let fast_compat = fast_header || fast_body_alias;
-    let bytes = if fast_compat {
-        if lane != Lane::OpenAi {
-            return surface.invalid(
-                "Fast service-tier compatibility selectors are supported only for GPT models.",
-                Some(if fast_header {
-                    "x-apitoken-service-tier"
-                } else {
-                    "serviceTier"
-                }),
-            );
-        }
-        if let Err(response) = normalize_fast_service_tier(&mut value, surface, fast_header) {
-            return response;
-        }
-        match serde_json::to_vec(&value) {
-            Ok(bytes) => Bytes::from(bytes),
+    let bytes = if fast_compat || rewrite_native_model.is_some() {
+        let mut value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(value) => value,
             Err(_) => return surface.invalid("Invalid JSON in request body.", None),
+        };
+        if fast_compat {
+            if lane != Lane::OpenAi {
+                return surface.invalid(
+                    "Fast service-tier compatibility selectors are supported only for GPT models.",
+                    Some(if fast_header {
+                        "x-apitoken-service-tier"
+                    } else {
+                        "serviceTier"
+                    }),
+                );
+            }
+            if let Err(response) = normalize_fast_service_tier(&mut value, surface, fast_header) {
+                return response;
+            }
         }
-    } else if let Some(native_model) = &rewrite_native_model {
-        value
-            .as_object_mut()
-            .expect("validated request object")
-            .insert(
-                "model".to_string(),
-                serde_json::Value::String(native_model.clone()),
-            );
+        if let Some(native_model) = &rewrite_native_model {
+            value
+                .as_object_mut()
+                .expect("validated request object")
+                .insert(
+                    "model".to_string(),
+                    serde_json::Value::String(native_model.clone()),
+                );
+        }
         match serde_json::to_vec(&value) {
             Ok(bytes) => Bytes::from(bytes),
             Err(_) => return surface.invalid("Invalid JSON in request body.", None),
@@ -804,10 +826,6 @@ async fn proxy_single(
     } else {
         bytes
     };
-    // The model and lane are now resolved and any rewritten body has been serialized. Drop the
-    // potentially large serde tree before transferring the only remaining body allocation and
-    // its admission permit into the outbound upload stream.
-    drop(value);
     let origin = origin_for_lane(state, lane);
     let logical_request_id = match LogicalRequestId::fresh() {
         Ok(id) => id,
@@ -830,6 +848,21 @@ async fn proxy_single(
     )
     .await
     .response
+}
+
+fn request_content_encoding_forbidden(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(axum::http::header::CONTENT_ENCODING)
+        .iter()
+        .any(|value| {
+            let Ok(value) = value.to_str() else {
+                return true;
+            };
+            value.split(',').any(|part| {
+                let token = part.trim();
+                !token.is_empty() && !token.eq_ignore_ascii_case("identity")
+            })
+        })
 }
 
 fn take_fast_service_tier_header(
@@ -862,12 +895,6 @@ fn take_fast_service_tier_header(
         ));
     }
     Ok(true)
-}
-
-fn has_fast_service_tier_alias(value: &serde_json::Value) -> bool {
-    value
-        .as_object()
-        .is_some_and(|object| object.contains_key("serviceTier"))
 }
 
 fn normalize_fast_service_tier(
@@ -1150,6 +1177,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compressed_request_content_encoding_is_forbidden() {
+        let mut headers = HeaderMap::new();
+        assert!(!request_content_encoding_forbidden(&headers));
+        headers.insert(
+            axum::http::header::CONTENT_ENCODING,
+            HeaderValue::from_static("identity"),
+        );
+        assert!(!request_content_encoding_forbidden(&headers));
+        headers.insert(
+            axum::http::header::CONTENT_ENCODING,
+            HeaderValue::from_static("gzip"),
+        );
+        assert!(request_content_encoding_forbidden(&headers));
+    }
+
     fn test_state(metrics: Arc<RouterMetrics>) -> AppState {
         use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!(
@@ -1208,7 +1251,7 @@ mod tests {
         ));
         assert_eq!(state.body_storage.used_bytes(), 0);
         assert_eq!(state.body_memory.used_bytes(), 0);
-        let rendered = metrics.render();
+        let rendered = metrics.render(0, 0, 0);
         assert!(rendered.contains("claude_router_body_read_timeout_total 1"));
         assert!(rendered.contains("claude_router_active_body_admission_units 0"));
     }
@@ -1239,7 +1282,7 @@ mod tests {
         assert_eq!(state.body_storage.used_bytes(), 0);
         assert_eq!(state.body_memory.used_bytes(), 0);
         assert!(metrics
-            .render()
+            .render(0, 0, 0)
             .contains("claude_router_body_read_timeout_total 0"));
     }
 }

@@ -81,13 +81,16 @@ use super::chat::{
     enforce_output_limits, output_chars_for, send_chat_bytes, ChatReceiverStream, StopFilter,
 };
 use super::{new_id, CodexGateway, CodexTurnResult, CodexUsage, TurnUpdate};
-use crate::proxy::{read_body_bounded, with_not_started, without_not_started, TerminalErrorReason};
+use crate::proxy::{
+    read_body_bounded, with_not_started, without_not_started, BodyAdmitError, TerminalErrorReason,
+    UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
+};
 use crate::request_classification::classify_anthropic_messages;
 use crate::state::AppState;
 use crate::validation::optional_bool;
 use axum::body::{to_bytes, Body};
 use axum::extract::{ConnectInfo, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use registry::request_facts::MAX_REQUEST_FACT_MODEL_LEN;
@@ -1567,19 +1570,29 @@ async fn stream_messages(
 /// Buffered JSON request body under the OpenAI-plane limit; failures are Anthropic-envelope 400s.
 async fn read_messages_body(
     app: &AppState,
+    headers: &HeaderMap,
     body: Body,
 ) -> Result<(Value, bounded_body::StoredBodyLease), Response> {
     let bounded = match read_body_bounded(
         app,
+        headers,
         body,
-        api_limits::current::OPENAI_TEXT_REQUEST,
         api_limits::current::OPENAI_TEXT_REQUEST,
     )
     .await
     {
         Ok(body) => body,
-        Err(bounded_body::StorageError::TooLarge)
-        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
+        Err(BodyAdmitError::ContentEncoding) => {
+            return Err(skin_error(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "invalid_request_error",
+                UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
+                "unsupported_content_encoding",
+                None,
+            ))
+        }
+        Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge))
+        | Err(BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)) => {
             return Err(skin_error(
                 StatusCode::BAD_REQUEST,
                 "invalid_request_error",
@@ -1588,7 +1601,7 @@ async fn read_messages_body(
                 None,
             ))
         }
-        Err(_) => {
+        Err(BodyAdmitError::Storage(_)) => {
             return Err(skin_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "api_error",
@@ -1637,7 +1650,7 @@ pub async fn messages(
             return anthropic_error(ApiError::from(error));
         }
     };
-    let (value, _body_lease) = match read_messages_body(&app, body).await {
+    let (value, _body_lease) = match read_messages_body(&app, &parts.headers, body).await {
         Ok(value) => value,
         Err(response) => return response,
     };
@@ -1797,7 +1810,7 @@ pub async fn count_tokens(
     );
     let tenant_scope = pending.tenant_scope().to_owned();
     let (response, requested_model, executable_model) =
-        count_tokens_after_admission(&app, gateway, &tenant_scope, body).await;
+        count_tokens_after_admission(&app, gateway, &tenant_scope, &parts.headers, body).await;
     submit_count_tokens_fact(
         app.billing.as_deref(),
         fact_seed,
@@ -1820,19 +1833,33 @@ async fn count_tokens_after_admission(
     app: &AppState,
     gateway: Arc<CodexGateway>,
     tenant_scope: &str,
+    headers: &HeaderMap,
     body: Body,
 ) -> (Response, Option<String>, Option<String>) {
     let bounded = match read_body_bounded(
         app,
+        headers,
         body,
-        api_limits::current::OPENAI_TEXT_REQUEST,
         api_limits::current::OPENAI_TEXT_REQUEST,
     )
     .await
     {
         Ok(body) => body,
-        Err(bounded_body::StorageError::TooLarge)
-        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
+        Err(BodyAdmitError::ContentEncoding) => {
+            return (
+                skin_error(
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    "invalid_request_error",
+                    UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
+                    "unsupported_content_encoding",
+                    None,
+                ),
+                None,
+                None,
+            )
+        }
+        Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge))
+        | Err(BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)) => {
             return (
                 skin_error(
                     StatusCode::BAD_REQUEST,
@@ -1845,7 +1872,7 @@ async fn count_tokens_after_admission(
                 None,
             )
         }
-        Err(_) => {
+        Err(BodyAdmitError::Storage(_)) => {
             return (
                 skin_error(
                     StatusCode::SERVICE_UNAVAILABLE,

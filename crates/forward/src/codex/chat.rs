@@ -11,7 +11,7 @@ use super::api::{
 };
 use super::billing::{begin_admission, CodexBillableRequestSpec};
 use super::{new_id, CodexGateway, CodexTurnResult, CodexUsage, TurnUpdate};
-use crate::proxy::read_body_bounded;
+use crate::proxy::{read_body_bounded, BodyAdmitError};
 use crate::request_classification::classify_openai_chat;
 use crate::state::AppState;
 use crate::validation::optional_positive_u64;
@@ -59,23 +59,26 @@ pub async fn completions(
     };
     let bounded_body = match read_body_bounded(
         &app,
+        &parts.headers,
         body,
-        api_limits::current::OPENAI_TEXT_REQUEST,
         api_limits::current::OPENAI_TEXT_REQUEST,
     )
     .await
     {
         Ok(body) => body,
-        Err(bounded_body::StorageError::TooLarge)
-        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
+        Err(BodyAdmitError::ContentEncoding) => {
+            return ApiError::unsupported_content_encoding().into_response()
+        }
+        Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge))
+        | Err(BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)) => {
             return ApiError::invalid("Request body exceeds the 8 MiB limit.", None::<String>)
                 .into_response()
         }
-        Err(bounded_body::StorageError::Io) => {
+        Err(BodyAdmitError::Storage(bounded_body::StorageError::Io)) => {
             return ApiError::invalid("Could not read request body.", None::<String>)
                 .into_response()
         }
-        Err(_) => return ApiError::unavailable().into_response(),
+        Err(BodyAdmitError::Storage(_)) => return ApiError::unavailable().into_response(),
     };
     let raw = bounded_body.bytes.clone();
     let _body_lease = bounded_body._lease;

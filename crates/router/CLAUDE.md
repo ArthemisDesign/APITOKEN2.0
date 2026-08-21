@@ -77,7 +77,11 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   raw-storage and estimated-memory budgets, and 60/300-second deadlines. A required absolute
   `CLAUDE_ROUTER_BODY_SPOOL_ROOT` is opened as a private directory capability; systemd gives every
   slot a separate mode-0700 RuntimeDirectory. The current threshold equals the request cap, so public
-  behavior remains memory-first; future 256 MiB ceilings are not enablement.
+  behavior remains memory-first; future 256 MiB ceilings are not enablement. Request
+  `Content-Encoding` other than `identity` is 415 before the body is read. Ordinary namespaced
+  single-model JSON extracts only routing selectors (`model` / `models` / `provider` / `serviceTier`)
+  and skips unknown fields through `IgnoredAny`; a full `serde_json::Value` is built only for alias,
+  Fast, or advanced `models`/`provider` rewrite.
 - `auth.rs` — uncached bodyless early-auth client: before reading the universal body it probes fixed
   origins in hedged Anthropic → OpenAI → Gemini order. Anthropic starts immediately; each later
   origin starts after a 50 ms hedge only without a conclusive result, or immediately when an

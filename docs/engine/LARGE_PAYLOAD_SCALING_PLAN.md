@@ -1,6 +1,13 @@
 # План масштабирования больших API payloads
 
-Статус: **предложение к реализации; текущий production-контракт не изменён**.
+Статус: **в работе; публичные production-defaults не подняты до 256 MiB**.
+
+Commits 1–4 уже в `master`: `api-limits`, `bounded-body`, dual admission, Gemini binary IPC,
+typed executor, systemd slices и headroom gate. Этот документ больше не предложение. Следующие
+шаги — закрыть оставшийся Definition of Done на **текущих** caps (Caddy streaming ceiling,
+Content-Encoding fail-closed, spill `into_bytes`, telemetry/alerts) и только потом, после
+exact-SHA load proof, commits 5/7/8 с raised public defaults. Commit 6 (Codex
+JSONL/history/Redis) не поднимает OpenAI public 8 MiB.
 
 Область: публичные model API endpoints `router.apitoken.sale`, `api.apitoken.sale`,
 `openai.api.apitoken.sale`, `gemini.api.apitoken.sale` и их внутренний путь
@@ -49,14 +56,14 @@ provider-owned upstream contract.
 
 | Граница | Сейчас | Цель GA | Действие |
 |---|---:|---:|---|
-| Caddy model-vhost request body | явного cap нет | 256 MiB | Явно поставить streaming cap на четырёх model vhosts; не включать buffering |
-| Universal request body | 32 MiB | 256 MiB | Поднимать после spooling и weighted admission |
-| Router body admission | 128 MiB raw, шаг 1 MiB | 4 GiB aggregate raw/spool + отдельный 4 GiB estimated-RSS budget | Разделить disk/storage и memory budgets; оба fail-fast, без очереди |
+| Caddy model-vhost request body | **256 MiB streaming cap** (не public default) | 256 MiB | Потолок на четырёх model vhosts; buffering/SSE flush_interval запрещены |
+| Universal request body | **64 MiB** на active `@` unit | 256 MiB | Поднимать после disk-backed spool и weighted admission proof |
+| Router body admission | 512 MiB raw + 512 MiB estimated-RSS | 4 GiB aggregate raw/spool + отдельный 4 GiB estimated-RSS budget | Разделить disk/storage и memory budgets; оба fail-fast, без очереди |
 | Body idle timeout | 60 s | 120 s | Timeout только при отсутствии byte progress |
 | Body absolute upload timeout | 5 min | 30 min | Позволяет 256 MiB на медленном uplink; не является generation timeout |
-| In-memory threshold | всё materialized | 8 MiB | Более крупные тела немедленно spill в anonymous 0600 file |
-| Router process memory | `MemoryMax=512M` | `MemoryHigh=6G`, `MemoryMax=8G` | Только вместе с admission и cgroup alerts |
-| Router disk-spool budget | отсутствует | 16 GiB на active slot, 256 MiB/request | Atomic reservation до записи, cleanup на drop/startup; отдельный filesystem/project quota является authority, не только in-process counter |
+| In-memory threshold | **равен request cap** (spill выключен) | 8 MiB | Не включать на `/run` tmpfs; нужен quota-backed filesystem |
+| Router process memory | `MemoryHigh=6G`, `MemoryMax=8G` | те же | Только вместе с admission и cgroup alerts |
+| Router disk-spool budget | 512 MiB in-process, root на tmpfs `/run` | 16 GiB на active slot, 256 MiB/request | Atomic reservation до записи; OS quota — authority |
 | Router response body | stream | stream | Не вводить aggregate cap и не буферизовать SSE |
 
 Router memory budget учитывает не только raw bytes. Каждый materialized JSON получает
@@ -76,14 +83,15 @@ escaped Unicode, base64 и глубоко вложенных tool schemas. До 
 | Codex custom tool grammar | 256 KiB | 4 MiB | Оставить bounded независимо от body max |
 | Codex app-server JSONL frame | 32 MiB | 384 MiB | 256 MiB payload + JSON/framing overhead; incremental cap до allocation |
 | Codex stored history entry | 16 MiB | 256 MiB | Одновременно увеличить Redis history capacity и eviction monitoring |
-| Gemini text native/universal request | 32 MiB | 256 MiB | После binary IPC и Gemini weighted admission |
+| Gemini text native request | **64 MiB argv/canary** | 256 MiB | Universal adapters остаются на `api-limits` 32 MiB |
+| Gemini text universal Chat/Responses/Messages | 32 MiB | 256 MiB | После binary IPC и Gemini weighted admission |
 | Gemini inline-media/image request | 20 MiB | **20 MiB, оставить** | Документированный provider-owned media ceiling |
 | Gemini non-stream/generated-image response | 64 MiB | 256 MiB | Отдельный response admission; streaming остаётся streaming |
-| Gemini Rust↔Node decoded request | 32 MiB | 256 MiB | Binary framing, без base64 JSON line |
-| Gemini Rust↔Node metadata frame | часть 48 MiB NDJSON | 1 MiB | Headers/URL/control только; body идёт отдельным binary frame |
-| Gemini IPC binary body frame | отсутствует | 256 MiB | Length-prefixed, exact request ID, bounded before allocation |
-| Provider process memory | `MemoryMax=2G` | Anthropic/OpenAI: `High=6G Max=8G`; Gemini: `High=12G Max=16G` | Нужны parent-slice caps для blue-green overlap |
-| Provider request spool | отсутствует | 16 GiB/active plane | Quota и cleanup аналогичны router |
+| Gemini Rust↔Node decoded request | 256 MiB transport ceiling | 256 MiB | Binary framing, без base64 JSON line |
+| Gemini Rust↔Node metadata frame | 1 MiB | 1 MiB | Headers/URL/control только; body идёт отдельным binary frame |
+| Gemini IPC binary body frame | 256 MiB ceiling | 256 MiB | Length-prefixed, exact request ID, bounded before allocation |
+| Provider process memory | Anthropic/OpenAI `High=6G Max=8G`; Gemini `High=12G Max=16G` | те же | Нужны parent-slice caps для blue-green overlap |
+| Provider request spool | 2 GiB in-process, root на tmpfs `/run` | 16 GiB/active plane | Quota и cleanup аналогичны router |
 
 ### 3.3 Намеренно не увеличивать
 
@@ -468,98 +476,44 @@ Exact candidate SHA допускается к повышенным defaults то
 Это один feature train, но не один огромный commit. Каждый шаг достигает production GREEN до
 следующего.
 
-### Commit 1 — checked contract и dormant config
+### Commit 1 — checked contract и dormant config — **сделано**
 
-- Добавить dependency-free `api-limits`, strict settings и current-cap parity tests.
-- Production defaults оставить текущими 32/128/2G и OpenAI 8 MiB; hard ceilings не являются
-  enablement и выше-current значения fail-closed.
-- Не публиковать фиктивные spool/RSS/IPC series до появления соответствующих runtime-механизмов.
+### Commit 1b — честная baseline observability — **сделано**
 
-### Commit 1b — честная baseline observability
+### Commit 2a — leaf-примитивы bounded storage и weighted admission — **сделано**
 
-- Добавить fixed-cardinality histograms фактически materialized request bodies и реальные
-  oversize/read/admission rejection counters на текущих путях.
-- Обновить dashboards, alerts/runbooks и dependency map; spool/RSS/IPC gauges остаются за
-  commits, которые создают соответствующие authorities.
-- Собрать минимум 7 дней body-size/concurrency evidence; RSS coefficients отдельно доказываются
-  profiler/cgroup load harness перед raised defaults.
+### Commit 2b — интеграция router bounded storage — **сделано** (threshold = request cap)
 
-### Commit 2a — leaf-примитивы bounded storage и weighted admission
+### Commit 2c — интеграция provider bounded storage — **сделано** (threshold = request cap)
 
-- Добавить dependency-light `crates/bounded-body`: fail-fast atomic weighted budgets, single-owner
-  RAII reservations и private memory→anonymous-file storage с checked growth/rollback.
-- Runtime call sites, config, metrics, systemd и public errors не менять; публичные пределы прежние.
-- Малые unit tests доказывают threshold/limit boundaries, one-byte chunks, replay, exhaustion,
-  panic/drop cleanup, private root/mode и отсутствие content/path в Debug.
+### Commit 3a — Gemini binary IPC v2 — **сделано**
 
-### Commit 2b — интеграция router bounded storage
+### Commit 3b — Gemini typed executor — **сделано**
 
-- Universal bodies получают два независимых fail-fast budget: raw storage и estimated memory;
-  auth/deadlines/errors/permit lifetime остаются прежними.
-- Каждый slot получает private mode-0700 RuntimeDirectory и обязательный абсолютный spool root;
-  `/tmp` fallback запрещён. Threshold пока равен текущему 32 MiB request cap.
-- Публичные пределы и `MemoryMax=512M` прежние; доказать отсутствие protocol/money/SSE изменений.
+### Commit 4 — systemd slices и resource headroom gate — **сделано**
 
-### Commit 2c — интеграция provider bounded storage
+### Commit 4b — Caddy ceiling, encoding gate, spill reload, plane telemetry
 
-- Native Anthropic Messages идёт первым: после auth/allowlist и до parse/reserve он получает два
-  независимых 2 GiB fail-fast budget и slot-private spool capability; cap/threshold остаются 32 MiB.
-- Anthropic universal Chat/Responses следующими удерживают те же reservations через parse,
-  translation и внутренний native `forward`, сохраняя OpenAI-shaped errors и текущий 32 MiB cap.
-- Codex native Responses следующим получает shared bounded reader под текущим 8 MiB cap; остальные
-  Chat/Messages/count paths мигрируют отдельно с собственными prepared/history weights.
-- Затем Gemini materializers получают spooling и caller-supplied estimated RSS после typed IPC,
-  сохраняя отдельные text/media caps.
-- Публичные пределы пока прежние; доказать отсутствие protocol/money изменений до raised default.
+- Explicit 256 MiB streaming Caddy cap on the four model vhosts; OpenKeys stays 32KB; no SSE buffer.
+- Request `Content-Encoding` fail-closed 415 on materializing text routes.
+- Router namespaced single-model path extracts routing selectors without a full JSON tree.
+- `StoredBody::into_bytes()` reloads a spilled body so a later disk-backed 8 MiB threshold does not 503 every large request.
+- Provider `/metrics` exports admission/storage/RSS/spool and Gemini IPC series; alerts/runbooks/dashboard land in the same commit.
+- Публичные request caps не меняются. 8 MiB spill на `/run` tmpfs по-прежнему запрещён.
 
-### Commit 3a — Gemini binary IPC v2
+### Commit 5 — поднять router + Gemini text/response до 256 MiB — **заблокировано**
 
-- Единый binary framed stdin/stdout protocol заменяет NDJSON/readline и base64 request/response
-  data: bounded JSON control, raw exact-length request frame и raw response chunks.
-- Multiplex/cancel/no-replay/actual-send semantics и SHA-pinned Node fingerprint неизменны.
-- Limits пока 32/20/64 MiB; 256 MiB остаётся только transport ceiling.
+Нужен exact-SHA load proof (oom=0, peak < MemoryHigh, mixed-load p99, fail-fast admission) и
+disk-backed spool filesystem. Caddy 256 MiB — потолок, не enablement.
 
-### Commit 3b — Gemini typed executor
-
-- Universal adapters передают один раз переведённый `NativeGeminiRequest` через trusted typed
-  extensions; synthetic body serialization и повторный parse удалены.
-- Shared native executor сохраняет HTTP shell только для route/auth/context/error/SSE contracts.
-- Exact transport fingerprint и money/error/SSE matrix должны быть GREEN.
-
-### Commit 4 — systemd slices и resource headroom gate
-
-- Установить per-slot и aggregate caps, spool directories, FD/task limits.
-- Перед стартом inactive router/Anthropic candidate проверять host MemAvailable, свободное место
-  private spool filesystem и current/max parent slice; fail-closed без cutover.
-- Candidate должен пройти mock large-payload load до cutover; raised public defaults остаются
-  отдельным последующим commit после нагрузочного evidence.
-
-### Commit 5 — поднять router + Gemini text/response до 256 MiB
-
-- Caddy model cap 256 MiB.
-- Router universal 256 MiB, 4 GiB aggregate raw + 4 GiB estimated-RSS + 16 GiB spool budgets,
-  8 MiB threshold, 120 s/30 min upload.
-- Gemini text/request/IPC/non-stream response 256 MiB; media остаётся 20 MiB; Gemini unit получает
-  отдельный reviewed 8 GiB estimated-RSS budget под 12/16 GiB cgroup envelope.
-- Free native `countTokens` canary на large text body первым.
-- Любая paid large-input generation требует отдельного явного budget authorization; успешный
-  `countTokens` не доказывает generation.
-
-### Commit 6 — Codex transport/history capacity
+### Commit 6 — Codex transport/history capacity — **ещё не сделано в этом SHA**
 
 - Расширить JSONL/history/Redis/admission, но OpenAI public body default оставить 8 MiB.
 - Провести controlled private app-server acceptance по размерным ступеням.
 
-### Commit 7 — поднять OpenAI public text envelope
+### Commit 7 — поднять OpenAI public text envelope — **заблокировано** (нужен private app-server proof)
 
-- Включать последовательно 32 → 64 → 128 → 256 MiB только до максимума, реально принятого private
-  provider transport на exact implementation SHA.
-- Не рекламировать 256, если upstream proof остановился раньше.
-
-### Commit 8 — Anthropic response envelope
-
-- Request cap остаётся 32 MiB.
-- Поднять только локальный translated non-stream response envelope под weighted admission.
+### Commit 8 — Anthropic response envelope — **заблокировано** (после 5/7 и weighted response admission)
 
 Rollback каждого шага — предыдущий immutable release/config; нельзя откатывать billing/schema
 историю. Oversized requests снова получают прежний deterministic 4xx/413, уже начатые billable

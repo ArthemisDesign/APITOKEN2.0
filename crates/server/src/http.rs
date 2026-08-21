@@ -1501,6 +1501,29 @@ async fn metrics(
             m.execution_not_started_count(plane),
         );
     }
+    let _ = writeln!(body, "{}", m.render_body_admission());
+    let (storage_used, memory_used, spool_files) = match &app.body_storage {
+        Some(storage) => (
+            storage.storage.used_bytes(),
+            storage.memory.used_bytes(),
+            storage.spool.live_files(),
+        ),
+        None => (0, 0, 0),
+    };
+    let _ = writeln!(
+        body,
+        "# HELP claude_api_body_storage_bytes Raw request-body bytes currently held in memory or private spool.\n\
+         # TYPE claude_api_body_storage_bytes gauge\n\
+         claude_api_body_storage_bytes{{kind=\"memory\"}} {memory_used}\n\
+         claude_api_body_storage_bytes{{kind=\"spool\"}} {storage_used}\n\
+         # HELP claude_api_body_memory_cost_bytes Estimated-RSS admission weight currently held for materialized request bodies.\n\
+         # TYPE claude_api_body_memory_cost_bytes gauge\n\
+         claude_api_body_memory_cost_bytes {memory_used}\n\
+         # HELP claude_api_body_spool_files Live private spool files owned by in-flight materialized request bodies.\n\
+         # TYPE claude_api_body_spool_files gauge\n\
+         claude_api_body_spool_files {spool_files}"
+    );
+    let _ = writeln!(body, "{}", forward::GeminiIpc::global().render());
     let gemini_batch = match &app.gemini_batch_runtime {
         Some(runtime) => Some(runtime.operational_snapshot().await),
         None => None,

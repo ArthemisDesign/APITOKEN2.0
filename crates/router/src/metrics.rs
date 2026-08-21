@@ -22,7 +22,7 @@ const PRICING_FAILURE_COUNT: usize = 2;
 const POLICY_FAILURE_COUNT: usize = 3;
 const BODY_SURFACE_COUNT: usize = 4;
 const BODY_BUCKET_COUNT: usize = 10;
-const BODY_REJECTION_REASON_COUNT: usize = 3;
+const BODY_REJECTION_REASON_COUNT: usize = 4;
 const FALLBACK_SERIES_COUNT: usize = NAMESPACE_COUNT * NAMESPACE_COUNT * REASON_COUNT;
 const LANE_MATRIX_COUNT: usize = NAMESPACE_COUNT * NAMESPACE_COUNT;
 
@@ -80,6 +80,7 @@ pub enum BodyRejectionReason {
     Oversized,
     ReadTimeout,
     AdmissionOverload,
+    ContentEncoding,
 }
 
 impl BodyRejectionReason {
@@ -87,6 +88,7 @@ impl BodyRejectionReason {
         (Self::Oversized, "oversized"),
         (Self::ReadTimeout, "read_timeout"),
         (Self::AdmissionOverload, "admission_overload"),
+        (Self::ContentEncoding, "content_encoding"),
     ];
 
     fn index(self) -> usize {
@@ -94,6 +96,7 @@ impl BodyRejectionReason {
             Self::Oversized => 0,
             Self::ReadTimeout => 1,
             Self::AdmissionOverload => 2,
+            Self::ContentEncoding => 3,
         }
     }
 }
@@ -345,7 +348,12 @@ impl RouterMetrics {
         self.fallback[fallback_index(from, to, reason)].fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn render(&self) -> String {
+    pub fn render(
+        &self,
+        storage_used_bytes: u64,
+        memory_used_bytes: u64,
+        spool_files: u64,
+    ) -> String {
         use std::fmt::Write as _;
 
         let mut body = String::new();
@@ -436,6 +444,38 @@ impl RouterMetrics {
                 self.body_admission_rejections[reason.index()].load(Ordering::Relaxed)
             );
         }
+        metric_header(
+            &mut body,
+            "claude_router_body_storage_bytes",
+            "gauge",
+            "Raw request-body bytes currently held in memory or private spool.",
+        );
+        let _ = writeln!(
+            body,
+            "claude_router_body_storage_bytes{{kind=\"memory\"}} {memory_used_bytes}"
+        );
+        let _ = writeln!(
+            body,
+            "claude_router_body_storage_bytes{{kind=\"spool\"}} {storage_used_bytes}"
+        );
+        metric_header(
+            &mut body,
+            "claude_router_body_memory_cost_bytes",
+            "gauge",
+            "Estimated-RSS admission weight currently held for materialized request bodies.",
+        );
+        sample(
+            &mut body,
+            "claude_router_body_memory_cost_bytes",
+            memory_used_bytes,
+        );
+        metric_header(
+            &mut body,
+            "claude_router_body_spool_files",
+            "gauge",
+            "Live private spool files owned by in-flight materialized request bodies.",
+        );
+        sample(&mut body, "claude_router_body_spool_files", spool_files);
 
         metric_header(
             &mut body,
@@ -625,11 +665,12 @@ mod tests {
             BodyRejectionReason::Oversized,
             BodyRejectionReason::ReadTimeout,
             BodyRejectionReason::AdmissionOverload,
+            BodyRejectionReason::ContentEncoding,
         ] {
             metrics.body_admission_rejection(reason);
         }
 
-        let body = metrics.render();
+        let body = metrics.render(0, 0, 0);
         assert_eq!(
             body.lines()
                 .filter(|line| line.starts_with("claude_router_fallback_total{"))
@@ -693,6 +734,13 @@ mod tests {
         assert!(
             body.contains("claude_router_body_admission_rejections_total{reason=\"oversized\"} 1")
         );
+        assert!(body.contains(
+            "claude_router_body_admission_rejections_total{reason=\"content_encoding\"} 1"
+        ));
+        assert!(body.contains("claude_router_body_storage_bytes{kind=\"memory\"} 0"));
+        assert!(body.contains("claude_router_body_storage_bytes{kind=\"spool\"} 0"));
+        assert!(body.contains("claude_router_body_memory_cost_bytes 0"));
+        assert!(body.contains("claude_router_body_spool_files 0"));
         for forbidden in [
             "path=",
             "key=",

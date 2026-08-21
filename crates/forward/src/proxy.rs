@@ -505,6 +505,29 @@ pub(crate) enum BodyReadError {
     Read,
 }
 
+pub(crate) enum BodyAdmitError {
+    Storage(bounded_body::StorageError),
+    ContentEncoding,
+}
+
+pub(crate) const UNSUPPORTED_CONTENT_ENCODING_MESSAGE: &str =
+    "Request Content-Encoding is not supported.";
+
+pub(crate) fn request_content_encoding_forbidden(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(axum::http::header::CONTENT_ENCODING)
+        .iter()
+        .any(|value| {
+            let Ok(value) = value.to_str() else {
+                return true;
+            };
+            value.split(',').any(|part| {
+                let token = part.trim();
+                !token.is_empty() && !token.eq_ignore_ascii_case("identity")
+            })
+        })
+}
+
 pub(crate) async fn read_body_limited(
     body: Body,
     limit: usize,
@@ -523,40 +546,68 @@ pub(crate) async fn read_body_limited(
 
 pub(crate) async fn read_body_bounded(
     app: &AppState,
+    headers: &HeaderMap,
     body: Body,
     request_limit: api_limits::ByteLimit,
-    memory_threshold: api_limits::ByteLimit,
-) -> Result<MaterializedBoundedBody, bounded_body::StorageError> {
+) -> Result<MaterializedBoundedBody, BodyAdmitError> {
+    if request_content_encoding_forbidden(headers) {
+        crate::metrics::Metrics::inc(&app.metrics.body_admission_content_encoding);
+        return Err(BodyAdmitError::ContentEncoding);
+    }
     let initial = api_limits::ByteLimit::from_bytes(api_limits::MIB);
-    let body_storage = app.body_storage()?;
+    let body_storage = app
+        .body_storage()
+        .map_err(BodyAdmitError::Storage)?;
     let storage = body_storage
         .storage
         .try_reserve(initial)
-        .map_err(|_| bounded_body::StorageError::StorageExhausted)?;
+        .map_err(|_| {
+            crate::metrics::Metrics::inc(&app.metrics.body_admission_overload);
+            BodyAdmitError::Storage(bounded_body::StorageError::StorageExhausted)
+        })?;
     let memory = body_storage
         .memory
         .try_reserve(initial)
-        .map_err(|_| bounded_body::StorageError::MemoryExhausted)?;
+        .map_err(|_| {
+            crate::metrics::Metrics::inc(&app.metrics.body_admission_overload);
+            BodyAdmitError::Storage(bounded_body::StorageError::MemoryExhausted)
+        })?;
     let mut store = bounded_body::BodyStore::start(
         bounded_body::StorageConfig {
             request_limit,
-            memory_threshold: memory_threshold.min(request_limit),
+            memory_threshold: body_storage.limits.memory_threshold.min(request_limit),
         },
         &body_storage.storage,
         &body_storage.memory,
         storage,
         memory,
-        body_storage.spool.try_clone()?,
-    )?;
+        body_storage.spool.try_clone().map_err(BodyAdmitError::Storage)?,
+    )
+    .map_err(BodyAdmitError::Storage)?;
     let mut stream = body.into_data_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| bounded_body::StorageError::Io)?;
-        store.push(&chunk)?;
+        let chunk = chunk.map_err(|_| BodyAdmitError::Storage(bounded_body::StorageError::Io))?;
+        store.push(&chunk).map_err(|error| {
+            match error {
+                bounded_body::StorageError::TooLarge
+                | bounded_body::StorageError::ArithmeticOverflow => {
+                    crate::metrics::Metrics::inc(&app.metrics.body_admission_oversized);
+                }
+                bounded_body::StorageError::StorageExhausted
+                | bounded_body::StorageError::MemoryExhausted
+                | bounded_body::StorageError::PrivateSpoolUnavailable => {
+                    crate::metrics::Metrics::inc(&app.metrics.body_admission_overload);
+                }
+                _ => {}
+            }
+            BodyAdmitError::Storage(error)
+        })?;
     }
-    let stored = store.finish()?;
-    let (bytes, lease) = stored
-        .into_memory()
-        .map_err(|_| bounded_body::StorageError::InvalidConfig)?;
+    let stored = store.finish().map_err(BodyAdmitError::Storage)?;
+    let (bytes, lease) = stored.into_bytes().map_err(|error| {
+        crate::metrics::Metrics::inc(&app.metrics.body_admission_overload);
+        BodyAdmitError::Storage(error)
+    })?;
     Ok(MaterializedBoundedBody {
         bytes: bytes::Bytes::from(bytes),
         _lease: lease,
@@ -565,19 +616,19 @@ pub(crate) async fn read_body_bounded(
 
 pub(crate) async fn read_anthropic_body_bounded(
     app: &AppState,
+    headers: &HeaderMap,
     body: Body,
-) -> Result<MaterializedAnthropicBody, bounded_body::StorageError> {
-    let body_storage = app.body_storage()?;
+) -> Result<MaterializedAnthropicBody, BodyAdmitError> {
+    let body_storage = app
+        .body_storage()
+        .map_err(BodyAdmitError::Storage)?;
     let body = read_body_bounded(
         app,
+        headers,
         body,
         body_storage
             .limits
             .request
-            .min(api_limits::current::ANTHROPIC_TEXT_REQUEST),
-        body_storage
-            .limits
-            .memory_threshold
             .min(api_limits::current::ANTHROPIC_TEXT_REQUEST),
     )
     .await?;
@@ -955,6 +1006,8 @@ pub(crate) enum LocalErr {
     NotFound,
     /// Тело запроса больше лимита. 413 `request_too_large`.
     BodyTooLarge,
+    /// Compressed request bodies are forbidden on materializing text routes. 415.
+    UnsupportedContentEncoding,
     /// Не удалось прочитать/разобрать тело запроса. 400 `invalid_request_error`.
     BadRequest,
     /// Некорректный `anthropic-beta` заголовок. 400 `invalid_request_error`.
@@ -996,6 +1049,11 @@ impl LocalErr {
                 "request_too_large",
                 "Request exceeds the maximum allowed number of bytes.",
             ),
+            LocalErr::UnsupportedContentEncoding => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "invalid_request_error",
+                "Request Content-Encoding is not supported.",
+            ),
             LocalErr::BadRequest => (
                 StatusCode::BAD_REQUEST,
                 "invalid_request_error",
@@ -1022,6 +1080,7 @@ impl LocalErr {
             LocalErr::LowBalance => "billing_limit",
             LocalErr::NotFound => "unsupported_endpoint",
             LocalErr::BodyTooLarge => "body_too_large",
+            LocalErr::UnsupportedContentEncoding => "unsupported_content_encoding",
             LocalErr::BadRequest => "invalid_request_body",
             LocalErr::BadBeta => "invalid_beta_header",
             LocalErr::Internal => "internal_response_error",
@@ -1465,19 +1524,19 @@ pub async fn forward(
     let bounded_native_messages =
         billable && app.provider.serves_anthropic() && synthesized_messages_origin.is_none();
     let (raw, _body_lease) = if bounded_native_messages {
-        let bounded = match read_anthropic_body_bounded(&app, body).await {
+        let bounded = match read_anthropic_body_bounded(&app, &parts.headers, body).await {
             Ok(body) => body,
-            Err(bounded_body::StorageError::TooLarge)
-            | Err(bounded_body::StorageError::ArithmeticOverflow) => {
+            Err(BodyAdmitError::ContentEncoding) => {
+                return local_err(LocalErr::UnsupportedContentEncoding, None)
+            }
+            Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge))
+            | Err(BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)) => {
                 return local_err(LocalErr::BodyTooLarge, None)
             }
-            Err(bounded_body::StorageError::Io) => return local_err(LocalErr::BadRequest, None),
-            Err(
-                bounded_body::StorageError::StorageExhausted
-                | bounded_body::StorageError::MemoryExhausted
-                | bounded_body::StorageError::PrivateSpoolUnavailable
-                | bounded_body::StorageError::InvalidConfig,
-            ) => {
+            Err(BodyAdmitError::Storage(bounded_body::StorageError::Io)) => {
+                return local_err(LocalErr::BadRequest, None)
+            }
+            Err(BodyAdmitError::Storage(_)) => {
                 return with_not_started(local_err_for(
                     LocalErr::Overloaded,
                     "body_storage_unavailable",

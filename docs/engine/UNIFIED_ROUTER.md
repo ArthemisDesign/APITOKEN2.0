@@ -447,6 +447,14 @@ contract and strict router composition. Startup additionally requires the absolu
 `CLAUDE_ROUTER_BODY_SPOOL_ROOT`; each systemd slot owns a separate mode-0700 RuntimeDirectory and the
 path is never logged. The current memory threshold still equals the 64 MiB request limit, preserving
 memory-first production behavior while the spill path remains exercised under smaller test configs.
+`StoredBody::into_bytes()` can reload a spilled body, but production must not set an 8 MiB threshold
+while the spool root is the host `/run` tmpfs. Request `Content-Encoding` other than `identity` is
+rejected with a lane-shaped 415 before the body is read, so a 256 MiB wire cap cannot become a
+gzip/br decompression bomb. The four public model vhosts share Caddy snippet `model_request_body`
+(`max_size 256MiB`, no buffering / no `flush_interval`); that is a streaming hard ceiling, not a
+raised router default. Namespaced single-model JSON is routed by an incremental top-level selector
+extractor (`IgnoredAny` for unknown fields) and does not build a full `serde_json::Value` unless
+alias rewrite, Fast `serviceTier`, or advanced `models`/`provider` requires it.
 Malformed, zero, inconsistent, or above-current values fail startup; the future 256 MiB hard ceiling
 is not enablement. A valid
 `Content-Length` is rounded up; a chunked/unknown size first

@@ -7,7 +7,10 @@ use super::{
     new_id, CodexGateway, CodexModel, CodexTurnRequest, CodexTurnResult, CodexUsage, HistoryError,
     ProcessError, StoredHistory, TurnUpdate,
 };
-use crate::proxy::{authorize, read_body_bounded, with_not_started, Authz, TerminalErrorReason};
+use crate::proxy::{
+    authorize, read_body_bounded, with_not_started, Authz, BodyAdmitError, TerminalErrorReason,
+    UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
+};
 use crate::request_classification::{classify_openai_responses, RequestClassification};
 use crate::state::AppState;
 use crate::validation::{optional_bool as strict_optional_bool, optional_positive_u64};
@@ -71,6 +74,18 @@ impl ApiError {
             code: None,
             retry_after: None,
             reason: "invalid_request",
+        }
+    }
+
+    pub(super) fn unsupported_content_encoding() -> Self {
+        Self {
+            status: StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            message: UNSUPPORTED_CONTENT_ENCODING_MESSAGE.to_string(),
+            kind: "invalid_request_error",
+            param: None,
+            code: Some("unsupported_content_encoding"),
+            retry_after: None,
+            reason: "unsupported_content_encoding",
         }
     }
 
@@ -291,23 +306,26 @@ pub async fn responses(
     };
     let bounded_body = match read_body_bounded(
         &app,
+        &parts.headers,
         body,
-        api_limits::current::OPENAI_TEXT_REQUEST,
         api_limits::current::OPENAI_TEXT_REQUEST,
     )
     .await
     {
         Ok(body) => body,
-        Err(bounded_body::StorageError::TooLarge)
-        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
+        Err(BodyAdmitError::ContentEncoding) => {
+            return ApiError::unsupported_content_encoding().into_response()
+        }
+        Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge))
+        | Err(BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)) => {
             return ApiError::invalid("Request body exceeds the 8 MiB limit.", None::<String>)
                 .into_response()
         }
-        Err(bounded_body::StorageError::Io) => {
+        Err(BodyAdmitError::Storage(bounded_body::StorageError::Io)) => {
             return ApiError::invalid("Could not read request body.", None::<String>)
                 .into_response()
         }
-        Err(_) => {
+        Err(BodyAdmitError::Storage(_)) => {
             return ApiError::unavailable_for("codex_body_storage_unavailable").into_response()
         }
     };
@@ -793,7 +811,7 @@ pub async fn input_tokens(
     );
     let tenant_scope = pending.tenant_scope().to_owned();
     let (response, evidence) =
-        input_tokens_after_admission(&app, gateway, &tenant_scope, body).await;
+        input_tokens_after_admission(&app, gateway, &tenant_scope, &parts.headers, body).await;
     submit_input_tokens_fact(
         app.billing.as_deref(),
         fact_seed,
@@ -814,32 +832,39 @@ async fn input_tokens_after_admission(
     app: &AppState,
     gateway: Arc<CodexGateway>,
     tenant_scope: &str,
+    headers: &HeaderMap,
     body: Body,
 ) -> (Response, InputTokensFactEvidence) {
     let bounded = match read_body_bounded(
         app,
+        headers,
         body,
-        api_limits::current::OPENAI_TEXT_REQUEST,
         api_limits::current::OPENAI_TEXT_REQUEST,
     )
     .await
     {
         Ok(body) => body,
-        Err(bounded_body::StorageError::TooLarge)
-        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
+        Err(BodyAdmitError::ContentEncoding) => {
+            return (
+                ApiError::unsupported_content_encoding().into_response(),
+                InputTokensFactEvidence::default(),
+            )
+        }
+        Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge))
+        | Err(BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)) => {
             return (
                 ApiError::invalid("Request body exceeds the 8 MiB limit.", None::<String>)
                     .into_response(),
                 InputTokensFactEvidence::default(),
             )
         }
-        Err(bounded_body::StorageError::Io) => {
+        Err(BodyAdmitError::Storage(bounded_body::StorageError::Io)) => {
             return (
                 ApiError::invalid("Could not read request body.", None::<String>).into_response(),
                 InputTokensFactEvidence::default(),
             )
         }
-        Err(_) => {
+        Err(BodyAdmitError::Storage(_)) => {
             return (
                 ApiError::unavailable().into_response(),
                 InputTokensFactEvidence::default(),

@@ -462,8 +462,12 @@ is only what is needed to walk the relationships when making changes:
   18 `claude_router_fallback_total{from_namespace,to_namespace,reason}` series plus
   fixed-cardinality admission/auth/catalog/pricing/policy/header-timeout/balance telemetry. Large-
   payload baseline adds a four-surface cumulative histogram of fully materialized universal body
-  bytes and three fixed rejection reasons (`oversized|read_timeout|admission_overload`); native
-  streaming bodies and partial/rejected byte counts are not fabricated. The public Caddy allowlist
+  bytes and four fixed rejection reasons (`oversized|read_timeout|admission_overload|content_encoding`);
+  native streaming bodies and partial/rejected byte counts are not fabricated. Router and provider
+  planes also export storage/RSS/spool-file gauges and provider admission/Gemini IPC counters;
+  scrape already labels engine targets `provider`, so those series do not repeat the label.
+  Alerts `RouterBodySpoolLeak`, `ProviderBodyAdmissionFailures`, `ProviderBodySpoolLeak`, and
+  `GeminiIpcProtocolFailures` consume them. The public Caddy allowlist
   does not pass this path. Each fixed
   `crates/server` plane produces three bounded
   `claude_api_execution_not_started_total{plane}` series through the existing
@@ -471,7 +475,9 @@ is only what is needed to walk the relationships when making changes:
   plane. The consumer is `observability/prometheus/prometheus.yml` and the
   recording/alert rules; Alertmanager/operator use the runbooks `RouterMetricsDown`,
   `RouterFallbackRateHigh`, `RouterConnectionRefusedFallback`, `RouterAdmissionFailures`,
-  `RouterBodyOversizePressure`, `RouterAuthorityFailures`, and `RouterResponseHeaderTimeout`, while money-regression
+  `RouterBodyOversizePressure`, `RouterBodySpoolLeak`, `RouterAuthorityFailures`, and
+  `RouterResponseHeaderTimeout`, plus provider `ProviderBodyAdmissionFailures`,
+  `ProviderBodySpoolLeak`, and `GeminiIpcProtocolFailures`, while money-regression
   detectors stay separate. Model, credential, account, group, and request identity do not
   travel through this relationship. Contract — `docs/engine/ROUTING_FENCING.md` §§5.3–6
   and `docs/ops/MONITORING.md`.

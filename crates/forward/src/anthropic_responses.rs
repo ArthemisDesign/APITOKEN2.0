@@ -133,7 +133,10 @@ use crate::anthropic::{
 use crate::anthropic_stream::AnthropicStreamState;
 use crate::codex::new_id;
 use crate::openai_responses_stream::ResponsesEventEncoder;
-use crate::proxy::{forward, read_anthropic_body_bounded, without_not_started};
+use crate::proxy::{
+    forward, read_anthropic_body_bounded, without_not_started, BodyAdmitError,
+    UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
+};
 use crate::request_classification::classify_openai_responses;
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
@@ -146,10 +149,19 @@ pub async fn anthropic_responses(
     request: Request,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    let bounded_body = match read_anthropic_body_bounded(&app, body).await {
+    let bounded_body = match read_anthropic_body_bounded(&app, &parts.headers, body).await {
         Ok(body) => body,
-        Err(bounded_body::StorageError::TooLarge)
-        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
+        Err(BodyAdmitError::ContentEncoding) => {
+            return chat_error(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
+                None,
+                json!("unsupported_content_encoding"),
+                "unsupported_content_encoding",
+            )
+        }
+        Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge))
+        | Err(BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)) => {
             return chat_error(
                 StatusCode::BAD_REQUEST,
                 "Request body exceeds the 32 MiB limit.",
@@ -158,7 +170,7 @@ pub async fn anthropic_responses(
                 "invalid_responses_request",
             )
         }
-        Err(bounded_body::StorageError::Io) => {
+        Err(BodyAdmitError::Storage(bounded_body::StorageError::Io)) => {
             return chat_error(
                 StatusCode::BAD_REQUEST,
                 "Could not read request body.",
@@ -167,7 +179,7 @@ pub async fn anthropic_responses(
                 "invalid_responses_request",
             )
         }
-        Err(_) => {
+        Err(BodyAdmitError::Storage(_)) => {
             return chat_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Request body storage is unavailable.",

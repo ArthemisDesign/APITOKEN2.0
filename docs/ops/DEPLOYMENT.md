@@ -22,7 +22,7 @@ large-payload slot pins `LimitNOFILE=262144`, `TasksMax=8192`, and `OOMPolicy=st
 Before starting an inactive router or Anthropic slot, the controller runs the fixed
 `large-payload-headroom.sh`: at least 12 GiB host `MemAvailable`, 8 GiB free on the current private
 `/run` spool filesystem, and parent `MemoryCurrent < MemoryMax` are mandatory. The 8 GiB threshold
-matches the host's 10 GiB runtime tmpfs while production remains on a 128 MiB process spool budget
+matches the host's 10 GiB runtime tmpfs while production remains on a 512 MiB process spool budget
 and memory-first threshold; the later 16 GiB disk-backed rollout requires a quota-backed filesystem.
 Failure leaves the serving slot and Caddy routing unchanged. These resource limits enable safe load
 testing; they do not raise any public body limit by themselves.

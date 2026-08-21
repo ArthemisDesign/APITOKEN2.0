@@ -12,7 +12,10 @@ use super::transport::{
 };
 use super::REPLAYED_FUNCTION_CALL_THOUGHT_SIGNATURE;
 use crate::metrics::Metrics;
-use crate::proxy::{read_body_bounded, with_not_started, TerminalErrorReason};
+use crate::proxy::{
+    read_body_bounded, with_not_started, BodyAdmitError, TerminalErrorReason,
+    UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
+};
 use crate::request_classification::{classify_gemini_generate_content, RequestClassification};
 use crate::state::AppState;
 use crate::{AffinityInput, AffinityResolution};
@@ -755,6 +758,18 @@ impl ApiError {
         Self {
             error_info_reason: Some(error_info_reason),
             ..Self::invalid(message)
+        }
+    }
+
+    fn unsupported_content_encoding() -> Self {
+        Self {
+            status: StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            message: UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
+            google_status: "INVALID_ARGUMENT",
+            retry_after: None,
+            reason: "unsupported_content_encoding",
+            error_info_reason: Some("UNSUPPORTED_CONTENT_ENCODING"),
+            execution_not_started: true,
         }
     }
 
@@ -3959,15 +3974,18 @@ async fn api_inner_observed(
         (typed.value, None)
     } else {
         let request_limit = api_limits::ByteLimit::from_bytes(request_body_limit as u64);
-        let bounded_body = read_body_bounded(&app, body, request_limit, request_limit)
+        let bounded_body = read_body_bounded(&app, &parts.headers, body, request_limit)
             .await
             .map_err(|error| match error {
-                bounded_body::StorageError::TooLarge
-                | bounded_body::StorageError::ArithmeticOverflow
-                | bounded_body::StorageError::Io => {
+                BodyAdmitError::ContentEncoding => ApiError::unsupported_content_encoding(),
+                BodyAdmitError::Storage(bounded_body::StorageError::TooLarge)
+                | BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)
+                | BodyAdmitError::Storage(bounded_body::StorageError::Io) => {
                     ApiError::invalid("The request body is invalid or too large.")
                 }
-                _ => ApiError::unavailable("gemini_body_storage_unavailable"),
+                BodyAdmitError::Storage(_) => {
+                    ApiError::unavailable("gemini_body_storage_unavailable")
+                }
             })?;
         let value = serde_json::from_slice(&bounded_body.bytes)
             .map_err(|_| ApiError::invalid("The request body is not valid JSON."))?;

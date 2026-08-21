@@ -123,7 +123,7 @@ use std::time::Duration;
 
 use axum::body::{to_bytes, Body, Bytes};
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::BytesMut;
 use futures_util::{Stream, StreamExt};
@@ -139,8 +139,8 @@ use crate::codex::new_id;
 use crate::gemini_schema;
 use crate::gemini_stream::GeminiStreamState;
 use crate::proxy::{
-    read_body_bounded, with_not_started, without_not_started, TerminalErrorReason,
-    EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
+    read_body_bounded, with_not_started, without_not_started, BodyAdmitError, TerminalErrorReason,
+    EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED, UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
 };
 use crate::request_classification::classify_anthropic_messages;
 use crate::state::AppState;
@@ -1693,29 +1693,42 @@ fn bounded_request_fact_model(value: &str) -> Option<String> {
     .then(|| value.to_owned())
 }
 
-/// Буферизованное JSON-тело Messages-запроса под лимитом плоскости (32 MiB — общий
-/// `CHAT_BODY_LIMIT` universal lanes Gemini); ошибки — Anthropic-конверт 400.
+/// Буферизованное JSON-тело Messages-запроса под лимитом плоскости (`GEMINI_TEXT_REQUEST`
+/// universal lanes Gemini); ошибки — Anthropic-конверт 400/415.
 async fn read_messages_body(
     app: &AppState,
+    headers: &HeaderMap,
     body: Body,
 ) -> Result<(Value, bounded_body::StoredBodyLease), Response> {
     let bounded = match read_body_bounded(
         app,
+        headers,
         body,
-        api_limits::current::GEMINI_TEXT_REQUEST,
         api_limits::current::GEMINI_TEXT_REQUEST,
     )
     .await
     {
         Ok(body) => body,
-        Err(bounded_body::StorageError::TooLarge)
-        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
-            return Err(invalid_request("Request body exceeds the 64 MiB limit."))
+        Err(BodyAdmitError::ContentEncoding) => {
+            return Err(skin_error(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "invalid_request_error",
+                UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
+                "unsupported_content_encoding",
+                None,
+            ))
         }
-        Err(bounded_body::StorageError::Io) => {
+        Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge))
+        | Err(BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)) => {
+            return Err(invalid_request(format!(
+                "Request body exceeds the {} limit.",
+                api_limits::current::GEMINI_TEXT_REQUEST
+            )))
+        }
+        Err(BodyAdmitError::Storage(bounded_body::StorageError::Io)) => {
             return Err(invalid_request("Could not read request body."))
         }
-        Err(_) => {
+        Err(BodyAdmitError::Storage(_)) => {
             return Err(skin_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "api_error",
@@ -1782,7 +1795,7 @@ pub async fn gemini_messages_skin(
     request: Request,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    let (value, _body_lease) = match read_messages_body(&app, body).await {
+    let (value, _body_lease) = match read_messages_body(&app, &parts.headers, body).await {
         Ok(value) => value,
         Err(response) => return response,
     };
@@ -1836,7 +1849,7 @@ pub async fn gemini_messages_count_tokens(
     request: Request,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    let (value, _body_lease) = match read_messages_body(&app, body).await {
+    let (value, _body_lease) = match read_messages_body(&app, &parts.headers, body).await {
         Ok(value) => value,
         Err(response) => return response,
     };

@@ -99,7 +99,7 @@ pub use tripo3d::{
     upload_model as tripo3d_upload_model, Tripo3dGateway, Tripo3dOperationalStatus,
     Tripo3dProfileStatus, Tripo3dTaskView,
 };
-pub use metrics::Metrics;
+pub use metrics::{GeminiIpc, Metrics};
 pub use pricing::tariff_book;
 pub use proxy::{
     authed, client_keys, control_authed, forward, is_exact_not_started_response, readonly_authed,

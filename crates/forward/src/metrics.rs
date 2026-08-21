@@ -94,6 +94,11 @@ pub struct Metrics {
     pub gemini_backend_failures: AtomicU64,
     pub gemini_malformed_responses: AtomicU64,
     pub gemini_stream_start_failures: AtomicU64,
+    /// Materialized text-body admission outcomes. Reasons are compile-fixed; identity never
+    /// becomes a label. The Prometheus scrape target already supplies `provider`.
+    pub body_admission_oversized: AtomicU64,
+    pub body_admission_overload: AtomicU64,
+    pub body_admission_content_encoding: AtomicU64,
     /// Exact `not_started` proofs actually returned by each fixed provider plane. The array is
     /// compile-bounded to Anthropic/OpenAI/Gemini and never carries request or credential labels.
     execution_not_started: [AtomicU64; 3],
@@ -143,46 +148,112 @@ impl Metrics {
             .unwrap_or(0)
     }
 
+    pub fn render_body_admission(&self) -> String {
+        format!(
+            "# HELP claude_api_body_admission_rejections_total Materialized text request bodies rejected before provider dispatch.\n\
+             # TYPE claude_api_body_admission_rejections_total counter\n\
+             claude_api_body_admission_rejections_total{{reason=\"oversized\"}} {}\n\
+             claude_api_body_admission_rejections_total{{reason=\"admission_overload\"}} {}\n\
+             claude_api_body_admission_rejections_total{{reason=\"content_encoding\"}} {}\n",
+            Self::get(&self.body_admission_oversized),
+            Self::get(&self.body_admission_overload),
+            Self::get(&self.body_admission_content_encoding),
+        )
+    }
+}
 
+/// Process-wide Gemini binary IPC telemetry. The helper lives in this process, and scrape already
+/// labels the target `provider="gemini"`; other planes export zeros.
+pub struct GeminiIpc {
+    pub request_control_bytes: AtomicU64,
+    pub request_data_bytes: AtomicU64,
+    pub response_control_bytes: AtomicU64,
+    pub response_data_bytes: AtomicU64,
+    pub active_requests: AtomicU64,
+    pub protocol_failures: [AtomicU64; 4],
+}
 
+impl GeminiIpc {
+    pub const REASON_PROTOCOL: usize = 0;
+    pub const REASON_SPAWN: usize = 1;
+    pub const REASON_CLOSED: usize = 2;
+    pub const REASON_BODY_TOO_LARGE: usize = 3;
 
+    pub fn global() -> &'static Self {
+        static IPC: GeminiIpc = GeminiIpc {
+            request_control_bytes: AtomicU64::new(0),
+            request_data_bytes: AtomicU64::new(0),
+            response_control_bytes: AtomicU64::new(0),
+            response_data_bytes: AtomicU64::new(0),
+            active_requests: AtomicU64::new(0),
+            protocol_failures: [const { AtomicU64::new(0) }; 4],
+        };
+        &IPC
+    }
 
+    pub fn record_failure(&self, reason: usize) {
+        if let Some(counter) = self.protocol_failures.get(reason) {
+            Metrics::inc(counter);
+        }
+    }
 
+    pub fn record_pipe_bytes(&self, request: bool, control: bool, n: u64) {
+        let field = match (request, control) {
+            (true, true) => &self.request_control_bytes,
+            (true, false) => &self.request_data_bytes,
+            (false, true) => &self.response_control_bytes,
+            (false, false) => &self.response_data_bytes,
+        };
+        field.fetch_add(n, Ordering::Relaxed);
+    }
 
+    pub fn inc_active(&self) {
+        Metrics::inc(&self.active_requests);
+    }
 
+    pub fn dec_active(&self) {
+        Metrics::dec(&self.active_requests);
+    }
 
+    pub fn dec_active_by(&self, n: u64) {
+        if n == 0 {
+            return;
+        }
+        let _ = self.active_requests.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |value| Some(value.saturating_sub(n)),
+        );
+    }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    pub fn render(&self) -> String {
+        format!(
+            "# HELP claude_api_gemini_ipc_bytes_total Bytes written or read on the Gemini binary IPC pipe.\n\
+             # TYPE claude_api_gemini_ipc_bytes_total counter\n\
+             claude_api_gemini_ipc_bytes_total{{direction=\"request\",kind=\"control\"}} {}\n\
+             claude_api_gemini_ipc_bytes_total{{direction=\"request\",kind=\"data\"}} {}\n\
+             claude_api_gemini_ipc_bytes_total{{direction=\"response\",kind=\"control\"}} {}\n\
+             claude_api_gemini_ipc_bytes_total{{direction=\"response\",kind=\"data\"}} {}\n\
+             # HELP claude_api_gemini_ipc_active_requests In-flight Gemini helper requests.\n\
+             # TYPE claude_api_gemini_ipc_active_requests gauge\n\
+             claude_api_gemini_ipc_active_requests {}\n\
+             # HELP claude_api_gemini_ipc_protocol_failures_total Gemini helper framing or lifecycle failures.\n\
+             # TYPE claude_api_gemini_ipc_protocol_failures_total counter\n\
+             claude_api_gemini_ipc_protocol_failures_total{{reason=\"protocol\"}} {}\n\
+             claude_api_gemini_ipc_protocol_failures_total{{reason=\"spawn\"}} {}\n\
+             claude_api_gemini_ipc_protocol_failures_total{{reason=\"closed\"}} {}\n\
+             claude_api_gemini_ipc_protocol_failures_total{{reason=\"body_too_large\"}} {}\n",
+            Metrics::get(&self.request_control_bytes),
+            Metrics::get(&self.request_data_bytes),
+            Metrics::get(&self.response_control_bytes),
+            Metrics::get(&self.response_data_bytes),
+            Metrics::get(&self.active_requests),
+            Metrics::get(&self.protocol_failures[Self::REASON_PROTOCOL]),
+            Metrics::get(&self.protocol_failures[Self::REASON_SPAWN]),
+            Metrics::get(&self.protocol_failures[Self::REASON_CLOSED]),
+            Metrics::get(&self.protocol_failures[Self::REASON_BODY_TOO_LARGE]),
+        )
+    }
 }
 
 fn execution_plane_index(plane: crate::ProviderMode) -> Option<usize> {
@@ -233,5 +304,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn body_admission_render_uses_fixed_reasons() {
+        let metrics = Metrics::new();
+        Metrics::inc(&metrics.body_admission_oversized);
+        Metrics::inc(&metrics.body_admission_content_encoding);
+        let body = metrics.render_body_admission();
+        assert!(body.contains("reason=\"oversized\"} 1"));
+        assert!(body.contains("reason=\"admission_overload\"} 0"));
+        assert!(body.contains("reason=\"content_encoding\"} 1"));
+        assert!(!body.contains("provider="));
+    }
 
+    #[test]
+    fn gemini_ipc_render_is_fixed_cardinality() {
+        let body = GeminiIpc::global().render();
+        assert!(body.contains("direction=\"request\",kind=\"control\""));
+        assert!(body.contains("direction=\"request\",kind=\"data\""));
+        assert!(body.contains("direction=\"response\",kind=\"control\""));
+        assert!(body.contains("direction=\"response\",kind=\"data\""));
+        assert!(body.contains("claude_api_gemini_ipc_active_requests"));
+        assert!(body.contains("reason=\"protocol\""));
+        assert!(body.contains("reason=\"spawn\""));
+        assert!(body.contains("reason=\"closed\""));
+        assert!(body.contains("reason=\"body_too_large\""));
+        assert!(!body.contains("provider="));
+    }
 }

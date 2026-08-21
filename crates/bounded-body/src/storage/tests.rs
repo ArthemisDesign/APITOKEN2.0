@@ -307,3 +307,38 @@ fn panic_unwind_cleans_anonymous_spool_and_reservations() {
     assert_eq!(memory.used_bytes(), 0);
     assert!(root.path.read_dir().unwrap().next().is_none());
 }
+
+#[test]
+fn spilled_body_reloads_into_bytes_and_tracks_live_files() {
+    let root = TestRoot::new();
+    let factory = PrivateSpoolFactory::new(&root.path).unwrap();
+    assert_eq!(factory.live_files(), 0);
+    let storage = Budget::new(bytes(32), bytes(1)).unwrap();
+    let memory = Budget::new(bytes(16), bytes(1)).unwrap();
+    let mut store = BodyStore::start(
+        StorageConfig {
+            request_limit: bytes(8),
+            memory_threshold: bytes(2),
+        },
+        &storage,
+        &memory,
+        storage.try_reserve(bytes(0)).unwrap(),
+        memory.try_reserve(bytes(0)).unwrap(),
+        factory.try_clone().unwrap(),
+    )
+    .unwrap();
+    store.push(b"spilled!").unwrap();
+    assert!(store.is_spooled());
+    assert_eq!(factory.live_files(), 1);
+    assert_eq!(memory.used_bytes(), 0);
+    let body = store.finish().unwrap();
+    assert_eq!(factory.live_files(), 1);
+    let (bytes, lease) = body.into_bytes().unwrap();
+    assert_eq!(bytes, b"spilled!");
+    assert_eq!(factory.live_files(), 0);
+    assert!(memory.used_bytes() >= 8);
+    drop(lease);
+    assert_eq!(storage.used_bytes(), 0);
+    assert_eq!(memory.used_bytes(), 0);
+    assert!(root.path.read_dir().unwrap().next().is_none());
+}

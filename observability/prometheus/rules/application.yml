@@ -348,6 +348,48 @@ groups:
           description: 'At least ten universal request bodies were rejected as oversized in fifteen minutes; this is demand evidence, not permission to raise the current limit.'
           runbook: 'docs/ops/MONITORING.md#routerbodyoversizepressure'
 
+      - alert: RouterBodySpoolLeak
+        expr: claude_router_body_spool_files > 0
+        for: 2m
+        labels:
+          severity: warning
+          component: claude-router
+        annotations:
+          summary: 'Router private spool files exist while spill is still disabled'
+          description: 'Live private spool files are non-zero. Production threshold still equals the request cap and RuntimeDirectory is tmpfs, so any spool file is a leak or an accidental spill enablement.'
+          runbook: 'docs/ops/MONITORING.md#routerbodyspoolleak'
+
+      - alert: ProviderBodyAdmissionFailures
+        expr: sum(increase(claude_api_body_admission_rejections_total[5m])) > 0
+        labels:
+          severity: warning
+          component: claude-api
+        annotations:
+          summary: 'A provider plane rejected a request at body admission'
+          description: 'At least one materialized text request was rejected as oversized, encoding-forbidden, or storage/memory exhausted before provider dispatch. Scrape already labels the plane as provider.'
+          runbook: 'docs/ops/MONITORING.md#providerbodyadmissionfailures'
+
+      - alert: ProviderBodySpoolLeak
+        expr: claude_api_body_spool_files > 0
+        for: 2m
+        labels:
+          severity: warning
+          component: claude-api
+        annotations:
+          summary: 'Provider private spool files exist while spill is still disabled'
+          description: 'Live private spool files are non-zero on a provider plane. Production threshold still equals the request cap and RuntimeDirectory is tmpfs, so any spool file is a leak or an accidental spill enablement.'
+          runbook: 'docs/ops/MONITORING.md#providerbodyspoolleak'
+
+      - alert: GeminiIpcProtocolFailures
+        expr: sum(increase(claude_api_gemini_ipc_protocol_failures_total[5m])) > 0
+        labels:
+          severity: warning
+          component: claude-api
+        annotations:
+          summary: 'Gemini helper IPC framing or lifecycle failed'
+          description: 'The Gemini binary helper reported a protocol, spawn, closed, or oversize-frame failure. Investigate helper restarts and hostile frames without logging request bodies.'
+          runbook: 'docs/ops/MONITORING.md#geminiipcprotocolfailures'
+
       - alert: RouterAuthorityFailures
         expr: |
           sum(increase(claude_router_auth_preflight_total{outcome="unavailable"}[10m]))

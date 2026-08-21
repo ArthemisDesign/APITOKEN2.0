@@ -2,7 +2,8 @@ use crate::{CapacityError, Reservation};
 use api_limits::ByteLimit;
 use std::fmt;
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::sync::Arc;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -44,6 +45,22 @@ pub enum StorageError {
 
 pub struct PrivateSpoolFactory {
     root: File,
+    live_spool_files: Arc<AtomicU64>,
+}
+
+struct LiveSpoolGuard(Arc<AtomicU64>);
+
+impl LiveSpoolGuard {
+    fn new(counter: &Arc<AtomicU64>) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self(counter.clone())
+    }
+}
+
+impl Drop for LiveSpoolGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl fmt::Debug for PrivateSpoolFactory {
@@ -74,7 +91,10 @@ impl PrivateSpoolFactory {
         let root = options
             .open(root)
             .map_err(|_| StorageError::PrivateSpoolUnavailable)?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            live_spool_files: Arc::new(AtomicU64::new(0)),
+        })
     }
 
     pub fn try_clone(&self) -> Result<Self, StorageError> {
@@ -83,7 +103,12 @@ impl PrivateSpoolFactory {
                 .root
                 .try_clone()
                 .map_err(|_| StorageError::PrivateSpoolUnavailable)?,
+            live_spool_files: self.live_spool_files.clone(),
         })
+    }
+
+    pub fn live_files(&self) -> u64 {
+        self.live_spool_files.load(Ordering::Relaxed)
     }
 
     fn create(&self) -> Result<File, StorageError> {
@@ -146,7 +171,7 @@ pub struct BodyStore {
 
 enum StoreState {
     Memory(Vec<u8>),
-    Spool(File),
+    Spool { file: File, live: LiveSpoolGuard },
     Poisoned,
 }
 
@@ -212,7 +237,7 @@ impl BodyStore {
                 Ok(())
             }
             StoreState::Memory(_) => self.spill_and_push(chunk, next_len),
-            StoreState::Spool(file) => {
+            StoreState::Spool { file, .. } => {
                 self.storage
                     .try_grow_to(ByteLimit::from_bytes(next_len))
                     .map_err(storage_capacity)?;
@@ -237,7 +262,7 @@ impl BodyStore {
                 .memory
                 .shrink_to(ByteLimit::from_bytes(self.len))
                 .map_err(|_| StorageError::InvalidConfig)?,
-            StoreState::Spool(_) => self
+            StoreState::Spool { .. } => self
                 .memory
                 .shrink_to(ByteLimit::from_bytes(0))
                 .map_err(|_| StorageError::InvalidConfig)?,
@@ -251,11 +276,12 @@ impl BodyStore {
                 _storage: take_reservation(&mut self.storage),
                 _memory: take_reservation(&mut self.memory),
             })),
-            StoreState::Spool(mut file) => {
+            StoreState::Spool { mut file, live } => {
                 file.flush().map_err(|_| StorageError::Io)?;
                 Ok(StoredBody::Spool(SpoolBody {
                     file,
                     len: self.len,
+                    live,
                     _storage: take_reservation(&mut self.storage),
                     _memory: take_reservation(&mut self.memory),
                 }))
@@ -269,7 +295,7 @@ impl BodyStore {
     }
 
     pub fn is_spooled(&self) -> bool {
-        matches!(self.state, StoreState::Spool(_))
+        matches!(self.state, StoreState::Spool { .. })
     }
 
     fn kind(&self) -> &'static str {
@@ -307,7 +333,11 @@ impl BodyStore {
                 return Err(error);
             }
         };
-        let old = std::mem::replace(&mut self.state, StoreState::Spool(file));
+        let live = LiveSpoolGuard::new(&self.factory.live_spool_files);
+        let old = std::mem::replace(
+            &mut self.state,
+            StoreState::Spool { file, live },
+        );
         drop(old);
         self.memory
             .shrink_to(ByteLimit::from_bytes(0))
@@ -392,6 +422,48 @@ impl StoredBody {
         }
     }
 
+    /// Load the stored bytes into a Vec, re-reserving estimated-RSS weight for a previously
+    /// spilled body. Callers that only need a sequential reader should use `copy_to` instead.
+    pub fn into_bytes(self) -> Result<(Vec<u8>, StoredBodyLease), StorageError> {
+        match self {
+            Self::Memory(body) => Ok((
+                body.bytes,
+                StoredBodyLease {
+                    _storage: body._storage,
+                    _memory: body._memory,
+                },
+            )),
+            Self::Spool(mut body) => {
+                body._memory
+                    .try_grow_to(ByteLimit::from_bytes(body.len))
+                    .map_err(memory_capacity)?;
+                let expected =
+                    usize::try_from(body.len).map_err(|_| StorageError::ArithmeticOverflow)?;
+                let mut bytes = Vec::new();
+                bytes
+                    .try_reserve_exact(expected)
+                    .map_err(|_| StorageError::MemoryExhausted)?;
+                body.file
+                    .seek(SeekFrom::Start(0))
+                    .map_err(|_| StorageError::Io)?;
+                body.file
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| StorageError::Io)?;
+                if bytes.len() != expected {
+                    return Err(StorageError::Io);
+                }
+                drop(body.live);
+                Ok((
+                    bytes,
+                    StoredBodyLease {
+                        _storage: body._storage,
+                        _memory: body._memory,
+                    },
+                ))
+            }
+        }
+    }
+
     pub fn copy_to(&mut self, writer: &mut impl Write) -> Result<(), StorageError> {
         match self {
             Self::Memory(body) => writer.write_all(&body.bytes).map_err(|_| StorageError::Io),
@@ -416,6 +488,7 @@ pub struct MemoryBody {
 pub struct SpoolBody {
     file: File,
     len: u64,
+    live: LiveSpoolGuard,
     _storage: Reservation,
     _memory: Reservation,
 }

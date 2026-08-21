@@ -27,6 +27,7 @@ use tokio::process::{ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
+use crate::metrics::GeminiIpc;
 use super::transport_v2::{read_raw_frame, write_raw_frame_locked};
 
 const IPC_PROTOCOL: u8 = 2;
@@ -152,6 +153,7 @@ impl TransportResponse {
         while let Some(chunk) = self.body.next().await {
             let chunk = chunk?;
             if collected.len().saturating_add(chunk.len()) > limit {
+                GeminiIpc::global().record_failure(GeminiIpc::REASON_BODY_TOO_LARGE);
                 return Err(TransportError::BodyTooLarge);
             }
             collected.extend_from_slice(&chunk);
@@ -167,6 +169,7 @@ impl TransportResponse {
         while let Some(chunk) = self.body.next().await {
             let chunk = chunk?;
             if collected.len().saturating_add(chunk.len()) > limit {
+                GeminiIpc::global().record_failure(GeminiIpc::REASON_BODY_TOO_LARGE);
                 return Err(TransportError::BodyTooLarge);
             }
             collected.extend_from_slice(&chunk);
@@ -562,6 +565,7 @@ impl ProcessShared {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
+        record_ipc_error(&error);
         if let Some(ready) = self
             .ready
             .lock()
@@ -576,6 +580,7 @@ impl ProcessShared {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
+        GeminiIpc::global().dec_active_by(pending.len() as u64);
         for (_, mut request) in pending {
             if let Some(headers) = request.headers.take() {
                 let _ = headers.send(Err(error));
@@ -609,11 +614,23 @@ impl NodeProcess {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         isolate_process_group(&mut command);
-        let mut child = command.spawn().map_err(|_| TransportError::Spawn)?;
+        let mut child = command.spawn().map_err(|_| {
+            GeminiIpc::global().record_failure(GeminiIpc::REASON_SPAWN);
+            TransportError::Spawn
+        })?;
         let pid = child.id();
-        let stdin = child.stdin.take().ok_or(TransportError::Spawn)?;
-        let stdout = child.stdout.take().ok_or(TransportError::Spawn)?;
-        let stderr = child.stderr.take().ok_or(TransportError::Spawn)?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            GeminiIpc::global().record_failure(GeminiIpc::REASON_SPAWN);
+            TransportError::Spawn
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            GeminiIpc::global().record_failure(GeminiIpc::REASON_SPAWN);
+            TransportError::Spawn
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            GeminiIpc::global().record_failure(GeminiIpc::REASON_SPAWN);
+            TransportError::Spawn
+        })?;
         let (ready_tx, ready_rx) = oneshot::channel();
         let shared = Arc::new(ProcessShared {
             pending: Mutex::new(HashMap::new()),
@@ -711,6 +728,7 @@ impl NodeProcess {
                 self.shared.close(TransportError::Protocol);
                 return Err(TransportError::Protocol);
             }
+            GeminiIpc::global().inc_active();
         }
         // If the caller disappears before the complete response body, remove the pending IPC
         // request and asynchronously cancel its Node socket. Without this RAII edge, rapid client
@@ -772,12 +790,17 @@ impl NodeProcess {
         let encoded =
             Zeroizing::new(serde_json::to_vec(frame).map_err(|_| TransportError::Protocol)?);
         if encoded.len() > MAX_IPC_CONTROL_BYTES || body.len() > MAX_IPC_BODY_BYTES {
+            GeminiIpc::global().record_failure(GeminiIpc::REASON_BODY_TOO_LARGE);
             return Err(TransportError::Protocol);
         }
         let mut writer = self.writer.lock().await;
         write_raw_frame_locked(&mut *writer, IPC_KIND_CONTROL, 0, &encoded).await?;
         write_raw_frame_locked(&mut *writer, IPC_KIND_DATA, id, body).await?;
-        writer.flush().await.map_err(|_| TransportError::Closed)
+        writer.flush().await.map_err(|_| TransportError::Closed)?;
+        let ipc = GeminiIpc::global();
+        ipc.record_pipe_bytes(true, true, encoded.len() as u64);
+        ipc.record_pipe_bytes(true, false, body.len() as u64);
+        Ok(())
     }
 
     async fn write_raw_frame(
@@ -788,7 +811,9 @@ impl NodeProcess {
     ) -> Result<(), TransportError> {
         let mut writer = self.writer.lock().await;
         write_raw_frame_locked(&mut *writer, kind, id, payload).await?;
-        writer.flush().await.map_err(|_| TransportError::Closed)
+        writer.flush().await.map_err(|_| TransportError::Closed)?;
+        GeminiIpc::global().record_pipe_bytes(true, kind == IPC_KIND_CONTROL, payload.len() as u64);
+        Ok(())
     }
 
     fn signal_kill(&self) {
@@ -880,6 +905,7 @@ impl Drop for PendingCancelGuard {
             .remove(&self.id)
             .is_some();
         if removed {
+            GeminiIpc::global().dec_active();
             let _ = self.cancel.send(self.id);
         } else {
             self.shared.consume_canceled_frame(self.id, true);
@@ -959,6 +985,11 @@ where
                 return;
             }
         };
+        GeminiIpc::global().record_pipe_bytes(
+            false,
+            kind == IPC_KIND_CONTROL,
+            payload.len() as u64,
+        );
         if kind == IPC_KIND_DATA {
             if dispatch_data_frame(&shared, id, Bytes::from(payload))
                 .await
@@ -1101,6 +1132,7 @@ async fn dispatch_frame(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&id)
                 .ok_or(TransportError::Protocol)?;
+            GeminiIpc::global().dec_active();
             if request.headers.is_some() {
                 return Err(TransportError::Protocol);
             }
@@ -1114,6 +1146,7 @@ async fn dispatch_frame(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&id)
                 .ok_or(TransportError::Protocol)?;
+            GeminiIpc::global().dec_active();
             if let Some(headers) = request.headers.take() {
                 let _ = headers.send(Err(error));
             } else {
@@ -1123,6 +1156,19 @@ async fn dispatch_frame(
         _ => return Err(TransportError::Protocol),
     }
     Ok(())
+}
+
+fn record_ipc_error(error: &TransportError) {
+    let ipc = GeminiIpc::global();
+    match error {
+        TransportError::Protocol => ipc.record_failure(GeminiIpc::REASON_PROTOCOL),
+        TransportError::Spawn => ipc.record_failure(GeminiIpc::REASON_SPAWN),
+        TransportError::Closed => ipc.record_failure(GeminiIpc::REASON_CLOSED),
+        TransportError::BodyTooLarge => ipc.record_failure(GeminiIpc::REASON_BODY_TOO_LARGE),
+        TransportError::Timeout
+        | TransportError::Network
+        | TransportError::CalibrationExpired => {}
+    }
 }
 
 fn helper_error_kind(kind: Option<&str>) -> Option<TransportError> {

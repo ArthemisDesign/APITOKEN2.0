@@ -4011,6 +4011,127 @@
           "targetBlank": true
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" }
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 227 },
+      "id": 414,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "claude_router_body_storage_bytes", "legendFormat": "router {{kind}}", "refId": "A" },
+        { "expr": "claude_router_body_memory_cost_bytes", "legendFormat": "router rss", "refId": "B" },
+        { "expr": "claude_api_body_storage_bytes", "legendFormat": "{{provider}} {{kind}}", "refId": "C" },
+        { "expr": "claude_api_body_memory_cost_bytes", "legendFormat": "{{provider}} rss", "refId": "D" }
+      ],
+      "title": "Body storage and estimated-RSS admission",
+      "type": "timeseries",
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#routerbodyspoolleak",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" }
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 227 },
+      "id": 415,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "sum by (reason) (increase(claude_api_body_admission_rejections_total[1h]))", "legendFormat": "{{reason}}", "refId": "A" },
+        { "expr": "claude_router_body_spool_files", "legendFormat": "router spool files", "refId": "B" },
+        { "expr": "claude_api_body_spool_files", "legendFormat": "{{provider}} spool files", "refId": "C" }
+      ],
+      "title": "Provider body rejections and live spool files",
+      "type": "timeseries",
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#providerbodyadmissionfailures",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" }
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 235 },
+      "id": 416,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "sum by (direction, kind) (rate(claude_api_gemini_ipc_bytes_total[5m]))", "legendFormat": "{{direction}} {{kind}}", "refId": "A" },
+        { "expr": "claude_api_gemini_ipc_active_requests", "legendFormat": "active", "refId": "B" },
+        { "expr": "sum by (reason) (increase(claude_api_gemini_ipc_protocol_failures_total[1h]))", "legendFormat": "{{reason}}", "refId": "C" }
+      ],
+      "title": "Gemini binary IPC bytes, in-flight requests, failures",
+      "type": "timeseries",
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#geminiipcprotocolfailures",
+          "targetBlank": true
+        }
+      ]
     }
   ],
   "refresh": "30s",

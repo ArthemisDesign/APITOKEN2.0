@@ -507,19 +507,21 @@ safe fallback reasons.
 Compare `claude_router_body_admission_overload_total` and
 `claude_router_body_read_timeout_total`, then inspect
 `claude_router_active_body_admission_units` beside `claude_router_active_universal_requests`.
-Admission is a fixed 128-unit memory guard, not an execution queue: declared bodies reserve their
+Admission is a fail-fast memory guard, not an execution queue: declared bodies reserve their
 rounded MiB weight immediately; unknown/chunked bodies start at one unit and grow as bytes arrive.
-An overload with 128 active units means real buffered pressure. Repeated timeouts with few bytes are
+The active router `@` unit currently pins a 512 MiB raw-storage budget and an independent 512 MiB
+estimated-RSS budget (512 units each). An overload with those units exhausted means real buffered
+pressure. Repeated timeouts with few bytes are
 usually clients that made no byte progress for 60 seconds; steady uploads may run for at most five
 minutes. Confirm Caddy/client upload behavior and abusive source patterns without logging
 credentials or request contents. Do not increase the budget until RSS headroom is measured, and do
 not add a waiting semaphore or provider execution ceiling. The additive
 `claude_router_body_admission_rejections_total` splits the same overload and timeout outcomes from
-`oversized`; the two legacy counters remain the compatibility source for this alert.
+`oversized` and `content_encoding`; the two legacy counters remain the compatibility source for this alert.
 
 ## RouterBodyOversizePressure
 
-This is sustained demand evidence against the current 32 MiB universal router contract, not an
+This is sustained demand evidence against the current 64 MiB universal router contract, not an
 instruction to raise a constant or `MemoryMax`. Use
 `claude_router_request_body_bytes_bucket{surface}` to compare p50/p95/p99 of bodies that were fully
 materialized and the fixed `surface` label to distinguish Chat, Responses, Messages and Messages
@@ -527,14 +529,53 @@ count-tokens. These quantiles intentionally include every fully read attempt, in
 JSON and requests rejected later by model/routing/policy admission; they measure materialization
 pressure, not successful or billable demand. Oversized attempts are not added to the histogram because their full bytes were never
 accepted; the rejection counter covers both declared and chunked overflow without retaining the
-attempted size.
+attempted size. Compressed request bodies are counted separately as
+`reason="content_encoding"` and never enter the histogram.
 
 Confirm that the traffic is legitimate without logging bodies, keys, models, accounts, or request
 identities. Anthropic remains capped at its provider-owned 32 MiB request contract, Gemini media at
-20 MiB, and Codex at the currently proved 8 MiB transport boundary. Do not raise router/systemd
-limits before bounded spool storage, dual raw/RSS admission, cgroup headroom, and exact-SHA load
+20 MiB, Gemini universal text at 32 MiB (native Gemini generate is a 64 MiB argv canary), and Codex at the currently proved 8 MiB transport boundary. Do not raise router/systemd
+limits before disk-backed spool storage, dual raw/RSS admission under an 8 MiB threshold, cgroup headroom, and exact-SHA load
 proof are GREEN. If the pressure is abusive, mitigate at ingress/account controls rather than
 creating a waiting queue.
+
+## RouterBodySpoolLeak
+
+`claude_router_body_spool_files` must stay at zero while the production memory threshold equals the
+request cap and the slot `RuntimeDirectory` lives on the host `/run` tmpfs. A non-zero gauge means
+either RAII cleanup failed or `CLAUDE_ROUTER_BODY_MEMORY_THRESHOLD_MIB` was lowered onto tmpfs.
+Do not "fix" this by raising tmpfs, deleting files by hand, or treating spill as enabled. Confirm
+the active `@` unit still pins threshold=request, inspect
+`claude_router_body_storage_bytes` and `claude_router_active_universal_requests`, and roll back any
+candidate that enabled 8 MiB spill without a quota-backed filesystem. After a later disk-backed
+rollout this alert must be retuned to `files > 0 AND active_requests == 0`.
+
+## ProviderBodyAdmissionFailures
+
+Compare `claude_api_body_admission_rejections_total{reason}` on the scraping job already labeled
+`provider`. `oversized` is demand against the current plane contract (Anthropic 32 MiB, OpenAI 8 MiB,
+Gemini universal 32 MiB / native 64 MiB). `content_encoding` is a compressed request that was
+fail-closed with 415 before materialization. `admission_overload` is the fail-fast storage or
+estimated-RSS budget. None of these is permission to raise a public cap. Confirm Caddy still
+enforces the 256 MiB streaming ceiling without buffering SSE, and do not log bodies or keys.
+
+## ProviderBodySpoolLeak
+
+Same contract as `RouterBodySpoolLeak` on the provider planes:
+`claude_api_body_spool_files` must stay zero while threshold equals the request cap and spool roots
+are `/run/claude-api-*` tmpfs. A non-zero gauge is a leak or accidental spill enablement. Confirm
+`CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB` still matches the request pin in the active unit argv.
+Retune to idle-only after a disk-backed 8 MiB threshold rollout.
+
+## GeminiIpcProtocolFailures
+
+`claude_api_gemini_ipc_protocol_failures_total{reason}` counts helper framing and lifecycle
+failures (`protocol|spawn|closed|body_too_large`), not upstream HTTP errors. Pair with
+`claude_api_gemini_ipc_active_requests` and `claude_api_gemini_ipc_bytes_total`. A spawn storm is a
+helper/binary/fingerprint problem; `protocol`/`body_too_large` on the 13-byte framed pipe is a
+hostile or desynchronized helper and should close that multiplexed process. Do not log IPC payloads.
+Response `BodyTooLarge` on the public Gemini envelope remains the existing 64 MiB native response
+bound and is separate from this IPC series.
 
 ## RouterAuthorityFailures
 

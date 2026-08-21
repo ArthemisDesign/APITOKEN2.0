@@ -248,6 +248,9 @@ for router_metric in \
   claude_router_body_read_timeout_total \
   claude_router_request_body_bytes \
   claude_router_body_admission_rejections_total \
+  claude_router_body_storage_bytes \
+  claude_router_body_memory_cost_bytes \
+  claude_router_body_spool_files \
   claude_router_auth_preflight_total \
   claude_router_catalog_refresh_total \
   claude_router_pricing_failure_total \
@@ -263,8 +266,9 @@ grep -Fq 'sum by (plane) (rate(claude_api_execution_not_started_total[5m]))' \
   "$ROOT/observability/prometheus/rules/application.yml" \
   || { printf 'no recording rule consumes exact not_started proofs by fixed plane\n' >&2; exit 1; }
 for router_alert in RouterMetricsDown RouterFallbackRateHigh RouterConnectionRefusedFallback \
-  RouterAdmissionFailures RouterBodyOversizePressure RouterAuthorityFailures \
-  RouterResponseHeaderTimeout; do
+  RouterAdmissionFailures RouterBodyOversizePressure RouterBodySpoolLeak RouterAuthorityFailures \
+  RouterResponseHeaderTimeout ProviderBodyAdmissionFailures ProviderBodySpoolLeak \
+  GeminiIpcProtocolFailures; do
   grep -Fq "alert: $router_alert" "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'missing router fallback alert %s\n' "$router_alert" >&2; exit 1; }
   anchor=$(printf '%s' "$router_alert" | tr '[:upper:]' '[:lower:]')
@@ -277,7 +281,7 @@ for body_surface in chat responses messages messages_count_tokens; do
   grep -Fq "$body_surface" "$ROOT/crates/router/src/metrics.rs" \
     || { printf 'router body histogram lacks fixed surface %s\n' "$body_surface" >&2; exit 1; }
 done
-for rejection_reason in oversized read_timeout admission_overload; do
+for rejection_reason in oversized read_timeout admission_overload content_encoding; do
   grep -Fq "$rejection_reason" "$ROOT/crates/router/src/metrics.rs" \
     || { printf 'router body rejection metric lacks fixed reason %s\n' "$rejection_reason" >&2; exit 1; }
 done
@@ -296,6 +300,20 @@ for quantile in 0.50 0.95 0.99; do
     "$ROOT/observability/grafana/dashboards/production-overview.json" \
     || { printf 'router body dashboard lacks quantile %s\n' "$quantile" >&2; exit 1; }
 done
+grep -Fq 'claude_api_body_admission_rejections_total' "$ROOT/crates/forward/src/metrics.rs" \
+  || { printf 'engine does not export body admission rejections\n' >&2; exit 1; }
+grep -Fq 'claude_api_body_storage_bytes' "$ROOT/crates/server/src/http.rs" \
+  || { printf 'engine does not export body storage gauges\n' >&2; exit 1; }
+grep -Fq 'claude_api_body_spool_files' "$ROOT/crates/server/src/http.rs" \
+  || { printf 'engine does not export live spool-file gauge\n' >&2; exit 1; }
+grep -Fq 'claude_api_gemini_ipc_protocol_failures_total' "$ROOT/crates/forward/src/metrics.rs" \
+  || { printf 'engine does not export Gemini IPC protocol failures\n' >&2; exit 1; }
+grep -Fq 'sum by (reason) (increase(claude_api_body_admission_rejections_total[1h]))' \
+  "$ROOT/observability/grafana/dashboards/production-overview.json" \
+  || { printf 'provider body dashboard lacks rejection series\n' >&2; exit 1; }
+grep -Fq 'claude_api_gemini_ipc_bytes_total' \
+  "$ROOT/observability/grafana/dashboards/production-overview.json" \
+  || { printf 'Gemini IPC dashboard panel is missing\n' >&2; exit 1; }
 # The generic scrape alert must exclude jobs with their own scrape-health alerts:
 # claude-router -> RouterMetricsDown, devbot -> DevBotMetricsDown.
 grep -Fq 'up{job!~"claude-router|devbot"} == 0' "$ROOT/observability/prometheus/rules/operations.yml" \

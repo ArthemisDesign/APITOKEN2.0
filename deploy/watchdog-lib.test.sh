@@ -2501,6 +2501,20 @@ grep -Fq '@public_core path /v1/messages* /v1/responses* /v1/chat/completions /v
   || wd_die 'unified router must forward exactly the documented public contract'
 grep -Fq 'import router_backend' <<<"$router_vhost" \
   || wd_die 'unified router does not consume the atomically selected backend for Batch/Files paths'
+grep -Fq 'import model_request_body' <<<"$claude_api_vhost" \
+  || wd_die 'Anthropic public vhost lost the streaming 256 MiB request cap'
+grep -Fq 'import model_request_body' <<<"$openai_api_vhost" \
+  || wd_die 'OpenAI public vhost lost the streaming 256 MiB request cap'
+grep -Fq 'import model_request_body' <<<"$gemini_api_vhost" \
+  || wd_die 'Gemini public vhost lost the streaming 256 MiB request cap'
+grep -Fq 'import model_request_body' <<<"$router_vhost" \
+  || wd_die 'unified router lost the streaming 256 MiB request cap'
+grep -Fq 'max_size 256MiB' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'model-vhost request cap is not the compile-time 256 MiB ceiling'
+grep -Fq 'max_size 32KB' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'OpenKeys request cap is no longer 32KB'
+! grep -Fq 'flush_interval' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'Caddy must not set flush_interval (SSE buffering risk)'
 ! grep -Fq 'reverse_proxy' <<<"$router_vhost" \
   || wd_die 'public router vhost bypasses the runtime backend selector'
 grep -Fq 'import /etc/caddy/router-active.caddy' "$ROOT/deploy/Caddyfile" \

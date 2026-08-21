@@ -5,7 +5,7 @@ set -euo pipefail
 # runs before systemctl start; it never changes live units or traffic.
 MIN_AVAILABLE_BYTES=${LARGE_PAYLOAD_MIN_AVAILABLE_BYTES:-12884901888} # 12 GiB
 # RuntimeDirectory currently lives on the host's 10 GiB /run tmpfs. The in-process production
-# spool budget is still pinned to 128 MiB and threshold=request, so require 8 GiB free here. The
+# spool budget is still pinned to 512 MiB and threshold=request, so require 8 GiB free here. The
 # 16 GiB authority belongs to the later disk-backed threshold rollout on a quota-backed filesystem.
 MIN_SPOOL_BYTES=${LARGE_PAYLOAD_MIN_SPOOL_BYTES:-8589934592}           # 8 GiB
 SPOOL_ROOT=${1:?usage: large-payload-headroom.sh <spool-root> [parent-slice]}

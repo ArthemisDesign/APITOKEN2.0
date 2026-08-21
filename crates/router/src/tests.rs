@@ -2569,6 +2569,29 @@ async fn chat_oversized_body_is_413_and_never_reaches_plane() {
 }
 
 #[tokio::test]
+async fn chat_gzip_body_is_415_and_never_reaches_plane() {
+    let (a, log_a) = echo_plane().await;
+    let router = spawn(make_router(
+        &a,
+        "http://127.0.0.1:1",
+        "http://127.0.0.1:2",
+        Duration::ZERO,
+    ))
+    .await;
+    let response = reqwest::Client::new()
+        .post(format!("{router}/v1/chat/completions"))
+        .header(reqwest::header::CONTENT_ENCODING, "gzip")
+        .body(r#"{"model":"anthropic/claude-opus-4-8","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    let json: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(json["error"]["code"], "unsupported_content_encoding");
+    assert!(log_a.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn chat_sse_response_first_chunk_is_not_buffered() {
     // Буферизуется только тело запроса; ответ стримится, как в native lanes.
     let plane = spawn(

@@ -193,7 +193,13 @@ restricted to `/v1beta/*`, `/upload/v1beta/*`, `/health`, and `/balance`. Every 
 (`/v1/messages*`, `/v1/responses*`, `/v1/chat/completions`, `/v1/images/*`, `/v1/models*`, `/v1beta/*`,
 `/upload/v1beta/*`, `/health`, `/balance`) imports the root-owned `router_backend` runtime snippet. In steady state it
 names exactly one `claude-router@` slot on loopback 8800 or 8801; the same snippet backs the
-loopback-only stable origin `127.0.0.1:8802` used by Prometheus and verification. The router owns path-shape routing to the
+loopback-only stable origin `127.0.0.1:8802` used by Prometheus and verification.
+
+The four public model vhosts (`api`, `openai.api`, `gemini.api`, `router`) import snippet
+`model_request_body`: Caddy `request_body { max_size 256MiB }` on the incoming stream. This is the
+compile-time hard ceiling from `crates/api-limits`, not a raised router or provider default.
+Caddy does not buffer the request or the SSE response; `flush_interval` is forbidden. OpenKeys keeps
+its own `max_size 32KB` and is not a model vhost. The router owns path-shape routing to the
 three provider planes, the aggregated namespaced `/v1/models` catalog with its degradation
 policy, lane-shaped errors, and explicit off-by-default serial model fallback. Authentication,
 billing, in-plane retry boundaries, and streaming stay inside the planes; cross-plane fallback

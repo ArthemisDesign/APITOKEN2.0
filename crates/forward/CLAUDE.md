@@ -26,7 +26,14 @@ Never mix the three provider paths.
   `count_tokens` use the same body authorities after auth/admission while retaining terminal-fact
   evidence and response semantics.
   Native Gemini generate/stream/count plus all universal Chat/Responses/Messages/count paths use
-  the shared bounded reader under existing 32 MiB text and 20 MiB image/media caps.
+  the shared bounded reader under existing 32 MiB text and 20 MiB image/media caps. Native Gemini
+  generate keeps a 64 MiB argv canary distinct from `api-limits::current::GEMINI_TEXT_REQUEST`.
+  Materializing text routes reject request `Content-Encoding` other than `identity` with a
+  lane-shaped 415 before admission. `StoredBody::into_bytes()` reloads a spilled body under the
+  estimated-RSS budget so a later disk-backed threshold does not 503; production threshold still
+  equals the request cap because `/run` is tmpfs. `/metrics` exports
+  `claude_api_body_admission_rejections_total`, storage/RSS/spool gauges, and Gemini IPC
+  byte/active/failure series (scrape already supplies `provider`).
 
 **Gemini typed executor boundary.** Universal Chat, Responses and Messages adapters translate the
 validated public request once into `NativeGeminiRequest` and pass the native `serde_json::Value`

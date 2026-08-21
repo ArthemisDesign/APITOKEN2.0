@@ -64,8 +64,8 @@ use crate::codex::new_id;
 use crate::gemini_schema;
 use crate::gemini_stream::GeminiStreamState;
 use crate::proxy::{
-    read_body_bounded, with_not_started, without_not_started, TerminalErrorReason,
-    EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
+    read_body_bounded, with_not_started, without_not_started, BodyAdmitError, TerminalErrorReason,
+    EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED, UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
 };
 use crate::request_classification::classify_openai_chat;
 use crate::state::AppState;
@@ -84,24 +84,36 @@ pub async fn gemini_chat_completions(
     let (parts, body) = request.into_parts();
     let bounded = match read_body_bounded(
         &app,
+        &parts.headers,
         body,
-        api_limits::current::GEMINI_TEXT_REQUEST,
         api_limits::current::GEMINI_TEXT_REQUEST,
     )
     .await
     {
         Ok(body) => body,
-        Err(bounded_body::StorageError::TooLarge)
-        | Err(bounded_body::StorageError::ArithmeticOverflow) => {
+        Err(BodyAdmitError::ContentEncoding) => {
+            return chat_error(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                UNSUPPORTED_CONTENT_ENCODING_MESSAGE,
+                None,
+                json!("unsupported_content_encoding"),
+                "unsupported_content_encoding",
+            )
+        }
+        Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge))
+        | Err(BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)) => {
             return chat_error(
                 StatusCode::BAD_REQUEST,
-                "Request body exceeds the 64 MiB limit.",
+                &format!(
+                    "Request body exceeds the {} limit.",
+                    api_limits::current::GEMINI_TEXT_REQUEST
+                ),
                 None,
                 Value::Null,
                 "invalid_chat_request",
             )
         }
-        Err(bounded_body::StorageError::Io) => {
+        Err(BodyAdmitError::Storage(bounded_body::StorageError::Io)) => {
             return chat_error(
                 StatusCode::BAD_REQUEST,
                 "Could not read request body.",
@@ -110,7 +122,7 @@ pub async fn gemini_chat_completions(
                 "invalid_chat_request",
             )
         }
-        Err(_) => {
+        Err(BodyAdmitError::Storage(_)) => {
             return chat_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Request body storage is unavailable.",
@@ -1150,7 +1162,7 @@ fn map_usage(usage: &Value) -> Value {
 /// детальный google.rpc status уезжает в `code`).
 fn openai_error_type(status: StatusCode) -> &'static str {
     match status.as_u16() {
-        400 | 402 | 404 | 405 | 409 | 413 | 422 => "invalid_request_error",
+        400 | 402 | 404 | 405 | 409 | 413 | 415 | 422 => "invalid_request_error",
         401 | 403 => "authentication_error",
         429 => "rate_limit_error",
         _ => "server_error",

@@ -125,6 +125,16 @@ import /etc/caddy/router-active.caddy
 	request_header -X-Apitoken-Logical-Request-Id
 }
 
+# Streaming request-size cap for the four public model vhosts. This is the compile-time hard
+# ceiling from crates/api-limits, not a raised public default: router and provider request caps
+# remain the effective contract. Caddy enforces the cap on the incoming stream and does not
+# buffer SSE responses.
+(model_request_body) {
+	request_body {
+		max_size 256MiB
+	}
+}
+
 # Every provider route targets its own stable loopback origin. Only those loopback sites know
 # runtime ports; applications and public/admin vhosts never select a deployment slot themselves.
 (engine_backend) {
@@ -189,6 +199,7 @@ import /etc/caddy/router-active.caddy
 
 api.apitoken.sale {
 	import strip_execution_identity
+	import model_request_body
 	@public_core path /v1/* /health /balance
 	handle @public_core {
 		import engine_backend
@@ -198,6 +209,7 @@ api.apitoken.sale {
 
 openai.api.apitoken.sale {
 	import strip_execution_identity
+	import model_request_body
 	# Compress only complete JSON documents. Responses SSE must stay identity-encoded so the
 	# compressor cannot buffer small lifecycle frames and increase time-to-first-token.
 	encode zstd gzip {
@@ -215,6 +227,7 @@ openai.api.apitoken.sale {
 
 gemini.api.apitoken.sale {
 	import strip_execution_identity
+	import model_request_body
 	header {
 		-Server
 		X-Content-Type-Options nosniff
@@ -252,6 +265,7 @@ gemini.api.apitoken.sale {
 # behavior behind their stable origins; nothing changes on the per-provider hostnames.
 router.apitoken.sale {
 	import strip_execution_identity
+	import model_request_body
 	@public_core path /v1/messages* /v1/responses* /v1/chat/completions /v1/images/* /v1/models* /v1beta/* /upload/v1beta/* /health /balance
 	handle @public_core {
 		import router_backend

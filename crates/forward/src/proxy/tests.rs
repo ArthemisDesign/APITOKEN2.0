@@ -1553,13 +1553,14 @@ fn cap_to_balance_enforces_budget() {
 }
 
 /// Все синтетические причины перебираем в одном месте (гарантия, что тест покрывает КАЖДУЮ).
-const ALL_LOCAL_ERRS: [LocalErr; 9] = [
+const ALL_LOCAL_ERRS: [LocalErr; 10] = [
     LocalErr::Overloaded,
     LocalErr::RateLimited,
     LocalErr::InvalidKey,
     LocalErr::LowBalance,
     LocalErr::NotFound,
     LocalErr::BodyTooLarge,
+    LocalErr::UnsupportedContentEncoding,
     LocalErr::BadRequest,
     LocalErr::BadBeta,
     LocalErr::Internal,
@@ -1607,6 +1608,7 @@ fn local_err_maps_to_authentic_anthropic_triples() {
         (LocalErr::LowBalance, 402, "invalid_request_error"),
         (LocalErr::NotFound, 404, "not_found_error"),
         (LocalErr::BodyTooLarge, 413, "request_too_large"),
+        (LocalErr::UnsupportedContentEncoding, 415, "invalid_request_error"),
         (LocalErr::BadRequest, 400, "invalid_request_error"),
         (LocalErr::BadBeta, 400, "invalid_request_error"),
         (LocalErr::Internal, 500, "api_error"),
@@ -1618,6 +1620,22 @@ fn local_err_maps_to_authentic_anthropic_triples() {
     }
     // overloaded=529 достижим (вне именованных констант http) и валиден.
     assert_eq!(http_overloaded().as_u16(), 529);
+}
+
+#[test]
+fn compressed_request_content_encoding_is_forbidden() {
+    let mut headers = axum::http::HeaderMap::new();
+    assert!(!request_content_encoding_forbidden(&headers));
+    headers.insert(
+        axum::http::header::CONTENT_ENCODING,
+        axum::http::HeaderValue::from_static("identity"),
+    );
+    assert!(!request_content_encoding_forbidden(&headers));
+    headers.insert(
+        axum::http::header::CONTENT_ENCODING,
+        axum::http::HeaderValue::from_static("gzip"),
+    );
+    assert!(request_content_encoding_forbidden(&headers));
 }
 
 #[test]
