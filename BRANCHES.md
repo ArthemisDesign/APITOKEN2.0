@@ -75,10 +75,13 @@ git push -u origin HEAD
 ./deploy/agent-merge.sh              # serialized merge into master; never manually
 ```
 
-Task finished — after a green `deploy/watchdog`, the agent runs `deploy/agent-worktree.sh finish
-<path>` from the primary clone. The script itself verifies clean+merged, fast-forwards local
+Task finished — after a green `deploy/watchdog`, the agent runs the task worktree's
+`deploy/agent-worktree.sh finish <path>` from the primary clone (`"$task/deploy/agent-worktree.sh"
+finish "$task"`). The script itself verifies clean+merged, fast-forwards local
 `master` to `origin/master` (checkout `--ff-only` when `master` is checked out and clean; otherwise
-only the ref, so a detached primary is not rewritten), and removes only the selected worktree/branch. Never
+only the ref, so a detached primary is not rewritten), re-executes GitHub's copy when the local
+file is stale, and removes only the selected worktree/branch. `agent-merge.sh` already fast-forwards
+that same local `master` ref after it pushes. Never
 touch other agents' worktrees: for global state use the safe `doctor` and dry-run `gc`, while
 `gc --apply` is left to the operator or the scheduled maintenance process. On macOS, missed cleanup
 can be safely picked up by the permanent LaunchAgent `DELETE_WORKTREE`

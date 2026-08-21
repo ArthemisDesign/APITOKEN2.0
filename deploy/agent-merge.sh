@@ -5,6 +5,8 @@
 # is a production deployment trigger. This script is the only supported way to land work:
 #
 #   * it never checks out master, so it cannot disturb a co-resident working tree;
+#   * after every fetch of origin/master and after a successful push, it fast-forwards local
+#     `master` to GitHub: merge --ff-only in a clean master checkout, otherwise only the ref;
 #   * it holds a machine-wide lock across the merge AND the deployment that follows, so two
 #     candidates can never be tested or deployed on top of each other;
 #   * it runs a fail-closed path-aware local gate and trusted production-host validation on the
@@ -48,6 +50,65 @@ done
 
 am_log() { printf '[agent-merge] %s\n' "$*"; }
 am_die() { printf '[agent-merge] ERROR: %s\n' "$*" >&2; exit 1; }
+
+# Path of the worktree that currently has `$AGENT_MERGE_TARGET` checked out, if any.
+am_master_checkout_path() {
+  local listing line path=''
+  listing=$(git -C "$ROOT" worktree list --porcelain 2>/dev/null) || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      'worktree '*) path=${line#worktree } ;;
+      "branch refs/heads/$AGENT_MERGE_TARGET")
+        printf '%s\n' "$path"
+        return 0
+        ;;
+    esac
+  done <<<"$listing"
+  return 1
+}
+
+# Fast-forward local `$AGENT_MERGE_TARGET` to `$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET`.
+# Never checks a detached or otherwise occupied primary out onto master.
+am_sync_local_master() {
+  local master_sha origin_sha checkout status
+  git -C "$ROOT" show-ref --verify --quiet "refs/heads/$AGENT_MERGE_TARGET" \
+    || { am_log "WARNING: local $AGENT_MERGE_TARGET ref is missing; skipping its fast-forward"; return 0; }
+  origin_sha=$(git -C "$ROOT" rev-parse "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET" 2>/dev/null) \
+    || { am_log "WARNING: $AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET is unavailable; skipping local fast-forward"; return 0; }
+  master_sha=$(git -C "$ROOT" rev-parse "refs/heads/$AGENT_MERGE_TARGET")
+  [[ $master_sha != "$origin_sha" ]] || return 0
+
+  if git -C "$ROOT" merge-base --is-ancestor "$origin_sha" "$master_sha"; then
+    am_log "WARNING: local $AGENT_MERGE_TARGET is ahead of $AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET; leaving it untouched"
+    return 0
+  fi
+  if ! git -C "$ROOT" merge-base --is-ancestor "$master_sha" "$origin_sha"; then
+    am_log "WARNING: local $AGENT_MERGE_TARGET has diverged from $AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET; skipping its fast-forward"
+    return 0
+  fi
+
+  checkout=$(am_master_checkout_path || true)
+  if [[ -n $checkout ]]; then
+    status=$(git -C "$checkout" status --porcelain --untracked-files=no 2>/dev/null || printf unavailable)
+    if [[ -n $status ]]; then
+      am_log "WARNING: $checkout has $AGENT_MERGE_TARGET checked out with tracked changes; skipping its fast-forward"
+      return 0
+    fi
+    if git -C "$checkout" merge --ff-only "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET" >&2; then
+      am_log "fast-forwarded checked-out $AGENT_MERGE_TARGET in $checkout to $origin_sha"
+    else
+      am_log "WARNING: could not fast-forward checked-out $AGENT_MERGE_TARGET in $checkout"
+    fi
+    return 0
+  fi
+
+  if git -C "$ROOT" update-ref -m "agent-merge: fast-forward $AGENT_MERGE_TARGET to $AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET" \
+      "refs/heads/$AGENT_MERGE_TARGET" "$origin_sha" "$master_sha"; then
+    am_log "fast-forwarded local $AGENT_MERGE_TARGET to $origin_sha"
+  else
+    am_log "WARNING: local $AGENT_MERGE_TARGET changed concurrently; leaving it untouched"
+  fi
+}
 
 # BSD (macOS) and GNU (Linux contributors, production host) disagree about stat, and they disagree
 # dangerously: GNU reads -f as --file-system, then EXITS 0 while printing `File: "/tmp"` instead of a
@@ -617,6 +678,7 @@ git -C "$ROOT" rev-parse --verify -q "$BRANCH@{upstream}" >/dev/null \
 # The same target must be green under the merge lock before anything is pushed.
 am_require_status_access
 git -C "$ROOT" fetch "$AGENT_MERGE_REMOTE"
+am_sync_local_master
 previous=$(git -C "$ROOT" rev-parse "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET")
 am_log "checking whether existing $AGENT_MERGE_TARGET $previous is safe to test against"
 am_require_target_gateable "$previous"
@@ -655,6 +717,7 @@ else
   # legitimately make this old request fail the ancestry fence; keep the local result, then rebase
   # and request validation for the new exact SHA under the lock.
   git -C "$ROOT" fetch "$AGENT_MERGE_REMOTE"
+  am_sync_local_master
   latest_target=$(git -C "$ROOT" rev-parse "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET")
   if [[ $latest_target == "$previous" ]]; then
     am_die "trusted host validation for $candidate $VALIDATION_FAILURE_DETAIL$(am_red_detail "$candidate"); no merge was attempted"
@@ -689,6 +752,7 @@ am_log 'merge lock acquired'
 
 # --- never stack onto a red or in-flight target --------------------------------------------------
 git -C "$ROOT" fetch "$AGENT_MERGE_REMOTE"
+am_sync_local_master
 previous=$(git -C "$ROOT" rev-parse "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET")
 am_log "rechecking $AGENT_MERGE_REQUIRED_CONTEXT for locked $AGENT_MERGE_TARGET $previous"
 am_wait_for_target_ready "$previous"
@@ -739,6 +803,7 @@ for attempt in $(seq 1 "$AGENT_MERGE_PUSH_ATTEMPTS"); do
   fi
   am_log "$AGENT_MERGE_TARGET moved under us, retrying ($attempt/$AGENT_MERGE_PUSH_ATTEMPTS)"
   git -C "$ROOT" fetch "$AGENT_MERGE_REMOTE"
+  am_sync_local_master
   previous=$(git -C "$ROOT" rev-parse "$AGENT_MERGE_REMOTE/$AGENT_MERGE_TARGET")
   am_log "checking $AGENT_MERGE_REQUIRED_CONTEXT for newly moved $AGENT_MERGE_TARGET $previous"
   am_wait_for_target_ready "$previous"
@@ -747,6 +812,7 @@ done
   || am_die "could not fast-forward $AGENT_MERGE_TARGET after $AGENT_MERGE_PUSH_ATTEMPTS attempts"
 git -C "$ROOT" push --force-with-lease "$AGENT_MERGE_REMOTE" "HEAD:$BRANCH" || true
 am_log "pushed $pushed to $AGENT_MERGE_TARGET"
+am_sync_local_master
 
 # --- hold the lock until our own deployment settles ----------------------------------------------
 waited=0

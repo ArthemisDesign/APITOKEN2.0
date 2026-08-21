@@ -7,9 +7,18 @@
 #           without deleting or rewriting local worktrees and branches;
 # gc      — dry-run by default; with --apply, prune missing registrations, old clean merged
 #           worktrees, and old merged local branch refs while preserving all unique commits.
+#
+# create, finish, and gc --apply fast-forward local master to origin/master. A stale copy of this
+# script (typical when the primary checkout is detached) re-executes the blob from origin/master
+# after fetch so GitHub's lifecycle code always runs.
 set -euo pipefail
 
-ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+if [[ -n ${AGENT_WORKTREE_REPO:-} ]]; then
+  ROOT=$(cd -- "$AGENT_WORKTREE_REPO" && pwd -P) \
+    || { printf '[agent-worktree] ERROR: AGENT_WORKTREE_REPO is not a directory\n' >&2; exit 1; }
+else
+  ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+fi
 REMOTE=origin
 TARGET_REF=origin/master
 DEFAULT_GRACE_HOURS=${AGENT_WORKTREE_GRACE_HOURS:-24}
@@ -719,6 +728,36 @@ aw_gc() {
 command_name=${1:-}
 [[ -n $command_name ]] || aw_usage
 shift
+
+# A detached primary often still has last week's copy of this file. Fetch, then run GitHub's
+# blob so create/finish/gc actually move local master. AGENT_WORKTREE_REPO keeps ROOT pointed at
+# the caller's repository after exec from the extracted blob.
+aw_reexec_if_stale() {
+  local running canonical tmp dest
+  [[ ${AGENT_WORKTREE_CANONICAL:-0} == 1 ]] && return 0
+  case "$command_name" in
+    -h|--help|help) return 0 ;;
+  esac
+  git -C "$ROOT" fetch --quiet "$REMOTE" 2>/dev/null || true
+  git -C "$ROOT" rev-parse --verify --quiet "$TARGET_REF:deploy/agent-worktree.sh" >/dev/null \
+    || return 0
+  canonical=$(git -C "$ROOT" rev-parse "$TARGET_REF:deploy/agent-worktree.sh")
+  running=$(git hash-object -- "${BASH_SOURCE[0]}")
+  [[ $running == "$canonical" ]] && return 0
+  mkdir -p -- "$COMMON_DIR/codex-tools"
+  tmp=$(mktemp "$COMMON_DIR/codex-tools/agent-worktree.from-origin.XXXXXX")
+  dest="$COMMON_DIR/codex-tools/agent-worktree.from-origin.sh"
+  git -C "$ROOT" show "$TARGET_REF:deploy/agent-worktree.sh" >"$tmp"
+  chmod 700 "$tmp"
+  mv -- "$tmp" "$dest"
+  aw_log "re-executing deploy/agent-worktree.sh from $TARGET_REF because the local copy is stale"
+  export AGENT_WORKTREE_CANONICAL=1
+  export AGENT_WORKTREE_REPO=$ROOT
+  exec bash "$dest" "$command_name" "$@"
+}
+
+aw_reexec_if_stale "$@"
+
 case "$command_name" in
   create) aw_create "$@" ;;
   finish) aw_finish "$@" ;;

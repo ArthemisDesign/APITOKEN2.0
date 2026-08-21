@@ -115,10 +115,13 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    blind. Work is complete only when the script reports the exact pushed SHA's `deploy/watchdog`
    context green, and the agent includes that verdict in its final report.
 
-After that green verdict, leave the task directory and run
-`deploy/agent-worktree.sh finish <worktree-path>` from the primary clone. It removes only an
+After that green verdict, leave the task directory and run the task worktree's
+`deploy/agent-worktree.sh finish <worktree-path>` from the primary clone
+(`"$task/deploy/agent-worktree.sh" finish "$task"`). It removes only an
 explicit clean worktree whose non-protected branch is already contained in fresh `origin/master`,
-then deletes the unchanged local branch ref. `doctor` and `gc` report repository-wide residue; `gc`
+then deletes the unchanged local branch ref. `agent-merge.sh` already fast-forwarded local `master`
+to the SHA it pushed. `finish`/`create`/`gc --apply` do the same after fetch, and a stale primary
+copy re-executes the blob from `origin/master`. `doctor` and `gc` report repository-wide residue; `gc`
 is dry-run unless an operator or scheduled maintenance process explicitly passes `--apply`, and it
 never removes dirty, unmerged, locked, detached, current, primary, `master`, or `comp/*` worktrees.
 On macOS, the optional persistent `DELETE_WORKTREE` LaunchAgent provides a fail-closed recovery net

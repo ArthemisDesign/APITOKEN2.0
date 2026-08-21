@@ -12,7 +12,8 @@ the GitHub API (reusing the credential from `git credential`), runs the path-awa
 for the lanes your diff touches (TypeScript/Rust/deployment classifiers from
 `deploy/watchdog-lib.sh`, always-on static lane with `bash -n`, `git diff --check`, and
 `deploy/docs-check.sh`), takes the machine merge-lock, rebases onto the latest
-`origin/master`, re-runs the gate on the exact SHA it pushes, and holds the lock until the
+`origin/master`, re-runs the gate on the exact SHA it pushes, fast-forwards local `master` to that
+GitHub SHA (merge `--ff-only` in a clean `master` checkout, otherwise only the ref), and holds the lock until the
 host reports a green `deploy/watchdog` on that SHA. A red SHA is never retried: fix forward
 with a new commit on a new branch. The red error includes the 140-character status headline and
 the redacted host cycle excerpt from check run `deploy/watchdog-log`. The full contributor workflow is in
@@ -41,13 +42,15 @@ and the shared primary clone is refused without `--allow-primary-tree`. The beha
 
 `agent-worktree.sh` is the managed boundary around task worktrees:
 
-- `create <type/task> [name]` fetches `origin`, fast-forwards local `master` to that
+- `create <type/task> [name]` fetches `origin`, re-executes this script from `origin/master` when
+  the local file is stale, fast-forwards local `master` to that
   `origin/master` when the update is a fast-forward (merge `--ff-only` in a clean `master`
   checkout, otherwise only the ref), creates `${AGENT_WORKTREE_ROOT:-$HOME/wt}/<name>`
   from the exact current `origin/master`, rejects protected/existing branches and paths, and records
   creation/owner metadata in Git's per-worktree administrative directory;
 - `finish [path]` requires one explicit non-primary, non-protected, unlocked, clean worktree whose
-  branch is an ancestor of fresh `origin/master`; it fast-forwards local `master` the same way
+  branch is an ancestor of fresh `origin/master`; invoke the copy inside the task worktree so a
+  stale primary cannot skip catch-up. It fast-forwards local `master` the same way
   even when primary is detached or on another branch, removes only that worktree, and atomically
   deletes the branch only if its ref did not change after validation;
 - `doctor` refreshes `origin` and classifies primary/current, missing, locked, detached, protected,

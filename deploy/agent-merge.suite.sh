@@ -255,6 +255,26 @@ grep -Fq 'reusing the local and trusted host gates already passed by unchanged S
   || wd_die 'the unchanged-SHA dual-gate reuse was not reported'
 [[ ! -d $TEMP/lock ]] || wd_die 'the merge lock was not released'
 grep -Fq 'GREEN' "$TEMP/happy.log" || wd_die 'the merge did not wait for a green deployment'
+[[ $(git_quiet -C "$PRIMARY" rev-parse refs/heads/master) == "$pushed" ]] \
+  || wd_die 'merge did not fast-forward local master to the SHA it pushed'
+
+# --- local master follows GitHub even when primary is detached ---------------------------------
+lagged=$(git_quiet -C "$PRIMARY" rev-parse HEAD)
+git_quiet -C "$PRIMARY" checkout --quiet --detach
+git_quiet -C "$PRIMARY" update-ref refs/heads/master "$lagged^"
+[[ $(git_quiet -C "$PRIMARY" rev-parse refs/heads/master) != $(git --git-dir="$ORIGIN" rev-parse master) ]] \
+  || wd_die 'fixture expected local master to lag GitHub before the detached merge'
+tree_sync=$(new_agent_worktree agent-sync feat/agent-sync)
+run_merge "$tree_sync" >"$TEMP/local-master.log" \
+  || wd_die "detached-primary merge failed: $(cat "$TEMP/local-master.log")"
+grep -Fq 'fast-forwarded local master' "$TEMP/local-master.log" \
+  || wd_die "merge did not report a local master fast-forward: $(cat "$TEMP/local-master.log")"
+[[ $(git_quiet -C "$PRIMARY" rev-parse --abbrev-ref HEAD) == HEAD ]] \
+  || wd_die 'merge checked a branch out in a detached primary'
+[[ $(git_quiet -C "$PRIMARY" rev-parse HEAD) == "$lagged" ]] \
+  || wd_die 'merge moved a detached primary working tree'
+[[ $(git_quiet -C "$PRIMARY" rev-parse refs/heads/master) == $(git --git-dir="$ORIGIN" rev-parse master) ]] \
+  || wd_die 'merge did not fast-forward local master while primary was detached'
 
 # --- a red deployment is reported and never silently accepted --------------------------------------
 # The SHA is on master by the time the host reports on it, so the contract here is a loud failure

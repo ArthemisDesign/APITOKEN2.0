@@ -138,7 +138,10 @@ Without an explicit instruction from the person, NEVER: `git checkout <branch>`,
 `git reset --hard`, `git clean -f`, `git merge`, `git rebase`, `git push` into someone else's branch or into
 `master`, raw `git worktree add/remove/prune`. Stage only your own paths:
 `git add crates/forward/...`. `git add -A` and `git add .` are forbidden. Only
-`deploy/agent-worktree.sh` performs creation and cleanup; it also syncs the local master itself during `finish`.
+`deploy/agent-worktree.sh` performs creation and cleanup. `create`, `finish`, and `gc --apply`
+fast-forward local `master` to GitHub; `deploy/agent-merge.sh` does the same after every fetch of
+`origin/master` and after a successful push. A stale copy of the worktree script (a detached
+primary) re-executes the blob from `origin/master` so that catch-up still runs.
 
 ## What counts as your work
 
@@ -352,7 +355,8 @@ git push -u origin HEAD
 Run it from your own worktree, with no arguments, a clean tree, and a configured upstream (from the primary
 clone the script will refuse; `--allow-primary-tree` is for the person only). `master` is the production trigger:
 the host deploys exactly one SHA at a time. The script runs the full gate, takes a machine merge-lock,
-rebases, re-verifies the gate on the very SHA it pushes, and holds the lock until `deploy/watchdog` is green.
+rebases, re-verifies the gate on the very SHA it pushes, fast-forwards local `master` to that GitHub SHA
+without checking out a detached primary, and holds the lock until `deploy/watchdog` is green.
 Before the gate, and again under the lock, it reads `deploy/watchdog` itself via the
 GitHub API, reusing the credential from `git credential` (on macOS — Keychain), so `gh` and
 a separate `GITHUB_TOKEN` are not needed. The script waits out pending/transient errors and re-checks itself. The agent
@@ -394,18 +398,23 @@ After `agent-merge.sh` has finished and `deploy/watchdog` is green on your SHA, 
 delete its worktree and branch via the lifecycle script:
 
 ```bash
+task=~/wt/<task>
 cd <primary_repo_dir>          # leave the worktree being deleted
-./deploy/agent-worktree.sh finish ~/wt/<task>
+"$task/deploy/agent-worktree.sh" finish "$task"
 ```
 
 `finish` fetches `origin/master` again, refuses to touch primary, detached, locked, dirty,
 unmerged, and the protected `master`/`comp/*`, deletes exactly the worktree passed to it, and atomically deletes
-the branch only if its ref has not changed since the check. It always fast-forwards local `master` to
+the branch only if its ref has not changed since the check. Invoke the copy inside the task
+worktree, not `./deploy/agent-worktree.sh` from a stale primary: the task tree was created from
+`origin/master` and therefore has the current lifecycle script. A stale primary copy still
+re-executes GitHub's blob after fetch. It always fast-forwards local `master` to
 `origin/master` when that is a fast-forward: if some worktree has `master` checked out and its
 tracked files are clean, that checkout is merged `--ff-only`; otherwise only `refs/heads/master`
 moves, so a detached or otherwise occupied primary is left alone. Divergence, a dirty `master`
 checkout, or a concurrent ref update produce a warning but do not block safe task cleanup.
-`create` and `gc --apply` perform the same catch-up after they fetch, so the local `master` ref
+`create` and `gc --apply` perform the same catch-up after they fetch. `agent-merge.sh` performs
+the same catch-up after every fetch of `origin/master` and after it pushes, so local `master`
 matches GitHub after ordinary agent work even when nobody is sitting on the branch.
 
 The same applies to a read-only worktree used for studying code: once the task is closed, the worktree and scratch

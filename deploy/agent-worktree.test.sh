@@ -221,6 +221,21 @@ create_sync_probe=$(run_manager create feat/create-sync-probe create-sync-probe)
 run_manager finish "$create_sync"
 run_manager finish "$create_sync_probe"
 
+stale_script=$(run_manager create feat/stale-script stale-script)
+git_test -C "$stale_script" commit --quiet --allow-empty -m 'stale script work'
+git_test -C "$stale_script" push --quiet origin HEAD:master
+git_test -C "$PRIMARY" fetch --quiet origin
+printf '\n# stale local copy\n' >>"$PRIMARY/deploy/agent-worktree.sh"
+stale_log=$(run_manager finish "$stale_script" 2>&1) || {
+  printf '%s\n' "$stale_log" >&2
+  fail 'finish of a merged worktree failed after the primary copy of the script went stale'
+}
+printf '%s\n' "$stale_log" | grep -Fq 're-executing deploy/agent-worktree.sh from origin/master' \
+  || fail "stale local script did not re-exec from origin: $stale_log"
+[[ ! -e $stale_script ]] || fail 're-executed finish retained the merged worktree'
+[[ $(git -C "$PRIMARY" rev-parse refs/heads/master) == $(git -C "$PRIMARY" rev-parse origin/master) ]] \
+  || fail 're-executed finish did not fast-forward local master'
+
 expect_failure 'dirty finish' run_manager finish "$dirty"
 [[ -d $dirty ]] || fail 'finish removed a dirty worktree'
 
