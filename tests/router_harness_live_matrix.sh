@@ -204,20 +204,21 @@ for attempt in attempts:
             raise SystemExit(f"{label}: Fast attempt {sequence} lacks the camelCase Fast selector")
         if "priority" not in response_tiers:
             raise SystemExit(f"{label}: Fast attempt {sequence} lacks authoritative priority evidence")
-        if label.startswith("codex-0149-sol"):
-            if attempt.get("request_parallel_tool_calls") is not False:
-                raise SystemExit(f"{label}: Responses Lite request did not preserve parallel_tool_calls=false")
-            if attempt.get("request_reasoning_context") != "all_turns":
-                raise SystemExit(f"{label}: Responses Lite request did not preserve reasoning.context=all_turns")
-            if not attempt.get("request_has_client_metadata"):
-                raise SystemExit(f"{label}: request has no client_metadata")
-            if not attempt.get("response_terminal_usage"):
-                raise SystemExit(f"{label}: response has no terminal usage")
-            inventory = attempt.get("request_tool_inventory") or {}
-            if not {"namespace", "function", "custom"}.issubset(set(inventory.get("types") or [])):
-                raise SystemExit(f"{label}: missing bounded Responses Lite tool inventory")
         if label == "opencode-fast" and attempt.get("request_reasoning_effort") != "low":
             raise SystemExit(f"{label}: Fast model did not preserve its reasoning variant")
+
+    if label.startswith("codex-0149-sol"):
+        if attempt.get("request_parallel_tool_calls") is not False:
+            raise SystemExit(f"{label}: Responses Lite request did not preserve parallel_tool_calls=false")
+        if attempt.get("request_reasoning_context") != "all_turns":
+            raise SystemExit(f"{label}: Responses Lite request did not preserve reasoning.context=all_turns")
+        if not attempt.get("request_has_client_metadata"):
+            raise SystemExit(f"{label}: request has no client_metadata")
+        if not attempt.get("response_terminal_usage"):
+            raise SystemExit(f"{label}: response has no terminal usage")
+        inventory = attempt.get("request_tool_inventory") or {}
+        if not {"namespace", "function", "custom"}.issubset(set(inventory.get("types") or [])):
+            raise SystemExit(f"{label}: missing bounded Responses Lite tool inventory")
 
     event_types = set(attempt.get("response_event_types") or [])
     if protocol == "anthropic_messages" and not {"message_start", "message_stop"}.issubset(event_types):

@@ -370,6 +370,11 @@ def main():
         help="exit non-zero unless response.completed reports this exact tier (diagnostic only)",
     )
     parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="validate arguments and print the redacted action plan without login or network",
+    )
+    parser.add_argument(
         "--execute-paid-turn",
         action="store_true",
         help="allow exactly one paid Responses generation after the free checks",
@@ -399,6 +404,14 @@ def main():
         parser.error("paid turn requires --confirm-paid-budget equal to --max-nanousd")
     if not args.execute_paid_turn and args.confirm_paid_budget:
         parser.error("--confirm-paid-budget requires --execute-paid-turn")
+    if args.plan:
+        print(f"client_version={args.client_version}")
+        print(f"model={args.model}")
+        print(f"paid_turn={str(args.execute_paid_turn).lower()}")
+        print(f"max_nanousd={args.max_nanousd}")
+        print(f"refresh_rotation={str(args.rotate_refresh_family).lower()}")
+        print(f"websocket_probe={str(not args.no_ws).lower()}")
+        return 0
     opener = make_opener(args.proxy)
     device = device_login(opener)
     tokens = exchange_code(opener, device)
