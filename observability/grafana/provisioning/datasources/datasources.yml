@@ -3,6 +3,7 @@ apiVersion: 1
 deleteDatasources:
   - { name: Prometheus, orgId: 1 }
   - { name: Loki, orgId: 1 }
+  - { name: Engine Request Analytics, orgId: 1 }
 
 datasources:
   - name: Prometheus
@@ -24,3 +25,23 @@ datasources:
     editable: false
     jsonData:
       maxLines: 2000
+
+  # Private, read-only aggregate views. This datasource never grants Grafana access to the base
+  # request_facts, usage_events, account, key, or ledger tables.
+  - name: Engine Request Analytics
+    uid: engine-request-analytics
+    type: postgres
+    access: proxy
+    url: 127.0.0.1:5433
+    user: apitoken_monitoring
+    database: claude_engine
+    editable: false
+    secureJsonData:
+      password: ${MONITORING_POSTGRES_PASSWORD}
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+      maxOpenConns: 2
+      maxIdleConns: 1
+      connMaxLifetime: 300

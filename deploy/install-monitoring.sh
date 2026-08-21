@@ -112,6 +112,12 @@ monitoring_role_sql=$({
 [[ $monitoring_role_sql != *'\$\$'* ]] || die 'generated PostgreSQL role bootstrap contains escaped dollar quoting'
 printf '%s\n' "$monitoring_role_sql" | docker compose --env-file "$POSTGRES_ENV" -f "$POSTGRES_COMPOSE" exec -T commerce-postgres \
   psql -U commerce -d postgres --no-psqlrc --set ON_ERROR_STOP=1 >/dev/null
+if docker compose --env-file "$POSTGRES_ENV" -f "$POSTGRES_COMPOSE" exec -T commerce-postgres \
+  psql -U commerce -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname='claude_engine'" | grep -qx 1; then
+  printf '%s\n' "DO \$\$ BEGIN IF to_regclass('public.request_fact_usage_daily') IS NOT NULL THEN GRANT SELECT ON request_fact_usage_daily, request_fact_tool_usage_daily TO apitoken_monitoring; END IF; END \$\$;" \
+    | docker compose --env-file "$POSTGRES_ENV" -f "$POSTGRES_COMPOSE" exec -T commerce-postgres \
+      psql -U commerce -d claude_engine --no-psqlrc --set ON_ERROR_STOP=1 >/dev/null
+fi
 
 install -d -o root -g root -m 0755 "$STAGE"
 cp -a -- "$SOURCE/." "$STAGE/"

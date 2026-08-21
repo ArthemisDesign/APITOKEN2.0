@@ -6,8 +6,11 @@ loopback. The only public entry point is `https://monitoring.apitoken.sale`, and
 through the same database-backed managed-admin authentication used by the other private consoles.
 
 This design intentionally keeps customer identifiers, request contents, API keys, balances, and
-payment payloads out of labels and dashboards. The custom collector exports aggregate queue and
-database state only. Grafana users are auto-provisioned as viewers.
+payment payloads out of Prometheus labels and Grafana. The custom collector exports aggregate queue
+and database state only. A separate read-only PostgreSQL datasource can query only the two
+privacy-bounded request-usage views from engine migration 0061; it has no `SELECT` grant on base
+request, usage, account, key, ledger, or content-bearing tables. Grafana users are auto-provisioned as
+viewers.
 
 ## Coverage and retention
 
@@ -71,6 +74,16 @@ scrolling:
   Notification Delivery · Billing Writer · Request Fact Observability · Logs & Journals.
 - **`$provider` template variable** filters the engine pool/traffic panels
   (`claude_api_*{provider=~"$provider"}`); the default is all providers.
+- `observability/grafana/dashboards/request-usage-dimensions.json` (uid
+  `apitoken-request-usage`) is the private 30-day request-analytics dashboard. It shows grouped
+  request/billable counts, authoritative tokens and nanoUSD by opaque engine account, non-secret key
+  ID, normalized client kind/source, requested/executable model, closed tool class, tool-count bucket,
+  tool choice and capability flags. The dashboard reads only `request_fact_usage_daily` and
+  `request_fact_tool_usage_daily`, limits each table to 500 groups, and never queries or displays
+  email, key label, raw API key, request IDs, client versions, tool names, schemas, arguments, results,
+  prompts, or provider-profile identities. Client kind is
+  attribution, not authentication. A row with no joined `usage_events` contributes to request count
+  but not billable count, tokens, or money.
 - **Annotations** on every graph: firing alerts (red), `agent-merge` deploy events from Loki
   (blue), and systemd unit restarts (purple) — so incidents can be correlated with changes.
 - Dashboard links: runbooks, devbot design, and this dashboard's Git source.

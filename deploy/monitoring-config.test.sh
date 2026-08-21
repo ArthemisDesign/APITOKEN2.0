@@ -36,6 +36,41 @@ grep -Fq 'and min(time() - apitoken_monitoring_collector_last_success_unixtime) 
 
 for dashboard in "$ROOT"/observability/grafana/dashboards/*.json; do
   node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "$dashboard"
+  node - "$dashboard" <<'EOF'
+const { readFileSync } = require('node:fs');
+const file = process.argv[2];
+const dashboard = JSON.parse(readFileSync(file, 'utf8'));
+const ids = new Set();
+for (const panel of dashboard.panels ?? []) {
+  if (panel.id == null) continue;
+  if (ids.has(panel.id)) throw new Error(`${file}: duplicate panel id ${panel.id}`);
+  ids.add(panel.id);
+}
+EOF
+done
+
+# Exact client/model/tool dimensions stay in the read-only PostgreSQL reporting boundary. The
+# datasource secret comes from monitoring.env, and the role receives only the aggregate views.
+for reporting_view in request_fact_usage_daily request_fact_tool_usage_daily; do
+  grep -Fq "CREATE VIEW $reporting_view" \
+    "$ROOT/crates/registry/migrations_pg/0061_request_observability_views.sql"
+  grep -Fq "$reporting_view" \
+    "$ROOT/observability/grafana/dashboards/request-usage-dimensions.json"
+done
+grep -Fq 'uid: engine-request-analytics' \
+  "$ROOT/observability/grafana/provisioning/datasources/datasources.yml"
+grep -Fq 'password: ${MONITORING_POSTGRES_PASSWORD}' \
+  "$ROOT/observability/grafana/provisioning/datasources/datasources.yml"
+grep -Fq 'MONITORING_POSTGRES_PASSWORD: ${MONITORING_POSTGRES_PASSWORD:?MONITORING_POSTGRES_PASSWORD is required}' \
+  "$ROOT/observability/compose.yaml"
+grep -Fq 'GRANT SELECT ON request_fact_usage_daily, request_fact_tool_usage_daily TO apitoken_monitoring' \
+  "$ROOT/deploy/install-monitoring.sh"
+! grep -Eq 'GRANT SELECT ON (request_facts|usage_events|accounts|api_keys|ledger)' \
+  "$ROOT/deploy/install-monitoring.sh"
+for forbidden_dimension in logical_request_id billing_request_id execution_group_id \
+  upstream_request_id client_version failure_class; do
+  ! grep -Fq "$forbidden_dimension" \
+    "$ROOT/observability/grafana/dashboards/request-usage-dimensions.json"
 done
 
 for pinned_image in \
