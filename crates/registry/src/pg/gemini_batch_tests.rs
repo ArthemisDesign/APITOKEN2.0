@@ -718,6 +718,18 @@ fn stage2_authority_postgres_matrix() {
         .get(0);
     assert!(payload_deleted.is_some());
 
+    // PostgreSQL must infer both timestamp operands as bigint in the live file-input cancellation
+    // path. Untyped `$3 + $4` parameters fail before execution with `unknown + unknown`.
+    let inferred_expiry: i64 = pg
+        .client
+        .query_one(
+            "SELECT $1::bigint+$2::bigint",
+            &[&ts, &crate::BATCH_RESULT_RETENTION_SECS],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(inferred_expiry, ts + crate::BATCH_RESULT_RETENTION_SECS);
+
     let mut sqlite = crate::authority::Authority::Sqlite(crate::open(":memory:").unwrap());
     assert!(crate::is_gemini_batch_unsupported(
         &sqlite.gemini_batch_get("a", "b").unwrap_err()

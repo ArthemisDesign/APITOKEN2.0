@@ -102,7 +102,7 @@ pub(super) fn complete_job_if_terminal(
     if input_kind == "inline" {
         tx.execute(
             "UPDATE gemini_batch_jobs SET terminal_items_ts=COALESCE(terminal_items_ts,$2),\
-             completed_ts=COALESCE(completed_ts,$2),result_expiration_ts=COALESCE(result_expiration_ts,$2+$3),\
+             completed_ts=COALESCE(completed_ts,$2),result_expiration_ts=COALESCE(result_expiration_ts,$2::bigint+$3::bigint),\
              update_ts=GREATEST(update_ts,$2) WHERE job_id=$1",
             &[&job_id, &ts, &BATCH_RESULT_RETENTION_SECS],
         )?;
@@ -117,7 +117,7 @@ pub(super) fn complete_job_if_terminal(
         "INSERT INTO gemini_batch_files(file_id,account_id,display_name,mime_type,size_bytes,sha256_digest,\
          source_kind,state,storage_kind,create_ts,update_ts,expiration_ts,received_bytes,next_chunk_index,chunk_count)\
          VALUES($1,$2,'Gemini Batch output','application/jsonl',0,decode(repeat('00',32),'hex'),\
-         'batch_output','processing','chunked',$3,$3,$3+$4,0,0,0) ON CONFLICT(file_id) DO NOTHING",
+         'batch_output','processing','chunked',$3,$3,$3::bigint+$4::bigint,0,0,0) ON CONFLICT(file_id) DO NOTHING",
         &[&file_id, &account_id, &ts, &BATCH_RESULT_RETENTION_SECS],
     )?;
     tx.execute(
