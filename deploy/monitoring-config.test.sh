@@ -59,6 +59,14 @@ for reporting_view in request_fact_usage_daily request_fact_tool_usage_daily; do
 done
 grep -Fq 'uid: engine-request-analytics' \
   "$ROOT/observability/grafana/provisioning/datasources/datasources.yml"
+for request_dashboard in production-overview.json request-usage-dimensions.json; do
+  grep -Fq '"type":"grafana-postgresql-datasource","uid":"engine-request-analytics"' \
+    "$ROOT/observability/grafana/dashboards/$request_dashboard" \
+    || { printf 'request dashboard %s has the wrong PostgreSQL plugin reference\n' "$request_dashboard" >&2; exit 1; }
+  ! grep -Fq '"type":"postgres","uid":"engine-request-analytics"' \
+    "$ROOT/observability/grafana/dashboards/$request_dashboard"
+done
+grep -Fq '"type":"grafana-postgresql-datasource"' "$ROOT/deploy/install-monitoring.sh"
 grep -Fq 'password: ${MONITORING_POSTGRES_PASSWORD}' \
   "$ROOT/observability/grafana/provisioning/datasources/datasources.yml"
 grep -Fq 'MONITORING_POSTGRES_PASSWORD: ${MONITORING_POSTGRES_PASSWORD:?MONITORING_POSTGRES_PASSWORD is required}' \
