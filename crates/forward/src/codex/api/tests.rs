@@ -199,10 +199,11 @@ fn every_public_error_marks_the_execution_not_started() {
     // Значит все они обязаны нести x-apitoken-execution-state: not_started, а успешный
     // json_response (2xx) — не нести никогда.
     for error in all_public_errors() {
+        let missing_usage = error.reason == "codex_missing_authoritative_usage";
         let response = error.into_response();
         assert!(!response.status().is_success());
         let execution_state = response.headers().get(crate::proxy::EXECUTION_STATE_HEADER);
-        if error.reason == "codex_missing_authoritative_usage" {
+        if missing_usage {
             assert!(execution_state.is_none());
         } else {
             assert_eq!(
