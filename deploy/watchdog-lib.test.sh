@@ -1965,7 +1965,7 @@ grep -Fq "grep -qx 'rdb_last_bgsave_status:ok'" "$ROOT/deploy/affinity-redis.com
 
 # Cache affinity and Codex response history run as separate instances. maxmemory and
 # maxmemory-policy are per-instance in Redis, so a single instance cannot give them independent
-# budgets: a few dozen 16 MiB conversations could evict affinity, and affinity churn could delete
+# budgets: a few dozen 256 MiB conversations could evict affinity, and affinity churn could delete
 # conversations, which clients see as a permanent 400.
 grep -Fq '127.0.0.1:6380:6379' "$ROOT/deploy/affinity-redis.compose.yaml" \
   || wd_die 'cache affinity does not have its own Redis instance'

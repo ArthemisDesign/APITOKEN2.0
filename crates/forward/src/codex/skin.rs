@@ -262,7 +262,7 @@ fn translate_messages_request(
         .is_some_and(|value| value.len() > MAX_INSTRUCTIONS_BYTES)
     {
         return Err(invalid_request(
-            "System instructions exceed the 1 MiB limit (parameter: system).",
+            "System instructions exceed the 16 MiB limit (parameter: system).",
         ));
     }
 

@@ -1162,7 +1162,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Codex history entries reach 16 MiB each, so a few dozen large conversations can fill the instance and evict affinity with it.",
+      "description": "Codex history entries reach 256 MiB each; the history Redis instance is 8 GiB and affinity stays 128 MiB.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },

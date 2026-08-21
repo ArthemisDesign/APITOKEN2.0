@@ -92,8 +92,11 @@ grep -F '  affinity-redis:' -A 30 "$ROOT/deploy/affinity-redis.compose.yaml" \
   | grep -Fq '/var/lib/apitoken/affinity-redis:/data' \
   || { printf 'response history must keep its existing data directory\n' >&2; exit 1; }
 grep -F '  affinity-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
-  | grep -Fq '512mb' \
-  || { printf 'response history budget changed during the additive split\n' >&2; exit 1; }
+  | grep -Fq '8gb' \
+  || { printf 'response history budget is not the 8 GiB first-rollout capacity\n' >&2; exit 1; }
+grep -F '  cache-affinity-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
+  | grep -Fq '128mb' \
+  || { printf 'cache affinity budget must stay 128 MiB\n' >&2; exit 1; }
 grep -F '  affinity-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
   | grep -Fq 'allkeys-lru' \
   || { printf 'response history eviction policy changed during the additive split\n' >&2; exit 1; }

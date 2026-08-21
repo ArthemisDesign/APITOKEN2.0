@@ -245,7 +245,7 @@ fn parse_chat_request(gateway: &CodexGateway, value: Value) -> Result<ParsedChat
         .is_some_and(|value| value.len() > MAX_INSTRUCTIONS_BYTES)
     {
         return Err(ApiError::invalid(
-            "Combined system instructions exceed the 1 MiB limit.",
+            "Combined system instructions exceed the 16 MiB limit.",
             Some("messages".to_string()),
         ));
     }
@@ -254,7 +254,7 @@ fn parse_chat_request(gateway: &CodexGateway, value: Value) -> Result<ParsedChat
         .is_some_and(|value| value.len() > MAX_INSTRUCTIONS_BYTES)
     {
         return Err(ApiError::invalid(
-            "Combined developer instructions exceed the 1 MiB limit.",
+            "Combined developer instructions exceed the 16 MiB limit.",
             Some("messages".to_string()),
         ));
     }

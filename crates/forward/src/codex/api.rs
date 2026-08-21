@@ -31,7 +31,7 @@ use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
 pub(super) const OPENAI_BODY_LIMIT: usize = 8 * 1024 * 1024;
-pub(super) const MAX_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
+pub(super) const MAX_INSTRUCTIONS_BYTES: usize = 16 * 1024 * 1024;
 /// Sanity bound against a pathological body, not a model of the provider's own tool-count limit —
 /// the 8 MiB body cap is what really bounds parsing work, and the backend is the authority on how
 /// many tools it accepts. It sits far above any real client: a Codex config wiring several MCP
@@ -39,7 +39,7 @@ pub(super) const MAX_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 /// 128-tool cap would have failed those turns locally with a deterministic 400 before the provider
 /// ever saw them.
 const MAX_TOOLS: usize = 1024;
-const MAX_CUSTOM_TOOL_GRAMMAR_BYTES: usize = 256 * 1024;
+const MAX_CUSTOM_TOOL_GRAMMAR_BYTES: usize = 4 * 1024 * 1024;
 /// Codex 0.146 exposes client-side deferred tool discovery as a Responses-native `tool_search`
 /// tool. The pinned 0.145 upstream client does not know that wire type, so the gateway presents an
 /// equivalent private dynamic function to the model and translates calls/results at the boundary.
@@ -1256,7 +1256,7 @@ pub(super) fn parse_responses_request(
         .is_some_and(|value| value.len() > MAX_INSTRUCTIONS_BYTES)
     {
         return Err(ApiError::invalid(
-            "instructions exceeds the 1 MiB limit.",
+            "instructions exceeds the 16 MiB limit.",
             Some("instructions".to_string()),
         ));
     }

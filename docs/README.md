@@ -29,7 +29,7 @@ document, update this index.
 - [PROVIDER_ONBOARDING.md](engine/PROVIDER_ONBOARDING.md) — full playbook for adding a new subscription provider through production GA.
 - [STAGE2_POSTGRES_AUTHORITY.md](engine/STAGE2_POSTGRES_AUTHORITY.md) — PostgreSQL authority model and Stage 2 fencing.
 - [UNIFIED_ROUTER.md](engine/UNIFIED_ROUTER.md) — target architecture of the single endpoint for all providers (design).
-- [LARGE_PAYLOAD_SCALING_PLAN.md](engine/LARGE_PAYLOAD_SCALING_PLAN.md) — staged train for raising model API payload and concurrency limits; commits 1–4 are in production, public 256 MiB defaults remain blocked on exact-SHA load proof.
+- [LARGE_PAYLOAD_SCALING_PLAN.md](engine/LARGE_PAYLOAD_SCALING_PLAN.md) — staged train for raising model API payload and concurrency limits; commits 1–4, 4b (Caddy/telemetry) and 6 (Codex JSONL/history/Redis) are landed, public 256 MiB defaults remain blocked on exact-SHA load proof.
 - [QUOTA_DISTRIBUTION_ANALYSIS.md](engine/QUOTA_DISTRIBUTION_ANALYSIS.md) — принятый план эффективности трат подписочных квот (Claude 5h/7d, Codex weekly, Gemini per-model buckets, Kimi/GLM 5h+weekly): подтверждённые проблемы, принятые правки R2/R7/R1 без слома cache-аффинити, отклонённые предложения с причинами, порядок внедрения.
 - [QUOTA_DISTRIBUTION_PROGRESS.md](engine/QUOTA_DISTRIBUTION_PROGRESS.md) — рабочий журнал внедрения правок R2/R7/R1 и измерения (шаг 0) по плану QUOTA_DISTRIBUTION_ANALYSIS.
 - [ROUTING_FENCING.md](engine/ROUTING_FENCING.md) — detailed design of UNIFIED_ROUTER stage 6: routing with fallback lists and attempt fencing (execution group / single billable winner).

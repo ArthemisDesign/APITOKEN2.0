@@ -6,7 +6,7 @@ name: apitoken-affinity
 #
 # The two consumers have very different blast radii:
 #   * cache affinity stores short keyed digests. Losing one costs a prompt-cache hit. Fail-open.
-#   * Codex response history stores whole conversations, up to 16 MiB each. Losing one makes the
+#   * Codex response history stores whole conversations, up to 256 MiB each. Losing one makes the
 #     engine answer previous_response_id with a 400 that well-behaved clients treat as permanent,
 #     so they discard a conversation the customer already paid to build.
 # While they shared one instance, a few dozen large conversations could evict affinity, and
@@ -31,7 +31,7 @@ services:
       - --appendfsync
       - everysec
       - --maxmemory
-      - 512mb
+      - 8gb
       - --maxmemory-policy
       - allkeys-lru
       - --requirepass

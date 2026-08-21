@@ -19,7 +19,12 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
-const MAX_SSE_LINE_BYTES: usize = 32 * 1024 * 1024;
+/// 256 MiB payload plus JSON/SSE framing overhead. Public OpenAI body stays 8 MiB.
+const MAX_SSE_LINE_BYTES: usize = 384 * 1024 * 1024;
+
+fn sse_chunk_exceeds_bound(buffered: usize, chunk_len: usize) -> bool {
+    buffered.saturating_add(chunk_len) > MAX_SSE_LINE_BYTES
+}
 const TURN_EVENT_QUEUE: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1208,12 +1213,12 @@ async fn drive_sse_stream(
                 return Err(ProcessError::Closed);
             }
         };
-        buffer.extend_from_slice(&chunk);
-        if buffer.len() > MAX_SSE_LINE_BYTES {
+        if sse_chunk_exceeds_bound(buffer.len(), chunk.len()) {
             return Err(ProcessError::Protocol(
                 "SSE event exceeded bound".to_string(),
             ));
         }
+        buffer.extend_from_slice(&chunk);
         while let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = buffer.drain(..=newline).collect();
             let line = std::str::from_utf8(&line)
@@ -2235,5 +2240,15 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("producer task did not finish after the consumer was dropped");
+    }
+
+    #[test]
+    fn sse_line_bound_rejects_384_mib_plus_one_before_allocation() {
+        assert_eq!(MAX_SSE_LINE_BYTES, 384 * 1024 * 1024);
+        assert!(!sse_chunk_exceeds_bound(0, MAX_SSE_LINE_BYTES));
+        assert!(sse_chunk_exceeds_bound(0, MAX_SSE_LINE_BYTES + 1));
+        assert!(sse_chunk_exceeds_bound(MAX_SSE_LINE_BYTES, 1));
+        assert!(!sse_chunk_exceeds_bound(MAX_SSE_LINE_BYTES - 1, 1));
+        assert!(sse_chunk_exceeds_bound(usize::MAX, 1));
     }
 }

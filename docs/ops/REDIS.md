@@ -16,7 +16,7 @@ Two instances, loopback-only, defined in `deploy/affinity-redis.compose.yaml` an
 
 | Instance | Port | Owner | Contents | Budget | Loss impact |
 | --- | --- | --- | --- | --- | --- |
-| `affinity-redis` | `127.0.0.1:6379` | `crates/forward/src/codex/history.rs` | Codex response history, encrypted envelopes keyed by `response_id` | 512 MiB, `allkeys-lru`, AOF `everysec` | Customer-visible: a lost key answers `previous_response_id` with a 400 |
+| `affinity-redis` | `127.0.0.1:6379` | `crates/forward/src/codex/history.rs` | Codex response history, encrypted envelopes keyed by `response_id` | 8 GiB, `allkeys-lru`, AOF `everysec` | Customer-visible: a lost key answers `previous_response_id` with a 400 |
 | `cache-affinity-redis` | `127.0.0.1:6380` | `crates/forward/src/affinity.rs` | Cache-lineage affinity aliases, session bindings, cache roots, cooling hints | 128 MiB, `allkeys-lru`, AOF `everysec` | Prompt-cache hit rate for one TTL |
 
 The split into two instances rather than two logical databases is deliberate: `maxmemory` and

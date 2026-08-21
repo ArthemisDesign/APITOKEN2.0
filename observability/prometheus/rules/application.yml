@@ -152,7 +152,7 @@ groups:
 
   # Shared Redis holds two consumers with very different blast radii. Affinity stores short digests
   # and its loss only costs prompt-cache hits; Codex response history stores whole conversations up
-  # to 16 MiB each, and its loss is reported to the client as a 400 that well-behaved clients treat
+  # to 256 MiB each, and its loss is reported to the client as a 400 that well-behaved clients treat
   # as permanent. Under allkeys-lru the eviction policy cannot tell the two apart, so memory
   # pressure silently deletes paid-for conversations. None of this was measured before.
   - name: affinity-redis

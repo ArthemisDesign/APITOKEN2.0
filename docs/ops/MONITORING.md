@@ -356,14 +356,14 @@ consequence differs completely:
 
 - `affinity` — short digests under `allkeys-lru`. Losing them costs prompt-cache hits and money,
   not correctness. Raise `--maxmemory` for that service if it is chronic.
-- `history` — whole conversations, up to 16 MiB each (`MAX_SERIALIZED_HISTORY_BYTES`), retained for
+- `history` — whole conversations, up to 256 MiB each (`MAX_SERIALIZED_HISTORY_BYTES`), retained for
   `CLAUDE_API_CODEX_HISTORY_TTL_SECS` (24 h by default). Losing one makes `prepare_turn` answer
   `previous_response_id was not found` as a 400, which well-behaved clients treat as permanent and
   respond to by discarding the conversation. Treat this as customer-visible.
 
 The two ran in one instance until the split; a few dozen large conversations could fill it and evict
 affinity, and affinity churn could delete conversations. They now have independent budgets
-(128 MiB affinity, 512 MiB history) so each can be sized on its own evidence. The first split keeps
+(128 MiB affinity, 8 GiB history) so each can be sized on its own evidence. The first split keeps
 the existing 6379 Compose service identity, command and data directory unchanged and adds 6380 with
 an in-place `docker compose up`; it must not use `systemctl restart`, which would run Compose
 `down` and make stored response history temporarily unavailable.

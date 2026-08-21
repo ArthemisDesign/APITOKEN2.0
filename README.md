@@ -143,7 +143,7 @@ The watchdog automatically creates Redis/affinity secrets and manages the local
 The instances are shared by two consumers with different blast radii: affinity (fail-open, only the
 prompt-cache hit is lost) and Codex response history (a lost write is returned to the client as a
 400). Since `maxmemory` and `maxmemory-policy` in Redis are set per instance, they are split in two:
-history — `127.0.0.1:6379` (`allkeys-lru`, 512 MiB), affinity — `127.0.0.1:6380` (`allkeys-lru`, 128 MiB).
+history — `127.0.0.1:6379` (`allkeys-lru`, 8 GiB), affinity — `127.0.0.1:6380` (`allkeys-lru`, 128 MiB).
 The first split rollout preserves the previous Compose identity and configuration of the history
 container, so adding 6380 neither stops nor recreates the container holding already-paid-for
 conversations. Memory and eviction of each are scraped by their own `redis_exporter` (`9121`/`9122`)

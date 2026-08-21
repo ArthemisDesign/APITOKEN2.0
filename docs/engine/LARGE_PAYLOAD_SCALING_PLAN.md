@@ -3,11 +3,11 @@
 Статус: **в работе; публичные production-defaults не подняты до 256 MiB**.
 
 Commits 1–4 уже в `master`: `api-limits`, `bounded-body`, dual admission, Gemini binary IPC,
-typed executor, systemd slices и headroom gate. Этот документ больше не предложение. Следующие
-шаги — закрыть оставшийся Definition of Done на **текущих** caps (Caddy streaming ceiling,
-Content-Encoding fail-closed, spill `into_bytes`, telemetry/alerts) и только потом, после
-exact-SHA load proof, commits 5/7/8 с raised public defaults. Commit 6 (Codex
-JSONL/history/Redis) не поднимает OpenAI public 8 MiB.
+typed executor, systemd slices и headroom gate. Commit 4b (Caddy streaming ceiling,
+Content-Encoding fail-closed, spill `into_bytes`, plane telemetry) и commit 6 (Codex
+JSONL/history/Redis capacity) закрывают оставшийся DoD на **текущих** caps; public OpenAI
+остаётся 8 MiB. Commits 5/7/8 с raised public defaults ждут exact-SHA load proof и private
+app-server acceptance.
 
 Область: публичные model API endpoints `router.apitoken.sale`, `api.apitoken.sale`,
 `openai.api.apitoken.sale`, `gemini.api.apitoken.sale` и их внутренний путь
@@ -79,10 +79,10 @@ escaped Unicode, base64 и глубоко вложенных tool schemas. До 
 | Anthropic-compatible Chat/Responses request | 32 MiB | 32 MiB effective | Локальное увеличение не создаёт upstream capacity |
 | Anthropic translated non-stream response | 32 MiB | 256 MiB local envelope | Только weighted response admission; output-token contract не меняется |
 | OpenAI/Codex Chat/Responses/Messages request | 8 MiB | 256 MiB local envelope, staged provider proof | Нынешние 8 MiB — локальный parsing bound, но upstream acceptance надо доказать |
-| Codex combined instructions | 1 MiB | 16 MiB | Отдельный structural cap внутри 256 MiB body |
-| Codex custom tool grammar | 256 KiB | 4 MiB | Оставить bounded независимо от body max |
-| Codex app-server JSONL frame | 32 MiB | 384 MiB | 256 MiB payload + JSON/framing overhead; incremental cap до allocation |
-| Codex stored history entry | 16 MiB | 256 MiB | Одновременно увеличить Redis history capacity и eviction monitoring |
+| Codex combined instructions | 16 MiB | 16 MiB | Отдельный structural cap внутри будущего 256 MiB body; public OpenAI остаётся 8 MiB |
+| Codex custom tool grammar | 4 MiB | 4 MiB | Bounded независимо от body max |
+| Codex app-server JSONL frame | 384 MiB | 384 MiB | Cap-before-allocation; public body 8 MiB |
+| Codex stored history entry | 256 MiB | 256 MiB | History Redis 8 GiB; affinity 128 MiB не тронут |
 | Gemini text native request | **64 MiB argv/canary** | 256 MiB | Universal adapters остаются на `api-limits` 32 MiB |
 | Gemini text universal Chat/Responses/Messages | 32 MiB | 256 MiB | После binary IPC и Gemini weighted admission |
 | Gemini inline-media/image request | 20 MiB | **20 MiB, оставить** | Документированный provider-owned media ceiling |
@@ -266,14 +266,12 @@ error envelope должны сохраниться без обходного п�
 
 До поднятия `OPENAI_BODY_LIMIT`:
 
-- поднять incremental JSON-RPC reader/writer bounds до envelope, достаточного для 256 MiB request;
-- доказать cap-before-allocation на 384 MiB + 1 без реального giant fixture;
-- избежать `Vec` clone на retry/preparation;
-- расширить stored history entry и Redis history capacity согласованно;
-- обновить `deploy/affinity-redis.compose.yaml`: history maxmemory с 512 MiB до **8 GiB** на первом
-  rollout, после production cardinality/size evidence — до **16 GiB**, если eviction остаётся;
-- affinity Redis 128 MiB не увеличивать автоматически: он не хранит conversation bodies;
-- подтвердить private Codex app-server acceptance отдельным controlled canary. До него production
+- JSONL/SSE reader bound поднят до 384 MiB с cap-before-allocation (доказано без giant fixture);
+- stored history entry 256 MiB; history Redis `--maxmemory` **8 GiB** на первом rollout
+  (`deploy/affinity-redis.compose.yaml`); следующий шаг — **16 GiB**, только если eviction
+  остаётся после production cardinality/size evidence;
+- affinity Redis 128 MiB не увеличен: он не хранит conversation bodies;
+- private Codex app-server acceptance остаётся отдельным controlled canary. До него production
   OpenAI public cap остаётся 8 MiB, даже если transport готов к 256 MiB.
 
 ### 4.8 Process и host resource envelope
@@ -492,7 +490,7 @@ Exact candidate SHA допускается к повышенным defaults то
 
 ### Commit 4 — systemd slices и resource headroom gate — **сделано**
 
-### Commit 4b — Caddy ceiling, encoding gate, spill reload, plane telemetry
+### Commit 4b — Caddy ceiling, encoding gate, spill reload, plane telemetry — **сделано**
 
 - Explicit 256 MiB streaming Caddy cap on the four model vhosts; OpenKeys stays 32KB; no SSE buffer.
 - Request `Content-Encoding` fail-closed 415 on materializing text routes.
@@ -506,10 +504,12 @@ Exact candidate SHA допускается к повышенным defaults то
 Нужен exact-SHA load proof (oom=0, peak < MemoryHigh, mixed-load p99, fail-fast admission) и
 disk-backed spool filesystem. Caddy 256 MiB — потолок, не enablement.
 
-### Commit 6 — Codex transport/history capacity — **ещё не сделано в этом SHA**
+### Commit 6 — Codex transport/history capacity — **сделано в этом train**
 
-- Расширить JSONL/history/Redis/admission, но OpenAI public body default оставить 8 MiB.
-- Провести controlled private app-server acceptance по размерным ступеням.
+- JSONL/SSE reader bound 384 MiB with cap-before-allocation; history entry 256 MiB;
+  history Redis 8 GiB; instructions 16 MiB; custom grammar 4 MiB.
+- OpenAI public body default остаётся 8 MiB до private app-server acceptance (commit 7).
+- Affinity Redis 128 MiB не увеличен.
 
 ### Commit 7 — поднять OpenAI public text envelope — **заблокировано** (нужен private app-server proof)
 

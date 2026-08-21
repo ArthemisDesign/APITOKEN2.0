@@ -18,7 +18,7 @@ use tokio::sync::{Mutex as AsyncMutex, RwLock};
 const HISTORY_KEY_CONTEXT: &str = "claude-api/codex-history/encryption/v1";
 const SCOPE_KEY_CONTEXT: &str = "claude-api/codex-history/scope/v1";
 const REDIS_PREFIX: &str = "claude-api:codex-history:v1";
-const MAX_SERIALIZED_HISTORY_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SERIALIZED_HISTORY_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct StoredHistory {
@@ -439,6 +439,11 @@ impl HistoryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serialized_history_bound_is_256_mib() {
+        assert_eq!(MAX_SERIALIZED_HISTORY_BYTES, 256 * 1024 * 1024);
+    }
 
     fn store() -> HistoryStore {
         HistoryStore::new(None, Some("test-only-secret"), 600, 32, 20).unwrap()

@@ -168,7 +168,9 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   a pathological body, not a model of the provider's own limit: the 8 MiB body cap bounds parsing
   work and the backend stays the authority. `crates/api-limits` records that narrower current cap;
   the common dormant 32 MiB provider envelope and future 256 MiB hard ceiling do not widen Codex
-  before a controlled private app-server proof. An MCP-heavy config with a few hundred declared
+  before a controlled private app-server proof. Internal transport already admits a 384 MiB JSONL/SSE
+  frame (cap-before-allocation) and 256 MiB stored history entries on the dedicated 8 GiB history
+  Redis; combined instructions are 16 MiB and custom tool grammar 4 MiB. An MCP-heavy config with a few hundred declared
   tools is never failed locally first.
   History items follow the same principle: `message`, `reasoning`, the tool-call/-output pairs,
   `tool_search_*` and `agent_message` are translated, and an item type the gateway does not know is
@@ -363,8 +365,8 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   are exported on `/metrics`, and an unreachable shared store is counted as an error rather than a
   miss so an outage can never be mistaken for a genuine unknown id. `CodexHistoryWriteFailures` and
   `CodexHistoryMissesElevated` alert on the two failure shapes; the shared instance's own memory
-  and eviction are covered by `AffinityRedis*` because history entries (up to 16 MiB each) are what
-  usually exhaust it.
+  and eviction are covered by `AffinityRedis*` because history entries (up to 256 MiB each) are what
+  usually exhaust the dedicated 8 GiB history instance; affinity Redis stays 128 MiB.
 
 ## Failure and stream safety
 

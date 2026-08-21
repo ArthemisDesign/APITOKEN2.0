@@ -22,7 +22,10 @@ Never mix the three provider paths.
   requests memory-backed, and ownership spans parse/translation/reserve/rotation. Native auth remains
   before body read; universal adapters keep their existing outer auth semantics through `forward`.
   Codex native Responses uses the same shared bounded primitive under its narrower 8 MiB cap;
-  Chat and billable Messages also use bounded ownership under 8 MiB. Quota-free `input_tokens` and
+  Chat and billable Messages also use bounded ownership under 8 MiB. The JSONL/SSE reader bound is
+  384 MiB and stored history entries are 256 MiB (history Redis 8 GiB) so a later public envelope
+  can land without a second transport rewrite; the public OpenAI request cap stays 8 MiB until
+  private app-server proof. Combined instructions are 16 MiB and custom tool grammar 4 MiB. Quota-free `input_tokens` and
   `count_tokens` use the same body authorities after auth/admission while retaining terminal-fact
   evidence and response semantics.
   Native Gemini generate/stream/count plus all universal Chat/Responses/Messages/count paths use
