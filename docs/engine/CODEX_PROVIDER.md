@@ -384,6 +384,11 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
 - Client disconnect detaches the upstream read; the turn drains to its authoritative final
   usage before settlement, and the shutdown deadline aborts the read, settles the last snapshot
   and only then releases the background task guard.
+- A `response.completed` event without a non-null authoritative `usage` is a terminal
+  `missing_authoritative_usage` failure. It never becomes a successful zero-usage turn. The default
+  unknown-usage policy does not charge the hold, but the request is not reported as provider success.
+- Provider code `misalignment_policy_violation` is a terminal client policy error. It is not an OAuth
+  failure and must not rotate or quarantine a healthy profile.
 - Public errors are OpenAI-shaped and carry no pool/profile/proxy/upstream internals; the
   regression gate is `codex::api::tests::public_errors_never_leak_internal_architecture`.
 - Blue-green is trivial compared to the app-server era: generations own no children and no

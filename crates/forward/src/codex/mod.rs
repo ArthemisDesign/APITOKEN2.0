@@ -1713,8 +1713,12 @@ impl CodexHome {
     /// drain the pool.
     pub(crate) fn note_turn_error(&self, error: &ProcessError) {
         match error {
-            // Deterministic client faults: another home would reject them identically.
-            ProcessError::BadRequest | ProcessError::ContextWindowExceeded => {}
+            // Deterministic client/policy faults: another home would reject them identically, and a
+            // policy refusal is not evidence that this OAuth profile is unhealthy.
+            ProcessError::BadRequest
+            | ProcessError::ContextWindowExceeded
+            | ProcessError::PolicyViolation
+            | ProcessError::MissingAuthoritativeUsage => {}
             other => self.note_transport_error(other),
         }
     }
@@ -2664,9 +2668,11 @@ mod calibration_integration_tests {
             injected_items: Vec::new(),
             turn_input: vec![serde_json::json!({"type": "text", "text": "measure"})],
             dynamic_tools: Vec::new(),
+            parallel_tool_calls: true,
             service_tier: fast.then(|| "priority".to_string()),
             reasoning_effort: Some("none".to_string()),
             reasoning_summary: None,
+            reasoning_context: None,
             output_schema: None,
             verbosity: None,
             attempts: None,

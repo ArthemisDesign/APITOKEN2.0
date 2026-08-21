@@ -1017,6 +1017,12 @@ fn codex_process_error_terminal(
         super::ProcessError::BadRequest | super::ProcessError::ContextWindowExceeded => {
             (ProviderTerminalClass::ClientError, DeliveryState::Unknown)
         }
+        super::ProcessError::PolicyViolation => {
+            (ProviderTerminalClass::ClientError, DeliveryState::Unknown)
+        }
+        super::ProcessError::MissingAuthoritativeUsage => {
+            (ProviderTerminalClass::Unknown, DeliveryState::Unknown)
+        }
         super::ProcessError::UsageLimitExceeded { .. } => {
             (ProviderTerminalClass::Quota, DeliveryState::Unknown)
         }
@@ -2733,6 +2739,16 @@ mod tests {
             (
                 super::super::ProcessError::ContextWindowExceeded,
                 ProviderTerminalClass::ClientError,
+                DeliveryState::Unknown,
+            ),
+            (
+                super::super::ProcessError::PolicyViolation,
+                ProviderTerminalClass::ClientError,
+                DeliveryState::Unknown,
+            ),
+            (
+                super::super::ProcessError::MissingAuthoritativeUsage,
+                ProviderTerminalClass::Unknown,
                 DeliveryState::Unknown,
             ),
             (

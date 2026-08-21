@@ -39,6 +39,12 @@ pub enum ProcessError {
         retry_after: Option<u64>,
     },
     BadRequest,
+    /// The provider rejected the request for a safety/alignment policy reason. This is a client
+    /// terminal error, not evidence that the OAuth profile is invalid or that the account is dead.
+    PolicyViolation,
+    /// The provider completed execution but omitted authoritative terminal usage. Do not turn this
+    /// into a successful zero-usage turn; settlement applies the explicit unknown-usage policy.
+    MissingAuthoritativeUsage,
     AuthenticationRequired,
     SubscriptionRequired,
     /// A ClaudeStore request was started after the local pool became terminal, but the external
@@ -63,6 +69,10 @@ impl std::fmt::Display for ProcessError {
                 f.write_str("ChatGPT subscription usage limit exceeded")
             }
             Self::BadRequest => f.write_str("model rejected the request"),
+            Self::PolicyViolation => f.write_str("request blocked by provider policy"),
+            Self::MissingAuthoritativeUsage => {
+                f.write_str("Codex provider completed without authoritative usage")
+            }
             Self::AuthenticationRequired => f.write_str("Codex profile is not authenticated"),
             Self::SubscriptionRequired => {
                 f.write_str("Codex profile is not authenticated with a ChatGPT subscription")
@@ -90,6 +100,8 @@ impl ProcessError {
             Self::ContextWindowExceeded => "context_window_exceeded",
             Self::UsageLimitExceeded { .. } => "usage_limit_exceeded",
             Self::BadRequest => "bad_request",
+            Self::PolicyViolation => "policy_violation",
+            Self::MissingAuthoritativeUsage => "missing_authoritative_usage",
             Self::AuthenticationRequired => "authentication_required",
             Self::SubscriptionRequired => "subscription_required",
             Self::ExternalFallbackFailed { .. } => "external_fallback_failed",
@@ -221,7 +233,10 @@ impl TurnEvents {
             tokio::select! {
                 biased;
                 event = self.receiver.recv() => {
-                    return event.ok_or(ProcessError::Closed);
+                    return match event {
+                        Some(event) => Ok(event),
+                        None => Err(self.closed.borrow().clone().unwrap_or(ProcessError::Closed)),
+                    };
                 }
                 changed = self.closed.changed() => {
                     if changed.is_err() {
@@ -887,6 +902,9 @@ fn classify_http_error(
             .and_then(Value::as_str)
             .map(str::to_string)
     });
+    if code.as_deref() == Some("misalignment_policy_violation") {
+        return ProcessError::PolicyViolation;
+    }
     match status.as_u16() {
         400 | 404 | 409 | 422 => match code.as_deref() {
             Some("context_length_exceeded" | "context_window_exceeded") => {
@@ -1143,6 +1161,9 @@ fn codex_error_info(code: Option<&str>) -> Value {
         Some("context_length_exceeded" | "context_window_exceeded") => {
             Value::String("contextWindowExceeded".to_string())
         }
+        Some("misalignment_policy_violation") => {
+            Value::String("misalignmentPolicyViolation".to_string())
+        }
         Some("invalid_api_key" | "unauthorized" | "authentication_error") => {
             Value::String("unauthorized".to_string())
         }
@@ -1339,14 +1360,13 @@ async fn dispatch_sse_event(
             }
         }
         "response.completed" => {
-            if let Some(usage) = payload.pointer("/response/usage").filter(|v| !v.is_null()) {
-                notify!(
-                    "rawResponse/completed",
-                    json!({"usage": translate_usage(usage)})
-                );
-            } else {
-                notify!("rawResponse/completed", json!({"usage": Value::Null}));
-            }
+            let Some(usage) = payload.pointer("/response/usage").filter(|v| !v.is_null()) else {
+                return Err(ProcessError::MissingAuthoritativeUsage);
+            };
+            notify!(
+                "rawResponse/completed",
+                json!({"usage": translate_usage(usage)})
+            );
             // Preserve the completed-response tier as a wire diagnostic. ChatGPT-authenticated
             // Codex commonly reports `default` for measurably accelerated Fast turns, so the
             // runner deliberately derives the effective tier from the accepted request.
@@ -1367,6 +1387,9 @@ async fn dispatch_sse_event(
                 .cloned()
                 .unwrap_or(Value::Null);
             let code = error.get("code").and_then(Value::as_str);
+            if code == Some("misalignment_policy_violation") {
+                return Err(ProcessError::PolicyViolation);
+            }
             let message = error
                 .get("message")
                 .and_then(Value::as_str)
@@ -1665,6 +1688,22 @@ mod tests {
             ),
             ProcessError::ContextWindowExceeded
         );
+        let policy = serde_json::to_vec(&json!({
+            "error": {"code": "misalignment_policy_violation"}
+        }))
+        .unwrap();
+        assert_eq!(
+            classify_http_error(
+                wreq::StatusCode::FORBIDDEN,
+                headers.clone(),
+                Some(policy.clone())
+            ),
+            ProcessError::PolicyViolation
+        );
+        assert_eq!(
+            classify_http_error(wreq::StatusCode::BAD_REQUEST, headers.clone(), Some(policy)),
+            ProcessError::PolicyViolation
+        );
         assert!(matches!(
             classify_http_error(wreq::StatusCode::INTERNAL_SERVER_ERROR, headers, None),
             ProcessError::Timeout(_)
@@ -1673,6 +1712,10 @@ mod tests {
 
     #[test]
     fn codex_error_info_maps_only_reviewed_codes() {
+        assert_eq!(
+            codex_error_info(Some("misalignment_policy_violation")),
+            Value::String("misalignmentPolicyViolation".to_string())
+        );
         assert_eq!(
             codex_error_info(Some("rate_limit_exceeded")),
             Value::String("usageLimitExceeded".to_string())
@@ -1864,6 +1907,56 @@ mod tests {
             }
         }
         out
+    }
+
+    #[tokio::test]
+    async fn response_completed_without_usage_is_rejected_before_turn_completion() {
+        let base = mock_upstream(|_, _| {
+            let body = sse_body(&[(
+                "response.completed",
+                r#"{"response":{"status":"completed"}}"#,
+            )]);
+            (200, body, vec![("content-type", "text/event-stream".to_string())])
+        })
+        .await;
+        let transport = ProfileTransport::new(test_config(&base), None).unwrap();
+        let mut events = transport
+            .run_turn(
+                &test_auth(),
+                json!({"model": "gpt-5.5"}),
+                None,
+                Arc::new(Mutex::new(None)),
+                None,
+            )
+            .await
+            .unwrap();
+        let error = events.recv().await.expect_err("missing usage must fail");
+        assert_eq!(error, ProcessError::MissingAuthoritativeUsage);
+    }
+
+    #[tokio::test]
+    async fn response_failed_misalignment_is_typed_and_non_retryable() {
+        let base = mock_upstream(|_, _| {
+            let body = sse_body(&[(
+                "response.failed",
+                r#"{"response":{"error":{"code":"misalignment_policy_violation","message":"blocked"}}}"#,
+            )]);
+            (200, body, vec![("content-type", "text/event-stream".to_string())])
+        })
+        .await;
+        let transport = ProfileTransport::new(test_config(&base), None).unwrap();
+        let mut events = transport
+            .run_turn(
+                &test_auth(),
+                json!({"model": "gpt-5.5"}),
+                None,
+                Arc::new(Mutex::new(None)),
+                None,
+            )
+            .await
+            .unwrap();
+        let error = events.recv().await.expect_err("policy failure must be typed");
+        assert_eq!(error, ProcessError::PolicyViolation);
     }
 
     #[tokio::test]

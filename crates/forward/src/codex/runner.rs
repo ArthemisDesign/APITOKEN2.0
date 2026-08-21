@@ -105,10 +105,14 @@ pub(crate) struct CodexTurnRequest {
     pub turn_input: Vec<Value>,
     /// Canonical dynamic-tool specs (`function` with `inputSchema`, `custom` with Lark grammar).
     pub dynamic_tools: Vec<Value>,
+    /// The client-requested Responses parallel-tools control. The native adapter preserves it.
+    pub parallel_tool_calls: bool,
     /// OpenAI request value (`priority` for Codex Fast mode, otherwise absent).
     pub service_tier: Option<String>,
     pub reasoning_effort: Option<String>,
     pub reasoning_summary: Option<String>,
+    /// Reviewed Responses reasoning context. Unknown future values remain absent.
+    pub reasoning_context: Option<String>,
     pub output_schema: Option<Value>,
     pub verbosity: Option<String>,
     /// Present only after PostgreSQL admitted a request fact; shared by every actual submission.
@@ -254,7 +258,7 @@ pub(crate) fn build_responses_body(request: &CodexTurnRequest) -> Value {
         "input": input,
         "tools": tools,
         "tool_choice": "auto",
-        "parallel_tool_calls": true,
+        "parallel_tool_calls": request.parallel_tool_calls,
         "store": false,
         "stream": true,
         // Official Codex is stateless (`store:false`) and always requests the encrypted reasoning
@@ -275,6 +279,9 @@ pub(crate) fn build_responses_body(request: &CodexTurnRequest) -> Value {
         }
         if let Some(summary) = &request.reasoning_summary {
             reasoning["summary"] = Value::String(summary.clone());
+        }
+        if let Some(context) = &request.reasoning_context {
+            reasoning["context"] = Value::String(context.clone());
         }
         body["reasoning"] = reasoning;
     }
@@ -439,7 +446,10 @@ impl CodexGateway {
             // A client fault is deterministic: another home would reject it identically.
             if matches!(
                 error,
-                ProcessError::BadRequest | ProcessError::ContextWindowExceeded
+                ProcessError::BadRequest
+                    | ProcessError::ContextWindowExceeded
+                    | ProcessError::PolicyViolation
+                    | ProcessError::MissingAuthoritativeUsage
             ) {
                 return Err(error);
             }
@@ -764,6 +774,9 @@ impl CodexHome {
                     _ => {}
                 }
             };
+            if !saw_raw_usage {
+                return Err(ProcessError::MissingAuthoritativeUsage);
+            }
             let effective_service_tier = Some(
                 effective_service_tier(requested_fast, provider_reported_service_tier.as_deref())
                     .to_string(),
@@ -819,6 +832,7 @@ async fn classify_turn_error(
             })
         }
         (Some("badRequest" | "cyberPolicy"), _) | (_, Some(400)) => Some(ProcessError::BadRequest),
+        (Some("misalignmentPolicyViolation"), _) => Some(ProcessError::PolicyViolation),
         (Some("unauthorized"), _) | (_, Some(401 | 403)) => {
             Some(ProcessError::AuthenticationRequired)
         }
@@ -927,9 +941,11 @@ mod tests {
                 "inputSchema": {"type": "object"},
                 "deferLoading": false
             })],
+            parallel_tool_calls: false,
             service_tier: None,
             reasoning_effort: Some("medium".to_string()),
             reasoning_summary: Some("auto".to_string()),
+            reasoning_context: Some("all_turns".to_string()),
             output_schema: None,
             verbosity: None,
             attempts: None,
@@ -962,6 +978,7 @@ mod tests {
         assert_eq!(body["stream"], true);
         assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
         assert_eq!(body["tool_choice"], "auto");
+        assert_eq!(body["parallel_tool_calls"], false);
         // Developer instructions lead, then the user message; nothing else exists to send.
         let input = body["input"].as_array().unwrap();
         assert_eq!(input.len(), 2);
@@ -977,6 +994,7 @@ mod tests {
         assert!(body["tools"][0].get("deferLoading").is_none());
         assert_eq!(body["reasoning"]["effort"], "medium");
         assert_eq!(body["reasoning"]["summary"], "auto");
+        assert_eq!(body["reasoning"]["context"], "all_turns");
         assert!(body.get("service_tier").is_none());
         let text = serde_json::to_string(&body).unwrap();
         for forbidden in [

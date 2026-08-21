@@ -243,6 +243,22 @@ impl From<ProcessError> for ApiError {
                     None::<String>,
                 )
             }
+            ProcessError::PolicyViolation => {
+                elog::warn("codex", &diagnostic);
+                Self {
+                    status: StatusCode::BAD_REQUEST,
+                    message: "This request was blocked by provider safety policy.".to_string(),
+                    kind: "invalid_request_error",
+                    param: None,
+                    code: Some("misalignment_policy_violation"),
+                    retry_after: None,
+                    reason: "provider_policy_violation",
+                }
+            }
+            ProcessError::MissingAuthoritativeUsage => {
+                elog::error("codex", &diagnostic);
+                Self::unavailable_for("codex_missing_authoritative_usage")
+            }
             other => {
                 elog::error(
                     "codex",
@@ -268,6 +284,7 @@ pub(super) struct ParsedResponsesRequest {
     pub(super) service_tier: Option<String>,
     reasoning_effort: Option<String>,
     reasoning_summary: Option<String>,
+    reasoning_context: Option<String>,
     output_schema: Option<Value>,
     verbosity: Option<String>,
     text: Value,
@@ -1204,9 +1221,11 @@ pub(super) async fn prepare_turn(
         injected_items,
         turn_input: request.input.turn_input.clone(),
         dynamic_tools: request.dynamic_tools.clone(),
+        parallel_tool_calls: request.parallel_tool_calls,
         service_tier: request.service_tier.clone(),
         reasoning_effort: request.reasoning_effort.clone(),
         reasoning_summary: request.reasoning_summary.clone(),
+        reasoning_context: request.reasoning_context.clone(),
         output_schema: request.output_schema.clone(),
         verbosity: request.verbosity.clone(),
         attempts: None,
@@ -1297,7 +1316,7 @@ pub(super) fn parse_responses_request(
     // blob that tripped the old size/control-character gate and made every turn fail with a
     // deterministic 400. Accept any shape for both and ignore them.
     let service_tier = parse_service_tier(object.get("service_tier"), &public_model);
-    let (reasoning_effort, reasoning_summary) =
+    let (reasoning_effort, reasoning_summary, reasoning_context) =
         parse_reasoning(object.get("reasoning"), &public_model)?;
     let (text, output_schema, verbosity) = parse_text(object.get("text"))?;
     let tool_choice = object
@@ -1377,6 +1396,7 @@ pub(super) fn parse_responses_request(
         service_tier,
         reasoning_effort,
         reasoning_summary,
+        reasoning_context,
         output_schema,
         verbosity,
         text,
@@ -1441,9 +1461,9 @@ fn parse_service_tier(value: Option<&Value>, model: &CodexModel) -> Option<Strin
 fn parse_reasoning(
     value: Option<&Value>,
     model: &CodexModel,
-) -> Result<(Option<String>, Option<String>), ApiError> {
+) -> Result<(Option<String>, Option<String>, Option<String>), ApiError> {
     let Some(value) = value.filter(|value| !value.is_null()) else {
-        return Ok((None, None));
+        return Ok((None, None, None));
     };
     let object = value.as_object().ok_or_else(|| {
         ApiError::invalid(
@@ -1451,7 +1471,7 @@ fn parse_reasoning(
             Some("reasoning".to_string()),
         )
     })?;
-    // Unknown reasoning fields (generate_summary, context, future additions) are ignored.
+    let context = optional_string(object, "context")?.filter(|context| context == "all_turns");
     let effort = optional_string(object, "effort")?;
     // An effort the model does not advertise degrades to the model default instead of failing
     // the request: SDKs pin effort names across providers and must not 400 on a mismatch.
@@ -1459,7 +1479,7 @@ fn parse_reasoning(
     let summary = optional_string(object, "summary")?;
     let summary = summary
         .filter(|summary| matches!(summary.as_str(), "auto" | "concise" | "detailed" | "none"));
-    Ok((effort, summary))
+    Ok((effort, summary, context))
 }
 
 fn parse_text(value: Option<&Value>) -> Result<(Value, Option<Value>, Option<String>), ApiError> {
