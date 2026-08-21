@@ -51,8 +51,10 @@ transport envelope. The check happens after typed parsing and before provider di
 13-byte big-endian headers (`kind`, request id, payload length), control JSON capped at 1 MiB,
 request bodies capped at the dormant 256 MiB envelope, and response data chunks capped at 1 MiB.
 Body/data bytes are raw, never base64; one writer mutex keeps request metadata+body atomic while
-response IDs preserve multiplexing, cancellation tombstones, and backpressure. There is no v1
-compatibility branch because helper source ships inside the same immutable engine binary.
+response IDs preserve multiplexing, cancellation tombstones, and backpressure. Request, configure,
+and cancel control messages all use the same binary v2 framing; no NDJSON writer may share the
+helper stdin. There is no v1 compatibility branch because helper source ships inside the same
+immutable engine binary.
 
 **Three authorization classes (secret separation, `proxy.rs`):** `authed` (forwarding-admin: `api_keys`
 /loopback) ⊂ `control_authed` (+`control_keys` — for commerce `/admin/*`) ⊂ `readonly_authed`

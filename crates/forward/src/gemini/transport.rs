@@ -1224,11 +1224,13 @@ where
     }
 }
 
-async fn cancel_writer_loop(
-    writer: Arc<tokio::sync::Mutex<ChildStdin>>,
+async fn cancel_writer_loop<W>(
+    writer: Arc<tokio::sync::Mutex<W>>,
     mut receiver: mpsc::UnboundedReceiver<u64>,
     shared: Arc<ProcessShared>,
-) {
+) where
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     while let Some(id) = receiver.recv().await {
         if shared.closed.load(Ordering::Acquire) {
             return;
@@ -1244,13 +1246,15 @@ async fn cancel_writer_loop(
             }
         };
         let mut writer = writer.lock().await;
-        if writer.write_all(&encoded).await.is_err()
-            || writer.write_all(b"\n").await.is_err()
+        if write_raw_frame_locked(&mut *writer, IPC_KIND_CONTROL, 0, &encoded)
+            .await
+            .is_err()
             || writer.flush().await.is_err()
         {
             shared.close(TransportError::Closed);
             return;
         }
+        GeminiIpc::global().record_pipe_bytes(true, true, encoded.len() as u64);
     }
 }
 
@@ -1482,6 +1486,55 @@ mod tests {
         ] {
             assert!(validate_proxy(invalid).is_err(), "accepted {invalid}");
         }
+    }
+
+    #[tokio::test]
+    async fn cancel_writer_uses_one_binary_v2_control_frame() {
+        let (writer, mut reader) = tokio::io::duplex(MAX_IPC_CONTROL_BYTES * 2);
+        let (ready, _ready_rx) = oneshot::channel();
+        let shared = Arc::new(ProcessShared {
+            pending: Mutex::new(HashMap::new()),
+            canceled: Mutex::new(HashMap::new()),
+            ready: Mutex::new(Some(ready)),
+            closed: AtomicBool::new(false),
+        });
+        let (cancel, cancel_rx) = mpsc::unbounded_channel();
+        let loop_shared = shared.clone();
+        let loop_task = tokio::spawn(async move {
+            cancel_writer_loop(
+                Arc::new(tokio::sync::Mutex::new(writer)),
+                cancel_rx,
+                loop_shared,
+            )
+            .await;
+        });
+
+        cancel.send(7).expect("cancel channel is open");
+        let (kind, frame_id, payload) = read_raw_frame(&mut reader)
+            .await
+            .expect("binary frame parses")
+            .expect("cancel frame is present");
+        assert_eq!(kind, IPC_KIND_CONTROL);
+        assert_eq!(frame_id, 0);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&payload).expect("control payload is JSON"),
+            serde_json::json!({"type": "cancel", "id": 7})
+        );
+
+        cancel.send(8).expect("cancel channel stays open");
+        let (kind, frame_id, payload) = read_raw_frame(&mut reader)
+            .await
+            .expect("second binary frame parses")
+            .expect("second cancel frame is present");
+        assert_eq!((kind, frame_id), (IPC_KIND_CONTROL, 0));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&payload).expect("control payload is JSON"),
+            serde_json::json!({"type": "cancel", "id": 8})
+        );
+        assert!(!shared.closed.load(Ordering::Acquire));
+
+        drop(cancel);
+        loop_task.await.expect("cancel writer exits cleanly");
     }
 
     #[tokio::test]
