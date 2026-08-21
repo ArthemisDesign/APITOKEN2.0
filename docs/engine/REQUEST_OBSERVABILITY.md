@@ -491,6 +491,17 @@ drops, persistence health/failures, and facts still nonterminal after one hour. 
 accounts, keys, logical/billing/upstream IDs, execution groups, and provider profiles are database
 report dimensions, never Prometheus labels.
 
+Migration 0061 exposes two private read-only daily aggregate views for the managed Grafana
+PostgreSQL datasource. `request_fact_usage_daily` groups the normalized client/source, requested and
+executable model, route, request class, bounded tool-count bucket, tool choice, and nullable capability
+flags, then joins authoritative token/search/nanoUSD values by billing request ID. The separate
+`request_fact_tool_usage_daily` expands only the seven closed tool-class bits. Both views expose the
+opaque engine `account_id` and non-secret `key_id` so the operator can answer which customer/project
+produced the load. Neither view exposes email, key label, raw API key, request, execution-group,
+provider-profile, content, tool-name, schema, argument, or result fields. The monitoring role receives `SELECT` only on these views. Queries remain capped to the
+30-day retention horizon and bounded dashboard result sets. This does not weaken the Prometheus label
+prohibition.
+
 Each alert below requires a matching fixed-cardinality metric, rule, dashboard view, and runbook
 anchor in the same metric commit:
 
