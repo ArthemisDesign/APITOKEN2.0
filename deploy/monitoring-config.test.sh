@@ -82,13 +82,17 @@ for forbidden_dimension in logical_request_id billing_request_id execution_group
 done
 grep -Fq 'authbot|router)).service' "$ROOT/observability/grafana/dashboards/production-overview.json"
 ! grep -Fq 'authbot|router))\\.service' "$ROOT/observability/grafana/dashboards/production-overview.json"
-# Grafana top-level cards use narrow rollups so they do not overflow monitoring PostgreSQL shared
-# memory on broad hash aggregation. Full detail stays in the migration-0061 drilldown dashboard.
+# Migration 0062 rollups exist in the tree, but monitoring install runs before engine migrate.
+# Overview cards and the installer canary must keep using the already-granted 0061 views.
 for reporting_view in request_fact_usage_top_customer_model_daily \
   request_fact_usage_top_client_daily request_fact_usage_top_model_daily \
   request_fact_usage_top_tool_daily; do
   grep -Fq "CREATE VIEW $reporting_view" \
     "$ROOT/crates/registry/migrations_pg/0062_request_usage_grafana_rollups.sql"
+  ! grep -Fq "$reporting_view" \
+    "$ROOT/observability/grafana/dashboards/production-overview.json" \
+    || { printf 'production overview queries %s before schema 62 is applied and granted\n' \
+      "$reporting_view" >&2; exit 1; }
 done
 for overview_dimension in account_id key_id client_kind requested_model executable_model tool_class; do
   grep -Fq "$overview_dimension" \
@@ -102,6 +106,17 @@ grep -Fq 'GRANT SELECT ON request_fact_usage_top_customer_model_daily, request_f
 grep -Fq 'Grafana request-analytics datasource returned no request usage rows' \
   "$ROOT/deploy/install-monitoring.sh"
 grep -Fq 'http://127.0.0.1:3600/api/ds/query' "$ROOT/deploy/install-monitoring.sh"
+grep -Fq 'grafana_query=$(jq -nc --arg sql "$grafana_sql"' \
+  "$ROOT/deploy/install-monitoring.sh"
+grep -Fq 'grafana_response=$(curl --noproxy' "$ROOT/deploy/install-monitoring.sh"
+! grep -Fq "grafana_query='" "$ROOT/deploy/install-monitoring.sh"
+! grep -Fq 'request_fact_usage_top_model_daily WHERE' "$ROOT/deploy/install-monitoring.sh"
+grafana_sql="SELECT COUNT(*)::bigint AS rows, COALESCE(SUM(request_count),0)::bigint AS requests FROM request_fact_usage_daily WHERE usage_day >= CURRENT_DATE - INTERVAL '30 days'"
+grafana_query=$(jq -nc --arg sql "$grafana_sql" \
+  '{"from":"now-30d","to":"now","queries":[{"refId":"A","datasource":{"uid":"engine-request-analytics","type":"grafana-postgresql-datasource"},"format":"table","rawQuery":true,"rawSql":$sql,"intervalMs":30000,"maxDataPoints":100}]}')
+jq --exit-status --arg needle "INTERVAL '30 days'" \
+  '.queries[0].datasource.type == "grafana-postgresql-datasource" and (.queries[0].rawSql | contains("request_fact_usage_daily")) and (.queries[0].rawSql | contains($needle))' \
+  >/dev/null <<<"$grafana_query"
 
 for pinned_image in \
   'quay.io/prometheus/prometheus:v3.12.0@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac' \

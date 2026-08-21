@@ -117,6 +117,8 @@ if docker compose --env-file "$POSTGRES_ENV" -f "$POSTGRES_COMPOSE" exec -T comm
   printf '%s\n' "DO \$\$ BEGIN IF to_regclass('public.request_fact_usage_daily') IS NOT NULL THEN GRANT SELECT ON request_fact_usage_daily, request_fact_tool_usage_daily TO apitoken_monitoring; END IF; END \$\$;" \
     | docker compose --env-file "$POSTGRES_ENV" -f "$POSTGRES_COMPOSE" exec -T commerce-postgres \
       psql -U commerce -d claude_engine --no-psqlrc --set ON_ERROR_STOP=1 >/dev/null
+  # 0062 rollups are granted only after engine migrate has created them. This installer often
+  # runs first, so the absence of the views here is expected and must not fail the activation.
   printf '%s\n' "DO \$\$ BEGIN IF to_regclass('public.request_fact_usage_top_customer_model_daily') IS NOT NULL THEN GRANT SELECT ON request_fact_usage_top_customer_model_daily, request_fact_usage_top_client_daily, request_fact_usage_top_model_daily, request_fact_usage_top_tool_daily TO apitoken_monitoring; END IF; END \$\$;" \
     | docker compose --env-file "$POSTGRES_ENV" -f "$POSTGRES_COMPOSE" exec -T commerce-postgres \
       psql -U commerce -d claude_engine --no-psqlrc --set ON_ERROR_STOP=1 >/dev/null
@@ -237,9 +239,18 @@ wait_prometheus_result monitoring-targets \
 
 # Provisioning success alone does not prove the private request-analytics datasource can query its
 # granted views. Exercise the same Grafana backend path as the dashboard and require real rows before
-# committing this monitoring activation.
-grafana_query='{"from":"now-30d","to":"now","queries":[{"refId":"A","datasource":{"uid":"engine-request-analytics","type":"grafana-postgresql-datasource"},"format":"table","rawQuery":true,"rawSql":"SELECT COUNT(*)::bigint AS rows, COALESCE(SUM(request_count),0)::bigint AS requests FROM request_fact_usage_top_model_daily WHERE usage_day >= CURRENT_DATE - INTERVAL '\''30 days'\''"}]}'
-grafana_response=$(curl --fail --silent --show-error \
+# committing this monitoring activation. jq owns JSON encoding so SQL quotes cannot break the body.
+# This installer runs before engine migrate, so the canary must use the already-deployed 0061 view
+# `request_fact_usage_daily`; 0062 rollups are granted only when they already exist.
+grafana_sql="SELECT COUNT(*)::bigint AS rows, COALESCE(SUM(request_count),0)::bigint AS requests FROM request_fact_usage_daily WHERE usage_day >= CURRENT_DATE - INTERVAL '30 days'"
+grafana_query=$(jq -nc --arg sql "$grafana_sql" \
+  '{"from":"now-30d","to":"now","queries":[{"refId":"A","datasource":{"uid":"engine-request-analytics","type":"grafana-postgresql-datasource"},"format":"table","rawQuery":true,"rawSql":$sql,"intervalMs":30000,"maxDataPoints":100}]}') \
+  || die 'Grafana request-analytics canary payload is not valid JSON'
+jq --exit-status --arg needle "INTERVAL '30 days'" \
+  '.queries[0].datasource.type == "grafana-postgresql-datasource" and (.queries[0].rawSql | contains("request_fact_usage_daily")) and (.queries[0].rawSql | contains($needle))' \
+  >/dev/null <<<"$grafana_query" \
+  || die 'Grafana request-analytics canary payload is not valid JSON'
+grafana_response=$(curl --noproxy '*' --fail --silent --show-error \
   -H 'X-WEBAUTH-USER: monitoring-installer' -H 'Content-Type: application/json' \
   --data-binary "$grafana_query" http://127.0.0.1:3600/api/ds/query) \
   || die 'Grafana request-analytics datasource query failed'

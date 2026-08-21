@@ -499,11 +499,11 @@ flags, then joins authoritative token/search/nanoUSD values by billing request I
 opaque engine `account_id` and non-secret `key_id` so the operator can answer which customer/project
 produced the load. Neither view exposes email, key label, raw API key, request, execution-group,
 provider-profile, content, tool-name, schema, argument, or result fields. Migration 0062 adds four
-narrow top-level rollups for the always-visible Production Overview cards; they group one axis at a
-time and avoid the broad parallel hash aggregation that can exceed the monitoring PostgreSQL
-shared-memory budget. The monitoring role receives `SELECT` only on these views. Queries remain capped
-to the 30-day retention horizon and bounded dashboard result sets. This does not weaken the Prometheus
-label prohibition.
+narrow top-level rollups intended for the always-visible Production Overview cards; they group one
+axis at a time and avoid the broad parallel hash aggregation that can exceed the monitoring PostgreSQL
+shared-memory budget. Grafana currently queries the 0061 views. The monitoring role receives `SELECT`
+only on granted reporting views. Queries remain capped to the 30-day retention horizon and bounded
+dashboard result sets. This does not weaken the Prometheus label prohibition.
 
 Each alert below requires a matching fixed-cardinality metric, rule, dashboard view, and runbook
 anchor in the same metric commit:
