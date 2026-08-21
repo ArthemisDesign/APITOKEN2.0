@@ -20,7 +20,7 @@
         "name": "Unit restarts",
         "datasource": { "type": "prometheus", "uid": "prometheus" },
         "enable": true,
-        "expr": "changes(node_systemd_unit_state{name=~\"(apitoken-.+|claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?|-kimi(@.+)?)?|authbot|router))\\.service\",state=\"active\"}[2m]) > 0",
+        "expr": "changes(node_systemd_unit_state{name=~\"(apitoken-.+|claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?|-kimi(@.+)?)?|authbot|router)).service\",state=\"active\"}[2m]) > 0",
         "iconColor": "purple",
         "step": "120s"
       }

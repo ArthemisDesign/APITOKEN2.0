@@ -80,6 +80,8 @@ for forbidden_dimension in logical_request_id billing_request_id execution_group
   ! grep -Fq "$forbidden_dimension" \
     "$ROOT/observability/grafana/dashboards/request-usage-dimensions.json"
 done
+grep -Fq 'authbot|router)).service' "$ROOT/observability/grafana/dashboards/production-overview.json"
+! grep -Fq 'authbot|router))\\.service' "$ROOT/observability/grafana/dashboards/production-overview.json"
 for overview_dimension in account_id key_id client_kind requested_model executable_model tool_class; do
   grep -Fq "$overview_dimension" \
     "$ROOT/observability/grafana/dashboards/production-overview.json" \
