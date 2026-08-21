@@ -19,7 +19,7 @@ export const article: LearnArticle = {
       { type: "p", text: "Save this as ~/.codex/apitoken.config.toml. It declares the provider, the endpoint, the wire protocol, and the environment variable Codex should read the secret from:" },
       { type: "code", code: `# ~/.codex/apitoken.config.toml\nmodel = "gpt-5.6-sol"\nmodel_provider = "apitoken"\n\n[model_providers.apitoken]\nname = "apiToken.sale"\nbase_url = "${OPENAI_BASE}"\nwire_api = "responses"\nenv_key = "APITOKEN_API_KEY"` },
       { type: "p", text: "Two lines carry the security posture. env_key names a variable instead of storing the secret, so the key lives in your shell and never in a file you might commit. And base_url keeps its /v1 suffix — dropping it is the single most common cause of a broken first run, because every route Codex calls hangs off that prefix." },
-      { type: "note", text: "Keep wire_api = \"responses\". The gateway serves both the Responses API and Chat Completions, and Codex is built around the Responses stream. Switch to \"chat\" only if some other client sharing the file requires the classic shape." },
+      { type: "note", text: "Keep wire_api = \"responses\". Codex 0.149 accepts only the Responses wire. The gateway also serves Chat Completions for other clients, but that does not make wire_api = \"chat\" valid in Codex." },
     ] },
     { h2: "Export the key, check the catalog, run", blocks: [
       { type: "steps", items: [
@@ -65,7 +65,7 @@ export const article: LearnArticle = {
     { q: "Do I need a ChatGPT account or subscription for Codex CLI?", a: "No. With a custom model_providers profile and the provider's API key in the environment, Codex runs entirely on API-key authentication — the ChatGPT login in auth.json is irrelevant." },
     { q: "Does this profile change my default Codex setup?", a: "No. The profile lives in its own file and activates only when you pass --profile apitoken. Your default configuration and any ChatGPT login stay untouched." },
     { q: "Is the GPT-5.6 discount the same as the Claude one?", a: "Yes. GPT-5.6 usage is metered at official OpenAI token rates and your flat 50% B2C discount applies to the same prepaid balance." },
-    { q: "Should wire_api be responses or chat?", a: "Use wire_api = \"responses\" — the gateway serves both the Responses API and Chat Completions, and Codex is built around the Responses stream. The chat value exists for clients that require the classic shape." },
+    { q: "Which wire_api value does Codex 0.149 use?", a: "Use wire_api = \"responses\". Codex 0.149 accepts only the Responses wire. Chat Completions is available to other clients through the gateway, but wire_api = \"chat\" is not a valid Codex setting." },
     { q: "Can I switch GPT-5.6 models without editing the profile?", a: "The model line in the profile sets the default; editing it per project is the supported way to move between gpt-5.6-sol, gpt-5.6-terra and gpt-5.6-luna." },
     { q: "What does a 402 error mean mid-session?", a: "The shared prepaid balance is empty and needs a top-up. Retrying with backoff will not help — add balance and the next request goes through." },
   ],

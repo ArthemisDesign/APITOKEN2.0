@@ -16,7 +16,7 @@ export const content: LocalizedContent = {
         { type: "p", text: "将以下内容保存为 ~/.codex/apitoken.config.toml。它声明了提供商、端点、wire 协议，以及 Codex 读取密钥的环境变量：" },
         { type: "code", code: `# ~/.codex/apitoken.config.toml\nmodel = "gpt-5.6-sol"\nmodel_provider = "apitoken"\n\n[model_providers.apitoken]\nname = "apiToken.sale"\nbase_url = "https://router.apitoken.sale/v1"\nwire_api = "responses"\nenv_key = "APITOKEN_API_KEY"` },
         { type: "p", text: "两行承载了安全姿态。env_key 指定变量名而不是存放密钥本身，密钥留在 shell 里，绝不写进可能被提交的文件。base_url 必须保留 /v1 后缀——丢掉它是首次运行失败最常见的原因，因为 Codex 调用的每个路由都挂在这个前缀下。" },
-        { type: "note", text: "保持 wire_api = \"responses\"。网关同时提供 Responses API 和 Chat Completions，而 Codex 是围绕 Responses 流构建的。只有共享该文件的其他客户端要求经典格式时才改成 \"chat\"。" },
+        { type: "note", text: "保持 wire_api = \"responses\"。Codex 0.149 只接受 Responses wire。网关也为其他客户端提供 Chat Completions，但这不表示 wire_api = \"chat\" 是 Codex 的有效设置。" },
       ] },
       { h2: "导出密钥、查目录、运行", blocks: [
         { type: "steps", items: [
@@ -62,7 +62,7 @@ export const content: LocalizedContent = {
       { q: "Codex CLI 需要 ChatGPT 账户或订阅吗？", a: "不需要。配置好自定义 model_providers 配置档、把提供商的 API 密钥放进环境变量后，Codex 完全以 API 密钥认证运行——auth.json 里的 ChatGPT 登录与此无关。" },
       { q: "这个配置档会改动我的默认 Codex 配置吗？", a: "不会。配置档独立存放，只有传入 --profile apitoken 时才启用。你的默认配置和已有的 ChatGPT 登录保持原样。" },
       { q: "GPT-5.6 的折扣和 Claude 的一样吗？", a: "一样。GPT-5.6 用量按 OpenAI 官方 token 费率计量，你的统一 50% B2C 折扣作用于同一个预付余额。" },
-      { q: "wire_api 该用 responses 还是 chat？", a: "用 wire_api = \"responses\"——网关同时提供 Responses API 和 Chat Completions，而 Codex 围绕 Responses 流构建。chat 值是为要求经典格式的客户端准备的。" },
+      { q: "Codex 0.149 应该使用哪个 wire_api？", a: "使用 wire_api = \"responses\"。Codex 0.149 只接受 Responses wire。网关通过 Chat Completions 为其他客户端提供服务，但 wire_api = \"chat\" 不是 Codex 的有效设置。" },
       { q: "不改配置档能切换 GPT-5.6 模型吗？", a: "配置档里的 model 行设定的是默认值；按项目编辑这一行就是在 gpt-5.6-sol、gpt-5.6-terra 和 gpt-5.6-luna 之间切换的受支持方式。" },
       { q: "会话中途报 402 是什么意思？", a: "共享预付余额用完了，需要充值。退避重试没有用——充值后下一个请求就会通过。" },
     ],

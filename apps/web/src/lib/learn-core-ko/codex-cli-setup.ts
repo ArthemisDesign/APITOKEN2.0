@@ -20,7 +20,7 @@ export const content: LocalizedContent = {
           "model 줄을 바꿔 프로젝트별로 모델을 전환하세요: 가장 어려운 작업은 gpt-5.6-sol, 일상적인 작업은 gpt-5.6-terra, 빠르고 저렴한 단계는 gpt-5.6-luna.",
           "같은 Bearer 키로 GET https://router.apitoken.sale/v1/models를 호출하면 현재 활성화된 모델 세트를 볼 수 있습니다 — 통합 카탈로그는 ID를 제공자별로 구분합니다(anthropic/*, openai/*, google/*).",
         ] },
-        { type: "note", text: "wire_api = \"responses\"가 이 게이트웨이에 맞는 값입니다 — Responses와 Chat Completions를 모두 제공하며 Codex는 Responses로 스트리밍합니다. 특정 클라이언트가 클래식 형태를 요구할 때만 \"chat\"으로 설정하세요." },
+        { type: "note", text: "wire_api = \"responses\"가 Codex 0.149의 유효한 값입니다. Codex 0.149는 Responses wire만 허용합니다. 게이트웨이는 다른 클라이언트를 위해 Chat Completions도 제공하지만, Codex에서 wire_api = \"chat\"은 유효하지 않습니다." },
       ] },
       { h2: "만날 수 있는 오류", blocks: [
         { type: "list", items: [
@@ -36,6 +36,6 @@ export const content: LocalizedContent = {
       { q: "ChatGPT 계정이나 구독이 필요한가요?", a: "아니요. 커스텀 model_providers 프로필과 환경에 있는 프로바이더 API 키만 있으면 Codex는 완전히 API 키 인증으로 실행됩니다 — auth.json의 ChatGPT 로그인은 무관합니다." },
       { q: "기본 Codex 설정이 바뀌나요?", a: "아니요. 프로필은 자체 파일에 있으며 --profile apitoken을 전달할 때만 활성화됩니다. 기본 설정과 로그인은 그대로 유지됩니다." },
       { q: "할인이 Claude와 동일한가요?", a: "네. GPT-5.6 사용량은 공식 OpenAI 토큰 요금으로 측정되고 B2C 통일 50% 할인이 같은 선불 잔액에 적용됩니다." },
-      { q: "wire_api는 Responses와 Chat Completions 중 무엇으로 하나요?", a: "wire_api = \"responses\"를 사용하세요 — 게이트웨이는 둘 다 제공하며 Codex는 Responses 스트림을 중심으로 만들어졌습니다. Chat Completions 형태는 필요한 클라이언트를 위한 것입니다." },
+      { q: "Codex 0.149에서는 어떤 wire_api를 사용하나요?", a: "wire_api = \"responses\"를 사용하세요. Codex 0.149는 Responses wire만 허용합니다. 게이트웨이는 다른 클라이언트를 위해 Chat Completions도 제공하지만 Codex에서 wire_api = \"chat\"은 유효하지 않습니다." },
     ],
   };
