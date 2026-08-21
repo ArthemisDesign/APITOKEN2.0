@@ -26,7 +26,7 @@ export const article: LearnArticle = {
       { h2: "The Gemini catalog on one key", blocks: [
         { type: "p", text: "A single key covers the supported Gemini line; the model ID in the request path is the only switch between tiers. Representative text rates per 1M tokens:" },
         { type: "table", headers: ["Model ID", "Tier", "Official input / output", "After 50% discount"], rows: [
-          ["gemini-3.6-flash", "Flash — everyday default", "$1.50 / $7.50", "$0.75 / $3.75"],
+          ["gemini-3.6-flash", "Flash — everyday default", "$0.75 / $3.75 promo", "$0.375 / $1.875"],
           ["gemini-3.1-pro-preview", "Pro — hardest reasoning", "$2 / $12", "$1 / $6"],
           ["gemini-3.1-flash-lite", "Flash-Lite — bulk steps", "$0.25 / $1.50", "$0.125 / $0.75"],
           ["gemini-2.5-flash-lite", "Cheapest text floor", "$0.10 / $0.40", "$0.05 / $0.20"],
@@ -34,6 +34,7 @@ export const article: LearnArticle = {
         { type: "list", items: [
           "Gemini 3.1 Pro Preview requests above 200K input tokens bill the whole request at the long-context rates: $4 input and $18 output per 1M.",
           "Gemini 3.1 Flash Image (Nano Banana 2) generates images on the same route; image output is $60 per 1M image tokens officially, $30 after the discount.",
+          "Gemini 3.6 Flash's $0.75/$3.75 Google promotion runs through 2026-12-31; standard $1.50/$7.50 rates resume on 2027-01-01.",
           "Cached input on the text models bills at 10% of the fresh-input rate, so prompt-cache-heavy workloads settle even lower.",
         ] },
         { type: "link", text: "Gemini 3.6 Flash rates, context and output limits", href: "/models/gemini-3-6-flash" },

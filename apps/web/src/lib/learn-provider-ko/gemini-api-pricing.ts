@@ -10,11 +10,11 @@ export const content: LocalizedContent = {
       { h2: "대표 text 모델 요금", blocks: [
         { type: "table", headers: ["모델", "공식 input / cached / output", "50% 할인 후"], rows: [
           ["gemini-3.1-pro-preview", "$2 / $0.20 / $12", "$1 / $0.10 / $6"],
-          ["gemini-3.6-flash", "$1.50 / $0.15 / $7.50", "$0.75 / $0.075 / $3.75"],
+          ["gemini-3.6-flash", "$0.75 / $0.075 / $3.75 프로모션", "$0.375 / $0.0375 / $1.875"],
           ["gemini-3.1-flash-lite", "$0.25 / $0.025 / $1.50", "$0.125 / $0.0125 / $0.75"],
           ["gemini-2.5-flash-lite", "$0.10 / $0.01 / $0.40", "$0.05 / $0.005 / $0.20"],
         ] },
-        { type: "p", text: "모든 값은 100만 token 기준입니다. cached input은 provider가 보고한 독립 usage leg이며 같은 token이 fresh input에도 중복 추가되지 않습니다." },
+        { type: "p", text: "Gemini 3.6 Flash의 $0.75 / $0.075 / $3.75 공식 프로모션은 2026-12-31까지 적용되고 2027-01-01에 $1.50 / $0.15 / $7.50으로 전환됩니다. 모든 값은 100만 token 기준이며 cached input은 같은 token의 fresh input과 중복 과금되지 않습니다." },
       ] },
       { h2: "Long context와 이미지", blocks: [
         { type: "list", items: [

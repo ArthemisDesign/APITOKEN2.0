@@ -15,14 +15,14 @@ export const article: LearnArticle = {
       { type: "p", text: "Gemini API pricing is pure per-token metering: you pay for the input tokens you send and the output tokens the model generates, cached input bills as a cheaper leg of its own, and there is no per-request fee or minimum spend. Officially the spread runs from $0.10/$0.40 per 1M tokens on Gemini 2.5 Flash-Lite up to $2/$12 on Gemini 3.1 Pro Preview. apiToken.sale settles every one of those legs at a flat 50% discount, so the same requests cost $0.05/$0.20 to $1/$6." },
       { type: "table", headers: ["Model", "Official input / cached / output", "Price here after 50%"], rows: [
         ["gemini-3.1-pro-preview", "$2 / $0.20 / $12", "$1 / $0.10 / $6"],
-        ["gemini-3.6-flash", "$1.50 / $0.15 / $7.50", "$0.75 / $0.075 / $3.75"],
+        ["gemini-3.6-flash", "$0.75 / $0.075 / $3.75 promo", "$0.375 / $0.0375 / $1.875"],
         ["gemini-3.1-flash-lite", "$0.25 / $0.025 / $1.50", "$0.125 / $0.0125 / $0.75"],
         ["gemini-2.5-flash-lite", "$0.10 / $0.01 / $0.40", "$0.05 / $0.005 / $0.20"],
       ] },
       { type: "p", text: "All figures are per 1M tokens. Cached input is an independent usage leg reported in the response usage metadata: on the text models it bills at 10% of the fresh input rate, it applies automatically on repeated prompt prefixes, and there is no separate cache-write charge. You are never billed cached and fresh input for the same token." },
     ] },
     { h2: "How the token legs add up on a real call", blocks: [
-      { type: "p", text: "The cost of any call is a sum of three multiplications: fresh input tokens times the input rate, cached tokens times the cached rate, and output tokens times the output rate. A gemini-3.6-flash request that sends 20,000 input tokens — 12,000 of them served from cache — and generates 1,500 output tokens costs 8,000 × $1.50/M + 12,000 × $0.15/M + 1,500 × $7.50/M = $0.012 + $0.0018 + $0.011 ≈ $0.025 at official rates. After the flat 50% discount that call settles at roughly $0.0125." },
+      { type: "p", text: "The cost of any call is a sum of three multiplications: fresh input tokens times the input rate, cached tokens times the cached rate, and output tokens times the output rate. During Google's promotion through 2026-12-31, a gemini-3.6-flash request that sends 20,000 input tokens — 12,000 of them served from cache — and generates 1,500 output tokens costs 8,000 × $0.75/M + 12,000 × $0.075/M + 1,500 × $3.75/M = $0.006 + $0.0009 + $0.005625 = $0.012525 at official rates. After the flat 50% discount that call settles at $0.0062625." },
       { type: "list", items: [
         "Output is the expensive leg: on every text model above, output costs 4–6× the input rate, so verbose replies cost more than long prompts.",
         "Model choice beats prompt trimming: 3.1 Flash-Lite input costs an eighth of 3.1 Pro input, and 2.5 Flash-Lite a twentieth.",
@@ -32,7 +32,7 @@ export const article: LearnArticle = {
     ] },
     { h2: "Long-context pricing above 200K input tokens", blocks: [
       { type: "p", text: "Gemini 3.1 Pro Preview is the one text model with a long-context premium. Once a request crosses 200K input tokens, the entire request — not just the tokens past the threshold — bills at $4 input, $0.40 cached input and $18 output per 1M: double the input rate and 1.5× the output rate." },
-      { type: "p", text: "The Flash and Flash-Lite models have no such tier. They hold their standard rates across the full 1M-token context window with up to 64K output. A 500K-token analysis that costs $2 in input alone on Pro costs $0.75 on gemini-3.6-flash — and the discount then halves both figures." },
+      { type: "p", text: "The Flash and Flash-Lite models have no such tier. They hold their standard rates across the full 1M-token context window with up to 64K output. A 500K-token analysis that costs $2 in input alone on Pro costs $0.375 at Gemini 3.6 Flash's current official promotional input rate — and the apiToken.sale discount halves both figures again." },
       { type: "note", text: "Measure before sending a giant context to Pro: countTokens returns the exact billable input count for free (see below), so you can route oversized jobs to Flash deliberately instead of discovering the premium on the dashboard." },
     ] },
     { h2: "Image output: Gemini 3.1 Flash Image (Nano Banana 2)", blocks: [

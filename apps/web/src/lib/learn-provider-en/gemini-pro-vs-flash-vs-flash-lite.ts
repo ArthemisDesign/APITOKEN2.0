@@ -19,12 +19,12 @@ export const article: LearnArticle = {
         { type: "p", text: "Pricing is where the tiers differ most. All figures below are per 1M tokens, shown as input / cached input / output, with the official Google rates and the effective price on apiToken.sale after the flat 50% B2C discount, which applies identically to every tier." },
         { type: "table", headers: ["Tier", "Model ID", "Official in / cached / out", "After 50% discount"], rows: [
           ["Pro", "gemini-3.1-pro-preview", "$2 / $0.20 / $12", "$1 / $0.10 / $6"],
-          ["Flash", "gemini-3.6-flash", "$1.50 / $0.15 / $7.50", "$0.75 / $0.075 / $3.75"],
+          ["Flash", "gemini-3.6-flash", "$0.75 / $0.075 / $3.75 promo", "$0.375 / $0.0375 / $1.875"],
           ["Flash-Lite", "gemini-3.1-flash-lite", "$0.25 / $0.025 / $1.50", "$0.125 / $0.0125 / $0.75"],
           ["Flash-Lite (2.5)", "gemini-2.5-flash-lite", "$0.10 / $0.01 / $0.40", "$0.05 / $0.005 / $0.20"],
         ] },
         { type: "p", text: "Two things stand out. Output is the expensive leg on every tier — four to eight times the input rate — so the model that finishes in one pass at a lower output rate usually beats a stronger model that needs retries. And the spread is enormous: Flash-Lite output bills at one eighth of Pro output, which is why routing classification and extraction away from the top tiers matters more than any prompt optimization." },
-        { type: "note", text: "Cached input is a separate usage leg reported by the provider, billed at 10% of the fresh-input rate on the text models — it is not added on top of fresh input for the same tokens. Reusing long system prompts and few-shot blocks across calls compounds quickly in agent loops." },
+        { type: "note", text: "Gemini 3.6 Flash uses Google's $0.75/$0.075/$3.75 promotion through 2026-12-31 and returns to $1.50/$0.15/$7.50 on 2027-01-01. Cached input is a separate usage leg at 10% of fresh input; it is never added on top of fresh input for the same tokens." },
       ] },
       { h2: "Context window, output ceiling and the 200K threshold", blocks: [
         { type: "p", text: "Context is mostly not a differentiator: the current Pro, Flash and Flash-Lite text models all expose a 1M-token window and up to 64K output tokens. Flash-Lite is not a small-context tier — its advantage is cost and latency on simpler work, not a shorter window. The one context rule that changes your bill lives on Pro." },

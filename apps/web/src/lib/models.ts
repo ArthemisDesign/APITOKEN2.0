@@ -131,15 +131,33 @@ export type CatalogModel = ClaudeModel | OpenAiModel | GeminiModel | KimiModel;
 
 export const DISCOUNT_FLAT = 0.5;
 
+/** Google Gemini 3.6/3.7 promotional rates end at this UTC instant. */
+export const GEMINI_FLASH_PROMO_END_UNIX = 1_798_761_600;
+
+export type GeminiFlashPricing = {
+  inputPerM: number;
+  cachedInputPerM: number;
+  outputPerM: number;
+};
+
+/** Resolve the effective Google Gemini Flash rate card for a build timestamp. */
+export function geminiFlashPricingAt(unixSeconds = Math.floor(Date.now() / 1000)): GeminiFlashPricing {
+  return unixSeconds < GEMINI_FLASH_PROMO_END_UNIX
+    ? { inputPerM: 0.75, cachedInputPerM: 0.075, outputPerM: 3.75 }
+    : { inputPerM: 1.5, cachedInputPerM: 0.15, outputPerM: 7.5 };
+}
+
+const GEMINI_FLASH_PRICING = geminiFlashPricingAt();
+
 /** Price after the flat (50%) discount, formatted. */
 export function priceHere(officialPerM: number): string {
   return formatUsd(officialPerM * (1 - DISCOUNT_FLAT));
 }
 
 export function formatUsd(value: number): string {
-  // Three decimals keep official cache-write rates like $3.125 exact; trailing zeros strip.
-  const rounded = Math.round(value * 1000) / 1000;
-  return `$${rounded.toFixed(3).replace(/\.?0+$/, (m) => (m === ".000" ? "" : m.replace(/0+$/, "")))}`;
+  // Four decimals preserve discounted cache rates such as $0.0375; trailing zeros strip.
+  const rounded = Math.round(value * 10_000) / 10_000;
+  return `$${rounded.toFixed(4).replace(/\.?0+$/, (m) => (m === ".0000" ? "" : m.replace(/0+$/, "")))}`;
 }
 
 // Unified router endpoint — the recommended entry point: native Anthropic,
@@ -740,9 +758,9 @@ export const geminiModels: GeminiModel[] = [
     description: "Gemini 3.7 Flash API pricing: promotional official rates of $0.75/$3.75 per 1M tokens through 2026, or $0.375/$1.875 with the flat 50% apiToken.sale discount.",
     keywords: ["gemini 3.7 flash api", "gemini 3.7 flash price", "gemini 3.7 api cost", "gemini-3.7-flash", "google gemini api"],
     dek: "Gemini 3.7 Flash is Google's newest GA Flash model, available through the native Gemini API with streaming and authoritative token usage.",
-    inputPerM: 0.75,
-    cachedInputPerM: 0.075,
-    outputPerM: 3.75,
+    inputPerM: GEMINI_FLASH_PRICING.inputPerM,
+    cachedInputPerM: GEMINI_FLASH_PRICING.cachedInputPerM,
+    outputPerM: GEMINI_FLASH_PRICING.outputPerM,
     context: "1M tokens",
     maxOutput: "64K tokens",
     bestFor: [
@@ -769,12 +787,12 @@ export const geminiModels: GeminiModel[] = [
     name: "Gemini 3.6 Flash",
     tier: "Flash",
     title: "Gemini 3.6 Flash API — Price per Token & Access",
-    description: "Gemini 3.6 Flash API pricing: official $1.50/$7.50 per 1M tokens, $0.75/$3.75 with the flat 50% apiToken.sale discount. The newest Gemini on the native Google API.",
+    description: "Gemini 3.6 Flash API pricing: current promotional official rates of $0.75/$0.075/$3.75 per 1M tokens through 2026-12-31, or $0.375/$0.0375/$1.875 with the flat 50% apiToken.sale discount. Standard rates resume on 2027-01-01.",
     keywords: ["gemini 3.6 flash api", "gemini 3.6 flash price", "gemini 3.6 api cost", "gemini-3.6-flash", "gemini flash token pricing", "google gemini api"],
     dek: "Gemini 3.6 Flash is the newest Gemini model — Google's frontier-class Flash for agentic coding, multimodal work and long-context tasks, at Flash-tier pricing.",
-    inputPerM: 1.5,
-    cachedInputPerM: 0.15,
-    outputPerM: 7.5,
+    inputPerM: GEMINI_FLASH_PRICING.inputPerM,
+    cachedInputPerM: GEMINI_FLASH_PRICING.cachedInputPerM,
+    outputPerM: GEMINI_FLASH_PRICING.outputPerM,
     context: "1M tokens",
     maxOutput: "64K tokens",
     bestFor: [
@@ -783,13 +801,14 @@ export const geminiModels: GeminiModel[] = [
       "Long-context analysis in the full 1M-token window.",
     ],
     notes: [
+      "Current official promotional rates are $0.75 input, $0.075 cached input and $3.75 output per 1M tokens through 2026-12-31; standard rates resume on 2027-01-01.",
       "Cached input bills at 10% of input — caching is automatic on repeated prefixes.",
-      "1M-token context window with 64K max output at standard pricing — no long-context premium.",
+      "1M-token context window with 64K max output and no long-context premium.",
     ],
     faq: [
-      { q: "How much does the Gemini 3.6 Flash API cost?", a: "Officially $1.50 per 1M input tokens and $7.50 per 1M output tokens, with cached input at $0.15. On apiToken.sale the same requests cost 50% less — $0.75/$3.75 at the flat discount applied to every call." },
+      { q: "How much does the Gemini 3.6 Flash API cost?", a: "Google's current promotional rate through 2026-12-31 is $0.75 input, $0.075 cached input and $3.75 output per 1M tokens. The flat 50% apiToken.sale discount makes that $0.375/$0.0375/$1.875. Google returns to $1.50/$0.15/$7.50 on 2027-01-01." },
       { q: "What is the model ID for Gemini 3.6 Flash?", a: "gemini-3.6-flash. Use it unchanged with the Google GenAI SDK or any Gemini-compatible tool pointed at https://router.apitoken.sale, with the key sent as x-goog-api-key." },
-      { q: "Gemini 3.6 Flash or 3.5 Flash?", a: "3.6 Flash is newer and cheaper on output — $7.50 vs $9.00 per 1M at the same input price — so new projects should default to it. Keep 3.5 Flash only where prompts and evals are pinned to it." },
+      { q: "Gemini 3.6 Flash or 3.5 Flash?", a: "3.6 Flash is newer and, during the current Google promotion, costs $0.75 input and $3.75 output per 1M versus $1.50/$9.00 on 3.5 Flash. New projects should default to 3.6; keep 3.5 only where prompts and evals are pinned to it." },
     ],
     related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
   },
@@ -814,12 +833,12 @@ export const geminiModels: GeminiModel[] = [
       "Multimodal pipelines migrating gradually to 3.6 Flash.",
     ],
     notes: [
-      "Same input price as Gemini 3.6 Flash, but output is $9.00 vs $7.50 — new work should default to gemini-3.6-flash.",
+      "Gemini 3.6 Flash currently has Google's lower promotional $0.75/$3.75 input/output rates; new work should default to gemini-3.6-flash.",
       "Cached input bills at 10% of input; caching is automatic on repeated prefixes.",
     ],
     faq: [
       { q: "How much does the Gemini 3.5 Flash API cost?", a: "Officially $1.50 per 1M input tokens and $9.00 per 1M output tokens, with cached input at $0.15. With the flat 50% apiToken.sale discount that is $0.75/$4.50." },
-      { q: "Gemini 3.5 Flash or 3.6 Flash?", a: "They share an input price, and 3.6 Flash is newer with cheaper output ($7.50 vs $9.00) — prefer it for new projects. Stay on 3.5 Flash when your prompts and evals are pinned to it." },
+      { q: "Gemini 3.5 Flash or 3.6 Flash?", a: "3.6 Flash is newer and currently uses Google's promotional $0.75/$3.75 input/output rates versus $1.50/$9.00 on 3.5 Flash. Prefer 3.6 for new projects; stay on 3.5 only when prompts and evals are pinned to it." },
       { q: "What is the model ID?", a: "gemini-3.5-flash. It works on the same apiToken.sale key and balance as every other Claude, GPT and Gemini model — send it as the model on the native Gemini endpoint with x-goog-api-key." },
     ],
     related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],

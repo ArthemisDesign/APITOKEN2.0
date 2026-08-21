@@ -24,7 +24,7 @@ export const content: LocalizedContent = {
       { h2: "一把密钥覆盖整个 Gemini 目录", blocks: [
         { type: "p", text: "一把密钥覆盖受支持的 Gemini 产品线；切换档位只需改请求路径中的模型 ID。每 1M token 的代表性文本价格：" },
         { type: "table", headers: ["模型 ID", "档位", "官方输入 / 输出", "五折之后"], rows: [
-          ["gemini-3.6-flash", "Flash —— 日常默认", "$1.50 / $7.50", "$0.75 / $3.75"],
+          ["gemini-3.6-flash", "Flash —— 日常默认", "$0.75 / $3.75 促销价", "$0.375 / $1.875"],
           ["gemini-3.1-pro-preview", "Pro —— 最难的推理任务", "$2 / $12", "$1 / $6"],
           ["gemini-3.1-flash-lite", "Flash-Lite —— 批量环节", "$0.25 / $1.50", "$0.125 / $0.75"],
           ["gemini-2.5-flash-lite", "最低文本价格底线", "$0.10 / $0.40", "$0.05 / $0.20"],
@@ -32,6 +32,7 @@ export const content: LocalizedContent = {
         { type: "list", items: [
           "Gemini 3.1 Pro Preview 请求超过 200K 输入 token 时，整个请求按长上下文费率计费：每 1M 输入 $4、输出 $18。",
           "Gemini 3.1 Flash Image（Nano Banana 2）在同一路由上生成图像；图像输出官方价为每 1M 图像 token $60，折扣后 $30。",
+          "Gemini 3.6 Flash 的 Google $0.75/$3.75 促销价持续到 2026-12-31；2027-01-01 恢复 $1.50/$7.50 标准价。",
           "文本模型的缓存输入按新鲜输入费率的 10% 计费，重度使用提示词缓存的负载最终成本更低。",
         ] },
         { type: "link", text: "Gemini 3.6 Flash 的价格、上下文和输出上限", href: "/models/gemini-3-6-flash" },

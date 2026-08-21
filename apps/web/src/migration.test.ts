@@ -329,8 +329,9 @@ describe("completed Next.js migration", () => {
     expect(marketing).toContain('["GPT-5.6 Luna","gpt-5.6-luna","400K","$0.20","$1.20"');
     expect(marketing).toContain('["GPT-5.5","gpt-5.5","400K","$5","$30"');
     expect(marketing).toContain('["GPT-5.4","gpt-5.4","400K","$2.50","$15"');
-    expect(marketing).toContain('["Gemini 3.7 Flash","gemini-3.7-flash","1M","$0.75*","$3.75*"');
-    expect(marketing).toContain('["Gemini 3.6 Flash","gemini-3.6-flash","1M","$1.50","$7.50"');
+    expect(marketing).toContain('const geminiFlashRates = geminiFlashPricingAt();');
+    expect(marketing).toContain('const geminiFlashInput = `${formatUsd(geminiFlashRates.inputPerM)}*`;');
+    expect(marketing).toContain('const geminiFlashOutput = `${formatUsd(geminiFlashRates.outputPerM)}*`;');
     expect(marketing).toContain('["Gemini 3.5 Flash","gemini-3.5-flash","1M","$1.50","$9.00"');
     expect(marketing).toContain('["Gemini 3 Flash Preview","gemini-3-flash-preview","1M","$0.50","$3.00"');
     expect(marketing).toContain('["Gemini 3.1 Pro Preview","gemini-3.1-pro-preview","1M","$2*","$12*"');

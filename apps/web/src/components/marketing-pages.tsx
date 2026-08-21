@@ -7,6 +7,7 @@ import { useI18n, type Language } from "./i18n-provider";
 import { PricingOverview } from "./pricing-overview";
 import { LocalizedLink, T } from "./translated";
 import { DOCS_URL } from "@/lib/site-links";
+import { formatUsd, geminiFlashPricingAt } from "@/lib/models";
 
 export function MarketingFrame({ children }: { children: ReactNode }) {
   return <main>{children}</main>;
@@ -43,9 +44,13 @@ const gptModelRows = [
   ["GPT-5.4","gpt-5.4","400K","$2.50","$15","m_gpt54"],
 ] as const;
 
+const geminiFlashRates = geminiFlashPricingAt();
+const geminiFlashInput = `${formatUsd(geminiFlashRates.inputPerM)}*`;
+const geminiFlashOutput = `${formatUsd(geminiFlashRates.outputPerM)}*`;
+
 const geminiModelRows = [
-  ["Gemini 3.7 Flash","gemini-3.7-flash","1M","$0.75*","$3.75*","m_gem37flash"],
-  ["Gemini 3.6 Flash","gemini-3.6-flash","1M","$1.50","$7.50","m_gem36flash"],
+  ["Gemini 3.7 Flash","gemini-3.7-flash","1M",geminiFlashInput,geminiFlashOutput,"m_gem37flash"],
+  ["Gemini 3.6 Flash","gemini-3.6-flash","1M",geminiFlashInput,geminiFlashOutput,"m_gem36flash"],
   ["Gemini 3.5 Flash","gemini-3.5-flash","1M","$1.50","$9.00","m_gem35flash"],
   ["Gemini 3 Flash Preview","gemini-3-flash-preview","1M","$0.50","$3.00","m_gem3flashpreview"],
   ["Gemini 3.1 Pro Preview","gemini-3.1-pro-preview","1M","$2*","$12*","m_gem31pro"],
@@ -59,12 +64,12 @@ const modelPageCopy: Record<Language, { sonnet5Footnote: string; gptFootnote: st
   en: {
     sonnet5Footnote: "* Claude Sonnet 5 introductory official pricing is $2 / $10 per 1M through 2026-08-31 and returns to $3 / $15 on 2026-09-01. The engine already charges the current effective rate.",
     gptFootnote: "GPT rows are official OpenAI standard rates. gpt-5.6 is a convenience alias of gpt-5.6-sol. Requests above 272K input tokens bill at OpenAI long-context rates (2× input, 1.5× output on the whole request).",
-    geminiFootnote: "* Gemini 3.7 Flash promotional rates are $0.75 / $3.75 per 1M through 2026-12-31 and become $1.50 / $7.50 on 2027-01-01. Gemini 3.1 Pro Preview bills $4 / $18 per 1M above 200K input tokens. Gemini 3.1 Flash Image bills image output at $60 per 1M image-output tokens.",
+    geminiFootnote: "* Gemini 3.6 Flash and Gemini 3.7 Flash promotional rates are $0.75 / $3.75 per 1M through 2026-12-31 and become $1.50 / $7.50 on 2027-01-01. The table resolves the effective rate at build time. Gemini 3.1 Pro Preview bills $4 / $18 per 1M above 200K input tokens. Gemini 3.1 Flash Image bills image output at $60 per 1M image-output tokens.",
   },
   ru: {
     sonnet5Footnote: "* Для Claude Sonnet 5 официальная вводная цена $2 / $10 за 1 млн действует до 2026-08-31 включительно; с 2026-09-01 возвращается ставка $3 / $15. Движок уже применяет актуальную ставку.",
     gptFootnote: "Строки GPT — официальные стандартные ставки OpenAI. gpt-5.6 — удобный псевдоним gpt-5.6-sol. Запросы свыше 272K входных токенов тарифицируются по ставкам OpenAI для длинного контекста (×2 вход, ×1,5 выход за весь запрос).",
-    geminiFootnote: "* Для Gemini 3.7 Flash промо-ставки $0.75 / $3.75 за 1 млн действуют до 2026-12-31; с 2027-01-01 — $1.50 / $7.50. Gemini 3.1 Pro Preview тарифицируется по $4 / $18 за 1 млн свыше 200K входных токенов. Gemini 3.1 Flash Image тарифицирует вывод изображений по $60 за 1 млн токенов изображения.",
+    geminiFootnote: "* Для Gemini 3.6 Flash и Gemini 3.7 Flash промо-ставки $0.75 / $3.75 за 1 млн действуют до 2026-12-31; с 2027-01-01 — $1.50 / $7.50. Таблица выбирает актуальную ставку во время сборки. Gemini 3.1 Pro Preview тарифицируется по $4 / $18 за 1 млн свыше 200K входных токенов. Gemini 3.1 Flash Image тарифицирует вывод изображений по $60 за 1 млн токенов изображения.",
   },
 };
 

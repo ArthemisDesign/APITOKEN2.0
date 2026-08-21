@@ -46,7 +46,7 @@ export const content: LocalizedContent = {
       { h2: "前几次调用的成本", blocks: [
         { type: "p", text: "Gemini 调用按 Google 官方费率项精确结算——输入、缓存输入和输出——再叠加固定 50% 折扣。常用文本模型折后每 100 万 token 的价格：" },
         { type: "table", headers: ["模型", "每 100 万 token 输入 / 缓存 / 输出", "适合的首个任务"], rows: [
-          ["gemini-3.6-flash", "$0.75 / $0.075 / $3.75", "日常编程、聊天和智能体"],
+          ["gemini-3.6-flash", "$0.375 / $0.0375 / $1.875", "日常编程、聊天和智能体"],
           ["gemini-3.1-flash-lite", "$0.125 / $0.0125 / $0.75", "分类、抽取、路由"],
           ["gemini-2.5-flash-lite", "$0.05 / $0.005 / $0.20", "最便宜的大批量文本"],
           ["gemini-3.1-pro-preview", "$1 / $0.10 / $6", "最硬的推理和评审"],

@@ -77,7 +77,7 @@ export const article: LearnArticle = {
       { h2: "What the first calls cost", blocks: [
         { type: "p", text: "Gemini calls settle at the exact official Google rate legs — input, cached input and output — and the flat 50% discount is applied on top. Post-discount prices per 1M tokens for the common text models:" },
         { type: "table", headers: ["Model", "Input / cached / output per 1M", "Good first job"], rows: [
-          ["gemini-3.6-flash", "$0.75 / $0.075 / $3.75", "Everyday coding, chat and agents"],
+          ["gemini-3.6-flash", "$0.375 / $0.0375 / $1.875", "Everyday coding, chat and agents"],
           ["gemini-3.1-flash-lite", "$0.125 / $0.0125 / $0.75", "Classification, extraction, routing"],
           ["gemini-2.5-flash-lite", "$0.05 / $0.005 / $0.20", "Cheapest high-volume text"],
           ["gemini-3.1-pro-preview", "$1 / $0.10 / $6", "Hardest reasoning and review"],
