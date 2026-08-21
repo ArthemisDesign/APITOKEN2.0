@@ -346,7 +346,7 @@ fn stage2_authority_postgres_matrix() {
         .unwrap();
     let mut pg = PgStore::connect(&url).unwrap();
     pg.migrate().unwrap();
-    pg.client.batch_execute("DELETE FROM gemini_batch_profile_leases_slot2 WHERE job_id='stage2-job';DELETE FROM gemini_batch_profile_leases WHERE job_id='stage2-job';DELETE FROM gemini_batch_settlement_outbox WHERE job_id='stage2-job';DELETE FROM gemini_batch_blobs WHERE job_id='stage2-job';DELETE FROM gemini_batch_items WHERE job_id='stage2-job';DELETE FROM gemini_batch_jobs WHERE job_id='stage2-job';DELETE FROM gemini_batch_file_chunks WHERE file_id='stage2-file';DELETE FROM gemini_batch_files WHERE file_id='stage2-file';DELETE FROM provider_turn_calibration_events WHERE request_id='stage2-request';DELETE FROM provider_calibration_subject_spend WHERE subject_id='stage2-profile';DELETE FROM usage_events WHERE request_id='stage2-request';DELETE FROM ledger WHERE request_id='stage2-request';DELETE FROM api_keys WHERE key='stage2-key';DELETE FROM accounts WHERE id='stage2-account';").unwrap();
+    pg.client.batch_execute("DELETE FROM gemini_batch_admissions WHERE admission_id='stage2-delete-admission';DELETE FROM gemini_batch_items WHERE job_id='stage2-delete-job';DELETE FROM gemini_batch_jobs WHERE job_id='stage2-delete-job';DELETE FROM gemini_batch_file_chunks WHERE file_id='stage2-delete-input';DELETE FROM gemini_batch_files WHERE file_id='stage2-delete-input';DELETE FROM gemini_batch_profile_leases_slot2 WHERE job_id='stage2-job';DELETE FROM gemini_batch_profile_leases WHERE job_id='stage2-job';DELETE FROM gemini_batch_settlement_outbox WHERE job_id='stage2-job';DELETE FROM gemini_batch_blobs WHERE job_id='stage2-job';DELETE FROM gemini_batch_items WHERE job_id='stage2-job';DELETE FROM gemini_batch_jobs WHERE job_id='stage2-job';DELETE FROM gemini_batch_file_chunks WHERE file_id='stage2-file';DELETE FROM gemini_batch_files WHERE file_id='stage2-file';DELETE FROM provider_turn_calibration_events WHERE request_id='stage2-request';DELETE FROM provider_calibration_subject_spend WHERE subject_id='stage2-profile';DELETE FROM usage_events WHERE request_id='stage2-request';DELETE FROM ledger WHERE request_id='stage2-request';DELETE FROM api_keys WHERE key='stage2-key';DELETE FROM accounts WHERE id='stage2-account';").unwrap();
     pg.client.execute("INSERT INTO accounts(id,balance_nano,spent_nano,reserved_nano,mult_bp,status,created_ts,created)VALUES('stage2-account',1000,0,0,5000,'active',1,'x')",&[]).unwrap();
     pg.client.execute("INSERT INTO api_keys(key,key_id,account_id,spent_nano,reserved_nano,status,created_ts,created)VALUES('stage2-key','stage2-key-id','stage2-account',0,0,'active',1,'x')",&[]).unwrap();
     let ts = now();
@@ -641,6 +641,70 @@ fn stage2_authority_postgres_matrix() {
     assert!(pg
         .gemini_batch_file_delete("stage2-account", "stage2-zero-file")
         .unwrap());
+
+    // Staged publication retains a committed replay marker with an input-file FK. Deleting the
+    // terminal job must remove that redundant marker atomically so its two files become deletable.
+    let admission = "stage2-delete-admission";
+    let file_job = "stage2-delete-job";
+    let input_file = crate::GeminiBatchFileCreate {
+        file_id: "stage2-delete-input".into(),
+        size_bytes: 0,
+        sha256_digest: [0; 32],
+        ..crate::GeminiBatchFileCreate {
+            file_id: "unused".into(),
+            account_id: "stage2-account".into(),
+            display_name: "delete input".into(),
+            mime_type: "application/jsonl".into(),
+            size_bytes: 0,
+            sha256_digest: [0; 32],
+            source_kind: "client_upload".into(),
+            create_ts: ts,
+            expiration_ts: ts + 100,
+        }
+    };
+    assert_eq!(
+        pg.gemini_batch_file_create(&input_file).unwrap(),
+        crate::GeminiBatchFileCreateOutcome::Created
+    );
+    assert!(pg
+        .gemini_batch_file_complete(
+            "stage2-account",
+            "stage2-delete-input",
+            &crate::GeminiBatchFileCompletion {
+                completed_ts: ts + 1,
+                whole_file_sha256_digest: [0; 32],
+                chunk_manifest_digest: [
+                    160, 21, 227, 48, 235, 217, 253, 190, 242, 13, 102, 210, 42, 9, 140, 207, 75,
+                    199, 12, 236, 163, 222, 104, 168, 110, 208, 96, 24, 193, 96, 120, 238,
+                ],
+            }
+        )
+        .unwrap());
+    pg.client.execute(
+        "INSERT INTO gemini_batch_admissions(admission_id,job_id,account_id,creator_key_id,public_model,display_name,priority,input_kind,input_file_id,schema_version,encryption_policy_version,state,next_item_index,aggregate_hold_nano,aggregate_output_tokens,create_ts,deadline_ts,expires_ts,update_ts,canonical_request_digest) VALUES($1,$2,'stage2-account','stage2-key-id','gemini-2.5-flash','delete',0,'file',$3,1,1,'committed',1,0,1,$4,$4+100,$4+100,$4,decode(repeat('01',32),'hex'))",
+        &[&admission, &file_job, &"stage2-delete-input", &ts],
+    ).unwrap();
+    pg.client.execute(
+        "INSERT INTO gemini_batch_jobs(job_id,account_id,creator_key_id,public_model,display_name,canonical_request_digest,priority,input_kind,input_file_id,schema_version,encryption_policy_version,create_ts,update_ts,deadline_ts,completed_ts,result_expiration_ts,terminal_items_ts,output_state) VALUES($1,'stage2-account','stage2-key-id','gemini-2.5-flash','delete',decode(repeat('01',32),'hex'),0,'file',$2,1,1,$3,$3,$3+100,$3,$3+3628800,$3,'ready')",
+        &[&file_job, &"stage2-delete-input", &ts],
+    ).unwrap();
+    pg.client.execute(
+        "INSERT INTO gemini_batch_items(job_id,item_index,request_id,logical_request_id,execution_group_id,request_digest,hold_nano,payable_multiplier_bp,priced_ts,tariff_family,tariff_version,tariff_schedule_id,state,creator_key_id,created_ts,updated_ts,terminal_class,terminal_ts) VALUES($1,0,'stage2-delete-request','stage2-delete-logical','stage2-delete-group',decode(repeat('02',32),'hex'),0,5000,$2,'google/gemini/gemini-2.5-flash',1,'v1','canceled','stage2-key-id',$2,$2,'canceled',$2)",
+        &[&file_job, &ts],
+    ).unwrap();
+    assert!(pg.gemini_batch_delete("stage2-account", file_job).unwrap());
+    assert!(pg
+        .client
+        .query_opt(
+            "SELECT 1 FROM gemini_batch_admissions WHERE admission_id=$1",
+            &[&admission]
+        )
+        .unwrap()
+        .is_none());
+    assert!(pg
+        .gemini_batch_file_delete("stage2-account", "stage2-delete-input")
+        .unwrap());
+
     let mut sqlite = crate::authority::Authority::Sqlite(crate::open(":memory:").unwrap());
     assert!(crate::is_gemini_batch_unsupported(
         &sqlite.gemini_batch_get("a", "b").unwrap_err()

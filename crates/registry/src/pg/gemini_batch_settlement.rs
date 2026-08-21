@@ -631,7 +631,21 @@ impl PgStore {
 
     pub fn gemini_batch_delete(&mut self, account_id: &str, job_id: &str) -> Result<bool> {
         let ts = now();
-        Ok(self.client.execute("UPDATE gemini_batch_jobs j SET delete_ts=$3,update_ts=$3 WHERE account_id=$1 AND job_id=$2 AND completed_ts IS NOT NULL AND NOT EXISTS(SELECT 1 FROM gemini_batch_items i WHERE i.job_id=j.job_id AND i.state NOT IN ('succeeded','failed','indeterminate','canceled')) AND NOT EXISTS(SELECT 1 FROM gemini_batch_settlement_outbox o WHERE o.job_id=j.job_id AND o.state<>'done')", &[&account_id, &job_id, &ts])? == 1)
+        let mut tx = self.client.transaction()?;
+        let deleted = tx.execute("UPDATE gemini_batch_jobs j SET delete_ts=COALESCE(delete_ts,$3),update_ts=GREATEST(update_ts,$3) WHERE account_id=$1 AND job_id=$2 AND completed_ts IS NOT NULL AND NOT EXISTS(SELECT 1 FROM gemini_batch_items i WHERE i.job_id=j.job_id AND i.state NOT IN ('succeeded','failed','indeterminate','canceled')) AND NOT EXISTS(SELECT 1 FROM gemini_batch_settlement_outbox o WHERE o.job_id=j.job_id AND o.state<>'done')", &[&account_id, &job_id, &ts])? == 1;
+        if !deleted {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        // A committed admission is only a pre-publish replay marker. The durable job row remains the
+        // canonical idempotency authority, so retaining this staging row after job deletion merely
+        // pins its input file through the expand-only foreign key forever.
+        tx.execute(
+            "DELETE FROM gemini_batch_admissions WHERE account_id=$1 AND job_id=$2 AND state='committed'",
+            &[&account_id, &job_id],
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 
     pub fn prune_gemini_batch(

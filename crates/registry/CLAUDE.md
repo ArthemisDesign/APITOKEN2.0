@@ -80,8 +80,11 @@ side effect. `serve` may only perform the read-only schema verification before c
   identity-free operational report. That report is read in one PostgreSQL `REPEATABLE READ`
   transaction and owns the closed current state plus rolling `1h|24h|7d` aggregates; it never
   returns account/job/item/model/profile identity or customer content. Interactive
-  and batch APPLY share one private transaction-local account collection primitive, and provider-turn
-  recording likewise has one transaction helper used by its public wrapper and batch APPLY. Exact
+  and batch APPLY share one private transaction-local account collection primitive. Terminal job
+  deletion also removes its redundant committed staging replay marker in the same transaction, so
+  that marker cannot pin the account-scoped input file after the live job becomes deleted; the job
+  row remains the canonical idempotency authority. Provider-turn recording likewise has one
+  transaction helper used by its public wrapper and batch APPLY. Exact
   calibration replay never advances spend twice; conflicting replay rolls back; subject tracking uses
   `LEAST(tracking_started_ts)` and `GREATEST(updated_ts)` for out-of-order completion. Batch drains
   isolate every row: failures persist attempts/error plus bounded exponential backoff, permanent
