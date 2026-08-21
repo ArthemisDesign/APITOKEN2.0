@@ -102,7 +102,7 @@ side effect. `serve` may only perform the read-only schema verification before c
   active-item ceiling. Each profile's consecutive Batch starts use the durable 2–5 second pacing
   authority. SQLite returns typed unsupported.
   No public HTTP route, env switch, scheduler loop or execution transport is composed here.
-- **Request-observability S2 (migrations `0053`, `0054`, and read-only reporting migration `0061`) is PostgreSQL-only and opt-in.**
+- **Request-observability S2 (migrations `0053`, `0054`, read-only reporting `0061`, and Grafana rollups `0062`) is PostgreSQL-only and opt-in.**
   Fact-aware reservation and delivery methods insert/validate admission and first-delivery evidence in
   the owning money transaction. Terminal evidence is durably enqueued with settlement, then copied to
   the fact only during authoritative outbox APPLY; `billing_outcome` is derived there and is never a
@@ -115,11 +115,11 @@ side effect. `serve` may only perform the read-only schema verification before c
   Private analytics reads are PostgreSQL-only, read-only Repeatable Read snapshots: bounded summary,
   newest-first `(admitted_at,fact_id)` keyset pages, and canonical logical-ID attempts. Read DTOs omit
   account/key/billing/execution/upstream identities and raw failure prose; coverage never derives a
-  denominator from persisted rows. Migration 0061 adds two daily aggregate Grafana views that join
-  request facts to `usage_events` by billing request ID and grant the monitoring role only those views;
-  they expose opaque account/non-secret key identity, normalized client/model/closed-tool dimensions
-  and token/nanoUSD totals but no email, key label, raw API key, request, content, provider-profile, or
-  arbitrary tool identity. Lifecycle maintenance prunes
+  denominator from persisted rows. Migrations 0061 and 0062 add daily aggregate and narrow top-level
+  Grafana views that join request facts to `usage_events` by billing request ID and grant the
+  monitoring role only those views; they expose opaque account/non-secret key identity, normalized
+  client/model/closed-tool dimensions and token/nanoUSD totals but no email, key label, raw API key,
+  request, content, provider-profile, or arbitrary tool identity. Lifecycle maintenance prunes
   request facts first under the existing validated 30-day cutoff.
   Contract and staged rollout — `docs/engine/REQUEST_OBSERVABILITY.md`.
 - Public type [`Sub`] (email/token/proxy/fleet) — the contract for `pool`/`forward`. Change it —

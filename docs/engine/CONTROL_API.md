@@ -535,12 +535,15 @@ rows and an opaque versioned keyset cursor. Logical lookup returns at most 200 a
 
 The monitoring stack also provisions a separate PostgreSQL datasource against two read-only aggregate
 views in engine migration 0061: `request_fact_usage_daily` and `request_fact_tool_usage_daily`.
-Grafana can read only those views through the `apitoken_monitoring` role. The views join
+Migration 0062 adds narrow top-level Grafana rollups for customer/model, client, model, and closed
+tool-class cards so the overview does not require broad parallel hash aggregation. Grafana can read
+only these views through the `apitoken_monitoring` role. The views join
 `request_facts.billing_request_id` to authoritative `usage_events.request_id`, retain exact token and
 nanoUSD totals, and expose the opaque engine `account_id`, non-secret `key_id`, and closed
 client/model/tool dimensions. They never grant access to base request, ledger, prompt, email, key
-label, raw API key, tool-name, schema, argument, result, or request-identity columns. The dedicated `apitoken-request-usage` dashboard limits queries to 30 days and 500 grouped
-rows. Exact models remain database report dimensions and never become Prometheus labels.
+label, raw API key, tool-name, schema, argument, result, or request-identity columns. The dedicated
+`apitoken-request-usage` dashboard limits queries to 30 days and 500 grouped rows. Exact models remain
+database report dimensions and never become Prometheus labels.
 
 Rows omit account/key/billing/execution/upstream identities and failure prose. They never contain raw
 keys, key labels, email, prompt/content, tool names/schemas/arguments, provider subject/profile or raw

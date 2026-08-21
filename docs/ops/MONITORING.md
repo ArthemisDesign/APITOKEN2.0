@@ -78,7 +78,8 @@ scrolling:
 - The main Production Overview contains an expanded **Request Usage: Customers, Models & Tools**
   section after Request Fact Observability. It shows the top 30-day customer/key/client/model and
   closed-tool-class groups immediately on the page operators already use. Every panel and the
-  dashboard header link to the full drilldown.
+  dashboard header link to the full drilldown. These overview cards read the narrow migration-0062
+  rollup views; broad cross-product hash aggregation stays out of the always-open page.
 - `observability/grafana/dashboards/request-usage-dimensions.json` (uid
   `apitoken-request-usage`) is the private full 30-day request-analytics dashboard. It shows grouped
   request/billable counts, authoritative tokens and nanoUSD by opaque engine account, non-secret key

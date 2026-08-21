@@ -82,6 +82,14 @@ for forbidden_dimension in logical_request_id billing_request_id execution_group
 done
 grep -Fq 'authbot|router)).service' "$ROOT/observability/grafana/dashboards/production-overview.json"
 ! grep -Fq 'authbot|router))\\.service' "$ROOT/observability/grafana/dashboards/production-overview.json"
+# Grafana top-level cards use narrow rollups so they do not overflow monitoring PostgreSQL shared
+# memory on broad hash aggregation. Full detail stays in the migration-0061 drilldown dashboard.
+for reporting_view in request_fact_usage_top_customer_model_daily \
+  request_fact_usage_top_client_daily request_fact_usage_top_model_daily \
+  request_fact_usage_top_tool_daily; do
+  grep -Fq "CREATE VIEW $reporting_view" \
+    "$ROOT/crates/registry/migrations_pg/0062_request_usage_grafana_rollups.sql"
+done
 for overview_dimension in account_id key_id client_kind requested_model executable_model tool_class; do
   grep -Fq "$overview_dimension" \
     "$ROOT/observability/grafana/dashboards/production-overview.json" \
@@ -89,6 +97,8 @@ for overview_dimension in account_id key_id client_kind requested_model executab
 done
 grep -Fq '/d/apitoken-request-usage/apitoken-sale-request-usage-dimensions' \
   "$ROOT/observability/grafana/dashboards/production-overview.json"
+grep -Fq 'GRANT SELECT ON request_fact_usage_top_customer_model_daily, request_fact_usage_top_client_daily, request_fact_usage_top_model_daily, request_fact_usage_top_tool_daily TO apitoken_monitoring' \
+  "$ROOT/deploy/install-monitoring.sh"
 grep -Fq 'Grafana request-analytics datasource returned no request usage rows' \
   "$ROOT/deploy/install-monitoring.sh"
 grep -Fq 'http://127.0.0.1:3600/api/ds/query' "$ROOT/deploy/install-monitoring.sh"

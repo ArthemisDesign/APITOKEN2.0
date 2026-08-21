@@ -117,6 +117,9 @@ if docker compose --env-file "$POSTGRES_ENV" -f "$POSTGRES_COMPOSE" exec -T comm
   printf '%s\n' "DO \$\$ BEGIN IF to_regclass('public.request_fact_usage_daily') IS NOT NULL THEN GRANT SELECT ON request_fact_usage_daily, request_fact_tool_usage_daily TO apitoken_monitoring; END IF; END \$\$;" \
     | docker compose --env-file "$POSTGRES_ENV" -f "$POSTGRES_COMPOSE" exec -T commerce-postgres \
       psql -U commerce -d claude_engine --no-psqlrc --set ON_ERROR_STOP=1 >/dev/null
+  printf '%s\n' "DO \$\$ BEGIN IF to_regclass('public.request_fact_usage_top_customer_model_daily') IS NOT NULL THEN GRANT SELECT ON request_fact_usage_top_customer_model_daily, request_fact_usage_top_client_daily, request_fact_usage_top_model_daily, request_fact_usage_top_tool_daily TO apitoken_monitoring; END IF; END \$\$;" \
+    | docker compose --env-file "$POSTGRES_ENV" -f "$POSTGRES_COMPOSE" exec -T commerce-postgres \
+      psql -U commerce -d claude_engine --no-psqlrc --set ON_ERROR_STOP=1 >/dev/null
 fi
 
 install -d -o root -g root -m 0755 "$STAGE"
@@ -235,7 +238,7 @@ wait_prometheus_result monitoring-targets \
 # Provisioning success alone does not prove the private request-analytics datasource can query its
 # granted views. Exercise the same Grafana backend path as the dashboard and require real rows before
 # committing this monitoring activation.
-grafana_query='{"from":"now-30d","to":"now","queries":[{"refId":"A","datasource":{"uid":"engine-request-analytics","type":"grafana-postgresql-datasource"},"format":"table","rawQuery":true,"rawSql":"SELECT COUNT(*)::bigint AS rows, COALESCE(SUM(request_count),0)::bigint AS requests FROM request_fact_usage_daily WHERE usage_day >= CURRENT_DATE - INTERVAL '\''30 days'\''"}]}'
+grafana_query='{"from":"now-30d","to":"now","queries":[{"refId":"A","datasource":{"uid":"engine-request-analytics","type":"grafana-postgresql-datasource"},"format":"table","rawQuery":true,"rawSql":"SELECT COUNT(*)::bigint AS rows, COALESCE(SUM(request_count),0)::bigint AS requests FROM request_fact_usage_top_model_daily WHERE usage_day >= CURRENT_DATE - INTERVAL '\''30 days'\''"}]}'
 grafana_response=$(curl --fail --silent --show-error \
   -H 'X-WEBAUTH-USER: monitoring-installer' -H 'Content-Type: application/json' \
   --data-binary "$grafana_query" http://127.0.0.1:3600/api/ds/query) \
