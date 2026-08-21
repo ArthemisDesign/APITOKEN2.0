@@ -34,11 +34,13 @@ datasources:
     access: proxy
     url: 127.0.0.1:5433
     user: apitoken_monitoring
-    database: claude_engine
     editable: false
     secureJsonData:
       password: ${MONITORING_POSTGRES_PASSWORD}
     jsonData:
+      # Grafana 12+ ignores top-level `database` and the panel UI then shows
+      # "No data" / "no default database configured".
+      database: claude_engine
       sslmode: disable
       postgresVersion: 1600
       timescaledb: false

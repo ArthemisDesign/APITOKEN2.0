@@ -7,10 +7,11 @@ through the same database-backed managed-admin authentication used by the other 
 
 This design intentionally keeps customer identifiers, request contents, API keys, balances, and
 payment payloads out of Prometheus labels and Grafana. The custom collector exports aggregate queue
-and database state only. A separate read-only PostgreSQL datasource can query only the two
-privacy-bounded request-usage views from engine migration 0061; it has no `SELECT` grant on base
-request, usage, account, key, ledger, or content-bearing tables. Grafana users are auto-provisioned as
-viewers.
+and database state only. A separate read-only PostgreSQL datasource can query only the granted
+privacy-bounded request-usage views; it has no `SELECT` grant on base request, usage, account, key,
+ledger, or content-bearing tables. Grafana 12+ requires that datasource's default database
+(`claude_engine`) in `jsonData.database` — a top-level `database` field is ignored and the panels
+show "No data". Grafana users are auto-provisioned as viewers.
 
 ## Coverage and retention
 

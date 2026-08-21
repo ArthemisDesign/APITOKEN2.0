@@ -59,6 +59,34 @@ for reporting_view in request_fact_usage_daily request_fact_tool_usage_daily; do
 done
 grep -Fq 'uid: engine-request-analytics' \
   "$ROOT/observability/grafana/provisioning/datasources/datasources.yml"
+# Grafana 12+ postgres plugin ignores top-level `database`. The default DB must
+# live in jsonData or every panel shows "No data" with that plugin error.
+python3 - "$ROOT/observability/grafana/provisioning/datasources/datasources.yml" <<'PY'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_text().splitlines()
+in_ds = in_json = False
+found = False
+for line in text:
+    if line.startswith('  - ') and in_ds:
+        in_ds = in_json = False
+    if 'uid: engine-request-analytics' in line:
+        in_ds = True
+        continue
+    if in_ds and line.strip() == 'jsonData:':
+        in_json = True
+        continue
+    if in_ds and in_json:
+        if line.startswith('      database: claude_engine'):
+            found = True
+            break
+        if line and not line.startswith('      '):
+            break
+    if in_ds and line.startswith('    database:'):
+        sys.exit('engine-request-analytics still uses top-level database; Grafana 12+ ignores it')
+if not found:
+    sys.exit('engine-request-analytics jsonData.database is not claude_engine')
+PY
 for request_dashboard in production-overview.json request-usage-dimensions.json; do
   grep -Fq '"type":"grafana-postgresql-datasource","uid":"engine-request-analytics"' \
     "$ROOT/observability/grafana/dashboards/$request_dashboard" \
