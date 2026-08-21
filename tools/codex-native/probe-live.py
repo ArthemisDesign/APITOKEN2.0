@@ -297,18 +297,11 @@ def probe_responses(opener, tokens, client_version, model, service_tier, identit
     return True, served_tier
 
 
-def probe_usage(opener, tokens, client_version):
-    request = urllib.request.Request(USAGE_URL, headers=auth_headers(tokens, client_version))
-    try:
-        response = opener.open(request, timeout=TIMEOUT)
-    except urllib.error.HTTPError as error:
-        print(f"== wham/usage: HTTP {error.code}: {error.read(200).decode(errors='replace')}")
-        return
-    payload = json.loads(response.read())
+def redacted_usage_projection(payload):
     rate_limit = payload.get("rate_limit") if isinstance(payload.get("rate_limit"), dict) else {}
     additional = payload.get("additional_rate_limits")
     credits = payload.get("credits") if isinstance(payload.get("credits"), dict) else {}
-    redacted = {
+    return {
         "plan_type": payload.get("plan_type"),
         "rate_limit_keys": sorted(rate_limit),
         "primary_window_keys": sorted(
@@ -321,6 +314,17 @@ def probe_usage(opener, tokens, client_version):
         "credit_keys": sorted(credits),
         "spend_control_present": isinstance(payload.get("spend_control"), dict),
     }
+
+
+def probe_usage(opener, tokens, client_version):
+    request = urllib.request.Request(USAGE_URL, headers=auth_headers(tokens, client_version))
+    try:
+        response = opener.open(request, timeout=TIMEOUT)
+    except urllib.error.HTTPError as error:
+        print(f"== wham/usage: HTTP {error.code}: {error.read(200).decode(errors='replace')}")
+        return
+    payload = json.loads(response.read())
+    redacted = redacted_usage_projection(payload)
     print(f"== wham/usage: HTTP {response.status}")
     print(json.dumps(redacted, indent=2))
 
