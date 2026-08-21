@@ -23,6 +23,13 @@ engine (Rust)  ←Control API─  commerce (apps/api + worker)  ←internal sale
 - **Multi-level:** a partner can invite sub-partners (invite link
   `partners.apitoken.sale/register?invite=CODE`). From a sub-partner's commission their parent
   receives `sub_commission_bps` — a "percentage of a percentage", a chain up to 10 levels deep.
+- **Team API:** an authenticated partner reads `GET /v1/partner/team` and
+  `GET /v1/partner/invites`, and creates a one-time 30-day invite with
+  `POST /v1/partner/invites` (`telegramUsername`, optional `commissionBps`). The server caps the
+  invited partner's direct rate at the inviter's own `commission_bps`; the response includes the
+  selected direct rate and the inviter's `sub_commission_bps` override. Team rows expose masked-safe
+  partner identity, status, referred-user count, the member's net earnings, and the inviter's exact
+  override net. All money values remain decimal nanoUSD strings.
 - Terms (bps) are individual per partner, set in the admin panel.
 - Payouts: the partner submits a request from their available balance; the admin
   approves/rejects/marks it paid.

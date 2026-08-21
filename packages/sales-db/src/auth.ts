@@ -283,7 +283,8 @@ export async function resolvePartnerSession(
            p.email_verified, p.referral_code, p.parent_partner_id, p.commission_bps,
            p.sub_commission_bps, p.payout_method, p.payout_details,
            p.promo_enabled, p.promo_max_value_nano::text AS promo_max_value_nano, p.promo_max_count,
-           p.referral_discount_bps, p.referral_discount_enabled, p.created_at
+           p.referral_discount_bps, p.referral_discount_enabled,
+           p.b2b_enabled, p.b2b_max_discount_bps, p.created_at
     FROM partner_sessions s
     JOIN partners p ON p.id = s.partner_id
     WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND p.status = 'active'

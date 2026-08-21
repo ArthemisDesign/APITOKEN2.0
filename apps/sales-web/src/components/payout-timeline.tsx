@@ -123,11 +123,11 @@ export function PayoutTimeline({ state }: { state: PeriodState }) {
 
       <div style={{ position: "relative" }}>
         {/* линия «сейчас» через все дорожки — яркая, контрастная */}
-        <div style={{ position: "absolute", left: nowPct, top: 18, bottom: 22, width: 2.5, background: "#e8590c", zIndex: 4, boxShadow: "0 0 0 1px rgba(255,255,255,0.5)" }} aria-hidden>
-          <span style={{ position: "absolute", top: -18, left: "50%", transform: "translateX(-50%)", fontSize: 10, fontWeight: 800, whiteSpace: "nowrap", background: "#e8590c", color: "#fff", padding: "2px 6px", borderRadius: 5 }}>
+        <div style={{ position: "absolute", left: nowPct, top: 18, bottom: 22, width: 2.5, background: "var(--warn)", zIndex: 4, boxShadow: "0 0 0 1px var(--line-strong)" }} aria-hidden>
+          <span style={{ position: "absolute", top: -18, left: "50%", transform: "translateX(-50%)", fontSize: 10, fontWeight: 800, whiteSpace: "nowrap", background: "var(--warn)", color: "var(--on-accent)", padding: "2px 6px", borderRadius: 5 }}>
             {t("now", "сейчас")}
           </span>
-          <span style={{ position: "absolute", top: -4, left: "50%", transform: "translateX(-50%)", width: 8, height: 8, borderRadius: "50%", background: "#e8590c", border: "2px solid #fff", boxSizing: "border-box" }} />
+          <span style={{ position: "absolute", top: -4, left: "50%", transform: "translateX(-50%)", width: 8, height: 8, borderRadius: "50%", background: "var(--warn)", border: "2px solid var(--bg-card)", boxSizing: "border-box" }} />
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingTop: 6 }}>
@@ -152,7 +152,7 @@ export function PayoutTimeline({ state }: { state: PeriodState }) {
                         position: "absolute", left: leftPct(s.a), width: widthPct(s.a, s.b), top: 0, bottom: 0,
                         background: s.c.bg, borderRadius: 4,
                         display: "flex", alignItems: "center", justifyContent: "center",
-                        color: "#fff", fontSize: 10, fontWeight: 600, overflow: "hidden", whiteSpace: "nowrap",
+                        color: "var(--on-accent)", fontSize: 10, fontWeight: 600, overflow: "hidden", whiteSpace: "nowrap",
                       }}
                     >
                       {s.label}

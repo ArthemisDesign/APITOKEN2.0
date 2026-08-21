@@ -2,7 +2,8 @@
 
 // Простой inline-билингвальный слой (RU/EN) для партнёрского кабинета.
 // Строки не выносим в ключи — переводим прямо на месте: t("English", "Русский").
-// Язык хранится в localStorage("sales_lang"); по умолчанию — из navigator.language.
+// Язык хранится в общем localStorage("lang:v1"), как в основном dashboard. Старый
+// ключ sales_lang читается один раз для мягкой миграции существующих кабинетов.
 
 import {
   createContext,
@@ -24,7 +25,11 @@ interface I18nValue {
 
 const I18nContext = createContext<I18nValue | null>(null);
 
-const STORAGE_KEY = "sales_lang";
+const STORAGE_KEY = "lang:v1";
+const LEGACY_STORAGE_KEY = "sales_lang";
+
+/** Set the document language before the first paint, using the same shared key as the main site. */
+export const languageBootstrapScript = `(()=>{try{const s=localStorage.getItem('${STORAGE_KEY}')??localStorage.getItem('${LEGACY_STORAGE_KEY}');if(s==='ru')document.documentElement.lang='ru'}catch{}})()`;
 
 function detectDefault(): Lang {
   if (typeof navigator === "undefined") return "en";
@@ -40,13 +45,18 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let resolved: Lang | null = null;
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
       if (stored === "en" || stored === "ru") resolved = stored;
     } catch {
       // localStorage недоступен — игнорируем
     }
     if (!resolved) resolved = detectDefault();
     if (resolved !== lang) setLangState(resolved);
+    try {
+      document.documentElement.lang = resolved;
+    } catch {
+      // document is unavailable during non-browser rendering.
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -56,6 +66,11 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       localStorage.setItem(STORAGE_KEY, next);
     } catch {
       // игнорируем
+    }
+    try {
+      document.documentElement.lang = next;
+    } catch {
+      // document is unavailable during non-browser rendering.
     }
     try {
       document.documentElement.lang = next;

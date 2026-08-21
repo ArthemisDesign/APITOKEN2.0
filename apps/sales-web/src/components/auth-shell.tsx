@@ -5,6 +5,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { Brand, Loading } from "@/components/ui";
 import { LanguageToggle, useI18n } from "@/components/i18n";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { api, ApiError } from "@/lib/api";
 
 type AuthEntryPhase = "checking" | "anonymous" | "error";
@@ -38,7 +39,10 @@ export function AuthShell({ children }: { children: ReactNode }) {
         <Link href="/" className="brand" aria-label="APIToken Partners home">
           <Brand />
         </Link>
-        <LanguageToggle />
+        <div className="gate-tools">
+          <LanguageToggle />
+          <ThemeToggle />
+        </div>
       </div>
       <div className="auth-card">
         {phase === "anonymous" ? children : phase === "error" ? (

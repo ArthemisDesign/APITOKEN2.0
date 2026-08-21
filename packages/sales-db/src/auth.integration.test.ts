@@ -20,10 +20,10 @@ describe.runIf(Boolean(connectionString))("partner session resolution", () => {
     await db.pool.query("TRUNCATE partners, partner_sessions RESTART IDENTITY CASCADE");
   });
 
-  async function partnerWithSession(status = "active"): Promise<{ partnerId: string; sessionId: string; tokenHash: string }> {
+  async function partnerWithSession(status = "active", b2b = false): Promise<{ partnerId: string; sessionId: string; tokenHash: string }> {
     const partner = await db.pool.query<{ id: string }>(
-      "INSERT INTO partners (referral_code, status, telegram_username) VALUES ($1,$2,$1) RETURNING id",
-      [randomBytes(4).toString("hex"), status],
+      "INSERT INTO partners (referral_code, status, telegram_username, b2b_enabled, b2b_max_discount_bps) VALUES ($1,$2,$1,$3,$4) RETURNING id",
+      [randomBytes(4).toString("hex"), status, b2b, b2b ? 4_000 : 0],
     );
     const tokenHash = hashOf(randomBytes(32).toString("base64url"));
     const sessionId = await createPartnerSession(db, {
@@ -54,6 +54,13 @@ describe.runIf(Boolean(connectionString))("partner session resolution", () => {
 
     const suspended = await partnerWithSession("suspended");
     expect(await resolvePartnerSession(db, suspended.tokenHash)).toBeNull();
+  });
+
+  it("preserves the B2B grant in the session partner payload", async () => {
+    const granted = await partnerWithSession("active", true);
+    const resolved = await resolvePartnerSession(db, granted.tokenHash);
+    expect(resolved?.partner.b2bEnabled).toBe(true);
+    expect(resolved?.partner.b2bMaxDiscountBps).toBe(4_000);
   });
 
   it("writes last_seen_at at most once per interval, not on every request", async () => {

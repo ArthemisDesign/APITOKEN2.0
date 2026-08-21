@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { I18nProvider } from "@/components/i18n";
+import { I18nProvider, languageBootstrapScript } from "@/components/i18n";
+import { themeBootstrapScript } from "@/lib/theme";
 
 export const metadata: Metadata = {
   title: {
@@ -15,7 +16,11 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: languageBootstrapScript }} />
+        <script dangerouslySetInnerHTML={{ __html: themeBootstrapScript }} />
+      </head>
       <body>
         <I18nProvider>{children}</I18nProvider>
       </body>

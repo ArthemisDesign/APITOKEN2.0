@@ -27,6 +27,7 @@ import {
 } from "@/components/ui";
 import { PartnersTab } from "./partner-analytics";
 import { PayoutSendTab } from "./payout-send";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 const KEY_STORAGE = "sales_admin_key";
 
@@ -872,16 +873,19 @@ export default function AdminPage() {
             <Badge tone="yellow">Admin</Badge>
           </span>
         </div>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => {
-            sessionStorage.removeItem(KEY_STORAGE);
-            setAdminKey(null);
-          }}
-        >
-          Lock
-        </Button>
+        <div className="gate-tools">
+          <ThemeToggle />
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              sessionStorage.removeItem(KEY_STORAGE);
+              setAdminKey(null);
+            }}
+          >
+            Lock
+          </Button>
+        </div>
       </div>
 
       <div className="tabs" role="tablist">

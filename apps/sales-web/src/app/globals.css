@@ -13,6 +13,7 @@
 
 /* ---- LIGHT theme only (matches the main site's default) ---- */
 :root{
+  color-scheme:light;
   --bg:#ffffff;
   --bg-soft:#f5f5f4;
   --bg-card:#ffffff;
@@ -35,6 +36,8 @@
   --warn:#b8760a;
   --warn-soft:rgba(184,118,10,0.08);
   --warn-line:rgba(184,118,10,0.30);
+  --topbar-bg:rgba(255,255,255,0.78);
+  --surface-2:rgba(127,127,127,0.06);
   --font-mono:'JetBrains Mono',ui-monospace,monospace;
   --radius:4px;
   --shadow:0 1px 2px rgba(10,10,10,.04),0 8px 30px rgba(10,10,10,.06);
@@ -44,6 +47,47 @@
   --text-faint:var(--txt-4);
   --border:var(--line);
   --border-strong:var(--line-strong);
+  --text:var(--txt);
+  --surface:var(--bg-card);
+  --on-accent:#fff;
+}
+
+/* The partner cabinet shares the main dashboard's explicit light/dark preference. */
+[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0a0a0a;
+  --bg-soft:#111111;
+  --bg-card:#0e0e0e;
+  --line:rgba(255,255,255,0.10);
+  --line-strong:rgba(255,255,255,0.18);
+  --txt:#ffffff;
+  --txt-2:rgba(255,255,255,0.88);
+  --txt-3:rgba(255,255,255,0.74);
+  --txt-4:rgba(255,255,255,0.64);
+  --accent:#4778ff;
+  --accent-soft:rgba(71,120,255,0.10);
+  --accent-line:rgba(71,120,255,0.35);
+  --grid:rgba(255,255,255,0.02);
+  --ok:#43d17a;
+  --ok-soft:rgba(67,209,122,0.12);
+  --ok-line:rgba(67,209,122,0.35);
+  --danger:#ff7b72;
+  --danger-soft:rgba(255,123,114,0.12);
+  --danger-line:rgba(255,123,114,0.35);
+  --warn:#ffb020;
+  --warn-soft:rgba(255,176,32,0.12);
+  --warn-line:rgba(255,176,32,0.35);
+  --topbar-bg:rgba(10,10,10,0.78);
+  --surface-2:rgba(255,255,255,0.06);
+  --shadow:0 0 0 1px rgba(255,255,255,.03);
+  --accent-strong:var(--accent);
+  --text-dim:var(--txt-3);
+  --text-faint:var(--txt-4);
+  --border:var(--line);
+  --border-strong:var(--line-strong);
+  --text:var(--txt);
+  --surface:var(--bg-card);
+  --on-accent:#fff;
 }
 
 *{box-sizing:border-box;margin:0;padding:0}
@@ -52,6 +96,7 @@ body{
   background:var(--bg);color:var(--txt-2);
   font-family:var(--font-mono);font-size:14px;line-height:1.6;
   -webkit-font-smoothing:antialiased;
+  transition:background .25s ease,color .25s ease;
   /* faint grid atmosphere, same as the main site */
   background-image:
     linear-gradient(var(--grid) 1px,transparent 1px),
@@ -151,6 +196,7 @@ button{font-family:inherit}
 .gate{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;
   gap:22px;padding:24px;position:relative}
 .gate-lang{position:absolute;top:20px;right:20px}
+.gate-tools{display:inline-flex;align-items:center;gap:8px}
 .gate-card{width:100%;max-width:392px;background:var(--bg-card);border:1px solid var(--line);
   border-radius:var(--radius);padding:42px 36px 36px;text-align:center;box-shadow:var(--shadow)}
 .gate-card .brand{font-size:18px;margin-bottom:14px}
@@ -190,7 +236,7 @@ button{font-family:inherit}
 
 .cab-main{flex:1;min-width:0;display:flex;flex-direction:column}
 .cab-topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;
-  padding:12px 28px;border-bottom:1px solid var(--line);background:rgba(255,255,255,0.78);
+  padding:12px 28px;border-bottom:1px solid var(--line);background:var(--topbar-bg);
   backdrop-filter:blur(10px);position:sticky;top:0;z-index:10}
 .cab-topbar-user{display:flex;align-items:center;gap:12px;font-size:13px;color:var(--txt-3);min-width:0}
 .cab-topbar-user .email{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -216,6 +262,17 @@ button{font-family:inherit}
 
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .stack{display:flex;flex-direction:column;gap:24px}
+
+.team-stats{grid-template-columns:repeat(3,1fr)}
+.team-invite-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,.5fr) auto;gap:16px;align-items:end}
+.team-invite-form .field{margin-bottom:0}
+.team-invite-action{padding-bottom:16px}
+.input-suffix{display:flex;align-items:center;gap:8px}
+.input-suffix .input{min-width:0}
+.input-suffix>span{color:var(--txt-3);font-size:14px}
+.created-invite{display:flex;flex-direction:column;gap:12px;margin-top:20px;padding-top:18px;border-top:1px solid var(--line)}
+.created-invite>div:first-child{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.created-invite strong{color:var(--txt)}
 
 .chart-wrap{width:100%;overflow-x:auto}
 .chart-svg{display:block;width:100%;height:auto}
@@ -249,6 +306,11 @@ button{font-family:inherit}
 .lang-opt:hover{color:var(--txt-2)}
 .lang-opt.active{background:var(--accent-soft);color:var(--accent)}
 .lang-opt:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.theme-tgl{width:32px;height:30px;display:inline-flex;align-items:center;justify-content:center;
+  background:transparent;border:1px solid var(--line-strong);border-radius:var(--radius);
+  color:var(--txt);font-family:var(--font-mono);font-size:15px;line-height:1;cursor:pointer;transition:.15s ease}
+.theme-tgl:hover{border-color:var(--accent);color:var(--accent)}
+.theme-tgl:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .inline-edit{width:84px;padding:5px 8px;font-size:13px}
 .row-actions{display:flex;gap:6px;flex-wrap:wrap}
 
@@ -262,6 +324,8 @@ button{font-family:inherit}
   .stat-card:nth-child(2n){border-right:0}
   .stat-card:nth-last-child(-n+2){border-bottom:0}
   .grid-2{grid-template-columns:1fr}
+  .team-invite-form{grid-template-columns:1fr 1fr}
+  .team-invite-action{grid-column:1/-1;padding-bottom:0}
 }
 
 @media (max-width:760px){
@@ -272,6 +336,8 @@ button{font-family:inherit}
   .cab-overlay{position:fixed;inset:0;background:rgba(10,10,10,0.35);z-index:30}
   .cab-content{padding:20px 16px}
   .reflink-row{flex-direction:column}
+  .team-invite-form{grid-template-columns:1fr}
+  .team-invite-action{grid-column:auto}
 }
 
 @media (max-width:520px){
@@ -280,17 +346,9 @@ button{font-family:inherit}
   .stat-card:last-child{border-bottom:0}
 }
 
-/* --- Soon-lock (временно закрытые разделы) --- */
-.soon-pill{margin-left:auto;font-size:10px;letter-spacing:.08em;text-transform:uppercase;
-  color:var(--accent);border:1px solid var(--accent);border-radius:999px;padding:1px 7px}
-.soon-wrap{position:relative}
-.soon-blur{filter:blur(5px);opacity:.55;pointer-events:none;user-select:none}
-.soon-overlay{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;
-  align-items:center;justify-content:center;gap:6px;text-align:center}
-.soon-overlay .soon-label{font-size:13px;letter-spacing:.14em;text-transform:uppercase;
-  font-weight:700;color:var(--accent);border:1px solid var(--accent);border-radius:var(--radius);
-  padding:6px 18px;background:var(--bg)}
-.soon-overlay p{color:var(--txt-2);font-size:13px;margin:0}
+@media (max-width:520px){
+  .team-stats{grid-template-columns:1fr}
+}
 
 /* --- Payout wallet (BSC) --- */
 .wallet-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}

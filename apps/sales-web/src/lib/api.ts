@@ -263,6 +263,7 @@ export type TeamRow = {
   telegramUsername: string | null;
   displayName: string | null;
   commissionBps: number;
+  overrideBps?: number;
   referredUsers: number;
   earnedNano: string;
   adjustmentNano: string;
@@ -278,6 +279,7 @@ export type InviteRow = {
   inviteUrl: string;
   telegramUsername: string | null;
   commissionBps: number | null;
+  overrideBps?: number;
   subCommissionBps?: number | null;
   referralDiscountBps?: number;
   referralDiscountEnabled?: boolean;
@@ -288,6 +290,7 @@ export type InviteRow = {
   promoMaxValueNano?: string;
   expiresAt: string | null;
   consumedAt: string | null;
+  createdAt?: string;
 };
 
 export type PayoutRow = {

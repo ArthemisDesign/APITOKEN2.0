@@ -351,6 +351,7 @@ export class PartnerController {
         displayName: member.displayName,
         status: member.status,
         commissionBps: member.commissionBps,
+        overrideBps: current.partner.subCommissionBps,
         referredUsers: member.referredUsers,
         earnedNano: member.theirEarnedNano.toString(),
         adjustmentNano: member.theirAdjustmentNano.toString(),
@@ -400,6 +401,8 @@ export class PartnerController {
           code: invite.code,
           inviteUrl: this.inviteUrl(invite.code),
           telegramUsername: invite.telegramUsername,
+          commissionBps: invite.commissionBps,
+          overrideBps: current.partner.subCommissionBps,
           expiresAt: invite.expiresAt?.toISOString() ?? null,
         };
       } catch (error) {
@@ -422,6 +425,7 @@ export class PartnerController {
         inviteUrl: this.inviteUrl(invite.code),
         telegramUsername: invite.telegramUsername,
         commissionBps: invite.commissionBps,
+        overrideBps: current.partner.subCommissionBps,
         expiresAt: invite.expiresAt?.toISOString() ?? null,
         consumedAt: invite.consumedAt?.toISOString() ?? null,
         createdAt: invite.createdAt.toISOString(),

@@ -120,8 +120,8 @@ export default function DocsPage() {
             </li>
             <li>
               {t(
-                "The override rate is set per partner and is separate from your direct commission; you cannot grant a sub-partner a higher rate than your own. (The Team section opens soon.)",
-                "Override-ставка задаётся индивидуально и отличается от вашей прямой комиссии; нельзя дать суб-партнёру ставку выше своей собственной. (Раздел «Команда» откроется скоро.)",
+                "The override rate is set per partner and is separate from your direct commission; you cannot grant a sub-partner a higher rate than your own. Open Team to create a one-time, 30-day invite and track the resulting override.",
+                "Override-ставка задаётся индивидуально и отличается от вашей прямой комиссии; нельзя дать суб-партнёру ставку выше своей собственной. В разделе «Команда» можно создать одноразовое приглашение на 30 дней и отслеживать надбавку.",
               )}
             </li>
           </ul>

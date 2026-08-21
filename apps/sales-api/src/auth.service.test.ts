@@ -13,7 +13,7 @@ vi.mock("@claude-api/sales-db", async (importOriginal) => {
   };
 });
 
-const { AuthService } = await import("./auth.service.js");
+const { AuthService, partnerView } = await import("./auth.service.js");
 
 const TOKEN = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const OTHER_TOKEN = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -131,5 +131,17 @@ describe("AuthService session cache", () => {
     await service.authenticate(TOKEN);
     await service.authenticate(OTHER_TOKEN);
     expect(resolvePartnerSessionMock).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe("partner session view", () => {
+  it("keeps the B2B grant in the authenticated partner payload", () => {
+    const view = partnerView({
+      ...partnerFixture("partner-b2b"),
+      b2bEnabled: true,
+      b2bMaxDiscountBps: 4_000,
+    });
+    expect(view.b2bEnabled).toBe(true);
+    expect(view.b2bMaxDiscountBps).toBe(4_000);
   });
 });

@@ -216,8 +216,11 @@ discount.
   line rather than being dropped, so the parts always sum to the whole.
 - **Referrals** — the users brought in (identities masked), their paid spend and your earnings on
   each of them.
-- **Team** — sub-salespeople and invitations (the tab is currently temporarily closed with a
-  "Soon" placeholder).
+- **Team** — create one-time, 30-day invitations for sub-salespeople, review invitation status, and
+  see each direct member's referral count, direct earnings, and your override. A sub-partner's direct
+  rate cannot exceed the inviting partner's own rate. Your `sub_commission_bps` is applied to the
+  sub-partner's level-0 commission (a percentage of a percentage); the immutable commission chain
+  carries this override up to ten active levels.
 - **Payouts** — BSC wallet binding, the current period, the locked amount + unfreeze date, the
   date and estimate of the next payout, explicit debt after refunds, net history by periods, a
   "How payouts work" explanation.
@@ -244,7 +247,8 @@ A separate admin site; sign-in — the operator enters `SALES_ADMIN_KEY` (sent a
 
 The partner dashboard works in **Russian and English**. The language is chosen with a switcher in
 the header and remembered in the browser; by default it is taken from the browser language. The
-admin panel is in English.
+light/dark theme uses the same `theme:v1` browser preference as the main dashboard and is toggled
+from the header. A missing preference keeps the partner cabinet light. The admin panel is in English.
 
 ## 11. Privacy and security
 

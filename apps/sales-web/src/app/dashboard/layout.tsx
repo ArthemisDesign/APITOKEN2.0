@@ -7,11 +7,12 @@ import { api, ApiError, type Partner } from "@/lib/api";
 import { Brand, Loading } from "@/components/ui";
 import { PartnerContext } from "@/components/partner-context";
 import { LanguageToggle, useI18n } from "@/components/i18n";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 const NAV = [
   { href: "/dashboard", en: "Overview", ru: "Обзор", icon: "◧" },
   { href: "/dashboard/referrals", en: "Referrals", ru: "Рефералы", icon: "⇢" },
-  { href: "/dashboard/team", en: "Team", ru: "Команда", icon: "⁂", soon: true },
+  { href: "/dashboard/team", en: "Team", ru: "Команда", icon: "⁂" },
   { href: "/dashboard/payouts", en: "Payouts", ru: "Выплаты", icon: "◈" },
   { href: "/dashboard/promo", en: "Promo codes", ru: "Промокоды", icon: "%", promoOnly: true },
   { href: "/dashboard/docs", en: "Docs", ru: "Документация", icon: "▤" },
@@ -106,9 +107,6 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
                     {item.icon}
                   </span>
                   {t(item.en, item.ru)}
-                  {"soon" in item && item.soon ? (
-                    <span className="soon-pill">{t("Soon", "Скоро")}</span>
-                  ) : null}
                 </Link>
               );
             })}
@@ -134,6 +132,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
                 {partner.telegramUsername ? `@${partner.telegramUsername}` : partner.displayName ?? partner.email}
               </span>
               <LanguageToggle />
+              <ThemeToggle />
               <button className="btn btn-ghost btn-sm" onClick={logout}>
                 {t("Log out", "Выйти")}
               </button>

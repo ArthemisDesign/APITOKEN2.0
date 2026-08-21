@@ -3,13 +3,15 @@
 import Link from "next/link";
 import { Brand } from "@/components/ui";
 import { LanguageToggle, useI18n } from "@/components/i18n";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 export default function Landing() {
   const { t } = useI18n();
   return (
     <main className="gate">
-      <div className="gate-lang">
+      <div className="gate-lang gate-tools">
         <LanguageToggle />
+        <ThemeToggle />
       </div>
       <div className="gate-card">
         <Brand />
