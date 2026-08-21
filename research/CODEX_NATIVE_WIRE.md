@@ -147,14 +147,31 @@ GPT-5.6 стал `2x`, но подписочный Fast по-прежнему с
 - https://learn.chatgpt.com/docs/agent-configuration/speed#fast-mode
 - https://developers.openai.com/api/docs/changelog#july-2026
 
-## Pending 0.149 controlled proof
+## Codex CLI 0.149 custom-provider live acceptance — 2026-08-21
 
-The source and synthetic custom-provider matrix target is `rust-v0.149.0`. Native ChatGPT identity
-remains pinned at `0.146.0` until a throwaway-profile proof completes. The live runner now defaults
-to no generation and no refresh-family rotation. One paid turn requires both
-`--execute-paid-turn` and an exact matching `--confirm-paid-budget`; the hard repository ceiling is
-`100000 nanoUSD` (`$0.0001`). A failed or missing-usage generation is a withdrawal and does not
-authorize a pin bump.
+Exact `@openai/codex@0.149.0 --profile apitoken` completed one ephemeral read-only turn through
+`router.apitoken.sale` on `gpt-5.6-luna`:
+
+- no tool call and no filesystem mutation;
+- one assistant item with the expected `OK` text;
+- authoritative terminal usage: input `14157`, cached input `0`, cache-write input `0`, output `5`,
+  reasoning output `0`;
+- temporary workdir was deleted after the process exited.
+
+This is GREEN evidence for the **public named custom-provider boundary**. It is not native ChatGPT
+identity evidence: the deployed gateway still reconstructs its private upstream request under the
+reviewed `0.146.0` identity. Therefore this run does not authorize `CODEX_CLI_VERSION` bump.
+
+The attempted direct native device flow returned HTTP 530 before a code was issued. No generation,
+refresh, or spend occurred in that failed attempt. Native 0.149 proof remains pending on a working
+throwaway ChatGPT device-login path.
+
+The paid-turn authorization target was `100000 nanoUSD` (`$0.0001`), but actual Codex system/tool
+context produced 14157 input tokens. At the current Luna official card that is approximately
+`$0.00284` before discount and `$0.00142` at the current 50% B2C multiplier. The probe cannot enforce
+a pre-dispatch nanoUSD cap because it does not know the final Codex-composed prompt before submission.
+Its flags are now documented as an operator authorization target, not a hard cost ceiling. No second
+paid turn was run.
 
 ## Открытые вопросы (не блокеры)
 

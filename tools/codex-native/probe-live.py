@@ -17,7 +17,9 @@ the Rust transport depends on, and prints them REDACTED (no tokens, no account i
 Usage (safe default: no generation, no refresh rotation):
     python3 tools/codex-native/probe-live.py --service-tier priority --no-ws
 
-One paid micro-turn on a throwaway profile only:
+One paid turn on a throwaway profile only. The authorization flags are an operator gate, not a
+pre-dispatch cost meter: Codex can add a large system/tool prompt before the request reaches this
+script's response parser, so actual terminal usage can exceed the requested nanoUSD number:
     python3 tools/codex-native/probe-live.py --service-tier priority --no-ws \
       --execute-paid-turn --max-nanousd 100000 --confirm-paid-budget 100000
 
@@ -41,7 +43,7 @@ VERIFICATION_URL = "https://auth.openai.com/codex/device"
 BASE_URL = "https://chatgpt.com/backend-api/codex"
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 CLI_VERSION = "0.149.0"
-DEFAULT_MAX_NANOUSD = 100_000
+DEFAULT_AUTHORIZED_NANOUSD = 100_000
 ORIGINATOR = "codex_cli_rs"
 
 TIMEOUT = 30
@@ -388,8 +390,8 @@ def main():
     parser.add_argument(
         "--max-nanousd",
         type=int,
-        default=DEFAULT_MAX_NANOUSD,
-        help="hard aggregate paid-turn ceiling (default: 100000 nanoUSD)",
+        default=DEFAULT_AUTHORIZED_NANOUSD,
+        help="operator-authorized target, not an enforceable pre-dispatch cost cap",
     )
     parser.add_argument(
         "--rotate-refresh-family",
@@ -398,8 +400,8 @@ def main():
     )
     parser.add_argument("--no-ws", action="store_true")
     args = parser.parse_args()
-    if args.max_nanousd <= 0 or args.max_nanousd > DEFAULT_MAX_NANOUSD:
-        parser.error(f"--max-nanousd must be 1-{DEFAULT_MAX_NANOUSD}")
+    if args.max_nanousd <= 0 or args.max_nanousd > DEFAULT_AUTHORIZED_NANOUSD:
+        parser.error(f"--max-nanousd must be 1-{DEFAULT_AUTHORIZED_NANOUSD}")
     if args.execute_paid_turn and args.confirm_paid_budget != args.max_nanousd:
         parser.error("paid turn requires --confirm-paid-budget equal to --max-nanousd")
     if not args.execute_paid_turn and args.confirm_paid_budget:
@@ -421,7 +423,7 @@ def main():
     probe_models(opener, tokens, args.client_version, args.model)
     ok, served_tier = True, None
     if args.execute_paid_turn:
-        print(f"== paid turn authorized: cap={args.max_nanousd} nanoUSD; exactly one dispatch")
+        print(f"== paid turn authorized target={args.max_nanousd} nanoUSD; exactly one dispatch; actual usage can exceed target")
         ok, served_tier = probe_responses(
             opener,
             tokens,
