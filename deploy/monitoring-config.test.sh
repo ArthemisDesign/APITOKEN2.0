@@ -72,6 +72,16 @@ for forbidden_dimension in logical_request_id billing_request_id execution_group
   ! grep -Fq "$forbidden_dimension" \
     "$ROOT/observability/grafana/dashboards/request-usage-dimensions.json"
 done
+for overview_dimension in account_id key_id client_kind requested_model executable_model tool_class; do
+  grep -Fq "$overview_dimension" \
+    "$ROOT/observability/grafana/dashboards/production-overview.json" \
+    || { printf 'production overview omits request-usage dimension %s\n' "$overview_dimension" >&2; exit 1; }
+done
+grep -Fq '/d/apitoken-request-usage/apitoken-sale-request-usage-dimensions' \
+  "$ROOT/observability/grafana/dashboards/production-overview.json"
+grep -Fq 'Grafana request-analytics datasource returned no request usage rows' \
+  "$ROOT/deploy/install-monitoring.sh"
+grep -Fq 'http://127.0.0.1:3600/api/ds/query' "$ROOT/deploy/install-monitoring.sh"
 
 for pinned_image in \
   'quay.io/prometheus/prometheus:v3.12.0@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac' \

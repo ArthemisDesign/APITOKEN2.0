@@ -232,6 +232,23 @@ wait_prometheus_result Redis 'sum(redis_up == 1) == 2'
 wait_prometheus_result monitoring-targets \
   'sum(up{job=~"prometheus|node|postgres|redis|caddy|alertmanager|grafana|loki|alloy|blackbox-exporter"} == 1) == 11'
 
+# Provisioning success alone does not prove the private request-analytics datasource can query its
+# granted views. Exercise the same Grafana backend path as the dashboard and require real rows before
+# committing this monitoring activation.
+grafana_query='{"from":"now-30d","to":"now","queries":[{"refId":"A","datasource":{"uid":"engine-request-analytics","type":"postgres"},"format":"table","rawQuery":true,"rawSql":"SELECT COUNT(*)::bigint AS rows, COALESCE(SUM(request_count),0)::bigint AS requests FROM request_fact_usage_daily WHERE usage_day >= CURRENT_DATE - INTERVAL '\''30 days'\''"}]}'
+grafana_response=$(curl --fail --silent --show-error \
+  -H 'X-WEBAUTH-USER: monitoring-installer' -H 'Content-Type: application/json' \
+  --data-binary "$grafana_query" http://127.0.0.1:3600/api/ds/query) \
+  || die 'Grafana request-analytics datasource query failed'
+node -e '
+const response = JSON.parse(process.argv[1]);
+const result = response?.results?.A;
+const values = result?.frames?.[0]?.data?.values;
+if (result?.status !== 200 || !Array.isArray(values) || Number(values[0]?.[0]) < 1 || Number(values[1]?.[0]) < 1) {
+  process.exit(1);
+}
+' "$grafana_response" || die 'Grafana request-analytics datasource returned no request usage rows'
+
 COMMITTED=1
 trap - EXIT
 log "monitoring stack installed successfully${BACKUP:+; rollback copy: $BACKUP}"

@@ -71,11 +71,16 @@ scrolling:
 - **Collapsed domain sections** below: Host & Platform · Database · Engine (pool, traffic &
   capacity) · Affinity, Redis & Codex History · Revenue & Business State · Codex (OpenAI) ·
   Gemini · Kimi & GLM (default-off) · Router & Unified API · Delivery Pipeline · Devbot &
-  Notification Delivery · Billing Writer · Request Fact Observability · Logs & Journals.
+  Notification Delivery · Billing Writer · Request Fact Observability · Request Usage: Customers,
+  Models & Tools · Logs & Journals.
 - **`$provider` template variable** filters the engine pool/traffic panels
   (`claude_api_*{provider=~"$provider"}`); the default is all providers.
+- The main Production Overview contains an expanded **Request Usage: Customers, Models & Tools**
+  section after Request Fact Observability. It shows the top 30-day customer/key/client/model and
+  closed-tool-class groups immediately on the page operators already use. Every panel and the
+  dashboard header link to the full drilldown.
 - `observability/grafana/dashboards/request-usage-dimensions.json` (uid
-  `apitoken-request-usage`) is the private 30-day request-analytics dashboard. It shows grouped
+  `apitoken-request-usage`) is the private full 30-day request-analytics dashboard. It shows grouped
   request/billable counts, authoritative tokens and nanoUSD by opaque engine account, non-secret key
   ID, normalized client kind/source, requested/executable model, closed tool class, tool-count bucket,
   tool choice and capability flags. The dashboard reads only `request_fact_usage_daily` and
