@@ -640,4 +640,13 @@ mod tests {
             "codex_cli_rs/0.145.0 (Ubuntu 22.04; x86_64) xterm-256color"
         );
     }
+
+    #[test]
+    fn compiled_wire_identity_is_the_live_admitted_stable_release() {
+        assert_eq!(CODEX_CLI_VERSION, "0.149.0");
+        assert_eq!(
+            codex_user_agent(CODEX_CLI_VERSION, "Linux", "x86_64", CODEX_ORIGINATOR),
+            "codex_cli_rs/0.149.0 (Linux; x86_64) codex_cli_rs"
+        );
+    }
 }
