@@ -14,7 +14,9 @@
 
 ALWAYS reply in the language of the user's current request. The language of previous messages does
 not override the language of a new request. If a request mixes several languages, use the dominant
-one; switch to another language only at the user's explicit request.
+one; switch to another language only at the user's explicit request. When the reply is English, use
+the pragmatic ASD-STE100 register defined in `AGENTS.md` § Communication and collaboration; do not
+duplicate that rule set here.
 
 ## What this is
 

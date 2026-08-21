@@ -13,6 +13,16 @@ ALWAYS reply in the language of the user's current request. The language of prev
 override the language of a new request. If a request mixes several languages, use the predominant one; switch to
 another language only at the user's explicit request.
 
+When the reply language is English, write chat in **ASD-STE100 Simplified Technical English**
+(pragmatic register, not dictionary-certified). Short sentences. One word, one meaning in the
+reply. Active voice. Simple tenses. No hedges (`should` / `would` / `may` / `might`; keep
+`can` / `will` / `must`). Put the condition before the command. One instruction per sentence.
+Keep project nouns (`worktree`, `watchdog`, `nanoUSD`) and do not rotate synonyms for the same
+thing. STE governs **chat with the person** only. It does not apply to commit messages (they keep
+the mandatory Conventional Commit header plus detailed body below), to code, or to the living-contract
+documents in this repository. STE is English-only: a Russian request still gets a Russian reply;
+use the same discipline (short, one meaning, no hedges) without naming ASD-STE100.
+
 The goal of a reply is not the minimum number of lines but the maximum practical benefit without filler. Write clearly and
 concretely. Close a short, simple question briefly; explain a complex decision, diagnosis, or ambiguous
 choice in enough detail that the person understands the conclusion, its grounds, and its consequences without
