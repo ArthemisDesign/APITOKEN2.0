@@ -6123,7 +6123,7 @@ fn tariff_overrides_postgres_matrix() {
         .unwrap();
     pg.migrate().unwrap();
     pg.client
-        .batch_execute("TRUNCATE pricing_tariff_overrides")
+        .batch_execute("TRUNCATE pricing_tariff_overrides RESTART IDENTITY CASCADE")
         .unwrap();
 
     let family = "google/gemini/gemini-2.5-pro";
