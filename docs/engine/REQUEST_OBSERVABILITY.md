@@ -1,6 +1,6 @@
 # Request observability contract
 
-> **Status: v1 DECISIONS LOCKED; implementation is incomplete.** Registry S2, forward-core S3A,
+> **Status: v1 COMPLETE under the owner-approved 21-hour observation exception.** Registry S2, forward-core S3A,
 > the Caddy logical-ID perimeter, provider-plane logical/client context admission, router logical-ID
 > production, and the client-attribution slice of classifier stage 5 are implemented. The production
 > request-fact surfaces are metered Codex/OpenAI/Gemini universal Messages count,
@@ -29,10 +29,11 @@
 > polling. Gemini universal Chat, Responses, and Messages now hand a typed privacy-bounded origin to
 > the synthesized native leaf, which emits exactly one fact under the original public route semantics.
 > Legacy/admin, SQLite, image, batch, counting, and missing-context generation paths remain fact-free.
-> All other billable producers, the private read surface, and request-fact metrics remain incomplete.
+> The v1 producer matrix, private read surface, metrics/alerts/runbooks, typed consumer chain and
+> dedicated operator UI are complete; excluded providers/modalities remain fact-free by contract.
 >
-> This document is the owner-approved v1 implementation contract. It authorizes only the finite,
-> ordered rollout and Definition of Done in §§13-15; it does not claim that those stages are complete.
+> This document is the owner-approved v1 implementation contract and final evidence record. The finite,
+> ordered rollout and Definition of Done in §§13-16 are complete.
 > Migrations 0053-0054 are deployed; `crates/registry` exposes opt-in PostgreSQL write/lifecycle
 > primitives, and `AsyncBilling` transports typed facts through the owning money transactions plus a
 > distinct fail-open terminal-at-insert inbox. The Caddy perimeter reserves
@@ -625,30 +626,28 @@ the prerequisite exact SHA is production GREEN.
     owner explicitly approved 21 hours as sufficient and directed the rollout to finish. The runner
     accepts only this explicit `75600`-second exception via
     `REQUEST_OBSERVABILITY_OWNER_APPROVED_21H=1`; its default remains 24 hours.
-11. **Deliver private Control API producers — implemented in this producer.** After the accepted gate,
+11. **Deliver private Control API producers — complete, production GREEN `899bb0a1`.** After the accepted gate,
     the three endpoints expose the §9 coverage semantics, bounded summaries, keyset drilldown and
     logical-attempt lookup. This commit updates `docs/engine/CONTROL_API.md` and
     `docs/DEPENDENCIES.md`; consumers still wait for its exact production GREEN SHA.
-12. **Deliver `packages/contracts` — implemented in this producer.** After production-GREEN engine
+12. **Deliver `packages/contracts` — complete, production GREEN `1541c1fe`.** After production-GREEN engine
     producer `899bb0a10e8b977aa775f996cced53491264a39c`, add typed private summary/page/logical schemas
     with bounded rows/axes and honest nullable coverage/runtime semantics; update
     `docs/DEPENDENCIES.md` and wait for this exact SHA to be GREEN.
-13. **Deliver `packages/engine-client` — implemented in this consumer.** After production-GREEN
+13. **Deliver `packages/engine-client` — complete, production GREEN `97ef2f2f`.** After production-GREEN
     contracts producer `1541c1fefcaa84c4e87ecd5b2d1a0a67b2b21138`, add the three validated GET
     methods with local window/limit/cursor/UUID bounds; wait for this exact SHA to be GREEN.
-14. **Deliver `apps/api` — implemented in this producer.** After production-GREEN engine-client
+14. **Deliver `apps/api` — complete, production GREEN `3fe2baeb`.** After production-GREEN engine-client
     consumer `97ef2f2f9f7bf5feb2c90b9fb9d0522487370b91`, expose three guarded no-store admin routes
     that validate bounds and forward only through EngineClient. Engine rows intentionally omit account/key
     identities, so v1 performs no fabricated commerce identity join; wait for this exact SHA to be GREEN.
-15. **Deliver `apps/admin` — implemented on preview.** After production-GREEN apps/api producer
+15. **Deliver `apps/admin` — complete, production GREEN `76386e90`.** After production-GREEN apps/api producer
     `3fe2baebfe8ccca22a974974154a83cb2af27600`, add the dedicated **Request Analytics** area,
     linked from but not mixed into Engine Spend. It consumes only the private producer chain and
     preserves unknown coverage/runtime evidence. There is no customer API or UI.
-16. **Record final proof.** Capture exact producer and consumer SHAs, migration/watchdog verdicts,
-    route-manifest coverage, exclusion tests, privacy-negative tests, metric/alert/runbook checks,
-    24-hour thresholds, and bounded live smoke results. Live-smoke credentials and budget records may
-    remain in the operator evidence system rather than this repository; no secret or customer content
-    enters the proof.
+16. **Record final proof — complete in this document.** Exact producer/consumer SHAs, GREEN verdicts,
+    route/exclusion/privacy gates, the owner-approved 21-hour observation exception and bounded live
+    smoke are recorded below. No secret or customer content enters the proof.
 
 Every migration and cross-context contract remains expand-only and producer-first. Completed stages
 are not repeated or combined with dependent producer/consumer stages.
@@ -703,7 +702,9 @@ The owner-approved v1 decisions are locked:
    its previous producer's exact SHA is GREEN. Later providers or modalities require a new versioned
    scope decision rather than silently widening v1.
 
-The MVP is **Done** only when all of the following finite conditions hold:
+The MVP is **Done** under the direct owner-approved 21-hour exception recorded in §16. The following
+finite conditions are satisfied, with the latency/error baseline uncertainty explicitly accepted rather
+than silently converted into a pass:
 
 - §§13.1-13.10 are complete on production-GREEN exact SHAs, including the mechanical producer
   coverage gate, fixed operations surfaces, 24-hour observation gate, and every test in §14;
@@ -713,7 +714,8 @@ The MVP is **Done** only when all of the following finite conditions hold:
   and never manufacture a coverage denominator from persisted rows or a process-runtime snapshot;
 - the metrics, alerts, dashboard, and runbooks implement the four thresholds in §10 with no forbidden
   label cardinality;
-- during one continuous 24-hour observation window, admission and first-public-byte latency p99 for
+- during the owner-approved continuous 21-hour observation window (the default remains 24 hours),
+  admission and first-public-byte latency p99 for
   both scoped billable and scoped nonbillable traffic do not increase by both more than `+5 ms` and
   more than `+10%` of the approved baseline for any continuous 15-minute evaluation; attributable
   request-error rate increases by no more than `0.1` percentage points; dropped/persistence accounting
@@ -731,13 +733,54 @@ The MVP is **Done** only when all of the following finite conditions hold:
 Passing unit tests alone, a partial provider matrix, rows without honest coverage, or a UI over the
 current single Codex count-token producer is not completion.
 
-## 16. Historical review findings and code confirmations (2026-08)
+## 16. Final v1 evidence bundle (2026-08-21)
+
+The completed producer-first chain is:
+
+| Stage | Exact production-GREEN SHA | Evidence |
+|---|---|---|
+| complete Gemini universal producer matrix | `92b53c1a4af4916717d2d2af16278bacbe77e728` | native/universal PostgreSQL ownership matrix, one fact per reservation, no synthesized double fact |
+| mechanical coverage + operations | `942e5309c5cc89453942fc81ecd4f3fca028bc02` | 15-scope manifest gate, fixed metrics, four alerts, dashboard and runbooks |
+| fresh-inbox health correction | `f35c841d1f82abe962ded6381da8b6e53f6109a6` | fresh PostgreSQL inbox healthy-without-failure; SQLite series absent |
+| private Control API | `899bb0a10e8b977aa775f996cced53491264a39c` | three control-key routes, Repeatable Read summary/page/logical reads, 30-day/200 bounds, privacy-safe DTOs |
+| `packages/contracts` | `1541c1fefcaa84c4e87ecd5b2d1a0a67b2b21138` | `scope_version=1` Zod envelopes with bounded axes/rows and nullable honest evidence |
+| `packages/engine-client` | `97ef2f2f9f7bf5feb2c90b9fb9d0522487370b91` | sole typed transport, local bounds, 15 package tests |
+| `apps/api` | `3fe2baebfe8ccca22a974974154a83cb2af27600` | AdminGuard/no-store producer, 162 API tests passed in its gate |
+| `apps/admin` | `76386e90103bbbc05a94d0b44dddb3af2b7ceb2b` | dedicated Request Analytics route, build/typecheck and 427 tests, host admin watchdog GREEN |
+
+The owner explicitly accepted a 21-hour continuous observation window instead of the locked 24 hours.
+The accepted interval began at `1787219554`. It contained more than 43,000 scoped lifecycle events,
+continuous healthy persistence on Anthropic/OpenAI/Gemini, zero stuck facts, zero measured drops or
+persistence failures, zero RequestFact alerts, zero execution-group double winners and zero balance
+divergence. Historical Caddy latency/error comparisons were sparse and had threshold excursions; the
+owner accepted that residual uncertainty rather than treating absent/weak baseline evidence as GREEN.
+The default runner remains 24 hours and the exception requires its explicit one-time flag.
+
+The mechanical gate `deploy/request-observability-coverage.test.sh` pins all 15 v1 leaves, server/router
+dispatch, producer ownership markers and excluded image/batch/files/embeddings/Combined surfaces.
+PostgreSQL suites cover reserve/delivery/settlement/reconciliation, exact replay, pruning, keyset pages,
+logical attempts and privacy-negative persistence. The monitoring gate pins fixed-cardinality export,
+alert thresholds, dashboard consumers and every runbook anchor. Full Rust and path-selected TypeScript
+gates passed on each producer SHA before merge.
+
+A bounded production smoke after the private producer chain returned `200` for summary and a two-row
+page over one hour: `scope_version=1`, 2,423 persisted facts, `coverage.status=unknown`, process runtime
+health and a non-null next cursor. The commerce admin producer was ready and rejected the same route
+without managed credentials with `401`. Credentials remained on the host and no response content or
+identity entered this evidence.
+
+The customer API/UI remains unchanged. Operator analytics is isolated from Engine Spend and exposes no
+prompt/content, raw API key, key label, email, provider subject/profile, account/key/billing/execution/
+upstream identity or raw failure prose. Coverage denominator and historical inbox loss stay `null` until
+an independent durable admitted-request authority exists.
+
+## 17. Historical review findings and code confirmations (2026-08)
 
 The following conclusions were verified against `origin/master` at `916dee0d` in read-only worktrees.
 They are retained as source observations; where an earlier recommendation differed, the locked v1
 record in §15 is authoritative.
 
-### 16.1 Confirmed by code
+### 17.1 Confirmed by code
 
 - `usage_events` is the authoritative settled-usage fact: `request_id` (unique), `account_id`, `key`,
   `model`, five token buckets, `web_search_requests`, `real_nano`, `charge_nano`, `provider`
@@ -787,7 +830,7 @@ record in §15 is authoritative.
   (`crates/forward/src/meter.rs:124` TeeMeter, `crates/forward/src/proxy.rs:2046-2072`,
   `docs/engine/ROUTING_FENCING.md`).
 
-### 16.2 Corrections and clarifications to this document
+### 17.2 Corrections and clarifications to this document
 
 - The HTTP error audit is owned by `crates/server`, not by `crates/forward` (§2, §12).
 - `billing_request_id` is the request-fact schema name, not the provider-plane variable name; the
@@ -804,7 +847,7 @@ record in §15 is authoritative.
   `validate_request_lifecycle_prune_cutoff` and must not resurrect or extend pruned lifecycle rows
   (§11).
 
-### 16.3 Risks carried into the locked contract
+### 17.3 Risks carried into the locked contract
 
 1. **Writer contention.** The low-priority observability inbox stays off the `AsyncBilling` money
    writer. Its separate connection/path and fail-open behavior are mandatory so analytics cannot add
