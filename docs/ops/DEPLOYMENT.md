@@ -159,7 +159,8 @@ two transient `candidate-validation` deployments concurrently for exact SHAs rea
 feature branches. The merge client first rebases onto the latest committed `master`, then creates
 that request before its fail-closed path-aware local gate, so local validation, trusted-host
 validation, and an active parent rollout may overlap. Each host worker has its own disposable
-PostgreSQL port, Cargo target, status file, and immutable candidate tree. Git fetches are briefly
+PostgreSQL port, Cargo target, status file, immutable candidate tree, and a bounded 256 MiB
+PostgreSQL shared-memory allocation for parallel analytical matrices. Git fetches are briefly
 serialized, and work for the same SHA has a per-SHA lock so production waits for and reuses that
 exact build instead of rebuilding it.
 
