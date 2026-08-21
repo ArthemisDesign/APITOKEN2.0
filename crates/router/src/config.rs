@@ -20,9 +20,8 @@ pub struct Config {
     /// Явный rollout-флаг advanced routing. По умолчанию выключен: `models` и
     /// `provider` отклоняются до catalog/policy/plane work.
     pub fallback_enabled: bool,
-    /// Composed large-body settings. Defaults preserve the current 64 MiB request and independent
-    /// 512 MiB raw-storage/estimated-memory budgets; later stages may raise them only after
-    /// bounded storage and dual admission exist.
+    /// Composed large-body settings. Production pins 256 MiB request, 8 MiB spill threshold,
+    /// and independent 4 GiB estimated-RSS / 16 GiB spool budgets.
     pub body_limits: api_limits::BodyLimits,
     pub body_idle_secs: u64,
     pub body_max_secs: u64,
@@ -100,8 +99,9 @@ impl Config {
             "CLAUDE_ROUTER_BODY_SPOOL_BUDGET_MIB cannot exceed the compiled runtime ceiling"
         );
         anyhow::ensure!(
-            body_limits.memory_threshold == body_limits.request,
-            "CLAUDE_ROUTER_BODY_MEMORY_THRESHOLD_MIB must equal the request limit before spooling is deployed"
+            body_limits.memory_threshold == body_limits.request
+                || body_limits.memory_threshold == api_limits::current::ROUTER_MEMORY_THRESHOLD,
+            "CLAUDE_ROUTER_BODY_MEMORY_THRESHOLD_MIB must equal the request limit or the 8 MiB spill threshold"
         );
         let body_idle_secs = parse_seconds(
             "CLAUDE_ROUTER_BODY_IDLE_SECS",
@@ -118,7 +118,7 @@ impl Config {
         anyhow::ensure!(
             body_idle_secs <= api_limits::current::ROUTER_BODY_IDLE_SECS
                 && body_max_secs <= api_limits::current::ROUTER_BODY_MAX_SECS,
-            "router upload timeouts cannot exceed current runtime ceilings before bounded storage is deployed"
+            "router upload timeouts cannot exceed current runtime ceilings"
         );
         let body_spool_root = std::path::PathBuf::from(
             std::env::var("CLAUDE_ROUTER_BODY_SPOOL_ROOT")

@@ -35,8 +35,9 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   never receive an ID even when a spoofed value arrives. The header is stripped from provider responses,
   never returned publicly, and does not replace `x-request-id`, billing identity, or execution group/attempt.
 - **No execution queues, semaphores, circuit breakers, rate limits** (invariant 3).
-  The only exception is a 512 MiB fail-fast budget in 1 MiB steps on buffered universal request
-  bodies: a known `Content-Length` is rounded up, an unknown/chunked one starts at 1 MiB and
+  The only exception is a 4 GiB fail-fast estimated-RSS budget and a 16 GiB spool budget in 1 MiB
+  steps on buffered universal request bodies: a known `Content-Length` is rounded up, an unknown/chunked
+  one starts at 1 MiB and
   fail-fast adds units as bytes are actually read. Read deadline — 60 seconds without
   progress and 5 minutes of absolute time.
   The ordinary single-model path drops the parsed tree and releases the permit after the outbound upload;
@@ -49,7 +50,7 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   (default-features off) so that bytes and Content-Encoding pass unchanged.
   The only exception is the shared `routing.rs`: the REQUEST body of
   `/v1/chat/completions`, `/v1/responses` and
-  `/v1/messages{,/count_tokens}` is read in full (64 MiB limit) for the sake of the
+  `/v1/messages{,/count_tokens}` is read in full (256 MiB limit) for the sake of the
   `model` field; the response body stays a stream. An additional exception is the router-owned
   `x-apitoken-service-tier: fast|priority` and the OpenAI-compatible body alias
   `serviceTier:"fast"|"priority"`: on executable GPT Chat/Responses requests the router
@@ -73,11 +74,10 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
 - `config.rs` — the only place env is read (`CLAUDE_ROUTER_*`), including
   the strict off-by-default flag `CLAUDE_ROUTER_FALLBACK_ENABLED` (`0|1|false|true`). The dormant
   body settings use `api-limits` strict decimal MiB/seconds parsing and fail startup on malformed,
-  zero, inconsistent, or above-current values. They preserve the 64 MiB request, independent 512 MiB
-  raw-storage and estimated-memory budgets, and 60/300-second deadlines. A required absolute
-  `CLAUDE_ROUTER_BODY_SPOOL_ROOT` is opened as a private directory capability; systemd gives every
-  slot a separate mode-0700 RuntimeDirectory. The current threshold equals the request cap, so public
-  behavior remains memory-first; future 256 MiB ceilings are not enablement. Request
+  zero, inconsistent, or above-current values. Production pins the 256 MiB request, independent 4 GiB
+  estimated-RSS and 16 GiB spool budgets, 8 MiB spill threshold, and 120/1800-second deadlines. A
+  required absolute `CLAUDE_ROUTER_BODY_SPOOL_ROOT` is opened as a private directory capability;
+  systemd gives every slot a separate mode-0700 StateDirectory on disk. Request
   `Content-Encoding` other than `identity` is 415 before the body is read. Ordinary namespaced
   single-model JSON extracts only routing selectors (`model` / `models` / `provider` / `serviceTier`)
   and skips unknown fields through `IgnoredAny`; a full `serde_json::Value` is built only for alias,
@@ -102,7 +102,7 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   `x-apitoken-service-tier` is stripped as well.
 - `routing.rs` — shared model dispatch and serial fallback for all universal
   surfaces. It first performs the bodyless auth, then dynamically reserves the actual
-  body size in the shared 512 MiB budget; overload/slow body return lane-shaped 503/408 without a billable call.
+  body size in the shared 4 GiB estimated-RSS budget; overload/slow body return lane-shaped 503/408 without a billable call.
   An ordinary request without `models` and `provider` keeps the original bytes and direct
   namespaced dispatch. The extended planner obtains one aggregate catalog snapshot, canonically
   deduplicates the explicit chain, applies provider filters/order and `allow_fallbacks`, then the
@@ -195,7 +195,7 @@ cargo build && bash tests/router_fallback_smoke.sh  # concurrent 6.4c mock-load 
 
 The integration tests bring up mock planes on real loopback sockets and
 cover: bodyless early auth ahead of an unfinished large body, terminal 401 and mixed-version,
-dynamic weighted 512 MiB overload without a queue, the slow-body deadline, permit release on parse error,
+dynamic weighted 4 GiB overload without a queue, the slow-body deadline, permit release on parse error,
 outbound EOF with an open SSE,
 absence of a data-plane pre-header deadline and a bounded `/balance` deadline without retry, passthrough
 of body/headers, unbuffered SSE, transitive

@@ -243,7 +243,7 @@ begin_cutover
 if [[ $TARGET_PORT != "$ACTIVE_PORT" ]]; then
   log "stopping inactive target $TARGET_UNIT before a fresh start"
   systemctl_command stop "$TARGET_UNIT"
-  privileged_command "$HEADROOM_HELPER" "/run/claude-router-$TARGET_PORT" claude-router.slice \
+  privileged_command "$HEADROOM_HELPER" "/var/lib/apitoken/spool/router-$TARGET_PORT" claude-router.slice \
     || die "insufficient memory or spool headroom for $TARGET_UNIT"
   log "starting $TARGET_UNIT from releases/current"
   systemctl_command start "$TARGET_UNIT"
@@ -255,7 +255,7 @@ if [[ $TARGET_PORT != "$ACTIVE_PORT" ]]; then
       || die 'large-payload canary marker is invalid'
     if ! privileged_command "$PAYLOAD_GATE" "$(basename -- "$CURRENT_RELEASE")" \
       "http://127.0.0.1:$TARGET_PORT/v1/chat/completions" "$TARGET_UNIT" \
-      "/run/claude-router-$TARGET_PORT" "$PAYLOAD_MEMORY_HIGH_BYTES" "$PAYLOAD_EVIDENCE_DIR" \
+      "/var/lib/apitoken/spool/router-$TARGET_PORT" "$PAYLOAD_MEMORY_HIGH_BYTES" "$PAYLOAD_EVIDENCE_DIR" \
       /srv/claude-api/data/large-payload-canary.authorization; then
       die "$(payload_canary_reason "$(basename -- "$CURRENT_RELEASE")" \
         || printf 'payload-canary: failed exact-SHA candidate evidence')"

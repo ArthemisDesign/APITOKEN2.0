@@ -192,21 +192,47 @@ fn parse_body_limits(
     .validate(api_limits::hard::SPOOL)
     .map_err(|error| format!("invalid provider body limits: {error}"))?;
     let request_ceiling = if provider == ProviderMode::Gemini {
-        api_limits::ByteLimit::from_bytes(64 * api_limits::MIB)
+        api_limits::current::GEMINI_TEXT_REQUEST
     } else {
-        api_limits::current::PROVIDER_TEXT_REQUEST
+        api_limits::current::ANTHROPIC_TEXT_REQUEST
+    };
+    let memory_ceiling = if provider == ProviderMode::Gemini {
+        api_limits::current::GEMINI_MEMORY_BUDGET
+    } else {
+        api_limits::current::PROVIDER_MEMORY_BUDGET
+    };
+    let response_ceiling = if provider == ProviderMode::Gemini {
+        api_limits::current::GEMINI_NATIVE_RESPONSE
+    } else {
+        api_limits::current::PROVIDER_NONSTREAM_RESPONSE
     };
     if limits.request > request_ceiling {
         return Err(format!(
             "CLAUDE_API_TEXT_BODY_MAX_MIB exceeds the {provider:?} runtime ceiling"
         ));
     }
-    if limits.memory_budget != api_limits::current::PROVIDER_MEMORY_BUDGET
-        || limits.spool_budget != api_limits::current::PROVIDER_SPOOL_BUDGET
-        || limits.memory_threshold != limits.request
-        || limits.response != api_limits::current::PROVIDER_NONSTREAM_RESPONSE
+    if limits.memory_budget > memory_ceiling {
+        return Err(format!(
+            "CLAUDE_API_BODY_MEMORY_BUDGET_MIB exceeds the {provider:?} runtime ceiling"
+        ));
+    }
+    if limits.spool_budget > api_limits::current::PROVIDER_SPOOL_BUDGET {
+        return Err(
+            "CLAUDE_API_BODY_SPOOL_BUDGET_MIB exceeds the compiled spool ceiling".to_owned(),
+        );
+    }
+    if limits.response > response_ceiling {
+        return Err(format!(
+            "CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB exceeds the {provider:?} runtime ceiling"
+        ));
+    }
+    if limits.memory_threshold != limits.request
+        && limits.memory_threshold != api_limits::current::PROVIDER_MEMORY_THRESHOLD
     {
-        return Err("provider body budgets must preserve the current envelope before bounded storage and dual admission".to_owned());
+        return Err(
+            "CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB must equal the request limit or the 8 MiB spill threshold"
+                .to_owned(),
+        );
     }
     Ok(limits)
 }
@@ -1633,7 +1659,31 @@ mod tests {
         );
         assert!(parse_body_limits(&gemini_64, ProviderMode::Anthropic).is_err());
         assert!(parse_body_limits(&gemini_64, ProviderMode::OpenAi).is_err());
-        for invalid in ["", "0", " 32", "+32", "1.5", "8", "256"] {
+        let gemini_256 = BTreeMap::from([
+            ("CLAUDE_API_TEXT_BODY_MAX_MIB".to_owned(), "256".to_owned()),
+            (
+                "CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB".to_owned(),
+                "8".to_owned(),
+            ),
+            (
+                "CLAUDE_API_BODY_MEMORY_BUDGET_MIB".to_owned(),
+                "8192".to_owned(),
+            ),
+            (
+                "CLAUDE_API_BODY_SPOOL_BUDGET_MIB".to_owned(),
+                "16384".to_owned(),
+            ),
+            (
+                "CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB".to_owned(),
+                "256".to_owned(),
+            ),
+        ]);
+        let gemini = parse_body_limits(&gemini_256, ProviderMode::Gemini).unwrap();
+        assert_eq!(gemini.request.bytes(), 256 * api_limits::MIB);
+        assert_eq!(gemini.memory_threshold.bytes(), 8 * api_limits::MIB);
+        assert!(parse_body_limits(&gemini_256, ProviderMode::Anthropic).is_err());
+        assert!(parse_body_limits(&gemini_256, ProviderMode::OpenAi).is_err());
+        for invalid in ["", "0", " 32", "+32", "1.5", "256"] {
             let values = BTreeMap::from([(
                 "CLAUDE_API_TEXT_BODY_MAX_MIB".to_owned(),
                 invalid.to_owned(),

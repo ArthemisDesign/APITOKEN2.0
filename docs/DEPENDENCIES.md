@@ -391,14 +391,14 @@ is only what is needed to walk the relationships when making changes:
   `POST /internal/router/auth/preflight` verifies the forwarding-admin/customer
   credential through the same `authed`/`AsyncBilling` resolver as live admission, and
   returns only a closed success marker or 401/503 without reserve, pricing/policy read,
-  or identity. The consumer is `crates/router`: before materializing the 64 MiB universal
+  or identity. The consumer is `crates/router`: before materializing the 256 MiB universal
   body it uses bounded hedged Anthropic → OpenAI → Gemini probes. The first starts
   immediately, later origins start at fixed 50 ms intervals without a conclusive result,
   and an inconclusive response with no useful active probe advances immediately. The first
   exact schema-v1 success or terminal 401 wins; mixed-version/transport/5xx remain
   inconclusive, and no credential/result is cached. Dropping outstanding request futures
   does not guarantee cancellation of provider DB work already accepted. The deployment
-  startup probe remains concurrent across all three origins. The fail-fast 512 MiB budget
+  startup probe remains concurrent across all three origins. The fail-fast 4 GiB estimated-RSS budget
   with a 1 MiB step grows dynamically with the actual chunked
   bytes, has a 60-second idle and a 5-minute absolute body deadline, and does not create
   an execution queue.

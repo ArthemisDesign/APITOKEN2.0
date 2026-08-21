@@ -2123,8 +2123,12 @@ legacy_gemini_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-gemini.servi
     -e 's#CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api-gemini #CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api-gemini-%i #')
 slot_gemini_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-gemini@.service" \
   | sed -e 's/CLAUDE_API_GEMINI_BATCH_ENABLED=1 CLAUDE_API_GEMINI_BATCH_PUBLIC_ENABLED=1 //' \
-    -e 's/CLAUDE_API_TEXT_BODY_MAX_MIB=64/CLAUDE_API_TEXT_BODY_MAX_MIB=32/' \
-    -e 's/CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=64/CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=32/')
+    -e 's/CLAUDE_API_TEXT_BODY_MAX_MIB=256/CLAUDE_API_TEXT_BODY_MAX_MIB=32/' \
+    -e 's/CLAUDE_API_BODY_MEMORY_BUDGET_MIB=8192/CLAUDE_API_BODY_MEMORY_BUDGET_MIB=2048/' \
+    -e 's/CLAUDE_API_BODY_SPOOL_BUDGET_MIB=16384/CLAUDE_API_BODY_SPOOL_BUDGET_MIB=2048/' \
+    -e 's/CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=8/CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=32/' \
+    -e 's/CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=256/CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=64/' \
+    -e 's#CLAUDE_API_BODY_SPOOL_ROOT=/var/lib/apitoken/spool/gemini-%i #CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api-gemini-%i #')
 [[ $slot_gemini_exec == "$legacy_gemini_exec" ]] \
   || wd_die 'Gemini slots drifted from the reviewed roster, catalog, upstream, or wire identity pins beyond Batch activation'
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-kimi.service"
@@ -3184,7 +3188,7 @@ grep -Fxq 'TimeoutStopSec=660' "$ROOT/systemd/claude-router@.service" \
   || wd_die "router slots cannot drain provider-grade SSE sessions"
 grep -Fxq 'TimeoutStopSec=660' "$ROOT/systemd/claude-router.service" \
   || wd_die "first singleton-to-slot handoff still truncates long SSE sessions"
-router_payload_pins='CLAUDE_ROUTER_MAX_BODY_MIB=64 CLAUDE_ROUTER_BODY_MEMORY_BUDGET_MIB=512 CLAUDE_ROUTER_BODY_SPOOL_BUDGET_MIB=512 CLAUDE_ROUTER_BODY_MEMORY_THRESHOLD_MIB=64 CLAUDE_ROUTER_BODY_IDLE_SECS=60 CLAUDE_ROUTER_BODY_MAX_SECS=300'
+router_payload_pins='CLAUDE_ROUTER_MAX_BODY_MIB=256 CLAUDE_ROUTER_BODY_MEMORY_BUDGET_MIB=4096 CLAUDE_ROUTER_BODY_SPOOL_BUDGET_MIB=16384 CLAUDE_ROUTER_BODY_MEMORY_THRESHOLD_MIB=8 CLAUDE_ROUTER_BODY_IDLE_SECS=120 CLAUDE_ROUTER_BODY_MAX_SECS=1800'
 for router_unit in claude-router.service claude-router@.service; do
   if [[ $router_unit == claude-router@.service ]]; then
     grep -Fq "$router_payload_pins" "$ROOT/systemd/$router_unit"
@@ -3212,11 +3216,11 @@ grep -Fq 'large-payload-headroom.sh' "$ROOT/deploy/router-bluegreen.sh" \
   || wd_die 'router cutover lacks a fail-closed headroom gate'
 grep -Fq 'large-payload-headroom.sh' "$ROOT/deploy/engine-bluegreen.sh" \
   || wd_die 'provider cutover lacks a fail-closed headroom gate'
-grep -Fq 'CLAUDE_ROUTER_BODY_SPOOL_ROOT=/run/claude-router-%i' "$ROOT/systemd/claude-router@.service" \
+grep -Fq 'CLAUDE_ROUTER_BODY_SPOOL_ROOT=/var/lib/apitoken/spool/router-%i' "$ROOT/systemd/claude-router@.service" \
   || wd_die 'router slots do not use separate instance-private spool roots'
-grep -Fxq 'RuntimeDirectory=claude-router-%i' "$ROOT/systemd/claude-router@.service" \
-  || wd_die 'router slot runtime directory is not instance-scoped'
-grep -Fxq 'RuntimeDirectoryMode=0700' "$ROOT/systemd/claude-router@.service" \
+grep -Fxq 'StateDirectory=apitoken/spool/router-%i' "$ROOT/systemd/claude-router@.service" \
+  || wd_die 'router slot spool directory is not instance-scoped'
+grep -Fxq 'StateDirectoryMode=0700' "$ROOT/systemd/claude-router@.service" \
   || wd_die 'router slot spool root is not private'
 grep -Fq 'CLAUDE_ROUTER_BODY_SPOOL_ROOT=/run/claude-router-8798' "$ROOT/systemd/claude-router.service" \
   || wd_die 'legacy router does not have its own spool root'
@@ -3225,11 +3229,19 @@ for provider_unit in claude-api.service claude-api@.service claude-api-anthropic
   claude-api-openai.service claude-api-openai@.service claude-api-gemini.service \
   claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service; do
   if [[ $provider_unit == claude-api-gemini@.service ]]; then
-    grep -Fq 'CLAUDE_API_TEXT_BODY_MAX_MIB=64 CLAUDE_API_BODY_MEMORY_BUDGET_MIB=2048 CLAUDE_API_BODY_SPOOL_BUDGET_MIB=2048 CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=64 CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=64' "$ROOT/systemd/$provider_unit" \
-      || wd_die "$provider_unit does not argv-pin the controlled 64 MiB canary"
+    grep -Fq 'CLAUDE_API_TEXT_BODY_MAX_MIB=256 CLAUDE_API_BODY_MEMORY_BUDGET_MIB=8192 CLAUDE_API_BODY_SPOOL_BUDGET_MIB=16384 CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=8 CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=256' "$ROOT/systemd/$provider_unit" \
+      || wd_die "$provider_unit does not argv-pin the 256 MiB Gemini envelope"
+    grep -Fq 'CLAUDE_API_BODY_SPOOL_ROOT=/var/lib/apitoken/spool/gemini-%i' "$ROOT/systemd/$provider_unit" \
+      || wd_die "$provider_unit does not argv-pin a disk-backed Gemini spool root"
+    grep -Fxq 'StateDirectoryMode=0700' "$ROOT/systemd/$provider_unit" \
+      || wd_die "$provider_unit spool root is not mode 0700"
   else
     grep -Fq "$provider_payload_pins" "$ROOT/systemd/$provider_unit" \
       || wd_die "$provider_unit changed outside the Gemini canary"
+    grep -Fq 'CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api' "$ROOT/systemd/$provider_unit" \
+      || wd_die "$provider_unit does not argv-pin a private provider spool root"
+    grep -Fxq 'RuntimeDirectoryMode=0700' "$ROOT/systemd/$provider_unit" \
+      || wd_die "$provider_unit spool root is not mode 0700"
   fi
   case "$provider_unit" in
     claude-api-anthropic@.service|claude-api-openai@.service)
@@ -3240,10 +3252,6 @@ for provider_unit in claude-api.service claude-api@.service claude-api-anthropic
       grep -Fxq 'MemoryMax=16G' "$ROOT/systemd/$provider_unit" ;;
     *) grep -Fxq 'MemoryMax=2G' "$ROOT/systemd/$provider_unit" ;;
   esac
-  grep -Fq 'CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api' "$ROOT/systemd/$provider_unit" \
-    || wd_die "$provider_unit does not argv-pin a private provider spool root"
-  grep -Fxq 'RuntimeDirectoryMode=0700' "$ROOT/systemd/$provider_unit" \
-    || wd_die "$provider_unit spool root is not mode 0700"
 done
 ! grep -Fq "trap 'abort_cutover \"\$?\" EXIT' EXIT" "$ROOT/deploy/router-bluegreen.sh" \
   || wd_die 'router success path is still converted into a cutover failure by EXIT trap'

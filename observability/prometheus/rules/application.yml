@@ -349,14 +349,14 @@ groups:
           runbook: 'docs/ops/MONITORING.md#routerbodyoversizepressure'
 
       - alert: RouterBodySpoolLeak
-        expr: claude_router_body_spool_files > 0
+        expr: claude_router_body_spool_files > 0 and claude_router_active_universal_requests == 0
         for: 2m
         labels:
           severity: warning
           component: claude-router
         annotations:
-          summary: 'Router private spool files exist while spill is still disabled'
-          description: 'Live private spool files are non-zero. Production threshold still equals the request cap and RuntimeDirectory is tmpfs, so any spool file is a leak or an accidental spill enablement.'
+          summary: 'Router private spool files remain after in-flight requests drain'
+          description: 'Live private spool files are non-zero while no universal request is active. Production 8 MiB spill on disk-backed StateDirectory is expected during uploads; leftover files after idle are a leak.'
           runbook: 'docs/ops/MONITORING.md#routerbodyspoolleak'
 
       - alert: ProviderBodyAdmissionFailures
@@ -370,14 +370,14 @@ groups:
           runbook: 'docs/ops/MONITORING.md#providerbodyadmissionfailures'
 
       - alert: ProviderBodySpoolLeak
-        expr: claude_api_body_spool_files > 0
+        expr: claude_api_body_spool_files > 0 and claude_api_active_requests == 0
         for: 2m
         labels:
           severity: warning
           component: claude-api
         annotations:
-          summary: 'Provider private spool files exist while spill is still disabled'
-          description: 'Live private spool files are non-zero on a provider plane. Production threshold still equals the request cap and RuntimeDirectory is tmpfs, so any spool file is a leak or an accidental spill enablement.'
+          summary: 'Provider private spool files remain after in-flight requests drain'
+          description: 'Live private spool files are non-zero while the plane reports no active requests. Gemini 8 MiB spill on disk is expected during uploads; leftover files after idle are a leak. Anthropic/OpenAI still pin threshold=request on tmpfs and must not create files at all.'
           runbook: 'docs/ops/MONITORING.md#providerbodyspoolleak'
 
       - alert: GeminiIpcProtocolFailures

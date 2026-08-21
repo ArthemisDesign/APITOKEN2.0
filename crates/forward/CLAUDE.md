@@ -15,9 +15,8 @@ Never mix the three provider paths.
 - Does NOT read env and does NOT contain CLI/management routes (`/health`, `/pool`, `/balance`) — that is `server`.
 - Receives its config ready-made: [`ProxyConfig`] is populated by `server::config`; billing is the async DB actor `Option<Arc<AsyncBilling>>` in `AppState` (1 writer + N readers).
 - `api-limits` is the dependency-free checked payload contract. Current provider caps remain distinct:
-  Anthropic text 32 MiB, Codex text 8 MiB, Gemini text 32 MiB/media 20 MiB, translated response
-  32 MiB and Gemini native response 64 MiB. Hard 256 MiB ceilings are not runtime enablement.
-  Native Anthropic Messages plus the Anthropic Chat/Responses universal adapters use `bounded-body`:
+  Anthropic text 32 MiB, Codex text 8 MiB, Gemini text/response 256 MiB, Gemini media 20 MiB,
+  translated Anthropic response 32 MiB. Native Anthropic Messages plus the Anthropic Chat/Responses universal adapters use `bounded-body`:
   independent 2 GiB raw-storage and estimated-memory admission, the 32 MiB threshold keeps current
   requests memory-backed, and ownership spans parse/translation/reserve/rotation. Native auth remains
   before body read; universal adapters keep their existing outer auth semantics through `forward`.
@@ -29,12 +28,12 @@ Never mix the three provider paths.
   `count_tokens` use the same body authorities after auth/admission while retaining terminal-fact
   evidence and response semantics.
   Native Gemini generate/stream/count plus all universal Chat/Responses/Messages/count paths use
-  the shared bounded reader under existing 32 MiB text and 20 MiB image/media caps. Native Gemini
-  generate keeps a 64 MiB argv canary distinct from `api-limits::current::GEMINI_TEXT_REQUEST`.
+  the shared bounded reader under the 256 MiB text envelope and the 20 MiB image/media cap. Native
+  Gemini generate uses the same `api-limits::current::GEMINI_TEXT_REQUEST` 256 MiB ceiling.
   Materializing text routes reject request `Content-Encoding` other than `identity` with a
   lane-shaped 415 before admission. `StoredBody::into_bytes()` reloads a spilled body under the
-  estimated-RSS budget so a later disk-backed threshold does not 503; production threshold still
-  equals the request cap because `/run` is tmpfs. `/metrics` exports
+  estimated-RSS budget. Gemini `@` production threshold is 8 MiB on disk-backed StateDirectory;
+  Anthropic/OpenAI remain memory-first on `/run` tmpfs with threshold equal to the request cap. `/metrics` exports
   `claude_api_body_admission_rejections_total`, storage/RSS/spool gauges, and Gemini IPC
   byte/active/failure series (scrape already supplies `provider`).
 

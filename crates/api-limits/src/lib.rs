@@ -237,25 +237,26 @@ pub mod hard {
 pub mod current {
     use super::{BodyLimits, ByteLimit, MIB};
 
-    pub const ROUTER_REQUEST: ByteLimit = ByteLimit::from_bytes(64 * MIB);
-    pub const ROUTER_MEMORY_BUDGET: ByteLimit = ByteLimit::from_bytes(512 * MIB);
-    pub const ROUTER_SPOOL_BUDGET: ByteLimit = ByteLimit::from_bytes(512 * MIB);
-    pub const ROUTER_MEMORY_THRESHOLD: ByteLimit = ROUTER_REQUEST;
+    pub const ROUTER_REQUEST: ByteLimit = ByteLimit::from_bytes(256 * MIB);
+    pub const ROUTER_MEMORY_BUDGET: ByteLimit = ByteLimit::from_bytes(4 * 1024 * MIB);
+    pub const ROUTER_SPOOL_BUDGET: ByteLimit = ByteLimit::from_bytes(16 * 1024 * MIB);
+    pub const ROUTER_MEMORY_THRESHOLD: ByteLimit = ByteLimit::from_bytes(8 * MIB);
     pub const ROUTER_RESPONSE: ByteLimit = ByteLimit::from_bytes(32 * MIB);
-    pub const ROUTER_BODY_IDLE_SECS: u64 = 60;
-    pub const ROUTER_BODY_MAX_SECS: u64 = 5 * 60;
+    pub const ROUTER_BODY_IDLE_SECS: u64 = 120;
+    pub const ROUTER_BODY_MAX_SECS: u64 = 30 * 60;
 
     pub const PROVIDER_TEXT_REQUEST: ByteLimit = ByteLimit::from_bytes(32 * MIB);
     pub const ANTHROPIC_TEXT_REQUEST: ByteLimit = ByteLimit::from_bytes(32 * MIB);
     pub const OPENAI_TEXT_REQUEST: ByteLimit = ByteLimit::from_bytes(8 * MIB);
-    pub const GEMINI_TEXT_REQUEST: ByteLimit = ByteLimit::from_bytes(32 * MIB);
+    pub const GEMINI_TEXT_REQUEST: ByteLimit = ByteLimit::from_bytes(256 * MIB);
     pub const GEMINI_MEDIA_REQUEST: ByteLimit = ByteLimit::from_bytes(20 * MIB);
     pub const TRANSLATED_NONSTREAM_RESPONSE: ByteLimit = ByteLimit::from_bytes(32 * MIB);
-    pub const GEMINI_NATIVE_RESPONSE: ByteLimit = ByteLimit::from_bytes(64 * MIB);
-    pub const PROVIDER_MEMORY_BUDGET: ByteLimit = ByteLimit::from_bytes(2 * 1024 * MIB);
-    pub const PROVIDER_SPOOL_BUDGET: ByteLimit = ByteLimit::from_bytes(2 * 1024 * MIB);
-    pub const PROVIDER_MEMORY_THRESHOLD: ByteLimit = PROVIDER_TEXT_REQUEST;
-    pub const PROVIDER_NONSTREAM_RESPONSE: ByteLimit = GEMINI_NATIVE_RESPONSE;
+    pub const GEMINI_NATIVE_RESPONSE: ByteLimit = ByteLimit::from_bytes(256 * MIB);
+    pub const PROVIDER_MEMORY_BUDGET: ByteLimit = ByteLimit::from_bytes(4 * 1024 * MIB);
+    pub const GEMINI_MEMORY_BUDGET: ByteLimit = ByteLimit::from_bytes(8 * 1024 * MIB);
+    pub const PROVIDER_SPOOL_BUDGET: ByteLimit = ByteLimit::from_bytes(16 * 1024 * MIB);
+    pub const PROVIDER_MEMORY_THRESHOLD: ByteLimit = ByteLimit::from_bytes(8 * MIB);
+    pub const PROVIDER_NONSTREAM_RESPONSE: ByteLimit = ByteLimit::from_bytes(64 * MIB);
 
     pub const ROUTER: BodyLimits = BodyLimits {
         request: ROUTER_REQUEST,
@@ -321,9 +322,13 @@ mod tests {
         assert!(current::PROVIDER.memory_budget <= hard::MEMORY_BUDGET);
         assert!(current::ANTHROPIC_TEXT_REQUEST <= current::PROVIDER_TEXT_REQUEST);
         assert!(current::OPENAI_TEXT_REQUEST <= current::PROVIDER_TEXT_REQUEST);
-        assert!(current::GEMINI_TEXT_REQUEST <= current::PROVIDER_TEXT_REQUEST);
+        assert!(current::GEMINI_TEXT_REQUEST <= hard::REQUEST);
         assert!(current::GEMINI_MEDIA_REQUEST <= current::GEMINI_TEXT_REQUEST);
         assert!(current::TRANSLATED_NONSTREAM_RESPONSE <= current::PROVIDER_NONSTREAM_RESPONSE);
+        assert!(current::PROVIDER_NONSTREAM_RESPONSE <= current::GEMINI_NATIVE_RESPONSE);
+        assert!(current::ROUTER_MEMORY_THRESHOLD <= current::ROUTER_REQUEST);
+        assert!(current::PROVIDER_MEMORY_THRESHOLD <= current::PROVIDER_TEXT_REQUEST);
+        assert!(current::GEMINI_MEMORY_BUDGET <= hard::MEMORY_BUDGET);
     }
 
     #[test]

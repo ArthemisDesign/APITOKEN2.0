@@ -32,7 +32,7 @@ if ! "$collector" "$unit" "$spool" "$before"; then
   exit 1
 fi
 load_rc=0
-python3 "$script_dir/tests/large_payload_mock_load.py" --url "$url" --sizes-mib "8,32,64" --concurrency 4 --authorization-file "$authorization_file" >"$load" 2>"$load.err" || load_rc=$?
+python3 "$script_dir/tests/large_payload_mock_load.py" --url "$url" --sizes-mib "8,32,64,128,256" --concurrency 4 --authorization-file "$authorization_file" >"$load" 2>"$load.err" || load_rc=$?
 if (( load_rc != 0 )); then
   if grep -Fq 'No such file or directory' "$load.err" 2>/dev/null; then
     write_reason 'payload-canary: load-driver missing'

@@ -198,7 +198,7 @@ struct ResolvedAttempt {
 }
 
 /// Shared universal handler. The response body is never buffered; only the
-/// already-required request body (current 64 MiB cap) is materialized.
+/// already-required request body (current 256 MiB cap) is materialized.
 pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surface) -> Response {
     let body_surface = surface.body_surface(req.uri().path());
     let _request_guard = state.metrics.universal_request();
@@ -714,9 +714,7 @@ async fn read_body_with_timeouts(
             })?;
         }
         let stored = store.finish().map_err(|_| BodyReadError::Overloaded)?;
-        let (bytes, stored) = stored
-            .into_bytes()
-            .map_err(|_| BodyReadError::Overloaded)?;
+        let (bytes, stored) = stored.into_bytes().map_err(|_| BodyReadError::Overloaded)?;
         let units = body_units_for_len(bytes.len(), body_limit);
         let bytes = Bytes::from(bytes);
         metric_units.replace(units);

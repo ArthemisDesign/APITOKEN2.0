@@ -387,7 +387,10 @@ mod tests {
 
     #[tokio::test]
     async fn chat_payload_too_large_is_openai_shaped_413() {
-        let response = chat_payload_too_large("Request body exceeds the 64 MiB limit.");
+        let response = chat_payload_too_large(&format!(
+            "Request body exceeds the {} limit.",
+            api_limits::current::ROUTER_REQUEST
+        ));
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         let json = body_json(response).await;
         assert_eq!(json["error"]["type"], "invalid_request_error");
@@ -395,7 +398,7 @@ mod tests {
         assert!(json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("64 MiB"));
+            .contains(&api_limits::current::ROUTER_REQUEST.to_string()));
     }
 
     #[tokio::test]

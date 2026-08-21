@@ -1,13 +1,14 @@
 # План масштабирования больших API payloads
 
-Статус: **в работе; публичные production-defaults не подняты до 256 MiB**.
+Статус: **commit 5 в этом train: router и Gemini text/response 256 MiB, disk-backed 8 MiB spill.
+Public OpenAI остаётся 8 MiB. Commits 7/8 ждут private app-server proof и Anthropic response
+admission.**
 
 Commits 1–4 уже в `master`: `api-limits`, `bounded-body`, dual admission, Gemini binary IPC,
 typed executor, systemd slices и headroom gate. Commit 4b (Caddy streaming ceiling,
 Content-Encoding fail-closed, spill `into_bytes`, plane telemetry) и commit 6 (Codex
-JSONL/history/Redis capacity) закрывают оставшийся DoD на **текущих** caps; public OpenAI
-остаётся 8 MiB. Commits 5/7/8 с raised public defaults ждут exact-SHA load proof и private
-app-server acceptance.
+JSONL/history/Redis capacity) закрыли transport/capacity на прежних caps. Commit 5 поднимает
+публичный router envelope и Gemini text/response до 256 MiB на disk-backed spool.
 
 Область: публичные model API endpoints `router.apitoken.sale`, `api.apitoken.sale`,
 `openai.api.apitoken.sale`, `gemini.api.apitoken.sale` и их внутренний путь
@@ -57,13 +58,13 @@ provider-owned upstream contract.
 | Граница | Сейчас | Цель GA | Действие |
 |---|---:|---:|---|
 | Caddy model-vhost request body | **256 MiB streaming cap** (не public default) | 256 MiB | Потолок на четырёх model vhosts; buffering/SSE flush_interval запрещены |
-| Universal request body | **64 MiB** на active `@` unit | 256 MiB | Поднимать после disk-backed spool и weighted admission proof |
-| Router body admission | 512 MiB raw + 512 MiB estimated-RSS | 4 GiB aggregate raw/spool + отдельный 4 GiB estimated-RSS budget | Разделить disk/storage и memory budgets; оба fail-fast, без очереди |
-| Body idle timeout | 60 s | 120 s | Timeout только при отсутствии byte progress |
-| Body absolute upload timeout | 5 min | 30 min | Позволяет 256 MiB на медленном uplink; не является generation timeout |
-| In-memory threshold | **равен request cap** (spill выключен) | 8 MiB | Не включать на `/run` tmpfs; нужен quota-backed filesystem |
+| Universal request body | **256 MiB** на active `@` unit | 256 MiB | Disk-backed 8 MiB spill; rollback unit остаётся 32 MiB |
+| Router body admission | **4 GiB estimated-RSS + 16 GiB spool** | 4 GiB estimated-RSS + 16 GiB spool | Оба fail-fast, без очереди |
+| Body idle timeout | **120 s** | 120 s | Timeout только при отсутствии byte progress |
+| Body absolute upload timeout | **30 min** | 30 min | Позволяет 256 MiB на медленном uplink; не является generation timeout |
+| In-memory threshold | **8 MiB** на router `@` | 8 MiB | Disk-backed `/var/lib/apitoken/spool`; tmpfs `/run` запрещён |
 | Router process memory | `MemoryHigh=6G`, `MemoryMax=8G` | те же | Только вместе с admission и cgroup alerts |
-| Router disk-spool budget | 512 MiB in-process, root на tmpfs `/run` | 16 GiB на active slot, 256 MiB/request | Atomic reservation до записи; OS quota — authority |
+| Router disk-spool budget | **16 GiB** на active slot, 256 MiB/request | 16 GiB на active slot, 256 MiB/request | Atomic reservation до записи; headroom отвергает tmpfs |
 | Router response body | stream | stream | Не вводить aggregate cap и не буферизовать SSE |
 
 Router memory budget учитывает не только raw bytes. Каждый materialized JSON получает
@@ -83,15 +84,15 @@ escaped Unicode, base64 и глубоко вложенных tool schemas. До 
 | Codex custom tool grammar | 4 MiB | 4 MiB | Bounded независимо от body max |
 | Codex app-server JSONL frame | 384 MiB | 384 MiB | Cap-before-allocation; public body 8 MiB |
 | Codex stored history entry | 256 MiB | 256 MiB | History Redis 8 GiB; affinity 128 MiB не тронут |
-| Gemini text native request | **64 MiB argv/canary** | 256 MiB | Universal adapters остаются на `api-limits` 32 MiB |
-| Gemini text universal Chat/Responses/Messages | 32 MiB | 256 MiB | После binary IPC и Gemini weighted admission |
+| Gemini text native request | **256 MiB** | 256 MiB | Native generate совпадает с `api-limits` |
+| Gemini text universal Chat/Responses/Messages | **256 MiB** | 256 MiB | Binary IPC и Gemini weighted admission |
 | Gemini inline-media/image request | 20 MiB | **20 MiB, оставить** | Документированный provider-owned media ceiling |
-| Gemini non-stream/generated-image response | 64 MiB | 256 MiB | Отдельный response admission; streaming остаётся streaming |
+| Gemini non-stream/generated-image response | **256 MiB** | 256 MiB | Отдельный response admission; streaming остаётся streaming |
 | Gemini Rust↔Node decoded request | 256 MiB transport ceiling | 256 MiB | Binary framing, без base64 JSON line |
 | Gemini Rust↔Node metadata frame | 1 MiB | 1 MiB | Headers/URL/control только; body идёт отдельным binary frame |
 | Gemini IPC binary body frame | 256 MiB ceiling | 256 MiB | Length-prefixed, exact request ID, bounded before allocation |
 | Provider process memory | Anthropic/OpenAI `High=6G Max=8G`; Gemini `High=12G Max=16G` | те же | Нужны parent-slice caps для blue-green overlap |
-| Provider request spool | 2 GiB in-process, root на tmpfs `/run` | 16 GiB/active plane | Quota и cleanup аналогичны router |
+| Provider request spool | Anthropic/OpenAI `/run` 2 GiB memory-first; Gemini **16 GiB** disk | 16 GiB/active plane | Gemini `@` на StateDirectory; Anthropic/OpenAI без public cap raise |
 
 ### 3.3 Намеренно не увеличивать
 
@@ -499,10 +500,12 @@ Exact candidate SHA допускается к повышенным defaults то
 - Provider `/metrics` exports admission/storage/RSS/spool and Gemini IPC series; alerts/runbooks/dashboard land in the same commit.
 - Публичные request caps не меняются. 8 MiB spill на `/run` tmpfs по-прежнему запрещён.
 
-### Commit 5 — поднять router + Gemini text/response до 256 MiB — **заблокировано**
+### Commit 5 — поднять router + Gemini text/response до 256 MiB — **в этом commit**
 
-Нужен exact-SHA load proof (oom=0, peak < MemoryHigh, mixed-load p99, fail-fast admission) и
-disk-backed spool filesystem. Caddy 256 MiB — потолок, не enablement.
+Router `@` 256 MiB request, 8 MiB spill, 4 GiB estimated-RSS, 16 GiB disk spool, 120/1800 s.
+Gemini `@` 256 MiB text/response, 8 MiB spill, 8 GiB estimated-RSS, 16 GiB disk spool.
+Candidate gate sizes `8,32,64,128,256`. OpenAI public 8 MiB и Anthropic request 32 MiB не меняются.
+Caddy 256 MiB остаётся потолком, теперь совпадает с router default.
 
 ### Commit 6 — Codex transport/history capacity — **сделано в этом train**
 

@@ -53,7 +53,9 @@ printf '%s\n' "faketokenaaaaaaaaaaaa" > "$token_file"
   echo "не удалось назначить plan mock-подписке" >&2; exit 2; }
 
 ADMIN_KEY="universal-chat-smoke-admin-key"
+mkdir -m 700 "$DATA/engine-spool" "$DATA/router-spool"
 CLAUDE_API_PROVIDER=anthropic \
+CLAUDE_API_BODY_SPOOL_ROOT="$DATA/engine-spool" \
 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=$SRVP CLAUDE_API_KEYS="$ADMIN_KEY" \
 CLAUDE_API_BILLING=0 CLAUDE_API_POLL=0 CLAUDE_API_UPSTREAM="http://127.0.0.1:$MOCKP" \
 CLAUDE_API_ALLOW_INSECURE_LOOPBACK_UPSTREAM=1 \
@@ -64,7 +66,6 @@ if ! kill -0 "$SRV" 2>/dev/null || \
   echo "mock engine не поднялся" >&2; tail -n 80 "$DATA/srv.log" >&2; exit 2
 fi
 
-mkdir -m 700 "$DATA/router-spool"
 CLAUDE_ROUTER_BODY_SPOOL_ROOT="$DATA/router-spool" \
 CLAUDE_ROUTER_HOST=127.0.0.1 CLAUDE_ROUTER_PORT=$RTRP \
 CLAUDE_ROUTER_ANTHROPIC_ORIGIN="http://127.0.0.1:$SRVP" \

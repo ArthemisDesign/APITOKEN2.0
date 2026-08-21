@@ -20,12 +20,9 @@ slices cap simultaneous active+candidate generations at 9/12 GiB or 18/24 GiB re
 large-payload slot pins `LimitNOFILE=262144`, `TasksMax=8192`, and `OOMPolicy=stop`.
 
 Before starting an inactive router or Anthropic slot, the controller runs the fixed
-`large-payload-headroom.sh`: at least 12 GiB host `MemAvailable`, 8 GiB free on the current private
-`/run` spool filesystem, and parent `MemoryCurrent < MemoryMax` are mandatory. The 8 GiB threshold
-matches the host's 10 GiB runtime tmpfs while production remains on a 512 MiB process spool budget
-and memory-first threshold; the later 16 GiB disk-backed rollout requires a quota-backed filesystem.
-Failure leaves the serving slot and Caddy routing unchanged. These resource limits enable safe load
-testing; they do not raise any public body limit by themselves.
+`large-payload-headroom.sh`: at least 12 GiB host `MemAvailable`, 16 GiB free on the disk-backed
+`/var/lib/apitoken/spool` filesystem (tmpfs is rejected), and parent `MemoryCurrent < MemoryMax` are mandatory.
+Failure leaves the serving slot and Caddy routing unchanged.
 
 ## Large-payload load evidence
 
@@ -38,14 +35,14 @@ small-request p99 regression no greater than 10%. `tests/large_payload_candidate
 before/after cgroup snapshots plus load output for an exact SHA and fails unless OOM/max deltas and
 spool leaks are zero, peak is below MemoryHigh, and at least 20% MemoryMax headroom remains. The
 root-installed `large-payload-candidate-gate.sh` composes snapshot→load→snapshot→verdict for the
-8/32/64 MiB concurrency-4 canary and atomically publishes the exact-SHA verdict. The controller
+8/32/64/128/256 MiB concurrency-4 canary and atomically publishes the exact-SHA verdict. The controller
 installer publishes both Python harness files under
 `/usr/local/lib/apitoken-watchdog/tests/`, because the root gate resolves them from its own
 installed root rather than from a repository checkout. A release carrying
 the regular-file marker `.large-payload-canary-v1` must pass this gate on the inactive router slot
 after readiness and before enablement/Caddy promotion; failure leaves the old slot serving. The
 canary POSTs valid JSON **without** `model` to the sudoers-pinned
-`/v1/chat/completions` URL so every 8/32/64 MiB body must cross raised router admission and then
+`/v1/chat/completions` URL so every 8/32/64/128/256 MiB body must cross raised router admission and then
 fail locally (400 missing `model`). A namespaced or otherwise routable `model` is forwarded to a
 provider plane whose own cap is still 8 or 32 MiB; that plane's 413 is not router-admission
 evidence, and a 413/408/431 from the router itself is a size/timeout/header reject. The gate

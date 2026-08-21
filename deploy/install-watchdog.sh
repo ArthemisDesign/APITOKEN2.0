@@ -244,6 +244,7 @@ install_controller_definitions() {
   install -d -o root -g root -m 0755 \
     /usr/local/lib/apitoken-watchdog/controller /opt/apitoken-watchdog
   install -d -o root -g root -m 0700 /var/lib/apitoken/watchdog/large-payload
+  install -d -o deploy -g deploy -m 0750 /var/lib/apitoken/spool
   # The payload candidate gate executes this harness from its fixed installed root; publish it in
   # the same controller transaction so a marker-bearing release can actually run its evidence gate.
   install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/tests

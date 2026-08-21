@@ -104,6 +104,7 @@ fn make_router(anthropic: &str, openai: &str, gemini: &str, ttl: Duration) -> Ro
         ttl,
         false,
         build_client().unwrap(),
+        api_limits::current::ROUTER,
     )
 }
 
@@ -115,6 +116,7 @@ fn make_fallback_router(anthropic: &str, openai: &str, gemini: &str, ttl: Durati
         ttl,
         true,
         build_client().unwrap(),
+        api_limits::current::ROUTER,
     )
 }
 
@@ -138,15 +140,16 @@ fn make_router_with(
     ttl: Duration,
     fallback_enabled: bool,
     client: Client,
+    body_limits: api_limits::BodyLimits,
 ) -> Router {
     let spool_root = private_spool_root();
     let body_storage = bounded_body::Budget::new(
-        api_limits::current::ROUTER_SPOOL_BUDGET,
+        body_limits.spool_budget,
         api_limits::ByteLimit::from_bytes(api_limits::MIB),
     )
     .unwrap();
     let body_memory = bounded_body::Budget::new(
-        api_limits::current::ROUTER_MEMORY_BUDGET,
+        body_limits.memory_budget,
         api_limits::ByteLimit::from_bytes(api_limits::MIB),
     )
     .unwrap();
@@ -163,7 +166,7 @@ fn make_router_with(
             openai_origin: openai.into(),
             gemini_origin: gemini.into(),
             fallback_enabled,
-            body_limits: api_limits::current::ROUTER,
+            body_limits,
             body_idle_secs: api_limits::current::ROUTER_BODY_IDLE_SECS,
             body_max_secs: api_limits::current::ROUTER_BODY_MAX_SECS,
             body_spool_root: spool_root,
@@ -1629,6 +1632,7 @@ async fn proven_connection_refused_retries_but_timeout_does_not() {
         Duration::ZERO,
         true,
         timeout_client,
+        api_limits::current::ROUTER,
     ))
     .await;
     let response = reqwest::Client::new()
@@ -2310,18 +2314,28 @@ async fn universal_body_budget_fails_fast_without_becoming_an_execution_queue() 
         }
     })))
     .await;
-    let router = spawn(make_router(
+    let test_limits = api_limits::BodyLimits {
+        request: api_limits::ByteLimit::from_bytes(8 * api_limits::MIB),
+        memory_budget: api_limits::ByteLimit::from_bytes(64 * api_limits::MIB),
+        spool_budget: api_limits::ByteLimit::from_bytes(64 * api_limits::MIB),
+        memory_threshold: api_limits::ByteLimit::from_bytes(8 * api_limits::MIB),
+        response: api_limits::current::ROUTER_RESPONSE,
+    };
+    let router = spawn(make_router_with(
         &plane,
         "http://127.0.0.1:0",
         "http://127.0.0.1:0",
         Duration::ZERO,
+        false,
+        build_client().unwrap(),
+        test_limits,
     ))
     .await;
     let held_body = || {
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         tx.try_send(Ok::<Bytes, std::io::Error>(Bytes::from(vec![
             b' ';
-            64 * 1024
+            8 * 1024
                 * 1024
         ])))
         .unwrap();
@@ -2329,7 +2343,7 @@ async fn universal_body_budget_fails_fast_without_becoming_an_execution_queue() 
     };
     let mut held_senders = Vec::new();
     let mut held_tasks = Vec::new();
-    // The 512 MiB budget admits eight maximal 64 MiB bodies before fail-fast overload.
+    // A 64 MiB test budget admits eight 8 MiB bodies before fail-fast overload.
     for _ in 0..8 {
         let (body, tx) = held_body();
         let held_router = router.clone();
@@ -2352,7 +2366,7 @@ async fn universal_body_budget_fails_fast_without_becoming_an_execution_queue() 
             .text()
             .await
             .unwrap();
-        if metrics.contains("claude_router_active_body_admission_units 512") {
+        if metrics.contains("claude_router_active_body_admission_units 64") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2552,7 +2566,10 @@ async fn chat_oversized_body_is_413_and_never_reaches_plane() {
     .await;
     let response = reqwest::Client::new()
         .post(format!("{router}/v1/chat/completions"))
-        .header(reqwest::header::CONTENT_LENGTH, 64 * 1024 * 1024 + 1)
+        .header(
+            reqwest::header::CONTENT_LENGTH,
+            api_limits::current::ROUTER_REQUEST.bytes() + 1,
+        )
         .body(oversized_pending_body())
         .send()
         .await
@@ -2564,7 +2581,7 @@ async fn chat_oversized_body_is_413_and_never_reaches_plane() {
     assert!(json["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("64 MiB"));
+        .contains(api_limits::current::ROUTER_REQUEST.to_string().as_str()));
     assert!(log_a.lock().unwrap().is_empty());
 }
 
@@ -2803,7 +2820,10 @@ async fn responses_oversized_body_is_413_and_never_reaches_plane() {
     .await;
     let response = reqwest::Client::new()
         .post(format!("{router}/v1/responses"))
-        .header(reqwest::header::CONTENT_LENGTH, 64 * 1024 * 1024 + 1)
+        .header(
+            reqwest::header::CONTENT_LENGTH,
+            api_limits::current::ROUTER_REQUEST.bytes() + 1,
+        )
         .body(oversized_pending_body())
         .send()
         .await
@@ -2815,7 +2835,7 @@ async fn responses_oversized_body_is_413_and_never_reaches_plane() {
     assert!(json["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("64 MiB"));
+        .contains(api_limits::current::ROUTER_REQUEST.to_string().as_str()));
     assert!(log_a.lock().unwrap().is_empty());
 }
 
@@ -3107,7 +3127,10 @@ async fn messages_oversized_body_is_413_and_never_reaches_plane() {
     .await;
     let response = reqwest::Client::new()
         .post(format!("{router}/v1/messages"))
-        .header(reqwest::header::CONTENT_LENGTH, 64 * 1024 * 1024 + 1)
+        .header(
+            reqwest::header::CONTENT_LENGTH,
+            api_limits::current::ROUTER_REQUEST.bytes() + 1,
+        )
         .body(oversized_pending_body())
         .send()
         .await
@@ -3119,7 +3142,7 @@ async fn messages_oversized_body_is_413_and_never_reaches_plane() {
     assert!(json["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("64 MiB"));
+        .contains(api_limits::current::ROUTER_REQUEST.to_string().as_str()));
     assert!(log_a.lock().unwrap().is_empty());
 }
 

@@ -4,7 +4,7 @@ usage() { echo 'usage: large-payload-evidence.sh <unit> <spool-root> <output-jso
 [[ $# == 3 ]] || usage
 unit=$1 spool=$2 output=$3
 [[ $unit =~ ^(claude-router|claude-api-(anthropic|openai|gemini))@[0-9]+\.service$ ]] || usage
-[[ $spool == /run/* && -d $spool && ! -L $spool ]] || exit 1
+[[ $spool == /var/lib/apitoken/spool/* && -d $spool && ! -L $spool ]] || exit 1
 [[ $output == /* ]] || usage
 cg=$(systemctl show "$unit" -p ControlGroup --value)
 [[ $cg == /* && -d /sys/fs/cgroup$cg ]] || exit 1
