@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useMemo, useState, type ReactElement } from "react";
+import { startTransition, useMemo, useState, type FormEvent, type ReactElement } from "react";
 import { ago } from "@/lib/format";
 import { useResource, useResources } from "@/lib/resources";
 import { Banner, CardGrid, EmptyRow, LoadingGrid, PageHead, Pill, SectionHeader, StatCard, TableCard } from "@/components/ui";
@@ -25,17 +25,13 @@ const WINDOWS: Array<{ hours: WindowHours; label: string }> = [
 export default function RequestAnalyticsPage(): ReactElement {
   const [hours, setHours] = useState<WindowHours>(24);
   const [cursor, setCursor] = useState<string | undefined>();
+  const [logicalDraft, setLogicalDraft] = useState("");
   const [logicalId, setLogicalId] = useState<string | undefined>();
   const urls = useMemo(() => requestAnalyticsUrls(hours, cursor), [hours, cursor]);
   const { data } = useResources<{ summary: SummaryResponse; page: PageResponse }>({
     summary: urls.summary,
     page: urls.page,
   });
-  const { data: logical } = useResource<LogicalResponse>(
-    logicalId
-      ? `/admin/request-analytics/logical/${encodeURIComponent(logicalId)}`
-      : "/admin/request-analytics/logical/00000000-0000-4000-8000-000000000000",
-  );
   const summary = data.summary;
   const page = data.page;
 
@@ -74,7 +70,7 @@ export default function RequestAnalyticsPage(): ReactElement {
           <thead><tr><th className="left">маршрут</th><th className="left">модель</th><th>stream</th><th>status</th><th>delivery</th><th>first byte</th><th>terminal</th><th>время</th></tr></thead>
           <tbody>
             {(page.rows ?? []).length ? (page.rows ?? []).map((row) => (
-              <tr key={row.fact_id} onClick={() => row.logical_request_id && setLogicalId(row.logical_request_id)} style={{ cursor: row.logical_request_id ? "pointer" : "default" }}>
+              <tr key={row.fact_id}>
                 <td className="left"><b>{routeLabel(row)}</b><div className="sub">client {displayValue(row.client_kind)}</div></td>
                 <td className="left"><span className="mono">{displayValue(row.requested_model)}</span><div className="sub mono">→ {displayValue(row.executable_model)}</div></td>
                 <td>{row.stream ? "да" : "нет"}</td><td>{row.http_status_code ?? "—"}</td>
@@ -87,10 +83,30 @@ export default function RequestAnalyticsPage(): ReactElement {
       </TableCard>
       {page.next_cursor ? <div className="toolbar"><button type="button" className="btn ghost" onClick={() => setCursor(page.next_cursor ?? undefined)}>Следующая страница</button></div> : null}
 
-      <SectionHeader title="Попытки логического запроса" sub={logicalId ? `operator-only ${logicalId}` : "выберите строку с logical ID"} />
-      {logicalId && logical ? <AttemptsTable rows={logical.rows ?? []} /> : <Banner title="Выберите запрос">Logical ID не раскрывается в общей таблице producer-а; detail откроется только для строк, где он присутствует.</Banner>}
+      <SectionHeader title="Попытки логического запроса" sub={logicalId ? `operator-only ${logicalId}` : "точный UUID из operator evidence"} />
+      <form
+        className="toolbar"
+        style={{ margin: "0 0 12px" }}
+        onSubmit={(event: FormEvent) => {
+          event.preventDefault();
+          const value = logicalDraft.trim();
+          if (/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)) {
+            setLogicalId(value);
+          }
+        }}
+      >
+        <label className="sr-only" htmlFor="logical-request-id">Logical request ID</label>
+        <input id="logical-request-id" className="mono" value={logicalDraft} onChange={(event) => setLogicalDraft(event.target.value)} placeholder="xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx" maxLength={36} />
+        <button type="submit" className="btn ghost" disabled={!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(logicalDraft.trim())}>Найти</button>
+      </form>
+      {logicalId ? <LogicalAttempts logicalId={logicalId} /> : <Banner title="Введите operator-only ID">Общий drilldown намеренно не раскрывает logical ID. Вставьте точный UUID из incident evidence или журнала.</Banner>}
     </div>
   );
+}
+
+function LogicalAttempts({ logicalId }: { logicalId: string }): ReactElement {
+  const { data } = useResource<LogicalResponse>(`/admin/request-analytics/logical/${encodeURIComponent(logicalId)}`);
+  return data ? <AttemptsTable rows={data.rows ?? []} /> : <LoadingGrid count={1} />;
 }
 
 function AttemptsTable({ rows }: { rows: RequestFactRow[] }): ReactElement {
