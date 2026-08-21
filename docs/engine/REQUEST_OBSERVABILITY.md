@@ -629,9 +629,10 @@ the prerequisite exact SHA is production GREEN.
     the three endpoints expose the §9 coverage semantics, bounded summaries, keyset drilldown and
     logical-attempt lookup. This commit updates `docs/engine/CONTROL_API.md` and
     `docs/DEPENDENCIES.md`; consumers still wait for its exact production GREEN SHA.
-12. **Deliver `packages/contracts`.** Only after the step-11 producer is GREEN, add the typed private
-    request-analytics schemas as an additive contract producer; update `docs/DEPENDENCIES.md` in the
-    same commit and wait for the exact SHA to be GREEN.
+12. **Deliver `packages/contracts` — implemented in this producer.** After production-GREEN engine
+    producer `899bb0a10e8b977aa775f996cced53491264a39c`, add typed private summary/page/logical schemas
+    with bounded rows/axes and honest nullable coverage/runtime semantics; update
+    `docs/DEPENDENCIES.md` and wait for this exact SHA to be GREEN.
 13. **Deliver `packages/engine-client`.** Only after the step-12 contract producer is GREEN, consume
     those schemas in the sole TypeScript Control API transport; wait for the exact SHA to be GREEN.
 14. **Deliver `apps/api`.** Only after the step-13 engine-client producer is GREEN, add the private

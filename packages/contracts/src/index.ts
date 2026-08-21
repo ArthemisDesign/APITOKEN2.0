@@ -231,6 +231,130 @@ export type EngineSpendAccount = z.infer<typeof spendStatsAccountSchema>;
 export type EngineSpendModel = z.infer<typeof spendStatsModelSchema>;
 export type EngineSpendProvider = z.infer<typeof spendStatsProviderSchema>;
 
+const requestFactNullableString = z.string().nullable();
+const requestFactAxisSchema = z.object({
+  groups: z.array(z.object({
+    values: z.array(requestFactNullableString),
+    count: z.number().int().safe().nonnegative(),
+  })).max(512),
+  truncated: z.boolean(),
+});
+const requestFactTotalsSchema = z.object({
+  persisted: z.number().int().safe().nonnegative(),
+  terminal: z.number().int().safe().nonnegative(),
+  nonterminal: z.number().int().safe().nonnegative(),
+  required_evidence_unknown: z.number().int().safe().nonnegative(),
+});
+const requestFactCoverageSchema = z.object({
+  scope_version: z.literal(1),
+  from: z.number().int().nonnegative(),
+  to: z.number().int().positive(),
+  persisted_facts: z.number().int().safe().nonnegative(),
+  terminal_facts: z.number().int().safe().nonnegative(),
+  nonterminal_facts: z.number().int().safe().nonnegative(),
+  required_evidence_unknown_facts: z.number().int().safe().nonnegative(),
+  drops: z.object({ value: z.null(), reason: z.literal("no_durable_window_attribution") }),
+  persistence_failures: z.object({ value: z.null(), reason: z.literal("no_durable_window_attribution") }),
+  admitted_denominator: z.null(),
+  coverage_percentage: z.null(),
+  status: z.literal("unknown"),
+}).superRefine((value, ctx) => {
+  if (value.to <= value.from || value.to - value.from > 30 * 86_400) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "invalid request-fact coverage window" });
+  }
+});
+const requestFactRuntimeSchema = z.object({
+  observed_at: z.number().int().nonnegative(),
+  process_started_at: z.number().int().nonnegative().nullable(),
+  continuity: z.enum(["process_local", "unknown"]),
+  queue_capacity: z.literal(4096),
+  queue_depth: z.number().int().nonnegative().max(4096),
+  accepted_total: z.number().int().safe().nonnegative(),
+  persisted_total: z.number().int().safe().nonnegative(),
+  deduplicated_total: z.number().int().safe().nonnegative(),
+  dropped_invalid_total: z.number().int().safe().nonnegative(),
+  dropped_full_total: z.number().int().safe().nonnegative(),
+  dropped_closed_total: z.number().int().safe().nonnegative(),
+  dropped_unsupported_total: z.number().int().safe().nonnegative(),
+  persistence_failed_total: z.number().int().safe().nonnegative(),
+  persistence_health: z.enum(["unknown", "healthy", "failed"]),
+  stuck_nonterminal_count: z.number().int().safe().nonnegative().nullable(),
+});
+export const engineRequestFactRowSchema = z.object({
+  fact_id: z.number().int().safe().positive(),
+  logical_request_id: z.string().uuid().optional(),
+  attempt: z.number().int().positive(),
+  client_kind: z.string(),
+  client_source: z.string(),
+  client_version: z.string().nullable(),
+  provider_plane: z.string(),
+  route_class: z.string(),
+  request_class: z.string(),
+  requested_model: z.string().nullable(),
+  executable_model: z.string().nullable(),
+  stream: z.boolean(),
+  tools_declared_count: z.number().int().nonnegative().nullable(),
+  tool_classes: z.number().int().nonnegative().nullable(),
+  tool_choice_mode: z.string().nullable(),
+  parallel_tools_requested: z.boolean().nullable(),
+  tool_results_in_input: z.boolean().nullable(),
+  structured_output: z.boolean().nullable(),
+  reasoning: z.boolean().nullable(),
+  service_tier: z.string().nullable(),
+  input_modalities: z.number().int().nonnegative().nullable(),
+  output_modalities: z.number().int().nonnegative().nullable(),
+  admitted_at: z.number().int().nonnegative(),
+  delivery_started_at: z.number().int().nonnegative().nullable(),
+  first_public_byte_at: z.number().int().nonnegative().nullable(),
+  terminal_at: z.number().int().nonnegative().nullable(),
+  http_status_code: z.number().int().min(100).max(599).nullable(),
+  provider_terminal_class: z.string().nullable(),
+  delivery_state: z.string().nullable(),
+  billing_outcome: z.string().nullable(),
+  downstream_disconnect: z.boolean().nullable(),
+  internal_attempt_count: z.number().int().nonnegative().nullable(),
+  tool_calls_in_output: z.boolean().nullable(),
+  admission_to_delivery_seconds: z.number().int().nonnegative().nullable(),
+  admission_to_first_public_byte_seconds: z.number().int().nonnegative().nullable(),
+  delivery_to_first_public_byte_seconds: z.number().int().nonnegative().nullable(),
+  admission_to_terminal_seconds: z.number().int().nonnegative().nullable(),
+  schema_version: z.number().int().positive(),
+});
+const requestFactEnvelope = z.object({
+  scope_version: z.literal(1),
+  from: z.number().int().nonnegative(),
+  to: z.number().int().positive(),
+  coverage: requestFactCoverageSchema,
+  runtime: requestFactRuntimeSchema,
+});
+export const engineRequestFactSummarySchema = requestFactEnvelope.extend({
+  summary: z.object({
+    totals: requestFactTotalsSchema,
+    clients: requestFactAxisSchema,
+    routes: requestFactAxisSchema,
+    requested_models: requestFactAxisSchema,
+    executable_models: requestFactAxisSchema,
+    terminal_classes: requestFactAxisSchema,
+    delivery_states: requestFactAxisSchema,
+    billing_outcomes: requestFactAxisSchema,
+  }),
+});
+export const engineRequestFactPageSchema = requestFactEnvelope.extend({
+  rows: z.array(engineRequestFactRowSchema).max(200),
+  next_cursor: z.string().max(64).nullable(),
+});
+export const engineRequestFactLogicalSchema = z.object({
+  scope_version: z.literal(1),
+  logical_request_id: z.string().uuid(),
+  rows: z.array(engineRequestFactRowSchema).max(200),
+  truncated: z.boolean(),
+  runtime: requestFactRuntimeSchema,
+});
+export type EngineRequestFactRow = z.infer<typeof engineRequestFactRowSchema>;
+export type EngineRequestFactSummary = z.infer<typeof engineRequestFactSummarySchema>;
+export type EngineRequestFactPage = z.infer<typeof engineRequestFactPageSchema>;
+export type EngineRequestFactLogical = z.infer<typeof engineRequestFactLogicalSchema>;
+
 export const createEngineAccountSchema = z.object({
   handle: z.string().trim().min(1).max(200).optional(),
   multBp: z.number().int().min(0).max(10_000).optional(),
