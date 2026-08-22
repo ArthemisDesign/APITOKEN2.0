@@ -593,6 +593,27 @@ remain immutable and readers sum both stores via `UNION ALL`.
 Payout balance = `max(confirmed gross + signed adjustments − (paid + active requests), 0)`.
 Debt = `max(paid − (lifetime gross + signed adjustments), 0)` and remains visible separately.
 
+## Local tests
+
+Affiliate money suites (`packages/sales-db` `*.integration.test.ts` and
+`apps/sales-api` payout/sync SQL tests) run only when `TEST_SALES_DATABASE_URL`
+is set. `pnpm test` without that variable exits 0 and skips them.
+
+Local topology matches production and the watchdog: a `sales` database on the
+`compose.yaml` Postgres, not a second container.
+
+```bash
+docker compose up -d
+bash deploy/local-test-databases.sh ensure
+TEST_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/commerce \
+TEST_SALES_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/sales \
+  pnpm test:integration
+```
+
+`pnpm test:integration` fails closed if either DSN is missing. The local merge
+TypeScript lane defaults those URLs, creates the databases, migrates, and then
+fails closed if Postgres is down.
+
 ## Env (apps/sales-api)
 
 `SALES_DATABASE_URL`, `SALES_TOKEN_ENCRYPTION_KEY`, `SALES_ADMIN_KEY`, `SALES_CONTROL_KEY`

@@ -165,7 +165,26 @@ am_gate_typescript() (
   else
     pnpm "${filters[@]}" -r --if-present --fail-if-no-match typecheck
   fi
-  bash "$ROOT/deploy/typescript-test-groups.sh" "$ROOT" ${test_packages[@]+"${test_packages[@]}"}
+  # Selected database components must migrate and run SQL suites. Watchdog injects disposable
+  # URLs. Locally the compose.yaml databases are the default so a missing DSN cannot skip the
+  # money path. typescript-test-groups.sh then fails closed if a selected component still has
+  # an empty URL.
+  if wd_typescript_component_list_contains "$context_list" commerce; then
+    export TEST_DATABASE_URL="${TEST_DATABASE_URL:-postgresql://commerce:commerce-local-only@127.0.0.1:5433/commerce}"
+  fi
+  if wd_typescript_component_list_contains "$context_list" sales; then
+    export TEST_SALES_DATABASE_URL="${TEST_SALES_DATABASE_URL:-postgresql://commerce:commerce-local-only@127.0.0.1:5433/sales}"
+  fi
+  if wd_typescript_component_list_contains "$context_list" openkeys; then
+    export TEST_OPENKEYS_DATABASE_URL="${TEST_OPENKEYS_DATABASE_URL:-postgresql://commerce:commerce-local-only@127.0.0.1:5433/openkeys}"
+  fi
+  if [[ ${TEST_DATABASE_URL:-} == 'postgresql://commerce:commerce-local-only@127.0.0.1:5433/commerce' \
+    || ${TEST_SALES_DATABASE_URL:-} == 'postgresql://commerce:commerce-local-only@127.0.0.1:5433/sales' \
+    || ${TEST_OPENKEYS_DATABASE_URL:-} == 'postgresql://commerce:commerce-local-only@127.0.0.1:5433/openkeys' ]]; then
+    bash "$ROOT/deploy/local-test-databases.sh" ensure
+  fi
+  TYPESCRIPT_TEST_COMPONENTS="$context_list" \
+    bash "$ROOT/deploy/typescript-test-groups.sh" "$ROOT" ${test_packages[@]+"${test_packages[@]}"}
 )
 
 am_gate_rust() (
@@ -208,6 +227,7 @@ am_gate_deployment() (
   bash "$ROOT/deploy/typescript-build-contexts.test.sh"
   bash "$ROOT/deploy/typescript-artifact-cache.test.sh"
   bash "$ROOT/deploy/typescript-test-groups.test.sh"
+  bash "$ROOT/deploy/local-test-databases.test.sh"
   bash "$ROOT/deploy/commerce-release-bundle.test.sh"
   bash "$ROOT/deploy/change-plan.test.sh"
   bash "$ROOT/deploy/repository-invariants.test.sh"
@@ -256,6 +276,7 @@ am_range_changes_local_gate() {
       deploy/typescript-build-contexts.sh|deploy/typescript-build-contexts.test.sh|\
       deploy/typescript-artifact-cache.test.sh|\
       deploy/typescript-test-groups.sh|deploy/typescript-test-groups.test.sh|\
+      deploy/local-test-databases.sh|deploy/local-test-databases.test.sh|\
       deploy/commerce-release-bundle.sh|deploy/commerce-release-bundle.test.sh|\
       deploy/release-tree-digest.mjs|deploy/content-studio-start.sh|\
       deploy/change-plan.sh|deploy/change-plan.test.sh|\

@@ -12,6 +12,9 @@ pnpm install
 SALES_DATABASE_URL=postgres://... pnpm --filter @claude-api/sales-db db:migrate
 pnpm --filter @claude-api/sales-api dev     # dev on http://127.0.0.1:3100
 pnpm --filter @claude-api/sales-api build && pnpm --filter @claude-api/sales-api test
+# SQL payout/sync suites run only when TEST_SALES_DATABASE_URL is set. Local
+# compose.yaml uses postgresql://commerce:commerce-local-only@127.0.0.1:5433/sales
+# (`bash deploy/local-test-databases.sh ensure`, then `pnpm test:integration`).
 ```
 
 Environment: see `.env.example` (every variable documented there). Money is integer nanoUSD,

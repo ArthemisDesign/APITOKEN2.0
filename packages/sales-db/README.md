@@ -103,6 +103,10 @@ pages before admitting that reversal; their unrelated sequence values are never 
 
 ```bash
 pnpm --filter @claude-api/sales-db build
-pnpm --filter @claude-api/sales-db test          # pure commission-chain tests
+pnpm --filter @claude-api/sales-db test          # pure tests; SQL suites skip without TEST_SALES_DATABASE_URL
 SALES_DATABASE_URL=postgres://... pnpm --filter @claude-api/sales-db db:migrate
+# Local compose.yaml Postgres (same instance as commerce):
+# TEST_SALES_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/sales
+# bash deploy/local-test-databases.sh ensure
+# TEST_DATABASE_URL=... TEST_SALES_DATABASE_URL=... pnpm test:integration
 ```

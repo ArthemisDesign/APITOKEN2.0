@@ -202,6 +202,12 @@ PNPM_CAPTURE=$migration_only_capture MIGRATION_EXPECT_BARRIER=1 \
 grep -Fq -- '--filter=@claude-api/sales-web' "$migration_only_capture/pure.args" \
   || fail 'the Sales component omitted selected Sales Web tests'
 
+expect_failure 'sales component without DSN' env \
+  TYPESCRIPT_TEST_COMPONENTS=sales PATH="$BIN:$PATH" \
+  bash "$RUNNER" "$FIXTURE"
+expect_failure 'commerce component without DSN' env \
+  TYPESCRIPT_TEST_COMPONENTS=commerce PATH="$BIN:$PATH" \
+  bash "$RUNNER" "$FIXTURE"
 expect_failure 'unknown package selector' env PATH="$BIN:$PATH" \
   bash "$RUNNER" "$FIXTURE" @claude-api/not-classified
 expect_failure 'non-canonical component selector' env \

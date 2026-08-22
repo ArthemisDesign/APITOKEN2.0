@@ -501,6 +501,15 @@ grep -Fq 'deploy/typescript-build-contexts.test.sh' "$ROOT/deploy/agent-merge.sh
   || wd_die 'the merge gate does not run the component-aware build suite'
 grep -Fq 'deploy/typescript-test-groups.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the parallel TypeScript-group suite'
+grep -Fq 'deploy/local-test-databases.test.sh' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge gate does not run the local sales/openkeys database helper suite'
+grep -Fq 'TYPESCRIPT_TEST_COMPONENTS="$context_list"' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the local TypeScript gate no longer selects database test components'
+grep -Fq 'deploy/local-test-databases.sh" ensure' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the local TypeScript gate no longer creates compose.yaml sales/openkeys databases'
+grep -Fq 'TEST_SALES_DATABASE_URL="${TEST_SALES_DATABASE_URL:-postgresql://commerce:commerce-local-only@127.0.0.1:5433/sales}"' \
+  "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the local TypeScript gate no longer defaults TEST_SALES_DATABASE_URL to compose.yaml'
 grep -Fq 'deploy/commerce-release-bundle.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the compact release-bundle suite'
 grep -Fq 'deploy/sccache-cargo.sh" cargo test --locked --workspace' \

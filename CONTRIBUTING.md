@@ -76,6 +76,15 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    `deploy/docs-check.sh` (the documentation living-contract check, see `AGENTS.md`); the
    language lanes above are selected from the diff as described below.
 
+   The TypeScript lane migrates and runs SQL suites for each selected database
+   component (`commerce`, `sales`, `openkeys`). The production watchdog injects
+   disposable URLs. Locally `deploy/agent-merge.sh` defaults them to the
+   `compose.yaml` databases on `127.0.0.1:5433`, creates `sales` and `openkeys`
+   when missing, and then fails closed if Postgres is down. `pnpm test` without
+   those variables still skips the SQL suites so unit tests stay usable without
+   Docker. `pnpm test:integration` requires `TEST_DATABASE_URL` and
+   `TEST_SALES_DATABASE_URL` and fails closed when either is missing.
+
    The Rust lane provisions a disposable Redis alongside PostgreSQL and exports
    `CLAUDE_API_TEST_REDIS_URL` with `CI=1`. The shared cache-affinity L2 proof is mandatory under
    that marker: without a reachable Redis the suite fails instead of skipping, because the

@@ -987,7 +987,8 @@ wd_path_requires_infrastructure_install() {
     deploy/test-stage2-e2e.sh|deploy/sccache-cargo.sh|deploy/agent-worktree.sh|\
     deploy/DELETE_WORKTREE.sh|deploy/prune-merged.sh|deploy/next-cache.sh|\
     deploy/typescript-scope.mjs|deploy/typescript-build-contexts.sh|\
-    deploy/typescript-test-groups.sh|deploy/host-image-gate.sh|deploy/host-image/*|\
+    deploy/typescript-test-groups.sh|deploy/local-test-databases.sh|\
+    deploy/local-postgres-init.sql|deploy/host-image-gate.sh|deploy/host-image/*|\
     compose.yaml)
       return 1
       ;;

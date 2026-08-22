@@ -10,6 +10,9 @@ services:
     volumes:
       # PostgreSQL 18 uses a versioned PGDATA below this parent directory.
       - commerce-postgres:/var/lib/postgresql
+      # Creates sales and openkeys databases on an empty volume. Existing volumes:
+      # `bash deploy/local-test-databases.sh ensure`.
+      - ./deploy/local-postgres-init.sql:/docker-entrypoint-initdb.d/01-test-databases.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U commerce -d commerce"]
       interval: 5s

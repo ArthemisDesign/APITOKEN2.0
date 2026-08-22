@@ -18,7 +18,7 @@
     "dev:web": "pnpm --filter @claude-api/web dev",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
-    "test:integration": "pnpm --filter @claude-api/db test:integration && pnpm --filter @claude-api/commercial-api test",
+    "test:integration": "bash deploy/local-test-databases.sh integration-test",
     "db:generate": "pnpm --filter @claude-api/db db:generate",
     "db:migrate": "pnpm --filter @claude-api/db db:migrate"
   },

@@ -43,7 +43,8 @@ will silently block the resource.
 Use Node.js 24 LTS and pnpm 9.
 
 ```bash
-docker compose up -d commerce-postgres
+docker compose up -d
+bash deploy/local-test-databases.sh ensure
 pnpm install
 cp apps/api/.env.example apps/api/.env
 cp apps/worker/.env.example apps/worker/.env
@@ -91,11 +92,19 @@ section (keys, ledger, usage) behind the skeleton for a few short attempts
 (`apps/web/src/lib/provisioning-retry.ts`) before showing the "could not be loaded" notice, so a
 first-time customer is not told their account is broken when it is one second old.
 
-Run the real PostgreSQL checkout/payment tests with:
+Run the real PostgreSQL checkout/payment and affiliate money tests with:
 
 ```bash
-TEST_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/commerce pnpm test:integration
+TEST_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/commerce \
+TEST_SALES_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/sales \
+  pnpm test:integration
 ```
+
+`pnpm test:integration` fails closed if either DSN is missing. It migrates commerce
+and sales, then runs `@claude-api/db` / `@claude-api/commercial-api` plus the
+`sales-db` / `sales-api` SQL suites. `pnpm test` without those variables still
+skips the SQL suites. The `sales` database lives on the same compose Postgres as
+`commerce` (one instance, extra database), matching production and the watchdog.
 
 Payment providers sit behind a provider-neutral adapter. Every adapter must verify
 the provider event using its authoritative API and persist the webhook's globally unique event ID.

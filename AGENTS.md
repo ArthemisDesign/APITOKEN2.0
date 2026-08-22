@@ -312,11 +312,20 @@ cargo test -p <crate>              # targeted; for metering/money — ALL tests 
 cargo build && bash tests/rotation_fanout_smoke.sh   # rotation smoke without live subscriptions (mock upstream)
 cargo build && bash tests/universal_chat_smoke.sh    # universal lanes chat+responses smoke (router→engine→mock upstream)
 
-pnpm build && pnpm typecheck && pnpm test            # commerce workspace
+pnpm build && pnpm typecheck && pnpm test            # workspace unit tests; SQL suites skip without TEST_* URLs
 pnpm --filter @claude-api/<pkg> test                 # a single package
-# integration tests require PostgreSQL:
-docker compose up -d commerce-postgres
-TEST_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/commerce pnpm test:integration
+# integration tests require PostgreSQL. compose.yaml is one instance with extra
+# sales and openkeys databases (same topology as production and the watchdog).
+docker compose up -d
+bash deploy/local-test-databases.sh ensure
+TEST_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/commerce \
+TEST_SALES_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/sales \
+  pnpm test:integration
+# Full TypeScript merge also needs the OpenKeys database on the same instance:
+# TEST_OPENKEYS_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/openkeys
+# `./deploy/agent-merge.sh` defaults the three URLs and runs `ensure` when a
+# database component is selected. `pnpm test:integration` fails closed if either
+# commerce or sales DSN is missing.
 ```
 
 The pre-merge gate is run by `deploy/agent-merge.sh` and selects lanes by diff (path-aware).

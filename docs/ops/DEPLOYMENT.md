@@ -497,6 +497,11 @@ pnpm install --frozen-lockfile
 pnpm build
 pnpm typecheck
 pnpm test
+# SQL suites (commerce checkout, sales commissions/payouts) need compose.yaml Postgres:
+# docker compose up -d && bash deploy/local-test-databases.sh ensure
+# TEST_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/commerce \
+# TEST_SALES_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/sales \
+#   pnpm test:integration
 cargo test --workspace
 bash -n deploy/*.sh deploy/apitoken-db-dump
 git diff --check

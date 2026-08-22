@@ -1401,6 +1401,8 @@ for validation_only_path in \
   deploy/typescript-scope.mjs \
   deploy/typescript-build-contexts.sh \
   deploy/typescript-test-groups.sh \
+  deploy/local-test-databases.sh \
+  deploy/local-postgres-init.sql \
   deploy/commerce-release-bundle.test.sh \
   deploy/host-image-gate.sh \
   deploy/host-image-gate.test.sh \
@@ -1429,6 +1431,12 @@ wd_path_depends_on_ubuntu_host deploy/host-image/prove-installers.sh \
   || wd_die 'host-image proofs are not classified as Ubuntu-host'
 if wd_path_depends_on_ubuntu_host deploy/agent-worktree.sh; then
   wd_die 'macOS worktree manager must not select the Ubuntu host-image'
+fi
+if wd_path_depends_on_ubuntu_host deploy/local-test-databases.sh; then
+  wd_die 'local compose database helper must not select the Ubuntu host-image'
+fi
+if wd_path_depends_on_ubuntu_host deploy/local-postgres-init.sql; then
+  wd_die 'local compose init SQL must not select the Ubuntu host-image'
 fi
 if wd_path_depends_on_ubuntu_host observability/prometheus/prometheus.yml; then
   wd_die 'Prometheus YAML must not select the Ubuntu host-image'
