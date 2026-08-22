@@ -315,8 +315,10 @@ private tier, proxy and OAuth are not serialized. Optional `recent_turns=0` keep
 `calibration_recent_turns` as `[]`; the omitted/default request still returns up to 512 events.
 
 `GET /kimi-subs` is a read-only operational projection of the backend-only KIMI plane. Production
-is served by a dedicated default-off KIMI plane via the stable loopback origin 8803
-(`claude-api-kimi@8804/8805`); the gateway built into the Anthropic runtime remains dev/test-only.
+is served by a dedicated KIMI plane via the stable loopback origin 8803
+(`claude-api-kimi@8804/8805`). Customer `kimi/*` through the unified router uses that origin.
+This SHA still composes the gateway on Anthropic as a safety net for `api.apitoken.sale`; a
+follow-up pin `CLAUDE_API_KIMI_ENABLED=0` removes that embed after the router dataplane is GREEN.
 The gate is the control key
 (`control_authed`, like `/codex-subs`; the panel key does not qualify). On a process without the plane, the response is a
 disabled envelope `{"now": <unix>, "enabled": false, "profiles": []}`. An enabled envelope publishes
