@@ -160,6 +160,10 @@ describe("completed Next.js migration", () => {
     expect(routes).not.toContain('"promos"');
     expect(dashboard).not.toContain("PromoPanel");
     expect(readFileSync(join(root, "lib", "api.ts"), "utf8")).not.toContain("redeemPromo");
+    const messages = readFileSync(join(root, "lib", "messages.json"), "utf8");
+    expect(messages).not.toMatch(/"(?:nav_promos|pr_(?:title|sub|ph|redeem|hist|code|reward|empty|ok|bad|already)|cr_promo_[tp])"/);
+    expect(messages).not.toContain("Promo codes");
+    expect(messages).not.toContain("Промокоды");
     expect(dashboard).not.toContain('section === "security"');
     expect(routes).toContain('value === "security"');
     expect(dashboard).not.toMatch(/href=[{\"]+\/dashboard\//);
