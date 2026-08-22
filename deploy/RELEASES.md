@@ -55,7 +55,10 @@ The CRM lane (separate repository) writes its own immutable releases below this 
 `/opt/apitoken/crm-releases/current`. This repository's watchdog release retention manages the root
 with the same newest-ten keep and live-process protection as the engine and commerce roots; its
 selector recognizes both the `crm-<sha>` lane names and the legacy plain-SHA names, and the two CRM
-units are observed as live releases exactly like the other managed units.
+units are observed as live releases exactly like the other managed units. The infrastructure
+transaction also installs both CRM units. The API unit owns the private persistent
+`/var/lib/apitoken-crm/ai-settings` state directory (mode `0700`) used by CRM to atomically replace
+its AI key; application rollout and the credential contents remain owned by the CRM repository.
 
 ## Rust engine
 

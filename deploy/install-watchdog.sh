@@ -395,6 +395,7 @@ install_systemd_definitions() {
     apitoken-openkeys.service \
     apitoken-admin.service \
     apitoken-devbot.service \
+    apitoken-crm-api.service apitoken-crm-web.service \
     apitoken-monitoring-collector.service apitoken-monitoring-collector.timer; do
     if [[ $unit == apitoken-affinity-redis.service ]]; then
       [[ ! -L "/etc/systemd/system/$unit" ]] \

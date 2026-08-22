@@ -3874,6 +3874,20 @@ NODE
 grep -Fxq 'SuccessExitStatus=143' "$ROOT/systemd/apitoken-sales-web.service" \
   || wd_die 'a normal Next.js SIGTERM is reported as a failed Sales Web rollout'
 
+# CRM owns its application release, while this repository owns the production units. The API gets
+# one private persistent directory for its replaceable AI credential; the infrastructure transaction
+# must publish both CRM units before a later CRM release restarts the service onto that contract.
+grep -Fxq 'StateDirectory=apitoken-crm/ai-settings' "$ROOT/systemd/apitoken-crm-api.service" \
+  || wd_die 'the CRM API has no persistent runtime directory for its replaceable AI credential'
+grep -Fxq 'StateDirectoryMode=0700' "$ROOT/systemd/apitoken-crm-api.service" \
+  || wd_die 'the CRM AI credential directory is not private'
+grep -Fxq 'UMask=0077' "$ROOT/systemd/apitoken-crm-api.service" \
+  || wd_die 'the CRM API does not create private runtime state by default'
+for crm_unit in apitoken-crm-api.service apitoken-crm-web.service; do
+  grep -Fq "$crm_unit" "$ROOT/deploy/install-watchdog.sh" \
+    || wd_die "the infrastructure transaction does not install $crm_unit"
+done
+
 grep -Fq 'CANDIDATE_RETENTION_SECONDS=$((24 * 60 * 60))' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'prune_expired_candidates' "$ROOT/deploy/watchdog.sh"
 
