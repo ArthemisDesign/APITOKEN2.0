@@ -139,7 +139,8 @@ SSH as `deploy`. An AI agent must not. The only SSH login an agent may use is `o
 ssh observe@84.32.48.2
 ```
 
-The full watchdog installer (`deploy/install-watchdog.sh`) creates `observe`, sets its login shell
+The full watchdog installer (`deploy/install-watchdog.sh`) creates the `observe` system group and
+user (Ubuntu `useradd --system` does not create a matching group by itself), sets the login shell
 to `/usr/local/bin/apitoken-observe`, adds it to `systemd-journal`/`adm`, and mirrors public keys
 from `/home/deploy/.ssh/authorized_keys` with `restrict,command=` so even `ssh observe@` cannot
 escape into a shell. That session is journal and readiness inspection. It must not run

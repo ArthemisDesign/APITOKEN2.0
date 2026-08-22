@@ -4251,9 +4251,24 @@ grep -Fq 'gpasswd -d apitoken-ci deploy' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'the watchdog installer does not enforce apitoken-ci group isolation'
 grep -Fq 'provision_observe_account' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'the watchdog installer does not provision the observe SSH account'
-grep -Fq 'useradd --system --create-home --home-dir "$home" --shell "$wrapper"' \
-  "$ROOT/deploy/install-watchdog.sh" \
-  || wd_die 'the watchdog installer does not create the observe account'
+observe_fn=$(sed -n '/^provision_observe_account()/,/^}/p' "$ROOT/deploy/install-watchdog.sh")
+grep -Fq 'groupadd --system observe' <<<"$observe_fn" \
+  || wd_die 'observe provisioning must create the observe group (Ubuntu useradd --system does not)'
+grep -Fq 'useradd --system --gid observe --create-home --home-dir "$home" --shell "$wrapper"' \
+  <<<"$observe_fn" \
+  || wd_die 'the watchdog installer does not create the observe account in group observe'
+grep -Fq 'usermod -g observe observe' <<<"$observe_fn" \
+  || wd_die 'observe provisioning must adopt an existing observe user into group observe'
+observe_groupadd_line=$(grep -n 'groupadd --system observe' <<<"$observe_fn" | head -n 1 | cut -d: -f1)
+observe_useradd_line=$(grep -n 'useradd --system --gid observe' <<<"$observe_fn" | head -n 1 | cut -d: -f1)
+observe_install_home_line=$(grep -n 'install -d -o observe -g observe -m 0750 "$home"' \
+  <<<"$observe_fn" | head -n 1 | cut -d: -f1)
+[[ -n $observe_groupadd_line && -n $observe_useradd_line && -n $observe_install_home_line ]] \
+  || wd_die 'observe provisioning lost groupadd, useradd, or home install'
+(( observe_groupadd_line < observe_useradd_line )) \
+  || wd_die 'observe groupadd must run before useradd --gid observe'
+(( observe_groupadd_line < observe_install_home_line )) \
+  || wd_die 'observe groupadd must run before install -g observe'
 grep -Fq 'gpasswd -d observe deploy' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'the watchdog installer does not isolate observe from the deploy group'
 if grep -Eq 'usermod -a -G deploy observe' "$ROOT/deploy/install-watchdog.sh"; then

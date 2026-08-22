@@ -219,9 +219,17 @@ provision_observe_account() {
     install -o root -g root -m 0644 /dev/null "$shells"
   fi
   grep -qxF "$wrapper" "$shells" || printf '%s\n' "$wrapper" >>"$shells"
+  # Ubuntu useradd --system does not create a user-private group. install -o observe -g observe
+  # then fails with "invalid group". A previous install may already have created the user in
+  # nogroup; groupadd first so both the first run and that recovery path converge.
+  if ! getent group observe >/dev/null; then
+    groupadd --system observe
+  fi
   if ! id observe >/dev/null 2>&1; then
-    useradd --system --create-home --home-dir "$home" --shell "$wrapper" \
+    useradd --system --gid observe --create-home --home-dir "$home" --shell "$wrapper" \
       --comment 'apitoken log-only SSH' observe
+  else
+    usermod -g observe observe
   fi
   usermod --shell "$wrapper" observe
   if getent group systemd-journal >/dev/null; then
@@ -234,9 +242,9 @@ provision_observe_account() {
     gpasswd -d observe deploy >/dev/null \
       || echo 'warning: could not remove observe from the deploy group' >&2
   fi
-  [[ -d $home && ! -L $home ]] || { echo "$home must be a real directory" >&2; return 1; }
   install -d -o observe -g observe -m 0750 "$home"
   install -d -o observe -g observe -m 0700 "$ssh_dir"
+  [[ -d $home && ! -L $home ]] || { echo "$home must be a real directory" >&2; return 1; }
   [[ -d $ssh_dir && ! -L $ssh_dir ]] || { echo "$ssh_dir must be a real directory" >&2; return 1; }
   tmp=$(mktemp)
   {
