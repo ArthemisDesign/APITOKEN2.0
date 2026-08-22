@@ -1,12 +1,14 @@
 # Тестовый стенд (staging) — план внедрения
 
-> **Статус: PROPOSAL. План, а не инструкция и не implementation contract.** Составлен 2026-08-16
-> на основе анализа текущей модели доставки (`CONTRIBUTING.md`, `docs/ops/INFRASTRUCTURE.md`,
-> `docs/ops/DEPLOYMENT.md`, `docs/ops/MONITORING.md`, `deploy/README.md`). Ничего из описанного
-> пока НЕ реализовано: ни стенда, ни ветки `stage`, ни новых скриптов. Каждая фаза ниже внедряется
-> отдельными коммитами, и каждый коммит, который меняет поведение, описанное в других документах
-> (веточная модель, слияние, рунбуки), обновляет эти документы в том же коммите
-> ("documentation is a living contract").
+> **Статус: IMPLEMENTATION PLAN.** Утверждён владельцем 2026-08-22 (интервью, раздел 11.3).
+> Не реализован: ни стенда, ни ветки `stage`, ни новых скриптов. Раздел 9 — нормативный.
+> Definition of Done раздела 12 закрывает приёмку живого контура, не этого документа.
+> Составлен 2026-08-16 на основе `CONTRIBUTING.md`, `docs/ops/INFRASTRUCTURE.md`,
+> `docs/ops/DEPLOYMENT.md`, `docs/ops/MONITORING.md`, `deploy/README.md`. Каждая фаза
+> внедряется отдельными коммитами; каждый коммит, который меняет поведение в других
+> документах, обновляет их в том же коммите ("documentation is a living contract").
+> `AGENTS.md` / `BRANCHES.md` / `CONTRIBUTING.md` не меняются этим документом — только
+> в коммите соответствующей фазы.
 >
 > **v2 (2026-08-16):** по решению владельца стенд размещается **на том же VPS, что и прод**
 > (совместный failure domain принят осознанно). Раздел 5.2 переписан под co-located-вариант:
@@ -42,15 +44,20 @@
 >
 > **v7 (2026-08-22):** план сверен с фактическим кодом по снимку
 > `apisnapshot-ops-20260820-1714` (147 файлов: watchdog, merge/recovery, systemd, sudoers,
-> Compose, Control API, smoke/mock, часть Rust). Статус остаётся `PROPOSAL`. Перед
-> реализацией документ больше нельзя читать как «поднять вторую линию того же watchdog».
-> Добавлен раздел 9 «Границы доверия и протокол допуска». Исправлены блокеры: цикл
-> `deploy/watchdog`; запрет candidate root-installer на прод-хосте; caller-bound reporting;
-> неизменяемая единица promotion и инвалидация после rebase/hotfix; агрегированный
-> `staging.slice`, Docker/disk/network isolation; сначала параметризация production-hardcoded
-> контура, затем вторая линия; enforcement только после dry-run и drill. Уточнено, что уже
-> есть в проде (exact-SHA marker, immutable artifacts, expand-only миграции, binary/slot
-> rollback, окно A/B, hardening юнитов) и чего в плане не хватало.
+> Compose, Control API, smoke/mock, часть Rust). Перед реализацией документ больше нельзя
+> читать как «поднять вторую линию того же watchdog». Добавлен раздел 9 «Границы доверия
+> и протокол допуска». Исправлены блокеры: цикл `deploy/watchdog`; запрет candidate
+> root-installer на прод-хосте; caller-bound reporting; неизменяемая единица promotion и
+> инвалидация после rebase/hotfix; агрегированный `staging.slice`, Docker/disk/network
+> isolation; сначала параметризация production-hardcoded контура, затем вторая линия;
+> enforcement только после dry-run и drill.
+>
+> **v8 (2026-08-22):** владелец закрыл оставшиеся развилки интервью (раздел 11.3). Статус
+> сменён на IMPLEMENTATION PLAN без переписывания разделов 1–9. Сняты противоречия:
+> network namespace **вместо** host-loopback `+10000`; бюджет `staging.slice`
+> MemoryMax=32G / CPUQuota=400% / loopback 80G; Docker — rootless у `deploy-stage`;
+> первый код — только extract `contour-config`; infra-proof — расширение
+> `deploy/host-image-gate.sh`. Ресурсные числа v4 (8G / 2 CPU / 50G) **заменены**.
 
 ---
 
@@ -61,16 +68,18 @@ exact-SHA валидация кандидата дают сильный, но н
 worker + router + Caddy + БД) в связке, под нагрузкой и с реальными сценариями деградации проверять
 негде. При частых деплоях часть регрессий переживает все гейты и проявляется на клиентах.
 
-Предлагается ввести **второй стенд (stage) — контур-близнец прода**, размещённый **на том же VPS,
-что и прод**, но в **реально изолированном** пространстве имён: свой ОС-пользователь, свои корни
-каталогов (`/opt/apitoken-staging`, `/srv/claude-api-staging`, …), свой диапазон портов, свой
-PostgreSQL-контейнер, свой набор systemd-юнитов, агрегированный `staging.slice`, enforceable
-disk quota и отдельный network namespace. Та же сборка из того же SHA и те же шаблоны приложения,
-но **не** «тот же watchdog-конвейер с четырьмя env-переменными»: production-контроллеры сейчас
+Вводится **второй стенд (stage) — контур-близнец прода**, размещённый **на том же VPS,
+что и прод**, в **реально изолированном** пространстве имён: свой ОС-пользователь, свои корни
+каталогов (`/opt/apitoken-staging`, `/srv/claude-api-staging`, …), свой network namespace
+(внутри — те же номера портов, что у прода; на хосте видны только veth IP), свой
+PostgreSQL-контейнер, свой набор systemd-юнитов, агрегированный `staging.slice`
+(MemoryMax=32G, CPUQuota=400%), enforceable disk quota (80G loopback) и rootless Docker
+у `deploy-stage`. Та же сборка из того же SHA и те же шаблоны приложения, но **не**
+«тот же watchdog-конвейер с четырьмя env-переменными»: production-контроллеры сейчас
 жёстко зашиты под прод-инвентарь, и вторая линия появляется только после явного `contour-config`.
-Секреты, БД и (по умолчанию mock-) апстрим — свои. Сетевой доступ закрыт: клиенты не достигают
-стенд, стенд не достигает прод-loopback, прод-сокетов и живых payment/mail/provider endpoint
-без явно включённого бюджетного lane.
+Секреты, БД и mock-апстрим — свои. Сетевой доступ закрыт: клиенты не достигают стенд;
+стенд не достигает прод-loopback, Unix-сокетов, Mailcow/support/payments-test и живых
+payment/mail/OAuth/provider endpoint. Живой провайдерский lane — только явная фаза 8.
 
 Разработка идёт **stage → prod**: ветка `stage` является триггером стенда. В `master` код
 попадает только как **fast-forward того же проверенного SHA** после stage-deployment,
@@ -86,11 +95,11 @@ degradation gate, human approval и host-owned `promotion/eligible`. **Хотф�
 Пороги гейта — trusted policy последнего production-approved контроллера, а не версия,
 привезённая проверяемым кандидатом.
 
-Документ **нельзя** переводить из `PROPOSAL` в обязательный implementation contract, пока
-не закрыты инварианты раздела 9 и Definition of Done раздела 12. Буквальная реализация
-редакций v1–v6 создала бы две наиболее опасные регрессии: циклический production admission
-через `deploy/watchdog` и выполнение неутверждённого infrastructure candidate как root на
-production-host.
+Инварианты раздела 9 закрыты в v7 и уточнены в v8. Этот документ — implementation plan.
+Приёмка живого контура — только по разделу 12. Буквальная реализация редакций v1–v6
+создала бы две наиболее опасные регрессии: циклический production admission через
+`deploy/watchdog` и выполнение неутверждённого infrastructure candidate как root на
+production-host. Эти редакции не реализовывать.
 
 ---
 
@@ -298,19 +307,19 @@ Node/Rust/Postgres/Caddy на одной машине).
 | Параметр | Прод (как есть) | Стенд (цель) |
 |---|---|---|
 | Хост | `84.32.48.2`, 8 ядер/16 потоков, 96 GB | **тот же VPS.** Совместный failure domain принят владельцем осознанно |
-| ОС-пользователь | `deploy`, root-бриджи, `apitoken-ci` | отдельный `deploy-stage` (+ `stage-ci` для тестовых процессов); стенд-процессы не работают от прод-пользователей и наоборот |
-| Каталоги | `/opt/apitoken/releases`, `/srv/claude-api/releases`, `/var/lib/apitoken/...` | свои корни: `/opt/apitoken-staging`, `/srv/claude-api-staging`, `/var/lib/apitoken-staging` — ни одного общего пути с продом |
-| Порты | 5433, 8790–8805, 3000/3001, 6379/6380 | свой диапазон (по умолчанию «+10000»: движок 18790/18787/18788, OpenAI 18792/18793/18797, Gemini 18794/18795/18799, KIMI 18803–18805, router 18800–18802, API 13000/13001, commerce 18791; PostgreSQL **5434**, Redis стенда 16379/16380; mock upstream — отдельный порт). Точная таблица фиксируется в `docs/ops/INFRASTRUCTURE.md` в фазе 1. Разные loopback-порты **не** являются network isolation |
+| ОС-пользователь | `deploy`, root-бриджи, `apitoken-ci`, `observe` | `deploy-stage` + `stage-ci` (рантайм/тесты); `observe-stage` (агент, read-only + туннель на veth); `stage-ctl` (forced-command: attest/sync/emergency-stop/reseed). Стенд-процессы не работают от прод-пользователей и наоборот. Агент **не** получает shell `deploy` |
+| Каталоги | `/opt/apitoken/releases`, `/srv/claude-api/releases`, `/var/lib/apitoken/...` | свои корни: `/opt/apitoken-staging`, `/srv/claude-api-staging`, `/var/lib/apitoken-staging` — ни одного общего пути с продом; все три — bind-mount с одного 80G loopback |
+| Порты | 5433, 8790–8806, 3000/3001, 6379/6380, sales/openkeys/admin/devbot | **внутри netns — те же номера, что у прода** (5433, 8787/8788, 8790–8806, 3000/3001, 6379/6380, …). На хосте процессы стенда **не** слушают `127.0.0.1`. Скрейп и `ssh -L` идут на veth IP. Таблица veth фиксируется в `docs/ops/INFRASTRUCTURE.md` при provisioning. Host-loopback `+10000` **не** используется |
 | systemd-юниты | `apitoken-*`, `claude-api-*` | те же шаблоны с суффиксом `-stage`, ставит **trusted master-sourced renderer** с whitelist имён, путей и портов — не candidate installer. Прод-watchdog не видит stage-инстансы |
-| PostgreSQL | контейнер `apitoken-postgres`, `127.0.0.1:5433`, прод-БД | отдельный контейнер `apitoken-postgres-stage`, `127.0.0.1:5434`, свои volume и роли (см. 5.4) |
-| Ресурсы | весь хост; per-unit `MemoryMax` (слот провайдера 2G, router 512M) | **агрегированный `staging.slice`**: `MemoryMax=8G`, `MemoryHigh` ниже 8G, `CPUQuota=200%`, `TasksMax` (не `TaskMax`) как aggregate bound, `IOWeight` ниже production. Все stage services, builders, validators и generators входят в этот slice. Per-unit лимиты остаются, но одних их недостаточно: полный blue-green набор плоскостей превышает 8 GB ещё до API/worker/PostgreSQL/Redis/load generator |
-| Docker | Compose project names/ports/volumes прода; oneshot wrappers; контейнеры **не** наследуют cgroup oneshot-unit; disposable `docker run` без CPU/RAM/PID limits | отдельные Compose project names; Docker-native `mem_limit`/`cpus`/`pids_limit`; `cgroup_parent` под `staging.slice` либо отдельный rootless runtime; отдельные volumes; `deploy-stage` **не** получает production Docker socket, если тот управляет всеми host containers |
-| Диск | общий filesystem | enforceable quota ≤ 50 GB (отдельный filesystem/LV, XFS/ext4 project quota или loopback 50 GB). Retention артефактов не заменяет quota. Thresholds и emergency GC до ENOSPC |
-| Сеть | общий network namespace; `RestrictAddressFamilies` в units; нет `PrivateNetwork` / IP policy для будущего stage | отдельный network namespace/veth: deny к production loopback ranges и Unix sockets; egress allowlist только mock, stage DB/Redis, GitHub/reporting proxy и явно разрешённые sandbox endpoints; контролируемый proxy для shadow telemetry; тесты отрицательной доступности |
+| PostgreSQL | контейнер `apitoken-postgres`, `127.0.0.1:5433`, прод-БД | контейнер `apitoken-postgres-stage` в staging netns / rootless Docker, внутри `:5433`, свои volume и роли (см. 5.4). На хосте порт 5434 не публикуется |
+| Ресурсы | весь хост; per-unit `MemoryMax` (Anthropic/OpenAI/router 8G, Gemini 16G, KIMI 2G; parent slices 12G/24G) | **агрегированный `staging.slice`**: `MemoryMax=32G`, `MemoryHigh=28G`, `CPUQuota=400%`, `TasksMax` (не `TaskMax`) как aggregate bound, `IOWeight` ниже production. Все stage services, builders, validators и generators входят в этот slice. Per-unit `MemoryMax` копирует прод; **стена — slice**. Gemini A/B на прод-капах может OOM-red soak — это принятый false-red, не инцидент прода |
+| Docker | Compose project names/ports/volumes прода; oneshot wrappers; контейнеры **не** наследуют cgroup oneshot-unit; disposable `docker run` без CPU/RAM/PID limits | **rootless Docker** пользователя `deploy-stage`; native `mem_limit`/`cpus`/`pids_limit`; `cgroup_parent=staging.slice`; отдельные volumes. `deploy-stage` **не** читает `/var/run/docker.sock`. Production socket остаётся у `deploy` |
+| Диск | общий filesystem, ext4 RAID, без project quota | один loopback **80 GB**, mount + bind на три staging-корня. Retention KEEP=3 релиза на корень. Large-payload canary требует ≥16G свободно под router spool. Emergency GC до ENOSPC. Remount `/` с quota **запрещён** |
+| Сеть | общий network namespace; `RestrictAddressFamilies` в units | отдельный network namespace/veth: deny production loopback, Unix sockets, Mailcow (`13306` и mail-порты), support `:3010`, payments-test `:5440`/`:3900`; egress allowlist: mock, stage DB/Redis, GitHub/reporting proxy. Payment/OAuth/mail vendor egress **нет**. Тесты отрицательной доступности merge-blocking |
 | Caddy | global `/etc/caddy/Caddyfile`, production keys, reload/restart | отдельный unprivileged stage Caddy process с собственными config/data/admin ports. Stage **не** перезагружает global Caddy и не использует production admin endpoints |
 | Мониторинг | общий host-network stack | production Prometheus скрейпит trusted static stage targets; candidate dashboards/rules валидируются отдельно и попадают в общий stack только после production promotion. Stage labels и cardinality budgets обязательны |
 | Публичные маршруты | все продуктовые vhost'ы | **нет ни одного.** Caddy стенда слушает только свой namespace/loopback; клиенты недостижимы по конструкции |
-| Доступ оператора/агентов | SSH `observe` для агента; `deploy` — watchdog identity, не agent login | SSH + проброс портов (`ssh -L`), интерфейсы стенда (Grafana, панель) через тот же туннель |
+| Доступ оператора/агентов | SSH `observe` для агента; `deploy` — watchdog identity, не agent login | Агент: `ssh observe-stage@host` (status/logs/ready + `permitopen` только на staging veth). Человек: `ssh -L` как `deploy`. Write-path: `deploy/promotion-attest.sh` / `deploy/stage-sync.sh` через forced-command `stage-ctl`, только после явной команды человека в том разговоре. Shell `deploy` агенту запрещён |
 | Firewall | UFW deny-inbound, SSH/HTTP/HTTPS | без изменений публичного inbound; внутренний deny stage→prod добавляется namespace/policy, не новыми входящими правилами |
 | DNS | `*.apitoken.sale` | отсутствует (режим туннеля; публичное имя для стенда не заводится) |
 | Секреты | `/etc/apitoken/*`, `/srv/claude-api/data/*` | собственные файлы в **стенд-корнях** (`/etc/apitoken-staging`, `/srv/claude-api-staging/data`), mode 0600, чтение только для стенд-пользователей; **ни один прод-секрет не копируется и не становится читаемым для стенда** |
@@ -335,9 +344,11 @@ Node/Rust/Postgres/Caddy на одной машине).
    желании — отдельный дюмп-таймер стенда, но без влияния на прод-цепочку.
 7. Stage user/process не читает production secrets, env, candidate cache или GitHub credential.
 8. Stage namespace не подключается к production PostgreSQL, Redis, Control API mutation
-   routes и internal origins.
+   routes, internal origins, Mailcow, support и payments-test.
 9. `stage-emergency-stop` останавливает весь `staging.slice` и освобождает ресурсы без
-   изменения production state.
+   изменения production state. Production-контур вызывает его автоматически, если
+   host `MemAvailable < 12G` или production SLO red и доля staging CPU/RAM выше
+   документированного порога.
 
 #### Что даёт совместное размещение (в сравнении с отдельным VPS)
 
@@ -411,7 +422,7 @@ Node/Rust/Postgres/Caddy на одной машине).
      - **предпочтительно** — однонаправленный telemetry exporter/proxy, который отдаёт стенду
        только агрегаты и не маршрутизирует произвольный URL.
      Ответы исключают email hints, account identifiers и поля, не нужные для калибровки mock.
-  2. **Бюджетный live-endpoint (фаза 7, строго опционально).** Если mock-реализма мало,
+  2. **Бюджетный live-endpoint (фаза 8, строго опционально).** Если mock-реализма мало,
      стенд может ходить в **прод-флот как обычный API-клиент**: на проде заводится отдельный
      engine-аккаунт `stage-live` с собственным ключом `sk-pool-…` и жёстким nanoUSD-капом
      (переиспользуется дисциплина капов из `docs/ops/*_CALIBRATION.md`, стартовый бюджет —
@@ -426,7 +437,7 @@ Node/Rust/Postgres/Caddy на одной машине).
   контурами, копирования живых токенов в стенд-секреты, read-replica пула, выдачи стенду
   полного `CONTROL_KEY`. Любое из этого — нарушение G8 и блокер мержа.
 
-- **Песочница (опционально, фаза 7)** — из прежнего плана остаётся как третий, независимый
+- **Песочница (опционально, фаза 8)** — из прежнего плана остаётся как третий, независимый
   вариант: отдельный минимальный набор реальных подписок (низкие тарифы, выделенные
   аккаунты, НЕ из прод-флота), свой `authbot` на стенде. Дешевле и безопаснее, чем
   live-endpoint, но требует отдельных денег и обслуживания. Если live-endpoint включён,
@@ -446,18 +457,18 @@ Node/Rust/Postgres/Caddy на одной машине).
 
 ### 5.4 Данные стенда
 
-- Свой PostgreSQL: отдельный контейнер `apitoken-postgres-stage` на `127.0.0.1:5434` того же
-  хоста, свои volume и роли. Свои БД: `commerce`, `claude_engine`, `sales`, `openkeys`
-  (CRM не нужен — не его контур). Прод-контейнер (`apitoken-postgres`, 5433) стенд не трогает
-  никогда — ни соединениями, ни перезапусками.
-- Redis стенда (позже, для fidelity affinity/history) — отдельные инстансы на своих портах
-  (16379/16380); на первых фазах движок в mock-режиме работает без них (тесты со
-  `CLAUDE_API_TEST_REDIS_URL` проходят в стенд-лайне со своим disposable Redis).
+- Свой PostgreSQL: контейнер `apitoken-postgres-stage` в staging netns / rootless Docker,
+  внутри `:5433`, свои volume и роли. БД: `commerce`, `claude_engine`, `sales`, `openkeys`
+  (CRM не нужен — не его контур). Content-studio в v1 нет. Прод-контейнер
+  (`apitoken-postgres` на хосте `:5433`) стенд не трогает никогда — ни соединениями, ни
+  перезапусками.
+- Redis стенда — отдельные инстансы внутри netns на прод-номерах `:6379`/`:6380`. В v1
+  они входят в twin (affinity/history). Disposable Redis для CI остаётся отдельным.
 - Наполнение: **сгенерированный seed** (новый скрипт, см. фазу 3): аккаунты и ключи, балансы,
   заказы в sandbox-статусах, referral-строки, mock-подписки, тарифные и provider-строки, чтобы
   повторять форму прод-данных без реальных PII. Схема — всегда из тех же миграций, что и прод:
   расхождение схем само по себе является сигналом.
-- Прод-дам из прод-бэкапа **не** используется. Позже (фаза 7) — опционально скрабленный
+- Прод-дам из прод-бэкапа **не** используется. Позже (фаза 8) — опционально скрабленный
   анонимизированный дамп, если реализма seed'а окажется мало. Это отдельное решение
   с собственным скраб-конвейером (PII, токены, почты, суммы), не раньше закрытия стандартных фаз.
 
@@ -465,15 +476,29 @@ Node/Rust/Postgres/Caddy на одной машине).
 
 Стенд должен «проживать» все те же воркфлоу без внешних эффектов:
 
-- Платежи — sandbox-ключи провайдеров (Platega/Cryptomus sandbox), либо локальная заглушка, если
-  провайдер не даёт sandbox.
-- Почта — sink (Mailhog/локальный SMTP), либо devbot-стиль запись в лог; ни одно реальное письмо
-  и ни один webhook наружу не уходит.
-- OAuth Google/GitHub — отдельные stage-приложения разработчика.
+- Платежи — **только локальная заглушка**. Стенд не ходит к Platega/Cryptomus и не получает
+  sandbox-ключи, пока владелец отдельно не откроет это решение.
+- Почта — sink (Mailhog/локальный SMTP / лог); ни одно реальное письмо и ни один webhook
+  наружу не уходит.
+- OAuth Google/GitHub — **локальные заглушки**, не stage-приложения у вендора.
+- Devbot стенда — запись в лог, без Telegram-токена и без `api.telegram.org`.
+- Authbot стенда — mock/UI only: без живых OAuth, без покупки подписок, без чтения прод-секретов.
 - Внешний uptime-workflow (`.github/workflows/production-uptime.yml`) на стенд не распространяется.
 
 Paired A/B и isolated mutating scenarios (раздел 8.1) доказывают zero external side effects:
 локальные payment/webhook/mail sinks, разные synthetic accounts и idempotency namespaces.
+
+### 5.6 Состав twin v1 (до enforcement)
+
+Входят и должны существовать до фазы 6: Anthropic, OpenAI/Codex, Gemini, KIMI, unified router,
+commerce API + worker, stage Postgres (`commerce`+`claude_engine`+`sales`+`openkeys`), stage Redis,
+unprivileged stage Caddy, mock upstream + load generator, sales API+web, OpenKeys, admin,
+mock/UI authbot, log-sink devbot.
+
+A/B soak: две слота Anthropic + OpenAI + Gemini + KIMI + router + API. Остальные — один инстанс.
+
+Не входят, пока владелец отдельно не решит: content-studio, CRM, отдельные systemd-плоскости
+Suno/Tripo. GLM покрывается процессом Anthropic.
 
 ## 6. Git-модель: `master` + `stage` + hotfix
 
@@ -553,7 +578,7 @@ origin/master ─▶ hotfix/x ──▶ merge сразу в master (deploy/agent
                                        (operator identity, exact SHA/tree, причина, TTL)
                                        production-watchdog принимает SHA по ней,
                                        не по имени ветки и не по trailer
-                                       deploy/stage-sync.sh подтягивает hotfix в stage
+                                       deploy/stage-sync.sh — только по команде оператора
 ```
 
 - Хотфикс — это merge в `master` без предварительной валидации на стенде, но **не без гейтов
@@ -567,21 +592,22 @@ origin/master ─▶ hotfix/x ──▶ merge сразу в master (deploy/agent
   не был продвинут, проходит заново (новая identity, новый gate, новый approval).
 - Стенд, будучи впереди, никогда не блокирует хотфикс — прод-контур автономен (G6).
   Direct-push detector в observe-only фазах только alert/quarantine dry-run; fail-closed
-  admission — только в фазе 6 после drill.
+  admission — только в фазе 7 после обоих drills.
 
 ### 6.4 Что меняется в правилах для агентов (фаза реализации git-модели)
 
 - `BRANCHES.md`: добавить строку `stage` (владелец, триггер стенда, serial batch, правила
   схождения) и раздел hotfix (критерии обхода, host-owned attestation, документирование).
-- `AGENTS.md`: поток «merge в stage → freeze → approval → eligible → FF того же SHA в
-  master», запрет `git push -f` в `stage`, обязанность использовать
-  `deploy/agent-merge-stage.sh` / `deploy/stage-sync.sh`.
+- `AGENTS.md`: в фазе 2 — `observe-stage` и `stage-ctl` (агент не получает shell `deploy`).
+  Поток «merge в stage → freeze → attest по команде оператора → eligible → FF того же SHA
+  в master» и fail-closed admission — только в фазе 7, после drills. Запрет `git push -f`
+  в `stage`. Скрипты `deploy/agent-merge-stage.sh` / `deploy/stage-sync.sh` /
+  `deploy/promotion-attest.sh`.
 - `CONTRIBUTING.md`: описание двухступенчатой доставки, разделение информационных и
-  авторизующих статусов, `promotion/eligible` как admission, критерии hotfix.
+  авторизующих статусов, `promotion/eligible` как admission, критерии hotfix — в фазе 7.
 - Индексы `docs/README.md` и карта в `AGENTS.md` — по факту добавления новых документов.
-- Эти правки **не** входят в фазу 2 observe-only: enforcement документов и кода включается
-  только когда dry-run и drill уже доказаны (раздел 10). Иначе обычные production merges
-  встанут до готовности контура.
+- Fail-closed enforcement документов и кода включается только когда dry-run и drill уже
+  доказаны (раздел 10). Иначе обычные production merges встанут до готовности контура.
 
 ### 6.5 Запрет прямой доставки в `master` — техническое закрепление
 
@@ -615,14 +641,10 @@ credential hygiene, но **сам по себе не создаёт branch-level
 server-side branch rules учётка с repository write технически может записать ref `master`;
 отсутствие merge token в её credential helper не отнимает существующее GitHub permission.
 
-Вводится разделение как гигиена:
-
-- Заводится **отдельный merge-кредишенс**. Им подписан пуш `HEAD:master` в
-  `deploy/agent-merge.sh`.
-- Этот кредишенс **не кладётся** в повседневный `git credential` разработчиков и агентов.
-  `agent-merge.sh` читает его через выделенный helper/env (`AGENT_MERGE_PUSH_TOKEN`).
-- Обычные учётки сохраняют пуш в фиче-ветки. Прямой пуш в `master` перестаёт быть штатным
-  путём для повседневной учётки, но слой B **не** формулируется как «физически невозможно».
+**v8: слой B в v1 не внедряется.** Повседневный `git credential` остаётся как сейчас.
+Отдельный merge-PAT — опциональная гигиена позже, не условие плана. Честная гарантия —
+слой C (нет attestation → нет production cutover). Учётка с repository write по-прежнему
+может записать ref `master`; собственная инфраструктура это не прячет.
 
 **Слой C. Fail-closed watchdog на хосте (главный).** Хост-watchdog — последняя линия.
 Даже удачный прямой пуш в `master` **не выкатывается** без attestation:
@@ -636,8 +658,8 @@ server-side branch rules учётка с repository write технически �
 - Имя `hotfix/*` и trailer не дают admission.
 - Fail-closed: при любой неопределённости (не смог проверить attestation, API недоступен)
   watchdog **не выкатывает**.
-- В фазах 2–5 слой C работает observe-only / dry-run: alert и quarantine-маркер без
-  блокировки обычных production merges. Fail-closed enforcement — фаза 6 после drill.
+- В фазах 3–6 слой C работает observe-only / dry-run: alert и quarantine-маркер без
+  блокировки обычных production merges. Fail-closed enforcement — фаза 7 после обоих drills.
 
 **Promotion-прекондишн (клиентская сторона слоя C).** `deploy/agent-merge.sh` в
 `AGENT_MERGE_TARGET=master` перед пушем проверяет `promotion/eligible` на той же identity,
@@ -667,8 +689,8 @@ server-side branch rules учётка с repository write технически �
 ### 6.6 Как этим пользоваться — простым языком
 
 Этот подраздел — для человека и агента, которым не нужны детали реализации. Что делать в
-типовых ситуациях после внедрения стенда **и** после включения enforcement (фаза 6).
-До фазы 6 прод по-прежнему принимает `master` как сейчас; стенд в это время observe-only.
+типовых ситуациях после внедрения стенда **и** после включения enforcement (фаза 7).
+До фазы 7 прод по-прежнему принимает `master` как сейчас; стенд в это время observe-only.
 
 **Обычная разработка (фича, исправление, документация):**
 
@@ -680,11 +702,13 @@ server-side branch rules учётка с repository write технически �
    Это отправляет изменение в ветку `stage` и автоматически раскатывает его на **тестовый
    стенд** — отдельную копию системы, куда клиенты не имеют доступа.
 4. На стенде всё само прогоняется: тесты, миграции, проверка «ничего не сломалось»
-   (degrade-гейт). Агент получает зелёный или красный статус.
-5. Стенд в этот момент **заморожен**: в очереди один batch. Когда soak пройден,
-   **оператор (человек)** даёт команду «выкатить в прод». Агент запускает
-   `deploy/agent-merge.sh` — **тот же SHA** (не «содержимое stage после rebase») уходит в
-   `master` и на боевой сервер.
+   (degrade-гейт). Docs-only / test-only: окно A/B = 0, human approval остаётся.
+   Runtime SHA: soak **60 минут**. Агент получает зелёный или красный статус.
+5. Стенд в этот момент **заморожен**: в очереди один SHA. Когда soak пройден,
+   **оператор (человек)** в том разговоре называет SHA и говорит агенту выпустить
+   attestation (`deploy/promotion-attest.sh` → forced-command `stage-ctl`) и затем
+   `deploy/agent-merge.sh`. **Тот же SHA** (не «содержимое stage после rebase») уходит в
+   `master` и на боевой сервер. Агент не аттестует SHA по стоячему правилу.
 6. После успешной выкладки агент убирает за собой — удаляет свою рабочую копию одной командой
    `deploy/agent-worktree.sh finish`.
 
@@ -695,8 +719,9 @@ server-side branch rules учётка с repository write технически �
    что ждать некогда. Но все обязательные проверки (локальный гейт, кандидат-валидация) и
    отдельная host-owned hotfix-attestation **сохраняются** — хотфикс не значит «без проверок»
    и не значит «ветка с нужным именем».
-3. Как только прод ожил, стенд автоматически подтягивает то же исправление
-   (`deploy/stage-sync.sh`). Непродвинутые стенд-изменения после хотфикса проверяются заново.
+3. Когда прод ожил, оператор **отдельной командой** велит агенту запустить
+   `deploy/stage-sync.sh` (тот же `stage-ctl`). Автосинхронизации нет. Непродвинутые
+   стенд-изменения после хотфикса недействительны и проходят стенд заново.
 
 **Чего делать нельзя ни в каком случае:** напрямую `git push origin master` как рабочий путь.
 Боевой сервер **не примет** такой код к выкладке без attestation и поднимет тревогу.
@@ -711,10 +736,11 @@ server-side branch rules учётка с repository write технически �
 ### 7.1 Стенд-watchdog
 
 На том же хосте работает **вторая линия watchdog-комплекта только после параметризации**.
-Фаза 2 — не запуск второго экземпляра с иной конфигурацией поверх текущего
+Первый код — не запуск второго экземпляра с иной конфигурацией поверх текущего
 production-hardcoded кода.
 
-Сначала refactor в явный immutable `contour-config` (раздел 5.1). Затем stage-линия:
+Сначала (фаза 1) refactor в явный immutable `contour-config` (раздел 5.1) **без**
+пользователя `deploy-stage` и без второго контейнера. Затем (фаза 2+) stage-линия:
 
 - поллится ветка `stage` (тот же read-only деплой-ключ репозитория);
 - свой state-root (`/var/lib/apitoken-staging/watchdog`), свои lock-файлы, свои quarantine-маркеры;
@@ -722,16 +748,17 @@ production-hardcoded кода.
 - работает с пониженным приоритетом и внутри `staging.slice`;
 - тот же path-aware отбор лайнов, те же изолированные disposable БД/Cargo-таргеты, но внутри
   стенд-пространства; disposable Docker получает CPU/RAM/PID limits и `cgroup_parent`;
-- миграции — только на стенд-БД (5434); blue-green — на стенд-слотах (порты «+10000» из 5.2);
+- миграции — только на стенд-БД внутри netns; blue-green — на стенд-слотах с прод-номерами портов внутри netns (раздел 5.2);
 - **application lane** на общем host: binaries, stage units уже установленные trusted
   renderer'ом, stage DB/Redis, stage-only Caddy, mock/load generator, stage dashboards/data
   sources;
 - **host-global lane не исполняется из stage-кандидата на production-host:**
   `install-watchdog.sh`, sudoers, общие systemd definitions/controllers, production Caddy,
   Docker daemon, firewall/sysctl/packages, общий Prometheus/Loki/Grafana/Alertmanager.
-  Candidate infrastructure changes проходят sandboxed infra-validation (параллельный контур:
-  ephemeral VM / systemd-nspawn / отдельный test host) и применяются к production-host
-  исключительно обычным production-watchdog после promotion;
+  Candidate infrastructure changes проходят sandboxed infra-validation расширением
+  `deploy/host-image-gate.sh` (уже существующий disposable Ubuntu 24.04). Новый VM-farm
+  и systemd-nspawn в v1 не вводятся. На production-host эти изменения применяет только
+  production-watchdog после promotion;
 - статусы GitHub — через **caller-bound** reporting helper, не через расширение того же
   широкого контракта новыми именами:
 
@@ -775,7 +802,7 @@ binary с post-migration schema. Провал любой стадии — red st
 
 Все env-файлы стенда заводит оператор один раз (фаза 1), в репозиторий не попадают.
 Набор — зеркало продового, но с заменёнными значениями: свои пароли БД, свои контрольные ключи,
-движок в mock-режиме, почта-заглушка, платежи-sandbox. `CONTROL_KEY` стенда — отдельный и
+движок в mock-режиме, почта-заглушка, платежи-заглушка. `CONTROL_KEY` стенда — отдельный и
 не равен прод-ключу. Прод-`CONTROL_KEY` стенду не выдаётся.
 
 ### 7.4 Полный список сознательных отличий стенда от прода
@@ -792,16 +819,16 @@ binary с post-migration schema. Провал любой стадии — red st
    shadow-read и/или бюджетный live-endpoint как API-клиент). Полный `CONTROL_KEY` не
    выдаётся.
 4. БД — своя, seed-данные; прод-дампы не используются (опционально скраб в фазе 7).
-5. Платежи/почта/OAuth — sandbox/заглушки.
+5. Платежи/почта/OAuth — только локальные заглушки; вендорам стенд не пишет.
 6. Прод-специфичные live-гейты и внешний uptime-детектор не активны.
 7. Бэкапы — локальные, упрощённая ротация.
 8. Роллбек при red degrade-гейта — автоматический binary/slot switchback (на проде —
    по решению оператора). Не заявляется как DB rollback.
-9. Ресурсы — агрегированный `staging.slice` ≤ 8 GB / ≤ 2 CPU, Docker внутри slice,
-   enforceable disk quota ≤ 50 GB, заниженные приоритеты.
-10. Совместное размещение: общий хост, ОС и Docker с продом — изоляция пользователями,
-    каталогами, портами «+10000», юнитами `*-stage`, PostgreSQL 5434, slice, namespace,
-    quota, по инвариантам раздела 5.2.
+9. Ресурсы — агрегированный `staging.slice` MemoryMax=32G / CPUQuota=400%, rootless
+   Docker внутри slice, enforceable disk quota 80G loopback, заниженные приоритеты.
+10. Совместное размещение: общий хост, ОС с продом — изоляция пользователями, каталогами,
+    network namespace (внутри — прод-номера портов), юнитами `*-stage`, slice, 80G
+    loopback, по инвариантам раздела 5.2. Host-loopback `+10000` не используется.
 11. Candidate host-global installers на production-host не исполняются.
 12. Stage Caddy — отдельный unprivileged process; global Caddy не reload.
 13. Gate policy — trusted production-approved, не candidate-owned.
@@ -844,10 +871,13 @@ Blue-green механика уже умеет держать два слота �
 Метрики снимаются по слотам раздельно, direct per-slot scraping. Labels:
 `{env, contour, slot, release_sha, scenario}`.
 
-Продолжительность окна сравнения настраивается (дефолт-предложение: 15 минут burst; для изменений
-движка/маршрутизации — до часа под постоянной нагрузкой). Warm-up и cool-down обязательны.
+Продолжительность окна сравнения для **runtime SHA — 60 минут**. Docs-only / test-only:
+окно A/B = 0 (deploy на стенд + human approval без soak). Warm-up и cool-down обязательны
+для runtime. A/B одновременно: Anthropic + OpenAI + Gemini + KIMI + router + commerce API.
+Sales, OpenKeys, admin, worker, mock-authbot, log-sink devbot — один инстанс, probe без A/B.
 После окна — обычный cutover; старый слот уходит по штатному drain. Red gate — automatic
-binary switchback.
+binary switchback. Large-payload canary на стенде — полный production-набор тел
+(8/32/64/128/256 MiB) на inactive router с production MemoryMax 8G и 16G spool floor.
 
 ### 8.3 Золотые метрики и пороги (degradation gate)
 
@@ -881,9 +911,10 @@ Candidate-version policy сначала проходит старую policy и 
 Одновременно нужны: warm-up/cool-down, minimum request count, absolute SLO, relative delta
 blue vs green, baseline TTL, confidence/noise rule, policy digest в attestation.
 
-PromQL-пороги калибруются по живым рядам; в снимке 2026-08-20 полных scrape/rule files и
-Grafana dashboards не было (только `observability/compose.yaml`). Конкретные числа порогов
-не фиксируются в этом proposal до появления этих рядов.
+PromQL-пороги калибруются по живым рядам. В репозитории уже есть
+`observability/prometheus/prometheus.yml`, rules и Grafana dashboards; production Prometheus
+скрепит staging veth с `env=staging`. Конкретные числа порогов фиксируются при калибровке
+фазы degrade-gate, не раньше.
 
 Промоушен-прекондишн на клиенте: `agent-merge.sh` в target=master проверяет
 `promotion/eligible` на той же identity; для hotfix — живую hotfix-attestation.
@@ -948,16 +979,21 @@ status остаётся удобным зеркалом, не admission.
 Минимум полей:
 
 - `mode`: `promotion` | `hotfix`;
-- operator identity;
-- `commit_sha`, `tree_sha`;
+- `unix_user=deploy` (admission identity; helper пишет файл от root/deploy, не interactive shell);
+- `github_actor` и названный `commit_sha` из команды оператора (аудит, не admission);
+- `tree_sha`;
 - artifact digests (binaries, TS bundles, migration manifest);
 - validation policy digest и degradation policy digest;
 - contour id (`stage` / `prod`);
-- issued_at, expires_at (TTL);
-- reason (обязателен для hotfix);
+- issued_at, expires_at (TTL **24h**);
+- reason (обязателен для hotfix; для promotion агент копирует формулировку оператора);
 - binding на текущий exact candidate marker / state-root.
 
-Attestation выпускает `promotion-attest`, не stage-watchdog и не проверяемый candidate.
+Attestation выпускает host-owned `apitoken-stage-ctl attest` по вызову
+`deploy/promotion-attest.sh` с ноутбука агента **только после явной команды оператора**
+в том разговоре на названный SHA. Не stage-watchdog и не проверяемый candidate.
+SSH-пользователь `stage-ctl` — ForceCommand, без shell. Пользователь `deploy` интерактивно
+агентом не используется.
 
 ### 9.4 Точная единица identity
 
@@ -988,10 +1024,11 @@ validation, повторного stage deploy/degrade и нового approval.
 
 - `staging.slice` с агрегированными Memory/CPU/Tasks/IO;
 - все stage processes и generators внутри slice;
-- Docker: отдельные project names, native limits, `cgroup_parent` (или rootless), отдельные
-  volumes, нет production Docker socket у `deploy-stage`;
-- enforceable disk quota ≤ 50 GB и emergency GC;
-- network namespace/veth с deny production loopback/Unix sockets и egress allowlist;
+- Docker: rootless daemon `deploy-stage`, native limits, `cgroup_parent=staging.slice`,
+  отдельные volumes, нет production Docker socket;
+- enforceable disk quota 80 GB loopback и emergency GC;
+- network namespace/veth с deny production loopback/Unix sockets, Mailcow/support/payments-test
+  и egress allowlist без payment/OAuth vendor;
 - отрицательные isolation tests как merge-blocking для изоляционного кода.
 
 ### 9.7 Разделение application и host-global infrastructure lanes
@@ -1010,53 +1047,50 @@ validation, повторного stage deploy/degrade и нового approval.
 enforcement уже в фазе 2, хотя stage data, components и degradation gate появлялись позже.
 Это заблокировало бы обычные production merges до готовности контура.
 
-- **Фаза 0. Решения — ВЫПОЛНЕНА (v4, 2026-08-16).** Все вопросы закрыты владельцем
-  (раздел 11.1): бюджет ≤ 8 GB / ≤ 2 ядер / ≤ 50 GB, доступ только SSH-туннель, протекающий
-  стенд, песочница в фазе 7, флот — shadow-read до решения после degradation gate. Ресурсный
-  бюджет и портовая таблица подтверждены живым снятием состояния прод-хоста. Закупать нечего.
-  v7 не переоткрывает эти решения; она уточняет, **как** их технически соблюсти.
-- **Фаза 1 — trusted contour foundation (1–2 д).** Inventory/schema для prod и stage;
-  `staging.slice`, disk quota, network namespace; users, roots, ports, Compose projects;
-  stage-specific reporting helper (caller-bound); отрицательные isolation tests; **никаких
-  candidate root installers**. На `84.32.48.2` без остановки прод-контура: пользователь
-  `deploy-stage`, стенд-корни, секреты сгенерированы заново, контейнер
-  `apitoken-postgres-stage` на `127.0.0.1:5434`. UFW публичный inbound не меняется.
-  `docs/ops/INFRASTRUCTURE.md` получает секцию «Staging contour (co-located with
-  production)». Trusted master-sourced renderer stage units — whitelist.
-- **Фаза 2 — parameterization и observe-only stage watchdog (2–4 д).** Refactor controller
-  configuration в `contour-config`; stage poll/deploy в mock mode; статусы публикуются, но
-  **не** являются production precondition; direct-push detector только alert/quarantine
-  dry-run. Скрипты `deploy/agent-merge-stage.sh`, `deploy/stage-sync.sh` (+ регрессионные
-  сьюты) в режиме, который не ломает текущий `AGENT_MERGE_REQUIRED_CONTEXT` для прода.
-  Обновление `BRANCHES.md` / `AGENTS.md` / `CONTRIBUTING.md` на этом шаге описывает
-  observe-only контур, не fail-closed admission.
-- **Фаза 3 — data/components и safe sinks (3–5 д).** Seed/reseed/snapshot/GC; stage
-  DB/Redis; API/engine/router/commerce; mock/payment/mail/webhook sinks; unprivileged stage
-  Caddy. Движок в mock-режиме (улучшенный mock upstream с деградационными сценариями).
-  Подключение к существующему мониторинг-стеку только как trusted static scrape
-  `env=staging`; candidate dashboards/rules в общий stack не попадают. Каждый контекст —
-  своими лайнами/юнитами `*-stage`.
-- **Фаза 4 — trusted degradation gate (2–4 д).** A/B state machine; direct per-slot
-  scraping; fail-closed metrics semantics; control injections; automatic binary switchback.
-  Генератор нагрузки, paired vs isolated scenarios. Приёмка фазы: искусственная регрессия
-  ловит гейт; missing/stale/renamed metric даёт red; candidate-ослабленная policy не
-  проходит старую policy.
-- **Фаза 5 — promotion attestation и dry-run enforcement (1–2 д).** Human approval record;
-  exact identity binding; master-watchdog проверяет attestation, но сначала только логирует
-  расхождения; hotfix drill и approval invalidation. Ещё не блокирует обычный прод.
-- **Фаза 6 — enforcement (1–2 д).** Обязательный stage→prod flow; fail-closed production
-  admission; emergency stop/break-glass runbook; полный drill зафиксирован в аудите.
-  С этого момента поток stage→prod обязателен для всего, кроме hotfix с attestation.
-  Рунбуки: `docs/ops/DEPLOYMENT.md` и новый runbook стенда.
+- **Фаза 0. Решения — ВЫПОЛНЕНА (v4 + v8, 2026-08-16/22).** Доступ только SSH-туннель,
+  протекающий стенд, песочница в фазе 7, mock-first флот, без байпаса «мелочей». Ресурсный
+  бюджет v8: MemoryMax=32G, CPUQuota=400%, loopback 80G (числа v4 8G/2CPU/50G **сняты**).
+  Полный lock — раздел 11.3.
+- **Фаза 1 — `contour-config` extract only.** Один production merge: watchdog/controllers
+  читают immutable prod contour-config. Поведение `master` не меняется. Нет `deploy-stage`,
+  нет второго контейнера, нет enforcement. Это **первый** код, не inventory.
+- **Фаза 2 — trusted contour foundation.** Inventory/schema stage; `staging.slice` 32G/400%;
+  80G loopback; netns+veth; users `deploy-stage` / `stage-ci` / `observe-stage` / `stage-ctl`;
+  rootless Docker; caller-bound reporting helper; отрицательные isolation tests включая
+  Mailcow/support/payments-test; **никаких candidate root installers**. Postgres-stage и
+  секреты — в staging netns. UFW публичный inbound не меняется.
+  `docs/ops/INFRASTRUCTURE.md` получает секцию staging. Trusted master-sourced renderer —
+  whitelist. `AGENTS.md` в этом коммите добавляет `observe-stage` и запрет shell `deploy`.
+- **Фаза 3 — observe-only stage watchdog.** Stage poll/deploy в mock mode; статусы
+  публикуются, но **не** являются production precondition; direct-push detector только
+  alert/quarantine dry-run. Скрипты `deploy/agent-merge-stage.sh`, `deploy/stage-sync.sh`,
+  `deploy/promotion-attest.sh` (+ регрессионные сьюты) не ломают текущий
+  `AGENT_MERGE_REQUIRED_CONTEXT` для прода. Документы описывают observe-only контур, не
+  fail-closed admission.
+- **Фаза 4 — data/components и safe sinks.** Seed/reseed/snapshot/GC; состав twin из 5.6;
+  mock/payment/mail/webhook **stubs**; unprivileged stage Caddy; mock-authbot; log-sink
+  devbot. Движок в mock-режиме. Prometheus скрепит staging veth, `env=staging`.
+- **Фаза 5 — trusted degradation gate.** A/B state machine на наборе из 5.6; 60 min soak
+  для runtime; full large-payload canary на inactive router; fail-closed metrics; control
+  injections; automatic binary switchback. Приёмка: искусственная регрессия ловит гейт;
+  missing/stale/renamed metric даёт red; candidate-ослабленная policy не проходит.
+  Shadow-read telemetry **не раньше** этой фазы.
+- **Фаза 6 — promotion attestation, drills, dry-run.** Human approval record; 24h TTL;
+  `unix_user=deploy` + `github_actor`; master-watchdog проверяет attestation, сначала
+  только логирует. Обязательны injected-fault drill **и** hotfix drill, запись в
+  `docs/audits/`. Ещё не блокирует обычный прод.
+- **Фаза 7 — enforcement.** Только после обоих drills. Обязательный stage→prod flow;
+  fail-closed production admission; `stage-emergency-stop` + auto-stop при
+  `MemAvailable < 12G` или production SLO red. Стенд down **не** блокирует hotfix.
+  Рунбуки: `docs/ops/DEPLOYMENT.md` и runbook стенда.
 - **Параллельно, не смешивая с application stage — host-global infra-validation.**
-  Candidate `deploy/`, `systemd/`, `observability/` прогоняются в ephemeral VM /
-  systemd-nspawn / отдельном test host. На production-host эти изменения по-прежнему
-  применяет только production-watchdog после promotion.
-- **Фаза 7. Опциональное усиление (по решению оператора).** Песочница реальных подписок
-  и/или бюджетный live-endpoint (решение **после** фазы 4/5, когда измерено, какие
-  регрессии mock не ловит); скрабленный анонимизированный дамп; контроль конфигурационного
-  дрифта контуров. Перенос канареечных live-гейтов провайдеров с прод-контура на
-  стенд-контур — только если live-lane явно включён и не обходит G8.
+  Candidate `deploy/` / `systemd/` / `observability/` — расширение
+  `deploy/host-image-gate.sh`. На production-host их применяет только production-watchdog
+  после promotion.
+- **Фаза 8. Опциональное усиление (по решению оператора).** Бывшая «фаза 7»: песочница
+  реальных подписок и/или бюджетный live-endpoint (решение **после** degrade-gate);
+  скрабленный дамп; дрифт контуров. Payment/OAuth вендоры по-прежнему закрыты, пока
+  владелец отдельно не откроет.
 
 ## 11. Риски и решения фазы 0
 
@@ -1107,64 +1141,87 @@ enforcement уже в фазе 2, хотя stage data, components и degradation
 ### 11.1 Решения фазы 0 (v4, утверждено владельцем 2026-08-16)
 
 Бывшие «открытые вопросы» закрыты; формулировки ниже — обязательная часть контракта.
-v7 уточняет реализацию, не отменяет решения.
+v8 **заменяет** ресурсные числа и модель портов v4; прочие решения v3–v4 (туннель,
+протекающий стенд, нет байпаса мелочей, mock-first флот) остаются.
 
-1. **Ресурсный бюджет стенда — утверждён.** Суммарно MemoryMax ≤ 8 GB и CPUQuota ≤ 200%
-   (2 ядра) на **весь** stage-контур через `staging.slice` (все `*-stage` юниты, builders,
-   validators, generators, Docker с `cgroup_parent`). Per-unit `TasksMax` дополняет
-   агрегированный `TasksMax` slice; директива называется `TasksMax`, не `TaskMax`. Диск
-   стенда ≤ 50 GB (`/opt/apitoken-staging` + `/srv/claude-api-staging` +
-   `/var/lib/apitoken-staging`) **enforceable quota**, не декларация. Билд-процессы стенда —
-   `Nice`/`IOSchedulingClass` ниже прод-класса. Прод держит весь остальной запас. Бюджет
-   подтверждён живым снятием состояния хоста (2026-08-16, SSH `deploy@84.32.48.2`, только
-   чтение): RAM занято ~11 из 96 GB (available ~81 GB), диск 326/894 GB (40%), прод-релизы
-   занимают ~34+12+40 GB, свободной ёмкости с запасом хватает под бюджет стенда даже в час
-   пик билдов. Снимок 2026-08-20 не содержал live `systemd-cgls` / quotas / listeners;
-   перед implementation sign-off ресурсные числа и mounts переснимаются.
-2. **Доступ — только SSH-туннель.** Публичное DNS-имя стенду не заводится; интерфейсы стенда
-   (Grafana с меткой `env=staging`, панель, API) смотрятся через `ssh -L`. UFW и Caddy-маршруты
-   прода не меняются; G4 обеспечивается сетью, а не конфигурацией приложения.
-3. **Песочница подписок — в фазе 7.** Набор: один минимальный Claude-тариф + один Codex +
-   один Gemini на выделенных аккаунтах (НЕ из прод-флота), свой `authbot` на стенде. Если к
-   фазе 7 будет включён live-endpoint (п.6) и его реализма хватает — песочницу не заводим,
-   решение фиксируется отдельным коммитом в этом документе.
-4. **Данные стенда — «протекающий» стенд.** Seed наполняется один раз (фаза 3), далее данные
-   живут своей жизнью (история заказов/ключей/балансов накапливается, как в проде) — это
-   ловит класс багов «проявляется на накопленном состоянии». Периодический reseed — по явной
-   команде оператора (например, после смены формы seed или аварии стенд-БД).
+1. **Ресурсный бюджет стенда — утверждён (v8 заменяет v4).** `staging.slice`:
+   MemoryMax=32G, MemoryHigh=28G, CPUQuota=400% (4 ядра), `TasksMax` (не `TaskMax`).
+   Per-unit `MemoryMax` копирует прод (Gemini 16G, Anthropic/OpenAI/router 8G, KIMI 2G);
+   стена — slice. Диск — loopback **80 GB** на три корня, KEEP=3, canary требует ≥16G
+   свободно под spool. Rootless Docker `deploy-stage` с `cgroup_parent=staging.slice`.
+   Билды стенда — `Nice`/`IOSchedulingClass` ниже прод-класса. Снимок хоста 2026-08-22
+   (SSH `deploy@84.32.48.2`, только чтение): RAM used ~10/93 GiB, MemAvailable ~82–87 GiB;
+   диск 371/879 GB (45%); `/var/lib/apitoken` 66G; staging users/roots **отсутствуют**;
+   Docker cgroup v2, user `deploy` в группе `docker`; на хосте уже Mailcow, support,
+   payments-test — isolation tests обязаны их отрицать. ext4 `/` без project quota —
+   поэтому loopback, не remount `/`.
+2. **Доступ — только SSH-туннель, без публичного DNS.** Агент расследует стенд через
+   `observe-stage` (read-only + `permitopen` на veth). Человек может `ssh -L` как `deploy`.
+   Grafana/Prometheus прода скребят veth, `env=staging`. UFW и Caddy-маршруты прода не
+   меняются; G4 обеспечивается сетью.
+3. **Песочница подписок — опционально после enforcement (фаза 8).** Набор: один минимальный
+   Claude-тариф + один Codex + один Gemini на выделенных аккаунтах (НЕ из прод-флота), свой
+   authbot на стенде. Если к фазе 8 будет включён live-endpoint (п.6) и его реализма хватает —
+   песочницу не заводим. v1 authbot — mock/UI only.
+4. **Данные стенда — «протекающий» стенд.** Seed наполняется один раз (фаза 4), далее данные
+   живут своей жизнью. Периодический reseed — только через `stage-ctl reseed` после явной
+   команды оператора.
 5. ~~Порог «мелочи» для бай-паса стенда~~ — **закрыт отказом (v3):** байпаса нет, обход стенда
    только через `hotfix/*` с host-owned attestation и документированной причиной (разделы 6.3,
    6.5).
-6. **Доступ к емкости флота — до фазы 4/5 только mock; shadow-read — после telemetry
-   inventory.** Mock-апстрим стенда калибруется по read-only агрегатам прод-флота, когда
-   exporter/узкий ключ готов (5.3.1). Решение о бюджетном live-endpoint (аккаунт
-   `stage-live` с nanoUSD-капом, 5.3.1 вариант 2) принимается **после фазы 4**, когда
-   измерено, какие регрессии mock не ловит. Полный `CONTROL_KEY` стенду не выдаётся.
+6. **Доступ к емкости флота — mock до degrade-gate (фаза 5); shadow-read не раньше.**
+   Решение о бюджетном live-endpoint (`stage-live`, 5.3.1 вариант 2) — **после фазы 5**,
+   в опциональной фазе 8. Полный `CONTROL_KEY` стенду не выдаётся.
 7. **Хотфикс-кандидаты и флот.** Кандидат-валидация хотфиксов остаётся на mock-апстриме —
    этого достаточно, т.к. хотфикс всё равно проходит полный прод-гейт. Если когда-либо
    понадобятся live-проверки хотфикса (фикс ротации под реальными 429), они идут через тот же
    бюджетный live-endpoint, что и стенд, — отдельной механики не вводится.
 
-Портовая таблица стенда («+10000») проверена против живых слушающих портов хоста
-(2026-08-16): 5434, 13000/13001, 16379/16380, 18787–18805 — все свободны; конфликтов с продом
-(5433, 6379/6380, 8787–8806) нет. Точная таблица фиксируется в `docs/ops/INFRASTRUCTURE.md`
-в фазе 1. Порты не заменяют network namespace.
+Host-loopback `+10000` **не** является моделью v8: процессы стенда слушают прод-номера
+**внутри netns**. На хосте 2026-08-22 порты 5434 / 13000 / 16379 / 18787–18805 свободны и
+остаются свободными. Точная таблица veth IP фиксируется в `docs/ops/INFRASTRUCTURE.md`
+в фазе 2.
 
-### 11.2 Что ещё отсутствует для implementation sign-off
+### 11.2 Sign-off gaps v7 — статус на v8
 
-Для правки этого proposal снимка 2026-08-20 достаточно. Перед implementation sign-off
-полезны и пока отсутствуют:
+- GitHub role/credential matrix: **закрыто решением** — повседневный `git credential`,
+  отдельный merge-PAT в v1 нет; admission = слой C.
+- Live snapshot 2026-08-22 снят (11.1): listeners, Docker, RAM/диск, отсутствие staging
+  артефактов, Mailcow/support/payments-test.
+- Prometheus scrape/rules и Grafana dashboards **есть в репозитории**
+  (`observability/`). Числа PromQL порогов — калибровка фазы 5, не блокер плана.
+- Migration SQL — в репозитории; план их не подменяет.
+- Incident postmortems — `docs/ops/INCIDENT_POSTMORTEMS.md`; конкретные injection
+  scenarios выбираются в фазе 5.
 
-- фактическая GitHub role/credential/settings matrix;
-- live snapshot `systemd-cgls`, Docker daemon config, groups, listeners, mounts/quotas и
-  current overrides;
-- полные Prometheus scrape/rule files и Grafana dashboards;
-- фактические migration SQL directories в том же архиве (в репозитории они есть; сверка
-  плана их не подменяла);
-- 3–5 incident/postmortem examples для калибровки degradation scenarios.
+### 11.3 Locked decisions (интервью владельца 2026-08-22)
 
-Отсутствие этих материалов не мешает держать архитектурные инварианты раздела 9, но мешает
-подтвердить ресурсные числа, GitHub permissions и конкретные PromQL thresholds.
+Поздний ответ перекрывает более ранний в том же интервью. Это нормативный перечень v8.
+
+| Тема | Решение |
+|---|---|
+| Бюджет | `staging.slice` MemoryMax=32G, MemoryHigh=28G, CPUQuota=400%. Per-unit caps как у прода; стена — slice |
+| Диск | 80G loopback, KEEP=3, canary spool floor 16G |
+| Сеть | Real netns + veth; внутри прод-порты; не host `+10000` |
+| Docker | Rootless у `deploy-stage`; production socket только у `deploy` |
+| Соседи на VPS | Mailcow, support, payments-test остаются; isolation tests deny их порты и контейнеры |
+| Twin v1 | Состав 5.6. Нет content-studio, CRM, Suno/Tripo units |
+| Authbot / Devbot | Mock/UI only; log sink; без живых токенов и Telegram |
+| A/B | Engine (вкл. KIMI) + router + API вместе, 60 min runtime soak. Sales/OpenKeys/admin/worker — single |
+| Docs/test-only | Через `stage`, A/B=0, human approval обязателен |
+| Canary | Полный production large-payload на inactive router |
+| Git queue | Serial freeze, один SHA |
+| Attestation | Скрипт после явной команды оператора; `unix_user=deploy`; TTL 24h; аудит `github_actor`+SHA |
+| SSH агента | `observe-stage` read-only+туннель; write через `stage-ctl` ForceCommand; не shell `deploy` |
+| stage-sync | Только после явной команды оператора |
+| Первый код | `contour-config` extract only |
+| Infra-proof | Расширить `host-image-gate`; не VM-farm |
+| Fail-closed admission | После injected-fault **и** hotfix drill |
+| Layer B PAT | Не в v1 |
+| Shadow-read | После mock twin + degrade gate (фаза 5+) |
+| Payment/OAuth | Никогда к вендорам с этого стенда, пока отдельное решение |
+| Emergency stop | Скрипт + auto при MemAvailable < 12G или production SLO red |
+| Крупный payload / Gemini A/B | Может OOM-red soak о 32G стене — принятый false-red |
 
 ## 12. Критерии успеха (definition of done)
 
@@ -1180,9 +1237,9 @@ Implementation нельзя считать принятой, пока не пр�
 6. Stage user/process не может прочитать production secrets, env, candidate cache или
    GitHub credential.
 7. Stage namespace не может подключиться к production PostgreSQL, Redis, Control API
-   mutation routes и internal origins.
-8. Stage не может обращаться к реальным payment/mail/provider endpoints без явно включённого
-   budgeted lane.
+   mutation routes, internal origins, Mailcow, support и payments-test.
+8. Stage не ходит к payment/mail/OAuth вендорам. К реальным provider endpoints — только
+   с явно включённым budgeted lane фазы 8.
 9. CPU/RAM/PID budget сохраняется при fork bomb, memory pressure и burst load; production
    SLO остаётся в заданном bounded-impact диапазоне.
 10. Docker containers входят в stage budget; Docker socket не даёт управления production
@@ -1223,4 +1280,5 @@ Implementation нельзя считать принятой, пока не пр�
 - `docs/engine/CONTROL_API.md` — граница shadow-read; полный control credential стенду не
   выдаётся.
 - `docs/ops/INCIDENT_POSTMORTEMS.md` — калибровка degradation scenarios на реальных инцидентах.
+- `docs/ops/HOST_IMAGE_GATE.md` — disposable Ubuntu proof for candidate host-global installers.
 - `deploy/rollback.sh` — binary/slot switchback, БД не меняет.
