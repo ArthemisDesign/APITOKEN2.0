@@ -13,6 +13,9 @@ expect_failure() { # $1=fixture root $2=expected diagnostic
 }
 
 python3 "$CHECK" "$ROOT"
+# The local merge gate supports the macOS system Python 3.9. Keep the maintained tomli backport
+# path explicit even when this regression suite runs on a host whose Python already has tomllib.
+grep -Fq 'import tomli as tomllib' "$CHECK" || fail 'Python before 3.11 has no TOML parser fallback'
 TEMP=$(mktemp -d)
 trap 'rm -rf -- "$TEMP"' EXIT
 
