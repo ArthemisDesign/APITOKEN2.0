@@ -21,6 +21,8 @@ export interface PartnerInvite {
   referralDiscountEnabled: boolean;
   b2bEnabled: boolean;
   b2bMaxDiscountBps: number;
+  teamInvitesEnabled: boolean;
+  b2bCanDelegate: boolean;
   expiresAt: Date | null;
   consumedAt: Date | null;
   consumedByPartnerId: string | null;
@@ -45,6 +47,8 @@ interface InviteRow {
   referral_discount_enabled: boolean;
   b2b_enabled: boolean;
   b2b_max_discount_bps: number;
+  team_invites_enabled: boolean;
+  b2b_can_delegate: boolean;
   expires_at: Date | null;
   consumed_at: Date | null;
   consumed_by_partner_id: string | null;
@@ -56,7 +60,7 @@ const INVITE_COLUMNS = `
   team_override_max_bps, parent_override_bps,
   promo_enabled, promo_max_value_nano::text AS promo_max_value_nano, promo_max_count,
   referral_discount_bps, referral_discount_enabled,
-  b2b_enabled, b2b_max_discount_bps,
+  b2b_enabled, b2b_max_discount_bps, team_invites_enabled, b2b_can_delegate,
   expires_at, consumed_at, consumed_by_partner_id, created_at
 `;
 
@@ -77,6 +81,8 @@ function mapInvite(row: InviteRow): PartnerInvite {
     referralDiscountEnabled: row.referral_discount_enabled,
     b2bEnabled: row.b2b_enabled,
     b2bMaxDiscountBps: row.b2b_max_discount_bps,
+    teamInvitesEnabled: row.team_invites_enabled,
+    b2bCanDelegate: row.b2b_can_delegate,
     expiresAt: row.expires_at,
     consumedAt: row.consumed_at,
     consumedByPartnerId: row.consumed_by_partner_id,
@@ -100,17 +106,24 @@ export async function createPartnerInvite(database: SalesDatabase, input: {
   /** B2B grant baked into the invite; the created partner holds it from the first sign-in. */
   b2bEnabled?: boolean;
   b2bMaxDiscountBps?: number;
+  teamInvitesEnabled?: boolean;
+  b2bCanDelegate?: boolean;
+  /** Verified admin actor for a root invite; partner invites derive the actor from partnerId. */
+  actorId?: string;
   expiresAt: Date;
 }): Promise<PartnerInvite> {
+  const client = await database.pool.connect();
   try {
-    const result = await database.pool.query<InviteRow>(`
+    await client.query("BEGIN");
+    const result = await client.query<InviteRow>(`
       INSERT INTO partner_invites (
         partner_id, code, telegram_username, commission_bps, sub_commission_bps,
         team_override_max_bps, parent_override_bps,
         promo_enabled, promo_max_value_nano, promo_max_count, referral_discount_bps,
-        referral_discount_enabled, b2b_enabled, b2b_max_discount_bps, expires_at
+        referral_discount_enabled, b2b_enabled, b2b_max_discount_bps,
+        team_invites_enabled, b2b_can_delegate, expires_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
       RETURNING ${INVITE_COLUMNS}
     `, [
       input.partnerId, input.code, input.telegramUsername, input.commissionBps, input.subCommissionBps,
@@ -118,14 +131,40 @@ export async function createPartnerInvite(database: SalesDatabase, input: {
       input.promoEnabled, input.promoMaxValueNano.toString(), input.promoMaxCount, input.referralDiscountBps,
       input.referralDiscountEnabled,
       input.b2bEnabled ?? false, input.b2bEnabled ? (input.b2bMaxDiscountBps ?? 0) : 0,
+      input.teamInvitesEnabled ?? true,
+      input.b2bEnabled ? (input.b2bCanDelegate ?? false) : false,
       input.expiresAt,
     ]);
-    return mapInvite(result.rows[0]!);
+    const invite = mapInvite(result.rows[0]!);
+    await client.query(`
+      INSERT INTO sales_audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ($1, $2, 'partner.invite_created', 'partner_invite', $3, $4::jsonb)
+    `, [
+      input.partnerId === null ? "admin" : "partner",
+      input.partnerId ?? input.actorId ?? "legacy-sales-admin",
+      invite.id,
+      JSON.stringify({
+        parentPartnerId: input.partnerId,
+        commissionBps: invite.commissionBps,
+        subCommissionBps: invite.subCommissionBps,
+        teamOverrideMaxBps: invite.teamOverrideMaxBps,
+        parentOverrideBps: invite.parentOverrideBps,
+        teamInvitesEnabled: invite.teamInvitesEnabled,
+        b2bEnabled: invite.b2bEnabled,
+        b2bMaxDiscountBps: invite.b2bMaxDiscountBps,
+        b2bCanDelegate: invite.b2bCanDelegate,
+      }),
+    ]);
+    await client.query("COMMIT");
+    return invite;
   } catch (error) {
+    await client.query("ROLLBACK");
     if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") {
       throw new InviteCodeCollisionError("invite code collision");
     }
     throw error;
+  } finally {
+    client.release();
   }
 }
 

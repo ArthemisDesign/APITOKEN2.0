@@ -37,6 +37,8 @@ const TABLE_RESOURCES: Readonly<Record<string, readonly string[]>> = {
   ],
   partner_applications: ["/partner-admin/overview", "/partner-admin/applications"],
   partner_invites: ["/partner-admin/invites", "/partner-admin/overview"],
+  partner_requests: ["/partner-admin/requests"],
+  partner_request_effects: ["/partner-admin/requests"],
   partner_discount_links: ["/partner-admin/partner-analytics"],
   promo_codes: ["/partner-admin/partner-analytics"],
   referred_users: ["/partner-admin/overview", "/partner-admin/partner-analytics"],

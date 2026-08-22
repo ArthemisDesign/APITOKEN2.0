@@ -33,6 +33,12 @@ export interface Partner {
   /** May turn own referrals into B2B customers, capped by b2bMaxDiscountBps (migration 0023). */
   b2bEnabled: boolean;
   b2bMaxDiscountBps: number;
+  /** Platform/parent switch for creating direct team invitations. */
+  teamInvitesEnabled: boolean;
+  /** Whether this partner may pass a bounded B2B grant to direct team members. */
+  b2bCanDelegate: boolean;
+  /** Direct parent when inherited; NULL for a platform grant. */
+  b2bGrantSourcePartnerId: string | null;
   createdAt: Date;
 }
 
@@ -69,6 +75,9 @@ interface PartnerRow {
   referral_discount_enabled: boolean;
   b2b_enabled: boolean;
   b2b_max_discount_bps: number;
+  team_invites_enabled: boolean;
+  b2b_can_delegate: boolean;
+  b2b_grant_source_partner_id: string | null;
   created_at: Date;
 }
 
@@ -79,7 +88,8 @@ const PARTNER_COLUMNS = `
   team_override_max_bps, parent_override_bps, payout_method, payout_details,
   promo_enabled, promo_max_value_nano::text AS promo_max_value_nano, promo_max_count,
   referral_discount_bps, referral_discount_enabled,
-  b2b_enabled, b2b_max_discount_bps, created_at
+  b2b_enabled, b2b_max_discount_bps, team_invites_enabled, b2b_can_delegate,
+  b2b_grant_source_partner_id, created_at
 `;
 
 function mapPartner(row: PartnerRow): PasswordPartner {
@@ -108,6 +118,9 @@ function mapPartner(row: PartnerRow): PasswordPartner {
     referralDiscountEnabled: row.referral_discount_enabled,
     b2bEnabled: row.b2b_enabled,
     b2bMaxDiscountBps: row.b2b_max_discount_bps,
+    teamInvitesEnabled: row.team_invites_enabled,
+    b2bCanDelegate: row.b2b_can_delegate,
+    b2bGrantSourcePartnerId: row.b2b_grant_source_partner_id,
     createdAt: row.created_at,
   };
 }
@@ -151,6 +164,7 @@ async function lockInvite(client: PoolClient, code: string): Promise<{
   promoEnabled: boolean; promoMaxValueNano: string; promoMaxCount: number;
   referralDiscountBps: number; referralDiscountEnabled: boolean;
   b2bEnabled: boolean; b2bMaxDiscountBps: number;
+  teamInvitesEnabled: boolean; b2bCanDelegate: boolean;
 }> {
   const result = await client.query<{
     id: string; partner_id: string | null; commission_bps: number | null;
@@ -159,12 +173,13 @@ async function lockInvite(client: PoolClient, code: string): Promise<{
     promo_enabled: boolean; promo_max_value_nano: string; promo_max_count: number;
     referral_discount_bps: number; referral_discount_enabled: boolean;
     b2b_enabled: boolean; b2b_max_discount_bps: number;
+    team_invites_enabled: boolean; b2b_can_delegate: boolean;
   }>(`
     SELECT id, partner_id, commission_bps, sub_commission_bps, telegram_username,
            team_override_max_bps, parent_override_bps,
            promo_enabled, promo_max_value_nano::text AS promo_max_value_nano, promo_max_count,
            referral_discount_bps, referral_discount_enabled,
-           b2b_enabled, b2b_max_discount_bps
+           b2b_enabled, b2b_max_discount_bps, team_invites_enabled, b2b_can_delegate
     FROM partner_invites
     WHERE code = $1 AND consumed_at IS NULL AND (expires_at IS NULL OR expires_at > now())
     FOR UPDATE
@@ -186,6 +201,8 @@ async function lockInvite(client: PoolClient, code: string): Promise<{
     referralDiscountEnabled: row.referral_discount_enabled,
     b2bEnabled: row.b2b_enabled,
     b2bMaxDiscountBps: row.b2b_max_discount_bps,
+    teamInvitesEnabled: row.team_invites_enabled,
+    b2bCanDelegate: row.b2b_can_delegate,
   };
 }
 
@@ -228,9 +245,11 @@ export async function createTelegramPartner(database: SalesDatabase, input: {
         referral_code, parent_partner_id, commission_bps, sub_commission_bps,
         team_override_max_bps, parent_override_bps,
         promo_enabled, promo_max_value_nano, promo_max_count, referral_discount_bps, referral_discount_enabled,
-        b2b_enabled, b2b_max_discount_bps
+        b2b_enabled, b2b_max_discount_bps, team_invites_enabled, b2b_can_delegate,
+        b2b_grant_source_partner_id
       )
-      VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+              $15, $16, $17, $18, $19, $20)
       RETURNING ${PARTNER_COLUMNS}
     `, [
       input.telegramId, input.telegramUsername, input.telegramPhotoUrl, input.displayName,
@@ -243,6 +262,8 @@ export async function createTelegramPartner(database: SalesDatabase, input: {
       invite.referralDiscountBps, invite.referralDiscountEnabled,
       // The grant is carried by the invite, so onboarding creates a partner who already holds it.
       invite.b2bEnabled, invite.b2bMaxDiscountBps,
+      invite.teamInvitesEnabled, invite.b2bCanDelegate,
+      invite.b2bEnabled && invite.partnerId ? invite.partnerId : null,
     ]);
     const partner = mapPartner(result.rows[0]!);
     await client.query(`
@@ -303,7 +324,8 @@ export async function resolvePartnerSession(
            p.payout_method, p.payout_details,
            p.promo_enabled, p.promo_max_value_nano::text AS promo_max_value_nano, p.promo_max_count,
            p.referral_discount_bps, p.referral_discount_enabled,
-           p.b2b_enabled, p.b2b_max_discount_bps, p.created_at
+           p.b2b_enabled, p.b2b_max_discount_bps, p.team_invites_enabled, p.b2b_can_delegate,
+           p.b2b_grant_source_partner_id, p.created_at
     FROM partner_sessions s
     JOIN partners p ON p.id = s.partner_id
     WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND p.status = 'active'

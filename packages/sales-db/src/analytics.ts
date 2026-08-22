@@ -33,10 +33,13 @@ export interface PartnerAnalyticsRow {
   commissionBps: number;
   subCommissionBps: number;
   teamOverrideMaxBps: number;
+  teamInvitesEnabled: boolean;
   parentOverrideBps: number | null;
   referralDiscountEnabled: boolean;
   b2bEnabled: boolean;
   b2bMaxDiscountBps: number;
+  b2bCanDelegate: boolean;
+  b2bGrantSourcePartnerId: string | null;
   referralDiscountBps: number;
   promoEnabled: boolean;
   depositsTotalNano: string;
@@ -137,8 +140,8 @@ export async function listPartnerAnalytics(
       COALESCE(parent.telegram_username, parent.email) AS parent_label,
       p.commission_bps, p.sub_commission_bps,
       COALESCE(p.team_override_max_bps, 2000) AS team_override_max_bps,
-      p.parent_override_bps, p.referral_discount_enabled, p.referral_discount_bps,
-      p.b2b_enabled, p.b2b_max_discount_bps,
+      p.team_invites_enabled, p.parent_override_bps, p.referral_discount_enabled, p.referral_discount_bps,
+      p.b2b_enabled, p.b2b_max_discount_bps, p.b2b_can_delegate, p.b2b_grant_source_partner_id,
       p.promo_enabled, p.created_at,
       COALESCE((SELECT SUM(rt.amount_nano) FROM referred_topups rt WHERE rt.partner_id = p.id), 0) AS deposits_total,
       COALESCE((SELECT SUM(rt.amount_nano) FROM referred_topups rt WHERE rt.partner_id = p.id AND rt.paid_at >= now() - interval '30 days'), 0) AS deposits_30d,
@@ -294,12 +297,15 @@ function serializeRow(r: Record<string, unknown>): PartnerAnalyticsRow {
     commissionBps: Number(r.commission_bps),
     subCommissionBps: Number(r.sub_commission_bps),
     teamOverrideMaxBps: Number(r.team_override_max_bps),
+    teamInvitesEnabled: Boolean(r.team_invites_enabled),
     parentOverrideBps: r.parent_override_bps === null || r.parent_override_bps === undefined
       ? null
       : Number(r.parent_override_bps),
     referralDiscountEnabled: Boolean(r.referral_discount_enabled),
     b2bEnabled: Boolean(r.b2b_enabled),
     b2bMaxDiscountBps: Number(r.b2b_max_discount_bps ?? 0),
+    b2bCanDelegate: Boolean(r.b2b_can_delegate),
+    b2bGrantSourcePartnerId: (r.b2b_grant_source_partner_id as string) ?? null,
     referralDiscountBps: Number(r.referral_discount_bps),
     promoEnabled: Boolean(r.promo_enabled),
     depositsTotalNano: s(r.deposits_total),

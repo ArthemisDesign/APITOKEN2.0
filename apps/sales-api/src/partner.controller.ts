@@ -1,12 +1,14 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   BadRequestException,
   Body,
   Controller,
+  ConflictException,
   Delete,
   ForbiddenException,
   Get,
   Header,
+  Headers,
   HttpCode,
   Inject,
   NotFoundException,
@@ -14,6 +16,7 @@ import {
   Patch,
   Post,
   Query,
+  ServiceUnavailableException,
   UnauthorizedException,
   UnprocessableEntityException,
   UseGuards,
@@ -31,7 +34,7 @@ import {
   listPartnerInvites,
   listPartnerPayouts,
   listPartnerTeam,
-  updateDirectTeamMemberControls,
+  updateDirectTeamMemberAuthority,
   listReferredUsers,
   resolveReferredUserByPrefix,
   getPartnerPeriodState,
@@ -52,6 +55,14 @@ import {
   PromoCodeCollisionError,
   TeamMemberNotFoundError,
   TeamOverrideLimitError,
+  PartnerB2BAuthorityError,
+  PartnerTeamAuthorityError,
+  PartnerRequestConflictError,
+  PartnerRequestNotFoundError,
+  PartnerRequestValidationError,
+  createB2BPartnerRequest,
+  createCommissionChangeRequest,
+  listPartnerRequests,
   type SalesDatabase,
 } from "@claude-api/sales-db";
 import type { Environment } from "./config.js";
@@ -62,16 +73,25 @@ import { CommercePartnerPricingError, CommerceService } from "./commerce.service
 import { SALES_DATABASE } from "./infrastructure.module.js";
 import {
   createDiscountLinkSchema,
+  b2bPartnerRequestSchema,
+  commissionChangeRequestSchema,
   createInviteSchema,
   createPromoSchema,
   earningsQuerySchema,
+  idempotencyKeySchema,
   partnerBusinessPricingSchema,
+  partnerRequestsQuerySchema,
   referralUserRefSchema,
   setReferralDiscountSchema,
   teamMemberControlsSchema,
   updateSettingsSchema,
   walletSchema,
 } from "./schemas.js";
+import {
+  decodePartnerRequestCursor,
+  encodePartnerRequestCursor,
+  partnerRequestView as serializePartnerRequest,
+} from "./partner-request-view.js";
 
 const INVITE_TTL_DAYS = 30;
 const uuidSchema = z.string().uuid();
@@ -127,6 +147,10 @@ export class PartnerController {
       referralPricingAffected: false,
       subCommissionBps: current.partner.subCommissionBps,
       teamOverrideMaxBps: current.partner.teamOverrideMaxBps,
+      teamInvitesEnabled: current.partner.teamInvitesEnabled,
+      b2bEnabled: current.partner.b2bEnabled,
+      b2bMaxDiscountBps: current.partner.b2bMaxDiscountBps,
+      b2bCanDelegate: current.partner.b2bCanDelegate,
       referredUsers,
       teamSize,
       totals: {
@@ -184,6 +208,100 @@ export class PartnerController {
           status: profile?.status ?? null,
         };
       }),
+    };
+  }
+
+  @Post("requests/commission")
+  @HttpCode(201)
+  async requestCommissionChange(
+    @CurrentAuth() current: RequestAuth,
+    @Headers("idempotency-key") idempotencyHeader: string | undefined,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    const parsed = commissionChangeRequestSchema.safeParse(body ?? {});
+    const idempotency = idempotencyKeySchema.safeParse(idempotencyHeader);
+    if (!parsed.success || !idempotency.success) {
+      throw new BadRequestException("valid request data and Idempotency-Key are required");
+    }
+    try {
+      const request = await createCommissionChangeRequest(this.database, {
+        requesterPartnerId: current.partner.id,
+        requestedCommissionBps: parsed.data.requestedCommissionBps,
+        reason: parsed.data.reason,
+        idempotencyKey: idempotency.data,
+      });
+      return { request: serializePartnerRequest(request, null) };
+    } catch (error) {
+      throwPartnerRequestError(error);
+    }
+  }
+
+  @Post("referrals/:userRef/b2b-requests")
+  @HttpCode(201)
+  async requestReferralB2B(
+    @CurrentAuth() current: RequestAuth,
+    @Param("userRef") userRef: string,
+    @Headers("idempotency-key") idempotencyHeader: string | undefined,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    const ref = referralUserRefSchema.safeParse(userRef);
+    const parsed = b2bPartnerRequestSchema.safeParse(body ?? {});
+    const idempotency = idempotencyKeySchema.safeParse(idempotencyHeader);
+    if (!ref.success || !parsed.success || !idempotency.success) {
+      throw new BadRequestException("valid request data and Idempotency-Key are required");
+    }
+    const commerceUserId = await resolveReferredUserByPrefix(this.database, current.partner.id, ref.data);
+    if (commerceUserId === null) throw new NotFoundException("referral not found");
+    if (commerceUserId === "ambiguous") throw new UnprocessableEntityException("ambiguous referral reference");
+    const profile = (await this.commerce.referralProfiles([commerceUserId])).get(commerceUserId);
+    if (!profile) {
+      throw new ServiceUnavailableException("Commerce profile is temporarily unavailable");
+    }
+    try {
+      const request = await createB2BPartnerRequest(this.database, {
+        requesterPartnerId: current.partner.id,
+        commerceUserId,
+        requestType: profile.customerType === "b2b" ? "b2b_pricing" : "b2b_conversion",
+        requestedDiscountBps: parsed.data.discountPercent * 100,
+        providers: Object.fromEntries(Object.entries(parsed.data.providers ?? {})
+          .map(([providerId, percent]) => [providerId, percent === null ? null : percent * 100])),
+        reason: parsed.data.reason,
+        stateSnapshot: {
+          customerType: profile.customerType,
+          discountPercent: profile.discountPercent,
+        },
+        idempotencyKey: idempotency.data,
+      });
+      return { request: serializePartnerRequest(request, profile.email) };
+    } catch (error) {
+      throwPartnerRequestError(error);
+    }
+  }
+
+  @Get("requests")
+  @Header("Cache-Control", "no-store")
+  async requests(@CurrentAuth() current: RequestAuth, @Query() query: unknown): Promise<unknown> {
+    const parsed = partnerRequestsQuerySchema.safeParse(query ?? {});
+    if (!parsed.success) throw new BadRequestException("invalid requests query");
+    const before = decodePartnerRequestCursor(parsed.data.cursor);
+    if (parsed.data.cursor !== undefined && before === undefined) {
+      throw new BadRequestException("invalid requests cursor");
+    }
+    const page = await listPartnerRequests(this.database, {
+      requesterPartnerId: current.partner.id,
+      ...(parsed.data.status === undefined ? {} : { status: parsed.data.status }),
+      ...(parsed.data.requestType === undefined ? {} : { requestType: parsed.data.requestType }),
+      ...(before === undefined ? {} : { before }),
+      limit: parsed.data.limit,
+    });
+    const profiles = await this.commerce.referralProfiles(page.items.flatMap((request) =>
+      request.commerceUserId === null ? [] : [request.commerceUserId]));
+    return {
+      items: page.items.map((request) => serializePartnerRequest(
+        request,
+        request.commerceUserId === null ? null : (profiles.get(request.commerceUserId)?.email ?? null),
+      )),
+      nextCursor: encodePartnerRequestCursor(page.nextCursor),
     };
   }
 
@@ -248,6 +366,7 @@ export class PartnerController {
     @CurrentAuth() current: RequestAuth,
     @Param("userRef") userRef: string,
     @Body() body: unknown,
+    @Headers("idempotency-key") idempotencyHeader?: string,
   ): Promise<unknown> {
     if (!current.partner.b2bEnabled) {
       throw new ForbiddenException("your account is not allowed to create B2B customers");
@@ -256,6 +375,12 @@ export class PartnerController {
     if (!ref.success) throw new BadRequestException("invalid referral reference");
     const parsed = partnerBusinessPricingSchema.safeParse(body ?? {});
     if (!parsed.success) throw new BadRequestException("invalid business pricing request");
+    const idempotency = idempotencyHeader === undefined
+      ? undefined
+      : idempotencyKeySchema.safeParse(idempotencyHeader);
+    if (idempotency !== undefined && !idempotency.success) {
+      throw new BadRequestException("invalid Idempotency-Key");
+    }
 
     const ceilingPercent = Math.floor(current.partner.b2bMaxDiscountBps / 100);
     const requested = [
@@ -273,11 +398,18 @@ export class PartnerController {
     let result;
     try {
       result = await this.commerce.setPartnerBusinessPricing({
+        ...(idempotency?.success ? {
+          operationRef: `partner-direct:${createHash("sha256")
+            .update(`${current.partner.id}:${idempotency.data}`)
+            .digest("hex")}`,
+        } : {}),
         userId: commerceUserId,
         referralCode: current.partner.referralCode,
         ceilingPercent,
         ...(parsed.data.discountPercent === undefined ? {} : { discountPercent: parsed.data.discountPercent }),
         ...(parsed.data.providers === undefined ? {} : { providers: parsed.data.providers }),
+        actorId: current.partner.id,
+        reason: "Partner self-service B2B pricing",
       });
     } catch (error) {
       if (error instanceof CommercePartnerPricingError && error.status === 403) {
@@ -288,19 +420,25 @@ export class PartnerController {
       if (error instanceof CommercePartnerPricingError && error.status === 400) {
         throw new UnprocessableEntityException("this referral cannot be converted yet");
       }
+      if (error instanceof CommercePartnerPricingError && error.status === 409) {
+        throw new ConflictException("Idempotency-Key was already used for another pricing request");
+      }
       throw error;
     }
 
-    await insertSalesAudit(this.database, {
-      actorType: "partner", actorId: current.partner.id,
-      action: "referral.business_pricing_set", targetType: "referred_user", targetId: commerceUserId,
-      metadata: {
-        ceilingPercent,
-        converted: result.converted,
-        discountPercent: result.discountPercent,
-        providers: result.providers,
-      },
-    });
+    if (!result.idempotentReplay) {
+      await insertSalesAudit(this.database, {
+        actorType: "partner", actorId: current.partner.id,
+        action: "referral.business_pricing_set", targetType: "referred_user", targetId: commerceUserId,
+        metadata: {
+          operationRef: result.operationRef,
+          ceilingPercent,
+          converted: result.converted,
+          discountPercent: result.discountPercent,
+          providers: result.providers,
+        },
+      });
+    }
 
     return {
       userRef: ref.data,
@@ -308,6 +446,8 @@ export class PartnerController {
       customerType: result.customerType,
       discountPercent: result.discountPercent,
       providers: result.providers,
+      operationRef: result.operationRef,
+      idempotentReplay: result.idempotentReplay,
       ceilingPercent,
     };
   }
@@ -367,6 +507,10 @@ export class PartnerController {
     return {
       platformCommissionBps: this.config.get("DEFAULT_COMMISSION_BPS", { infer: true }),
       teamOverrideMaxBps: current.partner.teamOverrideMaxBps,
+      teamInvitesEnabled: current.partner.teamInvitesEnabled,
+      b2bEnabled: current.partner.b2bEnabled,
+      b2bMaxDiscountBps: current.partner.b2bMaxDiscountBps,
+      b2bCanDelegate: current.partner.b2bCanDelegate,
       items: team.map((member) => ({
         id: member.id,
         email: member.email,
@@ -376,6 +520,11 @@ export class PartnerController {
         commissionBps: member.commissionBps,
         overrideBps: member.overrideBps,
         teamOverrideMaxBps: member.teamOverrideMaxBps,
+        teamInvitesEnabled: member.teamInvitesEnabled,
+        b2bEnabled: member.b2bEnabled,
+        b2bMaxDiscountBps: member.b2bMaxDiscountBps,
+        b2bCanDelegate: member.b2bCanDelegate,
+        b2bGrantSourcePartnerId: member.b2bGrantSourcePartnerId,
         referredUsers: member.referredUsers,
         earnedNano: member.theirEarnedNano.toString(),
         adjustmentNano: member.theirAdjustmentNano.toString(),
@@ -389,6 +538,9 @@ export class PartnerController {
 
   @Post("invites")
   async createInvite(@CurrentAuth() current: RequestAuth, @Body() body: unknown): Promise<unknown> {
+    if (!current.partner.teamInvitesEnabled) {
+      throw new ForbiddenException("team invitations are disabled for this partner");
+    }
     const parsed = createInviteSchema.safeParse(body ?? {});
     if (!parsed.success) throw new BadRequestException("invalid invite data: telegram username is required");
     const telegramUsername = normalizeTelegramUsername(parsed.data.telegramUsername);
@@ -438,6 +590,9 @@ export class PartnerController {
 
   @Post("team/invites")
   async createTeamInvite(@CurrentAuth() current: RequestAuth, @Body() body: unknown): Promise<unknown> {
+    if (!current.partner.teamInvitesEnabled) {
+      throw new ForbiddenException("team invitations are disabled for this partner");
+    }
     const parsed = createInviteSchema.safeParse(body ?? {});
     if (!parsed.success) throw new BadRequestException("invalid invite data: telegram username is required");
     const telegramUsername = normalizeTelegramUsername(parsed.data.telegramUsername);
@@ -447,6 +602,17 @@ export class PartnerController {
     const teamOverrideMaxBps = parsed.data.teamOverrideMaxBps ?? cap;
     if (overrideBps > cap || teamOverrideMaxBps > cap) {
       throw new UnprocessableEntityException(`team controls exceed your maximum of ${cap} bps`);
+    }
+    const b2bEnabled = parsed.data.b2bEnabled ?? false;
+    const b2bMaxDiscountBps = b2bEnabled ? (parsed.data.b2bMaxDiscountBps ?? 0) : 0;
+    const b2bCanDelegate = b2bEnabled ? (parsed.data.b2bCanDelegate ?? false) : false;
+    if (b2bEnabled && (!current.partner.b2bEnabled || !current.partner.b2bCanDelegate)) {
+      throw new ForbiddenException("your B2B authority cannot be delegated");
+    }
+    if (b2bMaxDiscountBps > current.partner.b2bMaxDiscountBps) {
+      throw new UnprocessableEntityException(
+        `B2B maximum discount exceeds your limit of ${current.partner.b2bMaxDiscountBps} bps`,
+      );
     }
     // The inviter cannot choose the member's platform-funded direct rate. Keeping this value on
     // the invite snapshots the configured 10% default for deterministic onboarding.
@@ -475,6 +641,10 @@ export class PartnerController {
           promoMaxCount: 0,
           referralDiscountBps: subDiscountBps,
           referralDiscountEnabled: subDiscountEnabled,
+          teamInvitesEnabled: parsed.data.teamInvitesEnabled ?? true,
+          b2bEnabled,
+          b2bMaxDiscountBps,
+          b2bCanDelegate,
           expiresAt,
         });
         return {
@@ -484,6 +654,10 @@ export class PartnerController {
           commissionBps: invite.commissionBps,
           overrideBps: invite.parentOverrideBps,
           teamOverrideMaxBps: invite.teamOverrideMaxBps,
+          teamInvitesEnabled: invite.teamInvitesEnabled,
+          b2bEnabled: invite.b2bEnabled,
+          b2bMaxDiscountBps: invite.b2bMaxDiscountBps,
+          b2bCanDelegate: invite.b2bCanDelegate,
           expiresAt: invite.expiresAt?.toISOString() ?? null,
         };
       } catch (error) {
@@ -508,6 +682,10 @@ export class PartnerController {
         commissionBps: invite.commissionBps,
         overrideBps: invite.parentOverrideBps ?? Math.min(current.partner.subCommissionBps, current.partner.teamOverrideMaxBps),
         teamOverrideMaxBps: invite.teamOverrideMaxBps ?? current.partner.teamOverrideMaxBps,
+        teamInvitesEnabled: invite.teamInvitesEnabled,
+        b2bEnabled: invite.b2bEnabled,
+        b2bMaxDiscountBps: invite.b2bMaxDiscountBps,
+        b2bCanDelegate: invite.b2bCanDelegate,
         expiresAt: invite.expiresAt?.toISOString() ?? null,
         consumedAt: invite.consumedAt?.toISOString() ?? null,
         createdAt: invite.createdAt.toISOString(),
@@ -525,17 +703,29 @@ export class PartnerController {
     const parsed = teamMemberControlsSchema.safeParse(body ?? {});
     if (!parsed.success) throw new BadRequestException("invalid team controls");
     try {
-      return await updateDirectTeamMemberControls(this.database, {
+      return await updateDirectTeamMemberAuthority(this.database, {
         parentPartnerId: current.partner.id,
         memberId,
         ...(parsed.data.overrideBps === undefined ? {} : { overrideBps: parsed.data.overrideBps }),
         ...(parsed.data.teamOverrideMaxBps === undefined
           ? {}
           : { teamOverrideMaxBps: parsed.data.teamOverrideMaxBps }),
+        ...(parsed.data.teamInvitesEnabled === undefined
+          ? {}
+          : { teamInvitesEnabled: parsed.data.teamInvitesEnabled }),
+        ...(parsed.data.b2bEnabled === undefined ? {} : { b2bEnabled: parsed.data.b2bEnabled }),
+        ...(parsed.data.b2bMaxDiscountBps === undefined
+          ? {}
+          : { b2bMaxDiscountBps: parsed.data.b2bMaxDiscountBps }),
+        ...(parsed.data.b2bCanDelegate === undefined
+          ? {}
+          : { b2bCanDelegate: parsed.data.b2bCanDelegate }),
       });
     } catch (error) {
       if (error instanceof TeamMemberNotFoundError) throw new NotFoundException(error.message);
       if (error instanceof TeamOverrideLimitError) throw new UnprocessableEntityException(error.message);
+      if (error instanceof PartnerTeamAuthorityError) throw new ForbiddenException(error.message);
+      if (error instanceof PartnerB2BAuthorityError) throw new UnprocessableEntityException(error.message);
       throw error;
     }
   }
@@ -737,6 +927,15 @@ export class PartnerController {
     const base = this.config.get("PUBLIC_SALES_BASE_URL", { infer: true });
     return `${new URL(base).origin}/register?invite=${code}`;
   }
+}
+
+function throwPartnerRequestError(error: unknown): never {
+  if (error instanceof PartnerRequestConflictError) throw new ConflictException(error.message);
+  if (error instanceof PartnerRequestNotFoundError) throw new NotFoundException(error.message);
+  if (error instanceof PartnerRequestValidationError) {
+    throw new UnprocessableEntityException(error.message);
+  }
+  throw error;
 }
 
 function payoutView(payout: {

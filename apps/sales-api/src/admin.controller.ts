@@ -4,6 +4,7 @@ import {
   Controller,
   Get,
   Header,
+  Headers,
   HttpCode,
   Inject,
   NotFoundException,
@@ -48,6 +49,12 @@ import {
   updatePartnerAdmin,
   InvalidPayoutTransitionError,
   InviteCodeCollisionError,
+  PartnerB2BAuthorityError,
+  PartnerRequestDecisionError,
+  PartnerRequestNotFoundError,
+  decidePartnerRequest,
+  getPartnerRequest,
+  listPartnerRequests,
   type SalesDatabase,
 } from "@claude-api/sales-db";
 import type { Environment } from "./config.js";
@@ -64,11 +71,23 @@ import {
   adminPayoutDecisionSchema,
   adminPayoutsQuerySchema,
   adminPromoSchema,
+  adminPartnerRequestDecisionSchema,
+  partnerRequestsQuerySchema,
   referralUserRefSchema,
   setReferralDiscountSchema,
 } from "./schemas.js";
+import {
+  decodePartnerRequestCursor,
+  encodePartnerRequestCursor,
+  partnerRequestView as serializePartnerRequest,
+} from "./partner-request-view.js";
 
 const uuidSchema = z.string().uuid();
+
+function adminActorId(value: string | undefined): string {
+  const actor = value?.trim();
+  return actor && actor.length <= 200 ? actor : "legacy-sales-admin";
+}
 
 const analyticsQuerySchema = z.object({
   sort: z.enum(PARTNER_ANALYTICS_SORTS).optional(),
@@ -120,6 +139,87 @@ export class AdminController {
     };
   }
 
+  @Get("requests")
+  @Header("Cache-Control", "no-store")
+  async requests(@Query() query: unknown): Promise<unknown> {
+    const parsed = partnerRequestsQuerySchema.safeParse(query ?? {});
+    if (!parsed.success) throw new BadRequestException("invalid requests query");
+    const before = decodePartnerRequestCursor(parsed.data.cursor);
+    if (parsed.data.cursor !== undefined && before === undefined) {
+      throw new BadRequestException("invalid requests cursor");
+    }
+    const page = await listPartnerRequests(this.database, {
+      ...(parsed.data.status === undefined ? {} : { status: parsed.data.status }),
+      ...(parsed.data.requestType === undefined ? {} : { requestType: parsed.data.requestType }),
+      ...(before === undefined ? {} : { before }),
+      limit: parsed.data.limit,
+    });
+    const profiles = await this.commerce.referralProfiles(page.items.flatMap((request) =>
+      request.commerceUserId === null ? [] : [request.commerceUserId]));
+    return {
+      items: page.items.map((request) => serializePartnerRequest(
+        request,
+        request.commerceUserId === null ? null : (profiles.get(request.commerceUserId)?.email ?? null),
+      )),
+      nextCursor: encodePartnerRequestCursor(page.nextCursor),
+    };
+  }
+
+  @Get("requests/:id")
+  @Header("Cache-Control", "no-store")
+  async request(@Param("id") id: string): Promise<unknown> {
+    if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid partner request id");
+    const request = await getPartnerRequest(this.database, id);
+    if (!request) throw new NotFoundException("partner request not found");
+    const customerEmail = request.commerceUserId === null
+      ? null
+      : (await this.commerce.referralProfiles([request.commerceUserId])).get(request.commerceUserId)?.email ?? null;
+    return { request: serializePartnerRequest(request, customerEmail) };
+  }
+
+  @Post("requests/:id/decision")
+  @HttpCode(200)
+  async decidePartnerRequestEndpoint(
+    @Param("id") id: string,
+    @Headers("x-admin-actor") actorHeader: string | undefined,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid partner request id");
+    const parsed = adminPartnerRequestDecisionSchema.safeParse(body ?? {});
+    if (!parsed.success) throw new BadRequestException("invalid partner request decision");
+    try {
+      const decision = parsed.data;
+      const request = await decidePartnerRequest(this.database, {
+        requestId: id,
+        action: decision.action,
+        reviewerActor: adminActorId(actorHeader),
+        reviewerNote: decision.note,
+        ...(decision.action !== "approve" || decision.commissionBps === undefined
+          ? {}
+          : { approvedCommissionBps: decision.commissionBps }),
+        ...(decision.action !== "approve" || decision.discountPercent === undefined
+          ? {}
+          : { approvedDiscountBps: decision.discountPercent * 100 }),
+        ...(decision.action !== "approve" || decision.providers === undefined
+          ? {}
+          : {
+              providers: Object.fromEntries(Object.entries(decision.providers)
+                .map(([providerId, percent]) => [providerId, percent === null ? null : percent * 100])),
+            }),
+      });
+      const customerEmail = request.commerceUserId === null
+        ? null
+        : (await this.commerce.referralProfiles([request.commerceUserId])).get(request.commerceUserId)?.email ?? null;
+      return { request: serializePartnerRequest(request, customerEmail) };
+    } catch (error) {
+      if (error instanceof PartnerRequestNotFoundError) throw new NotFoundException(error.message);
+      if (error instanceof PartnerRequestDecisionError) {
+        throw new UnprocessableEntityException(error.message);
+      }
+      throw error;
+    }
+  }
+
   @Get("partners")
   @Header("Cache-Control", "no-store")
   async partners(): Promise<unknown> {
@@ -141,6 +241,9 @@ export class AdminController {
         referralDiscountEnabled: partner.referralDiscountEnabled,
         b2bEnabled: partner.b2bEnabled,
         b2bMaxDiscountBps: partner.b2bMaxDiscountBps,
+        teamInvitesEnabled: partner.teamInvitesEnabled,
+        b2bCanDelegate: partner.b2bCanDelegate,
+        b2bGrantSourcePartnerId: partner.b2bGrantSourcePartnerId,
         parentPartnerId: partner.parentPartnerId,
         parentEmail: partner.parentEmail,
         parentTelegramUsername: partner.parentTelegramUsername,
@@ -227,6 +330,7 @@ export class AdminController {
     @Param("id") id: string,
     @Param("userRef") userRef: string,
     @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
   ): Promise<unknown> {
     if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid partner id");
     const ref = referralUserRefSchema.safeParse(userRef);
@@ -241,7 +345,7 @@ export class AdminController {
       throw new UnprocessableEntityException("this referral cannot store the legacy B2C marker");
     }
     await insertSalesAudit(this.database, {
-      actorType: "admin", actorId: "admin",
+      actorType: "admin", actorId: adminActorId(actorHeader),
       action: "referral.discount_set", targetType: "referred_user", targetId: commerceUserId,
       metadata: { partnerId: id, discountBps: parsed.data.discountBps, multiplierBp: result.multiplierBp },
     });
@@ -288,7 +392,11 @@ export class AdminController {
   /** Включить/выключить промокоды партнёру и задать лимиты (номинал USD, количество). */
   @Post("partners/:id/promo")
   @HttpCode(200)
-  async setPromo(@Param("id") id: string, @Body() body: unknown): Promise<unknown> {
+  async setPromo(
+    @Param("id") id: string,
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
     if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid partner id");
     const parsed = adminPromoSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException("invalid promo settings");
@@ -296,7 +404,7 @@ export class AdminController {
       enabled: parsed.data.enabled,
       maxValueNano: BigInt(parsed.data.maxValueUsd) * 1_000_000_000n,
       maxCount: parsed.data.maxCount,
-      actorId: "sales-admin-key",
+      actorId: adminActorId(actorHeader),
     });
     if (!ok) throw new NotFoundException("partner not found");
     return { updated: true };
@@ -339,7 +447,11 @@ export class AdminController {
   /** Approve создаёт активного партнёра сразу (вход у человека заработает мгновенно). */
   @Post("applications/:id/decision")
   @HttpCode(200)
-  async decideApplicationEndpoint(@Param("id") id: string, @Body() body: unknown): Promise<unknown> {
+  async decideApplicationEndpoint(
+    @Param("id") id: string,
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
     if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid application id");
     const parsed = adminApplicationDecisionSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException("invalid application decision");
@@ -352,7 +464,7 @@ export class AdminController {
           commissionBps: parsed.data.commissionBps ?? this.config.get("DEFAULT_COMMISSION_BPS", { infer: true }),
           subCommissionBps: parsed.data.subCommissionBps ?? this.config.get("DEFAULT_SUB_COMMISSION_BPS", { infer: true }),
           adminNote: parsed.data.note ?? null,
-          actorId: "sales-admin-key",
+          actorId: adminActorId(actorHeader),
         });
         return {
           application: { id: result.application.id, status: result.application.status },
@@ -369,7 +481,10 @@ export class AdminController {
   /** Онбординг сейлза верхнего уровня: инвайт без родителя, привязанный к telegram. */
   @Post("invites")
   @HttpCode(201)
-  async createInvite(@Body() body: unknown): Promise<unknown> {
+  async createInvite(
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
     const parsed = adminCreateInviteSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException("invalid invite data: telegram username is required");
     const telegramUsername = normalizeTelegramUsername(parsed.data.telegramUsername);
@@ -399,6 +514,9 @@ export class AdminController {
           // A ceiling only travels with an explicit grant; without it the invite carries none.
           b2bEnabled,
           b2bMaxDiscountBps: b2bEnabled ? (parsed.data.b2bMaxDiscountBps ?? 0) : 0,
+          teamInvitesEnabled: parsed.data.teamInvitesEnabled ?? true,
+          b2bCanDelegate: b2bEnabled ? (parsed.data.b2bCanDelegate ?? false) : false,
+          actorId: adminActorId(actorHeader),
           expiresAt,
         });
         return {
@@ -408,6 +526,10 @@ export class AdminController {
           commissionBps: invite.commissionBps,
           subCommissionBps: invite.subCommissionBps,
           teamOverrideMaxBps: invite.teamOverrideMaxBps ?? 2_000,
+          teamInvitesEnabled: invite.teamInvitesEnabled,
+          b2bEnabled: invite.b2bEnabled,
+          b2bMaxDiscountBps: invite.b2bMaxDiscountBps,
+          b2bCanDelegate: invite.b2bCanDelegate,
           referralDiscountBps: invite.referralDiscountBps,
           referralDiscountEnabled: invite.referralDiscountEnabled,
           promoEnabled: invite.promoEnabled,
@@ -439,6 +561,8 @@ export class AdminController {
         referralDiscountEnabled: invite.referralDiscountEnabled,
         b2bEnabled: invite.b2bEnabled,
         b2bMaxDiscountBps: invite.b2bMaxDiscountBps,
+        teamInvitesEnabled: invite.teamInvitesEnabled,
+        b2bCanDelegate: invite.b2bCanDelegate,
         promoEnabled: invite.promoEnabled,
         promoMaxCount: invite.promoMaxCount,
         promoMaxValueNano: invite.promoMaxValueNano.toString(),
@@ -449,24 +573,41 @@ export class AdminController {
   }
 
   @Patch("partners/:id")
-  async patchPartner(@Param("id") id: string, @Body() body: unknown): Promise<unknown> {
+  async patchPartner(
+    @Param("id") id: string,
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
     if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid partner id");
     const parsed = adminPatchPartnerSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException("invalid partner update");
-    const updated = await updatePartnerAdmin(this.database, id, {
-      ...(parsed.data.commissionBps !== undefined ? { commissionBps: parsed.data.commissionBps } : {}),
-      ...(parsed.data.subCommissionBps !== undefined ? { subCommissionBps: parsed.data.subCommissionBps } : {}),
-      ...(parsed.data.teamOverrideMaxBps !== undefined
-        ? { teamOverrideMaxBps: parsed.data.teamOverrideMaxBps }
-        : {}),
-      ...(parsed.data.referralDiscountBps !== undefined ? { referralDiscountBps: parsed.data.referralDiscountBps } : {}),
-      ...(parsed.data.referralDiscountEnabled !== undefined ? { referralDiscountEnabled: parsed.data.referralDiscountEnabled } : {}),
-      ...(parsed.data.b2bEnabled !== undefined ? { b2bEnabled: parsed.data.b2bEnabled } : {}),
-      ...(parsed.data.b2bMaxDiscountBps !== undefined ? { b2bMaxDiscountBps: parsed.data.b2bMaxDiscountBps } : {}),
-      ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
-      actorId: "sales-admin-key",
-    });
-    if (!updated) throw new NotFoundException("partner not found");
+    try {
+      const updated = await updatePartnerAdmin(this.database, id, {
+        ...(parsed.data.commissionBps !== undefined ? { commissionBps: parsed.data.commissionBps } : {}),
+        ...(parsed.data.subCommissionBps !== undefined ? { subCommissionBps: parsed.data.subCommissionBps } : {}),
+        ...(parsed.data.teamOverrideMaxBps !== undefined
+          ? { teamOverrideMaxBps: parsed.data.teamOverrideMaxBps }
+          : {}),
+        ...(parsed.data.referralDiscountBps !== undefined ? { referralDiscountBps: parsed.data.referralDiscountBps } : {}),
+        ...(parsed.data.referralDiscountEnabled !== undefined ? { referralDiscountEnabled: parsed.data.referralDiscountEnabled } : {}),
+        ...(parsed.data.b2bEnabled !== undefined ? { b2bEnabled: parsed.data.b2bEnabled } : {}),
+        ...(parsed.data.b2bMaxDiscountBps !== undefined ? { b2bMaxDiscountBps: parsed.data.b2bMaxDiscountBps } : {}),
+        ...(parsed.data.teamInvitesEnabled !== undefined
+          ? { teamInvitesEnabled: parsed.data.teamInvitesEnabled }
+          : {}),
+        ...(parsed.data.b2bCanDelegate !== undefined
+          ? { b2bCanDelegate: parsed.data.b2bCanDelegate }
+          : {}),
+        ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
+        actorId: adminActorId(actorHeader),
+      });
+      if (!updated) throw new NotFoundException("partner not found");
+    } catch (error) {
+      if (error instanceof PartnerB2BAuthorityError) {
+        throw new UnprocessableEntityException(error.message);
+      }
+      throw error;
+    }
     this.auth.invalidatePartnerSessions(id);
     return { updated: true };
   }
@@ -474,10 +615,13 @@ export class AdminController {
   /** Полное удаление возможно только без истории; иначе 422 → suspend. */
   @Delete("partners/:id")
   @HttpCode(200)
-  async deletePartner(@Param("id") id: string): Promise<unknown> {
+  async deletePartner(
+    @Param("id") id: string,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
     if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid partner id");
     try {
-      const deleted = await deletePartnerAdmin(this.database, id, "sales-admin-key");
+      const deleted = await deletePartnerAdmin(this.database, id, adminActorId(actorHeader));
       if (!deleted) throw new NotFoundException("partner not found");
       this.auth.invalidatePartnerSessions(id);
       return { deleted: true };
@@ -511,7 +655,11 @@ export class AdminController {
 
   @Post("payouts/:id/decision")
   @HttpCode(200)
-  async decide(@Param("id") id: string, @Body() body: unknown): Promise<unknown> {
+  async decide(
+    @Param("id") id: string,
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
     if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid payout id");
     const parsed = adminPayoutDecisionSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException("invalid payout decision");
@@ -525,7 +673,7 @@ export class AdminController {
         payoutId: id,
         decision: parsed.data.action,
         note: parsed.data.note ?? null,
-        actorId: "sales-admin-key",
+        actorId: adminActorId(actorHeader),
       });
       return {
         payout: {

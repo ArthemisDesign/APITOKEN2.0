@@ -15,7 +15,19 @@ consumed by `apps/sales-api`.
 - `src/secrets.ts` — AES-256-GCM encrypt/decrypt for raw auth tokens stored in the outbox payload
   (`SALES_TOKEN_ENCRYPTION_KEY`, 32-byte base64url).
 - Typed repositories: `auth.ts`, `outbox.ts`, `referrals.ts`, `commissions.ts`, `payouts.ts`,
-  `invites.ts`, `admin.ts`.
+  `invites.ts`, `admin.ts`, `partner-authority.ts`, `partner-requests.ts`.
+
+Migration `0025_partner_authority_requests.sql` separates platform and inherited B2B grants,
+adds the Team-invitation and B2B-delegation capabilities, and provides immutable request/decision
+evidence plus one fenced Commerce effect per approved B2B request. Authority narrowing is
+leaf-first and atomic: inherited descendants and unconsumed invites are clamped or revoked before
+the source row changes. A platform grant (`b2b_grant_source_partner_id IS NULL`) cannot be edited
+by a parent. Request effects use a unique lease token per claim, a stable Commerce operation ref,
+bounded retry delay, and an explicit terminal failure state; commission approvals update the
+partner rate in the same Sales transaction and do not create a cross-context effect. Public
+idempotency keys are hashed with the authenticated partner id before storage, so one partner cannot
+occupy another partner's key namespace. Retryable effects fence a referral from duplicate active
+requests; terminally closed evidence remains immutable but permits a new reviewed request.
 
 ## Money
 

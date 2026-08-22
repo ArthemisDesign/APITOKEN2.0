@@ -27,6 +27,11 @@ describe("salesChangeForTable", () => {
     });
   });
 
+  it("invalidates only the unified request queue for request/effect transitions", () => {
+    expect(salesChangeForTable("partner_requests").resources).toEqual(["/partner-admin/requests"]);
+    expect(salesChangeForTable("partner_request_effects").resources).toEqual(["/partner-admin/requests"]);
+  });
+
   it("keeps an unknown future payload inside the sales owner boundary", () => {
     const event = salesChangeForTable("future_table");
     expect(event.resources).toContain("/partner-admin/overview");

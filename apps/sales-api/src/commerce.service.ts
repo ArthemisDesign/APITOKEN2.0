@@ -92,11 +92,14 @@ export class CommerceService {
   }
 
   async setPartnerBusinessPricing(input: {
+    operationRef?: string;
     userId: string;
     referralCode: string;
     ceilingPercent: number;
     discountPercent?: number;
     providers?: Record<string, number | null>;
+    actorId?: string;
+    reason?: string;
   }): Promise<PartnerBusinessPricingResult> {
     const base = this.config.get("COMMERCE_BASE_URL", { infer: true });
     const response = await fetch(new URL("/v1/internal/sales/partner-business-pricing", base), {
@@ -131,10 +134,12 @@ export class CommercePartnerPricingError extends Error {
  * propagated, never swallowed: a partner must learn whether their pricing change actually landed.
  */
 const partnerBusinessPricingResultSchema = z.object({
+  operationRef: z.string().min(8).max(200),
+  idempotentReplay: z.boolean(),
   userId: z.string(),
   converted: z.boolean(),
-  customerType: z.enum(["b2c", "b2b"]).nullable(),
-  discountPercent: z.number().nullable(),
+  customerType: z.literal("b2b"),
+  discountPercent: z.number(),
   providers: z.record(z.string(), z.number()),
 });
 

@@ -43,6 +43,9 @@ function partnerFixture(id: string): Partner {
     referralDiscountEnabled: false,
     b2bEnabled: false,
     b2bMaxDiscountBps: 0,
+    teamInvitesEnabled: true,
+    b2bCanDelegate: false,
+    b2bGrantSourcePartnerId: null,
     createdAt: new Date(1_784_500_000_000),
   };
 }

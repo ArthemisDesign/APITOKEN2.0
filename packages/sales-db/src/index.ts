@@ -7,6 +7,8 @@ export * from "./referrals.js";
 export * from "./discount-links.js";
 export * from "./external-referral-aliases.js";
 export * from "./commissions.js";
+export * from "./partner-authority.js";
+export * from "./partner-requests.js";
 export * from "./commissions-v2.js";
 export * from "./payouts.js";
 export * from "./invites.js";

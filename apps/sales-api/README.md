@@ -31,6 +31,12 @@ never logged.
 - **Email delivery** (`EMAIL_POLL_INTERVAL_MS`): claims outbox rows with FOR UPDATE SKIP LOCKED,
   decrypts the token, renders "APIToken Partners" emails, sends via SMTP or logs metadata in
   `log` mode.
+- **Partner request effects** (`PARTNER_EFFECT_POLL_INTERVAL_MS`): claims approved B2B requests
+  with a unique lease token, calls Commerce with the stable request operation reference, and only
+  then moves the request to `applied`. Transport/5xx failures retry with bounded exponential delay;
+  request/ownership/idempotency conflicts remain visible as terminal `apply_failed` decisions.
+  Request responses expose `nextAttemptAt` and `terminal`; a terminally closed request no longer
+  blocks a separately reviewed successor request for the same referral.
 
 ## Endpoints (global prefix `/v1`)
 
@@ -50,11 +56,17 @@ never logged.
 | GET | /v1/partner/team | session | Direct sub-partners with their earnings + my override |
 | POST | /v1/partner/invites | session | Create sub-partner invite (optional commissionBps preset) |
 | GET | /v1/partner/invites | session | List invites |
+| POST | /v1/partner/requests/commission | session + Idempotency-Key | Request a higher platform commission with a reason |
+| POST | /v1/partner/referrals/:userRef/b2b-requests | session + Idempotency-Key | Request B2B conversion/pricing for an owned referral |
+| GET | /v1/partner/requests | session | Keyset-paginated own request history |
 | GET | /v1/partner/payouts | session | List own payouts |
 | PATCH | /v1/partner/settings | session | Update displayName / payout method+details |
 | GET | /v1/admin/overview | x-sales-admin-key | Program totals |
 | GET | /v1/admin/partners | x-sales-admin-key | Partners with aggregates + parent info |
 | PATCH | /v1/admin/partners/:id | x-sales-admin-key | Change commission bps / status |
+| GET | /v1/admin/requests | x-sales-admin-key | Keyset-paginated partner decision queue |
+| GET | /v1/admin/requests/:id | x-sales-admin-key | Request, immutable terms, decision and effect state |
+| POST | /v1/admin/requests/:id/decision | x-sales-admin-key + X-Admin-Actor | Approve/reject with a mandatory note |
 | GET | /v1/admin/payouts?status= | x-sales-admin-key | List payouts |
 | POST | /v1/admin/payouts/:id/decision | x-sales-admin-key | Reject a retained legacy manual payout; positive payouts use fenced batches |
 | GET | /v1/health, /v1/live, /v1/ready | — | Health/liveness/readiness |

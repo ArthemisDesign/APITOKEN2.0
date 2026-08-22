@@ -6,6 +6,9 @@ export const passwordSchema = z.string().min(8).max(200);
 export const displayNameSchema = z.string().trim().min(1).max(80);
 export const commissionBpsSchema = z.number().int().min(0).max(10_000);
 export const teamOverrideBpsSchema = z.number().int().min(0).max(2_000);
+// Ceiling on the discount a granted partner may give their own B2B customers. Same 0..9500 bps
+// range the pricing policies accept; the grant is what makes a non-zero value meaningful.
+export const b2bMaxDiscountBpsSchema = z.number().int().min(0).max(9_500);
 // Retained referral marker, not pricing. The historical wire range remains 0..9500 bps.
 export const referralDiscountBpsSchema = z.number().int().min(0).max(9_500);
 export const promoMaxCountSchema = z.number().int().min(0).max(10_000);
@@ -43,11 +46,15 @@ export const createInviteSchema = z.object({
   // Legacy marker permission, retained only for expand-only request compatibility.
   referralDiscountEnabled: z.boolean().optional(),
   referralDiscountBps: referralDiscountBpsSchema.optional(),
-});
-
-// Ceiling on the discount a granted partner may give their own B2B customers. Same 0..9500 bps
-// range the pricing policies accept; the grant is what makes a non-zero value meaningful.
-export const b2bMaxDiscountBpsSchema = z.number().int().min(0).max(9_500);
+  teamInvitesEnabled: z.boolean().optional(),
+  b2bEnabled: z.boolean().optional(),
+  b2bMaxDiscountBps: b2bMaxDiscountBpsSchema.optional(),
+  b2bCanDelegate: z.boolean().optional(),
+}).refine(
+  (value) => value.b2bEnabled !== false
+    || ((value.b2bMaxDiscountBps ?? 0) === 0 && value.b2bCanDelegate !== true),
+  { message: "a revoked B2B grant cannot retain a ceiling or delegation" },
+);
 
 export const adminCreateInviteSchema = z.object({
   telegramUsername: telegramUsernameSchema,
@@ -57,13 +64,19 @@ export const adminCreateInviteSchema = z.object({
   // Onboarding-time B2B grant: the partner created from this invite already holds it.
   b2bEnabled: z.boolean().optional(),
   b2bMaxDiscountBps: b2bMaxDiscountBpsSchema.optional(),
+  teamInvitesEnabled: z.boolean().optional(),
+  b2bCanDelegate: z.boolean().optional(),
   // Legacy marker permission/value; current UI always creates invites with this disabled.
   referralDiscountEnabled: z.boolean().optional(),
   referralDiscountBps: referralDiscountBpsSchema.optional(),
   // Доступ к промокодам, задаваемый прямо на онбординге: сколько кодов и их макс. номинал в USD.
   promoMaxCount: promoMaxCountSchema.optional(),
   promoMaxValueUsd: promoMaxValueUsdSchema.optional(),
-});
+}).refine(
+  (value) => value.b2bEnabled !== false
+    || ((value.b2bMaxDiscountBps ?? 0) === 0 && value.b2bCanDelegate !== true),
+  { message: "a revoked B2B grant cannot retain a ceiling or delegation" },
+);
 
 // Единственная сеть выплат — BSC (BEP-20): EVM-адрес.
 export const walletSchema = z.object({
@@ -83,6 +96,8 @@ export const adminPatchPartnerSchema = z.object({
   // Grant/revoke the B2B right and its ceiling on an existing partner.
   b2bEnabled: z.boolean().optional(),
   b2bMaxDiscountBps: b2bMaxDiscountBpsSchema.optional(),
+  teamInvitesEnabled: z.boolean().optional(),
+  b2bCanDelegate: z.boolean().optional(),
   status: z.enum(["active", "suspended", "pending"]).optional(),
 }).refine((value) => Object.values(value).some((item) => item !== undefined), {
   message: "at least one field is required",
@@ -91,14 +106,25 @@ export const adminPatchPartnerSchema = z.object({
   // would read like authority the partner does not have. Ask for both, or neither.
   (value) => !(value.b2bMaxDiscountBps !== undefined && value.b2bMaxDiscountBps > 0 && value.b2bEnabled === false),
   { message: "a B2B ceiling cannot be set while revoking the B2B grant" },
+).refine(
+  (value) => !(value.b2bCanDelegate === true && value.b2bEnabled === false),
+  { message: "B2B delegation cannot be enabled while revoking the B2B grant" },
 );
 
 export const teamMemberControlsSchema = z.object({
   overrideBps: teamOverrideBpsSchema.optional(),
   teamOverrideMaxBps: teamOverrideBpsSchema.optional(),
-}).refine((value) => value.overrideBps !== undefined || value.teamOverrideMaxBps !== undefined, {
+  teamInvitesEnabled: z.boolean().optional(),
+  b2bEnabled: z.boolean().optional(),
+  b2bMaxDiscountBps: b2bMaxDiscountBpsSchema.optional(),
+  b2bCanDelegate: z.boolean().optional(),
+}).refine((value) => Object.values(value).some((item) => item !== undefined), {
   message: "at least one team control is required",
-});
+}).refine(
+  (value) => value.b2bEnabled !== false
+    || ((value.b2bMaxDiscountBps ?? 0) === 0 && value.b2bCanDelegate !== true),
+  { message: "a revoked B2B grant cannot retain a ceiling or delegation" },
+);
 
 // Legacy marker writer schema, retained for expand-only compatibility.
 export const partnerSetDiscountSchema = z.object({
@@ -126,6 +152,44 @@ export const partnerBusinessPricingSchema = z.object({
 
 // Маскированная ссылка на реферала: первые 8 hex его uuid (ровно то, что в userMask/userRef).
 export const referralUserRefSchema = z.string().regex(/^[0-9a-f]{8}$/);
+
+export const idempotencyKeySchema = z.string().trim().min(8).max(200);
+export const partnerRequestReasonSchema = z.string().trim().min(1).max(4000);
+export const partnerRequestTypeSchema = z.enum(["b2b_conversion", "b2b_pricing", "commission_change"]);
+export const partnerRequestStatusSchema = z.enum(["pending", "approved", "rejected", "applied", "apply_failed"]);
+export const partnerRequestProviderIdSchema = z.enum(["anthropic", "openai", "google", "kimi", "glm"]);
+
+export const commissionChangeRequestSchema = z.object({
+  requestedCommissionBps: commissionBpsSchema,
+  reason: partnerRequestReasonSchema,
+});
+
+export const b2bPartnerRequestSchema = z.object({
+  discountPercent: partnerB2bPercentSchema,
+  providers: z.record(partnerRequestProviderIdSchema, partnerB2bPercentSchema.nullable()).optional(),
+  reason: partnerRequestReasonSchema,
+});
+
+export const partnerRequestsQuerySchema = z.object({
+  status: partnerRequestStatusSchema.optional(),
+  requestType: partnerRequestTypeSchema.optional(),
+  cursor: z.string().max(512).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+});
+
+export const adminPartnerRequestDecisionSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("reject"),
+    note: z.string().trim().min(1).max(4000),
+  }),
+  z.object({
+    action: z.literal("approve"),
+    note: z.string().trim().min(1).max(4000),
+    commissionBps: commissionBpsSchema.optional(),
+    discountPercent: partnerB2bPercentSchema.optional(),
+    providers: z.record(partnerRequestProviderIdSchema, partnerB2bPercentSchema.nullable()).optional(),
+  }),
+]);
 
 export const adminPayoutDecisionSchema = z.object({
   action: z.enum(["approve", "reject", "paid"]),

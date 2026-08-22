@@ -52,6 +52,8 @@ const environmentSchema = z.object({
   SMTP_PASSWORD: z.string().min(1).optional(),
   SYNC_INTERVAL_MS: z.coerce.number().int().min(1_000).default(60_000),
   EMAIL_POLL_INTERVAL_MS: z.coerce.number().int().min(100).default(5_000),
+  PARTNER_EFFECT_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
+  PARTNER_EFFECT_LEASE_SECONDS: z.coerce.number().int().min(10).max(3_600).default(60),
   DEFAULT_COMMISSION_BPS: z.coerce.number().int().min(0).max(10_000).default(1000),
   DEFAULT_SUB_COMMISSION_BPS: z.coerce.number().int().min(0).max(10_000).default(1000),
   // Минимальный профит за окно выплат: 0 = платим любую сумму > 0 (по решению юзера).

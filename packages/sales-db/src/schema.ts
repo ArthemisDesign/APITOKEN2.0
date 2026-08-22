@@ -3,11 +3,13 @@ import {
   bigserial,
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   unique,
@@ -26,6 +28,24 @@ export const partnerEmailStatus = pgEnum("partner_email_status", ["pending", "se
 export const payoutStatus = pgEnum("payout_status", ["requested", "approved", "paid", "rejected"]);
 export const partnerApplicationStatus = pgEnum("partner_application_status", ["pending", "approved", "rejected"]);
 export const promoCodeStatus = pgEnum("promo_code_status", ["active", "redeemed", "disabled"]);
+export const partnerRequestType = pgEnum("partner_request_type", [
+  "b2b_conversion",
+  "b2b_pricing",
+  "commission_change",
+]);
+export const partnerRequestStatus = pgEnum("partner_request_status", [
+  "pending",
+  "approved",
+  "rejected",
+  "applied",
+  "apply_failed",
+]);
+export const partnerRequestEffectStatus = pgEnum("partner_request_effect_status", [
+  "pending",
+  "processing",
+  "applied",
+  "failed",
+]);
 
 export const partners = pgTable("partners", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -65,6 +85,12 @@ export const partners = pgTable("partners", {
   // скидке. Потолок — предохранитель маржи, пишет только админ (миграция 0023).
   b2bEnabled: boolean("b2b_enabled").notNull().default(false),
   b2bMaxDiscountBps: integer("b2b_max_discount_bps").notNull().default(0),
+  teamInvitesEnabled: boolean("team_invites_enabled").notNull().default(true),
+  b2bCanDelegate: boolean("b2b_can_delegate").notNull().default(false),
+  // NULL is a direct platform grant; a non-NULL source must be the direct parent and is bounded
+  // by that parent's current delegable authority (migration 0025 database guards).
+  b2bGrantSourcePartnerId: uuid("b2b_grant_source_partner_id")
+    .references((): AnyPgColumn => partners.id, { onDelete: "restrict" }),
   createdAt,
   updatedAt,
 }, (table) => [
@@ -159,6 +185,8 @@ export const partnerInvites = pgTable("partner_invites", {
   // B2B-грант, зашитый в инвайт: партнёр получает его сразу при создании аккаунта (миграция 0023).
   b2bEnabled: boolean("b2b_enabled").notNull().default(false),
   b2bMaxDiscountBps: integer("b2b_max_discount_bps").notNull().default(0),
+  teamInvitesEnabled: boolean("team_invites_enabled").notNull().default(true),
+  b2bCanDelegate: boolean("b2b_can_delegate").notNull().default(false),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   consumedAt: timestamp("consumed_at", { withTimezone: true }),
   consumedByPartnerId: uuid("consumed_by_partner_id").references(() => partners.id, { onDelete: "restrict" }),
@@ -230,6 +258,191 @@ export const referredUsers = pgTable("referred_users", {
   uniqueIndex("referred_users_source_attribution_uidx").on(table.sourceAttributionId)
     .where(sql`${table.sourceAttributionId} IS NOT NULL`),
   index("referred_users_partner_idx").on(table.partnerId, table.attributedAt),
+]);
+
+export const partnerRequests = pgTable("partner_requests", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  requestType: partnerRequestType("request_type").notNull(),
+  status: partnerRequestStatus("status").notNull().default("pending"),
+  requesterPartnerId: uuid("requester_partner_id").notNull()
+    .references(() => partners.id, { onDelete: "restrict" }),
+  subjectPartnerId: uuid("subject_partner_id")
+    .references(() => partners.id, { onDelete: "restrict" }),
+  commerceUserId: uuid("commerce_user_id"),
+  reason: text("reason").notNull(),
+  stateSnapshot: jsonb("state_snapshot").notNull().default({}),
+  requestedCommissionBps: integer("requested_commission_bps"),
+  requestedDiscountBps: integer("requested_discount_bps"),
+  approvedCommissionBps: integer("approved_commission_bps"),
+  approvedDiscountBps: integer("approved_discount_bps"),
+  reviewerActor: text("reviewer_actor"),
+  reviewerNote: text("reviewer_note"),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  appliedAt: timestamp("applied_at", { withTimezone: true }),
+  applyAttempts: integer("apply_attempts").notNull().default(0),
+  lastApplyError: text("last_apply_error"),
+  idempotencyKey: text("idempotency_key").notNull(),
+  version: integer("version").notNull().default(1),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  uniqueIndex("partner_requests_idempotency_uidx").on(table.idempotencyKey),
+  uniqueIndex("partner_requests_pending_commission_uidx").on(table.subjectPartnerId)
+    .where(sql`${table.status} = 'pending' AND ${table.requestType} = 'commission_change'`),
+  uniqueIndex("partner_requests_pending_b2b_uidx").on(table.requesterPartnerId, table.commerceUserId)
+    .where(sql`${table.status} = 'pending' AND ${table.requestType} IN ('b2b_conversion', 'b2b_pricing')`),
+  index("partner_requests_admin_queue_idx").on(table.status, table.createdAt, table.id),
+  index("partner_requests_partner_time_idx").on(table.requesterPartnerId, table.createdAt, table.id),
+  index("partner_requests_commerce_user_idx").on(table.commerceUserId, table.createdAt)
+    .where(sql`${table.commerceUserId} IS NOT NULL`),
+  check("partner_requests_reason_check", sql`length(btrim(${table.reason})) BETWEEN 1 AND 4000`),
+  check("partner_requests_snapshot_check", sql`jsonb_typeof(${table.stateSnapshot}) = 'object'`),
+  check("partner_requests_idempotency_check", sql`length(${table.idempotencyKey}) BETWEEN 8 AND 200`),
+  check("partner_requests_attempts_check", sql`${table.applyAttempts} >= 0`),
+  check("partner_requests_version_check", sql`${table.version} > 0`),
+  check("partner_requests_requested_commission_check", sql`
+    ${table.requestedCommissionBps} IS NULL OR ${table.requestedCommissionBps} BETWEEN 0 AND 10000
+  `),
+  check("partner_requests_requested_discount_check", sql`
+    ${table.requestedDiscountBps} IS NULL OR ${table.requestedDiscountBps} BETWEEN 0 AND 9500
+  `),
+  check("partner_requests_approved_commission_check", sql`
+    ${table.approvedCommissionBps} IS NULL OR ${table.approvedCommissionBps} BETWEEN 0 AND 10000
+  `),
+  check("partner_requests_approved_discount_check", sql`
+    ${table.approvedDiscountBps} IS NULL OR ${table.approvedDiscountBps} BETWEEN 0 AND 9500
+  `),
+  check("partner_requests_subject_shape_check", sql`
+    (${table.requestType} = 'commission_change'
+      AND ${table.subjectPartnerId} IS NOT NULL
+      AND ${table.subjectPartnerId} = ${table.requesterPartnerId}
+      AND ${table.commerceUserId} IS NULL
+      AND ${table.requestedCommissionBps} IS NOT NULL
+      AND ${table.requestedDiscountBps} IS NULL)
+    OR
+    (${table.requestType} IN ('b2b_conversion', 'b2b_pricing')
+      AND ${table.subjectPartnerId} IS NULL
+      AND ${table.commerceUserId} IS NOT NULL
+      AND ${table.requestedCommissionBps} IS NULL
+      AND ${table.requestedDiscountBps} IS NOT NULL)
+  `),
+  check("partner_requests_type_status_check", sql`
+    ${table.requestType} <> 'commission_change'
+      OR ${table.status} IN ('pending', 'rejected', 'applied')
+  `),
+  check("partner_requests_decision_shape_check", sql`
+    (${table.status} = 'pending'
+      AND ${table.approvedCommissionBps} IS NULL
+      AND ${table.approvedDiscountBps} IS NULL
+      AND ${table.reviewerActor} IS NULL
+      AND ${table.reviewerNote} IS NULL
+      AND ${table.reviewedAt} IS NULL
+      AND ${table.appliedAt} IS NULL
+      AND ${table.lastApplyError} IS NULL)
+    OR
+    (${table.status} = 'rejected'
+      AND ${table.approvedCommissionBps} IS NULL
+      AND ${table.approvedDiscountBps} IS NULL
+      AND COALESCE(length(btrim(${table.reviewerActor})), 0) > 0
+      AND COALESCE(length(btrim(${table.reviewerNote})), 0) > 0
+      AND ${table.reviewedAt} IS NOT NULL
+      AND ${table.appliedAt} IS NULL
+      AND ${table.lastApplyError} IS NULL)
+    OR
+    (${table.status} IN ('approved', 'applied', 'apply_failed')
+      AND COALESCE(length(btrim(${table.reviewerActor})), 0) > 0
+      AND COALESCE(length(btrim(${table.reviewerNote})), 0) > 0
+      AND ${table.reviewedAt} IS NOT NULL
+      AND ((${table.requestType} = 'commission_change'
+          AND ${table.approvedCommissionBps} IS NOT NULL
+          AND ${table.approvedDiscountBps} IS NULL)
+        OR (${table.requestType} IN ('b2b_conversion', 'b2b_pricing')
+          AND ${table.approvedCommissionBps} IS NULL
+          AND ${table.approvedDiscountBps} IS NOT NULL))
+      AND ((${table.status} = 'applied') = (${table.appliedAt} IS NOT NULL))
+      AND ((${table.status} = 'apply_failed') = (${table.lastApplyError} IS NOT NULL)))
+  `),
+]);
+
+export const partnerRequestProviderTerms = pgTable("partner_request_provider_terms", {
+  requestId: uuid("request_id").notNull(),
+  providerId: text("provider_id").notNull(),
+  requestedDiscountBps: integer("requested_discount_bps"),
+  createdAt,
+}, (table) => [
+  primaryKey({ name: "partner_request_provider_terms_pk", columns: [table.requestId, table.providerId] }),
+  foreignKey({
+    name: "partner_request_provider_terms_request_fk",
+    columns: [table.requestId],
+    foreignColumns: [partnerRequests.id],
+  }).onDelete("restrict"),
+  check("partner_request_provider_terms_provider_check", sql`
+    ${table.providerId} IN ('anthropic', 'openai', 'google', 'kimi', 'glm')
+  `),
+  check("partner_request_provider_terms_discount_check", sql`
+    ${table.requestedDiscountBps} IS NULL OR ${table.requestedDiscountBps} BETWEEN 0 AND 9500
+  `),
+]);
+
+export const partnerRequestProviderDecisions = pgTable("partner_request_provider_decisions", {
+  requestId: uuid("request_id").notNull(),
+  providerId: text("provider_id").notNull(),
+  approvedDiscountBps: integer("approved_discount_bps"),
+  createdAt,
+}, (table) => [
+  primaryKey({ name: "partner_request_provider_decisions_pk", columns: [table.requestId, table.providerId] }),
+  foreignKey({
+    name: "partner_request_provider_decisions_term_fk",
+    columns: [table.requestId, table.providerId],
+    foreignColumns: [partnerRequestProviderTerms.requestId, partnerRequestProviderTerms.providerId],
+  }).onDelete("restrict"),
+  check("partner_request_provider_decisions_discount_check", sql`
+    ${table.approvedDiscountBps} IS NULL OR ${table.approvedDiscountBps} BETWEEN 0 AND 9500
+  `),
+]);
+
+export const partnerRequestEffects = pgTable("partner_request_effects", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  requestId: uuid("request_id").notNull()
+    .references(() => partnerRequests.id, { onDelete: "restrict" }),
+  status: partnerRequestEffectStatus("status").notNull().default("pending"),
+  payload: jsonb("payload").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  lockedAt: timestamp("locked_at", { withTimezone: true }),
+  lockedBy: text("locked_by"),
+  appliedAt: timestamp("applied_at", { withTimezone: true }),
+  lastError: text("last_error"),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  uniqueIndex("partner_request_effects_request_uidx").on(table.requestId),
+  uniqueIndex("partner_request_effects_idempotency_uidx").on(table.idempotencyKey),
+  index("partner_request_effects_claim_idx").on(table.status, table.nextAttemptAt, table.createdAt)
+    .where(sql`${table.status} IN ('pending', 'failed')`),
+  check("partner_request_effects_payload_check", sql`jsonb_typeof(${table.payload}) = 'object'`),
+  check("partner_request_effects_idempotency_check", sql`length(${table.idempotencyKey}) BETWEEN 8 AND 200`),
+  check("partner_request_effects_attempts_check", sql`${table.attempts} >= 0`),
+  check("partner_request_effects_status_shape_check", sql`
+    (${table.status} = 'pending'
+      AND ${table.lockedAt} IS NULL AND ${table.lockedBy} IS NULL
+      AND ${table.appliedAt} IS NULL AND ${table.lastError} IS NULL)
+    OR
+    (${table.status} = 'processing'
+      AND ${table.lockedAt} IS NOT NULL
+      AND COALESCE(length(btrim(${table.lockedBy})), 0) > 0
+      AND ${table.appliedAt} IS NULL)
+    OR
+    (${table.status} = 'applied'
+      AND ${table.lockedAt} IS NULL AND ${table.lockedBy} IS NULL
+      AND ${table.appliedAt} IS NOT NULL AND ${table.lastError} IS NULL)
+    OR
+    (${table.status} = 'failed'
+      AND ${table.lockedAt} IS NULL AND ${table.lockedBy} IS NULL
+      AND ${table.appliedAt} IS NULL
+      AND COALESCE(length(btrim(${table.lastError})), 0) > 0)
+  `),
 ]);
 
 /**

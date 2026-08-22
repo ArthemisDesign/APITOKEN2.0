@@ -1125,6 +1125,11 @@ export interface TeamMemberSummary {
   /** Exact current edge, with the legacy inviter fallback resolved for display. */
   overrideBps: number;
   teamOverrideMaxBps: number;
+  teamInvitesEnabled: boolean;
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
+  b2bCanDelegate: boolean;
+  b2bGrantSourcePartnerId: string | null;
   referredUsers: number;
   theirEarnedNano: bigint;
   theirAdjustmentNano: bigint;
@@ -1139,12 +1144,16 @@ export async function listPartnerTeam(database: SalesDatabase, partnerId: string
     id: string; email: string | null; telegram_username: string | null; display_name: string | null;
     status: PartnerStatus; commission_bps: number;
     override_bps: number; team_override_max_bps: number;
+    team_invites_enabled: boolean; b2b_enabled: boolean; b2b_max_discount_bps: number;
+    b2b_can_delegate: boolean; b2b_grant_source_partner_id: string | null;
     referred_users: string; their_earned: string; their_adjustment: string;
     my_override: string; my_override_adjustment: string;
   }>(`
     SELECT p.id, p.email, p.telegram_username, p.display_name, p.status, p.commission_bps,
       COALESCE(p.parent_override_bps, parent.sub_commission_bps) AS override_bps,
       COALESCE(p.team_override_max_bps, 2000) AS team_override_max_bps,
+      p.team_invites_enabled, p.b2b_enabled, p.b2b_max_discount_bps,
+      p.b2b_can_delegate, p.b2b_grant_source_partner_id,
       (SELECT count(*) FROM referred_users ru WHERE ru.partner_id = p.id)::text AS referred_users,
       COALESCE((
         SELECT SUM(amount_nano) FROM (
@@ -1202,6 +1211,11 @@ export async function listPartnerTeam(database: SalesDatabase, partnerId: string
     commissionBps: row.commission_bps,
     overrideBps: row.override_bps,
     teamOverrideMaxBps: row.team_override_max_bps,
+    teamInvitesEnabled: row.team_invites_enabled,
+    b2bEnabled: row.b2b_enabled,
+    b2bMaxDiscountBps: row.b2b_max_discount_bps,
+    b2bCanDelegate: row.b2b_can_delegate,
+    b2bGrantSourcePartnerId: row.b2b_grant_source_partner_id,
     referredUsers: Number(row.referred_users),
       theirEarnedNano,
       theirAdjustmentNano,

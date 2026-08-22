@@ -28,13 +28,20 @@ engine (Rust)  ←Control API─  commerce (apps/api + worker)  ←internal sale
   `sub_commission_bps` only as a rollout/history fallback.
 - **Team API:** an authenticated partner reads `GET /v1/partner/team` and
   `GET /v1/partner/invites`, and creates a one-time 30-day invite with
-  `POST /v1/partner/team/invites` (`telegramUsername`, optional `overrideBps` and
-  `teamOverrideMaxBps`). The member's platform-funded direct rate is not delegated: it is the Sales
+  `POST /v1/partner/team/invites` (`telegramUsername`, optional `overrideBps`,
+  `teamOverrideMaxBps`, `teamInvitesEnabled`, and a bounded
+  `b2bEnabled`/`b2bMaxDiscountBps`/`b2bCanDelegate` grant). The member's platform-funded direct rate is not delegated: it is the Sales
   default (10% / 1000 bps). A tolerated legacy `commissionBps` request field is ignored. The
   inviter chooses only their exact edge override and the ceiling the new member may use for their
   own team; both are bounded by the inviter's effective ceiling and the platform hard maximum 20%
   (2000 bps). `PATCH /v1/partner/team/:memberId` changes those controls only for a direct member;
-  lowering a delegated ceiling atomically clamps dependent edges and pending invites leaf-first.
+  lowering a delegated Team ceiling atomically clamps dependent edges and pending invites
+  leaf-first. B2B self-service and B2B delegation are separate rights. An inherited B2B grant can
+  never exceed its direct parent, while a direct platform grant cannot be edited by that parent;
+  narrowing an inherited source clamps or revokes its descendants and pending invites in the same
+  transaction.
+  A partner whose own Team-invitation right is disabled may still revoke that right from a direct
+  member, but cannot grant/re-enable it on the member.
   Team rows expose identity, status, the fixed direct rate, the exact edge/ceiling, referred-user
   count, the member's net earnings, and the inviter's exact override net. All money values remain
   decimal nanoUSD strings.
@@ -54,15 +61,34 @@ child-edge `parent_override_bps`, and the same snapshot fields on invites. Exist
 database guards repeat the API ceiling checks, and the v2 immutable commission trigger verifies the
 same exact edge before accepting money.
 
-Migration `packages/sales-db/migrations/0025_partner_authority_requests.sql` is the dormant schema
-checkpoint for unified partner administration. It separates B2B self-service from the authority to
+Migration `packages/sales-db/migrations/0025_partner_authority_requests.sql` is the schema
+authority for unified partner administration. It separates B2B self-service from the authority to
 delegate B2B rights, records whether a child grant came directly from the platform or from its
 parent, and makes unsafe parent-right narrowing fail closed until dependent grants and pending
 invites are clamped in the same transaction. It also creates empty, immutable request/provider
 decision tables and a durable idempotent Commerce-effect outbox for B2B conversion/pricing and
-direct-commission-change reviews. The migration creates no grant, request or effect, and the
-currently deployed writers remain compatible. The request/API/Admin consumers ship only after this
-exact migration SHA is GREEN in `deploy/migration` and `deploy/watchdog`.
+direct-commission-change reviews. The migration creates no grant, request or effect. The active
+consumer exposes keyset-paginated partner/admin queues, requires a reason and a stable
+`Idempotency-Key` (hashed under the authenticated partner before it reaches the global database
+index), applies commission approvals inside Sales, and delivers approved B2B decisions through a
+unique-attempt lease token plus Commerce `operationRef`. A stale worker cannot acknowledge a
+reclaimed attempt; retryable failures use a bounded exponential delay, while request, ownership and
+payload conflicts remain visible as terminal `apply_failed` evidence. A retryable failure keeps the
+referral fenced from a second request; a closed terminal effect permits a new independently reviewed
+request without mutating the historical failure.
+
+Partner request API:
+
+- `POST /v1/partner/requests/commission` — request a higher direct commission with a reason;
+- `POST /v1/partner/referrals/:userRef/b2b-requests` — request conversion/pricing for an owned
+  Commerce referral; the request stores the immutable Commerce UUID but responses identify the
+  customer by the fresh authoritative Commerce email;
+- `GET /v1/partner/requests` — own keyset-paginated history;
+- `GET /v1/admin/requests`, `GET /v1/admin/requests/:id`, and
+  `POST /v1/admin/requests/:id/decision` — operator queue/detail/decision. A decision requires an
+  `X-Admin-Actor` identity (legacy callers receive the explicit `legacy-sales-admin` fallback) and
+  a non-empty note. Reject is terminal; commission approval is immediately `applied`; B2B approval
+  is `approved` until the Commerce acknowledgement commits.
 
 `GET /v1/partner/earnings/providers?days=N` returns both the aggregate `items` and additive `daily`
 UTC points for the Usage-style stacked provider chart. Direct referral spend and downstream events

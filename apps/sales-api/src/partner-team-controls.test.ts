@@ -1,10 +1,10 @@
 import type { SalesDatabase } from "@claude-api/sales-db";
-import { BadRequestException, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   createPartnerInvite: vi.fn(),
-  updateDirectTeamMemberControls: vi.fn(),
+  updateDirectTeamMemberAuthority: vi.fn(),
 }));
 
 vi.mock("@claude-api/sales-db", async (importOriginal) => {
@@ -12,11 +12,12 @@ vi.mock("@claude-api/sales-db", async (importOriginal) => {
   return {
     ...original,
     createPartnerInvite: (...args: unknown[]) => mocks.createPartnerInvite(...args),
-    updateDirectTeamMemberControls: (...args: unknown[]) => mocks.updateDirectTeamMemberControls(...args),
+    updateDirectTeamMemberAuthority: (...args: unknown[]) => mocks.updateDirectTeamMemberAuthority(...args),
   };
 });
 
 const {
+  PartnerTeamAuthorityError,
   TeamMemberNotFoundError,
 } = await import("@claude-api/sales-db");
 const { PartnerController } = await import("./partner.controller.js");
@@ -45,13 +46,17 @@ function auth(maximumBps = 2_000) {
       subCommissionBps: 1_000,
       referralDiscountEnabled: false,
       referralDiscountBps: 0,
+      teamInvitesEnabled: true,
+      b2bEnabled: true,
+      b2bMaxDiscountBps: 4_000,
+      b2bCanDelegate: true,
     },
   } as never;
 }
 
 beforeEach(() => {
   mocks.createPartnerInvite.mockReset();
-  mocks.updateDirectTeamMemberControls.mockReset();
+  mocks.updateDirectTeamMemberAuthority.mockReset();
   mocks.createPartnerInvite.mockImplementation(async (_database: unknown, input: Record<string, unknown>) => ({
     id: "invite-id",
     partnerId: input.partnerId,
@@ -68,6 +73,8 @@ beforeEach(() => {
     referralDiscountEnabled: false,
     b2bEnabled: false,
     b2bMaxDiscountBps: 0,
+    teamInvitesEnabled: input.teamInvitesEnabled,
+    b2bCanDelegate: false,
     expiresAt: input.expiresAt,
     consumedAt: null,
     consumedByPartnerId: null,
@@ -126,11 +133,50 @@ describe("partner Team controls", () => {
   });
 
   it("maps a non-direct member update to not found", async () => {
-    mocks.updateDirectTeamMemberControls.mockRejectedValue(new TeamMemberNotFoundError());
+    mocks.updateDirectTeamMemberAuthority.mockRejectedValue(new TeamMemberNotFoundError());
     await expect(controller().updateTeamMember(
       auth(),
       "22222222-2222-4222-8222-222222222222",
       { overrideBps: 500 },
     )).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("maps forbidden Team delegation to a forbidden response", async () => {
+    mocks.updateDirectTeamMemberAuthority.mockRejectedValue(
+      new PartnerTeamAuthorityError("your Team invitation authority cannot be delegated"),
+    );
+    await expect(controller().updateTeamMember(
+      auth(),
+      "22222222-2222-4222-8222-222222222222",
+      { teamInvitesEnabled: true },
+    )).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it("blocks new invitations when the platform disabled that authority", async () => {
+    const current = auth() as any;
+    current.partner.teamInvitesEnabled = false;
+    await expect(controller().createTeamInvite(current, {
+      telegramUsername: "member_five",
+    })).rejects.toBeInstanceOf(ForbiddenException);
+    expect(mocks.createPartnerInvite).not.toHaveBeenCalled();
+  });
+
+  it("passes only bounded delegated B2B authority into the invite", async () => {
+    await expect(controller().createTeamInvite(auth(), {
+      telegramUsername: "member_six",
+      b2bEnabled: true,
+      b2bMaxDiscountBps: 4_001,
+    })).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await controller().createTeamInvite(auth(), {
+      telegramUsername: "member_seven",
+      b2bEnabled: true,
+      b2bMaxDiscountBps: 4_000,
+      b2bCanDelegate: true,
+    });
+    expect(mocks.createPartnerInvite).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+      b2bEnabled: true,
+      b2bMaxDiscountBps: 4_000,
+      b2bCanDelegate: true,
+    }));
   });
 });

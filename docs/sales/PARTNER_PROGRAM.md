@@ -113,6 +113,13 @@ commission.
 - **Margin constraint:** the inviter cannot change the sub-salesperson's direct platform rate
   (10% by default). They choose only their own override and the maximum the member may delegate;
   both are bounded by the inviter's ceiling and the platform hard maximum 20%.
+- The platform can independently disable new Team invitations for a partner. B2B self-service and
+  the ability to delegate B2B rights are separate settings; a delegated child ceiling cannot exceed
+  the parent's ceiling. A partner with Team invitations disabled cannot grant that capability to a
+  child. Platform-authored B2B rights remain outside the parent's authority.
+- A partner who needs a higher direct commission submits a reasoned request. The parent cannot
+  change that rate; only an operator decision updates it, atomically and without recalculating any
+  historical commission.
 
 All accruals are idempotent by the charge's `commerce_event_id` and computed in the same
 transaction as the usage-row insert. Live scalar and historical v1 rows use
@@ -175,6 +182,17 @@ read as authority the partner does not have. The maximum any ceiling may reach i
 pricing policy range. Every change is written to `sales_audit_log` — giving away margin is a
 decision that must be reconstructable, not just observable in the current row.
 
+Every partner may also request B2B conversion or new pricing for one of their own referrals even
+without self-service authority. Sales proves ownership by the immutable Commerce UUID, records the
+requested default/provider terms and reason, and shows the customer by the fresh Commerce account
+email. The operator may approve smaller/equal terms or reject with a mandatory note. Approval does
+not claim success early: one durable effect retries Commerce with the same `operationRef`, and the
+request becomes `applied` only after Commerce returns the matching acknowledgement. A payload-drift
+409 is terminal and visible; a transport timeout is retryable and an exact Commerce replay cannot
+duplicate pricing jobs or audit evidence. Retryable delivery keeps one active request for the
+referral; after a terminal failure the partner may submit a new request, while the original decision
+and failure remain immutable.
+
 ### What a granted partner can actually do
 
 From **Referrals** in the cabinet, a granted partner gets one extra action per referral:
@@ -229,6 +247,9 @@ discount.
   edge up to ten active levels.
   The dashboard uses the additive `/v1/partner/team/invites` writer; the previous writer remains
   only during the expand-only rollout and is retired after every documented consumer moves.
+- **Requests** — commission-increase and owned-referral B2B requests, including requested terms,
+  decision note, delivery status and any retry/terminal error. Customer identity is email; the
+  internal Commerce UUID is not the product label.
 - Promo-code creation and redemption are absent from the active partner/customer/admin interfaces.
   Historical credit/accounting records remain readable by backend reconciliation only; they are
   not a product capability.
@@ -237,15 +258,19 @@ discount.
   "How payouts work" explanation.
 - **Settings** — profile (display name) and commission terms (view only).
 
-## 9. Admin panel (`admin.partners.apitoken.sale`)
+## 9. Partner administration
 
-A separate admin site; sign-in — the operator enters `SALES_ADMIN_KEY` (sent as
-`x-sales-admin-key`). Tabs:
+The Sales API supports the legacy `admin.partners.apitoken.sale` consumer and the unified
+`admin.apitoken.sale` proxy during the parity rollout. Both call the same guarded admin contract;
+the unified admin additionally propagates its authenticated operator as `X-Admin-Actor`. The old
+site is removed only after route-by-route production parity is proven. Surfaces:
 - **Overview** — summary (partners, users brought in, spend, commissions, payout queue).
 - **Onboarding** — program applications (approve with percentages / reject) and issuing root
   invites to `@username`s.
 - **Partners** — partners table: changing percentages, freezing/enabling, deletion (only without
   history).
+- **Requests** — commission/B2B review queue with partner and customer email, requested and
+  approved provider terms, a mandatory decision note, effect attempts and terminal/retry state.
 - **Payout list** — the auto-generated "to be paid" list for the current/last period's window: who
   is ready for payout (wallet + amount > 0), who is held (no wallet), amounts and wallets.
 - **Send payouts** — prepares one immutable batch, pins amounts/recipient addresses/hot wallet,

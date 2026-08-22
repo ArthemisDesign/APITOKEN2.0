@@ -1,6 +1,7 @@
 import type { SalesDatabase } from "./client.js";
 import type { PartnerStatus } from "./auth.js";
 import { lowerTeamOverrideCeiling } from "./commissions.js";
+import { applyPartnerB2BAuthorityCascade } from "./partner-authority.js";
 
 export interface SalesOverview {
   partners: number;
@@ -120,6 +121,9 @@ export interface AdminPartnerSummary {
   referralDiscountEnabled: boolean;
   b2bEnabled: boolean;
   b2bMaxDiscountBps: number;
+  teamInvitesEnabled: boolean;
+  b2bCanDelegate: boolean;
+  b2bGrantSourcePartnerId: string | null;
   createdAt: Date;
 }
 
@@ -135,6 +139,8 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     promo_enabled: boolean; promo_max_value_nano: string; promo_max_count: number; promo_used: string;
     referral_discount_bps: number; referral_discount_enabled: boolean;
     b2b_enabled: boolean; b2b_max_discount_bps: number;
+    team_invites_enabled: boolean; b2b_can_delegate: boolean;
+    b2b_grant_source_partner_id: string | null;
     created_at: Date;
   }>(`
     SELECT p.id, p.email, p.telegram_username, p.display_name, p.status, p.email_verified, p.referral_code,
@@ -144,7 +150,8 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
       parent.telegram_username AS parent_telegram_username,
       p.promo_enabled, p.promo_max_value_nano::text AS promo_max_value_nano, p.promo_max_count,
       p.referral_discount_bps, p.referral_discount_enabled,
-      p.b2b_enabled, p.b2b_max_discount_bps,
+      p.b2b_enabled, p.b2b_max_discount_bps, p.team_invites_enabled, p.b2b_can_delegate,
+      p.b2b_grant_source_partner_id,
       (SELECT count(*) FROM promo_codes pc WHERE pc.partner_id = p.id)::text AS promo_used,
       (SELECT count(*) FROM referred_users ru WHERE ru.partner_id = p.id)::text AS referred_users,
       (SELECT count(*) FROM partners child WHERE child.parent_partner_id = p.id)::text AS team_size,
@@ -200,6 +207,9 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     referralDiscountEnabled: row.referral_discount_enabled,
     b2bEnabled: row.b2b_enabled,
     b2bMaxDiscountBps: row.b2b_max_discount_bps,
+    teamInvitesEnabled: row.team_invites_enabled,
+    b2bCanDelegate: row.b2b_can_delegate,
+    b2bGrantSourcePartnerId: row.b2b_grant_source_partner_id,
       createdAt: row.created_at,
     };
   });
@@ -241,7 +251,7 @@ export async function deletePartnerAdmin(database: SalesDatabase, partnerId: str
       await client.query("ROLLBACK");
       return false;
     }
-    const history = await client.query<{ referred: string; topups: string; commissions: string; adjustments: string; payouts: string; children: string; promos: string; links: string; aliases: string }>(`
+    const history = await client.query<{ referred: string; topups: string; commissions: string; adjustments: string; payouts: string; children: string; promos: string; links: string; aliases: string; requests: string }>(`
       SELECT
         (SELECT count(*) FROM referred_users WHERE partner_id = $1)::text AS referred,
         (SELECT count(*) FROM referred_topups WHERE partner_id = $1)::text AS topups,
@@ -255,10 +265,12 @@ export async function deletePartnerAdmin(database: SalesDatabase, partnerId: str
         (SELECT count(*) FROM promo_codes WHERE partner_id = $1)::text AS promos,
         (SELECT count(*) FROM partner_discount_links WHERE partner_id = $1)::text AS links,
         (SELECT count(*) FROM external_referral_aliases WHERE partner_id = $1)::text AS aliases,
+        (SELECT count(*) FROM partner_requests
+          WHERE requester_partner_id = $1 OR subject_partner_id = $1)::text AS requests,
         (SELECT count(*) FROM partners WHERE parent_partner_id = $1)::text AS children
     `, [partnerId]);
     const h = history.rows[0]!;
-    if (h.referred !== "0" || h.topups !== "0" || h.commissions !== "0" || h.adjustments !== "0" || h.payouts !== "0" || h.promos !== "0" || h.links !== "0" || h.aliases !== "0" || h.children !== "0") {
+    if (h.referred !== "0" || h.topups !== "0" || h.commissions !== "0" || h.adjustments !== "0" || h.payouts !== "0" || h.promos !== "0" || h.links !== "0" || h.aliases !== "0" || h.requests !== "0" || h.children !== "0") {
       await client.query("ROLLBACK");
       throw new PartnerHasHistoryError(
         "partner has referrals, earnings, payouts or sub-partners — suspend instead of deleting",
@@ -297,27 +309,48 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
    */
   b2bEnabled?: boolean;
   b2bMaxDiscountBps?: number;
+  teamInvitesEnabled?: boolean;
+  b2bCanDelegate?: boolean;
   status?: PartnerStatus;
-  actorId: string | null;
+  actorId: string;
 }): Promise<boolean> {
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
+    const existing = await client.query<{ id: string }>(
+      "SELECT id FROM partners WHERE id = $1 FOR UPDATE",
+      [partnerId],
+    );
+    if (!existing.rows[0]) {
+      await client.query("ROLLBACK");
+      return false;
+    }
     if (input.teamOverrideMaxBps !== undefined) {
       await lowerTeamOverrideCeiling(client, partnerId, input.teamOverrideMaxBps);
+    }
+    if (input.b2bEnabled !== undefined
+      || input.b2bMaxDiscountBps !== undefined
+      || input.b2bCanDelegate !== undefined) {
+      // Every administrator-authored B2B decision is a direct platform grant. This deliberately
+      // detaches an inherited grant from the parent before applying its leaf-first cascade.
+      await applyPartnerB2BAuthorityCascade(client, {
+        partnerId,
+        ...(input.b2bEnabled === undefined ? {} : { enabled: input.b2bEnabled }),
+        ...(input.b2bMaxDiscountBps === undefined ? {} : { maximumBps: input.b2bMaxDiscountBps }),
+        ...(input.b2bCanDelegate === undefined ? {} : { canDelegate: input.b2bCanDelegate }),
+        sourcePartnerId: null,
+        actorType: "admin",
+        actorId: input.actorId,
+      });
     }
     const updated = await client.query<{ id: string }>(`
       UPDATE partners
       SET commission_bps = COALESCE($2, commission_bps),
           sub_commission_bps = COALESCE($3, sub_commission_bps),
-          team_override_max_bps = COALESCE($9, team_override_max_bps),
+          team_override_max_bps = COALESCE($7, team_override_max_bps),
+          team_invites_enabled = COALESCE($8, team_invites_enabled),
           referral_discount_bps = COALESCE($5, referral_discount_bps),
           referral_discount_enabled = COALESCE($6, referral_discount_enabled),
-          b2b_enabled = COALESCE($7, b2b_enabled),
-          b2b_max_discount_bps = CASE
-            WHEN COALESCE($7, b2b_enabled) THEN COALESCE($8, b2b_max_discount_bps)
-            ELSE 0
-          END,
           status = COALESCE($4::partner_status, status),
           updated_at = now()
       WHERE id = $1
@@ -325,8 +358,8 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
     `, [
       partnerId, input.commissionBps ?? null, input.subCommissionBps ?? null, input.status ?? null,
       input.referralDiscountBps ?? null, input.referralDiscountEnabled ?? null,
-      input.b2bEnabled ?? null, input.b2bMaxDiscountBps ?? null,
       input.teamOverrideMaxBps ?? null,
+      input.teamInvitesEnabled ?? null,
     ]);
     if (!updated.rows[0]) {
       await client.query("ROLLBACK");
@@ -339,6 +372,7 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
       commissionBps: input.commissionBps ?? null,
       subCommissionBps: input.subCommissionBps ?? null,
       teamOverrideMaxBps: input.teamOverrideMaxBps ?? null,
+      teamInvitesEnabled: input.teamInvitesEnabled ?? null,
       status: input.status ?? null,
       // Retained marker permission/ceiling changes remain visible in the audit trail.
       referralDiscountBps: input.referralDiscountBps ?? null,
@@ -347,6 +381,7 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
       // reconstructable from the audit trail, not only from the partner's current row.
       b2bEnabled: input.b2bEnabled ?? null,
       b2bMaxDiscountBps: input.b2bMaxDiscountBps ?? null,
+      b2bCanDelegate: input.b2bCanDelegate ?? null,
     })]);
     await client.query("COMMIT");
     return true;
