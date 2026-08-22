@@ -307,4 +307,36 @@ describe("sales multi-discount migration", () => {
     // The retired marker columns stay retired rather than being overloaded a second time.
     expect(migration).not.toMatch(/ALTER TABLE[\s\S]*referral_discount/);
   });
+
+  it("expands per-edge team overrides under a hard 20 percent ceiling", () => {
+    const migration = readFileSync(
+      join(MIGRATIONS_FOLDER, "0024_team_override_controls.sql"),
+      "utf8",
+    );
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; tag: string; when: number }> };
+    const previous = journal.entries.find((entry) => entry.idx === 23);
+    const current = journal.entries.find((entry) => entry.idx === 24);
+
+    expect(current).toMatchObject({ idx: 24, tag: "0024_team_override_controls" });
+    expect(current!.when).toBeGreaterThan(previous!.when);
+    // Expand-only: no existing partner, invite, or financial row is rewritten or removed.
+    expect(migration).not.toMatch(/^(?:UPDATE|DELETE|TRUNCATE|DROP)\b/im);
+    for (const table of ["partners", "partner_invites"]) {
+      expect(migration).toContain(
+        `ALTER TABLE "${table}" ADD COLUMN "team_override_max_bps" integer;`,
+      );
+      expect(migration).toContain(
+        `ALTER TABLE "${table}" ADD COLUMN "parent_override_bps" integer;`,
+      );
+    }
+    expect(migration.match(/"team_override_max_bps" IS NULL OR "team_override_max_bps" BETWEEN 0 AND 2000/g)).toHaveLength(2);
+    expect(migration.match(/"parent_override_bps" BETWEEN 0 AND 2000/g)).toHaveLength(2);
+    expect(migration).toContain("partners_team_override_bounds_guard");
+    expect(migration).toContain("partner_invites_team_override_bounds_guard");
+    expect(migration).toContain("partners_team_override_ceiling_update_guard");
+    // The v2 immutable guard accepts the additive edge, while NULL preserves the deployed writer.
+    expect(migration).toContain('COALESCE(edge_override_bps, parent."sub_commission_bps")');
+  });
 });

@@ -43,6 +43,11 @@ export const partners = pgTable("partners", {
   parentPartnerId: uuid("parent_partner_id").references((): AnyPgColumn => partners.id, { onDelete: "restrict" }),
   commissionBps: integer("commission_bps").notNull().default(1000),
   subCommissionBps: integer("sub_commission_bps").notNull().default(1000),
+  // Hard-bounded authority to choose per-edge team overrides. The actual rate a direct parent
+  // receives is stored on the child. NULL is the rolling-deploy/default 20% ceiling; an explicit
+  // value records an admin/inviter narrowing it.
+  teamOverrideMaxBps: integer("team_override_max_bps"),
+  parentOverrideBps: integer("parent_override_bps"),
   payoutMethod: text("payout_method"),
   payoutDetails: jsonb("payout_details"),
   // Промокоды: по умолчанию доступа нет. Админ включает и задаёт лимиты — макс. номинал кода
@@ -69,6 +74,8 @@ export const partners = pgTable("partners", {
   index("partners_parent_idx").on(table.parentPartnerId),
   check("partners_commission_bps_check", sql`${table.commissionBps} BETWEEN 0 AND 10000`),
   check("partners_sub_commission_bps_check", sql`${table.subCommissionBps} BETWEEN 0 AND 10000`),
+  check("partners_team_override_max_check", sql`${table.teamOverrideMaxBps} IS NULL OR ${table.teamOverrideMaxBps} BETWEEN 0 AND 2000`),
+  check("partners_parent_override_check", sql`${table.parentOverrideBps} IS NULL OR ${table.parentOverrideBps} BETWEEN 0 AND 2000`),
   check("partners_referral_discount_check", sql`${table.referralDiscountBps} BETWEEN 0 AND 9500`),
   check("partners_b2b_max_discount_check", sql`
     ${table.b2bMaxDiscountBps} BETWEEN 0 AND 9500
@@ -139,6 +146,10 @@ export const partnerInvites = pgTable("partner_invites", {
   telegramUsername: text("telegram_username"),
   commissionBps: integer("commission_bps"),
   subCommissionBps: integer("sub_commission_bps"),
+  // Exact inviter edge plus the ceiling delegated to the invited partner. NULL edge remains a
+  // rolling-deploy fallback for invites created by the previous binary.
+  teamOverrideMaxBps: integer("team_override_max_bps"),
+  parentOverrideBps: integer("parent_override_bps"),
   // Promo access plus retained referral-marker permission/ceiling copied into a new partner.
   promoEnabled: boolean("promo_enabled").notNull().default(false),
   promoMaxValueNano: bigint("promo_max_value_nano", { mode: "bigint" }).notNull().default(sql`0`),
@@ -157,6 +168,8 @@ export const partnerInvites = pgTable("partner_invites", {
   index("partner_invites_partner_idx").on(table.partnerId, table.createdAt),
   check("partner_invites_commission_bps_check", sql`${table.commissionBps} IS NULL OR ${table.commissionBps} BETWEEN 0 AND 10000`),
   check("partner_invites_sub_commission_bps_check", sql`${table.subCommissionBps} IS NULL OR ${table.subCommissionBps} BETWEEN 0 AND 10000`),
+  check("partner_invites_team_override_max_check", sql`${table.teamOverrideMaxBps} IS NULL OR ${table.teamOverrideMaxBps} BETWEEN 0 AND 2000`),
+  check("partner_invites_parent_override_check", sql`${table.parentOverrideBps} IS NULL OR ${table.parentOverrideBps} BETWEEN 0 AND 2000`),
   check("partner_invites_referral_discount_check", sql`${table.referralDiscountBps} BETWEEN 0 AND 9500`),
   check("partner_invites_b2b_max_discount_check", sql`
     ${table.b2bMaxDiscountBps} BETWEEN 0 AND 9500

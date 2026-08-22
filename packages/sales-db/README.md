@@ -31,6 +31,16 @@ the first suspended partner (no entry, chain ends), at amount 0, or after level 
 `recordUsageEvent` inserts the usage event and its full commission chain in one transaction,
 idempotent via the unique `commerce_event_id`.
 
+Migration `0024_team_override_controls.sql` is the migration-first expansion for individual Team
+overrides. It adds a hard-bounded `team_override_max_bps` (0..2000) to partners/invites and an
+optional `parent_override_bps` on the child/invite edge. A NULL ceiling is the rolling-deploy/default
+20% ceiling, while existing NULL edges retain the deployed parent `sub_commission_bps` calculation.
+Cross-row guards prevent a child rate or
+delegated ceiling from exceeding the direct parent's ceiling and prevent lowering a ceiling below
+an explicit dependent grant. The immutable v2 commission trigger accepts the new edge with the
+same NULL fallback. This migration does not write an edge, change an existing commission, or enable
+a consumer; application/API/UI use follows only after the exact migration SHA is production GREEN.
+
 Migration `0015_paid_funded_commission_v2.sql` adds the dormant target authority in separate
 `partner_usage_events_v2`, `pending_referral_usage_events_v2` and `commission_entries_v2` tables.
 It has no pricing-mode field: eligibility is referred B2C plus positive exact

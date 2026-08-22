@@ -169,6 +169,13 @@
       "when": 1787100000000,
       "tag": "0023_partner_b2b_grant",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1787379309000,
+      "tag": "0024_team_override_controls",
+      "breakpoints": true
     }
   ]
 }

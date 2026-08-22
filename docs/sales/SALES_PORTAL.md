@@ -34,6 +34,14 @@ engine (Rust)  ←Control API─  commerce (apps/api + worker)  ←internal sale
 - Payouts: the partner submits a request from their available balance; the admin
   approves/rejects/marks it paid.
 
+Migration `packages/sales-db/migrations/0024_team_override_controls.sql` is a dormant,
+migration-first expansion for the next Team contract. It reserves an admin-set partner ceiling
+`team_override_max_bps` (hard range 0..2000 bps; NULL is the rollout/default 20% ceiling), an exact
+child-edge `parent_override_bps`, and the same snapshot fields on invites. Existing NULL edges continue to use the deployed parent's
+`sub_commission_bps`; the migration itself neither changes a commission nor enables a new API.
+The dependent Sales API and storefront may consume the fields only after this migration SHA has
+GREEN `deploy/migration` and `deploy/watchdog` statuses.
+
 ## Components
 
 | Path | What | Port (dev) |
