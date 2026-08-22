@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `3661a61ea56a1f9f09ff948fea003221294c4d23` | 2026-08-23 | GREEN parser fix; activating refreshed forced wrapper. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `9b857cc995bb0979fbc1a42bd880d97ae2ac5993` | 2026-08-23 | GREEN host envelope and observer. Next: empty stage stores. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -348,7 +348,7 @@ No stage-watchdog poll loop yet. No production admission change.
       do not listen on `127.0.0.1`. Record the veth IP table in `docs/ops/INFRASTRUCTURE.md`.
 - [x] Rootless Docker for `deploy-stage`, `cgroup_parent=staging.slice`, no
       `/var/run/docker.sock`. Production socket stays with `deploy`.
-- [ ] Postgres-stage and Redis-stage in the staging netns / rootless Docker. Do not publish
+- [x] Postgres-stage and Redis-stage in the staging netns / rootless Docker. Do not publish
       host `5434`. Do not touch `apitoken-postgres`.
 - [x] Trusted master-sourced unit renderer with a whitelist of names, paths, and ports.
       Candidate installers do not run on this host.
@@ -453,7 +453,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: activate the refreshed wrapper, verify live read-only logs, then add stores.
 
 ### 2026-08-23 — forced wrapper activation fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `9b857cc995bb0979fbc1a42bd880d97ae2ac5993`   watchdog: GREEN
 Result: The parser fix reached the root-owned controller source, but the SSH account still executed
 the older `/usr/local/bin` copy because controller-only transactions did not refresh forced shells.
 Refresh both staging wrappers from every controller transaction when their users exist. This changes
@@ -461,7 +461,18 @@ no SSH command or privilege allowlist.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
-Next: verify live `observe-stage` logs, then add stores and close Phase 2.
+Next: add empty stores and close Phase 2 after live isolation and pressure acceptance.
+
+### 2026-08-23 — empty stage PostgreSQL and Redis placeholders
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Added empty health-gated PostgreSQL and Redis Compose projects on the rootless staging
+Docker socket. They publish production port numbers only on `10.254.32.2`, use stage-only generated
+credentials and loopback-backed volumes, and carry native CPU, memory, PID, and `staging.slice`
+cgroup limits. No schemas or application data are seeded.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/contour-config.test.sh`;
+`bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: verify live stores, isolation, and pressure; then record Phase 2 DONE on a GREEN SHA.
 
 ---
 

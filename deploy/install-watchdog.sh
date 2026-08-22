@@ -297,6 +297,10 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/staging.slice
   install -o root -g root -m 0644 "$ROOT/systemd/apitoken-rootless-docker-stage.service" \
     /usr/local/lib/apitoken-watchdog/apitoken-rootless-docker-stage.service
+  install -o root -g root -m 0644 "$ROOT/deploy/staging-postgres.compose.yaml" \
+    /usr/local/lib/apitoken-watchdog/staging-postgres.compose.yaml
+  install -o root -g root -m 0644 "$ROOT/deploy/staging-redis.compose.yaml" \
+    /usr/local/lib/apitoken-watchdog/staging-redis.compose.yaml
   install -o root -g root -m 0440 "$ROOT/deploy/sudoers.d/96-apitoken-stage" \
     /usr/local/lib/apitoken-watchdog/96-apitoken-stage
   install -o root -g root -m 0644 "$ROOT/deploy/stage-unit-whitelist.json" \
@@ -444,7 +448,8 @@ install_systemd_definitions() {
     apitoken-candidate-validator.service apitoken-candidate-validator.timer \
     apitoken-sudoers-install.service apitoken-tmpfiles-install.service \
     apitoken-sysctl-install.service apitoken-observe-install.service \
-    apitoken-staging-foundation-install.service apitoken-rootless-docker-stage.service staging.slice \
+    apitoken-staging-foundation-install.service apitoken-rootless-docker-stage.service \
+    apitoken-postgres-stage.service apitoken-redis-stage.service staging.slice \
     apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \

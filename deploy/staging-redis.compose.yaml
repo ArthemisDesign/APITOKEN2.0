@@ -1,0 +1,24 @@
+name: apitoken-stage-redis
+services:
+  history-stage:
+    image: redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
+    container_name: apitoken-redis-history-stage
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${STAGE_REDIS_PASSWORD:?required}"]
+    ports: ["10.254.32.2:6379:6379"]
+    volumes: ["/var/lib/apitoken-staging/redis/history:/data"]
+    mem_limit: 2g
+    cpus: 0.5
+    pids_limit: 128
+    cgroup_parent: staging.slice
+  affinity-stage:
+    image: redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
+    container_name: apitoken-redis-affinity-stage
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${STAGE_REDIS_PASSWORD:?required}"]
+    ports: ["10.254.32.2:6380:6379"]
+    volumes: ["/var/lib/apitoken-staging/redis/affinity:/data"]
+    mem_limit: 512m
+    cpus: 0.25
+    pids_limit: 128
+    cgroup_parent: staging.slice

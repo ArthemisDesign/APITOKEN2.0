@@ -1,0 +1,17 @@
+[Unit]
+Description=Empty Redis placeholders in staging contour
+Requires=apitoken-rootless-docker-stage.service
+After=apitoken-rootless-docker-stage.service
+ConditionPathIsMountPoint=/var/lib/apitoken-staging
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=deploy-stage
+Group=deploy-stage
+Slice=staging.slice
+Environment=DOCKER_HOST=unix:///run/apitoken-staging/docker.sock
+EnvironmentFile=/etc/apitoken-staging/redis.env
+ExecStart=/usr/bin/docker compose --project-name apitoken-stage-redis -f /usr/local/lib/apitoken-watchdog/staging-redis.compose.yaml up -d --wait
+ExecStop=/usr/bin/docker compose --project-name apitoken-stage-redis -f /usr/local/lib/apitoken-watchdog/staging-redis.compose.yaml down
+TimeoutStartSec=180

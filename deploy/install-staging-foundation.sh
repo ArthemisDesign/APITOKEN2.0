@@ -99,6 +99,18 @@ install -o root -g root -m 0644 "$ROOT/staging.slice" /etc/systemd/system/stagin
 install -o root -g root -m 0644 "$ROOT/apitoken-rootless-docker-stage.service" /etc/systemd/system/apitoken-rootless-docker-stage.service
 install -o root -g root -m 0440 "$ROOT/96-apitoken-stage" /etc/sudoers.d/96-apitoken-stage
 visudo -c >/dev/null
+if [[ ! -s /etc/apitoken-staging/postgres.password ]]; then
+  umask 077
+  openssl rand -hex 32 >/etc/apitoken-staging/postgres.password
+fi
+if [[ ! -s /etc/apitoken-staging/redis.env ]]; then
+  umask 077
+  printf 'STAGE_REDIS_PASSWORD=%s\n' "$(openssl rand -hex 32)" >/etc/apitoken-staging/redis.env
+fi
+chown root:deploy-stage /etc/apitoken-staging/postgres.password /etc/apitoken-staging/redis.env
+chmod 0640 /etc/apitoken-staging/postgres.password /etc/apitoken-staging/redis.env
 systemctl daemon-reload
 loginctl enable-linger deploy-stage || echo 'staging-foundation: linger deferred to rootless Docker activation' >&2
+systemctl enable --now apitoken-rootless-docker-stage.service
+systemctl enable --now apitoken-postgres-stage.service apitoken-redis-stage.service
 printf 'staging-foundation: ready\n'

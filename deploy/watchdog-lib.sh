@@ -1033,7 +1033,8 @@ wd_path_is_systemd_definition() {
     systemd/apitoken-sudoers-install.service|systemd/apitoken-tmpfiles-install.service|\
     systemd/apitoken-sysctl-install.service|systemd/apitoken-observe-install.service|\
     systemd/apitoken-staging-foundation-install.service|\
-    systemd/apitoken-rootless-docker-stage.service|systemd/staging.slice|\
+    systemd/apitoken-rootless-docker-stage.service|systemd/apitoken-postgres-stage.service|\
+    systemd/apitoken-redis-stage.service|systemd/staging.slice|\
     systemd/apitoken-postgres.service|systemd/apitoken-affinity-redis.service|\
     systemd/apitoken-worker.service|systemd/apitoken-content-studio.service|\
     systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-openai@.service|\
@@ -1080,6 +1081,7 @@ wd_path_is_controller_definition() {
     deploy/apitoken-observe-stage.sh|deploy/stage-observe-helper.sh|\
     deploy/apitoken-stage-ctl.sh|deploy/stage-ctl-helper.sh|\
     deploy/staging-isolation-live.sh|deploy/staging-pressure-proof.sh|\
+    deploy/staging-postgres.compose.yaml|deploy/staging-redis.compose.yaml|\
     deploy/gpt-image-2-live-gate.sh|deploy/gpt-image-2-public-smoke-gate.sh|\
     deploy/gpt-image-2-public-preflight-gate.sh|deploy/gpt-image-2-public-preflight-v2-gate.sh|\
     deploy/gpt-image-2-public-preflight-v3-gate.sh|deploy/gpt-image-2-public-paid-smoke-gate.sh|\

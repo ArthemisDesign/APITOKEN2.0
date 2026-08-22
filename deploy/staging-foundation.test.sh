@@ -28,6 +28,17 @@ grep -Fxq 'Delegate=yes' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fq 'unix:///run/apitoken-staging/docker.sock' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fq '/usr/local/bin/apitoken-observe-stage' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq '/usr/local/bin/apitoken-stage-ctl' "$ROOT/deploy/install-watchdog.sh"
+for compose in staging-postgres.compose.yaml staging-redis.compose.yaml; do
+  grep -Fq 'cgroup_parent: staging.slice' "$ROOT/deploy/$compose"
+  ! grep -Eq '5434|127\.0\.0\.1|/var/run/docker.sock|privileged:' "$ROOT/deploy/$compose"
+done
+grep -Fq '10.254.32.2:5433:5432' "$ROOT/deploy/staging-postgres.compose.yaml"
+grep -Fq '10.254.32.2:6379:6379' "$ROOT/deploy/staging-redis.compose.yaml"
+grep -Fq '10.254.32.2:6380:6379' "$ROOT/deploy/staging-redis.compose.yaml"
+for unit in apitoken-postgres-stage.service apitoken-redis-stage.service; do
+  grep -Fxq 'Slice=staging.slice' "$ROOT/systemd/$unit"
+  grep -Fxq 'ConditionPathIsMountPoint=/var/lib/apitoken-staging' "$ROOT/systemd/$unit"
+done
 for user in deploy-stage stage-ci observe-stage stage-ctl; do grep -Fq "$user" "$I"; done
 grep -Fq 'make_user stage-ci' "$I" || exit 1
 stage_ci_line=$(grep -nF 'make_user stage-ci' "$I" | cut -d: -f1)
