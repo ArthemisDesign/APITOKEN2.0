@@ -176,6 +176,13 @@
       "when": 1787379309000,
       "tag": "0024_team_override_controls",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1787465709000,
+      "tag": "0025_partner_authority_requests",
+      "breakpoints": true
     }
   ]
 }

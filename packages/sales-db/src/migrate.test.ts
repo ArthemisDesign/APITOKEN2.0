@@ -339,4 +339,47 @@ describe("sales multi-discount migration", () => {
     // The v2 immutable guard accepts the additive edge, while NULL preserves the deployed writer.
     expect(migration).toContain('COALESCE(edge_override_bps, parent."sub_commission_bps")');
   });
+
+  it("stages immutable partner authority requests without creating live work", () => {
+    const migration = readFileSync(
+      join(MIGRATIONS_FOLDER, "0025_partner_authority_requests.sql"),
+      "utf8",
+    );
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; tag: string; when: number }> };
+    const previous = journal.entries.find((entry) => entry.idx === 24);
+    const current = journal.entries.find((entry) => entry.idx === 25);
+
+    expect(current).toMatchObject({ idx: 25, tag: "0025_partner_authority_requests" });
+    expect(current!.when).toBeGreaterThan(previous!.when);
+    // Existing rows are neither rewritten nor removed. The migration creates empty authority
+    // storage and compatible columns only.
+    expect(migration).not.toMatch(/^(?:UPDATE|DELETE|TRUNCATE|DROP)\b/im);
+    for (const table of [
+      "partner_requests",
+      "partner_request_provider_terms",
+      "partner_request_provider_decisions",
+      "partner_request_effects",
+    ]) {
+      expect(migration).toContain(`CREATE TABLE "${table}"`);
+    }
+    expect(migration).toContain('"team_invites_enabled" boolean DEFAULT true NOT NULL');
+    expect(migration).toContain('"b2b_can_delegate" boolean DEFAULT false NOT NULL');
+    expect(migration).toContain('"b2b_grant_source_partner_id" uuid');
+    expect(migration).toContain("partners_b2b_authority_narrowing_guard");
+    expect(migration).toContain("partner_requests_transition_guard");
+    expect(migration).toContain("partner_request_effects_transition_guard");
+    expect(migration).toContain("sales_audit_log_immutable");
+    expect(migration).toContain("partner_requests_pending_commission_uidx");
+    expect(migration).toContain("partner_requests_pending_b2b_uidx");
+
+    const databaseObjectNames = [
+      ...migration.matchAll(/CONSTRAINT "([^"]+)"/g),
+      ...migration.matchAll(/^CREATE (?:UNIQUE )?INDEX "([^"]+)"/gm),
+      ...migration.matchAll(/^CREATE FUNCTION "([^"]+)"/gm),
+      ...migration.matchAll(/^CREATE TRIGGER "([^"]+)"/gm),
+    ].map((match) => match[1]).filter((name): name is string => name !== undefined);
+    expect(databaseObjectNames.filter((name) => Buffer.byteLength(name, "utf8") > 63)).toEqual([]);
+  });
 });

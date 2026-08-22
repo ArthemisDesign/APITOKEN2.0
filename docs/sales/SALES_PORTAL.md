@@ -54,6 +54,16 @@ child-edge `parent_override_bps`, and the same snapshot fields on invites. Exist
 database guards repeat the API ceiling checks, and the v2 immutable commission trigger verifies the
 same exact edge before accepting money.
 
+Migration `packages/sales-db/migrations/0025_partner_authority_requests.sql` is the dormant schema
+checkpoint for unified partner administration. It separates B2B self-service from the authority to
+delegate B2B rights, records whether a child grant came directly from the platform or from its
+parent, and makes unsafe parent-right narrowing fail closed until dependent grants and pending
+invites are clamped in the same transaction. It also creates empty, immutable request/provider
+decision tables and a durable idempotent Commerce-effect outbox for B2B conversion/pricing and
+direct-commission-change reviews. The migration creates no grant, request or effect, and the
+currently deployed writers remain compatible. The request/API/Admin consumers ship only after this
+exact migration SHA is GREEN in `deploy/migration` and `deploy/watchdog`.
+
 `GET /v1/partner/earnings/providers?days=N` returns both the aggregate `items` and additive `daily`
 UTC points for the Usage-style stacked provider chart. Direct referral spend and downstream events
 that actually paid a team override are included; gross earned parts reconcile with the commission

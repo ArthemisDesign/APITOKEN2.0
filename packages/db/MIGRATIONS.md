@@ -76,6 +76,13 @@ migration SHA is green in `deploy/migration` and `deploy/watchdog`. The mapping 
 does not reuse `partner_discount_links`, so a CRM link can never acquire legacy price-marker
 semantics.
 
+Sales migration `packages/sales-db/migrations/0025_partner_authority_requests.sql` is the
+schema-only checkpoint for the unified partner Admin and partner request workflow. It adds
+backward-compatible Team/B2B authority columns, empty request/provider-decision tables, an empty
+durable Commerce-effect outbox and immutable transition/audit guards. It creates no request, grant
+or pricing write. The dependent Sales API, Commerce consumer and both Admin/partner UIs must ship
+only after this exact migration SHA is GREEN in `deploy/migration` and `deploy/watchdog`.
+
 ## Historical pricing release v2 migrations (non-executable)
 
 The entries through migration 0044 below describe what each immutable migration did when it was
