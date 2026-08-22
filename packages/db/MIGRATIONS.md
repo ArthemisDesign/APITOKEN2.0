@@ -83,6 +83,19 @@ durable Commerce-effect outbox and immutable transition/audit guards. It creates
 or pricing write. The dependent Sales API, Commerce consumer and both Admin/partner UIs must ship
 only after this exact migration SHA is GREEN in `deploy/migration` and `deploy/watchdog`.
 
+Sales migration `packages/sales-db/migrations/0026_commerce_partner_membership.sql` is the
+schema-only checkpoint for moving the partner cabinet behind the ordinary Commerce session. It
+adds dormant Commerce-account membership and email-targeted invite identities plus versioned
+`gross / withheld / net` commission evidence. Existing Telegram identities remain unlinked and
+disabled for the future program by the new flag's `false` default; existing commission rows remain
+calculation version 1 and are not rewritten. The database accepts the currently deployed writer
+unchanged, while independently validating every future version-2 row against a ten-level,
+20%-per-edge, commission-conserving chain. Membership start timestamps prevent delayed ingestion
+from paying or withholding against usage that predates a participant's admission. Commerce-linked
+onboarding, the new writer and the Dashboard/Admin consumers must ship only after this exact
+migration SHA is GREEN in
+`deploy/migration` and `deploy/watchdog`.
+
 ## Historical pricing release v2 migrations (non-executable)
 
 The entries through migration 0044 below describe what each immutable migration did when it was

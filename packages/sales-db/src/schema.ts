@@ -49,6 +49,11 @@ export const partnerRequestEffectStatus = pgEnum("partner_request_effect_status"
 
 export const partners = pgTable("partners", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  // Dormant until the Commerce-session producer ships after migration 0026 is production-GREEN.
+  // This immutable Commerce identity replaces Telegram as the future program membership key.
+  commerceUserId: uuid("commerce_user_id"),
+  programEnabled: boolean("program_enabled").notNull().default(false),
+  programStartedAt: timestamp("program_started_at", { withTimezone: true }),
   // Онбординг через Telegram: identity = telegram_id. email/password_hash — legacy
   // (партнёры первой волны), для новых NULL.
   email: text("email"),
@@ -97,7 +102,13 @@ export const partners = pgTable("partners", {
   uniqueIndex("partners_email_lower_uidx").on(sql`lower(${table.email})`).where(sql`${table.email} IS NOT NULL`),
   uniqueIndex("partners_telegram_id_uidx").on(table.telegramId).where(sql`${table.telegramId} IS NOT NULL`),
   uniqueIndex("partners_referral_code_uidx").on(table.referralCode),
+  uniqueIndex("partners_commerce_user_uidx").on(table.commerceUserId)
+    .where(sql`${table.commerceUserId} IS NOT NULL`),
   index("partners_parent_idx").on(table.parentPartnerId),
+  check("partners_program_membership_check", sql`
+    NOT ${table.programEnabled}
+    OR (${table.commerceUserId} IS NOT NULL AND ${table.programStartedAt} IS NOT NULL)
+  `),
   check("partners_commission_bps_check", sql`${table.commissionBps} BETWEEN 0 AND 10000`),
   check("partners_sub_commission_bps_check", sql`${table.subCommissionBps} BETWEEN 0 AND 10000`),
   check("partners_team_override_max_check", sql`${table.teamOverrideMaxBps} IS NULL OR ${table.teamOverrideMaxBps} BETWEEN 0 AND 2000`),
@@ -170,6 +181,9 @@ export const partnerInvites = pgTable("partner_invites", {
   // Инвайт привязан к Telegram-юзернейму (нормализован: без @, lower). Регистрация — только
   // если username вошедшего совпал.
   telegramUsername: text("telegram_username"),
+  // Commerce resolves the submitted email to this UUID before asking Sales to create the invite.
+  // The email remains authoritative in Commerce and is never copied into Sales membership state.
+  commerceUserId: uuid("commerce_user_id"),
   commissionBps: integer("commission_bps"),
   subCommissionBps: integer("sub_commission_bps"),
   // Exact inviter edge plus the ceiling delegated to the invited partner. NULL edge remains a
@@ -190,10 +204,19 @@ export const partnerInvites = pgTable("partner_invites", {
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   consumedAt: timestamp("consumed_at", { withTimezone: true }),
   consumedByPartnerId: uuid("consumed_by_partner_id").references(() => partners.id, { onDelete: "restrict" }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
   createdAt,
 }, (table) => [
   uniqueIndex("partner_invites_code_uidx").on(table.code),
   index("partner_invites_partner_idx").on(table.partnerId, table.createdAt),
+  uniqueIndex("partner_invites_open_commerce_uidx").on(table.commerceUserId).where(sql`
+    ${table.commerceUserId} IS NOT NULL
+    AND ${table.consumedAt} IS NULL
+    AND ${table.revokedAt} IS NULL
+  `),
+  check("partner_invites_commerce_shape_check", sql`
+    ${table.commerceUserId} IS NOT NULL OR ${table.revokedAt} IS NULL
+  `),
   check("partner_invites_commission_bps_check", sql`${table.commissionBps} IS NULL OR ${table.commissionBps} BETWEEN 0 AND 10000`),
   check("partner_invites_sub_commission_bps_check", sql`${table.subCommissionBps} IS NULL OR ${table.subCommissionBps} BETWEEN 0 AND 10000`),
   check("partner_invites_team_override_max_check", sql`${table.teamOverrideMaxBps} IS NULL OR ${table.teamOverrideMaxBps} BETWEEN 0 AND 2000`),
@@ -581,6 +604,9 @@ export const commissionEntries = pgTable("commission_entries", {
   partnerId: uuid("partner_id").notNull().references(() => partners.id, { onDelete: "restrict" }),
   level: integer("level").notNull(),
   appliedBps: integer("applied_bps").notNull(),
+  calculationVersion: integer("calculation_version").notNull().default(1),
+  grossAmountNano: bigint("gross_amount_nano", { mode: "bigint" }),
+  withheldAmountNano: bigint("withheld_amount_nano", { mode: "bigint" }),
   amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
   createdAt,
 }, (table) => [
@@ -592,6 +618,22 @@ export const commissionEntries = pgTable("commission_entries", {
   check("commission_entries_level_check", sql`${table.level} BETWEEN 0 AND 10`),
   check("commission_entries_applied_bps_check", sql`${table.appliedBps} BETWEEN 0 AND 10000`),
   check("commission_entries_amount_check", sql`${table.amountNano} > 0`),
+  check("commission_entries_calculation_check", sql`
+    (
+      ${table.calculationVersion} = 1
+      AND ${table.grossAmountNano} IS NULL
+      AND ${table.withheldAmountNano} IS NULL
+    ) OR (
+      ${table.calculationVersion} = 2
+      AND ${table.usageEventId} IS NOT NULL
+      AND ${table.topupId} IS NULL
+      AND ${table.grossAmountNano} > 0
+      AND ${table.withheldAmountNano} >= 0
+      AND ${table.withheldAmountNano} < ${table.grossAmountNano}
+      AND ${table.amountNano} = ${table.grossAmountNano} - ${table.withheldAmountNano}
+      AND (${table.level} = 0 OR ${table.appliedBps} BETWEEN 0 AND 2000)
+    )
+  `),
   check("commission_entries_one_source_check",
     sql`((${table.usageEventId} IS NOT NULL)::int + (${table.topupId} IS NOT NULL)::int) = 1`),
 ]);
@@ -689,6 +731,9 @@ export const commissionEntriesV2 = pgTable("commission_entries_v2", {
   level: integer("level").notNull(),
   appliedBps: integer("applied_bps").notNull(),
   basePaidFundedNano: bigint("base_paid_funded_nano", { mode: "bigint" }).notNull(),
+  calculationVersion: integer("calculation_version").notNull().default(1),
+  grossAmountNano: bigint("gross_amount_nano", { mode: "bigint" }),
+  withheldAmountNano: bigint("withheld_amount_nano", { mode: "bigint" }),
   amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
   createdAt,
 }, (table) => [
@@ -703,6 +748,20 @@ export const commissionEntriesV2 = pgTable("commission_entries_v2", {
     AND ${table.basePaidFundedNano} > 0
     AND ${table.amountNano} > 0
     AND ${table.amountNano} <= ${table.basePaidFundedNano}
+  `),
+  check("commission_entries_v2_calculation_check", sql`
+    (
+      ${table.calculationVersion} = 1
+      AND ${table.grossAmountNano} IS NULL
+      AND ${table.withheldAmountNano} IS NULL
+    ) OR (
+      ${table.calculationVersion} = 2
+      AND ${table.grossAmountNano} > 0
+      AND ${table.withheldAmountNano} >= 0
+      AND ${table.withheldAmountNano} < ${table.grossAmountNano}
+      AND ${table.amountNano} = ${table.grossAmountNano} - ${table.withheldAmountNano}
+      AND (${table.level} = 0 OR ${table.appliedBps} BETWEEN 0 AND 2000)
+    )
   `),
 ]);
 

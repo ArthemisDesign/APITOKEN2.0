@@ -78,6 +78,18 @@ payload conflicts remain visible as terminal `apply_failed` evidence. A retryabl
 referral fenced from a second request; a closed terminal effect permits a new independently reviewed
 request without mutating the historical failure.
 
+Migration `packages/sales-db/migrations/0026_commerce_partner_membership.sql` is a dormant,
+expand-only cutover checkpoint. It adds a unique Commerce user identity and explicit program state
+to partners, a Commerce user target to invitations, and calculation-version plus exact
+`gross_amount_nano` / `withheld_amount_nano` evidence to both commission ledgers. Existing rows
+remain version 1, no Telegram account/session/invite is changed, and no financial row is updated.
+The future version-2 database guard requires every participating ancestor to be an enabled
+Commerce membership, caps each Team edge at 20%, and verifies
+`net = gross - withheld` independently of insert order. It excludes any participant whose
+membership starts after the usage event, so manually admitted accounts begin with zero new-program
+commission. The Commerce-account producer, conserved writer and Dashboard consumer are forbidden
+to ship before this migration SHA is production-GREEN.
+
 An operator decision on an inbound application is also one authority transaction, not a
 create-then-patch workflow. `POST /v1/admin/applications/:id/decision` validates and writes the
 new root partner's direct commission, default Team override, Team override ceiling, Team-invite

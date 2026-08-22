@@ -382,4 +382,47 @@ describe("sales multi-discount migration", () => {
     ].map((match) => match[1]).filter((name): name is string => name !== undefined);
     expect(databaseObjectNames.filter((name) => Buffer.byteLength(name, "utf8") > 63)).toEqual([]);
   });
+
+  it("stages Commerce membership and conserved commission evidence without rewriting history", () => {
+    const migration = readFileSync(
+      join(MIGRATIONS_FOLDER, "0026_commerce_partner_membership.sql"),
+      "utf8",
+    );
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; tag: string; when: number }> };
+    const previous = journal.entries.find((entry) => entry.idx === 25);
+    const current = journal.entries.find((entry) => entry.idx === 26);
+
+    expect(current).toMatchObject({ idx: 26, tag: "0026_commerce_partner_membership" });
+    expect(current!.when).toBeGreaterThan(previous!.when);
+    expect(migration).not.toMatch(/^(?:UPDATE|DELETE|TRUNCATE|DROP)\b/im);
+    expect(migration).toContain('ALTER TABLE "partners" ADD COLUMN "commerce_user_id" uuid');
+    expect(migration).toContain('"program_enabled" boolean DEFAULT false NOT NULL');
+    expect(migration).toContain('"partners_commerce_user_uidx"');
+    expect(migration).toContain('ALTER TABLE "partner_invites" ADD COLUMN "commerce_user_id" uuid');
+    expect(migration).toContain('"partner_invites_open_commerce_uidx"');
+    for (const table of ["commission_entries", "commission_entries_v2"]) {
+      expect(migration).toContain(`ALTER TABLE "${table}" ADD COLUMN "calculation_version"`);
+      expect(migration).toContain(`ALTER TABLE "${table}" ADD COLUMN "gross_amount_nano"`);
+      expect(migration).toContain(`ALTER TABLE "${table}" ADD COLUMN "withheld_amount_nano"`);
+    }
+    expect(migration).toContain('"amount_nano" = "gross_amount_nano" - "withheld_amount_nano"');
+    expect(migration).toContain('current_gross_nano::numeric * next_edge_bps::numeric / 10000');
+    expect(migration).toContain("current_level + 1 < 10");
+    expect(migration).toContain("current_status <> 'active'");
+    expect(migration).toContain("NOT current_program_enabled");
+    expect(migration).toContain("current_program_started_at > source_occurred_at");
+    expect(migration).toContain("parent_program_started_at <= source_occurred_at");
+    expect(migration).toContain("conserved Team share must be between 0 and 2000 bps");
+    expect(migration).toContain('IF NEW."calculation_version" = 1 THEN');
+
+    const databaseObjectNames = [
+      ...migration.matchAll(/CONSTRAINT "([^"]+)"/g),
+      ...migration.matchAll(/^CREATE (?:UNIQUE )?INDEX "([^"]+)"/gm),
+      ...migration.matchAll(/^CREATE (?:OR REPLACE )?FUNCTION "([^"]+)"/gm),
+      ...migration.matchAll(/^CREATE TRIGGER "([^"]+)"/gm),
+    ].map((match) => match[1]).filter((name): name is string => name !== undefined);
+    expect(databaseObjectNames.filter((name) => Buffer.byteLength(name, "utf8") > 63)).toEqual([]);
+  });
 });
