@@ -26,6 +26,8 @@ grep -Fxq 'NetworkNamespacePath=/run/netns/apitoken-stage' "$ROOT/systemd/apitok
 grep -Fxq 'Delegate=yes' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 ! grep -Fq '/var/run/docker.sock' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fq 'unix:///run/apitoken-staging/docker.sock' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
+grep -Fq '/usr/local/bin/apitoken-observe-stage' "$ROOT/deploy/install-watchdog.sh"
+grep -Fq '/usr/local/bin/apitoken-stage-ctl' "$ROOT/deploy/install-watchdog.sh"
 for user in deploy-stage stage-ci observe-stage stage-ctl; do grep -Fq "$user" "$I"; done
 grep -Fq 'make_user stage-ci' "$I" || exit 1
 stage_ci_line=$(grep -nF 'make_user stage-ci' "$I" | cut -d: -f1)

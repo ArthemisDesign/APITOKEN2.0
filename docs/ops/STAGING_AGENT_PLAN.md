@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `134db1956fe26f44e104c1ad53ff0617d938a6bd` | 2026-08-23 | GREEN host envelope; fixing `observe-stage` multiword `--since`. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `3661a61ea56a1f9f09ff948fea003221294c4d23` | 2026-08-23 | GREEN parser fix; activating refreshed forced wrapper. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -442,7 +442,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED de
 Next: fix `observe-stage` multiword `--since`, then run live isolation and pressure proofs.
 
 ### 2026-08-23 — observe-stage multiword since fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `3661a61ea56a1f9f09ff948fea003221294c4d23`   watchdog: GREEN
 Result: The live `observe-stage` forced command works for status, but its compound arithmetic parser
 expanded an absent third word under `set -u` before the word-count guard. Split the parser into
 ordered branches and add a regression for a multiword `--since` value. No privilege or permitted
@@ -450,7 +450,18 @@ command changes.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
-Next: verify live read-only logs, then add stores and close Phase 2.
+Next: activate the refreshed wrapper, verify live read-only logs, then add stores.
+
+### 2026-08-23 — forced wrapper activation fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The parser fix reached the root-owned controller source, but the SSH account still executed
+the older `/usr/local/bin` copy because controller-only transactions did not refresh forced shells.
+Refresh both staging wrappers from every controller transaction when their users exist. This changes
+no SSH command or privilege allowlist.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: verify live `observe-stage` logs, then add stores and close Phase 2.
 
 ---
 

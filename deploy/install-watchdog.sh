@@ -283,6 +283,16 @@ install_controller_definitions() {
     install -o root -g root -m 0755 "$ROOT/deploy/$stage_helper" \
       "/usr/local/lib/apitoken-watchdog/$stage_helper"
   done
+  # The forced SSH shells execute /usr/local/bin, not the controller source path. Refresh wrappers
+  # in every controller transaction so parser/security fixes do not depend on full reprovisioning.
+  if id observe-stage >/dev/null 2>&1; then
+    install -o root -g root -m 0755 "$ROOT/deploy/apitoken-observe-stage.sh" \
+      /usr/local/bin/apitoken-observe-stage
+  fi
+  if id stage-ctl >/dev/null 2>&1; then
+    install -o root -g root -m 0755 "$ROOT/deploy/apitoken-stage-ctl.sh" \
+      /usr/local/bin/apitoken-stage-ctl
+  fi
   install -o root -g root -m 0644 "$ROOT/systemd/staging.slice" \
     /usr/local/lib/apitoken-watchdog/staging.slice
   install -o root -g root -m 0644 "$ROOT/systemd/apitoken-rootless-docker-stage.service" \
