@@ -178,33 +178,16 @@ export type Partner = {
   referralCode: string;
   commissionBps: number;
   subCommissionBps: number;
+  /** Maximum override this partner may choose on each direct team edge (hard cap: 2000 bps). */
+  teamOverrideMaxBps: number;
+  /** Exact override paid to the direct parent; null only on historical rollout rows. */
+  parentOverrideBps: number | null;
   status: string;
   payoutMethod?: string | null;
   payoutDetails?: { network?: string; asset?: string; address?: string } | string | null;
-  promoEnabled?: boolean;
-  promoMaxValueNano?: string;
-  promoMaxCount?: number;
   /** Granted right to convert own referrals to B2B, and the discount ceiling for it. */
   b2bEnabled?: boolean;
   b2bMaxDiscountBps?: number;
-};
-
-export type PromoCodeRow = {
-  id: string;
-  code: string;
-  valueNano: string;
-  status: "active" | "redeemed" | "disabled";
-  redeemedAt?: string | null;
-  createdAt?: string;
-};
-
-export type PromoListResponse = {
-  enabled: boolean;
-  maxValueNano: string;
-  maxCount: number;
-  redeemUrl: string;
-  pricingAffected?: false;
-  items: PromoCodeRow[];
 };
 
 export type Overview = {
@@ -212,6 +195,7 @@ export type Overview = {
   referralUrl: string;
   commissionBps: number;
   subCommissionBps: number;
+  teamOverrideMaxBps: number;
   referralDiscountEnabled?: boolean;
   referralDiscountBps?: number;
   referralPricingAffected?: false;
@@ -236,6 +220,8 @@ export type Overview = {
 };
 
 export type ReferralRow = {
+  /** Authoritative Commerce account email; null only while enrichment is unavailable. */
+  email: string | null;
   userMask: string;
   // Masked 8-hex machine reference retained by the expand-only API.
   userRef?: string;
@@ -267,13 +253,25 @@ export type ProviderEarningsRow = {
   earnedNano: string;
 };
 
+export type DailyProviderEarningsPoint = {
+  date: string;
+  providers: ProviderEarningsRow[];
+};
+
+export type ProviderEarningsResponse = {
+  days: number;
+  items: ProviderEarningsRow[];
+  daily: DailyProviderEarningsPoint[];
+};
+
 export type TeamRow = {
   id: string;
   email: string | null;
   telegramUsername: string | null;
   displayName: string | null;
   commissionBps: number;
-  overrideBps?: number;
+  overrideBps: number;
+  teamOverrideMaxBps: number;
   referredUsers: number;
   earnedNano: string;
   adjustmentNano: string;
@@ -290,14 +288,12 @@ export type InviteRow = {
   telegramUsername: string | null;
   commissionBps: number | null;
   overrideBps?: number;
+  teamOverrideMaxBps?: number;
   subCommissionBps?: number | null;
   referralDiscountBps?: number;
   referralDiscountEnabled?: boolean;
   b2bEnabled?: boolean;
   b2bMaxDiscountBps?: number;
-  promoEnabled?: boolean;
-  promoMaxCount?: number;
-  promoMaxValueNano?: string;
   expiresAt: string | null;
   consumedAt: string | null;
   createdAt?: string;
@@ -393,10 +389,6 @@ export type AdminPartnerRow = {
   status: string;
   earnedNano?: string;
   referredUsers?: number;
-  promoEnabled?: boolean;
-  promoMaxValueNano?: string;
-  promoMaxCount?: number;
-  promoUsed?: number;
 };
 
 export type AdminPayoutRow = {
@@ -431,7 +423,6 @@ export type PartnerAnalyticsRow = {
   /** May convert own referrals to B2B, up to b2bMaxDiscountBps. Off by default. */
   b2bEnabled: boolean;
   b2bMaxDiscountBps: number;
-  promoEnabled: boolean;
   depositsTotalNano: string;
   deposits30dNano: string;
   referredUsers: number;
@@ -451,8 +442,6 @@ export type PartnerAnalyticsRow = {
   teamSize: number;
   linksTotal: number;
   linksUsed: number;
-  promosTotal: number;
-  promosUsed: number;
   lastSeenAt: string | null;
   lastReferralAt: string | null;
   lastDepositAt: string | null;
@@ -497,10 +486,9 @@ export type PartnerDetailBundle = {
     myOverrideNano: string; myOverrideAdjustmentNano: string; myOverrideNetNano: string;
   }[];
   discountLinks: { id: string; code: string; discountBps: number; note: string | null; consumedAt: string | null; createdAt: string }[];
-  promos: { id: string; code: string; valueNano: string; status: string; discountBps: number; redeemedAt: string | null; createdAt: string }[];
   payouts: { id: string; amountNano: string; status: string; requestedAt: string; decidedAt: string | null; paidAt: string | null; adminNote: string | null }[];
   referrals: {
-    userMask: string; userRef?: string; attributedAt: string; spendNano: string;
+    email: string | null; userMask: string; userRef?: string; attributedAt: string; spendNano: string;
     earnedNano: string; adjustmentNano: string; netNano: string;
     customerType?: "b2c" | "b2b" | null; discountPercent?: number | null; referralFloorBps?: number | null;
   }[];

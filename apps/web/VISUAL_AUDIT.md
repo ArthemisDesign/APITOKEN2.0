@@ -131,7 +131,7 @@ Capture definitions live near the top of `scripts/capture-site.mjs`. Each defini
 
 The public-site scope includes home, plans, models, docs, integrations, authentication, terms,
 privacy, and support states. The dashboard scope includes overview, API keys, credits, usage, support,
-promos, profile, and security states.
+profile, and security states. The retired promo view is covered only by the removed-view fallback check.
 
 The `header-*` matrix covers the public header at 1920px desktop, 1280px laptop, the 1240px
 navigation-collapse boundary, 768px tablet, 390px mobile, and 320px narrow mobile widths. It includes

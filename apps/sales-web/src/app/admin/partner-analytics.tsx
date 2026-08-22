@@ -55,8 +55,6 @@ function activityLabel(event: PartnerActivityEvent, t: Translate): string {
     case "deposit": return t(event.label, `Пополнение реферала ${tail}`);
     case "discount_link_created": return t(event.label, `Создана старая маркерная ссылка ${String(event.meta.code ?? tail)}`);
     case "discount_link_used": return t(event.label, `Использована старая маркерная ссылка ${String(event.meta.code ?? tail)}`);
-    case "promo_created": return t(event.label, `Создан промокод ${String(event.meta.code ?? tail)}`);
-    case "promo_redeemed": return t(event.label, `Погашен промокод ${String(event.meta.code ?? tail)}`);
     case "payout_requested": return t(event.label, "Запрошена выплата");
     case "payout_decided": return t(event.label, `Решение по выплате: ${String(event.meta.status ?? tail)}`);
     case "login": return t(event.label, "Вход в кабинет");
@@ -188,6 +186,7 @@ export function PartnersTab({ adminKey }: { adminKey: string }) {
           <EmptyState title={t("No partners match this filter", "Нет партнёров с такими параметрами")} />
         ) : (
           <Table
+            label={t("Partner analytics", "Аналитика партнёров")}
             head={
               <>
                 <th>{t("Partner", "Партнёр")}</th>
@@ -202,7 +201,7 @@ export function PartnersTab({ adminKey }: { adminKey: string }) {
               <tr key={p.id}>
                 <td>
                   <button className="table-row-button" type="button" onClick={() => setSelected(p)}>
-                    <span style={{ fontWeight: 600 }}>{p.telegramUsername ? `@${p.telegramUsername}` : p.email ?? "—"}</span>
+                    <span className="identity-email" title={p.email ?? (p.telegramUsername ? `@${p.telegramUsername}` : "—")}>{p.email ?? (p.telegramUsername ? `@${p.telegramUsername}` : "—")}</span>
                     <span style={{ fontSize: 12, ...faint }}>{p.displayName ?? p.referralCode}</span>
                   </button>
                 </td>
@@ -328,7 +327,7 @@ function PartnerDrawer({
         api<{ events: PartnerActivityEvent[] }>(`/v1/admin/partners/${row.id}/activity?limit=80`, { headers: adminHeaders(adminKey) }),
       ]);
       setDetail(d);
-      setActivity(a.events);
+      setActivity(a.events.filter((event) => !event.type.startsWith("promo")));
       setBps(String(d.partner.commissionBps));
       setSubBps(String(d.partner.subCommissionBps));
     } catch (err) {
@@ -354,22 +353,8 @@ function PartnerDrawer({
     }
   }
 
-  async function postPromo(body: { enabled: boolean; maxValueUsd: number; maxCount: number }) {
-    setBusy(true);
-    setError(null);
-    try {
-      await api(`/v1/admin/partners/${row.id}/promo`, { method: "POST", headers: adminHeaders(adminKey), body });
-      await reload();
-      onChanged();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : t("Promo update failed.", "Не удалось обновить промо-настройки."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   const p = detail?.partner ?? row;
-  const label = p.telegramUsername ? `@${p.telegramUsername}` : p.email ?? p.id.slice(0, 8);
+  const label = p.email ?? (p.telegramUsername ? `@${p.telegramUsername}` : p.id.slice(0, 8));
   const suspended = p.status !== "active";
   const dirty = bps !== String(p.commissionBps) || subBps !== String(p.subCommissionBps);
 
@@ -393,18 +378,6 @@ function PartnerDrawer({
       return setError(t("Enter a percent between 0 and 95, or \"off\".", "Введите процент от 0 до 95 либо «выкл»."));
     }
     void patch({ b2bEnabled: true, b2bMaxDiscountBps: Math.round(percent * 100) });
-  }
-
-  function editPromo() {
-    const v = window.prompt(t(
-      `Promo codes for ${label}\n"maxUSD/count" to enable (e.g. 20/10), or "off".`,
-      `Промокоды для ${label}\nВведите «максимумUSD/количество» (например, 20/10) либо «выкл».`,
-    ), p.promoEnabled ? "" : t("off", "выкл"));
-    if (v == null) return;
-    if (["off", "выкл"].includes(v.trim().toLowerCase())) return void postPromo({ enabled: false, maxValueUsd: 0, maxCount: 0 });
-    const m = /^\s*(\d{1,5})\s*\/\s*(\d{1,5})\s*$/.exec(v);
-    if (!m) return setError(t("Format: maxUSD/count, e.g. 20/10", "Формат: максимумUSD/количество, например 20/10"));
-    void postPromo({ enabled: true, maxValueUsd: Number(m[1]), maxCount: Number(m[2]) });
   }
 
   return (
@@ -442,7 +415,6 @@ function PartnerDrawer({
           <span style={{ fontSize: 11, ...faint }}>{/^\d+$/.test(subBps) ? formatBps(Number(subBps)) : "—"}</span>
           <Button size="sm" variant="ghost" disabled={!dirty || busy || !/^\d+$/.test(bps) || !/^\d+$/.test(subBps)} onClick={() => patch({ commissionBps: Number(bps), subCommissionBps: Number(subBps) })}>{t("Save", "Сохранить")}</Button>
           <Button size="sm" variant={suspended ? "primary" : "danger"} disabled={busy} onClick={() => patch({ status: suspended ? "active" : "suspended" })}>{suspended ? t("Activate", "Активировать") : t("Suspend", "Приостановить")}</Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={editPromo}>{p.promoEnabled ? t("Promo: on", "Промо: вкл") : t("Promo: off", "Промо: выкл")}</Button>
           <Button size="sm" variant="ghost" disabled={busy} onClick={editB2b}>
             {p.b2bEnabled ? t(`B2B: up to ${formatBps(p.b2bMaxDiscountBps)}`, `B2B: до ${formatBps(p.b2bMaxDiscountBps)}`) : t("B2B: off", "B2B: выкл")}
           </Button>
@@ -460,7 +432,7 @@ function PartnerDrawer({
           <Kpi label={t("Paid out", "Выплачено")} value={formatUsd(p.paidNano)} />
           <Kpi label={t("Payable now", "К выплате сейчас")} value={formatUsd(p.payableNano)} foot={`${formatUsd(p.debtNano)} ${t("debt", "долг")}`} />
           <Kpi label={t("Team", "Команда")} value={String(p.teamSize)} foot={t("sub-partners", "субпартнёры")} />
-          <Kpi label={t("Legacy links / promos", "Старые ссылки / промо")} value={`${p.linksUsed}/${p.linksTotal} · ${p.promosUsed}/${p.promosTotal}`} foot={t("used / total", "использовано / всего")} />
+          <Kpi label={t("Legacy marker links", "Старые маркерные ссылки")} value={`${p.linksUsed}/${p.linksTotal}`} foot={t("used / total", "использовано / всего")} />
         </div>
 
         {detail ? <Sparkline daily={detail.daily} /> : null}
@@ -494,21 +466,10 @@ function PartnerDrawer({
               )}
             </Section>
 
-            <Section title={t(`Promo codes (${detail.promos.length})`, `Промокоды (${detail.promos.length})`)}>
-              {detail.promos.length === 0 ? <Muted>{t("None created.", "Не создавались.")}</Muted> : (
-                <MiniTable rows={detail.promos.map((c) => [
-                  <span key="c" className="mono">{c.code}</span>,
-                  formatUsd(c.valueNano),
-                  <StatusBadge key="s" status={c.status} />,
-                  c.redeemedAt ? t(`redeemed ${relTime(c.redeemedAt, t, locale)}`, `погашен ${relTime(c.redeemedAt, t, locale)}`) : formatDate(c.createdAt, locale),
-                ])} cols={[t("Code", "Код"), t("Value", "Номинал"), t("Status", "Статус"), t("When", "Когда")]} />
-              )}
-            </Section>
-
             <Section title={t(`Team (${detail.team.length})`, `Команда (${detail.team.length})`)}>
               {detail.team.length === 0 ? <Muted>{t("No sub-partners.", "Субпартнёров нет.")}</Muted> : (
                 <MiniTable rows={detail.team.map((m) => [
-                  m.telegramUsername ? `@${m.telegramUsername}` : m.email ?? m.id.slice(0, 8),
+                  m.email ?? (m.telegramUsername ? `@${m.telegramUsername}` : m.id.slice(0, 8)),
                   formatBps(m.commissionBps),
                   t(`${m.referredUsers} refs`, `${m.referredUsers} рефералов`),
                   `${formatUsd(m.myOverrideNetNano)} ${t("net override", "чистая командная комиссия")}`,
@@ -519,7 +480,7 @@ function PartnerDrawer({
             <Section title={t(`Referred users (${detail.referrals.length})`, `Привлечённые пользователи (${detail.referrals.length})`)}>
               {detail.referrals.length === 0 ? <Muted>{t("No referrals yet.", "Рефералов пока нет.")}</Muted> : (
                 <MiniTable rows={detail.referrals.slice(0, 50).map((u) => [
-                  <span key="u" className="mono">{u.userMask}</span>,
+                  <span key="u" className="identity-email" title={u.email ?? u.userMask}>{u.email ?? u.userMask}</span>,
                   u.customerType === "b2b"
                     ? <Badge key="t" tone="green">B2B</Badge>
                     : u.customerType === "b2c"
@@ -620,7 +581,7 @@ function activityColor(type: string): string {
   if (type === "deposit") return "#26a15e";
   if (type === "referral") return "#3b5bdb";
   if (type.startsWith("payout")) return "#d69e2e";
-  if (type.startsWith("discount") || type.startsWith("promo")) return "#7c3aed";
+  if (type.startsWith("discount")) return "#7c3aed";
   if (type === "admin") return "#e8590c";
   return "var(--text-faint)";
 }

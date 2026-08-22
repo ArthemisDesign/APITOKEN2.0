@@ -151,8 +151,6 @@ const dashboardCaptures = [
   ["dashboard-usage-russian-light", "/dashboard?view=usage", 1440, 1000, "light", "ru"],
   ["dashboard-support-dark", "/dashboard?view=support", 1440, 1000, "dark"],
   ["dashboard-support-light", "/dashboard?view=support", 1440, 1000, "light"],
-  ["dashboard-promos-light", "/dashboard?view=promos", 1440, 1000, "light"],
-  ["dashboard-promos-dark", "/dashboard?view=promos", 1440, 1000, "dark"],
   ["dashboard-profile-light", "/dashboard?view=profile", 1440, 1000, "light"],
   ["dashboard-profile-dark", "/dashboard?view=profile", 1440, 1000, "dark"],
   ["dashboard-overview-mobile", "/dashboard", 390, 844, "light"],
@@ -171,8 +169,6 @@ const dashboardCaptures = [
   ["dashboard-usage-mobile-russian-dark", "/dashboard?view=usage", 390, 844, "dark", "ru"],
   ["dashboard-support-mobile-light", "/dashboard?view=support", 390, 844, "light"],
   ["dashboard-support-mobile-dark", "/dashboard?view=support", 390, 844, "dark"],
-  ["dashboard-promos-mobile-light", "/dashboard?view=promos", 390, 844, "light"],
-  ["dashboard-promos-mobile-dark", "/dashboard?view=promos", 390, 844, "dark"],
   ["dashboard-profile-mobile-light", "/dashboard?view=profile", 390, 844, "light"],
   ["dashboard-profile-mobile-dark", "/dashboard?view=profile", 390, 844, "dark"],
 ];
@@ -618,9 +614,6 @@ async function capturePage(client, [name, route, width, height, theme, language 
       const sidebarFoot = sidebar?.querySelector('.side-foot');
       const sidebarRect = sidebar?.getBoundingClientRect();
       const sidebarFootRect = sidebarFoot?.getBoundingClientRect();
-      const promoEmpty = document.querySelector('.promo-history .empty-cell');
-      const promoEmptyRect = promoEmpty?.getBoundingClientRect();
-      const promoContainerRect = promoEmpty?.closest('.table-scroll')?.getBoundingClientRect();
       const overflowElements = [...document.querySelectorAll('body *')].flatMap((element) => {
         const rect = element.getBoundingClientRect();
         return rect.left < -1 || rect.right > innerWidth + 1
@@ -650,7 +643,6 @@ async function capturePage(client, [name, route, width, height, theme, language 
         sidebarNavOverflow: sidebarNav ? Math.max(0, sidebarNav.scrollHeight - sidebarNav.clientHeight) : 0,
         sidebarFootVisible: !sidebar || Boolean(sidebarRect && sidebarFootRect && sidebarFootRect.top >= sidebarRect.top - 1 && sidebarFootRect.bottom <= sidebarRect.bottom + 1),
         overflowElements,
-        promoEmptyFits: !promoEmpty || Boolean(promoEmptyRect && promoContainerRect && promoEmpty.scrollWidth <= promoEmpty.clientWidth + 1 && promoEmptyRect.left >= promoContainerRect.left - 1 && promoEmptyRect.right <= promoContainerRect.right + 1),
       });
     })()`,
     returnByValue: true,
@@ -677,9 +669,6 @@ async function capturePage(client, [name, route, width, height, theme, language 
   }
   if (["about-desktop", "about-mobile-dark", "contacts-desktop", "contacts-mobile-dark", "changelog-desktop", "changelog-mobile-dark", "blog-desktop", "blog-mobile-dark", "status-desktop", "status-mobile-dark", "calculator-desktop", "calculator-mobile-dark", "calculator-mobile-language-disabled", "model-detail-desktop", "model-detail-mobile-dark"].includes(name) && !visualState.russianUnavailable) {
     throw new Error(`${name} offers a Russian route that does not exist: ${JSON.stringify(visualState)}`);
-  }
-  if (name.startsWith("dashboard-promos-mobile-") && !visualState.promoEmptyFits) {
-    throw new Error(`${name} clips its empty promo history state: ${JSON.stringify(visualState)}`);
   }
   const { cssContentSize, contentSize } = await client.send("Page.getLayoutMetrics");
   // Chrome reports the legacy contentSize in physical pixels on Retina displays.
@@ -1525,7 +1514,7 @@ async function verifyDocsTheme(client) {
 
 async function verifyDashboardRouting(client) {
   await client.send("Runtime.evaluate", { expression: `localStorage.setItem('lang:v1', 'en');` });
-  for (const removedView of ["refer", "orders"]) {
+  for (const removedView of ["refer", "orders", "promos"]) {
     const removedLoaded = client.once("Page.loadEventFired");
     await client.send("Page.navigate", { url: new URL(`/dashboard?view=${removedView}`, baseUrl).href });
     await removedLoaded;
@@ -1591,7 +1580,7 @@ async function verifyDashboardNavIsolation(client) {
     { language: "en", base: "/dashboard", overviewTitle: "Overview" },
     { language: "ru", base: "/ru/dashboard", overviewTitle: "Обзор" },
   ];
-  const sections = ["keys", "credits", "promos", "usage", "support", "profile", "overview"];
+  const sections = ["keys", "credits", "usage", "support", "profile", "overview"];
   for (const { language, base, overviewTitle } of passes) {
     await client.send("Runtime.evaluate", { expression: `localStorage.setItem('lang:v1', ${JSON.stringify(language)});` });
     const loaded = client.once("Page.loadEventFired");

@@ -27,7 +27,6 @@ const Credits = memo(dynamic(() => import("./sections/credits").then((module) =>
 const Usage = memo(dynamic(() => import("./sections/usage").then((module) => module.Usage)));
 const SupportPanel = memo(dynamic(() => import("./sections/support-panel").then((module) => module.SupportPanel)));
 const Profile = memo(dynamic(() => import("./sections/profile").then((module) => module.Profile)));
-const PromoPanel = memo(dynamic(() => import("./sections/promo-panel").then((module) => module.PromoPanel)));
 
 type Section = DashboardSection;
 type OptionalDataSource = "keys" | "ledger" | "usage";
@@ -81,7 +80,7 @@ export function Dashboard() {
   const copy = dashboardCopy[language];
   const localCopy = localDashboardCopy[language];
   const locale = language === "ru" ? "ru-RU" : "en-US";
-  // Одноразовое чтение ?view из window.location (паттерн PromoPanel): подписка
+  // Одноразовое чтение ?view из window.location: подписка
   // useSearchParams заставляет Next перерендеривать маршрут на каждый pushState,
   // хотя активный раздел дальше живёт в состоянии компонента. Расхождения SSR/клиент
   // нет: пока loading=true, рендер (DashboardLoading) от section не зависит.
@@ -406,7 +405,7 @@ function DashboardContent({
     if (dataPending.keys) sourceNotices.push({ source: "keys", message: copy.keysDataLoading, pending: true });
     else if (dataErrors.keys) sourceNotices.push({ source: "keys", message: copy.keysDataUnavailable, pending: false });
   }
-  if (section === "credits" || section === "usage" || section === "promos") {
+  if (section === "credits" || section === "usage") {
     if (dataPending.ledger) sourceNotices.push({ source: "ledger", message: copy.ledgerDataLoading, pending: true });
     else if (dataErrors.ledger) sourceNotices.push({ source: "ledger", message: copy.ledgerDataUnavailable, pending: false });
   }
@@ -460,11 +459,6 @@ function DashboardContent({
     {visitedSections.has("profile") && <Activity mode={section === "profile" ? "visible" : "hidden"}>
       <Suspense fallback={<SectionSkeleton />}>
         <Profile user={user} onUpdated={onUserUpdated} />
-      </Suspense>
-    </Activity>}
-    {visitedSections.has("promos") && <Activity mode={section === "promos" ? "visible" : "hidden"}>
-      <Suspense fallback={<SectionSkeleton />}>
-        <PromoPanel ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} ledgerMayBePartial={ledger.length >= 100} />
       </Suspense>
     </Activity>}
   </div>;

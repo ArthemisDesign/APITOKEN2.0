@@ -149,7 +149,7 @@ describe("completed Next.js migration", () => {
     const dashboard = dashboardSource();
     const dashboardShell = readFileSync(join(appRoot, "dashboard", "dashboard-shell.tsx"), "utf8");
     const routes = readFileSync(join(appRoot, "dashboard", "dashboard-route.ts"), "utf8");
-    for (const section of ["overview", "keys", "credits", "promos", "usage", "support", "profile"]) {
+    for (const section of ["overview", "keys", "credits", "usage", "support", "profile"]) {
       expect(dashboard).toContain(`section === \"${section}\"`);
       expect(routes).toContain(`\"${section}\"`);
     }
@@ -157,6 +157,9 @@ describe("completed Next.js migration", () => {
     expect(dashboard).not.toContain('section === "orders"');
     expect(routes).not.toContain('"refer"');
     expect(routes).not.toContain('"orders"');
+    expect(routes).not.toContain('"promos"');
+    expect(dashboard).not.toContain("PromoPanel");
+    expect(readFileSync(join(root, "lib", "api.ts"), "utf8")).not.toContain("redeemPromo");
     expect(dashboard).not.toContain('section === "security"');
     expect(routes).toContain('value === "security"');
     expect(dashboard).not.toMatch(/href=[{\"]+\/dashboard\//);

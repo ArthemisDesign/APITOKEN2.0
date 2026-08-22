@@ -224,10 +224,6 @@ export const api = {
   resetPassword: (token: string, password: string) =>
     request<void>("/auth/password/reset", { method: "POST", body: JSON.stringify({ token, password }) }),
   logout: () => request<void>("/auth/logout", { method: "POST" }),
-  redeemPromo: (code: string) =>
-    request<{ credited_usd: string; credited_nano: string; balance?: string; balance_nano?: string }>(
-      "/promo/redeem", { method: "POST", body: JSON.stringify({ code }) },
-    ),
   account: () => request<AccountView>("/account"),
   ledger: (limit = 50) => request<{ entries: LedgerEntry[] }>(`/account/ledger?limit=${limit}`),
   usage: (window = "30d") => request<UsageView>(`/account/usage?window=${encodeURIComponent(window)}`),

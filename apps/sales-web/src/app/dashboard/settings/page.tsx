@@ -47,7 +47,7 @@ export default function SettingsPage() {
             <Field label="Telegram" htmlFor="partner-telegram">
               <Input
                 id="partner-telegram"
-                value={partner.telegramUsername ? `@${partner.telegramUsername}` : partner.email ?? "—"}
+                value={partner.email ?? (partner.telegramUsername ? `@${partner.telegramUsername}` : "—")}
                 readOnly
                 disabled
               />
@@ -70,8 +70,8 @@ export default function SettingsPage() {
         <Card
           title={t("Your commission terms", "Ваши условия комиссии")}
           sub={t(
-            "You earn this share of what your referrals actually spend on API usage — the amount charged after their own discount, and only the part paid with real money (free bonus/promo balance is spent first and never counts). Not their top-ups, not list price. Rate set individually by the program.",
-            "Вы получаете эту долю от того, что ваши рефералы реально тратят на использование API — от суммы, списанной после их скидки, и только с части, оплаченной реальными деньгами (бесплатный бонус/промо тратится первым и не считается). Не от пополнений и не от прайс-листа. Ставка устанавливается программой индивидуально.",
+            "You earn this share of what your referrals actually spend on API usage — the amount charged after their own discount, and only the part paid with real money. Free platform credit is spent first and never counts. Not their top-ups, not list price. Rate set individually by the program.",
+            "Вы получаете эту долю от реальных трат рефералов на API после их скидки и только с части, оплаченной их деньгами. Бесплатные средства платформы тратятся первыми и не считаются. Не от пополнений и не от прайс-листа. Ставка устанавливается программой индивидуально.",
           )}
         >
           <div className="stat-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)", marginBottom: 0 }}>

@@ -2,7 +2,7 @@
 // request() из api.ts отдаёт эти фикстуры вместо сети. Бэкенд пускает единственный browser-origin
 // (прод-домен), поэтому живой логин с превью невозможен by design; данные ниже — копия
 // детерминированных фикстур визуального аудита (scripts/capture-site.mjs), но с состоянием:
-// мутации (ключи, профиль, промо, чекаут) меняют его в памяти вкладки, чтобы UI-потоки были живыми.
+// мутации (ключи, профиль, чекаут) меняют его в памяти вкладки, чтобы UI-потоки были живыми.
 // В прод-сборке флаг NEXT_PUBLIC_PREVIEW_FIXTURES пуст и этот модуль не загружается вообще.
 import {
   ApiError,
@@ -284,10 +284,6 @@ export async function previewRequest<T>(path: string, init: RequestInit = {}): P
     case "POST /auth/password/forgot": return { accepted: true } as T;
     case "POST /auth/password/reset":
     case "POST /auth/logout": return undefined as T;
-    case "POST /promo/redeem": {
-      balanceNano += 10n * NANO;
-      return { credited_usd: "10.00", credited_nano: "10000000000", balance_nano: balanceNano.toString() } as T;
-    }
     case "GET /account": return account() as T;
     case "GET /account/ledger": return { entries: ledger } as T;
     case "GET /account/usage": return usage(url.searchParams.get("window") ?? "30d") as T;

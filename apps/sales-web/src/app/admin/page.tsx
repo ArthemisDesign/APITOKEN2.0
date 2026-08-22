@@ -354,6 +354,7 @@ function PayoutsTab({ adminKey }: { adminKey: string }) {
         </Card>
       ) : items ? (
         <Table
+          label={t("Payout requests", "Запросы на выплаты")}
           head={
             <>
               <th>{t("Partner", "Партнёр")}</th>
@@ -509,6 +510,7 @@ function ApplicationsCard({ adminKey }: { adminKey: string }) {
         <EmptyState title={t("No pending applications", "Нет заявок на рассмотрении")} />
       ) : (
         <Table
+          label={t("Partner applications", "Заявки партнёров")}
           head={
             <>
               <th>Telegram</th>
@@ -552,8 +554,6 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
   const [username, setUsername] = useState("");
   const [commissionPct, setCommissionPct] = useState("");
   const [subPct, setSubPct] = useState("");
-  const [promoCount, setPromoCount] = useState("");
-  const [promoMaxUsd, setPromoMaxUsd] = useState("");
   // Empty = no B2B right. A number grants it and fixes the ceiling in one step.
   const [b2bMaxPct, setB2bMaxPct] = useState("");
   const [busy, setBusy] = useState(false);
@@ -605,12 +605,6 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
       setError(t("B2B max discount cannot exceed 95%.", "Максимальная B2B-скидка не может превышать 95%."));
       return;
     }
-    const count = promoCount.trim() === "" ? 0 : Number(promoCount);
-    const maxUsd = promoMaxUsd.trim() === "" ? 0 : Number(promoMaxUsd);
-    if (!Number.isInteger(count) || count < 0 || !Number.isInteger(maxUsd) || maxUsd < 0) {
-      setError(t("Promo count and max $ must be whole numbers.", "Количество промокодов и максимальная сумма должны быть целыми числами."));
-      return;
-    }
     setBusy(true);
     try {
       const res = await api<{ inviteUrl: string; telegramUsername: string | null }>("/v1/admin/invites", {
@@ -624,8 +618,6 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
           // current product: they never reach the Commerce/engine price authority.
           referralDiscountEnabled: false,
           referralDiscountBps: 0,
-          promoMaxCount: count,
-          promoMaxValueUsd: maxUsd,
           // The right and its ceiling travel together: a blank field onboards an ordinary partner
           // whose referrals are plain B2C customers.
           ...(b2bMaxBps !== undefined && b2bMaxBps > 0
@@ -643,8 +635,6 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
       setBusy(false);
     }
   }
-
-  const promoOn = Number(promoCount || "0") > 0 && Number(promoMaxUsd || "0") > 0;
 
   return (
     <div className="stack">
@@ -699,26 +689,6 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
               placeholder="10"
             />
           </Field>
-          <Field label={t("Promo codes (count)", "Промокоды (количество)")} htmlFor="root-invite-promo-count" hint={t("0 = no promo access", "0 = без доступа к промокодам")}>
-            <Input
-              id="root-invite-promo-count"
-              value={promoCount}
-              onChange={(e) => setPromoCount(e.target.value.replace(/[^\d]/g, ""))}
-              inputMode="numeric"
-              autoComplete="off"
-              placeholder="0"
-            />
-          </Field>
-          <Field label={t("Max promo $", "Максимум по промокоду, $")} htmlFor="root-invite-promo-max" hint={t("Per code, platform balance", "На один код, баланс платформы")}>
-            <Input
-              id="root-invite-promo-max"
-              value={promoMaxUsd}
-              onChange={(e) => setPromoMaxUsd(e.target.value.replace(/[^\d]/g, ""))}
-              inputMode="numeric"
-              autoComplete="off"
-              placeholder="0"
-            />
-          </Field>
           <Field label={t("B2B max discount %", "Максимальная B2B-скидка %")} htmlFor="root-invite-b2b-max" hint={t("Blank = no B2B right; their referrals stay B2C", "Пусто = без B2B-права; рефералы остаются B2C")}>
             <Input
               id="root-invite-b2b-max"
@@ -735,10 +705,6 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
             {t("Create invite", "Создать приглашение")}
           </Button>
           <span className="field-hint">
-            {promoOn
-              ? t(`Promo: up to ${promoCount} code(s), max $${promoMaxUsd} each.`, `Промо: до ${promoCount} кодов, максимум $${promoMaxUsd} каждый.`)
-              : t("Promo: off (set both count and max $ to enable).", "Промо: выключено (задайте количество и максимум, чтобы включить).")}
-            {" · "}
             {Number(b2bMaxPct || "0") > 0
               ? t(`B2B: may discount their own customers up to ${b2bMaxPct}%.`, `B2B: может давать своим клиентам скидку до ${b2bMaxPct}%.`)
               : t("B2B: off (referrals are ordinary B2C customers).", "B2B: выключено (рефералы остаются обычными B2C-клиентами).")}
@@ -753,13 +719,13 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
           <EmptyState title={t("No invites yet", "Приглашений пока нет")} />
         ) : (
           <Table
+            label={t("Root invitations", "Корневые приглашения")}
             head={
               <>
                 <th>{t("For", "Для")}</th>
                 <th>{t("Commission", "Комиссия")}</th>
                 <th>{t("Sub", "Команда")}</th>
                 <th>{t("Legacy marker", "Старый маркер")}</th>
-                <th>{t("Promo", "Промо")}</th>
                 <th>{t("Expires", "Истекает")}</th>
                 <th>{t("Status", "Статус")}</th>
                 <th />
@@ -772,11 +738,6 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
                 <td>{inv.commissionBps != null ? formatBps(inv.commissionBps) : t("default", "по умолчанию")}</td>
                 <td>{inv.subCommissionBps != null ? formatBps(inv.subCommissionBps) : t("default", "по умолчанию")}</td>
                 <td>{inv.referralDiscountEnabled ? formatBps(inv.referralDiscountBps ?? 0) : "—"}</td>
-                <td>
-                  {inv.promoEnabled
-                    ? `${inv.promoMaxCount ?? 0} × ${formatUsd(inv.promoMaxValueNano)}`
-                    : "—"}
-                </td>
                 <td>{inv.expiresAt ? formatDate(inv.expiresAt, locale) : "—"}</td>
                 <td>
                   {inv.consumedAt ? (
@@ -864,6 +825,7 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
           <EmptyState title={t("Nothing due", "Нет выплат")}>{t("No partner has an unpaid balance for this period.", "В этом периоде ни у одного партнёра нет невыплаченного баланса.")}</EmptyState>
         ) : (
           <Table
+            label={t("Payouts due this window", "Выплаты в этом окне")}
             head={
               <>
                 <th>{t("Partner", "Партнёр")}</th>

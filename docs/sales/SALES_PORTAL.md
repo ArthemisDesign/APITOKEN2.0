@@ -1,8 +1,9 @@
 # SALES_PORTAL.md — sales arm (partners.apitoken.sale)
 
 The repository's third bounded context (after the engine and commerce): a **multi-level affiliate
-program for salespeople**. A separate product, separate domain, separate DB, separate visual
-style (not connected to apitoken.sale in any way). UI brand: **APIToken Partners**.
+program for salespeople**. It remains a separate domain and database, while its customer-facing
+cabinet deliberately uses the same visual system, light/dark theme preference and RU/EN language
+preference as the main apiToken.sale dashboard. UI brand: **APIToken Partners**.
 
 ```
 engine (Rust)  ←Control API─  commerce (apps/api + worker)  ←internal sales API (SALES_CONTROL_KEY)→  sales (sales-api + sales-web)
@@ -59,6 +60,13 @@ that actually paid a team override are included; gross earned parts reconcile wi
 ledger for the same window. Historical rows with no provider remain under `providerId:null` instead
 of being hidden or guessed. Manual signed adjustments have no provider evidence and stay outside
 this descriptive split.
+
+The active product UI has no promo-code entry point: the partner navigation/issuance screen, the
+customer dashboard redemption screen and the old Sales admin controls are removed. Historical
+promo ledger rows and the expand-only backend redemption/issuance contracts below remain only for
+accounting evidence and rolling consumer retirement; their presence is not permission to restore a
+product surface. Removing those contracts and stored history is a separate producer-first cleanup
+after every external consumer is proven retired.
 
 ## Components
 
@@ -328,7 +336,7 @@ mutex remains held through a final read-only Commerce-head probe under the share
 lock; the final balance proof and commitment/signing remain inside that fence. Legacy manual payout
 rows are reject-only, and an old batch without an `earned_before` checkpoint must be re-prepared.
 
-### Sales → Commerce: promo and registration (`apps/sales-api/src/internal.controller.ts`)
+### Sales → Commerce: registration and retired promo compatibility (`apps/sales-api/src/internal.controller.ts`)
 
 Commerce calls sales-api at `SALES_API_URL` with the same `SALES_CONTROL_KEY`.
 
@@ -520,7 +528,5 @@ https://partners.apitoken.sale is live. How it is set up on 84.32.48.2:
 ## Development ideas (not implemented)
 
 - Server-side attribution cookie instead of localStorage.
-- Promo materials in the dashboard (banners, UTM builder), click statistics storefront
-  (today we only count registrations and spend).
+- Click statistics storefront (today we only count registrations and spend).
 - Notifications to the partner (email/TG) about new referrals and accruals.
-- Personal landing pages/discount promo codes funded from the partner's commission.

@@ -3,7 +3,6 @@ import type { Language } from "@/components/i18n-provider";
 const en = {
   navStart: "Start", navOverview: "Overview", navDevelopers: "Developers", navKeys: "API keys", navDocs: "Docs",
   navBilling: "Billing", navTopUp: "Balance",
-  navGrowth: "Growth", navPromos: "Promo codes",
   navActivity: "Activity", navUsage: "Usage",
   navAccount: "Account", navProfile: "Profile", navSecurity: "Security",
   navSupportGroup: "Help", navSupport: "Support",
@@ -80,7 +79,7 @@ const en = {
   usageAnalytics: "Usage analytics", chartsPending: "Charts and model-level breakdowns will appear when the backend exposes authoritative request metrics.",
   comingSoon: "Coming soon", usageTrend: "Usage trend", officialSpendOverTime: "Official API spend over time",
   modelBreakdown: "Model breakdown", spendByModel: "Spend grouped by model", transactions: "Recent transactions",
-  time: "Time", type: "Type", reference: "Reference", amount: "Amount", noLedger: "No ledger activity yet.",
+  date: "Date", time: "Time", type: "Type", reference: "Reference", amount: "Amount", noLedger: "No ledger activity yet.",
   topupType: "Top-up", adjustType: "Adjustment", billedEventOne: "{n} billed event", billedEventsFew: "{n} billed events", apiRequestsN: "{n} billed events", moreRows: "+{n} more billed events",
   claudeApiReceived: "Official API value received", atOfficialPrices: "at official list prices",
   receivedFromCharged: "from {charged} charged · {mult} value", receivedEmpty: "No usage yet — make your first call",
@@ -126,13 +125,6 @@ const en = {
   newPassword: "New password", updatePassword: "Update password", passwordPending: "Password changes are not connected yet",
   oauthAccess: "Social sign-in", oauthAccessText: "This account signs in through Google or GitHub. It has no password stored on apiToken.sale.",
   activeSessions: "Active sessions", thisDevice: "This device", activeNow: "Active now", logoutSession: "Log out this session",
-  promoEyebrow: "Rewards", promoTitle: "Promo codes",
-  promoSubtitle: "Enter a promo code to add balance to your account.", activate: "Activate",
-  promoPending: "", myActivations: "My activations", code: "Code", reward: "Reward",
-  date: "Date", promoCredit: "Promo credit", noPromos: "No promo-code activations are visible in your recent ledger.",
-  promoInput: "Promo code", promoAdded: "Added to your balance:", promoInvalid: "Enter a valid promo code.",
-  promoPlaceholder: "For example, WELCOME26…",
-  promoHelp: "Codes come from our news channel and partners — each one credits balance to your account once.",
 } as const;
 
 export type DashboardCopy = { [K in keyof typeof en]: string };
@@ -140,7 +132,6 @@ export type DashboardCopy = { [K in keyof typeof en]: string };
 const ru: DashboardCopy = {
   navStart: "Начало", navOverview: "Обзор", navDevelopers: "Разработчикам", navKeys: "API-ключи", navDocs: "Документация",
   navBilling: "Оплата", navTopUp: "Баланс",
-  navGrowth: "Развитие", navPromos: "Промокоды",
   navActivity: "Активность", navUsage: "Использование",
   navAccount: "Аккаунт", navProfile: "Профиль", navSecurity: "Безопасность",
   navSupportGroup: "Помощь", navSupport: "Поддержка",
@@ -217,7 +208,7 @@ const ru: DashboardCopy = {
   usageAnalytics: "Аналитика использования", chartsPending: "Графики и разбивка по моделям появятся после подключения подтверждённых метрик бэкенда.",
   comingSoon: "Скоро", usageTrend: "Динамика использования", officialSpendOverTime: "Расход по официальным ценам во времени",
   modelBreakdown: "Разбивка по моделям", spendByModel: "Расход по каждой модели", transactions: "Недавние операции",
-  time: "Время", type: "Тип", reference: "Ссылка", amount: "Сумма", noLedger: "Операций пока нет.",
+  date: "Дата", time: "Время", type: "Тип", reference: "Ссылка", amount: "Сумма", noLedger: "Операций пока нет.",
   topupType: "Пополнение", adjustType: "Корректировка", billedEventOne: "{n} тарифицированное событие", billedEventsFew: "{n} тарифицированных события", apiRequestsN: "{n} тарифицированных событий", moreRows: "+{n} тарифицированных событий",
   claudeApiReceived: "Получено официальной ценности API", atOfficialPrices: "по официальным листовым ценам",
   receivedFromCharged: "из {charged} списанных · {mult} ценности", receivedEmpty: "Пока нет расхода — сделайте первый запрос",
@@ -263,13 +254,6 @@ const ru: DashboardCopy = {
   newPassword: "Новый пароль", updatePassword: "Обновить пароль", passwordPending: "Смена пароля пока не подключена",
   oauthAccess: "Вход через соцсеть", oauthAccessText: "Этот аккаунт входит через Google или GitHub. Пароль на apiToken.sale не хранится.",
   activeSessions: "Активные сессии", thisDevice: "Это устройство", activeNow: "Активно сейчас", logoutSession: "Завершить эту сессию",
-  promoEyebrow: "Награды", promoTitle: "Промокоды",
-  promoSubtitle: "Введите промокод, чтобы пополнить баланс.", activate: "Активировать",
-  promoPending: "", myActivations: "Мои активации", code: "Код", reward: "Награда",
-  date: "Дата", promoCredit: "Промо-начисление", noPromos: "В недавней истории нет активаций промокодов.",
-  promoInput: "Промокод", promoAdded: "Начислено на баланс:", promoInvalid: "Введите корректный промокод.",
-  promoPlaceholder: "Например, WELCOME26…",
-  promoHelp: "Промокоды публикуются в нашем новостном канале и у партнёров — каждый код один раз пополняет ваш баланс.",
 };
 
 export const dashboardCopy: Record<Language, DashboardCopy> = { en, ru };

@@ -6,7 +6,9 @@ const legacyPages = [
   "terms", "privacy",
 ];
 
-const dashboardSections = [
+// Retired direct paths remain redirect-only aliases, so old bookmarks reach the dashboard
+// instead of a 404. They are not active sections and never appear in navigation or UI state.
+const legacyDashboardPaths = [
   "overview", "keys", "credits", "promos", "usage", "profile", "security",
 ];
 
@@ -62,7 +64,7 @@ const nextConfig: NextConfig = {
         { source: "/ru/verify-email", destination: "/ru/dashboard", permanent: false },
       ] : []),
       ...legacyPages.map((page) => ({ source: `/${page}.html`, destination: `/${page}`, permanent: true })),
-      ...dashboardSections.map((section) => ({ source: `/dashboard/${section}`, destination: "/dashboard", permanent: false })),
+      ...legacyDashboardPaths.map((section) => ({ source: `/dashboard/${section}`, destination: "/dashboard", permanent: false })),
       ...Object.entries(shortLinks).map(([slug, destination]) => ({ source: `/go/${slug}`, destination, permanent: false })),
       // /e/<code> → справочник ошибок. Код едет ФРАГМЕНТОМ, а не query-параметром:
       // параметр породил бы второй сканируемый URL той же страницы (дубль), а фрагмент

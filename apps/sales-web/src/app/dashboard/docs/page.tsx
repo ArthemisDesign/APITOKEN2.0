@@ -40,8 +40,8 @@ export default function DocsPage() {
             </li>
             <li>
               {t(
-                "Free credits never count: usage paid from a welcome bonus, promo codes or any gifted balance earns you nothing. Free money is spent first — only spend covered by their real money counts.",
-                "Бесплатные средства не считаются никогда: использование, оплаченное из приветственного бонуса, промокодов или любого подаренного баланса, комиссию не приносит. Бесплатное тратится первым — засчитывается только трата, покрытая их реальными деньгами.",
+                "Free platform credit never counts. It is spent first; only usage covered by the referral's real money earns commission.",
+                "Бесплатные средства платформы не считаются. Они тратятся первыми; комиссию приносит только использование, оплаченное реальными деньгами реферала.",
               )}
             </li>
           </ul>
@@ -76,8 +76,8 @@ export default function DocsPage() {
           <ul className="how-list">
             <li>
               {t(
-                "The base is what a referral actually pays for API usage — the amount charged after their own discount — and only the part covered by their real money (free bonus/promo balance is spent first and never counts).",
-                "База — это то, что реферал реально платит за использование API: сумма, списанная с учётом его скидки, и только часть, покрытая его реальными деньгами (бесплатный бонус/промо тратится первым и не считается).",
+                "The base is what a referral actually pays for API usage after their own discount, and only the part covered by their real money. Free platform credit is spent first and never counts.",
+                "База — то, что реферал реально платит за использование API после своей скидки, и только часть, покрытая его деньгами. Бесплатные средства платформы тратятся первыми и не считаются.",
               )}
             </li>
             <li>

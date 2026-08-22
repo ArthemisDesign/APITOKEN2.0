@@ -19,6 +19,7 @@ describe("dashboard URL state", () => {
     expect(dashboardHref("keys", "ru")).toBe("/ru/dashboard?view=keys");
     expect(parseDashboardSection(null)).toBe("overview");
     expect(parseDashboardSection("billing-admin")).toBe("overview");
+    expect(parseDashboardSection("promos")).toBe("overview");
     expect(parseDashboardSection("refer")).toBe("overview");
     expect(parseDashboardSection("orders")).toBe("overview");
   });

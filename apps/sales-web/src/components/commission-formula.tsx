@@ -35,8 +35,8 @@ export function CommissionFormula({ commissionBps }: { commissionBps: number }) 
       </div>
       <div style={{ fontSize: 13.5, color: "var(--text-faint)", marginTop: 14, maxWidth: 560, marginInline: "auto", lineHeight: 1.5 }}>
         {t(
-          `The client pays (100 − their discount)% of the price. You get ${rate} of that — only the part paid with real money (free bonus/promo never counts).`,
-          `Клиент платит (100 − его скидка)% от цены. Вы получаете ${rate} от этого — только с части, оплаченной реальными деньгами (бесплатный бонус/промо не считается).`,
+          `The client pays (100 − their discount)% of the price. You get ${rate} of that — only the part paid with real money; free platform credit never counts.`,
+          `Клиент платит (100 − его скидка)% от цены. Вы получаете ${rate} от этого — только с части, оплаченной реальными деньгами; бесплатные средства платформы не считаются.`,
         )}
       </div>
       <div style={{ fontSize: 13.5, marginTop: 10, fontWeight: 600 }}>

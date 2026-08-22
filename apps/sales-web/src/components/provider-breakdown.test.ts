@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { earningsShareTenths, providerLabel } from "./provider-breakdown";
+import { dailyProviderTotal, earningsShareTenths, providerLabel } from "./provider-breakdown";
 
 describe("provider earnings breakdown", () => {
   it("names the providers the pool actually serves", () => {
-    expect(providerLabel("anthropic", "—")).toBe("Claude (Anthropic)");
-    expect(providerLabel("openai", "—")).toBe("GPT (OpenAI)");
-    expect(providerLabel("google", "—")).toBe("Gemini (Google)");
-    expect(providerLabel("kimi", "—")).toBe("Kimi (Moonshot)");
+    expect(providerLabel("anthropic", "—")).toBe("Claude");
+    expect(providerLabel("openai", "—")).toBe("GPT");
+    expect(providerLabel("google", "—")).toBe("Gemini");
+    expect(providerLabel("kimi", "—")).toBe("Kimi");
   });
 
   it("shows an unknown provider by its id instead of hiding the money", () => {
@@ -28,5 +28,15 @@ describe("provider earnings breakdown", () => {
 
   it("does not divide by zero before any earnings exist", () => {
     expect(earningsShareTenths("0", 0n)).toBe(0);
+  });
+
+  it("keeps historical and known-provider segments in the daily total", () => {
+    expect(dailyProviderTotal({
+      date: "2026-08-22",
+      providers: [
+        { providerId: "anthropic", events: 1, spendNano: "100", earnedNano: "10" },
+        { providerId: null, events: 2, spendNano: "250", earnedNano: "25" },
+      ],
+    })).toBe(35n);
   });
 });

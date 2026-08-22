@@ -50,8 +50,8 @@ export default function ReferralsPage() {
       <h1 className="page-title">{t("Referrals", "Рефералы")}</h1>
       <p className="page-sub">
         {t(
-          "Users attributed to you. Identities are masked for their privacy. “Spend” is their real-money API usage — the amount charged after their own discount, excluding anything paid from free bonus/promo balance. That is the base your commission is calculated from.",
-          "Пользователи, закреплённые за вами. Личности скрыты в целях конфиденциальности. «Расход» — это их реальные траты на API: сумма, списанная после их скидки, без учёта оплаченного из бесплатного бонуса/промо. Именно от неё считается ваша комиссия.",
+          "Users attributed to you are identified by their account email. If Commerce enrichment is temporarily unavailable, a privacy-safe mask is shown instead. “Spend” is their real-money API usage after their discount, excluding free platform credit. That is the base your commission is calculated from.",
+          "Закреплённые за вами пользователи отображаются по email аккаунта. Если данные Commerce временно недоступны, вместо него показывается безопасная маска. «Расход» — реальные траты на API после скидки, без бесплатных средств платформы. Именно от него считается ваша комиссия.",
         )}
       </p>
       {error ? <Notice kind="error">{error}</Notice> : null}
@@ -68,6 +68,7 @@ export default function ReferralsPage() {
           </div>
         ) : (
           <Table
+            label={t("Referrals", "Рефералы")}
             head={
               <>
                 <th>{t("User", "Пользователь")}</th>
@@ -83,9 +84,9 @@ export default function ReferralsPage() {
           >
             {items.map((r) => {
               return (
-                <tr key={`${r.userMask}-${r.attributedAt}`}>
-                  <td className="mono">
-                    {r.userMask}
+                <tr key={`${r.userRef ?? r.userMask}-${r.attributedAt}`}>
+                  <td>
+                    <span className="identity-email" title={r.email ?? r.userMask}>{r.email ?? r.userMask}</span>
                     <div style={{ color: "var(--text-dim)", fontSize: "12px", marginTop: "2px" }}>
                       {t("joined", "с")} {formatDate(r.attributedAt, locale)}
                     </div>

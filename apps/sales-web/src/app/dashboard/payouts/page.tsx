@@ -217,7 +217,7 @@ export default function PayoutsPage() {
 
         {payments && payments.length > 0 ? (
           <Card title={t("Payments", "Выплаты")} sub={t("On-chain USDT (BEP-20) transfers to your wallet.", "On-chain переводы USDT (BEP-20) на ваш кошелёк.")}>
-            <Table head={<><th>{t("Date", "Дата")}</th><th className="num">{t("Amount", "Сумма")}</th><th>{t("Status", "Статус")}</th><th>{t("Transaction", "Транзакция")}</th></>}>
+            <Table label={t("Payments", "Выплаты")} head={<><th>{t("Date", "Дата")}</th><th className="num">{t("Amount", "Сумма")}</th><th>{t("Status", "Статус")}</th><th>{t("Transaction", "Транзакция")}</th></>}>
               {payments.map((p) => (
                 <tr key={p.id}>
                   <td>{new Date(p.paidAt ?? p.requestedAt).toLocaleDateString(localeFor(lang), { day: "numeric", month: "short", year: "numeric" })}</td>
@@ -343,6 +343,7 @@ export default function PayoutsPage() {
             </EmptyState>
           ) : (
             <Table
+              label={t("Earnings history", "История заработка")}
               head={
                 <>
                   <th>{t("Period", "Период")}</th>

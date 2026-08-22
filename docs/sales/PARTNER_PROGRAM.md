@@ -32,8 +32,8 @@ commission; settlement shortfall funded by the pool earns none either.
 The program is **invite-only**: an account is created only by invitation or after an application
 is approved.
 
-A separate product with its own domain, its own database and its own design (in the style of the
-main site):
+A separate product with its own domain and database. Its cabinet uses the same card hierarchy,
+responsive layout, light/dark theme and RU/EN preferences as the main dashboard:
 - partner site — `https://partners.apitoken.sale`
 - operator admin panel — `https://admin.partners.apitoken.sale`
 
@@ -227,6 +227,9 @@ discount.
   edge up to ten active levels.
   The dashboard uses the additive `/v1/partner/team/invites` writer; the previous writer remains
   only during the expand-only rollout and is retired after every documented consumer moves.
+- Promo-code creation and redemption are absent from the active partner/customer/admin interfaces.
+  Historical credit/accounting records remain readable by backend reconciliation only; they are
+  not a product capability.
 - **Payouts** — BSC wallet binding, the current period, the locked amount + unfreeze date, the
   date and estimate of the next payout, explicit debt after refunds, net history by periods, a
   "How payouts work" explanation.

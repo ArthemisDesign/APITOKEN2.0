@@ -14,7 +14,6 @@ const NAV = [
   { href: "/dashboard/referrals", en: "Referrals", ru: "Рефералы", icon: "⇢" },
   { href: "/dashboard/team", en: "Team", ru: "Команда", icon: "⁂" },
   { href: "/dashboard/payouts", en: "Payouts", ru: "Выплаты", icon: "◈" },
-  { href: "/dashboard/promo", en: "Promo codes", ru: "Промокоды", icon: "%", promoOnly: true },
   { href: "/dashboard/docs", en: "Docs", ru: "Документация", icon: "▤" },
   { href: "/dashboard/settings", en: "Settings", ru: "Настройки", icon: "⚙" },
 ];
@@ -95,7 +94,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             <Brand />
           </Link>
           <nav className="cab-nav">
-            {NAV.filter((item) => !("promoOnly" in item && item.promoOnly) || partner.promoEnabled).map((item) => {
+            {NAV.map((item) => {
               const active =
                 item.href === "/dashboard"
                   ? pathname === "/dashboard"
@@ -137,7 +136,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             </button>
             <div className="cab-topbar-user">
               <span className="email">
-                {partner.telegramUsername ? `@${partner.telegramUsername}` : partner.displayName ?? partner.email}
+                {partner.email ?? (partner.telegramUsername ? `@${partner.telegramUsername}` : partner.displayName)}
               </span>
               <LanguageToggle />
               <ThemeToggle />

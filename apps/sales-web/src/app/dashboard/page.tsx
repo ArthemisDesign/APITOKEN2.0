@@ -9,7 +9,7 @@ import {
   formatUsd,
   type EarningRow,
   type Overview,
-  type ProviderEarningsRow,
+  type ProviderEarningsResponse,
   type ReferralRow,
 } from "@/lib/api";
 import {
@@ -30,7 +30,7 @@ export default function OverviewPage() {
   const locale = localeFor(lang);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [earnings, setEarnings] = useState<EarningRow[] | null>(null);
-  const [byProvider, setByProvider] = useState<ProviderEarningsRow[] | null>(null);
+  const [byProvider, setByProvider] = useState<ProviderEarningsResponse | null>(null);
   const [recent, setRecent] = useState<ReferralRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,13 +41,13 @@ export default function OverviewPage() {
         const [ov, earn, providers, refs] = await Promise.all([
           api<Overview>("/v1/partner/overview"),
           api<{ items: EarningRow[] }>("/v1/partner/earnings?days=30"),
-          api<{ items: ProviderEarningsRow[] }>("/v1/partner/earnings/providers?days=30"),
+          api<ProviderEarningsResponse>("/v1/partner/earnings/providers?days=30"),
           api<{ items: ReferralRow[] }>("/v1/partner/referrals"),
         ]);
         if (cancelled) return;
         setOverview(ov);
         setEarnings(earn.items);
-        setByProvider(providers.items);
+        setByProvider(providers);
         setRecent(
           [...refs.items]
             .sort((a, b) => (a.attributedAt < b.attributedAt ? 1 : -1))
@@ -74,8 +74,8 @@ export default function OverviewPage() {
         {t("You earn ", "Вы получаете ")}
         <strong>{formatBps(overview.commissionBps)}</strong>
         {t(
-          " of what your referrals actually spend on API usage — the amount charged after their own discount, and only the part paid with real money (free bonus/promo balance is spent first and never counts). Not their top-ups, not list price. Paid out in USDT (BEP-20).",
-          " от того, что ваши рефералы реально тратят на использование API — от суммы, списанной после их скидки, и только с части, оплаченной реальными деньгами (бесплатный бонус/промо тратится первым и не считается). Не от пополнений и не от прайс-листа. Выплаты в USDT (BEP-20).",
+          " of what your referrals actually spend on API usage — the amount charged after their own discount, and only the part paid with real money. Free platform credit is spent first and never counts. Not their top-ups, not list price. Paid out in USDT (BEP-20).",
+          " от того, что ваши рефералы реально тратят на использование API — от суммы, списанной после их скидки, и только с части, оплаченной реальными деньгами. Бесплатные средства платформы тратятся первыми и не считаются. Не от пополнений и не от прайс-листа. Выплаты в USDT (BEP-20).",
         )}
       </p>
 
@@ -150,8 +150,8 @@ export default function OverviewPage() {
             <li>
               {t("Free credits never count: ", "Бесплатные средства не считаются: ")}
               {t(
-                "usage paid from a welcome bonus or promo balance earns you nothing — free money is spent first, and only spend covered by their real money counts.",
-                "использование, оплаченное из приветственного бонуса или промо-баланса, комиссию не приносит — бесплатное тратится первым, и засчитывается только трата, покрытая их реальными деньгами.",
+                "usage paid from free platform credit earns you nothing — free money is spent first, and only spend covered by their real money counts.",
+                "использование, оплаченное бесплатными средствами платформы, комиссию не приносит — бесплатное тратится первым, и засчитывается только трата, покрытая реальными деньгами клиента.",
               )}
             </li>
             <li>
@@ -186,7 +186,7 @@ export default function OverviewPage() {
             "За последние 30 дней, в разбивке по провайдеру, обслужившему запросы ваших рефералов.",
           )}
         >
-          {byProvider === null ? <Loading /> : <ProviderBreakdown items={byProvider} />}
+          {byProvider === null ? <Loading /> : <ProviderBreakdown items={byProvider.items} daily={byProvider.daily} />}
         </Card>
 
         <Card
@@ -203,9 +203,9 @@ export default function OverviewPage() {
           ) : (
             <div className="activity-list">
               {recent.map((r) => (
-                <div className="activity-item" key={`${r.userMask}-${r.attributedAt}`}>
+                <div className="activity-item" key={`${r.userRef ?? r.userMask}-${r.attributedAt}`}>
                   <span>
-                    <span className="mono">{r.userMask}</span> {t("joined ·", "присоединился ·")}{" "}
+                    <span className="identity-email" title={r.email ?? r.userMask}>{r.email ?? r.userMask}</span> {t("joined ·", "присоединился ·")}{" "}
                     <span style={{ color: "var(--accent-strong)" }}>
                       {formatUsd(r.netNano)}
                     </span>{" "}

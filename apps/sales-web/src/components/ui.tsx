@@ -179,14 +179,16 @@ export function StatusBadge({ status }: { status: string }) {
 // ---------------------------------------------------------------------------
 
 export function Table({
+  label,
   head,
   children,
 }: {
+  label: string;
   head: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <div className="table-wrap">
+    <div className="table-wrap" role="region" aria-label={label} tabIndex={0}>
       <table className="table">
         <thead>
           <tr>{head}</tr>
