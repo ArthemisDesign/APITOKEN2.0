@@ -108,8 +108,8 @@ Read order at the start of work:
 |---|---|---|---|---|
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
-| **Phase 1 — `contour-config` extract** | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Production contour implemented and locally green. Delivery watchdog pending. |
-| Phase 2 — trusted contour foundation | BLOCKED on 1 | — | — | Users, slice, loopback, netns, rootless Docker, isolation tests. |
+| **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
+| Phase 2 — trusted contour foundation | **NOT STARTED** | — | — | Next: users, slice, loopback, netns, rootless Docker, isolation tests. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -296,15 +296,15 @@ staging admission. Watchdog GREEN on this SHA is the phase 1 exit.
 ### Exit criteria
 
 - [x] Production still deploys from `master` with no new precondition.
-- [ ] No staging Unix user, directory, unit, or slice exists on the host as a result of this SHA.
+- [x] No staging Unix user, directory, unit, or slice exists on the host as a result of this SHA.
 - [x] Contour schema is in the repository and production watchdog reads it.
 - [x] Overlap/unknown-inventory validation is merge-blocking in tests.
-- [ ] This file’s status board says phase 1 `DONE` with the GREEN SHA.
+- [x] This file’s status board says phase 1 `DONE` with the GREEN SHA.
 
 ### Execution log
 
 ### 2026-08-23 — immutable production contour implemented
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `7e5b9840f19ee0130546c73c111816624c2af5b2`   watchdog: GREEN
 Result: Added the closed production contour schema, one production config, a fail-closed validator
 and Bash loader, overlap fixtures, and a golden resolved-inventory snapshot. Production watchdog,
 reporting, root bridges, release selectors, and application controllers resolve contour-owned values
@@ -315,7 +315,7 @@ Checks actually run: `bash -n deploy/*.sh deploy/apitoken-db-dump`;
 `bash deploy/lib.test.sh`; `python3 deploy/repository-invariants.py`; `git diff --check`;
 `./deploy/host-image-gate.sh`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
-Next: amend this log into the delivery commit, push, merge, and wait for GREEN `deploy/watchdog`.
+Next: Phase 2 — trusted contour foundation in a new managed worktree.
 
 ---
 
