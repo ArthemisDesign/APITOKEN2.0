@@ -1402,6 +1402,10 @@ for validation_only_path in \
   deploy/typescript-build-contexts.sh \
   deploy/typescript-test-groups.sh \
   deploy/commerce-release-bundle.test.sh \
+  deploy/host-image-gate.sh \
+  deploy/host-image-gate.test.sh \
+  deploy/host-image/Dockerfile \
+  deploy/host-image/prove-installers.sh \
   compose.yaml; do
   wd_path_is_infrastructure "$validation_only_path" \
     || wd_die "deployment tooling path escaped operational validation: $validation_only_path"
@@ -1414,6 +1418,20 @@ wd_path_is_caddy deploy/install-caddy.sh
 wd_path_is_caddy deploy/render-caddy.awk
 if wd_path_is_caddy deploy/watchdog.sh; then
   wd_die "non-Caddy infrastructure change requested a Caddy reload"
+fi
+wd_path_depends_on_ubuntu_host systemd/apitoken-observe-install.service \
+  || wd_die 'observe oneshot is not classified as Ubuntu-host'
+wd_path_depends_on_ubuntu_host deploy/install-observe.sh \
+  || wd_die 'install-observe.sh is not classified as Ubuntu-host'
+wd_path_depends_on_ubuntu_host deploy/install-sudoers.sh \
+  || wd_die 'install-sudoers.sh is not classified as Ubuntu-host'
+wd_path_depends_on_ubuntu_host deploy/host-image/prove-installers.sh \
+  || wd_die 'host-image proofs are not classified as Ubuntu-host'
+if wd_path_depends_on_ubuntu_host deploy/agent-worktree.sh; then
+  wd_die 'macOS worktree manager must not select the Ubuntu host-image'
+fi
+if wd_path_depends_on_ubuntu_host observability/prometheus/prometheus.yml; then
+  wd_die 'Prometheus YAML must not select the Ubuntu host-image'
 fi
 wd_path_is_systemd_definition systemd/apitoken-deploy-watchdog.service
 wd_path_is_systemd_definition systemd/apitoken-tmpfiles-install.service
@@ -4308,6 +4326,9 @@ observe_start_line=$(grep -nF 'systemctl start apitoken-observe-install.service'
 grep -Fq 'run_as_ci bash "$candidate/deploy/apitoken-observe.test.sh"' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'static lane must run the observe wrapper regression'
+grep -Fq 'run_as_ci bash "$candidate/deploy/host-image-gate.test.sh"' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'static lane must run the host-image wiring suite'
 if wd_path_is_controller_definition deploy/apitoken-observe.sh; then
   wd_die 'observe wrapper updates must run the systemd observe oneshot, not controller-only'
 fi

@@ -333,7 +333,11 @@ equivalent of the full run:
 `bash -n deploy/*.sh deploy/apitoken-db-dump` → `git diff --check` →
 `python3 deploy/repository-invariants.py` →
 `bash deploy/docs-check.sh "$(git rev-parse origin/master)" "$(git rev-parse HEAD)"`.
-Node 24 (`engines` already set, `.node-version` exists), pnpm 9.
+When the committed range matches `wd_path_depends_on_ubuntu_host` (installers,
+`systemd/*`, sudoers, Caddy render, host-image files), also
+`./deploy/host-image-gate.sh` — Docker required, fail-closed. Contract:
+`docs/ops/HOST_IMAGE_GATE.md`. Node 24 (`engines` already set, `.node-version`
+exists), pnpm 9.
 
 ## Migrations — expand-only, in two commits
 

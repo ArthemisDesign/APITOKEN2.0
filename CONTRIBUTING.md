@@ -67,6 +67,7 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    git diff --check
    python3 deploy/repository-invariants.py
    bash deploy/docs-check.sh "$(git rev-parse origin/master)" "$(git rev-parse HEAD)"
+   ./deploy/host-image-gate.sh   # Ubuntu-host diffs only; Docker required
    ```
 
    `change-plan.sh` is a read-only explanation of the exact committed scope. Supply a base that you
@@ -88,6 +89,13 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    non-stream and SSE semantics, and compares the read-only replay fixture. A local Rust lane runs
    both proofs when `CLAUDE_API_TEST_DATABASE_URL` is explicitly set; the standalone replay can also
    run after `cargo build -p claude-api -p claude-router` without PostgreSQL.
+
+   The deployment lane also runs `deploy/host-image-gate.sh` when the exact range
+   matches `wd_path_depends_on_ubuntu_host`: real Ubuntu `useradd` / visudo /
+   tmpfiles inside a disposable container. Darwin grep suites stay in place.
+   Missing Docker is a hard fail. The production host does not run that
+   privileged container; it still applies the real installer after tests. See
+   [`docs/ops/HOST_IMAGE_GATE.md`](docs/ops/HOST_IMAGE_GATE.md).
 
    The merge script selects TypeScript, Rust, and deployment lanes from the exact committed diff and
    runs the selected independent lanes concurrently. Shell syntax and exact-range whitespace checks

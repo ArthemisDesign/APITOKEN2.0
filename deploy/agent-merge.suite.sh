@@ -532,7 +532,7 @@ done
 for parallel_gate_contract in \
   'am_gate_typescript "$base" "$target" "$typescript_full" & typescript_pid=$!' \
   'am_gate_rust & rust_pid=$!' \
-  'am_gate_deployment & deployment_pid=$!' \
+  'am_gate_deployment "$base" "$target" & deployment_pid=$!' \
   'am_gate_static "$base" "$target" & static_pid=$!' \
   'wait "$typescript_pid" || typescript_rc=$?' \
   'wait "$rust_pid" || rust_rc=$?' \
@@ -565,6 +565,12 @@ grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the activation-journal suite'
 grep -Fq 'deploy/codex-homes-migrate.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the Codex home migration suite'
+grep -Fq 'deploy/host-image-gate.test.sh' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the production gate does not run the host-image wiring suite'
+! grep -Fq 'deploy/host-image-gate.sh"' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the production host must not run the privileged Ubuntu host-image container'
+grep -Fq 'deploy/host-image-gate.sh' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the local merge gate does not run the Ubuntu host-image proofs'
 ! grep -Fq 'deploy/codex-app-servers.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate still runs the removed Codex app-server ownership suite'
 # Требуем сам запуск с набором пакетов, а не дословную цитату аргументов: точное

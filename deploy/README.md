@@ -11,7 +11,11 @@ worktree with a clean tree and an upstream set: it reads the live `deploy/watchd
 the GitHub API (reusing the credential from `git credential`), runs the path-aware local gate
 for the lanes your diff touches (TypeScript/Rust/deployment classifiers from
 `deploy/watchdog-lib.sh`, always-on static lane with `bash -n`, `git diff --check`,
-`deploy/repository-invariants.py`, and `deploy/docs-check.sh`), takes the machine merge-lock, rebases onto the latest
+`deploy/repository-invariants.py`, and `deploy/docs-check.sh`). When the exact
+range matches `wd_path_depends_on_ubuntu_host`, the deployment lane also runs
+[`host-image-gate.sh`](host-image-gate.sh) (disposable Ubuntu 24.04 installer
+proofs; contract [`../docs/ops/HOST_IMAGE_GATE.md`](../docs/ops/HOST_IMAGE_GATE.md)).
+It then takes the machine merge-lock, rebases onto the latest
 `origin/master`, re-runs the gate on the exact SHA it pushes, fast-forwards local `master` to that
 GitHub SHA (merge `--ff-only` in a clean `master` checkout, otherwise only the ref), and holds the lock until the
 host reports a green `deploy/watchdog` on that SHA. A red SHA is never retried: fix forward

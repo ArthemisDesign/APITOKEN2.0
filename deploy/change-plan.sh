@@ -107,6 +107,7 @@ join_path_classes() {
   wd_path_is_admin "$path" && classes+=(admin)
   wd_path_is_devbot "$path" && classes+=(devbot)
   wd_path_is_infrastructure "$path" && classes+=(infrastructure)
+  wd_path_depends_on_ubuntu_host "$path" && classes+=(ubuntu-host)
   wd_path_is_merge_workflow "$path" && classes+=(merge-workflow)
   wd_path_is_validation_neutral "$path" && classes+=(validation-neutral)
   if (( ${#classes[@]} == 0 )); then

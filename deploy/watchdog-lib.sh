@@ -987,10 +987,27 @@ wd_path_requires_infrastructure_install() {
     deploy/test-stage2-e2e.sh|deploy/sccache-cargo.sh|deploy/agent-worktree.sh|\
     deploy/DELETE_WORKTREE.sh|deploy/prune-merged.sh|deploy/next-cache.sh|\
     deploy/typescript-scope.mjs|deploy/typescript-build-contexts.sh|\
-    deploy/typescript-test-groups.sh|compose.yaml)
+    deploy/typescript-test-groups.sh|deploy/host-image-gate.sh|deploy/host-image/*|\
+    compose.yaml)
       return 1
       ;;
     deploy/*|systemd/*|observability/*|compose.yaml)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# Paths whose correctness depends on Ubuntu userland or systemd namespaces.
+# A match selects the disposable host-image gate on the merge client. It does
+# not install anything on the production host.
+wd_path_depends_on_ubuntu_host() {
+  case "$1" in
+    systemd/*|deploy/install-*.sh|deploy/watchdog-infrastructure.sh|\
+    deploy/sudoers.d/*|deploy/apitoken-observe.sh|\
+    deploy/affinity-redis.compose.yaml|deploy/commerce-postgres.compose.yaml|\
+    deploy/Caddyfile|deploy/render-caddy.awk|deploy/host-image-gate.sh|\
+    deploy/host-image/*)
       return 0
       ;;
     *) return 1 ;;

@@ -213,10 +213,17 @@ am_gate_deployment() (
   bash "$ROOT/deploy/repository-invariants.test.sh"
   bash "$ROOT/deploy/docs-check.test.sh"
   bash "$ROOT/deploy/apitoken-observe.test.sh"
+  bash "$ROOT/deploy/host-image-gate.test.sh"
   # The merge path tests itself on every merge, strictly. It is deliberately not enforced in the
   # production gate: the watchdog installed on the host still calls deploy/agent-merge.test.sh, now a
   # report-only shim, so a host-environment difference cannot quarantine a SHA and trap its own fix.
   bash "$ROOT/deploy/agent-merge.suite.sh"
+  # Ubuntu useradd/visudo/tmpfiles/sysctl only run when the exact range depends on that userland.
+  # shellcheck source=deploy/watchdog-lib.sh
+  source "$ROOT/deploy/watchdog-lib.sh"
+  if wd_range_has_class "$ROOT" "$1" "$2" wd_path_depends_on_ubuntu_host; then
+    bash "$ROOT/deploy/host-image-gate.sh"
+  fi
 )
 
 am_gate_static() (
@@ -254,6 +261,7 @@ am_range_changes_local_gate() {
       deploy/change-plan.sh|deploy/change-plan.test.sh|\
       deploy/repository-invariants.py|deploy/repository-invariants.test.sh|\
       deploy/docs-check.sh|deploy/docs-check.py|deploy/docs-check.test.sh|\
+      deploy/host-image-gate.sh|deploy/host-image-gate.test.sh|deploy/host-image/*|\
       tests/control_api_engine_client_acceptance.sh|\
       packages/engine-client/acceptance/control-api.mjs|\
       tests/router_engine_replay.py|tests/router_engine_replay_mock.py|\
@@ -328,7 +336,7 @@ am_gate() {
     am_gate_rust & rust_pid=$!
   fi
   if (( deployment_required == 1 )); then
-    am_gate_deployment & deployment_pid=$!
+    am_gate_deployment "$base" "$target" & deployment_pid=$!
   fi
   am_gate_static "$base" "$target" & static_pid=$!
   if [[ -n $typescript_pid ]]; then wait "$typescript_pid" || typescript_rc=$?; fi
