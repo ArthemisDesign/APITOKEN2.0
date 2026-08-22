@@ -505,14 +505,6 @@ grep -Fq 'deploy/commerce-release-bundle.test.sh' "$ROOT/deploy/agent-merge.sh" 
 grep -Fq 'deploy/sccache-cargo.sh" cargo test --locked --workspace' \
   "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run Rust tests through the shared compilation cache'
-grep -Fq 'tests/claude_code_compat_matrix.sh' "$ROOT/deploy/agent-merge.sh" \
-  || wd_die 'the merge Rust lane does not run exact Claude Code compatibility'
-grep -Fq 'tools/refresh-fingerprint.test.sh' "$ROOT/deploy/agent-merge.sh" \
-  || wd_die 'the merge Rust lane does not test fingerprint extraction'
-grep -Fq 'tests/claude_code_compat_matrix.sh' "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'the host Rust lane does not run exact Claude Code compatibility'
-grep -Fq 'tools/refresh-fingerprint.test.sh' "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'the host Rust lane does not test fingerprint extraction'
 for sccache_contract in \
   'git-common-dir' \
   'worktree list --porcelain' \

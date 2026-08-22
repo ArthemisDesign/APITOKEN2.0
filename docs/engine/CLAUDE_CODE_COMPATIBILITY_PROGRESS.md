@@ -31,7 +31,7 @@ This is the implementation journal for findings `CC-01`, `CC-02`, `CC-03`, `CC-0
 ### 2026-08-22 — Remediation implementation
 
 - Added integrity-pinned native package manifests for macOS/Linux x64/arm64 and exact npm stable/latest versions.
-- Added a credential-blind loopback mock, bounded evidence assertion, and runner. The runner downloads only when its cache misses, validates SHA-512 before extraction, confirms the binary's exact version, and runs a current-control/structured-output case plus a discovery case for each channel. Both local and host Rust lanes run it. `CLAUDE_CODE_COMPAT_RUNTIME_BASE_URL` additionally replays the exact captured main request through an explicit loopback engine/router runtime when a caller composes one; the paid live harness remains separate.
+- Added a credential-blind loopback mock, bounded evidence assertion, and runner. The runner downloads only when its cache misses, validates SHA-512 before extraction, confirms the binary's exact version, and runs a current-control/structured-output case plus a discovery case for each channel. A regular `claude-api` Rust integration test composes the native Anthropic engine and mock upstream, then replays each stable/latest exact main request through that runtime; no delivery-controller change is needed. The paid live harness remains separate.
 - Preserved the configured `cc_version` exactly and removed synthetic build suffix generation from Claude and GLM subscription personas. Existing three-component production values remain valid during blue-green overlap and are no longer expanded; the next reviewed capture atomically replaces the same key with its full suffix. Fingerprint env updates now publish once with one final rename and never restart the legacy singleton.
 - Added `display_name` to model discovery without removing the existing `name` field.
 - Unified engine/router synthetic Anthropic identities: one `req_…` appears in `request-id` and body `request_id`; Messages request-size errors now use `request_too_large`.
@@ -44,9 +44,10 @@ This is the implementation journal for findings `CC-01`, `CC-02`, `CC-03`, `CC-0
 - `CLAUDE_CODE_COMPAT_CACHE_ROOT=/tmp/claude-code-compat-cache bash tests/claude_code_compat_matrix.sh` — GREEN for 2.1.231 stable and 2.1.239 latest, basic+discovery cases.
 - `cargo test -p claude-router` — 137 passed.
 - Focused subscription-attribution, synthetic-error, GLM full-version, and server full-version tests — GREEN. One broad parallel forward filter hit the pre-existing temporary SQLite name collision; the affected test passed immediately with `--test-threads=1`.
-- `bash deploy/agent-merge.suite.sh` and `bash deploy/watchdog-lib.test.sh` — GREEN after adding local/host exact-client lane contracts.
+- `bash deploy/agent-merge.suite.sh` and `bash deploy/watchdog-lib.test.sh` — GREEN before the final design moved exact acceptance into ordinary Rust integration coverage.
 - `cargo build` — GREEN for the full Rust workspace.
-- Full workspace test gate remains pending in the serialized merge pipeline. Paid/live evidence is never inferred from these local tests.
+- `cargo test -p claude-api --test claude_code_compat` — GREEN: both exact channels replayed through the native Anthropic engine and mock upstream with SSE completion.
+- The first full candidate gate exposed two stale server assertions after additive `request_id`; both were fixed and pass. A later trusted-host TypeScript failure came from changing the delivery controller itself; those controller changes were removed so the standard Rust lane owns this test. Paid/live evidence is never inferred from local tests.
 
 ## Completion criteria
 

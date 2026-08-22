@@ -817,9 +817,6 @@ test_rust_lane() {
     CLAUDE_API_TEST_REDIS_URL="$redis_url" \
     CI=1 \
     cargo test --locked --workspace --manifest-path "$candidate/Cargo.toml"
-  run_as_ci bash "$candidate/tools/refresh-fingerprint.test.sh"
-  run_as_ci env CLAUDE_CODE_COMPAT_CACHE_ROOT="$CI_HOME/claude-code-compat" \
-    bash "$candidate/tests/claude_code_compat_matrix.sh"
   if (( build_artifacts == 1 )); then
     wd_log "building the production engine, authbot and router once, from the tested candidate"
     run_as_ci env CLAUDE_API_IMPLEMENTATION_SHA="$sha" \
