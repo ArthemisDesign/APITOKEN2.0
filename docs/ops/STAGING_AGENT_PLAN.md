@@ -7,6 +7,9 @@
 > Do not treat `STAGING_ENVIRONMENT.md` as a task list. That file is architecture, invariants, and
 > owner decisions. This file is the ordered work, the standing orders, the checklists, and the SHA
 > journal.
+>
+> **Kickoff prompt for a new session:** [`docs/ops/STAGING_AGENT_PROMPT.md`](STAGING_AGENT_PROMPT.md).
+> A new executing agent creates a `/goal` first, then follows this file.
 
 **Next action:** Phase 1 — production `contour-config` extract only. No `deploy-stage`. No second
 watchdog. No enforcement. No host users. No netns.
@@ -37,7 +40,10 @@ Read order at the start of work:
 
 ## 1. Start of every turn
 
-1. Create or enter a managed worktree off fresh `origin/master`. Do not work in the primary clone.
+1. If this is a **new session** executing this plan, create the autonomous `/goal` from
+   [`docs/ops/STAGING_AGENT_PROMPT.md`](STAGING_AGENT_PROMPT.md) **before** a worktree and
+   before any edit. If `/goal` is missing, say so and keep the same objective in `todo_write`.
+2. Create or enter a managed worktree off fresh `origin/master`. Do not work in the primary clone.
 
    ```bash
    worktree=$(./deploy/agent-worktree.sh create <branch> <slug>)
@@ -50,11 +56,11 @@ Read order at the start of work:
    staging v1**; do not open a `preview/*` branch for this work unless the owner later adds a
    customer-frontend change.
 
-2. Read the **status board** in §3. Execute only the first phase that is not `DONE`.
-3. Do not start phase N+1 before phase N exit criteria are true on a GREEN `deploy/watchdog` SHA.
-4. After each commit: tick the items this commit closed, append an execution-log row, push, merge
+3. Read the **status board** in §3. Execute only the first phase that is not `DONE`.
+4. Do not start phase N+1 before phase N exit criteria are true on a GREEN `deploy/watchdog` SHA.
+5. After each commit: tick the items this commit closed, append an execution-log row, push, merge
    with `./deploy/agent-merge.sh` from this worktree. Never retry a red SHA.
-5. After GREEN `deploy/watchdog` on your SHA and `finish` of the worktree, the next agent (or you)
+6. After GREEN `deploy/watchdog` on your SHA and `finish` of the worktree, the next agent (or you)
    continues from the updated status board.
 
 ---
@@ -667,7 +673,9 @@ and only then ask the owner about phase 8.
 ## 19. Related documents
 
 - [`docs/ops/STAGING_ENVIRONMENT.md`](STAGING_ENVIRONMENT.md) — implementation plan (architecture).
-- [`docs/README.md`](../README.md) — index; keep both files listed.
+- [`docs/ops/STAGING_AGENT_PROMPT.md`](STAGING_AGENT_PROMPT.md) — kickoff prompt for a new
+  executing session. Creates `/goal` first, then this plan.
+- [`docs/README.md`](../README.md) — index; keep the three staging files listed.
 - `AGENTS.md`, `BRANCHES.md`, `CONTRIBUTING.md` — updated in phase 2 (SSH identities) and
   phase 7 (fail-closed flow), not before.
 - [`docs/ops/INFRASTRUCTURE.md`](INFRASTRUCTURE.md), [`docs/ops/DEPLOYMENT.md`](DEPLOYMENT.md),
