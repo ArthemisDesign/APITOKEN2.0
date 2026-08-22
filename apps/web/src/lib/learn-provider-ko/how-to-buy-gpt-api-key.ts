@@ -20,6 +20,7 @@ export const content: LocalizedContent = {
         { type: "list", items: [
           "증분 SSE streaming을 지원하는 Responses와 Chat Completions.",
           "GPT-5.6 Sol, Terra, Luna, 이전 GPT tier와 별도 GPT Image 2 route.",
+          "Sol의 임시 공식 input/cached/cache write/output 요금은 2026-11-21까지(당일 포함) $4/$0.40/$5/$20이며 50% 할인 후 $2/$0.20/$2.50/$10입니다. 2026-11-22 UTC부터 표준 $5 input/$30 output 요금으로 돌아갑니다.",
           "같은 키와 잔액으로 지원되는 Claude, Gemini, Kimi 모델 사용.",
           "모든 요청의 공식 provider 비용에 적용되는 고정 50% B2C 할인.",
         ] },

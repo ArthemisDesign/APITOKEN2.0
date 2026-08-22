@@ -2,7 +2,7 @@ import { buildModelMarkdownBySlug } from "@/lib/md-pages";
 import { claudeModels, modelPath } from "@/lib/models";
 import { SITE_ORIGIN } from "@/lib/seo";
 
-export const dynamic = "force-static";
+export const dynamic = "force-dynamic";
 
 export function generateStaticParams() {
   return claudeModels.map((model) => ({ slug: model.slug }));
@@ -17,7 +17,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ slu
     headers: {
       "content-type": "text/markdown; charset=utf-8",
       "x-markdown-source": `${SITE_ORIGIN}${modelPath(slug)}`,
-      "cache-control": "public, max-age=3600",
+      "cache-control": "no-store",
     },
   });
 }

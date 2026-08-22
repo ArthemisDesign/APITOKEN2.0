@@ -331,7 +331,8 @@ describe("completed Next.js migration", () => {
     expect(marketing).toContain('["Claude Opus 4.7","claude-opus-4-7","1M","$5","$25"');
     expect(marketing).toContain('["Claude Sonnet 4.6","claude-sonnet-4-6","1M","$3","$15"');
     expect(marketing).toContain('["Claude Haiku 4.5","claude-haiku-4-5","200K","$1","$5"');
-    expect(marketing).toContain('["GPT-5.6 Sol","gpt-5.6-sol","400K","$5","$30"');
+    expect(marketing).toContain('["GPT-5.6 Sol","gpt-5.6-sol","400K",formatUsd(solRates.inputPerM),formatUsd(solRates.outputPerM)');
+    expect(seoModels).toContain("export const GPT_56_SOL_PROMO_END_UNIX = 1_795_305_600;");
     expect(marketing).toContain('["GPT-5.6 Terra","gpt-5.6-terra","400K","$2","$12"');
     expect(marketing).toContain('["GPT-5.6 Luna","gpt-5.6-luna","400K","$0.20","$1.20"');
     expect(marketing).toContain('["GPT-5.5","gpt-5.5","400K","$5","$30"');

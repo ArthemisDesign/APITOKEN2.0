@@ -25,7 +25,7 @@ pub struct CodexPrices {
     pub cache_write_input: i128,
     pub output: i128,
     /// Public API Fast-mode price multiplier. This is not the ChatGPT-subscription credit
-    /// multiplier: GPT-5.6 API Fast is 2x after 2026-07-30 while subscription Fast is 2.5x.
+    /// multiplier: GPT-5.6 API Fast is 2x from 2026-07-30 while subscription Fast is 2.5x.
     pub api_fast_multiplier_basis_points: i64,
     /// OpenAI applies long-context pricing to the whole request above this input-token boundary.
     pub long_context_threshold: u64,
@@ -166,6 +166,8 @@ const EFFORTS_STANDARD: &[&str] = &["none", "low", "medium", "high", "xhigh"];
 const FAST_25X: Option<i64> = Some(25_000);
 const FAST_20X: Option<i64> = Some(20_000);
 const PRICE_CUT_2026_07_30: i64 = 1_785_369_600;
+const GPT_56_SOL_PROMO_START_2026_08_21: i64 = 1_787_270_400;
+const GPT_56_SOL_STANDARD_RETURN_2026_11_22: i64 = 1_795_305_600;
 // Public release dates: https://developers.openai.com/api/docs/changelog (reviewed 2026-08-19).
 const GPT_54_RELEASED: i64 = 1_772_668_800; // 2026-03-05
 const GPT_55_RELEASED: i64 = 1_776_988_800; // 2026-04-24
@@ -202,7 +204,12 @@ const fn credits(input: i128, cached_input: i128, output: i128) -> CodexCreditRa
 // GPT-5.6 explicit/implicit cache writes are billed at 1.25x fresh input. Older advertised
 // GPT-5.5/5.4 models retain their published input-rate write price. Keep this as a separate bucket:
 // a write is neither a normal input token nor a discounted cache read.
-// Source: https://developers.openai.com/api/docs/guides/latest-model#using-gpt-56
+// Sources:
+// - https://developers.openai.com/api/docs/guides/latest-model#using-gpt-56
+// - https://developers.openai.com/api/docs/models/gpt-5.6-sol
+// The official Sol promotion says "August 21 through November 21, 2026" without a timezone.
+// We interpret both date boundaries at 00:00:00 UTC: promo starts 2026-08-21T00:00:00Z and the
+// standard card returns 2026-11-22T00:00:00Z. Historical epochs and their IDs stay immutable.
 const GPT_56_SOL_SCHEDULE: &[IdentifiedCodexPriceEpoch] = &[
     IdentifiedCodexPriceEpoch {
         epoch: CodexPriceEpoch {
@@ -217,6 +224,22 @@ const GPT_56_SOL_SCHEDULE: &[IdentifiedCodexPriceEpoch] = &[
             prices: prices(5_000, 500, 6_250, 30_000, 20_000),
         },
         tariff_schedule_id: TariffScheduleId::from_static("openai/gpt-5.6-sol/2026-07-30/v2"),
+    },
+    IdentifiedCodexPriceEpoch {
+        epoch: CodexPriceEpoch {
+            effective_from: GPT_56_SOL_PROMO_START_2026_08_21,
+            prices: prices(4_000, 400, 5_000, 20_000, 20_000),
+        },
+        tariff_schedule_id: TariffScheduleId::from_static("openai/gpt-5.6-sol/2026-08-21-promo/v3"),
+    },
+    IdentifiedCodexPriceEpoch {
+        epoch: CodexPriceEpoch {
+            effective_from: GPT_56_SOL_STANDARD_RETURN_2026_11_22,
+            prices: prices(5_000, 500, 6_250, 30_000, 20_000),
+        },
+        tariff_schedule_id: TariffScheduleId::from_static(
+            "openai/gpt-5.6-sol/2026-11-22-standard/v4",
+        ),
     },
 ];
 const GPT_56_TERRA_SCHEDULE: &[IdentifiedCodexPriceEpoch] = &[
@@ -931,6 +954,57 @@ mod tests {
     }
 
     #[test]
+    fn sol_promo_boundaries_preserve_history_and_restore_the_standard_card() {
+        let historical = prices(5_000, 500, 6_250, 30_000, 20_000);
+        let promo = prices(4_000, 400, 5_000, 20_000, 20_000);
+        let boundaries = [
+            (
+                GPT_56_SOL_PROMO_START_2026_08_21 - 1,
+                "openai/gpt-5.6-sol/2026-07-30/v2",
+                PRICE_CUT_2026_07_30,
+                historical,
+            ),
+            (
+                GPT_56_SOL_PROMO_START_2026_08_21,
+                "openai/gpt-5.6-sol/2026-08-21-promo/v3",
+                GPT_56_SOL_PROMO_START_2026_08_21,
+                promo,
+            ),
+            (
+                GPT_56_SOL_STANDARD_RETURN_2026_11_22 - 1,
+                "openai/gpt-5.6-sol/2026-08-21-promo/v3",
+                GPT_56_SOL_PROMO_START_2026_08_21,
+                promo,
+            ),
+            (
+                GPT_56_SOL_STANDARD_RETURN_2026_11_22,
+                "openai/gpt-5.6-sol/2026-11-22-standard/v4",
+                GPT_56_SOL_STANDARD_RETURN_2026_11_22,
+                historical,
+            ),
+        ];
+
+        for (priced_ts, schedule_id, effective_from, expected_prices) in boundaries {
+            let alias = codex_tariff_capability_at("gpt-5.6", priced_ts, CodexServiceTier::Fast, 0)
+                .unwrap();
+            let concrete =
+                codex_tariff_capability_at("gpt-5.6-sol", priced_ts, CodexServiceTier::Fast, 0)
+                    .unwrap();
+
+            assert_eq!(alias, concrete, "alias drift at {priced_ts}");
+            assert_eq!(alias.tariff_schedule_id.as_str(), schedule_id);
+            assert_eq!(alias.schedule_effective_from, effective_from);
+            assert_eq!(alias.prices, expected_prices);
+            assert_eq!(alias.modifiers.service_tier_multiplier_basis_points, 20_000);
+            assert_eq!(codex_prices_at("gpt-5.6", priced_ts), Some(expected_prices));
+            assert_eq!(
+                codex_prices_at("gpt-5.6-sol", priced_ts),
+                Some(expected_prices)
+            );
+        }
+    }
+
+    #[test]
     fn july_price_cut_is_effective_dated_without_repricing_history() {
         let before = PRICE_CUT_2026_07_30 - 1;
         let after = PRICE_CUT_2026_07_30;
@@ -1044,7 +1118,16 @@ mod tests {
             ("gpt-5.5", "openai/codex/gpt-5.5"),
             ("gpt-5.4", "openai/codex/gpt-5.4"),
         ] {
-            for ts in [0, PRICE_CUT_2026_07_30 - 1, PRICE_CUT_2026_07_30, i64::MAX] {
+            for ts in [
+                0,
+                PRICE_CUT_2026_07_30 - 1,
+                PRICE_CUT_2026_07_30,
+                GPT_56_SOL_PROMO_START_2026_08_21 - 1,
+                GPT_56_SOL_PROMO_START_2026_08_21,
+                GPT_56_SOL_STANDARD_RETURN_2026_11_22 - 1,
+                GPT_56_SOL_STANDARD_RETURN_2026_11_22,
+                i64::MAX,
+            ] {
                 let (matched_family, prices) =
                     codex_matched_tariff_at(model, ts).expect("catalog model priced");
                 assert_eq!(matched_family, family, "{model} family");
@@ -1081,7 +1164,16 @@ mod tests {
     #[test]
     fn compiled_tariff_enumeration_covers_every_matcher_family_with_identical_prices() {
         let catalog_models: Vec<&'static str> = CATALOG.iter().map(|entry| entry.id).collect();
-        for ts in [0, PRICE_CUT_2026_07_30 - 1, PRICE_CUT_2026_07_30, i64::MAX] {
+        for ts in [
+            0,
+            PRICE_CUT_2026_07_30 - 1,
+            PRICE_CUT_2026_07_30,
+            GPT_56_SOL_PROMO_START_2026_08_21 - 1,
+            GPT_56_SOL_PROMO_START_2026_08_21,
+            GPT_56_SOL_STANDARD_RETURN_2026_11_22 - 1,
+            GPT_56_SOL_STANDARD_RETURN_2026_11_22,
+            i64::MAX,
+        ] {
             let enumerated: std::collections::BTreeMap<&'static str, CodexPrices> =
                 codex_compiled_tariffs_at(ts).into_iter().collect();
             // The default alias and its concrete model share one family: one entry per upstream.
@@ -1117,26 +1209,53 @@ mod tests {
     }
 
     #[test]
-    fn compiled_schedule_metadata_keeps_past_multi_epoch_families_seed_unsafe() {
-        for multi in [
+    fn compiled_schedule_future_epoch_matrix_tracks_each_codex_cutoff() {
+        let sol = "openai/codex/gpt-5.6-sol";
+        for (priced_ts, expected) in [
+            (PRICE_CUT_2026_07_30 - 1, true),
+            (PRICE_CUT_2026_07_30, true),
+            (GPT_56_SOL_PROMO_START_2026_08_21 - 1, true),
+            (GPT_56_SOL_PROMO_START_2026_08_21, true),
+            (GPT_56_SOL_STANDARD_RETURN_2026_11_22 - 1, true),
+            (GPT_56_SOL_STANDARD_RETURN_2026_11_22, false),
+            (i64::MAX, false),
+        ] {
+            assert_eq!(
+                codex_tariff_has_future_epoch_at(sol, priced_ts),
+                expected,
+                "Sol future-epoch flag at {priced_ts}"
+            );
+        }
+
+        for family in ["openai/codex/gpt-5.6-terra", "openai/codex/gpt-5.6-luna"] {
+            assert!(codex_tariff_has_future_epoch_at(
+                family,
+                PRICE_CUT_2026_07_30 - 1
+            ));
+            assert!(!codex_tariff_has_future_epoch_at(
+                family,
+                PRICE_CUT_2026_07_30
+            ));
+        }
+
+        for family in ["openai/codex/gpt-5.5", "openai/codex/gpt-5.4"] {
+            assert!(!codex_tariff_has_future_epoch_at(family, 0));
+        }
+        assert!(!codex_tariff_has_future_epoch_at("unknown/family", 0));
+    }
+
+    #[test]
+    fn compiled_schedule_seed_safety_matrix_rejects_every_multi_epoch_family() {
+        for family in [
             "openai/codex/gpt-5.6-sol",
             "openai/codex/gpt-5.6-terra",
             "openai/codex/gpt-5.6-luna",
         ] {
-            assert!(codex_tariff_has_future_epoch_at(
-                multi,
-                PRICE_CUT_2026_07_30 - 1
-            ));
-            assert!(!codex_tariff_has_future_epoch_at(
-                multi,
-                PRICE_CUT_2026_07_30
-            ));
-            assert!(!codex_tariff_seed_safe(multi));
+            assert!(!codex_tariff_seed_safe(family), "{family}");
         }
-
-        let single = "openai/codex/gpt-5.5";
-        assert!(!codex_tariff_has_future_epoch_at(single, 0));
-        assert!(codex_tariff_seed_safe(single));
+        for family in ["openai/codex/gpt-5.5", "openai/codex/gpt-5.4"] {
+            assert!(codex_tariff_seed_safe(family), "{family}");
+        }
         assert!(!codex_tariff_seed_safe("unknown/family"));
     }
 }

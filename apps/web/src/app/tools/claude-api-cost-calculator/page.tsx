@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { CostCalculator } from "@/components/cost-calculator";
 import { JsonLd } from "@/components/json-ld";
+import { openaiModelsAt } from "@/lib/models";
+
+export const dynamic = "force-dynamic";
 
 const TITLE = "Claude API Cost Calculator — Free Price Estimator for Every Model";
 const DESC =
@@ -95,7 +98,7 @@ export default function CostCalculatorPage() {
 
       <section className="borderless">
         <div className="wrap">
-          <CostCalculator />
+          <CostCalculator openaiCatalog={openaiModelsAt()} />
         </div>
       </section>
 

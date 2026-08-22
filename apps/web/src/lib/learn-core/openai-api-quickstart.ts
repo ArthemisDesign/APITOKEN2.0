@@ -31,20 +31,21 @@ export const article: LearnArticle = {
     { h2: "Model IDs, per-token prices and the 272K trap", blocks: [
       { type: "p", text: "The served set is pinned and priced in the engine, and GET https://router.apitoken.sale/v1/models is always the live answer. Today the line covers three GPT-5.6 tiers plus two previous-generation models kept for compatibility:" },
       { type: "table", headers: ["Model ID", "Tier", "Official in / out ($ per 1M)", "Cached input"], rows: [
-        ["gpt-5.6-sol (alias: gpt-5.6)", "Flagship", "$5 / $30", "$0.50"],
+        ["gpt-5.6-sol (alias: gpt-5.6)", "Flagship", "$4 / $20 (temporary)", "$0.40"],
         ["gpt-5.6-terra", "Balanced", "$2 / $12", "$0.20"],
         ["gpt-5.6-luna", "Fast", "$0.20 / $1.20", "$0.02"],
         ["gpt-5.5", "Previous flagship", "$5 / $30", "$0.50"],
         ["gpt-5.4", "Previous balanced", "$2.50 / $15", "$0.25"],
       ] },
       { type: "list", items: [
+        "Sol's temporary official input/cached/cache-write/output rates are $4/$0.40/$5/$20 through 2026-11-21 inclusive, or $2/$0.20/$2.50/$10 after the flat 50% discount. Standard $5 input and $30 output return on 2026-11-22 UTC.",
         "Pick by tier: gpt-5.6-sol for the hardest reasoning, gpt-5.6-terra as the daily driver, gpt-5.6-luna for high-volume cheap calls. The alias gpt-5.6 tracks the flagship.",
         "Reasoning effort is adjustable per request — none through xhigh on every model, plus max on the GPT-5.6 line.",
         "Every model accepts text and image input and streams over SSE on both Responses and Chat Completions.",
-        "Cached input is priced separately and far cheaper than fresh input ($0.50 vs $5 per 1M on the flagship) — keeping a stable prompt prefix across calls is real money, not a micro-optimization.",
+        "Cached input is priced separately and far cheaper than fresh input ($0.40 vs $4 per 1M on promotional Sol) — keeping a stable prompt prefix across calls is real money, not a micro-optimization.",
         "Your flat 50% B2C discount applies here exactly as it does to Claude usage — one balance, one rate, half off official spend.",
       ] },
-      { type: "note", text: "The 272K threshold is the trap: above it, OpenAI long-context rates apply to the whole request — 2× on input and 1.5× on output, not just the overflow. A request at 273K input tokens costs more than twice one at 270K. Split oversized contexts or trim history before you cross the boundary." },
+      { type: "note", text: "The 272K threshold is the trap: above it, OpenAI long-context rates apply to the whole request — 2× on input and 1.5× on output, not just the overflow. On promotional Sol, 270K input plus 2K output costs $1.12 official; 273K plus 2K costs $2.244. Split oversized contexts or trim history before you cross the boundary." },
       { type: "link", text: "Full per-model specs and discounted prices", href: "/models" },
     ] },
     { h2: "What this endpoint is — and is not", blocks: [

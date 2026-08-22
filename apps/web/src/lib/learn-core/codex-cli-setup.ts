@@ -34,11 +34,12 @@ export const article: LearnArticle = {
     { h2: "Pick the right GPT-5.6 tier for the session", blocks: [
       { type: "p", text: "The model line in the profile is your default, not a commitment — edit it per project. The three GPT-5.6 tiers exist because agentic coding burns tokens at very different rates depending on how hard the reasoning is:" },
       { type: "table", headers: ["Model ID", "Tier", "Official in / out ($ per 1M)", "Cached input"], rows: [
-        ["gpt-5.6-sol", "Flagship", "$5 / $30", "$0.50"],
+        ["gpt-5.6-sol", "Flagship", "$4 / $20 (temporary)", "$0.40"],
         ["gpt-5.6-terra", "Balanced", "$2 / $12", "$0.20"],
         ["gpt-5.6-luna", "Fast", "$0.20 / $1.20", "$0.02"],
       ] },
       { type: "list", items: [
+        "Sol's temporary official input/cached/cache-write/output rates are $4/$0.40/$5/$20 through 2026-11-21 inclusive, or $2/$0.20/$2.50/$10 after the flat 50% discount. Standard $5 input and $30 output return on 2026-11-22 UTC.",
         "gpt-5.6-sol for the hardest work: multi-file refactors, subtle debugging, anything where a wrong answer costs more than the tokens.",
         "gpt-5.6-terra as the daily driver — the tier most Codex sessions should default to.",
         "gpt-5.6-luna for fast cheap steps: boilerplate, renames, throwaway scripts, and high-volume loops where latency matters more than depth.",

@@ -33,6 +33,8 @@ const staticPageSeo = {
 
 type StaticPageSlug = keyof typeof staticPageSeo;
 
+export const dynamic = "force-dynamic";
+
 function isStaticPageSlug(slug: string): slug is StaticPageSlug {
   return slug in staticPageSeo;
 }

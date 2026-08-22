@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { JsonLd } from "@/components/json-ld";
 import { DocsPortal } from "./docs-portal";
+import { openaiModelsAt } from "@/lib/models";
 import {
   absoluteUrl,
   breadcrumbNode,
@@ -12,9 +13,8 @@ import {
 
 export const metadata: Metadata = createPageMetadata(seoPages.docs);
 
-// English docs are content-only and can be generated once. Localized variants
-// retain request-aware language handling in the shared root layout.
-export const dynamic = "force-static";
+// Pricing is effective-dated, so the docs resolve the official card on each request.
+export const dynamic = "force-dynamic";
 
 const docsJsonLd = {
   "@context": "https://schema.org",
@@ -37,5 +37,5 @@ const docsJsonLd = {
 };
 
 export default function DocsPage() {
-  return <><JsonLd data={docsJsonLd} /><DocsPortal /></>;
+  return <><JsonLd data={docsJsonLd} /><DocsPortal openaiCatalog={openaiModelsAt()} /></>;
 }

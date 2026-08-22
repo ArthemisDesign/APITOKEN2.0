@@ -5,6 +5,8 @@ import { IntegrationGuidePage, IntegrationsPage, ModelsPage } from "@/components
 import { absoluteUrl, breadcrumbJsonLd, breadcrumbNode, createNoIndexMetadata, integrationGuideSeo, LAST_CONTENT_UPDATE, SITE_ORIGIN, seoPages, type IntegrationGuideSlug } from "@/lib/seo";
 import { coreIntRu, coreMetadata, coreRu } from "@/lib/seo-core";
 
+export const dynamic = "force-dynamic";
+
 const staticPages: Record<string, { enPath: string; en: { title: string; description: string }; ru: { title: string; description: string } }> = {
   models: { enPath: "/models", en: seoPages.models, ru: coreRu.models },
   integrations: { enPath: "/integrations", en: seoPages.integrations, ru: coreRu.integrations },

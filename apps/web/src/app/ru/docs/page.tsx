@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import { DocsPortal } from "@/app/docs/docs-portal";
 import { JsonLd } from "@/components/json-ld";
 import { absoluteUrl, breadcrumbNode, createPageMetadata, LAST_CONTENT_UPDATE, SITE_ORIGIN } from "@/lib/seo";
+import { openaiModelsAt } from "@/lib/models";
+
+export const dynamic = "force-dynamic";
 
 const title = "Документация API — Claude и GPT";
 const description = "Подключите Anthropic-совместимый или OpenAI-совместимый клиент к API Claude и GPT через apiToken.sale.";
@@ -29,5 +32,5 @@ const docsJsonLd = {
 };
 
 export default function DocsPageRu() {
-  return <><JsonLd data={docsJsonLd} /><DocsPortal /></>;
+  return <><JsonLd data={docsJsonLd} /><DocsPortal openaiCatalog={openaiModelsAt()} /></>;
 }

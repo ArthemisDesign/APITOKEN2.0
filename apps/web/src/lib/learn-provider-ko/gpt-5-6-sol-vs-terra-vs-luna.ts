@@ -9,11 +9,12 @@ export const content: LocalizedContent = {
     sections: [
       { h2: "작업별 선택", blocks: [
         { type: "table", headers: ["Tier", "적합한 작업", "공식 input / output"], rows: [
-          ["Sol", "어려운 reasoning, 장기 agent, 복잡한 code review", "$5 / $30"],
+          ["Sol", "어려운 reasoning, 장기 agent, 복잡한 code review", "$4 / $20 (임시)"],
           ["Terra", "일상 coding, production chat, 균형 잡힌 agent", "$2 / $12"],
           ["Luna", "분류, 추출, routing, 대량 단순 작업", "$0.20 / $1.20"],
         ] },
-        { type: "p", text: "Terra가 가장 안전한 기본값입니다. Sol의 controls와 context를 40% 가격에 유지합니다. eval에서 품질 차이가 확인되면 Sol로 올리고 예측 가능한 대량 작업은 Luna로 보냅니다." },
+        { type: "p", text: "Terra가 가장 안전한 기본값입니다. Sol의 controls와 context를 유지하면서 임시 Sol 요금 대비 input은 50%, output은 60%입니다. eval에서 품질 차이가 확인되면 Sol로 올리고 예측 가능한 대량 작업은 Luna로 보냅니다." },
+        { type: "note", text: "Sol 임시 공식 요금은 2026-11-21까지(당일 포함) input/cached/cache write/output $4/$0.40/$5/$20이며 50% 할인 후 $2/$0.20/$2.50/$10입니다. reasoning token도 output으로 청구되어 프로모션 기간 공식 요금은 100만 token당 $20입니다. 2026-11-22 UTC부터 표준 $5 input/$30 output 요금으로 돌아갑니다." },
       ] },
       { h2: "공통 기능", blocks: [
         { type: "list", items: [

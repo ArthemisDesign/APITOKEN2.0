@@ -14,6 +14,7 @@ import { ModelsPricing } from "./models-pricing";
 import { GeminiBatchGuide } from "./gemini-batch-guide";
 import { HighlightedCode } from "./highlighted-code";
 import { Prose } from "./prose";
+import type { OpenAiModel } from "@/lib/models";
 
 const CLAUDE_CACHE_JSON = `{
   "model": "claude-opus-4-8",
@@ -250,7 +251,7 @@ const copy = {
   },
 } as const;
 
-export function DocsPortal() {
+export function DocsPortal({ openaiCatalog }: { openaiCatalog?: OpenAiModel[] }) {
   const { language, setLanguage } = useI18n();
   const t = copy[language];
   const [supportUrl, setSupportUrl] = useState(SUPPORT_TELEGRAM_URL);
@@ -347,7 +348,7 @@ export function DocsPortal() {
 
         <section className="docs-section" id="models">
           <div className="docs-section-heading"><span>04</span><div><h2>{t.modelsTitle}</h2><p>{t.modelsText}</p></div></div>
-          <ModelsPricing language={language} />
+          <ModelsPricing language={language} openaiCatalog={openaiCatalog} />
         </section>
 
         <section className="docs-section" id="gemini-batch">

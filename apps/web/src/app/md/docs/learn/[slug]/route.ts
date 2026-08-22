@@ -1,7 +1,7 @@
 import { articlesForLocale, learnPath, renderLearnMarkdown, resolveArticle } from "@/lib/learn";
 import { SITE_ORIGIN } from "@/lib/seo";
 
-export const dynamic = "force-static";
+export const dynamic = "force-dynamic";
 
 export function generateStaticParams() {
   return articlesForLocale("en").map((slug) => ({ slug }));
@@ -18,7 +18,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ slu
     headers: {
       "content-type": "text/markdown; charset=utf-8",
       "x-markdown-source": `${SITE_ORIGIN}${learnPath(slug, "en")}`,
-      "cache-control": "public, max-age=3600",
+      "cache-control": "no-store",
     },
   });
 }

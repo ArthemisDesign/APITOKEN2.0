@@ -661,7 +661,11 @@ The time-bounded `anthropic/standard/sonnet-5-intro` family is published by the 
 after the flip the intro family is dead — the matcher never emits it again — and the scheduled
 epoch change is published as a normal new override version of `anthropic/standard/sonnet-current`.
 `google/gemini/gemini-3.6-flash` instead has two epochs in one family (promo through 2026-12-31,
-standard from `2027-01-01T00:00:00Z`) and is therefore never seed-safe.
+standard from `2027-01-01T00:00:00Z`) and is therefore never seed-safe. The concrete
+current+future pair `openai/codex/gpt-5.6-sol` follows the same rule: its promotional API card starts
+at `2026-08-21T00:00:00Z` and its standard card returns at `2026-11-22T00:00:00Z`, so the family is
+never seed-safe even after the return cutoff. The `gpt-5.6` alias resolves this same family; it does
+not create a second schedule.
 
 For a multi-epoch price correction, use an append-only pair because the schema deliberately has no
 `effective_until`: first publish the current payload with `effective_from` at the current rollout

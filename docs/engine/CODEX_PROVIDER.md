@@ -329,8 +329,15 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   rates for GPT-5.6 Terra are `$2 / $0.20 / $2.50 / $12` and Luna
   `$0.20 / $0.02 / $0.25 / $1.20` per million fresh / cached / cache-write / output tokens. The
   same effective epoch changed GPT-5.6 API Fast to `2x`, while ChatGPT subscription Fast remains
-  `2.5x` credits (`2x` for GPT-5.4). This distinction prevents the API-dollar workload equivalent
-  from being mistaken for a plan's fixed dollar size. Sources:
+  `2.5x` credits (`2x` for GPT-5.4). GPT-5.6 Sol then uses the official promotional API card
+  `$4 / $0.40 / $5 / $20` with API Fast `2x` from `2026-08-21T00:00:00Z`; its standard
+  `$5 / $0.50 / $6.25 / $30` card returns automatically at `2026-11-22T00:00:00Z`. The official
+  model page states “August 21 through November 21, 2026” without a timezone. The engine explicitly
+  interprets the inclusive date range as the half-open UTC interval
+  `[2026-08-21T00:00:00Z, 2026-11-22T00:00:00Z)`. The public alias `gpt-5.6` and concrete
+  `gpt-5.6-sol` resolve the same immutable epoch schedule. This distinction prevents the API-dollar
+  workload equivalent from being mistaken for a plan's fixed dollar size. Sources:
+  [GPT-5.6 Sol model and promotion](https://developers.openai.com/api/docs/models/gpt-5.6-sol),
   [Codex credits](https://learn.chatgpt.com/docs/pricing#what-are-tokens-and-credits),
   [Fast mode](https://learn.chatgpt.com/docs/agent-configuration/speed#fast-mode), and the
   [2026-07-30 API changelog](https://developers.openai.com/api/docs/changelog#july-2026).

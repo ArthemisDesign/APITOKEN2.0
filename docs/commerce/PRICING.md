@@ -8,11 +8,13 @@ corresponding checklist in `docs/CHANGE_CHECKLISTS.md`.
 ## Current authority
 
 - The engine account has one payable default, `accounts.mult_bp`, bounded to `0..10000`.
-- Provider list prices are a separate, effective-dated engine tariff authority. In particular,
-  Gemini 3.6 Flash and Gemini 3.7 Flash use Google's $0.75 / $0.075 / $3.75 per-1M promotion through
-  2026-12-31 and switch to $1.50 / $0.15 / $7.50 at 2027-01-01T00:00:00Z; the account multiplier is
-  applied to whichever official epoch the request pins. The storefront resolves the same cutoff at
-  build time, so its official and discounted figures follow the engine epoch instead of a static card.
+- Provider list prices are a separate, effective-dated engine tariff authority. GPT-5.6 Sol uses
+  OpenAI's `$4 / $0.40 / $5 / $20` per-1M fresh/cached/cache-write/output promotion through
+  2026-11-21 and returns to `$5 / $0.50 / $6.25 / $30` at 2026-11-22T00:00:00Z. Gemini 3.6 Flash
+  and Gemini 3.7 Flash use Google's $0.75 / $0.075 / $3.75 promotion through 2026-12-31 and switch
+  to $1.50 / $0.15 / $7.50 at 2027-01-01T00:00:00Z. The account multiplier is applied to whichever
+  official epoch the request pins. Price-bearing storefront requests resolve the same cutoffs at
+  request time, so their official and discounted figures change without a redeploy.
 - Optional `account_provider_discounts` rows override that default for one canonical provider.
 - Commerce persists the same desired default and provider rows, then delivers them through the
   fenced `engine_pricing_jobs` queue. A pricing edit is effective on the next authorization read;

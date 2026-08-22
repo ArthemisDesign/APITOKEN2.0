@@ -24,8 +24,14 @@
   the current clock. The Control API uses this metadata to prevent a zero-time override from
   collapsing historical or future prices.
 - The Codex catalog and the ChatGPT Fast credit multiplier also live only here. Fast is a tier of an
-  existing model, not a separate model id: GPT-5.6/5.5 = 2.5x, GPT-5.4 = 2x. Change it only per the
-  published OpenAI table with an exact-multiplier test. `codex_credit_cost_nano_with_rates` prices
+  existing model, not a separate model id: ChatGPT GPT-5.6/5.5 = 2.5x credits, GPT-5.4 = 2x. API
+  Fast is a separate field in each effective-dated API epoch. The official GPT-5.6 Sol promotion is
+  `$4 / $0.40 / $5 / $20` per million fresh / cached / cache-write / output tokens with API Fast
+  `2x` from `2026-08-21T00:00:00Z`; the standard `$5 / $0.50 / $6.25 / $30` card returns at
+  `2026-11-22T00:00:00Z`. OpenAI publishes the promotion as August 21 through November 21 without
+  a timezone, and this catalog explicitly interprets both date boundaries at 00:00:00 UTC. Source:
+  https://developers.openai.com/api/docs/models/gpt-5.6-sol. Change rates or multipliers only per
+  the published OpenAI table with exact boundary and multiplier tests. `codex_credit_cost_nano_with_rates` prices
   the same credit legs from an explicitly supplied rate card (the hot override book's pinned or
   resolved card) with the compiled model Fast multiplier; the model-keyed `codex_credit_cost_nano`
   delegates to it, so the two can never diverge.

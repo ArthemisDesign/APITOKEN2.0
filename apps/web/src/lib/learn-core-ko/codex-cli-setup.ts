@@ -18,6 +18,7 @@ export const content: LocalizedContent = {
         { type: "list", items: [
           "항상 --profile apitoken을 명시적으로 전달해 어떤 프로바이더와 어떤 환경 변수가 활성인지 모호하지 않게 하세요.",
           "model 줄을 바꿔 프로젝트별로 모델을 전환하세요: 가장 어려운 작업은 gpt-5.6-sol, 일상적인 작업은 gpt-5.6-terra, 빠르고 저렴한 단계는 gpt-5.6-luna.",
+          "Sol의 임시 공식 input/cached/cache write/output 요금은 2026-11-21까지(당일 포함) $4/$0.40/$5/$20이며 50% 할인 후 $2/$0.20/$2.50/$10입니다. 2026-11-22 UTC부터 표준 $5 input/$30 output 요금으로 돌아갑니다.",
           "같은 Bearer 키로 GET https://router.apitoken.sale/v1/models를 호출하면 현재 활성화된 모델 세트를 볼 수 있습니다 — 통합 카탈로그는 ID를 제공자별로 구분합니다(anthropic/*, openai/*, google/*).",
         ] },
         { type: "note", text: "wire_api = \"responses\"가 Codex 0.149의 유효한 값입니다. Codex 0.149는 Responses wire만 허용합니다. 게이트웨이는 다른 클라이언트를 위해 Chat Completions도 제공하지만, Codex에서 wire_api = \"chat\"은 유효하지 않습니다." },

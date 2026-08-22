@@ -17,11 +17,18 @@ import {
   modelPath,
   MODELS_HUB_PATH,
   openaiModels,
+  openaiModelsAt,
   priceHere,
   type CatalogModel,
 } from "@/lib/models";
 
 type Params = { slug: string };
+
+export const dynamic = "force-dynamic";
+
+function effectiveCatalogModel(slug: string): CatalogModel | undefined {
+  return openaiModelsAt().find((model) => model.slug === slug) ?? catalogModelBySlug[slug];
+}
 
 export function generateStaticParams(): Params[] {
   return [...claudeModels, ...openaiModels, ...geminiModels].map((model) => ({ slug: model.slug }));
@@ -29,7 +36,7 @@ export function generateStaticParams(): Params[] {
 
 export async function generateMetadata({ params }: { params: Promise<Params> }): Promise<Metadata> {
   const { slug } = await params;
-  const model = catalogModelBySlug[slug];
+  const model = effectiveCatalogModel(slug);
   if (!model) return {};
   return {
     ...createPageMetadata({ path: modelPath(slug), title: model.title, description: model.description }),
@@ -104,7 +111,7 @@ const providerCopy = {
 
 export default async function ModelPage({ params }: { params: Promise<Params> }) {
   const { slug } = await params;
-  const model = catalogModelBySlug[slug];
+  const model = effectiveCatalogModel(slug);
   if (!model) notFound();
 
   const copy = providerCopy[model.provider];
@@ -112,7 +119,7 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
   const related = model.related
     .map((relatedSlug) => resolveArticle(relatedSlug, "en"))
     .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
-  const siblings = model.provider === "anthropic" ? claudeModels : model.provider === "openai" ? openaiModels : geminiModels;
+  const siblings = model.provider === "anthropic" ? claudeModels : model.provider === "openai" ? openaiModelsAt() : geminiModels;
   const others = siblings.filter((entry) => entry.slug !== slug);
   const priceRows = priceRowsFor(model);
 

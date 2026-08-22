@@ -10,7 +10,7 @@ const tr = (language: Language, en: string, ru: string) => (language === "ru" ? 
 // Docs "Models & pricing" section: both providers, every model, official list
 // rates vs. the flat 50% discount. All numbers come from the live catalog in
 // @/lib/models — the same source as /models and the cost calculator.
-export function ModelsPricing({ language }: { language: Language }) {
+export function ModelsPricing({ language, openaiCatalog = openaiModels }: { language: Language; openaiCatalog?: OpenAiModel[] }) {
   return <div className="mp-root">
     <ProviderPanel
       language={language}
@@ -32,7 +32,7 @@ export function ModelsPricing({ language }: { language: Language }) {
       host="router.apitoken.sale"
       path="POST /v1/responses · POST /v1/chat/completions"
       auth="Authorization: Bearer"
-      models={openaiModels}
+      models={openaiCatalog}
       cacheNote={tr(language,
         "Caching is automatic — repeated prefixes bill at the cached-input rate with no opt-in. `gpt-5.6` is an alias of `gpt-5.6-sol`.",
         "Кеширование автоматическое — повторяющиеся префиксы тарифицируются по ставке кешированного ввода, ничего включать не нужно. `gpt-5.6` — алиас `gpt-5.6-sol`.")}

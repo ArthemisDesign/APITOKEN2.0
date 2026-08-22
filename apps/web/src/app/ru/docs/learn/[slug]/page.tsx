@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+
+export const dynamic = "force-dynamic";
 import { notFound } from "next/navigation";
 import { JsonLd } from "@/components/json-ld";
 import { LearnArticleView } from "@/components/learn-article";

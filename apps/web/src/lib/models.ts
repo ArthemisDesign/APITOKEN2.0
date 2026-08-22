@@ -129,6 +129,24 @@ export type KimiModel = {
 
 export type CatalogModel = ClaudeModel | OpenAiModel | GeminiModel | KimiModel;
 
+export type Gpt56SolPricing = {
+  inputPerM: number;
+  cachedInputPerM: number;
+  cacheWritePerM: number;
+  outputPerM: number;
+  promotional: boolean;
+};
+
+/** First UTC instant after OpenAI's promotion through 2026-11-21 inclusive. */
+export const GPT_56_SOL_PROMO_END_UNIX = 1_795_305_600;
+
+/** Resolve the effective official GPT-5.6 Sol card without repricing any other GPT model. */
+export function gpt56SolPricingAt(unixSeconds = Math.floor(Date.now() / 1000)): Gpt56SolPricing {
+  return unixSeconds < GPT_56_SOL_PROMO_END_UNIX
+    ? { inputPerM: 4, cachedInputPerM: 0.4, cacheWritePerM: 5, outputPerM: 20, promotional: true }
+    : { inputPerM: 5, cachedInputPerM: 0.5, cacheWritePerM: 6.25, outputPerM: 30, promotional: false };
+}
+
 export const DISCOUNT_FLAT = 0.5;
 
 /** Google Gemini 3.6/3.7 promotional rates end at this UTC instant. */
@@ -401,11 +419,12 @@ export const claudeModels: ClaudeModel[] = [
 // GPT rates mirror the pinned engine catalog (crates/metering/src/codex.rs): official OpenAI
 // standard token pricing, cached input at 10% of input, cache write at 125% of input for the
 // 5.6 line and 100% for 5.5/5.4, and long-context pricing (2× input, 1.5× output on the whole
-// request) above 272K input tokens. Terra and Luna carry the post-2026-07-30 official rates
-// ($2/$12 and $0.20/$1.20); gpt-5.6-sol is unchanged. gpt-5.6 is a convenience alias of
-// gpt-5.6-sol and is deliberately not listed as a separate page — one canonical pricing
+// request) above 272K input tokens. Terra and Luna carry the post-2026-07-30 official rates.
+// GPT-5.6 Sol resolves its temporary $4/$20 card through 2026-11-21 and returns to $5/$30
+// on 2026-11-22 UTC. gpt-5.6 is a convenience alias of gpt-5.6-sol and is deliberately not
+// listed as a separate page — one canonical pricing
 // identity per model.
-export const openaiModels: OpenAiModel[] = [
+const OPENAI_MODELS_STANDARD: OpenAiModel[] = [
   {
     provider: "openai",
     slug: "gpt-5-6-sol",
@@ -413,7 +432,7 @@ export const openaiModels: OpenAiModel[] = [
     name: "GPT-5.6 Sol",
     tier: "Flagship",
     title: "GPT-5.6 Sol API — Price per Token & Access",
-    description: "GPT-5.6 Sol API pricing: official $5/$30 per 1M tokens, $2.50/$15 with the flat 50% apiToken.sale discount. OpenAI-compatible endpoint, one key, prepaid balance.",
+    description: "GPT-5.6 Sol API pricing: temporary official $4/$20 per 1M tokens through 2026-11-21, $2/$10 with the flat 50% apiToken.sale discount; standard $5/$30 returns 2026-11-22 UTC.",
     keywords: ["gpt-5.6 api", "gpt-5.6 sol price", "gpt-5.6 api cost", "gpt-5.6-sol", "gpt-5.6 token pricing", "openai compatible api"],
     dek: "GPT-5.6 Sol is the flagship of the GPT-5.6 line — the strongest reasoning and agentic coding model on the OpenAI-compatible endpoint. Here is what it costs per token, and how to run it cheaper on the same key and balance.",
     inputPerM: 5,
@@ -434,7 +453,7 @@ export const openaiModels: OpenAiModel[] = [
       "Requests above 272K input tokens bill at OpenAI long-context rates: 2× input and 1.5× output on the whole request.",
     ],
     faq: [
-      { q: "How much does the GPT-5.6 Sol API cost?", a: "Officially $5 per 1M input tokens and $30 per 1M output tokens, with cached input at $0.50. On apiToken.sale the same requests cost 50% less — $2.50/$15 at the flat discount applied to every call." },
+      { q: "How much does the GPT-5.6 Sol API cost?", a: "Through 2026-11-21 inclusive, the temporary official card is $4 input, $0.40 cached input, $5 cache write and $20 output per 1M tokens. Here that is $2/$0.20/$2.50/$10 after 50% off. Standard $5 input and $30 output return on 2026-11-22 UTC." },
       { q: "What is the model ID for GPT-5.6 Sol?", a: "gpt-5.6-sol (gpt-5.6 is an alias of the same model). Use it with the OpenAI SDK, Codex CLI, opencode or any OpenAI-compatible tool pointed at https://router.apitoken.sale/v1." },
       { q: "Does the same key really work for GPT and Claude?", a: "Yes. One sk-pool key and one prepaid balance cover both surfaces: Anthropic Messages API for Claude models and the OpenAI-compatible API for GPT models. The same discount applies to both." },
     ],
@@ -449,7 +468,7 @@ export const openaiModels: OpenAiModel[] = [
     title: "GPT-5.6 Terra API — Price per Token & Access",
     description: "GPT-5.6 Terra API pricing: official $2/$12 per 1M tokens, $1/$6 with the flat 50% apiToken.sale discount. Balanced GPT-5.6 tier on one prepaid balance.",
     keywords: ["gpt-5.6 terra api", "gpt-5.6 terra price", "gpt-5.6-terra", "gpt-5.6 token pricing", "openai compatible api"],
-    dek: "GPT-5.6 Terra is the balanced tier of the GPT-5.6 line — 40% of the flagship token price, with the same reasoning-effort controls and the full 400K context.",
+    dek: "GPT-5.6 Terra is the balanced tier of the GPT-5.6 line — below promotional Sol at 50% of its input rate and 60% of its output rate, with the same reasoning-effort controls and full 400K context.",
     inputPerM: 2,
     cachedInputPerM: 0.2,
     cacheWritePerM: 2.5,
@@ -458,7 +477,7 @@ export const openaiModels: OpenAiModel[] = [
     context: "400K tokens",
     maxOutput: "128K tokens",
     bestFor: [
-      "Day-to-day coding and chat at 40% of the flagship price.",
+      "Day-to-day coding and chat below the promotional flagship price.",
       "Agentic workflows where flagship cost is not justified.",
       "High-volume production traffic on the OpenAI-compatible API.",
     ],
@@ -469,7 +488,7 @@ export const openaiModels: OpenAiModel[] = [
     ],
     faq: [
       { q: "How much does the GPT-5.6 Terra API cost?", a: "Officially $2 per 1M input tokens and $12 per 1M output tokens, with cached input at $0.20. With the flat 50% apiToken.sale discount that is $1/$6." },
-      { q: "Terra or Sol?", a: "Terra is the balanced default for most workloads at 40% of the price; route the hardest reasoning to gpt-5.6-sol. Both run on the same key, balance and endpoint." },
+      { q: "Terra or Sol?", a: "Terra is the balanced default for most workloads: during the Sol promotion it is 50% of Sol input and 60% of Sol output. Route only the hardest reasoning to gpt-5.6-sol. Both run on the same key, balance and endpoint." },
       { q: "What is the model ID?", a: "gpt-5.6-terra. Point any OpenAI-compatible client at https://router.apitoken.sale/v1 and send it as the model parameter." },
     ],
     related: ["openai-api-quickstart", "codex-cli-setup", "how-billing-works", "why-choose-apitoken"],
@@ -517,7 +536,7 @@ export const openaiModels: OpenAiModel[] = [
     title: "GPT-5.5 API — Price per Token & Access",
     description: "GPT-5.5 API pricing: official $5/$30 per 1M tokens, $2.50/$15 with the flat 50% apiToken.sale discount. Previous-generation flagship on the OpenAI-compatible endpoint.",
     keywords: ["gpt-5.5 api", "gpt-5.5 price", "gpt-5.5 api cost", "gpt-5.5 token pricing", "openai compatible api"],
-    dek: "GPT-5.5 is the previous-generation flagship — pinned for workloads evaluated against it, at the same list price as GPT-5.6 Sol.",
+    dek: "GPT-5.5 is the previous-generation flagship — pinned for workloads evaluated against it. During the Sol promotion it retains the higher standard $5/$30 card.",
     inputPerM: 5,
     cachedInputPerM: 0.5,
     cacheWritePerM: 5,
@@ -532,12 +551,12 @@ export const openaiModels: OpenAiModel[] = [
     ],
     notes: [
       "Reasoning efforts none through xhigh; the max level is exclusive to the GPT-5.6 line.",
-      "Same list price as gpt-5.6-sol — most new work should target the 5.6 line.",
+      "GPT-5.5 retains its $5/$30 list price while gpt-5.6-sol is temporarily $4/$20 through 2026-11-21.",
       "Requests above 272K input tokens bill at OpenAI long-context rates: 2× input and 1.5× output on the whole request.",
     ],
     faq: [
-      { q: "How much does the GPT-5.5 API cost?", a: "Officially $5 per 1M input tokens and $30 per 1M output tokens — the same as GPT-5.6 Sol. With the flat 50% apiToken.sale discount that is $2.50/$15." },
-      { q: "GPT-5.5 or GPT-5.6 Sol?", a: "They cost the same, so new projects should default to gpt-5.6-sol. Keep 5.5 when you have prompts or evals pinned to it." },
+      { q: "How much does the GPT-5.5 API cost?", a: "Officially $5 per 1M input tokens and $30 per 1M output tokens. With the flat 50% apiToken.sale discount that is $2.50/$15. Promotional GPT-5.6 Sol is cheaper through 2026-11-21." },
+      { q: "GPT-5.5 or GPT-5.6 Sol?", a: "New projects should default to gpt-5.6-sol, which is also cheaper during its promotion. Keep 5.5 when prompts or evals are pinned to it." },
       { q: "What is the model ID?", a: "gpt-5.5 — use it as-is on the OpenAI-compatible endpoint at https://router.apitoken.sale/v1." },
     ],
     related: ["openai-api-quickstart", "codex-cli-setup", "how-billing-works", "why-choose-apitoken"],
@@ -613,6 +632,23 @@ export const openaiModels: OpenAiModel[] = [
     related: ["gpt-image-2-api-guide", "gpt-image-2-api-cost", "nano-banana-2-vs-gpt-image-2", "image-editing-api-guide"],
   },
 ];
+
+export function openaiModelsAt(unixSeconds = Math.floor(Date.now() / 1000)): OpenAiModel[] {
+  const sol = gpt56SolPricingAt(unixSeconds);
+  return OPENAI_MODELS_STANDARD.map((model) => {
+    if (model.id !== "gpt-5.6-sol") return model;
+    return {
+      ...model,
+      inputPerM: sol.inputPerM,
+      cachedInputPerM: sol.cachedInputPerM,
+      cacheWritePerM: sol.cacheWritePerM,
+      outputPerM: sol.outputPerM,
+    };
+  });
+}
+
+/** Build-time snapshot for static identity consumers; request surfaces use openaiModelsAt. */
+export const openaiModels: OpenAiModel[] = openaiModelsAt();
 
 // Gemini rates mirror the pinned engine catalog (crates/metering/src/gemini.rs): official
 // Google standard paid-tier token pricing, cached input at 10% of input (exception:

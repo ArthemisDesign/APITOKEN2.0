@@ -6,6 +6,8 @@ import { articlesForLocale, resolveArticle } from "@/lib/learn";
 import { buildArticleJsonLd, buildArticleMetadata } from "@/lib/learn-page";
 import { createNoIndexMetadata } from "@/lib/seo";
 
+export const dynamic = "force-dynamic";
+
 export function generateStaticParams() {
   return articlesForLocale("en").map((slug) => ({ slug }));
 }

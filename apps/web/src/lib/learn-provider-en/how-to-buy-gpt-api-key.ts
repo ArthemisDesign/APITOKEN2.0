@@ -23,13 +23,14 @@ export const article: LearnArticle = {
       { h2: "Which GPT models the key serves", blocks: [
         { type: "p", text: `The catalog served to your key is always the live answer at GET ${OPENAI}/models — read it instead of assuming a model name from OpenAI's docs exists here. Today the line covers three GPT-5.6 tiers, two previous-generation models, and the separate GPT Image 2 generation and edit routes:` },
         { type: "table", headers: ["Model ID", "Tier", "Official in / cached / out ($ per 1M)", "After 50% discount"], rows: [
-          ["gpt-5.6-sol (alias: gpt-5.6)", "Flagship", "$5 / $0.50 / $30", "$2.50 / $0.25 / $15"],
+          ["gpt-5.6-sol (alias: gpt-5.6)", "Flagship", "$4 / $0.40 / $20", "$2 / $0.20 / $10"],
           ["gpt-5.6-terra", "Balanced", "$2 / $0.20 / $12", "$1 / $0.10 / $6"],
           ["gpt-5.6-luna", "Fast", "$0.20 / $0.02 / $1.20", "$0.10 / $0.01 / $0.60"],
           ["gpt-5.5", "Previous flagship", "$5 / — / $30", "$2.50 / — / $15"],
           ["gpt-5.4", "Previous balanced", "$2.50 / — / $15", "$1.25 / — / $7.50"],
         ] },
         { type: "list", items: [
+          "Sol's temporary official input/cached/cache-write/output rates are $4/$0.40/$5/$20 through 2026-11-21 inclusive, or $2/$0.20/$2.50/$10 here after 50% off. Standard $5 input and $30 output return on 2026-11-22 UTC.",
           "All three GPT-5.6 tiers share a 400K context window, up to 128K output, text and image input, and adjustable reasoning effort — none through xhigh, plus max on the GPT-5.6 line.",
           "Responses and Chat Completions both work with incremental SSE streaming, so existing generate-or-stream loops port without structural changes.",
           "GPT Image 2 runs on its own generation and edit routes rather than the chat surface; it bills against the same balance.",
@@ -40,11 +41,11 @@ export const article: LearnArticle = {
       { h2: "How the prepaid balance and the 50% discount settle", blocks: [
         { type: "p", text: "There is no subscription and no monthly fee. Every request is metered at official OpenAI token rates first, your flat 50% B2C discount is subtracted, and the net amount is drawn from the prepaid balance — so $50 of balance covers $100 of official-rate usage. The dashboard records the settled token usage and exact discounted charge for each request." },
         { type: "list", items: [
-          "Cached input is priced separately and far cheaper than fresh input ($0.50 vs $5 per 1M on the flagship), so a stable prompt prefix across calls is real money.",
+          "Cached input is priced separately and far cheaper than fresh input ($0.40 vs $4 per 1M on promotional Sol), so a stable prompt prefix across calls is real money.",
           "Cache writes bill at 125% of normal input; cached reads bill at 10% of input.",
           "Reasoning tokens appear in output usage and are not charged a second time as a separate leg.",
         ] },
-        { type: "note", text: "Above 272K input tokens, long-context rates apply to the whole request — 2× on input and 1.5× on output, before the discount. A request at 273K costs more than twice one at 270K; split oversized contexts before crossing the boundary." },
+        { type: "note", text: "Above 272K input tokens, long-context rates apply to the whole request — 2× on input and 1.5× on output, before the discount. On promotional Sol, 270K input plus 2K output costs $1.12 official; 273K plus 2K costs $2.244. Split oversized contexts before crossing the boundary." },
         { type: "note", text: "When the balance runs out, requests fail with an insufficient-balance error until you top up again — there is no overdraft and no surprise charge to your card." },
       ] },
       { h2: "Configuring the official SDK and existing clients", blocks: [
@@ -68,7 +69,7 @@ export const article: LearnArticle = {
       { q: "Do I need an OpenAI account to buy this GPT API key?", a: "No. The key, balance and billing come from apiToken.sale; compatible GPT clients only need the custom base URL and the Bearer key. There is no waitlist or manual review." },
       { q: "Can I pay for a GPT API key with cryptocurrency?", a: "Yes. Checkout accepts bank cards and cryptocurrency, and top-ups are any whole-dollar amount with no fixed bundle. New accounts created with Google or GitHub also start with $5 of platform bonus credit." },
       { q: "Can one key run both GPT and Claude?", a: "Yes. The same sk-pool key and prepaid balance cover all supported providers; only the endpoint and authorization header change with the protocol — Bearer on the OpenAI-compatible lane, x-api-key on Anthropic Messages." },
-      { q: "How much does GPT-5.6 cost here per 1M tokens?", a: "Officially Sol is $5 input and $30 output, Terra $2/$12 and Luna $0.20/$1.20; apiToken.sale applies a flat 50% discount to those exact legs, so Terra settles at $1/$6." },
+      { q: "How much does GPT-5.6 cost here per 1M tokens?", a: "Through 2026-11-21 inclusive, Sol's temporary official input/cached/cache-write/output rates are $4/$0.40/$5/$20 and settle here at $2/$0.20/$2.50/$10. Standard $5 input and $30 output return on 2026-11-22 UTC. Terra remains $2/$12 and Luna $0.20/$1.20 officially." },
       { q: "Is this the OpenAI Platform?", a: "No. It is an independent OpenAI-compatible gateway with its own account, prepaid balance and supported-model catalog. Responses, Chat Completions, streaming and GPT Image 2 are served; audio, realtime, assistants, batch and fine-tuning are not." },
     ],
     related: ["openai-api-quickstart", "gpt-api-pricing", "gpt-5-6-sol-vs-terra-vs-luna", "how-billing-works"],

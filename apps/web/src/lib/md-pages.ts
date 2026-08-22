@@ -14,6 +14,7 @@ import {
   geminiModels,
   modelPath,
   openaiModels,
+  openaiModelsAt,
   type CatalogModel,
 } from "./models";
 import { B2C_DISCOUNT_PERCENT, B2C_VALUE_MULTIPLIER } from "./pricing-tiers";
@@ -381,11 +382,12 @@ State concisely:
 }
 
 /** Canonical API reference: everything an agent needs to make a first call, from live model data. */
-export function buildApiReferenceMarkdown(): string {
+export function buildApiReferenceMarkdown(unixSeconds = Math.floor(Date.now() / 1000)): string {
+  const effectiveOpenaiModels = openaiModelsAt(unixSeconds);
   const claudeRows = claudeModels
     .map((m) => `| \`${m.id}\` | ${m.tier} | ${m.context} | ${m.maxOutput} | $${m.inputPerM} / $${m.outputPerM} |`)
     .join("\n");
-  const gptRows = openaiModels
+  const gptRows = effectiveOpenaiModels
     .map((m) => `| \`${m.id}\` | ${m.tier} | ${m.context} | ${m.maxOutput} | $${m.inputPerM} / $${m.outputPerM} |`)
     .join("\n");
   const geminiRows = geminiModels
@@ -431,7 +433,7 @@ ${claudeRows}
 
 ## GPT models (OpenAI lanes)
 
-Exact GPT model IDs (namespaced form \`openai/<id>\`). Prices are official OpenAI $ per 1M tokens with the same flat 50% discount; cached input bills at 10% of input. Requests above 272K input tokens bill at OpenAI long-context rates (2× input, 1.5× output on the whole request). \`gpt-5.6\` is an alias of \`gpt-5.6-sol\`.
+Exact GPT model IDs (namespaced form \`openai/<id>\`). Prices are official OpenAI $ per 1M tokens with the same flat 50% discount; cached input bills at 10% of input. GPT-5.6 Sol uses promotional $4/$20 through 2026-11-21 and returns to $5/$30 on 2026-11-22 UTC. Requests above 272K input tokens bill at OpenAI long-context rates (2× input, 1.5× output on the whole request). \`gpt-5.6\` is an alias of \`gpt-5.6-sol\`.
 
 | model ID | Tier | Context | Max output | Official in / out (per 1M) |
 |---|---|---|---|---|
@@ -445,7 +447,7 @@ Exact Gemini model IDs (namespaced form \`google/<id>\`). Prices are official Go
 |---|---|---|---|---|
 ${geminiRows}
 
-Per-model detail pages: ${[...claudeModels, ...openaiModels, ...geminiModels].map((m) => `${SITE_ORIGIN}${modelPath(m.slug)}`).join(", ")}.
+Per-model detail pages: ${[...claudeModels, ...effectiveOpenaiModels, ...geminiModels].map((m) => `${SITE_ORIGIN}${modelPath(m.slug)}`).join(", ")}.
 
 ## First request (native Anthropic lane, curl)
 
@@ -572,7 +574,8 @@ Prepaid, per-token at official provider rates minus the flat ${pct(DISCOUNT_FLAT
 }
 
 /** Model catalog with exact IDs, context, limits and discounted per-token prices. */
-export function buildModelsMarkdown(): string {
+export function buildModelsMarkdown(unixSeconds = Math.floor(Date.now() / 1000)): string {
+  const effectiveOpenaiModels = openaiModelsAt(unixSeconds);
   const sectionFor = (m: CatalogModel): string => {
     const inHere = formatUsd(m.inputPerM * (1 - DISCOUNT_FLAT));
     const outHere = formatUsd(m.outputPerM * (1 - DISCOUNT_FLAT));
@@ -619,7 +622,7 @@ ${claudeModels.map(sectionFor).join("\n\n")}
 
 # GPT models (OpenAI-compatible API)
 
-${openaiModels.map(sectionFor).join("\n\n")}
+${effectiveOpenaiModels.map(sectionFor).join("\n\n")}
 
 # Gemini models (Google Gemini API)
 
@@ -724,8 +727,8 @@ API reference: ${SITE_ORIGIN}/md/docs · All models: ${SITE_ORIGIN}/md/models
   );
 }
 
-export function buildModelMarkdownBySlug(slug: string): string | null {
-  const model = catalogModelBySlug[slug];
+export function buildModelMarkdownBySlug(slug: string, unixSeconds = Math.floor(Date.now() / 1000)): string | null {
+  const model = openaiModelsAt(unixSeconds).find((entry) => entry.slug === slug) ?? catalogModelBySlug[slug];
   return model ? buildModelMarkdown(model) : null;
 }
 

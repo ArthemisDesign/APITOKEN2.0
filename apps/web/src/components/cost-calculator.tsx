@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { claudeModels, openaiModels } from "@/lib/models";
+import { claudeModels, openaiModels, type OpenAiModel } from "@/lib/models";
 import { B2C_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
 import { LocalizedLink } from "./translated";
 
@@ -41,17 +41,19 @@ const CLAUDE_MODELS: Model[] = claudeModels.map((model) => {
 });
 
 // The calculator estimates text token spend; image models meter per image-output token instead.
-const GPT_MODELS: Model[] = openaiModels
-  .filter((model) => model.tier !== "Image")
-  .map((model) => ({
-    name: model.name,
-    id: model.id,
-    context: model.context,
-    input: model.inputPerM,
-    output: model.outputPerM,
-    cacheRead: model.cachedInputPerM,
-    cacheWrite: model.cacheWritePerM,
-  }));
+function gptCalculatorModels(catalog: OpenAiModel[]): Model[] {
+  return catalog
+    .filter((model) => model.tier !== "Image")
+    .map((model) => ({
+      name: model.name,
+      id: model.id,
+      context: model.context,
+      input: model.inputPerM,
+      output: model.outputPerM,
+      cacheRead: model.cachedInputPerM,
+      cacheWrite: model.cacheWritePerM,
+    }));
+}
 
 const PROVIDERS: Record<Provider, {
   label: string;
@@ -67,7 +69,7 @@ const PROVIDERS: Record<Provider, {
   },
   openai: {
     label: "GPT",
-    models: GPT_MODELS,
+    models: [],
     officialName: "OpenAI",
     apiDescription: "OpenAI-compatible API",
   },
@@ -182,7 +184,7 @@ function taskCost(m: Model, inTok: number, outTok: number, cacheR: number, cache
   );
 }
 
-export function CostCalculator() {
+export function CostCalculator({ openaiCatalog = openaiModels }: { openaiCatalog?: OpenAiModel[] }) {
   const [provider, setProvider] = useState<Provider>("anthropic");
   const [taskIdx, setTaskIdx] = useState(DEFAULT_TASK);
   const [inTok, setInTok] = useState(TASKS[DEFAULT_TASK].input);
@@ -193,7 +195,7 @@ export function CostCalculator() {
   const [advanced, setAdvanced] = useState(false);
 
   const providerInfo = PROVIDERS[provider];
-  const models = providerInfo.models;
+  const models = provider === "openai" ? gptCalculatorModels(openaiCatalog) : providerInfo.models;
   const task = TASKS[taskIdx];
   const discount = DISCOUNT;
   const mult = MULT;
@@ -209,7 +211,8 @@ export function CostCalculator() {
 
   function pickProvider(nextProvider: Provider) {
     setProvider(nextProvider);
-    setSelected(PROVIDERS[nextProvider].models[0].id);
+    const nextModels = nextProvider === "openai" ? gptCalculatorModels(openaiCatalog) : PROVIDERS[nextProvider].models;
+    setSelected(nextModels[0].id);
   }
 
   const rows = useMemo(() => {

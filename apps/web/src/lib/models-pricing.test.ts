@@ -1,10 +1,51 @@
 import { describe, expect, it } from "vitest";
 import {
   GEMINI_FLASH_PROMO_END_UNIX,
+  GPT_56_SOL_PROMO_END_UNIX,
   geminiFlashPricingAt,
   geminiModels,
+  gpt56SolPricingAt,
+  openaiModelsAt,
   priceHere,
 } from "./models";
+
+describe("effective-dated GPT-5.6 Sol pricing", () => {
+  it("uses OpenAI's promotional card through 2026-11-21", () => {
+    expect(gpt56SolPricingAt(GPT_56_SOL_PROMO_END_UNIX - 1)).toEqual({
+      inputPerM: 4,
+      cachedInputPerM: 0.4,
+      cacheWritePerM: 5,
+      outputPerM: 20,
+      promotional: true,
+    });
+  });
+
+  it("returns atomically to the standard card on 2026-11-22 UTC", () => {
+    expect(gpt56SolPricingAt(GPT_56_SOL_PROMO_END_UNIX)).toEqual({
+      inputPerM: 5,
+      cachedInputPerM: 0.5,
+      cacheWritePerM: 6.25,
+      outputPerM: 30,
+      promotional: false,
+    });
+  });
+
+  it("changes only Sol and applies the B2C discount after effective-date resolution", () => {
+    const promotional = openaiModelsAt(GPT_56_SOL_PROMO_END_UNIX - 1);
+    const standard = openaiModelsAt(GPT_56_SOL_PROMO_END_UNIX);
+    const promoSol = promotional.find((model) => model.id === "gpt-5.6-sol")!;
+    const standardSol = standard.find((model) => model.id === "gpt-5.6-sol")!;
+
+    expect([promoSol.inputPerM, promoSol.cachedInputPerM, promoSol.cacheWritePerM, promoSol.outputPerM]).toEqual([4, 0.4, 5, 20]);
+    expect([standardSol.inputPerM, standardSol.cachedInputPerM, standardSol.cacheWritePerM, standardSol.outputPerM]).toEqual([5, 0.5, 6.25, 30]);
+    expect(priceHere(promoSol.inputPerM)).toBe("$2");
+    expect(priceHere(promoSol.cachedInputPerM)).toBe("$0.2");
+    expect(priceHere(promoSol.cacheWritePerM)).toBe("$2.5");
+    expect(priceHere(promoSol.outputPerM)).toBe("$10");
+    expect(promotional.find((model) => model.id === "gpt-5.5")).toEqual(standard.find((model) => model.id === "gpt-5.5"));
+    expect(promotional.find((model) => model.id === "gpt-image-2")).toEqual(standard.find((model) => model.id === "gpt-image-2"));
+  });
+});
 
 describe("effective-dated Gemini Flash pricing", () => {
   it("uses Google's promotional rate through 2026-12-31", () => {
