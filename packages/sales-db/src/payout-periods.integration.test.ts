@@ -29,13 +29,13 @@ describe.runIf(Boolean(connectionString))("payout-periods due-list & cabinet cor
     await db.pool.query("TRUNCATE partners, commission_entries, payouts, referred_users, referred_topups RESTART IDENTITY CASCADE");
   });
 
-  async function makePartner(opts: { code: string; status?: PartnerStatus; wallet?: string }): Promise<string> {
+  async function makePartner(opts: { code: string; email?: string; status?: PartnerStatus; wallet?: string }): Promise<string> {
     const details = opts.wallet ? JSON.stringify({ address: opts.wallet }) : null;
     const method = opts.wallet ? "usdt-bep20" : null;
     const res = await db.pool.query<{ id: string }>(
-      `INSERT INTO partners (referral_code, status, payout_method, payout_details, telegram_username)
-       VALUES ($1, $2, $3, $4::jsonb, $1) RETURNING id`,
-      [opts.code, opts.status ?? "active", method, details],
+      `INSERT INTO partners (referral_code, email, status, payout_method, payout_details, telegram_username)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $1) RETURNING id`,
+      [opts.code, opts.email ?? `${opts.code}@example.test`, opts.status ?? "active", method, details],
     );
     return res.rows[0]!.id;
   }
@@ -122,10 +122,11 @@ describe.runIf(Boolean(connectionString))("payout-periods due-list & cabinet cor
   });
 
   it("eligible active partner with a wallet and balance is ready to pay", async () => {
-    const p = await makePartner({ code: "ready1", wallet: WALLET });
+    const p = await makePartner({ code: "ready1", email: "ready@example.test", wallet: WALLET });
     await earn(p, 100n, BEFORE_P1_END);
     const { items } = await getDuePayoutList(db, NOW, MIN_PAYOUT);
     const row = items.find((i) => i.partnerId === p);
+    expect(row?.email).toBe("ready@example.test");
     expect(row?.eligible).toBe(true);
     expect(row?.reason).toBe("ok");
   });

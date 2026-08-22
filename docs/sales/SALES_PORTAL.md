@@ -467,6 +467,13 @@ Computed from both commission tables (`commission_entries` + `commission_entries
 the events do not overlap) + `payouts`, with no separate table. Full description —
 `docs/sales/SALES_PAYOUT_PERIODS.md`. Code: `periods.ts` (+tests), `payout-periods.ts`, and the live
 on-chain state machine in `apps/sales-api/src/payout` + `packages/sales-db/src/payout-batch.ts`.
+
+The additive admin payout preview `GET /v1/admin/payout-list` includes `email: string | null` on
+every due row. Operator UIs use it as the primary partner identity, then fall back to display name,
+Telegram and the short opaque partner id only for legacy or temporarily unenriched accounts. The
+email is display metadata only: eligibility, amount, wallet fencing and payout identity continue to
+use the immutable `partnerId`.
+
 Preparation revalidates amount/address under partner locks and pins the hot wallet; send/retry/poller
 share a cross-process lock, persist exact hash/raw/nonce before broadcast and mark paid only from a
 confirmed BSC receipt. `SALES_MIN_PAYOUT_USD` is also the execution threshold; the retired fractional

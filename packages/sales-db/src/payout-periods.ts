@@ -53,6 +53,7 @@ export interface PeriodHistoryRow {
 
 export interface DuePayoutRow {
   partnerId: string;
+  email: string | null;
   telegramUsername: string | null;
   displayName: string | null;
   status: PartnerStatus;
@@ -284,12 +285,12 @@ export async function getDuePayoutList(
   // Неактивных партнёров НЕ прячем: если у них остался причитающийся баланс (заработан, пока были
   // активны), он должен быть виден админу — но платить их нельзя (eligible=false, reason=inactive).
   const result = await database.pool.query<{
-    partner_id: string; telegram_username: string | null; display_name: string | null;
+    partner_id: string; email: string | null; telegram_username: string | null; display_name: string | null;
     status: PartnerStatus; gross: string; adjustment: string; net: string; paid: string;
     committed: string; payout_method: string | null; payout_details: unknown;
   }>(
     `
-    SELECT p.id AS partner_id, p.telegram_username, p.display_name, p.status, p.payout_method, p.payout_details,
+    SELECT p.id AS partner_id, p.email, p.telegram_username, p.display_name, p.status, p.payout_method, p.payout_details,
       COALESCE((SELECT SUM(ce.amount_nano) FROM (
                     SELECT partner_id, amount_nano, created_at FROM commission_entries
                     UNION ALL
@@ -334,6 +335,7 @@ export async function getDuePayoutList(
       else if (payable < minPayoutNano) reason = "below_minimum";
       return {
         partnerId: row.partner_id,
+        email: row.email,
         telegramUsername: row.telegram_username,
         displayName: row.display_name,
         status: row.status,
