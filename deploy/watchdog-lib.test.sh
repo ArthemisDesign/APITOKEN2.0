@@ -4249,6 +4249,27 @@ if grep -Eq 'usermod -a -G deploy apitoken-ci' "$ROOT/deploy/install-watchdog.sh
 fi
 grep -Fq 'gpasswd -d apitoken-ci deploy' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'the watchdog installer does not enforce apitoken-ci group isolation'
+grep -Fq 'provision_observe_account' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the watchdog installer does not provision the observe SSH account'
+grep -Fq 'useradd --system --create-home --home-dir "$home" --shell "$wrapper"' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the watchdog installer does not create the observe account'
+grep -Fq 'gpasswd -d observe deploy' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the watchdog installer does not isolate observe from the deploy group'
+if grep -Eq 'usermod -a -G deploy observe' "$ROOT/deploy/install-watchdog.sh"; then
+  wd_die 'the watchdog installer must not add observe to the deploy group'
+fi
+grep -Fq 'restrict,command=\"/usr/local/bin/apitoken-observe\"' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'observe authorized_keys must ForceCommand the log-only wrapper'
+grep -Fq 'run_as_ci bash "$candidate/deploy/apitoken-observe.test.sh"' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'static lane must run the observe wrapper regression'
+if wd_path_is_controller_definition deploy/apitoken-observe.sh; then
+  wd_die 'observe wrapper updates must re-run full host provisioning'
+fi
+wd_path_requires_infrastructure_install deploy/apitoken-observe.sh \
+  || wd_die 'observe wrapper must install on the host'
 grep -Fq -- '--controller-only' "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die 'the sudo policy cannot run the narrow controller transaction'
 grep -Fq -- '--caddy-only' "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \

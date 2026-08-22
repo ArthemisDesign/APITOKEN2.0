@@ -139,10 +139,13 @@ SSH as `deploy`. An AI agent must not. The only SSH login an agent may use is `o
 ssh observe@84.32.48.2
 ```
 
-That session is journal and readiness inspection. It must not run `systemctl start|stop|restart|kill`,
-`deploy.sh`, `engine-bluegreen.sh`, or `apitoken-watchdog retry|run`. If `observe` is unreachable,
-stop. Do not fall back to `deploy`. Diagnose from GitHub `deploy/watchdog-log`. Land releases with
-`./deploy/agent-merge.sh`.
+The full watchdog installer (`deploy/install-watchdog.sh`) creates `observe`, sets its login shell
+to `/usr/local/bin/apitoken-observe`, adds it to `systemd-journal`/`adm`, and mirrors public keys
+from `/home/deploy/.ssh/authorized_keys` with `restrict,command=` so even `ssh observe@` cannot
+escape into a shell. That session is journal and readiness inspection. It must not run
+`systemctl start|stop|restart|kill`, `deploy.sh`, `engine-bluegreen.sh`, or
+`apitoken-watchdog retry|run`. If `observe` is unreachable, stop. Do not fall back to `deploy`.
+Diagnose from GitHub `deploy/watchdog-log`. Land releases with `./deploy/agent-merge.sh`.
 
 The active DNS record is `A *.apitoken.sale -> 84.32.48.2`. The apex remains independent for the
 future frontend. Exact DNS records override the wildcard if they are added later.

@@ -425,6 +425,10 @@ any other pre-commit step fails, it restores the previous policy and exits non-z
 transaction also restores the prior helper. It also removes `apitoken-ci` from the `deploy` group, so
 candidate-derived test code can no longer write group-writable files in the deployment checkout.
 
+The same full installer creates the `observe` Unix account: login shell
+`/usr/local/bin/apitoken-observe`, journal groups only, public keys mirrored from `deploy` with
+`restrict,command=`. Agents SSH as `observe`. They do not receive `deploy` sudo.
+
 The policy deliberately permits `deploy` to re-run the installer at its fixed root-owned path.
 Without that, removing the unrestricted grant would be irreversible without console access.
 

@@ -201,6 +201,58 @@ publish_pricing_retirement_postdrop_helper() {
     /usr/local/lib/apitoken-watchdog/pricing-retirement-postdrop.sh
 }
 
+provision_observe_account() {
+  local wrapper_src=$ROOT/deploy/apitoken-observe.sh
+  local wrapper=/usr/local/bin/apitoken-observe
+  local home=/home/observe
+  local ssh_dir=$home/.ssh
+  local keys=$ssh_dir/authorized_keys
+  local deploy_keys=/home/deploy/.ssh/authorized_keys
+  local shells=/etc/shells
+  local tmp
+  [[ -f $wrapper_src && ! -L $wrapper_src ]] \
+    || { echo 'observe wrapper source is missing' >&2; return 1; }
+  install -o root -g root -m 0755 "$wrapper_src" "$wrapper"
+  if [[ -e $shells || -L $shells ]]; then
+    [[ -f $shells && ! -L $shells ]] || { echo "$shells must be a regular file" >&2; return 1; }
+  else
+    install -o root -g root -m 0644 /dev/null "$shells"
+  fi
+  grep -qxF "$wrapper" "$shells" || printf '%s\n' "$wrapper" >>"$shells"
+  if ! id observe >/dev/null 2>&1; then
+    useradd --system --create-home --home-dir "$home" --shell "$wrapper" \
+      --comment 'apitoken log-only SSH' observe
+  fi
+  usermod --shell "$wrapper" observe
+  if getent group systemd-journal >/dev/null; then
+    usermod -a -G systemd-journal observe
+  fi
+  if getent group adm >/dev/null; then
+    usermod -a -G adm observe
+  fi
+  if id -Gn observe | tr ' ' '\n' | grep -Fxq deploy; then
+    gpasswd -d observe deploy >/dev/null \
+      || echo 'warning: could not remove observe from the deploy group' >&2
+  fi
+  [[ -d $home && ! -L $home ]] || { echo "$home must be a real directory" >&2; return 1; }
+  install -d -o observe -g observe -m 0750 "$home"
+  install -d -o observe -g observe -m 0700 "$ssh_dir"
+  [[ -d $ssh_dir && ! -L $ssh_dir ]] || { echo "$ssh_dir must be a real directory" >&2; return 1; }
+  tmp=$(mktemp)
+  {
+    printf '%s\n' '# managed by install-watchdog.sh; ForceCommand is the observe wrapper'
+    if [[ -f $deploy_keys && ! -L $deploy_keys ]]; then
+      awk '
+        match($0, /(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com) [A-Za-z0-9+\/=]+/) {
+          printf "restrict,command=\"/usr/local/bin/apitoken-observe\" %s\n", substr($0, RSTART, RLENGTH)
+        }
+      ' "$deploy_keys"
+    fi
+  } >"$tmp"
+  install -o observe -g observe -m 0600 "$tmp" "$keys"
+  rm -f -- "$tmp"
+}
+
 install_and_verify_sudo_policy() {
   local authbot_helper=/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
   local authbot_backup=${authbot_helper}.rollback.$$
@@ -485,6 +537,7 @@ if id -Gn apitoken-ci | tr ' ' '\n' | grep -Fxq deploy; then
   gpasswd -d apitoken-ci deploy >/dev/null \
     || echo 'warning: could not remove apitoken-ci from the deploy group' >&2
 fi
+provision_observe_account
 
 install -d -o deploy -g deploy -m 0751 /var/lib/apitoken/watchdog /var/lib/apitoken/watchdog/candidates
 install -d -o deploy -g deploy -m 0750 /var/lib/apitoken/watchdog/ci-home

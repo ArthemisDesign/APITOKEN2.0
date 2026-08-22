@@ -893,6 +893,7 @@ test_static_lane() {
     run_as_ci bash "$candidate/deploy/change-plan.test.sh"
     run_as_ci bash "$candidate/deploy/repository-invariants.test.sh"
     run_as_ci bash "$candidate/deploy/docs-check.test.sh"
+    run_as_ci bash "$candidate/deploy/apitoken-observe.test.sh"
     run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"
   fi
 }

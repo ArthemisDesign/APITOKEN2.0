@@ -212,6 +212,7 @@ am_gate_deployment() (
   bash "$ROOT/deploy/change-plan.test.sh"
   bash "$ROOT/deploy/repository-invariants.test.sh"
   bash "$ROOT/deploy/docs-check.test.sh"
+  bash "$ROOT/deploy/apitoken-observe.test.sh"
   # The merge path tests itself on every merge, strictly. It is deliberately not enforced in the
   # production gate: the watchdog installed on the host still calls deploy/agent-merge.test.sh, now a
   # report-only shim, so a host-environment difference cannot quarantine a SHA and trap its own fix.
