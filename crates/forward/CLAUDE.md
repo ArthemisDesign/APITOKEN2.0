@@ -1245,8 +1245,9 @@ path and never falls through to Claude.
 
 `state.rs` also carries a dedicated `ProviderMode::Kimi` for the production delivery plane:
 `serves_kimi()` is true for `Combined|Anthropic|Kimi`, so gateway composition in
-`server::config` covers the dedicated production plane and, on this SHA, the Anthropic
-safety-net embed for `api.apitoken.sale`. In `Kimi` mode the
+`server::config` covers those modes when `CLAUDE_API_KIMI_ENABLED` is on. Production
+Anthropic and combined units pin that switch off; only the dedicated KIMI plane composes
+the gateway. In `Kimi` mode the
 shared `/v1/messages` path dispatches exact aliases through the same `KimiGateway::handle`, and right after
 that block stands a fail-closed gate: any non-KIMI model gets a bounded static 404 and never
 reaches the Claude pool (the plane never brings it up). Gateway readiness

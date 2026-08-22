@@ -555,7 +555,8 @@ therefore moves to an internal producer, `GET /internal/router/catalog/kimi`, pu
 `/internal/router/catalog/pricing` on the same slot. The router reads it as the `kimi` plane. `kimi/*` keeps the Anthropic Messages
 **lane** (envelope, path, SSE) and is proxied to `CLAUDE_ROUTER_KIMI_ORIGIN`
 (default and production pin `http://127.0.0.1:8803`). Lane is not origin: a KIMI
-request must not land on the Claude slots.
+request must not land on the Claude slots. Anthropic and combined rollback units pin
+`CLAUDE_API_KIMI_ENABLED=0`; only origin 8803 composes the gateway.
 
 The KIMI plane is **optional**: a slot with `CLAUDE_API_KIMI_ENABLED` unset answers the producer
 with an empty list, and a build predating the producer has no such route at all. Neither state

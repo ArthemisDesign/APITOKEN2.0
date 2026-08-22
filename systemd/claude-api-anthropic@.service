@@ -20,16 +20,15 @@ EnvironmentFile=/srv/claude-api/data/engine-postgres.env
 # or a compliant private serving boundary, so the public Anthropic unit pins it off even when a
 # staged keyring remains in the shared env.
 #
-# KIMI aliases stay composed here as a safety net for this SHA: `api.apitoken.sale` still
-# reaches these slots, and a cold dedicated plane must not drop a direct KIMI alias into the
-# Claude pool (that fall-through became a 529 on 2026-08-07). Customer `kimi/*` through
-# `router.apitoken.sale` goes to the dedicated origin 8803. A follow-up pin
-# `CLAUDE_API_KIMI_ENABLED=0` removes this embed after that router dataplane is GREEN.
+# Customer `kimi/*` through `router.apitoken.sale` uses the dedicated origin 8803. This
+# public Anthropic unit pins `CLAUDE_API_KIMI_ENABLED=0` so a shared env cannot re-embed
+# the gateway here. A direct KIMI alias on this plane fails closed (`kimi_gateway_unavailable`)
+# and never falls into the Claude pool (that fall-through became a 529 on 2026-08-07).
 #
 # The 180-second drain pin is argv-level for the same reason as the GLM pin: a stale long value in
 # the shared env must not silently re-widen the deploy window. The engine already defaults to 180;
 # this slot held the 540s default that made every blue-green cutover sit through the full deadline.
-ExecStart=/usr/bin/env CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api-anthropic-%i CLAUDE_API_PRICING_BRIDGE_ENABLED=1 CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP=10000 CLAUDE_API_PROVIDER=anthropic CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_GLM_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:anthropic:%i CLAUDE_API_KIMI_ENABLED=1 CLAUDE_API_DRAIN_DEADLINE_SECS=180 CLAUDE_API_TEXT_BODY_MAX_MIB=32 CLAUDE_API_BODY_MEMORY_BUDGET_MIB=2048 CLAUDE_API_BODY_SPOOL_BUDGET_MIB=2048 CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=32 CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=256 /srv/claude-api/releases/current/claude-api serve
+ExecStart=/usr/bin/env CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api-anthropic-%i CLAUDE_API_PRICING_BRIDGE_ENABLED=1 CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP=10000 CLAUDE_API_PROVIDER=anthropic CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_GLM_ENABLED=0 CLAUDE_API_KIMI_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:anthropic:%i CLAUDE_API_DRAIN_DEADLINE_SECS=180 CLAUDE_API_TEXT_BODY_MAX_MIB=32 CLAUDE_API_BODY_MEMORY_BUDGET_MIB=2048 CLAUDE_API_BODY_SPOOL_BUDGET_MIB=2048 CLAUDE_API_BODY_MEMORY_THRESHOLD_MIB=32 CLAUDE_API_NONSTREAM_RESPONSE_MAX_MIB=256 /srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM

@@ -218,10 +218,9 @@ background loops and the HTTP router. Here — and only here — everything is w
   origin 127.0.0.1:8803) and the legacy/anchor singleton `systemd/claude-api-kimi.service` (8804).
   Both units pin `CLAUDE_API_KIMI_ENABLED=1` at argv level: the plane state lives only in
   reviewed units; turning it off is a reverse reviewed change.
-  Customer `kimi/*` through `claude-router` uses origin `127.0.0.1:8803`. This SHA still
-  composes the gateway on Anthropic (`CLAUDE_API_KIMI_ENABLED=1`) as a safety net for
-  `api.apitoken.sale`; a follow-up pin `CLAUDE_API_KIMI_ENABLED=0` leaves a single
-  maintenance writer on the dedicated plane.
+  Customer `kimi/*` through `claude-router` uses origin `127.0.0.1:8803`. Anthropic and both
+  combined rollback anchors pin `CLAUDE_API_KIMI_ENABLED=0`, so only the dedicated plane
+  composes the gateway and holds the maintenance writer.
   In kimi mode the router mounts only the common routes, `/kimi-subs` and `/v1/messages`, which
   dispatches exact KIMI aliases through the same `KimiGateway::handle` as the Anthropic path, while any
   other model gets a bounded fail-closed 404 — the Claude pool is not raised on this plane.

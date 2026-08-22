@@ -568,6 +568,12 @@ until a separate reviewed change proves the owned-subscription live matrix and e
 serving boundary or written permission. A firing `GlmNoLiveProfiles` on the public Anthropic target
 before that gate is configuration drift, not a request to add an unverified credential.
 
+KIMI production is the dedicated origin 8803. All Anthropic-serving definitions —
+the active `claude-api-anthropic@.service` and both combined rollback anchors
+`claude-api.service`/`claude-api@.service` — pin `CLAUDE_API_KIMI_ENABLED=0` at argv level.
+A shared env cannot re-embed the gateway on Claude slots. A direct KIMI alias on those slots
+fails closed (`kimi_gateway_unavailable`) and never falls into the Claude pool.
+
 Phase 3 rolls the unified stateless router independently on fixed ports 8800/8801. The controller
 starts the inactive slot, proves direct readiness and the exact selected `claude-router` executable,
 then invokes the fixed root helper to atomically publish `/etc/caddy/router-active.caddy`, validate

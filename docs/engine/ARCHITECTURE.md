@@ -100,7 +100,8 @@ subscriptions as AEAD-encrypted profiles. It sits BEFORE `registry` as a produce
   loopback origin `127.0.0.1:8803` (singleton `claude-api-kimi` on 8804 — rollback/anchor only),
   without a public vhost. The unified router namespace `kimi/*` is the customer path and
   goes to that origin; the plane is enabled by the argv pin
-  `CLAUDE_API_KIMI_ENABLED=1` in reviewed units (disabling is the reverse reviewed change). All use one fenced
+  `CLAUDE_API_KIMI_ENABLED=1` in the reviewed KIMI units (disabling is the reverse reviewed
+  change). Anthropic and combined rollback units pin `CLAUDE_API_KIMI_ENABLED=0`. All use one fenced
   PostgreSQL billing authority, but not a shared
   HTTP process, router, credential pool, or health state. Gemini profiles are separate encrypted
   Google OAuth identities with a Cloud Code project, their own proxy/refresh/cooling; the private
