@@ -1,6 +1,6 @@
 # Caddy production routing
 
-`deploy/Caddyfile` is the complete intended production configuration for Caddy 2.11. It includes the public engine API, the blue-green commerce API, loopback-only stable origins, mail/autodiscovery, support routing, and the managed-session-protected unified admin, partner admin, CRM, Content Studio and monitoring surfaces.
+`deploy/Caddyfile` is the complete intended production configuration for Caddy 2.11. It includes the public engine API, the blue-green commerce API, loopback-only stable origins, mail/autodiscovery, support routing (`support.apitoken.sale` → Chatwoot `:3010`, with `/hooks/devbot/*` reverse-proxied to `apps/devbot` `:3800` and `log_skip` so the path secret does not hit access logs), and the managed-session-protected unified admin, partner admin, CRM, Content Studio and monitoring surfaces.
 
 ## Managed browser sessions
 

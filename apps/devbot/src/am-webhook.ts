@@ -1,7 +1,8 @@
 import http from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { AlertInstance } from "./events.js";
+import { CHATWOOT_WEBHOOK_PREFIX, mapChatwootPayload, verifyChatwootSignature } from "./chatwoot.js";
+import type { AlertInstance, ChatwootIncomingMessage } from "./events.js";
 import { errorMessage, type Logger } from "./log.js";
 import type { TopicKey } from "./state.js";
 
@@ -13,6 +14,8 @@ export class MetricsRegistry {
   telegramSendFailures = 0;
   /** Unix timestamp of the last ACCEPTED Alertmanager webhook delivery; 0 = none yet. */
   lastWebhookTs = 0;
+  /** Unix timestamp of the last ACCEPTED Chatwoot webhook delivery; 0 = none yet. */
+  lastChatwootTs = 0;
   private readonly events = new Map<string, number>();
 
   incEvent(topic: TopicKey, kind: string): void {
@@ -40,6 +43,11 @@ export class MetricsRegistry {
       "# HELP devbot_last_webhook_seconds Unix timestamp of the last accepted Alertmanager webhook delivery.",
       "# TYPE devbot_last_webhook_seconds gauge",
       `devbot_last_webhook_seconds ${this.lastWebhookTs}`,
+    );
+    lines.push(
+      "# HELP devbot_last_chatwoot_seconds Unix timestamp of the last accepted Chatwoot webhook delivery.",
+      "# TYPE devbot_last_chatwoot_seconds gauge",
+      `devbot_last_chatwoot_seconds ${this.lastChatwootTs}`,
     );
     lines.push(
       "# HELP devbot_telegram_send_failures_total Telegram send/edit attempts dropped after retries.",
@@ -85,6 +93,13 @@ export function mapAmPayload(body: unknown): AlertInstance[] {
   });
 }
 
+export interface ChatwootIntake {
+  secret: string;
+  hmacSecret?: string;
+  onMessage: (message: ChatwootIncomingMessage) => void;
+  nowSec?: () => number;
+}
+
 export interface AmServerDeps {
   port: number;
   secret: string;
@@ -96,11 +111,17 @@ export interface AmServerDeps {
   heartbeatRefreshMs?: number;
   /** Интервал записи textfile для node-exporter (60 с по дизайну). */
   heartbeatFileMs?: number;
+  chatwoot?: ChatwootIntake;
 }
 
 export interface AmServer {
   server: http.Server;
   close: () => Promise<void>;
+}
+
+function headerValue(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) return value[0] ?? "";
+  return value ?? "";
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -166,6 +187,31 @@ export function createAmServer(deps: AmServerDeps): AmServer {
           res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
         } catch (error) {
           deps.logger?.warn(`am-webhook: bad payload: ${errorMessage(error)}`);
+          res.writeHead(400, { "content-type": "application/json" }).end('{"ok":false}');
+        }
+        return;
+      }
+      const chatwootPath = deps.chatwoot ? `${CHATWOOT_WEBHOOK_PREFIX}${deps.chatwoot.secret}` : undefined;
+      if (req.method === "POST" && chatwootPath !== undefined && url.pathname === chatwootPath) {
+        const raw = await readBody(req);
+        const hmacSecret = deps.chatwoot?.hmacSecret;
+        if (hmacSecret) {
+          const timestamp = headerValue(req.headers["x-chatwoot-timestamp"]);
+          const signature = headerValue(req.headers["x-chatwoot-signature"]);
+          const nowSec = deps.chatwoot?.nowSec?.() ?? Math.floor(Date.now() / 1000);
+          if (!verifyChatwootSignature(raw, timestamp, signature, hmacSecret, nowSec)) {
+            deps.logger?.warn("chatwoot-webhook: invalid HMAC signature");
+            res.writeHead(401, { "content-type": "application/json" }).end('{"ok":false}');
+            return;
+          }
+        }
+        try {
+          const mapped = mapChatwootPayload(JSON.parse(raw));
+          deps.metrics.lastChatwootTs = Math.floor(Date.now() / 1000);
+          if (mapped) deps.chatwoot?.onMessage(mapped);
+          res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
+        } catch (error) {
+          deps.logger?.warn(`chatwoot-webhook: bad payload: ${errorMessage(error)}`);
           res.writeHead(400, { "content-type": "application/json" }).end('{"ok":false}');
         }
         return;

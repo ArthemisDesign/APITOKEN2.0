@@ -291,7 +291,7 @@ walkthroughs of dependent places for typical cross-functional changes — `docs/
   deployed to the host; the workspace gate checks it in the Vercel/web context. The capability-only
   last-good cache must remain encrypted, credential/base-bound, and free of pricing/cost.
   Contract — `docs/engine/UNIFIED_ROUTER.md`.
-- **Devbot** (dev notifications in Telegram): `apps/devbot` — a plain Node service on
+- **Devbot** (dev notifications in Telegram, including incoming Chatwoot client messages): `apps/devbot` — a plain Node service on
   `127.0.0.1:3800` (env `DEVBOT_PORT`), its own watchdog lane `deploy/devbot` with a release root at
   `/opt/apitoken/devbot-releases`; secrets — `/etc/apitoken/devbot.env`; until its provisioning,
   the unit and lane are disabled. Description — `docs/ops/DEVBOT.md`.

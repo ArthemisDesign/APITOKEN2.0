@@ -21,7 +21,9 @@ describe("parseConfig", () => {
     expect(config.chatId).toBe(-100999);
     expect(config.adminIds.has(42)).toBe(true);
     expect(config.adminIds.has(43)).toBe(true);
-    expect(config.topics).toEqual({ critical: 1, deploys: 2, warnings: 3, commerce: 4, digest: 5 });
+    expect(config.topics).toEqual({ critical: 1, deploys: 2, warnings: 3, commerce: 4, digest: 5, support: 0 });
+    expect(config.chatwootSecret).toBeUndefined();
+    expect(config.chatwootBaseUrl).toBe("https://support.apitoken.sale");
     expect(config.port).toBe(3800);
     expect(config.githubRepo).toBe("3xcalibur-tech/Claude_API");
     expect(config.pollGithubMs).toBe(45_000);
@@ -52,5 +54,18 @@ describe("parseConfig", () => {
   it("accepts only valid IANA time zones", () => {
     expect(parseConfig({ ...minimalEnv(), DEVBOT_TIME_ZONE: "Europe/Berlin" }).timeZone).toBe("Europe/Berlin");
     expect(() => parseConfig({ ...minimalEnv(), DEVBOT_TIME_ZONE: "Tbilisi-ish" })).toThrow();
+  });
+
+  it("enables Chatwoot intake env only when the secret and topic are present", () => {
+    const config = parseConfig({
+      ...minimalEnv(),
+      DEVBOT_TOPIC_SUPPORT: "6",
+      DEVBOT_CHATWOOT_SECRET: "0123456789abcdef",
+      DEVBOT_CHATWOOT_HMAC_SECRET: "hmac-secret",
+    });
+    expect(config.topics.support).toBe(6);
+    expect(config.chatwootSecret).toBe("0123456789abcdef");
+    expect(config.chatwootHmacSecret).toBe("hmac-secret");
+    expect(parseConfig({ ...minimalEnv(), DEVBOT_TOPIC_SUPPORT: "", DEVBOT_CHATWOOT_SECRET: "" }).topics.support).toBe(0);
   });
 });

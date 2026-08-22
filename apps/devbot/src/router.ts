@@ -1,5 +1,6 @@
+import { chatwootConversationUrl, truncateChatwootContent } from "./chatwoot.js";
 import { Dedup } from "./dedup.js";
-import type { AlertInstance, DeployEvent, JournalEvent } from "./events.js";
+import type { AlertInstance, ChatwootIncomingMessage, DeployEvent, JournalEvent } from "./events.js";
 import { errorMessage, type Logger } from "./log.js";
 import type { DeployState, PhaseState, StateStore, TopicKey } from "./state.js";
 import type { TelegramBot } from "./tg.js";
@@ -59,6 +60,8 @@ export interface RouterDeps {
   repoSlug: string;
   /** IANA time zone for all operator-facing timestamps. */
   timeZone: string;
+  /** Chatwoot dashboard origin for conversation links. */
+  chatwootBaseUrl: string;
   now?: () => number;
   /** Метрика devbot_events_total{topic,kind}. */
   onEvent?: (topic: TopicKey, kind: string) => void;
@@ -393,6 +396,48 @@ export class Router {
       }
     } catch (error) {
       this.deps.logger?.error(`router: journal event failed: ${errorMessage(error)}`);
+    }
+  }
+
+  // ---------------------------------------------------------------- chatwoot
+
+  formatChatwoot(message: ChatwootIncomingMessage): string {
+    const inbox = message.inboxName ?? message.channel ?? "inbox";
+    const lines = [`💬 <b>Support</b> · ${escapeHtml(inbox)}`];
+    const who = [message.name ? `<b>${escapeHtml(message.name)}</b>` : undefined, message.email ? escapeHtml(message.email) : undefined]
+      .filter((part): part is string => part !== undefined);
+    if (who.length > 0) lines.push(`👤 ${who.join(" · ")}`);
+    lines.push(`диалог #${escapeHtml(message.conversationId)}`);
+    const body = truncateChatwootContent(message.content).trim();
+    lines.push("");
+    lines.push(body === "" ? "<i>(no text)</i>" : escapeHtml(body));
+    if (message.attachments.length > 0) {
+      const names = message.attachments
+        .map((item) => item.fileName ?? item.fileType ?? "file")
+        .map((name) => escapeHtml(name));
+      lines.push(`📎 ${names.join(", ")}`);
+    }
+    lines.push("");
+    lines.push(`<a href="${chatwootConversationUrl(this.deps.chatwootBaseUrl, message)}">открыть в Chatwoot</a>`);
+    return lines.join("\n");
+  }
+
+  async handleChatwoot(message: ChatwootIncomingMessage): Promise<void> {
+    try {
+      const { state, dedup, tg, chatId, topics } = this.deps;
+      const threadId = topics.support;
+      if (!threadId) return;
+      const now = this.now();
+      const fingerprint = `cw:${message.id}`;
+      if (dedup.lookup(fingerprint, now)) return;
+      const messageId = await tg.sendMessage(chatId, this.formatChatwoot(message), { threadId });
+      if (messageId === null) return;
+      dedup.register(fingerprint, { messageId, topic: "support", now });
+      state.recordEvent({ ts: now, kind: "support", name: message.conversationId }, now);
+      this.countEvent("support", "message");
+      await state.save();
+    } catch (error) {
+      this.deps.logger?.error(`router: chatwoot message ${message.id} failed: ${errorMessage(error)}`);
     }
   }
 }

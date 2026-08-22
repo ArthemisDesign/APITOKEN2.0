@@ -40,6 +40,10 @@ const configSchema = z.object({
   DEVBOT_TOPIC_WARNINGS: threadId("DEVBOT_TOPIC_WARNINGS"),
   DEVBOT_TOPIC_COMMERCE: threadId("DEVBOT_TOPIC_COMMERCE"),
   DEVBOT_TOPIC_DIGEST: threadId("DEVBOT_TOPIC_DIGEST"),
+  DEVBOT_TOPIC_SUPPORT: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    threadId("DEVBOT_TOPIC_SUPPORT").optional(),
+  ),
   DEVBOT_PORT: z.coerce.number().int().min(1).max(65_535).default(3800),
   DEVBOT_AM_SECRET: z.string().min(16),
   DEVBOT_GITHUB_TOKEN: optionalSecret(10),
@@ -55,6 +59,9 @@ const configSchema = z.object({
     .default("/var/lib/apitoken/monitoring/textfile/devbot.prom"),
   DEVBOT_JOURNALD_ENABLED: boolFromString("false"),
   DEVBOT_LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  DEVBOT_CHATWOOT_SECRET: optionalSecret(16),
+  DEVBOT_CHATWOOT_HMAC_SECRET: optionalSecret(8),
+  DEVBOT_CHATWOOT_BASE_URL: z.string().url().default("https://support.apitoken.sale"),
 });
 
 export type RawConfig = z.infer<typeof configSchema>;
@@ -65,6 +72,8 @@ export interface TopicMap {
   warnings: number;
   commerce: number;
   digest: number;
+  /** 0 = Chatwoot support topic not provisioned; intake stays disabled. */
+  support: number;
 }
 
 export interface DevbotConfig {
@@ -86,6 +95,9 @@ export interface DevbotConfig {
   heartbeatFile: string;
   journaldEnabled: boolean;
   logLevel: "debug" | "info" | "warn" | "error";
+  chatwootSecret?: string;
+  chatwootHmacSecret?: string;
+  chatwootBaseUrl: string;
 }
 
 /** Парсит произвольный env-like объект — безопасно вызывать в тестах без process.env. */
@@ -101,6 +113,7 @@ export function parseConfig(env: Record<string, unknown>): DevbotConfig {
       warnings: raw.DEVBOT_TOPIC_WARNINGS,
       commerce: raw.DEVBOT_TOPIC_COMMERCE,
       digest: raw.DEVBOT_TOPIC_DIGEST,
+      support: raw.DEVBOT_TOPIC_SUPPORT ?? 0,
     },
     port: raw.DEVBOT_PORT,
     amSecret: raw.DEVBOT_AM_SECRET,
@@ -113,10 +126,13 @@ export function parseConfig(env: Record<string, unknown>): DevbotConfig {
     heartbeatFile: raw.DEVBOT_HEARTBEAT_FILE,
     journaldEnabled: raw.DEVBOT_JOURNALD_ENABLED,
     logLevel: raw.DEVBOT_LOG_LEVEL,
+    chatwootBaseUrl: raw.DEVBOT_CHATWOOT_BASE_URL.replace(/\/+$/, ""),
   };
   if (raw.DEVBOT_GITHUB_TOKEN !== undefined) config.githubToken = raw.DEVBOT_GITHUB_TOKEN;
   if (raw.DEVBOT_ENGINE_READONLY_KEY !== undefined) config.engineReadonlyKey = raw.DEVBOT_ENGINE_READONLY_KEY;
   if (raw.DEVBOT_ENGINE_CONTROL_KEY !== undefined) config.engineControlKey = raw.DEVBOT_ENGINE_CONTROL_KEY;
+  if (raw.DEVBOT_CHATWOOT_SECRET !== undefined) config.chatwootSecret = raw.DEVBOT_CHATWOOT_SECRET;
+  if (raw.DEVBOT_CHATWOOT_HMAC_SECRET !== undefined) config.chatwootHmacSecret = raw.DEVBOT_CHATWOOT_HMAC_SECRET;
   return config;
 }
 

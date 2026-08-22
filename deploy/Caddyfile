@@ -509,8 +509,18 @@ admin.apitoken.sale {
 # Support console (Chatwoot) + Telegram webhook ingress. Chatwoot слушает 127.0.0.1:3010
 # (порт 3000 занят commerce). Держим в деплой-шаблоне, чтобы каждый деплой НЕ ронял
 # support-роут (иначе Telegram не может доставлять апдейты боту → поддержка «лежит»).
+# /hooks/devbot/* — Chatwoot → apps/devbot (incoming client messages as Telegram notifications).
+# Path secret must not land in access logs; Chatwoot SSRF often blocks 127.0.0.1, so this
+# public HTTPS path is the intake Chatwoot can actually reach.
 support.apitoken.sale {
-	reverse_proxy 127.0.0.1:3010
+	@devbot_chatwoot path /hooks/devbot/*
+	log_skip @devbot_chatwoot
+	handle @devbot_chatwoot {
+		reverse_proxy 127.0.0.1:3800
+	}
+	handle {
+		reverse_proxy 127.0.0.1:3010
+	}
 }
 
 # Stable, loopback-only commerce-backend origin for the sales bounded context.

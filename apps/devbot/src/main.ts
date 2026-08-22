@@ -36,8 +36,17 @@ async function main(): Promise<void> {
     logger,
     repoSlug: config.githubRepo,
     timeZone: config.timeZone,
+    chatwootBaseUrl: config.chatwootBaseUrl,
     onEvent: (topic, kind) => metrics.incEvent(topic, kind),
   });
+
+  const chatwootSecret = config.chatwootSecret;
+  const chatwootEnabled = chatwootSecret !== undefined && config.topics.support > 0;
+  if (chatwootSecret !== undefined && config.topics.support <= 0) {
+    logger.warn("DEVBOT_CHATWOOT_SECRET is set but DEVBOT_TOPIC_SUPPORT is missing — Chatwoot intake disabled");
+  } else if (chatwootSecret === undefined && config.topics.support > 0) {
+    logger.warn("DEVBOT_TOPIC_SUPPORT is set but DEVBOT_CHATWOOT_SECRET is missing — Chatwoot intake disabled");
+  }
 
   const am = createAmServer({
     port: config.port,
@@ -48,11 +57,23 @@ async function main(): Promise<void> {
     onAlerts: (alerts) => {
       for (const alert of alerts) void router.handleAlert(alert);
     },
+    ...(chatwootEnabled && chatwootSecret !== undefined
+      ? {
+        chatwoot: {
+          secret: chatwootSecret,
+          ...(config.chatwootHmacSecret ? { hmacSecret: config.chatwootHmacSecret } : {}),
+          onMessage: (message) => void router.handleChatwoot(message),
+        },
+      }
+      : {}),
   });
   await new Promise<void>((resolve, reject) => {
     am.server.once("error", reject);
     am.server.listen(config.port, "127.0.0.1", () => resolve());
   });
+  if (chatwootEnabled) {
+    logger.info("Chatwoot intake enabled on POST /hooks/devbot/{secret}");
+  }
 
   let poller: GithubPoller | undefined;
   if (config.githubToken) {

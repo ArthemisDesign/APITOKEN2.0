@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 /**
- * Создаёт 5 топиков forum-группы для devbot и печатает готовые env-строки.
+ * Создаёт топики forum-группы для devbot и печатает готовые env-строки.
  *
  *   DEVBOT_TELEGRAM_TOKEN=... DEVBOT_CHAT_ID=-100... node scripts/provision-topics.mjs
+ *
+ * Повторный запуск создаёт дубликаты. Для уже существующей группы создайте только
+ * недостающий топик:
+ *
+ *   DEVBOT_PROVISION_ONLY=SUPPORT DEVBOT_TELEGRAM_TOKEN=... DEVBOT_CHAT_ID=-100... \
+ *     node scripts/provision-topics.mjs
  *
  * Токен не логируется; ошибки Telegram печатаются с description из Bot API.
  */
@@ -13,13 +19,22 @@ const TOPICS = [
   { key: "DEVBOT_TOPIC_WARNINGS", name: "⚠️ Warnings", icon_color: 0xffd67e },
   { key: "DEVBOT_TOPIC_COMMERCE", name: "💰 Commerce", icon_color: 0x8eee98 },
   { key: "DEVBOT_TOPIC_DIGEST", name: "📊 Digest", icon_color: 0x92a8d1 },
+  { key: "DEVBOT_TOPIC_SUPPORT", name: "💬 Support", icon_color: 0xc38ed2 },
 ];
 
 const token = process.env.DEVBOT_TELEGRAM_TOKEN;
 const chatId = process.env.DEVBOT_CHAT_ID;
+const only = (process.env.DEVBOT_PROVISION_ONLY ?? "").trim().toUpperCase();
+const selected = only === ""
+  ? TOPICS
+  : TOPICS.filter((topic) => topic.key === `DEVBOT_TOPIC_${only}` || topic.key === only);
 
 if (!token || !chatId) {
   console.error("Usage: DEVBOT_TELEGRAM_TOKEN=... DEVBOT_CHAT_ID=-100... node scripts/provision-topics.mjs");
+  process.exit(1);
+}
+if (selected.length === 0) {
+  console.error(`Unknown DEVBOT_PROVISION_ONLY=${only}; expected CRITICAL|DEPLOYS|WARNINGS|COMMERCE|DIGEST|SUPPORT`);
   process.exit(1);
 }
 
@@ -39,7 +54,7 @@ async function call(method, body) {
 const lines = [];
 let failed = false;
 
-for (const topic of TOPICS) {
+for (const topic of selected) {
   try {
     const result = await call("createForumTopic", {
       chat_id: Number(chatId),

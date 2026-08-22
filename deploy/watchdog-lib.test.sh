@@ -2012,6 +2012,11 @@ grep -Fq 'admin.partners.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'crm.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'content-studio.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'monitoring.apitoken.sale {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'support.apitoken.sale {' "$ROOT/deploy/Caddyfile"
+grep -Fq '@devbot_chatwoot path /hooks/devbot/*' "$ROOT/deploy/Caddyfile"
+grep -Fq 'log_skip @devbot_chatwoot' "$ROOT/deploy/Caddyfile"
+grep -Fq 'reverse_proxy 127.0.0.1:3800' "$ROOT/deploy/Caddyfile"
+grep -Fq 'reverse_proxy 127.0.0.1:3010' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 
 # Shared cache affinity must remain host-local, durable enough for cache continuity, and optional

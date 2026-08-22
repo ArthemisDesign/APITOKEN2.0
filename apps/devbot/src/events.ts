@@ -24,3 +24,17 @@ export interface JournalEvent {
   severity: "info" | "warning" | "critical";
   text: string;
 }
+
+/** Incoming Chatwoot client message after webhook filtering (outgoing/private/activity dropped). */
+export interface ChatwootIncomingMessage {
+  id: string;
+  content: string;
+  createdAt: string;
+  conversationId: string;
+  accountId: string;
+  inboxName?: string;
+  channel?: string;
+  name?: string;
+  email?: string;
+  attachments: { fileName?: string; fileType?: string }[];
+}

@@ -3,14 +3,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { Dedup } from "./dedup.js";
-import type { AlertInstance } from "./events.js";
+import type { AlertInstance, ChatwootIncomingMessage } from "./events.js";
 import { Router } from "./router.js";
 import { StateStore, type TopicKey } from "./state.js";
 import type { TelegramBot } from "./tg.js";
 
 const T0 = 1_700_000_000_000;
 const CHAT_ID = -100999;
-const TOPICS: Record<TopicKey, number> = { critical: 1, deploys: 2, warnings: 3, commerce: 4, digest: 5 };
+const TOPICS: Record<TopicKey, number> = { critical: 1, deploys: 2, warnings: 3, commerce: 4, digest: 5, support: 6 };
 
 interface SentMessage {
   chatId: number;
@@ -28,6 +28,7 @@ async function makeRouter(
   now: () => number = () => T0,
   timeZone = "Asia/Tbilisi",
   sendDelayMs = 0,
+  topics: Record<TopicKey, number> = TOPICS,
 ) {
   const sent: SentMessage[] = [];
   const edited: EditedMessage[] = [];
@@ -50,11 +51,12 @@ async function makeRouter(
   const router = new Router({
     tg: tg as unknown as TelegramBot,
     chatId: CHAT_ID,
-    topics: TOPICS,
+    topics,
     state,
     dedup: new Dedup(state.data.fingerprints),
     repoSlug: "acme/repo",
     timeZone,
+    chatwootBaseUrl: "https://support.apitoken.sale",
     now,
   });
   return { router, sent, edited, state, tg };
@@ -297,5 +299,47 @@ describe("Router journal events", () => {
     await router.handleJournalEvent({ source: "admin-deploy", severity: "critical", text: "rollback target also unhealthy — manual intervention required" });
     expect(sent).toHaveLength(3);
     expect(sent[2]?.options.threadId).toBe(TOPICS.critical);
+  });
+});
+
+function chatwootMessage(overrides: Partial<ChatwootIncomingMessage> = {}): ChatwootIncomingMessage {
+  return {
+    id: "42",
+    content: "Hello <script>",
+    createdAt: "2026-08-22 12:00:00 UTC",
+    conversationId: "15",
+    accountId: "1",
+    inboxName: "Website",
+    name: "Jane Doe",
+    email: "jane@example.com",
+    attachments: [],
+    ...overrides,
+  };
+}
+
+describe("Router Chatwoot messages", () => {
+  it("posts an incoming client message to the Support topic with a dashboard link", async () => {
+    const { router, sent } = await makeRouter();
+    await router.handleChatwoot(chatwootMessage());
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.options.threadId).toBe(TOPICS.support);
+    expect(sent[0]?.text).toContain("💬 <b>Support</b> · Website");
+    expect(sent[0]?.text).toContain("Jane Doe");
+    expect(sent[0]?.text).toContain("диалог #15");
+    expect(sent[0]?.text).toContain("Hello &lt;script&gt;");
+    expect(sent[0]?.text).toContain("https://support.apitoken.sale/app/accounts/1/conversations/15");
+  });
+
+  it("deduplicates Chatwoot retries of the same message id", async () => {
+    const { router, sent } = await makeRouter();
+    await router.handleChatwoot(chatwootMessage());
+    await router.handleChatwoot(chatwootMessage({ content: "retry body" }));
+    expect(sent).toHaveLength(1);
+  });
+
+  it("skips sending when the Support topic is not provisioned", async () => {
+    const { router, sent } = await makeRouter(() => T0, "Asia/Tbilisi", 0, { ...TOPICS, support: 0 });
+    await router.handleChatwoot(chatwootMessage());
+    expect(sent).toHaveLength(0);
   });
 });

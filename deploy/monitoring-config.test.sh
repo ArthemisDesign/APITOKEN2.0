@@ -611,6 +611,8 @@ grep -Fq 'devbot_last_webhook_seconds' "$ROOT/observability/prometheus/rules/app
   || { printf 'no rule consumes devbot_last_webhook_seconds\n' >&2; exit 1; }
 grep -Fq 'devbot_last_webhook_seconds' "$ROOT/apps/devbot/src/am-webhook.ts" \
   || { printf 'devbot does not export the last-webhook metric\n' >&2; exit 1; }
+grep -Fq 'devbot_last_chatwoot_seconds' "$ROOT/apps/devbot/src/am-webhook.ts" \
+  || { printf 'devbot does not export the last-chatwoot metric\n' >&2; exit 1; }
 grep -Fq 'alertmanager_notifications_failed_total{integration="webhook"}' \
   "$ROOT/observability/prometheus/rules/application.yml" \
   || { printf 'DevBotWebhookDeliveryFailing does not consume Alertmanager webhook failures\n' >&2; exit 1; }

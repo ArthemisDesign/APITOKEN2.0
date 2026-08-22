@@ -2,7 +2,8 @@
 
 Status: **stages 1–3 implemented** (alert webhook + commands, deploy poller, journald/silence —
 the `apps/devbot` application; systemd unit, watchdog lane, Alertmanager rendering and heartbeat
-alert — the deploy/monitoring plane). Remaining is **stage 4** — positive commerce business
+alert — the deploy/monitoring plane) **plus Chatwoot incoming-message notifications** in the
+💬 Support topic. Remaining is **stage 4** — positive commerce business
 events; it requires a new expand-only contract from commerce and does not start until that
 contract exists (see "Open questions"). Every event source below is confirmed by a file in the
 repository — if the code diverges from this map during implementation, the code is correct and
@@ -19,8 +20,8 @@ checked manually.
 
 Goal: one Telegram group with topics (a forum group) where the `apps/devbot` bot delivers all
 project lifecycle events — alerts, deploys, migrations, engine incidents, validation
-results — with sensible deduplication, and answers commands about the current state of the
-systems.
+results — and incoming Chatwoot client messages, with sensible deduplication, and answers
+commands about the current state of the systems.
 
 Non-goals:
 
@@ -33,13 +34,14 @@ Non-goals:
 
 ## 2. Event source map
 
-Three transports deliver events to the bot:
+Four transports deliver events to the bot:
 
 | Transport | What it carries | Integration point |
 |---|---|---|
 | **Alertmanager webhook** | All provisioned critical and warning alert rules | a new `webhook_configs` receiver in `observability/alertmanager/alertmanager.yml.template` pointing at the bot's loopback port |
 | **GitHub API poller** | `deploy/*` commit statuses and `production-*` Deployments | the same contract as `deploy/agent-merge.sh` (`am_status`) and `deploy/watchdog-github.sh`; 30–60 s interval |
 | **Journald tail** (stage 3) | manual interventions and rollbacks not reflected in GitHub | the `[watchdog]`, `[agent-merge]`, `[admin-deploy]`, `[sales-deploy]`, `[openkeys-deploy]` prefixes; read via `journalctl -f` |
+| **Chatwoot webhook** | Incoming client messages (`message_created`, `message_type=incoming`) | Chatwoot account webhook → `POST https://support.apitoken.sale/hooks/devbot/{DEVBOT_CHATWOOT_SECRET}` (Caddy → `127.0.0.1:3800`); loopback path is the same |
 
 ### 2.1 Deploy pipeline (host-watchdog)
 
@@ -136,6 +138,7 @@ created; ids are pinned in the bot's env config (see section 7), not in code.
 | **⚠️ Warnings** | All warning alerts (firing + resolved) | Push with repeat collapsing (section 4); resolved — an edit of the original message |
 | **💰 Commerce** | Money alerts (`FailedWebhooksPresent`, `StaleCheckoutSessions`, `SalesPayoutBatchFailed`, `DurableQueue*`, `BalanceDivergenceDetected`, `EngineSettlement*`) — duplicated from their severity topic; positive events (stage 4) | A duplicate carries only the header + a reply link to the message in Critical/Warnings |
 | **📊 Digest** | Daily summary (see `/digest`) | One message per day |
+| **💬 Support** | Incoming Chatwoot messages from clients (widget, email, Telegram inbox — any contact) | One Telegram message per Chatwoot message id; Chatwoot retries collapse by id. Agent replies, private notes, and activity events are dropped. Original client text is posted as-is (no machine translation). |
 
 Severity criteria: the rule's severity label (`critical`/`warning`) — from Alertmanager;
 deploy events are classified by the bot per the table in section 2.1 (quarantine and "manual
@@ -220,6 +223,29 @@ a fast no-change/docs deploy and the reordering of concurrent `editMessageText`.
 All operator timestamps and the daily digest use the IANA zone `DEVBOT_TIME_ZONE` (default
 `Asia/Tbilisi`), regardless of the production host's timezone.
 
+### 4.5 Chatwoot incoming message
+
+Posted to 💬 Support. HTML-escaped, content truncated to 1500 characters, attachment names
+listed without their URLs, plus a link to the conversation in the Chatwoot dashboard:
+
+```
+💬 <b>Support</b> · Website
+👤 <b>Jane Doe</b> · jane@example.com
+диалог #15
+
+Hello, I cannot top up…
+
+<a href="https://support.apitoken.sale/app/accounts/1/conversations/15">открыть в Chatwoot</a>
+```
+
+Dedup key: `cw:{message.id}` in the fingerprint store (48 h TTL). A repeated delivery of the
+same id is dropped, not edited. The dashboard origin is `DEVBOT_CHATWOOT_BASE_URL`
+(default `https://support.apitoken.sale`).
+
+Intake is optional and fail-safe: it turns on only when both `DEVBOT_CHATWOOT_SECRET` and
+`DEVBOT_TOPIC_SUPPORT` are set. A missing half logs a warning and leaves the Alertmanager
+path unchanged. Existing production env without those keys keeps working.
+
 ### 4.3 Deduplication and collapsing
 
 - Alert dedup key: the `fingerprint` from the Alertmanager webhook. A repeated firing with the
@@ -257,7 +283,7 @@ from user ids in the allowlist (`DEVBOT_ADMIN_IDS`); other messages are ignored 
 | `/pool` | Subscription pool: live/cooling/dead by provider (Anthropic `/pool`, `/codex-subs`, `/gemini-subs`) | Engine Control API with a readonly key |
 | `/settlement` | Money diagnostics from `/settlement-health`: outbox by state, failed in the last 24 h, backlog | Engine Control API with a control key |
 | `/silence <alertname> <duration>` (stage 3) | Create a silence in Alertmanager | Alertmanager API `POST /api/v2/silences` |
-| `/digest` (and daily at 10:00 `DEVBOT_TIME_ZONE`) | A 24 h summary in the 📊 Digest topic: deploys (success/quarantine), fired alerts by count, top recurring warnings | The bot's own event journal (state file) |
+| `/digest` (and daily at 10:00 `DEVBOT_TIME_ZONE`) | A 24 h summary in the 📊 Digest topic: deploys (success/quarantine), fired alerts by count, top recurring warnings, incoming Chatwoot messages | The bot's own event journal (state file) |
 | `/help` | List of commands | — |
 
 Command replies go to the topic where the command was invoked (`message_thread_id` from the
@@ -275,7 +301,8 @@ client is already proven in the repo.
 apps/devbot/src/
   main.ts            — wiring, config (zod, like apps/api/src/config.ts)
   tg.ts              — Bot API client: send/edit, thread ids, retry/429, token redact
-  am-webhook.ts      — HTTP server 127.0.0.1:DEVBOT_PORT, Alertmanager webhook intake
+  am-webhook.ts      — HTTP server 127.0.0.1:DEVBOT_PORT, Alertmanager + Chatwoot webhook intake
+  chatwoot.ts        — Chatwoot payload map (incoming only) and HMAC verification
   github-poller.ts   — commit statuses/deployments poller (30–60 s), milestone diff logic,
                        tail polling of the previous SHA until deploy/watchdog terminal
   journald.ts        — (stage 3) journalctl tail, prefix parsers
@@ -300,18 +327,23 @@ Event flows:
 3. **Journald** (stage 3): `journalctl -f -o json` with filters on the syslog identifiers of
    the watchdog/deploy scripts; "rolled back", "manual intervention", `retry` events, and
    `rollback.sh` launches.
-4. **Commands**: long polling → allowlist → handler → loopback probes and APIs.
+4. **Chatwoot webhook**: Chatwoot POSTs `message_created` to
+   `https://support.apitoken.sale/hooks/devbot/{DEVBOT_CHATWOOT_SECRET}`. Caddy matches that
+   prefix, skips access logs (the path carries the secret), and reverse-proxies to
+   `127.0.0.1:3800`. The bot keeps incoming contact messages, drops outgoing/private/activity,
+   and posts one HTML message into 💬 Support. When `DEVBOT_CHATWOOT_HMAC_SECRET` is set,
+   `X-Chatwoot-Signature` / `X-Chatwoot-Timestamp` are required (`sha256=` HMAC of
+   `{timestamp}.{raw_body}`, 5-minute replay window).
+5. **Commands**: long polling → allowlist → handler → loopback probes and APIs.
 
 State: a single JSON file (the last processed SHA and its phase message, a fingerprint store
 with a 48 h TTL, counters for the digest). No DB is needed; losing the state file means
 re-sending the current status, not a catastrophe.
 
 Boundaries (per `docs/DEPENDENCIES.md`): devbot is a consumer of the Alertmanager webhook
-contract, the GitHub API, and the public/loopback HTTP health endpoints and the engine Control
-API (readonly/control GET only). The bot does NOT access engine PostgreSQL or the
-commerce/sales/openkeys DBs. During implementation, the links `alertmanager → devbot`,
-`github → devbot`, `engine Control API → devbot` are added to `docs/DEPENDENCIES.md`, and
-`apps/devbot` is added to the `AGENTS.md` map in the same commit.
+contract, the GitHub API, the Chatwoot `message_created` webhook, and the public/loopback HTTP
+health endpoints and the engine Control API (readonly/control GET only). The bot does NOT
+access engine PostgreSQL, Chatwoot's database, or the commerce/sales/openkeys DBs.
 
 ## 7. Security
 
@@ -326,6 +358,13 @@ commerce/sales/openkeys DBs. During implementation, the links `alertmanager → 
   `customer_error_event_is_structured_and_redacts_request_data` as a sample requirement).
 - **Alertmanager webhook**: binds only `127.0.0.1`; the path contains a 128-bit secret
   (`DEVBOT_AM_SECRET`); other paths get 404. Not exposed externally through Caddy.
+- **Chatwoot webhook**: the HTTP server still binds only `127.0.0.1`. Caddy publishes
+  `https://support.apitoken.sale/hooks/devbot/{DEVBOT_CHATWOOT_SECRET}` because Chatwoot
+  (especially after SSRF hardening) often refuses `127.0.0.1` as a webhook target. The path
+  secret is at least 16 characters; Caddy `log_skip`s the matcher so the secret does not
+  appear in access logs. Optional HMAC (`DEVBOT_CHATWOOT_HMAC_SECRET`) is the Chatwoot-generated
+  webhook secret — when set, unsigned deliveries get 401. Customer message bodies go to the
+  operator group and are not written to journald.
 - **Group**: the bot processes updates only from `DEVBOT_CHAT_ID`; commands — only from
   `DEVBOT_ADMIN_IDS` (user id, not username — usernames can change). The bot cannot be added
   to another group with any effect: a foreign chat_id is ignored silently.
@@ -335,6 +374,8 @@ commerce/sales/openkeys DBs. During implementation, the links `alertmanager → 
   digest; default `Asia/Tbilisi`; the host timezone does not affect the output.
 - **Control API**: for `/pool`, `/settlement` — engine readonly/control keys via env; only
   GET endpoints are used.
+- **Chatwoot**: the bot does not call the Chatwoot API and does not store conversations; it
+  only accepts the webhook. The conversation link uses public numeric account/conversation ids.
 - Outbound connections only to `api.telegram.org` and `api.github.com`; the systemd unit uses
   `NoNewPrivileges`, `ProtectSystem=strict`, `ReadWritePaths=/var/lib/apitoken/devbot` —
   modelled on the existing units in `systemd/`.
@@ -406,6 +447,25 @@ events), the `/silence` command, a `customer_http_error` digest by reasons.
 batches) — requires an expand-only contract from commerce (webhook/outbox); it is formalized
 producer-first per the `AGENTS.md` rules, and the link is added to `docs/DEPENDENCIES.md`.
 The scheduled daily `/digest`.
+
+**Chatwoot → 💬 Support (independent of stage 4).** Code and Caddy path ship in the same
+commit as this section. Operator steps, in this order, so a restart of `apitoken-devbot`
+picks up the env together with the new binary:
+
+1. Create the topic (existing group: do **not** re-run the full provisioner — it duplicates
+   the original five):
+   `DEVBOT_PROVISION_ONLY=SUPPORT DEVBOT_TELEGRAM_TOKEN=… DEVBOT_CHAT_ID=… node scripts/provision-topics.mjs`
+2. Add to `/etc/apitoken/devbot.env` (mode 0600): `DEVBOT_TOPIC_SUPPORT=<thread id>`,
+   `DEVBOT_CHATWOOT_SECRET=<≥16 random chars>`, and after creating the Chatwoot webhook
+   `DEVBOT_CHATWOOT_HMAC_SECRET=<Chatwoot-shown secret>`.
+3. In Chatwoot: Settings → Integrations → Webhooks → URL
+   `https://support.apitoken.sale/hooks/devbot/{DEVBOT_CHATWOOT_SECRET}`, subscribe to
+   `message_created` only.
+4. Land this SHA via `deploy/agent-merge.sh`. Watchdog reloads Caddy (the `/hooks/devbot/*`
+   handle) and restarts the bot, which re-reads the env file.
+
+Until both the secret and the topic id are present, the bot starts as before and Chatwoot
+intake stays off.
 
 ## Open questions
 

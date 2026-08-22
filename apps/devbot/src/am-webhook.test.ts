@@ -1,10 +1,12 @@
+import { createHmac } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { createAmServer, mapAmPayload, MetricsRegistry, writeHeartbeatFile } from "./am-webhook.js";
-import type { AlertInstance } from "./events.js";
+import { CHATWOOT_WEBHOOK_PREFIX } from "./chatwoot.js";
+import type { AlertInstance, ChatwootIncomingMessage } from "./events.js";
 import { Logger } from "./log.js";
 
 const SECRET = "test-am-secret-128bit";
@@ -154,6 +156,106 @@ describe("am-webhook server", () => {
       expect(received).toHaveLength(0);
       const text = await fetch(`${base}/metrics`).then((r) => r.text());
       expect(text).toContain("devbot_last_webhook_seconds 0");
+      expect(text).toContain("devbot_last_chatwoot_seconds 0");
+    });
+  });
+});
+
+describe("chatwoot webhook server", () => {
+  const CW_SECRET = "chatwoot-path-secret";
+  const HMAC = "chatwoot-hmac-secret";
+  const incoming = {
+    event: "message_created",
+    id: 42,
+    content: "help",
+    message_type: "incoming",
+    conversation: { display_id: 15 },
+    account: { id: 1 },
+    sender: { name: "Jane" },
+  };
+
+  async function withChatwoot(
+    hmac: string | undefined,
+    run: (base: string, received: ChatwootIncomingMessage[]) => Promise<void>,
+  ) {
+    const received: ChatwootIncomingMessage[] = [];
+    const am = createAmServer({
+      port: 0,
+      secret: SECRET,
+      metrics: new MetricsRegistry(),
+      onAlerts: () => undefined,
+      heartbeatRefreshMs: 3_600_000,
+      heartbeatFileMs: 3_600_000,
+      chatwoot: {
+        secret: CW_SECRET,
+        ...(hmac ? { hmacSecret: hmac, nowSec: () => 1_700_000_000 } : {}),
+        onMessage: (message) => received.push(message),
+      },
+    });
+    await new Promise<void>((resolve) => am.server.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = am.server.address() as AddressInfo;
+    try {
+      await run(`http://127.0.0.1:${port}`, received);
+    } finally {
+      await am.close();
+    }
+  }
+
+  it("routes an incoming Chatwoot message on the secret path", async () => {
+    await withChatwoot(undefined, async (base, received) => {
+      const response = await fetch(`${base}${CHATWOOT_WEBHOOK_PREFIX}${CW_SECRET}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(incoming),
+      });
+      expect(response.status).toBe(200);
+      expect(received).toHaveLength(1);
+      expect(received[0]?.id).toBe("42");
+    });
+  });
+
+  it("acknowledges outgoing messages without routing them", async () => {
+    await withChatwoot(undefined, async (base, received) => {
+      const response = await fetch(`${base}${CHATWOOT_WEBHOOK_PREFIX}${CW_SECRET}`, {
+        method: "POST",
+        body: JSON.stringify({ ...incoming, message_type: "outgoing" }),
+      });
+      expect(response.status).toBe(200);
+      expect(received).toHaveLength(0);
+    });
+  });
+
+  it("returns 404 for a near-miss Chatwoot secret", async () => {
+    await withChatwoot(undefined, async (base, received) => {
+      const response = await fetch(`${base}${CHATWOOT_WEBHOOK_PREFIX}wrong`, {
+        method: "POST",
+        body: JSON.stringify(incoming),
+      });
+      expect(response.status).toBe(404);
+      expect(received).toHaveLength(0);
+    });
+  });
+
+  it("requires a valid HMAC when a Chatwoot HMAC secret is configured", async () => {
+    await withChatwoot(HMAC, async (base, received) => {
+      const body = JSON.stringify(incoming);
+      const timestamp = "1700000000";
+      const signature = `sha256=${createHmac("sha256", HMAC).update(`${timestamp}.${body}`).digest("hex")}`;
+      const unauthorized = await fetch(`${base}${CHATWOOT_WEBHOOK_PREFIX}${CW_SECRET}`, {
+        method: "POST",
+        body,
+      });
+      expect(unauthorized.status).toBe(401);
+      const authorized = await fetch(`${base}${CHATWOOT_WEBHOOK_PREFIX}${CW_SECRET}`, {
+        method: "POST",
+        headers: {
+          "x-chatwoot-timestamp": timestamp,
+          "x-chatwoot-signature": signature,
+        },
+        body,
+      });
+      expect(authorized.status).toBe(200);
+      expect(received).toHaveLength(1);
     });
   });
 });
