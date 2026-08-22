@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { PayoutController } from "./payout.controller.js";
+import { PayoutController, payoutRowIdentity } from "./payout.controller.js";
 import type { PayoutService } from "./payout.service.js";
 
 describe("PayoutController.engine", () => {
@@ -21,5 +21,29 @@ describe("PayoutController.engine", () => {
 
     await expect(controller.engine()).resolves.toEqual(state);
     expect(engineState).toHaveBeenCalledOnce();
+  });
+});
+
+describe("payoutRowIdentity", () => {
+  const base = {
+    partnerId: "12345678-aaaa-bbbb-cccc-123456789012",
+    email: null,
+    displayName: null,
+    telegramUsername: null,
+  };
+
+  it("uses account email before every legacy display fallback", () => {
+    expect(payoutRowIdentity({
+      ...base,
+      email: "partner@example.com",
+      displayName: "Partner name",
+      telegramUsername: "partner_handle",
+    })).toBe("partner@example.com");
+  });
+
+  it("falls back through display name, Telegram and the bounded id prefix", () => {
+    expect(payoutRowIdentity({ ...base, displayName: "Partner name", telegramUsername: "partner_handle" })).toBe("Partner name");
+    expect(payoutRowIdentity({ ...base, telegramUsername: "partner_handle" })).toBe("@partner_handle");
+    expect(payoutRowIdentity(base)).toBe("12345678");
   });
 });

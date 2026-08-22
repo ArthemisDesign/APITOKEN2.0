@@ -20,8 +20,7 @@ export default function ReferralsPage() {
   const [items, setItems] = useState<ReferralRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pricing, setPricing] = useState<ReferralRow | null>(null);
-  // The B2B column exists only for a partner an admin granted the right. Without the grant the
-  // cabinet looks exactly as it did — an ordinary partner has no business pricing to see.
+  // A direct grant enables self-service. Everyone else can send an explicit reviewed request.
   const b2bAllowed = partner.b2bEnabled === true && (partner.b2bMaxDiscountBps ?? 0) > 0;
   const ceilingPercent = Math.floor((partner.b2bMaxDiscountBps ?? 0) / 100);
 
@@ -78,7 +77,7 @@ export default function ReferralsPage() {
                 <th className="num">{t("Top-ups", "Пополнения")}</th>
                 <th className="num">{t("Spend", "Траты")}</th>
                 <th className="num">{t("You earned", "Вы заработали")}</th>
-                {b2bAllowed ? <th>{t("Pricing", "Условия")}</th> : null}
+                <th>{t("Business terms", "B2B-условия")}</th>
               </>
             }
           >
@@ -86,8 +85,8 @@ export default function ReferralsPage() {
               return (
                 <tr key={`${r.userRef ?? r.userMask}-${r.attributedAt}`}>
                   <td>
-                    <span className="identity-email" title={r.email ?? r.userMask}>{r.email ?? r.userMask}</span>
-                    <div style={{ color: "var(--text-dim)", fontSize: "12px", marginTop: "2px" }}>
+                    <span className="identity-email" title={r.email ?? r.userMask} translate="no">{r.email ?? r.userMask}</span>
+                    <div className="referral-joined">
                       {t("joined", "с")} {formatDate(r.attributedAt, locale)}
                     </div>
                   </td>
@@ -97,35 +96,35 @@ export default function ReferralsPage() {
                     ) : r.customerType === "b2c" ? (
                       <Badge tone="neutral">B2C</Badge>
                     ) : (
-                      <span style={{ color: "var(--text-dim)" }}>—</span>
+                      <span className="muted-dash">—</span>
                     )}
                     {r.status && r.status !== "active" ? (
-                      <div style={{ marginTop: "4px" }}>
+                      <div className="referral-status">
                         <StatusBadge status={r.status} />
                       </div>
                     ) : null}
                   </td>
                   <td className="num">
-                    {r.discountPercent != null ? `${r.discountPercent}%` : <span style={{ color: "var(--text-dim)" }}>—</span>}
+                    {r.discountPercent != null ? `${r.discountPercent}%` : <span className="muted-dash">—</span>}
                   </td>
                   <td className="num">
-                    {r.balanceNano != null ? formatUsd(r.balanceNano) : <span style={{ color: "var(--text-dim)" }}>—</span>}
+                    {r.balanceNano != null ? formatUsd(r.balanceNano) : <span className="muted-dash">—</span>}
                   </td>
                   <td className="num">{formatUsd(r.topupNano)}</td>
                   <td className="num">{formatUsd(r.spendNano)}</td>
-                  <td className="num" style={{ color: "var(--accent-strong)", fontWeight: 700 }}>
+                  <td className="num referral-earned">
                     {formatUsd(r.netNano)}
                     {BigInt(r.adjustmentNano) !== 0n ? <div className="field-hint">{formatUsd(r.adjustmentNano)} {t("returns", "возвраты")}</div> : null}
                   </td>
-                  {b2bAllowed ? (
-                    <td>
-                      {r.userRef ? (
-                        <Button size="sm" variant="ghost" onClick={() => setPricing(r)}>
-                          {r.customerType === "b2b" ? t("Edit rates", "Ставки") : t("Make B2B", "Сделать B2B")}
-                        </Button>
-                      ) : null}
-                    </td>
-                  ) : null}
+                  <td>
+                    {r.userRef ? (
+                      <Button size="sm" variant="ghost" onClick={() => setPricing(r)}>
+                        {b2bAllowed
+                          ? (r.customerType === "b2b" ? t("Edit rates", "Ставки") : t("Make B2B", "Сделать B2B"))
+                          : (r.customerType === "b2b" ? t("Request rates", "Запросить ставки") : t("Request B2B", "Запросить B2B"))}
+                      </Button>
+                    ) : null}
+                  </td>
                 </tr>
               );
             })}
@@ -136,6 +135,7 @@ export default function ReferralsPage() {
         <BusinessPricingDialog
           row={pricing}
           ceilingPercent={ceilingPercent}
+          mode={b2bAllowed ? "direct" : "request"}
           onClose={() => setPricing(null)}
           onSaved={() => { void load(); }}
         />

@@ -15,9 +15,9 @@ describe("referral pricing copy contract", () => {
     expect(overview).not.toContain("referral-discount-card");
     expect(referrals).not.toContain("/discount");
     expect(referrals).not.toMatch(/personal partner rate|партнёрскую ставку|price floor/iu);
-    expect(onboarding).toContain("referralDiscountEnabled: false");
+    expect(onboarding).not.toMatch(/referralDiscount|promoMax/);
     expect(onboarding).not.toMatch(/allow this partner to give|price floor/iu);
     expect(analytics).not.toContain("/referrals/${u.userRef}/discount");
-    expect(analytics).toContain("no price effect");
+    expect(analytics).not.toMatch(/Legacy marker|Старый маркер|discountLinks/);
   });
 });

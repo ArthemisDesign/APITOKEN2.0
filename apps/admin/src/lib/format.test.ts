@@ -89,6 +89,7 @@ describe("ago", () => {
     expect(ago("2026-07-31T11:55:00Z")).toBe("5м");
     expect(ago("2026-07-31T09:00:00Z")).toBe("3ч");
     expect(ago("2026-07-29T12:00:00Z")).toBe("2д");
+    expect(ago("2026-07-31T11:55:00Z", "en-US")).toBe("5m");
     expect(ago(null)).toBe("—");
     vi.useRealTimers();
   });
@@ -103,6 +104,11 @@ describe("formatDate", () => {
   it("ru-RU дата и дата+время", () => {
     expect(formatDate("2026-07-31T12:34:56Z")).toMatch(/^\d{2}\.\d{2}\.\d{4}$/);
     expect(formatDate("2026-07-31T12:34:56Z", true)).toMatch(/^\d{2}\.\d{2}\.\d{4}, \d{2}:\d{2}$/);
+  });
+
+  it("formats new bilingual routes with their selected locale", () => {
+    expect(formatDate("2026-07-31T12:34:56Z", false, "en-US")).toBe("7/31/26");
+    expect(formatDate("invalid", false, "en-US")).toBe("—");
   });
 });
 

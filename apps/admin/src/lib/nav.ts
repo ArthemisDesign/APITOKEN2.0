@@ -3,46 +3,46 @@
 // Маршруты App Router: Сводка = "/", остальные — "/<tab>". Исключение —
 // Подписки = "/subscriptions": путь "/subs" на домене занят data-роутом
 // движка (Caddy @admin_data проксирует его на engine раньше фронтенда).
-export type NavItem = { href: string; label: string; icon: string };
-export type NavGroup = { group: string; items: NavItem[] };
+export type NavItem = { href: string; label: string; labelEn?: string; icon: string };
+export type NavGroup = { group: string; groupEn?: string; items: NavItem[] };
 
 export const NAV: NavGroup[] = [
-  { group: "Обзор", items: [{ href: "/", label: "Сводка", icon: "▣" }] },
+  { group: "Обзор", groupEn: "Overview", items: [{ href: "/", label: "Сводка", labelEn: "Dashboard", icon: "▣" }] },
   {
-    group: "Инфраструктура",
+    group: "Инфраструктура", groupEn: "Infrastructure",
     items: [
-      { href: "/subscriptions", label: "Подписки", icon: "◍" },
-      { href: "/proxies", label: "Прокси", icon: "◎" },
-      { href: "/system", label: "Система", icon: "⌘" },
-      { href: "/trends", label: "Тренды", icon: "∿" },
+      { href: "/subscriptions", label: "Подписки", labelEn: "Subscriptions", icon: "◍" },
+      { href: "/proxies", label: "Прокси", labelEn: "Proxies", icon: "◎" },
+      { href: "/system", label: "Система", labelEn: "System", icon: "⌘" },
+      { href: "/trends", label: "Тренды", labelEn: "Trends", icon: "∿" },
     ],
   },
   {
-    group: "Клиенты",
+    group: "Клиенты", groupEn: "Customers",
     items: [
-      { href: "/users", label: "Пользователи", icon: "◉" },
-      { href: "/paying-users", label: "Платящие", icon: "◒" },
-      { href: "/accounts", label: "Аккаунты", icon: "▤" },
-      { href: "/partners", label: "Партнёры", icon: "◆" },
-      { href: "/openkeys", label: "OpenKeys", icon: "◈" },
-      { href: "/business", label: "B2B", icon: "◇" },
+      { href: "/users", label: "Пользователи", labelEn: "Users", icon: "◉" },
+      { href: "/paying-users", label: "Платящие", labelEn: "Paying users", icon: "◒" },
+      { href: "/accounts", label: "Аккаунты", labelEn: "Accounts", icon: "▤" },
+      { href: "/partners", label: "Партнёры", labelEn: "Partners", icon: "◆" },
+      { href: "/openkeys", label: "OpenKeys", labelEn: "OpenKeys", icon: "◈" },
+      { href: "/business", label: "B2B", labelEn: "B2B", icon: "◇" },
     ],
   },
   {
-    group: "Деньги",
+    group: "Деньги", groupEn: "Money",
     items: [
-      { href: "/sales/calculator", label: "Калькулятор", icon: "⌁" },
-      { href: "/topups", label: "Пополнения", icon: "＄" },
-      { href: "/engine-spend", label: "Расход движка", icon: "⟠" },
+      { href: "/sales/calculator", label: "Калькулятор", labelEn: "Calculator", icon: "⌁" },
+      { href: "/topups", label: "Пополнения", labelEn: "Top-ups", icon: "＄" },
+      { href: "/engine-spend", label: "Расход движка", labelEn: "Engine spend", icon: "⟠" },
       { href: "/request-analytics", label: "Request Analytics", icon: "⌬" },
-      { href: "/finance", label: "Финансы", icon: "∑" },
+      { href: "/finance", label: "Финансы", labelEn: "Finance", icon: "∑" },
     ],
   },
   {
-    group: "Управление",
+    group: "Управление", groupEn: "Management",
     items: [
-      { href: "/admins", label: "Админы", icon: "⚿" },
-      { href: "/audit", label: "Аудит", icon: "≡" },
+      { href: "/admins", label: "Админы", labelEn: "Admins", icon: "⚿" },
+      { href: "/audit", label: "Аудит", labelEn: "Audit", icon: "≡" },
     ],
   },
 ];

@@ -11,6 +11,7 @@
 // обработчика без контекста.
 import { useSyncExternalStore, type FormEvent, type ReactElement } from "react";
 import { Modal } from "@/components/ui";
+import { useI18n } from "@/lib/i18n";
 
 export type DialogField = {
   name: string;
@@ -83,6 +84,7 @@ export function __resetDialogsForTests(): void {
 }
 
 function DialogView({ request }: { request: DialogRequest }): ReactElement {
+  const { t } = useI18n();
   const cancel = () => resolveDialog(request.id, null);
   // Enter в любом инпуте сабмитит форму нативно — отдельный keydown не нужен.
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -105,15 +107,16 @@ function DialogView({ request }: { request: DialogRequest }): ReactElement {
               name={field.name}
               defaultValue={field.value ?? ""}
               autoComplete="off"
+              spellCheck={false}
             />
           </label>
         ))}
         <div className="dlg-actions">
           <button type="button" className="btn ghost" onClick={cancel}>
-            Отмена
+            {t("Cancel", "Отмена")}
           </button>
           <button type="submit" className={"btn" + (request.danger ? " bad" : "")}>
-            {request.confirmLabel ?? "Подтвердить"}
+            {request.confirmLabel ?? t("Confirm", "Подтвердить")}
           </button>
         </div>
       </form>

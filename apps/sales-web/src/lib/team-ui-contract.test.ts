@@ -14,6 +14,19 @@ describe("partner team and referral UI contract", () => {
     expect(team).not.toContain("body: { telegramUsername: username, commissionBps }");
     expect(team).toContain("platformCommissionBps");
     expect(team).toContain("teamOverrideMaxBps");
+    for (const field of ["overrideBps", "teamOverrideMaxBps", "teamInvitesEnabled", "b2bEnabled", "b2bMaxDiscountBps", "b2bCanDelegate"]) {
+      expect(team).toContain(field);
+    }
+    expect(team).not.toMatch(/body:\s*\{[^}]*commissionBps/s);
+  });
+
+  it("provides the reviewed request workflow with idempotent commission writes", () => {
+    const requests = source("../app/dashboard/requests/page.tsx");
+    expect(requests).toContain('"/v1/partner/requests/commission"');
+    expect(requests).toContain('"Idempotency-Key": crypto.randomUUID()');
+    expect(requests).toContain("requestedCommissionBps");
+    expect(requests).toContain("partner.commissionBps");
+    expect(requests).toMatch(/customerEmail \?\? item\.requesterEmail/);
   });
 
   it("renders Commerce email before the outage-safe referral mask", () => {
@@ -35,5 +48,20 @@ describe("partner team and referral UI contract", () => {
     expect(layout).not.toMatch(/promo codes|промокоды|dashboard\/promo/iu);
     expect(onboarding).not.toMatch(/promo codes|промокоды|promoMax/iu);
     expect(analytics).not.toMatch(/postPromo|editPromo|Promo:|Промо:/u);
+  });
+
+  it("uses email-first identity in current admin, dashboard and payout serialization", () => {
+    const dashboard = source("../app/dashboard/layout.tsx");
+    const team = source("../app/dashboard/team/page.tsx");
+    const analytics = source("../app/admin/partner-analytics.tsx");
+    const legacyAdmin = source("../app/admin/page.tsx");
+    const payoutController = source("../../../sales-api/src/payout/payout.controller.ts");
+
+    expect(dashboard).toContain("partner.email ?? partner.displayName ??");
+    expect(team).toContain("if (member.email)");
+    expect(team.indexOf("if (member.email)")).toBeLessThan(team.indexOf("if (member.telegramUsername)"));
+    expect(analytics).toContain("p.email ?? p.displayName ??");
+    expect(legacyAdmin).toContain("row.email ?? row.displayName ??");
+    expect(payoutController).toContain("r.email ?? r.displayName ?? (r.telegramUsername");
   });
 });

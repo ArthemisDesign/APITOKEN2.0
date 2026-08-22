@@ -2,12 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError, formatBps, formatDate, formatUsd, type InviteRow, type TeamRow } from "@/lib/api";
-import { Badge, Button, Card, CopyButton, EmptyState, Field, Input, Loading, Notice, Table } from "@/components/ui";
+import { Badge, Button, Card, CopyButton, EmptyState, Field, Input, Loading, Notice, StatusBadge, Table } from "@/components/ui";
 import { localeFor, useI18n } from "@/components/i18n";
 
 type TeamResponse = {
   platformCommissionBps: number;
   teamOverrideMaxBps: number;
+  teamInvitesEnabled: boolean;
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
+  b2bCanDelegate: boolean;
   items: TeamRow[];
 };
 type InviteResponse = { items: InviteRow[] };
@@ -33,10 +37,18 @@ function bpsInput(bps: number): string {
   return String(bps / 100);
 }
 
+function percentToBps(input: string, maximumBps: number): number | null {
+  const match = /^(0|[1-9]\d?)(?:\.(\d{1,2}))?$/.exec(input.trim());
+  if (!match) return null;
+  const bps = Number(match[1]) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
+  return bps <= maximumBps ? bps : null;
+}
+
 function memberIdentity(member: TeamRow): string {
   if (member.email) return member.email;
+  if (member.displayName) return member.displayName;
   if (member.telegramUsername) return `@${member.telegramUsername}`;
-  return member.displayName ?? `partner-${member.id.slice(0, 8)}`;
+  return `partner-${member.id.slice(0, 8)}`;
 }
 
 export default function TeamPage() {
@@ -47,14 +59,27 @@ export default function TeamPage() {
   const [telegramUsername, setTelegramUsername] = useState("");
   const [overridePercent, setOverridePercent] = useState("10");
   const [memberCeilingPercent, setMemberCeilingPercent] = useState("20");
+  const [memberTeamInvitesEnabled, setMemberTeamInvitesEnabled] = useState(true);
+  const [memberB2bEnabled, setMemberB2bEnabled] = useState(false);
+  const [memberB2bMaxPercent, setMemberB2bMaxPercent] = useState("0");
+  const [memberB2bCanDelegate, setMemberB2bCanDelegate] = useState(false);
   const [created, setCreated] = useState<CreatedInvite | null>(null);
   const [editing, setEditing] = useState<TeamRow | null>(null);
   const [editOverridePercent, setEditOverridePercent] = useState("");
   const [editCeilingPercent, setEditCeilingPercent] = useState("");
+  const [editTeamInvitesEnabled, setEditTeamInvitesEnabled] = useState(false);
+  const [editB2bEnabled, setEditB2bEnabled] = useState(false);
+  const [editB2bMaxPercent, setEditB2bMaxPercent] = useState("0");
+  const [editB2bCanDelegate, setEditB2bCanDelegate] = useState(false);
   const [busy, setBusy] = useState(false);
   const [editBusy, setEditBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  function showError(message: string, fieldId?: string) {
+    setError(message);
+    if (fieldId) window.requestAnimationFrame(() => document.getElementById(fieldId)?.focus());
+  }
 
   const load = useCallback(async () => {
     const [teamResponse, inviteResponse] = await Promise.all([
@@ -86,18 +111,37 @@ export default function TeamPage() {
   );
   const team = teamData?.items ?? null;
   const maximumBps = teamData?.teamOverrideMaxBps ?? 0;
+  const mayDelegateB2b = teamData?.b2bEnabled === true && teamData.b2bCanDelegate === true;
+  const b2bMaximumBps = teamData?.b2bMaxDiscountBps ?? 0;
 
-  function parseControls(overrideValue: string, ceilingValue: string): { overrideBps: number; teamOverrideMaxBps: number } | null {
+  function parseControls(overrideValue: string, ceilingValue: string, overrideId: string, ceilingId: string): { overrideBps: number; teamOverrideMaxBps: number } | null {
     const overrideBps = percentToTeamBps(overrideValue);
     const teamOverrideMaxBps = percentToTeamBps(ceilingValue);
     if (overrideBps === null || teamOverrideMaxBps === null || overrideBps > maximumBps || teamOverrideMaxBps > maximumBps) {
-      setError(t(
+      showError(t(
         `Both values must be between 0% and ${formatBps(maximumBps)}, with at most two decimal places.`,
         `Оба значения должны быть от 0% до ${formatBps(maximumBps)}, не более двух знаков после запятой.`,
-      ));
+      ), overrideBps === null || overrideBps > maximumBps ? overrideId : ceilingId);
       return null;
     }
     return { overrideBps, teamOverrideMaxBps };
+  }
+
+  function parseB2bControls(enabled: boolean, maximum: string, canDelegate: boolean, maximumId: string) {
+    if (!enabled) return { b2bEnabled: false, b2bMaxDiscountBps: 0, b2bCanDelegate: false } as const;
+    if (!mayDelegateB2b) {
+      showError(t("Your account cannot delegate B2B rights.", "Ваш аккаунт не может делегировать B2B-права."));
+      return null;
+    }
+    const b2bMaxDiscountBps = percentToBps(maximum, b2bMaximumBps);
+    if (b2bMaxDiscountBps === null || b2bMaxDiscountBps <= 0) {
+      showError(t(
+        `B2B maximum must be above 0% and no greater than ${formatBps(b2bMaximumBps)}.`,
+        `B2B-максимум должен быть больше 0% и не выше ${formatBps(b2bMaximumBps)}.`,
+      ), maximumId);
+      return null;
+    }
+    return { b2bEnabled: true, b2bMaxDiscountBps, b2bCanDelegate: canDelegate } as const;
   }
 
   async function createInvite(event: React.FormEvent<HTMLFormElement>) {
@@ -107,11 +151,13 @@ export default function TeamPage() {
     setCreated(null);
     const username = telegramUsername.trim();
     if (!/^@?[A-Za-z0-9_]{5,32}$/.test(username)) {
-      setError(t("Enter a valid Telegram username.", "Введите корректное имя пользователя Telegram."));
+      showError(t("Enter a valid Telegram username.", "Введите корректное имя пользователя Telegram."), "team-invite-telegram");
       return;
     }
-    const controls = parseControls(overridePercent, memberCeilingPercent);
+    const controls = parseControls(overridePercent, memberCeilingPercent, "team-invite-override", "team-invite-ceiling");
     if (!controls) return;
+    const b2bControls = parseB2bControls(memberB2bEnabled, memberB2bMaxPercent, memberB2bCanDelegate, "team-invite-b2b-max");
+    if (!b2bControls) return;
     setBusy(true);
     try {
       const result = await api<{
@@ -119,7 +165,12 @@ export default function TeamPage() {
         overrideBps: number; teamOverrideMaxBps: number; expiresAt: string | null;
       }>("/v1/partner/team/invites", {
         method: "POST",
-        body: { telegramUsername: username, ...controls },
+        body: {
+          telegramUsername: username,
+          ...controls,
+          teamInvitesEnabled: memberTeamInvitesEnabled,
+          ...b2bControls,
+        },
       });
       const invite: CreatedInvite = { ...result, consumedAt: null, createdAt: new Date().toISOString() };
       setCreated(invite);
@@ -137,6 +188,10 @@ export default function TeamPage() {
     setEditing(member);
     setEditOverridePercent(bpsInput(member.overrideBps));
     setEditCeilingPercent(bpsInput(member.teamOverrideMaxBps));
+    setEditTeamInvitesEnabled(member.teamInvitesEnabled);
+    setEditB2bEnabled(member.b2bEnabled);
+    setEditB2bMaxPercent(bpsInput(member.b2bMaxDiscountBps));
+    setEditB2bCanDelegate(member.b2bCanDelegate);
     setError(null);
     setSuccess(null);
     window.requestAnimationFrame(() => document.getElementById("team-member-override")?.focus());
@@ -147,11 +202,16 @@ export default function TeamPage() {
     if (!editing) return;
     setError(null);
     setSuccess(null);
-    const controls = parseControls(editOverridePercent, editCeilingPercent);
+    const controls = parseControls(editOverridePercent, editCeilingPercent, "team-member-override", "team-member-ceiling");
     if (!controls) return;
+    const b2bControls = parseB2bControls(editB2bEnabled, editB2bMaxPercent, editB2bCanDelegate, "team-member-b2b-max");
+    if (!b2bControls) return;
     setEditBusy(true);
     try {
-      await api(`/v1/partner/team/${editing.id}`, { method: "PATCH", body: controls });
+      await api(`/v1/partner/team/${editing.id}`, {
+        method: "PATCH",
+        body: { ...controls, teamInvitesEnabled: editTeamInvitesEnabled, ...b2bControls },
+      });
       setSuccess(t("Team settings saved.", "Настройки участника сохранены."));
       await load();
       setEditing(null);
@@ -189,7 +249,10 @@ export default function TeamPage() {
         "The invite is bound to their Telegram username. Percentages are exact settings for this member and may be edited later.",
         "Приглашение привязано к Telegram-имени. Проценты — точные настройки этого участника, их можно изменить позже.",
       )}>
-        <form onSubmit={createInvite} className="team-invite-form" noValidate>
+        {!teamData.teamInvitesEnabled ? <Notice kind="info">{t(
+          "Team invitations are disabled for your account. Ask the program administrator to enable them.",
+          "Приглашения в команду отключены для вашего аккаунта. Запросите включение у администратора программы.",
+        )}</Notice> : <form onSubmit={createInvite} className="team-invite-form" noValidate>
           <Field label={t("Telegram username", "Имя пользователя Telegram")} htmlFor="team-invite-telegram" hint={t("For example: @partner_name", "Например: @partner_name")}>
             <Input id="team-invite-telegram" value={telegramUsername} onChange={(event) => setTelegramUsername(event.target.value)} placeholder="@partner_name…" autoComplete="off" spellCheck={false} disabled={busy} />
           </Field>
@@ -200,14 +263,25 @@ export default function TeamPage() {
             <div className="input-suffix"><Input id="team-invite-ceiling" type="number" min={0} max={maximumBps / 100} step={0.01} value={memberCeilingPercent} onChange={(event) => setMemberCeilingPercent(event.target.value)} disabled={busy} inputMode="decimal" autoComplete="off" /><span aria-hidden>%</span></div>
           </Field>
           <div className="team-invite-action"><Button type="submit" loading={busy}>{t("Create invite", "Создать приглашение")}</Button></div>
-        </form>
+          <fieldset className="team-authority-fields">
+            <legend>{t("Delegated permissions", "Делегируемые права")}</legend>
+            <label className="check-row"><input name="teamInvitesEnabled" type="checkbox" checked={memberTeamInvitesEnabled} onChange={(event) => setMemberTeamInvitesEnabled(event.target.checked)} disabled={busy} /><span><b>{t("May invite a team", "Может приглашать команду")}</b><small>{t("This member may create their own team invitations.", "Участник сможет создавать свои приглашения в команду.")}</small></span></label>
+            {mayDelegateB2b ? <>
+              <label className="check-row"><input name="b2bEnabled" type="checkbox" checked={memberB2bEnabled} onChange={(event) => { setMemberB2bEnabled(event.target.checked); if (!event.target.checked) setMemberB2bCanDelegate(false); }} disabled={busy} /><span><b>{t("B2B self-service", "Самостоятельный B2B")}</b><small>{t("May convert owned referrals within the ceiling below.", "Может переводить своих рефералов в пределах лимита ниже.")}</small></span></label>
+              {memberB2bEnabled ? <div className="team-authority-nested">
+                <Field label={t("B2B discount maximum", "Максимальная B2B-скидка")} htmlFor="team-invite-b2b-max" hint={`${t("Your maximum", "Ваш максимум")}: ${formatBps(b2bMaximumBps)}`}><div className="input-suffix"><Input id="team-invite-b2b-max" type="number" inputMode="decimal" autoComplete="off" min={0} max={b2bMaximumBps / 100} step={0.01} value={memberB2bMaxPercent} onChange={(event) => setMemberB2bMaxPercent(event.target.value)} disabled={busy} /><span aria-hidden>%</span></div></Field>
+                <label className="check-row"><input name="b2bCanDelegate" type="checkbox" checked={memberB2bCanDelegate} onChange={(event) => setMemberB2bCanDelegate(event.target.checked)} disabled={busy} /><span><b>{t("May delegate B2B", "Может делегировать B2B")}</b><small>{t("Can pass a smaller B2B ceiling to their own members.", "Сможет передать своей команде меньший B2B-лимит.")}</small></span></label>
+              </div> : null}
+            </> : null}
+          </fieldset>
+        </form>}
         <p className="team-control-note">{t(
           `Both values are limited to ${formatBps(maximumBps)} for your account and never exceed the platform maximum of 20%. You cannot change the member's platform-funded direct rate.`,
           `Оба значения ограничены ${formatBps(maximumBps)} для вашего аккаунта и никогда не превышают глобальные 20%. Прямую ставку участника от платформы вы не меняете.`,
         )}</p>
         {created ? <div className="created-invite">
-          <div><strong>{t("Invite ready", "Приглашение готово")}</strong><span className="field-hint">{formatBps(created.commissionBps)} {t("direct", "прямая")} · {formatBps(created.overrideBps)} {t("your override", "ваша надбавка")} · {formatBps(created.teamOverrideMaxBps)} {t("team limit", "лимит команды")} · {formatDate(created.expiresAt, locale)}</span></div>
-          <div className="reflink-row"><Input readOnly value={created.inviteUrl} aria-label={t("Created invite link", "Созданная ссылка-приглашение")} onFocus={(event) => event.currentTarget.select()} /><CopyButton value={created.inviteUrl} label={t("Copy link", "Копировать ссылку")} /></div>
+          <div><strong>{t("Invite ready", "Приглашение готово")}</strong><span className="field-hint">{formatBps(created.commissionBps)} {t("direct", "прямая")} · {formatBps(created.overrideBps)} {t("your override", "ваша надбавка")} · {formatBps(created.teamOverrideMaxBps)} {t("team limit", "лимит команды")} · {created.teamInvitesEnabled ? t("team enabled", "команда включена") : t("no team invites", "без приглашений")} · {created.b2bEnabled ? `B2B ≤ ${formatBps(created.b2bMaxDiscountBps)}` : "B2B —"} · {formatDate(created.expiresAt, locale)}</span></div>
+          <div className="reflink-row"><Input id="created-team-invite-url" autoComplete="off" readOnly translate="no" value={created.inviteUrl} aria-label={t("Created invite link", "Созданная ссылка-приглашение")} onFocus={(event) => event.currentTarget.select()} /><CopyButton value={created.inviteUrl} label={t("Copy link", "Копировать ссылку")} /></div>
         </div> : null}
       </Card>
 
@@ -223,6 +297,17 @@ export default function TeamPage() {
             <div className="input-suffix"><Input id="team-member-ceiling" type="number" min={0} max={maximumBps / 100} step={0.01} value={editCeilingPercent} onChange={(event) => setEditCeilingPercent(event.target.value)} disabled={editBusy} inputMode="decimal" autoComplete="off" /><span aria-hidden>%</span></div>
           </Field>
           <div className="team-edit-actions"><Button type="submit" loading={editBusy}>{t("Save settings", "Сохранить")}</Button><Button type="button" variant="ghost" disabled={editBusy} onClick={() => setEditing(null)}>{t("Cancel", "Отмена")}</Button></div>
+          <fieldset className="team-authority-fields">
+            <legend>{t("Delegated permissions", "Делегируемые права")}</legend>
+            <label className="check-row"><input name="editTeamInvitesEnabled" type="checkbox" checked={editTeamInvitesEnabled} onChange={(event) => setEditTeamInvitesEnabled(event.target.checked)} disabled={editBusy} /><span><b>{t("May invite a team", "Может приглашать команду")}</b></span></label>
+            {mayDelegateB2b ? <>
+              <label className="check-row"><input name="editB2bEnabled" type="checkbox" checked={editB2bEnabled} onChange={(event) => { setEditB2bEnabled(event.target.checked); if (!event.target.checked) setEditB2bCanDelegate(false); }} disabled={editBusy} /><span><b>{t("B2B self-service", "Самостоятельный B2B")}</b></span></label>
+              {editB2bEnabled ? <div className="team-authority-nested">
+                <Field label={t("B2B discount maximum", "Максимальная B2B-скидка")} htmlFor="team-member-b2b-max"><div className="input-suffix"><Input id="team-member-b2b-max" type="number" inputMode="decimal" autoComplete="off" min={0} max={b2bMaximumBps / 100} step={0.01} value={editB2bMaxPercent} onChange={(event) => setEditB2bMaxPercent(event.target.value)} disabled={editBusy} /><span aria-hidden>%</span></div></Field>
+                <label className="check-row"><input name="editB2bCanDelegate" type="checkbox" checked={editB2bCanDelegate} onChange={(event) => setEditB2bCanDelegate(event.target.checked)} disabled={editBusy} /><span><b>{t("May delegate B2B", "Может делегировать B2B")}</b></span></label>
+              </div> : null}
+            </> : null}
+          </fieldset>
         </form>
       </Card> : null}
 
@@ -231,12 +316,12 @@ export default function TeamPage() {
         "Ваша надбавка считается от прямой комиссии каждого участника, а не от его пополнений или цены по прайсу.",
       )}>
         {team.length === 0 ? <EmptyState title={t("No team members yet", "Пока нет участников команды")}>{t("Create an invite above to start your team.", "Создайте приглашение выше, чтобы начать команду.")}</EmptyState> : <Table label={t("Team members", "Участники команды")} head={<>
-          <th>{t("Partner", "Партнёр")}</th><th>{t("Status", "Статус")}</th><th className="num">{t("Direct rate", "Прямая ставка")}</th><th className="num">{t("Your override", "Ваша надбавка")}</th><th className="num">{t("Their team limit", "Их лимит команды")}</th><th className="num">{t("Referrals", "Рефералы")}</th><th className="num">{t("They earned", "Они заработали")}</th><th className="num">{t("You earned", "Вы заработали")}</th><th><span className="sr-only">{t("Actions", "Действия")}</span></th>
+          <th>{t("Partner", "Партнёр")}</th><th>{t("Status", "Статус")}</th><th className="num">{t("Direct rate", "Прямая ставка")}</th><th className="num">{t("Your override", "Ваша надбавка")}</th><th className="num">{t("Their team limit", "Их лимит команды")}</th><th>{t("Permissions", "Права")}</th><th className="num">{t("Referrals", "Рефералы")}</th><th className="num">{t("They earned", "Они заработали")}</th><th className="num">{t("You earned", "Вы заработали")}</th><th><span className="sr-only">{t("Actions", "Действия")}</span></th>
         </>}>
           {team.map((member) => <tr key={member.id}>
-            <td><span className="identity-email" title={memberIdentity(member)}>{memberIdentity(member)}</span>{member.email && member.telegramUsername ? <div className="identity-secondary">@{member.telegramUsername}</div> : null}</td>
-            <td><Badge tone={member.status === "active" ? "green" : "neutral"}>{member.status}</Badge></td>
-            <td className="num">{formatBps(member.commissionBps)}</td><td className="num">{formatBps(member.overrideBps)}</td><td className="num">{formatBps(member.teamOverrideMaxBps)}</td><td className="num">{member.referredUsers.toLocaleString(locale)}</td><td className="num">{formatUsd(member.netNano)}</td><td className="num team-earned">{formatUsd(member.myOverrideNetNano)}</td>
+            <td><span className="identity-email" title={memberIdentity(member)} translate="no">{memberIdentity(member)}</span>{member.email && member.telegramUsername ? <div className="identity-secondary" translate="no">@{member.telegramUsername}</div> : null}</td>
+            <td><StatusBadge status={member.status} /></td>
+            <td className="num">{formatBps(member.commissionBps)}</td><td className="num">{formatBps(member.overrideBps)}</td><td className="num">{formatBps(member.teamOverrideMaxBps)}</td><td><div className="permission-list"><span>{member.teamInvitesEnabled ? t("Team", "Команда") : t("No team", "Без команды")}</span><span>{member.b2bEnabled ? `B2B ≤ ${formatBps(member.b2bMaxDiscountBps)}${member.b2bCanDelegate ? " ↗" : ""}` : "B2B —"}</span></div></td><td className="num">{member.referredUsers.toLocaleString(locale)}</td><td className="num">{formatUsd(member.netNano)}</td><td className="num team-earned">{formatUsd(member.myOverrideNetNano)}</td>
             <td><Button type="button" size="sm" variant="ghost" onClick={() => startEditing(member)}>{t("Edit", "Изменить")}</Button></td>
           </tr>)}
         </Table>}
@@ -244,11 +329,11 @@ export default function TeamPage() {
 
       <Card title={t("Invitations", "Приглашения")} sub={t("Each unused invite expires after 30 days and can be used once.", "Неиспользованное приглашение действует 30 дней и используется один раз.")}>
         {invites.length === 0 ? <EmptyState title={t("No invitations yet", "Пока нет приглашений")} /> : <Table label={t("Team invitations", "Приглашения в команду")} head={<>
-          <th>{t("Telegram", "Telegram")}</th><th>{t("Status", "Статус")}</th><th className="num">{t("Direct rate", "Прямая ставка")}</th><th className="num">{t("Your override", "Ваша надбавка")}</th><th className="num">{t("Team limit", "Лимит команды")}</th><th>{t("Expires", "Истекает")}</th><th>{t("Link", "Ссылка")}</th>
+          <th>{t("Invite identity", "Идентификатор приглашения")}</th><th>{t("Status", "Статус")}</th><th className="num">{t("Direct rate", "Прямая ставка")}</th><th className="num">{t("Your override", "Ваша надбавка")}</th><th className="num">{t("Team limit", "Лимит команды")}</th><th>{t("Permissions", "Права")}</th><th>{t("Expires", "Истекает")}</th><th>{t("Link", "Ссылка")}</th>
         </>}>
           {invites.map((invite) => {
             const state = inviteState(invite);
-            return <tr key={invite.code}><td className="mono">{invite.telegramUsername ? `@${invite.telegramUsername}` : "—"}</td><td><Badge tone={state.tone}>{t(state.label[0], state.label[1])}</Badge></td><td className="num">{formatBps(invite.commissionBps)}</td><td className="num">{formatBps(invite.overrideBps)}</td><td className="num">{formatBps(invite.teamOverrideMaxBps)}</td><td>{formatDate(invite.expiresAt, locale)}</td><td>{!invite.consumedAt ? <CopyButton value={invite.inviteUrl} label={t("Copy", "Копировать")} /> : "—"}</td></tr>;
+            return <tr key={invite.code}><td className="mono" translate="no">{invite.telegramUsername ? `@${invite.telegramUsername}` : "—"}</td><td><Badge tone={state.tone}>{t(state.label[0], state.label[1])}</Badge></td><td className="num">{formatBps(invite.commissionBps)}</td><td className="num">{formatBps(invite.overrideBps)}</td><td className="num">{formatBps(invite.teamOverrideMaxBps)}</td><td><div className="permission-list"><span>{invite.teamInvitesEnabled ? t("Team", "Команда") : t("No team", "Без команды")}</span><span>{invite.b2bEnabled ? `B2B ≤ ${formatBps(invite.b2bMaxDiscountBps)}${invite.b2bCanDelegate ? " ↗" : ""}` : "B2B —"}</span></div></td><td>{formatDate(invite.expiresAt, locale)}</td><td>{!invite.consumedAt ? <CopyButton value={invite.inviteUrl} label={t("Copy", "Копировать")} /> : "—"}</td></tr>;
           })}
         </Table>}
       </Card>

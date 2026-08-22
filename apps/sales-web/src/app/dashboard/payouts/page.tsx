@@ -229,7 +229,7 @@ export default function PayoutsPage() {
                   </td>
                   <td>
                     {p.explorerUrl ? (
-                      <a href={p.explorerUrl} target="_blank" rel="noreferrer" style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent-strong, #3b5bdb)" }}>
+                      <a href={p.explorerUrl} target="_blank" rel="noreferrer" translate="no" style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent-strong, #3b5bdb)" }}>
                         {p.txHash?.slice(0, 10)}… ↗
                       </a>
                     ) : "—"}

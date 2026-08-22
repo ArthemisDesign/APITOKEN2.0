@@ -97,7 +97,7 @@ function KeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
               type="password"
               value={key}
               onChange={(e) => setKey(e.target.value)}
-              placeholder="x-admin-key"
+              placeholder="x-admin-key…"
               autoComplete="off"
               spellCheck={false}
               required
@@ -268,7 +268,7 @@ function PayoutRowView({
         {pending ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 200 }}>
             <Input
-              placeholder={t("Note (optional)", "Примечание (необязательно)")}
+              placeholder={t("Note (optional)…", "Примечание (необязательно)…")}
               aria-label={t("Payout decision note", "Примечание к решению по выплате")}
               name={`payout-note-${payout.id}`}
               autoComplete="off"
@@ -448,18 +448,22 @@ function ApplicationRowView({
           <Input
             className="inline-edit"
             inputMode="numeric"
+            name="applicationCommissionBps"
+            autoComplete="off"
             value={bps}
             onChange={(e) => setBps(e.target.value.replace(/[^\d]/g, ""))}
-            placeholder="bps"
+            placeholder="bps…"
             aria-label={t("Commission bps", "Комиссия в базисных пунктах")}
             style={{ maxWidth: 90 }}
           />
           <Input
             className="inline-edit"
             inputMode="numeric"
+            name="applicationSubCommissionBps"
+            autoComplete="off"
             value={subBps}
             onChange={(e) => setSubBps(e.target.value.replace(/[^\d]/g, ""))}
-            placeholder="sub"
+            placeholder="sub…"
             aria-label={t("Sub-commission bps", "Командная комиссия в базисных пунктах")}
             style={{ maxWidth: 90 }}
           />
@@ -614,10 +618,6 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
           telegramUsername: clean,
           ...(commissionBps !== undefined ? { commissionBps } : {}),
           ...(subCommissionBps !== undefined ? { subCommissionBps } : {}),
-          // Legacy marker rights are retained in the API for old rows but are not granted by the
-          // current product: they never reach the Commerce/engine price authority.
-          referralDiscountEnabled: false,
-          referralDiscountBps: 0,
           // The right and its ceiling travel together: a blank field onboards an ordinary partner
           // whose referrals are plain B2C customers.
           ...(b2bMaxBps !== undefined && b2bMaxBps > 0
@@ -664,7 +664,7 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
               id="root-invite-telegram"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              placeholder="@telegram_username"
+              placeholder="@telegram_username…"
               autoComplete="off"
               spellCheck={false}
             />
@@ -676,7 +676,7 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
               onChange={(e) => setCommissionPct(e.target.value.replace(/[^\d.]/g, ""))}
               inputMode="decimal"
               autoComplete="off"
-              placeholder="10"
+              placeholder="10…"
             />
           </Field>
           <Field label={t("Sub-partner %", "Команда %")} htmlFor="root-invite-sub-commission" hint={t("Override on recruited sub-partners", "Доля от комиссии приглашённых партнёров")}>
@@ -686,7 +686,7 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
               onChange={(e) => setSubPct(e.target.value.replace(/[^\d.]/g, ""))}
               inputMode="decimal"
               autoComplete="off"
-              placeholder="10"
+              placeholder="10…"
             />
           </Field>
           <Field label={t("B2B max discount %", "Максимальная B2B-скидка %")} htmlFor="root-invite-b2b-max" hint={t("Blank = no B2B right; their referrals stay B2C", "Пусто = без B2B-права; рефералы остаются B2C")}>
@@ -696,7 +696,7 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
               onChange={(e) => setB2bMaxPct(e.target.value.replace(/[^\d.]/g, ""))}
               inputMode="decimal"
               autoComplete="off"
-              placeholder={t("off", "выкл")}
+              placeholder={t("Off…", "Выкл…")}
             />
           </Field>
         </div>
@@ -725,7 +725,6 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
                 <th>{t("For", "Для")}</th>
                 <th>{t("Commission", "Комиссия")}</th>
                 <th>{t("Sub", "Команда")}</th>
-                <th>{t("Legacy marker", "Старый маркер")}</th>
                 <th>{t("Expires", "Истекает")}</th>
                 <th>{t("Status", "Статус")}</th>
                 <th />
@@ -737,7 +736,6 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
                 <td className="mono">{inv.telegramUsername ? `@${inv.telegramUsername}` : "—"}</td>
                 <td>{inv.commissionBps != null ? formatBps(inv.commissionBps) : t("default", "по умолчанию")}</td>
                 <td>{inv.subCommissionBps != null ? formatBps(inv.subCommissionBps) : t("default", "по умолчанию")}</td>
-                <td>{inv.referralDiscountEnabled ? formatBps(inv.referralDiscountBps ?? 0) : "—"}</td>
                 <td>{inv.expiresAt ? formatDate(inv.expiresAt, locale) : "—"}</td>
                 <td>
                   {inv.consumedAt ? (
@@ -840,7 +838,7 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
               return <tr key={row.partnerId}>
                 <td>
                   <div style={{ fontWeight: 600 }}>
-                    {row.telegramUsername ? `@${row.telegramUsername}` : row.displayName ?? row.partnerId.slice(0, 8)}
+                    <span translate="no">{row.email ?? row.displayName ?? (row.telegramUsername ? `@${row.telegramUsername}` : row.partnerId.slice(0, 8))}</span>
                   </div>
                 </td>
                 <td className="num" style={{ fontWeight: 700 }}>
@@ -938,6 +936,7 @@ export default function AdminPage() {
           ] as Array<[Tab, string]>
         ).map(([id, label]) => (
           <button
+            type="button"
             key={id}
             role="tab"
             aria-selected={tab === id}

@@ -5,10 +5,11 @@ const dialog = readFileSync(new URL("./business-pricing-dialog.tsx", import.meta
 const referrals = readFileSync(new URL("../app/dashboard/referrals/page.tsx", import.meta.url), "utf8");
 
 describe("partner B2B pricing surface", () => {
-  it("is shown only to a partner who holds the grant with a real ceiling", () => {
-    // An ordinary partner's cabinet must look exactly as before — no B2B controls at all.
+  it("uses direct self-service only with a real grant and gives every other partner the review path", () => {
     expect(referrals).toContain("partner.b2bEnabled === true && (partner.b2bMaxDiscountBps ?? 0) > 0");
     expect(referrals).toContain("{b2bAllowed ?");
+    expect(referrals).toContain('mode={b2bAllowed ? "direct" : "request"}');
+    expect(referrals).toContain('t("Request B2B", "Запросить B2B")');
   });
 
   it("offers exactly the providers commerce accepts", () => {
@@ -26,11 +27,23 @@ describe("partner B2B pricing surface", () => {
 
   it("requires a base discount when converting, not only provider overrides", () => {
     // Provider overrides alone would leave every other model at the ordinary B2C price.
-    expect(dialog).toContain("!isB2b && parsedDefault === null");
+    expect(dialog).toContain('(mode === "request" || !isB2b) && parsedDefault === null');
   });
 
   it("posts to the partner-scoped route, never to an admin one", () => {
     expect(dialog).toContain("/v1/partner/referrals/${row.userRef}/business-pricing");
+    expect(dialog).toContain("/v1/partner/referrals/${row.userRef}/b2b-requests");
+    expect(dialog).toContain('"Idempotency-Key": crypto.randomUUID()');
     expect(dialog).not.toContain("/v1/admin");
+  });
+
+  it("keeps the custom dialog keyboard-contained and blocks close while saving", () => {
+    expect(dialog).toContain("dialogRef");
+    expect(dialog).toContain('event.key !== "Tab"');
+    expect(dialog).toContain('event.key === "Escape"');
+    expect(dialog).toContain("!busyRef.current");
+    expect(dialog).toContain("previousFocus.focus()");
+    expect(dialog).toContain('aria-modal="true"');
+    expect(dialog).not.toMatch(/style=\{\{/);
   });
 });

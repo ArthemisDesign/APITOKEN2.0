@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 
 // UI-примитивы админки — визуальные аналоги хелперов admin-panel.js
 // (card/pill/banner/empty/dialog). Классы совпадают с globals.css.
@@ -13,7 +13,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 
 export type Tone = "" | "ok" | "warn" | "bad";
 
-export function PageHead(props: { title: string; sub?: ReactNode; badge?: ReactNode }) {
+export function PageHead(props: { title: ReactNode; sub?: ReactNode; badge?: ReactNode }) {
   return (
     <div className="page-head">
       <div>
@@ -119,9 +119,9 @@ export function EmptyRow(props: { columns: number; text?: string }) {
   );
 }
 
-export function LoadingGrid(props: { count?: number }) {
+export function LoadingGrid(props: { count?: number; label?: string }) {
   return (
-    <div className="loading-grid" role="status" aria-label="Загрузка данных">
+    <div className="loading-grid" role="status" aria-live="polite" aria-label={props.label ?? "Загрузка данных"}>
       {Array.from({ length: props.count ?? 8 }, (_, i) => (
         <div key={i} className="skeleton" />
       ))}
@@ -142,21 +142,32 @@ export function Modal(props: {
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<Element | null>(null);
-  const { open, onClose } = props;
+  const onCloseRef = useRef(props.onClose);
+  const titleId = useId();
+  const { open } = props;
+
+  useEffect(() => {
+    onCloseRef.current = props.onClose;
+  }, [props.onClose]);
 
   useEffect(() => {
     if (!open) return;
     previousFocus.current = document.activeElement;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     const dialog = dialogRef.current;
-    const first = dialog?.querySelector<HTMLElement>("input, button");
+    const first = dialog?.querySelector<HTMLElement>("input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), a[href]");
     first?.focus();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+      }
       // Фокус-трап как в dialog()/spendStats() легаси: Tab циклит фокус внутри диалога.
       if (event.key === "Tab" && dialog) {
-        const focusable = [...dialog.querySelectorAll<HTMLElement>("button,input,select,a[href]")].filter(
-          (item) => !(item as HTMLButtonElement).disabled,
-        );
+        const focusable = [...dialog.querySelectorAll<HTMLElement>(
+          "button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),a[href]",
+        )].filter((item) => item.tabIndex !== -1);
         if (!focusable.length) return;
         const first = focusable[0];
         const last = focusable[focusable.length - 1];
@@ -172,9 +183,10 @@ export function Modal(props: {
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previousOverflow;
       if (previousFocus.current instanceof HTMLElement) previousFocus.current.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!props.open) return null;
   return (
@@ -189,9 +201,9 @@ export function Modal(props: {
         className={"dialog" + (props.wide ? " wide" : "")}
         role="dialog"
         aria-modal="true"
-        aria-label={props.title}
+        aria-labelledby={titleId}
       >
-        <h3>{props.title}</h3>
+        <h3 id={titleId}>{props.title}</h3>
         {props.message ? <p className="dlg-sub">{props.message}</p> : null}
         {props.children}
       </div>

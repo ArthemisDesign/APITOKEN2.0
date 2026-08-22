@@ -53,8 +53,6 @@ function activityLabel(event: PartnerActivityEvent, t: Translate): string {
   switch (event.type) {
     case "referral": return t(event.label, `Новый реферал ${tail}`);
     case "deposit": return t(event.label, `Пополнение реферала ${tail}`);
-    case "discount_link_created": return t(event.label, `Создана старая маркерная ссылка ${String(event.meta.code ?? tail)}`);
-    case "discount_link_used": return t(event.label, `Использована старая маркерная ссылка ${String(event.meta.code ?? tail)}`);
     case "payout_requested": return t(event.label, "Запрошена выплата");
     case "payout_decided": return t(event.label, `Решение по выплате: ${String(event.meta.status ?? tail)}`);
     case "login": return t(event.label, "Вход в кабинет");
@@ -201,7 +199,7 @@ export function PartnersTab({ adminKey }: { adminKey: string }) {
               <tr key={p.id}>
                 <td>
                   <button className="table-row-button" type="button" onClick={() => setSelected(p)}>
-                    <span className="identity-email" title={p.email ?? (p.telegramUsername ? `@${p.telegramUsername}` : "—")}>{p.email ?? (p.telegramUsername ? `@${p.telegramUsername}` : "—")}</span>
+                    <span className="identity-email" title={p.email ?? p.displayName ?? (p.telegramUsername ? `@${p.telegramUsername}` : "—")} translate="no">{p.email ?? p.displayName ?? (p.telegramUsername ? `@${p.telegramUsername}` : "—")}</span>
                     <span style={{ fontSize: 12, ...faint }}>{p.displayName ?? p.referralCode}</span>
                   </button>
                 </td>
@@ -327,7 +325,7 @@ function PartnerDrawer({
         api<{ events: PartnerActivityEvent[] }>(`/v1/admin/partners/${row.id}/activity?limit=80`, { headers: adminHeaders(adminKey) }),
       ]);
       setDetail(d);
-      setActivity(a.events.filter((event) => !event.type.startsWith("promo")));
+      setActivity(a.events.filter((event) => !event.type.startsWith("promo") && !event.type.startsWith("discount_link")));
       setBps(String(d.partner.commissionBps));
       setSubBps(String(d.partner.subCommissionBps));
     } catch (err) {
@@ -354,7 +352,7 @@ function PartnerDrawer({
   }
 
   const p = detail?.partner ?? row;
-  const label = p.email ?? (p.telegramUsername ? `@${p.telegramUsername}` : p.id.slice(0, 8));
+  const label = p.email ?? p.displayName ?? (p.telegramUsername ? `@${p.telegramUsername}` : p.id.slice(0, 8));
   const suspended = p.status !== "active";
   const dirty = bps !== String(p.commissionBps) || subBps !== String(p.subCommissionBps);
 
@@ -418,9 +416,6 @@ function PartnerDrawer({
           <Button size="sm" variant="ghost" disabled={busy} onClick={editB2b}>
             {p.b2bEnabled ? t(`B2B: up to ${formatBps(p.b2bMaxDiscountBps)}`, `B2B: до ${formatBps(p.b2bMaxDiscountBps)}`) : t("B2B: off", "B2B: выкл")}
           </Button>
-          {p.referralDiscountEnabled ? (
-            <Badge tone="yellow">{t("Legacy marker", "Старый маркер")} {formatBps(p.referralDiscountBps)} · {t("no price effect", "не влияет на цену")}</Badge>
-          ) : null}
         </div>
 
         {/* Stat grid */}
@@ -432,7 +427,6 @@ function PartnerDrawer({
           <Kpi label={t("Paid out", "Выплачено")} value={formatUsd(p.paidNano)} />
           <Kpi label={t("Payable now", "К выплате сейчас")} value={formatUsd(p.payableNano)} foot={`${formatUsd(p.debtNano)} ${t("debt", "долг")}`} />
           <Kpi label={t("Team", "Команда")} value={String(p.teamSize)} foot={t("sub-partners", "субпартнёры")} />
-          <Kpi label={t("Legacy marker links", "Старые маркерные ссылки")} value={`${p.linksUsed}/${p.linksTotal}`} foot={t("used / total", "использовано / всего")} />
         </div>
 
         {detail ? <Sparkline daily={detail.daily} /> : null}
@@ -455,21 +449,10 @@ function PartnerDrawer({
               )}
             </Section>
 
-            <Section title={t(`Legacy marker links (${detail.discountLinks.length})`, `Старые маркерные ссылки (${detail.discountLinks.length})`)}>
-              {detail.discountLinks.length === 0 ? <Muted>{t("None issued.", "Не выпускались.")}</Muted> : (
-                <MiniTable rows={detail.discountLinks.map((l) => [
-                  <span key="c" className="mono">{l.code}</span>,
-                  formatBps(l.discountBps),
-                  l.note ?? "—",
-                  l.consumedAt ? t(`used ${relTime(l.consumedAt, t, locale)}`, `использовано ${relTime(l.consumedAt, t, locale)}`) : t("unused", "не использовано"),
-                ])} cols={[t("Code", "Код"), t("Marker", "Маркер"), t("For", "Для"), t("State", "Состояние")]} />
-              )}
-            </Section>
-
             <Section title={t(`Team (${detail.team.length})`, `Команда (${detail.team.length})`)}>
               {detail.team.length === 0 ? <Muted>{t("No sub-partners.", "Субпартнёров нет.")}</Muted> : (
                 <MiniTable rows={detail.team.map((m) => [
-                  m.email ?? (m.telegramUsername ? `@${m.telegramUsername}` : m.id.slice(0, 8)),
+                  m.email ?? m.displayName ?? (m.telegramUsername ? `@${m.telegramUsername}` : m.id.slice(0, 8)),
                   formatBps(m.commissionBps),
                   t(`${m.referredUsers} refs`, `${m.referredUsers} рефералов`),
                   `${formatUsd(m.myOverrideNetNano)} ${t("net override", "чистая командная комиссия")}`,
@@ -480,7 +463,7 @@ function PartnerDrawer({
             <Section title={t(`Referred users (${detail.referrals.length})`, `Привлечённые пользователи (${detail.referrals.length})`)}>
               {detail.referrals.length === 0 ? <Muted>{t("No referrals yet.", "Рефералов пока нет.")}</Muted> : (
                 <MiniTable rows={detail.referrals.slice(0, 50).map((u) => [
-                  <span key="u" className="identity-email" title={u.email ?? u.userMask}>{u.email ?? u.userMask}</span>,
+                  <span key="u" className="identity-email" title={u.email ?? u.userMask} translate="no">{u.email ?? u.userMask}</span>,
                   u.customerType === "b2b"
                     ? <Badge key="t" tone="green">B2B</Badge>
                     : u.customerType === "b2c"

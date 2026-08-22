@@ -12,6 +12,7 @@ const PROVIDERS: Record<string, ProviderMeta> = {
   openai: { name: "GPT", api: "OpenAI-compatible API", color: "#10a37f" },
   google: { name: "Gemini", api: "Google Gemini API", color: "#4b8bf5" },
   kimi: { name: "Kimi", api: "Anthropic Messages API", color: "#b8348c" },
+  glm: { name: "GLM", api: "Anthropic Messages API", color: "#6550ba" },
 };
 const UNKNOWN_COLORS = ["#6f7a8a", "#8b5cf6", "#0ea5a4", "#d97706"] as const;
 const NANO = 1_000_000_000n;
@@ -93,7 +94,7 @@ export function ProviderBreakdown({ items, daily }: { items: ProviderEarningsRow
     .filter((provider) => BigInt(provider.earnedNano) > 0n)
     .map((provider) => provider.providerId)))]
     .sort((left, right) => {
-      const order = ["anthropic", "openai", "google", "kimi"];
+      const order = ["anthropic", "openai", "google", "kimi", "glm"];
       const rank = (value: string | null) => {
         if (value === null) return Number.MAX_SAFE_INTEGER;
         const index = order.indexOf(value);
@@ -129,7 +130,7 @@ export function ProviderBreakdown({ items, daily }: { items: ProviderEarningsRow
         return <article className="provider-card" key={row.providerId ?? "(unattributed)"} style={{ "--provider-color": meta.color } as CSSProperties}>
           <div className="provider-card-head">
             <span className="provider-card-mark" aria-hidden>{meta.name.slice(0, 1)}</span>
-            <div className="provider-card-name"><strong>{meta.name}</strong><span>{meta.api}</span></div>
+            <div className="provider-card-name" translate="no"><strong>{meta.name}</strong><span>{meta.api}</span></div>
             <span className="provider-share">{(share / 10).toFixed(1)}%</span>
           </div>
           <div className="provider-card-value">{formatNanoUsd(BigInt(row.earnedNano), locale)}</div>
@@ -147,7 +148,7 @@ export function ProviderBreakdown({ items, daily }: { items: ProviderEarningsRow
           <div className="provider-chart-legend" aria-label={t("Providers", "Провайдеры")}>
             {providerIds.map((providerId) => {
               const meta = providerMeta(providerId, unattributed);
-              return <span key={providerId ?? "(unattributed)"}><i aria-hidden style={{ background: meta.color }} />{meta.name}</span>;
+              return <span key={providerId ?? "(unattributed)"} translate="no"><i aria-hidden style={{ background: meta.color }} />{meta.name}</span>;
             })}
           </div>
         </div>

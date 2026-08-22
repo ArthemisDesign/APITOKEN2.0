@@ -15,7 +15,7 @@ Contents:
 6. Wallet and payout currency
 7. Periods, lock and payouts
 8. Partner dashboard
-9. Admin panel (admin.partners.apitoken.sale)
+9. Admin panel (admin.apitoken.sale)
 10. Interface languages
 11. Privacy and security
 12. What is not done yet
@@ -35,7 +35,7 @@ is approved.
 A separate product with its own domain and database. Its cabinet uses the same card hierarchy,
 responsive layout, light/dark theme and RU/EN preferences as the main dashboard:
 - partner site — `https://partners.apitoken.sale`
-- operator admin panel — `https://admin.partners.apitoken.sale`
+- primary operator admin panel — `https://admin.apitoken.sale/partners`
 
 ## 2. Sign-in and onboarding
 
@@ -204,7 +204,9 @@ commerce accepts, so a typo cannot be stored and then silently never match a req
 provider field leaves that provider on the customer's base discount; clearing one drops it back.
 
 Converting requires a base discount: provider overrides alone would leave every other model on the
-ordinary B2C price. A partner without the grant sees none of this — the column does not render.
+ordinary B2C price. Every partner sees the B2B action for an owned referral. A partner with a direct
+self-service grant applies terms immediately within the delegated ceiling; a partner without that
+grant submits the same base/provider proposal and a required reason for operator review.
 
 The ceiling is enforced **twice, server-side, and never read from the request**:
 
@@ -262,24 +264,33 @@ discount.
 
 ## 9. Partner administration
 
-The Sales API supports the legacy `admin.partners.apitoken.sale` consumer and the unified
-`admin.apitoken.sale` proxy during the parity rollout. Both call the same guarded admin contract;
-the unified admin additionally propagates its authenticated operator as `X-Admin-Actor`. The old
-site is removed only after route-by-route production parity is proven. Surfaces:
-- **Overview** — summary (partners, users brought in, spend, commissions, payout queue).
-- **Onboarding** — program applications (approve with percentages / reject) and issuing root
-  invites to `@username`s.
-- **Partners** — partners table: changing percentages, freezing/enabling, deletion (only without
-  history).
-- **Requests** — commission/B2B review queue with partner and customer email, requested and
-  approved provider terms, a mandatory decision note, effect attempts and terminal/retry state.
-- **Payout list** — the auto-generated "to be paid" list for the current/last period's window: who
-  is ready for payout (wallet + amount > 0), who is held (no wallet), amounts and wallets.
-- **Send payouts** — prepares one immutable batch, pins amounts/recipient addresses/hot wallet,
-  first proves the usage/funding/reversal feeds and allocation ledger are current, checks BSC
-  mainnet, canonical USDT, balances and gas, then sends sequentially with durable
-  hash/raw/nonce evidence and receipt reconciliation. Irreversible sends are server-gated to the
-  3-day payout window.
+The primary operator surface is `https://admin.apitoken.sale/partners`. It proxies the guarded Sales
+admin contract without exposing a Sales key to the browser and propagates the authenticated managed
+operator as `X-Admin-Actor`. The exact routes are:
+
+- `/partners` — overview, payout readiness and current partner analytics;
+- `/partners/onboarding` — root invitations and application decisions with all initial authority
+  boundaries set atomically;
+- `/partners/directory` — email-first searchable directory with status, direct rate, Team ceiling,
+  B2B authority and operational balances;
+- `/partners/[id]` — one partner's direct commission, fixed Team defaults/ceiling, B2B rights,
+  team, referrals and activity. Direct commission is platform-owned; a parent never edits it;
+- `/partners/requests` — commission/B2B review queue with partner and customer email, requested and
+  approved provider terms, mandatory notes, effect attempts and terminal/retry state;
+- `/partners/payouts` — prepares one immutable batch, pins amounts/recipient addresses/hot wallet,
+  proves the usage/funding/reversal feeds and allocation ledger are current, checks BSC mainnet,
+  canonical USDT, balances and gas, then sends with durable hash/raw/nonce evidence and receipt
+  reconciliation. Irreversible sends remain server-gated to the 3-day payout window.
+
+Partner, Team, referral, request and payout identities are displayed by account email when the
+producer has authoritative Commerce data; documented display-name, Telegram or short-mask fallbacks
+remain only for legacy/pre-account/outage states. Promo-code controls are absent. This does not
+delete historical promo evidence or expand-only backend compatibility contracts.
+
+`admin.partners.apitoken.sale` remains online only as the legacy parity surface during rollout. It
+must not be disabled, redirected or deleted until every route above has been verified in production
+for RU/EN, light/dark, desktop/mobile, all mutations and payout safety against the exact deployed
+SHA. Retirement is a separate release after that evidence exists.
 
 ## 10. Interface languages
 
@@ -287,8 +298,9 @@ The partner dashboard works in **Russian and English**. The language is chosen w
 the header and remembered in the browser; by default it is taken from the browser language. The
 light/dark theme uses the same `theme:v1` browser preference as the main dashboard and is toggled
 from the header. A missing or invalid preference uses the same dark default as the main dashboard.
-Every partner and Admin surface supports Russian and English, including the Admin sign-in gate;
-both use the shared `lang:v1` and `theme:v1` preferences.
+Every partner-program surface in the partner dashboard and unified Admin supports Russian and
+English, including the managed Admin shell; both use the shared `lang:v1` and `theme:v1`
+preferences.
 
 ## 11. Privacy and security
 

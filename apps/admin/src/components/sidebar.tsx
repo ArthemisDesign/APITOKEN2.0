@@ -6,6 +6,7 @@ import { NAV, isNavItemActive } from "@/lib/nav";
 import { toggleTheme } from "@/lib/theme";
 import { refreshMountedResources } from "@/lib/resources";
 import { useRealtimeStatus } from "@/lib/realtime";
+import { LanguageToggle, useI18n } from "@/lib/i18n";
 
 // Сайдбар портирован из shell() в admin-panel.js: бренд, группы навигации,
 // футер с env, состоянием realtime, точечным обновлением текущего экрана
@@ -13,18 +14,19 @@ import { useRealtimeStatus } from "@/lib/realtime";
 export function Sidebar() {
   const pathname = usePathname();
   const realtime = useRealtimeStatus();
+  const { t } = useI18n();
   return (
     <aside>
       <div className="side-bar-head">
         <div className="brand">
           api<i>Token</i>.sale<small>admin</small>
         </div>
-        <a className="skip-link" href="#main-content">К содержанию</a>
+        <a className="skip-link" href="#main-content">{t("Skip to content", "К содержанию")}</a>
       </div>
-      <nav aria-label="Разделы админ-панели">
+      <nav aria-label={t("Admin sections", "Разделы админ-панели")}>
         {NAV.map((group) => (
           <div key={group.group}>
-            <div className="nav-group">{group.group}</div>
+            <div className="nav-group">{t(group.groupEn ?? group.group, group.group)}</div>
             {group.items.map((item) => (
               <Link
                 key={item.href}
@@ -32,7 +34,7 @@ export function Sidebar() {
                 href={item.href}
               >
                 <span className="ico" aria-hidden="true">{item.icon}</span>
-                {item.label}
+                {t(item.labelEn ?? item.label, item.label)}
               </Link>
             ))}
           </div>
@@ -41,16 +43,17 @@ export function Sidebar() {
       <div className="side-foot">
         <span
           className={`env realtime ${realtime.state}`}
-          title={`Realtime-источники: ${realtime.live} из ${realtime.total}`}
-          aria-label={`Realtime: ${realtime.live} из ${realtime.total} источников`}
+          title={t(`Realtime sources: ${realtime.live} of ${realtime.total}`, `Realtime-источники: ${realtime.live} из ${realtime.total}`)}
+          aria-label={t(`Realtime: ${realtime.live} of ${realtime.total} sources`, `Realtime: ${realtime.live} из ${realtime.total} источников`)}
         >
           {realtime.state === "live" ? "live" : realtime.state === "recovering" ? "reconnect" : "connect"}
         </span>
+        <LanguageToggle />
         <button
           type="button"
           className="theme"
-          title="Обновить"
-          aria-label="Обновить текущую страницу"
+          title={t("Refresh", "Обновить")}
+          aria-label={t("Refresh current page", "Обновить текущую страницу")}
           onClick={() => refreshMountedResources()}
         >
           ↻
@@ -58,8 +61,8 @@ export function Sidebar() {
         <button
           type="button"
           className="theme"
-          title="Сменить тему"
-          aria-label="Сменить тему"
+          title={t("Change theme", "Сменить тему")}
+          aria-label={t("Change theme", "Сменить тему")}
           onClick={() => toggleTheme()}
         >
           ◐

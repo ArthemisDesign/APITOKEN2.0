@@ -44,10 +44,11 @@ export default function SettingsPage() {
           {error ? <Notice kind="error">{error}</Notice> : null}
           {saved ? <Notice kind="success">{t("Settings saved.", "Настройки сохранены.")}</Notice> : null}
           <form onSubmit={onSubmit}>
-            <Field label="Telegram" htmlFor="partner-telegram">
+            <Field label={t("Account identity", "Идентификатор аккаунта")} htmlFor="partner-email">
               <Input
-                id="partner-telegram"
-                value={partner.email ?? (partner.telegramUsername ? `@${partner.telegramUsername}` : "—")}
+                id="partner-email"
+                translate="no"
+                value={partner.email ?? partner.displayName ?? (partner.telegramUsername ? `@${partner.telegramUsername}` : "—")}
                 readOnly
                 disabled
               />
@@ -58,7 +59,7 @@ export default function SettingsPage() {
                 autoComplete="name"
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
-                placeholder={t("How we should address you", "Как к вам обращаться")}
+                placeholder={t("How we should address you…", "Как к вам обращаться…")}
               />
             </Field>
             <Button type="submit" loading={busy}>

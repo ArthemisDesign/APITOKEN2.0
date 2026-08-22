@@ -13,6 +13,7 @@ const NAV = [
   { href: "/dashboard", en: "Overview", ru: "Обзор", icon: "◧" },
   { href: "/dashboard/referrals", en: "Referrals", ru: "Рефералы", icon: "⇢" },
   { href: "/dashboard/team", en: "Team", ru: "Команда", icon: "⁂" },
+  { href: "/dashboard/requests", en: "Requests", ru: "Заявки", icon: "◇" },
   { href: "/dashboard/payouts", en: "Payouts", ru: "Выплаты", icon: "◈" },
   { href: "/dashboard/docs", en: "Docs", ru: "Документация", icon: "▤" },
   { href: "/dashboard/settings", en: "Settings", ru: "Настройки", icon: "⚙" },
@@ -74,7 +75,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             <p className="auth-sub">
               {t("Check your connection and reload the page.", "Проверьте соединение и перезагрузите страницу.")}
             </p>
-            <button className="btn btn-primary" onClick={() => window.location.reload()}>
+            <button type="button" className="btn btn-primary" onClick={() => window.location.reload()}>
               {t("Reload", "Перезагрузить")}
             </button>
           </div>
@@ -114,7 +115,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             })}
           </nav>
           <div className="cab-side-foot">
-            {t("Partner code:", "Код партнёра:")} <span className="mono">{partner.referralCode}</span>
+            {t("Partner code:", "Код партнёра:")} <span className="mono" translate="no">{partner.referralCode}</span>
           </div>
         </aside>
         {menuOpen ? (
@@ -128,6 +129,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         <div className="cab-main">
           <header className="cab-topbar">
             <button
+              type="button"
               className="cab-burger"
               onClick={() => setMenuOpen((v) => !v)}
               aria-label={t("Toggle menu", "Открыть меню")}
@@ -135,12 +137,12 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
               ☰
             </button>
             <div className="cab-topbar-user">
-              <span className="email">
-                {partner.email ?? (partner.telegramUsername ? `@${partner.telegramUsername}` : partner.displayName)}
+              <span className="email" translate="no">
+                {partner.email ?? partner.displayName ?? (partner.telegramUsername ? `@${partner.telegramUsername}` : `partner-${partner.id.slice(0, 8)}`)}
               </span>
               <LanguageToggle />
               <ThemeToggle />
-              <button className="btn btn-ghost btn-sm" onClick={logout}>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={logout}>
                 {t("Log out", "Выйти")}
               </button>
             </div>

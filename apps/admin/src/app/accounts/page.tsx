@@ -59,10 +59,9 @@ interface AccountsData {
 
 const isCrmAccount = (handle: string | undefined): boolean => String(handle ?? "").toLowerCase() === "crm-parsing";
 
-// Отображаемое имя партнёра — приоритет как в легаси: @telegram, email, имя.
+// Email — основной идентификатор аккаунта; displayName и Telegram остаются fallback для legacy-строк.
 export function partnerName(partner: PartnerAnalyticsItem): string {
-  if (partner.telegramUsername) return `@${partner.telegramUsername}`;
-  return partner.email || partner.displayName || "—";
+  return partner.email || partner.displayName || (partner.telegramUsername ? `@${partner.telegramUsername}` : "—");
 }
 
 // Зажатие пейджера партнёров: если список сократился и текущий offset вышел
@@ -149,8 +148,8 @@ export default function AccountsPage(): ReactElement {
       partnerItems.map((partner, index) => (
         <tr key={partner.id ?? index}>
           <td className="left">
-            <b>{partnerName(partner)}</b>
-            <div className="sub mono">
+            <b translate="no">{partnerName(partner)}</b>
+            <div className="sub mono" translate="no">
               {partner.id ?? ""} · {partner.referralCode ?? ""}
             </div>
           </td>

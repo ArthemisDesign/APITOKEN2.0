@@ -76,5 +76,10 @@ export function mutationResources(path: string): string[] {
   }
   if (clean.startsWith("/proxy-admin/")) return ["/proxy-admin/inventory"];
   if (clean.startsWith("/gemini-subs/")) return ["/gemini-subs"];
+  if (clean.startsWith("/partner-admin/requests/")) return ["/partner-admin/requests"];
+  if (clean.startsWith("/partner-admin/applications/")) return ["/partner-admin/applications", "/partner-admin/partners", "/partner-admin/overview"];
+  if (clean === "/partner-admin/invites") return ["/partner-admin/invites", "/partner-admin/overview"];
+  if (clean.startsWith("/partner-admin/partners/")) return ["/partner-admin/partners", "/partner-admin/partner-analytics", "/partner-admin/overview"];
+  if (clean.startsWith("/partner-admin/payouts/")) return ["/partner-admin/payouts", "/partner-admin/payouts/batches", "/partner-admin/payouts/engine", "/partner-admin/payout-list"];
   return [clean];
 }

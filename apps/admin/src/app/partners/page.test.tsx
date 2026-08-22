@@ -11,7 +11,13 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
+}));
+
 import PartnersPage from "./page";
+import { I18nProvider } from "@/lib/i18n";
 import {
   bnbMoney,
   clampOffset,
@@ -29,7 +35,7 @@ describe("Партнёры (partners page)", () => {
     const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const html = renderToString(<PartnersPage />);
+    const html = renderToString(<I18nProvider><PartnersPage /></I18nProvider>);
     expect(html).toContain("Партнёры");
     expect(html).toContain("loading-grid");
 
@@ -128,10 +134,11 @@ describe("partners helpers", () => {
     expect(payoutReasonText({})).toBe("нельзя");
   });
 
-  it("partnerName: @telegram приоритетнее email/displayName, иначе тире", () => {
-    expect(partnerName({ telegramUsername: "ivan", email: "a@b.c" })).toBe("@ivan");
+  it("partnerName: email приоритетнее displayName/@telegram, иначе тире", () => {
+    expect(partnerName({ telegramUsername: "ivan", email: "a@b.c" })).toBe("a@b.c");
     expect(partnerName({ email: "a@b.c", displayName: "Иван" })).toBe("a@b.c");
     expect(partnerName({ displayName: "Иван" })).toBe("Иван");
+    expect(partnerName({ telegramUsername: "ivan" })).toBe("@ivan");
     expect(partnerName({})).toBe("—");
   });
 

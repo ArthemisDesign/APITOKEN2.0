@@ -129,11 +129,11 @@ export default function OverviewPage() {
           )}
         >
           <div className="reflink-row">
-            <Input readOnly value={overview.referralUrl} aria-label={t("Your referral link", "Ваша реферальная ссылка")} onFocus={(e) => e.currentTarget.select()} />
+            <Input id="partner-referral-url" readOnly translate="no" value={overview.referralUrl} aria-label={t("Your referral link", "Ваша реферальная ссылка")} onFocus={(e) => e.currentTarget.select()} />
             <CopyButton value={overview.referralUrl} label={t("Copy link", "Копировать ссылку")} />
           </div>
           <p className="field-hint" style={{ marginTop: 10 }}>
-            {t("Referral code:", "Реферальный код:")} <span className="mono">{overview.referralCode}</span>
+            {t("Referral code:", "Реферальный код:")} <span className="mono" translate="no">{overview.referralCode}</span>
           </p>
         </Card>
 
@@ -205,7 +205,7 @@ export default function OverviewPage() {
               {recent.map((r) => (
                 <div className="activity-item" key={`${r.userRef ?? r.userMask}-${r.attributedAt}`}>
                   <span>
-                    <span className="identity-email" title={r.email ?? r.userMask}>{r.email ?? r.userMask}</span> {t("joined ·", "присоединился ·")}{" "}
+                    <span className="identity-email" title={r.email ?? r.userMask} translate="no">{r.email ?? r.userMask}</span> {t("joined ·", "присоединился ·")}{" "}
                     <span style={{ color: "var(--accent-strong)" }}>
                       {formatUsd(r.netNano)}
                     </span>{" "}

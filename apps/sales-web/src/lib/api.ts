@@ -188,6 +188,11 @@ export type Partner = {
   /** Granted right to convert own referrals to B2B, and the discount ceiling for it. */
   b2bEnabled?: boolean;
   b2bMaxDiscountBps?: number;
+  /** Whether this partner may create team invitations at all. */
+  teamInvitesEnabled?: boolean;
+  /** Whether this partner may pass a bounded B2B grant to a direct team member. */
+  b2bCanDelegate?: boolean;
+  b2bGrantSourcePartnerId?: string | null;
 };
 
 export type Overview = {
@@ -196,8 +201,6 @@ export type Overview = {
   commissionBps: number;
   subCommissionBps: number;
   teamOverrideMaxBps: number;
-  referralDiscountEnabled?: boolean;
-  referralDiscountBps?: number;
   referralPricingAffected?: false;
   referredUsers: number;
   teamSize: number;
@@ -272,6 +275,11 @@ export type TeamRow = {
   commissionBps: number;
   overrideBps: number;
   teamOverrideMaxBps: number;
+  teamInvitesEnabled: boolean;
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
+  b2bCanDelegate: boolean;
+  b2bGrantSourcePartnerId: string | null;
   referredUsers: number;
   earnedNano: string;
   adjustmentNano: string;
@@ -290,13 +298,63 @@ export type InviteRow = {
   overrideBps?: number;
   teamOverrideMaxBps?: number;
   subCommissionBps?: number | null;
-  referralDiscountBps?: number;
-  referralDiscountEnabled?: boolean;
   b2bEnabled?: boolean;
   b2bMaxDiscountBps?: number;
+  teamInvitesEnabled?: boolean;
+  b2bCanDelegate?: boolean;
   expiresAt: string | null;
   consumedAt: string | null;
   createdAt?: string;
+};
+
+export type PartnerRequestType = "b2b_conversion" | "b2b_pricing" | "commission_change";
+export type PartnerRequestStatus = "pending" | "approved" | "rejected" | "applied" | "apply_failed";
+export type PartnerRequestProviderId = "anthropic" | "openai" | "google" | "kimi" | "glm";
+
+export type PartnerRequest = {
+  id: string;
+  requestType: PartnerRequestType;
+  status: PartnerRequestStatus;
+  requesterPartnerId: string;
+  requesterEmail: string | null;
+  requesterDisplayName: string | null;
+  subjectPartnerId: string | null;
+  customerEmail: string | null;
+  reason: string;
+  stateSnapshot: Record<string, unknown>;
+  requestedCommissionBps: number | null;
+  requestedDiscountBps: number | null;
+  approvedCommissionBps: number | null;
+  approvedDiscountBps: number | null;
+  reviewerActor: string | null;
+  reviewerNote: string | null;
+  reviewedAt: string | null;
+  appliedAt: string | null;
+  applyAttempts: number;
+  lastApplyError: string | null;
+  version: number;
+  providerTerms: Array<{
+    providerId: PartnerRequestProviderId;
+    requestedDiscountBps: number | null;
+    approvedDiscountBps: number | null;
+    decided: boolean;
+  }>;
+  effect: null | {
+    id: string;
+    status: "pending" | "processing" | "applied" | "failed";
+    attempts: number;
+    nextAttemptAt: string | null;
+    terminal: boolean;
+    appliedAt: string | null;
+    lastError: string | null;
+  };
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PartnerRequestsResponse = {
+  items: PartnerRequest[];
+  nextCursor: string | null;
 };
 
 export type PayoutRow = {
@@ -345,6 +403,7 @@ export type PeriodState = {
 
 export type DuePayoutRow = {
   partnerId: string;
+  email: string | null;
   telegramUsername: string | null;
   displayName: string | null;
   status: "active" | "suspended" | "pending";
@@ -382,8 +441,6 @@ export type AdminPartnerRow = {
   parentId?: string | null;
   commissionBps: number;
   subCommissionBps: number;
-  referralDiscountBps?: number;
-  referralDiscountEnabled?: boolean;
   b2bEnabled?: boolean;
   b2bMaxDiscountBps?: number;
   status: string;
@@ -418,8 +475,6 @@ export type PartnerAnalyticsRow = {
   parentLabel: string | null;
   commissionBps: number;
   subCommissionBps: number;
-  referralDiscountEnabled: boolean;
-  referralDiscountBps: number;
   /** May convert own referrals to B2B, up to b2bMaxDiscountBps. Off by default. */
   b2bEnabled: boolean;
   b2bMaxDiscountBps: number;
@@ -440,8 +495,6 @@ export type PartnerAnalyticsRow = {
   debtNano: string;
   payableNano: string;
   teamSize: number;
-  linksTotal: number;
-  linksUsed: number;
   lastSeenAt: string | null;
   lastReferralAt: string | null;
   lastDepositAt: string | null;
@@ -485,7 +538,6 @@ export type PartnerDetailBundle = {
     theirEarnedNano: string; theirAdjustmentNano: string; theirNetNano: string;
     myOverrideNano: string; myOverrideAdjustmentNano: string; myOverrideNetNano: string;
   }[];
-  discountLinks: { id: string; code: string; discountBps: number; note: string | null; consumedAt: string | null; createdAt: string }[];
   payouts: { id: string; amountNano: string; status: string; requestedAt: string; decidedAt: string | null; paidAt: string | null; adminNote: string | null }[];
   referrals: {
     email: string | null; userMask: string; userRef?: string; attributedAt: string; spendNano: string;

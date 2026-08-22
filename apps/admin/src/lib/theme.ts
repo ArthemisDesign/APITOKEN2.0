@@ -1,19 +1,18 @@
 // Тема админки: dark/light через data-theme на <html> (CSS-переменные в globals.css).
 // Ключ версионирован, чтобы при смене схемы не подхватывать старые значения.
-export const THEME_STORAGE_KEY = "apitoken-admin-theme:v1";
+export const THEME_STORAGE_KEY = "theme:v1";
 
 export type Theme = "dark" | "light";
 
 // Должен совпадать с inline-скриптом в src/app/layout.tsx (тот исполняется до
 // первой отрисовки и не может импортировать модули).
 export function resolveInitialTheme(): Theme {
-  if (typeof window === "undefined") return "light";
+  if (typeof window === "undefined") return "dark";
   try {
     const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (saved === "dark" || saved === "light") return saved;
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    return saved === "light" ? "light" : "dark";
   } catch {
-    return "light";
+    return "dark";
   }
 }
 

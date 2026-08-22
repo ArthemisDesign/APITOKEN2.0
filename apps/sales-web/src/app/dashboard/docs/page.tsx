@@ -51,7 +51,7 @@ export default function DocsPage() {
           <ul className="how-list">
             <li>
               {t("Your code is ", "Ваш код — ")}
-              <span className="mono">{partner.referralCode}</span>
+              <span className="mono" translate="no">{partner.referralCode}</span>
               {t("; share the link from the Overview page.", "; ссылку можно скопировать на странице «Обзор».")}
             </li>
             <li>

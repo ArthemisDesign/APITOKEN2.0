@@ -45,22 +45,31 @@ export function money(value: number | string | null | undefined): string {
 }
 
 // date: "01.02.2026" или с временем "01.02.2026, 15:04"; пустое значение → тире.
-export function formatDate(value: string | number | Date | null | undefined, withTime = false): string {
+export function formatDate(
+  value: string | number | Date | null | undefined,
+  withTime = false,
+  locale = "ru-RU",
+): string {
   if (!value) return "—";
-  return new Date(value).toLocaleString(
-    "ru-RU",
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(
+    locale,
     withTime ? { dateStyle: "short", timeStyle: "short" } : { dateStyle: "short" },
-  );
+  ).format(date);
 }
 
 // ago: "сейчас" | "5м" | "3ч" | "2д" — возраст метки времени.
-export function ago(value: string | number | Date | null | undefined): string {
+export function ago(value: string | number | Date | null | undefined, locale = "ru-RU"): string {
   if (!value) return "—";
-  const seconds = Math.max(0, ((Date.now() - new Date(value).getTime()) / 1000) | 0);
-  if (seconds < 60) return "сейчас";
-  if (seconds < 3600) return `${(seconds / 60) | 0}м`;
-  if (seconds < 86400) return `${(seconds / 3600) | 0}ч`;
-  return `${(seconds / 86400) | 0}д`;
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) return "—";
+  const seconds = Math.max(0, ((Date.now() - timestamp) / 1000) | 0);
+  const ru = locale.toLowerCase().startsWith("ru");
+  if (seconds < 60) return ru ? "сейчас" : "now";
+  if (seconds < 3600) return `${(seconds / 60) | 0}${ru ? "м" : "m"}`;
+  if (seconds < 86400) return `${(seconds / 3600) | 0}${ru ? "ч" : "h"}`;
+  return `${(seconds / 86400) | 0}${ru ? "д" : "d"}`;
 }
 
 // duration: секунды → "2д 3ч" | "5ч 12м" | "7м".

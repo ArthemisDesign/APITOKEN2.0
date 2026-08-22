@@ -50,8 +50,9 @@ engine (Rust)  ←Control API─  commerce (apps/api + worker)  ←internal sale
   it after the new producer is GREEN; disabling that retired writer is a later consumer-retirement
   release, not a silent semantic change in this producer.
 - Terms (bps) are individual per partner, set in the admin panel.
-- Payouts: the partner submits a request from their available balance; the admin
-  approves/rejects/marks it paid.
+- Payouts: the partner binds a BSC wallet and sees automatic half-month periods. The operator
+  prepares and sends a fenced immutable batch only inside the payout window; old manual requests
+  are reject-only compatibility history.
 
 Migration `packages/sales-db/migrations/0024_team_override_controls.sql` was deployed before this
 Team consumer. It provides an admin-set partner ceiling
@@ -113,6 +114,16 @@ promo ledger rows and the expand-only backend redemption/issuance contracts belo
 accounting evidence and rolling consumer retirement; their presence is not permission to restore a
 product surface. Removing those contracts and stored history is a separate producer-first cleanup
 after every external consumer is proven retired.
+
+The primary operator consumer is the managed `apps/admin` surface at
+`admin.apitoken.sale/partners`, with child routes `/onboarding`, `/directory`, `/[id]`, `/requests`
+and `/payouts`. Caddy injects the Sales admin credential server-side and forwards the authenticated
+operator identity; the browser receives neither secret. `apps/sales-web` still serves its legacy
+`/admin` only for route-by-route production parity verification. Removing or redirecting that legacy
+surface is a separate release after the unified routes, mutations, RU/EN, light/dark, responsive
+layout and payout fences have all been proven on the exact production SHA. Both UIs display account
+email first and use only documented legacy/pre-account/outage fallbacks. Partner and unified Admin
+preferences use the main dashboard keys `lang:v1` and `theme:v1`.
 
 ## Components
 

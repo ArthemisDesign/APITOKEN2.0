@@ -45,10 +45,11 @@ describe("Аккаунты (accounts page)", () => {
   });
 
   describe("partnerName (отображаемое имя партнёра)", () => {
-    it("предпочитает @telegram, затем email, затем displayName", () => {
-      expect(partnerName({ telegramUsername: "agent", email: "a@b.c", displayName: "Agent" })).toBe("@agent");
+    it("предпочитает email, затем displayName, затем @telegram", () => {
+      expect(partnerName({ telegramUsername: "agent", email: "a@b.c", displayName: "Agent" })).toBe("a@b.c");
       expect(partnerName({ email: "a@b.c", displayName: "Agent" })).toBe("a@b.c");
       expect(partnerName({ displayName: "Agent" })).toBe("Agent");
+      expect(partnerName({ telegramUsername: "agent" })).toBe("@agent");
       expect(partnerName({})).toBe("—");
     });
   });

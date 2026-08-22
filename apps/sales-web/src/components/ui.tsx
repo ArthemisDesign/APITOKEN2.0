@@ -17,6 +17,7 @@ export function Button({
   variant = "primary",
   size = "md",
   loading = false,
+  type = "button",
   className = "",
   children,
   disabled,
@@ -31,7 +32,7 @@ export function Button({
     .filter(Boolean)
     .join(" ");
   return (
-    <button className={cls} disabled={disabled || loading} {...rest}>
+    <button type={type} className={cls} disabled={disabled || loading} {...rest}>
       {loading ? <span className="spinner" aria-hidden /> : null}
       {children}
     </button>
@@ -117,7 +118,7 @@ export function Notice({
   children: ReactNode;
 }) {
   return (
-    <div className={`notice notice-${kind}`} role={kind === "error" ? "alert" : "status"}>
+    <div className={`notice notice-${kind}`} role={kind === "error" ? "alert" : "status"} aria-live={kind === "error" ? "assertive" : "polite"}>
       {children}
     </div>
   );
@@ -142,11 +143,11 @@ export function StatusBadge({ status }: { status: string }) {
   const { t } = useI18n();
   const s = status.toLowerCase();
   const tone =
-    s === "active" || s === "approved" || s === "paid" || s === "completed"
+    s === "active" || s === "approved" || s === "paid" || s === "completed" || s === "applied"
       ? "green"
       : s === "pending" || s === "requested" || s === "processing"
         ? "yellow"
-        : s === "rejected" || s === "suspended" || s === "blocked" || s === "disabled"
+        : s === "rejected" || s === "suspended" || s === "blocked" || s === "disabled" || s === "apply_failed" || s === "failed"
           ? "red"
           : "neutral";
   const label: Record<string, string> = {
@@ -154,6 +155,7 @@ export function StatusBadge({ status }: { status: string }) {
     approved: t("Approved", "Одобрено"),
     paid: t("Paid", "Выплачено"),
     completed: t("Completed", "Завершено"),
+    applied: t("Applied", "Применено"),
     pending: t("Pending", "Ожидает"),
     requested: t("Requested", "Запрошено"),
     processing: t("Processing", "Обрабатывается"),
@@ -161,6 +163,7 @@ export function StatusBadge({ status }: { status: string }) {
     suspended: t("Suspended", "Приостановлен"),
     blocked: t("Blocked", "Заблокирован"),
     disabled: t("Disabled", "Выключен"),
+    apply_failed: t("Delivery failed", "Ошибка применения"),
     redeemed: t("Redeemed", "Погашен"),
     expired: t("Expired", "Истёк"),
     used: t("Used", "Использован"),
@@ -222,7 +225,7 @@ export function EmptyState({
   return (
     <div className="empty">
       <div className="empty-title">{title}</div>
-      {children ? <div style={{ fontSize: 14 }}>{children}</div> : null}
+      {children ? <div className="empty-copy">{children}</div> : null}
     </div>
   );
 }
@@ -233,22 +236,28 @@ export function EmptyState({
 
 export function CopyButton({ value, label }: { value: string; label?: string }) {
   const { t } = useI18n();
-  const [copied, setCopied] = useState(false);
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   return (
     <Button
       variant="ghost"
       type="button"
+      aria-live="polite"
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(value);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1800);
+          setState("copied");
+          setTimeout(() => setState("idle"), 1800);
         } catch {
-          // clipboard unavailable — ignore
+          setState("failed");
+          setTimeout(() => setState("idle"), 2400);
         }
       }}
     >
-      {copied ? t("Copied ✓", "Скопировано ✓") : label ?? t("Copy", "Копировать")}
+      {state === "copied"
+        ? t("Copied ✓", "Скопировано ✓")
+        : state === "failed"
+          ? t("Copy failed", "Не удалось скопировать")
+          : label ?? t("Copy", "Копировать")}
     </Button>
   );
 }

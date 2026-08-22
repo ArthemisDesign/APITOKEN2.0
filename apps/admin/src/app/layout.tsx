@@ -7,25 +7,25 @@ import { DialogHost } from "@/lib/dialog";
 import { Toaster } from "@/lib/toast";
 import { RealtimeBridge } from "@/lib/realtime";
 import { ResourceFreshnessBridge } from "@/lib/resources";
+import { I18nProvider, languageScript } from "@/lib/i18n";
 
 export const metadata: Metadata = {
   title: "apiToken.sale · admin",
-  description: "Операционная админ-панель apiToken.sale",
+  description: "apiToken.sale operations admin",
   robots: { index: false, follow: false },
 };
 
 export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
   colorScheme: "light dark",
-  themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f3f5f8" },
-    { media: "(prefers-color-scheme: dark)", color: "#0c0e11" },
-  ],
+  themeColor: "#0a0a0a",
 };
 
 // Inline-скрипт выставляет data-theme на <html> ДО первой отрисовки, чтобы не было
 // вспышки не той темы. Логика должна совпадать с resolveInitialTheme() в lib/theme.ts;
 // модуль здесь импортировать нельзя — скрипт исполняется как есть в <head>.
-const themeScript = `(function(){try{var t=localStorage.getItem(${JSON.stringify(THEME_STORAGE_KEY)});if(t!=="dark"&&t!=="light")t=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";document.documentElement.dataset.theme=t}catch(e){document.documentElement.dataset.theme="light"}})()`;
+const themeScript = `(function(){try{var s=localStorage.getItem(${JSON.stringify(THEME_STORAGE_KEY)});document.documentElement.dataset.theme=s==="light"?"light":"dark"}catch(e){document.documentElement.dataset.theme="dark"}})()`;
 
 export default function RootLayout({
   children,
@@ -36,18 +36,21 @@ export default function RootLayout({
     <html lang="ru" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <script dangerouslySetInnerHTML={{ __html: languageScript }} />
       </head>
       <body>
-        <RealtimeBridge />
-        <ResourceFreshnessBridge />
-        <div className="shell">
-          <Sidebar />
-          <main id="main-content">{children}</main>
-        </div>
-        {/* Глобальные слои легаси: центр ошибок (#error-center), промис-диалоги, тосты. */}
-        <ErrorCenter />
-        <DialogHost />
-        <Toaster />
+        <I18nProvider>
+          <RealtimeBridge />
+          <ResourceFreshnessBridge />
+          <div className="shell">
+            <Sidebar />
+            <main id="main-content">{children}</main>
+          </div>
+          {/* Глобальные слои легаси: центр ошибок (#error-center), промис-диалоги, тосты. */}
+          <ErrorCenter />
+          <DialogHost />
+          <Toaster />
+        </I18nProvider>
       </body>
     </html>
   );

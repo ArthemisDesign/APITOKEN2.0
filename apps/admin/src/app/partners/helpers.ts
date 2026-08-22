@@ -81,6 +81,7 @@ export interface PayoutEngine {
 
 export interface PayoutDueItem {
   partnerId?: string;
+  email?: string;
   telegramUsername?: string;
   displayName?: string;
   payableNano?: string;
@@ -304,15 +305,25 @@ export function payoutReasonText(item: { eligible?: boolean; reason?: string }):
   return (item.reason && PAYOUT_REASON_LABEL[item.reason]) || item.reason || "нельзя";
 }
 
-// Отображаемое имя партнёра: @telegram, иначе email/displayName (analytics)
-// или displayName (payout-list), иначе «—».
+// Email — основной идентификатор аккаунта; displayName и Telegram — fallback для legacy-строк.
 export function partnerName(partner: {
   telegramUsername?: string;
   email?: string;
   displayName?: string;
 }): string {
-  if (partner.telegramUsername) return "@" + partner.telegramUsername;
-  return partner.email || partner.displayName || "—";
+  return partner.email || partner.displayName || (partner.telegramUsername ? "@" + partner.telegramUsername : "—");
+}
+
+/**
+ * Parse an exact percentage with at most two decimal places into integer basis points.
+ * Building the integer from decimal digits avoids rejecting values such as 19.99 because of
+ * binary floating-point rounding.
+ */
+export function parsePercentBps(value: string, maximumBps: number): number | null {
+  const match = /^(0|[1-9]\d{0,2})(?:\.(\d{1,2}))?$/.exec(value.trim());
+  if (!match) return null;
+  const bps = Number(match[1]) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
+  return bps <= maximumBps ? bps : null;
 }
 
 // Кламп offset, когда текущая страница вышла за сократившийся total

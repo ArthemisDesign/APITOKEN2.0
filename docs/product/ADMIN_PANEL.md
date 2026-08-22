@@ -277,6 +277,43 @@ Pipeline delivery/drift status is shown through `GET /admin/pipeline-health` on 
 finance surfaces. Official provider tariff changes are an engine operator action, not a browser
 pricing editor (`docs/engine/CONTROL_API.md`).
 
+## Unified partner administration
+
+`apps/admin` is the primary operator consumer for the Sales partner program. Its routes are
+`/partners`, `/partners/onboarding`, `/partners/directory`, `/partners/[id]`,
+`/partners/requests`, and `/partners/payouts`. All data and mutations stay behind the same-origin
+`/partner-admin/*` proxy; Caddy injects `x-sales-admin-key`, while the authenticated managed-admin
+identity is forwarded as `X-Admin-Actor`. Neither value is part of the Next.js environment or the
+browser bundle.
+
+The UI preserves the authority model instead of inferring it from editable fields:
+
+- the platform owns each partner's direct commission (10% by default); a Team parent chooses only
+  its own edge override and the smaller ceiling a direct member may delegate, under the hard 20%
+  platform cap;
+- onboarding and later edits set Team invitation, Team ceiling, B2B self-service, maximum B2B
+  discount and B2B delegation independently. A platform-authored B2B grant stays outside a
+  parent's authority;
+- partners without direct B2B self-service still submit owned-referral conversion/pricing requests;
+  partners with the grant apply only terms within their server-authoritative ceiling;
+- commission-change and B2B requests require reasons, and operator decisions require notes. The
+  screen distinguishes an accepted decision from its durable Commerce effect becoming `applied`;
+- payout controls use the fenced batch report and never authorize an irreversible send from a
+  browser-only balance calculation.
+
+Partner, Team, referral, request and payout identities are email-first. Display-name, Telegram and
+short masks are explicit fallbacks for legacy/pre-account or temporarily unavailable Commerce
+profile data; internal UUIDs remain authority keys, not product labels. Promo-code controls do not
+exist on active partner or unified Admin routes. Historical promo storage and expand-only backend
+compatibility remain outside this UI until their separate producer-first retirement.
+
+The partner routes use the same Dashboard visual hierarchy, JetBrains Mono data typography,
+responsive tables/forms, light/dark theme, and RU/EN controls. They share `theme:v1` and `lang:v1`
+with the main dashboard; email, provider, wallet, transaction and referral identifiers are marked
+non-translatable. The legacy `admin.partners.apitoken.sale/admin` surface remains available solely
+for production parity verification. It is retired only in a separate release after the unified
+routes and all mutations are proven on the exact deployed SHA.
+
 ## Partner payout readiness
 
 The read-only `/partners` page combines the current payout list with the additive

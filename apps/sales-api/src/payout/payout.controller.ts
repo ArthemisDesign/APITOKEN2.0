@@ -28,10 +28,14 @@ function serializeBatch(b: PayoutBatch): Record<string, unknown> {
   };
 }
 
+export function payoutRowIdentity(r: Pick<PayoutRow, "partnerId" | "email" | "displayName" | "telegramUsername">): string {
+  return r.email ?? r.displayName ?? (r.telegramUsername ? `@${r.telegramUsername}` : r.partnerId.slice(0, 8));
+}
+
 function serializeRow(r: PayoutRow): Record<string, unknown> {
   return {
     id: r.id, partnerId: r.partnerId,
-    partner: r.telegramUsername ? `@${r.telegramUsername}` : r.email ?? r.displayName ?? r.partnerId.slice(0, 8),
+    partner: payoutRowIdentity(r),
     amountNano: r.amountNano.toString(), status: r.status, walletAddress: r.walletAddress,
     txHash: r.txHash, chainStatus: r.chainStatus, chainError: r.chainError,
     paidAt: r.paidAt?.toISOString() ?? null,
