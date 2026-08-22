@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import subprocess
@@ -23,6 +24,11 @@ MIGRATION_PREFIXES = (
     "packages/openkeys-db/migrations/",
     "crates/registry/migrations_pg/",
 )
+MIGRATION_JOURNALS = frozenset((
+    "packages/db/migrations/meta/_journal.json",
+    "packages/sales-db/migrations/meta/_journal.json",
+    "packages/openkeys-db/migrations/meta/_journal.json",
+))
 
 # label, source prefixes/exact paths, required-all docs, required-any docs/prefixes.
 OWNER_RULES = (
@@ -157,11 +163,82 @@ def require_owners(entries: list[tuple[str, str]]) -> list[str]:
     return failures
 
 
-def migration_contract(entries: list[tuple[str, str]]) -> list[str]:
+def journal_append_contract(
+    root: Path,
+    base: str,
+    target: str,
+    path: str,
+    entries_by_path: dict[str, str],
+) -> list[str]:
+    try:
+        before = json.loads(str(git(root, "show", f"{base}:{path}")))
+        after = json.loads(str(git(root, "show", f"{target}:{path}")))
+    except (json.JSONDecodeError, TypeError) as error:
+        return [f"migration journal is not valid JSON ({path}): {error}"]
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return [f"migration journal must be an object: {path}"]
+
+    before_entries = before.get("entries")
+    after_entries = after.get("entries")
+    before_header = {key: value for key, value in before.items() if key != "entries"}
+    after_header = {key: value for key, value in after.items() if key != "entries"}
+    if before_header != after_header or not isinstance(before_entries, list) \
+            or not isinstance(after_entries, list):
+        return [f"migration journal header or shape changed: {path}"]
+    if len(after_entries) <= len(before_entries) \
+            or after_entries[:len(before_entries)] != before_entries:
+        return [f"migration journal is not append-only: {path}"]
+
+    failures: list[str] = []
+    migration_root = path.removesuffix("meta/_journal.json")
+    previous = before_entries[-1] if before_entries else None
+    for entry in after_entries[len(before_entries):]:
+        if not isinstance(entry, dict):
+            failures.append(f"appended migration journal entry is not an object: {path}")
+            continue
+        tag = entry.get("tag")
+        idx = entry.get("idx")
+        when = entry.get("when")
+        if not isinstance(tag, str) or not tag \
+                or not isinstance(idx, int) or not isinstance(when, int) \
+                or entry.get("version") != after.get("version") \
+                or not isinstance(entry.get("breakpoints"), bool):
+            failures.append(f"appended migration journal entry has an invalid identity: {path}")
+            previous = entry
+            continue
+        if isinstance(previous, dict):
+            previous_idx = previous.get("idx")
+            previous_when = previous.get("when")
+            if not isinstance(previous_idx, int) or idx != previous_idx + 1:
+                failures.append(f"appended migration journal index is not contiguous: {path} ({tag})")
+            if not isinstance(previous_when, int) or when <= previous_when:
+                failures.append(f"appended migration journal timestamp is not increasing: {path} ({tag})")
+        migration_path = f"{migration_root}{tag}.sql"
+        if entries_by_path.get(migration_path) != "A":
+            failures.append(
+                f"appended migration journal entry lacks a new SQL file: {path} ({migration_path})"
+            )
+        previous = entry
+    return failures
+
+
+def migration_contract(
+    root: Path,
+    base: str,
+    target: str,
+    entries: list[tuple[str, str]],
+) -> list[str]:
     failures: list[str] = []
     paths = [path for _, path in entries]
+    entries_by_path = {path: status for status, path in entries}
     for status, path in entries:
         if not path_matches(path, MIGRATION_PREFIXES):
+            continue
+        if path in MIGRATION_JOURNALS:
+            if status != "M":
+                failures.append(f"migration journal must already exist ({status}): {path}")
+            else:
+                failures.extend(journal_append_contract(root, base, target, path, entries_by_path))
             continue
         if status != "A":
             failures.append(f"existing migration is immutable ({status}): {path}")
@@ -311,7 +388,7 @@ def main(argv: list[str]) -> int:
         extract_target(root, target, snapshot)
         failures = [
             *require_owners(entries),
-            *migration_contract(entries),
+            *migration_contract(root, base, target, entries),
             *markdown_integrity(snapshot),
             *docs_index_completeness(snapshot),
             *alert_runbooks(snapshot),

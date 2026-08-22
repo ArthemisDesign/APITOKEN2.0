@@ -83,4 +83,85 @@ git -C "$REPO" commit --quiet -m broken-runbook
 BROKEN_RUNBOOK=$(git -C "$REPO" rev-parse HEAD)
 expect_failure "$UNINDEXED" "$BROKEN_RUNBOOK" 'runbook anchor #broken is absent'
 
+# A Drizzle migration necessarily modifies its existing journal. Accept only an exact tail append
+# whose new tag has a matching newly-added SQL file; historical SQL and journal entries stay frozen.
+MIGRATION_REPO=$TEMP/migration-repo
+git init --quiet "$MIGRATION_REPO"
+git -C "$MIGRATION_REPO" config user.name test
+git -C "$MIGRATION_REPO" config user.email test@example.invalid
+mkdir -p "$MIGRATION_REPO/deploy" "$MIGRATION_REPO/docs/sales" \
+  "$MIGRATION_REPO/docs/ops" "$MIGRATION_REPO/observability/prometheus/rules" \
+  "$MIGRATION_REPO/packages/sales-db/migrations/meta"
+cp "$CHECK" "$MIGRATION_REPO/deploy/docs-check.py"
+printf '# docs\n\n- [Sales](sales/SALES_PORTAL.md)\n- [Monitoring](ops/MONITORING.md)\n' \
+  >"$MIGRATION_REPO/docs/README.md"
+printf '# Sales\n' >"$MIGRATION_REPO/docs/sales/SALES_PORTAL.md"
+printf '# Monitoring\n' >"$MIGRATION_REPO/docs/ops/MONITORING.md"
+printf 'CREATE TABLE base (id integer PRIMARY KEY);\n' \
+  >"$MIGRATION_REPO/packages/sales-db/migrations/0000_base.sql"
+printf '%s\n' \
+  '{"version":"7","dialect":"postgresql","entries":[{"idx":0,"version":"7","when":1,"tag":"0000_base","breakpoints":true}]}' \
+  >"$MIGRATION_REPO/packages/sales-db/migrations/meta/_journal.json"
+git -C "$MIGRATION_REPO" add deploy/docs-check.py docs/README.md \
+  docs/sales/SALES_PORTAL.md docs/ops/MONITORING.md \
+  packages/sales-db/migrations/0000_base.sql \
+  packages/sales-db/migrations/meta/_journal.json
+git -C "$MIGRATION_REPO" commit --quiet -m base
+MIGRATION_BASE=$(git -C "$MIGRATION_REPO" rev-parse HEAD)
+
+printf 'CREATE TABLE appended (id integer PRIMARY KEY);\n' \
+  >"$MIGRATION_REPO/packages/sales-db/migrations/0001_appended.sql"
+python3 - "$MIGRATION_REPO/packages/sales-db/migrations/meta/_journal.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+journal = json.loads(path.read_text())
+journal["entries"].append({
+    "idx": 1,
+    "version": "7",
+    "when": 2,
+    "tag": "0001_appended",
+    "breakpoints": True,
+})
+path.write_text(json.dumps(journal) + "\n")
+PY
+printf '\nNew migration.\n' >>"$MIGRATION_REPO/docs/sales/SALES_PORTAL.md"
+git -C "$MIGRATION_REPO" add docs/sales/SALES_PORTAL.md \
+  packages/sales-db/migrations/0001_appended.sql \
+  packages/sales-db/migrations/meta/_journal.json
+git -C "$MIGRATION_REPO" commit --quiet -m append
+MIGRATION_APPEND=$(git -C "$MIGRATION_REPO" rev-parse HEAD)
+DOCS_CHECK_ROOT="$MIGRATION_REPO" python3 "$MIGRATION_REPO/deploy/docs-check.py" \
+  "$MIGRATION_BASE" "$MIGRATION_APPEND" >/dev/null
+
+printf '\n-- forbidden edit\n' >>"$MIGRATION_REPO/packages/sales-db/migrations/0000_base.sql"
+git -C "$MIGRATION_REPO" add packages/sales-db/migrations/0000_base.sql
+git -C "$MIGRATION_REPO" commit --quiet -m tamper-sql
+MIGRATION_SQL_TAMPER=$(git -C "$MIGRATION_REPO" rev-parse HEAD)
+output=$(DOCS_CHECK_ROOT="$MIGRATION_REPO" python3 "$MIGRATION_REPO/deploy/docs-check.py" \
+  "$MIGRATION_APPEND" "$MIGRATION_SQL_TAMPER" 2>&1) && fail 'historical SQL edit passed'
+grep -Fq 'existing migration is immutable' <<<"$output" \
+  || fail "missing immutable SQL diagnostic: $output"
+
+python3 - "$MIGRATION_REPO/packages/sales-db/migrations/meta/_journal.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+journal = json.loads(path.read_text())
+journal["entries"][0]["when"] = 99
+path.write_text(json.dumps(journal) + "\n")
+PY
+git -C "$MIGRATION_REPO" add packages/sales-db/migrations/meta/_journal.json
+git -C "$MIGRATION_REPO" commit --quiet -m tamper-journal
+MIGRATION_JOURNAL_TAMPER=$(git -C "$MIGRATION_REPO" rev-parse HEAD)
+output=$(DOCS_CHECK_ROOT="$MIGRATION_REPO" python3 "$MIGRATION_REPO/deploy/docs-check.py" \
+  "$MIGRATION_SQL_TAMPER" "$MIGRATION_JOURNAL_TAMPER" 2>&1) \
+  && fail 'historical journal edit passed'
+grep -Fq 'migration journal is not append-only' <<<"$output" \
+  || fail "missing append-only journal diagnostic: $output"
+
 printf 'docs-check.test: passed\n'
