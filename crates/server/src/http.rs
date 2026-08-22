@@ -104,6 +104,88 @@ fn cache_put(cell: &DashCache, v: &serde_json::Value) {
         .unwrap() = Some((std::time::Instant::now(), v.clone()));
 }
 
+#[derive(Default, serde::Deserialize)]
+struct RecentTurnsQuery {
+    recent_turns: Option<i64>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct OverviewQuery {
+    accounts_limit: Option<i64>,
+    accounts_offset: Option<i64>,
+}
+
+fn omit_recent_turns(q: &RecentTurnsQuery) -> bool {
+    matches!(q.recent_turns, Some(0))
+}
+
+pub(crate) fn maybe_omit_recent_turns(mut value: Value, omit: bool) -> Value {
+    if omit {
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("calibration_recent_turns".into(), json!([]));
+        }
+    }
+    value
+}
+
+fn overview_account_json(account: &registry::AccountRow) -> Value {
+    json!({
+        "account": account.id,
+        "handle": account.handle,
+        "balance_usd": (account.balance_nano as f64 / 1e9 * 100.0).round() / 100.0,
+        "spent_usd": (account.spent_nano as f64 / 1e9 * 100.0).round() / 100.0,
+        "mult": account.mult_bp as f64 / 10000.0,
+        "status": account.status,
+    })
+}
+
+async fn attach_overview_accounts(
+    app: &AppState,
+    mut value: Value,
+    query: &OverviewQuery,
+) -> anyhow::Result<Value> {
+    let Some(billing) = &app.billing else {
+        return Ok(value);
+    };
+    let limit = query.accounts_limit;
+    let offset = query.accounts_offset.unwrap_or(0).max(0) as usize;
+    if limit == Some(0) {
+        let totals = billing.totals().await?;
+        value["accounts_total"] = json!(totals.accounts);
+        value["accounts_active"] = json!(totals.active_accounts);
+        value["crm"] = match billing.account_by_handle("crm-parsing").await? {
+            Some(row) => overview_account_json(&row),
+            None => Value::Null,
+        };
+        return Ok(value);
+    }
+    let rows = billing.accounts().await?;
+    let accounts_total = rows.len();
+    let accounts_active = rows.iter().filter(|row| row.status == "active").count();
+    let crm = rows
+        .iter()
+        .find(|row| {
+            row.handle
+                .as_deref()
+                .is_some_and(|handle| handle.eq_ignore_ascii_case("crm-parsing"))
+        })
+        .map(overview_account_json)
+        .unwrap_or(Value::Null);
+    value["accounts_total"] = json!(accounts_total);
+    value["accounts_active"] = json!(accounts_active);
+    value["crm"] = crm;
+    let mapped: Vec<Value> = rows.iter().map(overview_account_json).collect();
+    if let Some(limit) = limit {
+        let limit = (limit.max(0) as usize).min(500);
+        let start = offset.min(mapped.len());
+        let end = start.saturating_add(limit).min(mapped.len());
+        value["accounts"] = json!(mapped[start..end].to_vec());
+    } else {
+        value["accounts"] = json!(mapped);
+    }
+    Ok(value)
+}
+
 fn invalidate_admin_caches(resources: &[&str]) {
     for resource in resources {
         let cell = match *resource {
@@ -3735,6 +3817,7 @@ async fn capacity(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    Query(query): Query<RecentTurnsQuery>,
 ) -> Response {
     if !readonly_authed(&app, &headers, &peer) {
         Metrics::inc(&app.metrics.auth_failures);
@@ -3744,8 +3827,9 @@ async fn capacity(
         )
             .into_response();
     }
+    let omit_turns = omit_recent_turns(&query);
     if let Some(v) = cache_get(&CAPACITY_CACHE) {
-        return Json(v).into_response();
+        return Json(maybe_omit_recent_turns(v, omit_turns)).into_response();
     }
     let report = match &app.billing {
         Some(billing) => match billing.anthropic_calibration_report().await {
@@ -3796,7 +3880,7 @@ async fn capacity(
         lifecycle_by_email.as_ref(),
     );
     cache_put(&CAPACITY_CACHE, &v);
-    Json(v).into_response()
+    Json(maybe_omit_recent_turns(v, omit_turns)).into_response()
 }
 
 pub(crate) fn capacity_value(
@@ -4116,6 +4200,7 @@ async fn overview(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    Query(query): Query<OverviewQuery>,
 ) -> Response {
     if !control_authed(&app, &headers, &peer) {
         Metrics::inc(&app.metrics.auth_failures);
@@ -4125,51 +4210,35 @@ async fn overview(
         )
             .into_response();
     }
-    if let Some(v) = cache_get(&OVERVIEW_CACHE) {
-        return Json(v).into_response();
-    }
-    let mut v = match overview_value(&app).await {
-        Ok(value) => value,
-        Err(error) => {
-            elog::error("server", format!("billing overview query failed: {error:#}"));
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"error": "billing authority unavailable"})),
-            )
-                .into_response();
-        }
-    };
-    // Разбивка спроса по engine-аккаунтам — только в HTTP-ответе панели; в историю
-    // (poller::metrics_loop пишет overview_value) её не кладём, чтобы не раздувать metrics.db.
-    if let Some(b) = &app.billing {
-        let account_rows = match b.accounts().await {
-            Ok(rows) => rows,
+    let core = if let Some(v) = cache_get(&OVERVIEW_CACHE) {
+        v
+    } else {
+        match overview_value(&app).await {
+            Ok(value) => {
+                cache_put(&OVERVIEW_CACHE, &value);
+                value
+            }
             Err(error) => {
-                elog::error("server", format!("billing account overview failed: {error:#}"));
+                elog::error("server", format!("billing overview query failed: {error:#}"));
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(json!({"error": "billing authority unavailable"})),
                 )
                     .into_response();
             }
-        };
-        let accounts: Vec<_> = account_rows
-            .into_iter()
-            .map(|a| {
-                json!({
-                    "account": a.id,
-                    "handle": a.handle,
-                    "balance_usd": (a.balance_nano as f64 / 1e9 * 100.0).round() / 100.0,
-                    "spent_usd": (a.spent_nano as f64 / 1e9 * 100.0).round() / 100.0,
-                    "mult": a.mult_bp as f64 / 10000.0,
-                    "status": a.status,
-                })
-            })
-            .collect();
-        v["accounts"] = json!(accounts);
+        }
+    };
+    match attach_overview_accounts(&app, core, &query).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => {
+            elog::error("server", format!("billing account overview failed: {error:#}"));
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "billing authority unavailable"})),
+            )
+                .into_response()
+        }
     }
-    cache_put(&OVERVIEW_CACHE, &v);
-    Json(v).into_response()
 }
 
 /// Панель «кто тратит»: разбивка расхода по engine-аккаунтам за окна 24ч/7д/30д.
@@ -4857,6 +4926,7 @@ async fn kimi_subs(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    Query(query): Query<RecentTurnsQuery>,
 ) -> Response {
     if !control_authed(&app, &headers, &peer) {
         Metrics::inc(&app.metrics.auth_failures);
@@ -4883,14 +4953,18 @@ async fn kimi_subs(
                     None
                 }
             };
-            let recent_turns = match billing
-                .kimi_recent_turns(registry::MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS as i64)
-                .await
-            {
-                Ok(turns) => Some(turns),
-                Err(error) => {
-                    elog::error("server", format!("KIMI recent turns unavailable: {error:#}"));
-                    None
+            let recent_turns = if omit_recent_turns(&query) {
+                None
+            } else {
+                match billing
+                    .kimi_recent_turns(registry::MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS as i64)
+                    .await
+                {
+                    Ok(turns) => Some(turns),
+                    Err(error) => {
+                        elog::error("server", format!("KIMI recent turns unavailable: {error:#}"));
+                        None
+                    }
                 }
             };
             (report, recent_turns)
@@ -6043,6 +6117,7 @@ async fn gemini_subs(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    Query(query): Query<RecentTurnsQuery>,
 ) -> Response {
     if !readonly_authed(&app, &headers, &peer) {
         Metrics::inc(&app.metrics.auth_failures);
@@ -6186,9 +6261,13 @@ async fn gemini_subs(
             rows.iter().map(gemini_calibration_aggregate_value).collect::<Vec<_>>()
         }),
         "calibration_recent_turn_limit": registry::MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS,
-        "calibration_recent_turns": calibration_report.as_ref().map_or_else(Vec::new, |(_, _, rows)| {
-            rows.iter().map(gemini_calibration_event_value).collect::<Vec<_>>()
-        }),
+        "calibration_recent_turns": if omit_recent_turns(&query) {
+            Vec::new()
+        } else {
+            calibration_report.as_ref().map_or_else(Vec::new, |(_, _, rows)| {
+                rows.iter().map(gemini_calibration_event_value).collect::<Vec<_>>()
+            })
+        },
         "window_totals": window_totals,
         "batch": batch_value,
         "conversion_models": gemini_conversion_models(&gemini.config().models, now),

@@ -5,8 +5,7 @@ import { Sidebar } from "@/components/sidebar";
 import { ErrorCenter } from "@/components/error-center";
 import { DialogHost } from "@/lib/dialog";
 import { Toaster } from "@/lib/toast";
-import { RealtimeBridge } from "@/lib/realtime";
-import { ResourceFreshnessBridge } from "@/lib/resources";
+import { RealtimeBridge, ResourceFreshnessBridge } from "@/lib/realtime";
 import { I18nProvider, languageScript } from "@/lib/i18n";
 
 export const metadata: Metadata = {

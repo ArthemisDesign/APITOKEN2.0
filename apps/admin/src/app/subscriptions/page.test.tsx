@@ -11,7 +11,7 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-import SubsPage, { SubscriptionsView } from "./page";
+import SubsPage, { SubscriptionsView, SUBSCRIPTION_LIVE_PATHS } from "./page";
 import { ClaudeTable, GeminiModelDetails, GeminiTable, GptTable, TransportDetails } from "./components";
 import { ClaudeCapacityBoard } from "./claude-capacity-board";
 import { CodexCapacityBoard } from "./codex-capacity-board";
@@ -3332,6 +3332,13 @@ describe("Suno capacity board (wire contract /suno-subs)", () => {
 });
 
 describe("Подписки (subs page)", () => {
+  it("не запрашивает dormant Tripo3D и Suno", () => {
+    const paths = Object.values(SUBSCRIPTION_LIVE_PATHS);
+    expect(paths).not.toContain("/tripo3d-subs");
+    expect(paths).not.toContain("/suno-subs");
+    expect(paths).toContain("/capacity?recent_turns=0");
+  });
+
   it("рендерится без падения: начальное состояние — скелетон загрузки", () => {
     // fetch на всякий случай замокан: при SSR-рендере эффекты не исполняются,
     // но страница не должна трогать сеть до монтирования.

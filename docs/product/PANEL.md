@@ -64,8 +64,12 @@ browser ──host-only session──▶ Caddy forward_auth ──▶ commerce a
   single-release OpenAI bridge on 8792 is described in `deploy/CADDY.md` and does not
   change admin routing.
 - Engine data (`/overview`, `/capacity`, `/subs`, `/metrics`) is defined in
-  `crates/server/src/http.rs`. `/overview` contains the full list of engine accounts
-  without API keys. `/fleet-history` serves metrics.db history (minute fleet snapshots for
+  `crates/server/src/http.rs`. `/overview` without query params still contains the full list of
+  engine accounts without API keys. Optional `accounts_limit` / `accounts_offset` page that list
+  (limit `0` omits `accounts` and still returns expand-only `accounts_total`, `accounts_active`,
+  and `crm`). `/capacity`, `/gemini-subs` and `/kimi-subs` accept `recent_turns=0` to keep
+  `calibration_recent_turns` as `[]` while the omitted/default request still returns up to 512
+  events. `/fleet-history` serves metrics.db history (minute fleet snapshots for
   90 days) in 24h/7d/30d/90d windows bucketed down to ≤ ~500 points, optionally a per-sub
   series matched by email mask. `/spend-stats`, besides accounts/providers, returns
   `models[]` — the top-20 models by charge for each window (the served model id from

@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { MANAGED_ADMIN_DOMAINS, type ManagedAdminDomain } from "@claude-api/db";
@@ -11,8 +11,10 @@ import {
 
 export const ADMIN_SESSION_COOKIE = "__Host-apitoken_admin_session";
 export const ADMIN_SESSION_TTL_SECONDS = 180 * 24 * 60 * 60;
+export const ADMIN_AUTH_VERIFY_CACHE_TTL_MS = 2_000;
 const ADMIN_SESSION_TTL_MS = ADMIN_SESSION_TTL_SECONDS * 1_000;
 const CLOCK_SKEW_MS = 60_000;
+const VERIFY_CACHE_MAX = 256;
 
 const payloadSchema = z.object({
   v: z.literal(1),
@@ -25,6 +27,8 @@ const payloadSchema = z.object({
 
 @Injectable()
 export class AdminSessionService {
+  private readonly verifyCache = new Map<string, { identity: ManagedAdminAuthIdentity; expiresAt: number }>();
+
   constructor(
     private readonly accounts: AdminAccountsService,
     private readonly config: ConfigService<Environment, true>,
@@ -45,12 +49,23 @@ export class AdminSessionService {
 
   async authenticate(token: string | null, domain: ManagedAdminDomain): Promise<ManagedAdminAuthIdentity | null> {
     const payload = this.verify(token);
-    if (!payload || payload.domain !== domain) return null;
-    return this.accounts.resolveSessionIdentity({
+    if (!payload || payload.domain !== domain || !token) return null;
+    const cacheKey = createHash("sha256").update(`${domain}\0${token}`, "utf8").digest("base64url");
+    const now = Date.now();
+    const cached = this.verifyCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) return cached.identity;
+    const identity = await this.accounts.resolveSessionIdentity({
       accountId: payload.sub,
       domain,
       sessionVersion: payload.session_version,
     });
+    if (!identity) return null;
+    if (this.verifyCache.size >= VERIFY_CACHE_MAX) {
+      const oldest = this.verifyCache.keys().next().value;
+      if (oldest) this.verifyCache.delete(oldest);
+    }
+    this.verifyCache.set(cacheKey, { identity, expiresAt: now + ADMIN_AUTH_VERIFY_CACHE_TTL_MS });
+    return identity;
   }
 
   private verify(token: string | null): z.infer<typeof payloadSchema> | null {

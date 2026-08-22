@@ -800,6 +800,7 @@ fn billing_totals_aggregates_across_accounts() {
     assert_eq!(t.spent_nano, 400_000_000);
     assert_eq!(t.reserved_nano, 500_000_000);
     assert_eq!(t.active_accounts, 1);
+    assert_eq!(t.accounts, 2);
 }
 
 /// Без per-request identity старт не может доказать, что резерв осиротел: fail-closed оставляет hold.

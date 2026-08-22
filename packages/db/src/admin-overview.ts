@@ -466,22 +466,45 @@ export async function listAdminUserOverview(
 
 export async function getAdminDashboard(database: Database): Promise<AdminDashboard> {
   const result = await database.pool.query<Record<string, string | Date>>(`
-    WITH user_auth AS (
-      SELECT u.id, u.status, u.created_at, u.email_verified, u.totp_enabled,
-             (u.password_hash IS NOT NULL) AS has_password,
-             EXISTS (SELECT 1 FROM auth_identities ai WHERE ai.user_id = u.id) AS has_oauth,
-             EXISTS (SELECT 1 FROM auth_identities ai WHERE ai.user_id = u.id AND ai.provider = 'google') AS has_google,
-             EXISTS (SELECT 1 FROM auth_identities ai WHERE ai.user_id = u.id AND ai.provider = 'github') AS has_github,
-             EXISTS (
-               SELECT 1 FROM audit_log al
-               WHERE al.target_type = 'user' AND al.target_id = u.id::text
-                 AND al.action = 'auth.oauth_registered'
-             ) AS registered_oauth,
-             EXISTS (
-               SELECT 1 FROM auth_sessions s
-               WHERE s.user_id = u.id AND s.last_seen_at >= now() - interval '7 days'
-             ) AS active_7d
+    WITH oauth_ident AS (
+      SELECT user_id,
+             bool_or(true) AS has_oauth,
+             bool_or(provider = 'google') AS has_google,
+             bool_or(provider = 'github') AS has_github
+      FROM auth_identities
+      GROUP BY user_id
+    ),
+    oauth_reg AS (
+      SELECT DISTINCT target_id AS user_id
+      FROM audit_log
+      WHERE target_type = 'user' AND action = 'auth.oauth_registered'
+    ),
+    sess_7d AS (
+      SELECT DISTINCT user_id
+      FROM auth_sessions
+      WHERE last_seen_at >= now() - interval '7 days'
+    ),
+    user_agg AS (
+      SELECT
+        count(*) AS users_total,
+        count(*) FILTER (WHERE u.status = 'active') AS users_active,
+        count(*) FILTER (WHERE u.status = 'disabled') AS users_disabled,
+        count(*) FILTER (WHERE u.created_at >= now() - interval '24 hours') AS users_registered_24h,
+        count(*) FILTER (WHERE u.created_at >= now() - interval '30 days') AS users_registered_30d,
+        count(*) FILTER (WHERE s.user_id IS NOT NULL) AS users_active_7d,
+        count(*) FILTER (WHERE oreg.user_id IS NOT NULL) AS users_registered_oauth,
+        count(*) FILTER (WHERE oreg.user_id IS NULL) AS users_registered_password,
+        count(*) FILTER (WHERE u.password_hash IS NOT NULL AND oi.user_id IS NULL) AS users_password_only,
+        count(*) FILTER (WHERE oi.user_id IS NOT NULL AND u.password_hash IS NULL) AS users_oauth_only,
+        count(*) FILTER (WHERE oi.user_id IS NOT NULL AND u.password_hash IS NOT NULL) AS users_hybrid,
+        count(*) FILTER (WHERE oi.has_google) AS users_google,
+        count(*) FILTER (WHERE oi.has_github) AS users_github,
+        count(*) FILTER (WHERE u.email_verified) AS users_verified,
+        count(*) FILTER (WHERE u.totp_enabled) AS users_totp
       FROM users u
+      LEFT JOIN oauth_ident oi ON oi.user_id = u.id
+      LEFT JOIN oauth_reg oreg ON oreg.user_id = u.id::text
+      LEFT JOIN sess_7d s ON s.user_id = u.id
     ), paid AS (
       SELECT count(*) FILTER (WHERE status = 'paid') AS paid_count,
              count(DISTINCT user_id) FILTER (WHERE status = 'paid') AS paid_users,
@@ -503,21 +526,11 @@ export async function getAdminDashboard(database: Database): Promise<AdminDashbo
       WHERE action = 'admin.credit' AND metadata->>'amount_nano' ~ '^[0-9]+$'
     )
     SELECT now() AS generated_at,
-      (SELECT count(*) FROM user_auth) AS users_total,
-      (SELECT count(*) FROM user_auth WHERE status = 'active') AS users_active,
-      (SELECT count(*) FROM user_auth WHERE status = 'disabled') AS users_disabled,
-      (SELECT count(*) FROM user_auth WHERE created_at >= now() - interval '24 hours') AS users_registered_24h,
-      (SELECT count(*) FROM user_auth WHERE created_at >= now() - interval '30 days') AS users_registered_30d,
-      (SELECT count(*) FROM user_auth WHERE active_7d) AS users_active_7d,
-      (SELECT count(*) FROM user_auth WHERE registered_oauth) AS users_registered_oauth,
-      (SELECT count(*) FROM user_auth WHERE NOT registered_oauth) AS users_registered_password,
-      (SELECT count(*) FROM user_auth WHERE has_password AND NOT has_oauth) AS users_password_only,
-      (SELECT count(*) FROM user_auth WHERE has_oauth AND NOT has_password) AS users_oauth_only,
-      (SELECT count(*) FROM user_auth WHERE has_oauth AND has_password) AS users_hybrid,
-      (SELECT count(*) FROM user_auth WHERE has_google) AS users_google,
-      (SELECT count(*) FROM user_auth WHERE has_github) AS users_github,
-      (SELECT count(*) FROM user_auth WHERE email_verified) AS users_verified,
-      (SELECT count(*) FROM user_auth WHERE totp_enabled) AS users_totp,
+      user_agg.users_total, user_agg.users_active, user_agg.users_disabled,
+      user_agg.users_registered_24h, user_agg.users_registered_30d, user_agg.users_active_7d,
+      user_agg.users_registered_oauth, user_agg.users_registered_password,
+      user_agg.users_password_only, user_agg.users_oauth_only, user_agg.users_hybrid,
+      user_agg.users_google, user_agg.users_github, user_agg.users_verified, user_agg.users_totp,
       paid.paid_count, paid.paid_users, paid.paid_nano, paid.paid_30d_count, paid.paid_30d_nano,
       paid.refunded_count, paid.refunded_nano,
       (SELECT count(*) FROM checkout_sessions WHERE status IN ('creating', 'pending')) AS pending_checkouts,
@@ -532,7 +545,7 @@ export async function getAdminDashboard(database: Database): Promise<AdminDashbo
       (SELECT count(*) FROM engine_accounts WHERE status = 'pending') AS engine_pending,
       (SELECT count(*) FROM engine_accounts WHERE status = 'error') AS engine_error,
       (SELECT count(*) FROM engine_accounts WHERE status = 'disabled') AS engine_disabled
-    FROM paid CROSS JOIN manual
+    FROM user_agg CROSS JOIN paid CROSS JOIN manual
   `);
   const row = result.rows[0]!;
   const count = (key: string): number => Number(row[key] ?? 0);

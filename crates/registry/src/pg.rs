@@ -3448,7 +3448,8 @@ impl PgStore {
     pub fn billing_totals(&mut self) -> Result<BillingTotals> {
         let row = self.client.query_one(
             "SELECT COALESCE(SUM(balance_nano),0)::bigint,COALESCE(SUM(spent_nano),0)::bigint, \
-             COALESCE(SUM(reserved_nano),0)::bigint,COUNT(*) FILTER (WHERE status='active')::bigint FROM accounts",
+             COALESCE(SUM(reserved_nano),0)::bigint,COUNT(*) FILTER (WHERE status='active')::bigint, \
+             COUNT(*)::bigint FROM accounts",
             &[],
         )?;
         Ok(BillingTotals {
@@ -3456,6 +3457,7 @@ impl PgStore {
             spent_nano: row.get(1),
             reserved_nano: row.get(2),
             active_accounts: row.get(3),
+            accounts: row.get(4),
         })
     }
 

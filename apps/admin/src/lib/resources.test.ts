@@ -46,7 +46,8 @@ describe("resource invalidation", () => {
   });
 
   it("accepts valid change and resync payload shapes", () => {
-    expect(applyRealtimePayload(JSON.stringify({ resources: ["/overview", "/capacity"] }))).toBe(true);
+    expect(applyRealtimePayload(JSON.stringify({ resources: ["/overview", "/capacity"] }), "change")).toBe(true);
+    expect(applyRealtimePayload(JSON.stringify({ resources: ["/overview"] }), "resync")).toBe(true);
   });
 
   it("does not fetch merely because an unmounted URL was invalidated", () => {
@@ -160,6 +161,27 @@ describe("resource invalidation", () => {
       await flush();
       unsubscribeFast();
       unsubscribeSlow();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not queue a connect-resync while the first GET is still in flight", async () => {
+    const resolvers: Array<(response: Response) => void> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(() => new Promise<Response>((resolve) => resolvers.push(resolve))) as typeof fetch;
+    try {
+      const resource = getResource<{ version: number }>("/overview");
+      const unsubscribe = resource.subscribe(() => undefined);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      applyRealtimePayload(JSON.stringify({ resources: ["/overview"] }), "resync");
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+
+      resolvers[0]?.(new Response(JSON.stringify({ version: 1 })));
+      await flush();
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      expect(resource.getSnapshot().data).toEqual({ version: 1 });
+      unsubscribe();
     } finally {
       globalThis.fetch = originalFetch;
     }

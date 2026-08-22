@@ -69,11 +69,19 @@ PostgreSQL notifications; Authbot emits only when provider inventory or renewal 
 
 Every connection begins with `resync`; listener lag or database reconnect produces another one
 because event delivery is an invalidation hint, not durable state. Heartbeats are transport-only.
-Engine resync/change delivery evicts the matching short-lived server response cache before the
-browser refetches, so push cannot immediately return a stale cached projection.
+A **connect-resync** that arrives while a URL's first GET is still in flight does not queue a
+second request. A later `change` event, or a resync after that first GET has already succeeded,
+still refreshes as before. Engine resync/change delivery evicts the matching short-lived server
+response cache before the browser refetches, so push cannot immediately return a stale cached
+projection.
+The layout opens only the SSE feeds whose prefixes the current screen can consume (for example
+Subscriptions opens engine/openai/gemini/kimi; Proxies opens Authbot; `/partners` and its nested
+screens open only the sales feed). Overlapping feeds stay
+open across navigation; unused ones close. The sidebar `live/total` counts those opened feeds.
 Because invalidation delivery is deliberately not durable, the app also revalidates only the
-currently mounted URL resources every 30 seconds while the tab is visible and online. Returning to
-a visible tab or restoring network access triggers the same mounted-only refresh immediately.
+currently mounted URL resources every 30 seconds **while opened feeds are not fully live**, and
+only while the tab is visible and online. Returning to a visible tab or restoring network access
+triggers the same mounted-only refresh immediately, even when SSE is live.
 Every admin request uses browser `cache: no-store`. This fallback bounds staleness after a lost or
 suspended event without polling hidden pages or unmounted cohorts; SSE remains the immediate path.
 The UI consumer keeps last-good data, deduplicates by actual request URL and revalidates only
@@ -129,9 +137,10 @@ domain grants. Caddy same-origin proxies the depersonalized `/capacity`, `/codex
 plane with its own stable loopback origin `127.0.0.1:8803`; GLM remains a backend inside the
 Anthropic runtime. Caddy adds
 the server keys; the browser never receives control keys, OAuth, Google project, KIMI/GLM
-subject, keys or proxy. `/tripo3d-subs` and `/suno-subs` are fetched the same way but
-intentionally have no Caddy origin yet — the Tripo3D and Suno planes are dormant, and the
-subscriptions page degrades to its null state until the planes are activated. Full account
+subject, keys or proxy. `/tripo3d-subs` and `/suno-subs` remain reserved data routes for when
+those planes activate, but the subscriptions page does **not** GET them: Caddy has no origin yet,
+and a 404 would pollute Error Center. The boards render a local `enabled: false` dormant envelope
+until the planes are activated. Full account
 email has one narrow exception
 described below for the
 closed managed-admin `/proxies` response; the other subscription routes remain masked. The
@@ -602,10 +611,10 @@ minutes) says `обновляем` ("refreshing"); fleet sums in the strip are c
 profiles whose row shows real money, and null on any of them makes the total unknown
 rather than a partial sum.
 
-Tripo3D is built from `/tripo3d-subs` (an `enabled:false` envelope is shown as
-"Tripo3D-контур выключен" — "Tripo3D plane disabled"; the plane is dormant and has no
-production Caddy origin yet, so until activation the fetch fails and the board shows the
-null state `нет связи` — "no connection" — by design) and repeats the same compact
+Tripo3D is built from a local dormant envelope while `/tripo3d-subs` has no production Caddy
+origin (an `enabled:false` envelope is shown as
+"Tripo3D-контур выключен" — "Tripo3D plane disabled"; the page does not GET the missing origin,
+so Error Center stays clean) and repeats the same compact
 contract on a windowless balance track: prepaid API credits never reset
 (`docs/engine/TRIPO3D_PROVIDER.md` §5.3), so there are no 5h/7d columns and no fictitious
 equivalents — one row per identity, one money column per account. The profile identity is
@@ -624,10 +633,9 @@ money behind `сохраняется`/`обновляем`. Fleet sums are compu
 row shows real money, and null on any of them makes the total unknown rather than a
 partial sum.
 
-Suno is built from `/suno-subs` (an `enabled:false` envelope is shown as "Suno-контур
-выключен" — "Suno plane disabled"; like Tripo3D, the plane is dormant and has no
-production Caddy origin yet, so until activation the fetch fails and the board shows the
-null state `нет связи` — "no connection" — by design) and repeats the same compact
+Suno is built from a local dormant envelope while `/suno-subs` has no production Caddy origin
+(an `enabled:false` envelope is shown as "Suno-контур
+выключен" — "Suno plane disabled"; like Tripo3D, the page does not GET the missing origin) and repeats the same compact
 contract on the monthly credit window of the paid plans (Pro/Premier —
 `docs/engine/SUNO_PROVIDER.md` §5.2/§5.3). The profile identity is only an opaque roster
 id and the bounded plan label; subject (session-id digest), the cookie, session id, proxy

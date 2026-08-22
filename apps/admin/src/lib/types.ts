@@ -61,6 +61,9 @@ export interface EngineAccount {
 
 export interface EngineOverview {
   accounts?: EngineAccount[];
+  accounts_total?: number;
+  accounts_active?: number;
+  crm?: EngineAccount | null;
   [key: string]: unknown;
 }
 

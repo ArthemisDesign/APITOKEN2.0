@@ -18,7 +18,10 @@ background loops and the HTTP router. Here — and only here — everything is w
   Claude/OpenAI/Gemini router. The production provider is selected by the systemd unit, not the request; the Caddy marker remains
   only in the one-shot `Combined` migration bridge and is never accepted from a client. +
   data routes for admin.apitoken.sale (`/overview`, `/capacity`, `/subs` etc.; UI — standalone
-  Next.js `apps/admin`, architecture — root `docs/product/PANEL.md`) +
+  Next.js `apps/admin`, architecture — root `docs/product/PANEL.md`). `/overview` default remains
+  the full account list; optional `accounts_limit`/`accounts_offset` page or omit it. `/capacity`,
+  `/gemini-subs` and `/kimi-subs` accept `recent_turns=0` to return an empty
+  `calibration_recent_turns` array without changing the default 512-event payload. +
   `/admin/*` (control plane,
   see `admin.rs`) + fallback to `forward::forward`. Key issuance returns the non-secret `key_id`,
   and `/admin/key-id/{key_id}/status` allows revoking a key without passing the full secret again.

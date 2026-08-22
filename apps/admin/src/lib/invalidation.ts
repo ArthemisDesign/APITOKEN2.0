@@ -1,4 +1,6 @@
-type InvalidationListener = (prefixes: readonly string[]) => void;
+export type InvalidationKind = "change" | "resync";
+
+type InvalidationListener = (prefixes: readonly string[], kind: InvalidationKind) => void;
 
 const listeners = new Set<InvalidationListener>();
 
@@ -8,10 +10,13 @@ export function resourceMatches(url: string, prefix: string): boolean {
   return candidate === normalized || candidate.startsWith(normalized + "/");
 }
 
-export function publishInvalidation(prefixes: readonly string[]): void {
+export function publishInvalidation(
+  prefixes: readonly string[],
+  kind: InvalidationKind = "change",
+): void {
   const valid = prefixes.filter((prefix) => prefix.startsWith("/") && prefix.length <= 256);
   if (!valid.length) return;
-  for (const listener of listeners) listener(valid);
+  for (const listener of listeners) listener(valid, kind);
 }
 
 export function subscribeInvalidations(listener: InvalidationListener): () => void {

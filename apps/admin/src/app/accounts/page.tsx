@@ -2,7 +2,7 @@
 
 // Аккаунты — порт 1:1 функции accounts() из crates/server/src/admin-panel.js
 // (строки 477-506): единый реестр engine, commerce, partner и CRM-аккаунтов.
-// Источники: /overview (engine), /admin/dashboard (счётчик commerce),
+// Источники: /overview (engine, paged), /admin/dashboard (счётчик commerce),
 // /partner-admin/partner-analytics?sort=created_at&dir=desc (пейджер по 50),
 // /openkeys-admin/lookup (подписи OpenKeys, ленивый кэш на сессию).
 // Источники обновляются по SSE-prefixes; общий freshness-bridge страхует потерянные события.
@@ -13,6 +13,7 @@
 import Link from "next/link";
 import { startTransition, useEffect, useMemo, useState, type ReactElement } from "react";
 import { useResources } from "@/lib/resources";
+import { clampPageOffset, ENGINE_ACCOUNT_PAGE, pagedOverviewUrl } from "@/lib/engine-urls";
 import { ago, count, money, nanoMoney } from "@/lib/format";
 import type { CommerceDashboard } from "@/lib/types";
 import { Banner, EmptyRow, LoadingGrid, PageHead, Pill, SectionHeader, TableCard } from "@/components/ui";
@@ -51,7 +52,12 @@ interface PartnerAnalyticsResponse {
 }
 
 interface AccountsData {
-  overview: { accounts?: EngineAccountRow[] };
+  overview: {
+    accounts?: EngineAccountRow[];
+    accounts_total?: number;
+    accounts_active?: number;
+    crm?: EngineAccountRow | null;
+  };
   dashboard: CommerceDashboard;
   partners: PartnerAnalyticsResponse;
   directory: { rows?: OkDirectoryRow[] };
@@ -80,8 +86,9 @@ function partnerStatusKind(status: string | undefined): "ok" | "bad" | "warn" {
 
 export default function AccountsPage(): ReactElement {
   const [partnerOffset, setPartnerOffset] = useState(0);
+  const [engineOffset, setEngineOffset] = useState(0);
   const { data, isLoading } = useResources<AccountsData>({
-    overview: "/overview",
+    overview: pagedOverviewUrl(engineOffset),
     dashboard: "/admin/dashboard",
     partners: `/partner-admin/partner-analytics?sort=created_at&dir=desc&limit=${PARTNER_LIMIT}&offset=${partnerOffset}`,
     directory: "/openkeys-admin/lookup",
@@ -96,7 +103,12 @@ export default function AccountsPage(): ReactElement {
     ? data.partners.totals?.total || (data.partners.items ?? []).length
     : 0;
 
+  const engineAccounts = useMemo(() => data?.overview?.accounts ?? [], [data]);
+  const engineTotal = data?.overview?.accounts_total ?? engineAccounts.length;
   const effectivePartnerOffset = clampPartnerOffset(partnerOffset, partnerTotal);
+  const effectiveEngineOffset = clampPageOffset(engineOffset, engineTotal, ENGINE_ACCOUNT_PAGE);
+  const crm =
+    data?.overview?.crm ?? engineAccounts.find((account) => isCrmAccount(account.handle));
 
   useEffect(() => {
     if (data.partners && effectivePartnerOffset !== partnerOffset) {
@@ -104,12 +116,18 @@ export default function AccountsPage(): ReactElement {
     }
   }, [data.partners, effectivePartnerOffset, partnerOffset]);
 
+  useEffect(() => {
+    if (data.overview && effectiveEngineOffset !== engineOffset) {
+      startTransition(() => setEngineOffset(effectiveEngineOffset));
+    }
+  }, [data.overview, effectiveEngineOffset, engineOffset]);
+
   const goToOffset = (next: number): void => {
     startTransition(() => setPartnerOffset(next));
   };
-
-  const engineAccounts = useMemo(() => data?.overview?.accounts ?? [], [data]);
-  const crm = engineAccounts.find((account) => isCrmAccount(account.handle));
+  const goToEngineOffset = (next: number): void => {
+    startTransition(() => setEngineOffset(next));
+  };
 
   const engineRows = useMemo(
     () =>
@@ -175,7 +193,7 @@ export default function AccountsPage(): ReactElement {
   }
 
   const commerceTotal = data.dashboard?.users?.total || 0;
-  const totalRecords = commerceTotal + engineAccounts.length + partnerTotal;
+  const totalRecords = commerceTotal + engineTotal + partnerTotal;
 
   const domains: Array<[domain: string, label: string, sub: string, url: string | null]> = [
     ["admin.apitoken.sale", "central admin", "commerce + engine + partner account control", null],
@@ -203,7 +221,7 @@ export default function AccountsPage(): ReactElement {
       />
 
       <Banner kind={crm ? "ok" : "warn"} title="Единый реестр аккаунтов">
-        commerce {commerceTotal} · engine {engineAccounts.length} · partners {partnerTotal} · CRM{" "}
+        commerce {commerceTotal} · engine {engineTotal} · partners {partnerTotal} · CRM{" "}
         {crm ? "connected" : "missing"}
       </Banner>
 
@@ -226,7 +244,7 @@ export default function AccountsPage(): ReactElement {
         ))}
       </div>
 
-      <SectionHeader title="Engine и service accounts" sub={String(engineAccounts.length)} />
+      <SectionHeader title="Engine и service accounts" sub={String(engineTotal)} />
       <TableCard>
         <table>
           <thead>
@@ -246,6 +264,28 @@ export default function AccountsPage(): ReactElement {
           <tbody>{engineRows.length ? engineRows : <EmptyRow columns={6} />}</tbody>
         </table>
       </TableCard>
+      <div className="pager">
+        <span>
+          {engineTotal ? effectiveEngineOffset + 1 : 0}–{Math.min(effectiveEngineOffset + ENGINE_ACCOUNT_PAGE, engineTotal)} из{" "}
+          {engineTotal}
+        </span>
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={effectiveEngineOffset <= 0}
+          onClick={() => goToEngineOffset(Math.max(0, effectiveEngineOffset - ENGINE_ACCOUNT_PAGE))}
+        >
+          Назад
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={effectiveEngineOffset + ENGINE_ACCOUNT_PAGE >= engineTotal}
+          onClick={() => goToEngineOffset(effectiveEngineOffset + ENGINE_ACCOUNT_PAGE)}
+        >
+          Дальше
+        </button>
+      </div>
 
       <SectionHeader title="Partner accounts" sub={String(partnerTotal)} />
       <TableCard>

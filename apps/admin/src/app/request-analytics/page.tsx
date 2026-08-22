@@ -34,54 +34,55 @@ export default function RequestAnalyticsPage(): ReactElement {
   });
   const summary = data.summary;
   const page = data.page;
-
-  if (!summary || !page) {
-    return <><PageHead title="Request Analytics" sub="операторская аналитика запросов без содержимого и секретов" /><LoadingGrid count={4} /></>;
-  }
-
-  const totals = summary.summary?.totals;
-  const runtime = summary.runtime;
+  const totals = summary?.summary?.totals;
+  const runtime = summary?.runtime;
   return (
     <div>
       <PageHead
         title="Request Analytics"
         sub="отдельно от расходов: маршруты, lifecycle и качество покрытия"
-        badge={<Pill kind={runtime?.persistence_health === "failed" ? "bad" : "ok"}>persistence {displayValue(runtime?.persistence_health)}</Pill>}
+        badge={summary ? <Pill kind={runtime?.persistence_health === "failed" ? "bad" : "ok"}>persistence {displayValue(runtime?.persistence_health)}</Pill> : undefined}
       />
       <div className="paying-window-switch" role="group" aria-label="Окно аналитики">
         <span>Окно</span>
         {WINDOWS.map((window) => <button key={window.hours} type="button" className={hours === window.hours ? "on" : ""} aria-pressed={hours === window.hours} onClick={() => startTransition(() => { setHours(window.hours); setCursor(undefined); setLogicalId(undefined); })}>{window.label}</button>)}
       </div>
 
-      <CardGrid>
-        <StatCard label="persisted facts" value={totals?.persisted ?? 0} hint={`${totals?.terminal ?? 0} terminal`} />
-        <StatCard label="nonterminal" value={totals?.nonterminal ?? 0} hint={`unknown evidence ${totals?.required_evidence_unknown ?? 0}`} />
-        <StatCard label="inbox" value={runtime?.queue_depth ?? 0} hint={runtime?.continuity === "process_local" ? `процесс с ${ago((runtime.process_started_at ?? 0) * 1000)}` : "continuity неизвестна"} />
-        <StatCard label="stuck > 1ч" value={runtime?.stuck_nonterminal_count ?? "—"} hint="долговременная authority-проверка" />
-      </CardGrid>
+      {summary ? (
+        <CardGrid>
+          <StatCard label="persisted facts" value={totals?.persisted ?? 0} hint={`${totals?.terminal ?? 0} terminal`} />
+          <StatCard label="nonterminal" value={totals?.nonterminal ?? 0} hint={`unknown evidence ${totals?.required_evidence_unknown ?? 0}`} />
+          <StatCard label="inbox" value={runtime?.queue_depth ?? 0} hint={runtime?.continuity === "process_local" ? `процесс с ${ago((runtime.process_started_at ?? 0) * 1000)}` : "continuity неизвестна"} />
+          <StatCard label="stuck > 1ч" value={runtime?.stuck_nonterminal_count ?? "—"} hint="долговременная authority-проверка" />
+        </CardGrid>
+      ) : <LoadingGrid count={4} />}
 
       <Banner kind="warn" title="Coverage не подтверждён">
         Persisted facts не являются независимым знаменателем admitted requests. Потери inbox не имеют durable window attribution и не показываются как ноль.
       </Banner>
 
       <SectionHeader title="Последние запросы" sub="новые первыми · до 100 строк на страницу" />
-      <TableCard>
-        <table>
-          <thead><tr><th className="left">маршрут</th><th className="left">модель</th><th>stream</th><th>status</th><th>delivery</th><th>first byte</th><th>terminal</th><th>время</th></tr></thead>
-          <tbody>
-            {(page.rows ?? []).length ? (page.rows ?? []).map((row) => (
-              <tr key={row.fact_id}>
-                <td className="left"><b>{routeLabel(row)}</b><div className="sub">client {displayValue(row.client_kind)}</div></td>
-                <td className="left"><span className="mono">{displayValue(row.requested_model)}</span><div className="sub mono">→ {displayValue(row.executable_model)}</div></td>
-                <td>{row.stream ? "да" : "нет"}</td><td>{row.http_status_code ?? "—"}</td>
-                <td>{displayValue(row.delivery_state)}</td><td>{durationLabel(row.admission_to_first_public_byte_seconds)}</td>
-                <td>{durationLabel(row.admission_to_terminal_seconds)}</td><td>{ago((row.admitted_at ?? 0) * 1000)}</td>
-              </tr>
-            )) : <EmptyRow columns={8} text="в этом окне фактов нет" />}
-          </tbody>
-        </table>
-      </TableCard>
-      {page.next_cursor ? <div className="toolbar"><button type="button" className="btn ghost" onClick={() => setCursor(page.next_cursor ?? undefined)}>Следующая страница</button></div> : null}
+      {page ? (
+        <>
+          <TableCard>
+            <table>
+              <thead><tr><th className="left">маршрут</th><th className="left">модель</th><th>stream</th><th>status</th><th>delivery</th><th>first byte</th><th>terminal</th><th>время</th></tr></thead>
+              <tbody>
+                {(page.rows ?? []).length ? (page.rows ?? []).map((row) => (
+                  <tr key={row.fact_id}>
+                    <td className="left"><b>{routeLabel(row)}</b><div className="sub">client {displayValue(row.client_kind)}</div></td>
+                    <td className="left"><span className="mono">{displayValue(row.requested_model)}</span><div className="sub mono">→ {displayValue(row.executable_model)}</div></td>
+                    <td>{row.stream ? "да" : "нет"}</td><td>{row.http_status_code ?? "—"}</td>
+                    <td>{displayValue(row.delivery_state)}</td><td>{durationLabel(row.admission_to_first_public_byte_seconds)}</td>
+                    <td>{durationLabel(row.admission_to_terminal_seconds)}</td><td>{ago((row.admitted_at ?? 0) * 1000)}</td>
+                  </tr>
+                )) : <EmptyRow columns={8} text="в этом окне фактов нет" />}
+              </tbody>
+            </table>
+          </TableCard>
+          {page.next_cursor ? <div className="toolbar"><button type="button" className="btn ghost" onClick={() => setCursor(page.next_cursor ?? undefined)}>Следующая страница</button></div> : null}
+        </>
+      ) : <LoadingGrid count={2} />}
 
       <SectionHeader title="Попытки логического запроса" sub={logicalId ? `operator-only ${logicalId}` : "точный UUID из operator evidence"} />
       <form

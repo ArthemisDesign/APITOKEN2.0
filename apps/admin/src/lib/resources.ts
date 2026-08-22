@@ -1,8 +1,8 @@
 "use client";
 
-import { useDeferredValue, useEffect, useMemo, useSyncExternalStore } from "react";
+import { useDeferredValue, useMemo, useSyncExternalStore } from "react";
 import { api } from "@/lib/api";
-import { resourceMatches, subscribeInvalidations } from "@/lib/invalidation";
+import { resourceMatches, subscribeInvalidations, type InvalidationKind } from "@/lib/invalidation";
 
 export type ResourceSnapshot<T> = {
   data: T | undefined;
@@ -96,7 +96,10 @@ export class Resource<T> {
     return this.listeners.size > 0;
   }
 
-  markStale(): void {
+  markStale(kind: InvalidationKind = "change"): void {
+    // Connect-resync lands while the first GET is already in flight. Queueing a second
+    // request doubles first paint; a later change event still queues as before.
+    if (kind === "resync" && this.inflight && this.lastSuccessfulAt === 0) return;
     this.stale = true;
     if (!this.hasSubscribers()) return;
     if (this.inflight) this.queued = true;
@@ -312,11 +315,14 @@ export function useResources<T extends object>(
   };
 }
 
-export function invalidateResources(prefixes: readonly string[]): void {
+export function invalidateResources(
+  prefixes: readonly string[],
+  kind: InvalidationKind = "change",
+): void {
   const valid = prefixes.filter((prefix) => prefix.startsWith("/") && prefix.length <= 256);
   if (!valid.length) return;
   for (const resource of registry.values()) {
-    if (valid.some((prefix) => resourceMatches(resource.key, prefix))) resource.markStale();
+    if (valid.some((prefix) => resourceMatches(resource.key, prefix))) resource.markStale(kind);
   }
 }
 
@@ -327,29 +333,6 @@ export function refreshMountedResources(): void {
   for (const resource of registry.values()) {
     if (resource.hasSubscribers()) resource.refresh();
   }
-}
-
-/**
- * SSE remains the fast path, while this bridge bounds staleness if an invalidation was lost or a
- * browser suspended the stream. Only the visible screen is refreshed; background tabs and
- * unmounted URL cohorts do no work. Returning online or to a visible tab refreshes immediately.
- */
-export function ResourceFreshnessBridge(): null {
-  useEffect(() => {
-    const refreshWhenActive = () => {
-      if (document.visibilityState !== "visible" || !navigator.onLine) return;
-      refreshMountedResources();
-    };
-    const timer = window.setInterval(refreshWhenActive, RESOURCE_FALLBACK_INTERVAL_MS);
-    document.addEventListener("visibilitychange", refreshWhenActive);
-    window.addEventListener("online", refreshWhenActive);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", refreshWhenActive);
-      window.removeEventListener("online", refreshWhenActive);
-    };
-  }, []);
-  return null;
 }
 
 export function getResourceSnapshot<T>(key: string): ResourceSnapshot<T> {

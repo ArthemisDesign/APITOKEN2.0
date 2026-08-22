@@ -32,6 +32,7 @@ export function Sidebar() {
                 key={item.href}
                 className={"nav-item" + (isNavItemActive(pathname, item.href) ? " on" : "")}
                 href={item.href}
+                prefetch={false}
               >
                 <span className="ico" aria-hidden="true">{item.icon}</span>
                 {t(item.labelEn ?? item.label, item.label)}

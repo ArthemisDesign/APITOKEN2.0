@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type AdminAccountsService } from "./admin-accounts.service.js";
-import { AdminSessionService, ADMIN_SESSION_TTL_SECONDS } from "./admin-session.service.js";
+import { AdminSessionService, ADMIN_SESSION_TTL_SECONDS, ADMIN_AUTH_VERIFY_CACHE_TTL_MS } from "./admin-session.service.js";
 
 const accountId = "11111111-1111-4111-8111-111111111111";
 const sessionVersion = "s".repeat(43);
@@ -71,6 +71,27 @@ describe("managed admin sessions", () => {
     const token = sessions.issue(identity, "crm.apitoken.sale");
 
     await expect(sessions.authenticate(token, "crm.apitoken.sale")).resolves.toBeNull();
+  });
+
+  it("reuses a successful verify for a short TTL and never caches a failure", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(issuedAt);
+    const fake = fakeAccounts();
+    fake.resolveSessionIdentity
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(identity)
+      .mockResolvedValueOnce(identity);
+    const sessions = makeService(fake.service);
+    const token = sessions.issue(identity, "crm.apitoken.sale");
+
+    await expect(sessions.authenticate(token, "crm.apitoken.sale")).resolves.toBeNull();
+    await expect(sessions.authenticate(token, "crm.apitoken.sale")).resolves.toEqual(identity);
+    await expect(sessions.authenticate(token, "crm.apitoken.sale")).resolves.toEqual(identity);
+    expect(fake.resolveSessionIdentity).toHaveBeenCalledTimes(2);
+
+    vi.spyOn(Date, "now").mockReturnValue(issuedAt + ADMIN_AUTH_VERIFY_CACHE_TTL_MS + 1);
+    fake.resolveSessionIdentity.mockResolvedValueOnce(identity);
+    await expect(sessions.authenticate(token, "crm.apitoken.sale")).resolves.toEqual(identity);
+    expect(fake.resolveSessionIdentity).toHaveBeenCalledTimes(3);
   });
 
   it("refuses to issue or verify sessions when no signing key is configured", async () => {

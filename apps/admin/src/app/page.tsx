@@ -3,6 +3,7 @@
 // Сводка — порт 1:1 функции dashboard() из crates/server/src/admin-panel.js.
 // Данные грузятся параллельно и обновляются только по producer SSE invalidation.
 import Link from "next/link";
+import { compactOverviewUrl } from "@/lib/engine-urls";
 import { useResources } from "@/lib/resources";
 import { formatDate, money, nanoMoney } from "@/lib/format";
 import type {
@@ -28,7 +29,7 @@ const show = (value: number | null | undefined): number | "—" => value ?? "—
 export default function DashboardPage() {
   const { data: result, isLoading } = useResources<DashboardData>({
     data: "/admin/dashboard",
-    engine: "/overview",
+    engine: compactOverviewUrl(),
     partners: "/partner-admin/overview",
     pipes: "/admin/pipeline-health",
     settle: "/settlement-health",
@@ -49,10 +50,12 @@ export default function DashboardPage() {
   const t = data?.topups ?? {};
   const p = data?.platform ?? {};
 
-  const engineAccounts = engine?.accounts ?? [];
-  const crm = engineAccounts.find(
-    (account) => String(account.handle ?? "").toLowerCase() === "crm-parsing",
-  );
+  const engineAccountsTotal = engine?.accounts_total ?? (engine?.accounts ?? []).length;
+  const engineAccountsActive =
+    engine?.accounts_active ?? (engine?.accounts ?? []).filter((account) => account.status === "active").length;
+  const crm =
+    engine?.crm ??
+    (engine?.accounts ?? []).find((account) => String(account.handle ?? "").toLowerCase() === "crm-parsing");
   const degraded = !data || Boolean(p.engine_error) || !engine || !partners || !crm;
 
   // Денежные пайплайны: warn/bad баннер-строка в начале сводки, клик ведёт на /finance.
@@ -103,8 +106,8 @@ export default function DashboardPage() {
         />
         <StatCard
           label="engine accounts"
-          value={engine ? engineAccounts.length : "—"}
-          hint={engine ? `${engineAccounts.filter((a) => a.status === "active").length} active` : "источник недоступен"}
+          value={engine ? engineAccountsTotal : "—"}
+          hint={engine ? `${engineAccountsActive} active` : "источник недоступен"}
           onClick={openSpendStats}
           title="Разбивка: сутки / 7 дней / 30 дней"
         />

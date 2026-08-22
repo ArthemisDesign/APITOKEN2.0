@@ -229,7 +229,9 @@ token/cost legs; for the UI they can be sorted by `api_total_nanousd`.
 `calibration_recent_turns` is a bounded newest-first window of up to 512 individual immutable Anthropic events.
 Each row contains an opaque internal `request_id`, the same masked email, the full model/tier/geo/
 tariff identity and all token/cost legs; the prompt, full email and credential are not published.
-`calibration_recent_turn_limit=512` fixes the server-side bound. This window is meant for exact
+`calibration_recent_turn_limit=512` fixes the server-side bound. Optional query `recent_turns=0`
+keeps the field present as `[]` (the admin panel always sends this); omitting the param preserves
+the 512-event default. This window is meant for exact
 operator attribution of a live test via request-id set difference; aggregates must not be used
 for that, because parallel customer traffic legitimately changes the same row.
 
@@ -240,6 +242,11 @@ The bounded production run and the rules for interpreting model-level quota delt
 is now the same exact report. The canonical values live next to them in `supply.avail_nano`,
 `cap_nano`, `consumed_nano`; `supply.legacy_pool_prior_authoritative=false`. Without exact
 evidence, capacity-facing fields fail closed to `null` instead of falling back to the old pool prior/EMA.
+The HTTP handler additionally attaches the engine account list (`accounts`) for the panel only;
+the metrics-history snapshot does not include it. Expand-only fields `accounts_total`,
+`accounts_active` and `crm` are always present when billing is on. Optional `accounts_limit` /
+`accounts_offset` page `accounts` (default remains the full list; `accounts_limit=0` omits the
+array and still returns the totals plus the `crm-parsing` row).
 
 `GET /codex-subs` separates two different notions:
 
@@ -304,7 +311,8 @@ canonical `google_ai_pro` expires after 18 Gregorian UTC calendar months (time-o
 month-end clamped), while every other canonical Gemini plan expires after exactly 30×86400 seconds.
 `subscription_days_left` is fractional at response `now` and may be negative. The profile contains only a
 bounded email hint (four characters of the local part without the domain); full email, subject, project,
-private tier, proxy and OAuth are not serialized.
+private tier, proxy and OAuth are not serialized. Optional `recent_turns=0` keeps
+`calibration_recent_turns` as `[]`; the omitted/default request still returns up to 512 events.
 
 `GET /kimi-subs` is a read-only operational projection of the backend-only KIMI plane. Production
 is served by a dedicated default-off KIMI plane via the stable loopback origin 8803
@@ -324,7 +332,8 @@ the envelope additionally publishes `calibration_authority_available`,
 `calibration_recent_turn_limit` and `calibration_recent_turns` — immutable turn events
 (engine request id, opaque profile id, bounded plan label, served/requested model, full usage
 and exact nano-legs as decimal strings) — plus `conversion_models` with the official rate card for
-worst-case bounds. Redaction contract: only
+worst-case bounds. Optional `recent_turns=0` keeps `calibration_recent_turns` as `[]` and skips
+the recent-turns read; the omitted/default request still returns up to 512 events. Redaction contract: only
 opaque profile ids and reviewed bounded plan labels are serialized; subject, email, phone, token, proxy,
 credential path, customer/request id and raw provider errors are never serialized; the unknown is
 `null`, not 0. The plane is default-off: while KIMI is not enabled, the envelope is always disabled.

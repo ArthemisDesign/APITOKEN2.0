@@ -5613,6 +5613,7 @@ pub struct BillingTotals {
     pub spent_nano: i64,    // суммарно списано за всё время
     pub reserved_nano: i64, // сейчас в незакрытых резервах (in-flight холды)
     pub active_accounts: i64,
+    pub accounts: i64,
 }
 
 /// Суммы по accounts одним запросом (источник истины — БД). Ошибка возвращается вызывающему коду.
@@ -5620,7 +5621,7 @@ pub fn billing_totals(conn: &Connection) -> Result<BillingTotals> {
     Ok(conn.query_row(
         "SELECT COALESCE(SUM(balance_nano),0), COALESCE(SUM(spent_nano),0), \
          COALESCE(SUM(reserved_nano),0), COALESCE(SUM(CASE WHEN COALESCE(status,'active')='active' \
-         THEN 1 ELSE 0 END),0) FROM accounts",
+         THEN 1 ELSE 0 END),0), COUNT(*) FROM accounts",
         [],
         |r| {
             Ok(BillingTotals {
@@ -5628,6 +5629,7 @@ pub fn billing_totals(conn: &Connection) -> Result<BillingTotals> {
                 spent_nano: r.get(1)?,
                 reserved_nano: r.get(2)?,
                 active_accounts: r.get(3)?,
+                accounts: r.get(4)?,
             })
         },
     )?)

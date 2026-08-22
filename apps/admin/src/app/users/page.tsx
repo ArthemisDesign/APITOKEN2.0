@@ -14,6 +14,7 @@ import {
   type ReactElement,
 } from "react";
 import { send } from "@/lib/api";
+import { compactOverviewUrl } from "@/lib/engine-urls";
 import { useResources } from "@/lib/resources";
 import { toast } from "@/lib/toast";
 import { dialog } from "@/lib/dialog";
@@ -198,7 +199,7 @@ export default function UsersPage() {
   }>({
     page: `/admin/users?${query}`,
     dashboard: "/admin/dashboard",
-    overview: "/overview",
+    overview: compactOverviewUrl(),
   });
   const { openSpendStats, spendStatsModal } = useSpendStatsModal();
 

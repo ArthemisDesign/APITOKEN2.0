@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  getAdminDashboard,
   listAdminAudit,
   listAdminAuditActions,
   listAdminTopups,
@@ -193,5 +194,19 @@ describe("listAdminAuditActions", () => {
     ]);
     await expect(listAdminAuditActions(database)).resolves.toEqual(["admin.credit", "auth.login"]);
     expect(queries[0]!.text).toContain("SELECT DISTINCT action FROM audit_log ORDER BY action");
+  });
+});
+
+describe("getAdminDashboard SQL", () => {
+  it("aggregates user auth with hash joins instead of per-user EXISTS", async () => {
+    const { database, queries } = fakeDatabase([
+      { when: () => true, rows: [{ generated_at: new Date("2026-08-22T12:00:00Z") }] },
+    ]);
+    await getAdminDashboard(database);
+    const sql = queries[0]!.text;
+    expect(sql).not.toMatch(/EXISTS\s*\(\s*SELECT 1 FROM auth_identities/i);
+    expect(sql).toContain("LEFT JOIN oauth_ident");
+    expect(sql).toContain("FILTER (WHERE");
+    expect(sql).toContain("FROM user_agg CROSS JOIN paid CROSS JOIN manual");
   });
 });

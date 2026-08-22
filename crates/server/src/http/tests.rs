@@ -596,6 +596,24 @@ fn claude_lifecycle_stays_null_without_valid_registry_authority() {
 }
 
 #[test]
+fn compact_recent_turns_query_clears_the_event_array_and_keeps_other_fields() {
+    let mut value = json!({
+        "calibration_recent_turn_limit": 512,
+        "calibration_recent_turns": [{"request_id": "r1"}],
+        "per_sub": [1],
+    });
+    value = maybe_omit_recent_turns(value, true);
+    assert_eq!(value["calibration_recent_turns"], json!([]));
+    assert_eq!(value["calibration_recent_turn_limit"], 512);
+    assert_eq!(value["per_sub"], json!([1]));
+    let kept = maybe_omit_recent_turns(
+        json!({"calibration_recent_turns": [{"request_id": "r1"}]}),
+        false,
+    );
+    assert_eq!(kept["calibration_recent_turns"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn gemini_conversion_catalogue_keeps_long_context_media_and_quota_aliases() {
     let spec = metering::gemini_catalog_at(1_785_369_601)
         .into_iter()

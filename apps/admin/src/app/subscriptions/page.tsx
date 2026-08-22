@@ -1,12 +1,11 @@
 "use client";
 
 // Подписки — порт 1:1 функции subscriptions() из crates/server/src/admin-panel.js.
-// Семь флотов на одной странице: Claude OAuth (/subs + live-ёмкость /capacity),
-// GPT/Codex homes (/codex-subs), Gemini-профили (/gemini-subs), KIMI-профили
-// (/kimi-subs), GLM-профили (/glm-subs), Tripo3D-профили (/tripo3d-subs) и
-// Suno-профили (/suno-subs). Каждый provider-feed инвалидирует только
-// затронутые URL; общий freshness-bridge страхует потерянное событие и возврат во вкладку.
+// Живые флоты: Claude OAuth (/subs + compact /capacity?recent_turns=0),
+// GPT/Codex, Gemini, KIMI, GLM. Tripo3D и Suno stay local dormant envelopes
+// (no Caddy origin yet) so the page never GETs /tripo3d-subs or /suno-subs.
 import { useMemo } from "react";
+import { compactCapacityUrl, compactCodexSubsUrl, compactGeminiSubsUrl, compactGlmSubsUrl, compactKimiSubsUrl } from "@/lib/engine-urls";
 import { useResources } from "@/lib/resources";
 import { count, formatDate } from "@/lib/format";
 import { Banner, LoadingGrid, PageHead, Pill } from "@/components/ui";
@@ -53,7 +52,8 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
 
   // Все производные флотов пересчитываются только при смене снимка данных.
   const derived = useMemo(() => {
-    if (isLoading && Object.values(result).every((value) => value === undefined)) return null;
+    const liveReady = [result.subs, result.capacity, result.codex, result.gemini, result.kimi, result.glm];
+    if (isLoading && liveReady.every((value) => value === undefined)) return null;
     const { subs, capacity, codex, gemini, kimi, glm, tripo3d, suno } = result;
     const list = subs?.subs ?? [];
     const dead = list.filter((item) => item.auth_state === "dead").length;
@@ -432,16 +432,32 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
   );
 }
 
+const DORMANT_FLEET: { enabled: false; profiles: [] } = { enabled: false, profiles: [] };
+
+export const SUBSCRIPTION_LIVE_PATHS = {
+  subs: "/subs",
+  capacity: compactCapacityUrl(),
+  codex: compactCodexSubsUrl(),
+  gemini: compactGeminiSubsUrl(),
+  kimi: compactKimiSubsUrl(),
+  glm: compactGlmSubsUrl(),
+} as const;
+
 export default function SubsPage() {
-  const state = useResources<SubsData>({
-    subs: "/subs",
-    capacity: "/capacity",
-    codex: "/codex-subs",
-    gemini: "/gemini-subs",
-    kimi: "/kimi-subs",
-    glm: "/glm-subs",
-    tripo3d: "/tripo3d-subs",
-    suno: "/suno-subs",
-  });
+  const live = useResources<Omit<SubsData, "tripo3d" | "suno">>(SUBSCRIPTION_LIVE_PATHS);
+  const state: SubsPageState = {
+    data: {
+      ...live.data,
+      tripo3d: DORMANT_FLEET,
+      suno: DORMANT_FLEET,
+    },
+    availability: {
+      ...live.availability,
+      tripo3d: "ready",
+      suno: "ready",
+    },
+    isLoading: live.isLoading,
+    updatedAt: live.updatedAt,
+  };
   return <SubscriptionsView state={state} />;
 }

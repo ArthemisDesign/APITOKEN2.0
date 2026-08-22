@@ -2,6 +2,7 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import { nanoMoney } from "@/lib/format";
+import { compactCapacityUrl, compactCodexSubsUrl, compactGeminiSubsUrl } from "@/lib/engine-urls";
 import { useResources } from "@/lib/resources";
 import { LoadingGrid, Pill } from "@/components/ui";
 import type {
@@ -116,9 +117,9 @@ export default function SalesCalculatorPage() {
     codex: CodexSubsResponse;
     gemini: GeminiSubsResponse;
   }>({
-    capacity: "/capacity",
-    codex: "/codex-subs",
-    gemini: "/gemini-subs",
+    capacity: compactCapacityUrl(),
+    codex: compactCodexSubsUrl(),
+    gemini: compactGeminiSubsUrl(),
   });
   const data: CalibrationPayload = useMemo(() => ({
     capacity: partial.capacity ?? null,

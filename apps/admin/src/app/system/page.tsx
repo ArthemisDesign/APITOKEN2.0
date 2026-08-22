@@ -4,8 +4,9 @@
 // crates/server/src/admin-panel.js: ёмкость флота vs спрос, рекомендации
 // по докупке подписок и балансы engine-аккаунтов. Обновление — по engine/OpenKeys SSE.
 import Link from "next/link";
-import { memo } from "react";
+import { memo, startTransition, useEffect, useState } from "react";
 import { useResources } from "@/lib/resources";
+import { clampPageOffset, ENGINE_ACCOUNT_PAGE, pagedOverviewUrl } from "@/lib/engine-urls";
 import { count, money, ratio } from "@/lib/format";
 import {
   Banner,
@@ -57,6 +58,8 @@ export interface SystemOverview {
   coverage?: Record<string, number | null>;
   recommend?: { subs_needed?: number | null; gap?: number | null };
   accounts?: SystemAccount[];
+  accounts_total?: number;
+  accounts_active?: number;
 }
 
 export type SystemVerdict = { kind: "ok" | "warn" | "bad"; title: string; detail: string };
@@ -159,14 +162,24 @@ const AccountRows = memo(function AccountRows({
 });
 
 export default function SystemPage() {
+  const [accountOffset, setAccountOffset] = useState(0);
   const { data: result, isLoading } = useResources<{
     overview: SystemOverview;
     directory: { rows?: OkDirectoryRow[] };
   }>({
-    overview: "/overview",
+    overview: pagedOverviewUrl(accountOffset),
     directory: "/openkeys-admin/lookup",
   });
   const { openSpendStats, spendStatsModal } = useSpendStatsModal();
+  const overviewPreview = result.overview;
+  const previewAccounts = overviewPreview?.accounts ?? [];
+  const previewTotal = overviewPreview?.accounts_total ?? previewAccounts.length;
+  const effectiveAccountOffset = clampPageOffset(accountOffset, previewTotal, ENGINE_ACCOUNT_PAGE);
+  useEffect(() => {
+    if (overviewPreview && effectiveAccountOffset !== accountOffset) {
+      startTransition(() => setAccountOffset(effectiveAccountOffset));
+    }
+  }, [accountOffset, effectiveAccountOffset, overviewPreview]);
 
   if (isLoading && Object.values(result).every((value) => value === undefined)) {
     return (
@@ -208,6 +221,7 @@ export default function SystemPage() {
   const subs = overview.subs ?? 0;
   const gap = recommend.gap ?? 0;
   const accounts = overview.accounts ?? [];
+  const accountsTotal = overview.accounts_total ?? accounts.length;
   const verdict = systemVerdict(overview);
   const verdictDot: Tone = verdict.kind === "ok" ? "" : verdict.kind;
 
@@ -302,7 +316,7 @@ export default function SystemPage() {
         — окна, cooling, quota, lifecycle и transport по Claude, GPT и Gemini.
       </Banner>
 
-      <SectionHeader title={"Аккаунты движка · " + accounts.length} />
+      <SectionHeader title={"Аккаунты движка · " + accountsTotal} />
       <TableCard>
         <table>
           <thead>
@@ -324,6 +338,28 @@ export default function SystemPage() {
           </tbody>
         </table>
       </TableCard>
+      <div className="pager">
+        <span>
+          {accountsTotal ? effectiveAccountOffset + 1 : 0}–{Math.min(effectiveAccountOffset + ENGINE_ACCOUNT_PAGE, accountsTotal)} из{" "}
+          {accountsTotal}
+        </span>
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={effectiveAccountOffset <= 0}
+          onClick={() => startTransition(() => setAccountOffset(Math.max(0, effectiveAccountOffset - ENGINE_ACCOUNT_PAGE)))}
+        >
+          Назад
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={effectiveAccountOffset + ENGINE_ACCOUNT_PAGE >= accountsTotal}
+          onClick={() => startTransition(() => setAccountOffset(effectiveAccountOffset + ENGINE_ACCOUNT_PAGE))}
+        >
+          Дальше
+        </button>
+      </div>
 
       <footer>
         Live-обновление по изменениям движка и OpenKeys · «доступно» учитывает сбросы окон · «запас» = доступно ÷ текущее
