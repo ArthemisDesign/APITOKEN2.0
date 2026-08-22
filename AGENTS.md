@@ -202,7 +202,9 @@ the code, not an appendix to it.
   then a minimal generation with an aggregate cap of `$0.0001` (0.01 of a cent), unless the person explicitly
   allowed a larger budget.
 - Exception: `docs/audits/*` — historical snapshots as of a date. They are not edited retroactively;
-  a new audit is a new file with the date in its name or title.
+  a new audit is a new file with the date in its name or title. A production incident or escaped
+  near miss follows `docs/ops/INCIDENT_POSTMORTEMS.md`; resolved status requires a linked executable
+  guardrail that rejects the seeded root cause, not only a prose lesson.
 
 ## Documentation organization
 

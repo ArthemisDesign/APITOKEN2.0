@@ -36,9 +36,9 @@
 | 1 | Change-plan интерфейс и repository invariants | Завершён | `973f21a3c3df790dcf71559c9ee50d5010c97984` | Полный TypeScript/Rust/deployment/static gate; exact SHA GREEN `deploy/watchdog` |
 | 2 | Targeted docs ownership, links/anchors/index | Завершён | `15643546ee710cc5a38f1a1873fcba4690cce6e6` | Полный TypeScript/Rust/deployment/static gate; exact SHA GREEN `deploy/watchdog` |
 | 3 | Assembled Control API ↔ EngineClient acceptance | Завершён | `e567d52b52982c4867da29d41391b845371a4f39` | Trusted-host release binary + built package export + disposable PostgreSQL/HTTP; exact SHA GREEN `deploy/watchdog` |
-| 4 | Keyless router → engine replay | Готов к merge | — | Real debug binaries; fixture record plus two read-only repeats; semantic mutation guards; trusted release replay ahead |
-| 5 | Incident → guardrail template и финальная документация | Не начат | — | Documentation checks, ссылка из process contract |
-| 6 | Финальная совместная проверка и closeout | Не начат | — | Полный выбранный gate, точные GREEN SHA |
+| 4 | Keyless router → engine replay | Завершён | `77b745c0a09b96e90cf28a0e3d1c9f16250d2b5f` | Local repeatability/mutations plus trusted-host exact release replay; exact SHA GREEN `deploy/watchdog` |
+| 5 | Incident → guardrail template и финальная документация | Готов к merge | — | Indexed template, living-contract link, exact-target docs checks |
+| 6 | Финальная совместная проверка и closeout | Готов к merge | — | Stages 0–4 exact GREEN; final docs gate and closeout SHA ahead |
 
 ## Журнал решений
 
@@ -56,8 +56,9 @@ Golden transcript может стабильно зафиксировать не�
 
 ## Текущее состояние
 
-- Завершено: предложение/журнал — GREEN `e2eab16b9a9541c3777fb635cbbfa00579c3d2ad`; change plan/invariants — GREEN `973f21a3c3df790dcf71559c9ee50d5010c97984`; targeted docs — GREEN `15643546ee710cc5a38f1a1873fcba4690cce6e6`; Control API acceptance — GREEN `e567d52b52982c4867da29d41391b845371a4f39`; worktree каждого этапа удалён штатно.
-- В работе: этап 4 на свежем `origin/master` `e567d52b52982c4867da29d41391b845371a4f39`; реальный router→engine replay, versioned fixture, explicit local update и read-only CI wiring готовы к merge.
-- Проверено локально: Python syntax; `cargo build -p claude-api -p claude-router`; явная запись fixture; два последовательных read-only replay с одинаковым результатом; mutation tests на missing terminal usage, error-only non-stream и отсутствующий `response.completed`; classifier/ordering regression впереди общего merge suite.
+- Завершено и GREEN: предложение/журнал `e2eab16b9a9541c3777fb635cbbfa00579c3d2ad`; change plan/invariants `973f21a3c3df790dcf71559c9ee50d5010c97984`; targeted docs `15643546ee710cc5a38f1a1873fcba4690cce6e6`; Control API acceptance `e567d52b52982c4867da29d41391b845371a4f39`; keyless exact-release replay `77b745c0a09b96e90cf28a0e3d1c9f16250d2b5f`. Worktree каждого этапа удалён штатно.
+- В работе: этапы 5–6 на свежем `origin/master` `77b745c0a09b96e90cf28a0e3d1c9f16250d2b5f`; incident threshold/template и финальный closeout журнала готовы к docs-only merge.
+- Итоговое доказательство: change scope и architecture/docs invariants выполняются always-on; Control API проверяется собранным binary+package export+PostgreSQL; router→engine replay выполняется на exact release binaries, имеет semantic guards, explicit record и read-only gate.
+- Известные ограничения: link checker не обращается к внешней сети; architecture checker покрывает заявленные три механических класса, но не доказывает всю семантику bounded contexts; replay фиксирует один Anthropic Responses путь, а не весь multi-provider matrix; Control API acceptance не вызывает inference.
 - Блокеры: отсутствуют.
-- Следующее действие: прогнать gate regressions, слить этап 4 и подтвердить replay ещё раз на exact release binaries trusted host.
+- Следующее действие: слить этот стандарт и closeout, записать финальный GREEN SHA, затем закрыть цель.
