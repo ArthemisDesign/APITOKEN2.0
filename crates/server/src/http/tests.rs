@@ -5157,7 +5157,7 @@ async fn router_catalog_pricing_is_key_scoped_integer_only_and_present_on_every_
         assert_eq!(body["mode"], "admin");
         assert_eq!(body["entries"].as_array().unwrap().len(), 3);
         assert_eq!(body["entries"][0]["standard"]["input"], "3000000000");
-        assert_eq!(body["entries"][1]["priority"]["output"], "60000000000");
+        assert_eq!(body["entries"][1]["priority"]["output"], "40000000000");
         assert!(body["entries"][0]["standard"]["input"].is_string());
     }
 
@@ -5179,8 +5179,8 @@ async fn router_catalog_pricing_is_key_scoped_integer_only_and_present_on_every_
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["mode"], "legacy");
     assert_eq!(body["entries"][0]["standard"]["input"], "1500000000");
-    assert_eq!(body["entries"][1]["standard"]["output"], "15000000000");
-    assert_eq!(body["entries"][1]["priority"]["output"], "30000000000");
+    assert_eq!(body["entries"][1]["standard"]["output"], "10000000000");
+    assert_eq!(body["entries"][1]["priority"]["output"], "20000000000");
     assert_eq!(body["entries"][2]["standard"]["input"], "375000000");
     assert!(!body.to_string().contains("discount-account"));
 
