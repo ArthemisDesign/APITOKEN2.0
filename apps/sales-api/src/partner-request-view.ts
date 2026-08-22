@@ -29,7 +29,11 @@ export function decodePartnerRequestCursor(value: string | undefined): PartnerRe
   }
 }
 
-export function partnerRequestView(request: PartnerRequestView, customerEmail: string | null): unknown {
+export function partnerRequestView(
+  request: PartnerRequestView,
+  customerEmail: string | null,
+  options: { includeCommerceIdentity?: boolean } = {},
+): unknown {
   return {
     id: request.id,
     requestType: request.requestType,
@@ -38,6 +42,9 @@ export function partnerRequestView(request: PartnerRequestView, customerEmail: s
     requesterEmail: request.requesterEmail,
     requesterDisplayName: request.requesterDisplayName,
     subjectPartnerId: request.subjectPartnerId,
+    ...(options.includeCommerceIdentity
+      ? { customerCommerceUserId: request.commerceUserId }
+      : {}),
     customerEmail,
     reason: request.reason,
     stateSnapshot: request.stateSnapshot,

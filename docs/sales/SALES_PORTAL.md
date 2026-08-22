@@ -104,7 +104,10 @@ accept Commerce UUIDs only from the server-side consumer. The browser never call
 - `GET partner/:commerceUserId?days=N` returns one Dashboard snapshot: safe membership authority,
   net/gross/adjustment totals, referrals, direct Team, account-bound invites, request history,
   payout periods and Usage-style aggregate/daily provider earnings. It contains no promo authority
-  or Telegram product identity. Commerce enriches referenced UUIDs with authoritative emails.
+  or Telegram product identity. Every request view on this internal boundary additively carries
+  nullable `customerCommerceUserId`; Commerce uses it together with the other referenced account
+  UUIDs to attach current authoritative emails, then removes all UUIDs and Sales partner ids before
+  returning a browser response. The legacy partner/browser contracts do not expose this field.
 - Partner mutations: `POST/DELETE team-invitations`, `PATCH team/:memberCommerceUserId`, `PATCH
   wallet`, `POST requests/commission`, `POST requests/b2b`, and `POST
   referrals/business-pricing`. Invitation revocation is owner-scoped, idempotent and cannot undo an

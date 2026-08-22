@@ -335,7 +335,11 @@ export class CommercePartnerController {
           revokedAt: invite.revokedAt,
           createdAt: invite.createdAt,
         })),
-      requests: requests.items.map((request) => partnerRequestView(request, null)),
+      requests: requests.items.map((request) => partnerRequestView(
+        request,
+        null,
+        { includeCommerceIdentity: true },
+      )),
       payouts: payouts.map(payoutView),
       period,
       periodHistory: history,
@@ -464,7 +468,7 @@ export class CommercePartnerController {
         idempotencyKey: key.data,
         requireProgramEnabled: true,
       });
-      return { request: partnerRequestView(request, null) };
+      return { request: partnerRequestView(request, null, { includeCommerceIdentity: true }) };
     } catch (error) {
       translateKnownError(error);
     }
@@ -499,7 +503,7 @@ export class CommercePartnerController {
         idempotencyKey: key.data,
         requireProgramEnabled: true,
       });
-      return { request: partnerRequestView(request, null) };
+      return { request: partnerRequestView(request, null, { includeCommerceIdentity: true }) };
     } catch (error) {
       translateKnownError(error);
     }
@@ -714,7 +718,11 @@ export class CommercePartnerController {
       limit: parsed.data.limit,
     });
     return {
-      items: page.items.map((request) => partnerRequestView(request, null)),
+      items: page.items.map((request) => partnerRequestView(
+        request,
+        null,
+        { includeCommerceIdentity: true },
+      )),
       nextCursor: encodePartnerRequestCursor(page.nextCursor),
     };
   }
@@ -746,7 +754,7 @@ export class CommercePartnerController {
           : {}),
         requireCommerceProgram: true,
       });
-      return { request: partnerRequestView(request, null) };
+      return { request: partnerRequestView(request, null, { includeCommerceIdentity: true }) };
     } catch (error) {
       translateKnownError(error);
     }

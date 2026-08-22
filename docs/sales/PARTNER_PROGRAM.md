@@ -278,7 +278,9 @@ discount.
   proof of identity.
 - **Requests** — commission-increase and owned-referral B2B requests, including requested terms,
   decision note, delivery status and any retry/terminal error. Customer identity is email; the
-  internal Commerce UUID is not the product label.
+  internal Commerce UUID is not the product label. The Sales→Commerce internal request view carries
+  nullable `customerCommerceUserId` only so Commerce can resolve the latest account email; the
+  Commerce browser contract strips that UUID and every Sales partner identity.
 - Promo-code creation and redemption are absent from the active partner/customer/admin interfaces.
   Historical credit/accounting records remain readable by backend reconciliation only; they are
   not a product capability.
