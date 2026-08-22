@@ -2351,7 +2351,7 @@ mod calibration_integration_tests {
     fn expected_turn_prices(model: &str, tier: &str) -> ([i64; 4], [i64; 3]) {
         let (api, credits, api_fast_bp, credit_fast_bp) = match model {
             "gpt-5.6-sol" => (
-                [350_000, 10_000, 62_500, 600_000],
+                [280_000, 8_000, 50_000, 400_000],
                 [10_000_000, 250_000, 15_000_000],
                 20_000,
                 25_000,
@@ -2983,7 +2983,7 @@ mod calibration_integration_tests {
         let report = fleet.billing.codex_calibration_report().await.unwrap();
         assert_eq!(report.len(), 1);
         assert_eq!(report[0].turns, 1);
-        assert_eq!(report[0].api_total_nanousd, 1_022_500);
+        assert_eq!(report[0].api_total_nanousd, 738_000);
         assert_eq!(report[0].chatgpt_total_nanocredits, 25_250_000);
         fleet.close().await;
     }
