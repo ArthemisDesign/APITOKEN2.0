@@ -30,6 +30,7 @@ observe_unit_allowed() {
   case "$unit" in
     apitoken-deploy-watchdog.service|apitoken-deploy-watchdog.timer|\
     apitoken-candidate-validator.service|apitoken-candidate-validator.timer|\
+    apitoken-staging-foundation-install.service|apitoken-rootless-docker-stage.service|staging.slice|\
     apitoken-worker.service|apitoken-content-studio.service|\
     apitoken-sales-api.service|apitoken-sales-web.service|\
     apitoken-openkeys.service|apitoken-admin.service|apitoken-devbot.service|\
