@@ -45,6 +45,14 @@ describe("v2 commission chain math (basis = exact paid_funded_nano)", () => {
     ]);
   });
 
+  it("applies the immutable per-edge override to v2 paid funding", () => {
+    const entries = computeCommissionChain([
+      partner({ partnerId: "p0", commissionBps: 1000, parentOverrideBps: 2000 }),
+      partner({ partnerId: "p1", subCommissionBps: 250 }),
+    ], 10_000n);
+    expect(entries[1]).toEqual({ partnerId: "p1", level: 1, appliedBps: 2000, amountNano: 200n });
+  });
+
   it("floors integer division at every level", () => {
     const entries = computeCommissionChain([
       partner({ partnerId: "p0", commissionBps: 3333 }),

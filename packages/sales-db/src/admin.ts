@@ -1,5 +1,6 @@
 import type { SalesDatabase } from "./client.js";
 import type { PartnerStatus } from "./auth.js";
+import { lowerTeamOverrideCeiling } from "./commissions.js";
 
 export interface SalesOverview {
   partners: number;
@@ -98,6 +99,8 @@ export interface AdminPartnerSummary {
   referralCode: string;
   commissionBps: number;
   subCommissionBps: number;
+  teamOverrideMaxBps: number;
+  parentOverrideBps: number | null;
   parentPartnerId: string | null;
   parentEmail: string | null;
   parentTelegramUsername: string | null;
@@ -125,6 +128,7 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     id: string; email: string | null; telegram_username: string | null; display_name: string | null;
     status: PartnerStatus;
     email_verified: boolean; referral_code: string; commission_bps: number; sub_commission_bps: number;
+    team_override_max_bps: number; parent_override_bps: number | null;
     parent_partner_id: string | null; parent_email: string | null; parent_telegram_username: string | null;
     referred_users: string; team_size: string; earned: string; adjustment: string;
     paid: string; committed: string;
@@ -134,7 +138,9 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     created_at: Date;
   }>(`
     SELECT p.id, p.email, p.telegram_username, p.display_name, p.status, p.email_verified, p.referral_code,
-      p.commission_bps, p.sub_commission_bps, p.parent_partner_id, parent.email AS parent_email,
+      p.commission_bps, p.sub_commission_bps,
+      COALESCE(p.team_override_max_bps, 2000) AS team_override_max_bps,
+      p.parent_override_bps, p.parent_partner_id, parent.email AS parent_email,
       parent.telegram_username AS parent_telegram_username,
       p.promo_enabled, p.promo_max_value_nano::text AS promo_max_value_nano, p.promo_max_count,
       p.referral_discount_bps, p.referral_discount_enabled,
@@ -173,6 +179,8 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     referralCode: row.referral_code,
     commissionBps: row.commission_bps,
     subCommissionBps: row.sub_commission_bps,
+    teamOverrideMaxBps: row.team_override_max_bps,
+    parentOverrideBps: row.parent_override_bps,
     parentPartnerId: row.parent_partner_id,
     parentEmail: row.parent_email,
     parentTelegramUsername: row.parent_telegram_username,
@@ -280,6 +288,7 @@ export async function deletePartnerAdmin(database: SalesDatabase, partnerId: str
 export async function updatePartnerAdmin(database: SalesDatabase, partnerId: string, input: {
   commissionBps?: number;
   subCommissionBps?: number;
+  teamOverrideMaxBps?: number;
   referralDiscountBps?: number;
   referralDiscountEnabled?: boolean;
   /**
@@ -294,10 +303,14 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
+    if (input.teamOverrideMaxBps !== undefined) {
+      await lowerTeamOverrideCeiling(client, partnerId, input.teamOverrideMaxBps);
+    }
     const updated = await client.query<{ id: string }>(`
       UPDATE partners
       SET commission_bps = COALESCE($2, commission_bps),
           sub_commission_bps = COALESCE($3, sub_commission_bps),
+          team_override_max_bps = COALESCE($9, team_override_max_bps),
           referral_discount_bps = COALESCE($5, referral_discount_bps),
           referral_discount_enabled = COALESCE($6, referral_discount_enabled),
           b2b_enabled = COALESCE($7, b2b_enabled),
@@ -313,6 +326,7 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
       partnerId, input.commissionBps ?? null, input.subCommissionBps ?? null, input.status ?? null,
       input.referralDiscountBps ?? null, input.referralDiscountEnabled ?? null,
       input.b2bEnabled ?? null, input.b2bMaxDiscountBps ?? null,
+      input.teamOverrideMaxBps ?? null,
     ]);
     if (!updated.rows[0]) {
       await client.query("ROLLBACK");
@@ -324,6 +338,7 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
     `, [input.actorId, partnerId, JSON.stringify({
       commissionBps: input.commissionBps ?? null,
       subCommissionBps: input.subCommissionBps ?? null,
+      teamOverrideMaxBps: input.teamOverrideMaxBps ?? null,
       status: input.status ?? null,
       // Retained marker permission/ceiling changes remain visible in the audit trail.
       referralDiscountBps: input.referralDiscountBps ?? null,

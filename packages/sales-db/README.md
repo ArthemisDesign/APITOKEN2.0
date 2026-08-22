@@ -26,20 +26,23 @@ are cast `::text` and parsed with `BigInt()`. Never JS `number` for amounts.
 
 `computeCommissionChain(partnersChain, amountNano)` (pure, unit-tested):
 level 0 = `amount * commission_bps / 10000` (integer floor) for the direct referrer; every next
-level = previous level's amount `* sub_commission_bps / 10000` of that ancestor. The walk stops at
+level = previous level's amount `* parent_override_bps / 10000` from the child edge; an older NULL
+edge retains the ancestor's `sub_commission_bps` fallback. The walk stops at
 the first suspended partner (no entry, chain ends), at amount 0, or after level 10.
 `recordUsageEvent` inserts the usage event and its full commission chain in one transaction,
 idempotent via the unique `commerce_event_id`.
 
-Migration `0024_team_override_controls.sql` is the migration-first expansion for individual Team
-overrides. It adds a hard-bounded `team_override_max_bps` (0..2000) to partners/invites and an
+Migration `0024_team_override_controls.sql` was the migration-first expansion for individual Team
+overrides. It added a hard-bounded `team_override_max_bps` (0..2000) to partners/invites and an
 optional `parent_override_bps` on the child/invite edge. A NULL ceiling is the rolling-deploy/default
 20% ceiling, while existing NULL edges retain the deployed parent `sub_commission_bps` calculation.
 Cross-row guards prevent a child rate or
 delegated ceiling from exceeding the direct parent's ceiling and prevent lowering a ceiling below
 an explicit dependent grant. The immutable v2 commission trigger accepts the new edge with the
-same NULL fallback. This migration does not write an edge, change an existing commission, or enable
-a consumer; application/API/UI use follows only after the exact migration SHA is production GREEN.
+same NULL fallback. The deployed consumer now writes explicit edges on new Team invites, resolves
+them in both v1/v2 commission chains, lets an inviter edit only a direct member, and clamps a lowered
+delegated subtree plus its pending invites in one transaction. The invited member's direct
+commission remains the platform default (1000 bps); it is never selected by the inviter.
 
 Migration `0015_paid_funded_commission_v2.sql` adds the dormant target authority in separate
 `partner_usage_events_v2`, `pending_referral_usage_events_v2` and `commission_entries_v2` tables.

@@ -135,6 +135,8 @@ export class AdminController {
         referralCode: partner.referralCode,
         commissionBps: partner.commissionBps,
         subCommissionBps: partner.subCommissionBps,
+        teamOverrideMaxBps: partner.teamOverrideMaxBps,
+        parentOverrideBps: partner.parentOverrideBps,
         referralDiscountBps: partner.referralDiscountBps,
         referralDiscountEnabled: partner.referralDiscountEnabled,
         b2bEnabled: partner.b2bEnabled,
@@ -195,12 +197,13 @@ export class AdminController {
     // Commerce supplies the actual price discount. referralFloorBps is separate legacy metadata
     // and is never presented as an applied price.
     const profiles = await this.commerce.referralProfiles(referrals.map((r) => r.commerceUserId));
-    // Commerce identities stay masked even for admins: expose only an 8-char prefix, never the full UUID.
+    // Email is authoritative in Commerce and is disclosed only on this managed-admin boundary.
     const maskedReferrals = referrals.map((r) => {
       const profile = profiles.get(r.commerceUserId);
       return {
         userMask: `user-${r.commerceUserId.slice(0, 8)}…`,
         userRef: r.commerceUserId.slice(0, 8),
+        email: profile?.email ?? null,
         attributedAt: r.attributedAt,
         spendNano: r.spendNano,
         earnedNano: r.earnedNano,
@@ -257,7 +260,29 @@ export class AdminController {
     if (!uuidSchema.safeParse(id).success) throw new BadRequestException("invalid partner id");
     const n = limit ? Number.parseInt(limit, 10) : 60;
     const events = await getPartnerActivity(this.database, id, Number.isFinite(n) ? n : 60);
-    return jsonSafe({ events });
+    const userIds = [...new Set(events.flatMap((event) => {
+      const userId = event.meta.commerceUserId;
+      return typeof userId === "string" && uuidSchema.safeParse(userId).success ? [userId] : [];
+    }))];
+    const profiles = await this.commerce.referralProfiles(userIds);
+    const enriched = events.map((event) => {
+      const rawUserId = event.meta.commerceUserId;
+      if (typeof rawUserId !== "string" || !uuidSchema.safeParse(rawUserId).success) {
+        return { ...event, email: null, userMask: null };
+      }
+      const { commerceUserId: _commerceUserId, ...safeMeta } = event.meta;
+      const email = profiles.get(rawUserId)?.email ?? null;
+      const userMask = `user-${rawUserId.slice(0, 8)}…`;
+      const prefix = event.type === "referral" ? "New referral" : "Referred deposit";
+      return {
+        ...event,
+        label: `${prefix} ${email ?? userMask}`,
+        email,
+        userMask,
+        meta: { ...safeMeta, email, userMask },
+      };
+    });
+    return jsonSafe({ events: enriched });
   }
 
   /** Включить/выключить промокоды партнёру и задать лимиты (номинал USD, количество). */
@@ -364,6 +389,8 @@ export class AdminController {
           telegramUsername,
           commissionBps: parsed.data.commissionBps ?? null,
           subCommissionBps: parsed.data.subCommissionBps ?? null,
+          teamOverrideMaxBps: parsed.data.teamOverrideMaxBps ?? null,
+          parentOverrideBps: null,
           promoEnabled,
           promoMaxValueNano: BigInt(promoMaxValueUsd) * 1_000_000_000n,
           promoMaxCount,
@@ -380,6 +407,7 @@ export class AdminController {
           telegramUsername: invite.telegramUsername,
           commissionBps: invite.commissionBps,
           subCommissionBps: invite.subCommissionBps,
+          teamOverrideMaxBps: invite.teamOverrideMaxBps ?? 2_000,
           referralDiscountBps: invite.referralDiscountBps,
           referralDiscountEnabled: invite.referralDiscountEnabled,
           promoEnabled: invite.promoEnabled,
@@ -406,6 +434,7 @@ export class AdminController {
         telegramUsername: invite.telegramUsername,
         commissionBps: invite.commissionBps,
         subCommissionBps: invite.subCommissionBps,
+        teamOverrideMaxBps: invite.teamOverrideMaxBps ?? 2_000,
         referralDiscountBps: invite.referralDiscountBps,
         referralDiscountEnabled: invite.referralDiscountEnabled,
         b2bEnabled: invite.b2bEnabled,
@@ -427,6 +456,9 @@ export class AdminController {
     const updated = await updatePartnerAdmin(this.database, id, {
       ...(parsed.data.commissionBps !== undefined ? { commissionBps: parsed.data.commissionBps } : {}),
       ...(parsed.data.subCommissionBps !== undefined ? { subCommissionBps: parsed.data.subCommissionBps } : {}),
+      ...(parsed.data.teamOverrideMaxBps !== undefined
+        ? { teamOverrideMaxBps: parsed.data.teamOverrideMaxBps }
+        : {}),
       ...(parsed.data.referralDiscountBps !== undefined ? { referralDiscountBps: parsed.data.referralDiscountBps } : {}),
       ...(parsed.data.referralDiscountEnabled !== undefined ? { referralDiscountEnabled: parsed.data.referralDiscountEnabled } : {}),
       ...(parsed.data.b2bEnabled !== undefined ? { b2bEnabled: parsed.data.b2bEnabled } : {}),

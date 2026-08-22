@@ -32,6 +32,8 @@ function partnerFixture(id: string): Partner {
     parentPartnerId: null,
     commissionBps: 1000,
     subCommissionBps: 1000,
+    teamOverrideMaxBps: 2000,
+    parentOverrideBps: null,
     payoutMethod: null,
     payoutDetails: null,
     promoEnabled: false,

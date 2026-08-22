@@ -11,6 +11,7 @@ const nanoStringSchema = z.string().regex(/^\d{1,27}$/);
 
 const referralProfileSchema = z.object({
   userId: z.string().uuid(),
+  email: z.string().email().max(320),
   customerType: z.enum(["b2c", "b2b"]),
   multiplierBp: z.number().int().nonnegative(),
   discountPercent: z.number(),

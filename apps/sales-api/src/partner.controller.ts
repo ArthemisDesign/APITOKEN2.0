@@ -19,16 +19,19 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { z } from "zod";
 import {
   countPartnerTeam,
   countReferredUsers,
   createPartnerInvite,
   getPartnerDailyEarnings,
   getPartnerEarningsByProvider,
+  getPartnerDailyEarningsByProvider,
   getPartnerEarningsTotals,
   listPartnerInvites,
   listPartnerPayouts,
   listPartnerTeam,
+  updateDirectTeamMemberControls,
   listReferredUsers,
   resolveReferredUserByPrefix,
   getPartnerPeriodState,
@@ -47,6 +50,8 @@ import {
   PromoNotAllowedError,
   PromoLimitError,
   PromoCodeCollisionError,
+  TeamMemberNotFoundError,
+  TeamOverrideLimitError,
   type SalesDatabase,
 } from "@claude-api/sales-db";
 import type { Environment } from "./config.js";
@@ -63,11 +68,13 @@ import {
   partnerBusinessPricingSchema,
   referralUserRefSchema,
   setReferralDiscountSchema,
+  teamMemberControlsSchema,
   updateSettingsSchema,
   walletSchema,
 } from "./schemas.js";
 
 const INVITE_TTL_DAYS = 30;
+const uuidSchema = z.string().uuid();
 const PAYOUT_METHOD = "usdt-bep20";
 const PROMO_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // без похожих 0O1I
 
@@ -119,6 +126,7 @@ export class PartnerController {
       referralDiscountBps: current.partner.referralDiscountBps,
       referralPricingAffected: false,
       subCommissionBps: current.partner.subCommissionBps,
+      teamOverrideMaxBps: current.partner.teamOverrideMaxBps,
       referredUsers,
       teamSize,
       totals: {
@@ -161,6 +169,7 @@ export class PartnerController {
           userMask: `user-${referral.commerceUserId.slice(0, 8)}…`,
           // Stable masked machine reference retained for the expand-only API.
           userRef: referral.commerceUserId.slice(0, 8),
+          email: profile?.email ?? null,
           attributedAt: referral.attributedAt.toISOString(),
           spendNano: referral.spendNano.toString(),
           earnedNano: referral.earnedNano.toString(),
@@ -309,7 +318,10 @@ export class PartnerController {
   async earningsByProvider(@CurrentAuth() current: RequestAuth, @Query() query: unknown): Promise<unknown> {
     const parsed = earningsQuerySchema.safeParse(query ?? {});
     if (!parsed.success) throw new BadRequestException("invalid earnings query");
-    const rows = await getPartnerEarningsByProvider(this.database, current.partner.id, parsed.data.days);
+    const [rows, daily] = await Promise.all([
+      getPartnerEarningsByProvider(this.database, current.partner.id, parsed.data.days),
+      getPartnerDailyEarningsByProvider(this.database, current.partner.id, parsed.data.days),
+    ]);
     return {
       days: parsed.data.days,
       items: rows.map((row) => ({
@@ -317,6 +329,15 @@ export class PartnerController {
         events: row.events,
         spendNano: row.spendNano.toString(),
         earnedNano: row.earnedNano.toString(),
+      })),
+      daily: daily.map((point) => ({
+        date: point.date,
+        providers: point.providers.map((row) => ({
+          providerId: row.providerId,
+          events: row.events,
+          spendNano: row.spendNano.toString(),
+          earnedNano: row.earnedNano.toString(),
+        })),
       })),
     };
   }
@@ -344,6 +365,8 @@ export class PartnerController {
   async team(@CurrentAuth() current: RequestAuth): Promise<unknown> {
     const team = await listPartnerTeam(this.database, current.partner.id);
     return {
+      platformCommissionBps: this.config.get("DEFAULT_COMMISSION_BPS", { infer: true }),
+      teamOverrideMaxBps: current.partner.teamOverrideMaxBps,
       items: team.map((member) => ({
         id: member.id,
         email: member.email,
@@ -351,7 +374,8 @@ export class PartnerController {
         displayName: member.displayName,
         status: member.status,
         commissionBps: member.commissionBps,
-        overrideBps: current.partner.subCommissionBps,
+        overrideBps: member.overrideBps,
+        teamOverrideMaxBps: member.teamOverrideMaxBps,
         referredUsers: member.referredUsers,
         earnedNano: member.theirEarnedNano.toString(),
         adjustmentNano: member.theirAdjustmentNano.toString(),
@@ -369,12 +393,11 @@ export class PartnerController {
     if (!parsed.success) throw new BadRequestException("invalid invite data: telegram username is required");
     const telegramUsername = normalizeTelegramUsername(parsed.data.telegramUsername);
     if (!telegramUsername) throw new BadRequestException("invalid telegram username");
-    // Партнёр не может подарить суб-партнёру ставку выше собственной (иначе раздаёт маржу
-    // платформы). По умолчанию — своя ставка. Более широкий диапазон — только у админа.
+    // Expand-only compatibility for the deployed endpoint. The new storefront uses
+    // POST /partner/team/invites; this route keeps its previous direct-rate semantics until its
+    // consumer-retirement release.
     const cap = current.partner.commissionBps;
     const commissionBps = Math.min(parsed.data.commissionBps ?? cap, cap);
-    // Preserve the legacy marker permission through existing invites without presenting it as a
-    // price capability. Current UI does not grant or expose this field.
     const canGrantDiscount = current.partner.referralDiscountEnabled;
     const subDiscountEnabled = canGrantDiscount && (parsed.data.referralDiscountEnabled ?? false);
     const subDiscountBps = subDiscountEnabled
@@ -389,7 +412,8 @@ export class PartnerController {
           telegramUsername,
           commissionBps,
           subCommissionBps: null,
-          // Промо-доступ остаётся под контролем админа (по умолчанию выключен).
+          teamOverrideMaxBps: null,
+          parentOverrideBps: null,
           promoEnabled: false,
           promoMaxValueNano: 0n,
           promoMaxCount: 0,
@@ -412,6 +436,63 @@ export class PartnerController {
     }
   }
 
+  @Post("team/invites")
+  async createTeamInvite(@CurrentAuth() current: RequestAuth, @Body() body: unknown): Promise<unknown> {
+    const parsed = createInviteSchema.safeParse(body ?? {});
+    if (!parsed.success) throw new BadRequestException("invalid invite data: telegram username is required");
+    const telegramUsername = normalizeTelegramUsername(parsed.data.telegramUsername);
+    if (!telegramUsername) throw new BadRequestException("invalid telegram username");
+    const cap = current.partner.teamOverrideMaxBps;
+    const overrideBps = parsed.data.overrideBps ?? Math.min(current.partner.subCommissionBps, cap);
+    const teamOverrideMaxBps = parsed.data.teamOverrideMaxBps ?? cap;
+    if (overrideBps > cap || teamOverrideMaxBps > cap) {
+      throw new UnprocessableEntityException(`team controls exceed your maximum of ${cap} bps`);
+    }
+    // The inviter cannot choose the member's platform-funded direct rate. Keeping this value on
+    // the invite snapshots the configured 10% default for deterministic onboarding.
+    const commissionBps = this.config.get("DEFAULT_COMMISSION_BPS", { infer: true });
+    // Preserve the legacy marker permission through existing invites without presenting it as a
+    // price capability. Current UI does not grant or expose this field.
+    const canGrantDiscount = current.partner.referralDiscountEnabled;
+    const subDiscountEnabled = canGrantDiscount && (parsed.data.referralDiscountEnabled ?? false);
+    const subDiscountBps = subDiscountEnabled
+      ? Math.min(parsed.data.referralDiscountBps ?? current.partner.referralDiscountBps, current.partner.referralDiscountBps)
+      : 0;
+    const expiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 24 * 3600 * 1000);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const invite = await createPartnerInvite(this.database, {
+          partnerId: current.partner.id,
+          code: generateCode(12),
+          telegramUsername,
+          commissionBps,
+          subCommissionBps: null,
+          teamOverrideMaxBps,
+          parentOverrideBps: overrideBps,
+          // Промо-доступ остаётся под контролем админа (по умолчанию выключен).
+          promoEnabled: false,
+          promoMaxValueNano: 0n,
+          promoMaxCount: 0,
+          referralDiscountBps: subDiscountBps,
+          referralDiscountEnabled: subDiscountEnabled,
+          expiresAt,
+        });
+        return {
+          code: invite.code,
+          inviteUrl: this.inviteUrl(invite.code),
+          telegramUsername: invite.telegramUsername,
+          commissionBps: invite.commissionBps,
+          overrideBps: invite.parentOverrideBps,
+          teamOverrideMaxBps: invite.teamOverrideMaxBps,
+          expiresAt: invite.expiresAt?.toISOString() ?? null,
+        };
+      } catch (error) {
+        if (error instanceof InviteCodeCollisionError && attempt < 5) continue;
+        throw error;
+      }
+    }
+  }
+
   // Legacy marker endpoints remain for expand-only compatibility. Current UI does not market or
   // expose them as a discount because they do not reach the pricing authority.
 
@@ -425,12 +506,38 @@ export class PartnerController {
         inviteUrl: this.inviteUrl(invite.code),
         telegramUsername: invite.telegramUsername,
         commissionBps: invite.commissionBps,
-        overrideBps: current.partner.subCommissionBps,
+        overrideBps: invite.parentOverrideBps ?? Math.min(current.partner.subCommissionBps, current.partner.teamOverrideMaxBps),
+        teamOverrideMaxBps: invite.teamOverrideMaxBps ?? current.partner.teamOverrideMaxBps,
         expiresAt: invite.expiresAt?.toISOString() ?? null,
         consumedAt: invite.consumedAt?.toISOString() ?? null,
         createdAt: invite.createdAt.toISOString(),
       })),
     };
+  }
+
+  @Patch("team/:memberId")
+  async updateTeamMember(
+    @CurrentAuth() current: RequestAuth,
+    @Param("memberId") memberId: string,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    if (!uuidSchema.safeParse(memberId).success) throw new BadRequestException("invalid team member id");
+    const parsed = teamMemberControlsSchema.safeParse(body ?? {});
+    if (!parsed.success) throw new BadRequestException("invalid team controls");
+    try {
+      return await updateDirectTeamMemberControls(this.database, {
+        parentPartnerId: current.partner.id,
+        memberId,
+        ...(parsed.data.overrideBps === undefined ? {} : { overrideBps: parsed.data.overrideBps }),
+        ...(parsed.data.teamOverrideMaxBps === undefined
+          ? {}
+          : { teamOverrideMaxBps: parsed.data.teamOverrideMaxBps }),
+      });
+    } catch (error) {
+      if (error instanceof TeamMemberNotFoundError) throw new NotFoundException(error.message);
+      if (error instanceof TeamOverrideLimitError) throw new UnprocessableEntityException(error.message);
+      throw error;
+    }
   }
 
   @Get("payouts")

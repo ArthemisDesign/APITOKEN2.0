@@ -32,6 +32,8 @@ export interface PartnerAnalyticsRow {
   parentLabel: string | null;
   commissionBps: number;
   subCommissionBps: number;
+  teamOverrideMaxBps: number;
+  parentOverrideBps: number | null;
   referralDiscountEnabled: boolean;
   b2bEnabled: boolean;
   b2bMaxDiscountBps: number;
@@ -133,7 +135,9 @@ export async function listPartnerAnalytics(
       p.id, p.email, p.telegram_username, p.display_name, p.status, p.referral_code,
       p.parent_partner_id AS parent_id,
       COALESCE(parent.telegram_username, parent.email) AS parent_label,
-      p.commission_bps, p.sub_commission_bps, p.referral_discount_enabled, p.referral_discount_bps,
+      p.commission_bps, p.sub_commission_bps,
+      COALESCE(p.team_override_max_bps, 2000) AS team_override_max_bps,
+      p.parent_override_bps, p.referral_discount_enabled, p.referral_discount_bps,
       p.b2b_enabled, p.b2b_max_discount_bps,
       p.promo_enabled, p.created_at,
       COALESCE((SELECT SUM(rt.amount_nano) FROM referred_topups rt WHERE rt.partner_id = p.id), 0) AS deposits_total,
@@ -289,6 +293,10 @@ function serializeRow(r: Record<string, unknown>): PartnerAnalyticsRow {
     parentLabel: (r.parent_label as string) ?? null,
     commissionBps: Number(r.commission_bps),
     subCommissionBps: Number(r.sub_commission_bps),
+    teamOverrideMaxBps: Number(r.team_override_max_bps),
+    parentOverrideBps: r.parent_override_bps === null || r.parent_override_bps === undefined
+      ? null
+      : Number(r.parent_override_bps),
     referralDiscountEnabled: Boolean(r.referral_discount_enabled),
     b2bEnabled: Boolean(r.b2b_enabled),
     b2bMaxDiscountBps: Number(r.b2b_max_discount_bps ?? 0),
@@ -349,11 +357,13 @@ export async function getPartnerActivity(
     type: PartnerActivityType; at: Date | null; amount_nano: string | null; label: string; meta: Record<string, unknown>;
   }>(`
     (SELECT 'referral'::text AS type, ru.attributed_at AS at, NULL::text AS amount_nano,
-            'New referral ' || left(ru.commerce_user_id::text, 8) AS label, '{}'::jsonb AS meta
+            'New referral ' || left(ru.commerce_user_id::text, 8) AS label,
+            jsonb_build_object('commerceUserId', ru.commerce_user_id) AS meta
        FROM referred_users ru WHERE ru.partner_id = $1)
     UNION ALL
     (SELECT 'deposit', rt.paid_at, rt.amount_nano::text,
-            'Referred deposit ' || left(rt.commerce_user_id::text, 8), '{}'::jsonb
+            'Referred deposit ' || left(rt.commerce_user_id::text, 8),
+            jsonb_build_object('commerceUserId', rt.commerce_user_id)
        FROM referred_topups rt WHERE rt.partner_id = $1)
     UNION ALL
     (SELECT 'discount_link_created', dl.created_at, NULL,

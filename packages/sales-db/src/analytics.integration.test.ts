@@ -119,6 +119,8 @@ describe.runIf(Boolean(connectionString))("partner analytics (list + activity)",
     expect(types).toContain("login");
     const deposit0 = feed.find((e) => e.type === "deposit");
     expect(deposit0?.amountNano).toBe((40n * USD).toString());
+    expect(deposit0?.meta.commerceUserId).toBe(u);
+    expect(feed.find((e) => e.type === "referral")?.meta.commerceUserId).toBe(u);
     // newest-first: timestamps must be non-increasing
     const ts = feed.map((e) => new Date(e.at).getTime());
     expect(ts).toEqual([...ts].sort((x, y) => y - x));

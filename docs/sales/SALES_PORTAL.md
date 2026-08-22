@@ -22,25 +22,43 @@ engine (Rust)  ←Control API─  commerce (apps/api + worker)  ←internal sale
   `commission_bps` on the **spend** (charge-ledger) of their users.
 - **Multi-level:** a partner can invite sub-partners (invite link
   `partners.apitoken.sale/register?invite=CODE`). From a sub-partner's commission their parent
-  receives `sub_commission_bps` — a "percentage of a percentage", a chain up to 10 levels deep.
+  receives the exact `parent_override_bps` stored on that child edge — a "percentage of a
+  percentage", through a chain up to 10 levels deep. An older NULL edge retains the parent's
+  `sub_commission_bps` only as a rollout/history fallback.
 - **Team API:** an authenticated partner reads `GET /v1/partner/team` and
   `GET /v1/partner/invites`, and creates a one-time 30-day invite with
-  `POST /v1/partner/invites` (`telegramUsername`, optional `commissionBps`). The server caps the
-  invited partner's direct rate at the inviter's own `commission_bps`; the response includes the
-  selected direct rate and the inviter's `sub_commission_bps` override. Team rows expose masked-safe
-  partner identity, status, referred-user count, the member's net earnings, and the inviter's exact
-  override net. All money values remain decimal nanoUSD strings.
+  `POST /v1/partner/team/invites` (`telegramUsername`, optional `overrideBps` and
+  `teamOverrideMaxBps`). The member's platform-funded direct rate is not delegated: it is the Sales
+  default (10% / 1000 bps). A tolerated legacy `commissionBps` request field is ignored. The
+  inviter chooses only their exact edge override and the ceiling the new member may use for their
+  own team; both are bounded by the inviter's effective ceiling and the platform hard maximum 20%
+  (2000 bps). `PATCH /v1/partner/team/:memberId` changes those controls only for a direct member;
+  lowering a delegated ceiling atomically clamps dependent edges and pending invites leaf-first.
+  Team rows expose identity, status, the fixed direct rate, the exact edge/ceiling, referred-user
+  count, the member's net earnings, and the inviter's exact override net. All money values remain
+  decimal nanoUSD strings.
+  The older `POST /v1/partner/invites` contract temporarily retains its original optional
+  `commissionBps` semantics for expand-only delivery. The dashboard has no remaining reason to call
+  it after the new producer is GREEN; disabling that retired writer is a later consumer-retirement
+  release, not a silent semantic change in this producer.
 - Terms (bps) are individual per partner, set in the admin panel.
 - Payouts: the partner submits a request from their available balance; the admin
   approves/rejects/marks it paid.
 
-Migration `packages/sales-db/migrations/0024_team_override_controls.sql` is a dormant,
-migration-first expansion for the next Team contract. It reserves an admin-set partner ceiling
+Migration `packages/sales-db/migrations/0024_team_override_controls.sql` was deployed before this
+Team consumer. It provides an admin-set partner ceiling
 `team_override_max_bps` (hard range 0..2000 bps; NULL is the rollout/default 20% ceiling), an exact
 child-edge `parent_override_bps`, and the same snapshot fields on invites. Existing NULL edges continue to use the deployed parent's
-`sub_commission_bps`; the migration itself neither changes a commission nor enables a new API.
-The dependent Sales API and storefront may consume the fields only after this migration SHA has
-GREEN `deploy/migration` and `deploy/watchdog` statuses.
+`sub_commission_bps`; every new Team invite writes an explicit edge and delegated ceiling. Cross-row
+database guards repeat the API ceiling checks, and the v2 immutable commission trigger verifies the
+same exact edge before accepting money.
+
+`GET /v1/partner/earnings/providers?days=N` returns both the aggregate `items` and additive `daily`
+UTC points for the Usage-style stacked provider chart. Direct referral spend and downstream events
+that actually paid a team override are included; gross earned parts reconcile with the commission
+ledger for the same window. Historical rows with no provider remain under `providerId:null` instead
+of being hidden or guessed. Manual signed adjustments have no provider evidence and stay outside
+this descriptive split.
 
 ## Components
 
@@ -353,7 +371,9 @@ commerce symmetrically does not open the sales DB — everything goes through HT
 Money amounts — only integer nanoUSD decimal strings. Referral email disclosure is limited to the
 partner who owns that referral and managed Sales admins: Sales first resolves the owned user-id set,
 then asks Commerce for profiles for exactly that set. The email remains authoritative in Commerce
-and is not copied into Sales storage.
+and is not copied into Sales storage. Partner referral rows, managed-admin partner detail and
+referral/deposit activity expose that email; if Commerce is unavailable they retain only the short
+UUID mask for that response rather than caching or inventing an identity.
 
 External referral aliases live in `external_referral_aliases`, not in
 `partner_discount_links`. Their only job is identity-preserving attribution to an ordinary partner;
@@ -419,7 +439,8 @@ customer-funded `real_funded_nano` after free-first accounting and settlement sh
 v1 rows use the same writer; historical v2 rows use their exact `paid_funded_nano`. For a user of
 partner P0:
 - level 0: `A * P0.commission_bps / 10000` (integer floor);
-- level N: `amount(level N-1) * Pn.sub_commission_bps / 10000` up the parent chain;
+- level N: `amount(level N-1) * edge(N-1→N).parent_override_bps / 10000`; only an older NULL
+  edge falls back to `Pn.sub_commission_bps`;
 - stop: no parent, amount 0, after 10 entries (levels 0..9), or a suspended parent.
 Entries are idempotent via the unique `commerce_event_id`; the calculation happens in the same
 transaction as the event insert. Scalar and historical v1 events are written to

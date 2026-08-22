@@ -26,6 +26,25 @@ describe("computeCommissionChain", () => {
     ]);
   });
 
+  it("uses the exact child edge instead of the parent's legacy global override", () => {
+    const entries = computeCommissionChain([
+      partner({ partnerId: "p0", commissionBps: 1000, parentOverrideBps: 1750 }),
+      partner({ partnerId: "p1", subCommissionBps: 400 }),
+    ], 10_000_000n);
+    expect(entries).toEqual([
+      { partnerId: "p0", level: 0, appliedBps: 1000, amountNano: 1_000_000n },
+      { partnerId: "p1", level: 1, appliedBps: 1750, amountNano: 175_000n },
+    ]);
+  });
+
+  it("keeps the parent's legacy fallback for an edge with no explicit override", () => {
+    const entries = computeCommissionChain([
+      partner({ partnerId: "p0", commissionBps: 1000, parentOverrideBps: null }),
+      partner({ partnerId: "p1", subCommissionBps: 650 }),
+    ], 10_000_000n);
+    expect(entries[1]?.appliedBps).toBe(650);
+  });
+
   it("floors integer division at every level", () => {
     const entries = computeCommissionChain([
       partner({ partnerId: "p0", commissionBps: 3333 }),

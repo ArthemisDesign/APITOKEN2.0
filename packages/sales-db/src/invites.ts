@@ -10,6 +10,10 @@ export interface PartnerInvite {
   telegramUsername: string | null;
   commissionBps: number | null;
   subCommissionBps: number | null;
+  /** Ceiling delegated to the invited partner for their own future team. */
+  teamOverrideMaxBps: number | null;
+  /** Exact override the inviter receives from this invited partner. */
+  parentOverrideBps: number | null;
   promoEnabled: boolean;
   promoMaxValueNano: bigint;
   promoMaxCount: number;
@@ -32,6 +36,8 @@ interface InviteRow {
   telegram_username: string | null;
   commission_bps: number | null;
   sub_commission_bps: number | null;
+  team_override_max_bps: number | null;
+  parent_override_bps: number | null;
   promo_enabled: boolean;
   promo_max_value_nano: string;
   promo_max_count: number;
@@ -47,6 +53,7 @@ interface InviteRow {
 
 const INVITE_COLUMNS = `
   id, partner_id, code, telegram_username, commission_bps, sub_commission_bps,
+  team_override_max_bps, parent_override_bps,
   promo_enabled, promo_max_value_nano::text AS promo_max_value_nano, promo_max_count,
   referral_discount_bps, referral_discount_enabled,
   b2b_enabled, b2b_max_discount_bps,
@@ -61,6 +68,8 @@ function mapInvite(row: InviteRow): PartnerInvite {
     telegramUsername: row.telegram_username,
     commissionBps: row.commission_bps,
     subCommissionBps: row.sub_commission_bps,
+    teamOverrideMaxBps: row.team_override_max_bps,
+    parentOverrideBps: row.parent_override_bps,
     promoEnabled: row.promo_enabled,
     promoMaxValueNano: BigInt(row.promo_max_value_nano),
     promoMaxCount: row.promo_max_count,
@@ -81,6 +90,8 @@ export async function createPartnerInvite(database: SalesDatabase, input: {
   telegramUsername: string | null;
   commissionBps: number | null;
   subCommissionBps: number | null;
+  teamOverrideMaxBps?: number | null;
+  parentOverrideBps?: number | null;
   promoEnabled: boolean;
   promoMaxValueNano: bigint;
   promoMaxCount: number;
@@ -95,13 +106,15 @@ export async function createPartnerInvite(database: SalesDatabase, input: {
     const result = await database.pool.query<InviteRow>(`
       INSERT INTO partner_invites (
         partner_id, code, telegram_username, commission_bps, sub_commission_bps,
+        team_override_max_bps, parent_override_bps,
         promo_enabled, promo_max_value_nano, promo_max_count, referral_discount_bps,
         referral_discount_enabled, b2b_enabled, b2b_max_discount_bps, expires_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
       RETURNING ${INVITE_COLUMNS}
     `, [
       input.partnerId, input.code, input.telegramUsername, input.commissionBps, input.subCommissionBps,
+      input.teamOverrideMaxBps ?? null, input.parentOverrideBps ?? null,
       input.promoEnabled, input.promoMaxValueNano.toString(), input.promoMaxCount, input.referralDiscountBps,
       input.referralDiscountEnabled,
       input.b2bEnabled ?? false, input.b2bEnabled ? (input.b2bMaxDiscountBps ?? 0) : 0,

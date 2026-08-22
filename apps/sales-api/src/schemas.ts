@@ -5,6 +5,7 @@ export const emailSchema = z.string().trim().email().max(320);
 export const passwordSchema = z.string().min(8).max(200);
 export const displayNameSchema = z.string().trim().min(1).max(80);
 export const commissionBpsSchema = z.number().int().min(0).max(10_000);
+export const teamOverrideBpsSchema = z.number().int().min(0).max(2_000);
 // Retained referral marker, not pricing. The historical wire range remains 0..9500 bps.
 export const referralDiscountBpsSchema = z.number().int().min(0).max(9_500);
 export const promoMaxCountSchema = z.number().int().min(0).max(10_000);
@@ -34,7 +35,11 @@ export const telegramApplySchema = telegramAuthSchema.omit({ inviteCode: true })
 
 export const createInviteSchema = z.object({
   telegramUsername: telegramUsernameSchema,
+  // Retained as a tolerated legacy input, but ignored: a team member's platform rate is fixed by
+  // Sales configuration (10% by default), never selected by the inviter.
   commissionBps: commissionBpsSchema.optional(),
+  overrideBps: teamOverrideBpsSchema.optional(),
+  teamOverrideMaxBps: teamOverrideBpsSchema.optional(),
   // Legacy marker permission, retained only for expand-only request compatibility.
   referralDiscountEnabled: z.boolean().optional(),
   referralDiscountBps: referralDiscountBpsSchema.optional(),
@@ -48,6 +53,7 @@ export const adminCreateInviteSchema = z.object({
   telegramUsername: telegramUsernameSchema,
   commissionBps: commissionBpsSchema.optional(),
   subCommissionBps: commissionBpsSchema.optional(),
+  teamOverrideMaxBps: teamOverrideBpsSchema.optional(),
   // Onboarding-time B2B grant: the partner created from this invite already holds it.
   b2bEnabled: z.boolean().optional(),
   b2bMaxDiscountBps: b2bMaxDiscountBpsSchema.optional(),
@@ -71,6 +77,7 @@ export const updateSettingsSchema = z.object({
 export const adminPatchPartnerSchema = z.object({
   commissionBps: commissionBpsSchema.optional(),
   subCommissionBps: commissionBpsSchema.optional(),
+  teamOverrideMaxBps: teamOverrideBpsSchema.optional(),
   referralDiscountBps: referralDiscountBpsSchema.optional(),
   referralDiscountEnabled: z.boolean().optional(),
   // Grant/revoke the B2B right and its ceiling on an existing partner.
@@ -85,6 +92,13 @@ export const adminPatchPartnerSchema = z.object({
   (value) => !(value.b2bMaxDiscountBps !== undefined && value.b2bMaxDiscountBps > 0 && value.b2bEnabled === false),
   { message: "a B2B ceiling cannot be set while revoking the B2B grant" },
 );
+
+export const teamMemberControlsSchema = z.object({
+  overrideBps: teamOverrideBpsSchema.optional(),
+  teamOverrideMaxBps: teamOverrideBpsSchema.optional(),
+}).refine((value) => value.overrideBps !== undefined || value.teamOverrideMaxBps !== undefined, {
+  message: "at least one team control is required",
+});
 
 // Legacy marker writer schema, retained for expand-only compatibility.
 export const partnerSetDiscountSchema = z.object({

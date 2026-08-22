@@ -10,6 +10,8 @@ export interface CommissionChainPartner {
   status: PartnerStatus;
   commissionBps: number;
   subCommissionBps: number;
+  /** Edge from this partner to its direct parent; NULL/omitted keeps the legacy parent fallback. */
+  parentOverrideBps?: number | null;
 }
 
 export interface CommissionEntryPlan {
@@ -38,7 +40,9 @@ export function computeCommissionChain(
   for (let level = 0; level < partnersChain.length && level < MAX_COMMISSION_LEVELS; level += 1) {
     const partner = partnersChain[level]!;
     if (partner.status !== "active") break;
-    const appliedBps = level === 0 ? partner.commissionBps : partner.subCommissionBps;
+    const appliedBps = level === 0
+      ? partner.commissionBps
+      : (partnersChain[level - 1]?.parentOverrideBps ?? partner.subCommissionBps);
     const entryAmount = (basisNano * BigInt(appliedBps)) / 10_000n;
     if (entryAmount <= 0n) break;
     entries.push({ partnerId: partner.partnerId, level, appliedBps, amountNano: entryAmount });
@@ -325,9 +329,17 @@ export async function loadCommissionChain(
     if (visited.has(nextPartnerId)) throw new PartnerReferralCycleError(nextPartnerId);
     visited.add(nextPartnerId);
     const row: {
-      rows: { id: string; status: PartnerStatus; commission_bps: number; sub_commission_bps: number; parent_partner_id: string | null }[];
+      rows: {
+        id: string;
+        status: PartnerStatus;
+        commission_bps: number;
+        sub_commission_bps: number;
+        parent_partner_id: string | null;
+        parent_override_bps: number | null;
+      }[];
     } = await client.query(
-      `SELECT id, status, commission_bps, sub_commission_bps, parent_partner_id
+      `SELECT id, status, commission_bps, sub_commission_bps,
+              parent_partner_id, parent_override_bps
        FROM partners WHERE id = $1 FOR SHARE`,
       [nextPartnerId],
     );
@@ -339,6 +351,7 @@ export async function loadCommissionChain(
         status: partner.status,
         commissionBps: partner.commission_bps,
         subCommissionBps: partner.sub_commission_bps,
+        parentOverrideBps: partner.parent_override_bps,
       });
     }
     nextPartnerId = partner.parent_partner_id;
@@ -984,14 +997,51 @@ export interface ProviderEarningsRow {
   earnedNano: bigint;
 }
 
+export interface DailyProviderEarningsPoint {
+  date: string;
+  providers: ProviderEarningsRow[];
+}
+
+// Direct rows retain spend even when the applied commission is zero. Override rows add the
+// downstream events that actually paid this partner. The two halves are disjoint by level.
+const PARTNER_PROVIDER_EVENTS_SQL = `
+  SELECT pue.spend_provider_id AS provider_id, pue.occurred_at,
+         pue.amount_nano AS spend_nano, COALESCE(ce.amount_nano, 0) AS earned_nano
+  FROM partner_usage_events pue
+  LEFT JOIN commission_entries ce
+    ON ce.usage_event_id = pue.id AND ce.partner_id = $1 AND ce.level = 0
+  WHERE pue.partner_id = $1 AND pue.occurred_at >= now() - ($2 * interval '1 day')
+  UNION ALL
+  SELECT pue.provider_id AS provider_id, pue.occurred_at,
+         pue.paid_funded_nano AS spend_nano, COALESCE(ce.amount_nano, 0) AS earned_nano
+  FROM partner_usage_events_v2 pue
+  LEFT JOIN commission_entries_v2 ce
+    ON ce.usage_event_id = pue.id AND ce.partner_id = $1 AND ce.level = 0
+  WHERE pue.partner_id = $1 AND pue.occurred_at >= now() - ($2 * interval '1 day')
+  UNION ALL
+  SELECT pue.spend_provider_id AS provider_id, pue.occurred_at,
+         pue.amount_nano AS spend_nano, ce.amount_nano AS earned_nano
+  FROM commission_entries ce
+  JOIN partner_usage_events pue ON pue.id = ce.usage_event_id
+  WHERE ce.partner_id = $1 AND ce.level > 0
+    AND pue.occurred_at >= now() - ($2 * interval '1 day')
+  UNION ALL
+  SELECT pue.provider_id AS provider_id, pue.occurred_at,
+         pue.paid_funded_nano AS spend_nano, ce.amount_nano AS earned_nano
+  FROM commission_entries_v2 ce
+  JOIN partner_usage_events_v2 pue ON pue.id = ce.usage_event_id
+  WHERE ce.partner_id = $1 AND ce.level > 0
+    AND pue.occurred_at >= now() - ($2 * interval '1 day')
+`;
+
 /**
  * Partner earnings split by the provider that served the spend, over the last `days` days.
  *
- * The split is descriptive: it re-groups commission that is already recorded, so the totals here
- * always reconcile with getPartnerEarningsTotals for the same window. v1 rows carry the dimension
- * in spend_provider_id, v2 rows in their authoritative provider_id; rows imported before migration
- * 0022 have neither and group under null rather than being dropped, so the parts still sum to the
- * whole. Manual commission adjustments are not per-provider and are deliberately excluded.
+ * The split is descriptive: it includes direct-referral spend plus the downstream events that paid
+ * this partner a team override. Gross earned totals therefore reconcile with the same-window
+ * commission ledger. v1 rows carry the dimension in spend_provider_id, v2 rows in their
+ * authoritative provider_id; rows imported before migration 0022 have neither and group under null
+ * rather than being dropped. Manual commission adjustments are not per-provider and are excluded.
  */
 export async function getPartnerEarningsByProvider(
   database: SalesDatabase,
@@ -1008,23 +1058,7 @@ export async function getPartnerEarningsByProvider(
            COUNT(*)::text AS events,
            COALESCE(SUM(spend_nano), 0)::text AS spend_nano,
            COALESCE(SUM(earned_nano), 0)::text AS earned_nano
-    FROM (
-      SELECT pue.spend_provider_id AS provider_id,
-             pue.amount_nano AS spend_nano,
-             COALESCE(ce.amount_nano, 0) AS earned_nano
-      FROM partner_usage_events pue
-      LEFT JOIN commission_entries ce
-        ON ce.usage_event_id = pue.id AND ce.partner_id = $1
-      WHERE pue.partner_id = $1 AND pue.occurred_at >= now() - ($2 * interval '1 day')
-      UNION ALL
-      SELECT pue.provider_id AS provider_id,
-             pue.paid_funded_nano AS spend_nano,
-             COALESCE(ce.amount_nano, 0) AS earned_nano
-      FROM partner_usage_events_v2 pue
-      LEFT JOIN commission_entries_v2 ce
-        ON ce.usage_event_id = pue.id AND ce.partner_id = $1
-      WHERE pue.partner_id = $1 AND pue.occurred_at >= now() - ($2 * interval '1 day')
-    ) per_event
+    FROM (${PARTNER_PROVIDER_EVENTS_SQL}) per_event
     GROUP BY 1
     ORDER BY 4 DESC, 3 DESC
   `, [partnerId, days]);
@@ -1036,6 +1070,51 @@ export async function getPartnerEarningsByProvider(
   }));
 }
 
+/** Same provider evidence as getPartnerEarningsByProvider, grouped into UTC calendar days. */
+export async function getPartnerDailyEarningsByProvider(
+  database: SalesDatabase,
+  partnerId: string,
+  days: number,
+): Promise<DailyProviderEarningsPoint[]> {
+  const result = await database.pool.query<{
+    day: string;
+    provider_id: string | null;
+    events: string;
+    spend_nano: string;
+    earned_nano: string;
+  }>(`
+    SELECT to_char(date_trunc('day', occurred_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+           provider_id,
+           COUNT(*)::text AS events,
+           COALESCE(SUM(spend_nano), 0)::text AS spend_nano,
+           COALESCE(SUM(earned_nano), 0)::text AS earned_nano
+    FROM (${PARTNER_PROVIDER_EVENTS_SQL}) per_event
+    GROUP BY 1, 2
+    ORDER BY 1, 5 DESC, 4 DESC
+  `, [partnerId, days]);
+
+  const byDay = new Map<string, ProviderEarningsRow[]>();
+  for (const row of result.rows) {
+    const providers = byDay.get(row.day) ?? [];
+    providers.push({
+      providerId: row.provider_id,
+      events: Number(row.events),
+      spendNano: BigInt(row.spend_nano),
+      earnedNano: BigInt(row.earned_nano),
+    });
+    byDay.set(row.day, providers);
+  }
+
+  const series: DailyProviderEarningsPoint[] = [];
+  const today = new Date();
+  for (let offset = days - 1; offset >= 0; offset -= 1) {
+    const day = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - offset));
+    const date = day.toISOString().slice(0, 10);
+    series.push({ date, providers: byDay.get(date) ?? [] });
+  }
+  return series;
+}
+
 export interface TeamMemberSummary {
   id: string;
   email: string | null;
@@ -1043,6 +1122,9 @@ export interface TeamMemberSummary {
   displayName: string | null;
   status: PartnerStatus;
   commissionBps: number;
+  /** Exact current edge, with the legacy inviter fallback resolved for display. */
+  overrideBps: number;
+  teamOverrideMaxBps: number;
   referredUsers: number;
   theirEarnedNano: bigint;
   theirAdjustmentNano: bigint;
@@ -1056,10 +1138,13 @@ export async function listPartnerTeam(database: SalesDatabase, partnerId: string
   const result = await database.pool.query<{
     id: string; email: string | null; telegram_username: string | null; display_name: string | null;
     status: PartnerStatus; commission_bps: number;
+    override_bps: number; team_override_max_bps: number;
     referred_users: string; their_earned: string; their_adjustment: string;
     my_override: string; my_override_adjustment: string;
   }>(`
     SELECT p.id, p.email, p.telegram_username, p.display_name, p.status, p.commission_bps,
+      COALESCE(p.parent_override_bps, parent.sub_commission_bps) AS override_bps,
+      COALESCE(p.team_override_max_bps, 2000) AS team_override_max_bps,
       (SELECT count(*) FROM referred_users ru WHERE ru.partner_id = p.id)::text AS referred_users,
       COALESCE((
         SELECT SUM(amount_nano) FROM (
@@ -1099,6 +1184,7 @@ export async function listPartnerTeam(database: SalesDatabase, partnerId: string
           AND COALESCE(usage.partner_id, usage_v2.partner_id) = p.id
       ), 0)::text AS my_override_adjustment
     FROM partners p
+    JOIN partners parent ON parent.id = $1
     WHERE p.parent_partner_id = $1
     ORDER BY p.created_at
   `, [partnerId]);
@@ -1114,6 +1200,8 @@ export async function listPartnerTeam(database: SalesDatabase, partnerId: string
     displayName: row.display_name,
     status: row.status,
     commissionBps: row.commission_bps,
+    overrideBps: row.override_bps,
+    teamOverrideMaxBps: row.team_override_max_bps,
     referredUsers: Number(row.referred_users),
       theirEarnedNano,
       theirAdjustmentNano,
@@ -1131,4 +1219,164 @@ export async function countPartnerTeam(database: SalesDatabase, partnerId: strin
     [partnerId],
   );
   return Number(result.rows[0]?.count ?? "0");
+}
+
+export class TeamMemberNotFoundError extends Error {
+  constructor() {
+    super("team member is not a direct child of this partner");
+    this.name = "TeamMemberNotFoundError";
+  }
+}
+
+export class TeamOverrideLimitError extends Error {
+  constructor(readonly maximumBps: number) {
+    super(`team override exceeds the allowed maximum of ${maximumBps} bps`);
+    this.name = "TeamOverrideLimitError";
+  }
+}
+
+/**
+ * Lowers one partner's delegated ceiling and every dependent explicit/legacy grant atomically.
+ * Descendants are processed leaf-first so each database guard sees already-clamped dependants.
+ */
+export async function lowerTeamOverrideCeiling(
+  client: PoolClient,
+  partnerId: string,
+  maximumBps: number,
+): Promise<void> {
+  const tree = await client.query<{
+    id: string;
+    depth: number;
+    effective_max_bps: number;
+    sub_commission_bps: number;
+  }>(`
+    WITH RECURSIVE team_tree AS (
+      SELECT id, 0 AS depth, ARRAY[id] AS path FROM partners WHERE id = $1
+      UNION ALL
+      SELECT child.id, team_tree.depth + 1, team_tree.path || child.id
+      FROM partners child
+      JOIN team_tree ON child.parent_partner_id = team_tree.id
+      WHERE NOT child.id = ANY(team_tree.path)
+    )
+    SELECT partner.id, team_tree.depth,
+           COALESCE(partner.team_override_max_bps, 2000) AS effective_max_bps,
+           partner.sub_commission_bps
+    FROM team_tree
+    JOIN partners partner ON partner.id = team_tree.id
+    ORDER BY team_tree.depth DESC
+    FOR UPDATE OF partner
+  `, [partnerId]);
+
+  for (const row of tree.rows) {
+    const cap = Math.min(row.effective_max_bps, maximumBps);
+    await client.query(`
+      UPDATE partner_invites
+      SET parent_override_bps = LEAST(COALESCE(parent_override_bps, $2), $3),
+          team_override_max_bps = LEAST(COALESCE(team_override_max_bps, 2000), $3)
+      WHERE partner_id = $1 AND consumed_at IS NULL
+    `, [row.id, row.sub_commission_bps, cap]);
+    await client.query(`
+      UPDATE partners
+      SET parent_override_bps = LEAST(COALESCE(parent_override_bps, $2), $3),
+          updated_at = now()
+      WHERE parent_partner_id = $1
+    `, [row.id, row.sub_commission_bps, cap]);
+    await client.query(`
+      UPDATE partners
+      SET team_override_max_bps = $2, updated_at = now()
+      WHERE id = $1 AND COALESCE(team_override_max_bps, 2000) <> $2
+    `, [row.id, cap]);
+  }
+}
+
+export interface TeamMemberControls {
+  memberId: string;
+  overrideBps: number;
+  teamOverrideMaxBps: number;
+}
+
+/** Changes only a direct edge and the ceiling delegated to that direct member. */
+export async function updateDirectTeamMemberControls(
+  database: SalesDatabase,
+  input: {
+    parentPartnerId: string;
+    memberId: string;
+    overrideBps?: number;
+    teamOverrideMaxBps?: number;
+  },
+): Promise<TeamMemberControls> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const parent = await client.query<{ maximum_bps: number }>(`
+      SELECT COALESCE(team_override_max_bps, 2000) AS maximum_bps
+      FROM partners WHERE id = $1 AND status = 'active' FOR UPDATE
+    `, [input.parentPartnerId]);
+    const maximumBps = parent.rows[0]?.maximum_bps;
+    if (maximumBps === undefined) throw new TeamMemberNotFoundError();
+    if ((input.overrideBps !== undefined && input.overrideBps > maximumBps)
+      || (input.teamOverrideMaxBps !== undefined && input.teamOverrideMaxBps > maximumBps)) {
+      throw new TeamOverrideLimitError(maximumBps);
+    }
+
+    const member = await client.query<{
+      override_bps: number;
+      team_override_max_bps: number;
+    }>(`
+      SELECT COALESCE(child.parent_override_bps, parent.sub_commission_bps) AS override_bps,
+             COALESCE(child.team_override_max_bps, 2000) AS team_override_max_bps
+      FROM partners child
+      JOIN partners parent ON parent.id = $1
+      WHERE child.id = $2 AND child.parent_partner_id = parent.id
+      FOR UPDATE OF child
+    `, [input.parentPartnerId, input.memberId]);
+    const current = member.rows[0];
+    if (!current) throw new TeamMemberNotFoundError();
+
+    if (input.teamOverrideMaxBps !== undefined
+      && input.teamOverrideMaxBps < current.team_override_max_bps) {
+      await lowerTeamOverrideCeiling(client, input.memberId, input.teamOverrideMaxBps);
+    }
+
+    const updated = await client.query<{
+      override_bps: number;
+      team_override_max_bps: number;
+    }>(`
+      UPDATE partners
+      SET parent_override_bps = CASE WHEN $3::boolean THEN $4 ELSE parent_override_bps END,
+          team_override_max_bps = CASE WHEN $5::boolean THEN $6 ELSE team_override_max_bps END,
+          updated_at = now()
+      WHERE id = $2 AND parent_partner_id = $1
+      RETURNING COALESCE(parent_override_bps, $7) AS override_bps,
+                COALESCE(team_override_max_bps, 2000) AS team_override_max_bps
+    `, [
+      input.parentPartnerId,
+      input.memberId,
+      input.overrideBps !== undefined,
+      input.overrideBps ?? null,
+      input.teamOverrideMaxBps !== undefined,
+      input.teamOverrideMaxBps ?? null,
+      current.override_bps,
+    ]);
+    const row = updated.rows[0];
+    if (!row) throw new TeamMemberNotFoundError();
+    await client.query(`
+      INSERT INTO sales_audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ('partner', $1, 'team.member_controls_updated', 'partner', $2, $3::jsonb)
+    `, [input.parentPartnerId, input.memberId, JSON.stringify({
+      overrideBps: input.overrideBps ?? null,
+      teamOverrideMaxBps: input.teamOverrideMaxBps ?? null,
+    })]);
+    await client.query("COMMIT");
+    return {
+      memberId: input.memberId,
+      overrideBps: row.override_bps,
+      teamOverrideMaxBps: row.team_override_max_bps,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }

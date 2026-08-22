@@ -35,6 +35,8 @@ export interface PartnerView {
   referralCode: string;
   commissionBps: number;
   subCommissionBps: number;
+  teamOverrideMaxBps: number;
+  parentOverrideBps: number | null;
   referralDiscountBps: number;
   referralDiscountEnabled: boolean;
   /** Whether this partner may turn their own referrals into B2B customers, and how deep. */
@@ -298,6 +300,8 @@ export function partnerView(partner: Partner): PartnerView {
     referralCode: partner.referralCode,
     commissionBps: partner.commissionBps,
     subCommissionBps: partner.subCommissionBps,
+    teamOverrideMaxBps: partner.teamOverrideMaxBps,
+    parentOverrideBps: partner.parentOverrideBps,
     referralDiscountBps: partner.referralDiscountBps,
     b2bEnabled: partner.b2bEnabled,
     b2bMaxDiscountBps: partner.b2bMaxDiscountBps,

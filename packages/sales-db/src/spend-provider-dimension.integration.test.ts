@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createSalesDatabase, type SalesDatabase } from "./client.js";
 import {
   getPartnerEarningsByProvider,
+  getPartnerDailyEarningsByProvider,
   getPartnerEarningsTotals,
   recordReferredSpend,
   reconcilePendingReferralEvents,
@@ -102,6 +103,8 @@ describe.runIf(Boolean(connectionString))("spend provider reporting dimension", 
     expect(split).toEqual([
       { providerId: null, events: 1, spendNano: 100_000n, earnedNano: 10_000n },
     ]);
+    const daily = await getPartnerDailyEarningsByProvider(db, partnerId, 3650);
+    expect(daily.find((point) => point.date === "2026-07-02")?.providers).toEqual(split);
   });
 
   it("pays identical commission whichever provider served the request", async () => {

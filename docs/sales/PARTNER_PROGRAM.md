@@ -103,15 +103,16 @@ multiplier. B2B remains a separate model with its own negotiated default/provide
 A partner can invite **sub-salespeople** and receive an **override** — a percentage of their
 commission.
 
-- A partner has two rates: `commission_bps` (their own direct percentage on referrals) and
-  `sub_commission_bps` (override on sub-salespeople).
+- A partner has a platform-set `commission_bps` (their own direct percentage on referrals), an
+  admin-set `team_override_max_bps`, and one exact `parent_override_bps` on every child edge.
+  `sub_commission_bps` remains only the fallback for older NULL edges.
 - The chain is computed upward up to **10 levels**: level 0 is the direct referrer, level 1 is
-  their parent (receives `sub_commission_bps` of the level-0 amount), and so on; it stops when
+  their parent (receives the exact child-edge percentage of the level-0 amount), and so on; it stops when
   there is no parent, the amount becomes 0, or the level exceeds 10. A blocked (`suspended`)
   partner breaks the chain.
-- **Margin constraint:** a partner cannot issue a sub-salesperson a rate higher than their own
-  (otherwise they would be giving away the platform's margin). By default a sub-salesperson gets
-  the parent's rate.
+- **Margin constraint:** the inviter cannot change the sub-salesperson's direct platform rate
+  (10% by default). They choose only their own override and the maximum the member may delegate;
+  both are bounded by the inviter's ceiling and the platform hard maximum 20%.
 
 All accruals are idempotent by the charge's `commerce_event_id` and computed in the same
 transaction as the usage-row insert. Live scalar and historical v1 rows use
@@ -210,17 +211,22 @@ discount.
 - **Overview** — the rate and what the percentage comes from (a "How your commission works" card
   with an example), the ref link with copy, key metrics, a 30-day chart, a 30-day split of earnings
   by the provider that served the referrals' requests (`GET /v1/partner/earnings/providers`), and
-  recent referrals. The split only re-groups commission that is already recorded — it never changes
-  what is owed, since the same spend earns the same commission on every provider. Spend recorded
+  recent referrals. The split includes stacked daily bars and aggregate provider totals. It only
+  re-groups commission that is already recorded — it never changes what is owed, since the same
+  spend earns the same commission on every provider. Spend recorded
   before the portal stored the provider (migration 0022) appears as one "no provider on record"
   line rather than being dropped, so the parts always sum to the whole.
-- **Referrals** — the users brought in (identities masked), their paid spend and your earnings on
-  each of them.
+- **Referrals** — the users brought in, identified by their authoritative Commerce account email,
+  their paid spend and your earnings on each of them. If Commerce is unavailable for one response,
+  the row falls back to a short UUID mask; Sales never persists or guesses the email.
 - **Team** — create one-time, 30-day invitations for sub-salespeople, review invitation status, and
-  see each direct member's referral count, direct earnings, and your override. A sub-partner's direct
-  rate cannot exceed the inviting partner's own rate. Your `sub_commission_bps` is applied to the
-  sub-partner's level-0 commission (a percentage of a percentage); the immutable commission chain
-  carries this override up to ten active levels.
+  see each direct member's referral count, direct earnings, and your override. The form shows the
+  fixed 10% platform rate read-only and lets the inviter set an edge override plus a delegated
+  ceiling within their own maximum. Existing direct-member controls are editable; lowering a
+  ceiling clamps dependent grants atomically. The immutable commission chain carries each exact
+  edge up to ten active levels.
+  The dashboard uses the additive `/v1/partner/team/invites` writer; the previous writer remains
+  only during the expand-only rollout and is retired after every documented consumer moves.
 - **Payouts** — BSC wallet binding, the current period, the locked amount + unfreeze date, the
   date and estimate of the next payout, explicit debt after refunds, net history by periods, a
   "How payouts work" explanation.
@@ -254,8 +260,9 @@ both use the shared `lang:v1` and `theme:v1` preferences.
 
 ## 11. Privacy and security
 
-- End users' identities are **not disclosed** to the partner — the dashboard shows only a masked
-  `user-xxxxxxxx…`, without email or the full id.
+- A partner receives only the authoritative email of users attributed to that partner. They never
+  receive a full Commerce UUID; managed admins receive the same email through the bounded profile
+  request. Sales does not persist it, and an outage falls back to `user-xxxxxxxx…` for that response.
 - The partner side has no access to the commerce/engine DBs; the only connection is a read-only
   HTTP feed under a server key. From sales you cannot touch commerce money or the engine.
 - Telegram sign-in is verified via the bot's HMAC signature; sessions are stored hashed; the admin
