@@ -122,8 +122,8 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
     await database.pool.query(`
       INSERT INTO customer_profiles
         (user_id, customer_type, current_tier, multiplier_bp, pricing_month_start)
-      VALUES ($1, 'b2c', NULL, 4000, date_trunc('month', now())),
-             ($2, 'b2c', NULL, 4000, date_trunc('month', now()))
+      VALUES ($1, 'b2c', 0, 4000, date_trunc('month', now())),
+             ($2, 'b2c', 0, 4000, date_trunc('month', now()))
     `, [requested, unrequested]);
 
     const profiles = await listReferralProfiles(database, [requested]);
