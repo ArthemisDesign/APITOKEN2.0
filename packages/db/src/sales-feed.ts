@@ -409,6 +409,7 @@ export async function listPaymentReversalsAfter(
 // видит исключительно закреплённых за ним пользователей (sales-api ограничивает список).
 export interface ReferralProfileRow {
   userId: string;
+  email: string;
   customerType: "b2c" | "b2b";
   multiplierBp: number;
   referralFloorBps: number;
@@ -422,6 +423,7 @@ export async function listReferralProfiles(database: Database, userIds: readonly
   // engine_accounts уникален по user_id → LEFT JOIN не даёт дублей.
   const result = await database.pool.query<{
     user_id: string;
+    email: string;
     customer_type: "b2c" | "b2b";
     multiplier_bp: number;
     referral_floor_bps: number;
@@ -429,14 +431,16 @@ export async function listReferralProfiles(database: Database, userIds: readonly
     engine_account_id: string | null;
     engine_status: string | null;
   }>(`
-    SELECT cp.user_id, cp.customer_type, cp.multiplier_bp, cp.referral_floor_bps,
+    SELECT cp.user_id, u.email, cp.customer_type, cp.multiplier_bp, cp.referral_floor_bps,
            cp.cumulative_topup_nano, ea.engine_account_id, ea.status AS engine_status
     FROM customer_profiles cp
+    JOIN users u ON u.id = cp.user_id
     LEFT JOIN engine_accounts ea ON ea.user_id = cp.user_id
     WHERE cp.user_id = ANY($1::uuid[])
   `, [userIds as string[]]);
   return result.rows.map((row) => ({
     userId: row.user_id,
+    email: row.email,
     customerType: row.customer_type,
     multiplierBp: row.multiplier_bp,
     referralFloorBps: row.referral_floor_bps,

@@ -6,6 +6,7 @@ import {
   listPaidTopupsAfter,
   listPaidTopupsV2After,
   listPaymentReversalsAfter,
+  listReferralProfiles,
   listUsageEventsAfter,
   recordReferralAttribution,
   ReferralAttributionConflictError,
@@ -113,6 +114,24 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
     const secondPage = await listUsageEventsAfter(database, firstPage.nextCursor, 1);
     expect(secondPage.items).toHaveLength(1);
     expect(secondPage.items[0]).toMatchObject({ userId: referred, amountNano: 750n });
+  });
+
+  it("returns the account email for an explicit referral profile without widening the requested set", async () => {
+    const requested = await insertUser(true);
+    const unrequested = await insertUser(true);
+    await database.pool.query(`
+      INSERT INTO customer_profiles
+        (user_id, customer_type, current_tier, multiplier_bp, pricing_month_start)
+      VALUES ($1, 'b2c', NULL, 4000, date_trunc('month', now())),
+             ($2, 'b2c', NULL, 4000, date_trunc('month', now()))
+    `, [requested, unrequested]);
+
+    const profiles = await listReferralProfiles(database, [requested]);
+
+    expect(profiles).toEqual([expect.objectContaining({
+      userId: requested,
+      email: `${requested}@test.invalid`,
+    })]);
   });
 
   it("emits the free-first commission basis and no retired lineage fields", async () => {

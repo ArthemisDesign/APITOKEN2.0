@@ -20,6 +20,7 @@ const dbMocks = vi.hoisted(() => ({
   listUsageEventsAfter: vi.fn(),
   listPaidTopupsV2After: vi.fn(),
   listPaymentReversalsAfter: vi.fn(),
+  listReferralProfiles: vi.fn(),
   setReferralFloor: vi.fn(),
 }));
 
@@ -29,7 +30,7 @@ vi.mock("@claude-api/db", () => ({
   listPaymentReversalsAfter: dbMocks.listPaymentReversalsAfter,
   listPaidTopupsAfter: vi.fn(),
   listReferralAttributionsAfter: vi.fn(),
-  listReferralProfiles: vi.fn(),
+  listReferralProfiles: dbMocks.listReferralProfiles,
   setReferralFloor: dbMocks.setReferralFloor,
 }));
 
@@ -40,6 +41,7 @@ describe("sales usage feed controller", () => {
     dbMocks.listUsageEventsAfter.mockReset();
     dbMocks.listPaidTopupsV2After.mockReset();
     dbMocks.listPaymentReversalsAfter.mockReset();
+    dbMocks.listReferralProfiles.mockReset();
     dbMocks.setReferralFloor.mockReset();
   });
 
@@ -113,6 +115,39 @@ describe("sales usage feed controller", () => {
       userId: "11111111-1111-4111-8111-111111111111",
       floorBps: 9_500,
     })).resolves.toEqual({ applied: true, multiplierBp: null, pricingAffected: false });
+  });
+
+  it("returns the authoritative account email only for explicitly requested referral profiles", async () => {
+    dbMocks.listReferralProfiles.mockResolvedValue([{
+      userId: "11111111-1111-4111-8111-111111111111",
+      email: "referral@example.com",
+      customerType: "b2c",
+      multiplierBp: 4_000,
+      referralFloorBps: 0,
+      cumulativeTopupNano: 2_000_000_000n,
+      engineAccountId: null,
+      engineStatus: null,
+    }]);
+    const controller = new SalesFeedController({} as never, {} as never);
+
+    await expect(controller.referralProfiles({
+      userIds: ["11111111-1111-4111-8111-111111111111"],
+    })).resolves.toEqual({
+      items: [{
+        userId: "11111111-1111-4111-8111-111111111111",
+        email: "referral@example.com",
+        customerType: "b2c",
+        multiplierBp: 4_000,
+        discountPercent: 60,
+        referralFloorBps: 0,
+        cumulativeTopupNano: "2000000000",
+        balanceNano: null,
+        status: null,
+      }],
+    });
+    expect(dbMocks.listReferralProfiles).toHaveBeenCalledWith({}, [
+      "11111111-1111-4111-8111-111111111111",
+    ]);
   });
 
   it("serializes immutable payment reversals with exact bigint money", async () => {

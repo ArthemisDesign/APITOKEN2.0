@@ -190,10 +190,12 @@ of reaching SQL as an out-of-range value.
   matching a request.
 
 - `POST /v1/internal/sales/referral-profiles` — referral profiles for the partner's storefront.
-  Body `{userIds: uuid[] (max 500)}` → `{items:[{userId, customerType (b2c/b2b), multiplierBp,
+  Body `{userIds: uuid[] (max 500)}` → `{items:[{userId, email, customerType (b2c/b2b), multiplierBp,
   discountPercent, referralFloorBps, cumulativeTopupNano, balanceNano, status}]}`. Only for an
   explicit list of user_id values that sales-api builds from the referrals assigned to the partner —
-  a partner sees only their own. `balanceNano` and the live `multiplierBp` are read from the engine
+  a partner sees only their own. `email` is the authoritative Commerce account email and is not
+  persisted in the Sales database; the producer joins it from `users` for this bounded request.
+  `balanceNano` and the live `multiplierBp` are read from the engine
   (the money authority) with parallelism 8; an unavailable engine account does not take the page
   down — the fields degrade to `null`/values from `customer_profiles`.
   `referralFloorBps` is legacy audit/attribution metadata and `cumulativeTopupNano` is reporting;
@@ -340,8 +342,10 @@ Commerce calls sales-api at `SALES_API_URL` with the same `SALES_CONTROL_KEY`.
 
 Rules: sales does not open the commerce/engine PostgreSQL and does not import `@claude-api/db`;
 commerce symmetrically does not open the sales DB — everything goes through HTTP under the key.
-Money amounts — only integer nanoUSD decimal strings; end-user emails are never given to a partner
-(the dashboard shows only a masked user-id).
+Money amounts — only integer nanoUSD decimal strings. Referral email disclosure is limited to the
+partner who owns that referral and managed Sales admins: Sales first resolves the owned user-id set,
+then asks Commerce for profiles for exactly that set. The email remains authoritative in Commerce
+and is not copied into Sales storage.
 
 External referral aliases live in `external_referral_aliases`, not in
 `partner_discount_links`. Their only job is identity-preserving attribution to an ordinary partner;

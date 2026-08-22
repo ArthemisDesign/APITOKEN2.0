@@ -41,7 +41,8 @@ import { safeEqual } from "./admin.guard.js";
 
 // Internal-фид для sales bounded context (sales.apitoken.sale). Единственная граница
 // commerce→sales: курсорные фиды after_id под серверным ключом SALES_CONTROL_KEY.
-// Деньги в ответах — только decimal-строки nanoUSD; email пользователей не отдаём.
+// Деньги в ответах — только decimal-строки nanoUSD. Referral profile email is exposed only on
+// the authenticated server-to-server route and only for the explicit user ids supplied by Sales.
 
 const PG_BIGINT_MAX = 9_223_372_036_854_775_807n;
 
@@ -312,6 +313,7 @@ export class SalesFeedController {
       const multiplierBp = engineMultBp ?? row.multiplierBp;
       return {
         userId: row.userId,
+        email: row.email,
         customerType: row.customerType,
         multiplierBp,
         discountPercent: 100 - multiplierBp / 100,
