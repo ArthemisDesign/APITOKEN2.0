@@ -220,9 +220,11 @@ and failure remain immutable.
 
 From **Referrals** in the cabinet, a granted partner gets one extra action per referral:
 "Make B2B" for a B2C referral, "Edit rates" for one already converted. It opens a base discount
-plus optional per-provider overrides (anthropic, openai, google, kimi, glm — the same closed list
-commerce accepts, so a typo cannot be stored and then silently never match a request). A blank
-provider field leaves that provider on the customer's base discount; clearing one drops it back.
+plus optional per-provider overrides. The active customer UI shows the production catalog only:
+Anthropic/Claude, OpenAI/GPT, Google/Gemini and Kimi. GLM remains accepted by the expand-only
+backend contract for historical/admin records but is not advertised in the partner Dashboard until
+it is a production provider. A blank provider field leaves that provider on the customer's base
+discount; clearing one drops it back.
 
 Converting requires a base discount: provider overrides alone would leave every other model on the
 ordinary B2C price. Every partner sees the B2B action for an owned referral. A partner with a direct
@@ -253,19 +255,28 @@ discount.
 
 ## 8. Partner dashboard (Commerce Dashboard → Referral)
 
-- **Overview** — the rate and what the percentage comes from (a "How your commission works" card
-  with an example), the ref link with copy, key metrics, a 30-day chart, a 30-day split of earnings
-  by the provider that served the referrals' requests (the provider series in
+- The six compact subviews are **Overview**, **Referrals**, **Team**, **Requests**, **Payouts** and
+  **Docs**. There is no separate partner Settings page; account identity and theme/language remain
+  owned by the main Dashboard.
+- **Overview** — key metrics plus a 30-day split of earnings by the provider that served the
+  referrals' requests (the provider series in
   `GET /v1/internal/referral/partner/:commerceUserId`), and
-  recent referrals. The split includes stacked daily bars and aggregate provider totals. It only
-  re-groups commission that is already recorded — it never changes what is owed, since the same
-  spend earns the same commission on every provider. Spend recorded
+  a stacked daily chart. Provider cards and the graph intentionally reuse the main Usage geometry,
+  logo registry, colors, responsive behavior and light/dark tokens. The active cards show Claude,
+  GPT, Gemini and Kimi; GLM is not presented as production. The split only re-groups commission
+  that is already recorded — it never changes what is owed, since the same spend earns the same
+  commission on every provider. Spend recorded
   before the portal stored the provider (migration 0022) appears as one "no provider on record"
-  line rather than being dropped, so the parts always sum to the whole.
+  line rather than being dropped, so the parts always sum to the whole. The longer commission/Team
+  explanation lives in Docs rather than occupying the Overview.
 - **Referrals** — the users brought in, identified by their authoritative Commerce account email,
-  their paid spend and your earnings on each of them. If Commerce cannot resolve one account for a
-  response, the row says that email data is unavailable; the Commerce Dashboard never substitutes
-  a UUID, Telegram handle or display name. Sales never persists or guesses the email.
+  their type, discount, top-ups, paid spend and partner earnings. The list has client-side email
+  search and exposes conversion/pricing on the owned referral row. That dialog always shows the
+  partner's applicable ceiling, the production provider logos and base/per-provider fields; a
+  self-service grant applies the terms directly, otherwise the same row submits a reviewed request
+  with a required reason. If Commerce cannot resolve one account for a response, the row says that
+  email data is unavailable; the Commerce Dashboard never substitutes a UUID, Telegram handle or
+  display name. Sales never persists or guesses the email.
 - **Team** — create one-time, 30-day invitations for sub-salespeople, review invitation status, and
   see each direct member's referral count, direct earnings, and your retained Team share. The form
   shows the fixed 10% platform rate read-only and lets the inviter set an edge share plus a delegated
@@ -277,21 +288,21 @@ discount.
   The Dashboard uses the Commerce `/v1/referral/*` boundary, which calls Sales
   `/v1/internal/referral/*`; the browser never receives `SALES_CONTROL_KEY` or a Sales partner id as
   proof of identity.
-- **Requests** — commission-increase and owned-referral B2B requests, including requested terms,
-  decision note, delivery status and any retry/terminal error. Customer identity is email; the
-  internal Commerce UUID is not the product label. The Sales→Commerce internal request view carries
-  nullable `customerCommerceUserId` only so Commerce can resolve the latest account email; the
-  Commerce browser contract strips that UUID and every Sales partner identity.
+- **Requests** — the commission-increase form and the complete request history, including owned-
+  referral B2B decisions created from Referrals, delivery status and retry/terminal state. Customer
+  identity is email; the internal Commerce UUID is not the product label.
 - Promo-code creation and redemption are absent from the active partner/customer/admin interfaces.
   Historical credit/accounting records remain readable by backend reconciliation only; they are
   not a product capability.
-- **Payouts** — BSC wallet binding, the current period, the locked amount + unfreeze date, the
-  date and estimate of the next payout, explicit debt after refunds, net history by periods, a
-  "How payouts work" explanation. The snapshot also returns the minimum payout and fixed
+- **Payouts** — the multi-lane accrual → 7-day lock → 3-day payout roadmap, completed on-chain
+  payments, four current-state KPI cards, BSC wallet binding, explicit debt after refunds, net
+  history by periods and a "How payouts work" explanation. The snapshot also returns the minimum
+  payout and fixed
   lock/window policy, while the wallet writer is restricted to the active session-derived
   membership and commits every accepted change with its audit evidence in one transaction.
-- **Settings** — the current Commerce login email and commission/authority terms (view only).
-  Referral does not maintain a second partner profile or product-facing display name.
+- **Docs** — the in-product contract for eligible paid usage, email identity, commission/refund
+  math, retained Team share, B2B authority, wallet/network, payout schedule and access/privacy. It is
+  personalized with the current platform commission, Team ceiling, B2B ceiling and payout minimum.
 
 ## 9. Partner administration
 

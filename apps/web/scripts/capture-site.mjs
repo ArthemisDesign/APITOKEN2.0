@@ -152,10 +152,13 @@ const dashboardCaptures = [
   ["dashboard-referral-light", "/dashboard?view=referral", 1440, 1000, "light"],
   ["dashboard-referral-dark", "/dashboard?view=referral", 1440, 1000, "dark"],
   ["dashboard-referral-russian-light", "/dashboard?view=referral", 1440, 1000, "light", "ru"],
+  ["dashboard-referral-referrals-light", "/dashboard?view=referral&tab=referrals", 1440, 1000, "light"],
+  ["dashboard-referral-b2b-dialog-light", "/dashboard?view=referral&tab=referrals", 1440, 1000, "light", "en", "referral-b2b-open"],
   ["dashboard-referral-team-dark", "/dashboard?view=referral&tab=team", 1440, 1000, "dark"],
   ["dashboard-referral-requests-light", "/dashboard?view=referral&tab=requests", 1440, 1000, "light"],
   ["dashboard-referral-payouts-russian-dark", "/dashboard?view=referral&tab=payouts", 1440, 1000, "dark", "ru"],
-  ["dashboard-referral-ordinary-light", "/dashboard?view=referral&referralState=ordinary", 1440, 1000, "light"],
+  ["dashboard-referral-docs-light", "/dashboard?view=referral&tab=docs", 1440, 1000, "light"],
+  ["dashboard-referral-ordinary-light", "/dashboard?view=referral&partner-preview=no-access", 1440, 1000, "light"],
   ["dashboard-support-dark", "/dashboard?view=support", 1440, 1000, "dark"],
   ["dashboard-support-light", "/dashboard?view=support", 1440, 1000, "light"],
   ["dashboard-profile-light", "/dashboard?view=profile", 1440, 1000, "light"],
@@ -177,7 +180,8 @@ const dashboardCaptures = [
   ["dashboard-referral-mobile-light", "/dashboard?view=referral", 390, 844, "light"],
   ["dashboard-referral-mobile-russian-dark", "/dashboard?view=referral&tab=team", 390, 844, "dark", "ru"],
   ["dashboard-referral-revoke-mobile-dark", "/dashboard?view=referral&tab=team", 390, 844, "dark", "en", "referral-revoke-open"],
-  ["dashboard-referral-ordinary-mobile-dark", "/dashboard?view=referral&referralState=ordinary", 390, 844, "dark"],
+  ["dashboard-referral-b2b-dialog-mobile-dark", "/dashboard?view=referral&tab=referrals", 390, 844, "dark", "en", "referral-b2b-open"],
+  ["dashboard-referral-ordinary-mobile-dark", "/dashboard?view=referral&partner-preview=no-access", 390, 844, "dark"],
   ["dashboard-support-mobile-light", "/dashboard?view=support", 390, 844, "light"],
   ["dashboard-support-mobile-dark", "/dashboard?view=support", 390, 844, "dark"],
   ["dashboard-profile-mobile-light", "/dashboard?view=profile", 390, 844, "light"],
@@ -441,7 +445,7 @@ const dashboardFixtureScript = `(() => {
       invitation.revokedAt = new Date().toISOString();
       return json({ invitation: { id: invitation.id, revokedAt: invitation.revokedAt, revoked: true } });
     }
-    if (path === "/referral") return json(location.search.includes("referralState=ordinary") ? { state: "unavailable", membership: null } : referral);
+    if (path === "/referral") return json(location.search.includes("partner-preview=no-access") ? { state: "unavailable", membership: null } : referral);
     if (path === "/auth/logout") return Promise.resolve(new Response(null, { status: 204 }));
     return json({ message: "Fixture route not found" }, 404);
   };
@@ -645,6 +649,10 @@ async function capturePage(client, [name, route, width, height, theme, language 
     await clickSelector(client, ".referral-invites .btn");
     await waitForCondition(client, `Boolean(document.querySelector('[role="alertdialog"]'))`, `${name} revoke-invitation dialog`);
   }
+  if (state === "referral-b2b-open") {
+    await clickSelector(client, ".referral-directory-table .btn");
+    await waitForCondition(client, `Boolean(document.querySelector('.referral-pricing-modal[role="dialog"]'))`, `${name} B2B dialog`);
+  }
   const visualStateResult = await client.send("Runtime.evaluate", {
     expression: `(() => {
       const h1 = document.querySelector('h1');
@@ -725,7 +733,7 @@ async function capturePage(client, [name, route, width, height, theme, language 
   const measuredSize = cssContentSize ?? contentSize;
   const pageHeight = Math.ceil(measuredSize.height);
   const pageWidth = Math.ceil(measuredSize.width);
-  const modalState = state === "key-create-open" || state === "key-edit-open" || state === "key-revoke-open" || state === "referral-revoke-open";
+  const modalState = state === "key-create-open" || state === "key-edit-open" || state === "key-revoke-open" || state === "referral-revoke-open" || state === "referral-b2b-open";
   const screenshot = await client.send("Page.captureScreenshot", modalState ? {
     format: "png",
     fromSurface: true,
@@ -1191,10 +1199,10 @@ async function verifyReferralLayout(client) {
   const loaded = client.once("Page.loadEventFired");
   await client.send("Page.navigate", { url: new URL("/dashboard?view=referral", baseUrl).href });
   await loaded;
-  await waitForCondition(client, `document.querySelectorAll('.referral-tabs button').length === 5 && document.querySelectorAll('.referral-earnings-graph .uchart-col').length === 30`, "active Referral overview");
+  await waitForCondition(client, `document.querySelectorAll('.referral-subnav button').length === 6 && document.querySelectorAll('.referral-earnings-graph .uchart-col').length === 30`, "active Referral overview");
   const overviewResult = await client.send("Runtime.evaluate", {
     expression: `(() => {
-      const tabs = [...document.querySelectorAll('.referral-tabs button')];
+      const tabs = [...document.querySelectorAll('.referral-subnav button')];
       const activeColumns = [...document.querySelectorAll('.referral-earnings-graph .uchart-col')].filter((column) => column.querySelector('.uchart-seg'));
       const body = document.querySelector('.referral-panel')?.innerText || '';
       return JSON.stringify({
@@ -1203,21 +1211,33 @@ async function verifyReferralLayout(client) {
         legend: [...document.querySelectorAll('.referral-earnings-graph .usage-chart-legend span')].map((item) => item.textContent.trim()),
         activeColumns: activeColumns.length,
         everyColumnNamed: activeColumns.every((column) => /Claude|GPT|Gemini/.test(column.getAttribute('aria-label') || '')),
+        providerCards: [...document.querySelectorAll('.referral-provider-section .uprovider-name strong')].map((item) => item.textContent.trim()),
         hasUuid: /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i.test(body),
         forbiddenCopy: /markup|promo.?code|промокод/i.test(body),
-        shareExplanation: body.includes('retained from a member') && body.includes('total remains $10'),
+        hasLongShareExplanation: body.includes('retained from a member') || body.includes('total remains $10'),
       });
     })()`,
     returnByValue: true,
   });
   const overview = JSON.parse(overviewResult.result.value);
-  if (overview.tabs.join("|") !== "Overview|Referrals|Team|Requests|Payouts" || overview.current !== "Overview" ||
+  if (overview.tabs.join("|") !== "Overview|Referrals|Team|Requests|Payouts|Docs" || overview.current !== "Overview" ||
       overview.legend.join("|") !== "Claude|GPT|Gemini" || overview.activeColumns !== 30 || !overview.everyColumnNamed ||
-      overview.hasUuid || overview.forbiddenCopy || !overview.shareExplanation) {
+      overview.providerCards.join("|") !== "Claude|GPT|Gemini|Kimi" || overview.hasUuid || overview.forbiddenCopy || overview.hasLongShareExplanation) {
     throw new Error(`Referral overview semantics failed: ${JSON.stringify(overview)}`);
   }
 
-  await clickSelector(client, ".referral-tabs button:nth-child(3)");
+  await clickSelector(client, ".referral-subnav button:nth-child(2)");
+  await waitForCondition(client, `Boolean(document.querySelector('input[type="search"]')) && Boolean(document.querySelector('.referral-directory-table'))`, "Referral directory search");
+  await client.send("Runtime.evaluate", { expression: `(() => { const input = document.querySelector('input[type="search"]'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; set.call(input, 'northstar'); input.dispatchEvent(new Event('input', { bubbles: true })); })()` });
+  await waitForCondition(client, `document.querySelectorAll('.referral-directory-table tbody tr').length === 1`, "Referral email search result");
+  await clickSelector(client, ".referral-directory-table .btn");
+  await waitForCondition(client, `Boolean(document.querySelector('.referral-pricing-modal'))`, "per-referral B2B dialog");
+  const pricingResult = await client.send("Runtime.evaluate", { expression: `JSON.stringify({ ceiling: document.querySelector('.referral-ceiling-callout strong')?.textContent.trim(), providers: [...document.querySelectorAll('.referral-provider-terms label>b')].map((item) => item.textContent.trim()) })`, returnByValue: true });
+  const pricing = JSON.parse(pricingResult.result.value);
+  if (pricing.ceiling !== "25%" || pricing.providers.join("|") !== "Claude|GPT|Gemini|Kimi") throw new Error(`Referral B2B dialog failed: ${JSON.stringify(pricing)}`);
+  await clickSelector(client, ".referral-pricing-modal .key-modal-close");
+
+  await clickSelector(client, ".referral-subnav button:nth-child(3)");
   await waitForCondition(client, `new URLSearchParams(location.search).get('tab') === 'team' && Boolean(document.querySelector('input[name="teamEmail"]'))`, "Referral Team URL state");
   const teamResult = await client.send("Runtime.evaluate", {
     expression: `(() => {
@@ -1229,14 +1249,15 @@ async function verifyReferralLayout(client) {
         emailAutocomplete: email?.autocomplete,
         maxes: shares.map((input) => input.max),
         memberEmails: memberEmails.map((item) => ({ text: item.textContent.trim(), translate: item.getAttribute('translate') })),
-        tabCurrent: document.querySelector('.referral-tabs [aria-current="page"]')?.textContent.trim(),
+        tabCurrent: document.querySelector('.referral-subnav [aria-current="page"]')?.textContent.trim(),
+        checkboxes: document.querySelectorAll('.referral-checkbox-card input[type="checkbox"]').length,
       });
     })()`,
     returnByValue: true,
   });
   const team = JSON.parse(teamResult.result.value);
   if (team.emailType !== "email" || team.emailAutocomplete !== "email" || team.maxes.some((value) => Number(value) > 20) ||
-      team.memberEmails.length !== 1 || team.memberEmails.some((item) => item.translate !== "no" || !item.text.includes("@")) || team.tabCurrent !== "Team") {
+      team.memberEmails.length !== 1 || team.memberEmails.some((item) => item.translate !== "no" || !item.text.includes("@")) || team.tabCurrent !== "Team" || team.checkboxes < 2) {
     throw new Error(`Referral Team identity/ceiling failed: ${JSON.stringify(team)}`);
   }
 
@@ -1258,18 +1279,18 @@ async function verifyReferralLayout(client) {
   await waitForCondition(client, `!document.querySelector('[role="alertdialog"]') && !document.querySelector('.referral-invites')?.innerText.includes('new.partner@studio.example')`, "Referral invitation revocation");
 
   const ordinaryLoaded = client.once("Page.loadEventFired");
-  await client.send("Page.navigate", { url: new URL("/dashboard?view=referral&referralState=ordinary", baseUrl).href });
+  await client.send("Page.navigate", { url: new URL("/dashboard?view=referral&partner-preview=no-access", baseUrl).href });
   await ordinaryLoaded;
   await waitForCondition(client, `Boolean(document.querySelector('.referral-access-card a[href="https://t.me/bozinodev"]'))`, "ordinary-account partner CTA");
   const ordinaryResult = await client.send("Runtime.evaluate", {
-    expression: `JSON.stringify({ tabs: document.querySelectorAll('.referral-tabs').length, text: document.querySelector('.referral-access-card')?.innerText || '' })`,
+    expression: `JSON.stringify({ tabs: document.querySelectorAll('.referral-subnav').length, text: document.querySelector('.referral-access-card')?.innerText || '' })`,
     returnByValue: true,
   });
   const ordinary = JSON.parse(ordinaryResult.result.value);
   if (ordinary.tabs !== 0 || !ordinary.text.includes("enabled manually") || !ordinary.text.includes("account email")) {
     throw new Error(`Referral ordinary-account state failed: ${JSON.stringify(ordinary)}`);
   }
-  process.stdout.write("Verified Referral URL tabs, provider chart, email identity, Team ceilings, retained-share semantics, destructive-action confirmation, and ordinary-account CTA\n");
+  process.stdout.write("Verified Referral URL tabs, Usage-parity providers, email search, per-row B2B ceiling, Team controls, destructive-action confirmation, and no-access CTA\n");
 }
 
 async function verifyApiKeysLayout(client) {

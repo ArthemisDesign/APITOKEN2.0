@@ -13,6 +13,7 @@ import {
   type LedgerEntry,
   type ProviderStatus,
   type ReferralActiveSnapshot,
+  type ReferralSnapshot,
   type TotpSetup,
   type UsageView,
 } from "./api";
@@ -326,7 +327,13 @@ export async function previewRequest<T>(path: string, init: RequestInit = {}): P
     case "GET /account": return account() as T;
     case "GET /account/ledger": return { entries: ledger } as T;
     case "GET /account/usage": return usage(url.searchParams.get("window") ?? "30d") as T;
-    case "GET /referral": return referral as T;
+    case "GET /referral": {
+      // Preview-only state selector: lets reviewers inspect both sides of the access gate
+      // without changing production identity or API semantics.
+      const previewState = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("partner-preview");
+      const snapshot: ReferralSnapshot = previewState === "no-access" ? { state: "unavailable", membership: null } : referral;
+      return snapshot as T;
+    }
     case "POST /referral/team-invitations": {
       const input = body(init);
       const authority = input.authority as Partial<ReferralActiveSnapshot["invitations"][number]>;

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const source = readFileSync(join(import.meta.dirname, "referral.tsx"), "utf8");
 const apiSource = readFileSync(join(import.meta.dirname, "..", "..", "..", "lib", "api.ts"), "utf8");
+const fixtureSource = readFileSync(join(import.meta.dirname, "..", "..", "..", "lib", "preview-fixtures.ts"), "utf8");
 
 describe("Commerce Dashboard partner surface", () => {
   it("keeps account identity email-first and session-owned", () => {
@@ -28,6 +29,31 @@ describe("Commerce Dashboard partner surface", () => {
     expect(source).toContain('href="https://t.me/bozinodev"');
     expect(source).toContain('snapshot.state === "unavailable"');
     expect(source).toContain('snapshot.state === "disabled"');
+    expect(source).toContain('"payouts", "docs"');
+    expect(source).not.toContain('"settings"');
+  });
+
+  it("keeps referral actions on an email-owned row and exposes search plus the B2B ceiling", () => {
+    expect(source).toContain('type="search"');
+    expect(source).toContain("setPricing(item)");
+    expect(source).toContain("BusinessPricingDialog");
+    expect(source).toContain("snapshot.membership.b2bMaxDiscountBps");
+    expect(source).toContain("value * 100");
+    expect(source).not.toMatch(/balanceNano/);
+  });
+
+  it("uses production provider metadata while hiding non-production GLM from referral analytics", () => {
+    expect(source).toContain("DASHBOARD_PROVIDERS");
+    expect(source).toContain('new Set(["glm", "zai", "zhipu"])');
+    expect(source).toContain('className="uprovider-card"');
+    expect(source).toContain('className="usage-graph referral-earnings-graph"');
+  });
+
+  it("offers reviewable active and no-access states only through preview fixtures", () => {
+    expect(fixtureSource).toContain('get("partner-preview")');
+    expect(fixtureSource).toContain('previewState === "no-access"');
+    expect(fixtureSource).toContain('{ state: "unavailable", membership: null }');
+    expect(apiSource).toContain('process.env.NEXT_PUBLIC_PREVIEW_FIXTURES === "1"');
   });
 
   it("confirms destructive invitation revocation and manages modal focus", () => {
