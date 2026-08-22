@@ -14,19 +14,19 @@ email to its immutable account UUID server-side, and browser views receive the c
 than Commerce/Sales UUIDs. Team income is a retained share of a member's fixed commission pool, not
 an additive markup, and every application and database boundary caps that share at 2,000 bps (20%).
 
-The consumer is **not releasable yet**. Exact Sales producer commit
-`cbc6c22321838908b83664711763fcf89c6699c9` additively supplies nullable
-`customerCommerceUserId` on every protected request view. On the audit date the commit exists only
-on `origin/fix/referral-request-account-identity` and is not an ancestor of `origin/master`.
-Commerce deliberately validates that producer response strictly; deploying the consumer first
-would turn incomplete request projections into safe 503 responses. The required sequence is:
+The consumer has passed its producer-first gate. Exact Sales producer commit
+`a57b582b61a0d85cd42b90bdfce705611889fda9` additively supplies nullable
+`customerCommerceUserId` on every protected request view and is production-GREEN under
+`deploy/watchdog`. Commerce deliberately validates that producer response strictly; deploying the
+consumer against an older producer would turn incomplete request projections into safe 503
+responses. The remaining release sequence is:
 
-1. merge and obtain production-GREEN `deploy/watchdog` evidence for producer SHA `cbc6c223…`;
-2. rebase/revalidate this Commerce consumer against the resulting `origin/master`;
-3. publish a human-reviewable `preview/*` Web deployment and obtain approval;
-4. merge the Commerce consumer and verify production parity;
-5. only then remove/redirect legacy Sales UI surfaces in a separate cutover;
-6. remove the dormant internal promo producer only after dependency search proves that it has no
+1. publish a human-reviewable `preview/*` Web deployment and obtain approval;
+2. rebase/revalidate this Commerce consumer against the resulting `origin/master` through the
+   serialized merge gate;
+3. merge the Commerce consumer and verify production parity;
+4. only then remove/redirect legacy Sales UI surfaces in a separate cutover;
+5. remove the dormant internal promo producer only after dependency search proves that it has no
    deployed consumer.
 
 ## Identity and authorization

@@ -130,11 +130,10 @@ serialized per invitee account: an exact retry returns the open invite, settings
 an expired invite is revoked before replacement, and an existing membership cannot be re-parented
 by invitation.
 
-Exact Sales producer SHA `cbc6c22321838908b83664711763fcf89c6699c9` adds the nullable request
-identity field to every protected `/v1/internal/referral/*` request projection. The Commerce
-consumer must not ship before that exact SHA is production-GREEN. The consumer validates the field
-strictly; an older or malformed producer therefore fails unavailable instead of dropping the
-customer email or exposing an internal identifier.
+Exact production-GREEN Sales producer SHA `a57b582b61a0d85cd42b90bdfce705611889fda9` adds the nullable
+request identity field to every protected `/v1/internal/referral/*` request projection. The
+Commerce consumer validates the field strictly; an older or malformed producer therefore fails
+unavailable instead of dropping the customer email or exposing an internal identifier.
 
 Commerce exposes the browser routes `/v1/referral/*` and `/v1/admin/referral/*`. It derives the
 partner UUID from the verified session or an admin-side Commerce account lookup, resolves Team and

@@ -348,11 +348,11 @@ invitation right, B2B self-service ceiling and B2B delegation right. A Team pare
 member's direct platform commission; it edits only the retained edge share and delegated authority
 within its own ceilings.
 
-This consumer contract depends on the additive Sales request identity field from exact producer SHA
-`cbc6c22321838908b83664711763fcf89c6699c9`. The Commerce consumer must not ship before that SHA is
-production-GREEN: without nullable `customerCommerceUserId` on request views, Commerce cannot
-restore the authoritative customer email after a reload. The local consumer keeps the field strict
-so an older producer fails unavailable instead of silently showing a wrong identity.
+This consumer contract depends on the additive Sales request identity field from exact
+production-GREEN producer SHA `a57b582b61a0d85cd42b90bdfce705611889fda9`. Nullable
+`customerCommerceUserId` on request views lets Commerce restore the authoritative customer email
+after a reload. The consumer keeps the field strict so an older or malformed producer fails
+unavailable instead of silently showing a wrong identity.
 
 Engine provisioning is recoverable: the stable handle `user:<commercial UUID>` makes account
 creation idempotent. API-key revocation uses the engine's non-secret `key_id`; PostgreSQL stores the

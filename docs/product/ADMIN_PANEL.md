@@ -328,12 +328,11 @@ non-translatable. The legacy `admin.partners.apitoken.sale/admin` surface remain
 for production parity verification. It is retired only in a separate release after the unified
 routes and all mutations are proven on the exact deployed SHA.
 
-The unified consumer is gated by exact Sales producer SHA
-`cbc6c22321838908b83664711763fcf89c6699c9`, which adds nullable
-`customerCommerceUserId` to every protected request view. `apps/admin` must not ship this consumer
-before that SHA is production-GREEN; otherwise a request list cannot restore the current customer
-email after reload. The Commerce schema rejects the older response instead of accepting an
-identity-incomplete row.
+The unified consumer is gated by exact production-GREEN Sales producer SHA
+`a57b582b61a0d85cd42b90bdfce705611889fda9`, which adds nullable
+`customerCommerceUserId` to every protected request view. A request list can therefore restore the
+current customer email after reload. The Commerce schema still rejects an older or malformed
+response instead of accepting an identity-incomplete row.
 
 ## Partner payout readiness
 
