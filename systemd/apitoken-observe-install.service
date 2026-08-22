@@ -1,0 +1,13 @@
+[Unit]
+Description=Create the API Token log-only observe SSH account
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+PrivateTmp=true
+# No ProtectSystem/ProtectHome: the watchdog namespace makes /etc/shells and /etc/passwd
+# read-only even after sudo, and ProtectHome cannot create /home/observe. This oneshot is the
+# same escape hatch as apitoken-sudoers-install.service.
+ExecStart=/usr/local/lib/apitoken-watchdog/install-observe.sh

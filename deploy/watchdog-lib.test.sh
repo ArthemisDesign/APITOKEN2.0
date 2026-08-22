@@ -1369,6 +1369,8 @@ for runtime_definition in \
   systemd/apitoken-deploy-watchdog.service \
   systemd/apitoken-candidate-validator.service \
   systemd/apitoken-tmpfiles-install.service \
+  systemd/apitoken-observe-install.service \
+  deploy/install-observe.sh \
   systemd/claude-api.service \
   systemd/claude-api@.service \
   systemd/claude-api-anthropic@.service \
@@ -1416,6 +1418,9 @@ fi
 wd_path_is_systemd_definition systemd/apitoken-deploy-watchdog.service
 wd_path_is_systemd_definition systemd/apitoken-tmpfiles-install.service
 wd_path_is_systemd_definition systemd/apitoken-sysctl-install.service
+wd_path_is_systemd_definition systemd/apitoken-observe-install.service
+wd_path_is_systemd_definition deploy/install-observe.sh
+wd_path_is_systemd_definition deploy/apitoken-observe.sh
 wd_path_is_systemd_definition systemd/sysctl-apitoken-redis.conf
 wd_path_is_systemd_definition deploy/install-sysctl.sh
 wd_path_is_systemd_definition deploy/install-tmpfiles.sh
@@ -4249,40 +4254,70 @@ if grep -Eq 'usermod -a -G deploy apitoken-ci' "$ROOT/deploy/install-watchdog.sh
 fi
 grep -Fq 'gpasswd -d apitoken-ci deploy' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'the watchdog installer does not enforce apitoken-ci group isolation'
-grep -Fq 'provision_observe_account' "$ROOT/deploy/install-watchdog.sh" \
-  || wd_die 'the watchdog installer does not provision the observe SSH account'
-observe_fn=$(sed -n '/^provision_observe_account()/,/^}/p' "$ROOT/deploy/install-watchdog.sh")
-grep -Fq 'groupadd --system observe' <<<"$observe_fn" \
+grep -Fq 'systemctl start apitoken-observe-install.service' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the watchdog installer does not start the isolated observe account installer'
+grep -Fq 'install-observe.sh' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the observe installer is not delivered to the host'
+if grep -Fq 'provision_observe_account' "$ROOT/deploy/install-watchdog.sh"; then
+  wd_die 'observe useradd still runs inside the watchdog read-only mount namespace'
+fi
+if grep -Fq '/etc/shells' "$ROOT/deploy/install-watchdog.sh"; then
+  wd_die 'the watchdog installer still writes /etc/shells inside its read-only namespace'
+fi
+grep -Fq 'groupadd --system observe' "$ROOT/deploy/install-observe.sh" \
   || wd_die 'observe provisioning must create the observe group (Ubuntu useradd --system does not)'
-grep -Fq 'useradd --system --gid observe --create-home --home-dir "$home" --shell "$wrapper"' \
-  <<<"$observe_fn" \
-  || wd_die 'the watchdog installer does not create the observe account in group observe'
-grep -Fq 'usermod -g observe observe' <<<"$observe_fn" \
+grep -Fq 'useradd --system --gid observe --create-home --home-dir "$HOME_DIR" --shell "$WRAPPER"' \
+  "$ROOT/deploy/install-observe.sh" \
+  || wd_die 'the observe installer does not create the observe account in group observe'
+grep -Fq 'usermod -g observe observe' "$ROOT/deploy/install-observe.sh" \
   || wd_die 'observe provisioning must adopt an existing observe user into group observe'
-observe_groupadd_line=$(grep -n 'groupadd --system observe' <<<"$observe_fn" | head -n 1 | cut -d: -f1)
-observe_useradd_line=$(grep -n 'useradd --system --gid observe' <<<"$observe_fn" | head -n 1 | cut -d: -f1)
-observe_install_home_line=$(grep -n 'install -d -o observe -g observe -m 0750 "$home"' \
-  <<<"$observe_fn" | head -n 1 | cut -d: -f1)
+observe_groupadd_line=$(grep -n 'groupadd --system observe' "$ROOT/deploy/install-observe.sh" \
+  | head -n 1 | cut -d: -f1)
+observe_useradd_line=$(grep -n 'useradd --system --gid observe' "$ROOT/deploy/install-observe.sh" \
+  | head -n 1 | cut -d: -f1)
+observe_install_home_line=$(grep -n 'install -d -o observe -g observe -m 0750 "$HOME_DIR"' \
+  "$ROOT/deploy/install-observe.sh" | head -n 1 | cut -d: -f1)
 [[ -n $observe_groupadd_line && -n $observe_useradd_line && -n $observe_install_home_line ]] \
   || wd_die 'observe provisioning lost groupadd, useradd, or home install'
 (( observe_groupadd_line < observe_useradd_line )) \
   || wd_die 'observe groupadd must run before useradd --gid observe'
 (( observe_groupadd_line < observe_install_home_line )) \
   || wd_die 'observe groupadd must run before install -g observe'
-grep -Fq 'gpasswd -d observe deploy' "$ROOT/deploy/install-watchdog.sh" \
-  || wd_die 'the watchdog installer does not isolate observe from the deploy group'
+grep -Fq 'gpasswd -d observe deploy' "$ROOT/deploy/install-observe.sh" \
+  || wd_die 'the observe installer does not isolate observe from the deploy group'
+if grep -Eq 'usermod -a -G deploy observe' "$ROOT/deploy/install-observe.sh"; then
+  wd_die 'the observe installer must not add observe to the deploy group'
+fi
 if grep -Eq 'usermod -a -G deploy observe' "$ROOT/deploy/install-watchdog.sh"; then
   wd_die 'the watchdog installer must not add observe to the deploy group'
 fi
 grep -Fq 'restrict,command=\"/usr/local/bin/apitoken-observe\"' \
-  "$ROOT/deploy/install-watchdog.sh" \
+  "$ROOT/deploy/install-observe.sh" \
   || wd_die 'observe authorized_keys must ForceCommand the log-only wrapper'
+grep -Fxq 'ExecStart=/usr/local/lib/apitoken-watchdog/install-observe.sh' \
+  "$ROOT/systemd/apitoken-observe-install.service" \
+  || wd_die 'the isolated observe installer unit does not run the fixed root-owned installer'
+if grep -Eq '^(ProtectSystem|ProtectHome)=' "$ROOT/systemd/apitoken-observe-install.service"; then
+  wd_die 'observe install must not inherit ProtectSystem/ProtectHome (passwd/shells/home are RO there)'
+fi
+observe_start_line=$(grep -nF 'systemctl start apitoken-observe-install.service' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+[[ -n $tmpfiles_reload_line && -n $observe_start_line \
+    && $observe_start_line -gt $tmpfiles_reload_line ]] \
+  || wd_die 'the isolated observe installer is not started after daemon-reload'
 grep -Fq 'run_as_ci bash "$candidate/deploy/apitoken-observe.test.sh"' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'static lane must run the observe wrapper regression'
 if wd_path_is_controller_definition deploy/apitoken-observe.sh; then
-  wd_die 'observe wrapper updates must re-run full host provisioning'
+  wd_die 'observe wrapper updates must run the systemd observe oneshot, not controller-only'
 fi
+if wd_path_is_controller_definition deploy/install-observe.sh; then
+  wd_die 'observe installer updates must run the systemd observe oneshot, not controller-only'
+fi
+wd_path_is_systemd_definition deploy/apitoken-observe.sh \
+  || wd_die 'observe wrapper must install via the systemd oneshot'
+wd_path_is_systemd_definition deploy/install-observe.sh \
+  || wd_die 'observe installer must install via the systemd oneshot'
 wd_path_requires_infrastructure_install deploy/apitoken-observe.sh \
   || wd_die 'observe wrapper must install on the host'
 grep -Fq -- '--controller-only' "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \

@@ -139,11 +139,14 @@ SSH as `deploy`. An AI agent must not. The only SSH login an agent may use is `o
 ssh observe@84.32.48.2
 ```
 
-The full watchdog installer (`deploy/install-watchdog.sh`) creates the `observe` system group and
-user (Ubuntu `useradd --system` does not create a matching group by itself), sets the login shell
-to `/usr/local/bin/apitoken-observe`, adds it to `systemd-journal`/`adm`, and mirrors public keys
-from `/home/deploy/.ssh/authorized_keys` with `restrict,command=` so even `ssh observe@` cannot
-escape into a shell. That session is journal and readiness inspection. It must not run
+The full watchdog installer stages the observe wrapper and a root oneshot
+(`apitoken-observe-install.service`), then `systemctl start`s it. That unit is the same escape
+hatch as `apitoken-sudoers-install.service`: the watchdog `ProtectSystem=full` namespace keeps
+`/etc/shells` and `/etc/passwd` read-only even after sudo, and `ProtectHome=read-only` cannot
+create `/home/observe`. The oneshot creates the `observe` system group and user, sets the login
+shell to `/usr/local/bin/apitoken-observe`, adds it to `systemd-journal`/`adm`, and mirrors public
+keys from `/home/deploy/.ssh/authorized_keys` with `restrict,command=` so even `ssh observe@`
+cannot escape into a shell. That session is journal and readiness inspection. It must not run
 `systemctl start|stop|restart|kill`, `deploy.sh`, `engine-bluegreen.sh`, or
 `apitoken-watchdog retry|run`. If `observe` is unreachable, stop. Do not fall back to `deploy`.
 Diagnose from GitHub `deploy/watchdog-log`. Land releases with `./deploy/agent-merge.sh`.

@@ -201,66 +201,6 @@ publish_pricing_retirement_postdrop_helper() {
     /usr/local/lib/apitoken-watchdog/pricing-retirement-postdrop.sh
 }
 
-provision_observe_account() {
-  local wrapper_src=$ROOT/deploy/apitoken-observe.sh
-  local wrapper=/usr/local/bin/apitoken-observe
-  local home=/home/observe
-  local ssh_dir=$home/.ssh
-  local keys=$ssh_dir/authorized_keys
-  local deploy_keys=/home/deploy/.ssh/authorized_keys
-  local shells=/etc/shells
-  local tmp
-  [[ -f $wrapper_src && ! -L $wrapper_src ]] \
-    || { echo 'observe wrapper source is missing' >&2; return 1; }
-  install -o root -g root -m 0755 "$wrapper_src" "$wrapper"
-  if [[ -e $shells || -L $shells ]]; then
-    [[ -f $shells && ! -L $shells ]] || { echo "$shells must be a regular file" >&2; return 1; }
-  else
-    install -o root -g root -m 0644 /dev/null "$shells"
-  fi
-  grep -qxF "$wrapper" "$shells" || printf '%s\n' "$wrapper" >>"$shells"
-  # Ubuntu useradd --system does not create a user-private group. install -o observe -g observe
-  # then fails with "invalid group". A previous install may already have created the user in
-  # nogroup; groupadd first so both the first run and that recovery path converge.
-  if ! getent group observe >/dev/null; then
-    groupadd --system observe
-  fi
-  if ! id observe >/dev/null 2>&1; then
-    useradd --system --gid observe --create-home --home-dir "$home" --shell "$wrapper" \
-      --comment 'apitoken log-only SSH' observe
-  else
-    usermod -g observe observe
-  fi
-  usermod --shell "$wrapper" observe
-  if getent group systemd-journal >/dev/null; then
-    usermod -a -G systemd-journal observe
-  fi
-  if getent group adm >/dev/null; then
-    usermod -a -G adm observe
-  fi
-  if id -Gn observe | tr ' ' '\n' | grep -Fxq deploy; then
-    gpasswd -d observe deploy >/dev/null \
-      || echo 'warning: could not remove observe from the deploy group' >&2
-  fi
-  install -d -o observe -g observe -m 0750 "$home"
-  install -d -o observe -g observe -m 0700 "$ssh_dir"
-  [[ -d $home && ! -L $home ]] || { echo "$home must be a real directory" >&2; return 1; }
-  [[ -d $ssh_dir && ! -L $ssh_dir ]] || { echo "$ssh_dir must be a real directory" >&2; return 1; }
-  tmp=$(mktemp)
-  {
-    printf '%s\n' '# managed by install-watchdog.sh; ForceCommand is the observe wrapper'
-    if [[ -f $deploy_keys && ! -L $deploy_keys ]]; then
-      awk '
-        match($0, /(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com) [A-Za-z0-9+\/=]+/) {
-          printf "restrict,command=\"/usr/local/bin/apitoken-observe\" %s\n", substr($0, RSTART, RLENGTH)
-        }
-      ' "$deploy_keys"
-    fi
-  } >"$tmp"
-  install -o observe -g observe -m 0600 "$tmp" "$keys"
-  rm -f -- "$tmp"
-}
-
 install_and_verify_sudo_policy() {
   local authbot_helper=/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
   local authbot_backup=${authbot_helper}.rollback.$$
@@ -437,6 +377,14 @@ install_systemd_definitions() {
     /usr/local/lib/apitoken-watchdog/install-tmpfiles.sh
   install -o root -g root -m 0644 "$ROOT/systemd/apitoken-tmpfiles.conf" \
     /usr/local/lib/apitoken-watchdog/apitoken-tmpfiles.conf
+  # Observe useradd writes passwd, shells, and /home/observe. Those paths stay read-only
+  # in this ProtectSystem=full / ProtectHome=read-only namespace even after sudo (2026-08-22
+  # host journal: observe installer aborted with Read-only file system). Stage the scripts here;
+  # a manager-spawned oneshot publishes the account, same as tmpfiles and sudoers.
+  install -o root -g root -m 0755 "$ROOT/deploy/install-observe.sh" \
+    /usr/local/lib/apitoken-watchdog/install-observe.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/apitoken-observe.sh" \
+    /usr/local/lib/apitoken-watchdog/apitoken-observe.sh
   install -o root -g root -m 0755 "$ROOT/deploy/install-sysctl.sh" \
     /usr/local/lib/apitoken-watchdog/install-sysctl.sh
   install -o root -g root -m 0644 "$ROOT/systemd/sysctl-apitoken-redis.conf" \
@@ -446,7 +394,7 @@ install_systemd_definitions() {
     apitoken-deploy-watchdog.service apitoken-deploy-watchdog.timer \
     apitoken-candidate-validator.service apitoken-candidate-validator.timer \
     apitoken-sudoers-install.service apitoken-tmpfiles-install.service \
-    apitoken-sysctl-install.service \
+    apitoken-sysctl-install.service apitoken-observe-install.service \
     apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
@@ -480,6 +428,7 @@ install_systemd_definitions() {
   fi
   systemctl start apitoken-tmpfiles-install.service
   systemctl start apitoken-sysctl-install.service
+  systemctl start apitoken-observe-install.service
 
   # Journald storage must be an explicit decision rather than a side effect of boot ordering. Under
   # the default `Storage=auto` journald picks volatile-vs-persistent once at start by testing
@@ -545,7 +494,6 @@ if id -Gn apitoken-ci | tr ' ' '\n' | grep -Fxq deploy; then
   gpasswd -d apitoken-ci deploy >/dev/null \
     || echo 'warning: could not remove apitoken-ci from the deploy group' >&2
 fi
-provision_observe_account
 
 install -d -o deploy -g deploy -m 0751 /var/lib/apitoken/watchdog /var/lib/apitoken/watchdog/candidates
 install -d -o deploy -g deploy -m 0750 /var/lib/apitoken/watchdog/ci-home

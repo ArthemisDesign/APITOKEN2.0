@@ -26,6 +26,7 @@ expect_help() {
 
 [[ -f $WRAPPER && ! -L $WRAPPER ]] || fail 'wrapper source is missing'
 bash -n "$WRAPPER"
+bash -n "$ROOT/deploy/install-observe.sh"
 grep -Fq 'Never exec a user shell' "$WRAPPER" || fail 'wrapper lost its no-shell contract'
 grep -Fq 'Never call sudo' "$WRAPPER" || fail 'wrapper lost its no-sudo contract'
 ! grep -Eq '"\$SYSTEMCTL" (start|stop|restart|kill)' "$WRAPPER" \

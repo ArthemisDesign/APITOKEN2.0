@@ -425,10 +425,13 @@ any other pre-commit step fails, it restores the previous policy and exits non-z
 transaction also restores the prior helper. It also removes `apitoken-ci` from the `deploy` group, so
 candidate-derived test code can no longer write group-writable files in the deployment checkout.
 
-The same full installer creates the `observe` system group and Unix account: login shell
+The same systemd installer starts `apitoken-observe-install.service`, a root oneshot outside the
+watchdog mount namespace. That unit creates the `observe` system group and Unix account: login shell
 `/usr/local/bin/apitoken-observe`, journal groups only, public keys mirrored from `deploy` with
 `restrict,command=`. Ubuntu `useradd --system` does not create a matching group, so the installer
-runs `groupadd --system observe` first. Agents SSH as `observe`. They do not receive `deploy` sudo.
+runs `groupadd --system observe` first. The watchdog process cannot write `/etc/shells` or
+`/etc/passwd` (`ProtectSystem=full`) and cannot create `/home/observe` (`ProtectHome=read-only`).
+Agents SSH as `observe`. They do not receive `deploy` sudo.
 
 The policy deliberately permits `deploy` to re-run the installer at its fixed root-owned path.
 Without that, removing the unrestricted grant would be irreversible without console access.
