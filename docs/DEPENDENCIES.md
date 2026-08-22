@@ -430,7 +430,8 @@ is only what is needed to walk the relationships when making changes:
   to the reviewed runtime contract. The consumer is `crates/router`: after a separate
   producer-first GREEN SHA it strictly validates and normalizes release timestamps and metadata
   into the unified `created`/`apitoken`, preserves the closed endpoint list, keeps top-level
-  capability mirrors, and moves a plane with missing/malformed authoritative metadata to
+  capability mirrors, and publishes the same bounded provider label as both existing `name` and
+  Claude Code gateway-discovery `display_name`. It moves a plane with missing/malformed authoritative metadata to
   last-good/degraded. It also strips globally conflicting aliases, keeping
   namespaced IDs executable and the private native ID for rewrite/preflight. The pricing
   overlay complements, not replaces, runtime metadata. Pricing rates, account identity,

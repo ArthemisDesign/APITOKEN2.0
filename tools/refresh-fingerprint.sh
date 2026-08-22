@@ -12,8 +12,9 @@
 # если ответ 401 по IP-lock — РЕКВЕСТ (заголовки+тело) уже захвачен (нам нужен только он). Проверено:
 # с IP сервера подписка отдаёт 200, захват чистый.
 #
-# Запускается таймером (claude-api-fingerprint.timer) под root; claude гоняем под agents. Нужен
-# ВАЛИДНЫЙ токен подписки из пула. Пул пуст / mitm недоступен — просто выходим, значения без изменений.
+# Dormant operator utility: production timer remains disabled. When an operator invokes it, claude
+# runs as agents and needs one valid pool token. An empty pool or unavailable mitm leaves values
+# unchanged. The script stores config only; blue-green activation belongs to the watchdog.
 set -uo pipefail
 CFG_DIR="${SUB_CFG_DIR:-/srv/claude-api/data}"
 DB="$CFG_DIR/subscriptions.db"
@@ -100,8 +101,10 @@ PY
         # тело: identity (system-блок "You are ...") и billing cc_version
         BODY="$(sed -n '/^### B$/,/^### E$/p' "$CAP")"
         IDENT="$(printf '%s' "$BODY" | grep -oE '"text":"You are [^"]*"' | head -1 | sed -E 's/^"text":"//; s/"$//')"
-        # cc_version=<base>.dNN — берём БАЗУ (без .dNN): суффикс варьируется и добавляется per-подписка
-        CCVER="$(printf '%s' "$BODY" | grep -oE 'cc_version=[^;]+' | head -1 | sed -E 's/^cc_version=//; s/\.d[0-9]+$//')"
+        # Preserve the COMPLETE value from one real request. Releases use several suffix forms
+        # (`.d49`, `.a6e`, `.408`, `.0f1`); stripping one guessed form and appending another creates
+        # a version that never existed.
+        CCVER="$(printf '%s' "$BODY" | grep -oE 'cc_version=[^;]+' | head -1 | sed -E 's/^cc_version=//')"
     fi
 fi
 rm -f "$CAP" 2>/dev/null || true
@@ -111,7 +114,14 @@ rm -f "$CAP" 2>/dev/null || true
 [ -n "$UA" ] || { echo "не удалось определить даже UA — значения без изменений"; exit 0; }
 
 touch "$CONFIG_ENV"
-set_kv() { grep -v "^$1=" "$CONFIG_ENV" > "$CONFIG_ENV.tmp" 2>/dev/null || true; echo "$1=$2" >> "$CONFIG_ENV.tmp"; mv "$CONFIG_ENV.tmp" "$CONFIG_ENV"; }
+NEXT="$CONFIG_ENV.tmp.$$"
+cp "$CONFIG_ENV" "$NEXT"
+set_kv() {
+    local key=$1 value=$2 scratch="$NEXT.row"
+    grep -v "^$key=" "$NEXT" > "$scratch" 2>/dev/null || true
+    printf '%s=%s\n' "$key" "$value" >> "$scratch"
+    mv "$scratch" "$NEXT"
+}
 set_kv CLAUDE_API_UA "$UA"                                    # всегда актуально (из --version как минимум)
 [ -n "$VER" ]      && set_kv CLAUDE_API_ANTHROPIC_VERSION "$VER"   # ниже — best-effort (если захват удался)
 [ -n "$BETA" ]     && set_kv CLAUDE_API_BETA "$BETA"
@@ -123,9 +133,8 @@ set_kv CLAUDE_API_UA "$UA"                                    # всегда а�
 [ -n "$SL_PKGVER" ] && set_kv CLAUDE_API_SL_PKG_VER "$SL_PKGVER"
 [ -n "$SL_OS" ]    && set_kv CLAUDE_API_SL_OS "$SL_OS"
 [ -n "$SL_ARCH" ]  && set_kv CLAUDE_API_SL_ARCH "$SL_ARCH"
-[ -n "$CCVER" ]    && set_kv CLAUDE_API_CC_VERSION "$CCVER"        # billing cc_version=<ver>.<build>
+[ -n "$CCVER" ]    && set_kv CLAUDE_API_CC_VERSION "$CCVER"        # complete captured billing cc_version
+mv "$NEXT" "$CONFIG_ENV"
 chown "$RUN_USER":"$RUN_USER" "$CONFIG_ENV" 2>/dev/null || true
 echo "актуализировано: UA='$UA' BETA='${BETA:+set}' XAPP='${XAPP:-(деф)}' SL_PKG='${SL_PKGVER:-(деф)}' SL_RTVER='${SL_RTVER:-(деф)}' CCVER='${CCVER:-(деф)}'"
-[ -n "${FP_NO_RESTART:-}" ] && { echo "(FP_NO_RESTART — рестарт пропущен)"; exit 0; }
-systemctl restart claude-api 2>/dev/null && echo "claude-api перезапущен" \
-    || echo "(claude-api не как сервис — применится при следующем старте)"
+echo "fingerprint сохранён; активация принадлежит reviewed blue-green rollout"

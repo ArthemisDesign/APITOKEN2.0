@@ -17,7 +17,7 @@ fn email_seed(email: &str) -> u64 {
 /// но это создавало НЕСУЩЕСТВУЮЩИЕ комбинации версий (UA говорит 2.1.188, а x-stainless-package-version/
 /// identity — от 2.1.195) → аномалия ВНУТРИ одного запроса, хуже одинакового UA. Реальные юзеры на одной
 /// версии CC делят точный UA — флот-константный валидный UA нормален. Различие аккаунтов даём через
-/// egress-IP + `metadata.user_id` (per-подписка), а НЕ через фейковые версии. `ua_spread` больше не влияет.
+/// egress-IP + `metadata.user_id` (per-подписка), а НЕ через фейковые версии.
 pub fn persona_ua(cfg: &ProxyConfig, email: &str) -> String {
     let seed = email_seed(email);
     if cfg.user_agents.len() > 1 {
@@ -71,6 +71,12 @@ pub fn fresh_request_id() -> String {
     )
 }
 
+/// Anthropic-shaped public request identity for a gateway-generated response. Keep this separate
+/// from the internal UUIDv4 used for billing and `x-client-request-id`.
+pub fn fresh_anthropic_request_id() -> String {
+    format!("req_{}", fresh_request_id().replace('-', ""))
+}
+
 /// Детерминированная hex-строка из seed (`words`×16 hex). Стабильна per-подписка.
 fn hex_expand(seed: u64, words: usize) -> String {
     let mut out = String::with_capacity(words * 16);
@@ -120,14 +126,6 @@ pub fn persona_session_id(email: &str, session: Option<u64>) -> String {
 pub fn persona_cch(email: &str) -> String {
     hex_expand(email_seed(email).wrapping_add(0xCC), 1)[0..5].to_string()
 }
-/// build-суффикс cc_version (`cc_version=<base>.d<NN>`). Живые захваты показали, что `.dNN` МЕНЯЕТСЯ
-/// между запусками (d49, d80 — зависит от конфиг-окружения инстанса), т.е. это НЕ стабильный build-id.
-/// Значит фиксировать один `.dNN` на весь флот = кластер. Делаем стабильным per-подписка (свой у каждой
-/// «инсталляции»), 2 цифры (10..99) — как в наблюдаемом формате.
-pub fn persona_ccbuild(email: &str) -> String {
-    format!("d{}", 10 + (email_seed(email).wrapping_add(0xB1) % 90))
-}
-
 /// Кэш http-клиентов: один клиент на ПАРУ (прокси, подписка). Ключевание по email критично для
 /// анти-фингерпринта: клиент по одной лишь строке прокси заставил бы подписки с общим/пустым прокси
 /// делить ОДИН reqwest::Client → один пул TCP/HTTP2-соединений и TLS-session-store → токены разных

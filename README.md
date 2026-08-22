@@ -21,9 +21,12 @@ pools, and failure domains.
    api.anthropic.com   →   the response (incl. SSE stream) is relayed to the client BYTE-FOR-BYTE
 ```
 
-For the client the protocol is exactly the same as the real API's (request/response/streaming/errors).
-Injecting the "Claude Code identity" into `system` is the only thing done under the hood: without it
-Anthropic does not let subscription OAuth tokens onto `/v1/messages`. It is invisible to the client.
+For the client the public Messages response, streaming lifecycle, and upstream errors follow the
+Anthropic protocol. The subscription OAuth request is intentionally an adapter boundary: it injects
+or rewrites the Claude Code subscription persona in `system`, replaces provider identity headers,
+and may cap `max_tokens` to the prepaid balance before sending. Anthropic does not admit subscription
+OAuth tokens without that persona. The router still relays the resulting response body, including SSE,
+without buffering.
 
 No session ID needs to be passed. Claude Code/harness is recognized via its already-existing native
 header; a plain SDK/curl/your own product — via keyed hashes of canonical prefixes of the growing

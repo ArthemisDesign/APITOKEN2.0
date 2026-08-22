@@ -518,7 +518,6 @@ fn input_tokens_proxy_config() -> Arc<ProxyConfig> {
         default_beta: String::new(),
         user_agent: "native-input-test".into(),
         user_agents: Vec::new(),
-        ua_spread: 0,
         anthropic_version: String::new(),
         connect_timeout: 1,
         read_timeout: 1,

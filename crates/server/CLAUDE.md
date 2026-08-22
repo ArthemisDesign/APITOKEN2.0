@@ -234,11 +234,10 @@ background loops and the HTTP router. Here — and only here — everything is w
   GLM-specific env: the persona identity is filled here from the SAME shared fleet env as the Claude persona
   (`CLAUDE_API_IDENTITY`, `CLAUDE_API_UA` (+ pool via `|`), `CLAUDE_API_BETA`,
   `CLAUDE_API_ANTHROPIC_VERSION`, `CLAUDE_API_X_APP`, `CLAUDE_API_SL_*`, `CLAUDE_API_CC_VERSION`,
-  `CLAUDE_API_CC_ENTRYPOINT`, `CLAUDE_API_INJECT_BILLING`), which is auto-refreshed by
-  `tools/refresh-fingerprint.sh`; the per-field fallback is the reviewed capture of 2.1.195 in
-  `GlmIdentityHeaders::default`. GLM intentionally does not read `CLAUDE_API_UA_SPREAD`: the patch-level UA
-  spread was removed from the Claude persona as a source of within-request anomalies (`persona_ua` in
-  `forward::upstream`); there is nothing to mirror.
+  `CLAUDE_API_CC_ENTRYPOINT`, `CLAUDE_API_INJECT_BILLING`). `CLAUDE_API_CC_VERSION` is the complete
+  captured value, including its build suffix; GLM and Claude preserve it exactly and derive only cch
+  per profile. `tools/refresh-fingerprint.sh` is an operator utility while its timer remains disabled;
+  the per-field fallback is the coherent reviewed 2.1.195 capture in `GlmIdentityHeaders::default`.
 - Pricing has no env surface: an account carries one discount, overridden per provider where the
   customer's terms differ, and both live in the engine authority. The retired
   `CLAUDE_API_PRICING_BRIDGE_*` and `CLAUDE_API_PRICING_SHADOW_*` variables are gone; the fleet env

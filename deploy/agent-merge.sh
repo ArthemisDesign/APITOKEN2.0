@@ -175,6 +175,8 @@ am_gate_rust() (
     return
   fi
   bash "$ROOT/deploy/sccache-cargo.sh" cargo test --locked --workspace
+  bash "$ROOT/tools/refresh-fingerprint.test.sh"
+  bash "$ROOT/tests/claude_code_compat_matrix.sh"
   # Local proof uses a release-shaped binary and an externally supplied disposable PostgreSQL DSN.
   # Ordinary developer machines without that DSN keep the expensive assembled acceptance on the
   # trusted host; CI/local environments that provide it run the same script before merge.

@@ -152,6 +152,37 @@ fn ev_or(k: &str, d: &str) -> String {
     ev(k).unwrap_or_else(|| d.to_string())
 }
 
+fn parse_full_cc_version(value: &str) -> Result<String, String> {
+    if value.is_empty()
+        || value.len() > 64
+        || value.trim() != value
+        || !value.bytes().all(|byte| byte.is_ascii_graphic())
+        || value.bytes().any(|byte| matches!(byte, b';' | b','))
+    {
+        return Err("Claude Code version must be a bounded printable token".to_string());
+    }
+    let mut parts = value.split('.');
+    for label in ["major", "minor", "patch"] {
+        let Some(part) = parts.next() else {
+            return Err(format!("Claude Code version is missing {label}"));
+        };
+        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(format!("Claude Code {label} must be decimal"));
+        }
+    }
+    let suffix: Vec<&str> = parts.collect();
+    if suffix
+        .iter()
+        .any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+    {
+        return Err("Claude Code build suffix must contain only alphanumeric segments".into());
+    }
+    // Existing production config can still carry the historical three-component base during
+    // blue-green overlap. It is preserved exactly, never expanded with a guessed suffix. The next
+    // reviewed capture atomically replaces it with the full value.
+    Ok(value.to_string())
+}
+
 fn strict_mib_value(
     key: &str,
     value: Option<&str>,
@@ -492,9 +523,6 @@ const GLM_REJECTED_ENV_KEYS: [&str; 1] = ["CLAUDE_API_GLM_BASE_URL"];
 /// `tools/refresh-fingerprint.sh` — one fleet fingerprint, one source of updates. The GLM
 /// persona per-field fallback is the reviewed 2.1.195 capture in `GlmIdentityHeaders::default`.
 ///
-/// `CLAUDE_API_UA_SPREAD` is deliberately absent: patch-version spread was removed from the
-/// Claude persona as a within-request anomaly source (`persona_ua` in `forward::upstream`),
-/// so there is no spread behaviour left for the GLM plane to mirror.
 const GLM_IDENTITY_ENV_KEYS: [&str; 14] = [
     "CLAUDE_API_IDENTITY",
     "CLAUDE_API_INJECT_BILLING",
@@ -517,7 +545,7 @@ const GLM_IDENTITY_ENV_KEYS: [&str; 14] = [
 /// capture, so an absent key — including the whole set, e.g. in tests — reproduces the Claude
 /// persona defaults exactly. `CLAUDE_API_INJECT_BILLING` mirrors the lenient `ev_bool`
 /// semantics the Claude persona uses for the same key (anything but 0/false/no/off is on).
-fn glm_identity(values: &BTreeMap<String, String>) -> GlmIdentityHeaders {
+fn glm_identity(values: &BTreeMap<String, String>) -> Result<GlmIdentityHeaders, String> {
     let defaults = GlmIdentityHeaders::default();
     let pick = |key: &str, fallback: &str| {
         values
@@ -528,7 +556,7 @@ fn glm_identity(values: &BTreeMap<String, String>) -> GlmIdentityHeaders {
     // The `|`-separated pool split reuses the Claude persona helper: a real UA contains a
     // comma, so only `|` is a safe separator.
     let user_agent = pick("CLAUDE_API_UA", &defaults.user_agent);
-    GlmIdentityHeaders {
+    Ok(GlmIdentityHeaders {
         user_agents: split_ua_list(&user_agent),
         user_agent,
         anthropic_version: pick("CLAUDE_API_ANTHROPIC_VERSION", &defaults.anthropic_version),
@@ -546,7 +574,11 @@ fn glm_identity(values: &BTreeMap<String, String>) -> GlmIdentityHeaders {
         ),
         stainless_os: pick("CLAUDE_API_SL_OS", &defaults.stainless_os),
         stainless_arch: pick("CLAUDE_API_SL_ARCH", &defaults.stainless_arch),
-        cc_version: pick("CLAUDE_API_CC_VERSION", &defaults.cc_version),
+        cc_version: parse_full_cc_version(&pick(
+            "CLAUDE_API_CC_VERSION",
+            &defaults.cc_version,
+        ))
+        .map_err(|message| format!("CLAUDE_API_CC_VERSION: {message}"))?,
         cc_entrypoint: pick("CLAUDE_API_CC_ENTRYPOINT", &defaults.cc_entrypoint),
         identity: pick("CLAUDE_API_IDENTITY", &defaults.identity),
         inject_billing: match values.get("CLAUDE_API_INJECT_BILLING") {
@@ -556,7 +588,7 @@ fn glm_identity(values: &BTreeMap<String, String>) -> GlmIdentityHeaders {
             ),
             None => defaults.inject_billing,
         },
-    }
+    })
 }
 
 fn parse_glm_config(values: &BTreeMap<String, String>) -> Result<Option<GlmPlaneConfig>, String> {
@@ -605,7 +637,7 @@ fn parse_glm_config(values: &BTreeMap<String, String>) -> Result<Option<GlmPlane
     // input: GLM shares the Claude persona env wholesale and must not grow GLM-specific
     // fingerprint keys, so the identity is filled here after the plane's own validation.
     if let Some(plane) = built.as_mut() {
-        plane.transport.identity = glm_identity(values);
+        plane.transport.identity = glm_identity(values)?;
     }
     Ok(built)
 }
@@ -1578,14 +1610,16 @@ impl Settings {
                 poll: ev_bool("CLAUDE_API_POLL", true),
                 inject_identity: ev_bool("CLAUDE_API_INJECT_IDENTITY", true),
                 identity: ev_or("CLAUDE_API_IDENTITY", CLAUDE_CODE_IDENTITY),
-                // billing-header (system[0]) — точный вид с живого claude 2.1.195 (mitm 2026-07-14):
-                // `x-anthropic-billing-header: cc_version=2.1.195.d49; cc_entrypoint=sdk-cli; cch=<hex>;`
-                // cc_version флот-константна (коген с UA), cch — per-персона (см. inject).
+                // Subscription OAuth persona boundary: system[0] is rewritten to one reviewed
+                // Claude Code attribution block. This is not transparent preservation of the caller's
+                // block. The version is the COMPLETE value captured from one real request; modern
+                // releases use suffixes such as `.408` and `.0f1`, so guessing a `.dNN` suffix creates
+                // a version that never existed. Only cch remains derived per subscription.
                 inject_billing: ev_bool("CLAUDE_API_INJECT_BILLING", true),
-                // БАЗА cc_version (без .dNN-суффикса); суффикс `.dNN` добавляем per-подписка в proxy
-                // (persona_ccbuild) — живые захваты показали, что .dNN варьируется, фиксировать на флот
-                // = кластер. refresh-fingerprint.sh кладёт сюда базу (срезает .dNN из живого захвата).
-                cc_version: ev_or("CLAUDE_API_CC_VERSION", "2.1.195"),
+                cc_version: parse_full_cc_version(
+                    &ev_or("CLAUDE_API_CC_VERSION", "2.1.195.d49"),
+                )
+                .unwrap_or_else(|message| panic!("CLAUDE_API_CC_VERSION: {message}")),
                 cc_entrypoint: ev_or("CLAUDE_API_CC_ENTRYPOINT", "sdk-cli"),
                 // Полный CC-набор beta (не только oauth): без `claude-code-20250219` мы «OAuth-клиент, но
                 // НЕ Claude Code». ТОЧНЫЙ актуальный набор снимает refresh-fingerprint.sh с живого claude
@@ -1597,14 +1631,12 @@ impl Settings {
                 default_beta: ev_or("CLAUDE_API_BETA",
                     "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07"),
                 // Дефолт-fallback; актуальное значение — env CLAUDE_API_UA (авто-рефреш скриптом).
-                // CLAUDE_API_UA можно задать СПИСКОМ через `|` (пул реальных UA) — тогда каждая персона
-                // пинит один. Иначе один UA + разброс patch-версии между персонами (ниже).
-                // ВАЖНО: разделитель `|`, а НЕ `,` — реальный UA Claude Code содержит запятую
-                // (`(external, sdk-cli)`), и split(',') порвал бы дефолт на фрагменты → битый UA флоту.
+                // CLAUDE_API_UA may contain a `|`-separated pool of COMPLETE observed values; each
+                // persona pins one. A real UA contains a comma (`(external, sdk-cli)`), so comma is
+                // not a list delimiter. A single observed UA is reused exactly; versions are never
+                // spread or fabricated because that would disagree with the Stainless/version body.
                 user_agent: ev_or("CLAUDE_API_UA", "claude-cli/2.1.195 (external, sdk-cli)"),
                 user_agents: split_ua_list(&ev_or("CLAUDE_API_UA", "claude-cli/2.1.195 (external, sdk-cli)")),
-                // Разброс patch-версии UA между персонами (антифингерпринт флота). 0/1 → выключено.
-                ua_spread: bounded_usize("CLAUDE_API_UA_SPREAD", 8, 1, 100) as u32,
                 anthropic_version: ev_or("CLAUDE_API_ANTHROPIC_VERSION", "2023-06-01"),
                 connect_timeout: bounded_u64("CLAUDE_API_CONNECT_TIMEOUT", 30, 1, 120),
                 // Стриминговая граница простоя: Anthropic шлёт SSE-ping, поэтому живой поток её
@@ -1635,6 +1667,30 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_claude_code_versions_are_opaque_and_legacy_base_is_not_expanded() {
+        for value in [
+            "2.1.195",
+            "2.1.195.d49",
+            "2.1.220.a6e",
+            "2.1.231.408",
+            "2.1.239.0f1",
+        ] {
+            assert_eq!(parse_full_cc_version(value).unwrap(), value);
+        }
+        for value in [
+            "",
+            " 2.1.239.0f1",
+            "2.1.239.0f1 ",
+            "2.1.239.;",
+            "2.1.239.0f1;cc_entrypoint=evil",
+            "v2.1.239.0f1",
+            "2.x.239.0f1",
+        ] {
+            assert!(parse_full_cc_version(value).is_err(), "accepted {value:?}");
+        }
+    }
 
     #[test]
     fn codex_composition_default_tracks_the_live_admitted_wire_identity() {
@@ -2382,7 +2438,7 @@ mod tests {
         for (key, value) in [
             ("CLAUDE_API_IDENTITY", "You are a test agent."),
             ("CLAUDE_API_INJECT_BILLING", "false"),
-            ("CLAUDE_API_CC_VERSION", "3.0.0"),
+            ("CLAUDE_API_CC_VERSION", "3.0.0.a1"),
             ("CLAUDE_API_CC_ENTRYPOINT", "cli"),
             ("CLAUDE_API_BETA", "oauth-2025-04-20,custom-beta-2099-01-01"),
             (
@@ -2407,7 +2463,7 @@ mod tests {
             .identity;
         assert_eq!(identity.identity, "You are a test agent.");
         assert!(!identity.inject_billing);
-        assert_eq!(identity.cc_version, "3.0.0");
+        assert_eq!(identity.cc_version, "3.0.0.a1");
         assert_eq!(identity.cc_entrypoint, "cli");
         assert_eq!(
             identity.anthropic_beta,
@@ -2452,7 +2508,7 @@ mod tests {
         );
         assert_eq!(identity.x_app, "cli");
         assert_eq!(identity.stainless_package_version, "0.94.0");
-        assert_eq!(identity.cc_version, "2.1.195");
+        assert_eq!(identity.cc_version, "2.1.195.d49");
         assert_eq!(identity.cc_entrypoint, "sdk-cli");
         assert!(identity.inject_billing);
         assert_eq!(

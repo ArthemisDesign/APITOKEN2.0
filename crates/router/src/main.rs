@@ -205,8 +205,8 @@ pub(crate) fn origins(state: &AppState) -> PlaneOrigins<'_> {
 }
 
 /// `GET /v1/models` — единый каталог. Ответ OpenAI-совместим (`object: list`),
-/// ID namespaced; `anthropic/claude-*` принимается discovery Claude Code
-/// (он игнорирует ID вне префиксов claude/anthropic — см. документ).
+/// ID namespaced; Claude Code 2.1.223+ keeps IDs containing `claude` or `anthropic`
+/// case-insensitively, so `anthropic/claude-*` is discoverable.
 async fn list_models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let codex_envelope = requests_codex_models_envelope(&headers);
     let auth = proxy::auth_passthrough(&headers);

@@ -189,13 +189,14 @@ tool headers — and applies throttling/bans (pi#4187). `decision` Generation tr
 **full Claude Code fleet fingerprint, identical to the Claude plane and fed from the SAME
 shared env** (`CLAUDE_API_UA` (+ pool via `|`), `CLAUDE_API_BETA`, `CLAUDE_API_ANTHROPIC_VERSION`,
 `CLAUDE_API_X_APP`, `CLAUDE_API_SL_*`, `CLAUDE_API_CC_VERSION`, `CLAUDE_API_CC_ENTRYPOINT`,
-`CLAUDE_API_IDENTITY`, `CLAUDE_API_INJECT_BILLING`; auto-refreshed by a live client —
-`tools/refresh-fingerprint.sh`; there are no GLM-specific fingerprint env vars): a per-profile UA
-pin from the pool, the full 10-beta `anthropic-beta`, `x-app` + the entire `x-stainless-*` set,
-`accept`, `anthropic-dangerous-direct-browser-access`, identity as the first system block without
-double injection, and a per-profile billing block `x-anthropic-billing-header: cc_version=<base>.dNN;
-cc_entrypoint=…; cch=<hex>` (cch and `.dNN` are deterministic on the roster profile id, like the
-per-persona scheme of the Claude pool). Client identity headers are not forwarded to the
+`CLAUDE_API_IDENTITY`, `CLAUDE_API_INJECT_BILLING`; captured by the operator utility
+`tools/refresh-fingerprint.sh` while its production timer remains disabled; there are no GLM-specific
+fingerprint env vars): a per-profile UA pin from the pool, the full 10-beta `anthropic-beta`, `x-app`
++ the entire `x-stainless-*` set, `accept`, `anthropic-dangerous-direct-browser-access`, identity as
+the first system block without double injection, and a per-profile billing block
+`x-anthropic-billing-header: cc_version=<complete-captured-value>; cc_entrypoint=…; cch=<hex>`.
+The full version is identical across the reviewed persona; only cch is deterministic on the roster
+profile id. Client identity headers are not forwarded to the
 upstream — the persona is synthesized in full (someone else's `x-stainless-*` under our claude-cli
 UA is a contradiction on which SDK detection trips). The quota endpoint carries no identity set:
 it is a monitor surface, not generation. "Bare SDK" traffic is a direct path to a subscription

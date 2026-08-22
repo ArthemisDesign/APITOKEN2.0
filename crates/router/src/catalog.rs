@@ -185,7 +185,10 @@ impl CatalogEntry {
             "aliases": self.aliases,
         });
         if let Some(name) = &self.display_name {
+            // Keep the existing OpenAI/models.dev mirror and add the field Claude Code's gateway
+            // discovery contract reads. Both come from the same bounded provider-authored value.
             obj["name"] = Value::String(name.clone());
+            obj["display_name"] = Value::String(name.clone());
         }
         if let Some(efforts) = &self.reasoning_efforts {
             obj["reasoning_efforts"] = serde_json::json!(efforts);
@@ -2031,6 +2034,7 @@ mod tests {
         assert_eq!(json["owned_by"], "anthropic");
         assert_eq!(json["aliases"][0], "claude-opus-4-8");
         assert_eq!(json["name"], "Claude Opus 4.8");
+        assert_eq!(json["display_name"], "Claude Opus 4.8");
         assert_eq!(
             json["reasoning_efforts"],
             serde_json::json!(["low", "medium", "high", "xhigh", "max"])

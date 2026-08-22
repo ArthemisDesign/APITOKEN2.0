@@ -111,21 +111,18 @@ pub struct ProxyConfig {
     pub poll: bool,            // включён ли фоновый поллер (для /pool)
     pub inject_identity: bool, // инжектить Claude Code identity в system
     pub identity: String,      // сама строка идентичности
-    /// Инжектить system[0] = `x-anthropic-billing-header: cc_version=…; cc_entrypoint=…; cch=…;`
-    /// (реальный CC шлёт его ПЕРВЫМ system-блоком; отсутствие = структурный отпечаток). cc_version
-    /// флот-константна (все на 2.1.195 шлют одно), cch варьируется per-персона (per-install реализм).
+    /// Rewrite `system[0]` to the reviewed subscription OAuth persona billing block. This is an
+    /// explicit provider-transport boundary, not transparent preservation of a caller's Claude Code
+    /// attribution. `cc_version` is the full value captured from one real client request; no build
+    /// suffix is guessed or generated per subscription. `cch` remains per subscription.
     pub inject_billing: bool,
-    pub cc_version: String, // БАЗА "2.1.195" (коген с UA); суффикс .dNN добавляем per-подписка
+    pub cc_version: String,
     pub cc_entrypoint: String, // "sdk-cli"
-    pub default_beta: String, // anthropic-beta, добавляемый к клиентским
-    pub user_agent: String, // UA-fallback (client-level default; поллер/детект)
-    /// Пул реальных UA. len>1 → каждая персона пинит один (hash(email)%len). len≤1 → берём его
-    /// как базу и варьируем patch-версию на `ua_spread` (см. `persona_ua`). Флот из байт-в-байт
-    /// одинаковых UA — сам по себе отпечаток; персональный стабильный UA убирает эту аномалию.
+    pub default_beta: String,  // anthropic-beta, добавляемый к клиентским
+    pub user_agent: String,    // UA-fallback (client-level default; поллер/детект)
+    /// Pool of real User-Agent values separated in env with `|`. A persona pins one complete
+    /// observed value. A single entry remains fleet-constant; versions are never fabricated.
     pub user_agents: Vec<String>,
-    /// Разброс patch-версии claude-cli в UA между персонами (0/1 = выключено). patch-релизы почти
-    /// наверняка существовали → правдоподобно. Для гарантии реальности — задай `user_agents` списком.
-    pub ua_spread: u32,
     pub anthropic_version: String, // деф. anthropic-version, если клиент не прислал
     pub connect_timeout: u64,      // сек на установку соединения с апстримом/прокси
     /// Пауза между чтениями, после которой соединение считается мёртвым. Применима к стриму:

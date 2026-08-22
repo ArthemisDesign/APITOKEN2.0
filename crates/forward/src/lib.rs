@@ -107,7 +107,7 @@ pub use proxy::{
 };
 pub use state::{AdminChange, AppState, BodyStorage, ProviderMode};
 pub use upstream::{
-    detect_plan, fresh_request_id, limits_from_headers, persona_ccbuild, persona_cch,
+    detect_plan, fresh_anthropic_request_id, fresh_request_id, limits_from_headers, persona_cch,
     persona_session_id, persona_ua, persona_user_id, poll_sub, Clients, Limits, PlanDetect,
     PollResult, QuotaFraction,
 };

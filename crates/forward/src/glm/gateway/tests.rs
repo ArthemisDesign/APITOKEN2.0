@@ -393,10 +393,7 @@ async fn customer_generation_start_invalidates_a_concurrent_quota_snapshot_witho
         .unwrap();
     assert_eq!(poll.await.unwrap(), 0);
     drop(lease);
-    assert_eq!(
-        profile.candidate("glm-5.2", now_unix()).window_5h,
-        None
-    );
+    assert_eq!(profile.candidate("glm-5.2", now_unix()).window_5h, None);
 }
 
 #[tokio::test]
@@ -751,7 +748,7 @@ async fn generation_body_carries_identity_first_and_a_per_profile_billing_block(
     assert_eq!(system.len(), 2);
     let billing = system[0]["text"].as_str().unwrap();
     assert!(
-        billing.starts_with("x-anthropic-billing-header: cc_version=2.1.195.d"),
+        billing.starts_with("x-anthropic-billing-header: cc_version=2.1.195.d49;"),
         "billing block: {billing}"
     );
     assert!(billing.contains("; cc_entrypoint=sdk-cli; cch="));

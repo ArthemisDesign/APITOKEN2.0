@@ -216,9 +216,9 @@ pub struct GlmIdentityHeaders {
     pub stainless_package_version: String,
     pub stainless_os: String,
     pub stainless_arch: String,
-    /// Billing-header `cc_version` BASE, without the `.dNN` build suffix: live captures show
-    /// the suffix varying between launches, so it is derived per profile (see
-    /// [`Self::billing_header_for`]), never fixed fleet-wide.
+    /// Complete billing-header `cc_version` from one reviewed live request. Modern Claude Code
+    /// releases use non-`.dNN` suffixes, so the transport preserves this value exactly and never
+    /// invents a per-profile build suffix.
     pub cc_version: String,
     /// Billing-header `cc_entrypoint` value.
     pub cc_entrypoint: String,
@@ -245,7 +245,7 @@ impl Default for GlmIdentityHeaders {
             stainless_package_version: "0.94.0".to_string(),
             stainless_os: "Linux".to_string(),
             stainless_arch: "x64".to_string(),
-            cc_version: "2.1.195".to_string(),
+            cc_version: "2.1.195.d49".to_string(),
             cc_entrypoint: "sdk-cli".to_string(),
             identity: crate::config::CLAUDE_CODE_IDENTITY.to_string(),
             inject_billing: true,
@@ -270,16 +270,13 @@ impl GlmIdentityHeaders {
             .unwrap_or_else(|| self.user_agent.clone())
     }
 
-    /// `x-anthropic-billing-header` block text, mirroring the Claude plane's billing inject:
-    /// fleet-base `cc_version` plus a deterministic per-profile `.dNN` build suffix and a
-    /// deterministic per-profile `cch` (each profile is a separate "installation" of the
-    /// client — a fleet-wide cch or build would be a cluster signal). Both derivations reuse
-    /// the Claude plane's per-persona functions, keyed on the roster profile id.
+    /// `x-anthropic-billing-header` block text, mirroring the Claude subscription-persona
+    /// boundary. The full captured version is fleet-constant and exact. The deterministic cch is
+    /// the only per-profile installation field.
     pub fn billing_header_for(&self, profile_id: &str) -> String {
         format!(
-            "x-anthropic-billing-header: cc_version={}.{}; cc_entrypoint={}; cch={};",
+            "x-anthropic-billing-header: cc_version={}; cc_entrypoint={}; cch={};",
             self.cc_version,
-            crate::upstream::persona_ccbuild(profile_id),
             self.cc_entrypoint,
             crate::upstream::persona_cch(profile_id),
         )
@@ -599,9 +596,8 @@ mod tests {
         assert_eq!(identity.stainless_package_version, "0.94.0");
         assert_eq!(identity.stainless_os, "Linux");
         assert_eq!(identity.stainless_arch, "x64");
-        // cc_version is the bare base: the .dNN suffix is derived per profile, never fixed.
-        assert_eq!(identity.cc_version, "2.1.195");
-        assert!(!identity.cc_version.contains(".d"));
+        // The complete captured value is kept; no second suffix is synthesized.
+        assert_eq!(identity.cc_version, "2.1.195.d49");
         assert_eq!(identity.cc_entrypoint, "sdk-cli");
         assert_eq!(
             identity.identity,
@@ -665,50 +661,30 @@ mod tests {
     }
 
     #[test]
-    fn the_billing_header_is_fleet_based_and_profile_keyed() {
-        let identity = GlmIdentityHeaders::default();
-        let text = identity.billing_header_for("glm-01");
-        let pattern = regex_lite_match(&text);
-        assert!(pattern, "unexpected billing header shape: {text}");
-        assert!(text.starts_with("x-anthropic-billing-header: cc_version=2.1.195.d"));
-        assert!(text.contains("; cc_entrypoint=sdk-cli; cch="));
-        assert!(text.ends_with(';'));
-        // Stable for the same profile, distinct between profiles (per-install realism).
-        assert_eq!(text, identity.billing_header_for("glm-01"));
-        assert_ne!(text, identity.billing_header_for("glm-02"));
-        // The operator-tuned base and entrypoint flow through.
-        let custom = GlmIdentityHeaders {
-            cc_version: "9.9.9".to_string(),
-            cc_entrypoint: "cli".to_string(),
-            ..GlmIdentityHeaders::default()
-        };
-        assert!(custom
-            .billing_header_for("glm-01")
-            .starts_with("x-anthropic-billing-header: cc_version=9.9.9.d"));
-        assert!(custom
-            .billing_header_for("glm-01")
-            .contains("; cc_entrypoint=cli;"));
+    fn the_billing_header_preserves_every_observed_full_version_and_keys_only_cch() {
+        for version in ["2.1.195.d49", "2.1.220.a6e", "2.1.231.408", "2.1.239.0f1"] {
+            let identity = GlmIdentityHeaders {
+                cc_version: version.to_string(),
+                ..GlmIdentityHeaders::default()
+            };
+            let first = identity.billing_header_for("glm-01");
+            let second = identity.billing_header_for("glm-02");
+            assert!(first.starts_with(&format!(
+                "x-anthropic-billing-header: cc_version={version}; cc_entrypoint=sdk-cli; cch="
+            )));
+            assert!(!first.contains(&format!("{version}.d")));
+            assert_eq!(first, identity.billing_header_for("glm-01"));
+            assert_ne!(first, second, "only the profile cch must differ");
+            assert!(billing_header_has_valid_cch(&first));
+        }
     }
 
-    /// Minimal shape check: `cc_version=<base>.d<two digits>; … cch=<5 hex>;`
-    fn regex_lite_match(text: &str) -> bool {
-        let Some(rest) = text.strip_prefix("x-anthropic-billing-header: cc_version=") else {
-            return false;
-        };
-        let Some((version, rest)) = rest.split_once("; cc_entrypoint=") else {
-            return false;
-        };
-        let Some((_, build)) = version.rsplit_once('.') else {
-            return false;
-        };
-        let build_ok = build.len() == 3
-            && build.starts_with('d')
-            && build[1..].bytes().all(|b| b.is_ascii_digit());
-        let Some(cch) = rest.split_once("; cch=").map(|(_, cch)| cch) else {
+    fn billing_header_has_valid_cch(text: &str) -> bool {
+        let Some(cch) = text.split_once("; cch=").map(|(_, cch)| cch) else {
             return false;
         };
         let cch = cch.strip_suffix(';').unwrap_or(cch);
-        build_ok && cch.len() == 5 && cch.bytes().all(|b| b.is_ascii_hexdigit())
+        cch.len() == 5 && cch.bytes().all(|byte| byte.is_ascii_hexdigit())
     }
 
     #[test]

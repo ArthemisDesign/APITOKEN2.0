@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "channels": {
+    "stable": "2.1.231",
+    "latest": "2.1.239"
+  },
+  "platforms": {
+    "darwin-arm64": {
+      "package": "@anthropic-ai/claude-code-darwin-arm64",
+      "2.1.231": "sha512-tpqiF9bw8jHYc85mpF0S+JxzDY4ErGF9L9/tBflHJgIqgBXL/UpkLuI53MMYCPeoaCtE88skbf/P9r8C3OUrYA==",
+      "2.1.239": "sha512-sQZA6mdzbp9nsTXYIxWmuMZOzLb/XpcOY1h6krUt8AgHdgsX8wZPOntGWatpTn/tevIshv1NhYpL8WJTJdwZ1w=="
+    },
+    "darwin-x64": {
+      "package": "@anthropic-ai/claude-code-darwin-x64",
+      "2.1.231": "sha512-F/Z3nyTnxsF1Nw+m3f/SWBmlk2EUlNkrjRnlPP00JkrdmHBwX4c2VxNRjb2lWsBFBQdYGTjDp24vDzQhrRr9Kg==",
+      "2.1.239": "sha512-tEfux91ZNsmHjM0N+4NnZXjKAeMV58uTJa8iES0gjCIWToAlBZgPQDNMW1AfQSWQNC83hmUqfsIm9bSiX1Em+Q=="
+    },
+    "linux-x64": {
+      "package": "@anthropic-ai/claude-code-linux-x64",
+      "2.1.231": "sha512-ou1X+6JWOgbY5pUerfdOmeyPwKwEN515sx9it2sxsYEqKRTvOOHkiN94enRxge9/Z1J2Iqhd4VdkQIl6UoUvYw==",
+      "2.1.239": "sha512-glj5zramK4ebmNa0EVx1iAtBfWHKnZ1q0Ti+1veMR4GHR9ttSranQoMIsLIuJUdRX/hErJnArjwe9hanuxE+dg=="
+    },
+    "linux-arm64": {
+      "package": "@anthropic-ai/claude-code-linux-arm64",
+      "2.1.231": "sha512-a0YGXTjk6N5yRWE30dkbtS0tTZ5hOEXFCjTTX2slSa7XULMlJJLQ1X8oFJwpXmlvZu9FHx1YRLKJnni05uNIQQ==",
+      "2.1.239": "sha512-ZEssQZvMi0QNGppgW5fl+o83c1eCBjmsqVG/w4tZIp897LycumN2VkQDSVDZRH9gUyOWJFPtQo6ztdxO2G/Ntg=="
+    }
+  }
+}

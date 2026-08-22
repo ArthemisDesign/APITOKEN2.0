@@ -20,6 +20,12 @@ pub(crate) fn fresh_execution_group_id() -> Result<String, ()> {
     fresh_uuid_v4("execution_group")
 }
 
+/// Public Anthropic request ID for a router-generated error. This is separate from the private
+/// logical/execution identities, but uses the same canonical OS-CSPRNG UUIDv4 representation.
+pub(crate) fn fresh_error_request_id() -> Result<String, ()> {
+    fresh_uuid_v4("synthetic_error").map(|uuid| format!("req_{}", uuid.replace('-', "")))
+}
+
 fn fresh_uuid_v4(purpose: &'static str) -> Result<String, ()> {
     let mut bytes = [0_u8; 16];
     if getrandom::fill(&mut bytes).is_err() {
@@ -87,11 +93,19 @@ mod tests {
     }
 
     #[test]
-    fn generated_logical_and_execution_ids_are_canonical_and_distinct() {
+    fn generated_logical_execution_and_error_ids_are_canonical_and_distinct() {
         let logical = LogicalRequestId::fresh().unwrap();
         let execution = fresh_execution_group_id().unwrap();
+        let error = fresh_error_request_id().unwrap();
         assert_canonical_uuid_v4(logical.as_str());
         assert_canonical_uuid_v4(&execution);
+        assert_eq!(error.len(), 36);
+        assert!(error.starts_with("req_"));
+        assert!(error[4..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')));
         assert_ne!(logical.as_str(), execution);
+        assert_ne!(logical.as_str().replace('-', ""), error[4..]);
+        assert_ne!(execution.replace('-', ""), error[4..]);
     }
 }

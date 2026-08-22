@@ -3750,6 +3750,8 @@ gate_contract=(
   'commerce-release-bundle.sh" "$candidate"'
   'CLAUDE_API_TEST_DATABASE_URL="$engine_dsn"'
   'cargo test --locked --workspace --manifest-path "$candidate/Cargo.toml"'
+  'run_as_ci bash "$candidate/tools/refresh-fingerprint.test.sh"'
+  'tests/claude_code_compat_matrix.sh'
   'git -C "$SOURCE_REPO" diff --check "$diff_base..$sha"'
   'find "$candidate/deploy" -type f -name '\''*.sh'\'' -print0'
   'bash -n "$shell_file"'

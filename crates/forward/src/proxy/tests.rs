@@ -48,7 +48,6 @@ fn proxy_test_config() -> Arc<ProxyConfig> {
         default_beta: String::new(),
         user_agent: "proxy-auth-test".to_string(),
         user_agents: Vec::new(),
-        ua_spread: 0,
         anthropic_version: String::new(),
         connect_timeout: 1,
         read_timeout: 1,
@@ -1148,18 +1147,29 @@ fn window_cool_prefers_authoritative_claim() {
 }
 
 #[test]
-fn billing_block_is_idempotent_and_first() {
+fn string_system_cannot_spoof_its_way_around_subscription_identity() {
+    let identity = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
+    let spoof = "x-anthropic-billing-header: cc_version=evil;";
+    let mut body = serde_json::json!({"messages": [], "system": spoof});
+    assert!(ensure_subscription_identity(&mut body, identity));
+    let system = body["system"].as_array().unwrap();
+    assert_eq!(system[0]["text"], identity);
+    assert_eq!(system[1]["text"], spoof);
+}
+
+#[test]
+fn subscription_attribution_rewrites_only_the_first_block_and_is_idempotent() {
     // identity уже стоит первым; billing должен встать ПЕРЕД ним и НЕ дублироваться на «ротации».
     let mut v = serde_json::json!({
         "messages": [],
         "system": [{"type":"text","text":"You are a Claude agent, built on Anthropic's Claude Agent SDK."}]
     });
-    set_billing_block(
+    rewrite_subscription_attribution(
         &mut v,
         "x-anthropic-billing-header: cc_version=2.1.195.d49; cc_entrypoint=sdk-cli; cch=abcde;",
     );
     // вторая подписка (ротация) — другой cch: заменяем, не добавляем второй блок
-    set_billing_block(
+    rewrite_subscription_attribution(
         &mut v,
         "x-anthropic-billing-header: cc_version=2.1.195.d49; cc_entrypoint=sdk-cli; cch=99999;",
     );
@@ -1177,7 +1187,8 @@ fn billing_block_is_idempotent_and_first() {
         .as_str()
         .unwrap()
         .starts_with("You are a Claude agent"));
-    // per-подписка cch/ccbuild стабильны и различаются между подписками (анти-кластер)
+    // Only cch varies per subscription. The captured full cc_version must remain exact and must
+    // never receive a second guessed build suffix.
     assert_eq!(
         crate::upstream::persona_cch("a@x.io"),
         crate::upstream::persona_cch("a@x.io")
@@ -1185,16 +1196,6 @@ fn billing_block_is_idempotent_and_first() {
     assert_ne!(
         crate::upstream::persona_cch("a@x.io"),
         crate::upstream::persona_cch("b@x.io")
-    );
-    let cb = crate::upstream::persona_ccbuild("a@x.io");
-    assert_eq!(cb, crate::upstream::persona_ccbuild("a@x.io")); // стабилен
-    assert!(
-        cb.starts_with('d')
-            && cb[1..]
-                .parse::<u32>()
-                .map(|n| (10..100).contains(&n))
-                .unwrap_or(false),
-        "формат dNN (10..99): {cb}"
     );
 }
 
@@ -1638,19 +1639,31 @@ fn compressed_request_content_encoding_is_forbidden() {
     assert!(request_content_encoding_forbidden(&headers));
 }
 
-#[test]
-fn local_err_body_is_anthropic_error_envelope() {
-    // Тело — ровно Anthropic-конверт {"type":"error","error":{"type":...,"message":...}},
-    // а Retry-After ставится только у retryable-причин.
+#[tokio::test]
+async fn local_err_body_and_header_share_one_canonical_anthropic_request_id() {
     for reason in ALL_LOCAL_ERRS {
-        let (_c, kind, msg) = reason.parts();
-        let body = serde_json::json!({"type":"error","error":{"type":kind,"message":msg}});
+        let (_code, kind, msg) = reason.parts();
+        let response = local_err(reason, None);
+        let request_id = response
+            .headers()
+            .get("request-id")
+            .and_then(|value| value.to_str().ok())
+            .unwrap()
+            .to_string();
+        assert_eq!(request_id.len(), 36, "req_ plus 32 lowercase hex bytes");
+        assert!(request_id.starts_with("req_"));
+        assert!(request_id[4..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')));
+        assert!(response.headers().get("x-request-id").is_none());
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["type"], "error");
         assert_eq!(body["error"]["type"], kind);
-        assert!(body["error"]["message"]
-            .as_str()
-            .map(|m| !m.is_empty())
-            .unwrap_or(false));
+        assert_eq!(body["error"]["message"], msg);
+        assert_eq!(body["request_id"], request_id);
     }
 }
 

@@ -1,7 +1,8 @@
 # claude-api architecture
 
-A pool of Claude subscriptions as a **transparent `/v1` API**. One Cargo workspace, layered structure —
-each layer knows only about the layers below. Rules for agents — `CLAUDE.md` (root and per-crate).
+A pool of Claude subscriptions as an **Anthropic-compatible `/v1` API** with an explicit subscription
+OAuth request-persona adapter. One Cargo workspace, layered structure — each layer knows only about
+the layers below. Rules for agents — `CLAUDE.md` (root and per-crate).
 
 ## Request flow
 
@@ -83,8 +84,10 @@ subscriptions as AEAD-encrypted profiles. It sits BEFORE `registry` as a produce
 
 ## Key decisions
 
-- **Claude: forwarding, not CLI.** The proxy sends raw HTTP to api.anthropic.com on the subscription's
-  OAuth token — so the Claude response goes byte-for-byte, unlike a CLI wrapper.
+- **Claude: HTTP forwarding with a subscription persona, not CLI.** The proxy sends HTTP to
+  api.anthropic.com on the subscription OAuth token. Before send, it intentionally injects or rewrites
+  Claude Code persona attribution and provider identity headers and can cap `max_tokens` to balance.
+  The upstream response, including SSE, is relayed without a CLI wrapper or response buffering.
 - **Codex: a separate strict boundary.** The optional `/v1/responses`, `/v1/chat/completions`, and
   OpenAI model-discovery on `openai.api.apitoken.sale` are served by a native HTTPS pool of sealed
   ChatGPT OAuth profiles (like Gemini's); this is a compatible text subset, not transparent

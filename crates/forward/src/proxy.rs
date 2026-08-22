@@ -984,26 +984,28 @@ pub async fn resolve_client_keys(
     }
 }
 
-/// Anthropic-подобная ошибка (чтобы SDK-клиент видел привычную форму).
-fn err_response(code: StatusCode, kind: &str, msg: &str) -> Response {
-    let body = serde_json::json!({"type": "error", "error": {"type": kind, "message": msg}});
-    Response::builder()
+/// Gateway-generated Anthropic error. One canonical synthetic request ID appears in both the
+/// official `request-id` response header and the top-level `request_id` body field.
+fn err_response(
+    code: StatusCode,
+    kind: &str,
+    msg: &str,
+    request_id: &str,
+    retry_after: Option<i64>,
+) -> Response {
+    let body = serde_json::json!({
+        "type": "error",
+        "error": {"type": kind, "message": msg},
+        "request_id": request_id,
+    });
+    let mut builder = Response::builder()
         .status(code)
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap()
-}
-
-/// Ошибка с `Retry-After` — прозрачно для клиента (как настоящий Anthropic при перегрузе/лимите):
-/// SDK сам откатится на указанные секунды вместо слепого ретрая.
-fn err_retry(code: StatusCode, kind: &str, msg: &str, retry_after: i64) -> Response {
-    let body = serde_json::json!({"type": "error", "error": {"type": kind, "message": msg}});
-    Response::builder()
-        .status(code)
-        .header("content-type", "application/json")
-        .header("retry-after", retry_after.max(1).to_string())
-        .body(Body::from(body.to_string()))
-        .unwrap()
+        .header("request-id", request_id);
+    if let Some(retry_after) = retry_after {
+        builder = builder.header("retry-after", retry_after.max(1).to_string());
+    }
+    builder.body(Body::from(body.to_string())).unwrap()
 }
 
 /// HTTP-статус `overloaded_error` у НАСТОЯЩЕГО Anthropic — 529 (не 503). Держим точь-в-точь,
@@ -1137,19 +1139,11 @@ pub(crate) fn local_err_for(
     retry_after: Option<i64>,
 ) -> Response {
     let (code, kind, msg) = reason.parts();
-    let mut response = match retry_after {
-        Some(secs) => err_retry(code, kind, msg, secs),
-        None => err_response(code, kind, msg),
-    };
+    let request_id = crate::fresh_anthropic_request_id();
+    let mut response = err_response(code, kind, msg, &request_id, retry_after);
     response
         .extensions_mut()
         .insert(TerminalErrorReason(terminal_reason));
-    // A synthetic error never carried an upstream `request-id`, so a customer reporting one of
-    // these had nothing to quote and support nothing to search on. The audit event logs whatever id
-    // the response carries, so setting it here makes the two match.
-    if let Ok(value) = HeaderValue::from_str(&crate::fresh_request_id()) {
-        response.headers_mut().insert("x-request-id", value);
-    }
     // Все ответы local_err_for — синтетические не-2xx ДО границы доставки: reserve по request_id
     // (если был) закрывает armed HoldGuard refund'ом. Ветки после границы снимают заголовок через
     // without_not_started (delivery-marker-failed с full-hold charge, fallback сборки stream_back).
@@ -1212,16 +1206,15 @@ fn cap_to_balance(
     Some((eff_mt, hold))
 }
 
-/// Инжект Claude Code identity первым system-блоком (если его там ещё нет).
-/// Первый system-блок уже несёт Claude-Code-идентичность? (billing-header/identity — как шлёт
-/// САМ Claude Code). Тогда повторно инжектить не надо — иначе получим двойную identity.
+/// Ensure the mandatory subscription OAuth identity prefix for an ordinary SDK request. A genuine
+/// Claude Code marker stays in place here and is handled separately by the attribution rewrite below.
 fn is_cc_marker(text: &str) -> bool {
     text.starts_with("x-anthropic-billing-header:")
         || text.starts_with("You are Claude Code")
         || text.starts_with("You are a Claude agent")
 }
 
-fn inject_identity(v: &mut Value, identity: &str) -> bool {
+fn ensure_subscription_identity(v: &mut Value, identity: &str) -> bool {
     let obj = match v.as_object_mut() {
         Some(o) => o,
         None => return false,
@@ -1240,9 +1233,9 @@ fn inject_identity(v: &mut Value, identity: &str) -> bool {
             obj.insert("system".into(), serde_json::json!([idblock]));
         }
         Some(Value::String(s)) => {
-            if is_cc_marker(&s) {
-                return false;
-            } // клиент прислал identity строкой — не дублируем
+            // A string system cannot preserve a positional billing block safely. Normalize it to
+            // the ordinary SDK form even when its text spoofs a Claude Code marker; outbound
+            // credential type, never client content, owns the subscription-persona policy.
             obj.insert(
                 "system".into(),
                 serde_json::json!([idblock, {"type":"text","text":s}]),
@@ -1266,10 +1259,10 @@ fn inject_identity(v: &mut Value, identity: &str) -> bool {
     true
 }
 
-/// Препендит/обновляет system[0] = billing-header блок ИДЕМПОТЕНТНО (на ротации заменяет текст,
-/// не дублирует). Реальный CC шлёт его первым system-блоком, БЕЗ cache_control (снято с 2.1.195).
-/// Работает только по массиву system (identity-инжект уже гарантирует массив на messages-запросе).
-fn set_billing_block(v: &mut Value, text: &str) {
+/// Apply the explicit subscription-persona attribution policy. A genuine Claude Code billing block
+/// is replaced at index zero; an ordinary SDK gets a new prefix. Rotation replaces only that block,
+/// keeping every later caller system block and cache marker ordered and unchanged.
+fn rewrite_subscription_attribution(v: &mut Value, text: &str) {
     let obj = match v.as_object_mut() {
         Some(o) => o,
         None => return,
@@ -1885,7 +1878,7 @@ pub async fn forward(
             fallback_parsed = Some(v.clone());
         }
         if app.cfg.inject_identity {
-            inject_identity(v, &app.cfg.identity);
+            ensure_subscription_identity(v, &app.cfg.identity);
         }
     }
     let mut affinity_resolution = match affinity_input.as_ref() {
@@ -2512,14 +2505,19 @@ pub async fn forward(
                             v,
                             crate::upstream::persona_user_id(&sub.email, persona_session),
                         );
-                        // billing-header первым system-блоком (как реальный CC): cc_version флот-константна,
-                        // cch стабилен per-подписка. Идемпотентно — на ротации заменяет, не дублирует.
+                        // Subscription OAuth persona boundary. A genuine client's attribution is
+                        // deliberately replaced with the reviewed provider persona; this is not a
+                        // transparent request transform. The captured full cc_version remains exact
+                        // across subscriptions and rotations. Only cch identifies the subscription's
+                        // synthetic installation.
                         if app.cfg.inject_billing {
-                            // cc_version = <base>.<build> где build стабилен per-подписка (см. persona_ccbuild).
-                            let txt = format!("x-anthropic-billing-header: cc_version={}.{}; cc_entrypoint={}; cch={};",
-                            app.cfg.cc_version, crate::upstream::persona_ccbuild(&sub.email),
-                            app.cfg.cc_entrypoint, crate::upstream::persona_cch(&sub.email));
-                            set_billing_block(v, &txt);
+                            let txt = format!(
+                                "x-anthropic-billing-header: cc_version={}; cc_entrypoint={}; cch={};",
+                                app.cfg.cc_version,
+                                app.cfg.cc_entrypoint,
+                                crate::upstream::persona_cch(&sub.email)
+                            );
+                            rewrite_subscription_attribution(v, &txt);
                         }
                     }
                     match serde_json::to_vec(v) {

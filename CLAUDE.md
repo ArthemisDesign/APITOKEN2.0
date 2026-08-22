@@ -104,7 +104,7 @@ registry  ←  pool  ←  forward  ←  server(bin)
 |---|---|---|---|
 | `crates/registry` | engine PostgreSQL authority + SQLite importer | postgres, rusqlite, anyhow | HTTP, env, pool logic |
 | `crates/pool` | pool + rotation (in-memory) | registry | network, HTTP, DB, env |
-| `crates/forward` | transparent forwarding of /v1/*, limits poller | pool, registry, axum, reqwest | reading env, CLI, control routes |
+| `crates/forward` | Anthropic-protocol forwarding + subscription OAuth persona adapter, limits poller | pool, registry, axum, reqwest | reading env, CLI, control routes |
 | `crates/server` | COMPOSITION: env config, CLI, router, background loops | forward, pool, registry | forwarding business logic (it lives in forward) |
 
 **Pool replenishment — `crates/authbot` (OUTSIDE the API layers).** A separate Rust PRODUCER
@@ -129,9 +129,12 @@ fail-fast weighted budgets and private memory→file storage on those units; it 
 provider semantics and enables no limit until later router/provider integration.
 
 **Invariants (check before committing):**
-1. **Transparency.** For the client the protocol = pure Anthropic API (body/response/stream/errors).
-   The only thing we do under the hood is inject the Claude Code identity + oauth headers
-   (otherwise the subscription token is not accepted). Do not break this transparency.
+1. **Protocol compatibility with an explicit request adapter.** The public response, SSE lifecycle,
+   and upstream error body remain Anthropic-compatible. The subscription OAuth outbound request is
+   intentionally rewritten: the provider persona replaces/injects Claude Code attribution and
+   identity headers, and balance admission may cap `max_tokens`. Do not describe that boundary as
+   byte-for-byte request transparency. Keep all later client system blocks ordered and keep response
+   streaming unbuffered.
 2. **Dependency direction** strictly per the table. pool — no network and no HTTP.
    registry — no HTTP and no external network, but it owns the engine's PostgreSQL connections
    (Stage 2 authority): DB I/O inside registry is the norm, not a violation.

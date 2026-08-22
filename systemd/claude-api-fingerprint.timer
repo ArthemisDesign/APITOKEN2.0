@@ -1,4 +1,5 @@
-# Раз в день актуализируем значения прикладного слоя (чтобы не протухали при апдейтах Claude Code).
+# Dormant operator utility timer. Production does not enable it until capture credentials and
+# blue-green activation have their own reviewed safe path (docs/ops/INFRASTRUCTURE.md).
 [Unit]
 Description=Daily refresh of claude-api fingerprint values
 

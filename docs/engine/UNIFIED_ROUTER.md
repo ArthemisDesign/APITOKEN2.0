@@ -295,6 +295,13 @@ Roo Code 3.54.0 is installed and has compatible OpenAI base URL/model/service-ti
 settings, but the extension has no official headless CLI, so it is honestly marked
 `SKIP` rather than simulated through another client.
 
+A separate mandatory offline gate does not use production credentials: the Rust lanes run
+`tests/claude_code_compat_matrix.sh`, which resolves the integrity-pinned native npm
+artifacts for current `stable` and `latest`, checks their exact `--version`, and executes
+current controls/structured output plus discovery against a credential-blind loopback mock.
+The dated acceptance baseline and implementation log are
+`docs/engine/CLAUDE_CODE_COMPATIBILITY_PROGRESS.md`.
+
 Critical Claude Code requirements (native Anthropic lane contract):
 
 - do not buffer SSE — buffering the full response stalls the client;
@@ -305,11 +312,15 @@ Critical Claude Code requirements (native Anthropic lane contract):
 - do not wrap native Anthropic errors: Claude Code sometimes recovers based on the
   error text;
 - `GET /v1/models?limit=1000` — no redirects and faster than three seconds;
-- Claude Code ignores discovery IDs that do not start with `claude` or `anthropic`
-  (therefore `anthropic/claude-*` is compatible); `/v1/messages/count_tokens` is
-  optional — without it the client counts context locally; model discovery is off by
-  default and requires `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` (Claude Code
-  v2.1.129+).
+- Claude Code 2.1.223+ keeps discovery IDs that contain `claude` or `anthropic`
+  case-insensitively anywhere in the ID (`anthropic/claude-*` remains compatible); the
+  router publishes the optional `display_name` Claude Code reads while retaining its
+  existing `name` mirror; `/v1/messages/count_tokens` is optional — without it the
+  client counts context locally; model discovery is off by default and requires
+  `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` (Claude Code v2.1.129+).
+- exact offline acceptance is pinned in `tests/claude-code-compat-manifest.json` for
+  npm `stable` and `latest`; `tests/claude_code_compat_matrix.sh` verifies package
+  integrity and runs each real native binary against a credential-blind loopback mock.
 
 Codex: a full Responses API is required, not an adaptation of Chat Completions —
 custom provider supports only `wire_api="responses"` (this is the default when

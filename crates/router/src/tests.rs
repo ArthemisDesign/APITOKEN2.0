@@ -3136,9 +3136,16 @@ async fn messages_oversized_body_is_413_and_never_reaches_plane() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let request_id = response
+        .headers()
+        .get("request-id")
+        .and_then(|value| value.to_str().ok())
+        .unwrap()
+        .to_string();
     let json: serde_json::Value = response.json().await.unwrap();
     assert_eq!(json["type"], "error");
-    assert_eq!(json["error"]["type"], "invalid_request_error");
+    assert_eq!(json["error"]["type"], "request_too_large");
+    assert_eq!(json["request_id"], request_id);
     assert!(json["error"]["message"]
         .as_str()
         .unwrap()
@@ -3269,6 +3276,7 @@ async fn catalog_merges_three_planes_with_namespaces_and_order() {
     );
     assert_eq!(json["data"][0]["aliases"][0], "claude-opus-4-8");
     assert_eq!(json["data"][0]["name"], "Claude Opus 4.8");
+    assert_eq!(json["data"][0]["display_name"], "Claude Opus 4.8");
     assert_eq!(json["data"][0]["created"], 1_779_926_400);
     assert_eq!(json["data"][2]["created"], 1_783_555_200);
     assert_eq!(json["data"][4]["created"], 1_750_118_400);

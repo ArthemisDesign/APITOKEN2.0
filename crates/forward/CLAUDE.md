@@ -1,6 +1,6 @@
 # crates/forward — CLAUDE.md
 
-**Role:** transparent forwarding of Claude `/v1/*` to api.anthropic.com (Step B) + limits poller;
+**Role:** Anthropic-protocol forwarding with an explicit Claude subscription OAuth persona adapter + limits poller;
 separately — an optional strict OpenAI-compatible text adapter on top of the encrypted ChatGPT OAuth roster
 (native HTTPS to the Codex backend) and a native Gemini surface on top of the encrypted Code Assist OAuth pool.
 Never mix the three provider paths.
@@ -753,13 +753,12 @@ The Codex plane has its own in-memory cooling (`codex/health.rs`) and is not par
   network or missing usage are never retried, keep the original local public status and strip
   `not_started`. This transport never allows startup with an empty sealed Codex roster.
 
-**Fleet anti-fingerprinting (`persona_ua`):** a fleet of 100 byte-for-byte identical UAs — is itself a
-fingerprint. `persona_ua(cfg, email)` yields a UA that is **stable over time** for a subscription, but **distinct between
-subscriptions**: the pool is given as a list (`user_agents` len>1) → pin by hash(email); otherwise we vary the
-patch version of the base UA across `ua_spread`. The client `user-agent` is NOT passed through (in `skip_req_header`)
-— the fingerprint is ours. The same UA also goes to `poll_sub`/`detect_plan` (persona health = the same fingerprint
-as live traffic). Identity/beta/anthropic-version are NOT varied — they are correctness-critical (no ground-truth on
-plausible alternatives). Env: `CLAUDE_API_UA` (one or a list), `CLAUDE_API_UA_SPREAD`.
+**Fleet Claude Code persona (`persona_ua`):** the client `user-agent` is not passed through
+(`skip_req_header`); subscription OAuth receives the reviewed provider persona. `CLAUDE_API_UA` is one complete
+observed value or a `|`-separated pool of complete observed values. With a pool, `persona_ua(cfg, email)` pins one by
+subscription hash; with one value, the fleet reuses it exactly. The runtime never fabricates a patch version because
+it would disagree with Stainless and body attribution. The same pinned UA goes to `poll_sub`/`detect_plan`.
+Identity/beta/anthropic-version are likewise correctness-critical and are not varied.
 
 **Unlimited client dispatch:** Claude, Codex and Gemini have no process/per-account/per-profile
 request semaphore, local concurrency queue or concurrency rejection. Every request that passed auth/money
@@ -793,19 +792,21 @@ outcome AND on cancellation; disarmed on success (the slot is held by the stream
 (the hold is closed by tee-metering with actuals). That is why `mark_cooling`/`mark_healthy` never touch in-flight —
 the slot has a single owner. The breaker is fed at most once per request (anti-DoS from a poison request).
 
-**Transparency invariants (critical — do not break):**
-1. The upstream response is delivered to the client **byte-for-byte** (including the SSE stream). Never buffer,
-   never rewrite the body.
-2. Under the hood: Claude Code identity injection as the FIRST system block + `anthropic-beta: oauth-…` +
-   the subscription's `Bearer`. The client's `system` is preserved as the second block. Without identity Anthropic does
-   not accept subscription OAuth tokens — but the client must never know this. The namespaced catalog id
+**Protocol and persona invariants (critical — do not break):**
+1. A clean upstream response is delivered to the client **byte-for-byte** (including the SSE stream). Never buffer
+   or rewrite a successful response body.
+2. The outbound subscription OAuth request is intentionally not byte-transparent. Claude Code identity is
+   injected for an ordinary SDK, while a genuine client's first billing attribution block is replaced in place
+   by the reviewed subscription persona. All later client system blocks keep their order. The request also gets
+   `anthropic-beta: oauth-…` and the subscription Bearer. Without this persona Anthropic does not accept
+   subscription OAuth tokens. The namespaced catalog id
    (`anthropic/<native id>`) is stripped by admission before reserve and upstream (`strip_own_namespace`):
    the router's universal dispatch proxies the body byte-identically, and the prefix would reach upstream
    as-is (404); mirrors the strip of the `anthropic.rs` chat adapter. The native id is unchanged.
 3. **A broken SSE is closed with an `event: error` frame** (`SseErrorTail`), not silent truncation:
    for an SDK a stalled stream is indistinguishable from a finished one, and many clients hang on it. The frame
-   is part of the Anthropic protocol, so this is NOT a departure from byte-for-byte transparency, but its
-   restoration — a real upstream would have sent exactly it. The wrapper is the outermost one so that metering
+   is part of the Anthropic protocol and turns an otherwise silent transport truncation into a typed terminal.
+   The wrapper is the outermost one so that metering
    never sees synthetic bytes (a failure tail is not usage), and the text is depersonalized, as in local_err.
 4. **Rotation only BEFORE the stream starts:** the decision by status (429/401/403/5xx → cooling + next
    subscription) is made before the body is delivered. Once streaming has started — no switching.
@@ -1341,8 +1342,8 @@ Three differences from KIMI that must not be "unified":
    the full 10-beta anthropic-beta, x-app + the entire x-stainless-* set, accept,
    `anthropic-dangerous-direct-browser-access`, identity as the first system block (no double
    injection, the semantics of `inject_identity`) and the per-profile billing block `x-anthropic-billing-header:
-   cc_version=<base>.dNN; cc_entrypoint=…; cch=<hex>` (cch and .dNN are deterministic by roster id —
-   `persona_cch`/`persona_ccbuild` are reused). Client identity headers never reach the gateway
+   cc_version=<complete-captured-value>; cc_entrypoint=…; cch=<hex>` (only cch is deterministic by roster id;
+   no version suffix is invented). Client identity headers never reach the gateway
    at all (structurally: `GlmRequest` does not carry them) — only the reviewed persona is synthesized.
    The units of the quota endpoint's counters are unproven live, so
    raw counters and the derived fraction are stored optional: unknown — `None`, never `0`.

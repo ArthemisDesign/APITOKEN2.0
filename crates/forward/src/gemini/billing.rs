@@ -1831,7 +1831,6 @@ mod tests {
             default_beta: String::new(),
             user_agent: "gemini-strict-test".to_string(),
             user_agents: Vec::new(),
-            ua_spread: 0,
             anthropic_version: String::new(),
             connect_timeout: 1,
             read_timeout: 120,

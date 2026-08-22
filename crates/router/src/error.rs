@@ -45,15 +45,36 @@ fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
     (status, axum::Json(body)).into_response()
 }
 
+fn anthropic_error_response(
+    status: StatusCode,
+    kind: &str,
+    message: impl Into<String>,
+) -> Response {
+    let request_id = crate::identity::fresh_error_request_id()
+        .expect("operating-system CSPRNG unavailable for synthetic Anthropic request identity");
+    let mut response = json_response(
+        status,
+        json!({
+            "type": "error",
+            "error": {"type": kind, "message": message.into()},
+            "request_id": request_id.clone(),
+        }),
+    );
+    response.headers_mut().insert(
+        axum::http::header::HeaderName::from_static("request-id"),
+        request_id
+            .parse()
+            .expect("router-generated UUIDv4 is a valid header value"),
+    );
+    response
+}
+
 /// 502: плоскость недостижима до заголовков ответа. Native lane и ambiguous
 /// universal outcomes возвращают её сразу; только доказанный ConnectionRefused
 /// может разрешить следующую явную fallback-модель (инвариант 2).
 pub fn upstream_unavailable(lane: Lane, detail: &str) -> Response {
     match lane {
-        Lane::Anthropic => json_response(
-            StatusCode::BAD_GATEWAY,
-            json!({"type": "error", "error": {"type": "api_error", "message": detail}}),
-        ),
+        Lane::Anthropic => anthropic_error_response(StatusCode::BAD_GATEWAY, "api_error", detail),
         Lane::OpenAi => json_response(
             StatusCode::BAD_GATEWAY,
             json!({"error": {"message": detail, "type": "server_error", "code": "bad_gateway"}}),
@@ -77,17 +98,23 @@ pub fn unsupported_endpoint() -> Response {
 
 /// 405 в форме плоскости, выбранной по пути (harness видит привычный конверт).
 pub fn method_not_allowed(path: &str) -> Response {
-    let body = match Lane::from_path(path) {
-        Some(Lane::Anthropic) => json!({"type": "error", "error": {"type": "not_found_error",
-            "message": "Method not allowed for this endpoint."}}),
-        Some(Lane::Gemini) => json!({"error": {"code": 405,
-            "message": "Method not allowed for this endpoint.", "status": "NOT_FOUND"}}),
-        Some(Lane::OpenAi) | None => {
+    match Lane::from_path(path) {
+        Some(Lane::Anthropic) => anthropic_error_response(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "not_found_error",
+            "Method not allowed for this endpoint.",
+        ),
+        Some(Lane::Gemini) => json_response(
+            StatusCode::METHOD_NOT_ALLOWED,
+            json!({"error": {"code": 405,
+                "message": "Method not allowed for this endpoint.", "status": "NOT_FOUND"}}),
+        ),
+        Some(Lane::OpenAi) | None => json_response(
+            StatusCode::METHOD_NOT_ALLOWED,
             json!({"error": {"message": "Method not allowed for this endpoint.",
-            "type": "invalid_request_error", "code": "method_not_allowed"}})
-        }
-    };
-    json_response(StatusCode::METHOD_NOT_ALLOWED, body)
+                "type": "invalid_request_error", "code": "method_not_allowed"}}),
+        ),
+    }
 }
 
 /// 400 universal chat-пути: тело не JSON или не содержит валидный `model`.
@@ -213,98 +240,92 @@ pub fn policy_restricted() -> Response {
 /// 400 universal messages-пути: тело не JSON или не содержит валидный `model`.
 /// Имя параметра — в тексте (в конверте поля param нет). Oversized bodies use 413.
 pub fn invalid_messages_request(message: &str) -> Response {
-    json_response(
-        StatusCode::BAD_REQUEST,
-        json!({"type": "error", "error": {"type": "invalid_request_error", "message": message}}),
-    )
+    anthropic_error_response(StatusCode::BAD_REQUEST, "invalid_request_error", message)
 }
 
 /// 413 messages-пути: тело превысило составленный request cap router'а.
 pub fn messages_payload_too_large(message: &str) -> Response {
-    json_response(
-        StatusCode::PAYLOAD_TOO_LARGE,
-        json!({"type": "error", "error": {"type": "invalid_request_error", "message": message}}),
-    )
+    anthropic_error_response(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large", message)
 }
 
 /// 404 неизвестной модели на messages-пути — форма нативной Anthropic-плоскости.
 pub fn messages_model_not_found(id: &str) -> Response {
-    json_response(
+    anthropic_error_response(
         StatusCode::NOT_FOUND,
-        json!({"type": "error", "error": {"type": "not_found_error",
-            "message": format!("The model `{id}` does not exist or you do not have access to it.")}}),
+        "not_found_error",
+        format!("The model `{id}` does not exist or you do not have access to it."),
     )
 }
 
 /// 503 messages-пути: каталог недоступен, alias разрешить нельзя.
 pub fn messages_catalog_unavailable() -> Response {
-    json_response(
+    anthropic_error_response(
         StatusCode::SERVICE_UNAVAILABLE,
-        json!({"type": "error", "error": {"type": "api_error",
-            "message": "The model catalog is temporarily unavailable."}}),
+        "api_error",
+        "The model catalog is temporarily unavailable.",
     )
 }
 
 /// 503 policy preflight failure in the Anthropic Messages envelope.
 pub fn messages_policy_unavailable() -> Response {
-    json_response(
+    anthropic_error_response(
         StatusCode::SERVICE_UNAVAILABLE,
-        json!({"type": "error", "error": {"type": "api_error",
-            "message": "Account routing policy is temporarily unavailable."}}),
+        "api_error",
+        "Account routing policy is temporarily unavailable.",
     )
 }
 
 /// 403 strict policy removed every candidate, before any provider attempt.
 pub fn messages_policy_restricted() -> Response {
-    json_response(
+    anthropic_error_response(
         StatusCode::FORBIDDEN,
-        json!({"type": "error", "error": {"type": "permission_error",
-            "message": "No requested model is allowed by the account routing policy."}}),
+        "permission_error",
+        "No requested model is allowed by the account routing policy.",
     )
 }
 
 /// Единый 401 messages-пути: ключ отклонён плоскостью при опросе каталога.
 pub fn messages_auth_rejected() -> Response {
-    json_response(
+    anthropic_error_response(
         StatusCode::UNAUTHORIZED,
-        json!({"type": "error", "error": {"type": "authentication_error",
-            "message": "Invalid or missing API key."}}),
+        "authentication_error",
+        "Invalid or missing API key.",
     )
 }
 
 /// 503 bodyless auth authority unavailable in the Anthropic Messages envelope.
 pub fn messages_auth_unavailable() -> Response {
-    json_response(
+    anthropic_error_response(
         StatusCode::SERVICE_UNAVAILABLE,
-        json!({"type": "error", "error": {"type": "api_error",
-            "message": "Authentication is temporarily unavailable."}}),
+        "api_error",
+        "Authentication is temporarily unavailable.",
     )
 }
 
 /// 503 request-body admission overload in the Anthropic Messages envelope.
 pub fn messages_body_admission_overloaded() -> Response {
-    json_response(
+    anthropic_error_response(
         StatusCode::SERVICE_UNAVAILABLE,
-        json!({"type": "error", "error": {"type": "api_error",
-            "message": "The router request-body budget is temporarily exhausted."}}),
+        "api_error",
+        "The router request-body budget is temporarily exhausted.",
     )
 }
 
 /// 408 request-body deadline in the Anthropic Messages envelope.
 pub fn messages_body_read_timeout() -> Response {
-    json_response(
+    anthropic_error_response(
         StatusCode::REQUEST_TIMEOUT,
-        json!({"type": "error", "error": {"type": "invalid_request_error",
-            "message": "The request body was not received in time."}}),
+        "invalid_request_error",
+        "The request body was not received in time.",
     )
 }
 
 /// 415 compressed request bodies are forbidden on the Anthropic Messages envelope.
 pub fn messages_unsupported_content_encoding() -> Response {
-    json_response(
+    anthropic_error_response(
         StatusCode::UNSUPPORTED_MEDIA_TYPE,
-        json!({"type": "error", "error": {"type": "invalid_request_error",
-            "message": "Request Content-Encoding is not supported."}}),
+        "invalid_request_error",
+        "Request Content-Encoding is not supported.",
     )
 }
 
@@ -321,11 +342,23 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    async fn assert_anthropic_request_identity(response: Response) -> serde_json::Value {
+        let request_id = response
+            .headers()
+            .get("request-id")
+            .and_then(|value| value.to_str().ok())
+            .unwrap()
+            .to_string();
+        let json = body_json(response).await;
+        assert_eq!(json["request_id"], request_id);
+        json
+    }
+
     #[tokio::test]
     async fn upstream_unavailable_matches_lane_envelope() {
         let response = upstream_unavailable(Lane::Anthropic, "x");
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        let json = body_json(response).await;
+        let json = assert_anthropic_request_identity(response).await;
         assert_eq!(json["type"], "error");
         assert_eq!(json["error"]["type"], "api_error");
 
@@ -441,7 +474,7 @@ mod tests {
     async fn messages_dispatch_errors_are_anthropic_shaped() {
         let response = invalid_messages_request("Missing or invalid required parameter: model.");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let json = body_json(response).await;
+        let json = assert_anthropic_request_identity(response).await;
         assert_eq!(json["type"], "error");
         assert_eq!(json["error"]["type"], "invalid_request_error");
         assert!(json["error"]["message"].as_str().unwrap().contains("model"));
@@ -451,19 +484,19 @@ mod tests {
 
         let response = messages_model_not_found("gpt-9");
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        let json = body_json(response).await;
+        let json = assert_anthropic_request_identity(response).await;
         assert_eq!(json["type"], "error");
         assert_eq!(json["error"]["type"], "not_found_error");
         assert!(json["error"]["message"].as_str().unwrap().contains("gpt-9"));
 
         let response = messages_catalog_unavailable();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let json = body_json(response).await;
+        let json = assert_anthropic_request_identity(response).await;
         assert_eq!(json["error"]["type"], "api_error");
 
         let response = messages_auth_rejected();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let json = body_json(response).await;
+        let json = assert_anthropic_request_identity(response).await;
         assert_eq!(json["error"]["type"], "authentication_error");
 
         for response in [
@@ -471,15 +504,22 @@ mod tests {
             messages_body_admission_overloaded(),
         ] {
             assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-            let json = body_json(response).await;
+            let json = assert_anthropic_request_identity(response).await;
             assert_eq!(json["type"], "error");
             assert_eq!(json["error"]["type"], "api_error");
         }
         let response = messages_body_read_timeout();
         assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
         assert_eq!(
-            body_json(response).await["error"]["type"],
+            assert_anthropic_request_identity(response).await["error"]["type"],
             "invalid_request_error"
+        );
+
+        let response = messages_payload_too_large("too large");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            assert_anthropic_request_identity(response).await["error"]["type"],
+            "request_too_large"
         );
     }
 }

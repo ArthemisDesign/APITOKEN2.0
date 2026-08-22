@@ -93,8 +93,9 @@ depends on them. Engine rollout skips an exact binary and, after a changed resta
 exact tested digest remains active. The root-run Caddy installer is the only other intended raw-file
 consumer. The interim host keeps a cold pre-migration copy for forensics, not as a
 live rollback authority, and no longer runs any product unit. The `claude-api-fingerprint.timer` is intentionally not
-enabled here yet (it needs a live `claude` CLI on the host); the fingerprint values in `config.env`
-are current.
+enabled here: the operator utility needs a live `claude` CLI and its activation path is not the blue-green
+watchdog. Fingerprint values in `config.env` are reviewed manually. `CLAUDE_API_CC_VERSION` stores the
+complete captured value, including its build suffix; the engine never synthesizes another suffix.
 
 ## Commercial host
 
