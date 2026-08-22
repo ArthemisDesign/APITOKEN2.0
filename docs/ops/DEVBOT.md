@@ -420,8 +420,9 @@ access engine PostgreSQL, Chatwoot's database, or the commerce/sales/openkeys DB
     `devbot`; `DevBotTelegramSendFailures` fires when Telegram send/edit attempts are dropped
     after retries, `DevBotWebhookDeliveryFailing` when Alertmanager cannot POST to the
     webhook, `DevBotWebhookSilent` when the intake has been silent for 24 h while
-    Alertmanager has active alerts, and `DevBotMetricsDown` when the scrape fails while the
-    unit is active.
+    Alertmanager has active alerts (`devbot_last_webhook_seconds` is seeded to process start
+    so a restart is not treated as epoch silence), and `DevBotMetricsDown` when the scrape
+    fails while the unit is active.
 - Last-resort channel: if the bot is dead, Alertmanager's email receiver keeps working —
   therefore the email branch in the Alertmanager config is never removed (expand-only).
 

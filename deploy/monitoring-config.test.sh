@@ -611,6 +611,15 @@ grep -Fq 'devbot_last_webhook_seconds' "$ROOT/observability/prometheus/rules/app
   || { printf 'no rule consumes devbot_last_webhook_seconds\n' >&2; exit 1; }
 grep -Fq 'devbot_last_webhook_seconds' "$ROOT/apps/devbot/src/am-webhook.ts" \
   || { printf 'devbot does not export the last-webhook metric\n' >&2; exit 1; }
+# Guardrail: lastWebhookTs must not initialize to 0. Prometheus then computes
+# time()-0 > 86400 and DevBotWebhookSilent false-fires 30 min after every restart
+# (2026-08-22 Chatwoot cutover).
+if grep -Eq 'lastWebhookTs[[:space:]]*=[[:space:]]*0' "$ROOT/apps/devbot/src/am-webhook.ts"; then
+  printf 'lastWebhookTs must not initialize to 0 (DevBotWebhookSilent epoch false-fire)\n' >&2
+  exit 1
+fi
+grep -Fq 'Seeded to process start' "$ROOT/apps/devbot/src/am-webhook.ts" \
+  || { printf 'lastWebhookTs seed comment is missing\n' >&2; exit 1; }
 grep -Fq 'devbot_last_chatwoot_seconds' "$ROOT/apps/devbot/src/am-webhook.ts" \
   || { printf 'devbot does not export the last-chatwoot metric\n' >&2; exit 1; }
 grep -Fq 'alertmanager_notifications_failed_total{integration="webhook"}' \

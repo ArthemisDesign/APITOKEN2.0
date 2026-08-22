@@ -58,5 +58,5 @@ pnpm --filter @claude-api/devbot test
   client messages only). Public Caddy path is the same on `support.apitoken.sale`.
 - `GET /health` — deploy health gate (`{"ok":true}`).
 - `GET /metrics` — `devbot_heartbeat_timestamp_seconds`, `devbot_events_total{topic,kind}`,
-  `devbot_telegram_send_failures_total`, `devbot_last_webhook_seconds`,
-  `devbot_last_chatwoot_seconds`.
+  `devbot_telegram_send_failures_total`, `devbot_last_webhook_seconds` (process start until
+  the first accepted Alertmanager POST), `devbot_last_chatwoot_seconds`.

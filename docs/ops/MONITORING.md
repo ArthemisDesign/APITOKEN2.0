@@ -1906,6 +1906,13 @@ devbot block was stripped from the rendered `alertmanager.yml` (the renderer omi
 `DEVBOT_AM_SECRET` is absent from the env file), the path secret drifted, or the bot's intake
 server stopped accepting while the process stayed up.
 
+The gauge is seeded to process start, not Unix epoch. A restart therefore does not look like
+56 years of silence, and this alert waits a full 24 hours of this process's life (plus the
+30-minute `for:`) before paging. Do not initialize `lastWebhookTs` to 0 — that false-fired
+30 minutes after the 2026-08-22 Chatwoot cutover while other alerts were already firing.
+Grafana "Last webhook (age)" shows time since the last accepted POST, or since process start
+until that first POST.
+
 Verify: `curl -fsS http://127.0.0.1:9093/-/ready` (Alertmanager itself), compare
 `devbot_last_webhook_seconds` against the current time, and confirm the rendered webhook URL
 still contains the same secret as `/etc/apitoken/devbot.env`. Reinstall monitoring so

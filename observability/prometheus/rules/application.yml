@@ -1425,6 +1425,8 @@ groups:
           description: 'Alertmanager webhook deliveries to the devbot receiver failed during the last fifteen minutes. Email keeps flowing; the Telegram path is degraded.'
           runbook: 'docs/ops/MONITORING.md#devbotwebhookdeliveryfailing'
 
+      # lastWebhookTs is seeded to process start, not 0. time()-0 is always > 86400 and
+      # false-fires this rule 30m after every unit restart while any alert is already active.
       - alert: DevBotWebhookSilent
         expr: |
           node_systemd_unit_state{name="apitoken-devbot.service",state="active"} == 1

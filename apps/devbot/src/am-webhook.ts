@@ -12,8 +12,12 @@ const MAX_BODY_BYTES = 1024 * 1024;
 export class MetricsRegistry {
   heartbeatTs = Math.floor(Date.now() / 1000);
   telegramSendFailures = 0;
-  /** Unix timestamp of the last ACCEPTED Alertmanager webhook delivery; 0 = none yet. */
-  lastWebhookTs = 0;
+  /**
+   * Unix timestamp of the last ACCEPTED Alertmanager webhook delivery.
+   * Seeded to process start, not 0: Prometheus `time() - 0` is always > 86400, so
+   * DevBotWebhookSilent false-fires 30 min after every restart while any alert is active.
+   */
+  lastWebhookTs = Math.floor(Date.now() / 1000);
   /** Unix timestamp of the last ACCEPTED Chatwoot webhook delivery; 0 = none yet. */
   lastChatwootTs = 0;
   private readonly events = new Map<string, number>();
@@ -40,7 +44,7 @@ export class MetricsRegistry {
       lines.push(`devbot_events_total{topic="${topic}",kind="${kind}"} ${value}`);
     }
     lines.push(
-      "# HELP devbot_last_webhook_seconds Unix timestamp of the last accepted Alertmanager webhook delivery.",
+      "# HELP devbot_last_webhook_seconds Unix timestamp of the last accepted Alertmanager webhook delivery, or process start if none yet this process.",
       "# TYPE devbot_last_webhook_seconds gauge",
       `devbot_last_webhook_seconds ${this.lastWebhookTs}`,
     );

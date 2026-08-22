@@ -129,7 +129,10 @@ describe("am-webhook server", () => {
       expect(text).toContain('devbot_events_total{topic="critical",kind="alert"} 2');
       expect(text).toContain('devbot_events_total{topic="deploys",kind="green"} 1');
       expect(text).toContain("devbot_telegram_send_failures_total 1");
-      expect(text).toContain("devbot_last_webhook_seconds 0");
+      const webhookTs = /devbot_last_webhook_seconds (\d+)/.exec(text);
+      expect(webhookTs).not.toBeNull();
+      expect(Number(webhookTs?.[1])).toBeGreaterThan(0);
+      expect(text).toContain("devbot_last_chatwoot_seconds 0");
     });
   });
 
@@ -151,13 +154,31 @@ describe("am-webhook server", () => {
 
   it("does not count rejected payloads as webhook deliveries", async () => {
     await withServer(async (base, received) => {
+      const beforeText = await fetch(`${base}/metrics`).then((r) => r.text());
+      const beforeMatch = /devbot_last_webhook_seconds (\d+)/.exec(beforeText);
+      expect(beforeMatch).not.toBeNull();
+      const seeded = Number(beforeMatch?.[1]);
+      expect(seeded).toBeGreaterThan(0);
       await fetch(`${base}/alerts/${SECRET}`, { method: "POST", body: "{not json" });
       await fetch(`${base}/alerts/wrong`, { method: "POST", body: "{}" });
       expect(received).toHaveLength(0);
       const text = await fetch(`${base}/metrics`).then((r) => r.text());
-      expect(text).toContain("devbot_last_webhook_seconds 0");
+      const afterMatch = /devbot_last_webhook_seconds (\d+)/.exec(text);
+      expect(Number(afterMatch?.[1])).toBe(seeded);
       expect(text).toContain("devbot_last_chatwoot_seconds 0");
     });
+  });
+
+  it("seeds last-webhook gauge to process start instead of Unix epoch", () => {
+    const before = Math.floor(Date.now() / 1000);
+    const metrics = new MetricsRegistry();
+    const after = Math.floor(Date.now() / 1000);
+    const match = /devbot_last_webhook_seconds (\d+)/.exec(metrics.render());
+    expect(match).not.toBeNull();
+    const value = Number(match?.[1]);
+    expect(value).toBeGreaterThanOrEqual(before);
+    expect(value).toBeLessThanOrEqual(after);
+    expect(value).not.toBe(0);
   });
 });
 
