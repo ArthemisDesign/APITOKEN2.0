@@ -596,7 +596,7 @@ closed expand-only object:
 
 ```json
 {"apitoken":{
-  "limits":{"context":400000,"input":272000,"output":128000},
+  "limits":{"context":1050000,"input":922000,"output":128000},
   "capabilities":{"reasoning_efforts":["low","medium","high"],
                   "service_tiers":["standard","priority"],
                   "input_modalities":["text","image"],
@@ -608,10 +608,12 @@ closed expand-only object:
 ```
 
 The fields inside `limits` are independent: unknown input/context are omitted, but a
-known output is preserved. Codex input is taken from the authenticated last-good
-`/codex/models.context_window`, and when profiles disagree the minimum common
-guarantee is published; missing metadata on even one serving profile lifts the
-guarantee. The optional OpenAI `name` is taken only from provider-authored
+known output is preserved. Codex total context is taken from the authenticated last-good
+`/codex/models.max_context_window`, falling back to legacy `context_window`; the reviewed output
+ceiling is subtracted to publish the maximum input. When profiles disagree, the minimum common
+context is published; missing metadata on even one serving profile lifts the guarantee. The
+OpenAI-documented GPT text contract is `1,050,000` total, `128,000` output, and therefore `922,000`
+maximum input; `272,000` remains only the long-context pricing threshold. The optional OpenAI `name` is taken only from provider-authored
 `display_name` and is dropped on profile conflict. Gemini publishes configured native
 limits and exact model-specific capabilities: the image-generation route accepts
 text/image, outputs text/image, and explicitly has

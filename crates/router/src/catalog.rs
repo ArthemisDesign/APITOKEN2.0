@@ -1645,7 +1645,7 @@ mod tests {
     fn openai_envelope_maps_to_namespaced_entries() {
         let body = serde_json::json!({"object": "list", "data": [
             {"id": "gpt-5.6", "object": "model", "created": 1_750_118_400, "owned_by": "apitoken",
-             "apitoken": {"limits": {"context": 400000, "input": 272000, "output": 128000},
+             "apitoken": {"limits": {"context": 1050000, "input": 922000, "output": 128000},
                  "capabilities": {"reasoning_efforts": ["none", "low", "max"],
                                   "service_tiers": ["standard", "priority"],
                                   "input_modalities": ["text", "image"],
@@ -1660,7 +1660,7 @@ mod tests {
         assert_eq!(entries[0].id, "openai/gpt-5.6");
         assert_eq!(entries[0].native_id, "gpt-5.6");
         assert_eq!(entries[0].display_name, None);
-        assert_eq!(entries[0].limits.as_ref().unwrap().input, Some(272_000));
+        assert_eq!(entries[0].limits.as_ref().unwrap().input, Some(922_000));
         assert_eq!(
             entries[0].reasoning_efforts.as_deref(),
             Some(["none", "low", "max"].map(String::from).as_slice())

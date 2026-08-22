@@ -153,9 +153,10 @@ pub(crate) struct CodexModelCatalog {
     /// Provider-authored presentation name. It is intentionally optional: startup fallback and
     /// older provider payloads must not synthesize one from the model id.
     pub display_names: HashMap<String, String>,
-    /// Provider-published input ceiling for one model. This is deliberately distinct from the
-    /// locally reviewed output ceiling: `/models` is the authority for live context rollout,
-    /// while the configured model contract remains the authority for output/admission.
+    /// Provider-published total context window for one model. This is deliberately distinct from
+    /// the locally reviewed output ceiling: `/models.max_context_window` is the authority for the
+    /// subscription rollout, with legacy `/models.context_window` used only when no maximum is
+    /// present; the configured model contract remains the authority for output/admission.
     pub input_token_limits: HashMap<String, u64>,
 }
 
@@ -860,14 +861,19 @@ fn parse_model_catalog(value: &Value) -> Result<CodexModelCatalog, ProcessError>
                 .display_names
                 .insert(id.to_string(), display_name.to_string());
         }
-        if let Some(input_token_limit) = model
-            .get("context_window")
+        // The authenticated subscription catalog can expose both the currently configured
+        // `context_window` and the provider-approved `max_context_window`. OpenAI's public model
+        // contract defines the latter as the total context window; reserve the reviewed output
+        // ceiling separately when publishing the maximum usable input.
+        if let Some(context_window) = model
+            .get("max_context_window")
+            .or_else(|| model.get("context_window"))
             .and_then(Value::as_u64)
             .filter(|limit| *limit > 0)
         {
             catalog
                 .input_token_limits
-                .insert(id.to_string(), input_token_limit);
+                .insert(id.to_string(), context_window);
         }
         let has_fast_tier = ["service_tiers", "additional_speed_tiers"]
             .iter()
@@ -1543,6 +1549,7 @@ mod tests {
                     "slug": "gpt-current",
                     "display_name": "GPT Current",
                     "context_window": 272000,
+                    "max_context_window": 1050000,
                     "service_tiers": [{"id": "priority", "name": "Fast"}],
                     "additional_speed_tiers": []
                 },
@@ -1561,7 +1568,7 @@ mod tests {
         assert!(catalog.fast_models.contains("gpt-legacy"));
         assert!(!catalog.fast_models.contains("gpt-standard"));
         assert!(!catalog.fast_models.contains("gpt-string"));
-        assert_eq!(catalog.input_token_limits["gpt-current"], 272_000);
+        assert_eq!(catalog.input_token_limits["gpt-current"], 1_050_000);
         assert_eq!(catalog.display_names["gpt-current"], "GPT Current");
         assert!(!catalog.input_token_limits.contains_key("gpt-standard"));
     }
@@ -1571,14 +1578,16 @@ mod tests {
         let catalog = parse_model_catalog(&json!({
             "models": [
                 {"slug": "valid", "context_window": 1},
+                {"slug": "valid-maximum", "context_window": 272000, "max_context_window": 1050000},
                 {"slug": "zero", "context_window": 0},
                 {"slug": "negative", "context_window": -1},
                 {"slug": "string", "context_window": "272000"}
             ]
         }))
         .unwrap();
-        assert_eq!(catalog.input_token_limits.len(), 1);
+        assert_eq!(catalog.input_token_limits.len(), 2);
         assert_eq!(catalog.input_token_limits["valid"], 1);
+        assert_eq!(catalog.input_token_limits["valid-maximum"], 1_050_000);
     }
 
     #[test]

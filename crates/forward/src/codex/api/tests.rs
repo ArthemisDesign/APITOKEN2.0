@@ -295,7 +295,7 @@ fn standard_model_list_uses_the_last_good_upstream_intersection() {
 
     let available = crate::codex::CodexModelCatalog {
         models: HashSet::from(["gpt-5.6-sol".to_string()]),
-        input_token_limits: HashMap::from([("gpt-5.6-sol".to_string(), 272_000)]),
+        input_token_limits: HashMap::from([("gpt-5.6-sol".to_string(), 1_050_000)]),
         display_names: HashMap::from([("gpt-5.6-sol".to_string(), "GPT 5.6 Thinking".to_string())]),
         ..Default::default()
     };
@@ -304,7 +304,7 @@ fn standard_model_list_uses_the_last_good_upstream_intersection() {
     assert_eq!(data[0]["id"], "gpt-5.6");
     assert_eq!(
         data[0]["apitoken"]["limits"],
-        json!({"context": 400000, "input": 272000, "output": 128000})
+        json!({"context": 1050000, "input": 922000, "output": 128000})
     );
     assert_eq!(data[0]["name"], "GPT 5.6 Thinking");
 }

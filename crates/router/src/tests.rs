@@ -215,7 +215,7 @@ const ANTHROPIC_MODELS: &str = r#"{"data":[
 ],"has_more":false,"first_id":"claude-opus-4-8","last_id":"claude-haiku-4-5"}"#;
 
 const OPENAI_MODELS: &str = r#"{"object":"list","data":[
-    {"id":"gpt-5.6","object":"model","created":1783555200,"owned_by":"apitoken","apitoken":{"limits":{"context":400000,"input":272000,"output":128000},"capabilities":{"reasoning_efforts":["none","low","medium","high","xhigh","max"],"service_tiers":["standard","priority"],"input_modalities":["text","image"],"output_modalities":["text"],"tool_calling":true,"structured_outputs":true,"streaming":true}}},
+    {"id":"gpt-5.6","object":"model","created":1783555200,"owned_by":"apitoken","apitoken":{"limits":{"context":1050000,"input":922000,"output":128000},"capabilities":{"reasoning_efforts":["none","low","medium","high","xhigh","max"],"service_tiers":["standard","priority"],"input_modalities":["text","image"],"output_modalities":["text"],"tool_calling":true,"structured_outputs":true,"streaming":true}}},
     {"id":"gpt-5.5","object":"model","created":1783555200,"owned_by":"apitoken","apitoken":{"limits":{"output":128000},"capabilities":{"reasoning_efforts":["none","low","medium","high","xhigh"],"service_tiers":["standard"],"input_modalities":["text","image"],"output_modalities":["text"],"tool_calling":true,"structured_outputs":true,"streaming":true}}}
 ]}"#;
 

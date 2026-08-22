@@ -993,14 +993,16 @@ pub(super) async fn available_upstream_models(
 
 fn model_object(
     model: &CodexModel,
-    input_token_limit: Option<u64>,
+    context_window: Option<u64>,
     display_name: Option<&str>,
 ) -> Value {
     let mut limits = Map::from_iter([("output".to_string(), Value::from(model.max_output_tokens))]);
-    if let Some(input) = input_token_limit {
-        if let Some(context) = input.checked_add(model.max_output_tokens) {
-            limits.insert("context".to_string(), Value::from(context));
-            limits.insert("input".to_string(), Value::from(input));
+    if let Some(context) = context_window {
+        if let Some(input) = context.checked_sub(model.max_output_tokens) {
+            if input > 0 {
+                limits.insert("context".to_string(), Value::from(context));
+                limits.insert("input".to_string(), Value::from(input));
+            }
         }
     }
     let mut service_tiers = vec!["standard"];

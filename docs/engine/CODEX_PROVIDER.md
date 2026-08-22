@@ -29,13 +29,24 @@ non-stream responses) are unchanged.
 Model resources carry a reviewed positive Unix-seconds `created` release date and an expand-only
 `apitoken` metadata object for unified discovery. Release dates come from the OpenAI changelog and
 are stored with the pinned model catalog; adding a public model without that date is forbidden. The
-live authenticated Codex `/models.context_window` is the input ceiling; the reviewed public model
-contract owns output and accepted reasoning efforts. `limits.context` is their checked sum,
-matching OpenCode's total/input/output schema. Fast-capable models publish `standard,priority`;
-others publish only `standard`. A fleet aggregate uses the smallest input ceiling proved by every
-profile that can serve the model. If any such profile omits or corrupts context metadata, input and
-total context are omitted while the model and known output remain available—no model-name table or
-pricing threshold is used as a fallback.
+OpenAI's public model pages define a `1,050,000`-token total context window and `128,000` maximum
+output tokens for every published subscription text model (`gpt-5.4`, `gpt-5.5`, and the GPT-5.6
+Sol/Terra/Luna family). The authenticated Codex `/models.max_context_window` is the live rollout
+authority for that total; older payloads fall back to `/models.context_window`. The reviewed public
+model contract owns output and accepted reasoning efforts. Discovery therefore publishes
+`limits.context=1,050,000`, `limits.output=128,000`, and the derived maximum input
+`limits.input=922,000` when the live catalog carries the current maximum. The separate `272,000`
+value is the long-context pricing threshold, not the context limit. Fast-capable models publish
+`standard,priority`; others publish only `standard`. A fleet aggregate uses the smallest total
+context proved by every profile that can serve the model. If any such profile omits or corrupts
+context metadata, input and total context are omitted while the model and known output remain
+available—no model-name table or pricing threshold is used as a fallback. Sources: the
+[OpenAI API changelog](https://developers.openai.com/api/docs/changelog#march-2026), which announced
+the 1M window, and the official model pages for [GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4),
+[GPT-5.5](https://developers.openai.com/api/docs/models/gpt-5.5),
+[GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol),
+[GPT-5.6 Terra](https://developers.openai.com/api/docs/models/gpt-5.6-terra), and
+[GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna).
 
 ## Accepted subscriptions
 
