@@ -34,8 +34,8 @@ import {
 import type { Environment } from "./config.js";
 import { SALES_DATABASE } from "./infrastructure.module.js";
 
-// Внутренний контур: commerce (apps/api) вызывает sales-api для погашения промокода.
-// Гейт — общий SALES_CONTROL_KEY (тот же, что у фида sales→commerce), заголовок x-api-key.
+// Внутренний Commerce→Sales контур. Гейт — общий SALES_CONTROL_KEY (тот же, что у фида
+// Sales→Commerce), заголовок x-api-key; ни один из этих маршрутов не вызывается браузером.
 
 @Injectable()
 export class InternalKeyGuard implements CanActivate {
@@ -108,7 +108,8 @@ export class InternalPartnersController {
     const parsed = resolveSchema.safeParse({ code });
     if (!parsed.success) return { found: false };
     const partner = await findPartnerByReferralCode(this.database, parsed.data.code.toLowerCase());
-    // Only an active partner owns a resolvable referral code.
+    // Only an active partner owns a resolvable referral code. Program-membership gating is a later
+    // consumer-retirement change; this existing expand-only contract keeps its rollout semantics.
     if (!partner || partner.status !== "active") return { found: false };
     return { found: true, partnerId: partner.id, referralDiscountBps: partner.referralDiscountBps };
   }

@@ -120,6 +120,41 @@ describe.runIf(Boolean(connectionString))("partner authority requests and Commer
     expect(left.id).not.toBe(right.id);
   });
 
+  it("keeps disabled Commerce requests visible and rejects legacy ids at the Commerce decision boundary", async () => {
+    const owner = await partner("boundary@example.test");
+    const request = await createCommissionChangeRequest(db, {
+      requesterPartnerId: owner.id,
+      requestedCommissionBps: 1_200,
+      reason: "Boundary isolation proof",
+      idempotencyKey: `commission:${randomUUID()}`,
+    });
+
+    await expect(decidePartnerRequest(db, {
+      requestId: request.id,
+      action: "reject",
+      reviewerActor: "commerce-admin:test",
+      reviewerNote: "Must not cross the legacy boundary",
+      requireCommerceProgram: true,
+    })).rejects.toBeInstanceOf(PartnerRequestNotFoundError);
+
+    await db.pool.query(`
+      UPDATE partners
+      SET commerce_user_id = gen_random_uuid(), program_enabled = true, program_started_at = now()
+      WHERE id = $1
+    `, [owner.id]);
+    await db.pool.query("UPDATE partners SET program_enabled = false WHERE id = $1", [owner.id]);
+
+    const listed = await listPartnerRequests(db, { commerceProgramOnly: true, limit: 100 });
+    expect(listed.items.map((item) => item.id)).toContain(request.id);
+    await expect(decidePartnerRequest(db, {
+      requestId: request.id,
+      action: "reject",
+      reviewerActor: "commerce-admin:test",
+      reviewerNote: "Disabled membership remains reviewable",
+      requireCommerceProgram: true,
+    })).resolves.toMatchObject({ id: request.id, status: "rejected" });
+  });
+
   it("proves referral ownership before accepting a B2B request", async () => {
     const owner = await partner("owner@example.test");
     const other = await partner("other@example.test");

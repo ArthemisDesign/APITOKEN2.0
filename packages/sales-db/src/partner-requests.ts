@@ -265,6 +265,7 @@ export async function createCommissionChangeRequest(database: SalesDatabase, inp
   requestedCommissionBps: number;
   reason: string;
   idempotencyKey: string;
+  requireProgramEnabled?: boolean;
 }): Promise<PartnerRequestView> {
   const reason = validateReason(input.reason);
   const idempotencyKey = scopedIdempotencyKey(
@@ -297,13 +298,16 @@ export async function createCommissionChangeRequest(database: SalesDatabase, inp
       await client.query("COMMIT");
       return existing;
     }
-    const partner = await client.query<{ commission_bps: number }>(`
-      SELECT commission_bps FROM partners
+    const partner = await client.query<{ commission_bps: number; program_enabled: boolean }>(`
+      SELECT commission_bps, program_enabled FROM partners
       WHERE id = $1 AND status = 'active'
       FOR UPDATE
     `, [input.requesterPartnerId]);
     const current = partner.rows[0]?.commission_bps;
     if (current === undefined) throw new PartnerRequestNotFoundError("active partner not found");
+    if (input.requireProgramEnabled === true && partner.rows[0]?.program_enabled !== true) {
+      throw new PartnerRequestNotFoundError("active Commerce partner membership not found");
+    }
     if (input.requestedCommissionBps <= current) {
       throw new PartnerRequestValidationError("requested commission must be higher than the current commission");
     }
@@ -349,6 +353,7 @@ export async function createB2BPartnerRequest(database: SalesDatabase, input: {
   reason: string;
   stateSnapshot: Record<string, unknown>;
   idempotencyKey: string;
+  requireProgramEnabled?: boolean;
 }): Promise<PartnerRequestView> {
   const reason = validateReason(input.reason);
   const idempotencyKey = scopedIdempotencyKey(
@@ -419,8 +424,9 @@ export async function createB2BPartnerRequest(database: SalesDatabase, input: {
       JOIN partners partner ON partner.id = referral.partner_id
       WHERE referral.partner_id = $1 AND referral.commerce_user_id = $2
         AND partner.status = 'active'
+        AND ($3::boolean = false OR partner.program_enabled = true)
       FOR SHARE OF partner
-    `, [input.requesterPartnerId, input.commerceUserId]);
+    `, [input.requesterPartnerId, input.commerceUserId, input.requireProgramEnabled === true]);
     if (!owner.rows[0]) throw new PartnerRequestNotFoundError("referral not found for this partner");
     const inserted = await client.query<{ id: string }>(`
       INSERT INTO partner_requests (
@@ -470,6 +476,8 @@ export interface PartnerRequestPage {
 
 export async function listPartnerRequests(database: SalesDatabase, input: {
   requesterPartnerId?: string;
+  /** Limit the new Commerce Admin queue to account-bound program memberships. */
+  commerceProgramOnly?: boolean;
   status?: PartnerRequestStatus;
   requestType?: PartnerRequestType;
   before?: { createdAt: Date; id: string };
@@ -483,6 +491,9 @@ export async function listPartnerRequests(database: SalesDatabase, input: {
     conditions.push(sql.replace("?", `$${values.length}`));
   };
   if (input.requesterPartnerId !== undefined) add("request.requester_partner_id = ?", input.requesterPartnerId);
+  if (input.commerceProgramOnly === true) {
+    conditions.push("requester.commerce_user_id IS NOT NULL");
+  }
   if (input.status !== undefined) add("request.status = ?::partner_request_status", input.status);
   if (input.requestType !== undefined) add("request.request_type = ?::partner_request_type", input.requestType);
   if (input.before !== undefined) {
@@ -534,6 +545,8 @@ export async function decidePartnerRequest(database: SalesDatabase, input: {
   approvedCommissionBps?: number;
   approvedDiscountBps?: number;
   providers?: Partial<Record<PartnerRequestProviderId, number | null>>;
+  /** Keep the Commerce Admin boundary from deciding a legacy Telegram request by raw UUID. */
+  requireCommerceProgram?: boolean;
 }): Promise<PartnerRequestView> {
   const actor = input.reviewerActor.trim();
   const note = input.reviewerNote.trim();
@@ -562,8 +575,9 @@ export async function decidePartnerRequest(database: SalesDatabase, input: {
       FROM partner_requests request
       JOIN partners requester ON requester.id = request.requester_partner_id
       WHERE request.id = $1
+        AND ($2::boolean = false OR requester.commerce_user_id IS NOT NULL)
       FOR UPDATE OF request, requester
-    `, [input.requestId]);
+    `, [input.requestId, input.requireCommerceProgram === true]);
     const request = locked.rows[0];
     if (!request) throw new PartnerRequestNotFoundError();
     if (request.status !== "pending") throw new PartnerRequestDecisionError("partner request was already decided");

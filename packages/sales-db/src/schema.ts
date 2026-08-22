@@ -49,8 +49,7 @@ export const partnerRequestEffectStatus = pgEnum("partner_request_effect_status"
 
 export const partners = pgTable("partners", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  // Dormant until the Commerce-session producer ships after migration 0026 is production-GREEN.
-  // This immutable Commerce identity replaces Telegram as the future program membership key.
+  // Commerce-session membership authority. Legacy Telegram rows remain NULL/disabled.
   commerceUserId: uuid("commerce_user_id"),
   programEnabled: boolean("program_enabled").notNull().default(false),
   programStartedAt: timestamp("program_started_at", { withTimezone: true }),

@@ -140,13 +140,13 @@ export async function applyPartnerB2BAuthorityCascade(
       await client.query(`
         UPDATE partner_invites
         SET b2b_max_discount_bps = LEAST(b2b_max_discount_bps, $2)
-        WHERE partner_id = $1 AND consumed_at IS NULL AND b2b_enabled
+        WHERE partner_id = $1 AND consumed_at IS NULL AND revoked_at IS NULL AND b2b_enabled
       `, [row.id, target.maximumBps]);
     } else {
       await client.query(`
         UPDATE partner_invites
         SET b2b_enabled = false, b2b_max_discount_bps = 0, b2b_can_delegate = false
-        WHERE partner_id = $1 AND consumed_at IS NULL AND b2b_enabled
+        WHERE partner_id = $1 AND consumed_at IS NULL AND revoked_at IS NULL AND b2b_enabled
       `, [row.id]);
     }
     const changed = row.b2b_enabled !== target.enabled
@@ -209,6 +209,7 @@ export async function updateDirectTeamMemberAuthority(
     b2bEnabled?: boolean;
     b2bMaxDiscountBps?: number;
     b2bCanDelegate?: boolean;
+    requireProgramEnabled?: boolean;
   },
 ): Promise<DirectTeamMemberAuthority> {
   const client = await database.pool.connect();
@@ -220,15 +221,20 @@ export async function updateDirectTeamMemberAuthority(
       b2b_enabled: boolean;
       b2b_max_discount_bps: number;
       b2b_can_delegate: boolean;
+      program_enabled: boolean;
     }>(`
       SELECT COALESCE(team_override_max_bps, 2000) AS maximum_bps,
-             team_invites_enabled, b2b_enabled, b2b_max_discount_bps, b2b_can_delegate
+             team_invites_enabled, b2b_enabled, b2b_max_discount_bps, b2b_can_delegate,
+             program_enabled
       FROM partners
       WHERE id = $1 AND status = 'active'
       FOR UPDATE
     `, [input.parentPartnerId]);
     const source = parent.rows[0];
     if (!source) throw new TeamMemberNotFoundError();
+    if (input.requireProgramEnabled === true && !source.program_enabled) {
+      throw new TeamMemberNotFoundError();
+    }
     if ((input.overrideBps !== undefined && input.overrideBps > source.maximum_bps)
       || (input.teamOverrideMaxBps !== undefined && input.teamOverrideMaxBps > source.maximum_bps)) {
       throw new TeamOverrideLimitError(source.maximum_bps);
@@ -244,11 +250,13 @@ export async function updateDirectTeamMemberAuthority(
       b2b_max_discount_bps: number;
       b2b_can_delegate: boolean;
       b2b_grant_source_partner_id: string | null;
+      program_enabled: boolean;
     }>(`
       SELECT COALESCE(child.parent_override_bps, parent.sub_commission_bps) AS override_bps,
              COALESCE(child.team_override_max_bps, 2000) AS team_override_max_bps,
              child.team_invites_enabled, child.b2b_enabled, child.b2b_max_discount_bps,
-             child.b2b_can_delegate, child.b2b_grant_source_partner_id
+             child.b2b_can_delegate, child.b2b_grant_source_partner_id,
+             child.program_enabled
       FROM partners child
       JOIN partners parent ON parent.id = $1
       WHERE child.id = $2 AND child.parent_partner_id = parent.id
@@ -256,6 +264,9 @@ export async function updateDirectTeamMemberAuthority(
     `, [input.parentPartnerId, input.memberId]);
     const current = member.rows[0];
     if (!current) throw new TeamMemberNotFoundError();
+    if (input.requireProgramEnabled === true && !current.program_enabled) {
+      throw new TeamMemberNotFoundError();
+    }
     if (input.teamOverrideMaxBps !== undefined
       && input.teamOverrideMaxBps < current.team_override_max_bps) {
       await lowerTeamOverrideCeiling(client, input.memberId, input.teamOverrideMaxBps);
@@ -295,6 +306,18 @@ export async function updateDirectTeamMemberAuthority(
         actorType: "partner",
         actorId: input.parentPartnerId,
       });
+    }
+
+    let revokedCommerceInviteIds: string[] = [];
+    if (input.teamInvitesEnabled === false) {
+      const revoked = await client.query<{ id: string }>(`
+        UPDATE partner_invites
+        SET revoked_at = now()
+        WHERE partner_id = $1 AND commerce_user_id IS NOT NULL
+          AND consumed_at IS NULL AND revoked_at IS NULL
+        RETURNING id
+      `, [input.memberId]);
+      revokedCommerceInviteIds = revoked.rows.map((row) => row.id);
     }
 
     const updated = await client.query<{
@@ -337,6 +360,7 @@ export async function updateDirectTeamMemberAuthority(
       b2bEnabled: input.b2bEnabled ?? null,
       b2bMaxDiscountBps: input.b2bMaxDiscountBps ?? null,
       b2bCanDelegate: input.b2bCanDelegate ?? null,
+      revokedCommerceInviteIds,
     })]);
     await client.query("COMMIT");
     return {

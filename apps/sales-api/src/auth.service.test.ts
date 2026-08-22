@@ -21,6 +21,9 @@ const OTHER_TOKEN = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 function partnerFixture(id: string): Partner {
   return {
     id,
+    commerceUserId: null,
+    programEnabled: false,
+    programStartedAt: null,
     email: "seller@example.test",
     displayName: "Seller",
     telegramId: "42424242",

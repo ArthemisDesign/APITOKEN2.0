@@ -27,7 +27,13 @@ describe.runIf(Boolean(connectionString))("pre-attribution buffer + reconcile (D
   });
 
   async function partner(code: string): Promise<string> {
-    const r = await db.pool.query<{ id: string }>("INSERT INTO partners (referral_code, status, telegram_username, commission_bps) VALUES ($1,'active',$1,1000) RETURNING id", [code]);
+    const r = await db.pool.query<{ id: string }>(`
+      INSERT INTO partners (
+        referral_code, status, telegram_username, commission_bps,
+        commerce_user_id, program_enabled, program_started_at
+      ) VALUES ($1, 'active', $1, 1000, gen_random_uuid(), true, '2020-01-01')
+      RETURNING id
+    `, [code]);
     return r.rows[0]!.id;
   }
   async function pendingCount(): Promise<number> {

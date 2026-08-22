@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { computeCommissionChain, type CommissionChainPartner } from "./commissions.js";
+import {
+  computeCommissionChain,
+  computeConservedCommissionChain,
+  type CommissionChainPartner,
+} from "./commissions.js";
 
 function partner(overrides: Partial<CommissionChainPartner> & { partnerId: string }): CommissionChainPartner {
   return { status: "active", commissionBps: 1000, subCommissionBps: 1000, ...overrides };
@@ -103,5 +107,70 @@ describe("computeCommissionChain", () => {
   it("produces no entries when the direct partner is pending", () => {
     const entries = computeCommissionChain([partner({ partnerId: "p0", status: "pending" })], 1_000_000_000n);
     expect(entries).toEqual([]);
+  });
+});
+
+describe("computeConservedCommissionChain", () => {
+  const occurredAt = new Date("2026-08-22T12:00:00.000Z");
+  const member = (overrides: Partial<CommissionChainPartner> & { partnerId: string }) => partner({
+    programEnabled: true,
+    programStartedAt: new Date("2026-08-01T00:00:00.000Z"),
+    ...overrides,
+  });
+
+  it("withholds every parent cut from the fixed direct commission pool", () => {
+    const entries = computeConservedCommissionChain([
+      member({ partnerId: "child", commissionBps: 1000, parentOverrideBps: 2000 }),
+      member({ partnerId: "parent", parentOverrideBps: 1000 }),
+      member({ partnerId: "root" }),
+    ], 1_000_000n, occurredAt);
+
+    expect(entries).toEqual([
+      {
+        partnerId: "child", level: 0, appliedBps: 1000,
+        grossAmountNano: 100_000n, withheldAmountNano: 20_000n, amountNano: 80_000n,
+      },
+      {
+        partnerId: "parent", level: 1, appliedBps: 2000,
+        grossAmountNano: 20_000n, withheldAmountNano: 2_000n, amountNano: 18_000n,
+      },
+      {
+        partnerId: "root", level: 2, appliedBps: 1000,
+        grossAmountNano: 2_000n, withheldAmountNano: 0n, amountNano: 2_000n,
+      },
+    ]);
+    expect(entries.reduce((sum, entry) => sum + entry.amountNano, 0n)).toBe(100_000n);
+  });
+
+  it("does not withhold when the parent is disabled, suspended or not started yet", () => {
+    for (const ineligibleParent of [
+      member({ partnerId: "disabled", programEnabled: false }),
+      member({ partnerId: "suspended", status: "suspended" }),
+      member({ partnerId: "late", programStartedAt: new Date("2026-08-23T00:00:00.000Z") }),
+    ]) {
+      expect(computeConservedCommissionChain([
+        member({ partnerId: "child", commissionBps: 1000, parentOverrideBps: 2000 }),
+        ineligibleParent,
+      ], 1_000_000n, occurredAt)).toEqual([{
+        partnerId: "child", level: 0, appliedBps: 1000,
+        grossAmountNano: 100_000n, withheldAmountNano: 0n, amountNano: 100_000n,
+      }]);
+    }
+  });
+
+  it("creates no new-program commission for a legacy or late direct membership", () => {
+    expect(computeConservedCommissionChain([
+      partner({ partnerId: "legacy" }),
+    ], 1_000_000n, occurredAt)).toEqual([]);
+    expect(computeConservedCommissionChain([
+      member({ partnerId: "late", programStartedAt: new Date("2026-08-23T00:00:00.000Z") }),
+    ], 1_000_000n, occurredAt)).toEqual([]);
+  });
+
+  it("rejects an invalid Team edge before any ledger write", () => {
+    expect(() => computeConservedCommissionChain([
+      member({ partnerId: "child", parentOverrideBps: 2001 }),
+      member({ partnerId: "parent" }),
+    ], 1_000_000n, occurredAt)).toThrow("between 0 and 2000 bps");
   });
 });

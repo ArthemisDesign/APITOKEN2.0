@@ -92,6 +92,9 @@ export async function getSalesOverview(database: SalesDatabase): Promise<SalesOv
 
 export interface AdminPartnerSummary {
   id: string;
+  commerceUserId: string | null;
+  programEnabled: boolean;
+  programStartedAt: Date | null;
   email: string | null;
   telegramUsername: string | null;
   displayName: string | null;
@@ -129,7 +132,9 @@ export interface AdminPartnerSummary {
 
 export async function listPartnersWithAggregates(database: SalesDatabase): Promise<AdminPartnerSummary[]> {
   const result = await database.pool.query<{
-    id: string; email: string | null; telegram_username: string | null; display_name: string | null;
+    id: string; commerce_user_id: string | null; program_enabled: boolean;
+    program_started_at: Date | null;
+    email: string | null; telegram_username: string | null; display_name: string | null;
     status: PartnerStatus;
     email_verified: boolean; referral_code: string; commission_bps: number; sub_commission_bps: number;
     team_override_max_bps: number; parent_override_bps: number | null;
@@ -143,7 +148,8 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     b2b_grant_source_partner_id: string | null;
     created_at: Date;
   }>(`
-    SELECT p.id, p.email, p.telegram_username, p.display_name, p.status, p.email_verified, p.referral_code,
+    SELECT p.id, p.commerce_user_id, p.program_enabled, p.program_started_at,
+      p.email, p.telegram_username, p.display_name, p.status, p.email_verified, p.referral_code,
       p.commission_bps, p.sub_commission_bps,
       COALESCE(p.team_override_max_bps, 2000) AS team_override_max_bps,
       p.parent_override_bps, p.parent_partner_id, parent.email AS parent_email,
@@ -178,6 +184,9 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
     const committedNano = BigInt(row.committed);
     return {
     id: row.id,
+    commerceUserId: row.commerce_user_id,
+    programEnabled: row.program_enabled,
+    programStartedAt: row.program_started_at,
     email: row.email,
     telegramUsername: row.telegram_username,
     displayName: row.display_name,
@@ -243,13 +252,23 @@ export async function deletePartnerAdmin(database: SalesDatabase, partnerId: str
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
-    const existing = await client.query<{ id: string; telegram_username: string | null }>(
-      "SELECT id, telegram_username FROM partners WHERE id = $1 FOR UPDATE",
+    const existing = await client.query<{
+      id: string;
+      telegram_username: string | null;
+      commerce_user_id: string | null;
+    }>(
+      "SELECT id, telegram_username, commerce_user_id FROM partners WHERE id = $1 FOR UPDATE",
       [partnerId],
     );
     if (!existing.rows[0]) {
       await client.query("ROLLBACK");
       return false;
+    }
+    if (existing.rows[0].commerce_user_id !== null) {
+      await client.query("ROLLBACK");
+      throw new PartnerHasHistoryError(
+        "Commerce partner membership is retained as authority evidence — disable it instead of deleting",
+      );
     }
     const history = await client.query<{ referred: string; topups: string; commissions: string; adjustments: string; payouts: string; children: string; promos: string; links: string; aliases: string; requests: string }>(`
       SELECT
@@ -312,18 +331,35 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
   teamInvitesEnabled?: boolean;
   b2bCanDelegate?: boolean;
   status?: PartnerStatus;
+  programEnabled?: boolean;
   actorId: string;
 }): Promise<boolean> {
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
-    const existing = await client.query<{ id: string }>(
-      "SELECT id FROM partners WHERE id = $1 FOR UPDATE",
+    const existing = await client.query<{ id: string; commerce_user_id: string | null }>(
+      "SELECT id, commerce_user_id FROM partners WHERE id = $1 FOR UPDATE",
       [partnerId],
     );
     if (!existing.rows[0]) {
       await client.query("ROLLBACK");
       return false;
+    }
+    if (input.programEnabled === true && existing.rows[0].commerce_user_id === null) {
+      throw new RangeError("legacy partner cannot be enabled in the Commerce-account program");
+    }
+    let revokedCommerceInviteIds: string[] = [];
+    if (input.programEnabled === false
+      || input.teamInvitesEnabled === false
+      || (input.status !== undefined && input.status !== "active")) {
+      const revoked = await client.query<{ id: string }>(`
+        UPDATE partner_invites
+        SET revoked_at = now()
+        WHERE partner_id = $1 AND commerce_user_id IS NOT NULL
+          AND consumed_at IS NULL AND revoked_at IS NULL
+        RETURNING id
+      `, [partnerId]);
+      revokedCommerceInviteIds = revoked.rows.map((row) => row.id);
     }
     if (input.teamOverrideMaxBps !== undefined) {
       await lowerTeamOverrideCeiling(client, partnerId, input.teamOverrideMaxBps);
@@ -349,6 +385,11 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
           sub_commission_bps = COALESCE($3, sub_commission_bps),
           team_override_max_bps = COALESCE($7, team_override_max_bps),
           team_invites_enabled = COALESCE($8, team_invites_enabled),
+          program_enabled = COALESCE($9, program_enabled),
+          program_started_at = CASE
+            WHEN $9::boolean IS TRUE THEN COALESCE(program_started_at, now())
+            ELSE program_started_at
+          END,
           referral_discount_bps = COALESCE($5, referral_discount_bps),
           referral_discount_enabled = COALESCE($6, referral_discount_enabled),
           status = COALESCE($4::partner_status, status),
@@ -360,6 +401,7 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
       input.referralDiscountBps ?? null, input.referralDiscountEnabled ?? null,
       input.teamOverrideMaxBps ?? null,
       input.teamInvitesEnabled ?? null,
+      input.programEnabled ?? null,
     ]);
     if (!updated.rows[0]) {
       await client.query("ROLLBACK");
@@ -374,6 +416,8 @@ export async function updatePartnerAdmin(database: SalesDatabase, partnerId: str
       teamOverrideMaxBps: input.teamOverrideMaxBps ?? null,
       teamInvitesEnabled: input.teamInvitesEnabled ?? null,
       status: input.status ?? null,
+      programEnabled: input.programEnabled ?? null,
+      revokedCommerceInviteIds,
       // Retained marker permission/ceiling changes remain visible in the audit trail.
       referralDiscountBps: input.referralDiscountBps ?? null,
       referralDiscountEnabled: input.referralDiscountEnabled ?? null,

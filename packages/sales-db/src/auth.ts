@@ -7,6 +7,12 @@ export const TEAM_OVERRIDE_PLATFORM_MAX_BPS = 2_000;
 
 export interface Partner {
   id: string;
+  /** Immutable Commerce account identity for the Dashboard-native partner program. */
+  commerceUserId: string | null;
+  /** Explicit program switch. Legacy Telegram rows remain disabled after migration 0026. */
+  programEnabled: boolean;
+  /** First instant from which this membership may earn; it is never moved backwards. */
+  programStartedAt: Date | null;
   email: string | null;
   displayName: string | null;
   // Telegram identity (онбординг через Telegram Login). id хранится строкой (pg bigint).
@@ -52,6 +58,9 @@ export class InvalidInviteError extends Error {}
 
 interface PartnerRow {
   id: string;
+  commerce_user_id: string | null;
+  program_enabled: boolean;
+  program_started_at: Date | null;
   email: string | null;
   display_name: string | null;
   password_hash: string | null;
@@ -82,7 +91,8 @@ interface PartnerRow {
 }
 
 const PARTNER_COLUMNS = `
-  id, email, display_name, password_hash, telegram_id, telegram_username, telegram_photo_url,
+  id, commerce_user_id, program_enabled, program_started_at,
+  email, display_name, password_hash, telegram_id, telegram_username, telegram_photo_url,
   status, email_verified, referral_code,
   parent_partner_id, commission_bps, sub_commission_bps,
   team_override_max_bps, parent_override_bps, payout_method, payout_details,
@@ -95,6 +105,9 @@ const PARTNER_COLUMNS = `
 function mapPartner(row: PartnerRow): PasswordPartner {
   return {
     id: row.id,
+    commerceUserId: row.commerce_user_id,
+    programEnabled: row.program_enabled,
+    programStartedAt: row.program_started_at,
     email: row.email,
     displayName: row.display_name,
     passwordHash: row.password_hash,
@@ -181,7 +194,9 @@ async function lockInvite(client: PoolClient, code: string): Promise<{
            referral_discount_bps, referral_discount_enabled,
            b2b_enabled, b2b_max_discount_bps, team_invites_enabled, b2b_can_delegate
     FROM partner_invites
-    WHERE code = $1 AND consumed_at IS NULL AND (expires_at IS NULL OR expires_at > now())
+    WHERE code = $1 AND commerce_user_id IS NULL
+      AND consumed_at IS NULL AND revoked_at IS NULL
+      AND (expires_at IS NULL OR expires_at > now())
     FOR UPDATE
   `, [code]);
   const row = result.rows[0];
@@ -293,6 +308,16 @@ export async function getPartner(database: SalesDatabase, partnerId: string): Pr
   return result.rows[0] ? withoutPassword(mapPartner(result.rows[0])) : null;
 }
 
+export async function findPartnerByCommerceUserId(
+  database: SalesDatabase,
+  commerceUserId: string,
+): Promise<Partner | null> {
+  const result = await database.pool.query<PartnerRow>(`
+    SELECT ${PARTNER_COLUMNS} FROM partners WHERE commerce_user_id = $1
+  `, [commerceUserId]);
+  return result.rows[0] ? withoutPassword(mapPartner(result.rows[0])) : null;
+}
+
 export async function findPartnerByReferralCode(database: SalesDatabase, referralCode: string): Promise<Partner | null> {
   const result = await database.pool.query<PartnerRow>(`
     SELECT ${PARTNER_COLUMNS} FROM partners WHERE referral_code = $1
@@ -317,7 +342,8 @@ export async function resolvePartnerSession(
   lastSeenIntervalSeconds = 60,
 ): Promise<{ sessionId: string; partner: Partner } | null> {
   const result = await database.pool.query<PartnerRow & { session_id: string }>(`
-    SELECT s.id AS session_id, p.id, p.email, p.display_name, p.password_hash,
+    SELECT s.id AS session_id, p.id, p.commerce_user_id, p.program_enabled,
+           p.program_started_at, p.email, p.display_name, p.password_hash,
            p.telegram_id, p.telegram_username, p.telegram_photo_url, p.status,
            p.email_verified, p.referral_code, p.parent_partner_id, p.commission_bps,
            p.sub_commission_bps, p.team_override_max_bps, p.parent_override_bps,

@@ -47,8 +47,10 @@ describe.runIf(Boolean(connectionString))("partner feed consumer hardening", () 
 
   async function partner(code: string): Promise<string> {
     const result = await db.pool.query<{ id: string }>(`
-      INSERT INTO partners(referral_code, status, commission_bps, sub_commission_bps)
-      VALUES($1, 'active', 1000, 1000)
+      INSERT INTO partners(
+        referral_code, status, commission_bps, sub_commission_bps,
+        commerce_user_id, program_enabled, program_started_at
+      ) VALUES($1, 'active', 1000, 1000, gen_random_uuid(), true, '2026-01-01')
       RETURNING id
     `, [code]);
     return result.rows[0]!.id;

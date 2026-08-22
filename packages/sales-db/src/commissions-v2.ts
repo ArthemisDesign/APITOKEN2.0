@@ -1,6 +1,6 @@
 import type { SalesDatabase } from "./client.js";
 import {
-  computeCommissionChain,
+  computeConservedCommissionChain,
   deleteReferralUsagePendingReplay,
   loadCommissionChain,
   loadReferralUsageReplays,
@@ -332,16 +332,18 @@ export async function recordReferredSpendV2(
       return "duplicate";
     }
     const chain = await loadCommissionChain(client, directPartnerId);
-    for (const entry of computeCommissionChain(chain, event.paidFundedNano)) {
+    for (const entry of computeConservedCommissionChain(chain, event.paidFundedNano, event.occurredAt)) {
       await client.query(`
         INSERT INTO commission_entries_v2 (
-          usage_event_id, partner_id, level, applied_bps, base_paid_funded_nano, amount_nano
+          usage_event_id, partner_id, level, applied_bps, base_paid_funded_nano,
+          calculation_version, gross_amount_nano, withheld_amount_nano, amount_nano
         )
-        VALUES ($1, $2, $3, $4, $5, $6)
+        VALUES ($1, $2, $3, $4, $5, 2, $6, $7, $8)
         ON CONFLICT (usage_event_id, partner_id) DO NOTHING
       `, [
         usageEventId, entry.partnerId, entry.level, entry.appliedBps,
-        event.paidFundedNano.toString(), entry.amountNano.toString(),
+        event.paidFundedNano.toString(), entry.grossAmountNano.toString(),
+        entry.withheldAmountNano.toString(), entry.amountNano.toString(),
       ]);
     }
     await client.query("COMMIT");

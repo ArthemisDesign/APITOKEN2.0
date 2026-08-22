@@ -31,8 +31,10 @@ describe.runIf(Boolean(connectionString))("spend provider reporting dimension", 
   beforeEach(async () => {
     await truncate();
     const partner = await db.pool.query<{ id: string }>(`
-      INSERT INTO partners(referral_code,status,commission_bps,sub_commission_bps)
-      VALUES('spd-direct','active',1000,1000)
+      INSERT INTO partners(
+        referral_code,status,commission_bps,sub_commission_bps,
+        commerce_user_id,program_enabled,program_started_at
+      ) VALUES('spd-direct','active',1000,1000,gen_random_uuid(),true,'2026-01-01')
       RETURNING id
     `);
     partnerId = partner.rows[0]!.id;

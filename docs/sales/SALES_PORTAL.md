@@ -1,9 +1,9 @@
-# SALES_PORTAL.md — sales arm (partners.apitoken.sale)
+# SALES_PORTAL.md — Sales financial authority for the partner program
 
 The repository's third bounded context (after the engine and commerce): a **multi-level affiliate
-program for salespeople**. It remains a separate domain and database, while its customer-facing
-cabinet deliberately uses the same visual system, light/dark theme preference and RU/EN language
-preference as the main apiToken.sale dashboard. UI brand: **APIToken Partners**.
+program for salespeople**. It remains a separate database and server-side financial authority, but
+Commerce accounts are the new membership identity and the canonical UI moves into the main
+Dashboard/Admin. The legacy Sales domains stay online only through verified consumer cutover.
 
 ```
 engine (Rust)  ←Control API─  commerce (apps/api + worker)  ←internal sales API (SALES_CONTROL_KEY)→  sales (sales-api + sales-web)
@@ -11,30 +11,26 @@ engine (Rust)  ←Control API─  commerce (apps/api + worker)  ←internal sale
 
 ## What this is
 
-- Sign-in and onboarding — **only via Telegram** (the official Login Widget; the bot is configured
-  via `TELEGRAM_BOT_TOKEN`/`TELEGRAM_BOT_USERNAME`, the widget domain is bound in BotFather with
-  `/setdomain`). A new partner is created ONLY through an invite issued to their Telegram username:
-  the admin (Onboarding tab, root salespeople) or a partner (Team tab, sub-salespeople) enters the
-  `@username` and sends the person a link `partners.apitoken.sale/register?invite=CODE`; the person
-  confirms sign-in via Telegram — the account is immediately active, no password/email needed.
-  The email/password fields in partners are legacy from the first wave.
+- Membership identity is immutable `partners.commerce_user_id`. Commerce derives it from the
+  authenticated session; neither browser nor email is accepted by Sales as proof of identity.
+  An operator onboards an existing Commerce account immediately, or a partner invites an existing
+  account by email after Commerce resolves it to UUID. Sales stores that UUID, not the email.
+  Legacy Telegram login/session/application code remains reachable only during producer-first
+  rollout and cannot enable a migration-0026 membership by itself.
 - A partner receives a **referral code** and a link `https://apitoken.sale/?ref=CODE`.
 - Users who arrive via the link are attributed to the partner. The partner earns
   `commission_bps` on the **spend** (charge-ledger) of their users.
-- **Multi-level:** a partner can invite sub-partners (invite link
-  `partners.apitoken.sale/register?invite=CODE`). From a sub-partner's commission their parent
-  receives the exact `parent_override_bps` stored on that child edge — a "percentage of a
-  percentage", through a chain up to 10 levels deep. An older NULL edge retains the parent's
-  `sub_commission_bps` only as a rollout/history fallback.
-- **Team API:** an authenticated partner reads `GET /v1/partner/team` and
-  `GET /v1/partner/invites`, and creates a one-time 30-day invite with
-  `POST /v1/partner/team/invites` (`telegramUsername`, optional `overrideBps`,
-  `teamOverrideMaxBps`, `teamInvitesEnabled`, and a bounded
-  `b2bEnabled`/`b2bMaxDiscountBps`/`b2bCanDelegate` grant). The member's platform-funded direct rate is not delegated: it is the Sales
-  default (10% / 1000 bps). A tolerated legacy `commissionBps` request field is ignored. The
-  inviter chooses only their exact edge override and the ceiling the new member may use for their
-  own team; both are bounded by the inviter's effective ceiling and the platform hard maximum 20%
-  (2000 bps). `PATCH /v1/partner/team/:memberId` changes those controls only for a direct member;
+- **Multi-level:** a partner can invite direct Team members by Commerce account. The exact
+  `parent_override_bps` is the share withheld from that member's fixed gross direct commission;
+  it is not an additive bonus. The remaining parent cut can itself be divided with the next
+  ancestor. Across at most ten entries the net sum remains exactly the original direct gross pool.
+  An older NULL edge retains the parent's `sub_commission_bps` only as a history fallback.
+- **Team API:** Commerce calls `POST /v1/internal/referral/partner/:commerceUserId/team-invitations`
+  with an already-resolved `inviteeCommerceUserId`, `overrideBps`, `teamOverrideMaxBps`,
+  `teamInvitesEnabled`, and bounded B2B authority. The member's platform-funded direct rate is the
+  Sales default (10% / 1000 bps), never an inviter input. Both edge and delegated ceiling are
+  bounded by the inviter and the hard 20% maximum. `PATCH .../team/:memberCommerceUserId` changes
+  those controls only for a direct active Commerce member;
   lowering a delegated Team ceiling atomically clamps dependent edges and pending invites
   leaf-first. B2B self-service and B2B delegation are separate rights. An inherited B2B grant can
   never exceed its direct parent, while a direct platform grant cannot be edited by that parent;
@@ -42,13 +38,11 @@ engine (Rust)  ←Control API─  commerce (apps/api + worker)  ←internal sale
   transaction.
   A partner whose own Team-invitation right is disabled may still revoke that right from a direct
   member, but cannot grant/re-enable it on the member.
-  Team rows expose identity, status, the fixed direct rate, the exact edge/ceiling, referred-user
-  count, the member's net earnings, and the inviter's exact override net. All money values remain
-  decimal nanoUSD strings.
-  The older `POST /v1/partner/invites` contract temporarily retains its original optional
-  `commissionBps` semantics for expand-only delivery. The dashboard has no remaining reason to call
-  it after the new producer is GREEN; disabling that retired writer is a later consumer-retirement
-  release, not a silent semantic change in this producer.
+  Team rows expose immutable Commerce identity server-side, status, fixed direct rate, the exact
+  share/ceiling, referral count, the member's net earnings and the inviter's exact Team net. Commerce
+  enriches those UUIDs with current emails and removes UUIDs from public responses. Money remains
+  decimal nanoUSD strings. Older `/v1/partner/*` writers remain expand-only compatibility until the
+  Dashboard consumer is production-verified.
 - Terms (bps) are individual per partner, set in the admin panel.
 - Payouts: the partner binds a BSC wallet and sees automatic half-month periods. The operator
   prepares and sends a fenced immutable batch only inside the payout window; old manual requests
@@ -78,17 +72,59 @@ payload conflicts remain visible as terminal `apply_failed` evidence. A retryabl
 referral fenced from a second request; a closed terminal effect permits a new independently reviewed
 request without mutating the historical failure.
 
-Migration `packages/sales-db/migrations/0026_commerce_partner_membership.sql` is a dormant,
-expand-only cutover checkpoint. It adds a unique Commerce user identity and explicit program state
+Migration `packages/sales-db/migrations/0026_commerce_partner_membership.sql` was deployed first as
+an expand-only cutover checkpoint. It adds a unique Commerce user identity and explicit program state
 to partners, a Commerce user target to invitations, and calculation-version plus exact
 `gross_amount_nano` / `withheld_amount_nano` evidence to both commission ledgers. Existing rows
 remain version 1, no Telegram account/session/invite is changed, and no financial row is updated.
-The future version-2 database guard requires every participating ancestor to be an enabled
+The active version-2 database guard requires every participating ancestor to be an enabled
 Commerce membership, caps each Team edge at 20%, and verifies
 `net = gross - withheld` independently of insert order. It excludes any participant whose
 membership starts after the usage event, so manually admitted accounts begin with zero new-program
-commission. The Commerce-account producer, conserved writer and Dashboard consumer are forbidden
-to ship before this migration SHA is production-GREEN.
+commission. The dependent Sales producer shipped only after that migration SHA was production-
+GREEN; the Commerce consumer remains the next producer-first stage.
+
+Migration `packages/sales-db/migrations/0027_terminal_commerce_invites.sql` was deployed next. Its
+Team/B2B narrowing guards ignore an invitation only after `revoked_at` is committed, so current
+authority can be reduced without rewriting terminal evidence. Consumed/revoked Commerce
+invitations are database-immutable and Commerce invitation evidence cannot be deleted; legacy
+invitation lifecycle is unchanged. The revocation/cascade producer below depends on that
+production-GREEN checkpoint.
+
+### Commerce → Sales membership boundary (`/v1/internal/referral/*`)
+
+All routes require `x-api-key: SALES_CONTROL_KEY`, return `Cache-Control: no-store` on reads, and
+accept Commerce UUIDs only from the server-side consumer. The browser never calls them directly.
+
+- `POST membership/resolve {commerceUserId}` atomically returns `unavailable`, `disabled` or
+  `active`. A valid account-bound invitation activates once, creates an enabled membership with
+  `program_started_at=now()`, consumes the invitation and writes audit evidence. Exact retries
+  return the same membership. An invalidated parent revokes the pending invite instead of creating
+  an orphan.
+- `GET partner/:commerceUserId?days=N` returns one Dashboard snapshot: safe membership authority,
+  net/gross/adjustment totals, referrals, direct Team, account-bound invites, request history,
+  payout periods and Usage-style aggregate/daily provider earnings. It contains no promo authority
+  or Telegram product identity. Commerce enriches referenced UUIDs with authoritative emails.
+- Partner mutations: `POST/DELETE team-invitations`, `PATCH team/:memberCommerceUserId`, `PATCH
+  wallet`, `POST requests/commission`, `POST requests/b2b`, and `POST
+  referrals/business-pricing`. Invitation revocation is owner-scoped, idempotent and cannot undo an
+  activated membership. Wallet writes accept only a BSC `0x` address and commit the address plus
+  audit evidence atomically under the active membership lock.
+  Commission and B2B requests require a scoped `Idempotency-Key`; direct B2B writes require a grant,
+  prove referral ownership, enforce the stored ceiling and then use the existing Commerce
+  operation-ref boundary.
+- Admin mutations: `POST admin/partners` immediately onboards/re-enables an account with all
+  platform-owned terms; `PATCH admin/partners/:commerceUserId` edits them; admin list/request/payout
+  routes expose only Commerce-linked program records. Disabled memberships remain visible in the
+  request queue as immutable operational history, and the decision writer atomically rejects any
+  legacy Telegram request id. A Commerce membership can be disabled but never physically deleted;
+  every write carries the managed actor in `X-Admin-Actor` and is audited.
+
+An admin onboarding wins over a pending Team invitation in one transaction and preserves the
+original financial history/start timestamp on an existing membership. Team invitation creation is
+serialized per invitee account: an exact retry returns the open invite, settings drift conflicts,
+an expired invite is revoked before replacement, and an existing membership cannot be re-parented
+by invitation.
 
 Migration `packages/sales-db/migrations/0027_terminal_commerce_invites.sql` is the next
 expand-only checkpoint. The Team/B2B narrowing guards ignore a Commerce invitation only after
@@ -536,18 +572,21 @@ For the live scalar usage event, `A` is `amountNano`, already narrowed by commer
 customer-funded `real_funded_nano` after free-first accounting and settlement shortfall. Historical
 v1 rows use the same writer; historical v2 rows use their exact `paid_funded_nano`. For a user of
 partner P0:
-- level 0: `A * P0.commission_bps / 10000` (integer floor);
-- level N: `amount(level N-1) * edge(N-1→N).parent_override_bps / 10000`; only an older NULL
-  edge falls back to `Pn.sub_commission_bps`;
-- stop: no parent, amount 0, after 10 entries (levels 0..9), or a suspended parent.
-Entries are idempotent via the unique `commerce_event_id`; the calculation happens in the same
-transaction as the event insert. Scalar and historical v1 events are written to
-`partner_usage_events`/`commission_entries`; historical v2 rows go to
-`partner_usage_events_v2`/`commission_entries_v2` (the trigger `enforce_commission_entry_v2_source`
-fails closed on a row outside that chain). Before computing either schema, every traversed partner
-row is held `FOR SHARE`, so parent/status/bps cannot change under the calculation; a repeated
-partner id is an explicit cycle error and rolls back the whole event. Readers sum both stores via
-UNION ALL.
+- direct gross `G0 = floor(A * P0.commission_bps / 10000)`;
+- next parent cut `Wn = floor(Gn * edge(Pn→parent).parent_override_bps / 10000)`; only an older NULL
+  edge falls back to the parent's `sub_commission_bps`;
+- current net `Nn = Gn - Wn`; if the parent is eligible, `G(n+1) = Wn`;
+- conservation: `Σ Nn = G0` exactly, including integer flooring;
+- stop: no eligible parent, zero cut, or 10 entries (levels 0..9). Eligibility requires active
+  status, `program_enabled=true` and `program_started_at <= event.occurred_at`.
+
+New writes in both commission ledgers use `calculation_version=2` and store `gross_amount_nano`,
+`withheld_amount_nano`, and net `amount_nano`. Entries are idempotent via the unique
+`commerce_event_id`; calculation and usage insert share one transaction. The database trigger
+reconstructs the chain and rejects invented partner/rate/gross/withheld/net evidence. Before
+computing either store, every traversed partner row is held `FOR SHARE`, so membership/status/bps
+cannot change under calculation; a cycle rolls back the event. Existing calculation-version 1 rows
+remain immutable and readers sum both stores via `UNION ALL`.
 Payout balance = `max(confirmed gross + signed adjustments − (paid + active requests), 0)`.
 Debt = `max(paid − (lifetime gross + signed adjustments), 0)` and remains visible separately.
 

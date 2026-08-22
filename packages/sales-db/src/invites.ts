@@ -8,6 +8,8 @@ export interface PartnerInvite {
   // Нормализованный telegram-юзернейм (без @, lower). Регистрация по инвайту — только
   // если юзернейм вошедшего через Telegram совпал.
   telegramUsername: string | null;
+  /** Immutable Commerce account target; email remains authoritative in Commerce. */
+  commerceUserId: string | null;
   commissionBps: number | null;
   subCommissionBps: number | null;
   /** Ceiling delegated to the invited partner for their own future team. */
@@ -26,6 +28,7 @@ export interface PartnerInvite {
   expiresAt: Date | null;
   consumedAt: Date | null;
   consumedByPartnerId: string | null;
+  revokedAt: Date | null;
   createdAt: Date;
 }
 
@@ -36,6 +39,7 @@ interface InviteRow {
   partner_id: string | null;
   code: string;
   telegram_username: string | null;
+  commerce_user_id: string | null;
   commission_bps: number | null;
   sub_commission_bps: number | null;
   team_override_max_bps: number | null;
@@ -52,16 +56,17 @@ interface InviteRow {
   expires_at: Date | null;
   consumed_at: Date | null;
   consumed_by_partner_id: string | null;
+  revoked_at: Date | null;
   created_at: Date;
 }
 
 const INVITE_COLUMNS = `
-  id, partner_id, code, telegram_username, commission_bps, sub_commission_bps,
+  id, partner_id, code, telegram_username, commerce_user_id, commission_bps, sub_commission_bps,
   team_override_max_bps, parent_override_bps,
   promo_enabled, promo_max_value_nano::text AS promo_max_value_nano, promo_max_count,
   referral_discount_bps, referral_discount_enabled,
   b2b_enabled, b2b_max_discount_bps, team_invites_enabled, b2b_can_delegate,
-  expires_at, consumed_at, consumed_by_partner_id, created_at
+  expires_at, consumed_at, consumed_by_partner_id, revoked_at, created_at
 `;
 
 function mapInvite(row: InviteRow): PartnerInvite {
@@ -70,6 +75,7 @@ function mapInvite(row: InviteRow): PartnerInvite {
     partnerId: row.partner_id,
     code: row.code,
     telegramUsername: row.telegram_username,
+    commerceUserId: row.commerce_user_id,
     commissionBps: row.commission_bps,
     subCommissionBps: row.sub_commission_bps,
     teamOverrideMaxBps: row.team_override_max_bps,
@@ -86,6 +92,7 @@ function mapInvite(row: InviteRow): PartnerInvite {
     expiresAt: row.expires_at,
     consumedAt: row.consumed_at,
     consumedByPartnerId: row.consumed_by_partner_id,
+    revokedAt: row.revoked_at,
     createdAt: row.created_at,
   };
 }
@@ -194,7 +201,8 @@ export async function getActiveInviteByTelegramUsername(
     SELECT ${INVITE_COLUMNS}
     FROM partner_invites
     WHERE lower(telegram_username) = lower($1)
-      AND consumed_at IS NULL AND (expires_at IS NULL OR expires_at > now())
+      AND consumed_at IS NULL AND revoked_at IS NULL
+      AND (expires_at IS NULL OR expires_at > now())
     ORDER BY created_at DESC
     LIMIT 1
   `, [telegramUsername]);
@@ -206,7 +214,9 @@ export async function getActiveInviteByCode(database: SalesDatabase, code: strin
   const result = await database.pool.query<InviteRow>(`
     SELECT ${INVITE_COLUMNS}
     FROM partner_invites
-    WHERE code = $1 AND consumed_at IS NULL AND (expires_at IS NULL OR expires_at > now())
+    WHERE code = $1 AND commerce_user_id IS NULL
+      AND consumed_at IS NULL AND revoked_at IS NULL
+      AND (expires_at IS NULL OR expires_at > now())
   `, [code]);
   return result.rows[0] ? mapInvite(result.rows[0]) : null;
 }

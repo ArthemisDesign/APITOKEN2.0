@@ -38,14 +38,17 @@ describe.runIf(Boolean(connectionString))("recordReferredSpendV2 (release-v2 wri
 
   async function seedChain(): Promise<{ direct: string; parent: string }> {
     const parent = await db.pool.query<{ id: string }>(`
-      INSERT INTO partners(referral_code,status,commission_bps,sub_commission_bps)
-      VALUES('v2w-parent','active',1000,500)
+      INSERT INTO partners(
+        referral_code,status,commission_bps,sub_commission_bps,
+        commerce_user_id,program_enabled,program_started_at
+      ) VALUES('v2w-parent','active',1000,500,gen_random_uuid(),true,'2026-01-01')
       RETURNING id
     `);
     const direct = await db.pool.query<{ id: string }>(`
       INSERT INTO partners(
-        referral_code,status,parent_partner_id,commission_bps,sub_commission_bps
-      ) VALUES('v2w-direct','active',$1,1000,1000)
+        referral_code,status,parent_partner_id,commission_bps,sub_commission_bps,
+        commerce_user_id,program_enabled,program_started_at
+      ) VALUES('v2w-direct','active',$1,1000,1000,gen_random_uuid(),true,'2026-01-01')
       RETURNING id
     `, [parent.rows[0]!.id]);
     return { direct: direct.rows[0]!.id, parent: parent.rows[0]!.id };
@@ -102,17 +105,28 @@ describe.runIf(Boolean(connectionString))("recordReferredSpendV2 (release-v2 wri
     }]);
 
     const entries = await db.pool.query<{
-      partner_id: string; level: number; applied_bps: number;
-      base_paid_funded_nano: string; amount_nano: string;
+      partner_id: string; level: number; applied_bps: number; calculation_version: number;
+      base_paid_funded_nano: string; gross_amount_nano: string;
+      withheld_amount_nano: string; amount_nano: string;
     }>(`
-      SELECT partner_id, level, applied_bps, base_paid_funded_nano::text, amount_nano::text
+      SELECT partner_id, level, applied_bps, calculation_version,
+             base_paid_funded_nano::text, gross_amount_nano::text,
+             withheld_amount_nano::text, amount_nano::text
       FROM commission_entries_v2 ORDER BY level
     `);
-    // level 0 = 10000 * 1000/10000 = 1000; level 1 = 1000 * 500/10000 = 50.
-    // Bonus-funded 2000 никогда не входит в basis.
+    // Gross direct pool = 1000. Parent keeps 5% of that pool: child 950 + parent 50 = 1000.
+    // Bonus-funded 2000 never enters the basis.
     expect(entries.rows).toEqual([
-      { partner_id: chain.direct, level: 0, applied_bps: 1000, base_paid_funded_nano: "10000", amount_nano: "1000" },
-      { partner_id: chain.parent, level: 1, applied_bps: 500, base_paid_funded_nano: "10000", amount_nano: "50" },
+      {
+        partner_id: chain.direct, level: 0, applied_bps: 1000, calculation_version: 2,
+        base_paid_funded_nano: "10000", gross_amount_nano: "1000",
+        withheld_amount_nano: "50", amount_nano: "950",
+      },
+      {
+        partner_id: chain.parent, level: 1, applied_bps: 500, calculation_version: 2,
+        base_paid_funded_nano: "10000", gross_amount_nano: "50",
+        withheld_amount_nano: "0", amount_nano: "50",
+      },
     ]);
   });
 
@@ -254,7 +268,7 @@ describe.runIf(Boolean(connectionString))("recordReferredSpendV2 (release-v2 wri
       VALUES ($1, $2, 0, 1000, 400)
     `, [v1Usage.rows[0]!.id, chain.direct]);
 
-    // v2 evidence: paid 10_000 → level 0 = 1000 (direct), level 1 = 50 (parent).
+    // v2 evidence: one 1000 pool is conserved as 950 direct + 50 parent.
     const v2Input = event({ commerceEventId: 8002n });
     await attribute(v2Input.commerceUserId, chain.direct);
     await expect(recordReferredSpendV2(db, v2Input)).resolves.toBe("recorded");
@@ -262,8 +276,8 @@ describe.runIf(Boolean(connectionString))("recordReferredSpendV2 (release-v2 wri
     const { getPartnerEarningsTotals } = await import("./commissions.js");
     const { listReferredUsers } = await import("./referrals.js");
     const totals = await getPartnerEarningsTotals(db, chain.direct);
-    expect(totals.earnedNano).toBe(1_400n);   // 400 (v1) + 1000 (v2)
-    expect(totals.directNano).toBe(1_400n);
+    expect(totals.earnedNano).toBe(1_350n);   // 400 (v1) + 950 (v2 net)
+    expect(totals.directNano).toBe(1_350n);
     expect(totals.overrideNano).toBe(0n);      // level 1 принадлежит parent, не direct
     expect(totals.last30dSpendNano).toBe(14_000n); // 4000 (v1 amount) + 10000 (v2 paid)
 
@@ -275,10 +289,10 @@ describe.runIf(Boolean(connectionString))("recordReferredSpendV2 (release-v2 wri
     const v1Row = referrals.find((row) => row.commerceUserId === v1User);
     const v2Row = referrals.find((row) => row.commerceUserId === v2Input.commerceUserId);
     expect(v1Row).toMatchObject({ spendNano: 4_000n, earnedNano: 400n });
-    expect(v2Row).toMatchObject({ spendNano: 10_000n, earnedNano: 1_000n });
+    expect(v2Row).toMatchObject({ spendNano: 10_000n, earnedNano: 950n });
 
     const { getPartnerPeriodState } = await import("./payout-periods.js");
     const state = await getPartnerPeriodState(db, chain.direct, new Date());
-    expect(state.lifetimeEarnedNano).toBe("1400");
+    expect(state.lifetimeEarnedNano).toBe("1350");
   });
 });

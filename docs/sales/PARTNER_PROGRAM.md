@@ -1,17 +1,17 @@
 # PARTNER_PROGRAM.md — apitoken.sale partner program (complete guide)
 
-A complete description of the sales arm (`partners.apitoken.sale`): how it works from a
-salesperson's sign-in to a payout arriving at their wallet, what a partner sees and what an
+A complete description of the partner program: how it works from a Commerce-account membership
+to a payout arriving at the partner's wallet, what a partner sees and what an
 operator sees in the admin panel, and how everything is calculated. This is the "product"
 documentation; the technical map of the bounded context is
 `docs/sales/SALES_PORTAL.md`, the detail on payout periods is `docs/sales/SALES_PAYOUT_PERIODS.md`.
 
 Contents:
 1. What this is and who it is for
-2. Sign-in and onboarding (Telegram only, invite-only, applications)
+2. Commerce-account membership and onboarding
 3. Referral links and attribution
 4. Commission: on what and how much
-5. Multi-level structure (sub-salespeople and override)
+5. Multi-level Team and retained share
 6. Wallet and payout currency
 7. Periods, lock and payouts
 8. Partner dashboard
@@ -29,35 +29,50 @@ A partner earns **a percentage of what their referrals ACTUALLY SPEND** on API u
 charged, accounting for their discount). Commission — ONLY on the collected portion covered by real
 customer money: free credit (welcome bonus, promo, admin credit) is spent first and earns no
 commission; settlement shortfall funded by the pool earns none either.
-The program is **invite-only**: an account is created only by invitation or after an application
-is approved.
+The program is **invite-only**: membership is enabled either immediately by an operator for an
+existing Commerce account or by an account-bound Team invitation. There is no public self-service
+application in the new Dashboard flow.
 
-A separate product with its own domain and database. Its cabinet uses the same card hierarchy,
-responsive layout, light/dark theme and RU/EN preferences as the main dashboard:
-- partner site — `https://partners.apitoken.sale`
-- primary operator admin panel — `https://admin.apitoken.sale/partners`
+Sales remains a separate financial bounded context and database, but it is not a separate user
+identity or long-term product surface. The canonical partner cabinet is the **Referral** section of
+the authenticated Commerce Dashboard; the canonical operator surface is the main Admin panel. Both
+use Commerce account UUID as the immutable membership key and display the current Commerce email.
 
-## 2. Sign-in and onboarding
+The rollout is producer-first. While the Dashboard/Admin consumers are being deployed and checked,
+`partners.apitoken.sale` and `admin.partners.apitoken.sale` remain available only as legacy parity
+surfaces. They are retired in a later release; disabling them before the replacement is production-
+verified would remove the only working access path. Historical Telegram identity, sessions,
+commission, reversal, payout and audit rows are retained, but legacy partners have
+`program_enabled=false` and receive no new version-2 accruals.
 
-**Authentication — only via Telegram** (the official Telegram Login Widget). No passwords, no
-email. Three scenarios on `/login` and `/register`:
+## 2. Commerce-account membership and onboarding
 
-- **Already have an account** (this `telegram_id` is already a partner) → straight into the
-  dashboard.
-- **There is an invitation to your @username** → press "Sign in with Telegram" and the account is
-  created automatically (the invite is bound to the username; signing in with it confirms the
-  match). A link of the form `partners.apitoken.sale/register?invite=CODE` is not required —
-  a regular sign-in is enough.
-- **No invitation** → you are offered to **submit an application** (write where you will promote).
-  The application goes to the operator for review; after approval, the next Telegram sign-in
-  already has the account ready. Approval creates the partner and all initial commission, Team and
-  B2B authority in one transaction; there is no intermediate account with default or partially
-  applied rights.
+There is no second login. An authenticated apitoken.sale account opens Dashboard → Referral, and
+Commerce calls Sales under `SALES_CONTROL_KEY` with the session-derived `users.id`. The browser is
+never trusted to choose a different membership UUID.
 
-Who issues invitations:
-- **The operator** — in the admin panel (Onboarding tab) for any `@username`, with individual
-  percentages. These are the "root" salespeople (no parent).
-- **A partner** — in their own dashboard (Team tab) for a sub-salesperson's `@username`.
+Three states are explicit:
+
+- **active** — the Commerce account has an enabled partner membership and receives the full cabinet;
+- **disabled** — the membership exists, but an operator disabled the program or suspended the
+  partner; financial history remains intact and no new commission is created;
+- **unavailable** — the account is not a partner and has no valid invitation. The Dashboard shows
+  the standard terms and a button to contact `https://t.me/bozinodev`; it does not silently create
+  access or accept a public application.
+
+An operator can make any existing Commerce user a root partner immediately from the Users list or
+partner onboarding screen. The same transaction sets their direct platform commission, Team-share
+ceiling, Team invitation permission, B2B self-service ceiling and B2B delegation permission. An
+open Team invitation for that account is revoked with audit evidence, so one account cannot belong
+to two competing trees.
+
+An enabled partner invites a direct Team member **by the email of an existing Commerce account**.
+Commerce resolves the normalized email to one UUID before calling Sales; Sales stores only that
+UUID, never an email snapshot. The invitation is account-bound, expires after 30 days and activates
+idempotently on the invited user's next Referral-page access. Exact create/activate retries are
+no-ops; a different open invitation or an existing membership is a conflict. The inviter chooses
+the edge share and bounded delegated authority, but cannot choose the invited member's platform
+direct rate (10% by default).
 
 ## 3. Referral links and attribution
 
@@ -89,9 +104,10 @@ the customer-funded basis, so a later discount change does not recompute history
 - Commission = `commission_bps × real_funded_nano` (integer, floor). `commission_bps` is the partner's
   rate (`1000 bps = 10%`), set by the operator.
 
-Example: a referral actually spent **$100** of their own money on the API → a partner with 10%
-gets **$10**. If they spent the welcome bonus — the partner gets nothing from that portion (free
-credit is spent first).
+Example: a referral actually spent **$100** of their own money on the API → the fixed 10% direct
+commission pool is **$10**. With no parent, the direct partner gets all $10. With a 20% Team edge,
+the direct member gets $8 and the parent gets $2; total platform payout remains exactly $10. If the
+referral spent the welcome bonus, no commission is created for that portion.
 
 A salesperson's referrals keep their ordinary account pricing: the stored default (normally 50%
 for B2C) plus any explicit provider overrides. A referral link controls attribution and commission,
@@ -100,20 +116,23 @@ markers retained for expand-only API and audit compatibility; the current partne
 grants nor presents them as a discount. They never enqueue a pricing job or change the engine
 multiplier. B2B remains a separate model with its own negotiated default/provider terms.
 
-## 5. Multi-level structure (sub-salespeople and override)
+## 5. Multi-level Team and retained share
 
-A partner can invite **sub-salespeople** and receive an **override** — a percentage of their
-commission.
+A partner can invite **Team members** and retain a **Team share** from the member's fixed platform
+commission. It is a withholding inside that commission, not an additive platform bonus.
 
 - A partner has a platform-set `commission_bps` (their own direct percentage on referrals), an
   admin-set `team_override_max_bps`, and one exact `parent_override_bps` on every child edge.
   `sub_commission_bps` remains only the fallback for older NULL edges.
-- The chain is computed upward up to **10 levels**: level 0 is the direct referrer, level 1 is
-  their parent (receives the exact child-edge percentage of the level-0 amount), and so on; it stops when
-  there is no parent, the amount becomes 0, or the level exceeds 10. A blocked (`suspended`)
-  partner breaks the chain.
+- The direct gross pool is `customer-funded spend × direct commission`. At each level the next
+  parent cut is `current gross × child.parent_override_bps`; the current member's net is
+  `current gross − parent cut`, and only that cut becomes the next level's gross. Thus the sum of
+  every net entry is exactly the original direct gross pool.
+- The chain is computed upward for at most **10 entries** (levels 0..9). It stops at a missing,
+  suspended, disabled, non-Commerce or not-yet-started membership, on a zero cut, or at the bound.
+  An ineligible parent receives nothing and causes no withholding from the current member.
 - **Margin constraint:** the inviter cannot change the sub-salesperson's direct platform rate
-  (10% by default). They choose only their own override and the maximum the member may delegate;
+  (10% by default). They choose only the Team share they retain and the maximum the member may delegate;
   both are bounded by the inviter's ceiling and the platform hard maximum 20%.
 - The platform can independently disable new Team invitations for a partner. B2B self-service and
   the ability to delegate B2B rights are separate settings; a delegated child ceiling cannot exceed
@@ -123,9 +142,11 @@ commission.
   change that rate; only an operator decision updates it, atomically and without recalculating any
   historical commission.
 
-All accruals are idempotent by the charge's `commerce_event_id` and computed in the same
-transaction as the usage-row insert. Live scalar and historical v1 rows use
-`partner_usage_events`; `partner_usage_events_v2` remains only for historical release-v2 replay.
+All new-program accruals use `calculation_version=2`, store gross/withheld/net on each ledger row,
+and are idempotent by the charge's `commerce_event_id` in the same transaction as the usage insert.
+Database triggers independently reconstruct the active membership chain, timestamp gate and exact
+integer-floor amounts. Version-1 rows remain immutable history. Live scalar rows use
+`partner_usage_events`; `partner_usage_events_v2` remains for historical release-v2 replay.
 
 If a customer's paid top-up is later refunded or disputed, the original positive commission stays
 immutable for audit and an exact negative adjustment is appended for the slices funded by that
@@ -230,11 +251,12 @@ to B2B — whether by the central admin or under a partner grant — leaves attr
 the partner's referral list intact; the referral simply shows a `B2B` badge and its negotiated
 discount.
 
-## 8. Partner dashboard (`partners.apitoken.sale`)
+## 8. Partner dashboard (Commerce Dashboard → Referral)
 
 - **Overview** — the rate and what the percentage comes from (a "How your commission works" card
   with an example), the ref link with copy, key metrics, a 30-day chart, a 30-day split of earnings
-  by the provider that served the referrals' requests (`GET /v1/partner/earnings/providers`), and
+  by the provider that served the referrals' requests (the provider series in
+  `GET /v1/internal/referral/partner/:commerceUserId`), and
   recent referrals. The split includes stacked daily bars and aggregate provider totals. It only
   re-groups commission that is already recorded — it never changes what is owed, since the same
   spend earns the same commission on every provider. Spend recorded
@@ -244,13 +266,16 @@ discount.
   their paid spend and your earnings on each of them. If Commerce is unavailable for one response,
   the row falls back to a short UUID mask; Sales never persists or guesses the email.
 - **Team** — create one-time, 30-day invitations for sub-salespeople, review invitation status, and
-  see each direct member's referral count, direct earnings, and your override. The form shows the
-  fixed 10% platform rate read-only and lets the inviter set an edge override plus a delegated
+  see each direct member's referral count, direct earnings, and your retained Team share. The form
+  shows the fixed 10% platform rate read-only and lets the inviter set an edge share plus a delegated
   ceiling within their own maximum. Existing direct-member controls are editable; lowering a
   ceiling clamps dependent grants atomically. The immutable commission chain carries each exact
-  edge up to ten active levels.
-  The dashboard uses the additive `/v1/partner/team/invites` writer; the previous writer remains
-  only during the expand-only rollout and is retired after every documented consumer moves.
+  edge up to ten active levels. A pending email invitation can be revoked by its owner; exact
+  revocation retries are safe, while an already activated membership cannot be revoked through the
+  invitation endpoint.
+  The Dashboard uses the Commerce `/v1/referral/*` boundary, which calls Sales
+  `/v1/internal/referral/*`; the browser never receives `SALES_CONTROL_KEY` or a Sales partner id as
+  proof of identity.
 - **Requests** — commission-increase and owned-referral B2B requests, including requested terms,
   decision note, delivery status and any retry/terminal error. Customer identity is email; the
   internal Commerce UUID is not the product label.
@@ -259,18 +284,20 @@ discount.
   not a product capability.
 - **Payouts** — BSC wallet binding, the current period, the locked amount + unfreeze date, the
   date and estimate of the next payout, explicit debt after refunds, net history by periods, a
-  "How payouts work" explanation.
+  "How payouts work" explanation. The snapshot also returns the minimum payout and fixed
+  lock/window policy, while the wallet writer is restricted to the active session-derived
+  membership and commits every accepted change with its audit evidence in one transaction.
 - **Settings** — profile (display name) and commission terms (view only).
 
 ## 9. Partner administration
 
-The primary operator surface is `https://admin.apitoken.sale/partners`. It proxies the guarded Sales
-admin contract without exposing a Sales key to the browser and propagates the authenticated managed
-operator as `X-Admin-Actor`. The exact routes are:
+The primary operator surface is `https://admin.apitoken.sale/partners`. It calls the Commerce
+admin boundary, which proxies the guarded Sales internal contract without exposing a Sales key to
+the browser and propagates the authenticated managed operator as `X-Admin-Actor`. The routes are:
 
 - `/partners` — overview, payout readiness and current partner analytics;
-- `/partners/onboarding` — root invitations and application decisions with all initial authority
-  boundaries set atomically;
+- `/partners/onboarding` — immediate Commerce-account onboarding by email with all initial
+  authority boundaries set atomically;
 - `/partners/directory` — email-first searchable directory with status, direct rate, Team ceiling,
   B2B authority and operational balances;
 - `/partners/[id]` — one partner's direct commission, fixed Team defaults/ceiling, B2B rights,
@@ -304,13 +331,15 @@ preferences.
 
 ## 11. Privacy and security
 
-- A partner receives only the authoritative email of users attributed to that partner. They never
-  receive a full Commerce UUID; managed admins receive the same email through the bounded profile
-  request. Sales does not persist it, and an outage falls back to `user-xxxxxxxx…` for that response.
-- The partner side has no access to the commerce/engine DBs; the only connection is a read-only
-  HTTP feed under a server key. From sales you cannot touch commerce money or the engine.
-- Telegram sign-in is verified via the bot's HMAC signature; sessions are stored hashed; the admin
-  key lives only on the server. A security audit has been completed (see history; nothing critical).
+- A partner's browser receives only the authoritative email of accounts attributed to that
+  partner. Full Commerce UUIDs cross only the server-to-server Commerce↔Sales boundary, where they
+  are required for ownership and membership checks; Commerce removes them from the public view.
+  Sales does not persist email, and an unavailable profile falls back to a short mask.
+- Neither side opens the other's database. Commerce owns sessions/email; Sales owns membership,
+  attribution and money ledgers. Every cross-context call uses `SALES_CONTROL_KEY` server-side.
+- Legacy Telegram HMAC login and hashed Sales sessions remain enabled only during cutover. They do
+  not grant `program_enabled` to legacy rows and are removed from routing only after the Commerce
+  replacement passes production parity. Keys never reach either browser surface.
 
 ## 12. What is not done yet
 

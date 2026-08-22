@@ -12,6 +12,9 @@ export interface CommissionChainPartner {
   subCommissionBps: number;
   /** Edge from this partner to its direct parent; NULL/omitted keeps the legacy parent fallback. */
   parentOverrideBps?: number | null;
+  /** New-program eligibility. Undefined preserves the immutable version-1 calculator. */
+  programEnabled?: boolean;
+  programStartedAt?: Date | null;
 }
 
 export interface CommissionEntryPlan {
@@ -19,6 +22,11 @@ export interface CommissionEntryPlan {
   level: number;
   appliedBps: number;
   amountNano: bigint;
+}
+
+export interface ConservedCommissionEntryPlan extends CommissionEntryPlan {
+  grossAmountNano: bigint;
+  withheldAmountNano: bigint;
 }
 
 /**
@@ -47,6 +55,59 @@ export function computeCommissionChain(
     if (entryAmount <= 0n) break;
     entries.push({ partnerId: partner.partnerId, level, appliedBps, amountNano: entryAmount });
     basisNano = entryAmount;
+  }
+  return entries;
+}
+
+/**
+ * Version-2 Team math. The direct partner first receives the platform commission pool. Every
+ * parent cut is withheld from that pool, not added on top of it, so the sum of net entries is
+ * exactly the original gross direct commission. A non-participating parent ends the chain without
+ * withholding anything from the current member.
+ */
+export function computeConservedCommissionChain(
+  partnersChain: readonly CommissionChainPartner[],
+  amountNano: bigint,
+  occurredAt: Date,
+): ConservedCommissionEntryPlan[] {
+  if (amountNano <= 0n || partnersChain.length === 0) return [];
+  const eligible = (partner: CommissionChainPartner | undefined): partner is CommissionChainPartner =>
+    Boolean(partner)
+    && partner!.status === "active"
+    && partner!.programEnabled === true
+    && partner!.programStartedAt instanceof Date
+    && partner!.programStartedAt.getTime() <= occurredAt.getTime();
+  const direct = partnersChain[0];
+  if (!eligible(direct)) return [];
+
+  const directGross = (amountNano * BigInt(direct.commissionBps)) / 10_000n;
+  if (directGross <= 0n) return [];
+  const entries: ConservedCommissionEntryPlan[] = [];
+  let grossAmountNano = directGross;
+  let appliedBps = direct.commissionBps;
+  for (let level = 0; level < partnersChain.length && level < MAX_COMMISSION_LEVELS; level += 1) {
+    const partner = partnersChain[level];
+    if (!eligible(partner)) break;
+    const parent = partnersChain[level + 1];
+    let withheldAmountNano = 0n;
+    if (level + 1 < MAX_COMMISSION_LEVELS && eligible(parent)) {
+      const edgeBps = partner.parentOverrideBps ?? parent.subCommissionBps;
+      if (!Number.isInteger(edgeBps) || edgeBps < 0 || edgeBps > 2_000) {
+        throw new RangeError("conserved Team share must be between 0 and 2000 bps");
+      }
+      withheldAmountNano = (grossAmountNano * BigInt(edgeBps)) / 10_000n;
+    }
+    entries.push({
+      partnerId: partner.partnerId,
+      level,
+      appliedBps,
+      grossAmountNano,
+      withheldAmountNano,
+      amountNano: grossAmountNano - withheldAmountNano,
+    });
+    if (withheldAmountNano <= 0n || !parent) break;
+    appliedBps = partner.parentOverrideBps ?? parent.subCommissionBps;
+    grossAmountNano = withheldAmountNano;
   }
   return entries;
 }
@@ -336,10 +397,12 @@ export async function loadCommissionChain(
         sub_commission_bps: number;
         parent_partner_id: string | null;
         parent_override_bps: number | null;
+        program_enabled: boolean;
+        program_started_at: Date | null;
       }[];
     } = await client.query(
       `SELECT id, status, commission_bps, sub_commission_bps,
-              parent_partner_id, parent_override_bps
+              parent_partner_id, parent_override_bps, program_enabled, program_started_at
        FROM partners WHERE id = $1 FOR SHARE`,
       [nextPartnerId],
     );
@@ -352,6 +415,8 @@ export async function loadCommissionChain(
         commissionBps: partner.commission_bps,
         subCommissionBps: partner.sub_commission_bps,
         parentOverrideBps: partner.parent_override_bps,
+        programEnabled: partner.program_enabled,
+        programStartedAt: partner.program_started_at,
       });
     }
     nextPartnerId = partner.parent_partner_id;
@@ -709,12 +774,18 @@ export async function recordReferredSpend(database: SalesDatabase, input: {
       return "duplicate";
     }
     const chain = await loadCommissionChain(client, directPartnerId);
-    for (const entry of computeCommissionChain(chain, input.amountNano)) {
+    for (const entry of computeConservedCommissionChain(chain, input.amountNano, input.occurredAt)) {
       await client.query(`
-        INSERT INTO commission_entries (usage_event_id, partner_id, level, applied_bps, amount_nano)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO commission_entries (
+          usage_event_id, partner_id, level, applied_bps, calculation_version,
+          gross_amount_nano, withheld_amount_nano, amount_nano
+        )
+        VALUES ($1, $2, $3, $4, 2, $5, $6, $7)
         ON CONFLICT (usage_event_id, partner_id) WHERE usage_event_id IS NOT NULL DO NOTHING
-      `, [usageEventId, entry.partnerId, entry.level, entry.appliedBps, entry.amountNano.toString()]);
+      `, [
+        usageEventId, entry.partnerId, entry.level, entry.appliedBps,
+        entry.grossAmountNano.toString(), entry.withheldAmountNano.toString(), entry.amountNano.toString(),
+      ]);
     }
     await client.query("COMMIT");
     return "recorded";
@@ -1117,6 +1188,9 @@ export async function getPartnerDailyEarningsByProvider(
 
 export interface TeamMemberSummary {
   id: string;
+  commerceUserId: string | null;
+  programEnabled: boolean;
+  programStartedAt: Date | null;
   email: string | null;
   telegramUsername: string | null;
   displayName: string | null;
@@ -1141,7 +1215,9 @@ export interface TeamMemberSummary {
 
 export async function listPartnerTeam(database: SalesDatabase, partnerId: string): Promise<TeamMemberSummary[]> {
   const result = await database.pool.query<{
-    id: string; email: string | null; telegram_username: string | null; display_name: string | null;
+    id: string; commerce_user_id: string | null; program_enabled: boolean;
+    program_started_at: Date | null;
+    email: string | null; telegram_username: string | null; display_name: string | null;
     status: PartnerStatus; commission_bps: number;
     override_bps: number; team_override_max_bps: number;
     team_invites_enabled: boolean; b2b_enabled: boolean; b2b_max_discount_bps: number;
@@ -1149,7 +1225,8 @@ export async function listPartnerTeam(database: SalesDatabase, partnerId: string
     referred_users: string; their_earned: string; their_adjustment: string;
     my_override: string; my_override_adjustment: string;
   }>(`
-    SELECT p.id, p.email, p.telegram_username, p.display_name, p.status, p.commission_bps,
+    SELECT p.id, p.commerce_user_id, p.program_enabled, p.program_started_at,
+      p.email, p.telegram_username, p.display_name, p.status, p.commission_bps,
       COALESCE(p.parent_override_bps, parent.sub_commission_bps) AS override_bps,
       COALESCE(p.team_override_max_bps, 2000) AS team_override_max_bps,
       p.team_invites_enabled, p.b2b_enabled, p.b2b_max_discount_bps,
@@ -1204,6 +1281,9 @@ export async function listPartnerTeam(database: SalesDatabase, partnerId: string
     const myOverrideAdjustmentNano = BigInt(row.my_override_adjustment);
     return {
     id: row.id,
+    commerceUserId: row.commerce_user_id,
+    programEnabled: row.program_enabled,
+    programStartedAt: row.program_started_at,
     email: row.email,
     telegramUsername: row.telegram_username,
     displayName: row.display_name,
@@ -1287,7 +1367,7 @@ export async function lowerTeamOverrideCeiling(
       UPDATE partner_invites
       SET parent_override_bps = LEAST(COALESCE(parent_override_bps, $2), $3),
           team_override_max_bps = LEAST(COALESCE(team_override_max_bps, 2000), $3)
-      WHERE partner_id = $1 AND consumed_at IS NULL
+      WHERE partner_id = $1 AND consumed_at IS NULL AND revoked_at IS NULL
     `, [row.id, row.sub_commission_bps, cap]);
     await client.query(`
       UPDATE partners
