@@ -148,6 +148,18 @@ policy_sha256=$(
     deploy/stage-unit-renderer.py \
     deploy/stage-unit-renderer.test.sh \
     deploy/stage-unit-whitelist.json \
+    deploy/install-staging-foundation.sh \
+    deploy/apitoken-observe-stage.sh \
+    deploy/stage-observe-helper.sh \
+    deploy/apitoken-stage-ctl.sh \
+    deploy/stage-ctl-helper.sh \
+    deploy/staging-foundation.test.sh \
+    deploy/staging-isolation-live.sh \
+    deploy/staging-pressure-proof.sh \
+    deploy/sudoers.d/96-apitoken-stage \
+    systemd/staging.slice \
+    systemd/apitoken-staging-foundation-install.service \
+    systemd/apitoken-rootless-docker-stage.service \
     deploy/test-fixtures/contour-config/production-resolved.txt \
     deploy/test-fixtures/contour-config/stage-resolved.txt \
     deploy/test-fixtures/contour-config/stage-safe.json \

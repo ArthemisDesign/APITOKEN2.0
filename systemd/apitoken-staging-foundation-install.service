@@ -1,0 +1,8 @@
+[Unit]
+Description=Install trusted co-located staging isolation foundation
+Before=apitoken-rootless-docker-stage.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/apitoken-watchdog/install-staging-foundation.sh
+RemainAfterExit=yes

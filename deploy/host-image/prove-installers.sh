@@ -20,6 +20,7 @@ INSTALLER_PROOF[install-tmpfiles.sh]=1
 INSTALLER_PROOF[install-sysctl.sh]=1
 INSTALLER_PROOF[install-sudoers.sh]=1
 INSTALLER_PROOF[install-watchdog.sh]=1
+INSTALLER_PROOF[install-staging-foundation.sh]=1
 INSTALLER_PROOF[install-caddy.sh]=1
 INSTALLER_SKIP[install-monitoring.sh]='Compose pull of the monitoring stack is not Ubuntu identity'
 
@@ -294,5 +295,15 @@ SSH_ORIGINAL_COMMAND='logs claude-api-anthropic@8787.service' \
 (( status == 0 || status == 1 )) \
   || die "observe wrapper logs failed unexpectedly with $status (127 is Darwin-only)"
 proof 'observe wrapper runs with Linux journalctl'
+
+# Phase 2 staging foundation static and scaled-loopback proofs. The real 80G file and live netns are
+# created only by the trusted master-sourced manager oneshot on the host.
+bash "$SRC/deploy/staging-foundation.test.sh"
+scaled=$(mktemp /tmp/staging-loopback.XXXXXX)
+truncate -s 64M "$scaled"
+mkfs.ext4 -F -m 0 "$scaled" >/dev/null
+[[ $(stat -c %s "$scaled") == 67108864 ]] || die 'scaled staging loopback has wrong size'
+rm -f "$scaled"
+proof 'staging foundation contracts and scaled loopback passed'
 
 proof 'all Ubuntu host proofs passed'

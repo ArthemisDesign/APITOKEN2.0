@@ -36,7 +36,9 @@ access — comes ONLY from the infra docs: first and foremost `docs/ops/INFRASTR
 from memory and do not invent ways to gain access: if it is not in the infra docs, the agent has no
 access. Manual SSH deployment and manual migrations are forbidden — only the host watchdog performs
 them. The `deploy` user in those runbooks is the watchdog/runtime identity, not an agent shell.
-The only SSH login an agent may use is `observe`. Cutover and restart go through
+The only production SSH login an agent may use is `observe`. After Phase 2 provisioning, the only
+staging SSH login an agent may use is the forced read-only `observe-stage` identity documented in
+`docs/ops/INFRASTRUCTURE.md`. Neither identity is a `deploy` shell. Cutover and restart go through
 `./deploy/agent-merge.sh` only.
 
 ## CRM & Parsing — MOVED to a separate repository

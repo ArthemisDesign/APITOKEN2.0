@@ -151,6 +151,49 @@ cannot escape into a shell. That session is journal and readiness inspection. It
 `apitoken-watchdog retry|run`. If `observe` is unreachable, stop. Do not fall back to `deploy`.
 Diagnose from GitHub `deploy/watchdog-log`. Land releases with `./deploy/agent-merge.sh`.
 
+### Co-located staging foundation
+
+Phase 2 provisions a non-serving isolation envelope on the same VPS. Production-watchdog installs
+it from tested `master` only. No candidate from the future `stage` branch can execute this root
+transaction. Phase 2 does not run a stage poll loop and does not change production admission.
+
+| Item | Stage value |
+|---|---|
+| Runtime / CI | `deploy-stage` / `stage-ci`, both without SSH shell or production groups |
+| Agent read path | `ssh observe-stage@84.32.48.2` through a forced command; stage status/ready/logs only |
+| Write path | `stage-ctl` forced command. Phase 2 enables only `emergency-stop`; `attest`, `sync`, and `reseed` refuse |
+| Slice | `staging.slice`: MemoryMax 32G, MemoryHigh 28G, CPUQuota 400%, TasksMax 16384, IOWeight 10 |
+| Storage | `/var/lib/apitoken-staging.img`, 80G ext4, mounted at `/mnt/apitoken-staging` with `nodev,nosuid` |
+| Bind roots | `/opt/apitoken-staging`, `/srv/claude-api-staging`, `/var/lib/apitoken-staging` |
+| Config root | `/etc/apitoken-staging`, root-controlled, no production secret copy |
+| Rootless Docker | `deploy-stage`, private `/run/user/<uid>/docker.sock`, data in the staging loopback, no production socket |
+| Public path | none; UFW public inbound is unchanged |
+
+The fixed veth table is:
+
+| Side | Interface | Address |
+|---|---|---|
+| Host | `veth-stage-host` | `10.254.32.1/30` |
+| Namespace `apitoken-stage` | `veth-stage-ns` | `10.254.32.2/30` |
+
+Processes inside the namespace use the production numeric ports. They never use host `+10000`
+ports. The namespace has no default route in Phase 2 and has an nftables output policy of `drop`,
+except loopback and established traffic. This blocks production loopback and Unix sockets, Mailcow,
+support, payments-test, payment/OAuth/mail vendors, and all public egress before application traffic
+exists. Later phases add only reviewed mock/reporting allowances.
+
+`observe-stage` is not in `adm` or `systemd-journal`. It calls a root-owned read-only helper that
+whitelists stage units only. The SSH key carries `restrict,command=`. Port forwarding is not granted
+until the operator installs exact `permitopen` options for the documented stage veth HTTP ports; DB
+and Redis forwarding stays forbidden. If `observe-stage` is unreachable, do not use `deploy`.
+
+The live acceptance scripts are `deploy/staging-isolation-live.sh` and
+`deploy/staging-pressure-proof.sh`. The first denies production/neighbor endpoints, production
+secrets, candidate state, the production Docker socket, and host/public staging listeners. The
+second applies bounded PID, memory, and CPU pressure below `staging.slice` and rechecks production
+readiness. `deploy/stage-ctl-helper.sh emergency-stop` stops only `staging.slice` and terminates only
+the `deploy-stage` user manager.
+
 The active DNS record is `A *.apitoken.sale -> 84.32.48.2`. The apex remains independent for the
 future frontend. Exact DNS records override the wildcard if they are added later.
 

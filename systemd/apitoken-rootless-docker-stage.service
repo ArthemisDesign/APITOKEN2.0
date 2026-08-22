@@ -1,0 +1,25 @@
+[Unit]
+Description=Rootless Docker for the isolated staging contour
+Requires=apitoken-staging-foundation-install.service
+After=apitoken-staging-foundation-install.service
+ConditionPathIsMountPoint=/var/lib/apitoken-staging
+
+[Service]
+Type=simple
+User=deploy-stage
+Group=deploy-stage
+Slice=staging.slice
+Delegate=yes
+NetworkNamespacePath=/run/netns/apitoken-stage
+Environment=HOME=/home/deploy-stage
+Environment=XDG_RUNTIME_DIR=/run/apitoken-staging
+Environment=DOCKER_HOST=unix:///run/apitoken-staging/docker.sock
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=host
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none
+ExecStart=/usr/bin/dockerd-rootless.sh --data-root=/var/lib/apitoken-staging/docker --host=unix:///run/apitoken-staging/docker.sock --storage-driver=fuse-overlayfs --exec-opt native.cgroupdriver=systemd
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/deploy-stage /run/apitoken-staging /var/lib/apitoken-staging
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

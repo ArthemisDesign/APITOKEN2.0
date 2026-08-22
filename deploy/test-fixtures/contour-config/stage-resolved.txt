@@ -38,6 +38,7 @@ CONTOUR_ROOTS_CACHE=/var/lib/apitoken-staging/cache
 CONTOUR_ROOTS_LOOPBACK_IMAGE=/var/lib/apitoken-stage.img
 CONTOUR_ROOTS_LOOPBACK_MOUNT=/mnt/apitoken-staging
 CONTOUR_ROOTS_NETNS=/run/netns/apitoken-stage
+CONTOUR_ROOTS_ROOTLESS_RUNTIME=/run/apitoken-staging
 CONTOUR_LOCKS_WATCHDOG=/run/lock/apitoken-stage-watchdog.lock
 CONTOUR_LOCKS_CANDIDATE_VALIDATOR=/run/lock/apitoken-stage-candidate-validator.lock
 CONTOUR_LOCKS_SOURCE_FETCH=/run/lock/apitoken-stage-source-fetch.lock

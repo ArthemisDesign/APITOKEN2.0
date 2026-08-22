@@ -221,6 +221,7 @@ am_gate_deployment() (
   bash "$ROOT/deploy/watchdog-backup.test.sh"
   bash "$ROOT/deploy/contour-config.test.sh"
   bash "$ROOT/deploy/stage-unit-renderer.test.sh"
+  bash "$ROOT/deploy/staging-foundation.test.sh"
   bash "$ROOT/deploy/sccache-cargo.test.sh"
   bash "$ROOT/deploy/agent-worktree.test.sh"
   bash "$ROOT/deploy/delete-worktree-agent.test.sh"

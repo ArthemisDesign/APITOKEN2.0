@@ -56,7 +56,8 @@
     "cache": "/var/lib/apitoken-staging/cache",
     "loopback_image": "/var/lib/apitoken-stage.img",
     "loopback_mount": "/mnt/apitoken-staging",
-    "netns": "/run/netns/apitoken-stage"
+    "netns": "/run/netns/apitoken-stage",
+    "rootless_runtime": "/run/apitoken-staging"
   },
   "locks": {
     "watchdog": "/run/lock/apitoken-stage-watchdog.lock",

@@ -144,8 +144,13 @@ fast-forward local `master` to GitHub; `deploy/agent-merge.sh` does the same aft
 primary) re-executes the blob from `origin/master` so that catch-up still runs.
 
 Never SSH as `deploy`, `root`, or any other host account. Never run `systemctl start|stop|restart|kill`
-or `apitoken-watchdog retry|run` on production. The only SSH login an agent may use is `observe`.
-Delivery and service cutovers go through `./deploy/agent-merge.sh` and the host watchdog only.
+or `apitoken-watchdog retry|run` on production. The only production SSH login an agent may use is
+`observe`. The only staging SSH login an agent may use is `observe-stage`, after the staging
+foundation has provisioned it. `observe-stage` is a forced read-only command with forwarding limited
+to the documented staging veth HTTP ports. It is not a shell and it cannot read production journals.
+The `stage-ctl` identity is forced-command-only and is used only after an explicit operator order;
+Phase 2 enables only `emergency-stop`, while `attest`, `sync`, and `reseed` fail closed. Delivery and
+service cutovers go through `./deploy/agent-merge.sh` and the host watchdog only.
 
 ## What counts as your work
 

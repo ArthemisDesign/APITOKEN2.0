@@ -1,0 +1,9 @@
+[Unit]
+Description=Co-located staging aggregate resource wall
+
+[Slice]
+MemoryMax=32G
+MemoryHigh=28G
+CPUQuota=400%
+TasksMax=16384
+IOWeight=10

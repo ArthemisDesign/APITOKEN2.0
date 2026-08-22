@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Stage contour and fail-closed trusted unit renderer; no host apply yet. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Trusted host envelope implementation; live isolation and stores remain. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -332,21 +332,21 @@ No stage-watchdog poll loop yet. No production admission change.
 
 ### In scope
 
-- [ ] Users: `deploy-stage`, `stage-ci`, `observe-stage`, `stage-ctl`. No interactive `deploy`
+- [x] Users: `deploy-stage`, `stage-ci`, `observe-stage`, `stage-ctl`. No interactive `deploy`
       shell for agents. `stage-ctl` is ForceCommand only (`attest` / `sync` / `emergency-stop` /
       `reseed` — commands may be stubs that refuse until later phases, but the SSH surface is
       not a shell).
-- [ ] `observe-stage`: read-only status/logs/ready plus `permitopen` only to the staging veth.
+- [x] `observe-stage`: read-only status/logs/ready plus `permitopen` only to the staging veth.
       Destructive commands denied. Document in `docs/ops/INFRASTRUCTURE.md` and add
       `observe-stage` to `AGENTS.md` in **this** phase’s contract commit.
-- [ ] Roots: `/opt/apitoken-staging`, `/srv/claude-api-staging`, `/var/lib/apitoken-staging`,
+- [x] Roots: `/opt/apitoken-staging`, `/srv/claude-api-staging`, `/var/lib/apitoken-staging`,
       `/etc/apitoken-staging`. No shared path with production. All three data roots bind-mount
       from one 80G loopback. Do not remount `/`.
-- [ ] `staging.slice`: `MemoryMax=32G`, `MemoryHigh=28G`, `CPUQuota=400%`, `TasksMax` (not
+- [x] `staging.slice`: `MemoryMax=32G`, `MemoryHigh=28G`, `CPUQuota=400%`, `TasksMax` (not
       `TaskMax`), IOWeight below production. Every future stage process must land in this slice.
-- [ ] Network namespace + veth. Inside: production port numbers. On the host: stage processes
+- [x] Network namespace + veth. Inside: production port numbers. On the host: stage processes
       do not listen on `127.0.0.1`. Record the veth IP table in `docs/ops/INFRASTRUCTURE.md`.
-- [ ] Rootless Docker for `deploy-stage`, `cgroup_parent=staging.slice`, no
+- [x] Rootless Docker for `deploy-stage`, `cgroup_parent=staging.slice`, no
       `/var/run/docker.sock`. Production socket stays with `deploy`.
 - [ ] Postgres-stage and Redis-stage in the staging netns / rootless Docker. Do not publish
       host `5434`. Do not touch `apitoken-postgres`.
@@ -359,8 +359,8 @@ No stage-watchdog poll loop yet. No production admission change.
 - [ ] Merge-blocking negative isolation tests: deny production loopback, Unix sockets,
       production secrets, production Docker socket, Mailcow (`13306` and mail ports),
       support `:3010`, payments-test `:5440`/`:3900`.
-- [ ] UFW public inbound unchanged.
-- [ ] `stage-emergency-stop` exists at least as a slice-stop that does not touch production
+- [x] UFW public inbound unchanged.
+- [x] `stage-emergency-stop` exists at least as a slice-stop that does not touch production
       state. Auto-stop on `MemAvailable < 12G` or production SLO red may be wired in phase 7
       if the probe is not safe yet; the script itself belongs as early as it can be tested
       without starting a fake production drain.
@@ -390,7 +390,7 @@ No stage-watchdog poll loop yet. No production admission change.
 ### Execution log
 
 ### 2026-08-23 — stage contour and trusted renderer
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `4dbb2d71fbb3f33ab1d3bb2e61c902074820eeb2`   watchdog: GREEN
 Result: Added the real stage contour with locked identities, roots, veth inventory, production port
 numbers inside the netns, 32G/28G/400%/80G resource envelope, disabled runtime/admission lanes, and
 no excluded twin components. Extended fail-closed contour validation. Added a closed trusted renderer
@@ -404,6 +404,20 @@ Checks actually run: `bash -n deploy/*.sh deploy/apitoken-db-dump`;
 `bash deploy/agent-merge.suite.sh`; `bash deploy/watchdog-lib.test.sh`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: merge the trusted Phase 2 host foundation in a new worktree after GREEN `deploy/watchdog`.
+
+### 2026-08-23 — trusted host isolation envelope
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Added the production-watchdog-installed root oneshot for the four isolated staging identities,
+80G loopback and three bind roots, locked `staging.slice`, real netns/veth, default-drop nftables,
+rootless Docker unit, forced `observe-stage` and `stage-ctl` commands, stage-only sudo policy,
+emergency stop, live negative isolation test, and bounded pressure proof. The foundation starts no
+stage application and does not poll `stage`, post stage statuses, or change production admission.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/contour-config.test.sh`;
+`bash deploy/stage-unit-renderer.test.sh`; `bash deploy/agent-merge.suite.sh`;
+`bash deploy/watchdog-lib.test.sh`; `bash -n deploy/*.sh deploy/apitoken-db-dump`;
+`./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: empty stage PostgreSQL/Redis placeholders and live isolation/pressure acceptance after GREEN.
 
 ---
 

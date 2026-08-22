@@ -16,6 +16,9 @@ RUN apt-get update \
         passwd \
         procps \
         python3 \
+        e2fsprogs \
+        iproute2 \
+        nftables \
         sudo \
         systemd \
         systemd-sysv \

@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'staging-foundation: root required' >&2; exit 1; }
+ROOT=/usr/local/lib/apitoken-watchdog
+PROD=$ROOT/contour-production.json
+STAGE=$ROOT/contour-stage.json
+python3 "$ROOT/contour-config.py" --schema "$ROOT/contour-config.schema.json" \
+  --config "$STAGE" --against "$PROD" >/dev/null
+
+make_user() {
+  local user=$1 home=$2 shell=$3
+  getent group "$user" >/dev/null || groupadd --system "$user"
+  id "$user" >/dev/null 2>&1 || useradd --system --gid "$user" --create-home \
+    --home-dir "$home" --shell "$shell" --comment 'apitoken staging identity' "$user"
+  usermod -g "$user" --home "$home" --shell "$shell" "$user"
+}
+make_user deploy-stage /home/deploy-stage /usr/sbin/nologin
+make_user stage-ci /var/lib/apitoken-staging/watchdog/ci-home /usr/sbin/nologin
+make_user observe-stage /home/observe-stage /usr/local/bin/apitoken-observe-stage
+make_user stage-ctl /home/stage-ctl /usr/local/bin/apitoken-stage-ctl
+for user in deploy-stage stage-ci observe-stage stage-ctl; do
+  for group in deploy docker apitoken-ci observe adm systemd-journal; do
+    if getent group "$group" >/dev/null && id -Gn "$user" | tr ' ' '\n' | grep -Fxq "$group"; then
+      gpasswd -d "$user" "$group" >/dev/null || true
+    fi
+  done
+done
+for db in /etc/subuid /etc/subgid; do
+  touch "$db"; grep -Eq '^deploy-stage:[0-9]+:65536$' "$db" || echo 'deploy-stage:231072:65536' >>"$db"
+done
+install -o root -g root -m 0755 "$ROOT/apitoken-observe-stage.sh" /usr/local/bin/apitoken-observe-stage
+install -o root -g root -m 0755 "$ROOT/apitoken-stage-ctl.sh" /usr/local/bin/apitoken-stage-ctl
+for wrapper in /usr/local/bin/apitoken-observe-stage /usr/local/bin/apitoken-stage-ctl; do
+  grep -qxF "$wrapper" /etc/shells || echo "$wrapper" >>/etc/shells
+done
+for user in observe-stage stage-ctl; do
+  home=/home/$user; install -d -o "$user" -g "$user" -m 0750 "$home"
+  install -d -o "$user" -g "$user" -m 0700 "$home/.ssh"
+  tmp=$(mktemp); wrapper=/usr/local/bin/apitoken-$user
+  [[ $user != stage-ctl ]] || wrapper=/usr/local/bin/apitoken-stage-ctl
+  if [[ -f /home/deploy/.ssh/authorized_keys && ! -L /home/deploy/.ssh/authorized_keys ]]; then
+    awk -v wrapper="$wrapper" '
+      match($0, /(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com) [A-Za-z0-9+\/=]+/) {
+        printf "restrict,command=\"%s\" %s\n", wrapper, substr($0,RSTART,RLENGTH)
+      }' /home/deploy/.ssh/authorized_keys >"$tmp"
+  fi
+  install -o "$user" -g "$user" -m 0600 "$tmp" "$home/.ssh/authorized_keys"; rm -f "$tmp"
+done
+
+IMAGE=/var/lib/apitoken-staging.img; MOUNT=/mnt/apitoken-staging
+install -d -m 0755 "$MOUNT"
+if [[ ! -e $IMAGE ]]; then truncate -s 80G "$IMAGE"; mkfs.ext4 -F -m 0 -L apitoken-staging "$IMAGE" >/dev/null; fi
+[[ -f $IMAGE && ! -L $IMAGE && $(stat -c %s "$IMAGE") == 85899345920 ]] || exit 1
+mountpoint -q "$MOUNT" || mount -o loop,nodev,nosuid "$IMAGE" "$MOUNT"
+for item in opt:/opt/apitoken-staging srv:/srv/claude-api-staging var:/var/lib/apitoken-staging; do
+  src=$MOUNT/${item%%:*}; dst=${item#*:}
+  install -d -o deploy-stage -g deploy-stage -m 0750 "$src" "$dst"
+  mountpoint -q "$dst" || mount --bind "$src" "$dst"
+done
+install -d -o root -g deploy-stage -m 0750 /etc/apitoken-staging
+install -d -o deploy-stage -g deploy-stage -m 0700 /var/lib/apitoken-staging/{docker,postgres,redis,spool,watchdog}
+install -d -o deploy-stage -g deploy-stage -m 0700 /run/apitoken-staging
+
+ip netns list | awk '{print $1}' | grep -Fxq apitoken-stage || ip netns add apitoken-stage
+if ! ip link show veth-stage-host >/dev/null 2>&1; then
+  ip link add veth-stage-host type veth peer name veth-stage-ns
+  ip link set veth-stage-ns netns apitoken-stage
+fi
+ip addr replace 10.254.32.1/30 dev veth-stage-host; ip link set veth-stage-host up
+ip netns exec apitoken-stage ip link set lo up
+ip netns exec apitoken-stage ip addr replace 10.254.32.2/30 dev veth-stage-ns
+ip netns exec apitoken-stage ip link set veth-stage-ns up
+ip netns exec apitoken-stage ip route del default >/dev/null 2>&1 || true
+ip netns exec apitoken-stage nft delete table inet apitoken_stage >/dev/null 2>&1 || true
+ip netns exec apitoken-stage nft -f - <<'NFT'
+table inet apitoken_stage { chain output { type filter hook output priority 0; policy drop; oifname "lo" accept; ct state established,related accept; } }
+NFT
+
+install -o root -g root -m 0644 "$ROOT/staging.slice" /etc/systemd/system/staging.slice
+install -o root -g root -m 0644 "$ROOT/apitoken-rootless-docker-stage.service" /etc/systemd/system/apitoken-rootless-docker-stage.service
+install -o root -g root -m 0440 "$ROOT/96-apitoken-stage" /etc/sudoers.d/96-apitoken-stage
+visudo -c >/dev/null
+systemctl daemon-reload
+loginctl enable-linger deploy-stage
+printf 'staging-foundation: ready\n'

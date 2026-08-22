@@ -1005,7 +1005,8 @@ wd_path_requires_infrastructure_install() {
 wd_path_depends_on_ubuntu_host() {
   case "$1" in
     systemd/*|deploy/install-*.sh|deploy/watchdog-infrastructure.sh|\
-    deploy/sudoers.d/*|deploy/apitoken-observe.sh|\
+    deploy/sudoers.d/*|deploy/apitoken-observe.sh|deploy/apitoken-observe-stage.sh|\
+    deploy/stage-*-helper.sh|deploy/staging-*.sh|\
     deploy/affinity-redis.compose.yaml|deploy/commerce-postgres.compose.yaml|\
     deploy/Caddyfile|deploy/render-caddy.awk|deploy/host-image-gate.sh|\
     deploy/host-image/*)
@@ -1031,6 +1032,8 @@ wd_path_is_systemd_definition() {
     systemd/apitoken-candidate-validator.service|systemd/apitoken-candidate-validator.timer|\
     systemd/apitoken-sudoers-install.service|systemd/apitoken-tmpfiles-install.service|\
     systemd/apitoken-sysctl-install.service|systemd/apitoken-observe-install.service|\
+    systemd/apitoken-staging-foundation-install.service|\
+    systemd/apitoken-rootless-docker-stage.service|systemd/staging.slice|\
     systemd/apitoken-postgres.service|systemd/apitoken-affinity-redis.service|\
     systemd/apitoken-worker.service|systemd/apitoken-content-studio.service|\
     systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-openai@.service|\
@@ -1073,7 +1076,10 @@ wd_path_is_controller_definition() {
     deploy/watchdog.sh|deploy/watchdog-lib.sh|deploy/validation-plan.sh|\
     deploy/contour-config.sh|deploy/contour-config.py|deploy/contour-config.schema.json|\
     deploy/contour-production.json|deploy/contour-stage.json|deploy/stage-unit-renderer.py|\
-    deploy/stage-unit-whitelist.json|\
+    deploy/stage-unit-whitelist.json|deploy/install-staging-foundation.sh|\
+    deploy/apitoken-observe-stage.sh|deploy/stage-observe-helper.sh|\
+    deploy/apitoken-stage-ctl.sh|deploy/stage-ctl-helper.sh|\
+    deploy/staging-isolation-live.sh|deploy/staging-pressure-proof.sh|\
     deploy/gpt-image-2-live-gate.sh|deploy/gpt-image-2-public-smoke-gate.sh|\
     deploy/gpt-image-2-public-preflight-gate.sh|deploy/gpt-image-2-public-preflight-v2-gate.sh|\
     deploy/gpt-image-2-public-preflight-v3-gate.sh|deploy/gpt-image-2-public-paid-smoke-gate.sh|\
