@@ -263,8 +263,9 @@ discount.
   before the portal stored the provider (migration 0022) appears as one "no provider on record"
   line rather than being dropped, so the parts always sum to the whole.
 - **Referrals** — the users brought in, identified by their authoritative Commerce account email,
-  their paid spend and your earnings on each of them. If Commerce is unavailable for one response,
-  the row falls back to a short UUID mask; Sales never persists or guesses the email.
+  their paid spend and your earnings on each of them. If Commerce cannot resolve one account for a
+  response, the row says that email data is unavailable; the Commerce Dashboard never substitutes
+  a UUID, Telegram handle or display name. Sales never persists or guesses the email.
 - **Team** — create one-time, 30-day invitations for sub-salespeople, review invitation status, and
   see each direct member's referral count, direct earnings, and your retained Team share. The form
   shows the fixed 10% platform rate read-only and lets the inviter set an edge share plus a delegated
@@ -289,7 +290,8 @@ discount.
   "How payouts work" explanation. The snapshot also returns the minimum payout and fixed
   lock/window policy, while the wallet writer is restricted to the active session-derived
   membership and commits every accepted change with its audit evidence in one transaction.
-- **Settings** — profile (display name) and commission terms (view only).
+- **Settings** — the current Commerce login email and commission/authority terms (view only).
+  Referral does not maintain a second partner profile or product-facing display name.
 
 ## 9. Partner administration
 
@@ -311,10 +313,19 @@ the browser and propagates the authenticated managed operator as `X-Admin-Actor`
   canonical USDT, balances and gas, then sends with durable hash/raw/nonce evidence and receipt
   reconciliation. Irreversible sends remain server-gated to the 3-day payout window.
 
-Partner, Team, referral, request and payout identities are displayed by account email when the
-producer has authoritative Commerce data; documented display-name, Telegram or short-mask fallbacks
-remain only for legacy/pre-account/outage states. Promo-code controls are absent. This does not
+Partner, Team, referral, request and payout identities on the unified surfaces are displayed only by
+current Commerce account email. If that projection is unavailable, the row says the email is
+unavailable and exposes no internal identity. Display-name, Telegram and short-mask fallbacks exist
+only on the legacy Sales surfaces during cutover. Promo-code controls are absent. This does not
 delete historical promo evidence or expand-only backend compatibility contracts.
+
+The Commerce admin boundary owns partner onboarding, directory/settings, request decisions and the
+email-enriched payout list. The existing `/partner-admin/*` on-chain readiness, prepare, send and
+receipt-reconciliation endpoints remain the sole execution authority until an additive internal
+Sales producer exposes the same fenced state machine to Commerce. The unified Admin may consume
+that execution surface during the transition, but it must not duplicate the payout calculation or
+signing logic in Commerce. Retiring `/partner-admin/*` is therefore a later producer-first change,
+not part of the identity/UI cutover.
 
 `admin.partners.apitoken.sale` remains online only as the legacy parity surface during rollout. It
 must not be disabled, redirected or deleted until every route above has been verified in production
@@ -336,7 +347,8 @@ preferences.
 - A partner's browser receives only the authoritative email of accounts attributed to that
   partner. Full Commerce UUIDs cross only the server-to-server Commerce↔Sales boundary, where they
   are required for ownership and membership checks; Commerce removes them from the public view.
-  Sales does not persist email, and an unavailable profile falls back to a short mask.
+  Sales does not persist email, and an unavailable Commerce profile remains an explicit missing
+  email instead of falling back to an opaque identifier.
 - Neither side opens the other's database. Commerce owns sessions/email; Sales owns membership,
   attribution and money ledgers. Every cross-context call uses `SALES_CONTROL_KEY` server-side.
 - Legacy Telegram HMAC login and hashed Sales sessions remain enabled only during cutover. They do

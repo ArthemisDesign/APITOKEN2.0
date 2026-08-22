@@ -149,6 +149,13 @@ const dashboardCaptures = [
   ["dashboard-usage-light", "/dashboard?view=usage", 1440, 1000, "light"],
   ["dashboard-usage-dark", "/dashboard?view=usage", 1440, 1000, "dark"],
   ["dashboard-usage-russian-light", "/dashboard?view=usage", 1440, 1000, "light", "ru"],
+  ["dashboard-referral-light", "/dashboard?view=referral", 1440, 1000, "light"],
+  ["dashboard-referral-dark", "/dashboard?view=referral", 1440, 1000, "dark"],
+  ["dashboard-referral-russian-light", "/dashboard?view=referral", 1440, 1000, "light", "ru"],
+  ["dashboard-referral-team-dark", "/dashboard?view=referral&tab=team", 1440, 1000, "dark"],
+  ["dashboard-referral-requests-light", "/dashboard?view=referral&tab=requests", 1440, 1000, "light"],
+  ["dashboard-referral-payouts-russian-dark", "/dashboard?view=referral&tab=payouts", 1440, 1000, "dark", "ru"],
+  ["dashboard-referral-ordinary-light", "/dashboard?view=referral&referralState=ordinary", 1440, 1000, "light"],
   ["dashboard-support-dark", "/dashboard?view=support", 1440, 1000, "dark"],
   ["dashboard-support-light", "/dashboard?view=support", 1440, 1000, "light"],
   ["dashboard-profile-light", "/dashboard?view=profile", 1440, 1000, "light"],
@@ -167,6 +174,10 @@ const dashboardCaptures = [
   ["dashboard-usage-mobile-light", "/dashboard?view=usage", 390, 844, "light"],
   ["dashboard-usage-mobile-dark", "/dashboard?view=usage", 390, 844, "dark"],
   ["dashboard-usage-mobile-russian-dark", "/dashboard?view=usage", 390, 844, "dark", "ru"],
+  ["dashboard-referral-mobile-light", "/dashboard?view=referral", 390, 844, "light"],
+  ["dashboard-referral-mobile-russian-dark", "/dashboard?view=referral&tab=team", 390, 844, "dark", "ru"],
+  ["dashboard-referral-revoke-mobile-dark", "/dashboard?view=referral&tab=team", 390, 844, "dark", "en", "referral-revoke-open"],
+  ["dashboard-referral-ordinary-mobile-dark", "/dashboard?view=referral&referralState=ordinary", 390, 844, "dark"],
   ["dashboard-support-mobile-light", "/dashboard?view=support", 390, 844, "light"],
   ["dashboard-support-mobile-dark", "/dashboard?view=support", 390, 844, "dark"],
   ["dashboard-profile-mobile-light", "/dashboard?view=profile", 390, 844, "light"],
@@ -186,6 +197,8 @@ const shouldVerifyKeys = process.env.AUDIT_VERIFY_KEYS === "1" ||
   (process.env.AUDIT_VERIFY_KEYS !== "0" && captures.some(([name]) => name.startsWith("dashboard-keys-")));
 const shouldVerifyUsage = process.env.AUDIT_VERIFY_USAGE === "1" ||
   (process.env.AUDIT_VERIFY_USAGE !== "0" && captures.some(([name]) => name.startsWith("dashboard-usage-")));
+const shouldVerifyReferral = process.env.AUDIT_VERIFY_REFERRAL === "1" ||
+  (process.env.AUDIT_VERIFY_REFERRAL !== "0" && captures.some(([name]) => name.startsWith("dashboard-referral-")));
 const shouldVerifyDocsTheme = process.env.AUDIT_VERIFY_DOCS_THEME === "1" ||
   (process.env.AUDIT_VERIFY_DOCS_THEME !== "0" && captures.some(([name]) => name.startsWith("docs-")));
 const shouldVerifyPricing = process.env.AUDIT_VERIFY_PRICING === "1" ||
@@ -345,6 +358,30 @@ const dashboardFixtureScript = `(() => {
       { keyMasked: "sk-pool-f367••••••••94ea", requests: 26, officialNano: "8679893050", chargedNano: "3471957220" },
     ],
   };
+  const referralDate = (daysAgo) => new Date(Date.now() - daysAgo * 86400000).toISOString();
+  const referral = {
+    state: "active", activated: true,
+    membership: { email: user.email, status: "active", programEnabled: true, programStartedAt: referralDate(96), referralCode: "AUDIT-PARTNER", commissionBps: 1000, teamShareBps: null, teamOverrideMaxBps: 2000, teamInvitesEnabled: true, b2bEnabled: true, b2bMaxDiscountBps: 2500, b2bCanDelegate: true, payoutMethod: "bsc_usdt", payoutDetails: { network: "BSC", asset: "USDT", address: "0x1111111111111111111111111111111111111111" }, createdAt: referralDate(96) },
+    totals: { earnedNano: "182400000000", directNano: "160000000000", overrideNano: "22400000000", adjustmentNano: "-2400000000", directAdjustmentNano: "-2200000000", overrideAdjustmentNano: "-200000000", netNano: "180000000000", directNetNano: "157800000000", overrideNetNano: "22200000000", paidNano: "118000000000", pendingPayoutNano: "0", debtNano: "0", availableNano: "28400000000", last30dSpendNano: "684000000000", last30dEarnedNano: "68400000000", last30dAdjustmentNano: "-1400000000", last30dNetNano: "67000000000" },
+    referrals: [
+      { email: "commerce@northstar.ai", customerType: "b2b", discountBps: 2000, providerDiscounts: [], attributedAt: referralDate(82), spendNano: "398000000000", earnedNano: "39800000000", adjustmentNano: "-900000000", netNano: "38900000000", topupNano: "520000000000" },
+      { email: "founder+very-long-account-name@automations.example", customerType: "b2c", discountBps: 0, providerDiscounts: [], attributedAt: referralDate(45), spendNano: "207000000000", earnedNano: "20700000000", adjustmentNano: "-500000000", netNano: "20200000000", topupNano: "250000000000" },
+      { email: "team@pixelcraft.dev", customerType: "b2c", discountBps: 0, providerDiscounts: [], attributedAt: referralDate(14), spendNano: "79000000000", earnedNano: "7900000000", adjustmentNano: "0", netNano: "7900000000", topupNano: "100000000000" },
+    ],
+    team: [{ email: "partner.team@agency.example", programEnabled: true, programStartedAt: referralDate(52), status: "active", commissionBps: 1000, overrideBps: 2000, teamOverrideMaxBps: 1000, teamInvitesEnabled: true, b2bEnabled: true, b2bMaxDiscountBps: 1500, b2bCanDelegate: false, referredUsers: 12, theirEarnedNano: "111000000000", theirAdjustmentNano: "-1000000000", theirNetNano: "110000000000", myOverrideNano: "22200000000", myOverrideAdjustmentNano: "-200000000", myOverrideNetNano: "22000000000" }],
+    earnings: {
+      days: 30,
+      daily: Array.from({ length: 30 }, (_, index) => ({ date: referralDate(29 - index).slice(0, 10), spendNano: String((index % 6 + 2) * 2000000000), earnedNano: String((index % 6 + 2) * 200000000), adjustmentNano: "0", netNano: String((index % 6 + 2) * 200000000) })),
+      providers: [{ providerId: "anthropic", events: 194, spendNano: "387000000000", earnedNano: "38700000000" }, { providerId: "openai", events: 126, spendNano: "203000000000", earnedNano: "20300000000" }, { providerId: "google", events: 74, spendNano: "94000000000", earnedNano: "9400000000" }],
+      providerDaily: Array.from({ length: 30 }, (_, index) => ({ date: referralDate(29 - index).slice(0, 10), providers: [{ providerId: "anthropic", events: index % 5 + 3, spendNano: String((index % 6 + 2) * 1100000000), earnedNano: String((index % 6 + 2) * 110000000) }, { providerId: "openai", events: index % 4 + 2, spendNano: String((index % 4 + 1) * 720000000), earnedNano: String((index % 4 + 1) * 72000000) }].concat(index % 3 === 0 ? [{ providerId: "google", events: 2, spendNano: "460000000", earnedNano: "46000000" }] : []) })),
+    },
+    invitations: [{ id: "832b52ea-43f2-457f-9d72-8f4a8f35f129", email: "new.partner@studio.example", overrideBps: 1500, teamOverrideMaxBps: 500, teamInvitesEnabled: false, b2bEnabled: false, b2bMaxDiscountBps: 0, b2bCanDelegate: false, expiresAt: referralDate(-21), consumedAt: null, revokedAt: null, createdAt: referralDate(9) }],
+    requests: [{ id: "9bf6a188-982f-4db1-aaf5-11e19aa521f2", requestType: "b2b_conversion", status: "pending", requesterEmail: user.email, customerEmail: "team@pixelcraft.dev", reason: "Customer is moving production traffic and needs consolidated billing.", stateSnapshot: {}, requestedCommissionBps: null, requestedDiscountBps: 1500, approvedCommissionBps: null, approvedDiscountBps: null, reviewerActor: null, reviewerNote: null, reviewedAt: null, appliedAt: null, applyAttempts: 0, lastApplyError: null, version: 1, providerTerms: [], effect: null, createdAt: referralDate(2), updatedAt: referralDate(2) }],
+    payouts: [{ id: "9c79815d-2fe4-4ea8-a37b-5c79dfa0bacc", amountNano: "42000000000", status: "paid", method: "bsc_usdt", details: {}, requestedAt: referralDate(34), decidedAt: referralDate(32), paidAt: referralDate(31), adminNote: null, txHash: "0x9f7a4caudit", chainStatus: "confirmed" }],
+    period: { now: referralDate(0), current: { key: "2026-08-H2", start: "2026-08-16T00:00:00.000Z", end: "2026-09-01T00:00:00.000Z", accruedNano: "12400000000", adjustmentNano: "0", netNano: "12400000000" }, locked: [{ key: "2026-08-H1", endedAt: "2026-08-16T00:00:00.000Z", unlocksAt: "2026-08-23T00:00:00.000Z", earnedNano: "17400000000", adjustmentNano: "-1400000000", netNano: "16000000000" }], nextPayout: { date: "2026-08-23T00:00:00.000Z", estimatedNano: "28400000000" }, lifetimeEarnedNano: "182400000000", lifetimeAdjustmentNano: "-2400000000", lifetimeNetNano: "180000000000", lifetimePaidNano: "118000000000", debtNano: "0", payableNano: "28400000000", unpaidNano: "62000000000" },
+    periodHistory: [{ key: "2026-08", index: 1, start: "2026-08-01T00:00:00.000Z", end: "2026-08-16T00:00:00.000Z", phase: "locked", payoutDate: "2026-08-23T00:00:00.000Z", earnedNano: "17400000000", adjustmentNano: "-1400000000", netNano: "16000000000" }, { key: "2026-07", index: 2, start: "2026-07-16T00:00:00.000Z", end: "2026-08-01T00:00:00.000Z", phase: "closed", payoutDate: "2026-08-08T00:00:00.000Z", earnedNano: "42000000000", adjustmentNano: "0", netNano: "42000000000" }],
+    payoutPolicy: { minPayoutNano: "10000000000", lockDays: 7, windowDays: 3 },
+  };
   window.fetch = (input, init = {}) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const parsed = new URL(url, location.origin);
@@ -397,6 +434,14 @@ const dashboardFixtureScript = `(() => {
     }
     if (path === "/account/ledger") return json({ entries });
     if (path === "/account/usage") return json(usage);
+    const referralInvitationMatch = path.match(new RegExp("^/referral/team-invitations/([^/]+)$"));
+    if (referralInvitationMatch && (init.method || "GET").toUpperCase() === "DELETE") {
+      const invitation = referral.invitations.find((item) => item.id === decodeURIComponent(referralInvitationMatch[1]));
+      if (!invitation) return json({ message: "Invitation not found" }, 404);
+      invitation.revokedAt = new Date().toISOString();
+      return json({ invitation: { id: invitation.id, revokedAt: invitation.revokedAt, revoked: true } });
+    }
+    if (path === "/referral") return json(location.search.includes("referralState=ordinary") ? { state: "unavailable", membership: null } : referral);
     if (path === "/auth/logout") return Promise.resolve(new Response(null, { status: 204 }));
     return json({ message: "Fixture route not found" }, 404);
   };
@@ -596,6 +641,10 @@ async function capturePage(client, [name, route, width, height, theme, language 
     await clickSelector(client, '.key-row [data-key-action="edit"]');
     await waitForCondition(client, `Boolean(document.querySelector('.key-edit-modal[role="dialog"]'))`, `${name} edit-key dialog`);
   }
+  if (state === "referral-revoke-open") {
+    await clickSelector(client, ".referral-invites .btn");
+    await waitForCondition(client, `Boolean(document.querySelector('[role="alertdialog"]'))`, `${name} revoke-invitation dialog`);
+  }
   const visualStateResult = await client.send("Runtime.evaluate", {
     expression: `(() => {
       const h1 = document.querySelector('h1');
@@ -676,7 +725,7 @@ async function capturePage(client, [name, route, width, height, theme, language 
   const measuredSize = cssContentSize ?? contentSize;
   const pageHeight = Math.ceil(measuredSize.height);
   const pageWidth = Math.ceil(measuredSize.width);
-  const modalState = state === "key-create-open" || state === "key-edit-open" || state === "key-revoke-open";
+  const modalState = state === "key-create-open" || state === "key-edit-open" || state === "key-revoke-open" || state === "referral-revoke-open";
   const screenshot = await client.send("Page.captureScreenshot", modalState ? {
     format: "png",
     fromSurface: true,
@@ -1107,6 +1156,95 @@ async function verifyUsageByKeyTable(client) {
     throw new Error(`Usage-by-key semantics failed: ${JSON.stringify(state)}`);
   }
   process.stdout.write("Verified provider-stacked usage, accessible labels, named-key labels, and key-specific columns\n");
+}
+
+async function verifyReferralLayout(client) {
+  await setViewport(client, 1440, 1000);
+  await client.send("Runtime.evaluate", {
+    expression: `localStorage.setItem('theme:v1', 'light'); localStorage.setItem('theme', 'light'); localStorage.setItem('lang:v1', 'en');`,
+  });
+  const loaded = client.once("Page.loadEventFired");
+  await client.send("Page.navigate", { url: new URL("/dashboard?view=referral", baseUrl).href });
+  await loaded;
+  await waitForCondition(client, `document.querySelectorAll('.referral-tabs button').length === 5 && document.querySelectorAll('.referral-earnings-graph .uchart-col').length === 30`, "active Referral overview");
+  const overviewResult = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const tabs = [...document.querySelectorAll('.referral-tabs button')];
+      const activeColumns = [...document.querySelectorAll('.referral-earnings-graph .uchart-col')].filter((column) => column.querySelector('.uchart-seg'));
+      const body = document.querySelector('.referral-panel')?.innerText || '';
+      return JSON.stringify({
+        tabs: tabs.map((tab) => tab.textContent.trim()),
+        current: tabs.find((tab) => tab.getAttribute('aria-current') === 'page')?.textContent.trim(),
+        legend: [...document.querySelectorAll('.referral-earnings-graph .usage-chart-legend span')].map((item) => item.textContent.trim()),
+        activeColumns: activeColumns.length,
+        everyColumnNamed: activeColumns.every((column) => /Claude|GPT|Gemini/.test(column.getAttribute('aria-label') || '')),
+        hasUuid: /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i.test(body),
+        forbiddenCopy: /markup|promo.?code|промокод/i.test(body),
+        shareExplanation: body.includes('retained from a member') && body.includes('total remains $10'),
+      });
+    })()`,
+    returnByValue: true,
+  });
+  const overview = JSON.parse(overviewResult.result.value);
+  if (overview.tabs.join("|") !== "Overview|Referrals|Team|Requests|Payouts" || overview.current !== "Overview" ||
+      overview.legend.join("|") !== "Claude|GPT|Gemini" || overview.activeColumns !== 30 || !overview.everyColumnNamed ||
+      overview.hasUuid || overview.forbiddenCopy || !overview.shareExplanation) {
+    throw new Error(`Referral overview semantics failed: ${JSON.stringify(overview)}`);
+  }
+
+  await clickSelector(client, ".referral-tabs button:nth-child(3)");
+  await waitForCondition(client, `new URLSearchParams(location.search).get('tab') === 'team' && Boolean(document.querySelector('input[name="teamEmail"]'))`, "Referral Team URL state");
+  const teamResult = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const email = document.querySelector('input[name="teamEmail"]');
+      const shares = [...document.querySelectorAll('.referral-percent-input input')];
+      const memberEmails = [...document.querySelectorAll('.team-table .referral-email')];
+      return JSON.stringify({
+        emailType: email?.type,
+        emailAutocomplete: email?.autocomplete,
+        maxes: shares.map((input) => input.max),
+        memberEmails: memberEmails.map((item) => ({ text: item.textContent.trim(), translate: item.getAttribute('translate') })),
+        tabCurrent: document.querySelector('.referral-tabs [aria-current="page"]')?.textContent.trim(),
+      });
+    })()`,
+    returnByValue: true,
+  });
+  const team = JSON.parse(teamResult.result.value);
+  if (team.emailType !== "email" || team.emailAutocomplete !== "email" || team.maxes.some((value) => Number(value) > 20) ||
+      team.memberEmails.length !== 1 || team.memberEmails.some((item) => item.translate !== "no" || !item.text.includes("@")) || team.tabCurrent !== "Team") {
+    throw new Error(`Referral Team identity/ceiling failed: ${JSON.stringify(team)}`);
+  }
+
+  await clickSelector(client, ".referral-invites .btn");
+  await waitForCondition(client, `Boolean(document.querySelector('[role="alertdialog"]'))`, "Referral invitation revocation confirmation");
+  const confirmationResult = await client.send("Runtime.evaluate", {
+    expression: `JSON.stringify({
+      title: document.querySelector('[role="alertdialog"] h2')?.textContent.trim(),
+      body: document.querySelector('[role="alertdialog"] p')?.textContent.trim(),
+      focused: document.activeElement?.classList.contains('key-modal-close'),
+    })`,
+    returnByValue: true,
+  });
+  const confirmation = JSON.parse(confirmationResult.result.value);
+  if (confirmation.title !== "Revoke invitation?" || !confirmation.body.includes("new.partner@studio.example") || !confirmation.focused) {
+    throw new Error(`Referral revocation confirmation failed: ${JSON.stringify(confirmation)}`);
+  }
+  await clickSelector(client, "[role=\"alertdialog\"] .btn-danger");
+  await waitForCondition(client, `!document.querySelector('[role="alertdialog"]') && !document.querySelector('.referral-invites')?.innerText.includes('new.partner@studio.example')`, "Referral invitation revocation");
+
+  const ordinaryLoaded = client.once("Page.loadEventFired");
+  await client.send("Page.navigate", { url: new URL("/dashboard?view=referral&referralState=ordinary", baseUrl).href });
+  await ordinaryLoaded;
+  await waitForCondition(client, `Boolean(document.querySelector('.referral-access-card a[href="https://t.me/bozinodev"]'))`, "ordinary-account partner CTA");
+  const ordinaryResult = await client.send("Runtime.evaluate", {
+    expression: `JSON.stringify({ tabs: document.querySelectorAll('.referral-tabs').length, text: document.querySelector('.referral-access-card')?.innerText || '' })`,
+    returnByValue: true,
+  });
+  const ordinary = JSON.parse(ordinaryResult.result.value);
+  if (ordinary.tabs !== 0 || !ordinary.text.includes("enabled manually") || !ordinary.text.includes("account email")) {
+    throw new Error(`Referral ordinary-account state failed: ${JSON.stringify(ordinary)}`);
+  }
+  process.stdout.write("Verified Referral URL tabs, provider chart, email identity, Team ceilings, retained-share semantics, destructive-action confirmation, and ordinary-account CTA\n");
 }
 
 async function verifyApiKeysLayout(client) {
@@ -1883,7 +2021,7 @@ async function verifyComplianceRouting(client) {
 const chrome = await findChrome();
 const port = 9222 + Math.floor(Math.random() * 500);
 await mkdir(outputDirectory, { recursive: true });
-await verifyServerDocumentLanguages();
+if (process.env.AUDIT_VERIFY_SERVER_LANGUAGES !== "0") await verifyServerDocumentLanguages();
 
 const browser = spawn(chrome, [
   "--headless=new",
@@ -1922,6 +2060,7 @@ try {
   if (shouldVerifyKeys) await verifyApiKeysLayout(client);
   if (shouldVerifyCredits) await verifyCreditsLayout(client);
   if (shouldVerifyUsage) await verifyUsageByKeyTable(client);
+  if (shouldVerifyReferral) await verifyReferralLayout(client);
   if (shouldVerifyDocsTheme) await verifyDocsTheme(client);
   if (captures.some(([name]) => name.startsWith("header-mobile"))) await verifyMobileNavigation(client);
   if (captures.some(([name]) => name.startsWith("learn-index-"))) await verifyLearnHubFiltering(client);

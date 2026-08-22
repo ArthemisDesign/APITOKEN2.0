@@ -25,6 +25,7 @@ import { DashboardScrim, DashboardSidebar, DashboardTopBar } from "./dashboard-s
 const ApiKeys = memo(dynamic(() => import("./sections/api-keys").then((module) => module.ApiKeys)));
 const Credits = memo(dynamic(() => import("./sections/credits").then((module) => module.Credits)));
 const Usage = memo(dynamic(() => import("./sections/usage").then((module) => module.Usage)));
+const Referral = memo(dynamic(() => import("./sections/referral").then((module) => module.Referral)));
 const SupportPanel = memo(dynamic(() => import("./sections/support-panel").then((module) => module.SupportPanel)));
 const Profile = memo(dynamic(() => import("./sections/profile").then((module) => module.Profile)));
 
@@ -195,14 +196,18 @@ export function Dashboard() {
 
   useEffect(() => {
     document.body.classList.add("app-body");
-    if (shellCache) {
-      // Гидрация завершена — мгновенно подменяем спиннер снапшотом и дальше тихо ревалидируем.
-      setUser(shellCache.user);
-      setAccount(shellCache.account);
-      setLoading(false);
-    }
-    queueMicrotask(() => { void load({ silent: shellCache !== null }); });
-    return () => { lifecycleGeneration.current += 1; document.body.classList.remove("app-body"); };
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      if (shellCache) {
+        // Гидрация завершена — подменяем спиннер снапшотом и дальше тихо ревалидируем.
+        setUser(shellCache.user);
+        setAccount(shellCache.account);
+        setLoading(false);
+      }
+      void load({ silent: shellCache !== null });
+    });
+    return () => { active = false; lifecycleGeneration.current += 1; document.body.classList.remove("app-body"); };
   }, [load, shellCache]);
 
   // Чанки самых ходовых разделов (keys/usage) грузим в простое браузера после
@@ -212,7 +217,7 @@ export function Dashboard() {
     if (!user || sectionChunksPrefetched.current) return;
     if ((navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData) return;
     sectionChunksPrefetched.current = true;
-    const prefetch = () => { void import("./sections/api-keys"); void import("./sections/usage"); };
+    const prefetch = () => { void import("./sections/api-keys"); void import("./sections/usage"); void import("./sections/referral"); };
     if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(prefetch, { timeout: 3000 });
     else window.setTimeout(prefetch, 2000);
   }, [user]);
@@ -451,9 +456,14 @@ function DashboardContent({
         {usage && <Usage account={account} keys={keys} ledger={ledger} usage={usage} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
       </Suspense>
     </Activity>}
+    {visitedSections.has("referral") && <Activity mode={section === "referral" ? "visible" : "hidden"}>
+      <Suspense fallback={<SectionSkeleton />}>
+        <Referral />
+      </Suspense>
+    </Activity>}
     {visitedSections.has("support") && <Activity mode={section === "support" ? "visible" : "hidden"}>
       <Suspense fallback={<SectionSkeleton />}>
-        <SupportPanel />
+        <SupportPanel user={user} />
       </Suspense>
     </Activity>}
     {visitedSections.has("profile") && <Activity mode={section === "profile" ? "visible" : "hidden"}>

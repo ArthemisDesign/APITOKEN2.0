@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AccountView, ApiKeyView, AuthUser, CheckoutView, LedgerEntry, UsageView } from "./api";
+import type { AccountView, ApiKeyView, AuthUser, CheckoutView, LedgerEntry, ReferralSnapshot, UsageView } from "./api";
 import { previewRequest } from "./preview-fixtures";
 
 describe("web/v2 preview fixtures", () => {
@@ -53,6 +53,18 @@ describe("web/v2 preview fixtures", () => {
     expect(paid.status).toBe("paid");
     const after = await previewRequest<AccountView>("/account");
     expect(BigInt(after.balanceNano) - BigInt(before.balanceNano)).toBe(25_000_000_000n);
+  });
+
+  it("serves a provider-stacked, email-first partner snapshot", async () => {
+    const snapshot = await previewRequest<ReferralSnapshot>("/referral");
+    expect(snapshot.state).toBe("active");
+    if (snapshot.state !== "active") throw new Error("active fixture expected");
+    expect(snapshot.referrals.every((item) => item.email?.includes("@"))).toBe(true);
+    expect(snapshot.team.every((item) => item.email?.includes("@"))).toBe(true);
+    expect(snapshot.earnings.providerDaily).toHaveLength(30);
+    expect(snapshot.earnings.providers.map((item) => item.providerId)).toEqual(["anthropic", "openai", "google"]);
+    expect(snapshot.membership.teamOverrideMaxBps).toBe(2_000);
+    expect(snapshot).not.toHaveProperty("commerceUserId");
   });
 
   it("rejects unknown routes with a 404 ApiError", async () => {

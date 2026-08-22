@@ -77,7 +77,7 @@ export default function PartnerRequestsPage() {
   const requestParams = new URLSearchParams({ limit: "100" });
   if (filters.status) requestParams.set("status", filters.status);
   if (filters.type) requestParams.set("requestType", filters.type);
-  const path = `/partner-admin/requests?${requestParams}`;
+  const path = `/admin/referral/requests?${requestParams}`;
   const { data, isLoading, refresh } = useResource<PartnerRequestsPage>(path);
 
   function showError(message: string, fieldId?: string) {
@@ -112,21 +112,21 @@ export default function PartnerRequestsPage() {
       if (selected.requestType === "commission_change") body.commissionBps = approvedBps;
       else {
         if (approvedBps % 100 !== 0) return showError(t("B2B discounts must be whole percents.", "B2B-скидки задаются целыми процентами."), "partner-approved-percent");
-        body.discountPercent = approvedBps / 100;
+        body.discountBps = approvedBps;
         const providers: Record<string, number | null> = {};
         for (const term of selected.providerTerms) {
           const raw = draft.providers[term.providerId] ?? "base";
           if (term.requestedDiscountBps === null) { providers[term.providerId] = null; continue; }
           const providerBps = parsePercentBps(raw, 9_500);
           if (providerBps === null || providerBps % 100 !== 0 || providerBps > term.requestedDiscountBps) return showError(t(`Invalid ${term.providerId} decision.`, `Некорректное решение для ${term.providerId}.`), `partner-approved-provider-${term.providerId}`);
-          providers[term.providerId] = providerBps / 100;
+          providers[term.providerId] = providerBps;
         }
         body.providers = providers;
       }
     }
     setBusy(true);
     try {
-      await send(`/partner-admin/requests/${selected.id}/decision`, "POST", body);
+      await send(`/admin/referral/requests/${selected.id}/decision`, "POST", body);
       toast(draft.action === "approve" ? t("Request approved", "Заявка одобрена") : t("Request rejected", "Заявка отклонена"));
       setSelected(null); setDraft(null); refresh();
     } catch (cause) {
@@ -147,10 +147,10 @@ export default function PartnerRequestsPage() {
       <button type="button" className="btn ghost" onClick={refresh}>{t("Refresh", "Обновить")}</button>
     </div>
     <TableCard><table className="partner-requests-table"><thead><tr><th className="left">{t("Requester", "Партнёр")}</th><th>{t("Request", "Запрос")}</th><th>{t("Account", "Аккаунт")}</th><th>{t("Requested terms", "Условия")}</th><th>{t("Status", "Статус")}</th><th className="left">{t("Reason / result", "Обоснование / результат")}</th><th>{t("Created", "Создана")}</th><th><span className="sr-only">{t("Actions", "Действия")}</span></th></tr></thead><tbody>
-      {items.length ? items.map((request) => <tr key={request.id}><td className="left"><b translate="no">{request.requesterEmail ?? request.requesterDisplayName ?? request.requesterPartnerId.slice(0, 8)}</b></td><td>{requestTitle(request.requestType, t)}</td><td className="left mono" translate="no">{request.customerEmail ?? "—"}</td><td><b>{formatBps(request.requestedCommissionBps ?? request.requestedDiscountBps)}</b>{request.providerTerms.length ? <div className="sub" translate="no">{request.providerTerms.map((term) => `${term.providerId} ${formatBps(term.requestedDiscountBps)}`).join(" · ")}</div> : null}</td><td><Pill kind={statusKind(request.status)}>{statusLabel(request.status, t)}</Pill>{request.effect ? <div className="sub">Commerce: {request.effect.terminal ? t("manual action", "ручное действие") : effectLabel(request.effect.status, t)} · {request.effect.attempts}</div> : null}</td><td className="left"><div className="partner-request-reason" title={request.reason}>{request.reason}</div>{request.reviewerNote ? <div className="sub partner-request-note">{request.reviewerActor}: {request.reviewerNote}</div> : null}{request.lastApplyError ? <div className="sub partner-bad partner-request-note">{request.lastApplyError}</div> : null}</td><td>{formatDate(request.createdAt, true, locale)}</td><td>{request.status === "pending" ? <div className="actions"><button type="button" className="btn" onClick={() => openDecision(request, "approve")}>{t("Review", "Рассмотреть")}</button><button type="button" className="btn bad" onClick={() => openDecision(request, "reject")}>{t("Reject", "Отклонить")}</button></div> : "—"}</td></tr>) : <EmptyRow columns={8} text={t("No requests in this view", "В этом представлении заявок нет")} />}
+      {items.length ? items.map((request) => <tr key={request.id}><td className="left"><b translate="no">{request.requesterEmail ?? t("Commerce email unavailable", "Commerce email недоступен")}</b></td><td>{requestTitle(request.requestType, t)}</td><td className="left mono" translate="no">{request.customerEmail ?? "—"}</td><td><b>{formatBps(request.requestedCommissionBps ?? request.requestedDiscountBps)}</b>{request.providerTerms.length ? <div className="sub" translate="no">{request.providerTerms.map((term) => `${term.providerId} ${formatBps(term.requestedDiscountBps)}`).join(" · ")}</div> : null}</td><td><Pill kind={statusKind(request.status)}>{statusLabel(request.status, t)}</Pill>{request.effect ? <div className="sub">Commerce: {request.effect.terminal ? t("manual action", "ручное действие") : effectLabel(request.effect.status, t)} · {request.effect.attempts}</div> : null}</td><td className="left"><div className="partner-request-reason" title={request.reason}>{request.reason}</div>{request.reviewerNote ? <div className="sub partner-request-note">{request.reviewerActor}: {request.reviewerNote}</div> : null}{request.lastApplyError ? <div className="sub partner-bad partner-request-note">{request.lastApplyError}</div> : null}</td><td>{formatDate(request.createdAt, true, locale)}</td><td>{request.status === "pending" ? <div className="actions"><button type="button" className="btn" onClick={() => openDecision(request, "approve")}>{t("Review", "Рассмотреть")}</button><button type="button" className="btn bad" onClick={() => openDecision(request, "reject")}>{t("Reject", "Отклонить")}</button></div> : "—"}</td></tr>) : <EmptyRow columns={8} text={t("No requests in this view", "В этом представлении заявок нет")} />}
     </tbody></table></TableCard>
 
-    <Modal open={Boolean(selected && draft)} wide title={selected ? requestTitle(selected.requestType, t) : ""} message={selected ? `${selected.requesterEmail ?? selected.requesterPartnerId} · ${selected.customerEmail ?? t("partner commission", "комиссия партнёра")}` : undefined} onClose={() => { if (!busy) { setSelected(null); setDraft(null); } }}>
+    <Modal open={Boolean(selected && draft)} wide title={selected ? requestTitle(selected.requestType, t) : ""} message={selected ? `${selected.requesterEmail ?? t("Commerce email unavailable", "Commerce email недоступен")} · ${selected.customerEmail ?? t("partner commission", "комиссия партнёра")}` : undefined} onClose={() => { if (!busy) { setSelected(null); setDraft(null); } }}>
       {selected && draft ? <form className="partner-decision-form" onSubmit={decide} noValidate>
         <div aria-live="polite">{error ? <div className="partner-form-error" role="alert">{error}</div> : null}</div>
         <div className="partner-request-full-reason"><b>{t("Partner reason", "Обоснование партнёра")}</b><p>{selected.reason}</p></div>

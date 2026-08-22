@@ -1,6 +1,6 @@
 // Типизированный fetch-клиент для same-origin JSON API.
-// Браузер ходит по относительным путям (/overview, /admin/*, /openkeys-admin/*,
-// /partner-admin/*); аутентификацию и серверные ключи внедряет Caddy — приложение
+// Браузер ходит по относительным путям (/overview, /admin/*, /openkeys-admin/* и
+// fenced /partner-admin/payouts/*); аутентификацию и серверные ключи внедряет Caddy — приложение
 // секретов не имеет. Поведение повторяет rawApi/api/send из admin-panel.js.
 import { publishInvalidation } from "@/lib/invalidation";
 
@@ -64,6 +64,9 @@ export async function send<T>(path: string, method: ApiOptions["method"], body: 
 
 export function mutationResources(path: string): string[] {
   const clean = path.split("?", 1)[0] ?? path;
+  if (clean.endsWith("/referral-partner") && clean.startsWith("/admin/users/")) {
+    return ["/admin/users", "/admin/referral/partners"];
+  }
   if (clean.startsWith("/admin/users/")) return ["/admin/users"];
   if (clean.startsWith("/admin/admin-accounts/")) return ["/admin/admin-accounts"];
   if (clean.startsWith("/admin/business-invites/")) return ["/admin/business-invites"];
@@ -76,10 +79,9 @@ export function mutationResources(path: string): string[] {
   }
   if (clean.startsWith("/proxy-admin/")) return ["/proxy-admin/inventory"];
   if (clean.startsWith("/gemini-subs/")) return ["/gemini-subs"];
-  if (clean.startsWith("/partner-admin/requests/")) return ["/partner-admin/requests"];
-  if (clean.startsWith("/partner-admin/applications/")) return ["/partner-admin/applications", "/partner-admin/partners", "/partner-admin/overview"];
-  if (clean === "/partner-admin/invites") return ["/partner-admin/invites", "/partner-admin/overview"];
-  if (clean.startsWith("/partner-admin/partners/")) return ["/partner-admin/partners", "/partner-admin/partner-analytics", "/partner-admin/overview"];
+  if (clean === "/admin/referral/partners") return ["/admin/referral/partners"];
+  if (clean.startsWith("/admin/referral/requests/")) return ["/admin/referral/requests"];
+  if (clean.startsWith("/admin/referral/payouts/")) return ["/admin/referral/payouts"];
   if (clean.startsWith("/partner-admin/payouts/")) return ["/partner-admin/payouts", "/partner-admin/payouts/batches", "/partner-admin/payouts/engine", "/partner-admin/payout-list"];
   return [clean];
 }

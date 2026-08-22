@@ -155,6 +155,206 @@ export interface ProviderStatus {
   github: { configured: boolean; enabled: boolean; emailScope: string };
 }
 
+export type ReferralRequestStatus = "pending" | "approved" | "rejected" | "applied" | "apply_failed";
+export type ReferralRequestType = "commission_change" | "b2b_conversion" | "b2b_pricing";
+
+export interface ReferralMembership {
+  email: string;
+  status: "active" | "suspended" | "pending";
+  programEnabled: boolean;
+  programStartedAt: string | null;
+  referralCode: string;
+  commissionBps: number;
+  teamShareBps: number | null;
+  teamOverrideMaxBps: number;
+  teamInvitesEnabled: boolean;
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
+  b2bCanDelegate: boolean;
+  payoutMethod: string | null;
+  payoutDetails: { network?: string; asset?: string; address?: string } | null;
+  createdAt: string;
+}
+
+export interface ReferralTotals {
+  earnedNano: string;
+  directNano: string;
+  overrideNano: string;
+  adjustmentNano: string;
+  directAdjustmentNano: string;
+  overrideAdjustmentNano: string;
+  netNano: string;
+  directNetNano: string;
+  overrideNetNano: string;
+  paidNano: string;
+  pendingPayoutNano: string;
+  debtNano: string;
+  availableNano: string;
+  last30dSpendNano: string;
+  last30dEarnedNano: string;
+  last30dAdjustmentNano: string;
+  last30dNetNano: string;
+}
+
+export interface ReferralCustomer {
+  email: string | null;
+  customerType: "b2c" | "b2b" | null;
+  discountBps: number | null;
+  providerDiscounts: Array<{ providerId: string; discountBps: number }>;
+  attributedAt: string;
+  spendNano: string;
+  earnedNano: string;
+  adjustmentNano: string;
+  netNano: string;
+  topupNano: string;
+}
+
+export interface ReferralTeamMember {
+  email: string | null;
+  programEnabled: boolean;
+  programStartedAt: string | null;
+  status: "active" | "suspended" | "pending";
+  commissionBps: number;
+  overrideBps: number;
+  teamOverrideMaxBps: number;
+  teamInvitesEnabled: boolean;
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
+  b2bCanDelegate: boolean;
+  referredUsers: number;
+  theirEarnedNano: string;
+  theirAdjustmentNano: string;
+  theirNetNano: string;
+  myOverrideNano: string;
+  myOverrideAdjustmentNano: string;
+  myOverrideNetNano: string;
+}
+
+export interface ReferralInvitation {
+  id: string;
+  email: string | null;
+  overrideBps: number;
+  teamOverrideMaxBps: number;
+  teamInvitesEnabled: boolean;
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
+  b2bCanDelegate: boolean;
+  expiresAt: string;
+  consumedAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+}
+
+export interface ReferralRequest {
+  id: string;
+  requestType: ReferralRequestType;
+  status: ReferralRequestStatus;
+  requesterEmail: string | null;
+  customerEmail: string | null;
+  reason: string;
+  stateSnapshot: Record<string, unknown>;
+  requestedCommissionBps: number | null;
+  requestedDiscountBps: number | null;
+  approvedCommissionBps: number | null;
+  approvedDiscountBps: number | null;
+  reviewerActor: string | null;
+  reviewerNote: string | null;
+  reviewedAt: string | null;
+  appliedAt: string | null;
+  applyAttempts: number;
+  lastApplyError: string | null;
+  version: number;
+  providerTerms: Array<{
+    providerId: string;
+    requestedDiscountBps: number | null;
+    approvedDiscountBps: number | null;
+    decided: boolean;
+  }>;
+  effect: {
+    id: string;
+    status: "pending" | "processing" | "applied" | "failed";
+    attempts: number;
+    nextAttemptAt: string | null;
+    terminal: boolean;
+    appliedAt: string | null;
+    lastError: string | null;
+  } | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReferralPayout {
+  id: string;
+  amountNano: string;
+  status: "requested" | "approved" | "paid" | "rejected";
+  method: string;
+  details: unknown;
+  requestedAt: string;
+  decidedAt: string | null;
+  paidAt: string | null;
+  adminNote: string | null;
+  txHash: string | null;
+  chainStatus: string | null;
+}
+
+export interface ReferralActiveSnapshot {
+  state: "active";
+  activated: boolean;
+  membership: ReferralMembership;
+  totals: ReferralTotals;
+  referrals: ReferralCustomer[];
+  team: ReferralTeamMember[];
+  earnings: {
+    days: number;
+    daily: Array<{ date: string; spendNano: string; earnedNano: string; adjustmentNano: string; netNano: string }>;
+    providers: Array<{ providerId: string | null; events: number; spendNano: string; earnedNano: string }>;
+    providerDaily: Array<{
+      date: string;
+      providers: Array<{ providerId: string | null; events: number; spendNano: string; earnedNano: string }>;
+    }>;
+  };
+  invitations: ReferralInvitation[];
+  requests: ReferralRequest[];
+  payouts: ReferralPayout[];
+  period: {
+    now: string;
+    current: { key: string; start: string; end: string; accruedNano: string; adjustmentNano: string; netNano: string };
+    locked: Array<{ key: string; endedAt: string; unlocksAt: string; earnedNano: string; adjustmentNano: string; netNano: string }>;
+    nextPayout: { date: string; estimatedNano: string };
+    lifetimeEarnedNano: string;
+    lifetimeAdjustmentNano: string;
+    lifetimeNetNano: string;
+    lifetimePaidNano: string;
+    debtNano: string;
+    payableNano: string;
+    unpaidNano: string;
+  };
+  periodHistory: Array<{
+    key: string;
+    index: 1 | 2;
+    start: string;
+    end: string;
+    phase: "accruing" | "locked" | "payable" | "closed";
+    payoutDate: string;
+    earnedNano: string;
+    adjustmentNano: string;
+    netNano: string;
+  }>;
+  payoutPolicy: { minPayoutNano: string; lockDays: 7; windowDays: 3 };
+}
+
+export type ReferralSnapshot = ReferralActiveSnapshot
+  | { state: "unavailable"; membership: null }
+  | { state: "disabled"; membership: ReferralMembership };
+
+export interface ReferralAuthorityInput {
+  teamOverrideMaxBps: number;
+  teamInvitesEnabled: boolean;
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
+  b2bCanDelegate: boolean;
+}
+
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly details?: unknown) {
     super(message);
@@ -249,6 +449,42 @@ export const api = {
     body: JSON.stringify({ amountUsd, provider: "platega", ...(paymentMethod ? { paymentMethod } : {}) }),
   }),
   checkout: (id: string) => request<CheckoutView>(`/checkouts/${encodeURIComponent(id)}`),
+  referral: () => request<ReferralSnapshot>("/referral"),
+  referralInviteTeam: (input: { email: string; overrideBps: number; authority: ReferralAuthorityInput }) =>
+    request<{ invitation: ReferralInvitation }>("/referral/team-invitations", {
+      method: "POST", body: JSON.stringify(input),
+    }),
+  referralRevokeInvitation: (inviteId: string) =>
+    request<{ invitation: { id: string; revokedAt: string; revoked: boolean } }>(`/referral/team-invitations/${encodeURIComponent(inviteId)}`, {
+      method: "DELETE",
+    }),
+  referralUpdateTeam: (input: { email: string; overrideBps?: number } & Partial<ReferralAuthorityInput>) =>
+    request<{ authority: ReferralAuthorityInput & { email: string; overrideBps: number } }>("/referral/team", {
+      method: "PATCH", body: JSON.stringify(input),
+    }),
+  referralRequestCommission: (input: { requestedCommissionBps: number; reason: string }, key: string) =>
+    request<{ request: ReferralRequest }>("/referral/requests/commission", {
+      method: "POST", headers: { "idempotency-key": key }, body: JSON.stringify(input),
+    }),
+  referralRequestB2B: (input: {
+    customerEmail: string;
+    requestType: "b2b_conversion" | "b2b_pricing";
+    requestedDiscountBps: number;
+    providers: Record<string, number | null>;
+    reason: string;
+  }, key: string) => request<{ request: ReferralRequest }>("/referral/requests/b2b", {
+    method: "POST", headers: { "idempotency-key": key }, body: JSON.stringify(input),
+  }),
+  referralSetBusinessPricing: (input: {
+    customerEmail: string;
+    discountPercent?: number;
+    providers?: Record<string, number | null>;
+  }, key: string) => request<{ customerEmail: string; discountPercent: number; ceilingPercent: number }>("/referral/referrals/business-pricing", {
+    method: "POST", headers: { "idempotency-key": key }, body: JSON.stringify(input),
+  }),
+  referralUpdateWallet: (address: string) => request<{ membership: ReferralMembership }>("/referral/wallet", {
+    method: "PATCH", body: JSON.stringify({ address }),
+  }),
 };
 
 export function oauthUrl(provider: "google" | "github", inviteToken?: string, referralCode?: string): string {

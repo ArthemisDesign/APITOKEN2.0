@@ -30,7 +30,8 @@ function uniqueFeeds(feeds: readonly FeedPath[]): FeedPath[] {
 export function feedsForPath(pathname: string): readonly FeedPath[] {
   const path = (pathname.split("?")[0] ?? pathname).replace(/\/+$/, "") || "/";
   if (path === "/partners" || path.startsWith("/partners/")) {
-    return uniqueFeeds([PARTNER]);
+    // Commerce owns the email-linked admin projection; Sales still emits request and payout events.
+    return uniqueFeeds([COMMERCE, PARTNER]);
   }
   switch (path) {
     case "/":

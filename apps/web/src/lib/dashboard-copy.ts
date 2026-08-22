@@ -3,7 +3,7 @@ import type { Language } from "@/components/i18n-provider";
 const en = {
   navStart: "Start", navOverview: "Overview", navDevelopers: "Developers", navKeys: "API keys", navDocs: "Docs",
   navBilling: "Billing", navTopUp: "Balance",
-  navActivity: "Activity", navUsage: "Usage",
+  navActivity: "Activity", navUsage: "Usage", navReferral: "Referral",
   navAccount: "Account", navProfile: "Profile", navSecurity: "Security",
   navSupportGroup: "Help", navSupport: "Support",
   supportEyebrow: "Help", supportTitle: "Support", supportSubtitle: "Chat with our AI assistant on Telegram — a human operator joins the same chat when your case needs one.",
@@ -132,7 +132,7 @@ export type DashboardCopy = { [K in keyof typeof en]: string };
 const ru: DashboardCopy = {
   navStart: "Начало", navOverview: "Обзор", navDevelopers: "Разработчикам", navKeys: "API-ключи", navDocs: "Документация",
   navBilling: "Оплата", navTopUp: "Баланс",
-  navActivity: "Активность", navUsage: "Использование",
+  navActivity: "Активность", navUsage: "Использование", navReferral: "Рефералы",
   navAccount: "Аккаунт", navProfile: "Профиль", navSecurity: "Безопасность",
   navSupportGroup: "Помощь", navSupport: "Поддержка",
   supportEyebrow: "Помощь", supportTitle: "Поддержка", supportSubtitle: "Пишите нашему ИИ-ассистенту в Telegram — живой оператор подключается в тот же чат, когда вопрос требует человека.",

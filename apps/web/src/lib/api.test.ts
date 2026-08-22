@@ -90,4 +90,31 @@ describe("browser API client", () => {
       "https://backend.apitoken.sale/v1/auth/github?invite=invite-token&ref=partner-code",
     );
   });
+
+  it("uses account email and idempotency keys for partner mutations", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ request: { id: "request" } }), {
+      status: 200, headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.referralRequestB2B({
+      customerEmail: "customer@example.com",
+      requestType: "b2b_conversion",
+      requestedDiscountBps: 2_000,
+      providers: {},
+      reason: "Production volume",
+    }, "idempotent-request-key");
+
+    const [url, request] = fetchMock.mock.calls[0]! as [string, RequestInit];
+    expect(url).toBe("https://backend.apitoken.sale/v1/referral/requests/b2b");
+    expect(new Headers(request.headers).get("idempotency-key")).toBe("idempotent-request-key");
+    expect(JSON.parse(String(request.body))).toEqual({
+      customerEmail: "customer@example.com",
+      requestType: "b2b_conversion",
+      requestedDiscountBps: 2_000,
+      providers: {},
+      reason: "Production volume",
+    });
+    expect(String(request.body)).not.toMatch(/commerceUserId|partnerId|telegram|promo/i);
+  });
 });

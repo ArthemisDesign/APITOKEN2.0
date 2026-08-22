@@ -11,9 +11,8 @@ import { AdminModule } from "./admin.module.js";
 import { SecurityModule } from "./security.module.js";
 import { ContentStudioModule } from "./content-studio.module.js";
 import { SalesFeedModule } from "./sales-feed.module.js";
-import { PromoController } from "./promo.controller.js";
-import { PromoService } from "./promo.service.js";
 import { CrmBridgeModule } from "./crm-bridge.module.js";
+import { ReferralModule } from "./referral.module.js";
 
 @Module({
   imports: [
@@ -27,8 +26,9 @@ import { CrmBridgeModule } from "./crm-bridge.module.js";
     PaymentsModule,
     SalesFeedModule,
     CrmBridgeModule,
+    ReferralModule,
   ],
-  controllers: [HealthController, PromoController],
-  providers: [ReadinessService, PromoService],
+  controllers: [HealthController],
+  providers: [ReadinessService],
 })
 export class AppModule {}

@@ -3,6 +3,7 @@ export const dashboardSections = [
   "keys",
   "credits",
   "usage",
+  "referral",
   "support",
   "profile",
 ] as const;

@@ -19,5 +19,6 @@ export * from "./pricing-discounts.js";
 export * from "./totp.js";
 export * from "./sales-feed.js";
 export * from "./crm-bridge.js";
+export * from "./referral-accounts.js";
 export * from "./content-studio.js";
 export * from "./schema.js";

@@ -82,7 +82,8 @@ Commerce membership, caps each Team edge at 20%, and verifies
 `net = gross - withheld` independently of insert order. It excludes any participant whose
 membership starts after the usage event, so manually admitted accounts begin with zero new-program
 commission. The dependent Sales producer shipped only after that migration SHA was production-
-GREEN; the Commerce consumer remains the next producer-first stage.
+GREEN. The Commerce consumer is a separate producer-first stage and remains forbidden from
+production until the complete request-view producer described below is production-GREEN.
 
 Migration `packages/sales-db/migrations/0027_terminal_commerce_invites.sql` was deployed next. Its
 Team/B2B narrowing guards ignore an invitation only after `revoked_at` is committed, so current
@@ -129,14 +130,22 @@ serialized per invitee account: an exact retry returns the open invite, settings
 an expired invite is revoked before replacement, and an existing membership cannot be re-parented
 by invitation.
 
-Migration `packages/sales-db/migrations/0027_terminal_commerce_invites.sql` is the next
-expand-only checkpoint. The Team/B2B narrowing guards ignore a Commerce invitation only after
-`revoked_at` is committed, so current authority can be reduced without rewriting terminal evidence.
-A terminal Commerce invitation then becomes database-immutable and no Commerce invitation can be
-deleted; legacy invitation lifecycle remains unchanged. The dependent revocation/cascade producer
-is forbidden to ship before this migration SHA is production-GREEN.
+Exact Sales producer SHA `cbc6c22321838908b83664711763fcf89c6699c9` adds the nullable request
+identity field to every protected `/v1/internal/referral/*` request projection. The Commerce
+consumer must not ship before that exact SHA is production-GREEN. The consumer validates the field
+strictly; an older or malformed producer therefore fails unavailable instead of dropping the
+customer email or exposing an internal identifier.
 
-An operator decision on an inbound application is also one authority transaction, not a
+Commerce exposes the browser routes `/v1/referral/*` and `/v1/admin/referral/*`. It derives the
+partner UUID from the verified session or an admin-side Commerce account lookup, resolves Team and
+B2B targets from existing active account email, and removes every Commerce/partner/parent/grant-
+source ID before returning data. Current Commerce email is the only account label on the unified
+Dashboard/Admin. A failed profile lookup is explicit missing email data, not a UUID/Telegram/display-
+name fallback. The server-only client uses a six-second timeout, strict Zod response schemas and no
+automatic mutation retry.
+
+The legacy Sales application decision remains an atomic compatibility path, not the unified
+onboarding flow. An operator decision on an inbound application is one authority transaction, not a
 create-then-patch workflow. `POST /v1/admin/applications/:id/decision` validates and writes the
 new root partner's direct commission, default Team override, Team override ceiling, Team-invite
 right, B2B self-service ceiling and B2B delegation right in the same Sales transaction that marks
@@ -170,18 +179,23 @@ The active product UI has no promo-code entry point: the partner navigation/issu
 customer dashboard redemption screen and the old Sales admin controls are removed. Historical
 promo ledger rows and the expand-only backend redemption/issuance contracts below remain only for
 accounting evidence and rolling consumer retirement; their presence is not permission to restore a
-product surface. Removing those contracts and stored history is a separate producer-first cleanup
-after every external consumer is proven retired.
+product surface. Removing the now-dormant contracts is a separate producer-first cleanup after every
+external consumer is proven retired; immutable financial and audit history remains retained.
 
 The primary operator consumer is the managed `apps/admin` surface at
 `admin.apitoken.sale/partners`, with child routes `/onboarding`, `/directory`, `/[id]`, `/requests`
-and `/payouts`. Caddy injects the Sales admin credential server-side and forwards the authenticated
-operator identity; the browser receives neither secret. `apps/sales-web` still serves its legacy
+and `/payouts`. Partner onboarding, directory/settings, request decisions and email-enriched payout
+lists use the Commerce `/admin/referral/*` same-origin boundary; Commerce propagates the verified
+operator identity to Sales under `SALES_CONTROL_KEY`, and the browser receives neither secret.
+Fenced on-chain payout readiness/prepare/send/reconciliation continues through the existing guarded
+`/partner-admin/*` routes until Sales adds the equivalent internal producer. Commerce must not
+reimplement signing or payout calculations. `apps/sales-web` still serves its legacy
 `/admin` only for route-by-route production parity verification. Removing or redirecting that legacy
 surface is a separate release after the unified routes, mutations, RU/EN, light/dark, responsive
-layout and payout fences have all been proven on the exact production SHA. Both UIs display account
-email first and use only documented legacy/pre-account/outage fallbacks. Partner and unified Admin
-preferences use the main dashboard keys `lang:v1` and `theme:v1`.
+layout and payout fences have all been proven on the exact production SHA. Unified screens display
+only current Commerce email or an explicit unavailable state; legacy-only identity fallbacks do not
+cross the Commerce browser contract. Partner and unified Admin preferences use the main dashboard
+keys `lang:v1` and `theme:v1`.
 
 ## Components
 
@@ -189,7 +203,7 @@ preferences use the main dashboard keys `lang:v1` and `theme:v1`.
 |---|---|---|
 | `packages/sales-db` | its own PostgreSQL DB `sales` (Drizzle, own migrations, advisory-lock migrate) | — |
 | `apps/sales-api` | NestJS/Fastify backend: auth, partner dashboard, admin panel, sync loop, email outbox | 3100 |
-| `apps/sales-web` | Next.js frontend: landing page, dashboard, `/admin` | 3200 |
+| `apps/sales-web` | Legacy Next.js partner/admin parity surface kept only through verified cutover | 3200 |
 
 ## The sales ↔ commerce boundary (the only one)
 
@@ -458,7 +472,7 @@ mutex remains held through a final read-only Commerce-head probe under the share
 lock; the final balance proof and commitment/signing remain inside that fence. Legacy manual payout
 rows are reject-only, and an old batch without an `earned_before` checkpoint must be re-prepared.
 
-### Sales → Commerce: registration and retired promo compatibility (`apps/sales-api/src/internal.controller.ts`)
+### Sales → Commerce: registration and dormant promo compatibility (`apps/sales-api/src/internal.controller.ts`)
 
 Commerce calls sales-api at `SALES_API_URL` with the same `SALES_CONTROL_KEY`.
 
@@ -472,18 +486,20 @@ Commerce calls sales-api at `SALES_API_URL` with the same `SALES_CONTROL_KEY`.
   producer is consumed only by Commerce, under `SALES_CONTROL_KEY`; an external CRM never receives
   that broad boundary key.
 
-- `POST /v1/internal/promo/redeem` — redeeming a partner promo code (called from
-  `apps/api/src/promo.service.ts`, public `POST /v1/promo/redeem`). Body
+- `POST /v1/internal/promo/redeem` — dormant legacy producer with no live Commerce consumer. The
+  public `POST /v1/promo/redeem`, its controller and its service have been removed consumer-first.
+  The internal route and stored rows remain temporarily so financial/redemption history is not
+  rewritten; removing that producer is a separate final contract-removal stage. Its legacy body
   `{code, commerceUserId}` → `{valueNano, partnerId, referralCode, redemptionRef, discountBps,
   pricingAffected:false, alreadyRedeemed}`. Atomic and idempotent by (code, user): a repeat redemption by the same user
   returns the same `redemptionRef`, so the engine credit on the commerce side is idempotent by ref
   (retries are safe). One-time code; one promo per user (409); promo credit is available only to an
   unassigned account or as an exact-owner replay, and a different permanent first-touch attribution
   fails closed before engine credit. The code is unavailable if the
-  partner is not active or the promo is disabled. Commerce continues on its own: credits the engine
-  (up to 3 attempts), after durably attributing an unassigned user to the code's owner, and with
-  a nonzero legacy `discountBps` stores only its audit marker with local retries. It never changes
-  the B2C scalar/provider price.
+  partner is not active or the promo is disabled. The removed Commerce consumer historically
+  credited the engine after durable owner attribution and stored a nonzero `discountBps` only as an
+  audit marker; no current product route can trigger that workflow. It never changed the B2C
+  scalar/provider price.
 - `POST /v1/internal/partners/referral-discount` — atomic claim of a legacy one-time attribution
   link. Body `{code, commerceUserId}` → `{discountBps, pricingAffected:false}`. First-wins and
   idempotent by (code, user); an ordinary or already-consumed code returns zero. Called from

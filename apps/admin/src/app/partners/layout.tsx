@@ -9,7 +9,7 @@ import { useI18n } from "@/lib/i18n";
 const ITEMS = [
   { href: "/partners", en: "Overview", ru: "Обзор", exact: true },
   { href: "/partners/requests", en: "Requests", ru: "Заявки" },
-  { href: "/partners/onboarding", en: "Onboarding", ru: "Подключение" },
+  { href: "/partners/onboarding", en: "Enable Partner", ru: "Сделать партнёром" },
   { href: "/partners/directory", en: "Directory", ru: "Партнёры" },
   { href: "/partners/payouts", en: "Payouts", ru: "Выплаты" },
 ] as const;
@@ -24,7 +24,7 @@ export default function PartnersLayout({ children }: { children: React.ReactNode
         return <Link key={item.href} href={item.href} aria-current={active ? "page" : undefined} className={active ? "on" : ""}>{t(item.en, item.ru)}</Link>;
       })}
     </nav>
-    <Suspense fallback={<LoadingGrid label={t("Loading partner management", "Загрузка управления партнёрами")} />}>
+    <Suspense fallback={<LoadingGrid label={t("Loading Partner Management", "Загрузка управления партнёрами")} />}>
       {children}
     </Suspense>
   </div>;

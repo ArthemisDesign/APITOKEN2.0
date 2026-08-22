@@ -1,23 +1,17 @@
+export type PartnerStatus = "active" | "suspended" | "pending";
+
+/** Commerce-enriched projection. Internal Commerce and Sales identifiers never reach the browser. */
 export type AdminPartner = {
-  id: string;
   email: string | null;
-  telegramUsername: string | null;
-  displayName: string | null;
-  status: "active" | "suspended" | "pending";
-  emailVerified: boolean;
+  accountStatus: "active" | "disabled" | null;
+  programEnabled: boolean;
+  programStartedAt: string | null;
+  status: PartnerStatus;
   referralCode: string;
   commissionBps: number;
-  subCommissionBps: number;
   teamOverrideMaxBps: number;
-  parentOverrideBps: number | null;
-  b2bEnabled: boolean;
-  b2bMaxDiscountBps: number;
-  teamInvitesEnabled: boolean;
-  b2bCanDelegate: boolean;
-  b2bGrantSourcePartnerId: string | null;
-  parentPartnerId: string | null;
+  teamShareBps: number | null;
   parentEmail: string | null;
-  parentTelegramUsername: string | null;
   referredUsers: number;
   teamSize: number;
   earnedNano: string;
@@ -26,20 +20,22 @@ export type AdminPartner = {
   debtNano: string;
   payableNano: string;
   paidNano: string;
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
+  teamInvitesEnabled: boolean;
+  b2bCanDelegate: boolean;
   createdAt: string;
 };
 
 export type PartnerRequestType = "b2b_conversion" | "b2b_pricing" | "commission_change";
 export type PartnerRequestStatus = "pending" | "approved" | "rejected" | "applied" | "apply_failed";
 export type ProviderId = "anthropic" | "openai" | "google" | "kimi" | "glm";
+
 export type AdminPartnerRequest = {
   id: string;
   requestType: PartnerRequestType;
   status: PartnerRequestStatus;
-  requesterPartnerId: string;
   requesterEmail: string | null;
-  requesterDisplayName: string | null;
-  subjectPartnerId: string | null;
   customerEmail: string | null;
   reason: string;
   stateSnapshot: Record<string, unknown>;
@@ -61,7 +57,6 @@ export type AdminPartnerRequest = {
     decided: boolean;
   }>;
   effect: null | {
-    id: string;
     status: "pending" | "processing" | "applied" | "failed";
     attempts: number;
     nextAttemptAt: string | null;
@@ -75,97 +70,23 @@ export type AdminPartnerRequest = {
 
 export type PartnerRequestsPage = { items: AdminPartnerRequest[]; nextCursor: string | null };
 
-export type PartnerApplication = {
-  id: string;
-  telegramUsername: string | null;
-  displayName: string | null;
-  note: string | null;
-  status: "pending" | "approved" | "rejected";
-  adminNote: string | null;
-  createdAt: string;
-  decidedAt: string | null;
-};
-
-export type RootInvite = {
-  code: string;
-  inviteUrl: string;
-  telegramUsername: string | null;
-  commissionBps: number | null;
-  subCommissionBps: number | null;
-  teamOverrideMaxBps: number;
-  teamInvitesEnabled: boolean;
-  b2bEnabled: boolean;
-  b2bMaxDiscountBps: number;
-  b2bCanDelegate: boolean;
-  expiresAt: string | null;
-  consumedAt: string | null;
-};
-
-export type PartnerAnalyticsDetail = {
+export type AdminPartnerPayout = {
   id: string;
   email: string | null;
-  telegramUsername: string | null;
-  displayName: string | null;
-  status: "active" | "suspended" | "pending";
-  referralCode: string;
-  parentId: string | null;
-  parentLabel: string | null;
-  commissionBps: number;
-  subCommissionBps: number;
-  teamOverrideMaxBps?: number;
-  teamInvitesEnabled?: boolean;
-  b2bEnabled: boolean;
-  b2bMaxDiscountBps: number;
-  b2bCanDelegate?: boolean;
-  depositsTotalNano: string;
-  deposits30dNano: string;
-  referredUsers: number;
-  convertedUsers: number;
-  spendTotalNano: string;
-  spend30dNano: string;
-  earnedTotalNano: string;
-  earned30dNano: string;
-  adjustmentTotalNano: string;
-  adjustment30dNano: string;
-  netTotalNano: string;
-  net30dNano: string;
-  paidNano: string;
-  unpaidNano: string;
-  debtNano: string;
-  payableNano: string;
-  teamSize: number;
-  lastSeenAt: string | null;
-  lastReferralAt: string | null;
-  lastDepositAt: string | null;
-  createdAt: string;
+  amountNano: string;
+  status: "requested" | "approved" | "paid" | "rejected";
+  method: string;
+  details: unknown;
+  requestedAt: string;
+  decidedAt: string | null;
+  paidAt: string | null;
+  adminNote: string | null;
+  txHash: string | null;
+  chainStatus: string | null;
 };
 
-export type PartnerDetailBundle = {
-  partner: PartnerAnalyticsDetail;
-  daily: Array<{ date: string; spendNano: string; earnedNano: string; adjustmentNano: string; netNano: string }>;
-  team: Array<{
-    id: string; email: string | null; telegramUsername: string | null; displayName: string | null;
-    commissionBps: number; overrideBps?: number; teamOverrideMaxBps?: number; referredUsers: number;
-    myOverrideNetNano: string; status?: string;
-  }>;
-  payouts: Array<{ id: string; amountNano: string; status: string; requestedAt: string; paidAt: string | null; adminNote?: string | null }>;
-  referrals: Array<{
-    userMask: string; userRef: string; email: string | null; attributedAt: string;
-    spendNano: string; earnedNano: string; adjustmentNano: string; netNano: string;
-    customerType: "b2c" | "b2b" | null; discountPercent: number | null;
-  }>;
-};
-
-export type PartnerActivity = {
-  type: string;
-  at: string;
-  amountNano: string | null;
-  label: string;
-  email?: string | null;
-  userMask?: string | null;
-  meta: Record<string, unknown>;
-};
-
+// The on-chain executor is still a separate, fenced Sales surface. It stays isolated from
+// Commerce identity onboarding until its producer contract is extended.
 export type PayoutBatch = {
   id: string;
   status: "preparing" | "prepared" | "sending" | "sent" | "failed" | "canceled";

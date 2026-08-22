@@ -36,7 +36,7 @@ describe("Партнёры (partners page)", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const html = renderToString(<I18nProvider><PartnersPage /></I18nProvider>);
-    expect(html).toContain("Партнёры");
+    expect(html).toContain("Партнёрская программа");
     expect(html).toContain("loading-grid");
 
     expect(fetchMock).not.toHaveBeenCalled();
@@ -134,12 +134,9 @@ describe("partners helpers", () => {
     expect(payoutReasonText({})).toBe("нельзя");
   });
 
-  it("partnerName: email приоритетнее displayName/@telegram, иначе тире", () => {
-    expect(partnerName({ telegramUsername: "ivan", email: "a@b.c" })).toBe("a@b.c");
-    expect(partnerName({ email: "a@b.c", displayName: "Иван" })).toBe("a@b.c");
-    expect(partnerName({ displayName: "Иван" })).toBe("Иван");
-    expect(partnerName({ telegramUsername: "ivan" })).toBe("@ivan");
-    expect(partnerName({})).toBe("—");
+  it("partnerName: только текущий Commerce email", () => {
+    expect(partnerName({ email: "a@b.c" })).toBe("a@b.c");
+    expect(partnerName({})).toBe("Commerce email недоступен");
   });
 
   it("clampOffset: offset за границей total → последняя полная страница", () => {

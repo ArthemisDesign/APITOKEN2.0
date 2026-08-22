@@ -534,21 +534,27 @@ const SUPPORT_IC_MONEY = <svg viewBox="0 0 24 24" width="20" height="20" fill="n
 
 // Ядро поддержки (бот-карточка + how-it-works + карточки). Переиспользуется публичной
 // страницей /support И секцией дашборда — поддержка в первую очередь часть кабинета.
-export function SupportContent() {
+export function SupportContent({ accountId }: { accountId?: string } = {}) {
   const { language } = useI18n();
   const copy = supportCopy[language];
   // Залогинен → персональная deep-link: t.me/bot?start=<accountId>. Бот получает
-  // ID профиля в контекст (для себя и оператора). Аноним → обычная ссылка.
-  const [tgUrl, setTgUrl] = useState(SUPPORT_TELEGRAM_URL);
+  // ID профиля в контекст (для себя и оператора). Внутри Dashboard identity уже
+  // загружена родителем; публичная /support по-прежнему проверяет сессию сама.
+  const [discoveredAccountId, setDiscoveredAccountId] = useState<string | null>(null);
   useEffect(() => {
+    if (accountId) return;
     let alive = true;
     api.me()
       .then(({ user }) => {
-        if (alive && user?.id) setTgUrl(`${SUPPORT_TELEGRAM_URL}?start=${encodeURIComponent(user.id)}`);
+        if (alive && user?.id) setDiscoveredAccountId(user.id);
       })
       .catch(() => {/* аноним — обычная ссылка */});
     return () => { alive = false; };
-  }, []);
+  }, [accountId]);
+  const resolvedAccountId = accountId ?? discoveredAccountId;
+  const tgUrl = resolvedAccountId
+    ? `${SUPPORT_TELEGRAM_URL}?start=${encodeURIComponent(resolvedAccountId)}`
+    : SUPPORT_TELEGRAM_URL;
   return <>
       <div className="support-bot">
         <div className="support-bot-glow" aria-hidden="true" />

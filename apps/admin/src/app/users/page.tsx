@@ -24,6 +24,8 @@ import type { CommerceDashboard, EngineOverview } from "@/lib/types";
 import { CardGrid, Dot, EmptyRow, LoadingGrid, PageHead, Pill, SectionHeader, StatCard, TableCard } from "@/components/ui";
 import { useSpendStatsModal } from "@/components/spend-stats-modal";
 import { BusinessConversionDialog, type BusinessConversionTarget } from "./business-conversion-dialog";
+import { PartnerOnboardingDialog, type PartnerOnboardingTarget } from "../partners/partner-onboarding-form";
+import { useI18n } from "@/lib/i18n";
 import {
   clampedOffset,
   buildUsersCsvRows,
@@ -90,10 +92,12 @@ interface RowProps {
   busyAction: string | null;
   onCredit: (user: AdminUser) => void;
   onAction: (user: AdminUser, action: UserAction) => void;
+  onPartner: (user: AdminUser) => void;
 }
 
 // Строка таблицы мемоизирована: ререндер идёт на каждое изменение фильтров/действий.
-const UserRow = memo(function UserRow({ user, busyAction, onCredit, onAction }: RowProps): ReactElement {
+const UserRow = memo(function UserRow({ user, busyAction, onCredit, onAction, onPartner }: RowProps): ReactElement {
+  const { t } = useI18n();
   const pay = user.payments ?? {};
   const keys = user.api_keys ?? {};
   const methods = user.auth_methods ?? [];
@@ -157,6 +161,11 @@ const UserRow = memo(function UserRow({ user, busyAction, onCredit, onAction }: 
               → B2B
             </button>
           ) : null}
+          {user.id && user.email && user.status === "active" ? (
+            <button type="button" className="btn ghost" disabled={busyAction === "partner"} onClick={() => onPartner(user)}>
+              {t("Make Partner", "Сделать партнёром")}
+            </button>
+          ) : null}
           {user.engine_account_id ? (
             <button className="btn warn" disabled={busyAction === "bonus"} onClick={() => onAction(user, "bonus")}>
               − бонус
@@ -190,9 +199,10 @@ export default function UsersPage() {
   const [draft, setDraft] = useState({ q: "", status: "", auth: "", sort: "created_at" as UserSortKey, dir: "desc" as "asc" | "desc" });
   const [busy, setBusy] = useState<{ userId: string; action: string } | null>(null);
   const [businessTarget, setBusinessTarget] = useState<BusinessConversionTarget | null>(null);
+  const [partnerTarget, setPartnerTarget] = useState<PartnerOnboardingTarget | null>(null);
 
   const query = usersQuery(page);
-  const { data: result, isLoading } = useResources<{
+  const { data: result, isLoading, refresh } = useResources<{
     page: AdminUsersPage;
     dashboard: CommerceDashboard;
     overview: UsersOverview;
@@ -517,6 +527,9 @@ export default function UsersPage() {
                   busyAction={busy && busy.userId === String(user.id ?? "") ? busy.action : null}
                   onCredit={creditUser}
                   onAction={userAction}
+                  onPartner={(target) => {
+                    if (target.id && target.email) setPartnerTarget({ id: target.id, email: target.email });
+                  }}
                 />
               ))
             ) : (
@@ -556,6 +569,11 @@ export default function UsersPage() {
         submitting={busy?.action === "business"}
         onClose={() => setBusinessTarget(null)}
         onConfirm={(discountPercent) => void convertToBusiness(discountPercent)}
+      />
+      <PartnerOnboardingDialog
+        target={partnerTarget}
+        onClose={() => setPartnerTarget(null)}
+        onCreated={refresh}
       />
     </>
   );

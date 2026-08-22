@@ -56,7 +56,7 @@ const environmentSchema = z.object({
   INDEXNOW_KEY: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).default("1308f989ba68a288dc5acf1423b445f8"),
   // Ключ internal-фида для sales bounded context (sales.apitoken.sale). Не задан — фид выключен.
   SALES_CONTROL_KEY: z.string().min(32).optional(),
-  // База sales-api для обратного вызова (погашение промокодов). Не задано — промо выключено.
+  // База sales-api для account-bound Referral и CRM bridge. Секрет остаётся только на сервере.
   SALES_API_URL: z.string().url().optional(),
   // Узкий PII-мост CRM→Commerce. Он не переиспользует sales/admin credentials и включается
   // только полной парой; партнёрский владелец всегда выбирается сервером, а не телом запроса.

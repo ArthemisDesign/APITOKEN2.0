@@ -9,17 +9,17 @@ import { formatDate, money, nanoMoney } from "@/lib/format";
 import type {
   CommerceDashboard,
   EngineOverview,
-  PartnerOverview,
   PipelineHealth,
   SettlementHealth,
 } from "@/lib/types";
 import { Banner, CardGrid, LoadingGrid, PageHead, Pill, SectionHeader, StatCard } from "@/components/ui";
 import { useSpendStatsModal } from "@/components/spend-stats-modal";
+import type { AdminPartner } from "./partners/types";
 
 interface DashboardData {
   data: CommerceDashboard;
   engine: EngineOverview;
-  partners: PartnerOverview;
+  partners: { items: AdminPartner[] };
   pipes: PipelineHealth;
   settle: SettlementHealth;
 }
@@ -30,7 +30,7 @@ export default function DashboardPage() {
   const { data: result, isLoading } = useResources<DashboardData>({
     data: "/admin/dashboard",
     engine: compactOverviewUrl(),
-    partners: "/partner-admin/overview",
+    partners: "/admin/referral/partners",
     pipes: "/admin/pipeline-health",
     settle: "/settlement-health",
   });
@@ -57,6 +57,12 @@ export default function DashboardPage() {
     engine?.crm ??
     (engine?.accounts ?? []).find((account) => String(account.handle ?? "").toLowerCase() === "crm-parsing");
   const degraded = !data || Boolean(p.engine_error) || !engine || !partners || !crm;
+  const partnerItems = partners?.items ?? [];
+  const activePartners = partnerItems.filter((partner) => partner.status === "active" && partner.programEnabled).length;
+  const referredUsers = partnerItems.reduce((sum, partner) => sum + partner.referredUsers, 0);
+  const partnerEarnedNano = sumNano(partnerItems.map((partner) => partner.earnedNano));
+  const partnerPayableNano = sumNano(partnerItems.map((partner) => partner.payableNano));
+  const partnerPaidNano = sumNano(partnerItems.map((partner) => partner.paidNano));
 
   // Денежные пайплайны: warn/bad баннер-строка в начале сводки, клик ведёт на /finance.
   // Источники деградируют молча (null → без баннера), как соседние контуры.
@@ -113,13 +119,13 @@ export default function DashboardPage() {
         />
         <StatCard
           label="partner accounts"
-          value={partners ? show(partners.partners) : "—"}
+          value={partners ? partnerItems.length : "—"}
           hint={
             partners ? (
               <>
-                {show(partners.activePartners)} active · {show(partners.referredUsers)} referrals
+                {activePartners} active · {referredUsers} referrals
                 <br />
-                комиссии {nanoMoney(partners.totalCommissionsNano)} · к выплате {nanoMoney(partners.pendingPayoutsNano)} · выплачено {nanoMoney(partners.paidPayoutsNano)}
+                комиссии {nanoMoney(partnerEarnedNano)} · к выплате {nanoMoney(partnerPayableNano)} · выплачено {nanoMoney(partnerPaidNano)}
               </>
             ) : (
               "источник недоступен"
@@ -208,4 +214,8 @@ export default function DashboardPage() {
       {spendStatsModal}
     </>
   );
+}
+
+function sumNano(values: string[]): string {
+  return values.reduce((sum, value) => sum + BigInt(value), 0n).toString();
 }

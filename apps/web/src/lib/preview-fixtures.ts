@@ -12,6 +12,7 @@ import {
   type CheckoutView,
   type LedgerEntry,
   type ProviderStatus,
+  type ReferralActiveSnapshot,
   type TotpSetup,
   type UsageView,
 } from "./api";
@@ -101,39 +102,6 @@ function account(): AccountView {
       discountPercent: 50,
       multiplierBp: 5000,
     },
-  };
-}
-
-function policyVersion() {
-  const staticRule = (ruleId: string) => ({
-    ruleId,
-    scope: "provider" as const,
-    pricingMode: "discount" as const,
-    ruleOrigin: "managed" as const,
-    discountBps: 5000,
-    payableMultiplierBp: 5000,
-    trackEligible: false,
-    retentionEligible: false,
-    commissionEligible: false,
-  });
-  return {
-    effectiveVersion: "3",
-    policyVersion: "2",
-    catalogGeneration: "1",
-    switchGeneration: "1",
-    providers: [{
-      providerId: "anthropic",
-      available: true,
-      models: ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"].map((modelId) => ({
-        modelId, available: true, unavailableReasons: [], rule: staticRule("anthropic-static"),
-      })),
-    }, {
-      providerId: "openai",
-      available: true,
-      models: ["gpt-5.6-sol", "gpt-5.6-luna"].map((modelId) => ({
-        modelId, available: true, unavailableReasons: [], rule: staticRule("openai-static"),
-      })),
-    }],
   };
 }
 
@@ -230,6 +198,77 @@ const providers: ProviderStatus = {
   github: { configured: true, enabled: true, emailScope: "user:email" },
 };
 
+const referralNow = new Date();
+const referralDay = (daysAgo: number) => new Date(referralNow.getTime() - daysAgo * DAY_MS).toISOString();
+const referral: ReferralActiveSnapshot = {
+  state: "active",
+  activated: true,
+  membership: {
+    email: user.email,
+    status: "active",
+    programEnabled: true,
+    programStartedAt: referralDay(96),
+    referralCode: "PREVIEW-PARTNER",
+    commissionBps: 1_000,
+    teamShareBps: null,
+    teamOverrideMaxBps: 2_000,
+    teamInvitesEnabled: true,
+    b2bEnabled: true,
+    b2bMaxDiscountBps: 2_500,
+    b2bCanDelegate: true,
+    payoutMethod: "bsc_usdt",
+    payoutDetails: { network: "BSC", asset: "USDT", address: "0x1111111111111111111111111111111111111111" },
+    createdAt: referralDay(96),
+  },
+  totals: {
+    earnedNano: "182400000000", directNano: "160000000000", overrideNano: "22400000000",
+    adjustmentNano: "-2400000000", directAdjustmentNano: "-2200000000", overrideAdjustmentNano: "-200000000",
+    netNano: "180000000000", directNetNano: "157800000000", overrideNetNano: "22200000000",
+    paidNano: "118000000000", pendingPayoutNano: "0", debtNano: "0", availableNano: "28400000000",
+    last30dSpendNano: "684000000000", last30dEarnedNano: "68400000000", last30dAdjustmentNano: "-1400000000", last30dNetNano: "67000000000",
+  },
+  referrals: [
+    { email: "commerce@northstar.ai", customerType: "b2b", discountBps: 2_000, providerDiscounts: [{ providerId: "anthropic", discountBps: 2_500 }], attributedAt: referralDay(82), spendNano: "398000000000", earnedNano: "39800000000", adjustmentNano: "-900000000", netNano: "38900000000", topupNano: "520000000000" },
+    { email: "founder+very-long-account-name@automations.example", customerType: "b2c", discountBps: 0, providerDiscounts: [], attributedAt: referralDay(45), spendNano: "207000000000", earnedNano: "20700000000", adjustmentNano: "-500000000", netNano: "20200000000", topupNano: "250000000000" },
+    { email: "team@pixelcraft.dev", customerType: "b2c", discountBps: 0, providerDiscounts: [], attributedAt: referralDay(14), spendNano: "79000000000", earnedNano: "7900000000", adjustmentNano: "0", netNano: "7900000000", topupNano: "100000000000" },
+  ],
+  team: [{
+    email: "partner.team@agency.example", programEnabled: true, programStartedAt: referralDay(52), status: "active", commissionBps: 1_000, overrideBps: 2_000,
+    teamOverrideMaxBps: 1_000, teamInvitesEnabled: true, b2bEnabled: true, b2bMaxDiscountBps: 1_500, b2bCanDelegate: false,
+    referredUsers: 12, theirEarnedNano: "111000000000", theirAdjustmentNano: "-1000000000", theirNetNano: "110000000000", myOverrideNano: "22200000000", myOverrideAdjustmentNano: "-200000000", myOverrideNetNano: "22000000000",
+  }],
+  earnings: {
+    days: 30,
+    daily: Array.from({ length: 30 }, (_, index) => ({ date: referralDay(29 - index).slice(0, 10), spendNano: String((index % 6 + 2) * 2_000_000_000), earnedNano: String((index % 6 + 2) * 200_000_000), adjustmentNano: index === 18 ? "-1400000000" : "0", netNano: String((index % 6 + 2) * 200_000_000 - (index === 18 ? 1_400_000_000 : 0)) })),
+    providers: [
+      { providerId: "anthropic", events: 194, spendNano: "387000000000", earnedNano: "38700000000" },
+      { providerId: "openai", events: 126, spendNano: "203000000000", earnedNano: "20300000000" },
+      { providerId: "google", events: 74, spendNano: "94000000000", earnedNano: "9400000000" },
+    ],
+    providerDaily: Array.from({ length: 30 }, (_, index) => ({
+      date: referralDay(29 - index).slice(0, 10),
+      providers: [
+        { providerId: "anthropic", events: index % 5 + 3, spendNano: String((index % 6 + 2) * 1_100_000_000), earnedNano: String((index % 6 + 2) * 110_000_000) },
+        { providerId: "openai", events: index % 4 + 2, spendNano: String((index % 4 + 1) * 720_000_000), earnedNano: String((index % 4 + 1) * 72_000_000) },
+        ...(index % 3 === 0 ? [{ providerId: "google", events: 2, spendNano: "460000000", earnedNano: "46000000" }] : []),
+      ],
+    })),
+  },
+  invitations: [{ id: "832b52ea-43f2-457f-9d72-8f4a8f35f129", email: "new.partner@studio.example", overrideBps: 1_500, teamOverrideMaxBps: 500, teamInvitesEnabled: false, b2bEnabled: false, b2bMaxDiscountBps: 0, b2bCanDelegate: false, expiresAt: referralDay(-21), consumedAt: null, revokedAt: null, createdAt: referralDay(9) }],
+  requests: [{ id: "9bf6a188-982f-4db1-aaf5-11e19aa521f2", requestType: "b2b_conversion", status: "pending", requesterEmail: user.email, customerEmail: "team@pixelcraft.dev", reason: "Customer is moving production traffic and needs consolidated billing.", stateSnapshot: {}, requestedCommissionBps: null, requestedDiscountBps: 1_500, approvedCommissionBps: null, approvedDiscountBps: null, reviewerActor: null, reviewerNote: null, reviewedAt: null, appliedAt: null, applyAttempts: 0, lastApplyError: null, version: 1, providerTerms: [], effect: null, createdAt: referralDay(2), updatedAt: referralDay(2) }],
+  payouts: [{ id: "9c79815d-2fe4-4ea8-a37b-5c79dfa0bacc", amountNano: "42000000000", status: "paid", method: "bsc_usdt", details: {}, requestedAt: referralDay(34), decidedAt: referralDay(32), paidAt: referralDay(31), adminNote: null, txHash: "0x9f7a4cpreview", chainStatus: "confirmed" }],
+  period: {
+    now: referralNow.toISOString(), current: { key: "2026-08-H2", start: "2026-08-16T00:00:00.000Z", end: "2026-09-01T00:00:00.000Z", accruedNano: "12400000000", adjustmentNano: "0", netNano: "12400000000" },
+    locked: [{ key: "2026-08-H1", endedAt: "2026-08-16T00:00:00.000Z", unlocksAt: "2026-08-23T00:00:00.000Z", earnedNano: "17400000000", adjustmentNano: "-1400000000", netNano: "16000000000" }],
+    nextPayout: { date: "2026-08-23T00:00:00.000Z", estimatedNano: "28400000000" }, lifetimeEarnedNano: "182400000000", lifetimeAdjustmentNano: "-2400000000", lifetimeNetNano: "180000000000", lifetimePaidNano: "118000000000", debtNano: "0", payableNano: "28400000000", unpaidNano: "62000000000",
+  },
+  periodHistory: [
+    { key: "2026-08", index: 1, start: "2026-08-01T00:00:00.000Z", end: "2026-08-16T00:00:00.000Z", phase: "locked", payoutDate: "2026-08-23T00:00:00.000Z", earnedNano: "17400000000", adjustmentNano: "-1400000000", netNano: "16000000000" },
+    { key: "2026-07", index: 2, start: "2026-07-16T00:00:00.000Z", end: "2026-08-01T00:00:00.000Z", phase: "closed", payoutDate: "2026-08-08T00:00:00.000Z", earnedNano: "42000000000", adjustmentNano: "0", netNano: "42000000000" },
+  ],
+  payoutPolicy: { minPayoutNano: "10000000000", lockDays: 7, windowDays: 3 },
+};
+
 const checkouts = new Map<string, CheckoutView & { polls: number }>();
 
 function usdToNano(value: string): bigint {
@@ -287,6 +326,29 @@ export async function previewRequest<T>(path: string, init: RequestInit = {}): P
     case "GET /account": return account() as T;
     case "GET /account/ledger": return { entries: ledger } as T;
     case "GET /account/usage": return usage(url.searchParams.get("window") ?? "30d") as T;
+    case "GET /referral": return referral as T;
+    case "POST /referral/team-invitations": {
+      const input = body(init);
+      const authority = input.authority as Partial<ReferralActiveSnapshot["invitations"][number]>;
+      referral.invitations.unshift({
+        id: randomHex(32), email: String(input.email ?? ""), overrideBps: Number(input.overrideBps ?? 0),
+        teamOverrideMaxBps: authority.teamOverrideMaxBps ?? 0,
+        teamInvitesEnabled: authority.teamInvitesEnabled ?? false,
+        b2bEnabled: authority.b2bEnabled ?? false,
+        b2bMaxDiscountBps: authority.b2bMaxDiscountBps ?? 0,
+        b2bCanDelegate: authority.b2bCanDelegate ?? false,
+        expiresAt: referralDay(-30), consumedAt: null, revokedAt: null, createdAt: referralNow.toISOString(),
+      });
+      return { invitation: referral.invitations[0] } as T;
+    }
+    case "PATCH /referral/team": return { authority: body(init) } as T;
+    case "POST /referral/requests/commission":
+    case "POST /referral/requests/b2b": return { request: referral.requests[0] } as T;
+    case "POST /referral/referrals/business-pricing": return { customerEmail: body(init).customerEmail, discountPercent: body(init).discountPercent ?? 0, ceilingPercent: referral.membership.b2bMaxDiscountBps / 100 } as T;
+    case "PATCH /referral/wallet": {
+      referral.membership.payoutDetails = { network: "BSC", asset: "USDT", address: String(body(init).address ?? "") };
+      return { membership: referral.membership } as T;
+    }
     case "GET /api-keys": return { keys } as T;
     case "POST /api-keys": {
       const input = body(init);
@@ -325,6 +387,13 @@ export async function previewRequest<T>(path: string, init: RequestInit = {}): P
       checkouts.set(checkout.id, checkout);
       return checkout as T;
     }
+  }
+
+  const referralInvitation = url.pathname.match(/^\/referral\/team-invitations\/([^/]+)$/);
+  if (referralInvitation && method === "DELETE") {
+    const invitation = referral.invitations.find((item) => item.id === referralInvitation[1]);
+    if (invitation) invitation.revokedAt = new Date().toISOString();
+    return { invitation: { id: referralInvitation[1], revokedAt: invitation?.revokedAt ?? new Date().toISOString(), revoked: true } } as T;
   }
 
   const keyPolicy = url.pathname.match(/^\/api-keys\/([^/]+)\/policy$/);

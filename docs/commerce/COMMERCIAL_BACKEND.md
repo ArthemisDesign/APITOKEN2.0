@@ -149,6 +149,14 @@ GET       /admin/business-invites/{id}/link
 POST      /admin/business-invites/{id}/revoke
 POST      /admin/business-invites/{id}/resend
 POST      /admin/users/{id}/provisioning-repair
+POST      /admin/users/{id}/referral-partner
+GET       /admin/referral/partners
+POST      /admin/referral/partners
+PATCH     /admin/referral/partners
+GET       /admin/referral/requests
+POST      /admin/referral/requests/{id}/decision
+GET       /admin/referral/payouts
+POST      /admin/referral/payouts/{id}/decision
 GET       /admin/pipeline-health
 GET       /admin/finance/paying-users?days=1|7|30&limit=...&offset=...&funding=payments|manual|bonus|all|spenders&include_usage=true|false
 GET       /admin/finance/engine-spend?days=1|7|30
@@ -291,6 +299,14 @@ GET    /v1/account/ledger?limit=50 live engine top-ups and charges (limit 1..100
 GET    /v1/api-keys                masked keys with live status and per-key spend
 POST   /v1/api-keys                {"label"?: "production"}; raw sk-pool key returned once
 DELETE /v1/api-keys/{id}           disable an owned key by commercial UUID
+GET    /v1/referral                account-bound partner state and cabinet snapshot
+POST   /v1/referral/team-invitations
+DELETE /v1/referral/team-invitations/{inviteId}
+PATCH  /v1/referral/team
+POST   /v1/referral/requests/commission
+POST   /v1/referral/requests/b2b
+POST   /v1/referral/referrals/business-pricing
+PATCH  /v1/referral/wallet
 ```
 
 `GET /v1/account` also returns the authenticated customer's stored scalar pricing view. Provider
@@ -298,6 +314,45 @@ overrides are an operator surface and are not inferred from model names. Commerc
 use a separate `COMMERCIAL_ADMIN_KEY`; they create email-bound or copy-only B2B invitations,
 revoke/rotate them, and manage the B2B default plus provider overrides. That key is never a client
 session or an engine Control API credential.
+
+## Commerce partner-program boundary
+
+Commerce is the only browser boundary for the account-bound partner program. `GET /v1/referral`
+derives `commerceUserId` from the authenticated session and returns one of three explicit states:
+`unavailable`, `disabled`, or `active`. The request body and query never select another partner.
+An unavailable account receives no membership or financial data; the Dashboard presents the
+program terms and the operator-contact action instead of creating a public application.
+
+Team invitations, Team edits, B2B actions, requests and admin onboarding identify people by the
+current email of an existing active Commerce account. Commerce normalizes and resolves that email
+to `users.id`, then sends only the UUID to Sales under `SALES_CONTROL_KEY`. Sales remains the
+membership and money authority and never stores an email snapshot. On reads, Commerce batch-loads
+the current account projection and adds email, customer type and exact default/provider discount
+terms where the view requires them. Before returning a browser response it removes Commerce UUIDs,
+Sales partner IDs and parent/grant-source IDs. A temporarily unavailable account projection is
+shown as missing email data; an internal ID is never substituted as the product identity.
+
+The server-side `ReferralSalesClient` calls only `/v1/internal/referral/*`, validates every Sales
+response with a strict local Zod schema and has a six-second timeout. Mutations are never retried by
+this client. The caller supplies a scoped `Idempotency-Key` for request creation and direct B2B
+pricing; the underlying Sales/Commerce operation remains the replay authority. Sales validation,
+ownership and conflict statuses `400`, `403`, `404`, `409`, `422` and `429` are preserved. A Sales
+authentication failure, transport error, timeout, 5xx or invalid response becomes a generic 503 and
+does not misclassify the Commerce customer session.
+
+The admin routes use `AdminGuard` and the same managed-admin Caddy boundary as the other
+`/v1/admin/*` routes. Operators can onboard by email or from `POST
+/v1/admin/users/:id/referral-partner`; both paths resolve the authoritative Commerce account before
+Sales changes membership. Initial and editable terms are direct commission, Team ceiling, Team
+invitation right, B2B self-service ceiling and B2B delegation right. A Team parent never selects a
+member's direct platform commission; it edits only the retained edge share and delegated authority
+within its own ceilings.
+
+This consumer contract depends on the additive Sales request identity field from exact producer SHA
+`cbc6c22321838908b83664711763fcf89c6699c9`. The Commerce consumer must not ship before that SHA is
+production-GREEN: without nullable `customerCommerceUserId` on request views, Commerce cannot
+restore the authoritative customer email after a reload. The local consumer keeps the field strict
+so an older producer fails unavailable instead of silently showing a wrong identity.
 
 Engine provisioning is recoverable: the stable handle `user:<commercial UUID>` makes account
 creation idempotent. API-key revocation uses the engine's non-secret `key_id`; PostgreSQL stores the

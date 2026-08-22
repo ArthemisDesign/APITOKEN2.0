@@ -1,5 +1,4 @@
-// Типы payload'ов partner-admin и чистые хелперы страницы «Партнёры».
-// Порт 1:1 констант и функций из partners() crates/server/src/admin-panel.js.
+// Точные денежные и payout-хелперы защищённого on-chain модуля партнёров.
 
 // Серверные сортировки partner-analytics — ровно PARTNER_ANALYTICS_SORTS из packages/sales-db/analytics.
 export const PARTNER_SORTS: ReadonlyArray<readonly [string, string]> = [
@@ -82,8 +81,6 @@ export interface PayoutEngine {
 export interface PayoutDueItem {
   partnerId?: string;
   email?: string;
-  telegramUsername?: string;
-  displayName?: string;
   payableNano?: string;
   debtNano?: string;
   adjustmentNano?: string;
@@ -109,9 +106,7 @@ export interface PayoutDue {
 export interface PartnerAnalyticsItem {
   id?: string;
   referralCode?: string;
-  telegramUsername?: string;
   email?: string;
-  displayName?: string;
   status?: string;
   referredUsers?: number;
   convertedUsers?: number;
@@ -305,13 +300,11 @@ export function payoutReasonText(item: { eligible?: boolean; reason?: string }):
   return (item.reason && PAYOUT_REASON_LABEL[item.reason]) || item.reason || "нельзя";
 }
 
-// Email — основной идентификатор аккаунта; displayName и Telegram — fallback для legacy-строк.
+// Commerce email is the only supported browser-visible partner identity.
 export function partnerName(partner: {
-  telegramUsername?: string;
   email?: string;
-  displayName?: string;
 }): string {
-  return partner.email || partner.displayName || (partner.telegramUsername ? "@" + partner.telegramUsername : "—");
+  return partner.email || "Commerce email недоступен";
 }
 
 /**

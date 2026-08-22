@@ -3,7 +3,7 @@
 // Аккаунты — порт 1:1 функции accounts() из crates/server/src/admin-panel.js
 // (строки 477-506): единый реестр engine, commerce, partner и CRM-аккаунтов.
 // Источники: /overview (engine, paged), /admin/dashboard (счётчик commerce),
-// /partner-admin/partner-analytics?sort=created_at&dir=desc (пейджер по 50),
+// /admin/referral/partners (Commerce-linked partner projection),
 // /openkeys-admin/lookup (подписи OpenKeys, ленивый кэш на сессию).
 // Источники обновляются по SSE-prefixes; общий freshness-bridge страхует потерянные события.
 //
@@ -14,11 +14,12 @@ import Link from "next/link";
 import { startTransition, useEffect, useMemo, useState, type ReactElement } from "react";
 import { useResources } from "@/lib/resources";
 import { clampPageOffset, ENGINE_ACCOUNT_PAGE, pagedOverviewUrl } from "@/lib/engine-urls";
-import { ago, count, money, nanoMoney } from "@/lib/format";
+import { count, formatDate, money, nanoMoney } from "@/lib/format";
 import type { CommerceDashboard } from "@/lib/types";
 import { Banner, EmptyRow, LoadingGrid, PageHead, Pill, SectionHeader, TableCard } from "@/components/ui";
 import { isOpenkeys, useSpendStatsModal, type OkDirectoryRow } from "@/components/spend-stats-modal";
 import { OkInfo } from "./ok-directory";
+import type { AdminPartner } from "../partners/types";
 
 const PARTNER_LIMIT = 50;
 
@@ -32,23 +33,8 @@ interface EngineAccountRow {
   mult?: number | string;
 }
 
-// GET /partner-admin/partner-analytics — постраничная аналитика партнёров.
-interface PartnerAnalyticsItem {
-  id?: string;
-  referralCode?: string;
-  telegramUsername?: string;
-  email?: string;
-  displayName?: string;
-  status?: string;
-  referredUsers?: number;
-  depositsTotalNano?: string;
-  earnedTotalNano?: string;
-  lastSeenAt?: string;
-}
-
 interface PartnerAnalyticsResponse {
-  items?: PartnerAnalyticsItem[];
-  totals?: { total?: number };
+  items?: AdminPartner[];
 }
 
 interface AccountsData {
@@ -65,9 +51,9 @@ interface AccountsData {
 
 const isCrmAccount = (handle: string | undefined): boolean => String(handle ?? "").toLowerCase() === "crm-parsing";
 
-// Email — основной идентификатор аккаунта; displayName и Telegram остаются fallback для legacy-строк.
-export function partnerName(partner: PartnerAnalyticsItem): string {
-  return partner.email || partner.displayName || (partner.telegramUsername ? `@${partner.telegramUsername}` : "—");
+// Partner identity is the current Commerce login email. Missing enrichment stays explicit.
+export function partnerName(partner: Pick<AdminPartner, "email">): string {
+  return partner.email || "Commerce email недоступен";
 }
 
 // Зажатие пейджера партнёров: если список сократился и текущий offset вышел
@@ -90,7 +76,7 @@ export default function AccountsPage(): ReactElement {
   const { data, isLoading } = useResources<AccountsData>({
     overview: pagedOverviewUrl(engineOffset),
     dashboard: "/admin/dashboard",
-    partners: `/partner-admin/partner-analytics?sort=created_at&dir=desc&limit=${PARTNER_LIMIT}&offset=${partnerOffset}`,
+    partners: "/admin/referral/partners",
     directory: "/openkeys-admin/lookup",
   });
   const { openSpendStats, spendStatsModal } = useSpendStatsModal();
@@ -99,9 +85,7 @@ export default function AccountsPage(): ReactElement {
     [data.directory],
   );
 
-  const partnerTotal = data?.partners
-    ? data.partners.totals?.total || (data.partners.items ?? []).length
-    : 0;
+  const partnerTotal = data?.partners?.items?.length ?? 0;
 
   const engineAccounts = useMemo(() => data?.overview?.accounts ?? [], [data]);
   const engineTotal = data?.overview?.accounts_total ?? engineAccounts.length;
@@ -160,24 +144,28 @@ export default function AccountsPage(): ReactElement {
     [engineAccounts, okDir],
   );
 
-  const partnerItems = useMemo(() => data?.partners?.items ?? [], [data]);
+  const partnerItems = useMemo(
+    () => [...(data?.partners?.items ?? [])]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(effectivePartnerOffset, effectivePartnerOffset + PARTNER_LIMIT),
+    [data, effectivePartnerOffset],
+  );
   const partnerRows = useMemo(
     () =>
       partnerItems.map((partner, index) => (
-        <tr key={partner.id ?? index}>
+        <tr key={partner.email ?? `${partner.createdAt}-${index}`}>
           <td className="left">
-            <b translate="no">{partnerName(partner)}</b>
-            <div className="sub mono" translate="no">
-              {partner.id ?? ""} · {partner.referralCode ?? ""}
-            </div>
+            {partner.email ? <Link className="partner-email-link" href={`/partners/${encodeURIComponent(partner.email)}`} translate="no">{partnerName(partner)}</Link> : <b className="partner-missing-email">{partnerName(partner)}</b>}
+            <div className="sub mono" translate="no">{partner.referralCode}</div>
           </td>
           <td>
             <Pill kind={partnerStatusKind(partner.status)}>{partner.status ?? ""}</Pill>
           </td>
-          <td>{partner.referredUsers ?? "—"}</td>
-          <td>{nanoMoney(partner.depositsTotalNano)}</td>
-          <td>{nanoMoney(partner.earnedTotalNano)}</td>
-          <td>{ago(partner.lastSeenAt)}</td>
+          <td>{partner.referredUsers}</td>
+          <td>{partner.teamSize}</td>
+          <td>{nanoMoney(partner.netNano)}</td>
+          <td>{nanoMoney(partner.payableNano)}</td>
+          <td>{formatDate(partner.createdAt)}</td>
         </tr>
       )),
     [partnerItems],
@@ -197,12 +185,6 @@ export default function AccountsPage(): ReactElement {
 
   const domains: Array<[domain: string, label: string, sub: string, url: string | null]> = [
     ["admin.apitoken.sale", "central admin", "commerce + engine + partner account control", null],
-    [
-      "admin.partners.apitoken.sale",
-      "partner admin",
-      "unchanged APIToken Partners operator console",
-      "https://admin.partners.apitoken.sale/admin",
-    ],
     [
       "crm.apitoken.sale",
       "CRM & Parsing",
@@ -295,12 +277,13 @@ export default function AccountsPage(): ReactElement {
               <th className="left">партнёр</th>
               <th>статус</th>
               <th>рефералы</th>
-              <th>депозиты</th>
-              <th>заработано</th>
-              <th>был(а)</th>
+              <th>Team</th>
+              <th>net заработано</th>
+              <th>к выплате</th>
+              <th>подключён</th>
             </tr>
           </thead>
-          <tbody>{partnerRows.length ? partnerRows : <EmptyRow columns={6} />}</tbody>
+          <tbody>{partnerRows.length ? partnerRows : <EmptyRow columns={7} />}</tbody>
         </table>
       </TableCard>
 
@@ -336,7 +319,7 @@ export default function AccountsPage(): ReactElement {
         <Link className="link" href="/users">
           «Пользователи»
         </Link>
-        ; полный partner workflow остаётся на admin.partners.apitoken.sale.
+        . Управление партнёрами работает только в этой основной админке.
       </footer>
 
       {spendStatsModal}

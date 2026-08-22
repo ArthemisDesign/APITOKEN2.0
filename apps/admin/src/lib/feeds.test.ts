@@ -17,12 +17,12 @@ describe("page-scoped SSE feeds", () => {
 
   it("opens a single feed on single-source screens", () => {
     expect(feedsForPath("/proxies")).toEqual(["/proxy-admin/events"]);
-    expect(feedsForPath("/partners")).toEqual(["/partner-admin/events"]);
-    expect(feedsForPath("/partners/directory")).toEqual(["/partner-admin/events"]);
-    expect(feedsForPath("/partners/onboarding")).toEqual(["/partner-admin/events"]);
-    expect(feedsForPath("/partners/payouts")).toEqual(["/partner-admin/events"]);
-    expect(feedsForPath("/partners/requests")).toEqual(["/partner-admin/events"]);
-    expect(feedsForPath("/partners/abc-id")).toEqual(["/partner-admin/events"]);
+    expect(feedsForPath("/partners")).toEqual(["/admin/events", "/partner-admin/events"]);
+    expect(feedsForPath("/partners/directory")).toEqual(["/admin/events", "/partner-admin/events"]);
+    expect(feedsForPath("/partners/onboarding")).toEqual(["/admin/events", "/partner-admin/events"]);
+    expect(feedsForPath("/partners/payouts")).toEqual(["/admin/events", "/partner-admin/events"]);
+    expect(feedsForPath("/partners/requests")).toEqual(["/admin/events", "/partner-admin/events"]);
+    expect(feedsForPath("/partners/abc-id")).toEqual(["/admin/events", "/partner-admin/events"]);
     expect(feedsForPath("/topups")).toEqual(["/admin/events"]);
   });
 

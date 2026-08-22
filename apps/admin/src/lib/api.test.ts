@@ -36,6 +36,16 @@ describe("mutationResources", () => {
     ]);
   });
 
+  it("refreshes Commerce referral projections after partner operations", () => {
+    expect(mutationResources("/admin/users/u-1/referral-partner")).toEqual([
+      "/admin/users",
+      "/admin/referral/partners",
+    ]);
+    expect(mutationResources("/admin/referral/partners")).toEqual(["/admin/referral/partners"]);
+    expect(mutationResources("/admin/referral/requests/r-1/decision")).toEqual(["/admin/referral/requests"]);
+    expect(mutationResources("/admin/referral/payouts/p-1/decision")).toEqual(["/admin/referral/payouts"]);
+  });
+
   it("keeps already-list-shaped mutation paths unchanged", () => {
     expect(mutationResources("/admin/users?limit=50")).toEqual(["/admin/users"]);
   });

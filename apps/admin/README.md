@@ -1,13 +1,15 @@
 # @claude-api/admin — apiToken.sale operations admin panel
 
 Next.js 16 / React 19 (App Router), port 3700. Replacement for the single-file panel
-`crates/server/src/admin-panel.html` + `admin-panel.js` — same visual style,
-same endpoints, same Russian labels.
+`crates/server/src/admin-panel.html` + `admin-panel.js`. The established admin visual system remains
+the reference. Unified partner routes additionally support the Dashboard RU/EN language and
+light/dark preferences without creating a second visual language.
 
 ## Security model
 
 No secrets, and there never will be: the browser uses same-origin relative paths
-(`/overview`, `/admin/*`, `/openkeys-admin/*`, `/partner-admin/*`); authentication
+(`/overview`, `/admin/*`, `/openkeys-admin/*`; the transitional `/partner-admin/*` path is limited
+to the existing fenced payout execution state machine); authentication
 (forward_auth) and server-side keys are injected by Caddy. No env files and no
 `NEXT_PUBLIC_*` keys. All data loading happens in client components.
 
@@ -67,10 +69,15 @@ No secrets, and there never will be: the browser uses same-origin relative paths
 - `src/app/users` — the general customer table renders the exact persisted scalar for both B2C and
   B2B. B2C is still one flat price, but historical/dormant `4000` rows must remain visible as a 60%
   discount; the UI and CSV never substitute today's common `5000` value for a stored condition.
-- `src/app/partners` — partner accounting and payout operations. The readiness block consumes the
-  additive Sales chain proof and shows the public hot-wallet address, exact USDT nanoUSD and BNB
-  wei balances, current eligible requirements and payout window. Missing/malformed chain evidence
-  is unavailable, never a fabricated zero; the page remains read-only.
+- `src/app/partners` — unified partner onboarding, Commerce-email directory, Team/B2B authority,
+  request decisions and payout operations. Management reads and writes use `/admin/referral/*`;
+  the Users page can open the same complete onboarding form for its selected Commerce account via
+  `/admin/users/:id/referral-partner`. The readiness block joins the Commerce email-enriched payout
+  list with the additive Sales chain proof and shows the public hot-wallet address, exact USDT
+  nanoUSD and BNB wei balances, current eligible requirements and payout window. The existing
+  `/partner-admin/*` prepare/send/reconciliation routes remain the sole payout execution authority
+  until a separate additive producer is deployed; no management screen falls back to legacy Sales
+  identities. Missing/malformed chain evidence is unavailable, never a fabricated zero.
 - `src/app/paying-users/page.tsx` — one read-only control room with independently filtered
   `Клиенты` and `OpenKeys` cohorts. Only the active cohort mounts its realtime request. Commerce
   defaults to `funding=spenders`, retains the selected funding filter and always sends

@@ -75,8 +75,9 @@ still refreshes as before. Engine resync/change delivery evicts the matching sho
 response cache before the browser refetches, so push cannot immediately return a stale cached
 projection.
 The layout opens only the SSE feeds whose prefixes the current screen can consume (for example
-Subscriptions opens engine/openai/gemini/kimi; Proxies opens Authbot; `/partners` and its nested
-screens open only the sales feed). Overlapping feeds stay
+Subscriptions opens engine/openai/gemini/kimi; Proxies opens Authbot; ordinary `/partners`
+management reads use the Commerce feed, while the payout execution screen may additionally open the
+Sales feed during the producer-first transition). Overlapping feeds stay
 open across navigation; unused ones close. The sidebar `live/total` counts those opened feeds.
 Because invalidation delivery is deliberately not durable, the app also revalidates only the
 currently mounted URL resources every 30 seconds **while opened feeds are not fully live**, and
@@ -290,10 +291,13 @@ pricing editor (`docs/engine/CONTROL_API.md`).
 
 `apps/admin` is the primary operator consumer for the Sales partner program. Its routes are
 `/partners`, `/partners/onboarding`, `/partners/directory`, `/partners/[id]`,
-`/partners/requests`, and `/partners/payouts`. All data and mutations stay behind the same-origin
-`/partner-admin/*` proxy; Caddy injects `x-sales-admin-key`, while the authenticated managed-admin
-identity is forwarded as `X-Admin-Actor`. Neither value is part of the Next.js environment or the
-browser bundle.
+`/partners/requests`, and `/partners/payouts`. Onboarding, directory/settings, requests and the
+email-enriched payout list use the same-origin Commerce `/admin/referral/*` routes. Caddy injects the
+Commerce admin credential, then Commerce calls protected Sales `/v1/internal/referral/*` under
+`SALES_CONTROL_KEY` and forwards the verified actor as `X-Admin-Actor`. Neither credential is part
+of the Next.js environment or the browser bundle. The Users table exposes the same full onboarding
+dialog through `POST /admin/users/:id/referral-partner`; it does not create a second partner path or
+accept an email different from that selected user.
 
 The UI preserves the authority model instead of inferring it from editable fields:
 
@@ -310,11 +314,12 @@ The UI preserves the authority model instead of inferring it from editable field
 - payout controls use the fenced batch report and never authorize an irreversible send from a
   browser-only balance calculation.
 
-Partner, Team, referral, request and payout identities are email-first. Display-name, Telegram and
-short masks are explicit fallbacks for legacy/pre-account or temporarily unavailable Commerce
-profile data; internal UUIDs remain authority keys, not product labels. Promo-code controls do not
-exist on active partner or unified Admin routes. Historical promo storage and expand-only backend
-compatibility remain outside this UI until their separate producer-first retirement.
+Partner, Team, referral, request and payout identities on the unified routes use only current
+Commerce account email. If the profile projection is unavailable, the table says that email is
+unavailable; it never substitutes a display name, Telegram handle, Sales partner id or Commerce
+UUID. Promo-code controls do not exist on active partner or unified Admin routes. Historical promo
+storage and expand-only backend compatibility remain outside this UI until their separate
+producer-first retirement.
 
 The partner routes use the same Dashboard visual hierarchy, JetBrains Mono data typography,
 responsive tables/forms, light/dark theme, and RU/EN controls. They share `theme:v1` and `lang:v1`
@@ -323,9 +328,16 @@ non-translatable. The legacy `admin.partners.apitoken.sale/admin` surface remain
 for production parity verification. It is retired only in a separate release after the unified
 routes and all mutations are proven on the exact deployed SHA.
 
+The unified consumer is gated by exact Sales producer SHA
+`cbc6c22321838908b83664711763fcf89c6699c9`, which adds nullable
+`customerCommerceUserId` to every protected request view. `apps/admin` must not ship this consumer
+before that SHA is production-GREEN; otherwise a request list cannot restore the current customer
+email after reload. The Commerce schema rejects the older response instead of accepting an
+identity-incomplete row.
+
 ## Partner payout readiness
 
-The read-only `/partners` page combines the current payout list with the additive
+The `/partners/payouts` page combines the Commerce email-enriched payout list with the additive
 `/partner-admin/payouts/engine` chain proof. Operators see the public hot-wallet address, exact USDT
 balance in nanoUSD, exact BNB balance in wei, USDT required by eligible rows, BNB required at the
 backend's pinned gas-per-transfer bound, and the send window. Integer strings stay integer through
@@ -333,6 +345,12 @@ all comparisons and formatting. Unavailable or malformed chain evidence is rende
 and blocks the readiness verdict; it is never coerced to `$0.00`. The backend rechecks all balances
 and accounting fences before any irreversible send, so this projection is operational guidance,
 not an authorization to transfer.
+
+The `/partner-admin/*` payout execution routes remain the only signing/prepare/send/reconciliation
+authority during this cutover. They stay guarded by Caddy and are used only for payout execution;
+partner management never falls back to them. Moving this state machine behind Commerce requires a
+separate additive Sales producer and a producer-first deployment. The Admin UI must not reproduce
+the payout calculation or wallet-signing logic in browser code or Commerce.
 
 ## User provider spend
 

@@ -67,21 +67,6 @@ export interface EngineOverview {
   [key: string]: unknown;
 }
 
-// GET /partner-admin/overview (партнёрка)
-export interface PartnerOverview {
-  partners?: number;
-  activePartners?: number;
-  referredUsers?: number;
-  totalCommissionsNano?: string;
-  totalAdjustmentsNano?: string;
-  totalNetCommissionsNano?: string;
-  totalDebtNano?: string;
-  totalPayableNano?: string;
-  pendingPayoutsNano?: string;
-  paidPayoutsNano?: string;
-  [key: string]: unknown;
-}
-
 // GET /admin/pipeline-health (коммерция)
 export interface PipelineHealth {
   verdict?: string;

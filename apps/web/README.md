@@ -94,9 +94,14 @@ To regression-test a hard-reloaded dashboard subview returning directly to Overv
 - rolling usage split by provider, model, token bucket and API key, with provider-stacked UTC-day bars;
 - API-key listing, one-time secret issuance, and revocation;
 - engine ledger;
+- account-bound Referral workspace with unavailable/disabled/active states, email-only Team and
+  customer identity, retained-share controls, commission/B2B requests, wallet/payout history and a
+  Usage-style provider-stacked earnings chart;
 - arbitrary positive whole-USD Cryptomus checkout creation.
 
-Telegram, rich analytics, password change, session management, and TOTP remain visible only as
+An account without partner membership sees the standard terms and an explicit contact link to
+`https://t.me/bozinodev`; opening the section does not create a membership or public application.
+Telegram authentication, password change, session management, and TOTP remain visible only as
 non-interactive future areas. Promo-code issuance and redemption are retired and have no dashboard
-surface; old promo URLs fall back to Overview. The frontend does not simulate removed capabilities or
-store fake server data in browser storage. Referral and order workspaces are intentionally not exposed.
+surface; old promo URLs fall back to Overview. The frontend does not simulate removed capabilities
+or store fake server data in browser storage. The order workspace is intentionally not exposed.

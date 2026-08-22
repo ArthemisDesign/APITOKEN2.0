@@ -44,13 +44,10 @@ describe("Аккаунты (accounts page)", () => {
     });
   });
 
-  describe("partnerName (отображаемое имя партнёра)", () => {
-    it("предпочитает email, затем displayName, затем @telegram", () => {
-      expect(partnerName({ telegramUsername: "agent", email: "a@b.c", displayName: "Agent" })).toBe("a@b.c");
-      expect(partnerName({ email: "a@b.c", displayName: "Agent" })).toBe("a@b.c");
-      expect(partnerName({ displayName: "Agent" })).toBe("Agent");
-      expect(partnerName({ telegramUsername: "agent" })).toBe("@agent");
-      expect(partnerName({})).toBe("—");
+  describe("partnerName (Commerce identity)", () => {
+    it("показывает только текущий Commerce email и честный fallback", () => {
+      expect(partnerName({ email: "a@b.c" })).toBe("a@b.c");
+      expect(partnerName({ email: null })).toBe("Commerce email недоступен");
     });
   });
 });

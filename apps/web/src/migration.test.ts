@@ -149,7 +149,7 @@ describe("completed Next.js migration", () => {
     const dashboard = dashboardSource();
     const dashboardShell = readFileSync(join(appRoot, "dashboard", "dashboard-shell.tsx"), "utf8");
     const routes = readFileSync(join(appRoot, "dashboard", "dashboard-route.ts"), "utf8");
-    for (const section of ["overview", "keys", "credits", "usage", "support", "profile"]) {
+    for (const section of ["overview", "keys", "credits", "usage", "referral", "support", "profile"]) {
       expect(dashboard).toContain(`section === \"${section}\"`);
       expect(routes).toContain(`\"${section}\"`);
     }

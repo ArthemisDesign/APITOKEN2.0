@@ -167,17 +167,18 @@ first, consumers after a green `deploy/watchdog` on the producer SHA.
 The contract is expand-only; the types are duplicated as local zod schemas on BOTH sides —
 both are edited.
 
-- [ ] Producer `apps/api/src/sales-feed.controller.ts` (or `apps/sales-api/src/internal.controller.ts`
-      for the reverse direction) — first, per the contract protocol.
+- [ ] Producer `apps/api/src/sales-feed.controller.ts` or `apps/sales-api/src/{internal,commerce-partner}.controller.ts`
+      for the reverse direction — first, per the contract protocol.
 - [ ] Consumer `apps/sales-api` (`sync.service.ts`, `commerce.service.ts`) or `apps/api`
-      (`promo.service.ts`, `auth.service.ts`) — after the producer deploy.
-- [ ] `apps/sales-web` — partner frontend (`referrals`, `partner-analytics`, `lib/api.ts`),
-      if the feed change is visible to the partner.
+      (`auth.service.ts`, `referral-sales.client.ts`) — after the producer deploy.
+- [ ] Visible consumers: legacy `apps/sales-web`, or unified `apps/web` / `apps/admin` through the
+      Commerce boundary. Do not let a browser call `/v1/internal/referral/*` or receive either key.
 - [ ] `docs/sales/SALES_PORTAL.md` — the "The sales ↔ commerce boundary" section in the same commit.
 - [ ] The sales feed line in `docs/DEPENDENCIES.md` — if the set of endpoints changes.
-- [ ] Update `tests/contracts/sales-usage-feed.golden.json` and keep producer serialization plus
-      consumer parsing pinned to that same row. Add an end-to-end rejection/acceptance case for any
-      new nullable combination; isolated producer and consumer unit tests are insufficient.
+- [ ] For a usage-feed row change, update `tests/contracts/sales-usage-feed.golden.json` and keep
+      producer serialization plus consumer parsing pinned to that same row. For every boundary,
+      add producer serialization and consumer rejection/acceptance coverage for a new nullable
+      combination; isolated happy-path tests are insufficient.
 
 ## New payment method
 
