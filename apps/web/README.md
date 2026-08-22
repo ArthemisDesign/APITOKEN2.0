@@ -68,6 +68,11 @@ Build or run the site on port 3001, then use the repository's Chrome DevTools Pr
 It injects deterministic dashboard API fixtures, waits for fonts and animation frames, captures the
 full CSS-pixel page, and writes a JSON manifest next to the PNG files.
 
+The language gate observes `document.documentElement.lang` when the first body content is parsed,
+before hydration effects. Localized routes use the synchronous bootstrap in the root `<head>` so
+the shared shell stays statically generated and CDN-cacheable; the gate must not require a
+request-bound `headers()` read that would silently turn every page into per-request SSR.
+
 ```bash
 pnpm --filter @claude-api/web build
 pnpm --filter @claude-api/web exec next start -p 3001

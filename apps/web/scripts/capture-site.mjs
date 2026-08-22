@@ -781,22 +781,47 @@ async function clickSelector(client, selector) {
   await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
 }
 
-async function verifyServerDocumentLanguages() {
+async function verifyInitialDocumentLanguages(client) {
   const cases = [
     ["/", "en"],
     ["/ru/docs", "ru"],
     ["/ko/docs/learn", "ko"],
     ["/zh/docs/learn", "zh-CN"],
   ];
-  for (const [route, language] of cases) {
-    const response = await fetch(new URL(route, baseUrl), { redirect: "error" });
-    const html = await response.text();
-    const renderedLanguage = html.match(/<html[^>]*\slang=["']([^"']+)["']/i)?.[1];
-    if (!response.ok || renderedLanguage !== language) {
-      throw new Error(`Server document language failed for ${route}: ${response.status}, lang=${renderedLanguage ?? "missing"}`);
+  const auditScript = await client.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      window.__documentLanguageAtFirstContent = null;
+      const observer = new MutationObserver(() => {
+        if (window.__documentLanguageAtFirstContent !== null) return;
+        if (document.body?.firstElementChild) {
+          window.__documentLanguageAtFirstContent = document.documentElement.lang;
+          observer.disconnect();
+        }
+      });
+      observer.observe(document, { childList: true, subtree: true });
+    })();`,
+  });
+  try {
+    for (const [route, language] of cases) {
+      const loaded = client.once("Page.loadEventFired");
+      await client.send("Page.navigate", { url: new URL(route, baseUrl).href });
+      await loaded;
+      const result = await client.send("Runtime.evaluate", {
+        expression: `JSON.stringify({
+          current: document.documentElement.lang,
+          atFirstContent: window.__documentLanguageAtFirstContent,
+        })`,
+        returnByValue: true,
+      });
+      const state = JSON.parse(result.result.value);
+      if (state.current !== language || state.atFirstContent !== language) {
+        throw new Error(`Initial document language failed for ${route}: ${JSON.stringify(state)}`);
+      }
     }
+  } finally {
+    await client.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: auditScript.identifier });
   }
-  process.stdout.write("Verified server-rendered document languages for EN, RU, KO, and ZH routes\n");
+  process.stdout.write("Verified pre-content document languages for EN, RU, KO, and ZH routes\n");
 }
 
 async function verifyMobileNavigation(client) {
@@ -2021,7 +2046,6 @@ async function verifyComplianceRouting(client) {
 const chrome = await findChrome();
 const port = 9222 + Math.floor(Math.random() * 500);
 await mkdir(outputDirectory, { recursive: true });
-if (process.env.AUDIT_VERIFY_SERVER_LANGUAGES !== "0") await verifyServerDocumentLanguages();
 
 const browser = spawn(chrome, [
   "--headless=new",
@@ -2046,6 +2070,7 @@ try {
   const warmupLoaded = client.once("Page.loadEventFired");
   await client.send("Page.navigate", { url: baseUrl });
   await warmupLoaded;
+  await verifyInitialDocumentLanguages(client);
 
   const manifest = [];
   for (const capture of captures) {

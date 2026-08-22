@@ -73,6 +73,21 @@ describe("completed Next.js migration", () => {
     expect(authSource).not.toContain("router.refresh()");
   });
 
+  it("sets the route language before content without making the root shell request-bound", () => {
+    const rootLayout = readFileSync(join(appRoot, "layout.tsx"), "utf8");
+    const captureAudit = readFileSync(join(root, "..", "scripts", "capture-site.mjs"), "utf8");
+    const languageScript = rootLayout.indexOf("dangerouslySetInnerHTML={{ __html: documentLanguageScript }}");
+    const documentBody = rootLayout.indexOf("<body>");
+
+    expect(rootLayout).toContain("const documentLanguageScript");
+    expect(rootLayout).not.toContain('from "next/headers"');
+    expect(languageScript).toBeGreaterThan(-1);
+    expect(languageScript).toBeLessThan(documentBody);
+    expect(captureAudit).toContain("__documentLanguageAtFirstContent");
+    expect(captureAudit).toContain("Verified pre-content document languages");
+    expect(captureAudit).not.toContain("verifyServerDocumentLanguages");
+  });
+
   it("limits the advertised welcome bonus to Google and GitHub authentication", () => {
     const authShell = readFileSync(join(root, "components", "auth-shell.tsx"), "utf8");
     const login = readFileSync(join(appRoot, "login", "login-form.tsx"), "utf8");
