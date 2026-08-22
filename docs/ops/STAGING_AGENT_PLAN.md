@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Forward fix for RED `05ea2f33`; host envelope remains incomplete. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Forward fix for RED `240e62a6`; host envelope remains incomplete. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -420,7 +420,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: fix the staging foundation installer on a new SHA; do not retry this SHA.
 
 ### 2026-08-23 — staging foundation installer forward fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `ed322aa91fab24e51ab8bdf3b8928ef5a70b030f`   watchdog: RED
 Result: The trusted foundation service on `05ea2f33` failed before completion. The fixed installer
 allocates the real 80G image with `fallocate`, creates `stage-ci` only after the loopback-backed
 watchdog root exists, creates bind targets without asking `install` to resolve an absent owner path,
@@ -429,7 +429,17 @@ and starts no application.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
 `./deploy/host-image-gate.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED delivery; no lock changed.
-Next: wait for GREEN, then verify the live foundation before adding stores.
+Next: fix the remaining nftables syntax failure on a new SHA; do not retry this SHA.
+
+### 2026-08-23 — stage nftables syntax forward fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: `240e62a6` exposed the exact root cause: the nftables ruleset was compressed onto one line
+without the required statement separators. Render the table and output chain as valid nft syntax,
+while preserving the default-drop policy, loopback allowance, and established-flow allowance.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
+`./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED delivery; no lock changed.
+Next: wait for GREEN, then run live isolation and pressure proofs.
 
 ---
 

@@ -86,7 +86,13 @@ ip netns exec apitoken-stage ip link set veth-stage-ns up
 ip netns exec apitoken-stage ip route del default >/dev/null 2>&1 || true
 ip netns exec apitoken-stage nft delete table inet apitoken_stage >/dev/null 2>&1 || true
 ip netns exec apitoken-stage nft -f - <<'NFT'
-table inet apitoken_stage { chain output { type filter hook output priority 0; policy drop; oifname "lo" accept; ct state established,related accept; } }
+table inet apitoken_stage {
+  chain output {
+    type filter hook output priority 0; policy drop;
+    oifname "lo" accept
+    ct state established,related accept
+  }
+}
 NFT
 
 install -o root -g root -m 0644 "$ROOT/staging.slice" /etc/systemd/system/staging.slice

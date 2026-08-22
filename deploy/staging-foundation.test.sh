@@ -6,7 +6,8 @@ bash -n "$I" "$ROOT/deploy/apitoken-observe-stage.sh" "$ROOT/deploy/stage-observ
   "$ROOT/deploy/apitoken-stage-ctl.sh" "$ROOT/deploy/stage-ctl-helper.sh"
 for locked in 'fallocate -l 80G' '10.254.32.1/30' '10.254.32.2/30' \
   'ip netns add apitoken-stage' 'policy drop' 'mount -o loop,nodev,nosuid' \
-  '/opt/apitoken-staging' '/srv/claude-api-staging' '/var/lib/apitoken-staging'; do
+  '/opt/apitoken-staging' '/srv/claude-api-staging' '/var/lib/apitoken-staging' \
+  'type filter hook output priority 0; policy drop;' 'ct state established,related accept'; do
   grep -Fq "$locked" "$I" || { echo "staging foundation lost: $locked" >&2; exit 1; }
 done
 ! grep -Eq '5434|13000|18787|/var/run/docker.sock|systemctl (start|restart|stop) apitoken-postgres\.service' "$I"
