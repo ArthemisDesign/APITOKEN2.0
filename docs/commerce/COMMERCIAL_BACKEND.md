@@ -62,6 +62,17 @@ Individual engine requests can still fail transiently during a slot cutover. `pa
 retries an idempotent `GET` exactly once (after a 300 ms pause) when it classified the failure as
 retryable (network/timeout, HTTP ≥ 500, 429); mutations are never retried.
 
+`GET /v1/ready` is the Caddy slot-health probe for this Nest process. HTTP 503 only when the
+slot is draining (`SIGUSR1` / `isAccepting() == false`) or commerce PostgreSQL is down. HTTP 200
+with `status: "ok"` and `database: "up"` means the process can accept HTTP. The JSON still
+includes `engine: "up"|"down"` as telemetry; a down Control API origin (`127.0.0.1:8790`) must
+not depool `3000`/`3001`. `GET /v1/health` stays HTTP 200 even when degraded (`ok: false` if
+database or engine is down) and is what the public status page reads.
+
+Routes that need the Control API (account, keys, live balance, admin engine views) still return
+their own `503 "engine is temporarily unavailable"`. Blue-green drain still flips `/v1/ready` to
+503 so Caddy depools the old slot.
+
 When a retryable engine failure reaches `apps/api`, the account/payments controllers log the
 original engine error at warn level (message, HTTP status, retryable flag, provisioning cause)
 before answering the generic `503 "engine is temporarily unavailable"` — the public text is

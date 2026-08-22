@@ -276,8 +276,9 @@ yet been issued.
 manifests. For every candidate the openkeys migrations are run against a separate
 disposable PostgreSQL (`watchdog-test-db openkeys-dsn`), and only then does the rollout
 proceed with a readiness gate on `http://127.0.0.1:3410/api/ready`. Readiness checks the
-configuration, the exact PostgreSQL issuance constraints, and an authenticated read-only engine
-Control API response without exposing the reason for refusal. The `openkeys` database is included
+configuration, secret-box, and the exact PostgreSQL issuance constraints without a Control API
+call, and does not expose the reason for refusal. Engine reachability stays on the Anthropic
+`/health` probe; issuance routes still fail when Control API is down. The `openkeys` database is included
 in the regular, mandatory pre-deploy backup together with the other PostgreSQL contexts.
 
 The GitHub context is called `deploy/openkeys`; its own baseline lives in

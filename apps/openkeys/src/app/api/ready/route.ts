@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { loadConfig } from "@/lib/config";
 import { getDatabase } from "@/lib/db";
-import { getEngineClient } from "@/lib/engine";
 import {
   assertOpenKeysDatabaseContract,
   OPENKEYS_DATABASE_CONTRACT_QUERY,
@@ -28,8 +27,6 @@ export async function GET(): Promise<NextResponse> {
         LIMIT 0
       `),
       pool.query<OpenKeysDatabaseContractRow>(OPENKEYS_DATABASE_CONTRACT_QUERY),
-      // Authenticated and read-only: this proves ENGINE_CONTROL_KEY as well as engine reachability.
-      getEngineClient().getSpendStats(),
     ]);
     assertOpenKeysDatabaseContract(databaseContract.rows);
     if (database.rowCount !== 1 || schema.rowCount !== 0) {

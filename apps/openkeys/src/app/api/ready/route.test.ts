@@ -47,21 +47,22 @@ describe("OpenKeys readiness", () => {
     } as never);
   });
 
-  it("requires config, secret storage, the exact DB contract, and an authenticated engine read", async () => {
+  it("requires config, secret storage, and the exact DB contract without a Control API call", async () => {
     const response = await GET();
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ status: "ready" });
     expect(assertSecretBoxReady).toHaveBeenCalledOnce();
-    expect(vi.mocked(getEngineClient)().getSpendStats).toHaveBeenCalledOnce();
+    expect(getEngineClient).not.toHaveBeenCalled();
   });
 
-  it("returns an opaque 503 when the control API authentication fails", async () => {
-    vi.mocked(getEngineClient).mockReturnValue({
-      getSpendStats: vi.fn().mockRejectedValue(new Error("control key rejected")),
-    } as never);
+  it("returns 200 when the engine client throws", async () => {
+    vi.mocked(getEngineClient).mockImplementation(() => {
+      throw new Error("control key rejected");
+    });
     const response = await GET();
-    expect(response.status).toBe(503);
-    await expect(response.json()).resolves.toEqual({ status: "unavailable" });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ status: "ready" });
+    expect(getEngineClient).not.toHaveBeenCalled();
   });
 
   it("returns an opaque 503 when a pricing constraint is absent", async () => {

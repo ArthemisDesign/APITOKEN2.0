@@ -72,8 +72,12 @@ export class HealthController {
         READINESS_CHECK_TIMEOUT_MS,
       ).catch(() => "down" as const),
     ]);
+    // Slot health is this Nest process: drain and local commerce Postgres.
+    // Engine Control API reachability stays in the JSON as telemetry so Caddy
+    // `:8791` does not depool admin auth, the sales feed, or other non-engine
+    // commerce routes when Anthropic `:8790` is down.
     const response: ReadinessStatus = {
-      status: database === "up" && engine === "up" && this.readiness.isAccepting()
+      status: database === "up" && this.readiness.isAccepting()
         ? "ok"
         : "unavailable",
       database,

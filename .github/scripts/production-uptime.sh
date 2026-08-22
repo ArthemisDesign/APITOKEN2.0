@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # GitHub-hosted public readiness probe. It intentionally uses no production credential: the
 # public contracts are enough to detect host/network/TLS failure and independently traverse the
-# Commerce, Sales, OpenKeys and engine PostgreSQL authority paths.
+# Commerce, Sales and OpenKeys PostgreSQL paths plus the public engine-plane /health origins.
 set -euo pipefail
 export LC_ALL=C
 
@@ -80,11 +80,11 @@ probe_json 'Gemini engine origin' 'https://gemini.api.apitoken.sale/health' \
   '.ok == true' gemini.json
 probe_json 'Unified router origin' 'https://router.apitoken.sale/health' \
   '.ok == true' router.json
-probe_json 'Commerce database and engine readiness' 'https://backend.apitoken.sale/v1/ready' \
-  '.status == "ok" and .database == "up" and .engine == "up"' commerce.json
+probe_json 'Commerce database readiness' 'https://backend.apitoken.sale/v1/ready' \
+  '.status == "ok" and .database == "up"' commerce.json
 probe_json 'Sales database readiness' 'https://partners.apitoken.sale/v1/ready' \
   '.status == "ok" and .database == "up"' sales.json
-probe_json 'OpenKeys database, contract and engine readiness' 'https://openkeys.apitoken.sale/api/ready' \
+probe_json 'OpenKeys database and contract readiness' 'https://openkeys.apitoken.sale/api/ready' \
   '.status == "ready"' openkeys.json
 probe_http 'Vercel status surface' 'https://apitoken.sale/status' web.html
 

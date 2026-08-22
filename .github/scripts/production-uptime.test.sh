@@ -27,6 +27,11 @@ if [[ -n ${MOCK_BAD_URL:-} && $url == *"$MOCK_BAD_URL"* ]]; then
   printf '503'
   exit 0
 fi
+if [[ ${MOCK_COMMERCE_ENGINE:-} == down && $url == *backend* ]]; then
+  printf '{"status":"ok","database":"up","engine":"down"}\n' >"$output"
+  printf '200'
+  exit 0
+fi
 case "$url" in
   *backend*) printf '{"status":"ok","database":"up","engine":"up"}\n' >"$output" ;;
   *partners*) printf '{"status":"ok","database":"up"}\n' >"$output" ;;
@@ -89,7 +94,15 @@ if MOCK_BAD_URL=backend.apitoken.sale run_probe; then
   printf 'HTTP failure unexpectedly passed\n' >&2
   exit 1
 fi
-grep -Fq -- '- Commerce database and engine readiness: HTTP 503' "$TEMP/summary"
+grep -Fq -- '- Commerce database readiness: HTTP 503' "$TEMP/summary"
+
+: >"$TEMP/gh.log"
+: >"$TEMP/summary"
+MOCK_COMMERCE_ENGINE=down run_probe
+! grep -Fq -- '--method POST' "$TEMP/gh.log" || {
+  printf 'engine-down commerce JSON unexpectedly mutated an issue\n' >&2
+  exit 1
+}
 
 : >"$TEMP/gh.log"
 : >"$TEMP/summary"

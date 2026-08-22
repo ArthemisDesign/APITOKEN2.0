@@ -109,8 +109,8 @@ The Prometheus, Alertmanager and blackbox stack runs on the production server. C
 total host, power, network or Docker failure also stops the internal alert path. The independent
 `.github/workflows/production-uptime.yml` workflow closes that gap from a GitHub-hosted runner every
 five minutes. Without production credentials it checks eight public contracts: the Anthropic,
-OpenAI and Gemini engine origins, the unified router, Commerce database+engine readiness, Sales
-database readiness, OpenKeys database+contract+engine readiness, and the Vercel status surface.
+OpenAI and Gemini engine origins, the unified router, Commerce database readiness, Sales
+database readiness, OpenKeys database+contract readiness, and the Vercel status surface.
 
 A failure makes the workflow red and opens exactly one GitHub issue titled
 `[uptime] Production public readiness is failing`. Repeated failures keep that issue open without

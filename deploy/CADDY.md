@@ -70,7 +70,7 @@ The only commerce slot selector is the loopback balancer `127.0.0.1:8791`, which
 - blue/green slot A: `127.0.0.1:3000`
 - blue/green slot B: `127.0.0.1:3001`
 
-Caddy probes `GET /v1/ready` on each slot every 2 seconds with a 2-second timeout and accepts only a `2xx` response. A process that is starting, draining, or missing a required dependency must return `503` from `/v1/ready`; Caddy then removes that slot from new-request selection. When the endpoint returns `2xx` again, Caddy automatically makes the slot eligible. Every public/admin vhost and application targets `8791`, never `3000` or `3001`.
+Caddy probes `GET /v1/ready` on each slot every 2 seconds with a 2-second timeout and accepts only a `2xx` response. A process that is draining (`SIGUSR1`) or whose local commerce PostgreSQL check fails must return `503` from `/v1/ready`; Caddy then removes that slot from new-request selection. Engine Control API reachability is not a commerce slot dependency: HTTP 200 with `status: "ok"` and `database: "up"` keeps the slot in the pool even when the JSON reports `engine: "down"`. When the endpoint returns `2xx` again after drain or a local DB outage, Caddy automatically makes the slot eligible. Every public/admin vhost and application targets `8791`, never `3000` or `3001`.
 
 For the first reload that adds `127.0.0.1:3001`, leave `apitoken-api@3001.service` stopped. Validate and reload Caddy while port 3000 continues serving. The new upstream initially dial-fails and Caddy's first active check marks it down; the configured dial-retry window covers the short interval before that health state is recorded. Start 3001 only through `api-bluegreen.sh` after the reload.
 
