@@ -58,6 +58,11 @@
 > MemoryMax=32G / CPUQuota=400% / loopback 80G; Docker — rootless у `deploy-stage`;
 > первый код — только extract `contour-config`; infra-proof — расширение
 > `deploy/host-image-gate.sh`. Ресурсные числа v4 (8G / 2 CPU / 50G) **заменены**.
+>
+> **План исполнения для агента:** [`docs/ops/STAGING_AGENT_PLAN.md`](STAGING_AGENT_PLAN.md).
+> Этот файл — архитектура, инварианты и решения владельца. Пошаговая работа, статусы фаз,
+> запреты и журнал SHA живут в плане исполнения. Агент не начинает код «по этому документу»,
+> минуя план исполнения. Агент обновляет план исполнения в том же коммите, что и работу.
 
 ---
 
@@ -96,6 +101,7 @@ degradation gate, human approval и host-owned `promotion/eligible`. **Хотф�
 привезённая проверяемым кандидатом.
 
 Инварианты раздела 9 закрыты в v7 и уточнены в v8. Этот документ — implementation plan.
+Порядок работы агента, чеклисты и журнал SHA — [`docs/ops/STAGING_AGENT_PLAN.md`](STAGING_AGENT_PLAN.md).
 Приёмка живого контура — только по разделу 12. Буквальная реализация редакций v1–v6
 создала бы две наиболее опасные регрессии: циклический production admission через
 `deploy/watchdog` и выполнение неутверждённого infrastructure candidate как root на
@@ -602,7 +608,8 @@ origin/master ─▶ hotfix/x ──▶ merge сразу в master (deploy/agent
   Поток «merge в stage → freeze → attest по команде оператора → eligible → FF того же SHA
   в master» и fail-closed admission — только в фазе 7, после drills. Запрет `git push -f`
   в `stage`. Скрипты `deploy/agent-merge-stage.sh` / `deploy/stage-sync.sh` /
-  `deploy/promotion-attest.sh`.
+  `deploy/promotion-attest.sh`. Пошаговый чеклист этих правок —
+  [`docs/ops/STAGING_AGENT_PLAN.md`](STAGING_AGENT_PLAN.md) фазы 2 и 7.
 - `CONTRIBUTING.md`: описание двухступенчатой доставки, разделение информационных и
   авторизующих статусов, `promotion/eligible` как admission, критерии hotfix — в фазе 7.
 - Индексы `docs/README.md` и карта в `AGENTS.md` — по факту добавления новых документов.
@@ -1043,6 +1050,12 @@ validation, повторного stage deploy/degrade и нового approval.
 Каждая фаза — отдельные коммиты и зелёные статусы; документы обновляются в тех же коммитах.
 Оценки — грубые (человеко-дни оператора + доля агентской работы).
 
+Исполняемый порядок для агента (чеклисты, запреты до фазы, журнал SHA) —
+[`docs/ops/STAGING_AGENT_PLAN.md`](STAGING_AGENT_PLAN.md). Этот раздел задаёт состав фаз;
+план исполнения задаёт, что агент делает сейчас. При расхождении по архитектуре и
+lock §11.3 побеждает этот файл; при расхождении «что делать сейчас» агент останавливается
+и чинит оба документа в одном коммите, а lock §11.3 без команды владельца не меняет.
+
 Порядок фаз **изменён относительно v1–v6**. Прежняя редакция вводила fail-closed production
 enforcement уже в фазе 2, хотя stage data, components и degradation gate появлялись позже.
 Это заблокировало бы обычные production merges до готовности контура.
@@ -1268,8 +1281,11 @@ Implementation нельзя считать принятой, пока не пр�
 
 ## 13. Связанные документы
 
+- [`docs/ops/STAGING_AGENT_PLAN.md`](STAGING_AGENT_PLAN.md) — обязательный план исполнения:
+  порядок фаз, стоячие запреты, чеклисты, журнал SHA. Агент следует ему и обновляет его
+  в том же коммите, что и работу. Архитектура и lock остаются в этом файле.
 - `CONTRIBUTING.md`, `BRANCHES.md`, `AGENTS.md` — текущая модель и правила (обновляются в
-  фазах 2 и 6 по мере observe-only → enforcement).
+  фазах 2 и 7 по мере observe-only → enforcement).
 - `docs/ops/INFRASTRUCTURE.md`, `docs/ops/DEPLOYMENT.md`, `deploy/README.md` — прод-топология
   и конвейер, которые стенд зеркалирует в application lane.
 - `docs/ops/MONITORING.md` — прод-метрики, список «золотых» метрик гейта растёт из него.
