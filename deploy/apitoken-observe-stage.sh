@@ -8,7 +8,14 @@ case "${words[0]:-}" in
   status|help) ((${#words[@]} == 1)) || exit 2 ;;
   ready) ((${#words[@]} == 2)) || exit 2 ;;
   logs)
-    ((${#words[@]} == 2 || (${#words[@]} >= 4 && ${words[2]} == --since))) || exit 2 ;;
+    if ((${#words[@]} == 2)); then
+      :
+    elif ((${#words[@]} >= 4)) && [[ ${words[2]} == --since ]]; then
+      :
+    else
+      exit 2
+    fi
+    ;;
   *) echo 'observe-stage: denied' >&2; exit 2 ;;
 esac
 exec sudo -n "$HELPER" "$raw"

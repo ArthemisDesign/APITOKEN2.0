@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
+TEMP_OBSERVE_STAGE_FIXTURE=$(mktemp)
+trap 'rm -f -- "$TEMP_OBSERVE_STAGE_FIXTURE"' EXIT
 I=$ROOT/deploy/install-staging-foundation.sh
 bash -n "$I" "$ROOT/deploy/apitoken-observe-stage.sh" "$ROOT/deploy/stage-observe-helper.sh" \
   "$ROOT/deploy/apitoken-stage-ctl.sh" "$ROOT/deploy/stage-ctl-helper.sh"
@@ -33,5 +35,11 @@ grep -Fq 'attest|sync|reseed' "$ROOT/deploy/stage-ctl-helper.sh"
 grep -Fq 'phase-disabled' "$ROOT/deploy/stage-ctl-helper.sh"
 grep -Fq 'systemctl stop staging.slice' "$ROOT/deploy/stage-ctl-helper.sh"
 if SSH_ORIGINAL_COMMAND='shell' bash "$ROOT/deploy/apitoken-observe-stage.sh" >/dev/null 2>&1; then exit 1; fi
+wrapper=$TEMP_OBSERVE_STAGE_FIXTURE
+sed -e 's#^HELPER=.*#HELPER=/bin/echo#' -e 's#exec sudo -n "\$HELPER"#exec "\$HELPER"#' \
+  "$ROOT/deploy/apitoken-observe-stage.sh" >"$wrapper"
+SSH_ORIGINAL_COMMAND='logs apitoken-staging-foundation-install.service --since 10 minutes ago' \
+  bash "$wrapper" | grep -Fq '10 minutes ago' || { rm -f "$wrapper"; exit 1; }
+rm -f "$wrapper"
 if SSH_ORIGINAL_COMMAND='sync' SUDO_USER=stage-ctl bash "$ROOT/deploy/stage-ctl-helper.sh" >/dev/null 2>&1; then exit 1; fi
 printf 'staging-foundation.test: PASS\n'

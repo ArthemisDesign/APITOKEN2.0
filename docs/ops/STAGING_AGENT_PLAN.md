@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Forward fix for RED `240e62a6`; host envelope remains incomplete. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `134db1956fe26f44e104c1ad53ff0617d938a6bd` | 2026-08-23 | GREEN host envelope; fixing `observe-stage` multiword `--since`. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -432,14 +432,25 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED de
 Next: fix the remaining nftables syntax failure on a new SHA; do not retry this SHA.
 
 ### 2026-08-23 — stage nftables syntax forward fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `134db1956fe26f44e104c1ad53ff0617d938a6bd`   watchdog: GREEN
 Result: `240e62a6` exposed the exact root cause: the nftables ruleset was compressed onto one line
 without the required statement separators. Render the table and output chain as valid nft syntax,
 while preserving the default-drop policy, loopback allowance, and established-flow allowance.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
 `./deploy/host-image-gate.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED delivery; no lock changed.
-Next: wait for GREEN, then run live isolation and pressure proofs.
+Next: fix `observe-stage` multiword `--since`, then run live isolation and pressure proofs.
+
+### 2026-08-23 — observe-stage multiword since fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The live `observe-stage` forced command works for status, but its compound arithmetic parser
+expanded an absent third word under `set -u` before the word-count guard. Split the parser into
+ordered branches and add a regression for a multiword `--since` value. No privilege or permitted
+command changes.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: verify live read-only logs, then add stores and close Phase 2.
 
 ---
 
