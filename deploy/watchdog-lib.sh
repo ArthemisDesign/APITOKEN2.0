@@ -983,7 +983,7 @@ wd_path_is_infrastructure() {
 # files fail safe into installation until they are explicitly proven local-only here.
 wd_path_requires_infrastructure_install() {
   case "$1" in
-    deploy/*.md|deploy/*.test.sh|deploy/agent-merge.sh|deploy/agent-merge.suite.sh|\
+    deploy/*.md|deploy/*.test.sh|deploy/test-fixtures/*|deploy/agent-merge.sh|deploy/agent-merge.suite.sh|\
     deploy/test-stage2-e2e.sh|deploy/sccache-cargo.sh|deploy/agent-worktree.sh|\
     deploy/DELETE_WORKTREE.sh|deploy/prune-merged.sh|deploy/next-cache.sh|\
     deploy/typescript-scope.mjs|deploy/typescript-build-contexts.sh|\
@@ -1071,6 +1071,8 @@ wd_path_is_monitoring_definition() {
 wd_path_is_controller_definition() {
   case "$1" in
     deploy/watchdog.sh|deploy/watchdog-lib.sh|deploy/validation-plan.sh|\
+    deploy/contour-config.sh|deploy/contour-config.py|deploy/contour-config.schema.json|\
+    deploy/contour-production.json|\
     deploy/gpt-image-2-live-gate.sh|deploy/gpt-image-2-public-smoke-gate.sh|\
     deploy/gpt-image-2-public-preflight-gate.sh|deploy/gpt-image-2-public-preflight-v2-gate.sh|\
     deploy/gpt-image-2-public-preflight-v3-gate.sh|deploy/gpt-image-2-public-paid-smoke-gate.sh|\

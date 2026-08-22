@@ -84,12 +84,17 @@ fi
 validate_timeout "$READINESS_TIMEOUT"
 validate_readiness_interval "${READINESS_INTERVAL_SECONDS:-2}"
 
-COMMERCE_RELEASE_ROOT=$(canonicalize_release_root "${COMMERCE_RELEASE_ROOT:-/opt/apitoken/releases}" /opt/apitoken commerce)
-ENGINE_RELEASE_ROOT=$(canonicalize_release_root "${ENGINE_RELEASE_ROOT:-/srv/claude-api/releases}" /srv/claude-api engine)
-DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}
-ENGINE_READY_URL=${ENGINE_READY_URL:-http://127.0.0.1:8787/ready}
-ENGINE_POSTGRES_ENV=${ENGINE_POSTGRES_ENV:-/srv/claude-api/data/engine-postgres.env}
-ENGINE_SERVICE=${ENGINE_SERVICE:-claude-api.service}
+IFS=, read -r ANTHROPIC_PORT_A ANTHROPIC_PORT_B <<<"$(contour_port_pair "$CONTOUR_PORTS_ANTHROPIC_SLOTS")"
+COMMERCE_RELEASE_ROOT=$(canonicalize_release_root \
+  "${COMMERCE_RELEASE_ROOT:-$CONTOUR_ROOTS_COMMERCE_RELEASE}" \
+  "${CONTOUR_ROOTS_COMMERCE_RELEASE%/releases}" commerce)
+ENGINE_RELEASE_ROOT=$(canonicalize_release_root \
+  "${ENGINE_RELEASE_ROOT:-$CONTOUR_ROOTS_ENGINE_RELEASE}" \
+  "${CONTOUR_ROOTS_ENGINE_RELEASE%/releases}" engine)
+DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-$CONTOUR_LOCKS_DEPLOY}
+ENGINE_READY_URL=${ENGINE_READY_URL:-http://$CONTOUR_NETWORK_LOOPBACK_HOST:$ANTHROPIC_PORT_A/ready}
+ENGINE_POSTGRES_ENV=${ENGINE_POSTGRES_ENV:-$CONTOUR_ROOTS_DATA/engine-postgres.env}
+ENGINE_SERVICE=${ENGINE_SERVICE:-$CONTOUR_UNITS_ENGINE_LEGACY}
 
 validate_service_unit "$ENGINE_SERVICE"
 

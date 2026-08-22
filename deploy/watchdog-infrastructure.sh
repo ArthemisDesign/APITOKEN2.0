@@ -5,8 +5,11 @@ LIB=/usr/local/lib/apitoken-watchdog/watchdog-lib.sh
 [[ -r $LIB ]] || { printf 'watchdog library is not installed\n' >&2; exit 1; }
 # shellcheck source=deploy/watchdog-lib.sh
 source "$LIB"
+CONTOUR_ROOT=${LIB%/*}
+# shellcheck source=deploy/contour-config.sh
+source "$CONTOUR_ROOT/contour-config.sh"
 
-STATE_ROOT=/var/lib/apitoken/watchdog
+STATE_ROOT=$CONTOUR_ROOTS_STATE
 CANDIDATE_ROOT=$STATE_ROOT/candidates
 REQUESTED_MODE=auto
 

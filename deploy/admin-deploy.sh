@@ -11,6 +11,11 @@ set -euo pipefail
 # change never disturbs the commerce blue-green API or the partner portal. The app has no
 # database and no secrets, so there are no migrations and no env file.
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if [[ -f $SCRIPT_DIR/contour-config.sh ]]; then CONTOUR_ROOT=$SCRIPT_DIR; else CONTOUR_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd); fi
+# shellcheck source=deploy/contour-config.sh
+source "$CONTOUR_ROOT/contour-config.sh"
+
 # Needs root (chown, systemctl). The watchdog runs as `deploy`, so self-elevate — robust whether
 # invoked with or without sudo.
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then exec sudo -n -- "$0" "$@"; fi
@@ -18,13 +23,13 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then exec sudo -n -- "$0" "$@"; fi
 SHA=${1:?usage: admin-deploy.sh <full-40-char-sha>}
 [[ $SHA =~ ^[0-9a-f]{40}$ ]] || { echo "admin-deploy: SHA must be a full 40-char commit hash" >&2; exit 1; }
 
-CANDIDATE_ROOT=${ADMIN_CANDIDATE_ROOT:-/var/lib/apitoken/watchdog/candidates}
-RELEASE_ROOT=${ADMIN_RELEASE_ROOT:-/opt/apitoken/admin-releases}
-WEB_UNIT=apitoken-admin.service
+CANDIDATE_ROOT=${ADMIN_CANDIDATE_ROOT:-$CONTOUR_ROOTS_CANDIDATE}
+RELEASE_ROOT=${ADMIN_RELEASE_ROOT:-$CONTOUR_ROOTS_ADMIN_RELEASE}
+WEB_UNIT=$CONTOUR_UNITS_ADMIN
 # The health endpoint returns 200 in both the previous release and the candidate, so rollback
 # health remains testable on the same stable path.
-WEB_HEALTH=${ADMIN_WEB_HEALTH:-http://127.0.0.1:3700/api/health}
-WEB_ROLLBACK_HEALTH=${ADMIN_WEB_ROLLBACK_HEALTH:-http://127.0.0.1:3700/api/health}
+WEB_HEALTH=${ADMIN_WEB_HEALTH:-$CONTOUR_ORIGINS_ADMIN/api/health}
+WEB_ROLLBACK_HEALTH=${ADMIN_WEB_ROLLBACK_HEALTH:-$CONTOUR_ORIGINS_ADMIN/api/health}
 HEALTH_RETRIES=${ADMIN_HEALTH_RETRIES:-30}
 HEALTH_INTERVAL=${ADMIN_HEALTH_INTERVAL:-2}
 

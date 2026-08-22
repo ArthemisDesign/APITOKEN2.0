@@ -5,8 +5,11 @@ LIB=/usr/local/lib/apitoken-watchdog/watchdog-lib.sh
 [[ -r $LIB ]] || { printf 'watchdog is not installed\n' >&2; exit 1; }
 # shellcheck source=deploy/watchdog-lib.sh
 source "$LIB"
+CONTOUR_ROOT=${LIB%/*}
+# shellcheck source=deploy/contour-config.sh
+source "$CONTOUR_ROOT/contour-config.sh"
 
-STATE_ROOT=/var/lib/apitoken/watchdog
+STATE_ROOT=$CONTOUR_ROOTS_STATE
 REJECTED=$STATE_ROOT/rejected.sha
 
 usage() {
@@ -37,13 +40,14 @@ case "${1:-}" in
         printf 'candidate_slot_%s=%s\n' "$slot" "$(<"$STATE_ROOT/candidate-validation-$slot.status")"
       fi
     done
-    systemctl --no-pager --full status apitoken-deploy-watchdog.timer \
-      apitoken-deploy-watchdog.service apitoken-candidate-validator.timer \
-      apitoken-candidate-validator.service || true
+    systemctl --no-pager --full status "$CONTOUR_UNITS_WATCHDOG_TIMER" \
+      "$CONTOUR_UNITS_WATCHDOG_SERVICE" "$CONTOUR_UNITS_CANDIDATE_VALIDATOR_TIMER" \
+      "$CONTOUR_UNITS_CANDIDATE_VALIDATOR_SERVICE" || true
     ;;
   run)
     [[ ${EUID:-$(id -u)} -eq 0 ]] || wd_die "run requires root"
-    systemctl start apitoken-deploy-watchdog.service apitoken-candidate-validator.service
+    systemctl start "$CONTOUR_UNITS_WATCHDOG_SERVICE" \
+      "$CONTOUR_UNITS_CANDIDATE_VALIDATOR_SERVICE"
     ;;
   retry)
     [[ ${EUID:-$(id -u)} -eq 0 ]] || wd_die "retry requires root"
@@ -53,10 +57,10 @@ case "${1:-}" in
     [[ $rejected == "$2" ]] || wd_die "quarantined candidate is $rejected, not $2"
     rm -f -- "$REJECTED"
     wd_log "cleared quarantine for $2"
-    systemctl start apitoken-deploy-watchdog.service
+    systemctl start "$CONTOUR_UNITS_WATCHDOG_SERVICE"
     ;;
   logs)
-    failure_dir=/var/lib/apitoken/watchdog/failures
+    failure_dir=$CONTOUR_ROOTS_STATE/failures
     shopt -s nullglob
     reports=("$failure_dir"/*.summary.md)
     if (( ${#reports[@]} > 0 )); then
@@ -72,8 +76,8 @@ case "${1:-}" in
         printf '\n'
       fi
     fi
-    journalctl -u apitoken-deploy-watchdog.service \
-      -u apitoken-candidate-validator.service -n 250 --no-pager
+    journalctl -u "$CONTOUR_UNITS_WATCHDOG_SERVICE" \
+      -u "$CONTOUR_UNITS_CANDIDATE_VALIDATOR_SERVICE" -n 250 --no-pager
     ;;
   -h|--help|'')
     usage

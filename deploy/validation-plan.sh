@@ -139,6 +139,14 @@ policy_sha256=$(
   for path in \
     deploy/validation-plan.sh \
     deploy/watchdog-lib.sh \
+    deploy/contour-config.sh \
+    deploy/contour-config.py \
+    deploy/contour-config.schema.json \
+    deploy/contour-production.json \
+    deploy/contour-config.test.sh \
+    deploy/test-fixtures/contour-config/production-resolved.txt \
+    deploy/test-fixtures/contour-config/stage-safe.json \
+    deploy/test-fixtures/contour-config/shell-injection.json \
     deploy/typescript-scope.mjs \
     deploy/next-cache.sh \
     deploy/typescript-build-contexts.sh \

@@ -4,14 +4,16 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=deploy/watchdog-lib.sh
 source "$SCRIPT_DIR/watchdog-lib.sh"
+# shellcheck source=deploy/contour-config.sh
+source "$SCRIPT_DIR/contour-config.sh"
 
-STATE_ROOT=/var/lib/apitoken/watchdog
+STATE_ROOT=$CONTOUR_ROOTS_STATE
 CANDIDATE_ROOT=$STATE_ROOT/candidates
 PENDING_FILE=$STATE_ROOT/pending-migration.sha
 DB_MANIFEST=$STATE_ROOT/database-migrations.manifest
-API_ENV_FILE=/etc/apitoken/api.env
-DEPLOY_LOCK=/run/lock/apitoken-deploy.lock
-MIGRATION_LOCK=/run/lock/apitoken-db-migrate.lock
+API_ENV_FILE=$CONTOUR_ROOTS_CONFIG/api.env
+DEPLOY_LOCK=$CONTOUR_LOCKS_DEPLOY
+MIGRATION_LOCK=$CONTOUR_LOCKS_MIGRATION
 BACKUP_RUNNER=$SCRIPT_DIR/watchdog-backup.sh
 PRICING_RETIREMENT_ADMISSION=$SCRIPT_DIR/pricing-retirement-admission.sh
 
@@ -59,11 +61,11 @@ wd_log "creating a fresh PostgreSQL backup before automatic migration"
 "$PRICING_RETIREMENT_ADMISSION" commerce "$SHA"
 
 wd_log "automatically applying the exact build that passed the disposable-database test gate for $SHA"
-deploy_uid=$(id -u deploy)
-deploy_gid=$(id -g deploy)
-bash -c 'set -a; . "$1"; set +a; export HOME=/home/deploy; exec setpriv --reuid="$2" --regid="$3" --init-groups --no-new-privs node "$4"' \
-  watchdog-migrate "$API_ENV_FILE" "$deploy_uid" "$deploy_gid" \
-  "$CANDIDATE/packages/db/dist/migrate.js"
+deploy_uid=$(id -u "$CONTOUR_IDENTITY_RUNTIME_USER")
+deploy_gid=$(id -g "$CONTOUR_IDENTITY_RUNTIME_GROUP")
+bash -c 'set -a; . "$1"; set +a; export HOME="$2"; exec setpriv --reuid="$3" --regid="$4" --init-groups --no-new-privs node "$5"' \
+  watchdog-migrate "$API_ENV_FILE" "/home/$CONTOUR_IDENTITY_RUNTIME_USER" \
+  "$deploy_uid" "$deploy_gid" "$CANDIDATE/packages/db/dist/migrate.js"
 
 cp -- "$MANIFEST" "${DB_MANIFEST}.tmp.$$"
 chown root:deploy "${DB_MANIFEST}.tmp.$$"

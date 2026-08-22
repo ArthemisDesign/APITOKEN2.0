@@ -96,6 +96,27 @@ content-addressed compiler cache under the git-common-dir. It always clears an i
 worktree's `target/` or the caller's explicit `CARGO_TARGET_DIR`. Worktree removal therefore
 reclaims task build output without allowing fingerprints or linked artifacts to mix across paths.
 
+## Immutable production contour
+
+`deploy/contour-production.json` is the only production contour inventory for the watchdog and the
+controllers it calls. It owns the production users, `master` branch, GitHub contexts and
+environments, roots, locks, units, ports, origins, Compose project names, lanes, network identity,
+and resource identity. `deploy/contour-config.schema.json` is the closed schema.
+`deploy/contour-config.py` rejects missing and unknown fields, unsafe values, duplicate inventory,
+and collisions between contours. Port collisions include the network namespace and bind address,
+so a later isolated netns can use the same numeric application ports without sharing an endpoint.
+`deploy/contour-config.sh` loads validated values with fixed variable names and no `eval`.
+
+The controller installer publishes and validates the schema, production config, validator, and
+loader before it atomically publishes the watchdog entrypoint. The watchdog, blue-green controllers,
+component runners, migration/backup bridges, and GitHub bridge resolve their production inventory
+from this config. Existing command overrides remain bounded by their current validation, but their
+production defaults come from the contour. `deploy/contour-config.test.sh` is merge-blocking in both
+the local deployment gate and trusted-host static gate. Its golden snapshot proves that the extract
+did not change the current production inventory. Its synthetic second contour proves that overlapping
+users, roots, locks, ports in one namespace, units, GitHub names, and Compose projects fail closed.
+Phase 1 ships no staging contour and creates no staging host object.
+
 These scripts finalize immutable SHA-addressed releases, move release links atomically, and activate
 processes with exact-systemd-unit readiness gates. The automatic watchdog passes
 `--tested-candidate`: `deploy.sh` validates and promotes the frozen build instead of compiling it a

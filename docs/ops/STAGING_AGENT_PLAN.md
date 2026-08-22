@@ -108,7 +108,7 @@ Read order at the start of work:
 |---|---|---|---|---|
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
-| **Phase 1 — `contour-config` extract** | **NOT STARTED** | — | — | First code. Production-only. |
+| **Phase 1 — `contour-config` extract** | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Production contour implemented and locally green. Delivery watchdog pending. |
 | Phase 2 — trusted contour foundation | BLOCKED on 1 | — | — | Users, slice, loopback, netns, rootless Docker, isolation tests. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
@@ -252,28 +252,28 @@ process.
 
 ### In scope
 
-- [ ] Inventory every production-hardcoded user, group, branch, GitHub context/environment,
+- [x] Inventory every production-hardcoded user, group, branch, GitHub context/environment,
       state/release/data/cache root, lock path, unit name, port/origin, Compose project, enabled
       lane, and reporting helper used by `deploy/watchdog.sh` and the controllers it calls
       (`deploy/watchdog-*.sh`, `deploy/engine-bluegreen.sh`, `deploy/api-bluegreen.sh`,
       `deploy/router-bluegreen.sh`, and any helper those scripts source). Write the inventory
       into the schema comments or a test fixture. Do not leave a path as a magic string next
       to a contour field that already exists.
-- [ ] Add an immutable contour-config schema. Required coverage is `STAGING_ENVIRONMENT.md` §5.1.
+- [x] Add an immutable contour-config schema. Required coverage is `STAGING_ENVIRONMENT.md` §5.1.
       Schema validation rejects: missing fields, unknown fields that collide with inventory,
       overlapping roots/ports/units/users between two contours (even if only one contour ships
       now), and a stage contour that reuses a production path.
-- [ ] Encode **one** contour: production, with values equal to today’s live inventory. The
+- [x] Encode **one** contour: production, with values equal to today’s live inventory. The
       extract is a refactor, not a retune. If you need a different port or path, you are in
       the wrong phase.
-- [ ] Switch production watchdog/controllers to **read** that config. They must not keep a
+- [x] Switch production watchdog/controllers to **read** that config. They must not keep a
       parallel hardcoded copy that can drift. Env stays owned by `crates/server/src/config.rs`
       for the engine binary; deploy scripts still do not grow a new ad-hoc env dialect that
       bypasses the schema.
-- [ ] Tests: valid production config loads and yields the same paths/ports/units as before.
+- [x] Tests: valid production config loads and yields the same paths/ports/units as before.
       Invalid/overlapping config fails closed. A second contour file is not required yet, but
       the overlap rule must already be testable (fixture vs production).
-- [ ] `deploy/README.md` and `docs/ops/STAGING_ENVIRONMENT.md` describe the extract if they
+- [x] `deploy/README.md` and `docs/ops/STAGING_ENVIRONMENT.md` describe the extract if they
       name the old hardcoded roots as the only source. This file’s phase 1 log is updated.
       Do **not** change `AGENTS.md` / `BRANCHES.md` / `CONTRIBUTING.md` in this phase.
 
@@ -295,15 +295,27 @@ staging admission. Watchdog GREEN on this SHA is the phase 1 exit.
 
 ### Exit criteria
 
-- [ ] Production still deploys from `master` with no new precondition.
+- [x] Production still deploys from `master` with no new precondition.
 - [ ] No staging Unix user, directory, unit, or slice exists on the host as a result of this SHA.
-- [ ] Contour schema is in the repository and production watchdog reads it.
-- [ ] Overlap/unknown-inventory validation is merge-blocking in tests.
+- [x] Contour schema is in the repository and production watchdog reads it.
+- [x] Overlap/unknown-inventory validation is merge-blocking in tests.
 - [ ] This file’s status board says phase 1 `DONE` with the GREEN SHA.
 
 ### Execution log
 
-*(empty — first phase 1 commit appends here)*
+### 2026-08-23 — immutable production contour implemented
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Added the closed production contour schema, one production config, a fail-closed validator
+and Bash loader, overlap fixtures, and a golden resolved-inventory snapshot. Production watchdog,
+reporting, root bridges, release selectors, and application controllers resolve contour-owned values
+from that config. No staging config or host object was added. Production `master` admission is unchanged.
+Checks actually run: `bash -n deploy/*.sh deploy/apitoken-db-dump`;
+`bash deploy/contour-config.test.sh`; `bash deploy/watchdog-backup.test.sh`;
+`bash deploy/watchdog-lib.test.sh`; `bash deploy/agent-merge.suite.sh`;
+`bash deploy/lib.test.sh`; `python3 deploy/repository-invariants.py`; `git diff --check`;
+`./deploy/host-image-gate.sh`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: amend this log into the delivery commit, push, merge, and wait for GREEN `deploy/watchdog`.
 
 ---
 

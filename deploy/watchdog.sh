@@ -5,12 +5,14 @@ set -E
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=deploy/watchdog-lib.sh
 source "$SCRIPT_DIR/watchdog-lib.sh"
+# shellcheck source=deploy/contour-config.sh
+source "$SCRIPT_DIR/contour-config.sh"
 
-SOURCE_REPO=/opt/apitoken/repo
-REMOTE=origin
-BRANCH=master
-STATE_ROOT=/var/lib/apitoken/watchdog
-CANDIDATE_ROOT=$STATE_ROOT/candidates
+SOURCE_REPO=$CONTOUR_ROOTS_SOURCE_REPO
+REMOTE=$CONTOUR_GIT_REMOTE
+BRANCH=$CONTOUR_GIT_BRANCH
+STATE_ROOT=$CONTOUR_ROOTS_STATE
+CANDIDATE_ROOT=$CONTOUR_ROOTS_CANDIDATE
 CANDIDATE_RETENTION_SECONDS=$((24 * 60 * 60))
 # Immutable releases and per-deployment dumps accumulate once per delivery and nothing else removes
 # them. Keep enough history for multi-step rollback and forensics, bounded so disk use cannot grow
@@ -18,14 +20,14 @@ CANDIDATE_RETENTION_SECONDS=$((24 * 60 * 60))
 # process are always retained regardless of these counts.
 RELEASE_RETENTION_KEEP=10
 PREDEPLOY_DUMP_RETENTION_KEEP=10
-CI_USER=apitoken-ci
-CI_HOME=$STATE_ROOT/ci-home
-CI_CARGO_TARGET=$CI_HOME/cargo-target
-CI_NEXT_CACHE_ROOT=$CI_HOME/next-cache
-CI_TYPESCRIPT_ARTIFACT_CACHE_ROOT=$CI_HOME/typescript-artifacts
-CI_TOOLCHAIN=/opt/apitoken-watchdog/rust-toolchain
-CONTROLLER_ROOT=/usr/local/lib/apitoken-watchdog/controller
-CONTROLLER_ENTRYPOINT=/usr/local/lib/apitoken-watchdog/watchdog.sh
+CI_USER=$CONTOUR_IDENTITY_CI_USER
+CI_HOME=$CONTOUR_ROOTS_CI_HOME
+CI_CARGO_TARGET=$CONTOUR_ROOTS_CI_CARGO_TARGET
+CI_NEXT_CACHE_ROOT=$CONTOUR_ROOTS_CI_NEXT_CACHE
+CI_TYPESCRIPT_ARTIFACT_CACHE_ROOT=$CONTOUR_ROOTS_CI_TYPESCRIPT_ARTIFACT_CACHE
+CI_TOOLCHAIN=$CONTOUR_ROOTS_CI_TOOLCHAIN
+CONTROLLER_ROOT=$CONTOUR_ROOTS_CONTROLLER
+CONTROLLER_ENTRYPOINT=${CONTOUR_ROOTS_CONTROLLER%/controller}/watchdog.sh
 VALIDATION_PLANNER=$CONTROLLER_ROOT/validation-plan.sh
 AUTHBOT_RUNTIME_STATE=$CONTROLLER_ROOT/authbot-runtime-state.sh
 GPT_IMAGE_2_LIVE_GATE=$CONTROLLER_ROOT/gpt-image-2-live-gate.sh
@@ -48,24 +50,31 @@ GPT_IMAGE_2_SURFACE_PROBE_GATE=$CONTROLLER_ROOT/gpt-image-2-surface-probe-gate.s
 GPT_IMAGE_2_SURFACE_PROBE_PRODUCER_SHA=d69868fb700aaeb9b6723d8780bb29be4aab9c0d
 GPT_IMAGE_2_PUBLIC_PAID_INSPECT_GATE=$CONTROLLER_ROOT/gpt-image-2-public-paid-inspect-gate.sh
 GPT_IMAGE_2_PUBLIC_PAID_INSPECT_PRODUCER_SHA=63972f2ddfd5906d7c30a87406053eb3782f4223
-TEST_DB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-test-db
-BACKUP_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-backup.sh
-MIGRATION_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
-PRICING_RETIREMENT_POSTDROP=/usr/local/lib/apitoken-watchdog/pricing-retirement-postdrop.sh
-INFRASTRUCTURE_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
-RETENTION_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-retention.sh
-SALES_RUNNER=/usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
-OPENKEYS_RUNNER=/usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh
-ADMIN_RUNNER=/usr/local/lib/apitoken-watchdog/controller/admin-deploy.sh
-DEVBOT_RUNNER=/usr/local/lib/apitoken-watchdog/controller/devbot-deploy.sh
-GITHUB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-github
-WATCHDOG_LOCK=/run/lock/apitoken-watchdog.lock
-CANDIDATE_VALIDATOR_LOCK=/run/lock/apitoken-candidate-validator.lock
-SOURCE_FETCH_LOCK=/run/lock/apitoken-source-fetch.lock
-DEPLOY_LOCK=/run/lock/apitoken-deploy.lock
-ENGINE_RELEASE_ROOT=/srv/claude-api/releases
-COMMERCE_RELEASE_ROOT=/opt/apitoken/releases
-CRM_RELEASE_ROOT=/opt/apitoken/crm-releases
+WATCHDOG_ROOT=${CONTOUR_ROOTS_CONTROLLER%/controller}
+TEST_DB_HELPER=$WATCHDOG_ROOT/watchdog-test-db
+BACKUP_RUNNER=$WATCHDOG_ROOT/watchdog-backup.sh
+MIGRATION_RUNNER=$WATCHDOG_ROOT/watchdog-migrate.sh
+PRICING_RETIREMENT_POSTDROP=$WATCHDOG_ROOT/pricing-retirement-postdrop.sh
+INFRASTRUCTURE_RUNNER=$WATCHDOG_ROOT/watchdog-infrastructure.sh
+RETENTION_HELPER=$WATCHDOG_ROOT/watchdog-retention.sh
+SALES_RUNNER=$CONTROLLER_ROOT/sales-deploy.sh
+OPENKEYS_RUNNER=$CONTROLLER_ROOT/openkeys-deploy.sh
+ADMIN_RUNNER=$CONTROLLER_ROOT/admin-deploy.sh
+DEVBOT_RUNNER=$CONTROLLER_ROOT/devbot-deploy.sh
+GITHUB_HELPER=$CONTOUR_GITHUB_REPORTING_HELPER
+WATCHDOG_LOCK=$CONTOUR_LOCKS_WATCHDOG
+CANDIDATE_VALIDATOR_LOCK=$CONTOUR_LOCKS_CANDIDATE_VALIDATOR
+SOURCE_FETCH_LOCK=$CONTOUR_LOCKS_SOURCE_FETCH
+DEPLOY_LOCK=$CONTOUR_LOCKS_DEPLOY
+ENGINE_RELEASE_ROOT=$CONTOUR_ROOTS_ENGINE_RELEASE
+COMMERCE_RELEASE_ROOT=$CONTOUR_ROOTS_COMMERCE_RELEASE
+CRM_RELEASE_ROOT=$CONTOUR_ROOTS_CRM_RELEASE
+IFS=, read -r ANTHROPIC_PORT_A ANTHROPIC_PORT_B <<<"$CONTOUR_PORTS_ANTHROPIC_SLOTS"
+IFS=, read -r OPENAI_PORT_A OPENAI_PORT_B <<<"$CONTOUR_PORTS_OPENAI_SLOTS"
+IFS=, read -r GEMINI_PORT_A GEMINI_PORT_B <<<"$CONTOUR_PORTS_GEMINI_SLOTS"
+IFS=, read -r KIMI_PORT_A KIMI_PORT_B <<<"$CONTOUR_PORTS_KIMI_SLOTS"
+IFS=, read -r ROUTER_PORT_A ROUTER_PORT_B <<<"$CONTOUR_PORTS_ROUTER_SLOTS"
+IFS=, read -r API_PORT_A API_PORT_B <<<"$CONTOUR_PORTS_COMMERCE_SLOTS"
 
 PROCESSED_FILE=$STATE_ROOT/processed.sha
 INFRASTRUCTURE_FILE=$STATE_ROOT/infrastructure.sha
@@ -76,7 +85,7 @@ OPENKEYS_FILE=$STATE_ROOT/openkeys.sha
 ADMIN_FILE=$STATE_ROOT/admin.sha
 DEVBOT_FILE=$STATE_ROOT/devbot.sha
 # Presence of this operator-provisioned secret file is what enables the devbot lane and unit.
-DEVBOT_ENV_FILE=/etc/apitoken/devbot.env
+DEVBOT_ENV_FILE=$CONTOUR_ROOTS_CONFIG/devbot.env
 REJECTED_FILE=$STATE_ROOT/rejected.sha
 PENDING_MIGRATION_FILE=$STATE_ROOT/pending-migration.sha
 ROUTER_SUCCESS_PROOF=$STATE_ROOT/router-proof/success
@@ -109,11 +118,14 @@ github_status() {
   # Repeating a status for the same SHA/context is safe: GitHub keeps the newest value. Absorb a
   # short API or network blip here so reporting availability cannot quarantine an otherwise
   # untested production candidate before any deployment work starts.
+  contour_require_status_context "$2" || wd_die "GitHub status context is absent from the contour: $2"
   wd_retry 3 2 sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" "$1" "$2" "$3"
 }
 
 github_deployment_start() {
   local component=$1 environment=$2 url=$3
+  contour_require_deployment_environment "$environment" \
+    || wd_die "GitHub deployment environment is absent from the contour: $environment"
   ACTIVE_DEPLOYMENT_ENV=$environment
   ACTIVE_DEPLOYMENT_URL=$url
   ACTIVE_DEPLOYMENT_ID=$(sudo -n "$GITHUB_HELPER" deployment-create \
@@ -140,9 +152,9 @@ run_github_status_lane() {
 
 publish_pipeline_start_statuses() {
   local watchdog_pid tests_pid watchdog_rc=0 tests_rc=0
-  run_github_status_lane pending deploy/watchdog "Production pipeline started" &
+  run_github_status_lane pending "$CONTOUR_GITHUB_STATUS_CONTEXT_WATCHDOG" "Production pipeline started" &
   watchdog_pid=$!
-  run_github_status_lane pending deploy/tests "Path-aware isolated validation in progress" &
+  run_github_status_lane pending "$CONTOUR_GITHUB_STATUS_CONTEXT_TESTS" "Path-aware isolated validation in progress" &
   tests_pid=$!
   wait "$watchdog_pid" || watchdog_rc=$?
   wait "$tests_pid" || tests_rc=$?
@@ -162,31 +174,31 @@ publish_unchanged_component_statuses() {
   done
 
   if (( backend_changed == 0 )); then
-    run_github_status_lane success deploy/migration "No commerce migration changes" &
+    run_github_status_lane success "$CONTOUR_GITHUB_STATUS_CONTEXT_MIGRATION" "No commerce migration changes" &
     migration_pid=$!
   fi
   if (( engine_changed == 0 )); then
-    run_github_status_lane success deploy/engine "No engine changes" &
+    run_github_status_lane success "$CONTOUR_GITHUB_STATUS_CONTEXT_ENGINE" "No engine changes" &
     engine_pid=$!
   fi
   if (( backend_changed == 0 )); then
-    run_github_status_lane success deploy/backend "No backend changes" &
+    run_github_status_lane success "$CONTOUR_GITHUB_STATUS_CONTEXT_BACKEND" "No backend changes" &
     backend_pid=$!
   fi
   if (( sales_changed == 0 )); then
-    run_github_status_lane success deploy/sales "No sales changes" &
+    run_github_status_lane success "$CONTOUR_GITHUB_STATUS_CONTEXT_SALES" "No sales changes" &
     sales_pid=$!
   fi
   if (( openkeys_changed == 0 )); then
-    run_github_status_lane success deploy/openkeys "No openkeys changes" &
+    run_github_status_lane success "$CONTOUR_GITHUB_STATUS_CONTEXT_OPENKEYS" "No openkeys changes" &
     openkeys_pid=$!
   fi
   if (( admin_changed == 0 )); then
-    run_github_status_lane success deploy/admin "No admin changes" &
+    run_github_status_lane success "$CONTOUR_GITHUB_STATUS_CONTEXT_ADMIN" "No admin changes" &
     admin_pid=$!
   fi
   if (( devbot_changed == 0 )); then
-    run_github_status_lane success deploy/devbot "No devbot changes" &
+    run_github_status_lane success "$CONTOUR_GITHUB_STATUS_CONTEXT_DEVBOT" "No devbot changes" &
     devbot_pid=$!
   fi
 
@@ -273,14 +285,14 @@ github_phase_failure() {
       "$log_url" >/dev/null 2>&1 || true
   fi
   case $phase in
-    testing) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/tests "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
-    migrating) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/migration "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
-    deploying-engine) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/engine "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
-    deploying-backend) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/backend "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
-    deploying-sales) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/sales "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
-    deploying-openkeys) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/openkeys "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
-    deploying-admin) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/admin "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
-    deploying-devbot) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/devbot "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
+    testing) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure "$CONTOUR_GITHUB_STATUS_CONTEXT_TESTS" "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
+    migrating) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure "$CONTOUR_GITHUB_STATUS_CONTEXT_MIGRATION" "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
+    deploying-engine) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure "$CONTOUR_GITHUB_STATUS_CONTEXT_ENGINE" "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
+    deploying-backend) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure "$CONTOUR_GITHUB_STATUS_CONTEXT_BACKEND" "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
+    deploying-sales) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure "$CONTOUR_GITHUB_STATUS_CONTEXT_SALES" "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
+    deploying-openkeys) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure "$CONTOUR_GITHUB_STATUS_CONTEXT_OPENKEYS" "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
+    deploying-admin) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure "$CONTOUR_GITHUB_STATUS_CONTEXT_ADMIN" "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
+    deploying-devbot) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure "$CONTOUR_GITHUB_STATUS_CONTEXT_DEVBOT" "$diagnostic" "$log_url" >/dev/null 2>&1 || true ;;
   esac
 }
 
@@ -291,9 +303,10 @@ wd_publish_github_failure_log() {
   local sha=$1 phase=$2 rc=$3 diagnostic=$4 html_url=''
   wd_write_failure_report "$sha" "$phase" "$rc" "$diagnostic" || return 1
   [[ -x ${GITHUB_HELPER:-} ]] || return 1
-  html_url=$(sudo -n "$GITHUB_HELPER" check-run "$sha" failure deploy/watchdog-log "$diagnostic") \
+  html_url=$(sudo -n "$GITHUB_HELPER" check-run "$sha" failure \
+    "$CONTOUR_GITHUB_STATUS_CONTEXT_WATCHDOG_LOG" "$diagnostic") \
     || return 1
-  [[ $html_url == https://github.com/* ]] || return 1
+  [[ $html_url == "$CONTOUR_ORIGINS_GITHUB_WEB"/* ]] || return 1
   printf '%s' "$html_url"
 }
 
@@ -341,7 +354,8 @@ fail() {
   wd_discard_cycle_log || true
   if [[ -x $GITHUB_HELPER ]]; then
     github_phase_failure "$failed_phase" "$diagnostic" "$failure_log_url"
-    sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/watchdog \
+    sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure \
+      "$CONTOUR_GITHUB_STATUS_CONTEXT_WATCHDOG" \
       "$diagnostic" "$failure_log_url" >/dev/null 2>&1 || true
   fi
   wd_warn "candidate ${CANDIDATE_SHA:-unknown} failed ($diagnostic) and will not be retried automatically"
@@ -588,15 +602,35 @@ prune_expired_candidates() {
 live_release_shas() {
   local unit pid resolved relative name authbot_sha load_state state final_load_state final_state
   local final_pid found exe cwd
-  for unit in claude-api.service claude-api@8787.service claude-api@8788.service \
-    claude-api-anthropic@8787.service claude-api-anthropic@8788.service \
-    claude-api-openai.service claude-api-openai@8793.service claude-api-openai@8797.service \
-    claude-api-gemini.service claude-api-gemini@8795.service claude-api-gemini@8799.service \
-    claude-api-kimi.service claude-api-kimi@8804.service claude-api-kimi@8805.service \
-    claude-router.service claude-router@8800.service claude-router@8801.service \
-    apitoken-api@3000.service apitoken-api@3001.service \
-    apitoken-worker.service apitoken-content-studio.service \
-    apitoken-crm-api.service apitoken-crm-web.service; do
+  local anthropic_a anthropic_b openai_a openai_b gemini_a gemini_b kimi_a kimi_b
+  local router_a router_b api_a api_b
+  IFS=, read -r anthropic_a anthropic_b <<<"$CONTOUR_PORTS_ANTHROPIC_SLOTS"
+  IFS=, read -r openai_a openai_b <<<"$CONTOUR_PORTS_OPENAI_SLOTS"
+  IFS=, read -r gemini_a gemini_b <<<"$CONTOUR_PORTS_GEMINI_SLOTS"
+  IFS=, read -r kimi_a kimi_b <<<"$CONTOUR_PORTS_KIMI_SLOTS"
+  IFS=, read -r router_a router_b <<<"$CONTOUR_PORTS_ROUTER_SLOTS"
+  IFS=, read -r api_a api_b <<<"$CONTOUR_PORTS_COMMERCE_SLOTS"
+  for unit in "$CONTOUR_UNITS_ENGINE_LEGACY" \
+    "${CONTOUR_UNITS_ENGINE_BRIDGE_TEMPLATE/@.service/@$anthropic_a.service}" \
+    "${CONTOUR_UNITS_ENGINE_BRIDGE_TEMPLATE/@.service/@$anthropic_b.service}" \
+    "${CONTOUR_UNITS_ANTHROPIC_TEMPLATE/@.service/@$anthropic_a.service}" \
+    "${CONTOUR_UNITS_ANTHROPIC_TEMPLATE/@.service/@$anthropic_b.service}" \
+    "$CONTOUR_UNITS_OPENAI_LEGACY" \
+    "${CONTOUR_UNITS_OPENAI_TEMPLATE/@.service/@$openai_a.service}" \
+    "${CONTOUR_UNITS_OPENAI_TEMPLATE/@.service/@$openai_b.service}" \
+    "$CONTOUR_UNITS_GEMINI_LEGACY" \
+    "${CONTOUR_UNITS_GEMINI_TEMPLATE/@.service/@$gemini_a.service}" \
+    "${CONTOUR_UNITS_GEMINI_TEMPLATE/@.service/@$gemini_b.service}" \
+    "$CONTOUR_UNITS_KIMI_LEGACY" \
+    "${CONTOUR_UNITS_KIMI_TEMPLATE/@.service/@$kimi_a.service}" \
+    "${CONTOUR_UNITS_KIMI_TEMPLATE/@.service/@$kimi_b.service}" \
+    "$CONTOUR_UNITS_ROUTER_LEGACY" \
+    "${CONTOUR_UNITS_ROUTER_TEMPLATE/@.service/@$router_a.service}" \
+    "${CONTOUR_UNITS_ROUTER_TEMPLATE/@.service/@$router_b.service}" \
+    "${CONTOUR_UNITS_COMMERCE_TEMPLATE/@.service/@$api_a.service}" \
+    "${CONTOUR_UNITS_COMMERCE_TEMPLATE/@.service/@$api_b.service}" \
+    "$CONTOUR_UNITS_WORKER" "$CONTOUR_UNITS_CONTENT_STUDIO" \
+    "$CONTOUR_UNITS_CRM_API" "$CONTOUR_UNITS_CRM_WEB"; do
     load_state=''
     if ! load_state=$(systemctl show "$unit" -p LoadState --value 2>/dev/null); then
       [[ $load_state == not-found ]] && continue
@@ -879,6 +913,7 @@ test_static_lane() {
     run_as_ci bash "$candidate/deploy/shutdown-ladder.test.sh"
     run_as_ci bash "$candidate/deploy/codex-homes-migrate.test.sh"
     run_as_ci bash "$candidate/deploy/watchdog-backup.test.sh"
+    run_as_ci bash "$candidate/deploy/contour-config.test.sh"
     run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"
     run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
     run_as_ci bash "$candidate/deploy/sccache-cargo.test.sh"
@@ -1340,10 +1375,10 @@ shadow_validation_exit() {
   failure_log_url=$(wd_publish_github_failure_log "$CANDIDATE_SHA" \
     "${CURRENT_PHASE_BEFORE_FAILURE:-${CURRENT_PHASE:-unknown}}" "$rc" "$summary" || true)
   sudo -n "$GITHUB_HELPER" deployment-status "$SHADOW_DEPLOYMENT_ID" failure \
-    "$summary" candidate-validation "" "$failure_log_url" \
+    "$summary" "$CONTOUR_GITHUB_DEPLOYMENT_ENVIRONMENT_CANDIDATE_VALIDATION" "" "$failure_log_url" \
     >/dev/null 2>&1 || true
-  sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/tests \
-    "$summary" "$failure_log_url" >/dev/null 2>&1 || true
+  sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure \
+    "$CONTOUR_GITHUB_STATUS_CONTEXT_TESTS" "$summary" "$failure_log_url" >/dev/null 2>&1 || true
   wd_warn "trusted shadow validation failed for $CANDIDATE_SHA: $summary; production remains unchanged" >&8 2>&8
   exit "$rc"
 }
@@ -1380,8 +1415,8 @@ run_shadow_candidate_validation() (
   CURRENT_PHASE_BEFORE_FAILURE=shadow-validation
   status "validating an exact pre-merge candidate in isolated slot $TEST_DB_SLOT"
   wd_retry 3 5 sudo -n "$GITHUB_HELPER" deployment-status "$SHADOW_DEPLOYMENT_ID" in_progress \
-    "Trusted production-host candidate validation started" candidate-validation ""
-  github_status pending deploy/tests "Trusted production-host candidate validation in progress"
+    "Trusted production-host candidate validation started" "$CONTOUR_GITHUB_DEPLOYMENT_ENVIRONMENT_CANDIDATE_VALIDATION" ""
+  github_status pending "$CONTOUR_GITHUB_STATUS_CONTEXT_TESTS" "Trusted production-host candidate validation in progress"
 
   # GitHub permits fetching a raw object ID when it is reachable from the already-pushed feature
   # branch. The merge client therefore requests validation only for a remotely visible exact SHA.
@@ -1421,9 +1456,9 @@ run_shadow_candidate_validation() (
   wd_validate_sha "$current_master"
   wd_require_ancestor "$SOURCE_REPO" "$current_master" "$CANDIDATE_SHA" shadow-current-master
 
-  github_status success deploy/tests "Trusted production-host candidate validation passed"
+  github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_TESTS" "Trusted production-host candidate validation passed"
   wd_retry 3 5 sudo -n "$GITHUB_HELPER" deployment-status "$SHADOW_DEPLOYMENT_ID" success \
-    "Exact candidate passed trusted production-host validation" candidate-validation ""
+    "Exact candidate passed trusted production-host validation" "$CONTOUR_GITHUB_DEPLOYMENT_ENVIRONMENT_CANDIDATE_VALIDATION" ""
   wd_log "trusted shadow validation passed for $CANDIDATE_SHA"
 )
 
@@ -1438,7 +1473,8 @@ candidate_validator_main() {
   local index slot validation_rc
   local validation_ids=() validation_shas=() validation_pids=()
 
-  [[ $(id -un) == deploy ]] || wd_die "candidate validator service must run as deploy"
+  [[ $(id -un) == "$CONTOUR_IDENTITY_RUNTIME_USER" ]] \
+    || wd_die "candidate validator service must run as $CONTOUR_IDENTITY_RUNTIME_USER"
   [[ -d $SOURCE_REPO/.git ]] || wd_die "source repository is missing: $SOURCE_REPO"
   [[ -d $STATE_ROOT && ! -L $STATE_ROOT ]] || wd_die "watchdog state is not installed"
   [[ -d $CANDIDATE_ROOT && ! -L $CANDIDATE_ROOT ]] \
@@ -1548,13 +1584,13 @@ engine_runtime_aligned() {
     return 1
   fi
 
-  for port in 8787 8788; do
-    unit="claude-api-anthropic@$port.service"
+  for port in "$ANTHROPIC_PORT_A" "$ANTHROPIC_PORT_B"; do
+    unit="${CONTOUR_UNITS_ANTHROPIC_TEMPLATE/@.service/@$port.service}"
     local active=0 ready=0 selected=0 enabled=0
     systemctl is-active --quiet "$unit" && active=1
     systemctl is-enabled --quiet "$unit" && enabled=1
     status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-      "http://127.0.0.1:$port/ready" 2>/dev/null || true)
+      "http://$CONTOUR_NETWORK_LOOPBACK_HOST:$port/ready" 2>/dev/null || true)
     [[ $status == 200 ]] && ready=1
     if (( active == 1 )); then
       pid=$(systemctl show "$unit" -p MainPID --value)
@@ -1567,23 +1603,25 @@ engine_runtime_aligned() {
         fi
       fi
     fi
-    if [[ $port == 8787 ]]; then
+    if [[ $port == "$ANTHROPIC_PORT_A" ]]; then
       active_8787=$active; ready_8787=$ready; current_8787=$selected; enabled_8787=$enabled
     else
       active_8788=$active; ready_8788=$ready; current_8788=$selected; enabled_8788=$enabled
     fi
   done
-  for combined_unit in claude-api.service claude-api@8787.service claude-api@8788.service; do
+  for combined_unit in "$CONTOUR_UNITS_ENGINE_LEGACY" \
+    "${CONTOUR_UNITS_ENGINE_BRIDGE_TEMPLATE/@.service/@$ANTHROPIC_PORT_A.service}" \
+    "${CONTOUR_UNITS_ENGINE_BRIDGE_TEMPLATE/@.service/@$ANTHROPIC_PORT_B.service}"; do
     systemctl is-active --quiet "$combined_unit" && legacy_active=1
     systemctl is-enabled --quiet "$combined_unit" && legacy_enabled=1
   done
-  for port in 8793 8797; do
-    unit="claude-api-openai@$port.service"
+  for port in "$OPENAI_PORT_A" "$OPENAI_PORT_B"; do
+    unit="${CONTOUR_UNITS_OPENAI_TEMPLATE/@.service/@$port.service}"
     local openai_active=0 openai_ready=0 openai_selected=0 openai_enabled=0
     systemctl is-active --quiet "$unit" && openai_active=1
     systemctl is-enabled --quiet "$unit" && openai_enabled=1
     status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-      "http://127.0.0.1:$port/ready" 2>/dev/null || true)
+      "http://$CONTOUR_NETWORK_LOOPBACK_HOST:$port/ready" 2>/dev/null || true)
     [[ $status == 200 ]] && openai_ready=1
     if (( openai_active == 1 )); then
       pid=$(systemctl show "$unit" -p MainPID --value)
@@ -1597,7 +1635,7 @@ engine_runtime_aligned() {
         fi
       fi
     fi
-    if [[ $port == 8793 ]]; then
+    if [[ $port == "$OPENAI_PORT_A" ]]; then
       openai_active_8793=$openai_active; openai_ready_8793=$openai_ready
       openai_current_8793=$openai_selected; openai_enabled_8793=$openai_enabled
     else
@@ -1605,13 +1643,13 @@ engine_runtime_aligned() {
       openai_current_8797=$openai_selected; openai_enabled_8797=$openai_enabled
     fi
   done
-  systemctl is-active --quiet claude-api-openai.service && openai_legacy_active=1
-  systemctl is-enabled --quiet claude-api-openai.service && openai_legacy_enabled=1
+  systemctl is-active --quiet "$CONTOUR_UNITS_OPENAI_LEGACY" && openai_legacy_active=1
+  systemctl is-enabled --quiet "$CONTOUR_UNITS_OPENAI_LEGACY" && openai_legacy_enabled=1
   status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-    http://127.0.0.1:8793/ready 2>/dev/null || true)
+    "http://$CONTOUR_NETWORK_LOOPBACK_HOST:$OPENAI_PORT_A/ready" 2>/dev/null || true)
   [[ $status == 200 && $openai_legacy_active == 1 ]] && openai_legacy_ready=1
   if (( openai_legacy_active == 1 )); then
-    pid=$(systemctl show claude-api-openai.service -p MainPID --value)
+    pid=$(systemctl show "$CONTOUR_UNITS_OPENAI_LEGACY" -p MainPID --value)
     if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
       executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)
       if [[ $executable == "$expected/claude-api" ]] \
@@ -1622,9 +1660,9 @@ engine_runtime_aligned() {
     fi
   fi
   stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-    http://127.0.0.1:8790/ready 2>/dev/null || true)
+    "$CONTOUR_ORIGINS_ANTHROPIC_STABLE/ready" 2>/dev/null || true)
   openai_stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-    http://127.0.0.1:8792/ready 2>/dev/null || true)
+    "$CONTOUR_ORIGINS_OPENAI_STABLE/ready" 2>/dev/null || true)
   if [[ -e "$expected/.openai-bluegreen-v1" || -L "$expected/.openai-bluegreen-v1" ]]; then
     [[ -f "$expected/.openai-bluegreen-v1" && ! -L "$expected/.openai-bluegreen-v1" \
         && $(<"$expected/.openai-bluegreen-v1") == openai-bluegreen-v1 ]] || return 1
@@ -1650,13 +1688,13 @@ engine_runtime_aligned() {
     (( kimi_supported == 1 )) || return 1
     kimi_shared_supported=1
   fi
-  for port in 8795 8799; do
-    unit="claude-api-gemini@$port.service"
+  for port in "$GEMINI_PORT_A" "$GEMINI_PORT_B"; do
+    unit="${CONTOUR_UNITS_GEMINI_TEMPLATE/@.service/@$port.service}"
     local gemini_active=0 gemini_ready=0 gemini_selected=0 gemini_enabled=0
     systemctl is-active --quiet "$unit" && gemini_active=1
     systemctl is-enabled --quiet "$unit" && gemini_enabled=1
     status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-      "http://127.0.0.1:$port/ready" 2>/dev/null || true)
+      "http://$CONTOUR_NETWORK_LOOPBACK_HOST:$port/ready" 2>/dev/null || true)
     [[ $status == 200 ]] && gemini_ready=1
     if (( gemini_active == 1 )); then
       pid=$(systemctl show "$unit" -p MainPID --value)
@@ -1669,7 +1707,7 @@ engine_runtime_aligned() {
         fi
       fi
     fi
-    if [[ $port == 8795 ]]; then
+    if [[ $port == "$GEMINI_PORT_A" ]]; then
       gemini_active_8795=$gemini_active; gemini_ready_8795=$gemini_ready
       gemini_current_8795=$gemini_selected; gemini_enabled_8795=$gemini_enabled
     else
@@ -1677,13 +1715,13 @@ engine_runtime_aligned() {
       gemini_current_8799=$gemini_selected; gemini_enabled_8799=$gemini_enabled
     fi
   done
-  systemctl is-active --quiet claude-api-gemini.service && gemini_legacy_active=1
-  systemctl is-enabled --quiet claude-api-gemini.service && gemini_legacy_enabled=1
+  systemctl is-active --quiet "$CONTOUR_UNITS_GEMINI_LEGACY" && gemini_legacy_active=1
+  systemctl is-enabled --quiet "$CONTOUR_UNITS_GEMINI_LEGACY" && gemini_legacy_enabled=1
   status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-    http://127.0.0.1:8795/ready 2>/dev/null || true)
+    "http://$CONTOUR_NETWORK_LOOPBACK_HOST:$GEMINI_PORT_A/ready" 2>/dev/null || true)
   [[ $status == 200 && $gemini_legacy_active == 1 ]] && gemini_legacy_ready=1
   if (( gemini_legacy_active == 1 )); then
-    pid=$(systemctl show claude-api-gemini.service -p MainPID --value)
+    pid=$(systemctl show "$CONTOUR_UNITS_GEMINI_LEGACY" -p MainPID --value)
     if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
       executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)
       if [[ $executable == "$expected/claude-api" ]] \
@@ -1694,14 +1732,14 @@ engine_runtime_aligned() {
     fi
   fi
   gemini_stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-    http://127.0.0.1:8794/ready 2>/dev/null || true)
-  for port in 8804 8805; do
-    unit="claude-api-kimi@$port.service"
+    "$CONTOUR_ORIGINS_GEMINI_STABLE/ready" 2>/dev/null || true)
+  for port in "$KIMI_PORT_A" "$KIMI_PORT_B"; do
+    unit="${CONTOUR_UNITS_KIMI_TEMPLATE/@.service/@$port.service}"
     local kimi_active=0 kimi_ready=0 kimi_selected=0 kimi_enabled=0
     systemctl is-active --quiet "$unit" && kimi_active=1
     systemctl is-enabled --quiet "$unit" && kimi_enabled=1
     status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-      "http://127.0.0.1:$port/ready" 2>/dev/null || true)
+      "http://$CONTOUR_NETWORK_LOOPBACK_HOST:$port/ready" 2>/dev/null || true)
     [[ $status == 200 ]] && kimi_ready=1
     if (( kimi_active == 1 )); then
       pid=$(systemctl show "$unit" -p MainPID --value)
@@ -1714,7 +1752,7 @@ engine_runtime_aligned() {
         fi
       fi
     fi
-    if [[ $port == 8804 ]]; then
+    if [[ $port == "$KIMI_PORT_A" ]]; then
       kimi_active_8804=$kimi_active; kimi_ready_8804=$kimi_ready
       kimi_current_8804=$kimi_selected; kimi_enabled_8804=$kimi_enabled
     else
@@ -1722,13 +1760,13 @@ engine_runtime_aligned() {
       kimi_current_8805=$kimi_selected; kimi_enabled_8805=$kimi_enabled
     fi
   done
-  systemctl is-active --quiet claude-api-kimi.service && kimi_legacy_active=1
-  systemctl is-enabled --quiet claude-api-kimi.service && kimi_legacy_enabled=1
+  systemctl is-active --quiet "$CONTOUR_UNITS_KIMI_LEGACY" && kimi_legacy_active=1
+  systemctl is-enabled --quiet "$CONTOUR_UNITS_KIMI_LEGACY" && kimi_legacy_enabled=1
   status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-    http://127.0.0.1:8804/ready 2>/dev/null || true)
+    "http://$CONTOUR_NETWORK_LOOPBACK_HOST:$KIMI_PORT_A/ready" 2>/dev/null || true)
   [[ $status == 200 && $kimi_legacy_active == 1 ]] && kimi_legacy_ready=1
   if (( kimi_legacy_active == 1 )); then
-    pid=$(systemctl show claude-api-kimi.service -p MainPID --value)
+    pid=$(systemctl show "$CONTOUR_UNITS_KIMI_LEGACY" -p MainPID --value)
     if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
       executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)
       if [[ $executable == "$expected/claude-api" ]] \
@@ -1739,7 +1777,7 @@ engine_runtime_aligned() {
     fi
   fi
   kimi_stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-    http://127.0.0.1:8803/ready 2>/dev/null || true)
+    "$CONTOUR_ORIGINS_KIMI_STABLE/ready" 2>/dev/null || true)
   ENGINE_RUNTIME_DETAIL="anthropic[8787=$active_8787:$ready_8787:$current_8787:$enabled_8787 8788=$active_8788:$ready_8788:$current_8788:$enabled_8788 stable=${stable_status:-unreachable}] openai[shared=$openai_shared_supported 8793=$openai_active_8793:$openai_ready_8793:$openai_current_8793:$openai_enabled_8793 8797=$openai_active_8797:$openai_ready_8797:$openai_current_8797:$openai_enabled_8797 stable=${openai_stable_status:-unreachable} legacy=$openai_legacy_active:$openai_legacy_ready:$openai_legacy_current:$openai_legacy_enabled] gemini[supported=$gemini_supported shared=$gemini_shared_supported 8795=$gemini_active_8795:$gemini_ready_8795:$gemini_current_8795:$gemini_enabled_8795 8799=$gemini_active_8799:$gemini_ready_8799:$gemini_current_8799:$gemini_enabled_8799 stable=${gemini_stable_status:-unreachable} legacy=$gemini_legacy_active:$gemini_legacy_ready:$gemini_legacy_current:$gemini_legacy_enabled] kimi[supported=$kimi_supported shared=$kimi_shared_supported 8804=$kimi_active_8804:$kimi_ready_8804:$kimi_current_8804:$kimi_enabled_8804 8805=$kimi_active_8805:$kimi_ready_8805:$kimi_current_8805:$kimi_enabled_8805 stable=${kimi_stable_status:-unreachable} legacy=$kimi_legacy_active:$kimi_legacy_ready:$kimi_legacy_current:$kimi_legacy_enabled] legacy=$legacy_active:$legacy_enabled"
   [[ $stable_status == 200 ]] || return 1
   [[ $openai_stable_status == 200 ]] || return 1
@@ -1823,13 +1861,17 @@ engine_runtime_aligned() {
 }
 
 router_active_backend_port() {
-  local snippet=/etc/caddy/router-active.caddy ports
+  local snippet=$CONTOUR_ROOTS_ROUTER_ACTIVE ports
   [[ -f $snippet && ! -L $snippet ]] || return 1
   [[ $(stat -c '%u' -- "$snippet" 2>/dev/null) == 0 ]] || return 1
-  ports=$(sed -n 's/^[[:space:]]*reverse_proxy 127\.0\.0\.1:\([0-9][0-9]*\)[[:space:]]*$/\1/p' \
-    "$snippet") || return 1
+  ports=$(awk -v host="$CONTOUR_NETWORK_LOOPBACK_HOST" '
+    $1 == "reverse_proxy" {
+      prefix = host ":"
+      if (index($2, prefix) == 1) print substr($2, length(prefix) + 1)
+    }
+  ' "$snippet") || return 1
   [[ $ports != *$'\n'* ]] || return 1
-  case "$ports" in 8800|8801) printf '%s\n' "$ports" ;; *) return 1 ;; esac
+  case "$ports" in "$ROUTER_PORT_A"|"$ROUTER_PORT_B") printf '%s\n' "$ports" ;; *) return 1 ;; esac
 }
 
 router_runtime_aligned() {
@@ -1839,13 +1881,13 @@ router_runtime_aligned() {
   local legacy_active=0 legacy_ready=0 legacy_enabled=0 stable_status
   expected="$ENGINE_RELEASE_ROOT/$sha"
   active_port=$(router_active_backend_port 2>/dev/null || true)
-  for port in 8800 8801; do
-    unit="claude-router@$port.service"
+  for port in "$ROUTER_PORT_A" "$ROUTER_PORT_B"; do
+    unit="${CONTOUR_UNITS_ROUTER_TEMPLATE/@.service/@$port.service}"
     local active=0 ready=0 selected=0 enabled=0
     systemctl is-active --quiet "$unit" && active=1
     systemctl is-enabled --quiet "$unit" && enabled=1
     status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-      "http://127.0.0.1:$port/ready" 2>/dev/null || true)
+      "http://$CONTOUR_NETWORK_LOOPBACK_HOST:$port/ready" 2>/dev/null || true)
     [[ $status == 200 ]] && ready=1
     if (( active == 1 )); then
       pid=$(systemctl show "$unit" -p MainPID --value)
@@ -1854,27 +1896,27 @@ router_runtime_aligned() {
         [[ $executable == "$expected/claude-router" ]] && selected=1
       fi
     fi
-    if [[ $port == 8800 ]]; then
+    if [[ $port == "$ROUTER_PORT_A" ]]; then
       active_8800=$active; ready_8800=$ready; current_8800=$selected; enabled_8800=$enabled
     else
       active_8801=$active; ready_8801=$ready; current_8801=$selected; enabled_8801=$enabled
     fi
   done
-  systemctl is-active --quiet claude-router.service && legacy_active=1
-  systemctl is-enabled --quiet claude-router.service && legacy_enabled=1
+  systemctl is-active --quiet "$CONTOUR_UNITS_ROUTER_LEGACY" && legacy_active=1
+  systemctl is-enabled --quiet "$CONTOUR_UNITS_ROUTER_LEGACY" && legacy_enabled=1
   status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-    http://127.0.0.1:8798/ready 2>/dev/null || true)
+    "http://$CONTOUR_NETWORK_LOOPBACK_HOST:$CONTOUR_PORTS_ROUTER_LEGACY/ready" 2>/dev/null || true)
   [[ $status == 200 ]] && legacy_ready=1
   stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-    http://127.0.0.1:8802/ready 2>/dev/null || true)
+    "$CONTOUR_ORIGINS_ROUTER_STABLE/ready" 2>/dev/null || true)
   ROUTER_RUNTIME_DETAIL="active_backend=${active_port:-invalid} stable=${stable_status:-unreachable} 8800=$active_8800:$ready_8800:$current_8800:$enabled_8800 8801=$active_8801:$ready_8801:$current_8801:$enabled_8801 legacy=$legacy_active:$legacy_ready:$legacy_enabled"
   [[ $stable_status == 200 && $legacy_active == 0 && $legacy_ready == 0 && $legacy_enabled == 0 ]] || return 1
   case "$active_port" in
-    8800)
+    "$ROUTER_PORT_A")
       (( active_8800 == 1 && ready_8800 == 1 && current_8800 == 1 && enabled_8800 == 1 \
         && active_8801 == 0 && ready_8801 == 0 && current_8801 == 0 && enabled_8801 == 0 ))
       ;;
-    8801)
+    "$ROUTER_PORT_B")
       (( active_8801 == 1 && ready_8801 == 1 && current_8801 == 1 && enabled_8801 == 1 \
         && active_8800 == 0 && ready_8800 == 0 && current_8800 == 0 && enabled_8800 == 0 ))
       ;;
@@ -1910,25 +1952,27 @@ final_verify_backend() {
   local sha=$1 current worker_pid worker_cwd studio_pid studio_cwd expected_studio_cwd
   current=$(readlink -f -- "$COMMERCE_RELEASE_ROOT/current")
   [[ $current == "$COMMERCE_RELEASE_ROOT/$sha" ]] || wd_die "commerce current is not $sha after cutover"
-  curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:3000/v1/ready >/dev/null \
-    || curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:3001/v1/ready >/dev/null \
+  curl --noproxy '*' --fail --silent --show-error --max-time 5 "http://$CONTOUR_NETWORK_LOOPBACK_HOST:$API_PORT_A/v1/ready" >/dev/null \
+    || curl --noproxy '*' --fail --silent --show-error --max-time 5 "http://$CONTOUR_NETWORK_LOOPBACK_HOST:$API_PORT_B/v1/ready" >/dev/null \
     || wd_die "no commerce API slot is ready after cutover"
-  curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:8791/v1/ready >/dev/null \
+  curl --noproxy '*' --fail --silent --show-error --max-time 5 \
+    "$CONTOUR_ORIGINS_COMMERCE_STABLE/v1/ready" >/dev/null \
     || wd_die "stable commerce balancer is not ready after cutover"
-  systemctl is-active --quiet apitoken-worker.service || wd_die "worker is not active after cutover"
-  worker_pid=$(systemctl show apitoken-worker.service -p MainPID --value)
+  systemctl is-active --quiet "$CONTOUR_UNITS_WORKER" || wd_die "worker is not active after cutover"
+  worker_pid=$(systemctl show "$CONTOUR_UNITS_WORKER" -p MainPID --value)
   [[ $worker_pid =~ ^[1-9][0-9]*$ ]] || wd_die "worker has no MainPID"
   worker_cwd=$(readlink -f -- "/proc/$worker_pid/cwd")
   [[ $worker_cwd == "$COMMERCE_RELEASE_ROOT/$sha/apps/worker" ]] \
     || wd_die "worker is not running immutable release $sha (cwd=$worker_cwd)"
-  systemctl is-active --quiet apitoken-content-studio.service || wd_die "content studio is not active after cutover"
-  studio_pid=$(systemctl show apitoken-content-studio.service -p MainPID --value)
+  systemctl is-active --quiet "$CONTOUR_UNITS_CONTENT_STUDIO" || wd_die "content studio is not active after cutover"
+  studio_pid=$(systemctl show "$CONTOUR_UNITS_CONTENT_STUDIO" -p MainPID --value)
   [[ $studio_pid =~ ^[1-9][0-9]*$ ]] || wd_die "content studio has no MainPID"
   studio_cwd=$(readlink -f -- "/proc/$studio_pid/cwd")
   expected_studio_cwd=$(wd_content_studio_runtime_directory "$COMMERCE_RELEASE_ROOT/$sha")
   [[ $studio_cwd == "$expected_studio_cwd" ]] \
     || wd_die "content studio is not running immutable release $sha (cwd=$studio_cwd)"
-  curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:3500/api/health >/dev/null \
+  curl --noproxy '*' --fail --silent --show-error --max-time 5 \
+    "$CONTOUR_ORIGINS_CONTENT_STUDIO/api/health" >/dev/null \
     || wd_die "content studio health endpoint is not ready after cutover"
 }
 
@@ -2012,7 +2056,7 @@ final_verify_admin_data() {
   for _ in $(seq 1 20); do
     status=$(curl --noproxy '*' --silent --show-error --max-time 5 \
       -o /dev/null -w '%{http_code}' \
-      http://127.0.0.1:8790/overview 2>/dev/null || true)
+      "$CONTOUR_ORIGINS_ANTHROPIC_STABLE/overview" 2>/dev/null || true)
     if [[ $status == 401 ]]; then
       streak=$((streak + 1))
       if (( streak >= 3 )); then
@@ -2046,11 +2090,11 @@ final_verify_monitoring() {
   # aggregation below already uses instead of dying on the first flake.
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
     if (( grafana_ready == 0 )) && curl --noproxy '*' --fail --silent --show-error --max-time 5 \
-      http://127.0.0.1:3600/api/health >/dev/null 2>&1; then
+      "$CONTOUR_ORIGINS_GRAFANA/api/health" >/dev/null 2>&1; then
       grafana_ready=1
     fi
     if (( prometheus_ready == 0 )) && curl --noproxy '*' --fail --silent --show-error --max-time 5 \
-      http://127.0.0.1:9090/-/ready >/dev/null 2>&1; then
+      "$CONTOUR_ORIGINS_PROMETHEUS/-/ready" >/dev/null 2>&1; then
       prometheus_ready=1
     fi
     if (( grafana_ready == 1 && prometheus_ready == 1 )); then
@@ -2065,7 +2109,7 @@ final_verify_monitoring() {
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
     response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
       --data-urlencode 'query=min(up) == 1 and min(probe_success{job=~"public-http|openai-http|gemini-http|protected-http|support-http|loopback-http"}) == 1 and min(time() - apitoken_monitoring_collector_last_success_unixtime) < 180' \
-      http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+      "$CONTOUR_ORIGINS_PROMETHEUS/api/v1/query" 2>/dev/null || true)
     if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
       >/dev/null 2>&1 <<<"$response"; then
       monitoring_ready=1
@@ -2084,12 +2128,12 @@ final_verify_monitoring() {
 # Routable headroom is deliberately not a deployment invariant: subscription windows can exhaust
 # without a code change, and `CodexNoAvailableHomes` owns that operational alert.
 final_verify_codex_surface() {
-  local response envelope enabled=0 determined=0 enabled_state='' attempt
+  local response envelope enabled=0 determined=0 enabled_state='' attempt openai_host
 
   for attempt in 1 2 3 4 5 6; do
     response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
       --data-urlencode 'query=claude_api_codex_enabled{provider="openai"}' \
-      http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+      "$CONTOUR_ORIGINS_PROMETHEUS/api/v1/query" 2>/dev/null || true)
     enabled_state=$(jq --exit-status --raw-output \
       'select(.status == "success" and (.data.result | length) == 1)
        | .data.result[0].value[1]
@@ -2110,7 +2154,7 @@ final_verify_codex_surface() {
     for attempt in 1 2 3 4 5 6; do
       response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
         --data-urlencode 'query=claude_api_codex_process_live{provider="openai"} == 1 and claude_api_codex_homes_authenticated{provider="openai"} >= 1' \
-        http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+        "$CONTOUR_ORIGINS_PROMETHEUS/api/v1/query" 2>/dev/null || true)
       if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
         >/dev/null 2>&1 <<<"$response"; then
         provider_ready=1
@@ -2128,11 +2172,12 @@ final_verify_codex_surface() {
   # hostname boundary and provider-specific origin without depending on external DNS or hairpin routing.
   # The request omits the required model, so even a legacy loopback-trusted bridge rejects it before
   # reservation/provider execution. A fixed unauthenticated engine answers `invalid_api_key` first.
+  openai_host=${CONTOUR_ORIGINS_PUBLIC_OPENAI#https://}
   envelope=$(curl --noproxy '*' --silent --show-error --max-time 5 \
-    --resolve openai.api.apitoken.sale:443:127.0.0.1 \
+    --resolve "$openai_host:443:$CONTOUR_NETWORK_LOOPBACK_HOST" \
     -H 'content-type: application/json' \
     -d '{}' \
-    -w $'\n%{http_code}' https://openai.api.apitoken.sale/v1/responses 2>/dev/null || true)
+    -w $'\n%{http_code}' "$CONTOUR_ORIGINS_PUBLIC_OPENAI/v1/responses" 2>/dev/null || true)
   envelope_status=${envelope##*$'\n'}
   envelope=${envelope%$'\n'*}
   if (( enabled == 1 )); then
@@ -2157,11 +2202,11 @@ final_verify_codex_surface() {
 # mode additionally requires one authenticated paid project; disabled mode is the provider-only
 # kill switch and must keep a stable native 404 envelope instead of crashing the service.
 final_verify_gemini_surface() {
-  local response envelope enabled=0 determined=0 enabled_state='' attempt
+  local response envelope enabled=0 determined=0 enabled_state='' attempt gemini_host
   for attempt in 1 2 3 4 5 6; do
     response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
       --data-urlencode 'query=claude_api_gemini_enabled{provider="gemini"}' \
-      http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+      "$CONTOUR_ORIGINS_PROMETHEUS/api/v1/query" 2>/dev/null || true)
     enabled_state=$(jq --exit-status --raw-output \
       'select(.status == "success" and (.data.result | length) == 1)
        | .data.result[0].value[1]
@@ -2182,17 +2227,18 @@ final_verify_gemini_surface() {
     local authenticated
     response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
       --data-urlencode 'query=claude_api_gemini_profiles_authenticated{provider="gemini"}' \
-      http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+      "$CONTOUR_ORIGINS_PROMETHEUS/api/v1/query" 2>/dev/null || true)
     authenticated=$(jq --raw-output \
       'select(.status == "success" and (.data.result | length) == 1) | .data.result[0].value[1]' \
       <<<"$response" 2>/dev/null || true)
     wd_log "Gemini enabled with ${authenticated:-0} authenticated paid project(s) (0 = pre-onboarding)"
   fi
 
+  gemini_host=${CONTOUR_ORIGINS_PUBLIC_GEMINI#https://}
   envelope=$(curl --noproxy '*' --silent --show-error --max-time 5 \
-    --resolve gemini.api.apitoken.sale:443:127.0.0.1 \
+    --resolve "$gemini_host:443:$CONTOUR_NETWORK_LOOPBACK_HOST" \
     -H 'content-type: application/json' -d '{}' \
-    'https://gemini.api.apitoken.sale/v1beta/models/gemini-provider-probe:generateContent' \
+    "$CONTOUR_ORIGINS_PUBLIC_GEMINI/v1beta/models/gemini-provider-probe:generateContent" \
     2>/dev/null || true)
   if (( enabled == 1 )); then
     jq --exit-status '.error.status == "INVALID_ARGUMENT" and .error.code == 400
@@ -2218,7 +2264,7 @@ final_verify_kimi_surface() {
   for attempt in 1 2 3 4 5 6; do
     response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
       --data-urlencode 'query=claude_api_kimi_enabled{provider="kimi"}' \
-      http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+      "$CONTOUR_ORIGINS_PROMETHEUS/api/v1/query" 2>/dev/null || true)
     enabled_state=$(jq --exit-status --raw-output \
       'select(.status == "success" and (.data.result | length) == 1)
        | .data.result[0].value[1]
@@ -2239,7 +2285,7 @@ final_verify_kimi_surface() {
     for attempt in 1 2 3 4 5 6; do
       response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
         --data-urlencode 'query=claude_api_kimi_live_profiles{provider="kimi"} >= 1' \
-        http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+        "$CONTOUR_ORIGINS_PROMETHEUS/api/v1/query" 2>/dev/null || true)
       if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
         >/dev/null 2>&1 <<<"$response"; then
         provider_ready=1
@@ -2253,7 +2299,7 @@ final_verify_kimi_surface() {
 
   envelope=$(curl --noproxy '*' --silent --show-error --max-time 5 \
     -H 'content-type: application/json' -d '{}' \
-    'http://127.0.0.1:8803/v1/messages' 2>/dev/null || true)
+    "$CONTOUR_ORIGINS_KIMI_STABLE/v1/messages" 2>/dev/null || true)
   jq --exit-status '.error.type == "authentication_error"' \
     >/dev/null 2>&1 <<<"$envelope" \
     || wd_die "stable KIMI origin did not answer with the bounded engine envelope"
@@ -2383,8 +2429,9 @@ deploy_engine() {
   CURRENT_PHASE=deploying-engine
   CURRENT_PHASE_BEFORE_FAILURE=deploying-engine
   status "promoting and blue-green deploying the tested engine"
-  github_status pending deploy/engine "Engine blue-green deployment in progress"
-  github_deployment_start engine production-engine https://api.apitoken.sale/health
+  github_status pending "$CONTOUR_GITHUB_STATUS_CONTEXT_ENGINE" "Engine blue-green deployment in progress"
+  github_deployment_start engine "$CONTOUR_GITHUB_DEPLOYMENT_ENVIRONMENT_ENGINE" \
+    "$CONTOUR_ORIGINS_PUBLIC_ENGINE/health"
   "$CONTROLLER_ROOT/deploy.sh" "${deploy_args[@]}" "$sha"
   "$CONTROLLER_ROOT/engine-bluegreen.sh" || controller_rc=$?
   if (( controller_rc != 0 )); then
@@ -2428,7 +2475,7 @@ deploy_engine() {
   fi
   wd_atomic_write "$ENGINE_FILE" "$sha"
   github_deployment_success engine
-  github_status success deploy/engine "Engine verified in production"
+  github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_ENGINE" "Engine verified in production"
   wd_log "engine $sha passed final production verification"
 }
 
@@ -2437,8 +2484,9 @@ deploy_backend() {
   CURRENT_PHASE=deploying-backend
   CURRENT_PHASE_BEFORE_FAILURE=deploying-backend
   status "promoting and blue-green deploying tested API, worker, and Content Studio artifacts"
-  github_status pending deploy/backend "Backend blue-green deployment in progress"
-  github_deployment_start backend production-backend https://backend.apitoken.sale/v1/ready
+  github_status pending "$CONTOUR_GITHUB_STATUS_CONTEXT_BACKEND" "Backend blue-green deployment in progress"
+  github_deployment_start backend "$CONTOUR_GITHUB_DEPLOYMENT_ENVIRONMENT_BACKEND" \
+    "$CONTOUR_ORIGINS_PUBLIC_BACKEND/v1/ready"
   "$CONTROLLER_ROOT/deploy.sh" --api-only --skip-migrate \
     --tested-candidate "$(candidate_for "$sha")" "$sha"
   "$CONTROLLER_ROOT/api-bluegreen.sh" --with-worker
@@ -2451,7 +2499,7 @@ deploy_backend() {
   fi
   wd_atomic_write "$BACKEND_FILE" "$sha"
   github_deployment_success backend
-  github_status success deploy/backend "Backend and worker verified in production"
+  github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_BACKEND" "Backend and worker verified in production"
   wd_log "backend and Content Studio $sha passed final production verification"
 }
 
@@ -2460,12 +2508,13 @@ deploy_sales() {
   CURRENT_PHASE=deploying-sales
   CURRENT_PHASE_BEFORE_FAILURE=deploying-sales
   status "promoting and health-gating the sales partner portal (own release lifecycle)"
-  github_status pending deploy/sales "Sales partner portal deployment in progress"
-  github_deployment_start sales production-sales https://partners.apitoken.sale/v1/health
+  github_status pending "$CONTOUR_GITHUB_STATUS_CONTEXT_SALES" "Sales partner portal deployment in progress"
+  github_deployment_start sales "$CONTOUR_GITHUB_DEPLOYMENT_ENVIRONMENT_SALES" \
+    "$CONTOUR_ORIGINS_PUBLIC_SALES/v1/health"
   "$SALES_RUNNER" "$sha"
   wd_atomic_write "$SALES_FILE" "$sha"
   github_deployment_success sales
-  github_status success deploy/sales "Sales partner portal verified in production"
+  github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_SALES" "Sales partner portal verified in production"
   wd_log "sales $sha promoted and verified (partners.apitoken.sale)"
 }
 
@@ -2474,12 +2523,13 @@ deploy_openkeys() {
   CURRENT_PHASE=deploying-openkeys
   CURRENT_PHASE_BEFORE_FAILURE=deploying-openkeys
   status "promoting and health-gating the OpenKeys portal (own release lifecycle)"
-  github_status pending deploy/openkeys "OpenKeys portal deployment in progress"
-  github_deployment_start openkeys production-openkeys https://openkeys.apitoken.sale/
+  github_status pending "$CONTOUR_GITHUB_STATUS_CONTEXT_OPENKEYS" "OpenKeys portal deployment in progress"
+  github_deployment_start openkeys "$CONTOUR_GITHUB_DEPLOYMENT_ENVIRONMENT_OPENKEYS" \
+    "$CONTOUR_ORIGINS_PUBLIC_OPENKEYS/"
   "$OPENKEYS_RUNNER" "$sha"
   wd_atomic_write "$OPENKEYS_FILE" "$sha"
   github_deployment_success openkeys
-  github_status success deploy/openkeys "OpenKeys portal verified in production"
+  github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_OPENKEYS" "OpenKeys portal verified in production"
   wd_log "openkeys $sha promoted and verified (openkeys.apitoken.sale)"
 }
 
@@ -2488,12 +2538,13 @@ deploy_admin() {
   CURRENT_PHASE=deploying-admin
   CURRENT_PHASE_BEFORE_FAILURE=deploying-admin
   status "promoting and health-gating the admin panel (own release lifecycle)"
-  github_status pending deploy/admin "Admin panel deployment in progress"
-  github_deployment_start admin production-admin https://admin.apitoken.sale/
+  github_status pending "$CONTOUR_GITHUB_STATUS_CONTEXT_ADMIN" "Admin panel deployment in progress"
+  github_deployment_start admin "$CONTOUR_GITHUB_DEPLOYMENT_ENVIRONMENT_ADMIN" \
+    "$CONTOUR_ORIGINS_PUBLIC_ADMIN/"
   "$ADMIN_RUNNER" "$sha"
   wd_atomic_write "$ADMIN_FILE" "$sha"
   github_deployment_success admin
-  github_status success deploy/admin "Admin panel verified in production"
+  github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_ADMIN" "Admin panel verified in production"
   wd_log "admin $sha promoted and verified (admin.apitoken.sale)"
 }
 
@@ -2502,13 +2553,14 @@ deploy_devbot() {
   CURRENT_PHASE=deploying-devbot
   CURRENT_PHASE_BEFORE_FAILURE=deploying-devbot
   status "promoting and health-gating the dev notification bot (own release lifecycle)"
-  github_status pending deploy/devbot "Devbot deployment in progress"
+  github_status pending "$CONTOUR_GITHUB_STATUS_CONTEXT_DEVBOT" "Devbot deployment in progress"
   if [[ ! -f $DEVBOT_ENV_FILE ]]; then
     # Disabled until the operator provisions secrets: keep the pipeline green, but deliberately
     # do NOT advance devbot.sha. The lane therefore keeps triggering on later cycles and rolls
     # the first release as soon as /etc/apitoken/devbot.env exists. devbot-deploy.sh re-checks
     # the same condition as root, so a standalone invocation skips identically.
-    github_status success deploy/devbot "Devbot disabled until /etc/apitoken/devbot.env is provisioned"
+    github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_DEVBOT" \
+      "Devbot disabled until $DEVBOT_ENV_FILE is provisioned"
     wd_log "devbot disabled: $DEVBOT_ENV_FILE missing — skipping (devbot.sha not advanced)"
     return 0
   fi
@@ -2521,15 +2573,16 @@ deploy_devbot() {
     # is missing the lane would otherwise keep quarantining every TypeScript-less master after
     # provisioning (devbot-deploy.sh dies on the missing dist). Deferring retries on the next
     # TypeScript-bearing master, which is guaranteed to carry a built devbot.
-    github_status success deploy/devbot "No built devbot in this candidate; rollout deferred"
+    github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_DEVBOT" "No built devbot in this candidate; rollout deferred"
     wd_log "candidate $sha carries no built devbot (TypeScript lane not selected) — rollout deferred (devbot.sha not advanced)"
     return 0
   fi
-  github_deployment_start devbot production-devbot http://127.0.0.1:3800/health
+  github_deployment_start devbot "$CONTOUR_GITHUB_DEPLOYMENT_ENVIRONMENT_DEVBOT" \
+    "$CONTOUR_ORIGINS_DEVBOT/health"
   "$DEVBOT_RUNNER" "$sha"
   wd_atomic_write "$DEVBOT_FILE" "$sha"
   github_deployment_success devbot
-  github_status success deploy/devbot "Devbot verified in production"
+  github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_DEVBOT" "Devbot verified in production"
   wd_log "devbot $sha promoted and verified (127.0.0.1:3800)"
 }
 
@@ -2560,16 +2613,16 @@ apply_migrations_before_deploy() {
     CURRENT_PHASE=migrating
     CURRENT_PHASE_BEFORE_FAILURE=migrating
     status "tests passed; backing up and applying tested database migrations before application deploy"
-    github_status pending deploy/migration "Backup and automatic migration in progress"
-    github_deployment_start database production-database ""
+    github_status pending "$CONTOUR_GITHUB_STATUS_CONTEXT_MIGRATION" "Backup and automatic migration in progress"
+    github_deployment_start database "$CONTOUR_GITHUB_DEPLOYMENT_ENVIRONMENT_DATABASE" ""
     wd_log "candidate $sha contains new migration history; applying it before any application cutover"
     sudo -n "$MIGRATION_RUNNER" "$sha"
     [[ $(wd_manifest_digest "$DB_MANIFEST") == "$digest" ]] \
       || wd_die "automatic migration returned without committing the tested manifest"
     github_deployment_success database
-    github_status success deploy/migration "Tested migration applied before application rollout"
+    github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_MIGRATION" "Tested migration applied before application rollout"
   else
-    github_status success deploy/migration "No commerce migration changes"
+    github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_MIGRATION" "No commerce migration changes"
   fi
   rm -f -- "$PENDING_MIGRATION_FILE"
   return 0
@@ -2611,7 +2664,8 @@ main() {
   local public_image_generation_status='' public_image_edit_status='' public_image_paid_inspect_summary=''
   local core_pid= sales_pid= openkeys_pid= admin_pid= devbot_pid= core_rc=0 sales_rc=0 openkeys_rc=0 admin_rc=0 devbot_rc=0
 
-  [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
+  [[ $(id -un) == "$CONTOUR_IDENTITY_RUNTIME_USER" ]] \
+    || wd_die "watchdog service must run as $CONTOUR_IDENTITY_RUNTIME_USER"
   [[ -d $SOURCE_REPO/.git ]] || wd_die "source repository is missing: $SOURCE_REPO"
   [[ -d $STATE_ROOT && ! -L $STATE_ROOT ]] || wd_die "watchdog state is not installed"
   [[ -d $CANDIDATE_ROOT && ! -L $CANDIDATE_ROOT ]] \
@@ -2817,14 +2871,14 @@ main() {
   prepare_and_test_candidate "$CANDIDATE_SHA" "$typescript_required" "$typescript_full" \
     "$typescript_base" "$rust_required" "$static_required" "$engine_artifacts_required" \
     "$validation_policy_sha256" "$validation_plan_sha256" "$codex_artifacts_required"
-  github_status success deploy/tests "Selected isolated validation lanes passed"
+  github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_TESTS" "Selected isolated validation lanes passed"
   rm -f -- "$REJECTED_FILE"
 
   if (( infra_changed == 1 )); then
     CURRENT_PHASE=installing-infrastructure
     CURRENT_PHASE_BEFORE_FAILURE=installing-infrastructure
     status "installing exact tested operational definitions ($infra_scope)"
-    github_status pending deploy/watchdog "Installing exact tested operational definitions ($infra_scope)"
+    github_status pending "$CONTOUR_GITHUB_STATUS_CONTEXT_WATCHDOG" "Installing exact tested operational definitions ($infra_scope)"
     # The fixed root bridge independently derives and verifies this exact scope before installing
     # it, so the candidate controller cannot omit a changed concern.
     sudo -n "$INFRASTRUCTURE_RUNNER" "$CANDIDATE_SHA"
@@ -2836,13 +2890,13 @@ main() {
       # old namespace, so only a manager-spawned next cycle may consume the new privileges.
       CURRENT_PHASE=handoff
       status "system definitions installed; next five-second poll starts the updated service"
-      github_status pending deploy/watchdog "System definitions installed; continuing on next poll"
+      github_status pending "$CONTOUR_GITHUB_STATUS_CONTEXT_WATCHDOG" "System definitions installed; continuing on next poll"
       wd_log "system infrastructure transaction installed; deferring to a fresh systemd invocation"
       exit 0
     elif wd_infrastructure_scope_has "$infra_scope" controller; then
       CURRENT_PHASE=handoff
       status "operational definitions installed; continuing immediately with the new controller"
-      github_status pending deploy/watchdog "New controller installed; continuing immediately"
+      github_status pending "$CONTOUR_GITHUB_STATUS_CONTEXT_WATCHDOG" "New controller installed; continuing immediately"
       wd_log "exact tested controller installed; transferring the held lock to the new controller"
       require_fixed_file "$CONTROLLER_ENTRYPOINT"
       exec "$CONTROLLER_ENTRYPOINT" --resume "$CANDIDATE_SHA"
@@ -2978,7 +3032,8 @@ main() {
     [[ $public_image_preflight_summary =~ ^gpt-image-preflight:[a-z_]{1,64}:g=false:e=false$ ]] \
       || wd_die "GPT Image 2 public preflight inspector returned an invalid summary"
     CURRENT_PHASE_BEFORE_FAILURE=$public_image_preflight_summary
-    github_status success deploy/gpt-image-2-public-preflight "$public_image_preflight_summary"
+    github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_GPT_IMAGE_PUBLIC_PREFLIGHT" \
+      "$public_image_preflight_summary"
   fi
 
   if (( gpt_image_2_public_preflight_v2_gate == 1 )); then
@@ -2997,7 +3052,7 @@ main() {
         gpt-image-preflight-v2:preflight_success:g=false:e=false ]] \
       || wd_die "GPT Image 2 public preflight v2 returned an invalid summary"
     CURRENT_PHASE_BEFORE_FAILURE=$public_image_preflight_v2_summary
-    github_status success deploy/gpt-image-2-public-preflight-v2 \
+    github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_GPT_IMAGE_PUBLIC_PREFLIGHT_V2" \
       "$public_image_preflight_v2_summary"
   fi
 
@@ -3017,7 +3072,7 @@ main() {
         gpt-image-preflight-v3:preflight_success:g=false:e=false ]] \
       || wd_die "GPT Image 2 public preflight v3 returned an invalid summary"
     CURRENT_PHASE_BEFORE_FAILURE=$public_image_preflight_v3_summary
-    github_status success deploy/gpt-image-2-public-preflight-v3 \
+    github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_GPT_IMAGE_PUBLIC_PREFLIGHT_V3" \
       "$public_image_preflight_v3_summary"
   fi
 
@@ -3067,8 +3122,10 @@ main() {
     (( ${#public_image_generation_status} <= 140 && ${#public_image_edit_status} <= 140 )) \
       || wd_die "GPT Image 2 public paid smoke v3 status exceeds the GitHub bound"
     CURRENT_PHASE_BEFORE_FAILURE=gpt-image-paid-v3:success:g=true:e=true
-    github_status success deploy/gpt-image-2-public-generation "$public_image_generation_status"
-    github_status success deploy/gpt-image-2-public-edit "$public_image_edit_status"
+    github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_GPT_IMAGE_PUBLIC_GENERATION" \
+      "$public_image_generation_status"
+    github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_GPT_IMAGE_PUBLIC_EDIT" \
+      "$public_image_edit_status"
   fi
 
   if (( gpt_image_2_public_paid_inspect_gate == 1 )); then
@@ -3096,7 +3153,8 @@ main() {
     (( ${#public_image_generation_status} <= 140 )) \
       || wd_die "GPT Image 2 inspected generation description exceeds the GitHub status bound"
     CURRENT_PHASE_BEFORE_FAILURE=gpt-image-paid:generation_received:g=true:e=false
-    github_status success deploy/gpt-image-2-public-paid-inspect "$public_image_generation_status"
+    github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_GPT_IMAGE_PUBLIC_PAID_INSPECT" \
+      "$public_image_generation_status"
   fi
 
   if (( gpt_image_2_surface_probe_gate == 1 )); then
@@ -3128,7 +3186,13 @@ main() {
       ' <<<"$surface_probe_summary")
       (( ${#surface_probe_status} <= 140 )) \
         || wd_die "GPT Image 2 surface probe status exceeds the GitHub bound"
-      github_status success "deploy/gpt-image-2-probe-$surface_probe_name" "$surface_probe_status"
+      case "$surface_probe_name" in
+        medium) surface_probe_context=$CONTOUR_GITHUB_STATUS_CONTEXT_GPT_IMAGE_PROBE_MEDIUM ;;
+        high) surface_probe_context=$CONTOUR_GITHUB_STATUS_CONTEXT_GPT_IMAGE_PROBE_HIGH ;;
+        multi-ref) surface_probe_context=$CONTOUR_GITHUB_STATUS_CONTEXT_GPT_IMAGE_PROBE_MULTI_REF ;;
+        *) wd_die "unknown GPT Image 2 surface probe context: $surface_probe_name" ;;
+      esac
+      github_status success "$surface_probe_context" "$surface_probe_status"
     done
   fi
 
@@ -3137,7 +3201,7 @@ main() {
   rm -f -- "$PENDING_MIGRATION_FILE"
   CURRENT_PHASE=idle
   status "candidate tested and all selected components verified in production"
-  github_status success deploy/watchdog "All selected production components verified"
+  github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_WATCHDOG" "All selected production components verified"
   wd_log "watchdog completed $CANDIDATE_SHA (engine=$engine_changed codex=$codex_changed backend=$backend_changed sales=$sales_changed openkeys=$openkeys_changed admin=$admin_changed devbot=$devbot_changed)"
 }
 

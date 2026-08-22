@@ -10,6 +10,11 @@ set -euo pipefail
 # /opt/apitoken/releases/current and from the sales release root, so an OpenKeys-only
 # change never disturbs the commerce blue-green API or the partner portal.
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if [[ -f $SCRIPT_DIR/contour-config.sh ]]; then CONTOUR_ROOT=$SCRIPT_DIR; else CONTOUR_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd); fi
+# shellcheck source=deploy/contour-config.sh
+source "$CONTOUR_ROOT/contour-config.sh"
+
 # Needs root (chown, read root-only openkeys.env, systemctl). The watchdog runs as `deploy`
 # (NOPASSWD:ALL), so self-elevate — robust whether invoked with or without sudo.
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then exec sudo -n -- "$0" "$@"; fi
@@ -17,15 +22,15 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then exec sudo -n -- "$0" "$@"; fi
 SHA=${1:?usage: openkeys-deploy.sh <full-40-char-sha>}
 [[ $SHA =~ ^[0-9a-f]{40}$ ]] || { echo "openkeys-deploy: SHA must be a full 40-char commit hash" >&2; exit 1; }
 
-CANDIDATE_ROOT=${OPENKEYS_CANDIDATE_ROOT:-/var/lib/apitoken/watchdog/candidates}
-RELEASE_ROOT=${OPENKEYS_RELEASE_ROOT:-/opt/apitoken/openkeys-releases}
-ENV_FILE=${OPENKEYS_ENV_FILE:-/etc/apitoken/openkeys.env}
-WEB_UNIT=apitoken-openkeys.service
+CANDIDATE_ROOT=${OPENKEYS_CANDIDATE_ROOT:-$CONTOUR_ROOTS_CANDIDATE}
+RELEASE_ROOT=${OPENKEYS_RELEASE_ROOT:-$CONTOUR_ROOTS_OPENKEYS_RELEASE}
+ENV_FILE=${OPENKEYS_ENV_FILE:-$CONTOUR_ROOTS_CONFIG/openkeys.env}
+WEB_UNIT=$CONTOUR_UNITS_OPENKEYS
 # The product root may intentionally redirect (currently to /docs). Probe a stable page that
 # returns 200 in both the previous release and the candidate, so a valid redirect is not mistaken
 # for an unhealthy process and rollback health remains testable.
-WEB_HEALTH=${OPENKEYS_WEB_HEALTH:-http://127.0.0.1:3410/api/ready}
-WEB_ROLLBACK_HEALTH=${OPENKEYS_WEB_ROLLBACK_HEALTH:-http://127.0.0.1:3410/docs}
+WEB_HEALTH=${OPENKEYS_WEB_HEALTH:-$CONTOUR_ORIGINS_OPENKEYS/api/ready}
+WEB_ROLLBACK_HEALTH=${OPENKEYS_WEB_ROLLBACK_HEALTH:-$CONTOUR_ORIGINS_OPENKEYS/docs}
 HEALTH_RETRIES=${OPENKEYS_HEALTH_RETRIES:-30}
 HEALTH_INTERVAL=${OPENKEYS_HEALTH_INTERVAL:-2}
 

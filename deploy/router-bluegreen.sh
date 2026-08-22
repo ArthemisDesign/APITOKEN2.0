@@ -5,10 +5,12 @@ set -E
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=deploy/lib.sh
 source "$SCRIPT_DIR/lib.sh"
+IFS=, read -r ROUTER_PORT_A ROUTER_PORT_B <<<"$(contour_port_pair "$CONTOUR_PORTS_ROUTER_SLOTS")"
+ROUTER_LEGACY_PORT=$CONTOUR_PORTS_ROUTER_LEGACY
 
 usage() {
   printf '%s\n' \
-    'Usage: router-bluegreen.sh [--target-port 8800|8801] [--timeout SECONDS] [--dry-run]' \
+    "Usage: router-bluegreen.sh [--target-port $ROUTER_PORT_A|$ROUTER_PORT_B] [--timeout SECONDS] [--dry-run]" \
     '' \
     'Start and exact-release verify an inactive router slot, atomically promote it in Caddy,' \
     'then gracefully drain and retire the previous slot or legacy singleton.'
@@ -17,24 +19,24 @@ usage() {
 DRY_RUN=0
 REQUESTED_TARGET_PORT=
 READINESS_TIMEOUT=${READINESS_TIMEOUT_SECONDS:-60}
-ENGINE_RELEASE_ROOT=${ENGINE_RELEASE_ROOT:-/srv/claude-api/releases}
-DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}
-CADDY_CONFIG=${CADDY_CONFIG:-/etc/caddy/Caddyfile}
-ACTIVE_SNIPPET=${ROUTER_ACTIVE_SNIPPET:-/etc/caddy/router-active.caddy}
-PROMOTE_HELPER=${ROUTER_PROMOTE_HELPER:-/usr/local/lib/apitoken-watchdog/controller/router-promote.sh}
-STABLE_READY_URL=${ROUTER_STABLE_READY_URL:-http://127.0.0.1:8802/ready}
-STABLE_STARTUP_URL=${ROUTER_STABLE_STARTUP_URL:-http://127.0.0.1:8802/startup}
-LEGACY_UNIT=claude-router.service
+ENGINE_RELEASE_ROOT=${ENGINE_RELEASE_ROOT:-$CONTOUR_ROOTS_ENGINE_RELEASE}
+DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-$CONTOUR_LOCKS_DEPLOY}
+CADDY_CONFIG=${CADDY_CONFIG:-$CONTOUR_ROOTS_CADDY_CONFIG}
+ACTIVE_SNIPPET=${ROUTER_ACTIVE_SNIPPET:-$CONTOUR_ROOTS_ROUTER_ACTIVE}
+PROMOTE_HELPER=${ROUTER_PROMOTE_HELPER:-$CONTOUR_ROOTS_CONTROLLER/router-promote.sh}
+STABLE_READY_URL=${ROUTER_STABLE_READY_URL:-$CONTOUR_ORIGINS_ROUTER_STABLE/ready}
+STABLE_STARTUP_URL=${ROUTER_STABLE_STARTUP_URL:-$CONTOUR_ORIGINS_ROUTER_STABLE/startup}
+LEGACY_UNIT=$CONTOUR_UNITS_ROUTER_LEGACY
 ACTIVE_PORT=
 ACTIVE_UNIT=
 TARGET_PORT=
 TARGET_UNIT=
 TARGET_STARTED=0
-HEADROOM_HELPER=${LARGE_PAYLOAD_HEADROOM_HELPER:-/usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh}
-PAYLOAD_GATE=${LARGE_PAYLOAD_CANDIDATE_GATE:-/usr/local/lib/apitoken-watchdog/controller/large-payload-candidate-gate.sh}
-PAYLOAD_EVIDENCE_DIR=${LARGE_PAYLOAD_EVIDENCE_DIR:-/var/lib/apitoken/watchdog/large-payload}
+HEADROOM_HELPER=${LARGE_PAYLOAD_HEADROOM_HELPER:-$CONTOUR_ROOTS_CONTROLLER/large-payload-headroom.sh}
+PAYLOAD_GATE=${LARGE_PAYLOAD_CANDIDATE_GATE:-$CONTOUR_ROOTS_CONTROLLER/large-payload-candidate-gate.sh}
+PAYLOAD_EVIDENCE_DIR=${LARGE_PAYLOAD_EVIDENCE_DIR:-$CONTOUR_ROOTS_STATE/large-payload}
 PAYLOAD_MEMORY_HIGH_BYTES=${LARGE_PAYLOAD_ROUTER_MEMORY_HIGH_BYTES:-6442450944}
-ROUTER_SUCCESS_PROOF=/var/lib/apitoken/watchdog/router-proof/success
+ROUTER_SUCCESS_PROOF=$CONTOUR_ROOTS_STATE/router-proof/success
 PROMOTED=0
 CUTOVER_ACTIVE=0
 PROOF_CANDIDATE=
@@ -50,11 +52,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-validate_port() { [[ $1 == 8800 || $1 == 8801 ]] || die "router slot port must be 8800 or 8801: $1"; }
-other_port() { [[ $1 == 8800 ]] && printf '8801\n' || printf '8800\n'; }
-slot_unit() { printf 'claude-router@%s.service\n' "$1"; }
-slot_url() { printf 'http://127.0.0.1:%s/ready\n' "$1"; }
-slot_startup_url() { printf 'http://127.0.0.1:%s/startup\n' "$1"; }
+validate_port() { [[ $1 == "$ROUTER_PORT_A" || $1 == "$ROUTER_PORT_B" ]] || die "router slot port must be $ROUTER_PORT_A or $ROUTER_PORT_B: $1"; }
+other_port() { [[ $1 == "$ROUTER_PORT_A" ]] && printf '%s\n' "$ROUTER_PORT_B" || printf '%s\n' "$ROUTER_PORT_A"; }
+slot_unit() { printf '%s\n' "${CONTOUR_UNITS_ROUTER_TEMPLATE/@.service/@$1.service}"; }
+slot_url() { printf 'http://%s:%s/ready\n' "$CONTOUR_NETWORK_LOOPBACK_HOST" "$1"; }
+slot_startup_url() { printf 'http://%s:%s/startup\n' "$CONTOUR_NETWORK_LOOPBACK_HOST" "$1"; }
 payload_canary_reason() {
   local sha=$1 file=$PAYLOAD_EVIDENCE_DIR/$sha.reason reason
   [[ $sha =~ ^[0-9a-f]{40}$ && -f $file && ! -L $file ]] || return 1
@@ -74,7 +76,7 @@ active_backend_port() {
   ports=$(sed -n 's/^[[:space:]]*reverse_proxy 127\.0\.0\.1:\([0-9][0-9]*\)[[:space:]]*$/\1/p' \
     "$ACTIVE_SNIPPET") || return 1
   [[ $ports != *$'\n'* ]] || return 1
-  case "$ports" in 8798|8800|8801) printf '%s\n' "$ports" ;; *) return 1 ;; esac
+  case "$ports" in "$ROUTER_LEGACY_PORT"|"$ROUTER_PORT_A"|"$ROUTER_PORT_B") printf '%s\n' "$ports" ;; *) return 1 ;; esac
 }
 
 slot_serves_release() {
@@ -168,28 +170,28 @@ commit_cutover() {
 
 validate_timeout "$READINESS_TIMEOUT"
 [[ -z $REQUESTED_TARGET_PORT ]] || validate_port "$REQUESTED_TARGET_PORT"
-[[ $CADDY_CONFIG == /etc/caddy/Caddyfile ]] || die 'Caddy config path is fixed at /etc/caddy/Caddyfile'
-[[ $ACTIVE_SNIPPET == /etc/caddy/router-active.caddy ]] \
-  || die 'router active-backend state is fixed at /etc/caddy/router-active.caddy'
-[[ $PROMOTE_HELPER == /usr/local/lib/apitoken-watchdog/controller/router-promote.sh ]] \
-  || die 'router promotion helper path is fixed'
-[[ $STABLE_READY_URL == http://127.0.0.1:8802/ready ]] \
-  || die 'stable router readiness URL is fixed at 127.0.0.1:8802'
-[[ $STABLE_STARTUP_URL == http://127.0.0.1:8802/startup ]] \
-  || die 'stable router startup URL is fixed at 127.0.0.1:8802'
+[[ $CADDY_CONFIG == "$CONTOUR_ROOTS_CADDY_CONFIG" ]] || die "Caddy config path is fixed by contour at $CONTOUR_ROOTS_CADDY_CONFIG"
+[[ $ACTIVE_SNIPPET == "$CONTOUR_ROOTS_ROUTER_ACTIVE" ]] \
+  || die "router active-backend state is fixed by contour at $CONTOUR_ROOTS_ROUTER_ACTIVE"
+[[ $PROMOTE_HELPER == "$CONTOUR_ROOTS_CONTROLLER/router-promote.sh" ]] \
+  || die 'router promotion helper path is fixed by contour'
+[[ $STABLE_READY_URL == "$CONTOUR_ORIGINS_ROUTER_STABLE/ready" ]] \
+  || die "stable router readiness URL is fixed by contour at $CONTOUR_ORIGINS_ROUTER_STABLE"
+[[ $STABLE_STARTUP_URL == "$CONTOUR_ORIGINS_ROUTER_STABLE/startup" ]] \
+  || die "stable router startup URL is fixed by contour at $CONTOUR_ORIGINS_ROUTER_STABLE"
 [[ -d ${ROUTER_SUCCESS_PROOF%/*} && ! -L ${ROUTER_SUCCESS_PROOF%/*} ]] \
   || die 'router success proof directory is missing or unsafe'
 [[ $(stat -c '%u:%g:%a' -- "${ROUTER_SUCCESS_PROOF%/*}" 2>/dev/null) \
     == "$(id -u):$(id -g):700" ]] \
   || die 'router success proof directory must be controller-owned mode 0700'
 validate_service_unit "$LEGACY_UNIT"
-validate_service_unit "$(slot_unit 8800)"
-validate_service_unit "$(slot_unit 8801)"
-ENGINE_RELEASE_ROOT=$(canonicalize_release_root "$ENGINE_RELEASE_ROOT" /srv/claude-api engine)
+validate_service_unit "$(slot_unit "$ROUTER_PORT_A")"
+validate_service_unit "$(slot_unit "$ROUTER_PORT_B")"
+ENGINE_RELEASE_ROOT=$(canonicalize_release_root "$ENGINE_RELEASE_ROOT" "${CONTOUR_ROOTS_ENGINE_RELEASE%/releases}" engine)
 
 log "preflighting router blue-green cutover (dry-run=$DRY_RUN target=${REQUESTED_TARGET_PORT:-auto})"
 acquire_deploy_lock "$DEPLOY_LOCK_FILE"
-privileged_command test -f /etc/systemd/system/claude-router@.service \
+privileged_command test -f "$CONTOUR_ROOTS_SYSTEMD_UNITS/$CONTOUR_UNITS_ROUTER_TEMPLATE" \
   || die 'router slot template is not installed'
 privileged_command test -x "$PROMOTE_HELPER" || die 'root-owned router promotion helper is missing'
 privileged_command caddy validate --adapter caddyfile --config "$CADDY_CONFIG" >/dev/null \
@@ -199,15 +201,15 @@ validate_release_marker "$CURRENT_RELEASE" "$(basename -- "$CURRENT_RELEASE")"
 [[ -x $CURRENT_RELEASE/claude-router ]] || die 'current router binary is missing'
 
 if [[ $DRY_RUN == 1 ]]; then
-  ACTIVE_PORT=${ROUTER_DRY_RUN_ACTIVE_PORT:-8798}
+  ACTIVE_PORT=${ROUTER_DRY_RUN_ACTIVE_PORT:-$ROUTER_LEGACY_PORT}
 else
   ACTIVE_PORT=$(active_backend_port) || die 'router active-backend state is missing or malformed'
   ready_port "$ACTIVE_PORT" || die "active router backend $ACTIVE_PORT is not ready"
   stable_ready || die "stable router origin is not ready at $STABLE_READY_URL"
 fi
 case "$ACTIVE_PORT" in
-  8798) ACTIVE_UNIT=$LEGACY_UNIT ;;
-  8800|8801) ACTIVE_UNIT=$(slot_unit "$ACTIVE_PORT") ;;
+  "$ROUTER_LEGACY_PORT") ACTIVE_UNIT=$LEGACY_UNIT ;;
+  "$ROUTER_PORT_A"|"$ROUTER_PORT_B") ACTIVE_UNIT=$(slot_unit "$ACTIVE_PORT") ;;
   *) die "unsupported active router backend: $ACTIVE_PORT" ;;
 esac
 
@@ -222,8 +224,8 @@ if [[ -n $REQUESTED_TARGET_PORT ]]; then
   fi
 else
   case "$ACTIVE_PORT" in
-    8798) TARGET_PORT=8800 ;;
-    8800|8801)
+    "$ROUTER_LEGACY_PORT") TARGET_PORT=$ROUTER_PORT_A ;;
+    "$ROUTER_PORT_A"|"$ROUTER_PORT_B")
       if slot_serves_release "$ACTIVE_PORT" "$CURRENT_RELEASE"; then TARGET_PORT=; else TARGET_PORT=$(other_port "$ACTIVE_PORT"); fi
       ;;
   esac
@@ -243,7 +245,8 @@ begin_cutover
 if [[ $TARGET_PORT != "$ACTIVE_PORT" ]]; then
   log "stopping inactive target $TARGET_UNIT before a fresh start"
   systemctl_command stop "$TARGET_UNIT"
-  privileged_command "$HEADROOM_HELPER" "/var/lib/apitoken/spool/router-$TARGET_PORT" claude-router.slice \
+  privileged_command "$HEADROOM_HELPER" "$CONTOUR_ROOTS_SPOOL/router-$TARGET_PORT" \
+    "$CONTOUR_UNITS_ROUTER_SLICE" \
     || die "insufficient memory or spool headroom for $TARGET_UNIT"
   log "starting $TARGET_UNIT from releases/current"
   systemctl_command start "$TARGET_UNIT"
@@ -254,9 +257,9 @@ if [[ $TARGET_PORT != "$ACTIVE_PORT" ]]; then
       && grep -Fxq large-payload-canary-v1 "$CURRENT_RELEASE/.large-payload-canary-v1" \
       || die 'large-payload canary marker is invalid'
     if ! privileged_command "$PAYLOAD_GATE" "$(basename -- "$CURRENT_RELEASE")" \
-      "http://127.0.0.1:$TARGET_PORT/v1/chat/completions" "$TARGET_UNIT" \
-      "/var/lib/apitoken/spool/router-$TARGET_PORT" "$PAYLOAD_MEMORY_HIGH_BYTES" "$PAYLOAD_EVIDENCE_DIR" \
-      /srv/claude-api/data/large-payload-canary.authorization; then
+      "http://$CONTOUR_NETWORK_LOOPBACK_HOST:$TARGET_PORT/v1/chat/completions" "$TARGET_UNIT" \
+      "$CONTOUR_ROOTS_SPOOL/router-$TARGET_PORT" "$PAYLOAD_MEMORY_HIGH_BYTES" "$PAYLOAD_EVIDENCE_DIR" \
+      $CONTOUR_ROOTS_DATA/large-payload-canary.authorization; then
       die "$(payload_canary_reason "$(basename -- "$CURRENT_RELEASE")" \
         || printf 'payload-canary: failed exact-SHA candidate evidence')"
     fi
@@ -285,7 +288,7 @@ else
   systemctl_command enable "$TARGET_UNIT"
 fi
 
-for port in 8800 8801; do
+for port in "$ROUTER_PORT_A" "$ROUTER_PORT_B"; do
   unit=$(slot_unit "$port")
   [[ $port == "$TARGET_PORT" ]] && continue
   systemctl_command disable "$unit"

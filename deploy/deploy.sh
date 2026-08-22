@@ -107,25 +107,31 @@ fi
 if [[ "$DEPLOY_API" != "1" && "$SKIP_MIGRATE" == "1" ]]; then
   warn "--skip-migrate has no effect when the commerce API is not selected"
 fi
-SOURCE_REPO=${SOURCE_REPO:-/opt/apitoken/repo}
-COMMERCE_RELEASE_ROOT=$(canonicalize_release_root "${COMMERCE_RELEASE_ROOT:-/opt/apitoken/releases}" /opt/apitoken commerce)
-ENGINE_RELEASE_ROOT=$(canonicalize_release_root "${ENGINE_RELEASE_ROOT:-/srv/claude-api/releases}" /srv/claude-api engine)
-API_ENV_FILE=${API_ENV_FILE:-/etc/apitoken/api.env}
-DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}
-MIGRATION_LOCK_FILE=${MIGRATION_LOCK_FILE:-/run/lock/apitoken-db-migrate.lock}
-API_READY_URL=${API_READY_URL:-http://127.0.0.1:3000/v1/ready}
-ENGINE_READY_URL=${ENGINE_READY_URL:-http://127.0.0.1:8787/ready}
-ENGINE_POSTGRES_ENV=${ENGINE_POSTGRES_ENV:-/srv/claude-api/data/engine-postgres.env}
-API_SERVICE=${API_SERVICE:-apitoken-api@3000.service}
-ENGINE_SERVICE=${ENGINE_SERVICE:-claude-api.service}
+SOURCE_REPO=${SOURCE_REPO:-$CONTOUR_ROOTS_SOURCE_REPO}
+IFS=, read -r API_PORT_A API_PORT_B <<<"$(contour_port_pair "$CONTOUR_PORTS_COMMERCE_SLOTS")"
+IFS=, read -r ANTHROPIC_PORT_A ANTHROPIC_PORT_B <<<"$(contour_port_pair "$CONTOUR_PORTS_ANTHROPIC_SLOTS")"
+COMMERCE_RELEASE_ROOT=$(canonicalize_release_root \
+  "${COMMERCE_RELEASE_ROOT:-$CONTOUR_ROOTS_COMMERCE_RELEASE}" \
+  "${CONTOUR_ROOTS_COMMERCE_RELEASE%/releases}" commerce)
+ENGINE_RELEASE_ROOT=$(canonicalize_release_root \
+  "${ENGINE_RELEASE_ROOT:-$CONTOUR_ROOTS_ENGINE_RELEASE}" \
+  "${CONTOUR_ROOTS_ENGINE_RELEASE%/releases}" engine)
+API_ENV_FILE=${API_ENV_FILE:-$CONTOUR_ROOTS_CONFIG/api.env}
+DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-$CONTOUR_LOCKS_DEPLOY}
+MIGRATION_LOCK_FILE=${MIGRATION_LOCK_FILE:-$CONTOUR_LOCKS_MIGRATION}
+API_READY_URL=${API_READY_URL:-http://$CONTOUR_NETWORK_LOOPBACK_HOST:$API_PORT_A/v1/ready}
+ENGINE_READY_URL=${ENGINE_READY_URL:-http://$CONTOUR_NETWORK_LOOPBACK_HOST:$ANTHROPIC_PORT_A/ready}
+ENGINE_POSTGRES_ENV=${ENGINE_POSTGRES_ENV:-$CONTOUR_ROOTS_DATA/engine-postgres.env}
+API_SERVICE=${API_SERVICE:-${CONTOUR_UNITS_COMMERCE_TEMPLATE/@.service/@$API_PORT_A.service}}
+ENGINE_SERVICE=${ENGINE_SERVICE:-$CONTOUR_UNITS_ENGINE_LEGACY}
 LEGACY_API_SERVICE=${LEGACY_API_SERVICE:-apitoken-api.service}
-SYSTEMD_UNIT_DIR=${SYSTEMD_UNIT_DIR:-/etc/systemd/system}
-TESTED_CANDIDATE_ROOT=/var/lib/apitoken/watchdog/candidates
+SYSTEMD_UNIT_DIR=${SYSTEMD_UNIT_DIR:-$CONTOUR_ROOTS_SYSTEMD_UNITS}
+TESTED_CANDIDATE_ROOT=$CONTOUR_ROOTS_CANDIDATE
 TESTED_MARKER=
 
 # The watchdog runs with ProtectHome=read-only. Release builds must never depend on a warm cache
 # under /home/deploy: new locked dependencies need a controller-owned writable cache on first use.
-DEPLOY_BUILD_CACHE_ROOT=/var/lib/apitoken/watchdog/deploy-build-cache
+DEPLOY_BUILD_CACHE_ROOT=$CONTOUR_ROOTS_STATE/deploy-build-cache
 export CARGO_HOME="$DEPLOY_BUILD_CACHE_ROOT/cargo"
 export XDG_CACHE_HOME="$DEPLOY_BUILD_CACHE_ROOT/xdg-cache"
 export XDG_CONFIG_HOME="$DEPLOY_BUILD_CACHE_ROOT/xdg-config"
@@ -133,7 +139,8 @@ export XDG_DATA_HOME="$DEPLOY_BUILD_CACHE_ROOT/xdg-data"
 
 [[ "$SOURCE_REPO" == /* ]] || die "SOURCE_REPO must be absolute"
 [[ "$API_ENV_FILE" == /* ]] || die "API_ENV_FILE must be absolute"
-[[ "$SYSTEMD_UNIT_DIR" == "/etc/systemd/system" ]] || die "SYSTEMD_UNIT_DIR is fixed at /etc/systemd/system"
+[[ "$SYSTEMD_UNIT_DIR" == "$CONTOUR_ROOTS_SYSTEMD_UNITS" ]] \
+  || die "SYSTEMD_UNIT_DIR is fixed by contour at $CONTOUR_ROOTS_SYSTEMD_UNITS"
 validate_service_unit "$API_SERVICE"
 validate_service_unit "$ENGINE_SERVICE"
 validate_service_unit "$LEGACY_API_SERVICE"
@@ -141,7 +148,7 @@ validate_service_unit "$LEGACY_API_SERVICE"
 if [[ -n "$TESTED_CANDIDATE" ]]; then
   [[ "$TESTED_CANDIDATE" == "$TESTED_CANDIDATE_ROOT/$SHA" ]] \
     || die "--tested-candidate must be the fixed watchdog candidate for $SHA"
-  TESTED_MARKER="/var/lib/apitoken/watchdog/$SHA.tested"
+  TESTED_MARKER="$CONTOUR_ROOTS_STATE/$SHA.tested"
 fi
 
 COMMERCE_RELEASE="$COMMERCE_RELEASE_ROOT/$SHA"

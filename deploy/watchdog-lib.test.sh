@@ -259,6 +259,8 @@ status_retry_log="$TEMP/status-retry.log"
   }
   GITHUB_HELPER=/fixed/watchdog-github
   CANDIDATE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  CONTOUR_GITHUB_STATUS_CONTEXTS=deploy/watchdog
+  contour_require_status_context() { [[ $1 == deploy/watchdog ]]; }
   github_status pending deploy/watchdog "Production pipeline started"
 )
 (( $(wc -l <"$status_retry_log") == 3 )) \
@@ -268,21 +270,17 @@ grep -Fq -- \
   "$status_retry_log" \
   || wd_die "commit-status retry changed the requested SHA, state, context, or description"
 
-commit_status_context_re=$(sed -n "s/^commit_status_context_re='\\(.*\\)'$/\\1/p" \
-  "$ROOT/deploy/watchdog-github.sh")
-[[ -n $commit_status_context_re ]] || wd_die 'GitHub commit-status context validator is missing'
-for valid_context in deploy/watchdog deploy/gpt-image-2-public-preflight \
-  deploy/gpt-image-2-public-preflight-v2 deploy/gpt-image-2-public-preflight-v3 \
-  deploy/gpt-image-2-public-paid-smoke deploy/gpt-image-2-public-paid-generation \
-  deploy/gpt-image-2-public-paid-edit deploy/gpt-image-2-public-paid-inspect \
-  deploy/gpt-image-2-settlement-diagnostic deploy/gpt-image-2-settlement-v2-diagnostic; do
-  [[ $valid_context =~ $commit_status_context_re ]] \
-    || wd_die "valid GitHub commit-status context was rejected: $valid_context"
-done
-for invalid_context in deploy/ deploy/-image deploy/Image-2 deploy/image_2 deploy/image/2 other/image-2; do
-  if [[ $invalid_context =~ $commit_status_context_re ]]; then
-    wd_die "invalid GitHub commit-status context was accepted: $invalid_context"
-  fi
+mapfile -t configured_status_contexts < <(python3 - "$ROOT/deploy/contour-production.json" <<'PY'
+import json, sys
+print(*json.load(open(sys.argv[1]))["github"]["status_contexts"].values(), sep="\n")
+PY
+)
+((${#configured_status_contexts[@]} >= 10)) \
+  || wd_die 'production contour has no complete GitHub status inventory'
+for required_context in deploy/watchdog deploy/watchdog-log deploy/tests deploy/migration \
+  deploy/engine deploy/backend deploy/sales deploy/openkeys deploy/admin deploy/devbot; do
+  printf '%s\n' "${configured_status_contexts[@]}" | grep -Fxq "$required_context" \
+    || wd_die "production contour lost GitHub context $required_context"
 done
 
 # Exercise the actual watchdog dispatchers with barrier-backed fakes. A serialized implementation
@@ -294,6 +292,15 @@ eval "$(sed -n '/^run_github_status_lane()/,/^test_db()/p' "$ROOT/deploy/watchdo
 status_barrier_log="$TEMP/status-barrier.log"
 STATUS_BARRIER_EXPECTED=0
 STATUS_FAIL_CONTEXT=
+CONTOUR_GITHUB_STATUS_CONTEXT_WATCHDOG=deploy/watchdog
+CONTOUR_GITHUB_STATUS_CONTEXT_TESTS=deploy/tests
+CONTOUR_GITHUB_STATUS_CONTEXT_MIGRATION=deploy/migration
+CONTOUR_GITHUB_STATUS_CONTEXT_ENGINE=deploy/engine
+CONTOUR_GITHUB_STATUS_CONTEXT_BACKEND=deploy/backend
+CONTOUR_GITHUB_STATUS_CONTEXT_SALES=deploy/sales
+CONTOUR_GITHUB_STATUS_CONTEXT_OPENKEYS=deploy/openkeys
+CONTOUR_GITHUB_STATUS_CONTEXT_ADMIN=deploy/admin
+CONTOUR_GITHUB_STATUS_CONTEXT_DEVBOT=deploy/devbot
 github_status() {
   local context=$2 observed
   printf '%s\n' "$context" >>"$status_barrier_log"
@@ -393,6 +400,9 @@ VERIFICATION_FAIL_CHECK=
   # shellcheck disable=SC2091
   eval "$(sed -n '/^final_verify_codex_surface()/,/^}/p' "$ROOT/deploy/watchdog.sh")"
   codex_probe_log="$TEMP/codex-probe.log"
+  CONTOUR_ORIGINS_PROMETHEUS=http://127.0.0.1:9090
+  CONTOUR_ORIGINS_PUBLIC_OPENAI=https://openai.api.apitoken.sale
+  CONTOUR_NETWORK_LOOPBACK_HOST=127.0.0.1
   CODEX_PROBE_MODE=disabled
   CODEX_PROBE_BODY=
   CODEX_PROBE_STATUS=
@@ -489,6 +499,9 @@ VERIFICATION_FAIL_CHECK=
   # shellcheck disable=SC2091
   eval "$(sed -n '/^final_verify_gemini_surface()/,/^}/p' "$ROOT/deploy/watchdog.sh")"
   gemini_probe_log="$TEMP/gemini-probe.log"
+  CONTOUR_ORIGINS_PROMETHEUS=http://127.0.0.1:9090
+  CONTOUR_ORIGINS_PUBLIC_GEMINI=https://gemini.api.apitoken.sale
+  CONTOUR_NETWORK_LOOPBACK_HOST=127.0.0.1
   GEMINI_PROBE_MODE=disabled
   # Invoked indirectly by the extracted verifier.
   # shellcheck disable=SC2329
@@ -557,6 +570,8 @@ VERIFICATION_FAIL_CHECK=
   # shellcheck disable=SC2091
   eval "$(sed -n '/^final_verify_kimi_surface()/,/^}/p' "$ROOT/deploy/watchdog.sh")"
   kimi_probe_log="$TEMP/kimi-probe.log"
+  CONTOUR_ORIGINS_PROMETHEUS=http://127.0.0.1:9090
+  CONTOUR_ORIGINS_KIMI_STABLE=http://127.0.0.1:8803
   KIMI_PROBE_MODE=disabled
   # Invoked indirectly by the extracted verifier.
   # shellcheck disable=SC2329
@@ -949,6 +964,28 @@ generic_engine_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 generic_commerce_sha=cccccccccccccccccccccccccccccccccccccccc
 generic_crm_sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 authbot_live_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+CONTOUR_PORTS_ANTHROPIC_SLOTS=8787,8788
+CONTOUR_PORTS_OPENAI_SLOTS=8793,8797
+CONTOUR_PORTS_GEMINI_SLOTS=8795,8799
+CONTOUR_PORTS_KIMI_SLOTS=8804,8805
+CONTOUR_PORTS_ROUTER_SLOTS=8800,8801
+CONTOUR_PORTS_COMMERCE_SLOTS=3000,3001
+CONTOUR_UNITS_ENGINE_LEGACY=claude-api.service
+CONTOUR_UNITS_ENGINE_BRIDGE_TEMPLATE=claude-api@.service
+CONTOUR_UNITS_ANTHROPIC_TEMPLATE=claude-api-anthropic@.service
+CONTOUR_UNITS_OPENAI_LEGACY=claude-api-openai.service
+CONTOUR_UNITS_OPENAI_TEMPLATE=claude-api-openai@.service
+CONTOUR_UNITS_GEMINI_LEGACY=claude-api-gemini.service
+CONTOUR_UNITS_GEMINI_TEMPLATE=claude-api-gemini@.service
+CONTOUR_UNITS_KIMI_LEGACY=claude-api-kimi.service
+CONTOUR_UNITS_KIMI_TEMPLATE=claude-api-kimi@.service
+CONTOUR_UNITS_ROUTER_LEGACY=claude-router.service
+CONTOUR_UNITS_ROUTER_TEMPLATE=claude-router@.service
+CONTOUR_UNITS_COMMERCE_TEMPLATE=apitoken-api@.service
+CONTOUR_UNITS_WORKER=apitoken-worker.service
+CONTOUR_UNITS_CONTENT_STUDIO=apitoken-content-studio.service
+CONTOUR_UNITS_CRM_API=apitoken-crm-api.service
+CONTOUR_UNITS_CRM_WEB=apitoken-crm-web.service
 ENGINE_RELEASE_ROOT="$TEMP/live-engine-releases"
 COMMERCE_RELEASE_ROOT="$TEMP/live-commerce-releases"
 CRM_RELEASE_ROOT="$TEMP/live-crm-releases"
@@ -1303,25 +1340,25 @@ wd_path_is_codex_tooling tools/codex-native/probe-live.py \
 if wd_path_is_codex_tooling crates/forward/src/codex/api.rs; then
   wd_die "gateway-only changes must not rebuild any sidecar Codex artifact"
 fi
-grep -Fq 'WEB_HEALTH=${OPENKEYS_WEB_HEALTH:-http://127.0.0.1:3410/api/ready}' \
+grep -Fq 'WEB_HEALTH=${OPENKEYS_WEB_HEALTH:-$CONTOUR_ORIGINS_OPENKEYS/api/ready}' \
   "$ROOT/deploy/openkeys-deploy.sh" \
   || wd_die "OpenKeys rollout must gate on dependency readiness"
-grep -Fq 'WEB_ROLLBACK_HEALTH=${OPENKEYS_WEB_ROLLBACK_HEALTH:-http://127.0.0.1:3410/docs}' \
+grep -Fq 'WEB_ROLLBACK_HEALTH=${OPENKEYS_WEB_ROLLBACK_HEALTH:-$CONTOUR_ORIGINS_OPENKEYS/docs}' \
   "$ROOT/deploy/openkeys-deploy.sh" \
   || wd_die "OpenKeys rollback health must remain compatible with the previous release"
-grep -Fq 'WEB_HEALTH=${ADMIN_WEB_HEALTH:-http://127.0.0.1:3700/api/health}' \
+grep -Fq 'WEB_HEALTH=${ADMIN_WEB_HEALTH:-$CONTOUR_ORIGINS_ADMIN/api/health}' \
   "$ROOT/deploy/admin-deploy.sh" \
   || wd_die "admin rollout must gate on the application health endpoint"
-grep -Fq 'WEB_ROLLBACK_HEALTH=${ADMIN_WEB_ROLLBACK_HEALTH:-http://127.0.0.1:3700/api/health}' \
+grep -Fq 'WEB_ROLLBACK_HEALTH=${ADMIN_WEB_ROLLBACK_HEALTH:-$CONTOUR_ORIGINS_ADMIN/api/health}' \
   "$ROOT/deploy/admin-deploy.sh" \
   || wd_die "admin rollback health must remain compatible with the previous release"
 if grep -Fq 'migrate.js' "$ROOT/deploy/admin-deploy.sh"; then
   wd_die "the admin panel has no database and must not run migrations"
 fi
-grep -Fq 'HEALTH=${DEVBOT_HEALTH:-http://127.0.0.1:3800/health}' \
+grep -Fq 'HEALTH=${DEVBOT_HEALTH:-$CONTOUR_ORIGINS_DEVBOT/health}' \
   "$ROOT/deploy/devbot-deploy.sh" \
   || wd_die "devbot rollout must gate on the application health endpoint"
-grep -Fq 'ROLLBACK_HEALTH=${DEVBOT_ROLLBACK_HEALTH:-http://127.0.0.1:3800/health}' \
+grep -Fq 'ROLLBACK_HEALTH=${DEVBOT_ROLLBACK_HEALTH:-$CONTOUR_ORIGINS_DEVBOT/health}' \
   "$ROOT/deploy/devbot-deploy.sh" \
   || wd_die "devbot rollback health must remain compatible with the previous release"
 grep -Fq 'devbot disabled: ' "$ROOT/deploy/devbot-deploy.sh" \
@@ -2624,9 +2661,9 @@ grep -Fq '@oauth_callback path /oauth/callback' "$ROOT/deploy/Caddyfile"
 grep -Fq 'log_skip @oauth_callback' "$ROOT/deploy/Caddyfile"
 grep -Fq 'handle @oauth_callback {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8796' "$ROOT/deploy/Caddyfile"
-grep -Fq -- '--resolve openai.api.apitoken.sale:443:127.0.0.1' "$ROOT/deploy/watchdog.sh"
-grep -Fq 'https://openai.api.apitoken.sale/v1/responses' "$ROOT/deploy/watchdog.sh"
-grep -Fq 'https://gemini.api.apitoken.sale/v1beta/models/gemini-provider-probe:generateContent' \
+grep -Fq -- '--resolve "$openai_host:443:$CONTOUR_NETWORK_LOOPBACK_HOST"' "$ROOT/deploy/watchdog.sh"
+grep -Fq '"$CONTOUR_ORIGINS_PUBLIC_OPENAI/v1/responses"' "$ROOT/deploy/watchdog.sh"
+grep -Fq '"$CONTOUR_ORIGINS_PUBLIC_GEMINI/v1beta/models/gemini-provider-probe:generateContent"' \
   "$ROOT/deploy/watchdog.sh"
 ! grep -Fq -- "-H 'X-Apitoken-Api-Plane: openai'" "$ROOT/deploy/watchdog.sh"
 grep -Fq '@commerce_admin path /admin/*' "$ROOT/deploy/Caddyfile"
@@ -2691,14 +2728,14 @@ grep -Fq 'request>headers>X-Proxy-Admin-Key replace REDACTED' "$ROOT/deploy/Cadd
 # silently reintroduces roughly one junk entry per second.
 [[ $(grep -Fc 'exclude http.handlers.reverse_proxy.health_checker.active' "$ROOT/deploy/Caddyfile") == 1 ]]
 grep -Fq 'COMMERCE_BASE_URL=http://127.0.0.1:8791' "$ROOT/apps/sales-api/.env.example"
-grep -Fq 'COMMERCE_BALANCER_URL=${COMMERCE_BALANCER_URL:-http://127.0.0.1:8791}' "$ROOT/deploy/sales-deploy.sh"
+grep -Fq 'COMMERCE_BALANCER_URL=${COMMERCE_BALANCER_URL:-$CONTOUR_ORIGINS_COMMERCE_STABLE}' "$ROOT/deploy/sales-deploy.sh"
 grep -Fq 'configure_commerce_balancer' "$ROOT/deploy/sales-deploy.sh"
-grep -Fq 'COMMERCE_BALANCER_READY_URL=${COMMERCE_BALANCER_READY_URL:-http://127.0.0.1:8791/v1/ready}' "$ROOT/deploy/api-bluegreen.sh"
+grep -Fq 'COMMERCE_BALANCER_READY_URL=${COMMERCE_BALANCER_READY_URL:-$CONTOUR_ORIGINS_COMMERCE_STABLE/v1/ready}' "$ROOT/deploy/api-bluegreen.sh"
 [[ $(grep -Fc 'balancer_is_ready' "$ROOT/deploy/api-bluegreen.sh") -ge 6 ]]
 # Each concurrent candidate owns a stable disposable-database slot. All three loopback ports must
 # stay below the kernel ephemeral range, or unrelated outbound traffic can intermittently take one.
-test_db_base_port=$(sed -n 's/^BASE_PORT=${WATCHDOG_POSTGRES_PORT:-\([0-9]*\)}$/\1/p' \
-  "$ROOT/deploy/watchdog-test-db.sh")
+test_db_base_port=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ports"]["test_postgres_base"])' \
+  "$ROOT/deploy/contour-production.json")
 [[ -n $test_db_base_port ]] \
   || wd_die "could not read the disposable test database base port"
 for test_db_slot in 0 1 2; do
@@ -2708,7 +2745,7 @@ for test_db_slot in 0 1 2; do
 done
 grep -Fq 'SLOT=${2:-0}' "$ROOT/deploy/watchdog-test-db.sh" \
   || wd_die 'test database helper does not default production to slot zero'
-grep -Fq 'NAME=apitoken-watchdog-postgres-$SLOT' "$ROOT/deploy/watchdog-test-db.sh" \
+grep -Fq 'NAME=$CONTOUR_COMPOSE_PROJECTS_TEST_POSTGRES_PREFIX-$SLOT' "$ROOT/deploy/watchdog-test-db.sh" \
   || wd_die 'parallel test database slots do not have distinct container names'
 grep -Fq -- '--label "apitoken.watchdog.slot=$SLOT"' "$ROOT/deploy/watchdog-test-db.sh" \
   || wd_die 'test database ownership is not fenced by slot'
@@ -2726,8 +2763,8 @@ grep -Fq -- '--shm-size=256m' "$ROOT/deploy/watchdog-test-db.sh" \
 # single-winner and opaque-keyspace invariants were unprovable while the gate ran without Redis, so
 # the disposable instance and its mandatory wiring are pinned here. Losing any of these silently
 # returns ~350 lines of L2 code and the tenant-privacy assertions to zero executed coverage.
-redis_base_port=$(sed -n 's/^REDIS_BASE_PORT=${WATCHDOG_REDIS_PORT:-\([0-9]*\)}$/\1/p' \
-  "$ROOT/deploy/watchdog-test-db.sh")
+redis_base_port=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ports"]["test_redis_base"])' \
+  "$ROOT/deploy/contour-production.json")
 [[ -n $redis_base_port ]] || wd_die 'could not read the disposable test Redis base port'
 for redis_slot in 0 1 2; do
   redis_slot_port=$((redis_base_port + redis_slot))
@@ -2736,7 +2773,7 @@ for redis_slot in 0 1 2; do
   (( redis_slot_port < test_db_base_port || redis_slot_port > test_db_base_port + 2 )) \
     || wd_die "test Redis port $redis_slot_port collides with the disposable PostgreSQL range"
 done
-grep -Fq 'REDIS_NAME=apitoken-watchdog-redis-$SLOT' "$ROOT/deploy/watchdog-test-db.sh" \
+grep -Fq 'REDIS_NAME=$CONTOUR_COMPOSE_PROJECTS_TEST_REDIS_PREFIX-$SLOT' "$ROOT/deploy/watchdog-test-db.sh" \
   || wd_die 'parallel test Redis slots do not have distinct container names'
 grep -Fq -- '--label apitoken.watchdog=test-redis' "$ROOT/deploy/watchdog-test-db.sh" \
   || wd_die 'test Redis ownership is not labelled'
@@ -3389,7 +3426,7 @@ grep -Fq '[[ $(pwd -P) == /var/lib/apitoken/watchdog/router-proof ]]' \
   || wd_die 'router proof provisioning does not verify the physical directory path'
 grep -Fq 'chown deploy:deploy .' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'router proof directory is not securely provisioned for the deploy controller'
-grep -Fxq 'ROUTER_SUCCESS_PROOF=/var/lib/apitoken/watchdog/router-proof/success' \
+grep -Fxq 'ROUTER_SUCCESS_PROOF=$CONTOUR_ROOTS_STATE/router-proof/success' \
   "$ROOT/deploy/router-bluegreen.sh" \
   || wd_die 'router controller proof does not use the fixed deploy-writable state path'
 grep -Fq 'mv -fT -- "$PROOF_CANDIDATE" "$ROUTER_SUCCESS_PROOF"' \
@@ -3454,6 +3491,13 @@ ROUTER_TEST_BOTH_ACTIVE=0
 ROUTER_TEST_WRONG_BINARY=0
 ROUTER_TEST_STABLE_STATUS=200
 ENGINE_RELEASE_ROOT=/srv/claude-api/releases
+ROUTER_PORT_A=8800
+ROUTER_PORT_B=8801
+CONTOUR_PORTS_ROUTER_LEGACY=8798
+CONTOUR_UNITS_ROUTER_TEMPLATE=claude-router@.service
+CONTOUR_UNITS_ROUTER_LEGACY=claude-router.service
+CONTOUR_NETWORK_LOOPBACK_HOST=127.0.0.1
+CONTOUR_ORIGINS_ROUTER_STABLE=http://127.0.0.1:8802
 router_active_backend_port() { printf '%s\n' "$ROUTER_TEST_ACTIVE_PORT"; }
 systemctl() {
   local verb=$1 unit=${3:-}
@@ -3559,7 +3603,7 @@ grep -Fq 'streak >= 3' "$ROOT/deploy/watchdog.sh" \
   || wd_die "the admin data check must require consecutive expected answers, not a single one"
 grep -Fq 'for _ in $(seq 1 20); do' "$ROOT/deploy/watchdog.sh" \
   || wd_die "the admin data convergence window must outlast blue-green cutover and health checks"
-grep -Fq 'http://127.0.0.1:8790/overview' "$ROOT/deploy/watchdog.sh" \
+grep -Fq '"$CONTOUR_ORIGINS_ANTHROPIC_STABLE/overview"' "$ROOT/deploy/watchdog.sh" \
   || wd_die "the admin data check must probe the engine data route the admin app polls"
 for scoped_verifier in final_verify_admin_routing final_verify_monitoring \
   final_verify_codex_surface final_verify_gemini_surface; do
@@ -3713,13 +3757,12 @@ grep -Fq '$unit runs a different binary; restarting onto the selected release' \
   || wd_die "deployment can leave changed authbot code unadopted"
 grep -Fq 'recover_interrupted_handoffs' "$ROOT/crates/authbot/src/main.rs" \
   || wd_die "an authbot code restart can strand sellers in a dead in-memory OAuth session"
-for retained_engine_unit in claude-api-openai.service claude-api-openai@8793.service \
-  claude-api-openai@8797.service claude-api-gemini.service \
-  claude-api-gemini@8795.service claude-api-gemini@8799.service \
-  claude-router.service claude-router@8800.service claude-router@8801.service \
-  apitoken-crm-api.service apitoken-crm-web.service; do
+for retained_engine_unit in CONTOUR_UNITS_OPENAI_LEGACY CONTOUR_UNITS_OPENAI_TEMPLATE \
+  CONTOUR_UNITS_GEMINI_LEGACY CONTOUR_UNITS_GEMINI_TEMPLATE \
+  CONTOUR_UNITS_ROUTER_LEGACY CONTOUR_UNITS_ROUTER_TEMPLATE \
+  CONTOUR_UNITS_CRM_API CONTOUR_UNITS_CRM_WEB; do
   grep -Fq "$retained_engine_unit" "$ROOT/deploy/watchdog.sh" \
-    || wd_die "release retention can unlink the executable backing $retained_engine_unit"
+    || wd_die "release retention lost contour inventory $retained_engine_unit"
 done
 grep -Fq 'AUTHBOT_RUNTIME_STATE=$CONTROLLER_ROOT/authbot-runtime-state.sh' \
   "$ROOT/deploy/watchdog.sh" \
@@ -3745,12 +3788,12 @@ grep -Fq 'track_detached_work()' "$ROOT/crates/forward/src/meter.rs" \
 final_verification_contract=(
   'publish_pipeline_start_statuses'
   'publish_unchanged_component_statuses'
-  'run_github_status_lane success deploy/migration'
-  'run_github_status_lane success deploy/engine'
-  'run_github_status_lane success deploy/backend'
-  'run_github_status_lane success deploy/sales'
-  'run_github_status_lane success deploy/openkeys'
-  'run_github_status_lane success deploy/admin'
+  'run_github_status_lane success "$CONTOUR_GITHUB_STATUS_CONTEXT_MIGRATION"'
+  'run_github_status_lane success "$CONTOUR_GITHUB_STATUS_CONTEXT_ENGINE"'
+  'run_github_status_lane success "$CONTOUR_GITHUB_STATUS_CONTEXT_BACKEND"'
+  'run_github_status_lane success "$CONTOUR_GITHUB_STATUS_CONTEXT_SALES"'
+  'run_github_status_lane success "$CONTOUR_GITHUB_STATUS_CONTEXT_OPENKEYS"'
+  'run_github_status_lane success "$CONTOUR_GITHUB_STATUS_CONTEXT_ADMIN"'
   'wd_final_verification_plan "$delivery_infra_scope" "$engine_changed"'
   'run_final_verification_lane final_verify_admin_data &'
   'run_final_verification_lane final_verify_admin_routing &'
@@ -4013,9 +4056,9 @@ grep -Fq 'DEVBOT_FILE=$STATE_ROOT/devbot.sha' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the watchdog has no devbot baseline state file'
 grep -Fq 'run_rollout_lane deploy_devbot' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the devbot rollout lane is not wired into the watchdog'
-grep -Fq 'github_deployment_start devbot production-devbot' "$ROOT/deploy/watchdog.sh" \
+grep -Fq 'github_deployment_start devbot "$CONTOUR_GITHUB_DEPLOYMENT_ENVIRONMENT_DEVBOT"' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the devbot lane does not publish its deployment environment'
-grep -Fq 'success deploy/devbot' "$ROOT/deploy/watchdog.sh" \
+grep -Fq 'success "$CONTOUR_GITHUB_STATUS_CONTEXT_DEVBOT"' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the devbot lane does not publish its status context'
 # A TypeScript-less candidate carries no built devbot; the lane must defer green WITHOUT advancing
 # devbot.sha, or every deploy/observability/engine-only master is quarantined after provisioning.
@@ -4705,7 +4748,7 @@ for cache_environment in \
   grep -Fxq "$cache_environment" "$ROOT/systemd/apitoken-deploy-watchdog.service" \
     || wd_die "watchdog service is missing writable build cache environment: $cache_environment"
 done
-grep -Fq 'DEPLOY_BUILD_CACHE_ROOT=/var/lib/apitoken/watchdog/deploy-build-cache' \
+grep -Fq 'DEPLOY_BUILD_CACHE_ROOT=$CONTOUR_ROOTS_STATE/deploy-build-cache' \
   "$ROOT/deploy/deploy.sh" || wd_die 'release builder does not pin the writable build cache'
 grep -Fq '/var/lib/apitoken/watchdog/deploy-build-cache/cargo' \
   "$ROOT/deploy/install-watchdog.sh" || wd_die 'watchdog installer does not create the release build cache'
@@ -4746,6 +4789,19 @@ grep -Fq 'install_monitoring_definitions' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'watchdog installer has no narrow monitoring transaction'
 grep -Fq '"$ROOT/deploy/validation-plan.sh"' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'watchdog installer does not install the versioned validation planner'
+for contour_path in contour-production.json contour-config.schema.json contour-config.py contour-config.sh; do
+  grep -Fq '"$ROOT/deploy/'"$contour_path"'"' "$ROOT/deploy/install-watchdog.sh" \
+    || wd_die "watchdog installer does not install immutable contour dependency $contour_path"
+done
+contour_install_line=$(grep -nF '"$ROOT/deploy/contour-production.json"' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+entrypoint_install_line=$(grep -nF '"$ROOT/deploy/watchdog.sh" "$watchdog_staged"' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+[[ -n $contour_install_line && -n $entrypoint_install_line \
+    && $contour_install_line -lt $entrypoint_install_line ]] \
+  || wd_die 'watchdog entrypoint can publish before its immutable contour dependencies'
+grep -Fq 'deploy/contour-config.test.sh' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'trusted static lane does not run contour-config validation'
 narrow_dispatch_line=$(grep -nF 'case "$INSTALL_MODE" in' \
   "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
 bootstrap_line=$(grep -nF "command -v curl >/dev/null" \
@@ -4793,7 +4849,7 @@ final_verification_line=$(grep -nF \
 [[ -n $final_verification_line && -n $postdrop_line && -n $processed_line \
     && $final_verification_line -lt $postdrop_line && $postdrop_line -lt $processed_line ]] \
   || wd_die 'pricing-retirement post-drop proof is not between final verification and processed/green'
-grep -Fq 'PRICING_RETIREMENT_POSTDROP=/usr/local/lib/apitoken-watchdog/pricing-retirement-postdrop.sh' \
+grep -Fq 'PRICING_RETIREMENT_POSTDROP=$WATCHDOG_ROOT/pricing-retirement-postdrop.sh' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'watchdog does not pin the fixed pricing-retirement post-drop helper'
 grep -Fq 'pricing-retirement-postdrop.sh --stage commerce [0-9a-f]*' \
@@ -4839,13 +4895,13 @@ core_start_line=$(grep -nF \
   "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
 [[ -n $backup_line && -n $core_start_line && $backup_line -lt $core_start_line ]] \
   || wd_die 'production backup can race an independent database rollout'
-grep -Fq 'DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}' \
+grep -Fq 'DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-$CONTOUR_LOCKS_DEPLOY}' \
   "$ROOT/deploy/engine-bluegreen.sh" \
   || wd_die 'engine controller lost the shared deploy lock'
-grep -Fq 'DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}' \
+grep -Fq 'DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-$CONTOUR_LOCKS_DEPLOY}' \
   "$ROOT/deploy/api-bluegreen.sh" \
   || wd_die 'backend controller lost the shared deploy lock'
-grep -Fq 'ENGINE_MIGRATION_HELPER=/usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh' \
+grep -Fq 'ENGINE_MIGRATION_HELPER=$CONTOUR_ROOTS_CONTROLLER/engine-migrate.sh' \
   "$ROOT/deploy/engine-bluegreen.sh" \
   || wd_die 'engine controller has no fixed schema migration helper'
 grep -Fq 'controller/engine-migrate.sh' "$ROOT/deploy/install-watchdog.sh" \
@@ -4908,9 +4964,11 @@ grep -Fq 'wd_content_studio_runtime_directory "$COMMERCE_RELEASE_ROOT/$sha"' \
   || wd_die 'final verification does not verify the selected Content Studio runtime directory'
 grep -Fq 'promoting exact tested engine binaries' "$ROOT/deploy/deploy.sh" \
   || wd_die 'engine is rebuilt after the candidate gate'
-[[ $(grep -Fc 'production-(database|engine|backend|sales|openkeys|admin|devbot)' \
-  "$ROOT/deploy/watchdog-github.sh") == 2 ]] \
-  || wd_die 'GitHub deployment reporting does not allow the admin and devbot environments'
+for deployment_environment in production-database production-engine production-backend \
+  production-sales production-openkeys production-admin production-devbot; do
+  grep -Fq "$deployment_environment" "$ROOT/deploy/contour-production.json" \
+    || wd_die "production contour does not allow deployment environment $deployment_environment"
+done
 
 # Trusted pre-merge validation is host-owned and SHA-keyed. A separate low-priority service can
 # validate two distinct descendants while production is active, but it shares only the exact-SHA
@@ -4925,8 +4983,10 @@ grep -Fq 'deployments(last:100,environments:[$environment]' \
   || wd_die 'candidate validation queue is not restricted to its dedicated environment'
 grep -Fq 'latestStatus{state}' "$ROOT/deploy/watchdog-github.sh" \
   || wd_die 'five-second candidate polling does not fetch queue states in one API request'
-grep -Fq '^(candidate-validation|production-' "$ROOT/deploy/watchdog-github.sh" \
-  || wd_die 'GitHub bridge cannot report trusted candidate validation results'
+grep -Fq 'contour_require_deployment_environment "$5"' "$ROOT/deploy/watchdog-github.sh" \
+  || wd_die 'GitHub bridge does not enforce contour deployment environments'
+grep -Fq 'candidate-validation' "$ROOT/deploy/contour-production.json" \
+  || wd_die 'production contour cannot report trusted candidate validation results'
 grep -Fq '(.state == "IN_PROGRESS")' "$ROOT/deploy/watchdog-github.sh" \
   || wd_die 'queued or interrupted candidate validations cannot be claimed'
 grep -Fq 'auto_inactive:($environment != "candidate-validation")' \
@@ -4997,7 +5057,7 @@ grep -Fq 'check-run)' "$ROOT/deploy/watchdog-github.sh" \
   || wd_die 'GitHub bridge cannot upload a redacted failure check run'
 grep -Fq 'escaped its directory' "$ROOT/deploy/watchdog-github.sh" \
   || wd_die 'GitHub check-run helper does not refuse a path-escaped failure report'
-grep -Fq '/var/lib/apitoken/watchdog/failures' "$ROOT/deploy/watchdog-github.sh" \
+grep -Fq 'failure_dir=$CONTOUR_ROOTS_STATE/failures' "$ROOT/deploy/watchdog-github.sh" \
   || wd_die 'GitHub check-run helper does not pin the failure-report directory'
 grep -Fq 'am_failure_log' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge client does not fetch the redacted host failure log'
@@ -5032,7 +5092,7 @@ done
 grep -Fq 'systemctl enable --now apitoken-candidate-validator.timer' \
   "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'candidate validation timer is not enabled'
-grep -Fq 'SOURCE_FETCH_LOCK=/run/lock/apitoken-source-fetch.lock' "$ROOT/deploy/watchdog.sh" \
+grep -Fq 'SOURCE_FETCH_LOCK=$CONTOUR_LOCKS_SOURCE_FETCH' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'concurrent Git fetches are not serialized'
 grep -Fq 'exec 9>"$STATE_ROOT/$sha.candidate.lock"' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'production and candidate validation can mutate one SHA concurrently'
@@ -5258,7 +5318,7 @@ preflight_gate_line=$(grep -nF '"$GPT_IMAGE_2_PUBLIC_PREFLIGHT_PRODUCER_SHA" --i
   || wd_die 'GPT Image 2 public preflight is not inspected before processed/green'
 grep -Fq 'CURRENT_PHASE_BEFORE_FAILURE=$public_image_preflight_summary' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 public preflight stage is absent from the watchdog status'
-grep -Fq 'github_status success deploy/gpt-image-2-public-preflight "$public_image_preflight_summary"' \
+grep -Fq 'github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_GPT_IMAGE_PUBLIC_PREFLIGHT"' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 public preflight stage has no sanitized GREEN status'
 
@@ -5314,7 +5374,7 @@ preflight_v2_gate_line=$(grep -nF '"$GPT_IMAGE_2_PUBLIC_PREFLIGHT_V2_PRODUCER_SH
 grep -Fq 'CURRENT_PHASE_BEFORE_FAILURE=$public_image_preflight_v2_summary' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 public preflight v2 result is absent from a later RED status'
-grep -Fq 'github_status success deploy/gpt-image-2-public-preflight-v2' \
+grep -Fq 'github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_GPT_IMAGE_PUBLIC_PREFLIGHT_V2"' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 public preflight v2 has no sanitized GREEN status'
 
@@ -5375,7 +5435,7 @@ preflight_v3_gate_line=$(grep -nF '"$GPT_IMAGE_2_PUBLIC_PREFLIGHT_V3_PRODUCER_SH
 grep -Fq 'CURRENT_PHASE_BEFORE_FAILURE=$public_image_preflight_v3_summary' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 public preflight v3 result is absent from a later RED status'
-grep -Fq 'github_status success deploy/gpt-image-2-public-preflight-v3' \
+grep -Fq 'github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_GPT_IMAGE_PUBLIC_PREFLIGHT_V3"' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 public preflight v3 has no sanitized GREEN status'
 
@@ -5504,7 +5564,7 @@ paid_inspect_gate_line=$(grep -nF '"$GPT_IMAGE_2_PUBLIC_PAID_INSPECT_PRODUCER_SH
 grep -Fq 'CURRENT_PHASE_BEFORE_FAILURE=gpt-image-paid:generation_received:g=true:e=false' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 generation-only withdrawal is absent from later RED status'
-grep -Fq 'github_status success deploy/gpt-image-2-public-paid-inspect "$public_image_generation_status"' \
+grep -Fq 'github_status success "$CONTOUR_GITHUB_STATUS_CONTEXT_GPT_IMAGE_PUBLIC_PAID_INSPECT"' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 generation inspection has no sanitized GREEN status'
 
@@ -5570,9 +5630,10 @@ surface_probe_gate_line=$(grep -nF '"$GPT_IMAGE_2_SURFACE_PROBE_PRODUCER_SHA")' 
 [[ -n $surface_probe_gate_line && -n $processed_line && \
    $surface_probe_gate_line -lt $processed_line ]] \
   || wd_die 'GPT Image 2 surface probe does not run before processed/green'
-grep -Fq 'github_status success "deploy/gpt-image-2-probe-$surface_probe_name"' \
-  "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'GPT Image 2 surface probe has no per-probe GREEN statuses'
+for context_var in GPT_IMAGE_PROBE_MEDIUM GPT_IMAGE_PROBE_HIGH GPT_IMAGE_PROBE_MULTI_REF; do
+  grep -Fq "CONTOUR_GITHUB_STATUS_CONTEXT_$context_var" "$ROOT/deploy/watchdog.sh" \
+    || wd_die "GPT Image 2 surface probe has no contour status $context_var"
+done
 grep -Fq 'for surface_probe_name in medium high multi-ref; do' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 surface probe names must stay valid status contexts (hyphenated)'

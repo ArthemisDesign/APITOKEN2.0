@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apitoken.sale/schemas/deploy-contour-v1.json",
+  "title": "apitoken deploy contour",
+  "description": "Immutable inventory for one watchdog/controller contour. The inventory includes every contour-owned user, branch, GitHub namespace, root, lock, port, origin, Compose project, systemd unit, lane, network boundary, and resource boundary.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "id", "kind", "identity", "git", "github", "roots", "locks",
+    "ports", "origins", "compose_projects", "units", "lanes", "network", "resources"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "id": { "$ref": "#/$defs/identifier" },
+    "kind": { "enum": ["production", "stage"] },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime_user", "runtime_group", "ci_user", "ci_group"],
+      "properties": {
+        "runtime_user": { "$ref": "#/$defs/unixName" },
+        "runtime_group": { "$ref": "#/$defs/unixName" },
+        "ci_user": { "$ref": "#/$defs/unixName" },
+        "ci_group": { "$ref": "#/$defs/unixName" }
+      }
+    },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["remote", "branch"],
+      "properties": {
+        "remote": { "$ref": "#/$defs/identifier" },
+        "branch": { "$ref": "#/$defs/gitBranch" }
+      }
+    },
+    "github": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reporting_helper", "config_file", "status_contexts", "deployment_environments"],
+      "properties": {
+        "reporting_helper": { "$ref": "#/$defs/absolutePath" },
+        "config_file": { "$ref": "#/$defs/absolutePath" },
+        "status_contexts": {
+          "type": "object", "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/githubName" }
+        },
+        "deployment_environments": {
+          "type": "object", "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/githubName" }
+        }
+      }
+    },
+    "roots": { "$ref": "#/$defs/pathMap" },
+    "locks": { "$ref": "#/$defs/pathMap" },
+    "ports": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": {
+        "oneOf": [
+          { "$ref": "#/$defs/port" },
+          { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/port" } }
+        ]
+      }
+    },
+    "origins": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/httpOrigin" }
+    },
+    "compose_projects": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/identifier" }
+    },
+    "units": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/systemdUnit" }
+    },
+    "lanes": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": { "type": "boolean" }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "loopback_host", "public_inbound"],
+      "properties": {
+        "namespace": { "$ref": "#/$defs/identifier" },
+        "loopback_host": { "type": "string", "minLength": 1 },
+        "public_inbound": { "type": "boolean" }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slice", "rootless_docker"],
+      "properties": {
+        "slice": { "$ref": "#/$defs/systemdUnit" },
+        "rootless_docker": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+    "unixName": { "type": "string", "pattern": "^[a-z_][a-z0-9_-]*$" },
+    "gitBranch": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$" },
+    "githubName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$" },
+    "absolutePath": { "type": "string", "pattern": "^/(?:[A-Za-z0-9._@{}$:+-]+/?)+$" },
+    "pathMap": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/absolutePath" }
+    },
+    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "httpOrigin": { "type": "string", "pattern": "^https?://[^/[:space:]]+(?:/[^[:space:]]*)?$" },
+    "systemdUnit": { "type": "string", "pattern": "^[A-Za-z0-9@_.-]+\\.(?:service|timer|slice)$" }
+  }
+}

@@ -1,21 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=deploy/lib.sh
+source "$SCRIPT_DIR/lib.sh"
+IFS=, read -r ROUTER_PORT_A ROUTER_PORT_B <<<"$(contour_port_pair "$CONTOUR_PORTS_ROUTER_SLOTS")"
+ROUTER_LEGACY_PORT=$CONTOUR_PORTS_ROUTER_LEGACY
+
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { printf 'router promotion must run as root\n' >&2; exit 1; }
-[[ $# -eq 1 ]] || { printf 'usage: router-promote.sh 8798|8800|8801\n' >&2; exit 2; }
+[[ $# -eq 1 ]] || { printf 'usage: router-promote.sh %s|%s|%s\n' \
+  "$ROUTER_LEGACY_PORT" "$ROUTER_PORT_A" "$ROUTER_PORT_B" >&2; exit 2; }
 
 TARGET_PORT=$1
 case "$TARGET_PORT" in
-  8798|8800|8801) ;;
+  "$ROUTER_LEGACY_PORT"|"$ROUTER_PORT_A"|"$ROUTER_PORT_B") ;;
   *) printf 'invalid router backend port: %s\n' "$TARGET_PORT" >&2; exit 2 ;;
 esac
 
-LIVE=${CADDY_CONFIG:-/etc/caddy/Caddyfile}
-SNIPPET=${ROUTER_ACTIVE_SNIPPET:-/etc/caddy/router-active.caddy}
-STABLE_READY_URL=${ROUTER_STABLE_READY_URL:-http://127.0.0.1:8802/ready}
-TARGET_READY_URL="http://127.0.0.1:$TARGET_PORT/ready"
-[[ $LIVE == /etc/caddy/Caddyfile ]] || { printf 'Caddy config path is fixed\n' >&2; exit 2; }
-[[ $SNIPPET == /etc/caddy/router-active.caddy ]] || { printf 'router state path is fixed\n' >&2; exit 2; }
+LIVE=${CADDY_CONFIG:-$CONTOUR_ROOTS_CADDY_CONFIG}
+SNIPPET=${ROUTER_ACTIVE_SNIPPET:-$CONTOUR_ROOTS_ROUTER_ACTIVE}
+STABLE_READY_URL=${ROUTER_STABLE_READY_URL:-$CONTOUR_ORIGINS_ROUTER_STABLE/ready}
+TARGET_READY_URL="http://$CONTOUR_NETWORK_LOOPBACK_HOST:$TARGET_PORT/ready"
+[[ $LIVE == "$CONTOUR_ROOTS_CADDY_CONFIG" ]] || { printf 'Caddy config path is fixed by contour\n' >&2; exit 2; }
+[[ $SNIPPET == "$CONTOUR_ROOTS_ROUTER_ACTIVE" ]] || { printf 'router state path is fixed by contour\n' >&2; exit 2; }
 [[ -f $LIVE && ! -L $LIVE ]] || { printf 'live Caddy config is missing or unsafe\n' >&2; exit 1; }
 [[ -f $SNIPPET && ! -L $SNIPPET ]] || { printf 'router backend state is missing or unsafe\n' >&2; exit 1; }
 [[ $(stat -c '%u' -- "$SNIPPET") == 0 ]] || { printf 'router backend state is not root-owned\n' >&2; exit 1; }
@@ -31,7 +38,8 @@ cleanup() { rm -f -- "$candidate" "$backup"; }
 trap cleanup EXIT
 chmod 0644 "$candidate" "$backup"
 cp -a -- "$SNIPPET" "$backup"
-printf '(router_backend) {\n\treverse_proxy 127.0.0.1:%s\n}\n' "$TARGET_PORT" >"$candidate"
+printf '(router_backend) {\n\treverse_proxy %s:%s\n}\n' \
+  "$CONTOUR_NETWORK_LOOPBACK_HOST" "$TARGET_PORT" >"$candidate"
 chown root:root "$candidate"
 
 restore() {

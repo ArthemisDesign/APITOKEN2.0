@@ -2,7 +2,10 @@
 set -euo pipefail
 
 # Root-only bridge from the unprivileged watchdog to GitHub's Statuses, Checks, and Deployments APIs.
-CONFIG=/etc/apitoken/github-watchdog.env
+WATCHDOG_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=deploy/contour-config.sh
+source "$WATCHDOG_ROOT/contour-config.sh"
+CONFIG=$CONTOUR_GITHUB_CONFIG_FILE
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'must run as root' >&2; exit 1; }
 [[ -f $CONFIG && ! -L $CONFIG ]] || { echo "missing $CONFIG" >&2; exit 1; }
 [[ $(stat -c '%u:%a' "$CONFIG") == 0:600 ]] || { echo "$CONFIG must be root-owned mode 0600" >&2; exit 1; }
@@ -15,7 +18,6 @@ source "$CONFIG"
 api=https://api.github.com/repos/$GITHUB_REPOSITORY
 graphql=https://api.github.com/graphql
 sha_re='^[0-9a-f]{40}$'
-commit_status_context_re='^deploy/[a-z][a-z0-9-]*$'
 
 # Read the authorization header from stdin so the token never appears in argv or service logs.
 github_curl() {
@@ -31,7 +33,7 @@ case "${1:-}" in
     [[ $# -ge 5 && $# -le 6 ]] || { echo 'usage: commit-status SHA STATE CONTEXT DESCRIPTION [URL]' >&2; exit 2; }
     [[ $2 =~ $sha_re ]] || { echo 'invalid SHA' >&2; exit 2; }
     [[ $3 =~ ^(error|failure|pending|success)$ ]] || { echo 'invalid commit state' >&2; exit 2; }
-    [[ $4 =~ $commit_status_context_re ]] || { echo 'invalid context' >&2; exit 2; }
+    contour_require_status_context "$4" || { echo 'invalid context' >&2; exit 2; }
     ((${#5} <= 140)) || { echo 'description is too long' >&2; exit 2; }
     body=$(jq -cn --arg state "$3" --arg context "$4" --arg description "$5" --arg target_url "${6:-}" \
       '{state:$state,context:$context,description:$description} + if $target_url == "" then {} else {target_url:$target_url} end')
@@ -43,9 +45,9 @@ case "${1:-}" in
     [[ $# -eq 5 ]] || { echo 'usage: check-run SHA CONCLUSION NAME TITLE' >&2; exit 2; }
     [[ $2 =~ $sha_re ]] || { echo 'invalid SHA' >&2; exit 2; }
     [[ $3 =~ ^(failure|success|cancelled|timed_out|neutral)$ ]] || { echo 'invalid check conclusion' >&2; exit 2; }
-    [[ $4 =~ $commit_status_context_re ]] || { echo 'invalid check name' >&2; exit 2; }
+    contour_require_status_context "$4" || { echo 'invalid check name' >&2; exit 2; }
     ((${#5} <= 1024)) || { echo 'check title is too long' >&2; exit 2; }
-    failure_dir=/var/lib/apitoken/watchdog/failures
+    failure_dir=$CONTOUR_ROOTS_STATE/failures
     summary_file=$failure_dir/$2.summary.md
     text_file=$failure_dir/$2.text
     [[ -d $failure_dir && ! -L $failure_dir ]] || { echo 'failure report directory is missing' >&2; exit 1; }
@@ -71,7 +73,8 @@ case "${1:-}" in
   deployment-create)
     [[ $# -eq 4 ]] || { echo 'usage: deployment-create SHA ENVIRONMENT DESCRIPTION' >&2; exit 2; }
     [[ $2 =~ $sha_re ]] || { echo 'invalid SHA' >&2; exit 2; }
-    [[ $3 =~ ^production-(database|engine|backend|sales|openkeys|admin|devbot)$ ]] || { echo 'invalid environment' >&2; exit 2; }
+    contour_require_deployment_environment "$3" || { echo 'invalid environment' >&2; exit 2; }
+    [[ $3 == production-* ]] || { echo 'deployment-create requires a production environment' >&2; exit 2; }
     body=$(jq -cn --arg ref "$2" --arg environment "$3" --arg description "$4" \
       '{ref:$ref,environment:$environment,description:$description,auto_merge:false,required_contexts:[],transient_environment:false,production_environment:true}')
     github_curl -X POST "$api/deployments" -d "$body" | jq -er '.id'
@@ -81,7 +84,7 @@ case "${1:-}" in
     [[ $2 =~ ^[1-9][0-9]*$ ]] || { echo 'invalid deployment id' >&2; exit 2; }
     [[ $3 =~ ^(error|failure|inactive|in_progress|queued|pending|success)$ ]] || { echo 'invalid deployment state' >&2; exit 2; }
     ((${#4} <= 140)) || { echo 'description is too long' >&2; exit 2; }
-    [[ $5 =~ ^(candidate-validation|production-(database|engine|backend|sales|openkeys|admin|devbot))$ ]] || { echo 'invalid environment' >&2; exit 2; }
+    contour_require_deployment_environment "$5" || { echo 'invalid environment' >&2; exit 2; }
     body=$(jq -cn --arg state "$3" --arg description "$4" --arg environment "$5" \
       --arg environment_url "$6" --arg log_url "${7:-}" \
       '{state:$state,description:$description,environment:$environment,

@@ -5,6 +5,7 @@ set -E
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=deploy/lib.sh
 source "$SCRIPT_DIR/lib.sh"
+IFS=, read -r API_PORT_A API_PORT_B <<<"$(contour_port_pair "$CONTOUR_PORTS_COMMERCE_SLOTS")"
 
 usage() {
   printf '%s\n' \
@@ -15,7 +16,7 @@ usage() {
     'Options:' \
     '  --with-worker        Restart immutable companion services after the API cutover' \
     '                       (worker and Content Studio run from releases/current)' \
-    '  --target-port PORT   Keep the final API on port 3000 or 3001' \
+    "  --target-port PORT   Keep the final API on port $API_PORT_A or $API_PORT_B" \
     '  --timeout SECONDS    Readiness deadline per operation (default: 60)' \
     '  --dry-run            Print mutations without changing service state' \
     '  -h, --help           Show this help'
@@ -29,15 +30,15 @@ READINESS_TIMEOUT=${READINESS_TIMEOUT_SECONDS:-60}
 # active-check window plus margin both when admitting and depooling a slot.
 CADDY_HEALTH_WINDOW_SECONDS=6
 PRE_DRAIN_SECONDS=6
-COMMERCE_RELEASE_ROOT=${COMMERCE_RELEASE_ROOT:-/opt/apitoken/releases}
-ENGINE_RELEASE_ROOT=${ENGINE_RELEASE_ROOT:-/srv/claude-api/releases}
-DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}
-WORKER_SERVICE=apitoken-worker.service
+COMMERCE_RELEASE_ROOT=${COMMERCE_RELEASE_ROOT:-$CONTOUR_ROOTS_COMMERCE_RELEASE}
+ENGINE_RELEASE_ROOT=${ENGINE_RELEASE_ROOT:-$CONTOUR_ROOTS_ENGINE_RELEASE}
+DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-$CONTOUR_LOCKS_DEPLOY}
+WORKER_SERVICE=$CONTOUR_UNITS_WORKER
 WORKER_SOURCE_ROOT=$COMMERCE_RELEASE_ROOT/current
-CONTENT_STUDIO_SERVICE=apitoken-content-studio.service
+CONTENT_STUDIO_SERVICE=$CONTOUR_UNITS_CONTENT_STUDIO
 CONTENT_STUDIO_SOURCE_ROOT=$COMMERCE_RELEASE_ROOT/current
-CONTENT_STUDIO_HEALTH_URL=http://127.0.0.1:3500/api/health
-COMMERCE_BALANCER_READY_URL=${COMMERCE_BALANCER_READY_URL:-http://127.0.0.1:8791/v1/ready}
+CONTENT_STUDIO_HEALTH_URL=$CONTOUR_ORIGINS_CONTENT_STUDIO/api/health
+COMMERCE_BALANCER_READY_URL=${COMMERCE_BALANCER_READY_URL:-$CONTOUR_ORIGINS_COMMERCE_STABLE/v1/ready}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -74,25 +75,25 @@ done
 
 validate_api_port() {
   case "$1" in
-    3000|3001) ;;
-    *) die "API slot port must be 3000 or 3001: $1" ;;
+    "$API_PORT_A"|"$API_PORT_B") ;;
+    *) die "API slot port must be $API_PORT_A or $API_PORT_B: $1" ;;
   esac
 }
 
 other_port() {
   case "$1" in
-    3000) printf '3001\n' ;;
-    3001) printf '3000\n' ;;
+    "$API_PORT_A") printf '%s\n' "$API_PORT_B" ;;
+    "$API_PORT_B") printf '%s\n' "$API_PORT_A" ;;
     *) return 1 ;;
   esac
 }
 
 slot_unit() {
-  printf 'apitoken-api@%s.service\n' "$1"
+  printf '%s\n' "${CONTOUR_UNITS_COMMERCE_TEMPLATE/@.service/@$1.service}"
 }
 
 slot_url() {
-  printf 'http://127.0.0.1:%s/v1/ready\n' "$1"
+  printf 'http://%s:%s/v1/ready\n' "$CONTOUR_NETWORK_LOOPBACK_HOST" "$1"
 }
 
 unit_is_active() {
@@ -440,7 +441,7 @@ recover_cutover() {
     fi
   fi
 
-  if (slot_is_ready 3000 || slot_is_ready 3001) && balancer_is_ready; then
+  if (slot_is_ready "$API_PORT_A" || slot_is_ready "$API_PORT_B") && balancer_is_ready; then
     log "recovery verified a ready API slot through the stable commerce balancer"
   else
     warn "CRITICAL: recovery could not establish a ready API slot; immediate operator intervention is required"
@@ -484,12 +485,14 @@ validate_readiness_interval "${READINESS_INTERVAL_SECONDS:-2}"
 if [[ -n "$REQUESTED_TARGET_PORT" ]]; then
   validate_api_port "$REQUESTED_TARGET_PORT"
 fi
-validate_service_unit "$(slot_unit 3000)"
-validate_service_unit "$(slot_unit 3001)"
+validate_service_unit "$(slot_unit "$API_PORT_A")"
+validate_service_unit "$(slot_unit "$API_PORT_B")"
 validate_service_unit "$WORKER_SERVICE"
 validate_service_unit "$CONTENT_STUDIO_SERVICE"
-COMMERCE_RELEASE_ROOT=$(canonicalize_release_root "$COMMERCE_RELEASE_ROOT" /opt/apitoken commerce)
-ENGINE_RELEASE_ROOT=$(canonicalize_release_root "$ENGINE_RELEASE_ROOT" /srv/claude-api engine)
+COMMERCE_RELEASE_ROOT=$(canonicalize_release_root "$COMMERCE_RELEASE_ROOT" \
+  "${CONTOUR_ROOTS_COMMERCE_RELEASE%/releases}" commerce)
+ENGINE_RELEASE_ROOT=$(canonicalize_release_root "$ENGINE_RELEASE_ROOT" \
+  "${CONTOUR_ROOTS_ENGINE_RELEASE%/releases}" engine)
 
 log "preflighting blue-green API cutover (dry-run=$DRY_RUN with-worker=$WITH_WORKER target=${REQUESTED_TARGET_PORT:-auto})"
 acquire_deploy_lock "$DEPLOY_LOCK_FILE"
@@ -501,23 +504,23 @@ require_commerce_release_compatible_with_active_engines \
   "$CURRENT_RELEASE" "$ENGINE_RELEASE_ROOT"
 log "current points to validated release $(basename -- "$CURRENT_RELEASE")"
 
-READY_3000=0
-READY_3001=0
-slot_is_ready 3000 && READY_3000=1
-slot_is_ready 3001 && READY_3001=1
-if [[ "$DRY_RUN" != "1" && "$READY_3000:$READY_3001" != "0:0" ]]; then
+READY_API_A=0
+READY_API_B=0
+slot_is_ready "$API_PORT_A" && READY_API_A=1
+slot_is_ready "$API_PORT_B" && READY_API_B=1
+if [[ "$DRY_RUN" != "1" && "$READY_API_A:$READY_API_B" != "0:0" ]]; then
   balancer_is_ready || die "stable commerce balancer is not ready at $COMMERCE_BALANCER_READY_URL"
 fi
 
 if [[ -n "$REQUESTED_TARGET_PORT" ]]; then
   TARGET_PORT=$REQUESTED_TARGET_PORT
   OTHER_PORT=$(other_port "$TARGET_PORT")
-  if [[ "$TARGET_PORT" == "3000" ]]; then
-    TARGET_READY=$READY_3000
-    OTHER_READY=$READY_3001
+  if [[ "$TARGET_PORT" == "$API_PORT_A" ]]; then
+    TARGET_READY=$READY_API_A
+    OTHER_READY=$READY_API_B
   else
-    TARGET_READY=$READY_3001
-    OTHER_READY=$READY_3000
+    TARGET_READY=$READY_API_B
+    OTHER_READY=$READY_API_A
   fi
 
   if [[ "$OTHER_READY" == "1" ]]; then
@@ -532,23 +535,23 @@ if [[ -n "$REQUESTED_TARGET_PORT" ]]; then
     ACTIVE_PORT=
   fi
 else
-  case "$READY_3000:$READY_3001" in
+  case "$READY_API_A:$READY_API_B" in
     1:0)
-      ACTIVE_PORT=3000
-      TARGET_PORT=3001
+      ACTIVE_PORT=$API_PORT_A
+      TARGET_PORT=$API_PORT_B
       ;;
     0:1)
-      ACTIVE_PORT=3001
-      TARGET_PORT=3000
+      ACTIVE_PORT=$API_PORT_B
+      TARGET_PORT=$API_PORT_A
       ;;
     0:0)
       ACTIVE_PORT=
-      TARGET_PORT=3000
+      TARGET_PORT=$API_PORT_A
       ;;
     1:1)
-      ACTIVE_PORT=3000
-      TARGET_PORT=3001
-      log "both slots are already healthy; defaulting to retain 3001 (use --target-port to choose explicitly)"
+      ACTIVE_PORT=$API_PORT_A
+      TARGET_PORT=$API_PORT_B
+      log "both slots are already healthy; defaulting to retain $API_PORT_B (use --target-port to choose explicitly)"
       ;;
   esac
 fi

@@ -269,6 +269,19 @@ install_controller_definitions() {
     return 1
   fi
   publish_authbot_runtime_helper
+  # Install the immutable production contour and its closed validator before the entrypoint. The
+  # watchdog cannot start with a partially published or schema-invalid inventory.
+  install -o root -g root -m 0644 "$ROOT/deploy/contour-production.json" \
+    /usr/local/lib/apitoken-watchdog/contour-production.json
+  install -o root -g root -m 0644 "$ROOT/deploy/contour-config.schema.json" \
+    /usr/local/lib/apitoken-watchdog/contour-config.schema.json
+  install -o root -g root -m 0755 "$ROOT/deploy/contour-config.py" \
+    /usr/local/lib/apitoken-watchdog/contour-config.py
+  install -o root -g root -m 0644 "$ROOT/deploy/contour-config.sh" \
+    /usr/local/lib/apitoken-watchdog/contour-config.sh
+  python3 /usr/local/lib/apitoken-watchdog/contour-config.py \
+    --schema /usr/local/lib/apitoken-watchdog/contour-config.schema.json \
+    --config /usr/local/lib/apitoken-watchdog/contour-production.json --emit json >/dev/null
   install -o root -g root -m 0644 "$ROOT/deploy/watchdog-lib.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-lib.sh
   install -o root -g root -m 0755 "$ROOT/deploy/validation-plan.sh" \

@@ -3,6 +3,9 @@ set -euo pipefail
 
 # Root-owned helper used by the watchdog. Candidate code never receives Docker access; it only
 # receives credentials for these disposable loopback-only PostgreSQL and Redis containers.
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=deploy/contour-config.sh
+source "$SCRIPT_DIR/contour-config.sh"
 
 IMAGE=${WATCHDOG_POSTGRES_IMAGE:-postgres:18-alpine}
 # Must stay BELOW the kernel ephemeral range (net.ipv4.ip_local_port_range, 32768-60999 here).
@@ -10,7 +13,7 @@ IMAGE=${WATCHDOG_POSTGRES_IMAGE:-postgres:18-alpine}
 # source port and the container then failed to bind with "address already in use". That is what
 # quarantined d3a3698 twice on 2026-07-25: Caddy's keep-alive to engine slot 8787 held
 # 127.0.0.1:55432 while the test database tried to publish it.
-BASE_PORT=${WATCHDOG_POSTGRES_PORT:-15432}
+BASE_PORT=${WATCHDOG_POSTGRES_PORT:-$CONTOUR_PORTS_TEST_POSTGRES_BASE}
 USER_NAME=watchdog
 DATABASE=watchdog
 ENGINE_DATABASE=watchdog_engine
@@ -23,7 +26,7 @@ PASSWORD=watchdog-local-disposable-only
 # and the invariant that the shared keyspace never receives raw identifiers or prompt text.
 # The port follows the same below-ephemeral-range rule as PostgreSQL above.
 REDIS_IMAGE=${WATCHDOG_REDIS_IMAGE:-redis:7.4.2-alpine}
-REDIS_BASE_PORT=${WATCHDOG_REDIS_PORT:-16379}
+REDIS_BASE_PORT=${WATCHDOG_REDIS_PORT:-$CONTOUR_PORTS_TEST_REDIS_BASE}
 REDIS_PASSWORD=watchdog-redis-local-disposable-only
 # Affinity and Codex history share one process-wide URL in production, so the gate hands out one
 # instance too and separates the two consumers by logical database.
@@ -58,11 +61,11 @@ REDIS_PORT=$((REDIS_BASE_PORT + SLOT))
 (( REDIS_PORT >= 1024 && REDIS_PORT < 32768 )) \
   || die "test Redis port must be unprivileged and below the ephemeral range"
 if (( SLOT == 0 )); then
-  NAME=apitoken-watchdog-postgres
-  REDIS_NAME=apitoken-watchdog-redis
+  NAME=$CONTOUR_COMPOSE_PROJECTS_TEST_POSTGRES_PREFIX
+  REDIS_NAME=$CONTOUR_COMPOSE_PROJECTS_TEST_REDIS_PREFIX
 else
-  NAME=apitoken-watchdog-postgres-$SLOT
-  REDIS_NAME=apitoken-watchdog-redis-$SLOT
+  NAME=$CONTOUR_COMPOSE_PROJECTS_TEST_POSTGRES_PREFIX-$SLOT
+  REDIS_NAME=$CONTOUR_COMPOSE_PROJECTS_TEST_REDIS_PREFIX-$SLOT
 fi
 
 database_is_owned() {

@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 
 # Shared helpers for immutable release deployment scripts.
+LIB_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if [[ -f $LIB_SCRIPT_DIR/contour-config.sh && ! -L $LIB_SCRIPT_DIR/contour-config.sh ]]; then
+  CONTOUR_ROOT=$LIB_SCRIPT_DIR
+elif [[ -f $LIB_SCRIPT_DIR/../contour-config.sh && ! -L $LIB_SCRIPT_DIR/../contour-config.sh ]]; then
+  CONTOUR_ROOT=$(cd -- "$LIB_SCRIPT_DIR/.." && pwd)
+else
+  printf '[deploy] ERROR: immutable contour loader is unavailable\n' >&2
+  exit 1
+fi
+# shellcheck source=deploy/contour-config.sh
+source "$CONTOUR_ROOT/contour-config.sh"
 
 log() {
   printf '[deploy] %s\n' "$*"

@@ -25,26 +25,26 @@ PRE_DRAIN_SECONDS=${ENGINE_PRE_DRAIN_SECONDS:-6}
 # so; this bound exists so one wedged request cannot block a deploy forever. Reaching it is an
 # incident signal, not a normal outcome.
 DRAIN_WAIT_SECONDS=${ENGINE_DRAIN_WAIT_SECONDS:-900}
-ENGINE_RELEASE_ROOT=${ENGINE_RELEASE_ROOT:-/srv/claude-api/releases}
-COMMERCE_RELEASE_ROOT=${COMMERCE_RELEASE_ROOT:-/opt/apitoken/releases}
-DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}
-POSTGRES_ENV=${ENGINE_POSTGRES_ENV:-/srv/claude-api/data/engine-postgres.env}
-CADDY_CONFIG=${CADDY_CONFIG:-/etc/caddy/Caddyfile}
-CONTROL_READY_URL=${ENGINE_CONTROL_READY_URL:-http://127.0.0.1:8790/ready}
-LEGACY_UNIT=claude-api.service
-OPENAI_LEGACY_UNIT=claude-api-openai.service
-GEMINI_LEGACY_UNIT=claude-api-gemini.service
-KIMI_LEGACY_UNIT=claude-api-kimi.service
+ENGINE_RELEASE_ROOT=${ENGINE_RELEASE_ROOT:-$CONTOUR_ROOTS_ENGINE_RELEASE}
+COMMERCE_RELEASE_ROOT=${COMMERCE_RELEASE_ROOT:-$CONTOUR_ROOTS_COMMERCE_RELEASE}
+DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-$CONTOUR_LOCKS_DEPLOY}
+POSTGRES_ENV=${ENGINE_POSTGRES_ENV:-$CONTOUR_ROOTS_DATA/engine-postgres.env}
+CADDY_CONFIG=${CADDY_CONFIG:-$CONTOUR_ROOTS_CADDY_CONFIG}
+CONTROL_READY_URL=${ENGINE_CONTROL_READY_URL:-$CONTOUR_ORIGINS_ANTHROPIC_STABLE/ready}
+LEGACY_UNIT=$CONTOUR_UNITS_ENGINE_LEGACY
+OPENAI_LEGACY_UNIT=$CONTOUR_UNITS_OPENAI_LEGACY
+GEMINI_LEGACY_UNIT=$CONTOUR_UNITS_GEMINI_LEGACY
+KIMI_LEGACY_UNIT=$CONTOUR_UNITS_KIMI_LEGACY
 PROVIDER_CAPABILITY_MARKER=.provider-runtime-v1
 GEMINI_CAPABILITY_MARKER=.gemini-provider-v1
 GEMINI_BLUEGREEN_MARKER=.gemini-bluegreen-v1
 KIMI_CAPABILITY_MARKER=.kimi-provider-v1
 KIMI_BLUEGREEN_MARKER=.kimi-bluegreen-v1
 OPENAI_CAPABILITY_MARKER=.openai-bluegreen-v1
-OPENAI_STABLE_READY_URL=${OPENAI_STABLE_READY_URL:-http://127.0.0.1:8792/ready}
-ENGINE_MIGRATION_HELPER=/usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh
-GEMINI_STABLE_READY_URL=${GEMINI_STABLE_READY_URL:-http://127.0.0.1:8794/ready}
-KIMI_STABLE_READY_URL=${KIMI_STABLE_READY_URL:-http://127.0.0.1:8803/ready}
+OPENAI_STABLE_READY_URL=${OPENAI_STABLE_READY_URL:-$CONTOUR_ORIGINS_OPENAI_STABLE/ready}
+ENGINE_MIGRATION_HELPER=$CONTOUR_ROOTS_CONTROLLER/engine-migrate.sh
+GEMINI_STABLE_READY_URL=${GEMINI_STABLE_READY_URL:-$CONTOUR_ORIGINS_GEMINI_STABLE/ready}
+KIMI_STABLE_READY_URL=${KIMI_STABLE_READY_URL:-$CONTOUR_ORIGINS_KIMI_STABLE/ready}
 CURRENT_RELEASE=
 PREVIOUS_RELEASE=
 ACTIVE_PORT=
@@ -55,7 +55,7 @@ TARGET_COMMITTED=0
 OLD_SIGNALLED=0
 CUTOVER_ACTIVE=0
 CUTOVER_COMMITTED=0
-HEADROOM_HELPER=${LARGE_PAYLOAD_HEADROOM_HELPER:-/usr/local/lib/apitoken-watchdog/controller/large-payload-headroom.sh}
+HEADROOM_HELPER=${LARGE_PAYLOAD_HEADROOM_HELPER:-$CONTOUR_ROOTS_CONTROLLER/large-payload-headroom.sh}
 OPENAI_ACTIVE_PORT=
 OPENAI_ACTIVE_UNIT=
 OPENAI_TARGET_PORT=
@@ -96,6 +96,11 @@ KIMI_OLD_STOPPED=0
 KIMI_LEGACY_TARGET=0
 KIMI_COMMITTED=0
 
+IFS=, read -r ANTHROPIC_PORT_A ANTHROPIC_PORT_B <<<"$(contour_port_pair "$CONTOUR_PORTS_ANTHROPIC_SLOTS")"
+IFS=, read -r OPENAI_PORT_A OPENAI_PORT_B <<<"$(contour_port_pair "$CONTOUR_PORTS_OPENAI_SLOTS")"
+IFS=, read -r GEMINI_PORT_A GEMINI_PORT_B <<<"$(contour_port_pair "$CONTOUR_PORTS_GEMINI_SLOTS")"
+IFS=, read -r KIMI_PORT_A KIMI_PORT_B <<<"$(contour_port_pair "$CONTOUR_PORTS_KIMI_SLOTS")"
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target-port) [[ $# -ge 2 ]] || die "--target-port requires a value"; REQUESTED_TARGET_PORT=$2; shift 2 ;;
@@ -107,17 +112,17 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-validate_port() { [[ $1 == 8787 || $1 == 8788 ]] || die "engine slot port must be 8787 or 8788: $1"; }
-other_port() { [[ $1 == 8787 ]] && printf '8788\n' || printf '8787\n'; }
-slot_unit() { printf 'claude-api-anthropic@%s.service\n' "$1"; }
-legacy_slot_unit() { printf 'claude-api@%s.service\n' "$1"; }
-slot_url() { printf 'http://127.0.0.1:%s/ready\n' "$1"; }
-openai_other_port() { [[ $1 == 8793 ]] && printf '8797\n' || printf '8793\n'; }
-openai_slot_unit() { printf 'claude-api-openai@%s.service\n' "$1"; }
-openai_slot_url() { printf 'http://127.0.0.1:%s/ready\n' "$1"; }
-gemini_other_port() { [[ $1 == 8795 ]] && printf '8799\n' || printf '8795\n'; }
-gemini_slot_unit() { printf 'claude-api-gemini@%s.service\n' "$1"; }
-gemini_slot_url() { printf 'http://127.0.0.1:%s/ready\n' "$1"; }
+validate_port() { [[ $1 == "$ANTHROPIC_PORT_A" || $1 == "$ANTHROPIC_PORT_B" ]] || die "engine slot port must be $ANTHROPIC_PORT_A or $ANTHROPIC_PORT_B: $1"; }
+other_port() { [[ $1 == "$ANTHROPIC_PORT_A" ]] && printf '%s\n' "$ANTHROPIC_PORT_B" || printf '%s\n' "$ANTHROPIC_PORT_A"; }
+slot_unit() { printf '%s\n' "${CONTOUR_UNITS_ANTHROPIC_TEMPLATE/@.service/@$1.service}"; }
+legacy_slot_unit() { printf '%s\n' "${CONTOUR_UNITS_ENGINE_BRIDGE_TEMPLATE/@.service/@$1.service}"; }
+slot_url() { printf 'http://%s:%s/ready\n' "$CONTOUR_NETWORK_LOOPBACK_HOST" "$1"; }
+openai_other_port() { [[ $1 == "$OPENAI_PORT_A" ]] && printf '%s\n' "$OPENAI_PORT_B" || printf '%s\n' "$OPENAI_PORT_A"; }
+openai_slot_unit() { printf '%s\n' "${CONTOUR_UNITS_OPENAI_TEMPLATE/@.service/@$1.service}"; }
+openai_slot_url() { printf 'http://%s:%s/ready\n' "$CONTOUR_NETWORK_LOOPBACK_HOST" "$1"; }
+gemini_other_port() { [[ $1 == "$GEMINI_PORT_A" ]] && printf '%s\n' "$GEMINI_PORT_B" || printf '%s\n' "$GEMINI_PORT_A"; }
+gemini_slot_unit() { printf '%s\n' "${CONTOUR_UNITS_GEMINI_TEMPLATE/@.service/@$1.service}"; }
+gemini_slot_url() { printf 'http://%s:%s/ready\n' "$CONTOUR_NETWORK_LOOPBACK_HOST" "$1"; }
 unit_active() { systemctl_raw is-active --quiet "$1" >/dev/null 2>&1; }
 unit_stopped() {
   local unit=$1 state pid control_group cgroup_file cgroup_pid=''
@@ -347,9 +352,9 @@ stable_gemini_ready() {
   curl --noproxy '*' --fail --silent --show-error --max-time 2 \
     "$GEMINI_STABLE_READY_URL" >/dev/null 2>&1
 }
-kimi_other_port() { [[ $1 == 8804 ]] && printf '8805\n' || printf '8804\n'; }
-kimi_slot_unit() { printf 'claude-api-kimi@%s.service\n' "$1"; }
-kimi_slot_url() { printf 'http://127.0.0.1:%s/ready\n' "$1"; }
+kimi_other_port() { [[ $1 == "$KIMI_PORT_A" ]] && printf '%s\n' "$KIMI_PORT_B" || printf '%s\n' "$KIMI_PORT_A"; }
+kimi_slot_unit() { printf '%s\n' "${CONTOUR_UNITS_KIMI_TEMPLATE/@.service/@$1.service}"; }
+kimi_slot_url() { printf 'http://%s:%s/ready\n' "$CONTOUR_NETWORK_LOOPBACK_HOST" "$1"; }
 kimi_ready_port() {
   local port=$1 status
   status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
@@ -432,7 +437,8 @@ gemini_provider_envelope() {
   body_file=$(mktemp)
   status=$(curl --noproxy '*' -sS -o "$body_file" -w '%{http_code}' --max-time 3 \
     -H 'content-type: application/json' -d '{}' \
-    'http://127.0.0.1:8794/v1beta/models/gemini-provider-probe:generateContent' 2>/dev/null || true)
+    "$CONTOUR_ORIGINS_GEMINI_STABLE/v1beta/models/gemini-provider-probe:generateContent" \
+    2>/dev/null || true)
   # Fixed Gemini mode stays up when its provider-only kill switch is disabled, mirroring the OpenAI
   # singleton. Enabled mode rejects the unauthenticated probe at the client-key stage, faithfully
   # mirroring Google with a 400 API_KEY_INVALID (checked before any project/profile, so it holds for
@@ -794,40 +800,42 @@ validate_service_unit "$(slot_unit 8787)"
 validate_service_unit "$(slot_unit 8788)"
 validate_service_unit "$(legacy_slot_unit 8787)"
 validate_service_unit "$(legacy_slot_unit 8788)"
-ENGINE_RELEASE_ROOT=$(canonicalize_release_root "$ENGINE_RELEASE_ROOT" /srv/claude-api engine)
-COMMERCE_RELEASE_ROOT=$(canonicalize_release_root "$COMMERCE_RELEASE_ROOT" /opt/apitoken commerce)
+ENGINE_RELEASE_ROOT=$(canonicalize_release_root "$ENGINE_RELEASE_ROOT" \
+  "${CONTOUR_ROOTS_ENGINE_RELEASE%/releases}" engine)
+COMMERCE_RELEASE_ROOT=$(canonicalize_release_root "$COMMERCE_RELEASE_ROOT" \
+  "${CONTOUR_ROOTS_COMMERCE_RELEASE%/releases}" commerce)
 
 log "preflighting PostgreSQL engine blue-green cutover (dry-run=$DRY_RUN target=${REQUESTED_TARGET_PORT:-auto})"
 acquire_deploy_lock "$DEPLOY_LOCK_FILE"
 privileged_command test -s "$POSTGRES_ENV" || die "PostgreSQL authority is not active: $POSTGRES_ENV"
 privileged_command test -x "$ENGINE_MIGRATION_HELPER" \
   || die "engine schema migration helper is missing or not executable"
-privileged_command test -f /etc/systemd/system/claude-api-anthropic@.service \
+privileged_command test -f "$CONTOUR_ROOTS_SYSTEMD_UNITS/$CONTOUR_UNITS_ANTHROPIC_TEMPLATE" \
   || die "fixed Anthropic slot template is not installed"
-privileged_command test -f /etc/systemd/system/claude-api@.service \
+privileged_command test -f "$CONTOUR_ROOTS_SYSTEMD_UNITS/$CONTOUR_UNITS_ENGINE_BRIDGE_TEMPLATE" \
   || die "combined bridge slot template is not installed"
-privileged_command test -f "/etc/systemd/system/$OPENAI_LEGACY_UNIT" \
+privileged_command test -f "$CONTOUR_ROOTS_SYSTEMD_UNITS/$OPENAI_LEGACY_UNIT" \
   || die "legacy OpenAI provider unit is not installed"
-privileged_command test -f /etc/systemd/system/claude-api-openai@.service \
+privileged_command test -f "$CONTOUR_ROOTS_SYSTEMD_UNITS/$CONTOUR_UNITS_OPENAI_TEMPLATE" \
   || die "OpenAI slot template is not installed"
-privileged_command test -f "/etc/systemd/system/$GEMINI_LEGACY_UNIT" \
+privileged_command test -f "$CONTOUR_ROOTS_SYSTEMD_UNITS/$GEMINI_LEGACY_UNIT" \
   || die "legacy Gemini provider unit is not installed"
-privileged_command test -f /etc/systemd/system/claude-api-gemini@.service \
+privileged_command test -f "$CONTOUR_ROOTS_SYSTEMD_UNITS/$CONTOUR_UNITS_GEMINI_TEMPLATE" \
   || die "Gemini slot template is not installed"
-privileged_command test -f "/etc/systemd/system/$KIMI_LEGACY_UNIT" \
+privileged_command test -f "$CONTOUR_ROOTS_SYSTEMD_UNITS/$KIMI_LEGACY_UNIT" \
   || die "legacy KIMI provider unit is not installed"
-privileged_command test -f /etc/systemd/system/claude-api-kimi@.service \
+privileged_command test -f "$CONTOUR_ROOTS_SYSTEMD_UNITS/$CONTOUR_UNITS_KIMI_TEMPLATE" \
   || die "KIMI slot template is not installed"
 privileged_command caddy validate --adapter caddyfile --config "$CADDY_CONFIG" >/dev/null
-privileged_command grep -q '127.0.0.1:8788' "$CADDY_CONFIG" \
+privileged_command grep -q "$CONTOUR_NETWORK_LOOPBACK_HOST:$ANTHROPIC_PORT_B" "$CADDY_CONFIG" \
   || die "Caddy is not configured with the 8788 engine slot"
-privileged_command grep -q '127.0.0.1:8790' "$CADDY_CONFIG" \
+privileged_command grep -q "$CONTOUR_NETWORK_LOOPBACK_HOST:$CONTOUR_PORTS_ANTHROPIC_STABLE" "$CADDY_CONFIG" \
   || die "Caddy is missing the stable loopback Control API listener on 127.0.0.1:8790"
-privileged_command grep -q '127.0.0.1:8792' "$CADDY_CONFIG" \
+privileged_command grep -q "$CONTOUR_NETWORK_LOOPBACK_HOST:$CONTOUR_PORTS_OPENAI_STABLE" "$CADDY_CONFIG" \
   || die "Caddy is missing the stable OpenAI listener on 127.0.0.1:8792"
-privileged_command grep -q '127.0.0.1:8793' "$CADDY_CONFIG" \
+privileged_command grep -q "$CONTOUR_NETWORK_LOOPBACK_HOST:$OPENAI_PORT_A" "$CADDY_CONFIG" \
   || die "Caddy is not configured with the OpenAI slot on 127.0.0.1:8793"
-privileged_command grep -q '127.0.0.1:8797' "$CADDY_CONFIG" \
+privileged_command grep -q "$CONTOUR_NETWORK_LOOPBACK_HOST:$OPENAI_PORT_B" "$CADDY_CONFIG" \
   || die "Caddy is not configured with the OpenAI slot on 127.0.0.1:8797"
 if [[ $DRY_RUN == 0 ]]; then
   control_ready || die "stable Control API is not ready at $CONTROL_READY_URL"
@@ -863,11 +871,11 @@ if [[ -f "$CURRENT_RELEASE/$GEMINI_CAPABILITY_MARKER" \
       || die "current engine release has an invalid Gemini blue-green capability marker"
     GEMINI_SHARED_SUPPORTED=1
   fi
-  privileged_command grep -q '127.0.0.1:8794' "$CADDY_CONFIG" \
+  privileged_command grep -q "$CONTOUR_NETWORK_LOOPBACK_HOST:$CONTOUR_PORTS_GEMINI_STABLE" "$CADDY_CONFIG" \
     || die "Caddy is missing the stable Gemini listener on 127.0.0.1:8794"
-  privileged_command grep -q '127.0.0.1:8795' "$CADDY_CONFIG" \
+  privileged_command grep -q "$CONTOUR_NETWORK_LOOPBACK_HOST:$GEMINI_PORT_A" "$CADDY_CONFIG" \
     || die "Caddy is not configured with the Gemini slot on 127.0.0.1:8795"
-  privileged_command grep -q '127.0.0.1:8799' "$CADDY_CONFIG" \
+  privileged_command grep -q "$CONTOUR_NETWORK_LOOPBACK_HOST:$GEMINI_PORT_B" "$CADDY_CONFIG" \
     || die "Caddy is not configured with the Gemini slot on 127.0.0.1:8799"
 fi
 if [[ -f "$CURRENT_RELEASE/$KIMI_CAPABILITY_MARKER" \
@@ -882,11 +890,11 @@ if [[ -f "$CURRENT_RELEASE/$KIMI_CAPABILITY_MARKER" \
       || die "current engine release has an invalid KIMI blue-green capability marker"
     KIMI_SHARED_SUPPORTED=1
   fi
-  privileged_command grep -q '127.0.0.1:8803' "$CADDY_CONFIG" \
+  privileged_command grep -q "$CONTOUR_NETWORK_LOOPBACK_HOST:$CONTOUR_PORTS_KIMI_STABLE" "$CADDY_CONFIG" \
     || die "Caddy is missing the stable KIMI listener on 127.0.0.1:8803"
-  privileged_command grep -q '127.0.0.1:8804' "$CADDY_CONFIG" \
+  privileged_command grep -q "$CONTOUR_NETWORK_LOOPBACK_HOST:$KIMI_PORT_A" "$CADDY_CONFIG" \
     || die "Caddy is not configured with the KIMI slot on 127.0.0.1:8804"
-  privileged_command grep -q '127.0.0.1:8805' "$CADDY_CONFIG" \
+  privileged_command grep -q "$CONTOUR_NETWORK_LOOPBACK_HOST:$KIMI_PORT_B" "$CADDY_CONFIG" \
     || die "Caddy is not configured with the KIMI slot on 127.0.0.1:8805"
 fi
 PREVIOUS_RELEASE=$(release_path_from_link "$ENGINE_RELEASE_ROOT" "$ENGINE_RELEASE_ROOT/previous") \
@@ -983,7 +991,8 @@ for blocking_unit in "${BLOCKING_UNITS[@]}"; do
 done
 if ! slot_serves_current "$TARGET_PORT"; then
   systemctl_command stop "$TARGET_UNIT"
-  privileged_command "$HEADROOM_HELPER" "/run/claude-api-anthropic-$TARGET_PORT" claude-api-anthropic.slice \
+  privileged_command "$HEADROOM_HELPER" "$CONTOUR_ROOTS_ANTHROPIC_RUNTIME_PREFIX-$TARGET_PORT" \
+    "$CONTOUR_UNITS_ANTHROPIC_SLICE" \
     || die "insufficient memory or spool headroom for $TARGET_UNIT"
   systemctl_command start "$TARGET_UNIT"
 fi
@@ -1110,7 +1119,7 @@ OPENAI_TARGET_STARTED=1
 if ! openai_target_serves_current; then
   systemctl_command stop "$OPENAI_TARGET_UNIT"
   if [[ $OPENAI_LEGACY_TARGET != 1 ]]; then
-    privileged_command "$HEADROOM_HELPER" "/var/lib/apitoken/spool/openai-$OPENAI_TARGET_PORT" claude-api-openai.slice \
+    privileged_command "$HEADROOM_HELPER" "$CONTOUR_ROOTS_SPOOL/openai-$OPENAI_TARGET_PORT" "$CONTOUR_UNITS_OPENAI_SLICE" \
       || post_admission_die "insufficient memory or spool headroom for $OPENAI_TARGET_UNIT"
   fi
   systemctl_command start "$OPENAI_TARGET_UNIT" \
@@ -1296,7 +1305,7 @@ if [[ $GEMINI_SUPPORTED == 1 ]]; then
   if ! gemini_target_serves_current; then
     systemctl_command stop "$GEMINI_TARGET_UNIT"
     if [[ $GEMINI_LEGACY_TARGET != 1 ]]; then
-      privileged_command "$HEADROOM_HELPER" "/var/lib/apitoken/spool/gemini-$GEMINI_TARGET_PORT" claude-api-gemini.slice \
+      privileged_command "$HEADROOM_HELPER" "$CONTOUR_ROOTS_SPOOL/gemini-$GEMINI_TARGET_PORT" "$CONTOUR_UNITS_GEMINI_SLICE" \
         || post_admission_die "insufficient memory or spool headroom for $GEMINI_TARGET_UNIT"
     fi
     systemctl_command start "$GEMINI_TARGET_UNIT" \

@@ -303,6 +303,13 @@ promotion обычным production-watchdog, а до этого — в песо
 Конфиг запрещает пересечение stage/prod inventory. Текстовая подстановка `sed` по production
 scripts запрещена как способ получить вторую линию.
 
+Фаза 1 реализовала production-форму этого контракта: `deploy/contour-production.json` — один
+immutable inventory, `deploy/contour-config.schema.json` — закрытая схема,
+`deploy/contour-config.py` / `deploy/contour-config.sh` — fail-closed validator и loader.
+Production watchdog, его root-bridges и application controllers читают значения оттуда.
+Golden snapshot фиксирует прежние production-значения, а synthetic second-contour fixture уже
+проверяет запрет пересечений. Stage-конфиг, stage users/processes и admission в фазе 1 не созданы.
+
 Уже сегодня почти вся host-specific конфигурация вынесена в `/etc/apitoken/*` и
 `/srv/claude-api/data/*` — этот же принцип переносится на стенд (со своими путями).
 Совместное размещение гарантирует нулевой дрифт инструментов (одни и те же

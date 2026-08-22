@@ -15,6 +15,11 @@ set -euo pipefail
 # secrets exist. The matching ConditionPathExists in systemd/apitoken-devbot.service keeps the
 # unit itself cleanly inactive over the same window.
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if [[ -f $SCRIPT_DIR/contour-config.sh ]]; then CONTOUR_ROOT=$SCRIPT_DIR; else CONTOUR_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd); fi
+# shellcheck source=deploy/contour-config.sh
+source "$CONTOUR_ROOT/contour-config.sh"
+
 # Needs root (chown, systemctl). The watchdog runs as `deploy`, so self-elevate — robust whether
 # invoked with or without sudo.
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then exec sudo -n -- "$0" "$@"; fi
@@ -22,14 +27,14 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then exec sudo -n -- "$0" "$@"; fi
 SHA=${1:?usage: devbot-deploy.sh <full-40-char-sha>}
 [[ $SHA =~ ^[0-9a-f]{40}$ ]] || { echo "devbot-deploy: SHA must be a full 40-char commit hash" >&2; exit 1; }
 
-CANDIDATE_ROOT=${DEVBOT_CANDIDATE_ROOT:-/var/lib/apitoken/watchdog/candidates}
-RELEASE_ROOT=${DEVBOT_RELEASE_ROOT:-/opt/apitoken/devbot-releases}
-UNIT=apitoken-devbot.service
-ENV_FILE=${DEVBOT_ENV_FILE:-/etc/apitoken/devbot.env}
+CANDIDATE_ROOT=${DEVBOT_CANDIDATE_ROOT:-$CONTOUR_ROOTS_CANDIDATE}
+RELEASE_ROOT=${DEVBOT_RELEASE_ROOT:-$CONTOUR_ROOTS_DEVBOT_RELEASE}
+UNIT=$CONTOUR_UNITS_DEVBOT
+ENV_FILE=${DEVBOT_ENV_FILE:-$CONTOUR_ROOTS_CONFIG/devbot.env}
 # The health endpoint answers 200 in both the previous release and the candidate, so rollback
 # health remains testable on the same stable path.
-HEALTH=${DEVBOT_HEALTH:-http://127.0.0.1:3800/health}
-ROLLBACK_HEALTH=${DEVBOT_ROLLBACK_HEALTH:-http://127.0.0.1:3800/health}
+HEALTH=${DEVBOT_HEALTH:-$CONTOUR_ORIGINS_DEVBOT/health}
+ROLLBACK_HEALTH=${DEVBOT_ROLLBACK_HEALTH:-$CONTOUR_ORIGINS_DEVBOT/health}
 HEALTH_RETRIES=${DEVBOT_HEALTH_RETRIES:-30}
 HEALTH_INTERVAL=${DEVBOT_HEALTH_INTERVAL:-2}
 

@@ -9,6 +9,10 @@ fixture=$TEMP/fixture
 stubs=$TEMP/stubs
 mkdir -p "$fixture/deploy" "$stubs"
 cp "$ROOT/deploy/watchdog-lib.sh" "$fixture/deploy/watchdog-lib.sh"
+cp "$ROOT/deploy/contour-config.sh" "$fixture/deploy/contour-config.sh"
+cp "$ROOT/deploy/contour-config.py" "$fixture/deploy/contour-config.py"
+cp "$ROOT/deploy/contour-config.schema.json" "$fixture/deploy/contour-config.schema.json"
+cp "$ROOT/deploy/contour-production.json" "$fixture/deploy/contour-production.json"
 sed \
   -e 's#^BACKUP_ROOT=.*#BACKUP_ROOT=${WATCHDOG_BACKUP_TEST_ROOT:?}#' \
   -e 's#^\[\[ ${EUID:.*validated deployment backup must run as root"#:#' \

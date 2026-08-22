@@ -4,11 +4,13 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=deploy/watchdog-lib.sh
 source "$SCRIPT_DIR/watchdog-lib.sh"
+# shellcheck source=deploy/contour-config.sh
+source "$SCRIPT_DIR/contour-config.sh"
 
-BACKUP_SERVICE=claude-api-backup.service
-BACKUP_ROOT=/var/lib/apitoken/backups
-COMPOSE_FILE=/usr/local/lib/apitoken-watchdog/controller/commerce-postgres.compose.yaml
-POSTGRES_ENV=/etc/apitoken/postgres.env
+BACKUP_SERVICE=$CONTOUR_UNITS_BACKUP_SERVICE
+BACKUP_ROOT=$CONTOUR_ROOTS_BACKUP
+COMPOSE_FILE=$CONTOUR_ROOTS_CONTROLLER/commerce-postgres.compose.yaml
+POSTGRES_ENV=$CONTOUR_ROOTS_CONFIG/postgres.env
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || wd_die "validated deployment backup must run as root"
 [[ $# -eq 1 ]] || wd_die "usage: $0 <tested-full-sha>"

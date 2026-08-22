@@ -18,8 +18,10 @@ LIB=$SCRIPT_DIR/watchdog-lib.sh
 [[ -r $LIB ]] || { printf 'watchdog library is not available\n' >&2; exit 1; }
 # shellcheck source=deploy/watchdog-lib.sh
 source "$LIB"
+# shellcheck source=deploy/contour-config.sh
+source "${LIB%/*}/contour-config.sh"
 
-BACKUP_ROOT=${WATCHDOG_BACKUP_ROOT:-/var/lib/apitoken/backups}
+BACKUP_ROOT=${WATCHDOG_BACKUP_ROOT:-$CONTOUR_ROOTS_BACKUP}
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || wd_die "dump retention must run as root"
 [[ $# -eq 1 ]] || wd_die "usage: $0 <keep-count>"

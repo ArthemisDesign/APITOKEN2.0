@@ -19,17 +19,19 @@ grep -Fq 'REJECT_VOLATILE_FS=0' "$HEADROOM" \
 grep -Fq '[[ $REJECT_VOLATILE_FS == 1 ]] && command -v findmnt' "$HEADROOM" \
   || { echo 'tmpfs reject is not gated on the disk-backed policy' >&2; exit 1; }
 
-grep -Fq '"$HEADROOM_HELPER" "/run/claude-api-anthropic-$TARGET_PORT" claude-api-anthropic.slice' \
+grep -Fq '"$HEADROOM_HELPER" "$CONTOUR_ROOTS_ANTHROPIC_RUNTIME_PREFIX-$TARGET_PORT"' \
   "$ROOT/deploy/engine-bluegreen.sh" \
+  && grep -Fq '"$CONTOUR_UNITS_ANTHROPIC_SLICE"' "$ROOT/deploy/engine-bluegreen.sh" \
   || { echo 'Anthropic cutover no longer gates /run RuntimeDirectory' >&2; exit 1; }
-grep -Fq '"$HEADROOM_HELPER" "/var/lib/apitoken/spool/gemini-$GEMINI_TARGET_PORT" claude-api-gemini.slice' \
+grep -Fq '"$HEADROOM_HELPER" "$CONTOUR_ROOTS_SPOOL/gemini-$GEMINI_TARGET_PORT" "$CONTOUR_UNITS_GEMINI_SLICE"' \
   "$ROOT/deploy/engine-bluegreen.sh" \
   || { echo 'Gemini cutover no longer gates the disk-backed spool' >&2; exit 1; }
-grep -Fq '"$HEADROOM_HELPER" "/var/lib/apitoken/spool/openai-$OPENAI_TARGET_PORT" claude-api-openai.slice' \
+grep -Fq '"$HEADROOM_HELPER" "$CONTOUR_ROOTS_SPOOL/openai-$OPENAI_TARGET_PORT" "$CONTOUR_UNITS_OPENAI_SLICE"' \
   "$ROOT/deploy/engine-bluegreen.sh" \
   || { echo 'OpenAI cutover no longer gates the disk-backed spool' >&2; exit 1; }
-grep -Fq '"$HEADROOM_HELPER" "/var/lib/apitoken/spool/router-$TARGET_PORT" claude-router.slice' \
+grep -Fq '"$HEADROOM_HELPER" "$CONTOUR_ROOTS_SPOOL/router-$TARGET_PORT"' \
   "$ROOT/deploy/router-bluegreen.sh" \
+  && grep -Fq '"$CONTOUR_UNITS_ROUTER_SLICE"' "$ROOT/deploy/router-bluegreen.sh" \
   || { echo 'router cutover no longer gates the disk-backed spool' >&2; exit 1; }
 grep -Fq 'large-payload-headroom.sh /var/lib/apitoken/spool/router-[0-9]* claude-router.slice' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
