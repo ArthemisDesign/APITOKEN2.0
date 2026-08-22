@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'staging-foundation: root required' >&2; exit 1; }
+trap 'rc=$?; echo "staging-foundation: failed line=${LINENO} status=$rc" >&2' ERR
 ROOT=/usr/local/lib/apitoken-watchdog
 PROD=$ROOT/contour-production.json
 STAGE=$ROOT/contour-stage.json
@@ -15,10 +16,9 @@ make_user() {
   usermod -g "$user" --home "$home" --shell "$shell" "$user"
 }
 make_user deploy-stage /home/deploy-stage /usr/sbin/nologin
-make_user stage-ci /var/lib/apitoken-staging/watchdog/ci-home /usr/sbin/nologin
 make_user observe-stage /home/observe-stage /usr/local/bin/apitoken-observe-stage
 make_user stage-ctl /home/stage-ctl /usr/local/bin/apitoken-stage-ctl
-for user in deploy-stage stage-ci observe-stage stage-ctl; do
+for user in deploy-stage observe-stage stage-ctl; do
   for group in deploy docker apitoken-ci observe adm systemd-journal; do
     if getent group "$group" >/dev/null && id -Gn "$user" | tr ' ' '\n' | grep -Fxq "$group"; then
       gpasswd -d "$user" "$group" >/dev/null || true
@@ -49,15 +49,28 @@ done
 
 IMAGE=/var/lib/apitoken-staging.img; MOUNT=/mnt/apitoken-staging
 install -d -m 0755 "$MOUNT"
-if [[ ! -e $IMAGE ]]; then truncate -s 80G "$IMAGE"; mkfs.ext4 -F -m 0 -L apitoken-staging "$IMAGE" >/dev/null; fi
+if [[ ! -e $IMAGE ]]; then fallocate -l 80G "$IMAGE"; mkfs.ext4 -F -m 0 -L apitoken-staging "$IMAGE" >/dev/null; fi
 [[ -f $IMAGE && ! -L $IMAGE && $(stat -c %s "$IMAGE") == 85899345920 ]] || exit 1
 mountpoint -q "$MOUNT" || mount -o loop,nodev,nosuid "$IMAGE" "$MOUNT"
 for item in opt:/opt/apitoken-staging srv:/srv/claude-api-staging var:/var/lib/apitoken-staging; do
   src=$MOUNT/${item%%:*}; dst=${item#*:}
-  install -d -o deploy-stage -g deploy-stage -m 0750 "$src" "$dst"
+  install -d -o deploy-stage -g deploy-stage -m 0750 "$src"
+  if [[ -e $dst || -L $dst ]]; then
+    [[ -d $dst && ! -L $dst ]] || { echo "staging-foundation: unsafe bind target $dst" >&2; exit 1; }
+  else
+    mkdir -p "$dst"
+    chown deploy-stage:deploy-stage "$dst"
+    chmod 0750 "$dst"
+  fi
   mountpoint -q "$dst" || mount --bind "$src" "$dst"
 done
 install -d -o root -g deploy-stage -m 0750 /etc/apitoken-staging
+make_user stage-ci /var/lib/apitoken-staging/watchdog/ci-home /usr/sbin/nologin
+for group in deploy docker apitoken-ci observe adm systemd-journal; do
+  if getent group "$group" >/dev/null && id -Gn stage-ci | tr ' ' '\n' | grep -Fxq "$group"; then
+    gpasswd -d stage-ci "$group" >/dev/null || true
+  fi
+done
 install -d -o deploy-stage -g deploy-stage -m 0700 /var/lib/apitoken-staging/{docker,postgres,redis,spool,watchdog}
 install -d -o deploy-stage -g deploy-stage -m 0700 /run/apitoken-staging
 
@@ -81,5 +94,5 @@ install -o root -g root -m 0644 "$ROOT/apitoken-rootless-docker-stage.service" /
 install -o root -g root -m 0440 "$ROOT/96-apitoken-stage" /etc/sudoers.d/96-apitoken-stage
 visudo -c >/dev/null
 systemctl daemon-reload
-loginctl enable-linger deploy-stage
+loginctl enable-linger deploy-stage || echo 'staging-foundation: linger deferred to rootless Docker activation' >&2
 printf 'staging-foundation: ready\n'
