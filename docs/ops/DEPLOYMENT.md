@@ -99,7 +99,8 @@ Every quarantined SHA also gets a GitHub check run named `deploy/watchdog-log`: 
 of that cycle's watchdog transcript (at most 24 KiB, last 4000 lines, failure markers plus a short
 tail). The 140-character commit-status description is the headline; the check run is the log. The
 merge client prints that log when `deploy/watchdog` (or trusted-host validation) is red, so an agent
-does not need production SSH. Clicking a red `deploy/watchdog` status follows `target_url` to the
+diagnoses without a `deploy` shell. A live journal, when still required, is `ssh observe@` the
+production host in `docs/ops/INFRASTRUCTURE.md`. Clicking a red `deploy/watchdog` status follows `target_url` to the
 same check run when Checks: write is granted on the host PAT. Publishing the check run is
 fail-open: a missing Checks permission still quarantines the SHA and still writes the 140-character
 status.
@@ -501,6 +502,9 @@ sudo deploy/test-stage2-e2e.sh /path/to/test/claude-api
 ```
 
 ## Manual recovery: select the production SHA
+
+This block is human operator recovery. An agent must not run it. The only SSH login an agent may
+use is `observe` (logs only). Agent delivery is `./deploy/agent-merge.sh`.
 
 ```bash
 ssh deploy@84.32.48.2

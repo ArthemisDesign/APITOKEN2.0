@@ -1164,7 +1164,7 @@ wd_infrastructure_install_scope() {
 
 wd_path_is_merge_workflow() {
   case "$1" in
-    .claude/*|AGENTS.md|CLAUDE.md|BRANCHES.md|CONTRIBUTING.md|\
+    .claude/*|.cursor/rules/*|AGENTS.md|CLAUDE.md|BRANCHES.md|CONTRIBUTING.md|\
     deploy/change-plan.sh|deploy/change-plan.test.sh|\
     deploy/repository-invariants.py|deploy/repository-invariants.test.sh)
       return 0

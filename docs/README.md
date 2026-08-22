@@ -69,8 +69,8 @@ document, update this index.
 
 ## ops/ — operations
 
-- [DEPLOYMENT.md](ops/DEPLOYMENT.md) — production deployment runbook (operator-facing).
-- [INFRASTRUCTURE.md](ops/INFRASTRUCTURE.md) — production infrastructure and hosts.
+- [DEPLOYMENT.md](ops/DEPLOYMENT.md) — production deployment runbook (operator-facing; agents deliver via `agent-merge.sh` and SSH only as `observe`).
+- [INFRASTRUCTURE.md](ops/INFRASTRUCTURE.md) — production infrastructure and hosts (`deploy` watchdog identity vs `observe` agent SSH).
 - [MODEL_RELEASE_CYCLE.md](ops/MODEL_RELEASE_CYCLE.md) — adding a model: dormant implementation, exact-SHA live proof, compiled/hot tariff verification, then separate public discovery and storefront publication; no policy or release-head advance.
 - [PRICING_RELEASE_BACKFILL.md](ops/PRICING_RELEASE_BACKFILL.md) — retired tombstone; its strict-chain sweep, knobs and endpoint no longer exist and must not be run.
 - [PRICING_RETIREMENT.md](ops/PRICING_RETIREMENT.md) — fail-closed retirement of the dead pricing policy/release/funding schema: exact manifests, retention/rollback gates and staged drop order.

@@ -1226,6 +1226,8 @@ wd_path_is_web packages/opencode-router-plugin/apitoken-router.js \
 wd_path_is_backend packages/opencode-router-plugin/apitoken-router.js \
   && wd_die "OpenCode plugin must not trigger a commerce backend deployment"
 wd_path_is_merge_workflow .claude/hooks/guard-git.sh || wd_die "git guard not classified as merge workflow"
+wd_path_is_merge_workflow .cursor/rules/production-ssh-observe.mdc \
+  || wd_die "Cursor production-SSH rule not classified as merge workflow"
 wd_path_is_validation_neutral docs/engine/STAGE2_POSTGRES_AUTHORITY.md \
   || wd_die "documentation should be validation-neutral"
 wd_path_is_sales apps/sales-api/src/main.ts || wd_die "sales-api not classified as sales"

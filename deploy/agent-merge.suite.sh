@@ -214,6 +214,7 @@ assert_gate_selection typescript apps/path-aware.ts 1 0 0 0
 assert_gate_selection rust crates/path-aware.rs 0 1 0 0
 assert_gate_selection infrastructure deploy/path-aware.test.sh 0 0 1 0
 assert_gate_selection workflow AGENTS.md 0 0 1 0
+assert_gate_selection cursor-ssh-rule .cursor/rules/production-ssh-observe.mdc 0 0 1 0
 assert_gate_selection unknown mystery/runtime.xyz 1 1 1 1
 assert_gate_selection gate-machinery deploy/sccache-cargo.sh 1 1 1 1
 assert_gate_selection worktree-manager deploy/agent-worktree.sh 1 1 1 1

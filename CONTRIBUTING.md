@@ -1,8 +1,10 @@
 # Contributing and production delivery
 
 This repository uses trunk delivery with a production-host watchdog. Feature branches and pull
-requests are safe: only a commit that reaches `master` is considered for production. Nobody should
-SSH to the host to deploy ordinary engine/backend changes or to run their migration manually.
+requests are safe: only a commit that reaches `master` is considered for production. Nobody
+SSH-deploys ordinary engine/backend changes or runs a production migration by hand. An AI agent
+must not SSH as `deploy`. The only SSH login an agent may use is `observe` (logs only). Delivery
+is `./deploy/agent-merge.sh`.
 
 The customer frontend remains an independent Vercel deployment. This workflow covers the Rust
 engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreSQL migrations.
@@ -202,7 +204,8 @@ means the commit did not complete production delivery. A green component status 
 red overall status. The 140-character description is the headline (payload-canary reason, a concrete
 transcript marker, or the last `wd_die` line). The same SHA's GitHub check run `deploy/watchdog-log`
 holds the redacted cycle excerpt; `deploy/agent-merge.sh` prints it on red so an agent can diagnose
-without production SSH.
+without a host login. A live journal, when still required, is `ssh observe@` the production host;
+never `deploy`.
 
 The same free GitHub API integration creates deployment records for the affected
 `production-database`, `production-engine`, `production-backend`, `production-sales`, and

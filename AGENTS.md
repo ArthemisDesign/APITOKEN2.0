@@ -143,6 +143,10 @@ fast-forward local `master` to GitHub; `deploy/agent-merge.sh` does the same aft
 `origin/master` and after a successful push. A stale copy of the worktree script (a detached
 primary) re-executes the blob from `origin/master` so that catch-up still runs.
 
+Never SSH as `deploy`, `root`, or any other host account. Never run `systemctl start|stop|restart|kill`
+or `apitoken-watchdog retry|run` on production. The only SSH login an agent may use is `observe`.
+Delivery and service cutovers go through `./deploy/agent-merge.sh` and the host watchdog only.
+
 ## What counts as your work
 
 Your work is the commits on your branch, not the state of the tree:
@@ -240,6 +244,12 @@ the server — is taken from the infra docs: `docs/ops/INFRASTRUCTURE.md` first,
 read these documents. Do not guess addresses, ports, paths, or credentials from memory: if the access
 method is not in the infra docs, the agent does not have it. Never deploy or migrate anything over SSH manually —
 only the host watchdog does that.
+
+The Unix account `deploy` is the watchdog and application runtime identity. Operator runbooks still
+name it. That is not an agent login. The only SSH login an agent may use is `observe` (`ssh observe@`
+the production host in `docs/ops/INFRASTRUCTURE.md`). Use it for live journal and readiness
+inspection. If `observe` is unreachable, stop; do not fall back to `deploy`. Diagnose a red deploy
+from GitHub check run `deploy/watchdog-log`. Land releases with `./deploy/agent-merge.sh`.
 
 ## Repository map
 

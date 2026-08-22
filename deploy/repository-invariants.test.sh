@@ -78,4 +78,22 @@ make_fixture "$fixture"
 printf 'fetch(`${engineBaseUrl}/admin/account/x`);\n' >"$fixture/apps/api/src/direct.ts"
 expect_failure "$fixture" 'direct Engine Control API fetch bypasses @claude-api/engine-client'
 
+fixture=$TEMP/agent-ssh-missing
+make_fixture "$fixture"
+printf '# agents\n' >"$fixture/AGENTS.md"
+expect_failure "$fixture" 'AGENTS.md: missing the agent SSH contract'
+
+fixture=$TEMP/agent-ssh-deploy-recipe
+make_fixture "$fixture"
+printf '%s\n' \
+  'The only SSH login an agent may use is `observe`.' \
+  'ssh deploy@84.32.48.2' \
+  >"$fixture/AGENTS.md"
+expect_failure "$fixture" 'AGENTS.md: must not contain an ssh deploy@ login recipe'
+
+fixture=$TEMP/agent-ssh-ok
+make_fixture "$fixture"
+printf 'The only SSH login an agent may use is `observe`.\n' >"$fixture/AGENTS.md"
+python3 "$CHECK" "$fixture" >/dev/null
+
 printf 'repository-invariants.test: passed\n'

@@ -1,0 +1,25 @@
+---
+description: Production SSH is observe-only for agents; deploys go through agent-merge.sh
+alwaysApply: true
+---
+
+# Production host login
+
+The Unix account `deploy` in `docs/ops/INFRASTRUCTURE.md` and `docs/ops/DEPLOYMENT.md` is the watchdog and application runtime identity. It is not an agent shell.
+
+- The only SSH login an agent may use is `observe` (`ssh observe@84.32.48.2`).
+- Use that session for journal and readiness inspection.
+- If `observe` is unreachable, stop. Do not fall back to `deploy` or `root`.
+- Do not run `systemctl start|stop|restart|kill`, `deploy.sh`, `engine-bluegreen.sh`, or `apitoken-watchdog retry|run`.
+- Land releases with `git push` and `./deploy/agent-merge.sh`. The host watchdog performs cutovers.
+
+```bash
+# BAD — caused the 2026-08-22 outage
+ssh deploy@84.32.48.2 'sudo systemctl restart claude-api-anthropic@8787'
+
+# GOOD — live logs only
+ssh observe@84.32.48.2
+
+# GOOD — deploy
+./deploy/agent-merge.sh
+```

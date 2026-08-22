@@ -149,6 +149,28 @@ def check_typescript_engine_boundary(root: Path, violations: list[str]) -> None:
                 )
 
 
+AGENT_SSH_CONTRACT = "The only SSH login an agent may use is `observe`"
+
+
+def check_agent_ssh_policy(root: Path, violations: list[str]) -> None:
+    """Agents must not be instructed to SSH as deploy. Operator runbooks may still name that user."""
+
+    agents = root / "AGENTS.md"
+    if not agents.is_file():
+        return
+    text = agents.read_text(encoding="utf-8")
+    if AGENT_SSH_CONTRACT not in text:
+        violations.append(
+            "AGENTS.md: missing the agent SSH contract "
+            f"({AGENT_SSH_CONTRACT!r})"
+        )
+    if "ssh deploy@" in text:
+        violations.append("AGENTS.md: must not contain an ssh deploy@ login recipe")
+    claude = root / "CLAUDE.md"
+    if claude.is_file() and "ssh deploy@" in claude.read_text(encoding="utf-8"):
+        violations.append("CLAUDE.md: must not contain an ssh deploy@ login recipe")
+
+
 def main(argv: list[str]) -> int:
     root = Path(argv[1]).resolve() if len(argv) == 2 else Path(__file__).resolve().parent.parent
     if len(argv) > 2:
@@ -162,6 +184,7 @@ def main(argv: list[str]) -> int:
     check_lower_layer_dependencies(root, violations)
     check_env_ownership(root, violations)
     check_typescript_engine_boundary(root, violations)
+    check_agent_ssh_policy(root, violations)
     if violations:
         for violation in violations:
             fail(violation)

@@ -35,7 +35,9 @@ access — comes ONLY from the infra docs: first and foremost `docs/ops/INFRASTR
 `docs/ops/DEPLOYMENT.md` and `docs/ops/MONITORING.md`. Do not guess addresses, ports, and paths
 from memory and do not invent ways to gain access: if it is not in the infra docs, the agent has no
 access. Manual SSH deployment and manual migrations are forbidden — only the host watchdog performs
-them.
+them. The `deploy` user in those runbooks is the watchdog/runtime identity, not an agent shell.
+The only SSH login an agent may use is `observe`. Cutover and restart go through
+`./deploy/agent-merge.sh` only.
 
 ## CRM & Parsing — MOVED to a separate repository
 

@@ -109,7 +109,8 @@ complete captured value, including its build suffix; the engine never synthesize
 | Network | 10 Gbit/s port, 100 TB egress allowance |
 | OS | Ubuntu 24.04 LTS |
 | Hostname | `apitokensale` |
-| Deployment user | `deploy` (SSH public key only) |
+| Deployment user | `deploy` (watchdog, product units, human recovery; SSH public key only) |
+| Agent SSH user | `observe` (log inspection only; the only SSH login an agent may use) |
 
 The initial RAID synchronization must finish before planned power interruption. Check it with
 `cat /proc/mdstat`.
@@ -125,9 +126,23 @@ Installed host tooling:
 - Caddy 2 from its official stable package repository.
 
 UFW denies inbound traffic by default and permits only SSH, HTTP and HTTPS. SSH password
-authentication is disabled. Root can authenticate by key for recovery, while routine deployment
-uses `deploy`. The application API and PostgreSQL bind to loopback. Caddy owns public ports 80/443,
+authentication is disabled. Root can authenticate by key for recovery. The watchdog and product
+units run as `deploy`. The application API and PostgreSQL bind to loopback. Caddy owns public ports 80/443,
 redirects HTTP to HTTPS and terminates TLS for the configured product/mail hostnames.
+
+### SSH identities
+
+`deploy` remains the documented deployment Unix account. Human recovery and live calibration may
+SSH as `deploy`. An AI agent must not. The only SSH login an agent may use is `observe`:
+
+```bash
+ssh observe@84.32.48.2
+```
+
+That session is journal and readiness inspection. It must not run `systemctl start|stop|restart|kill`,
+`deploy.sh`, `engine-bluegreen.sh`, or `apitoken-watchdog retry|run`. If `observe` is unreachable,
+stop. Do not fall back to `deploy`. Diagnose from GitHub `deploy/watchdog-log`. Land releases with
+`./deploy/agent-merge.sh`.
 
 The active DNS record is `A *.apitoken.sale -> 84.32.48.2`. The apex remains independent for the
 future frontend. Exact DNS records override the wildcard if they are added later.
