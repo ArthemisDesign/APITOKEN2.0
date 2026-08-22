@@ -56,7 +56,6 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
     if (isLoading && liveReady.every((value) => value === undefined)) return null;
     const { subs, capacity, codex, gemini, kimi, glm, tripo3d, suno } = result;
     const list = subs?.subs ?? [];
-    const dead = list.filter((item) => item.auth_state === "dead").length;
     const suspect = list.filter((item) => item.auth_state === "suspect").length;
     const subsDown = availability.subs === "error";
     const claudeCapacityLoading = availability.capacity === "loading";
@@ -138,7 +137,7 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
       + (kimiOff ? 0 : kimiProfiles.length) + (glmOff ? 0 : glmProfiles.length)
       + (tripo3dOff ? 0 : tripo3dProfiles.length) + (sunoOff ? 0 : sunoProfiles.length);
     const fleetWarn = Boolean(
-      dead || claudeCapacityDown || claudeCalibrationPending || claudeCalibrationDropped
+      claudeCapacityDown || claudeCalibrationPending || claudeCalibrationDropped
         || claudeCalibrationStorageBad || gptDown || geminiDown || geminiEmpty
         || geminiUnavailable || geminiAuthBad || geminiMissing || geminiCalibrationPending
         || geminiCalibrationDropped || geminiCalibrationStorageBad || kimiDown || kimiEmpty
@@ -155,7 +154,6 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
       subs,
       capacity,
       list,
-      dead,
       suspect,
       subsDown,
       claudeCapacityLoading,
@@ -239,7 +237,6 @@ export function SubscriptionsView({ state }: { state: SubsPageState }) {
   }
 
   const banner = resolveBanner({
-    dead: derived.dead,
     suspect: derived.suspect,
     subsDown: derived.subsDown,
     gptDown: derived.gptDown,

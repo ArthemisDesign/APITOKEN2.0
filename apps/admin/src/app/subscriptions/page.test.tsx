@@ -64,7 +64,6 @@ import type {
 } from "./types";
 
 const OK_BANNER = {
-  dead: 0,
   suspect: 0,
   subsDown: false,
   gptDown: false,
@@ -3394,6 +3393,44 @@ describe("Подписки (subs page)", () => {
     expect(plain(html)).toContain("Данные Suno загружаются");
     expect(plain(html)).not.toContain("не отвечает");
   });
+
+  it("не показывает флот-баннер про мёртвые Claude-токены", () => {
+    const html = renderToString(
+      <SubscriptionsView
+        state={{
+          data: {
+            subs: { subs: [{ email: "cl***@example.com", auth_state: "dead" }] },
+            capacity: {
+              per_sub: [{ email: "cl***@example.com", auth_state: "dead", routable: false }],
+            },
+            codex: { enabled: false, homes: [] },
+            gemini: { enabled: false, profiles: [] },
+            kimi: { enabled: false, profiles: [] },
+            glm: { enabled: false, profiles: [] },
+            tripo3d: { enabled: false, profiles: [] },
+            suno: { enabled: false, profiles: [] },
+          },
+          availability: {
+            subs: "ready",
+            capacity: "ready",
+            codex: "ready",
+            gemini: "ready",
+            kimi: "ready",
+            glm: "ready",
+            tripo3d: "ready",
+            suno: "ready",
+          },
+          isLoading: false,
+          updatedAt: 1_786_541_400_000,
+        }}
+      />,
+    );
+    const text = plain(html);
+    expect(text).not.toContain("мёртвым токеном");
+    expect(text).not.toContain("setup-token");
+    expect(html).not.toContain("banner bad");
+    expect(text).toContain("токен мёртв");
+  });
 });
 
 describe("deadLabel", () => {
@@ -4057,13 +4094,6 @@ describe("resolveBanner (приоритеты баннера флота)", () =>
       title: "Все семь флотов подписок в ротации",
       sub: "Claude 3 · GPT 2 · Gemini 1 · KIMI 1 · GLM 1 · Tripo3D 1 · Suno 1 · обновлено 31.07.2026, 19:00",
     });
-  });
-
-  it("dead имеет высший приоритет и несёт счётчик suspect в подписи", () => {
-    const banner = resolveBanner({ ...OK_BANNER, dead: 2, suspect: 1, subsDown: true, gptDown: true });
-    expect(banner.kind).toBe("bad");
-    expect(banner.title).toBe("2 Claude-подписки с мёртвым токеном");
-    expect(banner.sub).toContain("1 под наблюдением");
   });
 
   it("падения источников идут в порядке Claude → GPT → Gemini → KIMI → GLM → Tripo3D → Suno", () => {

@@ -734,7 +734,6 @@ export interface FleetBanner {
 }
 
 export interface FleetBannerInput {
-  dead: number;
   suspect: number;
   subsDown: boolean;
   gptDown: boolean;
@@ -774,22 +773,10 @@ export interface FleetBannerInput {
   updatedAt: string;
 }
 
-// Баннер флота: auth/fleet faults имеют приоритет над состоянием наблюдения
-// (порядок проверок — точно как в subscriptions()).
+// Баннер флота: падения источников и auth-сбои остальных контуров имеют
+// приоритет над Claude suspect. Мёртвые Claude-токены баннер не поднимают —
+// их видно в таблице аккаунтов, а не как флот-авария.
 export function resolveBanner(input: FleetBannerInput): FleetBanner {
-  if (input.dead)
-    return {
-      kind: "bad",
-      title: count(
-        input.dead,
-        "Claude-подписка с мёртвым токеном",
-        "Claude-подписки с мёртвым токеном",
-        "Claude-подписок с мёртвым токеном",
-      ),
-      sub:
-        "вне ротации — нужен свежий OAuth-токен (setup-token) на этот аккаунт" +
-        (input.suspect ? ` · ${input.suspect} под наблюдением` : ""),
-    };
   if (input.subsDown)
     return {
       kind: "warn",
