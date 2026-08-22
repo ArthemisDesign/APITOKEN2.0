@@ -108,6 +108,13 @@ The `GET` used to omit the default entirely, so an operator could not see the ra
 to replace; four live per-provider overrides written straight to the engine were invisible in that
 view and one careless save would have dropped them.
 
+The Sales partner boundary uses the same desired-state and delivery primitives through
+`applySalesPartnerBusinessPricing`, with one additional fence: a stable operation ref is serialized
+and recorded as terminal `audit_log` evidence in the transaction that converts B2C→B2B and writes
+all default/provider terms. Exact retry returns that stored result; a different payload under the
+same ref is a conflict. This closes both the partial-conversion window and the lost-response replay
+window without reviving a policy or release table.
+
 Invitations carry a discount percent, which the invitee's account is created with. Per-provider
 terms are set on the client after conversion.
 

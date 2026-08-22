@@ -195,9 +195,11 @@ The ceiling is enforced **twice, server-side, and never read from the request**:
 
 The second check is not redundancy for its own sake: `/v1/internal/sales/partner-business-pricing`
 is authenticated only as "sales", so without an independent ownership proof a defect on the sales
-side would be enough to reprice any customer in the system. Writes go through the same
-`setBusinessPricingBundle` the admin editor uses — the account default on `customer_profiles`
-plus `customer_provider_discounts`, delivered by durable `engine_pricing_jobs`.
+side would be enough to reprice any customer in the system. Every durable request effect carries a
+stable `operationRef` and the authenticated actor. Commerce serializes that ref, rejects payload
+drift, and commits the B2B conversion/default, `customer_provider_discounts`, durable
+`engine_pricing_jobs`, component audit and terminal replay evidence together. A timeout after
+commit can therefore return the stored output without repricing the customer or duplicating audit.
 
 Commission does not change with the customer's class. A referred B2B customer earns the partner the
 same percentage of the customer's own money as a referred B2C customer; a deeper discount simply

@@ -103,6 +103,7 @@ export async function applyProviderDiscountTx(client: PoolClient, input: {
   engineAccountId: string;
   providerId: string;
   multiplierBp: number | null;
+  actorType?: "admin" | "sales";
   actorId: string;
   reason: string;
 }): Promise<string> {
@@ -135,8 +136,8 @@ export async function applyProviderDiscountTx(client: PoolClient, input: {
   });
   await client.query(`
     INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
-    VALUES ('admin', $1, 'pricing.provider_discount_changed', 'user', $2, $3::jsonb)
-  `, [input.actorId, input.userId, JSON.stringify({
+    VALUES ($1, $2, 'pricing.provider_discount_changed', 'user', $3, $4::jsonb)
+  `, [input.actorType ?? "admin", input.actorId, input.userId, JSON.stringify({
     providerId: input.providerId,
     multiplierBp: input.multiplierBp,
     reason: input.reason,

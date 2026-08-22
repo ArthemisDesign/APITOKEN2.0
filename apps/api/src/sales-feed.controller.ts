@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Body,
+  ConflictException,
   ForbiddenException,
   CanActivate,
   Controller,
@@ -18,14 +19,13 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { z } from "zod";
 import {
+  applySalesPartnerBusinessPricing,
   setReferralFloor,
-  convertCustomerToBusiness,
-  getReferralAttributionCode,
-  getPricingView,
-  listCustomerProviderDiscounts,
-  setBusinessPricingBundle,
   isDiscountProviderId,
   BusinessCustomerNotFoundError,
+  PartnerBusinessPricingAuthorizationError,
+  PartnerBusinessPricingConflictError,
+  PartnerBusinessPricingRequestError,
   listPaidTopupsAfter,
   listPaidTopupsV2After,
   listPaymentReversalsAfter,
@@ -202,85 +202,30 @@ export class SalesFeedController {
    * on the sales side would be enough to reprice any customer in the system through a route that is
    * authenticated only as "sales".
    *
-   * Conversion is idempotent: an already-B2B customer keeps their class and only the requested
-   * values move. Nothing here is best-effort — the partner must learn whether their change landed.
+   * A stable operation ref makes conversion/default/provider writes replay-idempotent as one
+   * Commerce transaction. Nothing here is best-effort — the partner must learn whether their
+   * change landed, and a lost response must not create another pricing or audit side effect.
    */
   @Post("partner-business-pricing")
   @HttpCode(200)
   async partnerBusinessPricing(@Body() body: unknown) {
     const parsed = partnerBusinessPricingSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException("invalid partner business pricing payload");
-    const { userId, referralCode, ceilingPercent, discountPercent, providers } = parsed.data;
-
-    // The customer must be this partner's referral. Attribution is first-touch and immutable, so
-    // it is the one fact commerce can verify on its own.
-    const attributed = await getReferralAttributionCode(this.database, userId);
-    if (attributed === null || attributed !== referralCode) {
-      throw new ForbiddenException("this customer is not attributed to the calling partner");
-    }
-
-    // Re-enforce the ceiling here. Sales already refused anything deeper, so reaching this branch
-    // means the two sides disagree — fail closed rather than pick the more generous reading.
-    const requested = [
-      ...(discountPercent === undefined ? [] : [discountPercent]),
-      ...Object.values(providers ?? {}).filter((value): value is number => value !== null),
-    ];
-    if (requested.some((value) => value > ceilingPercent)) {
-      throw new ForbiddenException("requested discount exceeds the partner ceiling");
-    }
-
-    const before = await getPricingView(this.database, userId);
-    let converted = false;
-    if (before?.customerType !== "b2b") {
-      // A partner converting their referral must supply the default the customer starts on;
-      // provider overrides alone would leave the rest of the catalog at the B2C rate.
-      if (discountPercent === undefined) {
-        throw new BadRequestException("converting a referral to B2B requires the default discount");
+    try {
+      return await applySalesPartnerBusinessPricing(this.database, parsed.data);
+    } catch (error) {
+      if (error instanceof PartnerBusinessPricingAuthorizationError) {
+        throw new ForbiddenException(error.message);
       }
-      const result = await convertCustomerToBusiness(this.database, {
-        userId,
-        actorId: "sales-partner",
-        reason: "partner b2b conversion",
-        multiplierBp: 10_000 - discountPercent * 100,
-      });
-      converted = result.converted;
-    }
-
-    const providerEntries = Object.entries(providers ?? {});
-    // After a fresh conversion the default is already applied; re-sending it would be an empty
-    // change. Skip it so the bundle is never called with nothing to do.
-    const defaultChange = converted ? undefined : discountPercent;
-    if (defaultChange !== undefined || providerEntries.length > 0) {
-      try {
-        await setBusinessPricingBundle(this.database, {
-          userId,
-          ...(defaultChange === undefined ? {} : { multiplierBp: 10_000 - defaultChange * 100 }),
-          providers: Object.fromEntries(providerEntries.map(([providerId, percent]) => [
-            providerId,
-            percent === null ? null : 10_000 - percent * 100,
-          ])),
-          actorId: "sales-partner",
-          reason: "partner b2b pricing",
-        });
-      } catch (error) {
-        if (error instanceof BusinessCustomerNotFoundError) {
-          throw new BadRequestException("referral has no provisioned business account yet");
-        }
-        throw error;
+      if (error instanceof PartnerBusinessPricingConflictError) {
+        throw new ConflictException(error.message);
       }
+      if (error instanceof PartnerBusinessPricingRequestError
+        || error instanceof BusinessCustomerNotFoundError) {
+        throw new BadRequestException(error.message);
+      }
+      throw error;
     }
-
-    const [after, overrides] = await Promise.all([
-      getPricingView(this.database, userId),
-      listCustomerProviderDiscounts(this.database, userId),
-    ]);
-    return {
-      userId,
-      converted,
-      customerType: after?.customerType ?? null,
-      discountPercent: after?.discountPercent ?? null,
-      providers: Object.fromEntries(overrides.map((row) => [row.providerId, 100 - row.multiplierBp / 100])),
-    };
   }
 
   /**
@@ -352,6 +297,9 @@ const referralDiscountSchema = z.object({
 const partnerDiscountPercentSchema = z.number().int().min(0).max(95);
 
 const partnerBusinessPricingSchema = z.object({
+  // Optional during producer-first rollout. Durable Sales outbox consumers always send it; an
+  // older caller keeps its previous at-most-once transport semantics until it is upgraded.
+  operationRef: z.string().trim().min(8).max(200).optional(),
   userId: z.string().uuid(),
   // The calling partner's referral code, proving the customer is theirs.
   referralCode: z.string().min(1).max(64),
@@ -359,6 +307,10 @@ const partnerBusinessPricingSchema = z.object({
   discountPercent: partnerDiscountPercentSchema.optional(),
   // null drops a provider override back to the customer's default.
   providers: z.record(z.string(), partnerDiscountPercentSchema.nullable()).optional(),
+  // The trusted Sales service propagates the authenticated partner/admin identity. Commerce
+  // records it verbatim in the immutable operation evidence instead of a generic actor label.
+  actorId: z.string().trim().min(1).max(200).optional(),
+  reason: z.string().trim().min(1).max(4000).optional(),
 }).superRefine((value, context) => {
   if (value.discountPercent === undefined && (value.providers === undefined || Object.keys(value.providers).length === 0)) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "nothing to change" });

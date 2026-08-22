@@ -219,19 +219,26 @@ of reaching SQL as an out-of-range value.
   `pricingAffected:false`.
 - `POST /v1/internal/sales/partner-business-pricing` — a granted partner prices **their own**
   referral as a B2B customer. Body
-  `{userId, referralCode, ceilingPercent, discountPercent?, providers?}` (whole percents; a
+  `{operationRef?, userId, referralCode, ceilingPercent, discountPercent?, providers?, actorId?,
+  reason?}` (whole percents; a
   provider mapped to `null` drops its override back to the customer's default) →
-  `{userId, converted, customerType, discountPercent, providers}`. Two guards, both required:
+  `{operationRef, idempotentReplay, userId, converted, customerType, discountPercent, providers}`.
+  `operationRef` is temporarily optional only for producer-first compatibility; the durable Sales
+  effect consumer always sends its stable idempotency key plus the authenticated partner/admin
+  actor. An exact replay returns the stored result, while reuse with any different canonical
+  payload returns 409. Two guards, both required:
   the customer must be attributed to `referralCode` (first-touch attribution is the one ownership
   fact commerce can verify by itself), and every requested percent must be within
   `ceilingPercent`. The route is authenticated only as "sales", so the ownership proof is what
   keeps a defect on the sales side from repricing an unrelated customer; the ceiling is re-checked
   rather than trusted, and a disagreement fails closed instead of taking the more generous
-  reading. Conversion is idempotent and requires an explicit base discount — provider overrides
-  alone would leave the rest of the catalog at the B2C price. Writes reuse
-  `setBusinessPricingBundle`, the same durable lane as the admin editor. Provider ids are the
-  closed `DISCOUNT_PROVIDER_IDS` set; an unknown id is rejected instead of being stored and never
-  matching a request.
+  reading. Conversion requires an explicit base discount — provider overrides alone would leave
+  the rest of the catalog at the B2C price. Conversion, the default, every provider override,
+  their fenced `engine_pricing_jobs`, component audit and the terminal operation evidence commit
+  in one Commerce transaction. The terminal `audit_log` fact is the durable replay ledger, guarded
+  by the same transaction-advisory-lock pattern as idempotent admin credits; therefore a lost HTTP
+  response cannot repeat jobs or audit. Provider ids are the closed `DISCOUNT_PROVIDER_IDS` set;
+  an unknown id is rejected instead of being stored and never matching a request.
 
 - `POST /v1/internal/sales/referral-profiles` — referral profiles for the partner's storefront.
   Body `{userIds: uuid[] (max 500)}` → `{items:[{userId, email, customerType (b2c/b2b), multiplierBp,

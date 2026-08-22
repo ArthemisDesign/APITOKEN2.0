@@ -1,17 +1,25 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   paymentProviderSchema,
   type EngineLedgerEntry,
 } from "@claude-api/contracts";
 import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
-import { applyProviderDiscountTx, enqueuePricingJob } from "./pricing-discounts.js";
+import {
+  applyProviderDiscountTx,
+  enqueuePricingJob,
+  isDiscountProviderId,
+  type DiscountProviderId,
+} from "./pricing-discounts.js";
 
 export class InvalidBusinessInvitationError extends Error {}
 export class BusinessInvitationNotFoundError extends Error {}
 export class BusinessInvitationConflictError extends Error {}
 export class BusinessCustomerNotFoundError extends Error {}
 export class CustomerProfileNotFoundError extends Error {}
+export class PartnerBusinessPricingAuthorizationError extends Error {}
+export class PartnerBusinessPricingConflictError extends Error {}
+export class PartnerBusinessPricingRequestError extends Error {}
 export interface PricingSyncTarget {
   userId: string;
   engineAccountId: string;
@@ -580,6 +588,7 @@ async function applyBusinessDefaultTx(client: PoolClient, input: {
   userId: string;
   engineAccountId: string;
   multiplierBp: number;
+  actorType?: "admin" | "sales";
   actorId: string;
   reason: string;
 }): Promise<string> {
@@ -597,8 +606,8 @@ async function applyBusinessDefaultTx(client: PoolClient, input: {
   });
   await client.query(`
     INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
-    VALUES ('admin', $1, 'pricing.b2b_changed', 'user', $2, $3::jsonb)
-  `, [input.actorId, input.userId, JSON.stringify({
+    VALUES ($1, $2, 'pricing.b2b_changed', 'user', $3, $4::jsonb)
+  `, [input.actorType ?? "admin", input.actorId, input.userId, JSON.stringify({
     multiplierBp: input.multiplierBp,
     reason: input.reason,
     jobId,
@@ -619,6 +628,273 @@ export async function setBusinessPricing(database: Database, input: {
     reason: input.reason,
   });
   return { engineAccountId, jobId: jobIds[0]! };
+}
+
+export interface SalesPartnerBusinessPricingResult {
+  operationRef: string;
+  idempotentReplay: boolean;
+  userId: string;
+  converted: boolean;
+  customerType: "b2b";
+  discountPercent: number;
+  providers: Record<string, number>;
+}
+
+interface StoredSalesPartnerBusinessPricingResult {
+  userId: string;
+  converted: boolean;
+  customerType: "b2b";
+  discountPercent: number;
+  providers: Record<string, number>;
+}
+
+function salesPartnerPricingDigest(value: unknown): string {
+  return `sha256:v1:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+}
+
+function parseStoredSalesPartnerPricingResult(value: unknown): StoredSalesPartnerBusinessPricingResult | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.userId !== "string"
+    || typeof candidate.converted !== "boolean"
+    || candidate.customerType !== "b2b"
+    || typeof candidate.discountPercent !== "number"
+    || !Number.isFinite(candidate.discountPercent)
+    || typeof candidate.providers !== "object"
+    || candidate.providers === null
+    || Array.isArray(candidate.providers)) return null;
+  for (const [providerId, discountPercent] of Object.entries(candidate.providers)) {
+    if (!isDiscountProviderId(providerId)
+      || typeof discountPercent !== "number"
+      || !Number.isFinite(discountPercent)) return null;
+  }
+  return candidate as unknown as StoredSalesPartnerBusinessPricingResult;
+}
+
+/**
+ * Applies one Sales-owned B2B request as a single Commerce fact.
+ *
+ * The stable operation ref is fenced by a transaction advisory lock. The terminal audit row is
+ * both human-readable evidence and the durable replay ledger: it commits in the same transaction
+ * as the customer class/default/provider desired state and every engine delivery job. Therefore a
+ * timeout after COMMIT can be retried without producing a second audit trail or re-queuing pricing.
+ * Reusing the ref for different canonical inputs fails closed.
+ */
+export async function applySalesPartnerBusinessPricing(database: Database, input: {
+  operationRef?: string | undefined;
+  userId: string;
+  referralCode: string;
+  ceilingPercent: number;
+  discountPercent?: number | undefined;
+  providers?: Record<string, number | null> | undefined;
+  actorId?: string | undefined;
+  reason?: string | undefined;
+}): Promise<SalesPartnerBusinessPricingResult> {
+  const operationRef = input.operationRef?.trim() || `legacy:${randomUUID()}`;
+  const actorId = input.actorId?.trim() || "sales-partner";
+  const reason = input.reason?.trim() || "partner b2b pricing";
+  if (operationRef.length < 8 || operationRef.length > 200) {
+    throw new PartnerBusinessPricingRequestError("operation ref must contain between 8 and 200 characters");
+  }
+  if (actorId.length < 1 || actorId.length > 200) {
+    throw new PartnerBusinessPricingRequestError("actor id must contain between 1 and 200 characters");
+  }
+  if (reason.length < 1 || reason.length > 4000) {
+    throw new PartnerBusinessPricingRequestError("reason must contain between 1 and 4000 characters");
+  }
+  if (!Number.isInteger(input.ceilingPercent) || input.ceilingPercent < 0 || input.ceilingPercent > 95) {
+    throw new PartnerBusinessPricingRequestError("ceiling percent must be an integer between 0 and 95");
+  }
+  if (input.discountPercent !== undefined
+    && (!Number.isInteger(input.discountPercent) || input.discountPercent < 0 || input.discountPercent > 95)) {
+    throw new PartnerBusinessPricingRequestError("discount percent must be an integer between 0 and 95");
+  }
+  const providerEntries = Object.entries(input.providers ?? {})
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+  for (const [providerId, discountPercent] of providerEntries) {
+    if (!isDiscountProviderId(providerId)) {
+      throw new PartnerBusinessPricingRequestError(`unknown provider id: ${providerId}`);
+    }
+    if (discountPercent !== null
+      && (!Number.isInteger(discountPercent) || discountPercent < 0 || discountPercent > 95)) {
+      throw new PartnerBusinessPricingRequestError(`invalid discount percent for provider ${providerId}`);
+    }
+  }
+  if (input.discountPercent === undefined && providerEntries.length === 0) {
+    throw new PartnerBusinessPricingRequestError("business pricing mutation is empty");
+  }
+  const requestedPercents = [
+    ...(input.discountPercent === undefined ? [] : [input.discountPercent]),
+    ...providerEntries.flatMap(([, percent]) => percent === null ? [] : [percent]),
+  ];
+  if (requestedPercents.some((percent) => percent > input.ceilingPercent)) {
+    throw new PartnerBusinessPricingAuthorizationError("requested discount exceeds the partner ceiling");
+  }
+
+  const canonicalRequest = {
+    schemaVersion: 1,
+    userId: input.userId,
+    referralCode: input.referralCode,
+    ceilingPercent: input.ceilingPercent,
+    discountPercent: input.discountPercent ?? null,
+    providers: Object.fromEntries(providerEntries),
+    actorId,
+    reason,
+  };
+  const requestDigest = salesPartnerPricingDigest(canonicalRequest);
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+      `sales-partner-pricing:${operationRef}`,
+    ]);
+    const replay = await client.query<{ metadata: unknown }>(`
+      SELECT metadata
+      FROM audit_log
+      WHERE action = 'pricing.sales_partner_operation'
+        AND target_type = 'sales_partner_pricing_operation'
+        AND target_id = $1
+      ORDER BY id DESC
+      LIMIT 1
+    `, [operationRef]);
+    if (replay.rows[0]) {
+      const metadata = replay.rows[0].metadata;
+      const stored = typeof metadata === "object" && metadata !== null && !Array.isArray(metadata)
+        ? metadata as Record<string, unknown>
+        : null;
+      if (stored?.requestDigest !== requestDigest) {
+        throw new PartnerBusinessPricingConflictError("operation ref was already used for another pricing request");
+      }
+      const result = parseStoredSalesPartnerPricingResult(stored.result);
+      if (!result) throw new Error("stored Sales partner pricing operation has an invalid result");
+      await client.query("COMMIT");
+      return { operationRef, idempotentReplay: true, ...result };
+    }
+
+    const attribution = await client.query<{ code: string }>(`
+      SELECT code FROM referral_attributions
+      WHERE user_id = $1
+      FOR SHARE
+    `, [input.userId]);
+    if (attribution.rows[0]?.code !== input.referralCode) {
+      throw new PartnerBusinessPricingAuthorizationError(
+        "this customer is not attributed to the calling partner",
+      );
+    }
+    const account = await client.query<{
+      customer_type: "b2c" | "b2b";
+      current_tier: number | null;
+      multiplier_bp: number;
+      referral_floor_bps: number;
+      engine_account_id: string | null;
+    }>(`
+      SELECT cp.customer_type, cp.current_tier, cp.multiplier_bp, cp.referral_floor_bps,
+             ea.engine_account_id
+      FROM customer_profiles cp
+      JOIN engine_accounts ea ON ea.user_id = cp.user_id
+      WHERE cp.user_id = $1
+      FOR UPDATE OF cp, ea
+    `, [input.userId]);
+    const before = account.rows[0];
+    if (!before?.engine_account_id) {
+      throw new BusinessCustomerNotFoundError("referral has no provisioned business account yet");
+    }
+    if (before.customer_type === "b2c" && input.discountPercent === undefined) {
+      throw new PartnerBusinessPricingRequestError("converting a referral to B2B requires the default discount");
+    }
+
+    const converted = before.customer_type === "b2c";
+    const jobIds: string[] = [];
+    if (converted) {
+      const multiplierBp = 10_000 - input.discountPercent! * 100;
+      await client.query(`
+        UPDATE customer_profiles
+        SET customer_type = 'b2b', current_tier = NULL,
+            tier_window_start = NULL, tier_window_spent_nano = 0,
+            referral_floor_bps = 0, multiplier_bp = $2, updated_at = now()
+        WHERE user_id = $1
+      `, [input.userId, multiplierBp]);
+      await client.query(`
+        UPDATE engine_accounts SET mult_bp = $2, updated_at = now() WHERE user_id = $1
+      `, [input.userId, multiplierBp]);
+      const jobId = await enqueuePricingJob(client, {
+        userId: input.userId,
+        engineAccountId: before.engine_account_id,
+        multiplierBp,
+        reason: "b2b_conversion",
+      });
+      jobIds.push(jobId);
+      await client.query(`
+        INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+        VALUES ('sales', $1, 'pricing.b2b_converted', 'user', $2, $3::jsonb)
+      `, [actorId, input.userId, JSON.stringify({
+        reason,
+        operationRef,
+        previousMultiplierBp: before.multiplier_bp,
+        negotiatedMultiplierBp: multiplierBp,
+        previousTier: before.current_tier,
+        previousReferralFloorBps: before.referral_floor_bps,
+        jobId,
+      })]);
+    } else if (input.discountPercent !== undefined) {
+      jobIds.push(await applyBusinessDefaultTx(client, {
+        userId: input.userId,
+        engineAccountId: before.engine_account_id,
+        multiplierBp: 10_000 - input.discountPercent * 100,
+        actorType: "sales",
+        actorId,
+        reason,
+      }));
+    }
+    for (const [providerId, percent] of providerEntries) {
+      jobIds.push(await applyProviderDiscountTx(client, {
+        userId: input.userId,
+        engineAccountId: before.engine_account_id,
+        providerId: providerId as DiscountProviderId,
+        multiplierBp: percent === null ? null : 10_000 - percent * 100,
+        actorType: "sales",
+        actorId,
+        reason,
+      }));
+    }
+
+    const after = await client.query<{ multiplier_bp: number }>(`
+      SELECT multiplier_bp FROM customer_profiles WHERE user_id = $1
+    `, [input.userId]);
+    const overrides = await client.query<{ provider_id: string; multiplier_bp: number }>(`
+      SELECT provider_id, multiplier_bp
+      FROM customer_provider_discounts
+      WHERE user_id = $1
+      ORDER BY provider_id
+    `, [input.userId]);
+    const result: StoredSalesPartnerBusinessPricingResult = {
+      userId: input.userId,
+      converted,
+      customerType: "b2b",
+      discountPercent: 100 - after.rows[0]!.multiplier_bp / 100,
+      providers: Object.fromEntries(overrides.rows
+        .filter((row) => isDiscountProviderId(row.provider_id))
+        .map((row) => [row.provider_id, 100 - row.multiplier_bp / 100])),
+    };
+    await client.query(`
+      INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ('sales', $1, 'pricing.sales_partner_operation',
+              'sales_partner_pricing_operation', $2, $3::jsonb)
+    `, [actorId, operationRef, JSON.stringify({
+      schemaVersion: 1,
+      requestDigest,
+      request: canonicalRequest,
+      result,
+      jobIds,
+    })]);
+    await client.query("COMMIT");
+    return { operationRef, idempotentReplay: false, ...result };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**

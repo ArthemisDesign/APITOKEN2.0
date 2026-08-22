@@ -1,21 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Commerce re-checks what sales already checked. That redundancy is the point: this route is
-// authenticated only as "sales", so without an independent ownership proof a defect on the sales
-// side would be enough to reprice any customer in the system.
+const errors = vi.hoisted(() => ({
+  Authorization: class PartnerBusinessPricingAuthorizationError extends Error {},
+  Conflict: class PartnerBusinessPricingConflictError extends Error {},
+  Request: class PartnerBusinessPricingRequestError extends Error {},
+  MissingBusinessCustomer: class BusinessCustomerNotFoundError extends Error {},
+}));
+
 const dbMocks = vi.hoisted(() => ({
-  getReferralAttributionCode: vi.fn(),
-  getPricingView: vi.fn(),
-  convertCustomerToBusiness: vi.fn(),
-  setBusinessPricingBundle: vi.fn(),
-  listCustomerProviderDiscounts: vi.fn(),
+  applySalesPartnerBusinessPricing: vi.fn(),
 }));
 
 vi.mock("@claude-api/db", () => ({
   ...dbMocks,
   isDiscountProviderId: (value: string) =>
     ["anthropic", "openai", "google", "kimi", "glm"].includes(value),
-  BusinessCustomerNotFoundError: class BusinessCustomerNotFoundError extends Error {},
+  BusinessCustomerNotFoundError: errors.MissingBusinessCustomer,
+  PartnerBusinessPricingAuthorizationError: errors.Authorization,
+  PartnerBusinessPricingConflictError: errors.Conflict,
+  PartnerBusinessPricingRequestError: errors.Request,
   listUsageEventsAfter: vi.fn(),
   listPaidTopupsV2After: vi.fn(),
   listPaymentReversalsAfter: vi.fn(),
@@ -35,100 +38,93 @@ function controller() {
 
 function request(overrides: Record<string, unknown> = {}) {
   return {
+    operationRef: "partner-effect:00000000-0000-4000-8000-000000000001",
     userId: USER,
     referralCode: "partnercode",
     ceilingPercent: 70,
     discountPercent: 60,
+    actorId: "admin:operator@example.com",
+    reason: "approved partner request 0001",
     ...overrides,
   };
 }
 
 describe("partner-driven B2B pricing in commerce", () => {
   beforeEach(() => {
-    for (const mock of Object.values(dbMocks)) mock.mockReset();
-    dbMocks.listCustomerProviderDiscounts.mockResolvedValue([]);
-    dbMocks.getPricingView.mockResolvedValue({ customerType: "b2b", discountPercent: 60 });
-    dbMocks.setBusinessPricingBundle.mockResolvedValue({ engineAccountId: "acct_x", jobIds: ["job"] });
+    dbMocks.applySalesPartnerBusinessPricing.mockReset();
+    dbMocks.applySalesPartnerBusinessPricing.mockResolvedValue({
+      operationRef: "partner-effect:00000000-0000-4000-8000-000000000001",
+      idempotentReplay: false,
+      userId: USER,
+      converted: true,
+      customerType: "b2b",
+      discountPercent: 60,
+      providers: {},
+    });
   });
 
-  it("refuses a customer who is not the calling partner's referral", async () => {
-    dbMocks.getReferralAttributionCode.mockResolvedValue("someone-elses-code");
-    await expect(controller().partnerBusinessPricing(request())).rejects.toThrow(/not attributed/i);
-    expect(dbMocks.setBusinessPricingBundle).not.toHaveBeenCalled();
-    expect(dbMocks.convertCustomerToBusiness).not.toHaveBeenCalled();
-  });
-
-  it("refuses a customer with no referral attribution at all", async () => {
-    dbMocks.getReferralAttributionCode.mockResolvedValue(null);
-    await expect(controller().partnerBusinessPricing(request())).rejects.toThrow(/not attributed/i);
-    expect(dbMocks.setBusinessPricingBundle).not.toHaveBeenCalled();
-  });
-
-  it("re-enforces the ceiling instead of trusting the caller", async () => {
-    dbMocks.getReferralAttributionCode.mockResolvedValue("partnercode");
-    await expect(controller().partnerBusinessPricing(request({ discountPercent: 71 })))
-      .rejects.toThrow(/exceeds the partner ceiling/i);
-    expect(dbMocks.setBusinessPricingBundle).not.toHaveBeenCalled();
-  });
-
-  it("re-enforces the ceiling on every provider override, not just the default", async () => {
-    dbMocks.getReferralAttributionCode.mockResolvedValue("partnercode");
-    await expect(controller().partnerBusinessPricing(request({
-      discountPercent: 50,
-      providers: { anthropic: 50, kimi: 90 },
-    }))).rejects.toThrow(/exceeds the partner ceiling/i);
-    expect(dbMocks.setBusinessPricingBundle).not.toHaveBeenCalled();
-  });
-
-  it("rejects a provider id the engine would never match", async () => {
-    dbMocks.getReferralAttributionCode.mockResolvedValue("partnercode");
-    await expect(controller().partnerBusinessPricing(request({
-      providers: { "anthropik": 10 },
-    }))).rejects.toThrow();
-    expect(dbMocks.setBusinessPricingBundle).not.toHaveBeenCalled();
-  });
-
-  it("converts a B2C referral once and does not re-apply the same default", async () => {
-    dbMocks.getReferralAttributionCode.mockResolvedValue("partnercode");
-    dbMocks.getPricingView
-      .mockResolvedValueOnce({ customerType: "b2c", discountPercent: 50 })
-      .mockResolvedValue({ customerType: "b2b", discountPercent: 60 });
-    dbMocks.convertCustomerToBusiness.mockResolvedValue({ converted: true });
-
-    const result = await controller().partnerBusinessPricing(request());
-    expect(dbMocks.convertCustomerToBusiness).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ userId: USER, multiplierBp: 4000 }),
-    );
-    // Conversion already applied the default; re-sending it would be an empty bundle call.
-    expect(dbMocks.setBusinessPricingBundle).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ converted: true, customerType: "b2b" });
-  });
-
-  it("refuses to convert without a base discount", async () => {
-    dbMocks.getReferralAttributionCode.mockResolvedValue("partnercode");
-    dbMocks.getPricingView.mockResolvedValue({ customerType: "b2c", discountPercent: 50 });
-    await expect(controller().partnerBusinessPricing(request({
-      discountPercent: undefined,
-      providers: { kimi: 10 },
-    }))).rejects.toThrow(/requires the default discount/i);
-    expect(dbMocks.convertCustomerToBusiness).not.toHaveBeenCalled();
-  });
-
-  it("applies provider overrides on an already-business customer without re-converting", async () => {
-    dbMocks.getReferralAttributionCode.mockResolvedValue("partnercode");
-    await controller().partnerBusinessPricing(request({
-      discountPercent: undefined,
+  it("passes the stable operation and real actor to the atomic Commerce writer", async () => {
+    const result = await controller().partnerBusinessPricing(request({
       providers: { kimi: 20, google: null },
     }));
-    expect(dbMocks.convertCustomerToBusiness).not.toHaveBeenCalled();
-    expect(dbMocks.setBusinessPricingBundle).toHaveBeenCalledWith(
+    expect(dbMocks.applySalesPartnerBusinessPricing).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
+        operationRef: "partner-effect:00000000-0000-4000-8000-000000000001",
         userId: USER,
-        // null drops the override back to the customer's default.
-        providers: { kimi: 8000, google: null },
+        actorId: "admin:operator@example.com",
+        providers: { kimi: 20, google: null },
       }),
     );
+    expect(result).toMatchObject({ converted: true, customerType: "b2b", idempotentReplay: false });
+  });
+
+  it("keeps operationRef optional for the producer-first rollout", async () => {
+    await controller().partnerBusinessPricing(request({ operationRef: undefined }));
+    expect(dbMocks.applySalesPartnerBusinessPricing).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ operationRef: undefined }),
+    );
+  });
+
+  it("rejects an unknown provider before touching the database", async () => {
+    await expect(controller().partnerBusinessPricing(request({
+      providers: { anthropik: 10 },
+    }))).rejects.toThrow(/invalid partner business pricing payload/i);
+    expect(dbMocks.applySalesPartnerBusinessPricing).not.toHaveBeenCalled();
+  });
+
+  it("rejects an empty mutation before touching the database", async () => {
+    await expect(controller().partnerBusinessPricing(request({
+      discountPercent: undefined,
+      providers: undefined,
+    }))).rejects.toThrow(/invalid partner business pricing payload/i);
+    expect(dbMocks.applySalesPartnerBusinessPricing).not.toHaveBeenCalled();
+  });
+
+  it("maps ownership and ceiling failures to forbidden", async () => {
+    dbMocks.applySalesPartnerBusinessPricing.mockRejectedValue(
+      new errors.Authorization("requested discount exceeds the partner ceiling"),
+    );
+    await expect(controller().partnerBusinessPricing(request())).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("maps operation-ref payload drift to conflict", async () => {
+    dbMocks.applySalesPartnerBusinessPricing.mockRejectedValue(
+      new errors.Conflict("operation ref was already used for another pricing request"),
+    );
+    await expect(controller().partnerBusinessPricing(request())).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("maps malformed operations and unavailable business accounts to bad request", async () => {
+    dbMocks.applySalesPartnerBusinessPricing.mockRejectedValueOnce(
+      new errors.Request("converting a referral to B2B requires the default discount"),
+    );
+    await expect(controller().partnerBusinessPricing(request())).rejects.toMatchObject({ status: 400 });
+
+    dbMocks.applySalesPartnerBusinessPricing.mockRejectedValueOnce(
+      new errors.MissingBusinessCustomer("referral has no provisioned business account yet"),
+    );
+    await expect(controller().partnerBusinessPricing(request())).rejects.toMatchObject({ status: 400 });
   });
 });
