@@ -21,6 +21,10 @@ DOCS_CHECK=$ROOT/deploy/docs-check.sh
 DOCS_CHECK_IMPL=$ROOT/deploy/docs-check.py
 CONTROL_API_ACCEPTANCE=$ROOT/tests/control_api_engine_client_acceptance.sh
 CONTROL_API_CLIENT=$ROOT/packages/engine-client/acceptance/control-api.mjs
+ROUTER_REPLAY=$ROOT/tests/router_engine_replay.py
+ROUTER_REPLAY_MOCK=$ROOT/tests/router_engine_replay_mock.py
+ROUTER_REPLAY_SEMANTICS=$ROOT/tests/router_engine_replay_semantics.test.py
+ROUTER_REPLAY_FIXTURE=$ROOT/tests/fixtures/router-engine-replay-v1.json
 
 [[ -x $MERGE ]] || wd_die 'deploy/agent-merge.sh must be executable'
 [[ -x $GUARD ]] || wd_die '.claude/hooks/guard-git.sh must be executable'
@@ -66,7 +70,7 @@ git_quiet -C "$PRIMARY" push --quiet origin master
 # The merge script resolves its own repository from its location, so every scenario gets a copy of
 # the scripts it may load inside the throwaway tree.
 install_scripts() {
-  mkdir -p -- "$1/deploy" "$1/.claude/hooks" "$1/tests" \
+  mkdir -p -- "$1/deploy" "$1/.claude/hooks" "$1/tests/fixtures" \
     "$1/packages/engine-client/acceptance"
   cp -- "$MERGE" "$1/deploy/agent-merge.sh"
   cp -- "$GUARD" "$1/.claude/hooks/guard-git.sh"
@@ -78,12 +82,18 @@ install_scripts() {
   cp -- "$DOCS_CHECK_IMPL" "$1/deploy/docs-check.py"
   cp -- "$CONTROL_API_ACCEPTANCE" "$1/tests/control_api_engine_client_acceptance.sh"
   cp -- "$CONTROL_API_CLIENT" "$1/packages/engine-client/acceptance/control-api.mjs"
+  cp -- "$ROUTER_REPLAY" "$1/tests/router_engine_replay.py"
+  cp -- "$ROUTER_REPLAY_MOCK" "$1/tests/router_engine_replay_mock.py"
+  cp -- "$ROUTER_REPLAY_SEMANTICS" "$1/tests/router_engine_replay_semantics.test.py"
+  cp -- "$ROUTER_REPLAY_FIXTURE" "$1/tests/fixtures/router-engine-replay-v1.json"
 }
 install_scripts "$PRIMARY"
 git_quiet -C "$PRIMARY" add deploy/agent-merge.sh deploy/watchdog-lib.sh \
   deploy/sccache-cargo.sh deploy/change-plan.sh deploy/repository-invariants.py \
   deploy/docs-check.sh deploy/docs-check.py tests/control_api_engine_client_acceptance.sh \
-  packages/engine-client/acceptance/control-api.mjs .claude/hooks/guard-git.sh
+  packages/engine-client/acceptance/control-api.mjs tests/router_engine_replay.py \
+  tests/router_engine_replay_mock.py tests/router_engine_replay_semantics.test.py \
+  tests/fixtures/router-engine-replay-v1.json .claude/hooks/guard-git.sh
 git_quiet -C "$PRIMARY" commit --quiet -m 'tooling'
 git_quiet -C "$PRIMARY" push --quiet origin master
 

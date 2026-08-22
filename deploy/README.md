@@ -29,6 +29,8 @@ the redacted host cycle excerpt from check run `deploy/watchdog-log`. The full c
 
 The trusted-host engine artifact lane ends with `tests/control_api_engine_client_acceptance.sh`. It runs the exact built `claude-api`, imports the built `@claude-api/engine-client` through package exports, and exercises account, bigint credit, key policy, pricing, ledger, usage, auth and schema rejection over real HTTP against the disposable engine PostgreSQL. The only upstream is an unreachable loopback origin and no inference route is called. The host runs this assembled proof before it stops the disposable database. Locally the Rust lane runs the same proof when `CLAUDE_API_TEST_DATABASE_URL` is explicitly available; otherwise the trusted exact-SHA validation owns it.
 
+The same release artifact lane then runs `tests/router_engine_replay.py`: real `claude-router` → real `claude-api` → one deterministic local upstream. It sends one non-stream Responses request, feeds that visible output exactly into the SSE request, validates the complete event lifecycle and terminal usage, and only then compares a narrowly normalized versioned fixture. Replay mode is read-only and verifies the fixture bytes stayed unchanged; `--update-fixture` is an explicit local-only operation and is rejected under `CI`. Semantic mutation tests prevent an empty/error-only transcript or missing terminal event from being accepted merely because a golden file changed.
+
 ### Recovering an interrupted merge (agent-merge-recover.sh)
 
 That rebase onto the latest `origin/master` is where a moving trunk shows up: it can stop on a

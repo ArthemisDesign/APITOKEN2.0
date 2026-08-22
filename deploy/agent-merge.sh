@@ -184,6 +184,9 @@ am_gate_rust() (
       -r --if-present --fail-if-no-match build
     CLAUDE_API_BIN="$ROOT/target/release/claude-api" \
       bash "$ROOT/tests/control_api_engine_client_acceptance.sh"
+    CLAUDE_API_BIN="$ROOT/target/release/claude-api" \
+      CLAUDE_ROUTER_BIN="$ROOT/target/debug/claude-router" CI=1 \
+      python3 "$ROOT/tests/router_engine_replay.py"
   fi
 )
 
@@ -251,7 +254,9 @@ am_range_changes_local_gate() {
       deploy/repository-invariants.py|deploy/repository-invariants.test.sh|\
       deploy/docs-check.sh|deploy/docs-check.py|deploy/docs-check.test.sh|\
       tests/control_api_engine_client_acceptance.sh|\
-      packages/engine-client/acceptance/control-api.mjs)
+      packages/engine-client/acceptance/control-api.mjs|\
+      tests/router_engine_replay.py|tests/router_engine_replay_mock.py|\
+      tests/router_engine_replay_semantics.test.py|tests/fixtures/router-engine-replay-v1.json)
         return 0
         ;;
     esac

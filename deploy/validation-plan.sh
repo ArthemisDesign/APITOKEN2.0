@@ -96,6 +96,11 @@ if wd_range_has_class "$REPO" "$PROCESSED_BASE" "$TARGET" \
   RUST_REQUIRED=1
   ENGINE_ARTIFACTS_REQUIRED=1
 fi
+if wd_range_has_class "$REPO" "$PROCESSED_BASE" "$TARGET" \
+  wd_path_requires_router_engine_replay; then
+  RUST_REQUIRED=1
+  ENGINE_ARTIFACTS_REQUIRED=1
+fi
 if wd_range_has_class "$REPO" "$ENGINE_BASE" "$TARGET" wd_path_is_engine; then
   RUST_REQUIRED=1
   ENGINE_ARTIFACTS_REQUIRED=1
@@ -145,6 +150,10 @@ policy_sha256=$(
     deploy/docs-check.py \
     tests/control_api_engine_client_acceptance.sh \
     packages/engine-client/acceptance/control-api.mjs \
+    tests/router_engine_replay.py \
+    tests/router_engine_replay_mock.py \
+    tests/router_engine_replay_semantics.test.py \
+    tests/fixtures/router-engine-replay-v1.json \
     deploy/engine-commerce-compatibility.contract \
     deploy/release-tree-digest.mjs; do
     blob=$(git -c safe.directory="$REPO" -C "$REPO" rev-parse "$TARGET:$path" 2>/dev/null \

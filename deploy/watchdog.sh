@@ -848,6 +848,17 @@ test_control_api_acceptance() {
     bash "$candidate/tests/control_api_engine_client_acceptance.sh"
 }
 
+test_router_engine_replay() {
+  local candidate=$1
+  local engine="$candidate/.deploy-artifacts/engine/claude-api"
+  local router="$candidate/.deploy-artifacts/engine/claude-router"
+  [[ -x $engine && -x $router ]] \
+    || wd_die "router-engine replay requires both tested release binaries"
+  wd_log "running deterministic keyless router→engine→mock replay"
+  run_as_ci env CI=1 CLAUDE_API_BIN="$engine" CLAUDE_ROUTER_BIN="$router" \
+    python3 "$candidate/tests/router_engine_replay.py"
+}
+
 test_static_lane() {
   local candidate=$1 sha=$2 run_regression_suites=$3 shell_file
   local diff_base=${VALIDATION_BASE_SHA:-${PROCESSED_SHA:-}}
@@ -900,7 +911,7 @@ prepare_and_test_candidate_unlocked() {
   local codex_artifacts_required=${10}
   local candidate marker dsn= engine_dsn= sales_dsn= openkeys_dsn= redis_url= manifest digest tree
   local typescript_pid= rust_pid= static_pid=
-  local typescript_rc=0 rust_rc=0 codex_rc=0 static_rc=0 acceptance_rc=0
+  local typescript_rc=0 rust_rc=0 codex_rc=0 static_rc=0 acceptance_rc=0 replay_rc=0
   local typescript_components=none typescript_digest=none component
   local typescript_digest_commerce=none typescript_digest_sales=none
   local typescript_digest_openkeys=none typescript_digest_web=none
@@ -975,6 +986,7 @@ prepare_and_test_candidate_unlocked() {
   wait "$static_pid" || static_rc=$?
   if (( rust_rc == 0 && static_rc == 0 && engine_artifacts_required == 1 )); then
     test_control_api_acceptance "$candidate" "$engine_dsn" || acceptance_rc=$?
+    (( acceptance_rc != 0 )) || test_router_engine_replay "$candidate" || replay_rc=$?
   fi
   if (( TEST_DB_STARTED == 1 )); then
     test_db stop
@@ -985,6 +997,7 @@ prepare_and_test_candidate_unlocked() {
   (( codex_rc == 0 )) || wd_die "Codex candidate lane failed (exit $codex_rc)"
   (( static_rc == 0 )) || wd_die "Static candidate lane failed (exit $static_rc)"
   (( acceptance_rc == 0 )) || wd_die "Control API assembled acceptance failed (exit $acceptance_rc)"
+  (( replay_rc == 0 )) || wd_die "Router-engine replay failed (exit $replay_rc)"
 
   [[ -z $(run_as_ci git -C "$candidate" status --porcelain --untracked-files=no) ]] \
     || wd_die "tests modified tracked candidate files"

@@ -1270,6 +1270,19 @@ for control_api_path in \
 done
 wd_path_requires_control_api_acceptance apps/web/src/app/page.tsx \
   && wd_die "unrelated frontend changes must not select Control API acceptance"
+for replay_path in \
+  crates/router/src/main.rs \
+  crates/server/src/http.rs \
+  crates/forward/src/anthropic_responses.rs \
+  crates/pool/src/lib.rs \
+  tests/router_engine_replay.py \
+  tests/router_engine_replay_mock.py \
+  tests/fixtures/router-engine-replay-v1.json; do
+  wd_path_requires_router_engine_replay "$replay_path" \
+    || wd_die "router-engine replay trigger is missing: $replay_path"
+done
+wd_path_requires_router_engine_replay apps/web/src/app/page.tsx \
+  && wd_die "unrelated frontend changes must not select router-engine replay"
 wd_path_is_backend packages/contracts/src/index.ts \
   || wd_die "contracts remain shared with the commerce backend"
 wd_path_is_backend apps/content-studio/src/app/page.tsx || wd_die "content studio must trigger commerce deployment"
@@ -3756,6 +3769,8 @@ gate_contract=(
   'test_control_api_acceptance "$candidate" "$engine_dsn"'
   'bash "$candidate/tests/control_api_engine_client_acceptance.sh"'
   'CONTROL_API_ACCEPTANCE_PORT="$((17480 + TEST_DB_SLOT))"'
+  'test_router_engine_replay "$candidate"'
+  'python3 "$candidate/tests/router_engine_replay.py"'
   'status --porcelain --untracked-files=no'
   'run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn"'
   'run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" \'
@@ -3765,6 +3780,7 @@ gate_contract=(
   'wait "$codex_pid"'
   'wait "$static_pid"'
   'Control API assembled acceptance failed'
+  'Router-engine replay failed'
   'Static candidate lane failed'
   'wd_infrastructure_install_scope'
   'select_candidate_validation_requirements "$CANDIDATE_SHA"'

@@ -866,6 +866,17 @@ wd_path_requires_control_api_acceptance() {
   esac
 }
 
+wd_path_requires_router_engine_replay() {
+  case "$1" in
+    crates/router/*|crates/server/*|crates/forward/*|crates/pool/*|Cargo.toml|Cargo.lock|\
+    tests/router_engine_replay.py|tests/router_engine_replay_mock.py|\
+    tests/router_engine_replay_semantics.test.py|tests/fixtures/router-engine-replay-v1.json)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 wd_path_is_codex_tooling() {
   case "$1" in
     tools/codex-native/*)

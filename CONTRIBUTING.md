@@ -82,7 +82,10 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    Every trusted-host engine artifact lane then runs the exact release `claude-api` plus the built
    `@claude-api/engine-client` over HTTP against that disposable PostgreSQL. This assembled
    acceptance verifies the shipped Control API path without provider credentials or external traffic.
-   A local Rust lane runs it too when `CLAUDE_API_TEST_DATABASE_URL` is explicitly set.
+   It then runs the real release router→engine chain against a deterministic local upstream, validates
+   non-stream and SSE semantics, and compares the read-only replay fixture. A local Rust lane runs
+   both proofs when `CLAUDE_API_TEST_DATABASE_URL` is explicitly set; the standalone replay can also
+   run after `cargo build -p claude-api -p claude-router` without PostgreSQL.
 
    The merge script selects TypeScript, Rust, and deployment lanes from the exact committed diff and
    runs the selected independent lanes concurrently. Shell syntax and exact-range whitespace checks

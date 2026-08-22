@@ -1,0 +1,231 @@
+{
+  "expected": {
+    "non_stream": {
+      "created_at": "<created_at>",
+      "error": null,
+      "id": "resp_<id1>",
+      "incomplete_details": null,
+      "model": "claude-haiku-4-5-20251001",
+      "object": "response",
+      "output": [
+        {
+          "content": [
+            {
+              "annotations": [],
+              "logprobs": [],
+              "text": "replay output",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_<id1>",
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 11,
+        "output_tokens": 3,
+        "total_tokens": 14
+      }
+    },
+    "sse": [
+      {
+        "data": {
+          "response": {
+            "created_at": "<created_at>",
+            "error": null,
+            "id": "resp_<id2>",
+            "incomplete_details": null,
+            "model": "claude-haiku-4-5-20251001",
+            "object": "response",
+            "output": [],
+            "status": "in_progress",
+            "usage": null
+          },
+          "sequence_number": 0,
+          "type": "response.created"
+        },
+        "event": "response.created"
+      },
+      {
+        "data": {
+          "response": {
+            "created_at": "<created_at>",
+            "error": null,
+            "id": "resp_<id2>",
+            "incomplete_details": null,
+            "model": "claude-haiku-4-5-20251001",
+            "object": "response",
+            "output": [],
+            "status": "in_progress",
+            "usage": null
+          },
+          "sequence_number": 1,
+          "type": "response.in_progress"
+        },
+        "event": "response.in_progress"
+      },
+      {
+        "data": {
+          "item": {
+            "content": [],
+            "id": "msg_<id2>",
+            "role": "assistant",
+            "status": "in_progress",
+            "type": "message"
+          },
+          "output_index": 0,
+          "sequence_number": 2,
+          "type": "response.output_item.added"
+        },
+        "event": "response.output_item.added"
+      },
+      {
+        "data": {
+          "content_index": 0,
+          "item_id": "msg_<id2>",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "logprobs": [],
+            "text": "",
+            "type": "output_text"
+          },
+          "sequence_number": 3,
+          "type": "response.content_part.added"
+        },
+        "event": "response.content_part.added"
+      },
+      {
+        "comment": "ping"
+      },
+      {
+        "data": {
+          "content_index": 0,
+          "delta": "replay ",
+          "item_id": "msg_<id2>",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 4,
+          "type": "response.output_text.delta"
+        },
+        "event": "response.output_text.delta"
+      },
+      {
+        "data": {
+          "content_index": 0,
+          "delta": "output",
+          "item_id": "msg_<id2>",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 5,
+          "type": "response.output_text.delta"
+        },
+        "event": "response.output_text.delta"
+      },
+      {
+        "data": {
+          "content_index": 0,
+          "item_id": "msg_<id2>",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 6,
+          "text": "replay output",
+          "type": "response.output_text.done"
+        },
+        "event": "response.output_text.done"
+      },
+      {
+        "data": {
+          "content_index": 0,
+          "item_id": "msg_<id2>",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "logprobs": [],
+            "text": "replay output",
+            "type": "output_text"
+          },
+          "sequence_number": 7,
+          "type": "response.content_part.done"
+        },
+        "event": "response.content_part.done"
+      },
+      {
+        "data": {
+          "item": {
+            "content": [
+              {
+                "annotations": [],
+                "logprobs": [],
+                "text": "replay output",
+                "type": "output_text"
+              }
+            ],
+            "id": "msg_<id2>",
+            "role": "assistant",
+            "status": "completed",
+            "type": "message"
+          },
+          "output_index": 0,
+          "sequence_number": 8,
+          "type": "response.output_item.done"
+        },
+        "event": "response.output_item.done"
+      },
+      {
+        "data": {
+          "response": {
+            "created_at": "<created_at>",
+            "error": null,
+            "id": "resp_<id2>",
+            "incomplete_details": null,
+            "model": "claude-haiku-4-5-20251001",
+            "object": "response",
+            "output": [
+              {
+                "content": [
+                  {
+                    "annotations": [],
+                    "logprobs": [],
+                    "text": "replay output",
+                    "type": "output_text"
+                  }
+                ],
+                "id": "msg_<id2>",
+                "role": "assistant",
+                "status": "completed",
+                "type": "message"
+              }
+            ],
+            "status": "completed",
+            "usage": {
+              "input_tokens": 11,
+              "output_tokens": 3,
+              "total_tokens": 14
+            }
+          },
+          "sequence_number": 9,
+          "type": "response.completed"
+        },
+        "event": "response.completed"
+      }
+    ]
+  },
+  "requests": [
+    {
+      "input": "produce replay output",
+      "model": "anthropic/claude-haiku-4-5",
+      "stream": false
+    },
+    {
+      "input": "replay output",
+      "model": "anthropic/claude-haiku-4-5",
+      "stream": true
+    }
+  ],
+  "scenario": "router-engine-responses-replay",
+  "schema_version": 1
+}

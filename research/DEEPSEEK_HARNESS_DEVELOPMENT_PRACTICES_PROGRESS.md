@@ -35,8 +35,8 @@
 | 0 | Исходное предложение и этот журнал | Завершён | `e2eab16b9a9541c3777fb635cbbfa00579c3d2ad` | UTF-8/newline, whitespace, `deploy/docs-check.sh`; exact SHA GREEN `deploy/watchdog` |
 | 1 | Change-plan интерфейс и repository invariants | Завершён | `973f21a3c3df790dcf71559c9ee50d5010c97984` | Полный TypeScript/Rust/deployment/static gate; exact SHA GREEN `deploy/watchdog` |
 | 2 | Targeted docs ownership, links/anchors/index | Завершён | `15643546ee710cc5a38f1a1873fcba4690cce6e6` | Полный TypeScript/Rust/deployment/static gate; exact SHA GREEN `deploy/watchdog` |
-| 3 | Assembled Control API ↔ EngineClient acceptance | Готов к trusted-host merge | — | Built package export and orchestration syntax verified locally; real disposable-PostgreSQL execution requires trusted host because local Docker is unavailable |
-| 4 | Keyless router → engine replay | Не начат | — | Non-stream + SSE transcript, semantic guards, repeatability |
+| 3 | Assembled Control API ↔ EngineClient acceptance | Завершён | `e567d52b52982c4867da29d41391b845371a4f39` | Trusted-host release binary + built package export + disposable PostgreSQL/HTTP; exact SHA GREEN `deploy/watchdog` |
+| 4 | Keyless router → engine replay | Готов к merge | — | Real debug binaries; fixture record plus two read-only repeats; semantic mutation guards; trusted release replay ahead |
 | 5 | Incident → guardrail template и финальная документация | Не начат | — | Documentation checks, ссылка из process contract |
 | 6 | Финальная совместная проверка и closeout | Не начат | — | Полный выбранный gate, точные GREEN SHA |
 
@@ -56,8 +56,8 @@ Golden transcript может стабильно зафиксировать не�
 
 ## Текущее состояние
 
-- Завершено: предложение/журнал — GREEN `e2eab16b9a9541c3777fb635cbbfa00579c3d2ad`; change plan/invariants — GREEN `973f21a3c3df790dcf71559c9ee50d5010c97984`; targeted docs gate — GREEN `15643546ee710cc5a38f1a1873fcba4690cce6e6`; worktree каждого этапа удалён штатно.
-- В работе: этап 3 на свежем `origin/master` `15643546ee710cc5a38f1a1873fcba4690cce6e6`; built binary/package-export acceptance подключён после Rust artifact lane и до остановки disposable PostgreSQL.
-- Проверено локально: `pnpm install --frozen-lockfile`; сборка `@claude-api/contracts` и `@claude-api/engine-client`; `node --check` acceptance client; shell syntax; classifier/ordering assertions. Локальный Docker daemon недоступен, поэтому реальное PostgreSQL/HTTP исполнение остаётся обязательной частью trusted-host exact-SHA validation, а не заявляется как локально пройденное.
-- Блокеры: отсутствуют; trusted host предоставляет Docker-backed PostgreSQL, release artifact и CI account.
-- Следующее действие: прогнать deployment/static regression suites, слить этап 3 и использовать trusted-host verdict как первое полное assembled доказательство.
+- Завершено: предложение/журнал — GREEN `e2eab16b9a9541c3777fb635cbbfa00579c3d2ad`; change plan/invariants — GREEN `973f21a3c3df790dcf71559c9ee50d5010c97984`; targeted docs — GREEN `15643546ee710cc5a38f1a1873fcba4690cce6e6`; Control API acceptance — GREEN `e567d52b52982c4867da29d41391b845371a4f39`; worktree каждого этапа удалён штатно.
+- В работе: этап 4 на свежем `origin/master` `e567d52b52982c4867da29d41391b845371a4f39`; реальный router→engine replay, versioned fixture, explicit local update и read-only CI wiring готовы к merge.
+- Проверено локально: Python syntax; `cargo build -p claude-api -p claude-router`; явная запись fixture; два последовательных read-only replay с одинаковым результатом; mutation tests на missing terminal usage, error-only non-stream и отсутствующий `response.completed`; classifier/ordering regression впереди общего merge suite.
+- Блокеры: отсутствуют.
+- Следующее действие: прогнать gate regressions, слить этап 4 и подтвердить replay ещё раз на exact release binaries trusted host.
