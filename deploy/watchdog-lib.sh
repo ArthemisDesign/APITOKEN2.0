@@ -1072,7 +1072,8 @@ wd_path_is_controller_definition() {
   case "$1" in
     deploy/watchdog.sh|deploy/watchdog-lib.sh|deploy/validation-plan.sh|\
     deploy/contour-config.sh|deploy/contour-config.py|deploy/contour-config.schema.json|\
-    deploy/contour-production.json|\
+    deploy/contour-production.json|deploy/contour-stage.json|deploy/stage-unit-renderer.py|\
+    deploy/stage-unit-whitelist.json|\
     deploy/gpt-image-2-live-gate.sh|deploy/gpt-image-2-public-smoke-gate.sh|\
     deploy/gpt-image-2-public-preflight-gate.sh|deploy/gpt-image-2-public-preflight-v2-gate.sh|\
     deploy/gpt-image-2-public-preflight-v3-gate.sh|deploy/gpt-image-2-public-paid-smoke-gate.sh|\

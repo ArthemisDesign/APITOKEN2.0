@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **NOT STARTED** | — | — | Next: users, slice, loopback, netns, rootless Docker, isolation tests. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Stage contour and fail-closed trusted unit renderer; no host apply yet. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -350,7 +350,7 @@ No stage-watchdog poll loop yet. No production admission change.
       `/var/run/docker.sock`. Production socket stays with `deploy`.
 - [ ] Postgres-stage and Redis-stage in the staging netns / rootless Docker. Do not publish
       host `5434`. Do not touch `apitoken-postgres`.
-- [ ] Trusted master-sourced unit renderer with a whitelist of names, paths, and ports.
+- [x] Trusted master-sourced unit renderer with a whitelist of names, paths, and ports.
       Candidate installers do not run on this host.
 - [ ] Caller-bound GitHub reporting split designed here if the helper must exist before
       phase 3; production caller still cannot be impersonated by a stage user. Today’s
@@ -389,7 +389,21 @@ No stage-watchdog poll loop yet. No production admission change.
 
 ### Execution log
 
-*(empty)*
+### 2026-08-23 — stage contour and trusted renderer
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Added the real stage contour with locked identities, roots, veth inventory, production port
+numbers inside the netns, 32G/28G/400%/80G resource envelope, disabled runtime/admission lanes, and
+no excluded twin components. Extended fail-closed contour validation. Added a closed trusted renderer
+that accepts only whitelisted `*-stage` templates, staging roots, staging ports, `staging.slice`, and
+the stage network namespace. It rejects production paths and unknown units. Installed and policy-bound
+these files through the production controller transaction. No users, mounts, netns, Docker daemon,
+application unit, stage branch, reporter, or poll loop is created by this commit.
+Checks actually run: `bash -n deploy/*.sh deploy/apitoken-db-dump`;
+`python3 -m py_compile deploy/contour-config.py deploy/stage-unit-renderer.py`;
+`bash deploy/contour-config.test.sh`; `bash deploy/stage-unit-renderer.test.sh`;
+`bash deploy/agent-merge.suite.sh`; `bash deploy/watchdog-lib.test.sh`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: merge the trusted Phase 2 host foundation in a new worktree after GREEN `deploy/watchdog`.
 
 ---
 

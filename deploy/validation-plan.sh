@@ -143,8 +143,13 @@ policy_sha256=$(
     deploy/contour-config.py \
     deploy/contour-config.schema.json \
     deploy/contour-production.json \
+    deploy/contour-stage.json \
     deploy/contour-config.test.sh \
+    deploy/stage-unit-renderer.py \
+    deploy/stage-unit-renderer.test.sh \
+    deploy/stage-unit-whitelist.json \
     deploy/test-fixtures/contour-config/production-resolved.txt \
+    deploy/test-fixtures/contour-config/stage-resolved.txt \
     deploy/test-fixtures/contour-config/stage-safe.json \
     deploy/test-fixtures/contour-config/shell-injection.json \
     deploy/typescript-scope.mjs \

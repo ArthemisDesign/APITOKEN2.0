@@ -487,6 +487,8 @@ grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the activation-journal suite'
 grep -Fq 'deploy/contour-config.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the contour-config suite'
+grep -Fq 'deploy/stage-unit-renderer.test.sh' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge gate does not run the stage unit renderer suite'
 grep -Fq 'deploy/codex-homes-migrate.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the Codex home migration suite'
 ! grep -Fq 'deploy/codex-app-servers.test.sh' "$ROOT/deploy/agent-merge.sh" \
@@ -576,6 +578,8 @@ grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the activation-journal suite'
 grep -Fq 'deploy/contour-config.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the contour-config suite'
+grep -Fq 'deploy/stage-unit-renderer.test.sh' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the production gate does not run the stage unit renderer suite'
 grep -Fq 'deploy/codex-homes-migrate.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the Codex home migration suite'
 grep -Fq 'deploy/host-image-gate.test.sh' "$ROOT/deploy/watchdog.sh" \

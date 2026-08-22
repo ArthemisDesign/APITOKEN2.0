@@ -6,7 +6,11 @@
     "runtime_user": "deploy",
     "runtime_group": "deploy",
     "ci_user": "apitoken-ci",
-    "ci_group": "apitoken-ci"
+    "ci_group": "apitoken-ci",
+    "observer_user": "observe",
+    "observer_group": "observe",
+    "control_user": "deploy",
+    "control_group": "deploy"
   },
   "git": {
     "remote": "origin",
@@ -199,10 +203,24 @@
   "network": {
     "namespace": "host",
     "loopback_host": "127.0.0.1",
-    "public_inbound": true
+    "public_inbound": true,
+    "host_veth": "none",
+    "namespace_veth": "none",
+    "host_address": "127.0.0.1",
+    "namespace_address": "127.0.0.1",
+    "subnet": "127.0.0.0/8",
+    "deny_tcp_ports": [13306, 3010, 3900, 5440]
   },
   "resources": {
     "slice": "system.slice",
-    "rootless_docker": false
+    "rootless_docker": false,
+    "memory_max_bytes": 103079215104,
+    "memory_high_bytes": 103079215104,
+    "cpu_quota_percent": 1600,
+    "tasks_max": 65535,
+    "io_weight": 100,
+    "loopback_bytes": 1,
+    "release_keep": 10,
+    "spool_floor_bytes": 17179869184
   }
 }

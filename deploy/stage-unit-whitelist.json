@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "units": {
+    "anthropic": {"unit": "claude-api-anthropic-stage@.service", "ports": [8787, 8788], "memory_max": "8G"},
+    "openai": {"unit": "claude-api-openai-stage@.service", "ports": [8793, 8797], "memory_max": "8G"},
+    "gemini": {"unit": "claude-api-gemini-stage@.service", "ports": [8795, 8799], "memory_max": "16G"},
+    "kimi": {"unit": "claude-api-kimi-stage@.service", "ports": [8804, 8805], "memory_max": "2G"},
+    "router": {"unit": "claude-router-stage@.service", "ports": [8800, 8801], "memory_max": "8G"},
+    "api": {"unit": "apitoken-api-stage@.service", "ports": [3000, 3001], "memory_max": "2G"}
+  }
+}

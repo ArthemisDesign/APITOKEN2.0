@@ -4789,7 +4789,8 @@ grep -Fq 'install_monitoring_definitions' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'watchdog installer has no narrow monitoring transaction'
 grep -Fq '"$ROOT/deploy/validation-plan.sh"' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'watchdog installer does not install the versioned validation planner'
-for contour_path in contour-production.json contour-config.schema.json contour-config.py contour-config.sh; do
+for contour_path in contour-production.json contour-stage.json contour-config.schema.json \
+  contour-config.py contour-config.sh stage-unit-renderer.py stage-unit-whitelist.json; do
   grep -Fq '"$ROOT/deploy/'"$contour_path"'"' "$ROOT/deploy/install-watchdog.sh" \
     || wd_die "watchdog installer does not install immutable contour dependency $contour_path"
 done
@@ -4802,6 +4803,8 @@ entrypoint_install_line=$(grep -nF '"$ROOT/deploy/watchdog.sh" "$watchdog_staged
   || wd_die 'watchdog entrypoint can publish before its immutable contour dependencies'
 grep -Fq 'deploy/contour-config.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'trusted static lane does not run contour-config validation'
+grep -Fq 'deploy/stage-unit-renderer.test.sh' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'trusted static lane does not run stage unit renderer validation'
 narrow_dispatch_line=$(grep -nF 'case "$INSTALL_MODE" in' \
   "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
 bootstrap_line=$(grep -nF "command -v curl >/dev/null" \

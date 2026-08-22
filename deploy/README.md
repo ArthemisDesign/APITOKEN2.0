@@ -107,15 +107,24 @@ and collisions between contours. Port collisions include the network namespace a
 so a later isolated netns can use the same numeric application ports without sharing an endpoint.
 `deploy/contour-config.sh` loads validated values with fixed variable names and no `eval`.
 
-The controller installer publishes and validates the schema, production config, validator, and
-loader before it atomically publishes the watchdog entrypoint. The watchdog, blue-green controllers,
-component runners, migration/backup bridges, and GitHub bridge resolve their production inventory
-from this config. Existing command overrides remain bounded by their current validation, but their
-production defaults come from the contour. `deploy/contour-config.test.sh` is merge-blocking in both
-the local deployment gate and trusted-host static gate. Its golden snapshot proves that the extract
-did not change the current production inventory. Its synthetic second contour proves that overlapping
-users, roots, locks, ports in one namespace, units, GitHub names, and Compose projects fail closed.
-Phase 1 ships no staging contour and creates no staging host object.
+The controller installer publishes and validates the schema, production config, stage config,
+validator, loader, and closed stage unit renderer before it atomically publishes the watchdog
+entrypoint. The watchdog, blue-green controllers, component runners, migration/backup bridges, and
+GitHub bridge resolve their production inventory from the production config. Existing command
+overrides remain bounded by their current validation, but their production defaults come from the
+contour.
+
+`deploy/contour-stage.json` is trusted Phase 2 inventory. It locks the four staging identities,
+disjoint roots and locks, veth addresses, production-numbered ports inside the stage netns, and the
+32G/28G/400%/80G envelope. Its runtime and admission lanes stay disabled. This merge does not create
+the `stage` branch, users, mounts, netns, units, reporter, or watchdog. The closed
+`deploy/stage-unit-renderer.py` accepts only IDs in `deploy/stage-unit-whitelist.json` and renders
+only `deploy-stage` units inside `staging.slice` and `/run/netns/apitoken-stage` with staging paths.
+Unknown units and production paths fail closed.
+
+`deploy/contour-config.test.sh` and `deploy/stage-unit-renderer.test.sh` are merge-blocking in both
+the local deployment gate and trusted-host static gate. Golden snapshots prove the production
+inventory is unchanged and the stage inventory stays locked. Cross-contour collisions fail closed.
 
 These scripts finalize immutable SHA-addressed releases, move release links atomically, and activate
 processes with exact-systemd-unit readiness gates. The automatic watchdog passes

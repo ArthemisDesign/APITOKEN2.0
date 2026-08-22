@@ -273,6 +273,12 @@ install_controller_definitions() {
   # watchdog cannot start with a partially published or schema-invalid inventory.
   install -o root -g root -m 0644 "$ROOT/deploy/contour-production.json" \
     /usr/local/lib/apitoken-watchdog/contour-production.json
+  install -o root -g root -m 0644 "$ROOT/deploy/contour-stage.json" \
+    /usr/local/lib/apitoken-watchdog/contour-stage.json
+  install -o root -g root -m 0755 "$ROOT/deploy/stage-unit-renderer.py" \
+    /usr/local/lib/apitoken-watchdog/stage-unit-renderer.py
+  install -o root -g root -m 0644 "$ROOT/deploy/stage-unit-whitelist.json" \
+    /usr/local/lib/apitoken-watchdog/stage-unit-whitelist.json
   install -o root -g root -m 0644 "$ROOT/deploy/contour-config.schema.json" \
     /usr/local/lib/apitoken-watchdog/contour-config.schema.json
   install -o root -g root -m 0755 "$ROOT/deploy/contour-config.py" \
@@ -282,6 +288,14 @@ install_controller_definitions() {
   python3 /usr/local/lib/apitoken-watchdog/contour-config.py \
     --schema /usr/local/lib/apitoken-watchdog/contour-config.schema.json \
     --config /usr/local/lib/apitoken-watchdog/contour-production.json --emit json >/dev/null
+  python3 /usr/local/lib/apitoken-watchdog/contour-config.py \
+    --schema /usr/local/lib/apitoken-watchdog/contour-config.schema.json \
+    --config /usr/local/lib/apitoken-watchdog/contour-stage.json \
+    --against /usr/local/lib/apitoken-watchdog/contour-production.json --emit json >/dev/null
+  python3 /usr/local/lib/apitoken-watchdog/stage-unit-renderer.py \
+    --contour /usr/local/lib/apitoken-watchdog/contour-stage.json \
+    --whitelist /usr/local/lib/apitoken-watchdog/stage-unit-whitelist.json \
+    --unit api >/dev/null
   install -o root -g root -m 0644 "$ROOT/deploy/watchdog-lib.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-lib.sh
   install -o root -g root -m 0755 "$ROOT/deploy/validation-plan.sh" \

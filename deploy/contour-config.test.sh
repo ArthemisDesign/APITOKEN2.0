@@ -7,8 +7,10 @@ trap 'rm -rf -- "$TEMP"' EXIT
 
 SCHEMA=$ROOT/deploy/contour-config.schema.json
 PRODUCTION=$ROOT/deploy/contour-production.json
+STAGE=$ROOT/deploy/contour-stage.json
 VALIDATOR=$ROOT/deploy/contour-config.py
 EXPECTED=$ROOT/deploy/test-fixtures/contour-config/production-resolved.txt
+STAGE_EXPECTED=$ROOT/deploy/test-fixtures/contour-config/stage-resolved.txt
 
 fail() { printf 'contour-config.test: FAIL: %s\n' "$*" >&2; exit 1; }
 expect_reject() {
@@ -26,6 +28,9 @@ expect_reject() {
 python3 "$VALIDATOR" --schema "$SCHEMA" --config "$PRODUCTION" --emit shell \
   >"$TEMP/production.env"
 diff -u "$EXPECTED" "$TEMP/production.env"
+python3 "$VALIDATOR" --schema "$SCHEMA" --config "$STAGE" --against "$PRODUCTION" \
+  --emit shell >"$TEMP/stage.env"
+diff -u "$STAGE_EXPECTED" "$TEMP/stage.env"
 
 cp "$PRODUCTION" "$TEMP/missing.json"
 python3 - "$TEMP/missing.json" <<'PY'
@@ -50,7 +55,7 @@ expect_reject unknown 'unknown inventory field(s): unexpected_inventory' \
   python3 "$VALIDATOR" --schema "$SCHEMA" --config "$TEMP/unknown.json"
 
 for collision in user root lock port unit context environment compose; do
-  cp "$ROOT/deploy/test-fixtures/contour-config/stage-safe.json" "$TEMP/stage-$collision.json"
+  cp "$ROOT/deploy/contour-stage.json" "$TEMP/stage-$collision.json"
   python3 - "$PRODUCTION" "$TEMP/stage-$collision.json" "$collision" <<'PY'
 import json, sys
 prod_path, stage_path, collision = sys.argv[1:]
@@ -66,7 +71,11 @@ elif collision == "environment": stage["github"]["deployment_environments"]["dat
 elif collision == "compose": stage["compose_projects"]["postgres"] = prod["compose_projects"]["postgres"]
 json.dump(stage, open(stage_path, "w"))
 PY
-  expect_reject "overlap-$collision" 'overlap' \
+  expected=overlap
+  [[ $collision != user ]] || expected='locked stage identities'
+  [[ $collision != root ]] || expected='reuses a production path'
+  [[ $collision != port ]] || expected='non-host network namespace'
+  expect_reject "overlap-$collision" "$expected" \
     python3 "$VALIDATOR" --schema "$SCHEMA" --config "$PRODUCTION" \
       --against "$TEMP/stage-$collision.json"
 done
@@ -74,7 +83,7 @@ done
 # A future netns can reuse numeric application ports. The overlap rule compares endpoint identity by
 # namespace. Roots, users, locks, units, reporting, and Compose identities still remain disjoint.
 python3 "$VALIDATOR" --schema "$SCHEMA" --config "$PRODUCTION" \
-  --against "$ROOT/deploy/test-fixtures/contour-config/stage-safe.json" >/dev/null
+  --against "$ROOT/deploy/contour-stage.json" >/dev/null
 
 expect_reject injected 'invalid value' \
   python3 "$VALIDATOR" --schema "$SCHEMA" \

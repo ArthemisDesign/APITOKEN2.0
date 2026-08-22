@@ -127,7 +127,10 @@ def validate_contour(contour: dict[str, Any], label: str) -> None:
     identity = contour["identity"]
     if not isinstance(identity, dict):
         fail(f"{label}.identity must be an object")
-    require_exact_keys(identity, {"runtime_user", "runtime_group", "ci_user", "ci_group"}, f"{label}.identity")
+    require_exact_keys(identity, {
+        "runtime_user", "runtime_group", "ci_user", "ci_group",
+        "observer_user", "observer_group", "control_user", "control_group",
+    }, f"{label}.identity")
     for key, value in identity.items():
         require_string(value, f"{label}.identity.{key}", r"[a-z_][a-z0-9_-]*")
 
@@ -211,20 +214,69 @@ def validate_contour(contour: dict[str, Any], label: str) -> None:
     network = contour["network"]
     if not isinstance(network, dict):
         fail(f"{label}.network must be an object")
-    require_exact_keys(network, {"namespace", "loopback_host", "public_inbound"}, f"{label}.network")
+    require_exact_keys(network, {
+        "namespace", "loopback_host", "public_inbound", "host_veth", "namespace_veth",
+        "host_address", "namespace_address", "subnet", "deny_tcp_ports",
+    }, f"{label}.network")
     require_string(network["namespace"], f"{label}.network.namespace", r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+    require_string(network["host_veth"], f"{label}.network.host_veth", r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+    require_string(network["namespace_veth"], f"{label}.network.namespace_veth", r"[A-Za-z0-9][A-Za-z0-9_.-]*")
     try:
-        ipaddress.ip_address(require_string(network["loopback_host"], f"{label}.network.loopback_host"))
+        for key in ("loopback_host", "host_address", "namespace_address"):
+            ipaddress.ip_address(require_string(network[key], f"{label}.network.{key}"))
+        ipaddress.ip_network(require_string(network["subnet"], f"{label}.network.subnet"), strict=True)
     except ValueError as error:
-        fail(f"{label}.network.loopback_host is invalid: {error}")
+        fail(f"{label}.network address is invalid: {error}")
     require_bool(network["public_inbound"], f"{label}.network.public_inbound")
+    denied = require_list(network["deny_tcp_ports"], f"{label}.network.deny_tcp_ports")
+    for index, port in enumerate(denied):
+        require_port(port, f"{label}.network.deny_tcp_ports[{index}]")
 
     resources = contour["resources"]
     if not isinstance(resources, dict):
         fail(f"{label}.resources must be an object")
-    require_exact_keys(resources, {"slice", "rootless_docker"}, f"{label}.resources")
+    resource_keys = {
+        "slice", "rootless_docker", "memory_max_bytes", "memory_high_bytes",
+        "cpu_quota_percent", "tasks_max", "io_weight", "loopback_bytes",
+        "release_keep", "spool_floor_bytes",
+    }
+    require_exact_keys(resources, resource_keys, f"{label}.resources")
     require_string(resources["slice"], f"{label}.resources.slice", r"[A-Za-z0-9@_.-]+\.slice")
     require_bool(resources["rootless_docker"], f"{label}.resources.rootless_docker")
+    for key in resource_keys - {"slice", "rootless_docker"}:
+        if type(resources[key]) is not int or resources[key] < 1:
+            fail(f"{label}.resources.{key} must be a positive integer")
+    if resources["memory_high_bytes"] > resources["memory_max_bytes"]:
+        fail(f"{label}.resources.memory_high_bytes exceeds memory_max_bytes")
+
+    if contour["kind"] == "stage":
+        exact_identity = {
+            "runtime_user": "deploy-stage", "runtime_group": "deploy-stage",
+            "ci_user": "stage-ci", "ci_group": "stage-ci",
+            "observer_user": "observe-stage", "observer_group": "observe-stage",
+            "control_user": "stage-ctl", "control_group": "stage-ctl",
+        }
+        if identity != exact_identity:
+            fail(f"{label}.identity does not match the locked stage identities")
+        if git["branch"] != "stage" or network["namespace"] == "host":
+            fail(f"{label} must use branch stage and a non-host network namespace")
+        if network["public_inbound"] or not resources["rootless_docker"]:
+            fail(f"{label} must disable public inbound and enable rootless Docker")
+        if lanes.get("production_apply") is not False or lanes.get("staging_admission") is not False:
+            fail(f"{label} must disable production apply and staging admission in phase 2")
+        locked_resources = {
+            "slice": "staging.slice", "rootless_docker": True,
+            "memory_max_bytes": 34359738368, "memory_high_bytes": 30064771072,
+            "cpu_quota_percent": 400, "tasks_max": 16384, "io_weight": 10,
+            "loopback_bytes": 85899345920, "release_keep": 3,
+            "spool_floor_bytes": 17179869184,
+        }
+        if resources != locked_resources:
+            fail(f"{label}.resources does not match the locked phase 2 resource envelope")
+        forbidden_fragments = ("/opt/apitoken/", "/srv/claude-api/", "/var/lib/apitoken/", "/etc/apitoken/")
+        for path in list(contour["roots"].values()) + list(contour["locks"].values()):
+            if any(fragment in path for fragment in forbidden_fragments):
+                fail(f"{label} reuses a production path: {path}")
 
 
 def inventory(contour: dict[str, Any]) -> dict[str, set[Any]]:
@@ -232,8 +284,8 @@ def inventory(contour: dict[str, Any]) -> dict[str, set[Any]]:
     for value in contour["ports"].values():
         ports.update(value if isinstance(value, list) else [value])
     return {
-        "users": {contour["identity"]["runtime_user"], contour["identity"]["ci_user"]},
-        "groups": {contour["identity"]["runtime_group"], contour["identity"]["ci_group"]},
+        "users": set(contour["identity"].values()),
+        "groups": set(contour["identity"].values()),
         "branches": {contour["git"]["branch"]},
         "contexts": set(contour["github"]["status_contexts"].values()),
         "environments": set(contour["github"]["deployment_environments"].values()),
@@ -278,6 +330,8 @@ def emit_shell(contour: dict[str, Any]) -> None:
     emit("KIND", contour["kind"])
     for section in ("identity", "git", "roots", "locks", "origins", "compose_projects", "units", "lanes", "network", "resources"):
         for key, value in contour[section].items():
+            if isinstance(value, list):
+                value = ",".join(map(str, value))
             emit(f"{section}_{key}".upper(), value)
     for key, value in contour["ports"].items():
         emit(f"PORTS_{key}".upper(), ",".join(map(str, value)) if isinstance(value, list) else value)

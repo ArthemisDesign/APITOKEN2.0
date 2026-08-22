@@ -16,12 +16,16 @@
     "identity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["runtime_user", "runtime_group", "ci_user", "ci_group"],
+      "required": ["runtime_user", "runtime_group", "ci_user", "ci_group", "observer_user", "observer_group", "control_user", "control_group"],
       "properties": {
         "runtime_user": { "$ref": "#/$defs/unixName" },
         "runtime_group": { "$ref": "#/$defs/unixName" },
         "ci_user": { "$ref": "#/$defs/unixName" },
-        "ci_group": { "$ref": "#/$defs/unixName" }
+        "ci_group": { "$ref": "#/$defs/unixName" },
+        "observer_user": { "$ref": "#/$defs/unixName" },
+        "observer_group": { "$ref": "#/$defs/unixName" },
+        "control_user": { "$ref": "#/$defs/unixName" },
+        "control_group": { "$ref": "#/$defs/unixName" }
       }
     },
     "git": {
@@ -80,20 +84,34 @@
     "network": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["namespace", "loopback_host", "public_inbound"],
+      "required": ["namespace", "loopback_host", "public_inbound", "host_veth", "namespace_veth", "host_address", "namespace_address", "subnet", "deny_tcp_ports"],
       "properties": {
         "namespace": { "$ref": "#/$defs/identifier" },
         "loopback_host": { "type": "string", "minLength": 1 },
-        "public_inbound": { "type": "boolean" }
+        "public_inbound": { "type": "boolean" },
+        "host_veth": { "$ref": "#/$defs/identifier" },
+        "namespace_veth": { "$ref": "#/$defs/identifier" },
+        "host_address": { "type": "string", "minLength": 1 },
+        "namespace_address": { "type": "string", "minLength": 1 },
+        "subnet": { "type": "string", "minLength": 1 },
+        "deny_tcp_ports": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/port" } }
       }
     },
     "resources": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["slice", "rootless_docker"],
+      "required": ["slice", "rootless_docker", "memory_max_bytes", "memory_high_bytes", "cpu_quota_percent", "tasks_max", "io_weight", "loopback_bytes", "release_keep", "spool_floor_bytes"],
       "properties": {
         "slice": { "$ref": "#/$defs/systemdUnit" },
-        "rootless_docker": { "type": "boolean" }
+        "rootless_docker": { "type": "boolean" },
+        "memory_max_bytes": { "type": "integer" },
+        "memory_high_bytes": { "type": "integer" },
+        "cpu_quota_percent": { "type": "integer" },
+        "tasks_max": { "type": "integer" },
+        "io_weight": { "type": "integer" },
+        "loopback_bytes": { "type": "integer" },
+        "release_keep": { "type": "integer" },
+        "spool_floor_bytes": { "type": "integer" }
       }
     }
   },

@@ -914,6 +914,7 @@ test_static_lane() {
     run_as_ci bash "$candidate/deploy/codex-homes-migrate.test.sh"
     run_as_ci bash "$candidate/deploy/watchdog-backup.test.sh"
     run_as_ci bash "$candidate/deploy/contour-config.test.sh"
+    run_as_ci bash "$candidate/deploy/stage-unit-renderer.test.sh"
     run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"
     run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"
     run_as_ci bash "$candidate/deploy/sccache-cargo.test.sh"
