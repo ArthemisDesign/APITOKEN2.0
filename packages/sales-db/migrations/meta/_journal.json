@@ -190,6 +190,13 @@
       "when": 1787465710000,
       "tag": "0026_commerce_partner_membership",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1787465711000,
+      "tag": "0027_terminal_commerce_invites",
+      "breakpoints": true
     }
   ]
 }

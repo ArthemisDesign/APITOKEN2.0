@@ -90,6 +90,13 @@ membership starts after the usage event, so manually admitted accounts begin wit
 commission. The Commerce-account producer, conserved writer and Dashboard consumer are forbidden
 to ship before this migration SHA is production-GREEN.
 
+Migration `packages/sales-db/migrations/0027_terminal_commerce_invites.sql` is the next
+expand-only checkpoint. The Team/B2B narrowing guards ignore a Commerce invitation only after
+`revoked_at` is committed, so current authority can be reduced without rewriting terminal evidence.
+A terminal Commerce invitation then becomes database-immutable and no Commerce invitation can be
+deleted; legacy invitation lifecycle remains unchanged. The dependent revocation/cascade producer
+is forbidden to ship before this migration SHA is production-GREEN.
+
 An operator decision on an inbound application is also one authority transaction, not a
 create-then-patch workflow. `POST /v1/admin/applications/:id/decision` validates and writes the
 new root partner's direct commission, default Team override, Team override ceiling, Team-invite

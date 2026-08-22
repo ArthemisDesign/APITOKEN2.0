@@ -425,4 +425,32 @@ describe("sales multi-discount migration", () => {
     ].map((match) => match[1]).filter((name): name is string => name !== undefined);
     expect(databaseObjectNames.filter((name) => Buffer.byteLength(name, "utf8") > 63)).toEqual([]);
   });
+
+  it("makes terminal Commerce invites immutable without rewriting existing rows", () => {
+    const migration = readFileSync(
+      join(MIGRATIONS_FOLDER, "0027_terminal_commerce_invites.sql"),
+      "utf8",
+    );
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; tag: string; when: number }> };
+    const previous = journal.entries.find((entry) => entry.idx === 26);
+    const current = journal.entries.find((entry) => entry.idx === 27);
+
+    expect(current).toMatchObject({ idx: 27, tag: "0027_terminal_commerce_invites" });
+    expect(current!.when).toBeGreaterThan(previous!.when);
+    expect(migration).not.toMatch(/^(?:UPDATE|DELETE|TRUNCATE|DROP)\b/im);
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION "enforce_partner_team_override_ceiling_update"');
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION "enforce_partner_b2b_authority_narrowing"');
+    expect(migration.match(/invite\."revoked_at" IS NULL/g)).toHaveLength(2);
+    expect(migration).toContain('OLD."consumed_at" IS NOT NULL OR OLD."revoked_at" IS NOT NULL');
+    expect(migration).toContain("partner_invites_terminal_commerce_immutable_guard");
+    expect(migration).toContain("partner_invites_commerce_delete_guard");
+
+    const databaseObjectNames = [
+      ...migration.matchAll(/^CREATE (?:OR REPLACE )?FUNCTION "([^"]+)"/gm),
+      ...migration.matchAll(/^CREATE TRIGGER "([^"]+)"/gm),
+    ].map((match) => match[1]).filter((name): name is string => name !== undefined);
+    expect(databaseObjectNames.filter((name) => Buffer.byteLength(name, "utf8") > 63)).toEqual([]);
+  });
 });
