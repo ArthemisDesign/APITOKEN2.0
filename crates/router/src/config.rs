@@ -14,8 +14,8 @@ pub struct Config {
     pub openai_origin: String,
     /// Stable origin Gemini-плоскости.
     pub gemini_origin: String,
-    /// Origin, публикующий каталог KIMI. По умолчанию совпадает с Anthropic-плоскостью:
-    /// KIMI-шлюз скомпонован в тех же слотах и говорит на том же протоколе.
+    /// Stable origin of the dedicated KIMI plane (Caddy blue-green balancer on 8803).
+    /// Lane stays Anthropic Messages; origin is this plane, not the Claude slots.
     pub kimi_origin: String,
     /// Явный rollout-флаг advanced routing. По умолчанию выключен: `models` и
     /// `provider` отклоняются до catalog/policy/plane work.
@@ -133,7 +133,7 @@ impl Config {
             port: env_or("CLAUDE_ROUTER_PORT", "8798")
                 .parse()
                 .map_err(|e| anyhow::anyhow!("CLAUDE_ROUTER_PORT: {e}"))?,
-            kimi_origin: env_or("CLAUDE_ROUTER_KIMI_ORIGIN", &anthropic_origin),
+            kimi_origin: env_or("CLAUDE_ROUTER_KIMI_ORIGIN", "http://127.0.0.1:8803"),
             anthropic_origin,
             openai_origin: env_or("CLAUDE_ROUTER_OPENAI_ORIGIN", "http://127.0.0.1:8792"),
             gemini_origin: env_or("CLAUDE_ROUTER_GEMINI_ORIGIN", "http://127.0.0.1:8794"),

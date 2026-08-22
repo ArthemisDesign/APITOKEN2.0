@@ -109,7 +109,7 @@ to the client (clients must not depend on internal engine state).
   is already possible. The Gemini Messages skin (`gemini/skin.rs`) follows the same rule for its own
   surface. A missing or unknown signal remains fail-closed: retry is forbidden
   (§3.3).
-- **Stable Caddy origins** (8790/8792/8794) synthesize the same exact `not_started` only when
+- **Stable Caddy origins** (8790/8792/8794/8803) synthesize the same exact `not_started` only when
   the reverse-proxy handler itself returns `503 no healthy upstream`: no health-gated runtime
   accepted the request. Runtime-produced HTTP 503 does not enter `handle_errors` and receives no signal.
   External provider vhosts strip the header on the outer hop; the router sees it only over loopback.

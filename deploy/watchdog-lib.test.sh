@@ -3299,6 +3299,10 @@ grep -Fq 'large-payload-headroom.sh' "$ROOT/deploy/engine-bluegreen.sh" \
   || wd_die 'provider cutover lacks a fail-closed headroom gate'
 grep -Fq 'CLAUDE_ROUTER_BODY_SPOOL_ROOT=/var/lib/apitoken/spool/router-%i' "$ROOT/systemd/claude-router@.service" \
   || wd_die 'router slots do not use separate instance-private spool roots'
+grep -Fq 'CLAUDE_ROUTER_KIMI_ORIGIN=http://127.0.0.1:8803' "$ROOT/systemd/claude-router@.service" \
+  || wd_die 'router slots do not pin the dedicated KIMI origin'
+grep -Fq 'CLAUDE_ROUTER_KIMI_ORIGIN=http://127.0.0.1:8803' "$ROOT/systemd/claude-router.service" \
+  || wd_die 'legacy router singleton does not pin the dedicated KIMI origin'
 grep -Fxq 'StateDirectory=apitoken/spool/router-%i' "$ROOT/systemd/claude-router@.service" \
   || wd_die 'router slot spool directory is not instance-scoped'
 grep -Fxq 'StateDirectoryMode=0700' "$ROOT/systemd/claude-router@.service" \

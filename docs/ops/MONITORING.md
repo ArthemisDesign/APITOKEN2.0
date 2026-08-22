@@ -75,7 +75,12 @@ scrolling:
   Notification Delivery · Billing Writer · Request Fact Observability · Request Usage: Customers,
   Models & Tools · Logs & Journals.
 - **`$provider` template variable** filters the engine pool/traffic panels
-  (`claude_api_*{provider=~"$provider"}`); the default is all providers.
+  (`claude_api_*{provider=~"$provider"}`); the default is all providers. Customer
+  KIMI traffic is the dedicated scrape (`provider="kimi"`, origin 8803). The Engine
+  in-flight card adds `claude_api_kimi_inflight_requests`. The Kimi & GLM row
+  scopes KIMI gauges `{provider="kimi"}` so Anthropic-process zeros cannot win
+  Grafana `lastNotNull`, and plots `claude_api_kimi_requests_total` / failures /
+  inflight / cooling on that scrape.
 - The main Production Overview contains an expanded **Request Usage: Customers, Models & Tools**
   section after Request Fact Observability. It shows the top 30-day customer/key/client/model and
   closed-tool-class groups immediately on the page operators already use. Every panel and the

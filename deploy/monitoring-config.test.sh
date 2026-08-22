@@ -922,6 +922,19 @@ for gated_alert in KimiNoLiveProfiles KimiNoAvailableProfiles KimiCalibrationPer
     | grep -Fq 'claude_api_kimi_enabled == 1' \
     || { printf '%s is not gated on the provider being enabled\n' "$gated_alert" >&2; exit 1; }
 done
+# Customer KIMI traffic is the dedicated scrape (provider=kimi). Unscoped gauges let
+# Anthropic-process zeros win Grafana lastNotNull.
+grafana_overview="$ROOT/observability/grafana/dashboards/production-overview.json"
+grep -Fq 'claude_api_kimi_requests_total{provider=' "$grafana_overview" \
+  || { printf 'production overview omits scoped KIMI request traffic\n' >&2; exit 1; }
+grep -Fq 'claude_api_kimi_inflight_requests{provider=' "$grafana_overview" \
+  || { printf 'production overview omits scoped KIMI inflight\n' >&2; exit 1; }
+grep -Fq 'claude_api_kimi_live_profiles{provider=' "$grafana_overview" \
+  || { printf 'KIMI live-profile card is not scoped to the dedicated scrape\n' >&2; exit 1; }
+grep -Fq 'claude_api_kimi_available_profiles{provider=' "$grafana_overview" \
+  || { printf 'KIMI available-profile card is not scoped to the dedicated scrape\n' >&2; exit 1; }
+! grep -Fq 'claude_api_kimi_live_profiles or vector(0)' "$grafana_overview" \
+  || { printf 'KIMI live-profile card still mixes Anthropic zeros\n' >&2; exit 1; }
 # The backend-only GLM plane runs inside the Anthropic runtime: its aggregate series are scraped
 # on the anthropic target and deliberately carry no provider label — the claude_api_glm_ name
 # prefix is the discriminator, so the scoping pin here is the enabled gate, not a label selector.

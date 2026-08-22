@@ -613,8 +613,8 @@ systemctl status 'claude-router@*.service'
 All provider slots alternate. Consumers must never hard-code 8787/8788, 8793/8797, 8795/8799, or
 8804/8805; commerce always uses `http://127.0.0.1:8790`. OpenAI and Gemini clients use only their public
 hostnames; stable origins 8792/8794 and every runtime slot remain loopback-only. KIMI is
-backend-only: no public hostname or router namespace, and its stable origin 8803 with slots
-8804/8805 stays loopback-only as well.
+backend-only: no public hostname. Customer `kimi/*` is the unified-router namespace and
+goes to stable origin 8803; slots 8804/8805 stay loopback-only.
 Provision paid Antigravity OAuth profiles first as documented in `docs/engine/GEMINI_PROVIDER.md`.
 
 ## Manual recovery: deploy the commerce API

@@ -552,9 +552,10 @@ The reason is the transparency invariant: `GET /v1/models` on the Anthropic plan
 byte-for-byte proxy of `api.anthropic.com`, so appending our KIMI aliases to it would let every
 client — including those who never asked for KIMI — tell our fleet from Anthropic's. Discovery
 therefore moves to an internal producer, `GET /internal/router/catalog/kimi`, published beside
-`/internal/router/catalog/pricing` on the same slot. The router reads it as the `kimi` plane and
-routes `kimi/*` over the Anthropic lane; `CLAUDE_ROUTER_KIMI_ORIGIN` defaults to the Anthropic
-origin because the gateway is composed into those same slots.
+`/internal/router/catalog/pricing` on the same slot. The router reads it as the `kimi` plane. `kimi/*` keeps the Anthropic Messages
+**lane** (envelope, path, SSE) and is proxied to `CLAUDE_ROUTER_KIMI_ORIGIN`
+(default and production pin `http://127.0.0.1:8803`). Lane is not origin: a KIMI
+request must not land on the Claude slots.
 
 The KIMI plane is **optional**: a slot with `CLAUDE_API_KIMI_ENABLED` unset answers the producer
 with an empty list, and a build predating the producer has no such route at all. Neither state
@@ -584,10 +585,9 @@ both coding aliases, with exact request-id attribution and metered costs inside 
 `k3-256k` currently accepts the same probe too, but the public catalog deliberately keeps it
 image-only because the provider does not guarantee video for that id.
 
-A namespaced `kimi/<alias>` is resolved by the Anthropic plane's admission back to the bare
+A namespaced `kimi/<alias>` is resolved by the serving KIMI plane's admission back to the bare
 alias before dispatch (`KimiGateway::resolve_public_model`). The plane strips only its own
-`anthropic/` prefix, so without that resolution a published `kimi/*` id matched no alias and went
-verbatim to the Claude upstream.
+namespace prefixes, so without that resolution a published `kimi/*` id matched no alias.
 
 Normalized `reasoning_efforts` and `service_tiers` are published both in
 `apitoken.capabilities` and as the previous top-level mirrors for client

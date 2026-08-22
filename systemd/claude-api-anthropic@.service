@@ -20,12 +20,11 @@ EnvironmentFile=/srv/claude-api/data/engine-postgres.env
 # or a compliant private serving boundary, so the public Anthropic unit pins it off even when a
 # staged keyring remains in the shared env.
 #
-# KIMI is composed here as well, not only on its own slot. `serves_kimi()` covers Anthropic mode by
-# design, and this is the only way a KIMI alias becomes reachable from outside the host: the public
-# entry resolves to these slots, while `claude-api-kimi@8805` listens on loopback only. Without it
-# a KIMI model falls through to the Claude pool, the upstream does not know the alias, and rotation
-# turns that into a 529 — observed end to end on 2026-08-07. A cold or broken KIMI roster stays a
-# fail-closed KIMI-only path and never removes Claude traffic from readiness.
+# KIMI aliases stay composed here as a safety net for this SHA: `api.apitoken.sale` still
+# reaches these slots, and a cold dedicated plane must not drop a direct KIMI alias into the
+# Claude pool (that fall-through became a 529 on 2026-08-07). Customer `kimi/*` through
+# `router.apitoken.sale` goes to the dedicated origin 8803. A follow-up pin
+# `CLAUDE_API_KIMI_ENABLED=0` removes this embed after that router dataplane is GREEN.
 #
 # The 180-second drain pin is argv-level for the same reason as the GLM pin: a stale long value in
 # the shared env must not silently re-widen the deploy window. The engine already defaults to 180;

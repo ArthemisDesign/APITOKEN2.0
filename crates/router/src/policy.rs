@@ -12,7 +12,7 @@ use axum::http::HeaderMap;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::bounded;
-use crate::catalog::PlaneOrigins;
+use crate::catalog::{Plane, PlaneOrigins};
 use crate::error::Lane;
 
 const SCHEMA_VERSION: u64 = 1;
@@ -45,11 +45,18 @@ impl ProviderNamespace {
             Self::Anthropic => Lane::Anthropic,
             Self::OpenAi => Lane::OpenAi,
             Self::Google => Lane::Gemini,
-            // KIMI speaks the Anthropic Messages protocol, and `Lane` selects the wire contract —
-            // envelope shape, path prefixes, SSE dictionary — not the provider. Its traffic
-            // therefore rides the Anthropic lane, whose slots compose the KIMI gateway. A separate
-            // lane would only duplicate the Anthropic envelope everywhere it is matched.
+            // KIMI speaks the Anthropic Messages protocol. `Lane` selects the wire
+            // envelope, not the serving origin. Dataplane origin is `plane()`.
             Self::Kimi => Lane::Anthropic,
+        }
+    }
+
+    pub fn plane(self) -> Plane {
+        match self {
+            Self::Anthropic => Plane::Anthropic,
+            Self::OpenAi => Plane::OpenAi,
+            Self::Google => Plane::Gemini,
+            Self::Kimi => Plane::Kimi,
         }
     }
 }
@@ -217,12 +224,8 @@ pub async fn preflight(
         return Err(PreflightError::Unavailable);
     }
 
-    for lane in origin_order(candidates) {
-        let origin = match lane {
-            Lane::Anthropic => origins.anthropic,
-            Lane::OpenAi => origins.openai,
-            Lane::Gemini => origins.gemini,
-        };
+    for plane in origin_order(candidates) {
+        let origin = origins.for_plane(plane);
         let response = match client
             .post(format!("{origin}{PREFLIGHT_PATH}"))
             .headers(auth.clone())
@@ -259,15 +262,15 @@ pub async fn preflight(
     Err(PreflightError::Unavailable)
 }
 
-fn origin_order(candidates: &[PolicyCandidate<'_>]) -> Vec<Lane> {
-    let mut order = Vec::with_capacity(3);
-    for lane in candidates
+fn origin_order(candidates: &[PolicyCandidate<'_>]) -> Vec<Plane> {
+    let mut order = Vec::with_capacity(Plane::ALL.len());
+    for plane in candidates
         .iter()
-        .map(|candidate| candidate.provider.lane())
-        .chain([Lane::Anthropic, Lane::OpenAi, Lane::Gemini])
+        .map(|candidate| candidate.provider.plane())
+        .chain(Plane::ALL)
     {
-        if !order.contains(&lane) {
-            order.push(lane);
+        if !order.contains(&plane) {
+            order.push(plane);
         }
     }
     order
@@ -390,7 +393,16 @@ mod tests {
         ];
         assert_eq!(
             origin_order(&candidates),
-            [Lane::OpenAi, Lane::Gemini, Lane::Anthropic]
+            [Plane::OpenAi, Plane::Gemini, Plane::Anthropic, Plane::Kimi]
+        );
+    }
+
+    #[test]
+    fn policy_origin_order_sends_kimi_candidates_to_the_kimi_plane() {
+        let candidates = [candidate("kimi/k3", ProviderNamespace::Kimi)];
+        assert_eq!(
+            origin_order(&candidates),
+            [Plane::Kimi, Plane::Anthropic, Plane::OpenAi, Plane::Gemini]
         );
     }
 }

@@ -74,6 +74,8 @@ observe_status() {
     claude-api-openai@8797.service \
     claude-api-gemini@8795.service \
     claude-api-gemini@8799.service \
+    claude-api-kimi@8804.service \
+    claude-api-kimi@8805.service \
     claude-router@8800.service \
     claude-router@8801.service \
     apitoken-api@3000.service \
@@ -86,6 +88,7 @@ observe_status() {
   observe_probe http://127.0.0.1:8791/v1/ready
   observe_probe http://127.0.0.1:8792/ready
   observe_probe http://127.0.0.1:8794/ready
+  observe_probe http://127.0.0.1:8803/ready
   observe_probe http://127.0.0.1:8802/ready
   if [[ -r /var/lib/apitoken/watchdog/status ]]; then
     printf 'watchdog-status '

@@ -1,6 +1,7 @@
 # Health-gated KIMI slot. Only one slot accepts new traffic in steady state; during cutover the
 # old process drains established streams while the candidate serves new requests. The plane is
-# backend-only by design: no public hostname, no router namespace, no catalogue.
+# backend-only by design: no public hostname. Customer `kimi/*` is the unified-router
+# namespace and reaches this plane via origin 8803.
 [Unit]
 Description=claude-api KIMI subscription-pool slot on port %i
 After=network-online.target apitoken-affinity-redis.service

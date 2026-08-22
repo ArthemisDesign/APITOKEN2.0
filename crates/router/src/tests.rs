@@ -101,6 +101,7 @@ fn make_router(anthropic: &str, openai: &str, gemini: &str, ttl: Duration) -> Ro
         anthropic,
         openai,
         gemini,
+        "http://127.0.0.1:1",
         ttl,
         false,
         build_client().unwrap(),
@@ -113,6 +114,7 @@ fn make_fallback_router(anthropic: &str, openai: &str, gemini: &str, ttl: Durati
         anthropic,
         openai,
         gemini,
+        "http://127.0.0.1:1",
         ttl,
         true,
         build_client().unwrap(),
@@ -137,6 +139,7 @@ fn make_router_with(
     anthropic: &str,
     openai: &str,
     gemini: &str,
+    kimi: &str,
     ttl: Duration,
     fallback_enabled: bool,
     client: Client,
@@ -159,10 +162,7 @@ fn make_router_with(
             host: "127.0.0.1".into(),
             port: 0,
             anthropic_origin: anthropic.into(),
-            // Dead by default: these fixtures count requests against the mock planes, and pointing
-            // the KIMI producer at the Anthropic mock would add one hit per aggregate to every
-            // such count. An absent optional plane is a supported state, so this stays honest.
-            kimi_origin: "http://127.0.0.1:1".into(),
+            kimi_origin: kimi.into(),
             openai_origin: openai.into(),
             gemini_origin: gemini.into(),
             fallback_enabled,
@@ -1629,6 +1629,7 @@ async fn proven_connection_refused_retries_but_timeout_does_not() {
         &a,
         &o,
         &g,
+        "http://127.0.0.1:1",
         Duration::ZERO,
         true,
         timeout_client,
@@ -2325,6 +2326,7 @@ async fn universal_body_budget_fails_fast_without_becoming_an_execution_queue() 
         &plane,
         "http://127.0.0.1:0",
         "http://127.0.0.1:0",
+        "http://127.0.0.1:1",
         Duration::ZERO,
         false,
         build_client().unwrap(),
@@ -2883,6 +2885,44 @@ async fn messages_namespaced_models_route_by_prefix_without_catalog_fetch() {
     assert_eq!(lo[0].path, "/v1/messages");
     assert_eq!(lg[0].path, "/v1/messages");
     assert_eq!(la[0].x_api_key.as_deref(), Some("sk-pool-secret"));
+}
+
+#[tokio::test]
+async fn messages_kimi_namespaced_model_hits_kimi_origin_not_anthropic() {
+    let (a, log_a) = echo_plane().await;
+    let (o, log_o) = echo_plane().await;
+    let (g, log_g) = echo_plane().await;
+    let (k, log_k) = echo_plane().await;
+    let router = spawn(make_router_with(
+        &a,
+        &o,
+        &g,
+        &k,
+        Duration::ZERO,
+        false,
+        build_client().unwrap(),
+        api_limits::current::ROUTER,
+    ))
+    .await;
+    let payload =
+        r#"{"model":"kimi/k3","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}"#;
+    let response = reqwest::Client::new()
+        .post(format!("{router}/v1/messages"))
+        .header("x-api-key", "sk-pool-secret")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), payload);
+
+    assert!(log_a.lock().unwrap().is_empty());
+    assert!(log_o.lock().unwrap().is_empty());
+    assert!(log_g.lock().unwrap().is_empty());
+    let kimi = log_k.lock().unwrap().clone();
+    assert_eq!(kimi.len(), 1);
+    assert_eq!(kimi[0].path, "/v1/messages");
+    assert_eq!(kimi[0].x_api_key.as_deref(), Some("sk-pool-secret"));
 }
 
 /// Регрессия контракта native lane: claude-alias через каталог обязан

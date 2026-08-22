@@ -1245,7 +1245,8 @@ path and never falls through to Claude.
 
 `state.rs` also carries a dedicated `ProviderMode::Kimi` for the production delivery plane:
 `serves_kimi()` is true for `Combined|Anthropic|Kimi`, so gateway composition in
-`server::config` covers both the embedded dev/test backend and a separate process. In `Kimi` mode the
+`server::config` covers the dedicated production plane and, on this SHA, the Anthropic
+safety-net embed for `api.apitoken.sale`. In `Kimi` mode the
 shared `/v1/messages` path dispatches exact aliases through the same `KimiGateway::handle`, and right after
 that block stands a fail-closed gate: any non-KIMI model gets a bounded static 404 and never
 reaches the Claude pool (the plane never brings it up). Gateway readiness
@@ -1277,7 +1278,7 @@ success of all windows. A transient head/DB/CAS/parser failure preserves last-go
 no-op, a poisoned request-id quarantines only one turn. Shutdown cancels the steady poll, repeats
 the same turn-before-quota order after the stream barrier and bounds the final provider read by the
 shared deadline. The final pass never starts a rotating OAuth refresh: the indivisible refresh/reseal
-remains a steady-state-only operation. There is no public catalog and no router namespace.
+remains a steady-state-only operation. There is no public KIMI hostname. Customer `kimi/*` is the unified-router namespace and goes to origin 8803.
 
 `KimiGateway::operational_status` publishes an extended `KimiOperationalStatus` for readiness,
 `/metrics` and admin-only `GET /kimi-subs`: fleet counts (total/live/available, three cooling axes,

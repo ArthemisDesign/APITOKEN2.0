@@ -935,7 +935,17 @@
           "refId": "D"
         },
         { "expr": "rate(claude_api_exhausted_total[5m])", "legendFormat": "Exhausted", "refId": "E" },
-        { "expr": "rate(claude_api_breaker_rejects_total[5m])", "legendFormat": "Breaker rejects", "refId": "F" }
+        { "expr": "rate(claude_api_breaker_rejects_total[5m])", "legendFormat": "Breaker rejects", "refId": "F" },
+        {
+          "expr": "sum by (provider) (rate(claude_api_kimi_failures_total{provider=~\"$provider\"}[5m]))",
+          "legendFormat": "{{provider}} kimi failures",
+          "refId": "G"
+        },
+        {
+          "expr": "sum by (provider) (rate(claude_api_kimi_capacity_exhausted_total{provider=~\"$provider\"}[5m]))",
+          "legendFormat": "{{provider}} kimi exhausted",
+          "refId": "H"
+        }
       ],
       "title": "Provider traffic & failure modes",
       "type": "timeseries"
@@ -991,7 +1001,7 @@
         "textMode": "auto",
         "wideLayout": true
       },
-      "targets": [{ "expr": "claude_api_inflight or vector(0)", "refId": "A" }],
+      "targets": [{ "expr": "(sum(claude_api_inflight{provider=~\"$provider\"}) or vector(0)) + (sum(claude_api_kimi_inflight_requests{provider=~\"$provider\"}) or vector(0))", "refId": "A" }],
       "title": "In-flight requests",
       "type": "stat"
     },
@@ -2533,7 +2543,7 @@
       "type": "stat",
       "title": "Kimi live profiles",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [{ "expr": "claude_api_kimi_live_profiles or vector(0)", "refId": "A" }],
+      "targets": [{ "expr": "claude_api_kimi_live_profiles{provider=\"kimi\"} or vector(0)", "refId": "A" }],
       "gridPos": { "h": 3, "w": 4, "x": 0, "y": 138 },
       "fieldConfig": {
         "defaults": {
@@ -2560,7 +2570,7 @@
       "type": "stat",
       "title": "Kimi available",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [{ "expr": "claude_api_kimi_available_profiles or vector(0)", "refId": "A" }],
+      "targets": [{ "expr": "claude_api_kimi_available_profiles{provider=\"kimi\"} or vector(0)", "refId": "A" }],
       "gridPos": { "h": 3, "w": 4, "x": 4, "y": 138 },
       "fieldConfig": {
         "defaults": {
@@ -2587,7 +2597,7 @@
       "type": "stat",
       "title": "Kimi calibration ok",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [{ "expr": "claude_api_kimi_calibration_persistence_ok", "refId": "A" }],
+      "targets": [{ "expr": "claude_api_kimi_calibration_persistence_ok{provider=\"kimi\"}", "refId": "A" }],
       "gridPos": { "h": 3, "w": 4, "x": 8, "y": 138 },
       "fieldConfig": {
         "defaults": {
@@ -2702,6 +2712,58 @@
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "reqps"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "/fail|exhaust|cool/" },
+            "properties": [{ "id": "custom.axisPlacement", "value": "right" }]
+          }
+        ]
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 141 },
+      "id": 439,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "sum(rate(claude_api_kimi_requests_total{provider=\"kimi\"}[5m]))", "legendFormat": "kimi requests", "refId": "A" },
+        { "expr": "sum(rate(claude_api_kimi_failures_total{provider=\"kimi\"}[5m]))", "legendFormat": "kimi failures", "refId": "B" },
+        { "expr": "sum(rate(claude_api_kimi_capacity_exhausted_total{provider=\"kimi\"}[5m]))", "legendFormat": "kimi exhausted", "refId": "C" },
+        { "expr": "claude_api_kimi_inflight_requests{provider=\"kimi\"}", "legendFormat": "kimi inflight", "refId": "D" },
+        { "expr": "claude_api_kimi_transport_cooling_profiles{provider=\"kimi\"}", "legendFormat": "transport cooling", "refId": "E" },
+        { "expr": "claude_api_kimi_quota_cooling_profiles{provider=\"kimi\"}", "legendFormat": "quota cooling", "refId": "F" }
+      ],
+      "title": "Kimi traffic, inflight & cooling",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
             "fillOpacity": 12,
             "gradientMode": "none",
             "hideFrom": { "legend": false, "tooltip": false, "viz": false },
@@ -2720,14 +2782,14 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 141 },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 141 },
       "id": 378,
       "options": {
         "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
         "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
       },
       "targets": [
-        { "expr": "claude_api_kimi_calibration_pending_events", "legendFormat": "kimi", "refId": "A" },
+        { "expr": "claude_api_kimi_calibration_pending_events{provider=\"kimi\"}", "legendFormat": "kimi", "refId": "A" },
         { "expr": "claude_api_glm_calibration_pending_events", "legendFormat": "glm", "refId": "B" }
       ],
       "title": "Kimi & GLM calibration backlog",

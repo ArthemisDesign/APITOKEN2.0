@@ -530,7 +530,7 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
             Ok(bytes) => Bytes::from(bytes),
             Err(_) => return surface.invalid("Invalid JSON in request body.", None),
         };
-        let origin = origin_for_lane(&state, attempt.lane);
+        let origin = origin_for_provider(&state, attempt.provider);
         let request = request_from_parts(&parts, attempt_bytes, None);
         let execution = group_id
             .as_ref()
@@ -757,8 +757,8 @@ async fn proxy_single(
     body_permit: BodyOwnership,
 ) -> Response {
     let mut rewrite_native_model = None;
-    let lane = match catalog::namespace_lane(model) {
-        Some(lane) => lane,
+    let provider = match provider_for_namespaced_model(model) {
+        Some(provider) => provider,
         None => {
             let auth = proxy::auth_passthrough(&parts.headers);
             let aggregate = state
@@ -778,8 +778,8 @@ async fn proxy_single(
                     if entry.native_id != model {
                         rewrite_native_model = Some(entry.native_id.clone());
                     }
-                    match lane_for_namespace(namespace) {
-                        Some(lane) => lane,
+                    match provider_for_namespace(namespace) {
+                        Some(provider) => provider,
                         None => return surface.model_not_found(model),
                     }
                 }
@@ -787,6 +787,7 @@ async fn proxy_single(
             }
         }
     };
+    let lane = provider.lane();
     let fast_compat = fast_header || fast_body_alias;
     let bytes = if fast_compat || rewrite_native_model.is_some() {
         let mut value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
@@ -824,7 +825,7 @@ async fn proxy_single(
     } else {
         bytes
     };
-    let origin = origin_for_lane(state, lane);
+    let origin = origin_for_provider(state, provider);
     let logical_request_id = match LogicalRequestId::fresh() {
         Ok(id) => id,
         Err(()) => return surface.catalog_unavailable(),
@@ -973,8 +974,12 @@ fn request_from_parts(parts: &Parts, body: Bytes, permit: Option<BodyOwnership>)
     request
 }
 
-fn lane_for_namespace(namespace: &str) -> Option<Lane> {
-    provider_for_namespace(namespace).map(ProviderNamespace::lane)
+fn provider_for_namespaced_model(model: &str) -> Option<ProviderNamespace> {
+    let (prefix, native) = model.split_once('/')?;
+    if native.is_empty() {
+        return None;
+    }
+    provider_for_namespace(prefix)
 }
 
 fn provider_for_namespace(namespace: &str) -> Option<ProviderNamespace> {
@@ -987,11 +992,14 @@ fn provider_for_namespace(namespace: &str) -> Option<ProviderNamespace> {
     }
 }
 
-fn origin_for_lane(state: &AppState, lane: Lane) -> &str {
-    match lane {
-        Lane::Anthropic => &state.cfg.anthropic_origin,
-        Lane::OpenAi => &state.cfg.openai_origin,
-        Lane::Gemini => &state.cfg.gemini_origin,
+/// Wire lane is the envelope. Origin is the serving process. KIMI keeps the
+/// Anthropic Messages lane and still goes to the dedicated 8803 plane.
+fn origin_for_provider(state: &AppState, provider: ProviderNamespace) -> &str {
+    match provider {
+        ProviderNamespace::Anthropic => &state.cfg.anthropic_origin,
+        ProviderNamespace::OpenAi => &state.cfg.openai_origin,
+        ProviderNamespace::Google => &state.cfg.gemini_origin,
+        ProviderNamespace::Kimi => &state.cfg.kimi_origin,
     }
 }
 
@@ -1205,7 +1213,7 @@ mod tests {
                 host: "127.0.0.1".into(),
                 port: 0,
                 anthropic_origin: "http://127.0.0.1:1".into(),
-                kimi_origin: "http://127.0.0.1:1".into(),
+                kimi_origin: "http://127.0.0.1:8803".into(),
                 openai_origin: "http://127.0.0.1:2".into(),
                 gemini_origin: "http://127.0.0.1:3".into(),
                 fallback_enabled: false,
@@ -1229,6 +1237,25 @@ mod tests {
             .unwrap(),
             body_spool: bounded_body::PrivateSpoolFactory::new(root).unwrap(),
         }
+    }
+
+    #[test]
+    fn origin_follows_provider_not_wire_lane() {
+        let metrics = Arc::new(RouterMetrics::new());
+        let state = test_state(metrics);
+        assert_eq!(
+            origin_for_provider(&state, ProviderNamespace::Anthropic),
+            "http://127.0.0.1:1"
+        );
+        assert_eq!(
+            origin_for_provider(&state, ProviderNamespace::Kimi),
+            "http://127.0.0.1:8803"
+        );
+        assert_eq!(ProviderNamespace::Kimi.lane(), Lane::Anthropic);
+        assert_eq!(
+            provider_for_namespaced_model("kimi/k3"),
+            Some(ProviderNamespace::Kimi)
+        );
     }
 
     #[tokio::test]

@@ -59,7 +59,8 @@ pub const NS_KIMI: &str = "kimi";
 /// model list comes from, and KIMI needs its own even though it speaks the Anthropic protocol: the
 /// Anthropic plane's `/v1/models` is a byte-for-byte proxy of `api.anthropic.com`, so appending our
 /// KIMI aliases there would break the transparency invariant for every client. KIMI therefore
-/// publishes a separate internal producer and rides the Anthropic lane for dispatch.
+/// publishes a separate internal producer. It still speaks Anthropic Messages (the lane), and the
+/// router sends that traffic to the dedicated KIMI origin, not to the Claude slots.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Plane {
     Anthropic,
@@ -506,13 +507,25 @@ impl Catalog {
     }
 }
 
-/// Origins плоскостей — срез конфига для опроса каталога.
+/// Origins плоскостей — срез конфига для опроса каталога и dataplane proxy.
 pub struct PlaneOrigins<'a> {
     pub anthropic: &'a str,
     pub openai: &'a str,
     pub gemini: &'a str,
-    /// Обычно совпадает с `anthropic`: KIMI-шлюз скомпонован в тех же слотах.
+    /// Dedicated KIMI plane (stable origin 8803). Catalog producer and
+    /// `kimi/*` dataplane both use this origin; the Anthropic lane is wire only.
     pub kimi: &'a str,
+}
+
+impl<'a> PlaneOrigins<'a> {
+    pub fn for_plane(&self, plane: Plane) -> &'a str {
+        match plane {
+            Plane::Anthropic => self.anthropic,
+            Plane::OpenAi => self.openai,
+            Plane::Gemini => self.gemini,
+            Plane::Kimi => self.kimi,
+        }
+    }
 }
 
 /// Результат живого fetch'а каталога плоскости.
@@ -1380,8 +1393,8 @@ mod tests {
         );
         assert_eq!(namespace_lane("openai/gpt-5.6"), Some(Lane::OpenAi));
         assert_eq!(namespace_lane("google/gemini-2.5-pro"), Some(Lane::Gemini));
-        // KIMI is its own catalog plane but not its own protocol: it dispatches over the
-        // Anthropic lane, whose slots compose the gateway.
+        // KIMI is its own catalog plane and origin. The Anthropic lane is the
+        // Messages wire only; dataplane origin is CLAUDE_ROUTER_KIMI_ORIGIN.
         assert_eq!(namespace_lane("kimi/k3"), Some(Lane::Anthropic));
         assert_eq!(Plane::Kimi.lane(), Lane::Anthropic);
         assert_ne!(Plane::Kimi.namespace(), Plane::Anthropic.namespace());

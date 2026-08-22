@@ -3,7 +3,7 @@
 The single stateless entry point for all provider planes — stage 1b of
 `docs/engine/UNIFIED_ROUTER.md`. A separate bounded context OUTSIDE the layers
 `registry ← pool ← forward ← server`: the `claude-router` binary, which talks to the
-planes only over HTTP via stable loopback origins (8790/8792/8794).
+planes only over HTTP via stable loopback origins (8790/8792/8794/8803).
 
 ## Boundaries (do NOT violate)
 
@@ -139,7 +139,8 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
 - `messages.rs` — thin Anthropic-shaped entrypoint for `POST /v1/messages` and
   `POST /v1/messages/count_tokens`: namespaced `openai/*` goes to the Codex plane
   (where the Messages→Responses adapter lives, `crates/forward/src/codex/skin.rs`),
-  `anthropic/*` — to the Anthropic plane as a native lane, `google/*` — to the Gemini
+  `anthropic/*` — to the Anthropic plane as a native lane, `kimi/*` — to the dedicated KIMI
+  origin on the Anthropic Messages lane, `google/*` — to the Gemini
   plane under the shared namespace rule (the Messages→generateContent skin is implemented
   in `crates/forward/src/gemini/skin.rs`). For `count_tokens` the same
   plane is chosen: Anthropic native, reserve-grade local counting for Codex, or

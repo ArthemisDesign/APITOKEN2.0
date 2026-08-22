@@ -29,6 +29,10 @@ bash -n "$WRAPPER"
 bash -n "$ROOT/deploy/install-observe.sh"
 grep -Fq 'Never exec a user shell' "$WRAPPER" || fail 'wrapper lost its no-shell contract'
 grep -Fq 'Never call sudo' "$WRAPPER" || fail 'wrapper lost its no-sudo contract'
+grep -Fq 'http://127.0.0.1:8803/ready' "$WRAPPER" \
+  || fail 'status must probe the dedicated KIMI origin'
+grep -Fq 'claude-api-kimi@8804.service' "$WRAPPER" \
+  || fail 'status must list the active KIMI slot'
 ! grep -Eq '"\$SYSTEMCTL" (start|stop|restart|kill)' "$WRAPPER" \
   || fail 'wrapper must not invoke mutating systemctl verbs'
 if grep -Eq '^[[:space:]]*sudo |sudo -n |exec sudo' "$WRAPPER"; then

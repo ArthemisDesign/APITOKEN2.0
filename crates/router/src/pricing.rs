@@ -11,8 +11,7 @@ use axum::http::HeaderMap;
 use serde::{Deserialize, Serialize};
 
 use crate::bounded;
-use crate::catalog::PlaneOrigins;
-use crate::error::Lane;
+use crate::catalog::{Plane, PlaneOrigins};
 
 const SCHEMA_VERSION: u64 = 1;
 const UNIT: &str = "nano_usd_per_million_tokens";
@@ -155,12 +154,8 @@ async fn fetch_chunk(
         return Err(PricingError::Unavailable);
     }
 
-    for lane in origin_order(candidates) {
-        let origin = match lane {
-            Lane::Anthropic => origins.anthropic,
-            Lane::OpenAi => origins.openai,
-            Lane::Gemini => origins.gemini,
-        };
+    for plane in origin_order(candidates) {
+        let origin = origins.for_plane(plane);
         let response = match client
             .post(format!("{origin}{PRICING_PATH}"))
             .headers(auth.clone())
@@ -194,20 +189,21 @@ async fn fetch_chunk(
     Err(PricingError::Unavailable)
 }
 
-fn origin_order(candidates: &[PricingCandidate<'_>]) -> Vec<Lane> {
-    let mut order = Vec::with_capacity(3);
-    for lane in candidates
+fn origin_order(candidates: &[PricingCandidate<'_>]) -> Vec<Plane> {
+    let mut order = Vec::with_capacity(Plane::ALL.len());
+    for plane in candidates
         .iter()
         .filter_map(|candidate| match candidate.provider_id {
-            "anthropic" => Some(Lane::Anthropic),
-            "openai" => Some(Lane::OpenAi),
-            "google" => Some(Lane::Gemini),
+            "anthropic" => Some(Plane::Anthropic),
+            "openai" => Some(Plane::OpenAi),
+            "google" => Some(Plane::Gemini),
+            "kimi" => Some(Plane::Kimi),
             _ => None,
         })
-        .chain([Lane::Anthropic, Lane::OpenAi, Lane::Gemini])
+        .chain(Plane::ALL)
     {
-        if !order.contains(&lane) {
-            order.push(lane);
+        if !order.contains(&plane) {
+            order.push(plane);
         }
     }
     order
@@ -352,7 +348,16 @@ mod tests {
         ];
         assert_eq!(
             origin_order(&candidates),
-            [Lane::OpenAi, Lane::Gemini, Lane::Anthropic]
+            [Plane::OpenAi, Plane::Gemini, Plane::Anthropic, Plane::Kimi]
+        );
+    }
+
+    #[test]
+    fn pricing_origin_order_sends_kimi_candidates_to_the_kimi_plane() {
+        let candidates = [candidate("kimi/k3", "kimi")];
+        assert_eq!(
+            origin_order(&candidates),
+            [Plane::Kimi, Plane::Anthropic, Plane::OpenAi, Plane::Gemini]
         );
     }
 

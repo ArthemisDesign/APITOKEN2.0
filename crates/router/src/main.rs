@@ -3,7 +3,7 @@
 //!
 //! Bounded context ВНЕ слоёв registry ← pool ← forward ← server: крейт не
 //! импортирует их и общается с плоскостями только по HTTP через stable
-//! loopback origins (8790/8792/8794). Router не резервирует и не списывает
+//! loopback origins (8790/8792/8794/8803). Router не резервирует и не списывает
 //! деньги (инвариант 1), не ретраит неоднозначные исходы (инвариант 2), не
 //! имеет execution-очередей, semaphore и breaker (инвариант 3); fail-fast
 //! 4 GiB estimated-RSS budget ограничивает только universal request bodies. SSE не
