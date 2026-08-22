@@ -2381,6 +2381,8 @@ async fn malformed_client_attribution_never_changes_existing_auth_response() {
         let baseline_status = baseline.status();
         let baseline_headers = baseline.headers().clone();
         let baseline_body = to_bytes(baseline.into_body(), 4_096).await.unwrap();
+        let mut baseline_json: Value = serde_json::from_slice(&baseline_body).unwrap();
+        baseline_json.as_object_mut().unwrap().remove("request_id");
 
         for client in ["OpenCode/1", "opencode/", "opencode/1/2"] {
             let response = service
@@ -2399,7 +2401,12 @@ async fn malformed_client_attribution_never_changes_existing_auth_response() {
                 .get(forward::CLIENT_ATTRIBUTION_HEADER)
                 .is_none());
             let body = to_bytes(response.into_body(), 4_096).await.unwrap();
-            assert_eq!(body, baseline_body, "provider={provider:?} client={client:?}");
+            let mut body_json: Value = serde_json::from_slice(&body).unwrap();
+            body_json.as_object_mut().unwrap().remove("request_id");
+            assert_eq!(
+                body_json, baseline_json,
+                "provider={provider:?} client={client:?}"
+            );
         }
     }
 }
@@ -3624,10 +3631,12 @@ async fn kimi_plane_messages_fails_closed_for_non_kimi_models() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = to_bytes(response.into_body(), 4_096).await.unwrap();
     let body: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        body,
-        json!({"type": "error", "error": {"type": "not_found_error", "message": "Not Found"}})
-    );
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "not_found_error");
+    assert_eq!(body["error"]["message"], "Not Found");
+    assert!(body["request_id"]
+        .as_str()
+        .is_some_and(|request_id| request_id.starts_with("req_")));
     let wire = body.to_string();
     for forbidden in ["kimi", "subscription", "pool", "upstream"] {
         assert!(!wire.contains(forbidden), "leaked {forbidden}");
