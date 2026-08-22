@@ -113,9 +113,14 @@ def extract_target(root: Path, target: str, destination: Path) -> None:
     )
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as bundle:
         for member in bundle.getmembers():
-            if member.issym() or member.islnk() or member.name.startswith(("/", "../")):
+            parts = Path(member.name).parts
+            if (member.issym() or member.islnk() or not member.isfile() and not member.isdir()
+                    or member.name.startswith(("/", "../")) or ".." in parts):
                 die(f"target documentation archive contains unsafe member: {member.name}", 2)
-        bundle.extractall(destination, filter="data")
+        # git archives contain only the regular files/directories validated above. The explicit
+        # validation keeps this safe on the macOS system Python 3.9, where extractall(filter=)
+        # is not yet available (the filter keyword was added in Python 3.12).
+        bundle.extractall(destination)
 
 
 def path_matches(path: str, prefixes: tuple[str, ...]) -> bool:

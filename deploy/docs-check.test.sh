@@ -49,6 +49,10 @@ expect_failure() { # $1 base $2 head $3 expected
 
 run_check "$BASE" "$BASE" >/dev/null
 
+# The repository contract supports the macOS system Python 3.9 used by agent-merge; importing and
+# executing an archive snapshot must not require the Python 3.12-only extractall(filter=) keyword.
+grep -Fq 'bundle.extractall(destination)' "$CHECK" || fail 'Python 3.9 extraction path is absent'
+
 UNRELATED=$(commit_file docs/commerce/PAY.md unrelated unrelated-doc)
 CONTROL=$(commit_file crates/server/src/http.rs contract control-with-unrelated-doc)
 expect_failure "$BASE" "$CONTROL" 'Control API surface changed without required documentation'
