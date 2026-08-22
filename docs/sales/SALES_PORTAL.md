@@ -77,6 +77,16 @@ payload conflicts remain visible as terminal `apply_failed` evidence. A retryabl
 referral fenced from a second request; a closed terminal effect permits a new independently reviewed
 request without mutating the historical failure.
 
+An operator decision on an inbound application is also one authority transaction, not a
+create-then-patch workflow. `POST /v1/admin/applications/:id/decision` validates and writes the
+new root partner's direct commission, default Team override, Team override ceiling, Team-invite
+right, B2B self-service ceiling and B2B delegation right in the same Sales transaction that marks
+the application approved. The audit row records those initial terms. A failed constraint therefore
+leaves both the application and partner creation uncommitted; the UI must never claim an approved
+account with partially applied authority. If another onboarding path already created the partner,
+the application stays pending and the operator edits that existing partner directly; approval never
+links an existing account while silently discarding the selected initial terms.
+
 Partner request API:
 
 - `POST /v1/partner/requests/commission` — request a higher direct commission with a reason;

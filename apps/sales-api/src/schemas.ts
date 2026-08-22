@@ -231,5 +231,14 @@ export const adminApplicationDecisionSchema = z.object({
   action: z.enum(["approve", "reject"]),
   commissionBps: commissionBpsSchema.optional(),
   subCommissionBps: commissionBpsSchema.optional(),
+  teamOverrideMaxBps: teamOverrideBpsSchema.optional(),
+  teamInvitesEnabled: z.boolean().optional(),
+  b2bEnabled: z.boolean().optional(),
+  b2bMaxDiscountBps: b2bMaxDiscountBpsSchema.optional(),
+  b2bCanDelegate: z.boolean().optional(),
   note: z.string().trim().min(1).max(2000).optional(),
-});
+}).refine(
+  (value) => value.b2bEnabled === true
+    || ((value.b2bMaxDiscountBps ?? 0) === 0 && value.b2bCanDelegate !== true),
+  { message: "a revoked B2B grant cannot retain a ceiling or delegation" },
+);

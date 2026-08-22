@@ -50,7 +50,9 @@ email. Three scenarios on `/login` and `/register`:
   a regular sign-in is enough.
 - **No invitation** → you are offered to **submit an application** (write where you will promote).
   The application goes to the operator for review; after approval, the next Telegram sign-in
-  already has the account ready.
+  already has the account ready. Approval creates the partner and all initial commission, Team and
+  B2B authority in one transaction; there is no intermediate account with default or partially
+  applied rights.
 
 Who issues invitations:
 - **The operator** — in the admin panel (Onboarding tab) for any `@username`, with individual

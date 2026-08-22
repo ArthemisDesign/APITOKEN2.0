@@ -108,6 +108,11 @@ export async function decideApplication(database: SalesDatabase, input: {
   referralCode: string;
   commissionBps: number;
   subCommissionBps: number;
+  teamOverrideMaxBps: number;
+  teamInvitesEnabled: boolean;
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
+  b2bCanDelegate: boolean;
   adminNote: string | null;
   actorId: string;
 }): Promise<{ application: PartnerApplication; partnerId: string | null }> {
@@ -126,25 +131,32 @@ export async function decideApplication(database: SalesDatabase, input: {
       const inserted = await client.query<{ id: string }>(`
         INSERT INTO partners (
           telegram_id, telegram_username, telegram_photo_url, display_name, status,
-          referral_code, parent_partner_id, commission_bps, sub_commission_bps
+          referral_code, parent_partner_id, commission_bps, sub_commission_bps,
+          team_override_max_bps, team_invites_enabled,
+          b2b_enabled, b2b_max_discount_bps, b2b_can_delegate, b2b_grant_source_partner_id
         )
-        VALUES ($1, $2, $3, $4, 'active', $5, NULL, $6, $7)
+        VALUES ($1, $2, $3, $4, 'active', $5, NULL, $6, $7, $8, $9, $10, $11, $12, NULL)
         ON CONFLICT DO NOTHING
         RETURNING id
       `, [
         application.telegramId, application.telegramUsername, application.telegramPhotoUrl,
         application.displayName, input.referralCode, input.commissionBps, input.subCommissionBps,
+        input.teamOverrideMaxBps, input.teamInvitesEnabled,
+        input.b2bEnabled, input.b2bMaxDiscountBps, input.b2bCanDelegate,
       ]);
       partnerId = inserted.rows[0]?.id ?? null;
       if (!partnerId) {
-        // Конфликт: либо партнёр с этим telegram_id уже есть (гонка — линкуем),
-        // либо коллизия referral_code (крайне редко — пусть вызывающий повторит с новым кодом).
+        // A partner created through another onboarding path already has authoritative terms.
+        // Do not approve this application with a second, silently unapplied authority payload.
         const existing = await client.query<{ id: string }>(
           "SELECT id FROM partners WHERE telegram_id = $1",
           [application.telegramId],
         );
-        partnerId = existing.rows[0]?.id ?? null;
-        if (!partnerId) throw new ReferralCodeCollisionError("referral code collision");
+        if (existing.rows[0]) {
+          throw new ApplicationAlreadyDecidedError("partner account already exists; edit it directly");
+        }
+        // A referral-code collision is rare and safe to retry with a newly generated code.
+        throw new ReferralCodeCollisionError("referral code collision");
       }
     }
     const updated = await client.query<ApplicationRow>(`
@@ -160,7 +172,17 @@ export async function decideApplication(database: SalesDatabase, input: {
       input.actorId,
       input.action === "approve" ? "application.approved" : "application.rejected",
       application.id,
-      JSON.stringify({ telegramId: application.telegramId, partnerId }),
+      JSON.stringify({
+        telegramId: application.telegramId,
+        partnerId,
+        commissionBps: input.commissionBps,
+        subCommissionBps: input.subCommissionBps,
+        teamOverrideMaxBps: input.teamOverrideMaxBps,
+        teamInvitesEnabled: input.teamInvitesEnabled,
+        b2bEnabled: input.b2bEnabled,
+        b2bMaxDiscountBps: input.b2bMaxDiscountBps,
+        b2bCanDelegate: input.b2bCanDelegate,
+      }),
     ]);
     await client.query("COMMIT");
     return { application: mapApplication(updated.rows[0]!), partnerId };

@@ -67,6 +67,8 @@ never logged.
 | GET | /v1/admin/requests | x-sales-admin-key | Keyset-paginated partner decision queue |
 | GET | /v1/admin/requests/:id | x-sales-admin-key | Request, immutable terms, decision and effect state |
 | POST | /v1/admin/requests/:id/decision | x-sales-admin-key + X-Admin-Actor | Approve/reject with a mandatory note |
+| GET | /v1/admin/applications | x-sales-admin-key | Inbound partner applications |
+| POST | /v1/admin/applications/:id/decision | x-sales-admin-key + X-Admin-Actor | Atomically approve/reject; approval can set direct commission, Team ceiling/invite right and bounded B2B/delegation authority on the created partner |
 | GET | /v1/admin/payouts?status= | x-sales-admin-key | List payouts |
 | POST | /v1/admin/payouts/:id/decision | x-sales-admin-key | Reject a retained legacy manual payout; positive payouts use fenced batches |
 | GET | /v1/health, /v1/live, /v1/ready | — | Health/liveness/readiness |

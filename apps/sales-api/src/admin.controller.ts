@@ -463,6 +463,11 @@ export class AdminController {
           referralCode: generateCode(8),
           commissionBps: parsed.data.commissionBps ?? this.config.get("DEFAULT_COMMISSION_BPS", { infer: true }),
           subCommissionBps: parsed.data.subCommissionBps ?? this.config.get("DEFAULT_SUB_COMMISSION_BPS", { infer: true }),
+          teamOverrideMaxBps: parsed.data.teamOverrideMaxBps ?? 2_000,
+          teamInvitesEnabled: parsed.data.teamInvitesEnabled ?? true,
+          b2bEnabled: parsed.data.b2bEnabled ?? false,
+          b2bMaxDiscountBps: parsed.data.b2bEnabled === true ? (parsed.data.b2bMaxDiscountBps ?? 0) : 0,
+          b2bCanDelegate: parsed.data.b2bEnabled === true ? (parsed.data.b2bCanDelegate ?? false) : false,
           adminNote: parsed.data.note ?? null,
           actorId: adminActorId(actorHeader),
         });
