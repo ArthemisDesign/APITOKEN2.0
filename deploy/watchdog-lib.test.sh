@@ -1257,6 +1257,19 @@ wd_path_is_openkeys apps/admin/src/app/page.tsx \
   && wd_die "admin app wrongly classified as openkeys"
 wd_path_is_backend packages/engine-client/src/index.ts \
   || wd_die "engine-client remains shared with the commerce backend"
+for control_api_path in \
+  crates/server/src/admin.rs \
+  crates/server/src/http.rs \
+  crates/registry/src/pg.rs \
+  crates/registry/migrations_pg/0062_request_usage_grafana_rollups.sql \
+  packages/engine-client/src/index.ts \
+  packages/contracts/src/index.ts \
+  tests/control_api_engine_client_acceptance.sh; do
+  wd_path_requires_control_api_acceptance "$control_api_path" \
+    || wd_die "Control API acceptance trigger is missing: $control_api_path"
+done
+wd_path_requires_control_api_acceptance apps/web/src/app/page.tsx \
+  && wd_die "unrelated frontend changes must not select Control API acceptance"
 wd_path_is_backend packages/contracts/src/index.ts \
   || wd_die "contracts remain shared with the commerce backend"
 wd_path_is_backend apps/content-studio/src/app/page.tsx || wd_die "content studio must trigger commerce deployment"
@@ -1612,6 +1625,18 @@ printf 'format=1\ncommerce_requires=scalar-pricing-v1\nengine_provides=scalar-pr
 git -C "$validation_repo" add deploy/engine-commerce-compatibility.contract
 git -C "$validation_repo" commit --quiet -m compatibility-contract
 validation_compatibility=$(git -C "$validation_repo" rev-parse HEAD)
+mkdir -p "$validation_repo/packages/engine-client/acceptance"
+printf 'acceptance\n' >"$validation_repo/packages/engine-client/acceptance/control-api.mjs"
+git -C "$validation_repo" add packages/engine-client/acceptance/control-api.mjs
+git -C "$validation_repo" commit --quiet -m control-api-acceptance
+validation_control_api=$(git -C "$validation_repo" rev-parse HEAD)
+control_api_plan=$(bash "$ROOT/deploy/validation-plan.sh" "$validation_repo" \
+  "$validation_control_api" "$validation_compatibility" "$validation_compatibility" \
+  "$validation_compatibility" "$validation_compatibility" "$validation_compatibility")
+[[ $(plan_value "$control_api_plan" rust_required) == 1 \
+   && $(plan_value "$control_api_plan" engine_artifacts_required) == 1 ]] \
+  || wd_die "EngineClient acceptance changes did not require a production engine artifact"
+
 compatibility_plan=$(bash "$ROOT/deploy/validation-plan.sh" "$validation_repo" \
   "$validation_compatibility" "$validation_unknown" "$validation_unknown" \
   "$validation_unknown" "$validation_unknown" "$validation_unknown")
@@ -3728,6 +3753,9 @@ gate_contract=(
   'run_as_ci bash "$candidate/deploy/typescript-test-groups.test.sh"'
   'run_as_ci bash "$candidate/deploy/commerce-release-bundle.test.sh"'
   'run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"'
+  'test_control_api_acceptance "$candidate" "$engine_dsn"'
+  'bash "$candidate/tests/control_api_engine_client_acceptance.sh"'
+  'CONTROL_API_ACCEPTANCE_PORT="$((17480 + TEST_DB_SLOT))"'
   'status --porcelain --untracked-files=no'
   'run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn"'
   'run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" \'
@@ -3736,6 +3764,7 @@ gate_contract=(
   'wait "$rust_pid"'
   'wait "$codex_pid"'
   'wait "$static_pid"'
+  'Control API assembled acceptance failed'
   'Static candidate lane failed'
   'wd_infrastructure_install_scope'
   'select_candidate_validation_requirements "$CANDIDATE_SHA"'

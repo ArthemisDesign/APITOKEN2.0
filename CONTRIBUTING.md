@@ -79,6 +79,10 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    single-winner claim and the "shared keyspace holds only opaque digests" invariant cannot be
    verified any other way. Locally the same tests skip with a message when the variable is unset,
    so `cargo test` stays usable without Docker; to run them, start any Redis and export the URL.
+   Every trusted-host engine artifact lane then runs the exact release `claude-api` plus the built
+   `@claude-api/engine-client` over HTTP against that disposable PostgreSQL. This assembled
+   acceptance verifies the shipped Control API path without provider credentials or external traffic.
+   A local Rust lane runs it too when `CLAUDE_API_TEST_DATABASE_URL` is explicitly set.
 
    The merge script selects TypeScript, Rust, and deployment lanes from the exact committed diff and
    runs the selected independent lanes concurrently. Shell syntax and exact-range whitespace checks

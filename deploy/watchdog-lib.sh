@@ -851,6 +851,21 @@ wd_path_is_engine() {
   esac
 }
 
+# The assembled Control API acceptance owns both sides of the engine↔TypeScript seam. A client or
+# shared schema edit therefore needs a production engine artifact even when no Rust path changed;
+# the trusted host runs the built package against that exact binary and disposable PostgreSQL.
+wd_path_requires_control_api_acceptance() {
+  case "$1" in
+    crates/server/src/admin.rs|crates/server/src/http.rs|crates/server/src/config.rs|\
+    crates/server/src/main.rs|crates/registry/src/*|crates/registry/migrations_pg/*|\
+    packages/engine-client/*|packages/contracts/src/index.ts|\
+    tests/control_api_engine_client_acceptance.sh)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 wd_path_is_codex_tooling() {
   case "$1" in
     tools/codex-native/*)

@@ -834,6 +834,20 @@ test_rust_lane() {
   fi
 }
 
+test_control_api_acceptance() {
+  local candidate=$1 engine_dsn=$2
+  local binary="$candidate/.deploy-artifacts/engine/claude-api"
+  [[ -x $binary ]] || wd_die "Control API acceptance requires the tested release claude-api binary"
+  wd_log "building the real EngineClient package export for assembled Control API acceptance"
+  run_as_ci pnpm --dir "$candidate" install --frozen-lockfile
+  run_as_ci pnpm --dir "$candidate" --filter @claude-api/contracts \
+    --filter @claude-api/engine-client -r --if-present --fail-if-no-match build
+  wd_log "running built claude-api and EngineClient against disposable PostgreSQL"
+  run_as_ci env CLAUDE_API_BIN="$binary" CLAUDE_API_TEST_DATABASE_URL="$engine_dsn" \
+    CONTROL_API_ACCEPTANCE_PORT="$((17480 + TEST_DB_SLOT))" \
+    bash "$candidate/tests/control_api_engine_client_acceptance.sh"
+}
+
 test_static_lane() {
   local candidate=$1 sha=$2 run_regression_suites=$3 shell_file
   local diff_base=${VALIDATION_BASE_SHA:-${PROCESSED_SHA:-}}
@@ -886,7 +900,7 @@ prepare_and_test_candidate_unlocked() {
   local codex_artifacts_required=${10}
   local candidate marker dsn= engine_dsn= sales_dsn= openkeys_dsn= redis_url= manifest digest tree
   local typescript_pid= rust_pid= static_pid=
-  local typescript_rc=0 rust_rc=0 codex_rc=0 static_rc=0
+  local typescript_rc=0 rust_rc=0 codex_rc=0 static_rc=0 acceptance_rc=0
   local typescript_components=none typescript_digest=none component
   local typescript_digest_commerce=none typescript_digest_sales=none
   local typescript_digest_openkeys=none typescript_digest_web=none
@@ -959,6 +973,9 @@ prepare_and_test_candidate_unlocked() {
   if [[ -n $typescript_pid ]]; then wait "$typescript_pid" || typescript_rc=$?; fi
   if [[ -n $rust_pid ]]; then wait "$rust_pid" || rust_rc=$?; fi
   wait "$static_pid" || static_rc=$?
+  if (( rust_rc == 0 && static_rc == 0 && engine_artifacts_required == 1 )); then
+    test_control_api_acceptance "$candidate" "$engine_dsn" || acceptance_rc=$?
+  fi
   if (( TEST_DB_STARTED == 1 )); then
     test_db stop
     TEST_DB_STARTED=0
@@ -967,6 +984,7 @@ prepare_and_test_candidate_unlocked() {
   (( rust_rc == 0 )) || wd_die "Rust candidate lane failed (exit $rust_rc)"
   (( codex_rc == 0 )) || wd_die "Codex candidate lane failed (exit $codex_rc)"
   (( static_rc == 0 )) || wd_die "Static candidate lane failed (exit $static_rc)"
+  (( acceptance_rc == 0 )) || wd_die "Control API assembled acceptance failed (exit $acceptance_rc)"
 
   [[ -z $(run_as_ci git -C "$candidate" status --porcelain --untracked-files=no) ]] \
     || wd_die "tests modified tracked candidate files"

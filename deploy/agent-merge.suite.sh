@@ -19,6 +19,8 @@ CHANGE_PLAN=$ROOT/deploy/change-plan.sh
 REPOSITORY_INVARIANTS=$ROOT/deploy/repository-invariants.py
 DOCS_CHECK=$ROOT/deploy/docs-check.sh
 DOCS_CHECK_IMPL=$ROOT/deploy/docs-check.py
+CONTROL_API_ACCEPTANCE=$ROOT/tests/control_api_engine_client_acceptance.sh
+CONTROL_API_CLIENT=$ROOT/packages/engine-client/acceptance/control-api.mjs
 
 [[ -x $MERGE ]] || wd_die 'deploy/agent-merge.sh must be executable'
 [[ -x $GUARD ]] || wd_die '.claude/hooks/guard-git.sh must be executable'
@@ -64,7 +66,8 @@ git_quiet -C "$PRIMARY" push --quiet origin master
 # The merge script resolves its own repository from its location, so every scenario gets a copy of
 # the scripts it may load inside the throwaway tree.
 install_scripts() {
-  mkdir -p -- "$1/deploy" "$1/.claude/hooks"
+  mkdir -p -- "$1/deploy" "$1/.claude/hooks" "$1/tests" \
+    "$1/packages/engine-client/acceptance"
   cp -- "$MERGE" "$1/deploy/agent-merge.sh"
   cp -- "$GUARD" "$1/.claude/hooks/guard-git.sh"
   cp -- "$WATCHDOG_LIB" "$1/deploy/watchdog-lib.sh"
@@ -73,11 +76,14 @@ install_scripts() {
   cp -- "$REPOSITORY_INVARIANTS" "$1/deploy/repository-invariants.py"
   cp -- "$DOCS_CHECK" "$1/deploy/docs-check.sh"
   cp -- "$DOCS_CHECK_IMPL" "$1/deploy/docs-check.py"
+  cp -- "$CONTROL_API_ACCEPTANCE" "$1/tests/control_api_engine_client_acceptance.sh"
+  cp -- "$CONTROL_API_CLIENT" "$1/packages/engine-client/acceptance/control-api.mjs"
 }
 install_scripts "$PRIMARY"
 git_quiet -C "$PRIMARY" add deploy/agent-merge.sh deploy/watchdog-lib.sh \
   deploy/sccache-cargo.sh deploy/change-plan.sh deploy/repository-invariants.py \
-  deploy/docs-check.sh deploy/docs-check.py .claude/hooks/guard-git.sh
+  deploy/docs-check.sh deploy/docs-check.py tests/control_api_engine_client_acceptance.sh \
+  packages/engine-client/acceptance/control-api.mjs .claude/hooks/guard-git.sh
 git_quiet -C "$PRIMARY" commit --quiet -m 'tooling'
 git_quiet -C "$PRIMARY" push --quiet origin master
 

@@ -27,6 +27,8 @@ the redacted host cycle excerpt from check run `deploy/watchdog-log`. The full c
 
 `deploy/docs-check.sh <base-sha> <target-sha>` validates the committed target tree, not the caller's dirty files. The Python implementation requires the named contract owners for Control API, metering/pricing, payments, sales-feed producers, migrations, and alert rules; an unrelated Markdown edit does not satisfy the rule. It also rejects modified/deleted migrations, broken relative Markdown links or fragments, documents absent from `docs/README.md`, and alert runbook anchors absent from `docs/ops/MONITORING.md`. External links are not fetched. The checker and its fixtures run in both local and trusted-host static gates, and their blobs are part of the exact validation-policy digest.
 
+The trusted-host engine artifact lane ends with `tests/control_api_engine_client_acceptance.sh`. It runs the exact built `claude-api`, imports the built `@claude-api/engine-client` through package exports, and exercises account, bigint credit, key policy, pricing, ledger, usage, auth and schema rejection over real HTTP against the disposable engine PostgreSQL. The only upstream is an unreachable loopback origin and no inference route is called. The host runs this assembled proof before it stops the disposable database. Locally the Rust lane runs the same proof when `CLAUDE_API_TEST_DATABASE_URL` is explicitly available; otherwise the trusted exact-SHA validation owns it.
+
 ### Recovering an interrupted merge (agent-merge-recover.sh)
 
 That rebase onto the latest `origin/master` is where a moving trunk shows up: it can stop on a

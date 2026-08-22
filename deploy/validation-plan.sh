@@ -91,7 +91,11 @@ wd_range_has_class "$REPO" "$PROCESSED_BASE" "$TARGET" wd_path_is_merge_workflow
   && STATIC_REQUIRED=1
 wd_range_has_unknown_validation_path "$REPO" "$PROCESSED_BASE" "$TARGET" \
   && unknown_validation_path=1
-
+if wd_range_has_class "$REPO" "$PROCESSED_BASE" "$TARGET" \
+  wd_path_requires_control_api_acceptance; then
+  RUST_REQUIRED=1
+  ENGINE_ARTIFACTS_REQUIRED=1
+fi
 if wd_range_has_class "$REPO" "$ENGINE_BASE" "$TARGET" wd_path_is_engine; then
   RUST_REQUIRED=1
   ENGINE_ARTIFACTS_REQUIRED=1
@@ -139,6 +143,8 @@ policy_sha256=$(
     deploy/repository-invariants.py \
     deploy/docs-check.sh \
     deploy/docs-check.py \
+    tests/control_api_engine_client_acceptance.sh \
+    packages/engine-client/acceptance/control-api.mjs \
     deploy/engine-commerce-compatibility.contract \
     deploy/release-tree-digest.mjs; do
     blob=$(git -c safe.directory="$REPO" -C "$REPO" rev-parse "$TARGET:$path" 2>/dev/null \

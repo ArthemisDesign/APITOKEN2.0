@@ -175,6 +175,16 @@ am_gate_rust() (
     return
   fi
   bash "$ROOT/deploy/sccache-cargo.sh" cargo test --locked --workspace
+  # Local proof uses a release-shaped binary and an externally supplied disposable PostgreSQL DSN.
+  # Ordinary developer machines without that DSN keep the expensive assembled acceptance on the
+  # trusted host; CI/local environments that provide it run the same script before merge.
+  if [[ -n ${CLAUDE_API_TEST_DATABASE_URL:-} ]]; then
+    bash "$ROOT/deploy/sccache-cargo.sh" cargo build --locked --release -p claude-api
+    pnpm --filter @claude-api/contracts --filter @claude-api/engine-client \
+      -r --if-present --fail-if-no-match build
+    CLAUDE_API_BIN="$ROOT/target/release/claude-api" \
+      bash "$ROOT/tests/control_api_engine_client_acceptance.sh"
+  fi
 )
 
 am_gate_deployment() (
@@ -239,7 +249,9 @@ am_range_changes_local_gate() {
       deploy/release-tree-digest.mjs|deploy/content-studio-start.sh|\
       deploy/change-plan.sh|deploy/change-plan.test.sh|\
       deploy/repository-invariants.py|deploy/repository-invariants.test.sh|\
-      deploy/docs-check.sh|deploy/docs-check.py|deploy/docs-check.test.sh)
+      deploy/docs-check.sh|deploy/docs-check.py|deploy/docs-check.test.sh|\
+      tests/control_api_engine_client_acceptance.sh|\
+      packages/engine-client/acceptance/control-api.mjs)
         return 0
         ;;
     esac
