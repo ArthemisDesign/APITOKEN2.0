@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, ApiError, type ReferralRow } from "@/lib/api";
 import { Button, Input, Notice } from "@/components/ui";
 import { useI18n } from "@/components/i18n";
@@ -46,6 +46,14 @@ export function BusinessPricingDialog({
   const [error, setError] = useState<string | null>(null);
 
   const isB2b = row.customerType === "b2b";
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
 
   async function save() {
     setError(null);
@@ -94,9 +102,15 @@ export function BusinessPricingDialog({
   }
 
   return (
-    <div className="auth-shell" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 50, justifyContent: "center", padding: 16, overflowY: "auto" }} onClick={onClose}>
-      <div className="auth-card" style={{ maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
-        <h1 style={{ fontSize: 18 }}>
+    <div className="auth-shell" style={{ position: "fixed", inset: 0, zIndex: 50, justifyContent: "center", padding: 16, overflowY: "auto" }}>
+      <button
+        type="button"
+        aria-label={t("Close business pricing", "Закрыть бизнес-условия")}
+        onClick={onClose}
+        style={{ position: "absolute", inset: 0, border: 0, background: "rgba(0,0,0,.45)", cursor: "default" }}
+      />
+      <section className="auth-card" role="dialog" aria-modal="true" aria-labelledby="business-pricing-title" style={{ maxWidth: 460, position: "relative", overscrollBehavior: "contain" }}>
+        <h1 id="business-pricing-title" style={{ fontSize: 18 }}>
           {isB2b
             ? t("Business pricing", "Бизнес-условия")
             : t("Convert to a business customer", "Перевести в бизнес-клиенты")}
@@ -115,6 +129,7 @@ export function BusinessPricingDialog({
         <Input
           id="b2b-default"
           inputMode="numeric"
+          autoComplete="off"
           value={draft.default}
           placeholder={String(ceilingPercent)}
           onChange={(e) => setDraft({ ...draft, default: e.target.value.replace(/[^\d]/g, "") })}
@@ -131,6 +146,8 @@ export function BusinessPricingDialog({
               <Input
                 inputMode="numeric"
                 aria-label={providerLabel(id, id)}
+                name={`provider-discount-${id}`}
+                autoComplete="off"
                 value={draft.providers[id] ?? ""}
                 placeholder="—"
                 onChange={(e) => setDraft({
@@ -152,7 +169,7 @@ export function BusinessPricingDialog({
             {t("Cancel", "Отмена")}
           </Button>
         </div>
-      </div>
+      </section>
     </div>
   );
 }

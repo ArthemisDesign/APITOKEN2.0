@@ -86,6 +86,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
 
   return (
     <PartnerContext.Provider value={partner}>
+      <a className="skip-link" href="#dashboard-content">
+        {t("Skip to content", "Перейти к содержимому")}
+      </a>
       <div className="cab">
         <aside className={`cab-sidebar${menuOpen ? " open" : ""}`}>
           <Link href="/dashboard" className="brand">
@@ -116,7 +119,12 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
           </div>
         </aside>
         {menuOpen ? (
-          <div className="cab-overlay" onClick={() => setMenuOpen(false)} aria-hidden />
+          <button
+            type="button"
+            className="cab-overlay"
+            onClick={() => setMenuOpen(false)}
+            aria-label={t("Close menu", "Закрыть меню")}
+          />
         ) : null}
         <div className="cab-main">
           <header className="cab-topbar">
@@ -138,7 +146,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
               </button>
             </div>
           </header>
-          <main className="cab-content">{children}</main>
+          <main className="cab-content" id="dashboard-content" tabIndex={-1}>{children}</main>
         </div>
       </div>
     </PartnerContext.Provider>

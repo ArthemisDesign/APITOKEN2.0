@@ -72,11 +72,6 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     } catch {
       // document is unavailable during non-browser rendering.
     }
-    try {
-      document.documentElement.lang = next;
-    } catch {
-      // игнорируем
-    }
   }, []);
 
   const t = useCallback((en: string, ru: string) => (lang === "ru" ? ru : en), [lang]);
@@ -97,9 +92,9 @@ export function localeFor(lang: Lang): string {
 
 /** Небольшой переключатель EN / RU для шапки. */
 export function LanguageToggle({ className = "" }: { className?: string }) {
-  const { lang, setLang } = useI18n();
+  const { lang, setLang, t } = useI18n();
   return (
-    <div className={`lang-toggle${className ? ` ${className}` : ""}`} role="group" aria-label="Language">
+    <div className={`lang-toggle${className ? ` ${className}` : ""}`} role="group" aria-label={t("Language", "Язык")}>
       <button
         type="button"
         className={`lang-opt${lang === "en" ? " active" : ""}`}

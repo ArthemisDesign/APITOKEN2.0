@@ -34,9 +34,9 @@ export function AuthShell({ children }: { children: ReactNode }) {
   }, [attempt, router]);
 
   return (
-    <div className="auth-shell">
+    <main className="auth-shell">
       <div className="auth-header">
-        <Link href="/" className="brand" aria-label="APIToken Partners home">
+        <Link href="/" className="brand" aria-label={t("APIToken Partners home", "Главная APIToken Partners")}>
           <Brand />
         </Link>
         <div className="gate-tools">
@@ -68,6 +68,6 @@ export function AuthShell({ children }: { children: ReactNode }) {
           </div>
         )}
       </div>
-    </div>
+    </main>
   );
 }

@@ -22,7 +22,7 @@ import {
   Notice,
   Table,
 } from "@/components/ui";
-import { useI18n } from "@/components/i18n";
+import { localeFor, useI18n } from "@/components/i18n";
 import { usePartner } from "@/components/partner-context";
 
 type TeamResponse = { items: TeamRow[] };
@@ -48,7 +48,8 @@ function percentToBps(input: string): number | null {
 }
 
 export default function TeamPage() {
-  const { t } = useI18n();
+  const { lang, t } = useI18n();
+  const locale = localeFor(lang);
   const partner = usePartner();
   const [team, setTeam] = useState<TeamRow[] | null>(null);
   const [invites, setInvites] = useState<InviteRow[] | null>(null);
@@ -179,22 +180,27 @@ export default function TeamPage() {
           <form onSubmit={createInvite} className="team-invite-form">
             <Field
               label={t("Telegram username", "Имя пользователя Telegram")}
+              htmlFor="team-invite-telegram"
               hint={t("For example: @partner_name", "Например: @partner_name")}
             >
               <Input
+                id="team-invite-telegram"
                 value={telegramUsername}
                 onChange={(event) => setTelegramUsername(event.target.value)}
                 placeholder="@username"
                 autoComplete="off"
+                spellCheck={false}
                 disabled={busy}
               />
             </Field>
             <Field
               label={t("Their direct rate", "Их прямая ставка")}
+              htmlFor="team-invite-rate"
               hint={t(`Maximum ${formatBps(partner.commissionBps)}.`, `Максимум ${formatBps(partner.commissionBps)}.`)}
             >
               <div className="input-suffix">
                 <Input
+                  id="team-invite-rate"
                   type="number"
                   min={0}
                   max={partner.commissionBps / 100}
@@ -203,6 +209,7 @@ export default function TeamPage() {
                   onChange={(event) => setCommissionPercent(event.target.value)}
                   disabled={busy}
                   inputMode="decimal"
+                  autoComplete="off"
                 />
                 <span aria-hidden>%</span>
               </div>
@@ -216,11 +223,11 @@ export default function TeamPage() {
               <div>
                 <strong>{t("Invite ready", "Приглашение готово")}</strong>
                 <span className="field-hint">
-                  {formatBps(created.commissionBps)} {t("direct rate", "прямая ставка")} · {formatDate(created.expiresAt)}
+                  {formatBps(created.commissionBps)} {t("direct rate", "прямая ставка")} · {formatDate(created.expiresAt, locale)}
                 </span>
               </div>
               <div className="reflink-row">
-                <Input readOnly value={created.inviteUrl} onFocus={(event) => event.currentTarget.select()} />
+                <Input readOnly value={created.inviteUrl} aria-label={t("Created invite link", "Созданная ссылка-приглашение")} onFocus={(event) => event.currentTarget.select()} />
                 <CopyButton value={created.inviteUrl} label={t("Copy link", "Копировать ссылку")} />
               </div>
             </div>
@@ -292,7 +299,7 @@ export default function TeamPage() {
                     <td className="mono">{invite.telegramUsername ? `@${invite.telegramUsername}` : "—"}</td>
                     <td><Badge tone={state.tone}>{t(state.label[0], state.label[1])}</Badge></td>
                     <td className="num">{formatBps(invite.commissionBps)}</td>
-                    <td>{formatDate(invite.expiresAt)}</td>
+                    <td>{formatDate(invite.expiresAt, locale)}</td>
                     <td><CopyButton value={invite.inviteUrl} label={t("Copy", "Копировать")} /></td>
                   </tr>
                 );

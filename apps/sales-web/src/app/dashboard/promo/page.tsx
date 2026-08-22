@@ -118,7 +118,7 @@ export default function PromoPage() {
           {created ? (
             <div style={{ marginBottom: 14 }}>
               <div className="reflink-row">
-                <Input readOnly className="mono" value={created.code} onFocus={(e) => e.currentTarget.select()} />
+                <Input readOnly className="mono" value={created.code} aria-label={t("Created promo code", "Созданный промокод")} onFocus={(e) => e.currentTarget.select()} />
                 <CopyButton value={created.code} label={t("Copy code", "Копировать код")} />
               </div>
               <p className="field-hint" style={{ marginTop: 8 }}>
@@ -133,6 +133,9 @@ export default function PromoPage() {
             <div className="reflink-row">
               <Input
                 inputMode="numeric"
+                aria-label={t("Promo value in USD", "Номинал промокода в USD")}
+                name="promo-value-usd"
+                autoComplete="off"
                 value={value}
                 onChange={(e) => setValue(e.target.value.replace(/[^\d]/g, ""))}
                 placeholder={t(`Value in USD (max ${maxUsd ?? "—"})`, `Сумма в USD (макс ${maxUsd ?? "—"})`)}

@@ -1,12 +1,14 @@
 "use client";
 
 import { formatUsd, parseCanonicalSignedNanoUsd, type EarningRow } from "@/lib/api";
+import { useI18n } from "@/components/i18n";
 
 /**
  * Pure-SVG bar chart of daily earnings (nanoUSD strings).
  * BigInt-scaled to pixel heights — no float math on money values.
  */
 export function EarningsChart({ items }: { items: EarningRow[] }) {
+  const { t } = useI18n();
   const W = 720;
   const H = 180;
   const PAD_BOTTOM = 22;
@@ -18,8 +20,8 @@ export function EarningsChart({ items }: { items: EarningRow[] }) {
   if (parsedValues.some((value) => value === null)) {
     return (
       <div className="empty" style={{ padding: "36px 16px" }}>
-        <div className="empty-title">Earnings chart unavailable</div>
-        <div style={{ fontSize: 14 }}>The API returned an invalid money value. Refresh before relying on this chart.</div>
+        <div className="empty-title">{t("Earnings chart unavailable", "График заработка недоступен")}</div>
+        <div style={{ fontSize: 14 }}>{t("The API returned an invalid money value. Refresh before relying on this chart.", "API вернул некорректную денежную сумму. Обновите страницу, прежде чем использовать данные графика.")}</div>
       </div>
     );
   }
@@ -30,10 +32,12 @@ export function EarningsChart({ items }: { items: EarningRow[] }) {
   if (rows.length === 0 || max === 0n) {
     return (
       <div className="empty" style={{ padding: "36px 16px" }}>
-        <div className="empty-title">No earnings yet</div>
+        <div className="empty-title">{t("No earnings yet", "Заработка пока нет")}</div>
         <div style={{ fontSize: 14 }}>
-          Your last 30 days of commission will chart here once referrals start
-          spending.
+          {t(
+            "Your last 30 days of commission will chart here once referrals start spending.",
+            "Здесь появится график комиссии за последние 30 дней, когда рефералы начнут тратить средства.",
+          )}
         </div>
       </div>
     );
@@ -62,7 +66,7 @@ export function EarningsChart({ items }: { items: EarningRow[] }) {
         className="chart-svg"
         viewBox={`0 0 ${W} ${H}`}
         role="img"
-        aria-label="Daily earnings for the last 30 days"
+        aria-label={t("Daily earnings for the last 30 days", "Ежедневный заработок за последние 30 дней")}
       >
         {/* baseline */}
         <line
@@ -84,7 +88,10 @@ export function EarningsChart({ items }: { items: EarningRow[] }) {
               fill={b.negative ? "#d6455a" : "var(--accent)"}
               opacity={0.85}
             >
-              <title>{`${b.row.date}: ${formatUsd(b.row.netNano)} net (${formatUsd(b.row.adjustmentNano)} returns; spend ${formatUsd(b.row.spendNano)})`}</title>
+              <title>{t(
+                `${b.row.date}: ${formatUsd(b.row.netNano)} net (${formatUsd(b.row.adjustmentNano)} returns; spend ${formatUsd(b.row.spendNano)})`,
+                `${b.row.date}: чистыми ${formatUsd(b.row.netNano)} (возвраты ${formatUsd(b.row.adjustmentNano)}; расходы ${formatUsd(b.row.spendNano)})`,
+              )}</title>
             </rect>
           </g>
         ))}

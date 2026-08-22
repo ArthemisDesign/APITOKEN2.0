@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { I18nProvider, languageBootstrapScript } from "@/components/i18n";
 import { themeBootstrapScript } from "@/lib/theme";
@@ -10,6 +10,12 @@ export const metadata: Metadata = {
   },
   description:
     "Partner program for apitoken.sale: share your link and earn a percentage of what your referrals actually spend on the API — across every provider in the catalog — their real, after-discount usage paid with real money (not top-ups, not free credit).",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  themeColor: "#0a0a0a",
 };
 
 export default function RootLayout({

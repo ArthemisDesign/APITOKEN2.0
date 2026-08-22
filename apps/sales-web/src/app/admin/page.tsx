@@ -14,6 +14,7 @@ import {
 } from "@/lib/api";
 import {
   Badge,
+  Brand,
   Button,
   Card,
   CopyButton,
@@ -28,6 +29,7 @@ import {
 import { PartnersTab } from "./partner-analytics";
 import { PayoutSendTab } from "./payout-send";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { LanguageToggle, localeFor, useI18n } from "@/components/i18n";
 
 const KEY_STORAGE = "sales_admin_key";
 
@@ -42,6 +44,7 @@ function adminHeaders(key: string): Record<string, string> {
 // ---------------------------------------------------------------------------
 
 function KeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
+  const { t } = useI18n();
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,10 +62,10 @@ function KeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
     } catch (err) {
       setError(
         err instanceof ApiError && (err.status === 401 || err.status === 403)
-          ? "Invalid admin key."
+          ? t("Invalid admin key.", "Неверный ключ администратора.")
           : err instanceof ApiError
             ? err.message
-            : "Could not reach the API.",
+            : t("Could not reach the API.", "Не удалось подключиться к API."),
       );
     } finally {
       setBusy(false);
@@ -70,30 +73,42 @@ function KeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
   }
 
   return (
-    <div className="auth-shell" style={{ justifyContent: "center" }}>
+    <main className="auth-shell">
+      <div className="auth-header">
+        <Brand />
+        <div className="gate-tools">
+          <LanguageToggle />
+          <ThemeToggle />
+        </div>
+      </div>
       <div className="auth-card">
-        <h1>Admin access</h1>
+        <h1>{t("Admin access", "Доступ администратора")}</h1>
         <p className="auth-sub">
-          Enter the admin key. It is kept in this tab&apos;s session only.
+          {t(
+            "Enter the admin key. It is kept in this tab's session only.",
+            "Введите ключ администратора. Он хранится только в сессии этой вкладки.",
+          )}
         </p>
         {error ? <Notice kind="error">{error}</Notice> : null}
         <form onSubmit={submit}>
-          <Field label="Admin key">
+          <Field label={t("Admin key", "Ключ администратора")} htmlFor="sales-admin-key">
             <Input
+              id="sales-admin-key"
               type="password"
               value={key}
               onChange={(e) => setKey(e.target.value)}
               placeholder="x-admin-key"
-              autoFocus
+              autoComplete="off"
+              spellCheck={false}
               required
             />
           </Field>
           <Button type="submit" loading={busy} style={{ width: "100%" }}>
-            Enter admin key
+            {t("Enter admin key", "Войти с ключом")}
           </Button>
         </form>
       </div>
-    </div>
+    </main>
   );
 }
 
@@ -101,7 +116,23 @@ function KeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
 // Overview tab — renders whatever totals the API returns, defensively.
 // ---------------------------------------------------------------------------
 
-function labelize(key: string): string {
+type Translate = (en: string, ru: string) => string;
+
+function labelize(key: string, t: Translate): string {
+  const known: Record<string, string> = {
+    partners: t("Partners", "Партнёры"),
+    activePartners: t("Active partners", "Активные партнёры"),
+    referredUsers: t("Referred users", "Привлечённые пользователи"),
+    totalSpendNano: t("Total spend", "Общий расход"),
+    totalCommissionsNano: t("Total commissions", "Все комиссии"),
+    totalAdjustmentsNano: t("Refund adjustments", "Корректировки возвратов"),
+    totalNetCommissionsNano: t("Net commissions", "Чистые комиссии"),
+    totalDebtNano: t("Partner debt", "Долг партнёров"),
+    totalPayableNano: t("Payable now", "К выплате сейчас"),
+    pendingPayoutsNano: t("Pending payouts", "Ожидающие выплаты"),
+    paidPayoutsNano: t("Paid payouts", "Выплачено"),
+  };
+  if (known[key]) return known[key];
   return key
     .replace(/Nano$/, "")
     .replace(/([a-z])([A-Z])/g, "$1 $2")
@@ -109,6 +140,7 @@ function labelize(key: string): string {
 }
 
 function OverviewTab({ adminKey }: { adminKey: string }) {
+  const { t } = useI18n();
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -122,13 +154,13 @@ function OverviewTab({ adminKey }: { adminKey: string }) {
         if (!cancelled) setData(res);
       } catch (err) {
         if (!cancelled)
-          setError(err instanceof ApiError ? err.message : "Failed to load overview.");
+          setError(err instanceof ApiError ? err.message : t("Failed to load overview.", "Не удалось загрузить обзор."));
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [adminKey]);
+  }, [adminKey, t]);
 
   if (error) return <Notice kind="error">{error}</Notice>;
   if (!data) return <Loading />;
@@ -137,12 +169,12 @@ function OverviewTab({ adminKey }: { adminKey: string }) {
   const walk = (obj: Record<string, unknown>, prefix: string) => {
     for (const [k, v] of Object.entries(obj)) {
       if (v !== null && typeof v === "object" && !Array.isArray(v)) {
-        walk(v as Record<string, unknown>, prefix ? `${prefix} · ${labelize(k)}` : labelize(k));
+        walk(v as Record<string, unknown>, prefix ? `${prefix} · ${labelize(k, t)}` : labelize(k, t));
       } else if (typeof v === "string" && /Nano$/.test(k)) {
-        flat.push({ key: prefix ? `${prefix} · ${labelize(k)}` : labelize(k), value: formatUsd(v) });
+        flat.push({ key: prefix ? `${prefix} · ${labelize(k, t)}` : labelize(k, t), value: formatUsd(v) });
       } else if (typeof v === "number" || typeof v === "string") {
         flat.push({
-          key: prefix ? `${prefix} · ${labelize(k)}` : labelize(k),
+          key: prefix ? `${prefix} · ${labelize(k, t)}` : labelize(k, t),
           value: String(v),
         });
       }
@@ -150,7 +182,7 @@ function OverviewTab({ adminKey }: { adminKey: string }) {
   };
   walk(data, "");
 
-  if (flat.length === 0) return <EmptyState title="No overview data" />;
+  if (flat.length === 0) return <EmptyState title={t("No overview data", "Нет данных для обзора")} />;
 
   return (
     <div className="stat-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
@@ -185,6 +217,8 @@ function PayoutRowView({
   onDone: () => void;
   onError: (msg: string) => void;
 }) {
+  const { lang, t } = useI18n();
+  const locale = localeFor(lang);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -198,7 +232,7 @@ function PayoutRowView({
       });
       onDone();
     } catch (err) {
-      onError(err instanceof ApiError ? err.message : "Decision failed.");
+      onError(err instanceof ApiError ? err.message : t("Decision failed.", "Не удалось сохранить решение."));
     } finally {
       setBusy(false);
     }
@@ -213,7 +247,7 @@ function PayoutRowView({
       <td>
         <div style={{ fontWeight: 600 }}>{payout.partnerEmail ?? payout.partnerId ?? "—"}</div>
         <div style={{ fontSize: 12, color: "var(--text-faint)" }}>
-          {formatDate(payout.requestedAt)}
+          {formatDate(payout.requestedAt, locale)}
         </div>
       </td>
       <td className="num" style={{ fontWeight: 700 }}>
@@ -234,30 +268,33 @@ function PayoutRowView({
         {pending ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 200 }}>
             <Input
-              placeholder="Note (optional)"
+              placeholder={t("Note (optional)", "Примечание (необязательно)")}
+              aria-label={t("Payout decision note", "Примечание к решению по выплате")}
+              name={`payout-note-${payout.id}`}
+              autoComplete="off"
               value={note}
               onChange={(e) => setNote(e.target.value)}
               style={{ padding: "5px 8px", fontSize: 13 }}
             />
             <div className="row-actions">
               <Button size="sm" disabled={busy} onClick={() => decide("approve")}>
-                Approve
+                {t("Approve", "Одобрить")}
               </Button>
               <Button size="sm" variant="ghost" disabled={busy} onClick={() => decide("paid")}>
-                Mark paid
+                {t("Mark paid", "Отметить выплаченной")}
               </Button>
               <Button size="sm" variant="danger" disabled={busy} onClick={() => decide("reject")}>
-                Reject
+                {t("Reject", "Отклонить")}
               </Button>
             </div>
           </div>
         ) : payout.status.toLowerCase() === "approved" ? (
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => decide("paid")}>
-            Mark paid
+            {t("Mark paid", "Отметить выплаченной")}
           </Button>
         ) : (
           <span style={{ color: "var(--text-faint)", fontSize: 13 }}>
-            {payout.paidAt ? `Paid ${formatDate(payout.paidAt)}` : "—"}
+            {payout.paidAt ? `${t("Paid", "Выплачено")} ${formatDate(payout.paidAt, locale)}` : "—"}
           </span>
         )}
       </td>
@@ -266,6 +303,7 @@ function PayoutRowView({
 }
 
 function PayoutsTab({ adminKey }: { adminKey: string }) {
+  const { t } = useI18n();
   const [filter, setFilter] = useState<"pending" | "all">("pending");
   const [items, setItems] = useState<AdminPayoutRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -281,9 +319,9 @@ function PayoutsTab({ adminKey }: { adminKey: string }) {
       });
       setItems(res.items);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to load payouts.");
+      setError(err instanceof ApiError ? err.message : t("Failed to load payouts.", "Не удалось загрузить выплаты."));
     }
-  }, [adminKey, filter]);
+  }, [adminKey, filter, t]);
 
   useEffect(() => {
     void load();
@@ -297,14 +335,14 @@ function PayoutsTab({ adminKey }: { adminKey: string }) {
           variant={filter === "pending" ? "primary" : "ghost"}
           onClick={() => setFilter("pending")}
         >
-          Pending queue
+          {t("Pending queue", "Очередь выплат")}
         </Button>
         <Button
           size="sm"
           variant={filter === "all" ? "primary" : "ghost"}
           onClick={() => setFilter("all")}
         >
-          All payouts
+          {t("All payouts", "Все выплаты")}
         </Button>
       </div>
       {error ? <Notice kind="error">{error}</Notice> : null}
@@ -312,17 +350,17 @@ function PayoutsTab({ adminKey }: { adminKey: string }) {
         <Loading />
       ) : items && items.length === 0 ? (
         <Card>
-          <EmptyState title={filter === "pending" ? "Queue is empty" : "No payouts yet"} />
+          <EmptyState title={filter === "pending" ? t("Queue is empty", "Очередь пуста") : t("No payouts yet", "Выплат пока нет")} />
         </Card>
       ) : items ? (
         <Table
           head={
             <>
-              <th>Partner</th>
-              <th className="num">Amount</th>
-              <th>Method / details</th>
-              <th>Status</th>
-              <th>Decision</th>
+              <th>{t("Partner", "Партнёр")}</th>
+              <th className="num">{t("Amount", "Сумма")}</th>
+              <th>{t("Method / details", "Метод / реквизиты")}</th>
+              <th>{t("Status", "Статус")}</th>
+              <th>{t("Decision", "Решение")}</th>
             </>
           }
         >
@@ -367,6 +405,8 @@ function ApplicationRowView({
   onDone: () => void;
   onError: (msg: string) => void;
 }) {
+  const { lang, t } = useI18n();
+  const locale = localeFor(lang);
   const [bps, setBps] = useState("");
   const [subBps, setSubBps] = useState("");
   const [busy, setBusy] = useState(false);
@@ -385,7 +425,7 @@ function ApplicationRowView({
       });
       onDone();
     } catch (err) {
-      onError(err instanceof ApiError ? err.message : "Decision failed.");
+      onError(err instanceof ApiError ? err.message : t("Decision failed.", "Не удалось сохранить решение."));
       setBusy(false);
     }
   }
@@ -401,7 +441,7 @@ function ApplicationRowView({
         ) : null}
       </td>
       <td style={{ maxWidth: 320, whiteSpace: "pre-wrap" }}>{application.note ?? "—"}</td>
-      <td>{formatDate(application.createdAt)}</td>
+      <td>{formatDate(application.createdAt, locale)}</td>
       <td>
         <div className="row-actions">
           <Input
@@ -410,7 +450,7 @@ function ApplicationRowView({
             value={bps}
             onChange={(e) => setBps(e.target.value.replace(/[^\d]/g, ""))}
             placeholder="bps"
-            aria-label="Commission bps"
+            aria-label={t("Commission bps", "Комиссия в базисных пунктах")}
             style={{ maxWidth: 90 }}
           />
           <Input
@@ -419,14 +459,14 @@ function ApplicationRowView({
             value={subBps}
             onChange={(e) => setSubBps(e.target.value.replace(/[^\d]/g, ""))}
             placeholder="sub"
-            aria-label="Sub-commission bps"
+            aria-label={t("Sub-commission bps", "Командная комиссия в базисных пунктах")}
             style={{ maxWidth: 90 }}
           />
           <Button size="sm" disabled={busy} onClick={() => decide("approve")}>
-            Approve
+            {t("Approve", "Одобрить")}
           </Button>
           <Button size="sm" variant="danger" disabled={busy} onClick={() => decide("reject")}>
-            Reject
+            {t("Reject", "Отклонить")}
           </Button>
         </div>
       </td>
@@ -435,6 +475,7 @@ function ApplicationRowView({
 }
 
 function ApplicationsCard({ adminKey }: { adminKey: string }) {
+  const { t } = useI18n();
   const [items, setItems] = useState<AdminApplicationRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -445,9 +486,9 @@ function ApplicationsCard({ adminKey }: { adminKey: string }) {
       });
       setItems(res.items);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to load applications.");
+      setError(err instanceof ApiError ? err.message : t("Failed to load applications.", "Не удалось загрузить заявки."));
     }
-  }, [adminKey]);
+  }, [adminKey, t]);
 
   useEffect(() => {
     void load();
@@ -455,22 +496,25 @@ function ApplicationsCard({ adminKey }: { adminKey: string }) {
 
   return (
     <Card
-      title="Applications"
-      sub="People who signed in with Telegram without an invite and applied. Approve creates the partner account instantly."
+      title={t("Applications", "Заявки")}
+      sub={t(
+        "People who signed in with Telegram without an invite and applied. Approve creates the partner account instantly.",
+        "Пользователи, которые вошли через Telegram без приглашения и отправили заявку. Одобрение сразу создаёт партнёрский аккаунт.",
+      )}
     >
       {error ? <Notice kind="error">{error}</Notice> : null}
       {!items ? (
         <Loading />
       ) : items.length === 0 ? (
-        <EmptyState title="No pending applications" />
+        <EmptyState title={t("No pending applications", "Нет заявок на рассмотрении")} />
       ) : (
         <Table
           head={
             <>
               <th>Telegram</th>
-              <th>Application</th>
-              <th>Submitted</th>
-              <th>Decision (bps optional)</th>
+              <th>{t("Application", "Заявка")}</th>
+              <th>{t("Submitted", "Отправлена")}</th>
+              <th>{t("Decision (bps optional)", "Решение (ставки необязательны)")}</th>
             </>
           }
         >
@@ -501,6 +545,8 @@ function pctToBpsOptional(value: string): number | null | undefined {
 }
 
 function OnboardingTab({ adminKey }: { adminKey: string }) {
+  const { lang, t } = useI18n();
+  const locale = localeFor(lang);
   const [items, setItems] = useState<InviteRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [username, setUsername] = useState("");
@@ -520,9 +566,9 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
       });
       setItems(res.items);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to load invites.");
+      setError(err instanceof ApiError ? err.message : t("Failed to load invites.", "Не удалось загрузить приглашения."));
     }
-  }, [adminKey]);
+  }, [adminKey, t]);
 
   useEffect(() => {
     void load();
@@ -532,7 +578,10 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
     setError(null); // очищаем прошлую ошибку сразу при клике, чтобы не висела на валидном вводе
     const clean = username.trim().replace(/^@/, "");
     if (!/^[A-Za-z0-9_]{5,32}$/.test(clean)) {
-      setError("Enter the sales partner's Telegram username (5–32 letters, digits, underscore).");
+      setError(t(
+        "Enter the sales partner's Telegram username (5–32 letters, digits, underscore).",
+        "Введите Telegram-имя партнёра (5–32 латинских букв, цифр или символов подчёркивания).",
+      ));
       return;
     }
     // Пустое поле процента = «по умолчанию» (не отправляем — сервер подставит дефолт). Заполненное,
@@ -540,26 +589,26 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
     const commissionBps = pctToBpsOptional(commissionPct);
     const subCommissionBps = pctToBpsOptional(subPct);
     if (commissionBps === null || subCommissionBps === null) {
-      setError("Percents must be numbers like 10 or 12.5.");
+      setError(t("Percents must be numbers like 10 or 12.5.", "Проценты должны быть числами, например 10 или 12.5."));
       return;
     }
     if ((commissionBps ?? 0) > 10000 || (subCommissionBps ?? 0) > 10000) {
-      setError("Commission percent cannot exceed 100%.");
+      setError(t("Commission percent cannot exceed 100%.", "Комиссия не может превышать 100%."));
       return;
     }
     const b2bMaxBps = pctToBpsOptional(b2bMaxPct);
     if (b2bMaxBps === null) {
-      setError("B2B max discount must be a number like 70 or 72.5.");
+      setError(t("B2B max discount must be a number like 70 or 72.5.", "Максимальная B2B-скидка должна быть числом, например 70 или 72.5."));
       return;
     }
     if ((b2bMaxBps ?? 0) > 9500) {
-      setError("B2B max discount cannot exceed 95%.");
+      setError(t("B2B max discount cannot exceed 95%.", "Максимальная B2B-скидка не может превышать 95%."));
       return;
     }
     const count = promoCount.trim() === "" ? 0 : Number(promoCount);
     const maxUsd = promoMaxUsd.trim() === "" ? 0 : Number(promoMaxUsd);
     if (!Number.isInteger(count) || count < 0 || !Number.isInteger(maxUsd) || maxUsd < 0) {
-      setError("Promo count and max $ must be whole numbers.");
+      setError(t("Promo count and max $ must be whole numbers.", "Количество промокодов и максимальная сумма должны быть целыми числами."));
       return;
     }
     setBusy(true);
@@ -589,7 +638,7 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
       setB2bMaxPct("");
       void load();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not create the invite.");
+      setError(err instanceof ApiError ? err.message : t("Could not create the invite.", "Не удалось создать приглашение."));
     } finally {
       setBusy(false);
     }
@@ -601,102 +650,118 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
     <div className="stack">
       <ApplicationsCard adminKey={adminKey} />
       <Card
-        title="Onboard a sales partner"
-        sub="Invite is bound to their Telegram username. Send them the link — they sign in with Telegram and the account is created with the terms below."
+        title={t("Onboard a sales partner", "Подключить партнёра")}
+        sub={t(
+          "Invite is bound to their Telegram username. Send them the link — they sign in with Telegram and the account is created with the terms below.",
+          "Приглашение привязано к Telegram-имени. Отправьте ссылку: партнёр войдёт через Telegram, и аккаунт создастся с указанными условиями.",
+        )}
       >
         {error ? <Notice kind="error">{error}</Notice> : null}
         {created ? (
           <div style={{ marginBottom: 14 }}>
             <div className="reflink-row">
-              <Input readOnly value={created.inviteUrl} onFocus={(e) => e.currentTarget.select()} />
-              <CopyButton value={created.inviteUrl} label="Copy invite" />
+              <Input readOnly value={created.inviteUrl} aria-label={t("Created invite link", "Созданная ссылка-приглашение")} onFocus={(e) => e.currentTarget.select()} />
+              <CopyButton value={created.inviteUrl} label={t("Copy invite", "Копировать приглашение")} />
             </div>
             <p className="field-hint" style={{ marginTop: 8 }}>
-              For <span className="mono">@{created.telegramUsername}</span>
+              {t("For", "Для")} <span className="mono">@{created.telegramUsername}</span>
             </p>
           </div>
         ) : null}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
-          <Field label="Telegram username">
+          <Field label={t("Telegram username", "Имя пользователя Telegram")} htmlFor="root-invite-telegram">
             <Input
+              id="root-invite-telegram"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="@telegram_username"
+              autoComplete="off"
+              spellCheck={false}
             />
           </Field>
-          <Field label="Commission %" hint="Partner's cut of referral deposits">
+          <Field label={t("Commission %", "Комиссия %")} htmlFor="root-invite-commission" hint={t("Partner's cut of referral spend", "Доля партнёра от расходов рефералов")}>
             <Input
+              id="root-invite-commission"
               value={commissionPct}
               onChange={(e) => setCommissionPct(e.target.value.replace(/[^\d.]/g, ""))}
               inputMode="decimal"
+              autoComplete="off"
               placeholder="10"
             />
           </Field>
-          <Field label="Sub-partner %" hint="Override on recruited sub-sales">
+          <Field label={t("Sub-partner %", "Команда %")} htmlFor="root-invite-sub-commission" hint={t("Override on recruited sub-partners", "Доля от комиссии приглашённых партнёров")}>
             <Input
+              id="root-invite-sub-commission"
               value={subPct}
               onChange={(e) => setSubPct(e.target.value.replace(/[^\d.]/g, ""))}
               inputMode="decimal"
+              autoComplete="off"
               placeholder="10"
             />
           </Field>
-          <Field label="Promo codes (count)" hint="0 = no promo access">
+          <Field label={t("Promo codes (count)", "Промокоды (количество)")} htmlFor="root-invite-promo-count" hint={t("0 = no promo access", "0 = без доступа к промокодам")}>
             <Input
+              id="root-invite-promo-count"
               value={promoCount}
               onChange={(e) => setPromoCount(e.target.value.replace(/[^\d]/g, ""))}
               inputMode="numeric"
+              autoComplete="off"
               placeholder="0"
             />
           </Field>
-          <Field label="Max promo $" hint="Per code, our balance">
+          <Field label={t("Max promo $", "Максимум по промокоду, $")} htmlFor="root-invite-promo-max" hint={t("Per code, platform balance", "На один код, баланс платформы")}>
             <Input
+              id="root-invite-promo-max"
               value={promoMaxUsd}
               onChange={(e) => setPromoMaxUsd(e.target.value.replace(/[^\d]/g, ""))}
               inputMode="numeric"
+              autoComplete="off"
               placeholder="0"
             />
           </Field>
-          <Field label="B2B max discount %" hint="Blank = no B2B right; their referrals stay B2C">
+          <Field label={t("B2B max discount %", "Максимальная B2B-скидка %")} htmlFor="root-invite-b2b-max" hint={t("Blank = no B2B right; their referrals stay B2C", "Пусто = без B2B-права; рефералы остаются B2C")}>
             <Input
+              id="root-invite-b2b-max"
               value={b2bMaxPct}
               onChange={(e) => setB2bMaxPct(e.target.value.replace(/[^\d.]/g, ""))}
               inputMode="decimal"
-              placeholder="off"
+              autoComplete="off"
+              placeholder={t("off", "выкл")}
             />
           </Field>
         </div>
         <div className="row-actions" style={{ marginTop: 14, alignItems: "center", gap: 12 }}>
           <Button onClick={create} loading={busy}>
-            Create invite
+            {t("Create invite", "Создать приглашение")}
           </Button>
           <span className="field-hint">
             {promoOn
-              ? `Promo: up to ${promoCount} code(s), max $${promoMaxUsd} each.`
-              : "Promo: off (set both count and max $ to enable)."}
+              ? t(`Promo: up to ${promoCount} code(s), max $${promoMaxUsd} each.`, `Промо: до ${promoCount} кодов, максимум $${promoMaxUsd} каждый.`)
+              : t("Promo: off (set both count and max $ to enable).", "Промо: выключено (задайте количество и максимум, чтобы включить).")}
             {" · "}
             {Number(b2bMaxPct || "0") > 0
-              ? `B2B: may discount their own customers up to ${b2bMaxPct}%.`
-              : "B2B: off (referrals are ordinary B2C customers)."}
+              ? t(`B2B: may discount their own customers up to ${b2bMaxPct}%.`, `B2B: может давать своим клиентам скидку до ${b2bMaxPct}%.`)
+              : t("B2B: off (referrals are ordinary B2C customers).", "B2B: выключено (рефералы остаются обычными B2C-клиентами).")}
           </span>
         </div>
       </Card>
 
-      <Card title="Root invites">
+      <Card title={t("Root invites", "Корневые приглашения")}>
         {!items ? (
           <Loading />
         ) : items.length === 0 ? (
-          <EmptyState title="No invites yet" />
+          <EmptyState title={t("No invites yet", "Приглашений пока нет")} />
         ) : (
           <Table
             head={
               <>
-                <th>For</th>
-                <th>Commission</th>
-                <th>Sub</th>
-                <th>Legacy marker</th>
-                <th>Promo</th>
-                <th>Expires</th>
-                <th>Status</th>
+                <th>{t("For", "Для")}</th>
+                <th>{t("Commission", "Комиссия")}</th>
+                <th>{t("Sub", "Команда")}</th>
+                <th>{t("Legacy marker", "Старый маркер")}</th>
+                <th>{t("Promo", "Промо")}</th>
+                <th>{t("Expires", "Истекает")}</th>
+                <th>{t("Status", "Статус")}</th>
                 <th />
               </>
             }
@@ -704,23 +769,23 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
             {items.map((inv) => (
               <tr key={inv.code}>
                 <td className="mono">{inv.telegramUsername ? `@${inv.telegramUsername}` : "—"}</td>
-                <td>{inv.commissionBps != null ? formatBps(inv.commissionBps) : "default"}</td>
-                <td>{inv.subCommissionBps != null ? formatBps(inv.subCommissionBps) : "default"}</td>
+                <td>{inv.commissionBps != null ? formatBps(inv.commissionBps) : t("default", "по умолчанию")}</td>
+                <td>{inv.subCommissionBps != null ? formatBps(inv.subCommissionBps) : t("default", "по умолчанию")}</td>
                 <td>{inv.referralDiscountEnabled ? formatBps(inv.referralDiscountBps ?? 0) : "—"}</td>
                 <td>
                   {inv.promoEnabled
                     ? `${inv.promoMaxCount ?? 0} × ${formatUsd(inv.promoMaxValueNano)}`
                     : "—"}
                 </td>
-                <td>{inv.expiresAt ? formatDate(inv.expiresAt) : "—"}</td>
+                <td>{inv.expiresAt ? formatDate(inv.expiresAt, locale) : "—"}</td>
                 <td>
                   {inv.consumedAt ? (
-                    <Badge tone="green">Used {formatDate(inv.consumedAt)}</Badge>
+                    <Badge tone="green">{t("Used", "Использовано")} {formatDate(inv.consumedAt, locale)}</Badge>
                   ) : (
-                    <Badge tone="yellow">Unused</Badge>
+                    <Badge tone="yellow">{t("Unused", "Не использовано")}</Badge>
                   )}
                 </td>
-                <td>{!inv.consumedAt ? <CopyButton value={inv.inviteUrl} label="Copy" /> : null}</td>
+                <td>{!inv.consumedAt ? <CopyButton value={inv.inviteUrl} label={t("Copy", "Копировать")} /> : null}</td>
               </tr>
             ))}
           </Table>
@@ -735,14 +800,15 @@ function OnboardingTab({ adminKey }: { adminKey: string }) {
 // ---------------------------------------------------------------------------
 
 function PayoutListTab({ adminKey }: { adminKey: string }) {
+  const { lang, t } = useI18n();
   const [data, setData] = useState<PayoutListResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api<PayoutListResponse>("/v1/admin/payout-list", { headers: adminHeaders(adminKey) })
       .then(setData)
-      .catch((err) => setError(err instanceof ApiError ? err.message : "Failed to load the payout list."));
-  }, [adminKey]);
+      .catch((err) => setError(err instanceof ApiError ? err.message : t("Failed to load the payout list.", "Не удалось загрузить список выплат.")));
+  }, [adminKey, t]);
 
   if (error) return <Notice kind="error">{error}</Notice>;
   if (!data) return <Loading />;
@@ -753,54 +819,57 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
   const unpaidTotal = sumCanonicalNanoUsd(data.items.map((i) => i.payableNano));
   const win = data.period;
   const reasonLabel: Record<string, string> = {
-    ok: "Ready",
-    no_wallet: "No wallet",
-    below_minimum: "Below minimum",
-    inactive: "Suspended — held",
+    ok: t("Ready", "Готово"),
+    no_wallet: t("No wallet", "Нет кошелька"),
+    below_minimum: t("Below minimum", "Ниже минимума"),
+    inactive: t("Suspended — held", "Приостановлен — удержано"),
     zero: "—",
   };
-  const dt = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  const dt = (iso: string) => new Date(iso).toLocaleDateString(localeFor(lang), { month: "short", day: "numeric", year: "numeric" });
 
   return (
     <div className="stack">
       <Card
-        title={`Payout list — period ${win.key}`}
-        sub={`Auto-generated from gross commissions before ${dt(win.end)}, signed refund adjustments and committed payouts. Window ${dt(win.payoutWindowStart)} → ${dt(win.payoutWindowEnd)} · phase: ${win.phase}. Debt is shown separately and future earnings repay it first.`}
+        title={t(`Payout list — period ${win.key}`, `Список выплат — период ${win.key}`)}
+        sub={t(
+          `Auto-generated from gross commissions before ${dt(win.end)}, signed refund adjustments and committed payouts. Window ${dt(win.payoutWindowStart)} → ${dt(win.payoutWindowEnd)} · phase: ${win.phase}. Debt is shown separately and future earnings repay it first.`,
+          `Сформировано из валовой комиссии до ${dt(win.end)}, возвратных корректировок со знаком и зафиксированных выплат. Окно ${dt(win.payoutWindowStart)} → ${dt(win.payoutWindowEnd)} · этап: ${win.phase}. Долг показан отдельно и сначала погашается будущими начислениями.`,
+        )}
       >
         <div className="stat-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)", marginBottom: 0 }}>
           <div className="stat-card">
-            <div className="stat-label">Ready to pay</div>
+            <div className="stat-label">{t("Ready to pay", "Готово к выплате")}</div>
             <div className="stat-value green">{formatUsd(eligibleTotal)}</div>
-            <div className="stat-foot">{eligible.length} partners eligible</div>
+            <div className="stat-foot">{t(`${eligible.length} partners eligible`, `${eligible.length} партнёров допущено`)}</div>
           </div>
           <div className="stat-card">
-            <div className="stat-label">Held (rolls over)</div>
+            <div className="stat-label">{t("Held (rolls over)", "Удержано (переносится)")}</div>
             <div className="stat-value">
               {formatUsd(heldTotal)}
             </div>
-            <div className="stat-foot">{data.items.filter((i) => !i.eligible).length} not eligible yet</div>
+            <div className="stat-foot">{t(`${data.items.filter((i) => !i.eligible).length} not eligible yet`, `${data.items.filter((i) => !i.eligible).length} пока не допущено`)}</div>
           </div>
           <div className="stat-card">
-            <div className="stat-label">Total payable</div>
+            <div className="stat-label">{t("Total payable", "Всего к выплате")}</div>
             <div className="stat-value">
               {formatUsd(unpaidTotal)}
             </div>
-            <div className="stat-foot">{data.items.length} partners with a balance</div>
+            <div className="stat-foot">{t(`${data.items.length} partners with a balance`, `${data.items.length} партнёров с балансом`)}</div>
           </div>
         </div>
       </Card>
 
-      <Card title="Due this window">
+      <Card title={t("Due this window", "К выплате в этом окне")}>
         {data.items.length === 0 ? (
-          <EmptyState title="Nothing due">No partner has an unpaid balance for this period.</EmptyState>
+          <EmptyState title={t("Nothing due", "Нет выплат")}>{t("No partner has an unpaid balance for this period.", "В этом периоде ни у одного партнёра нет невыплаченного баланса.")}</EmptyState>
         ) : (
           <Table
             head={
               <>
-                <th>Partner</th>
-                <th className="num">Payable</th>
-                <th>Wallet (BSC)</th>
-                <th>Status</th>
+                <th>{t("Partner", "Партнёр")}</th>
+                <th className="num">{t("Payable", "К выплате")}</th>
+                <th>{t("Wallet (BSC)", "Кошелёк (BSC)")}</th>
+                <th>{t("Status", "Статус")}</th>
               </>
             }
           >
@@ -814,12 +883,12 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
                 </td>
                 <td className="num" style={{ fontWeight: 700 }}>
                   {formatUsd(row.payableNano)}
-                  {debtNano > 0n ? <div style={{ color: "#d6455a", fontSize: 11 }}>{formatUsd(row.debtNano)} debt</div> : null}
+                  {debtNano > 0n ? <div style={{ color: "#d6455a", fontSize: 11 }}>{formatUsd(row.debtNano)} {t("debt", "долг")}</div> : null}
                 </td>
                 <td className="mono">{row.walletAddress ? `${row.walletAddress.slice(0, 8)}…${row.walletAddress.slice(-6)}` : "—"}</td>
                 <td>
                   {row.eligible ? (
-                    <Badge tone="green">Ready</Badge>
+                    <Badge tone="green">{t("Ready", "Готово")}</Badge>
                   ) : (
                     <Badge tone="yellow">{reasonLabel[row.reason] ?? row.reason}</Badge>
                   )}
@@ -830,9 +899,14 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
         )}
       </Card>
       <p className="field-hint">
-        This list is the read-only period preview. Prepare, verify, and execute the on-chain batch in
-        <strong> Send payouts</strong>; the server revalidates every partner, wallet, amount, balance,
-        window, and hot-wallet identity immediately before signing.
+        {t(
+          "This list is the read-only period preview. Prepare, verify, and execute the on-chain batch in",
+          "Это предварительный список периода только для чтения. Подготовьте, проверьте и выполните пакет в разделе",
+        )}
+        <strong> {t("Send payouts", "Отправка выплат")}</strong>; {t(
+          "the server revalidates every partner, wallet, amount, balance, window, and hot-wallet identity immediately before signing.",
+          "непосредственно перед подписью сервер повторно проверяет каждого партнёра, кошелёк, сумму, баланс, окно и идентичность горячего кошелька.",
+        )}
       </p>
     </div>
   );
@@ -841,6 +915,7 @@ function PayoutListTab({ adminKey }: { adminKey: string }) {
 type Tab = "overview" | "onboarding" | "partners" | "payoutList" | "payouts" | "send";
 
 export default function AdminPage() {
+  const { t } = useI18n();
   const [adminKey, setAdminKey] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [tab, setTab] = useState<Tab>("overview");
@@ -865,7 +940,7 @@ export default function AdminPage() {
   if (adminKey === null) return <KeyGate onUnlock={setAdminKey} />;
 
   return (
-    <div className="admin-shell">
+    <main className="admin-shell">
       <div className="admin-topbar">
         <div className="brand">
           <span>
@@ -874,6 +949,7 @@ export default function AdminPage() {
           </span>
         </div>
         <div className="gate-tools">
+          <LanguageToggle />
           <ThemeToggle />
           <Button
             size="sm"
@@ -883,7 +959,7 @@ export default function AdminPage() {
               setAdminKey(null);
             }}
           >
-            Lock
+            {t("Lock", "Заблокировать")}
           </Button>
         </div>
       </div>
@@ -891,12 +967,12 @@ export default function AdminPage() {
       <div className="tabs" role="tablist">
         {(
           [
-            ["overview", "Overview"],
-            ["onboarding", "Onboarding"],
-            ["partners", "Partners"],
-            ["payoutList", "Payout list"],
-            ["send", "Send payouts"],
-            ["payouts", "Payouts"],
+            ["overview", t("Overview", "Обзор")],
+            ["onboarding", t("Onboarding", "Подключение")],
+            ["partners", t("Partners", "Партнёры")],
+            ["payoutList", t("Payout list", "Список выплат")],
+            ["send", t("Send payouts", "Отправка выплат")],
+            ["payouts", t("Payouts", "Выплаты")],
           ] as Array<[Tab, string]>
         ).map(([id, label]) => (
           <button
@@ -917,6 +993,6 @@ export default function AdminPage() {
       {tab === "payoutList" ? <PayoutListTab adminKey={adminKey} /> : null}
       {tab === "send" ? <PayoutSendTab adminKey={adminKey} /> : null}
       {tab === "payouts" ? <PayoutsTab adminKey={adminKey} /> : null}
-    </div>
+    </main>
   );
 }

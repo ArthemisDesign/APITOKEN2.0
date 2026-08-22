@@ -248,7 +248,9 @@ A separate admin site; sign-in — the operator enters `SALES_ADMIN_KEY` (sent a
 The partner dashboard works in **Russian and English**. The language is chosen with a switcher in
 the header and remembered in the browser; by default it is taken from the browser language. The
 light/dark theme uses the same `theme:v1` browser preference as the main dashboard and is toggled
-from the header. A missing preference keeps the partner cabinet light. The admin panel is in English.
+from the header. A missing or invalid preference uses the same dark default as the main dashboard.
+Every partner and Admin surface supports Russian and English, including the Admin sign-in gate;
+both use the shared `lang:v1` and `theme:v1` preferences.
 
 ## 11. Privacy and security
 

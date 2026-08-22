@@ -17,9 +17,9 @@ export function browserStorage(): Storage | null {
 export function readSavedTheme(storage: ReadableStorage | null): SalesTheme {
   try {
     const saved = storage?.getItem(THEME_STORAGE_KEY) ?? storage?.getItem(LEGACY_THEME_STORAGE_KEY);
-    return saved === "dark" ? "dark" : "light";
+    return saved === "light" ? "light" : "dark";
   } catch {
-    return "light";
+    return "dark";
   }
 }
 
@@ -31,5 +31,5 @@ export function saveTheme(storage: WritableStorage | null, theme: SalesTheme): v
   }
 }
 
-/** Apply a saved theme before hydration. No saved value keeps the partner cabinet light. */
-export const themeBootstrapScript = `(()=>{try{const s=localStorage.getItem('${THEME_STORAGE_KEY}')??localStorage.getItem('${LEGACY_THEME_STORAGE_KEY}');if(s==='dark')document.documentElement.dataset.theme='dark'}catch{}})()`;
+/** Apply the same saved/default theme as the customer dashboard before hydration. */
+export const themeBootstrapScript = `(()=>{try{const s=localStorage.getItem('${THEME_STORAGE_KEY}')??localStorage.getItem('${LEGACY_THEME_STORAGE_KEY}');const t=s==='light'?'light':'dark';if(t==='dark')document.documentElement.dataset.theme='dark';else delete document.documentElement.dataset.theme}catch{document.documentElement.dataset.theme='dark'}})()`;

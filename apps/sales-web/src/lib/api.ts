@@ -149,11 +149,21 @@ export function formatBps(bps: number | null | undefined): string {
   return `${Number.isInteger(pct) ? pct : pct.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}%`;
 }
 
-export function formatDate(iso: string | null | undefined): string {
+export function formatDate(
+  iso: string | null | undefined,
+  locale?: string,
+): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+  // Keep the implicit locale deterministic across SSR and hydration. UI callers pass the
+  // current I18nProvider locale explicitly and re-render after the saved language resolves.
+  const resolvedLocale = locale ?? "en-US";
+  return d.toLocaleDateString(resolvedLocale, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 // ---------------------------------------------------------------------------

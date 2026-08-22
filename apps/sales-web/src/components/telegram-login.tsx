@@ -170,6 +170,9 @@ export function TelegramLogin({ inviteCode }: { inviteCode?: string | null }) {
         </Notice>
         {error ? <Notice kind="error">{error}</Notice> : null}
         <Textarea
+          name="partner-application-note"
+          aria-label={t("Partner application note", "Описание партнёрской заявки")}
+          autoComplete="off"
           value={note}
           onChange={(e) => setNote(e.target.value)}
           placeholder={t(

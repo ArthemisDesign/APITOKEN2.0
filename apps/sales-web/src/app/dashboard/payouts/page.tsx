@@ -139,12 +139,14 @@ function WalletCard({ wallet, onBound }: { wallet: string | null; onBound: (addr
         <form onSubmit={bind}>
           <Field
             label={t("BSC wallet address", "Адрес кошелька BSC")}
+            htmlFor="payout-wallet-address"
             hint={t(
               "Double-check it — on-chain payouts cannot be reversed.",
               "Перепроверьте — выплаты в блокчейне нельзя отменить.",
             )}
           >
             <Input
+              id="payout-wallet-address"
               className="mono"
               value={address}
               onChange={(e) => setAddress(e.target.value)}

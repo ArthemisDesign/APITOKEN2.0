@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatDate,
   formatUsd,
   formatUsdCompact,
   isCanonicalNanoUsd,
@@ -46,5 +47,13 @@ describe("nanoUSD API contract", () => {
     expect(formatUsdCompact("1200000000000")).toBe("$1.2k");
     expect(formatUsdCompact("-1200000000000")).toBe("−$1.2k");
     expect(formatUsdCompact(" 1200000000000")).toBe("—");
+  });
+
+  it("formats dates for the selected locale and rejects invalid timestamps", () => {
+    expect(formatDate("2026-08-22T12:00:00.000Z", "en-US")).toBe("Aug 22, 2026");
+    expect(formatDate("2026-08-22T12:00:00.000Z")).toBe("Aug 22, 2026");
+    expect(formatDate("2026-08-22T12:00:00.000Z", "ru-RU")).toBe("22 авг. 2026 г.");
+    expect(formatDate("not-a-date", "ru-RU")).toBe("—");
+    expect(formatDate(null, "en-US")).toBe("—");
   });
 });

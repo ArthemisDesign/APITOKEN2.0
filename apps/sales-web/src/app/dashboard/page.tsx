@@ -23,10 +23,11 @@ import {
 import { EarningsChart } from "@/components/earnings-chart";
 import { ProviderBreakdown } from "@/components/provider-breakdown";
 import { CommissionFormula } from "@/components/commission-formula";
-import { useI18n } from "@/components/i18n";
+import { localeFor, useI18n } from "@/components/i18n";
 
 export default function OverviewPage() {
-  const { t } = useI18n();
+  const { lang, t } = useI18n();
+  const locale = localeFor(lang);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [earnings, setEarnings] = useState<EarningRow[] | null>(null);
   const [byProvider, setByProvider] = useState<ProviderEarningsRow[] | null>(null);
@@ -128,7 +129,7 @@ export default function OverviewPage() {
           )}
         >
           <div className="reflink-row">
-            <Input readOnly value={overview.referralUrl} onFocus={(e) => e.currentTarget.select()} />
+            <Input readOnly value={overview.referralUrl} aria-label={t("Your referral link", "Ваша реферальная ссылка")} onFocus={(e) => e.currentTarget.select()} />
             <CopyButton value={overview.referralUrl} label={t("Copy link", "Копировать ссылку")} />
           </div>
           <p className="field-hint" style={{ marginTop: 10 }}>
@@ -210,7 +211,7 @@ export default function OverviewPage() {
                     </span>{" "}
                     {t("earned for you", "заработано для вас")}
                   </span>
-                  <span className="activity-date">{formatDate(r.attributedAt)}</span>
+                  <span className="activity-date">{formatDate(r.attributedAt, locale)}</span>
                 </div>
               ))}
             </div>

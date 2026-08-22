@@ -68,16 +68,18 @@ export function Card({
 
 export function Field({
   label,
+  htmlFor,
   hint,
   children,
 }: {
   label: string;
+  htmlFor: string;
   hint?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <div className="field">
-      <label>{label}</label>
+      <label htmlFor={htmlFor}>{label}</label>
       {children}
       {hint ? <span className="field-hint">{hint}</span> : null}
     </div>
@@ -86,13 +88,13 @@ export function Field({
 
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
   const { className = "", ...rest } = props;
-  return <input className={`input ${className}`.trim()} {...rest} />;
+  return <input {...rest} name={rest.name ?? rest.id} className={`input ${className}`.trim()} />;
 }
 
 export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
   const { className = "", children, ...rest } = props;
   return (
-    <select className={`select ${className}`.trim()} {...rest}>
+    <select {...rest} name={rest.name ?? rest.id} className={`select ${className}`.trim()}>
       {children}
     </select>
   );
@@ -100,7 +102,7 @@ export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
 
 export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   const { className = "", ...rest } = props;
-  return <textarea className={`textarea ${className}`.trim()} {...rest} />;
+  return <textarea {...rest} name={rest.name ?? rest.id} className={`textarea ${className}`.trim()} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +139,7 @@ export function Badge({
 }
 
 export function StatusBadge({ status }: { status: string }) {
+  const { t } = useI18n();
   const s = status.toLowerCase();
   const tone =
     s === "active" || s === "approved" || s === "paid" || s === "completed"
@@ -146,7 +149,29 @@ export function StatusBadge({ status }: { status: string }) {
         : s === "rejected" || s === "suspended" || s === "blocked" || s === "disabled"
           ? "red"
           : "neutral";
-  return <Badge tone={tone}>{status}</Badge>;
+  const label: Record<string, string> = {
+    active: t("Active", "Активен"),
+    approved: t("Approved", "Одобрено"),
+    paid: t("Paid", "Выплачено"),
+    completed: t("Completed", "Завершено"),
+    pending: t("Pending", "Ожидает"),
+    requested: t("Requested", "Запрошено"),
+    processing: t("Processing", "Обрабатывается"),
+    rejected: t("Rejected", "Отклонено"),
+    suspended: t("Suspended", "Приостановлен"),
+    blocked: t("Blocked", "Заблокирован"),
+    disabled: t("Disabled", "Выключен"),
+    redeemed: t("Redeemed", "Погашен"),
+    expired: t("Expired", "Истёк"),
+    used: t("Used", "Использован"),
+    preparing: t("Preparing", "Подготавливается"),
+    prepared: t("Prepared", "Подготовлен"),
+    sending: t("Sending", "Отправляется"),
+    sent: t("Sent", "Отправлен"),
+    failed: t("Failed", "Ошибка"),
+    canceled: t("Canceled", "Отменён"),
+  };
+  return <Badge tone={tone}>{label[s] ?? status}</Badge>;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +204,7 @@ export function Table({
 export function Loading({ label }: { label?: string }) {
   const { t } = useI18n();
   return (
-    <div className="loading-block">
+    <div className="loading-block" role="status" aria-live="polite">
       <span className="spinner" aria-hidden /> {label ?? t("Loading…", "Загрузка…")}
     </div>
   );
@@ -232,7 +257,7 @@ export function CopyButton({ value, label }: { value: string; label?: string }) 
 
 export function Brand() {
   return (
-    <span className="brand">
+    <span className="brand" translate="no">
       <span>
         APIToken <em>Partners</em>
       </span>

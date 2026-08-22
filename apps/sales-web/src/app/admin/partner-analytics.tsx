@@ -17,6 +17,7 @@ import {
   type PartnerDetailBundle,
 } from "@/lib/api";
 import { Badge, Button, Card, EmptyState, Input, Loading, Notice, StatusBadge, Table } from "@/components/ui";
+import { localeFor, useI18n } from "@/components/i18n";
 
 // На admin.partners Caddy инжектит x-sales-admin-key после managed admin auth → ключ пустой ("").
 function adminHeaders(key: string): Record<string, string> {
@@ -26,18 +27,20 @@ function adminHeaders(key: string): Record<string, string> {
 const PAGE = 25;
 const faint = { color: "var(--text-faint)" } as const;
 
-function relTime(iso: string | null): string {
-  if (!iso) return "never";
+type Translate = (en: string, ru: string) => string;
+
+function relTime(iso: string | null, t: Translate, locale: string): string {
+  if (!iso) return t("never", "никогда");
   const diff = Date.now() - new Date(iso).getTime();
   if (Number.isNaN(diff)) return "—";
   const d = Math.floor(diff / 86_400_000);
   if (d <= 0) {
     const h = Math.floor(diff / 3_600_000);
-    if (h <= 0) return "just now";
-    return `${h}h ago`;
+    if (h <= 0) return t("just now", "только что");
+    return t(`${h}h ago`, `${h} ч назад`);
   }
-  if (d < 30) return `${d}d ago`;
-  return formatDate(iso);
+  if (d < 30) return t(`${d}d ago`, `${d} дн назад`);
+  return formatDate(iso, locale);
 }
 
 function convPct(row: PartnerAnalyticsRow): string {
@@ -45,17 +48,38 @@ function convPct(row: PartnerAnalyticsRow): string {
   return `${Math.round((row.convertedUsers / row.referredUsers) * 100)}%`;
 }
 
-const COLUMNS: { key: PartnerAnalyticsSortKey; label: string; num?: boolean }[] = [
-  { key: "deposits_total", label: "Deposits driven", num: true },
-  { key: "referred_users", label: "Referred", num: true },
-  { key: "spend_total", label: "Spend", num: true },
-  { key: "earned_total", label: "Earned", num: true },
-  { key: "unpaid", label: "Unpaid", num: true },
-  { key: "team_size", label: "Team", num: true },
-  { key: "last_seen_at", label: "Last seen", num: false },
-];
+function activityLabel(event: PartnerActivityEvent, t: Translate): string {
+  const tail = event.label.split(" ").at(-1) ?? "";
+  switch (event.type) {
+    case "referral": return t(event.label, `Новый реферал ${tail}`);
+    case "deposit": return t(event.label, `Пополнение реферала ${tail}`);
+    case "discount_link_created": return t(event.label, `Создана старая маркерная ссылка ${String(event.meta.code ?? tail)}`);
+    case "discount_link_used": return t(event.label, `Использована старая маркерная ссылка ${String(event.meta.code ?? tail)}`);
+    case "promo_created": return t(event.label, `Создан промокод ${String(event.meta.code ?? tail)}`);
+    case "promo_redeemed": return t(event.label, `Погашен промокод ${String(event.meta.code ?? tail)}`);
+    case "payout_requested": return t(event.label, "Запрошена выплата");
+    case "payout_decided": return t(event.label, `Решение по выплате: ${String(event.meta.status ?? tail)}`);
+    case "login": return t(event.label, "Вход в кабинет");
+    case "admin": return t(event.label, event.label.replace(/^Admin:/, "Администратор:"));
+    default: return event.label;
+  }
+}
+
+function columns(t: Translate): { key: PartnerAnalyticsSortKey; label: string; num?: boolean }[] {
+  return [
+    { key: "deposits_total", label: t("Deposits driven", "Привлечённые пополнения"), num: true },
+    { key: "referred_users", label: t("Referred", "Рефералы"), num: true },
+    { key: "spend_total", label: t("Spend", "Расходы"), num: true },
+    { key: "earned_total", label: t("Earned", "Заработано"), num: true },
+    { key: "unpaid", label: t("Unpaid", "Не выплачено"), num: true },
+    { key: "team_size", label: t("Team", "Команда"), num: true },
+    { key: "last_seen_at", label: t("Last seen", "Последняя активность"), num: false },
+  ];
+}
 
 export function PartnersTab({ adminKey }: { adminKey: string }) {
+  const { lang, t } = useI18n();
+  const locale = localeFor(lang);
   const [data, setData] = useState<PartnerAnalyticsList | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sort, setSort] = useState<PartnerAnalyticsSortKey>("deposits_total");
@@ -67,11 +91,11 @@ export function PartnersTab({ adminKey }: { adminKey: string }) {
   const [selected, setSelected] = useState<PartnerAnalyticsRow | null>(null);
 
   useEffect(() => {
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       setQuery(search);
       setOffset(0);
     }, 300);
-    return () => clearTimeout(t);
+    return () => clearTimeout(timer);
   }, [search]);
 
   const load = useCallback(async () => {
@@ -84,9 +108,9 @@ export function PartnersTab({ adminKey }: { adminKey: string }) {
       });
       setData(res);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to load analytics.");
+      setError(err instanceof ApiError ? err.message : t("Failed to load analytics.", "Не удалось загрузить аналитику."));
     }
-  }, [adminKey, sort, dir, status, query, offset]);
+  }, [adminKey, sort, dir, status, query, offset, t]);
 
   useEffect(() => {
     void load();
@@ -111,25 +135,30 @@ export function PartnersTab({ adminKey }: { adminKey: string }) {
     <div className="stack">
       {/* KPI strip over the CURRENT filter */}
       <div className="stat-grid" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
-        <Kpi label="Partners" value={totals ? String(totals.total) : "…"} foot={totals ? `${totals.active} active` : ""} />
-        <Kpi label="Deposits driven" value={totals ? formatUsd(totals.depositsNano) : "…"} foot="real money in" accent />
-        <Kpi label="Referred users" value={totals ? String(totals.referredUsers) : "…"} foot={`${totals?.convertedUsers ?? 0} deposited`} />
-        <Kpi label="Conversion" value={totals ? `${convTotal}%` : "…"} foot="referred → paid" />
-        <Kpi label="Payable now" value={totals ? formatUsd(totals.payableNano) : "…"} foot={`${totals ? formatUsd(totals.debtNano) : "…"} partner debt`} />
+        <Kpi label={t("Partners", "Партнёры")} value={totals ? String(totals.total) : "…"} foot={totals ? t(`${totals.active} active`, `${totals.active} активных`) : ""} />
+        <Kpi label={t("Deposits driven", "Привлечённые пополнения")} value={totals ? formatUsd(totals.depositsNano) : "…"} foot={t("real money in", "реальные деньги")} accent />
+        <Kpi label={t("Referred users", "Привлечённые пользователи")} value={totals ? String(totals.referredUsers) : "…"} foot={t(`${totals?.convertedUsers ?? 0} deposited`, `${totals?.convertedUsers ?? 0} пополнили баланс`)} />
+        <Kpi label={t("Conversion", "Конверсия")} value={totals ? `${convTotal}%` : "…"} foot={t("referred → paid", "рефералы → платящие")} />
+        <Kpi label={t("Payable now", "К выплате сейчас")} value={totals ? formatUsd(totals.payableNano) : "…"} foot={t(`${totals ? formatUsd(totals.debtNano) : "…"} partner debt`, `${totals ? formatUsd(totals.debtNano) : "…"} долг партнёров`)} />
       </div>
 
       <Card
-        title="Partner analytics"
-        sub="Ranked by real deposits their referrals paid. Click a row to open the partner card with full stats and activity."
+        title={t("Partner analytics", "Аналитика партнёров")}
+        sub={t("Ranked by real deposits their referrals paid. Click a row to open the partner card with full stats and activity.", "Рейтинг по реальным пополнениям рефералов. Нажмите строку, чтобы открыть карточку партнёра со статистикой и активностью.")}
       >
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
           <Input
-            placeholder="Search @username, email, name, code…"
+            placeholder={t("Search @username, email, name, code…", "Поиск по @username, email, имени или коду…")}
+            aria-label={t("Search partners", "Поиск партнёров")}
+            name="partner-search"
+            autoComplete="off"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{ maxWidth: 320 }}
           />
           <select
+            aria-label={t("Filter partners by status", "Фильтр партнёров по статусу")}
+            name="partner-status"
             value={status}
             onChange={(e) => {
               setStatus(e.target.value as typeof status);
@@ -137,47 +166,49 @@ export function PartnersTab({ adminKey }: { adminKey: string }) {
             }}
             style={selectStyle}
           >
-            <option value="all">All statuses</option>
-            <option value="active">Active</option>
-            <option value="pending">Pending</option>
-            <option value="suspended">Suspended</option>
+            <option value="all">{t("All statuses", "Все статусы")}</option>
+            <option value="active">{t("Active", "Активные")}</option>
+            <option value="pending">{t("Pending", "Ожидают")}</option>
+            <option value="suspended">{t("Suspended", "Приостановлены")}</option>
           </select>
           <span style={{ marginLeft: "auto", fontSize: 12, ...faint }}>
             {totals ? `${shownFrom}–${shownTo} of ${totals.total}` : ""}
           </span>
           <div style={{ display: "flex", gap: 6 }}>
             <Button size="sm" variant="ghost" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>
-              ‹ Prev
+              ‹ {t("Prev", "Назад")}
             </Button>
             <Button size="sm" variant="ghost" disabled={!totals || shownTo >= totals.total} onClick={() => setOffset(offset + PAGE)}>
-              Next ›
+              {t("Next", "Вперёд")} ›
             </Button>
           </div>
         </div>
 
         {error ? <Notice kind="error">{error}</Notice> : !data ? <Loading /> : items.length === 0 ? (
-          <EmptyState title="No partners match this filter" />
+          <EmptyState title={t("No partners match this filter", "Нет партнёров с такими параметрами")} />
         ) : (
           <Table
             head={
               <>
-                <th>Partner</th>
-                {COLUMNS.map((c) => (
+                <th>{t("Partner", "Партнёр")}</th>
+                {columns(t).map((c) => (
                   <SortTh key={c.key} col={c} sort={sort} dir={dir} onClick={() => toggleSort(c.key)} />
                 ))}
-                <th>Status</th>
+                <th>{t("Status", "Статус")}</th>
               </>
             }
           >
             {items.map((p) => (
-              <tr key={p.id} style={{ cursor: "pointer" }} onClick={() => setSelected(p)}>
+              <tr key={p.id}>
                 <td>
-                  <div style={{ fontWeight: 600 }}>{p.telegramUsername ? `@${p.telegramUsername}` : p.email ?? "—"}</div>
-                  <div style={{ fontSize: 12, ...faint }}>{p.displayName ?? p.referralCode}</div>
+                  <button className="table-row-button" type="button" onClick={() => setSelected(p)}>
+                    <span style={{ fontWeight: 600 }}>{p.telegramUsername ? `@${p.telegramUsername}` : p.email ?? "—"}</span>
+                    <span style={{ fontSize: 12, ...faint }}>{p.displayName ?? p.referralCode}</span>
+                  </button>
                 </td>
                 <td className="num">
                   <div style={{ fontWeight: 600 }}>{formatUsd(p.depositsTotalNano)}</div>
-                  <div style={{ fontSize: 11, ...faint }}>{formatUsd(p.deposits30dNano)} · 30d</div>
+                  <div style={{ fontSize: 11, ...faint }}>{formatUsd(p.deposits30dNano)} · {t("30d", "30 дн")}</div>
                 </td>
                 <td className="num">
                   <div>{p.referredUsers}</div>
@@ -186,14 +217,14 @@ export function PartnersTab({ adminKey }: { adminKey: string }) {
                 <td className="num">{formatUsd(p.spendTotalNano)}</td>
                 <td className="num">
                   <div>{formatUsd(p.netTotalNano)}</div>
-                  <div style={{ fontSize: 11, ...faint }}>{formatUsd(p.net30dNano)} · 30d net</div>
+                  <div style={{ fontSize: 11, ...faint }}>{formatUsd(p.net30dNano)} · {t("30d net", "чистыми за 30 дн")}</div>
                 </td>
                 <td className="num" style={{ fontWeight: isPositiveNanoUsd(p.payableNano) ? 600 : 400 }}>
                   {formatUsd(p.payableNano)}
-                  {isPositiveNanoUsd(p.debtNano) ? <div style={{ color: "#d6455a", fontSize: 11 }}>{formatUsd(p.debtNano)} debt</div> : null}
+                  {isPositiveNanoUsd(p.debtNano) ? <div style={{ color: "#d6455a", fontSize: 11 }}>{formatUsd(p.debtNano)} {t("debt", "долг")}</div> : null}
                 </td>
                 <td className="num">{p.teamSize}</td>
-                <td style={{ fontSize: 12, ...faint }}>{relTime(p.lastSeenAt)}</td>
+                <td style={{ fontSize: 12, ...faint }}>{relTime(p.lastSeenAt, t, locale)}</td>
                 <td><StatusBadge status={p.status} /></td>
               </tr>
             ))}
@@ -230,10 +261,11 @@ function SortTh({
   return (
     <th
       className={col.num ? "num" : undefined}
-      style={{ cursor: "pointer", userSelect: "none", color: active ? "var(--text)" : undefined }}
-      onClick={onClick}
+      aria-sort={active ? (dir === "desc" ? "descending" : "ascending") : "none"}
     >
-      {col.label} {active ? (dir === "desc" ? "▾" : "▴") : ""}
+      <button className="sort-button" type="button" onClick={onClick}>
+        {col.label} <span aria-hidden>{active ? (dir === "desc" ? "▾" : "▴") : ""}</span>
+      </button>
     </th>
   );
 }
@@ -272,12 +304,22 @@ function PartnerDrawer({
   onClose: () => void;
   onChanged: () => void;
 }) {
+  const { lang, t } = useI18n();
+  const locale = localeFor(lang);
   const [detail, setDetail] = useState<PartnerDetailBundle | null>(null);
   const [activity, setActivity] = useState<PartnerActivityEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [bps, setBps] = useState(String(row.commissionBps));
   const [subBps, setSubBps] = useState(String(row.subCommissionBps));
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
 
   const reload = useCallback(async () => {
     try {
@@ -290,9 +332,9 @@ function PartnerDrawer({
       setBps(String(d.partner.commissionBps));
       setSubBps(String(d.partner.subCommissionBps));
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to load partner.");
+      setError(err instanceof ApiError ? err.message : t("Failed to load partner.", "Не удалось загрузить партнёра."));
     }
-  }, [adminKey, row.id]);
+  }, [adminKey, row.id, t]);
 
   useEffect(() => {
     void reload();
@@ -306,7 +348,7 @@ function PartnerDrawer({
       await reload();
       onChanged();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Update failed.");
+      setError(err instanceof ApiError ? err.message : t("Update failed.", "Не удалось сохранить изменения."));
     } finally {
       setBusy(false);
     }
@@ -320,7 +362,7 @@ function PartnerDrawer({
       await reload();
       onChanged();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Promo update failed.");
+      setError(err instanceof ApiError ? err.message : t("Promo update failed.", "Не удалось обновить промо-настройки."));
     } finally {
       setBusy(false);
     }
@@ -335,80 +377,90 @@ function PartnerDrawer({
   // discount up to it, and nothing beyond. Revoking clears the ceiling with it, so a stale number
   // can never read as authority the partner no longer holds.
   function editB2b() {
-    const current = p.b2bEnabled ? String(p.b2bMaxDiscountBps / 100) : "off";
+    const current = p.b2bEnabled ? String(p.b2bMaxDiscountBps / 100) : t("off", "выкл");
     const v = window.prompt(
-      `B2B rights for ${label}\n`
-      + "Max discount percent this partner may give their own customers (e.g. 70), or \"off\".\n"
-      + "Their referrals stay ordinary B2C customers unless the partner converts them.",
+      t(
+        `B2B rights for ${label}\nMax discount percent this partner may give their own customers (e.g. 70), or "off".\nTheir referrals stay ordinary B2C customers unless the partner converts them.`,
+        `B2B-права для ${label}\nМаксимальная скидка, которую партнёр может дать своим клиентам (например, 70), либо «выкл».\nРефералы остаются обычными B2C-клиентами, пока партнёр сам их не переведёт.`,
+      ),
       current,
     );
     if (v == null) return;
-    if (v.trim().toLowerCase() === "off") return void patch({ b2bEnabled: false, b2bMaxDiscountBps: 0 });
+    if (["off", "выкл"].includes(v.trim().toLowerCase())) return void patch({ b2bEnabled: false, b2bMaxDiscountBps: 0 });
     const m = /^\s*(\d{1,2}(?:\.\d)?)\s*%?\s*$/.exec(v);
     const percent = m ? Number(m[1]) : Number.NaN;
     if (!Number.isFinite(percent) || percent <= 0 || percent > 95) {
-      return setError("Enter a percent between 0 and 95, or \"off\".");
+      return setError(t("Enter a percent between 0 and 95, or \"off\".", "Введите процент от 0 до 95 либо «выкл»."));
     }
     void patch({ b2bEnabled: true, b2bMaxDiscountBps: Math.round(percent * 100) });
   }
 
   function editPromo() {
-    const v = window.prompt(`Promo codes for ${label}\n"maxUSD/count" to enable (e.g. 20/10), or "off".`, p.promoEnabled ? "" : "off");
+    const v = window.prompt(t(
+      `Promo codes for ${label}\n"maxUSD/count" to enable (e.g. 20/10), or "off".`,
+      `Промокоды для ${label}\nВведите «максимумUSD/количество» (например, 20/10) либо «выкл».`,
+    ), p.promoEnabled ? "" : t("off", "выкл"));
     if (v == null) return;
-    if (v.trim().toLowerCase() === "off") return void postPromo({ enabled: false, maxValueUsd: 0, maxCount: 0 });
+    if (["off", "выкл"].includes(v.trim().toLowerCase())) return void postPromo({ enabled: false, maxValueUsd: 0, maxCount: 0 });
     const m = /^\s*(\d{1,5})\s*\/\s*(\d{1,5})\s*$/.exec(v);
-    if (!m) return setError("Format: maxUSD/count, e.g. 20/10");
+    if (!m) return setError(t("Format: maxUSD/count, e.g. 20/10", "Формат: максимумUSD/количество, например 20/10"));
     void postPromo({ enabled: true, maxValueUsd: Number(m[1]), maxCount: Number(m[2]) });
   }
 
   return (
-    <div style={overlayStyle} onClick={onClose}>
-      <aside style={panelStyle} onClick={(e) => e.stopPropagation()}>
+    <div style={overlayStyle}>
+      <button
+        type="button"
+        aria-label={t("Close partner details", "Закрыть карточку партнёра")}
+        style={backdropStyle}
+        onClick={onClose}
+      />
+      <aside style={panelStyle} role="dialog" aria-modal="true" aria-labelledby="partner-detail-title">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 700 }}>{label} <StatusBadge status={p.status} /></div>
+            <h2 id="partner-detail-title" style={{ fontSize: 18, fontWeight: 700 }}>{label} <StatusBadge status={p.status} /></h2>
             <div style={{ fontSize: 12, ...faint, marginTop: 2 }}>
-              {p.displayName ? `${p.displayName} · ` : ""}code <span className="mono">{p.referralCode}</span>
-              {p.parentLabel ? <> · under {p.parentLabel}</> : null}
+              {p.displayName ? `${p.displayName} · ` : ""}{t("code", "код")} <span className="mono">{p.referralCode}</span>
+              {p.parentLabel ? <> · {t("under", "в команде")} {p.parentLabel}</> : null}
             </div>
             <div style={{ fontSize: 12, ...faint }}>
-              joined {formatDate(p.createdAt)} · last seen {relTime(p.lastSeenAt)}
+              {t("joined", "подключён")} {formatDate(p.createdAt, locale)} · {t("last seen", "последняя активность")} {relTime(p.lastSeenAt, t, locale)}
             </div>
           </div>
-          <Button size="sm" variant="ghost" onClick={onClose}>✕ Close</Button>
+          <Button size="sm" variant="ghost" onClick={onClose}>✕ {t("Close", "Закрыть")}</Button>
         </div>
 
         {error ? <div style={{ marginTop: 10 }}><Notice kind="error">{error}</Notice></div> : null}
 
         {/* Rights & actions */}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 14 }}>
-          <label style={{ fontSize: 12, ...faint }}>Rate</label>
-          <Input className="inline-edit" inputMode="numeric" value={bps} onChange={(e) => setBps(e.target.value.replace(/[^\d]/g, ""))} aria-label="Commission bps" style={{ width: 84 }} />
+          <label style={{ fontSize: 12, ...faint }}>{t("Rate", "Ставка")}</label>
+          <Input className="inline-edit" inputMode="numeric" name="partner-commission-bps" autoComplete="off" value={bps} onChange={(e) => setBps(e.target.value.replace(/[^\d]/g, ""))} aria-label={t("Commission bps", "Комиссия в базисных пунктах")} style={{ width: 84 }} />
           <span style={{ fontSize: 11, ...faint }}>{/^\d+$/.test(bps) ? formatBps(Number(bps)) : "—"}</span>
-          <label style={{ fontSize: 12, ...faint }}>Sub</label>
-          <Input className="inline-edit" inputMode="numeric" value={subBps} onChange={(e) => setSubBps(e.target.value.replace(/[^\d]/g, ""))} aria-label="Sub bps" style={{ width: 84 }} />
+          <label style={{ fontSize: 12, ...faint }}>{t("Sub", "Команда")}</label>
+          <Input className="inline-edit" inputMode="numeric" name="partner-sub-commission-bps" autoComplete="off" value={subBps} onChange={(e) => setSubBps(e.target.value.replace(/[^\d]/g, ""))} aria-label={t("Sub bps", "Командная комиссия в базисных пунктах")} style={{ width: 84 }} />
           <span style={{ fontSize: 11, ...faint }}>{/^\d+$/.test(subBps) ? formatBps(Number(subBps)) : "—"}</span>
-          <Button size="sm" variant="ghost" disabled={!dirty || busy || !/^\d+$/.test(bps) || !/^\d+$/.test(subBps)} onClick={() => patch({ commissionBps: Number(bps), subCommissionBps: Number(subBps) })}>Save</Button>
-          <Button size="sm" variant={suspended ? "primary" : "danger"} disabled={busy} onClick={() => patch({ status: suspended ? "active" : "suspended" })}>{suspended ? "Activate" : "Suspend"}</Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={editPromo}>{p.promoEnabled ? "Promo: on" : "Promo: off"}</Button>
+          <Button size="sm" variant="ghost" disabled={!dirty || busy || !/^\d+$/.test(bps) || !/^\d+$/.test(subBps)} onClick={() => patch({ commissionBps: Number(bps), subCommissionBps: Number(subBps) })}>{t("Save", "Сохранить")}</Button>
+          <Button size="sm" variant={suspended ? "primary" : "danger"} disabled={busy} onClick={() => patch({ status: suspended ? "active" : "suspended" })}>{suspended ? t("Activate", "Активировать") : t("Suspend", "Приостановить")}</Button>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={editPromo}>{p.promoEnabled ? t("Promo: on", "Промо: вкл") : t("Promo: off", "Промо: выкл")}</Button>
           <Button size="sm" variant="ghost" disabled={busy} onClick={editB2b}>
-            {p.b2bEnabled ? `B2B: up to ${formatBps(p.b2bMaxDiscountBps)}` : "B2B: off"}
+            {p.b2bEnabled ? t(`B2B: up to ${formatBps(p.b2bMaxDiscountBps)}`, `B2B: до ${formatBps(p.b2bMaxDiscountBps)}`) : t("B2B: off", "B2B: выкл")}
           </Button>
           {p.referralDiscountEnabled ? (
-            <Badge tone="yellow">Legacy marker {formatBps(p.referralDiscountBps)} · no price effect</Badge>
+            <Badge tone="yellow">{t("Legacy marker", "Старый маркер")} {formatBps(p.referralDiscountBps)} · {t("no price effect", "не влияет на цену")}</Badge>
           ) : null}
         </div>
 
         {/* Stat grid */}
         <div className="stat-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)", marginTop: 16 }}>
-          <Kpi label="Deposits driven" value={formatUsd(p.depositsTotalNano)} foot={`${formatUsd(p.deposits30dNano)} · 30d`} accent />
-          <Kpi label="Referred / paid" value={`${p.referredUsers} / ${p.convertedUsers}`} foot={`${convPct(p)} conversion`} />
-          <Kpi label="Real spend" value={formatUsd(p.spendTotalNano)} foot={`${formatUsd(p.spend30dNano)} · 30d`} />
-          <Kpi label="Net earnings" value={formatUsd(p.netTotalNano)} foot={`${formatUsd(p.adjustmentTotalNano)} returns`} />
-          <Kpi label="Paid out" value={formatUsd(p.paidNano)} />
-          <Kpi label="Payable now" value={formatUsd(p.payableNano)} foot={`${formatUsd(p.debtNano)} debt`} />
-          <Kpi label="Team" value={String(p.teamSize)} foot="sub-partners" />
-          <Kpi label="Legacy links / promos" value={`${p.linksUsed}/${p.linksTotal} · ${p.promosUsed}/${p.promosTotal}`} foot="used / total" />
+          <Kpi label={t("Deposits driven", "Привлечённые пополнения")} value={formatUsd(p.depositsTotalNano)} foot={`${formatUsd(p.deposits30dNano)} · ${t("30d", "30 дн")}`} accent />
+          <Kpi label={t("Referred / paid", "Рефералы / платящие")} value={`${p.referredUsers} / ${p.convertedUsers}`} foot={`${convPct(p)} ${t("conversion", "конверсия")}`} />
+          <Kpi label={t("Real spend", "Реальные расходы")} value={formatUsd(p.spendTotalNano)} foot={`${formatUsd(p.spend30dNano)} · ${t("30d", "30 дн")}`} />
+          <Kpi label={t("Net earnings", "Чистый заработок")} value={formatUsd(p.netTotalNano)} foot={`${formatUsd(p.adjustmentTotalNano)} ${t("returns", "возвраты")}`} />
+          <Kpi label={t("Paid out", "Выплачено")} value={formatUsd(p.paidNano)} />
+          <Kpi label={t("Payable now", "К выплате сейчас")} value={formatUsd(p.payableNano)} foot={`${formatUsd(p.debtNano)} ${t("debt", "долг")}`} />
+          <Kpi label={t("Team", "Команда")} value={String(p.teamSize)} foot={t("sub-partners", "субпартнёры")} />
+          <Kpi label={t("Legacy links / promos", "Старые ссылки / промо")} value={`${p.linksUsed}/${p.linksTotal} · ${p.promosUsed}/${p.promosTotal}`} foot={t("used / total", "использовано / всего")} />
         </div>
 
         {detail ? <Sparkline daily={detail.daily} /> : null}
@@ -417,77 +469,77 @@ function PartnerDrawer({
           <div style={{ marginTop: 16 }}><Loading /></div>
         ) : (
           <div style={{ marginTop: 16, display: "grid", gap: 16 }}>
-            <Section title={`Activity (${activity.length})`}>
-              {activity.length === 0 ? <Muted>No activity yet.</Muted> : (
+            <Section title={t(`Activity (${activity.length})`, `Активность (${activity.length})`)}>
+              {activity.length === 0 ? <Muted>{t("No activity yet.", "Активности пока нет.")}</Muted> : (
                 <ul style={feedStyle}>
                   {activity.map((e, i) => (
                     <li key={i} style={feedItemStyle}>
                       <span style={{ ...dotStyle, background: activityColor(e.type) }} />
-                      <span style={{ flex: 1 }}>{e.label}{e.amountNano ? <strong> {formatUsd(e.amountNano)}</strong> : null}</span>
-                      <span style={{ fontSize: 11, ...faint, whiteSpace: "nowrap" }}>{relTime(e.at)}</span>
+                      <span style={{ flex: 1 }}>{activityLabel(e, t)}{e.amountNano ? <strong> {formatUsd(e.amountNano)}</strong> : null}</span>
+                      <span style={{ fontSize: 11, ...faint, whiteSpace: "nowrap" }}>{relTime(e.at, t, locale)}</span>
                     </li>
                   ))}
                 </ul>
               )}
             </Section>
 
-            <Section title={`Legacy marker links (${detail.discountLinks.length})`}>
-              {detail.discountLinks.length === 0 ? <Muted>None issued.</Muted> : (
+            <Section title={t(`Legacy marker links (${detail.discountLinks.length})`, `Старые маркерные ссылки (${detail.discountLinks.length})`)}>
+              {detail.discountLinks.length === 0 ? <Muted>{t("None issued.", "Не выпускались.")}</Muted> : (
                 <MiniTable rows={detail.discountLinks.map((l) => [
                   <span key="c" className="mono">{l.code}</span>,
                   formatBps(l.discountBps),
                   l.note ?? "—",
-                  l.consumedAt ? `used ${relTime(l.consumedAt)}` : "unused",
-                ])} cols={["Code", "Marker", "For", "State"]} />
+                  l.consumedAt ? t(`used ${relTime(l.consumedAt, t, locale)}`, `использовано ${relTime(l.consumedAt, t, locale)}`) : t("unused", "не использовано"),
+                ])} cols={[t("Code", "Код"), t("Marker", "Маркер"), t("For", "Для"), t("State", "Состояние")]} />
               )}
             </Section>
 
-            <Section title={`Promo codes (${detail.promos.length})`}>
-              {detail.promos.length === 0 ? <Muted>None created.</Muted> : (
+            <Section title={t(`Promo codes (${detail.promos.length})`, `Промокоды (${detail.promos.length})`)}>
+              {detail.promos.length === 0 ? <Muted>{t("None created.", "Не создавались.")}</Muted> : (
                 <MiniTable rows={detail.promos.map((c) => [
                   <span key="c" className="mono">{c.code}</span>,
                   formatUsd(c.valueNano),
-                  c.status,
-                  c.redeemedAt ? `redeemed ${relTime(c.redeemedAt)}` : formatDate(c.createdAt),
-                ])} cols={["Code", "Value", "Status", "When"]} />
+                  <StatusBadge key="s" status={c.status} />,
+                  c.redeemedAt ? t(`redeemed ${relTime(c.redeemedAt, t, locale)}`, `погашен ${relTime(c.redeemedAt, t, locale)}`) : formatDate(c.createdAt, locale),
+                ])} cols={[t("Code", "Код"), t("Value", "Номинал"), t("Status", "Статус"), t("When", "Когда")]} />
               )}
             </Section>
 
-            <Section title={`Team (${detail.team.length})`}>
-              {detail.team.length === 0 ? <Muted>No sub-partners.</Muted> : (
+            <Section title={t(`Team (${detail.team.length})`, `Команда (${detail.team.length})`)}>
+              {detail.team.length === 0 ? <Muted>{t("No sub-partners.", "Субпартнёров нет.")}</Muted> : (
                 <MiniTable rows={detail.team.map((m) => [
                   m.telegramUsername ? `@${m.telegramUsername}` : m.email ?? m.id.slice(0, 8),
                   formatBps(m.commissionBps),
-                  `${m.referredUsers} refs`,
-                  formatUsd(m.myOverrideNetNano) + " net override",
-                ])} cols={["Sub-partner", "Rate", "Referrals", "My override"]} />
+                  t(`${m.referredUsers} refs`, `${m.referredUsers} рефералов`),
+                  `${formatUsd(m.myOverrideNetNano)} ${t("net override", "чистая командная комиссия")}`,
+                ])} cols={[t("Sub-partner", "Субпартнёр"), t("Rate", "Ставка"), t("Referrals", "Рефералы"), t("My override", "Моя комиссия")]} />
               )}
             </Section>
 
-            <Section title={`Referred users (${detail.referrals.length})`}>
-              {detail.referrals.length === 0 ? <Muted>No referrals yet.</Muted> : (
+            <Section title={t(`Referred users (${detail.referrals.length})`, `Привлечённые пользователи (${detail.referrals.length})`)}>
+              {detail.referrals.length === 0 ? <Muted>{t("No referrals yet.", "Рефералов пока нет.")}</Muted> : (
                 <MiniTable rows={detail.referrals.slice(0, 50).map((u) => [
                   <span key="u" className="mono">{u.userMask}</span>,
                   u.customerType === "b2b"
                     ? <Badge key="t" tone="green">B2B</Badge>
                     : u.customerType === "b2c"
-                      ? <span key="t">B2C{u.discountPercent != null ? ` · actual ${u.discountPercent}%` : ""}</span>
+                      ? <span key="t">B2C{u.discountPercent != null ? ` · ${t("actual", "фактически")} ${u.discountPercent}%` : ""}</span>
                       : "—",
-                  formatDate(u.attributedAt),
-                  formatUsd(u.spendNano) + " spend",
-                  formatUsd(u.netNano) + " net earned",
-                ])} cols={["User", "Type", "Joined", "Spend", "Earned"]} />
+                  formatDate(u.attributedAt, locale),
+                  `${formatUsd(u.spendNano)} ${t("spend", "расходы")}`,
+                  `${formatUsd(u.netNano)} ${t("net earned", "чистый заработок")}`,
+                ])} cols={[t("User", "Пользователь"), t("Type", "Тип"), t("Joined", "Привлечён"), t("Spend", "Расходы"), t("Earned", "Заработано")]} />
               )}
             </Section>
 
-            <Section title={`Payouts (${detail.payouts.length})`}>
-              {detail.payouts.length === 0 ? <Muted>No payouts.</Muted> : (
+            <Section title={t(`Payouts (${detail.payouts.length})`, `Выплаты (${detail.payouts.length})`)}>
+              {detail.payouts.length === 0 ? <Muted>{t("No payouts.", "Выплат нет.")}</Muted> : (
                 <MiniTable rows={detail.payouts.map((po) => [
                   formatUsd(po.amountNano),
-                  <Badge key="s" tone={po.status === "paid" ? "green" : po.status === "rejected" ? "red" : "yellow"}>{po.status}</Badge>,
-                  formatDate(po.requestedAt),
-                  po.paidAt ? `paid ${formatDate(po.paidAt)}` : po.adminNote ?? "—",
-                ])} cols={["Amount", "Status", "Requested", "Note"]} />
+                  <StatusBadge key="s" status={po.status} />,
+                  formatDate(po.requestedAt, locale),
+                  po.paidAt ? `${t("paid", "выплачено")} ${formatDate(po.paidAt, locale)}` : po.adminNote ?? "—",
+                ])} cols={[t("Amount", "Сумма"), t("Status", "Статус"), t("Requested", "Запрошено"), t("Note", "Примечание")]} />
               )}
             </Section>
           </div>
@@ -498,10 +550,11 @@ function PartnerDrawer({
 }
 
 function Sparkline({ daily }: { daily: { date: string; spendNano: string; earnedNano: string; adjustmentNano: string; netNano: string }[] }) {
+  const { t } = useI18n();
   if (daily.length === 0) return null;
   const parsed = daily.map((d) => parseCanonicalNanoUsd(d.spendNano));
   if (parsed.some((value) => value === null)) {
-    return <div style={{ marginTop: 14, fontSize: 11, ...faint }}>Real-spend chart unavailable: invalid API money.</div>;
+    return <div style={{ marginTop: 14, fontSize: 11, ...faint }}>{t("Real-spend chart unavailable: invalid API money.", "График реальных расходов недоступен: API вернул некорректную денежную сумму.")}</div>;
   }
   const values = parsed as bigint[];
   const max = values.reduce((m, value) => value > m ? value : m, 1n);
@@ -509,8 +562,8 @@ function Sparkline({ daily }: { daily: { date: string; spendNano: string; earned
   return (
     <div style={{ marginTop: 14 }}>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, ...faint, marginBottom: 6 }}>
-        <span>Real spend · last 30 days</span>
-        <span>{formatUsdCompact(total.toString())} total</span>
+        <span>{t("Real spend · last 30 days", "Реальные расходы · последние 30 дней")}</span>
+        <span>{formatUsdCompact(total.toString())} {t("total", "всего")}</span>
       </div>
       <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 44 }}>
         {daily.map((d, index) => {
@@ -575,19 +628,28 @@ function activityColor(type: string): string {
 const overlayStyle: React.CSSProperties = {
   position: "fixed",
   inset: 0,
-  background: "rgba(0,0,0,0.38)",
   zIndex: 50,
   display: "flex",
   justifyContent: "flex-end",
 };
 const panelStyle: React.CSSProperties = {
+  position: "relative",
+  zIndex: 1,
   width: "min(680px, 100%)",
   height: "100%",
   overflowY: "auto",
+  overscrollBehavior: "contain",
   background: "var(--surface, #fff)",
   borderLeft: "1px solid var(--border)",
   padding: "20px 22px",
   boxShadow: "-8px 0 24px rgba(0,0,0,0.12)",
+};
+const backdropStyle: React.CSSProperties = {
+  position: "absolute",
+  inset: 0,
+  border: 0,
+  background: "rgba(0,0,0,0.38)",
+  cursor: "default",
 };
 const feedStyle: React.CSSProperties = { listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 6, maxHeight: 320, overflowY: "auto" };
 const feedItemStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "3px 0" };

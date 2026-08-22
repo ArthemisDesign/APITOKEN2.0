@@ -9,12 +9,13 @@ import {
   type ReferralRow,
 } from "@/lib/api";
 import { Badge, Button, EmptyState, Loading, Notice, StatusBadge, Table } from "@/components/ui";
-import { useI18n } from "@/components/i18n";
+import { localeFor, useI18n } from "@/components/i18n";
 import { usePartner } from "@/components/partner-context";
 import { BusinessPricingDialog } from "@/components/business-pricing-dialog";
 
 export default function ReferralsPage() {
-  const { t } = useI18n();
+  const { lang, t } = useI18n();
+  const locale = localeFor(lang);
   const partner = usePartner();
   const [items, setItems] = useState<ReferralRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -86,7 +87,7 @@ export default function ReferralsPage() {
                   <td className="mono">
                     {r.userMask}
                     <div style={{ color: "var(--text-dim)", fontSize: "12px", marginTop: "2px" }}>
-                      {t("joined", "с")} {formatDate(r.attributedAt)}
+                      {t("joined", "с")} {formatDate(r.attributedAt, locale)}
                     </div>
                   </td>
                   <td>

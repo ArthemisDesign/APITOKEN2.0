@@ -6,7 +6,7 @@ import { browserStorage, readSavedTheme, saveTheme, type SalesTheme } from "@/li
 
 export function ThemeToggle() {
   const { t } = useI18n();
-  const [theme, setTheme] = useState<SalesTheme>("light");
+  const [theme, setTheme] = useState<SalesTheme>("dark");
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -29,7 +29,7 @@ export function ThemeToggle() {
       aria-label={theme === "dark" ? t("Switch to light theme", "Включить светлую тему") : t("Switch to dark theme", "Включить тёмную тему")}
       onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}
     >
-      {theme === "dark" ? "☀" : "☾"}
+      <span aria-hidden>{theme === "dark" ? "☀" : "☾"}</span>
     </button>
   );
 }
