@@ -1,6 +1,6 @@
 # Журнал внедрения практик DeepSeek Harness
 
-> **Статус:** активный рабочий журнал.
+> **Статус:** завершено; первый рекомендуемый пакет находится в `master` и подтверждён exact-SHA GREEN.
 >
 > **Исходное предложение:** [DEEPSEEK_HARNESS_DEVELOPMENT_PRACTICES.md](DEEPSEEK_HARNESS_DEVELOPMENT_PRACTICES.md).
 >
@@ -37,8 +37,8 @@
 | 2 | Targeted docs ownership, links/anchors/index | Завершён | `15643546ee710cc5a38f1a1873fcba4690cce6e6` | Полный TypeScript/Rust/deployment/static gate; exact SHA GREEN `deploy/watchdog` |
 | 3 | Assembled Control API ↔ EngineClient acceptance | Завершён | `e567d52b52982c4867da29d41391b845371a4f39` | Trusted-host release binary + built package export + disposable PostgreSQL/HTTP; exact SHA GREEN `deploy/watchdog` |
 | 4 | Keyless router → engine replay | Завершён | `77b745c0a09b96e90cf28a0e3d1c9f16250d2b5f` | Local repeatability/mutations plus trusted-host exact release replay; exact SHA GREEN `deploy/watchdog` |
-| 5 | Incident → guardrail template и финальная документация | Готов к merge | — | Indexed template, living-contract link, exact-target docs checks |
-| 6 | Финальная совместная проверка и closeout | Готов к merge | — | Stages 0–4 exact GREEN; final docs gate and closeout SHA ahead |
+| 5 | Incident → guardrail template и финальная документация | Завершён | `e6de1912c77e189d35358a30256eeb32fbbdbf62` | Indexed standard, living-contract link, deployment/static suites; exact SHA GREEN `deploy/watchdog` |
+| 6 | Финальная совместная проверка и closeout | Завершён | `e6de1912c77e189d35358a30256eeb32fbbdbf62` | Stages 0–5 exact GREEN; limitations and completed SHA chain recorded |
 
 ## Журнал решений
 
@@ -56,9 +56,8 @@ Golden transcript может стабильно зафиксировать не�
 
 ## Текущее состояние
 
-- Завершено и GREEN: предложение/журнал `e2eab16b9a9541c3777fb635cbbfa00579c3d2ad`; change plan/invariants `973f21a3c3df790dcf71559c9ee50d5010c97984`; targeted docs `15643546ee710cc5a38f1a1873fcba4690cce6e6`; Control API acceptance `e567d52b52982c4867da29d41391b845371a4f39`; keyless exact-release replay `77b745c0a09b96e90cf28a0e3d1c9f16250d2b5f`. Worktree каждого этапа удалён штатно.
-- В работе: этапы 5–6 на свежем `origin/master` `77b745c0a09b96e90cf28a0e3d1c9f16250d2b5f`; incident threshold/template и финальный closeout журнала готовы к docs-only merge.
-- Итоговое доказательство: change scope и architecture/docs invariants выполняются always-on; Control API проверяется собранным binary+package export+PostgreSQL; router→engine replay выполняется на exact release binaries, имеет semantic guards, explicit record и read-only gate.
+- Завершено и GREEN: предложение/журнал `e2eab16b9a9541c3777fb635cbbfa00579c3d2ad`; change plan/invariants `973f21a3c3df790dcf71559c9ee50d5010c97984`; targeted docs `15643546ee710cc5a38f1a1873fcba4690cce6e6`; Control API acceptance `e567d52b52982c4867da29d41391b845371a4f39`; keyless exact-release replay `77b745c0a09b96e90cf28a0e3d1c9f16250d2b5f`; incident/closeout standard `e6de1912c77e189d35358a30256eeb32fbbdbf62`.
+- Итоговое доказательство: change scope и architecture/docs invariants выполняются always-on; Control API проверяется собранным binary+package export+PostgreSQL; router→engine replay выполняется на exact release binaries, имеет semantic guards, explicit record и read-only gate; resolved incident теперь требует executable guardrail.
 - Известные ограничения: link checker не обращается к внешней сети; architecture checker покрывает заявленные три механических класса, но не доказывает всю семантику bounded contexts; replay фиксирует один Anthropic Responses путь, а не весь multi-provider matrix; Control API acceptance не вызывает inference.
 - Блокеры: отсутствуют.
-- Следующее действие: слить этот стандарт и closeout, записать финальный GREEN SHA, затем закрыть цель.
+- Следующее действие: пакет закрыт. Следующий отдельный proposal может расширить risk-based test matrix или hygiene ratchet, но это не входит в текущую цель.
