@@ -33,8 +33,8 @@
 | Этап | Содержание | Состояние | Landed SHA | Проверки / доказательство |
 |---|---|---|---|---|
 | 0 | Исходное предложение и этот журнал | Завершён | `e2eab16b9a9541c3777fb635cbbfa00579c3d2ad` | UTF-8/newline, whitespace, `deploy/docs-check.sh`; exact SHA GREEN `deploy/watchdog` |
-| 1 | Change-plan интерфейс и repository invariants | Готов к merge | — | `change-plan.test.sh`, `repository-invariants.test.sh`, `agent-merge.suite.sh`, `watchdog-lib.test.sh`; exact SHA merge/watchdog впереди |
-| 2 | Targeted docs ownership, links/anchors/index | Не начат | — | Положительные и отрицательные docs fixtures |
+| 1 | Change-plan интерфейс и repository invariants | Завершён | `973f21a3c3df790dcf71559c9ee50d5010c97984` | Полный TypeScript/Rust/deployment/static gate; exact SHA GREEN `deploy/watchdog` |
+| 2 | Targeted docs ownership, links/anchors/index | Готов к merge | — | Exact-tree positive/negative fixtures; baseline links/index/runbooks clean; exact SHA merge/watchdog впереди |
 | 3 | Assembled Control API ↔ EngineClient acceptance | Не начат | — | Собранный binary, disposable PostgreSQL, реальный client |
 | 4 | Keyless router → engine replay | Не начат | — | Non-stream + SSE transcript, semantic guards, repeatability |
 | 5 | Incident → guardrail template и финальная документация | Не начат | — | Documentation checks, ссылка из process contract |
@@ -56,8 +56,8 @@ Golden transcript может стабильно зафиксировать не�
 
 ## Текущее состояние
 
-- Завершено: предложение и стартовый журнал доставлены в `master`; exact SHA `e2eab16b9a9541c3777fb635cbbfa00579c3d2ad` получил GREEN `deploy/watchdog`; документный worktree удалён штатно.
-- В работе: этап 1 на свежем `origin/master` `d135e69dbb96ec41b54ac1db175632433b85a569`; реализация и regression fixtures готовы к exact-SHA merge.
-- Проверено: developer-facing plan переиспользует `deploy/watchdog-lib.sh`; unknown path включает все дорогие lanes; static gate локально и на trusted host проверяет dependency/network, env ownership и Control API consumer invariants. Пройдены `change-plan.test.sh`, `repository-invariants.test.sh`, `agent-merge.suite.sh`, `watchdog-lib.test.sh`.
+- Завершено: предложение/журнал — GREEN `e2eab16b9a9541c3777fb635cbbfa00579c3d2ad`; change plan/repository invariants — GREEN `973f21a3c3df790dcf71559c9ee50d5010c97984`; оба worktree удалены штатно.
+- В работе: этап 2 на `origin/master` `973f21a3c3df790dcf71559c9ee50d5010c97984`; targeted owners и exact-target links/anchors/index/runbook checks готовы к merge.
+- Проверено: несвязанный `.md` не удовлетворяет Control API owner; existing migration M/D блокируется; broken target/fragment, unindexed doc и missing alert runbook блокируются; baseline потребовал и получил исправление одной активной ссылки и четырёх пропусков индекса.
 - Блокеры: отсутствуют.
-- Следующее действие: закоммитить этап 1, слить через `deploy/agent-merge.sh`, дождаться GREEN `deploy/watchdog`, записать landed SHA и начать targeted docs gate на свежем `origin/master`.
+- Следующее действие: прогнать merge/deployment regression suites для этапа 2, слить exact SHA, затем начать assembled Control API acceptance на свежем `origin/master`.

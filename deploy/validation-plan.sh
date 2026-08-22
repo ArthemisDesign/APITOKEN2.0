@@ -137,6 +137,8 @@ policy_sha256=$(
     deploy/commerce-release-bundle.sh \
     deploy/change-plan.sh \
     deploy/repository-invariants.py \
+    deploy/docs-check.sh \
+    deploy/docs-check.py \
     deploy/engine-commerce-compatibility.contract \
     deploy/release-tree-digest.mjs; do
     blob=$(git -c safe.directory="$REPO" -C "$REPO" rev-parse "$TARGET:$path" 2>/dev/null \

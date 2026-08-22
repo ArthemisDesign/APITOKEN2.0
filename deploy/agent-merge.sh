@@ -198,6 +198,7 @@ am_gate_deployment() (
   bash "$ROOT/deploy/commerce-release-bundle.test.sh"
   bash "$ROOT/deploy/change-plan.test.sh"
   bash "$ROOT/deploy/repository-invariants.test.sh"
+  bash "$ROOT/deploy/docs-check.test.sh"
   # The merge path tests itself on every merge, strictly. It is deliberately not enforced in the
   # production gate: the watchdog installed on the host still calls deploy/agent-merge.test.sh, now a
   # report-only shim, so a host-environment difference cannot quarantine a SHA and trap its own fix.
@@ -237,7 +238,8 @@ am_range_changes_local_gate() {
       deploy/commerce-release-bundle.sh|deploy/commerce-release-bundle.test.sh|\
       deploy/release-tree-digest.mjs|deploy/content-studio-start.sh|\
       deploy/change-plan.sh|deploy/change-plan.test.sh|\
-      deploy/repository-invariants.py|deploy/repository-invariants.test.sh|deploy/docs-check.sh)
+      deploy/repository-invariants.py|deploy/repository-invariants.test.sh|\
+      deploy/docs-check.sh|deploy/docs-check.py|deploy/docs-check.test.sh)
         return 0
         ;;
     esac

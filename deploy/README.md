@@ -25,6 +25,8 @@ the redacted host cycle excerpt from check run `deploy/watchdog-log`. The full c
 
 `deploy/repository-invariants.py` is part of every local static gate and every trusted-host static check. It rejects network/HTTP dependencies and source use in `pool`/`registry`, production API-layer environment reads outside `crates/server/src/config.rs`, undeclared `@claude-api/engine-client` consumers, and direct Control API fetches that bypass that client. Its test-only exclusions are structural and narrow; a new production exception requires changing the checker and its regression suite together.
 
+`deploy/docs-check.sh <base-sha> <target-sha>` validates the committed target tree, not the caller's dirty files. The Python implementation requires the named contract owners for Control API, metering/pricing, payments, sales-feed producers, migrations, and alert rules; an unrelated Markdown edit does not satisfy the rule. It also rejects modified/deleted migrations, broken relative Markdown links or fragments, documents absent from `docs/README.md`, and alert runbook anchors absent from `docs/ops/MONITORING.md`. External links are not fetched. The checker and its fixtures run in both local and trusted-host static gates, and their blobs are part of the exact validation-policy digest.
+
 ### Recovering an interrupted merge (agent-merge-recover.sh)
 
 That rebase onto the latest `origin/master` is where a moving trunk shows up: it can stop on a

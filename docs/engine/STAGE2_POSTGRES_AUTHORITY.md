@@ -23,7 +23,7 @@ production host highly available; host-loss tolerance remains Stage 3 work.
 ## Schema and invariants
 
 The transactional, idempotent schema is
-[`crates/registry/migrations_pg/0001_engine_authority.sql`](../crates/registry/migrations_pg/0001_engine_authority.sql).
+[`crates/registry/migrations_pg/0001_engine_authority.sql`](../../crates/registry/migrations_pg/0001_engine_authority.sql).
 Money is signed 64-bit integer nanodollars; leases use Unix seconds.
 
 | Table | Purpose and correctness rule |
