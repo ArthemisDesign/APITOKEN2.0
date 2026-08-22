@@ -15,6 +15,9 @@ GUARD=$ROOT/.claude/hooks/guard-git.sh
 WATCHDOG_LIB=$ROOT/deploy/watchdog-lib.sh
 SCCACHE_WRAPPER=$ROOT/deploy/sccache-cargo.sh
 WORKTREE_MANAGER=$ROOT/deploy/agent-worktree.sh
+CHANGE_PLAN=$ROOT/deploy/change-plan.sh
+REPOSITORY_INVARIANTS=$ROOT/deploy/repository-invariants.py
+DOCS_CHECK=$ROOT/deploy/docs-check.sh
 
 [[ -x $MERGE ]] || wd_die 'deploy/agent-merge.sh must be executable'
 [[ -x $GUARD ]] || wd_die '.claude/hooks/guard-git.sh must be executable'
@@ -65,10 +68,14 @@ install_scripts() {
   cp -- "$GUARD" "$1/.claude/hooks/guard-git.sh"
   cp -- "$WATCHDOG_LIB" "$1/deploy/watchdog-lib.sh"
   cp -- "$SCCACHE_WRAPPER" "$1/deploy/sccache-cargo.sh"
+  cp -- "$CHANGE_PLAN" "$1/deploy/change-plan.sh"
+  cp -- "$REPOSITORY_INVARIANTS" "$1/deploy/repository-invariants.py"
+  cp -- "$DOCS_CHECK" "$1/deploy/docs-check.sh"
 }
 install_scripts "$PRIMARY"
 git_quiet -C "$PRIMARY" add deploy/agent-merge.sh deploy/watchdog-lib.sh \
-  deploy/sccache-cargo.sh .claude/hooks/guard-git.sh
+  deploy/sccache-cargo.sh deploy/change-plan.sh deploy/repository-invariants.py \
+  deploy/docs-check.sh .claude/hooks/guard-git.sh
 git_quiet -C "$PRIMARY" commit --quiet -m 'tooling'
 git_quiet -C "$PRIMARY" push --quiet origin master
 

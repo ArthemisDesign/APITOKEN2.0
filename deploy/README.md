@@ -10,14 +10,20 @@ internals and first-environment procedures.
 worktree with a clean tree and an upstream set: it reads the live `deploy/watchdog` state via
 the GitHub API (reusing the credential from `git credential`), runs the path-aware local gate
 for the lanes your diff touches (TypeScript/Rust/deployment classifiers from
-`deploy/watchdog-lib.sh`, always-on static lane with `bash -n`, `git diff --check`, and
-`deploy/docs-check.sh`), takes the machine merge-lock, rebases onto the latest
+`deploy/watchdog-lib.sh`, always-on static lane with `bash -n`, `git diff --check`,
+`deploy/repository-invariants.py`, and `deploy/docs-check.sh`), takes the machine merge-lock, rebases onto the latest
 `origin/master`, re-runs the gate on the exact SHA it pushes, fast-forwards local `master` to that
 GitHub SHA (merge `--ff-only` in a clean `master` checkout, otherwise only the ref), and holds the lock until the
 host reports a green `deploy/watchdog` on that SHA. A red SHA is never retried: fix forward
 with a new commit on a new branch. The red error includes the 140-character status headline and
 the redacted host cycle excerpt from check run `deploy/watchdog-log`. The full contributor workflow is in
 [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
+
+### Inspecting the outgoing validation plan
+
+`deploy/change-plan.sh --base <verified-ref> [--head <commit>] [--format text|json]` is the read-only developer view of the same path classifiers. It resolves one merge base, lists committed paths, selects TypeScript/Rust/deployment lanes, shows the TypeScript runtime contexts, and marks unknown paths with the same full fail-closed plan. It does not fetch, inspect uncommitted files, run tests, or change the worktree. Verify and fetch the intended PR/stack base before invoking it; the command deliberately never guesses a base.
+
+`deploy/repository-invariants.py` is part of every local static gate and every trusted-host static check. It rejects network/HTTP dependencies and source use in `pool`/`registry`, production API-layer environment reads outside `crates/server/src/config.rs`, undeclared `@claude-api/engine-client` consumers, and direct Control API fetches that bypass that client. Its test-only exclusions are structural and narrow; a new production exception requires changing the checker and its regression suite together.
 
 ### Recovering an interrupted merge (agent-merge-recover.sh)
 

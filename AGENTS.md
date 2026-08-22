@@ -309,14 +309,17 @@ TEST_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/comme
 
 The pre-merge gate is run by `deploy/agent-merge.sh` and selects lanes by diff (path-aware).
 The static lane — always: `bash -n deploy/*.sh deploy/apitoken-db-dump`, ranged
-`git diff --check`, `deploy/docs-check.sh` (contract surfaces without documentation
-changes will not pass — see "Documentation is a living contract"). The TypeScript/Rust/deployment
+`git diff --check`, `deploy/repository-invariants.py`, and `deploy/docs-check.sh` (contract surfaces
+without documentation changes will not pass — see "Documentation is a living contract"). Before
+local validation, `deploy/change-plan.sh --base <verified-ref>` explains the exact committed scope
+through the same classifiers; it never fetches or guesses the base. The TypeScript/Rust/deployment
 lanes are enabled by classifiers from `deploy/watchdog-lib.sh`; cargo tests run via
 `deploy/sccache-cargo.sh`. Full description of the lane model — `CONTRIBUTING.md`. Local
 equivalent of the full run:
 `pnpm install --frozen-lockfile` → `pnpm build` → `pnpm typecheck` → `pnpm test` →
 `bash deploy/sccache-cargo.sh cargo test --locked --workspace` →
 `bash -n deploy/*.sh deploy/apitoken-db-dump` → `git diff --check` →
+`python3 deploy/repository-invariants.py` →
 `bash deploy/docs-check.sh "$(git rev-parse origin/master)" "$(git rev-parse HEAD)"`.
 Node 24 (`engines` already set, `.node-version` exists), pnpm 9.
 

@@ -32,8 +32,8 @@
 
 | Этап | Содержание | Состояние | Landed SHA | Проверки / доказательство |
 |---|---|---|---|---|
-| 0 | Исходное предложение и этот журнал | В работе | — | Markdown structure, whitespace; merge/watchdog впереди |
-| 1 | Change-plan интерфейс и repository invariants | Не начат | — | Unit/fixture matrix классификаторов, static lane regression |
+| 0 | Исходное предложение и этот журнал | Завершён | `e2eab16b9a9541c3777fb635cbbfa00579c3d2ad` | UTF-8/newline, whitespace, `deploy/docs-check.sh`; exact SHA GREEN `deploy/watchdog` |
+| 1 | Change-plan интерфейс и repository invariants | Готов к merge | — | `change-plan.test.sh`, `repository-invariants.test.sh`, `agent-merge.suite.sh`, `watchdog-lib.test.sh`; exact SHA merge/watchdog впереди |
 | 2 | Targeted docs ownership, links/anchors/index | Не начат | — | Положительные и отрицательные docs fixtures |
 | 3 | Assembled Control API ↔ EngineClient acceptance | Не начат | — | Собранный binary, disposable PostgreSQL, реальный client |
 | 4 | Keyless router → engine replay | Не начат | — | Non-stream + SSE transcript, semantic guards, repeatability |
@@ -56,7 +56,8 @@ Golden transcript может стабильно зафиксировать не�
 
 ## Текущее состояние
 
-- Завершено: сравнительный анализ DeepSeek Harness и нашего процесса; сформирован документ с предложениями.
-- В работе: публикация предложения и запуск этого связанного журнала.
+- Завершено: предложение и стартовый журнал доставлены в `master`; exact SHA `e2eab16b9a9541c3777fb635cbbfa00579c3d2ad` получил GREEN `deploy/watchdog`; документный worktree удалён штатно.
+- В работе: этап 1 на свежем `origin/master` `d135e69dbb96ec41b54ac1db175632433b85a569`; реализация и regression fixtures готовы к exact-SHA merge.
+- Проверено: developer-facing plan переиспользует `deploy/watchdog-lib.sh`; unknown path включает все дорогие lanes; static gate локально и на trusted host проверяет dependency/network, env ownership и Control API consumer invariants. Пройдены `change-plan.test.sh`, `repository-invariants.test.sh`, `agent-merge.suite.sh`, `watchdog-lib.test.sh`.
 - Блокеры: отсутствуют.
-- Следующее действие: закоммитить два research-документа, слить их через `deploy/agent-merge.sh`, дождаться GREEN `deploy/watchdog`, затем создать свежий task worktree для этапа 1.
+- Следующее действие: закоммитить этап 1, слить через `deploy/agent-merge.sh`, дождаться GREEN `deploy/watchdog`, записать landed SHA и начать targeted docs gate на свежем `origin/master`.

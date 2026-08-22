@@ -60,12 +60,16 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    pnpm typecheck
    pnpm test
    bash deploy/sccache-cargo.sh cargo test --locked --workspace
+   bash deploy/change-plan.sh --base "$(git rev-parse origin/master)"
    bash -n deploy/*.sh deploy/apitoken-db-dump
    git diff --check
+   python3 deploy/repository-invariants.py
    bash deploy/docs-check.sh "$(git rev-parse origin/master)" "$(git rev-parse HEAD)"
    ```
 
-   The always-on static lane of `deploy/agent-merge.sh` is exactly the last three lines plus
+   `change-plan.sh` is a read-only explanation of the exact committed scope. Supply a base that you
+   verified and fetched; it never guesses or fetches one. The always-on static lane of
+   `deploy/agent-merge.sh` is shell syntax, exact-range whitespace, repository invariants, and
    `deploy/docs-check.sh` (the documentation living-contract check, see `AGENTS.md`); the
    language lanes above are selected from the diff as described below.
 

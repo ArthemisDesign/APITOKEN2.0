@@ -844,6 +844,7 @@ test_static_lane() {
   while IFS= read -r -d '' shell_file; do
     bash -n "$shell_file"
   done < <(find "$candidate/deploy" -type f -name '*.sh' -print0)
+  run_as_ci python3 "$candidate/deploy/repository-invariants.py" "$candidate"
   if (( run_regression_suites == 1 )); then
     wd_log "running deployment and merge-workflow regression suites"
     run_as_ci bash "$candidate/deploy/lib.test.sh"
@@ -861,6 +862,8 @@ test_static_lane() {
     run_as_ci bash "$candidate/deploy/typescript-artifact-cache.test.sh"
     run_as_ci bash "$candidate/deploy/typescript-test-groups.test.sh"
     run_as_ci bash "$candidate/deploy/commerce-release-bundle.test.sh"
+    run_as_ci bash "$candidate/deploy/change-plan.test.sh"
+    run_as_ci bash "$candidate/deploy/repository-invariants.test.sh"
     run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"
   fi
 }
