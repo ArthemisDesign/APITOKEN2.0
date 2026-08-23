@@ -8,13 +8,14 @@ for image in \
   redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952; do
   archive=$(mktemp /var/lib/apitoken-staging/.image-seed.XXXXXX.tar)
   docker image inspect "$image" >/dev/null 2>&1 || docker pull "$image" >/dev/null
+  source_id=$(docker image inspect --format '{{.Id}}' "$image")
+  [[ $source_id == sha256:* ]] || { echo "staging-image-seed: source image has no ID" >&2; exit 1; }
   docker save -o "$archive" "$image"
   chown "$STAGE_USER:$STAGE_USER" "$archive"
-  loaded=$(runuser -u "$STAGE_USER" -- env DOCKER_HOST="unix://$SOCKET" docker load -i "$archive")
-  loaded_ref=$(sed -n 's/^Loaded image: //p' <<<"$loaded" | tail -n 1)
+  runuser -u "$STAGE_USER" -- env DOCKER_HOST="unix://$SOCKET" docker load -i "$archive" >/dev/null
   if ! runuser -u "$STAGE_USER" -- env DOCKER_HOST="unix://$SOCKET" docker image inspect "$image" >/dev/null 2>&1; then
-    [[ -n $loaded_ref ]] || { echo "staging-image-seed: imported image has no reference" >&2; exit 1; }
-    runuser -u "$STAGE_USER" -- env DOCKER_HOST="unix://$SOCKET" docker tag "$loaded_ref" "$image"
+    runuser -u "$STAGE_USER" -- env DOCKER_HOST="unix://$SOCKET" docker image inspect "$source_id" >/dev/null
+    runuser -u "$STAGE_USER" -- env DOCKER_HOST="unix://$SOCKET" docker tag "$source_id" "$image"
   fi
   rm -f "$archive"
 done
