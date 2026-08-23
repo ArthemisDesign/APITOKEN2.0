@@ -8,13 +8,12 @@ services:
       POSTGRES_DB: stage_empty
       POSTGRES_USER: stage
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-      PGDATA: /var/lib/postgresql/data/pgdata
     secrets:
       - postgres_password
     ports:
       - "10.254.32.2:5433:5432"
     volumes:
-      - /var/lib/apitoken-staging/postgres:/var/lib/postgresql/data
+      - postgres-stage-data:/var/lib/postgresql
     mem_limit: 2g
     cpus: 1.0
     pids_limit: 256
@@ -24,6 +23,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+volumes:
+  postgres-stage-data:
+    name: apitoken-postgres-stage-data
 secrets:
   postgres_password:
     file: /etc/apitoken-staging/postgres.password
