@@ -147,12 +147,13 @@ systemctl daemon-reload
 systemctl start apitoken-stage-pg-loopback.service
 
 migrate_node() {
-  local name=$1 url=$2 script=$3
+  local name=$1 url=$2 script=$3 resolved
   [[ -f $script ]] || return 0
+  resolved=$(readlink -f "$script")
   case "$name" in
-    commerce) DATABASE_URL=$url /usr/bin/node "$script" ;;
-    sales) SALES_DATABASE_URL=$url /usr/bin/node "$script" ;;
-    openkeys) OPENKEYS_DATABASE_URL=$url /usr/bin/node "$script" ;;
+    commerce) DATABASE_URL=$url /usr/bin/node "$resolved" ;;
+    sales) SALES_DATABASE_URL=$url /usr/bin/node "$resolved" ;;
+    openkeys) OPENKEYS_DATABASE_URL=$url /usr/bin/node "$resolved" ;;
     *) echo "install-staging-twin: unknown migrate target $name" >&2; return 1 ;;
   esac
 }
