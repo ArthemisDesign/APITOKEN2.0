@@ -43,6 +43,12 @@ admin.apitoken.sale /proxy-admin/* ---------> Caddy managed auth
 commercial host -- encrypted Borg/SSH --> 84.32.109.82:2223/backup/.repo
 ```
 
+The partner cabinet moved into the customer Dashboard. `partners.apitoken.sale` therefore redirects
+every browser route to `https://apitoken.sale/dashboard?view=referral` (302, deliberately reversible)
+while `/v1/*` keeps serving the partner API on `127.0.0.1:3100` and `/v1/internal/*` stays 404 in
+public. The sales-web process still runs: it serves `admin.partners.apitoken.sale` and its own
+loopback health gate, so this redirect changes no deployment or verification path.
+
 `api.apitoken.sale` is the public Anthropic-compatible core endpoint. Its public proxy exposes only
 `/v1/*`, `/health`, and `/balance`, not the engine Control API. `backend.apitoken.sale` is the browser-facing
 commercial API. The Rust engine remains authoritative for API keys, balances, reservations and

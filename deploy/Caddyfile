@@ -553,8 +553,12 @@ partners.apitoken.sale {
 	handle /v1/* {
 		reverse_proxy 127.0.0.1:3100
 	}
+	# The partner cabinet now lives inside the customer Dashboard, so the old browser portal only
+	# points there. 302, not 301: the retirement stays reversible without fighting browser caches.
+	# The sales-web process itself keeps serving admin.partners.apitoken.sale and its own health
+	# gate on the loopback origin, so nothing operational depends on this hostname any more.
 	handle {
-		reverse_proxy 127.0.0.1:3200
+		redir https://apitoken.sale/dashboard?view=referral 302
 	}
 }
 

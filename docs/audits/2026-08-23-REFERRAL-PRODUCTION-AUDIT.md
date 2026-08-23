@@ -106,12 +106,11 @@ bounded by the owner's own ceiling.
 The reviewer note is no longer mandatory: a decision is attributable through the admin actor header,
 so approving or rejecting an application needs one click and nothing else.
 
-### Old partner portal — prepared, not landed here
+### Old partner portal — retired
 
-The retirement is a `deploy/Caddyfile` change: every browser route on `partners.apitoken.sale`
-redirects to `apitoken.sale/dashboard?view=referral` (302, reversible), `/v1/*` keeps serving the
-partner API, `/v1/internal/*` stays 404 publicly, and sales-web keeps serving
-`admin.partners.apitoken.sale` and its own loopback health gate, so no deployment or verification
-path changes. `deploy/Caddyfile` is classified as Ubuntu-host-dependent, so the merge gate runs the
-host-installer proofs under Docker; this machine has no Docker, so the change must be landed from
-one that does. Nothing else in this audit depends on it.
+Every browser route on `partners.apitoken.sale` redirects to `apitoken.sale/dashboard?view=referral`
+(302, reversible). `/v1/*` keeps serving the partner API, `/v1/internal/*` stays 404 publicly, and
+sales-web keeps serving `admin.partners.apitoken.sale` and its own loopback health gate, so no
+deployment or verification path changed. `deploy/Caddyfile` is Ubuntu-host-dependent, so the change
+carries the full host-installer proof: it was run locally under Colima, where `install-caddy.sh
+--check` and `caddy validate` accepted the rewritten vhost before the merge gate ran the same proof.
