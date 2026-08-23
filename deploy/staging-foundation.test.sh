@@ -29,6 +29,7 @@ grep -Fxq 'PrivateUsers=no' "$ROOT/systemd/apitoken-rootless-docker-stage.servic
 grep -Fxq 'RestrictNamespaces=~cgroup ipc net pid time uts' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fxq 'Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fxq 'Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
+grep -Fxq 'Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=false' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 ! grep -Fq '/var/run/docker.sock' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fq 'unix:///run/apitoken-staging/docker.sock' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fq '/usr/local/bin/apitoken-observe-stage' "$ROOT/deploy/install-watchdog.sh"
