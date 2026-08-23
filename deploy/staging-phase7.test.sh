@@ -2,6 +2,7 @@
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 bash -n "$ROOT/deploy/promotion-admission.sh" "$ROOT/deploy/stage-emergency-guard.sh"
+grep -Fq 'if [[ $PROCESSED_SHA != "$CANDIDATE_SHA" ]]' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'promotion-admission.sh "$CANDIDATE_SHA"' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'staging-admission.enabled' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'MemAvailable' "$ROOT/deploy/stage-emergency-guard.sh"

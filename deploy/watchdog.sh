@@ -2722,7 +2722,6 @@ main() {
   remote_ref="refs/remotes/$REMOTE/$BRANCH"
   CANDIDATE_SHA=$(git -C "$SOURCE_REPO" rev-parse "$remote_ref^{commit}")
   wd_validate_sha "$CANDIDATE_SHA"
-  sudo -n /usr/local/lib/apitoken-watchdog/promotion-admission.sh "$CANDIDATE_SHA"
   if [[ -n $resume_sha && $CANDIDATE_SHA != "$resume_sha" ]]; then
     CURRENT_PHASE=handoff
     status "master advanced during controller handoff; next poll will select the newer candidate"
@@ -2835,6 +2834,10 @@ main() {
   codex_artifacts_required=$VALIDATION_CODEX_ARTIFACTS_REQUIRED
   validation_policy_sha256=$VALIDATION_POLICY_SHA256
   validation_plan_sha256=$VALIDATION_PLAN_SHA256
+
+  if [[ $PROCESSED_SHA != "$CANDIDATE_SHA" ]]; then
+    sudo -n /usr/local/lib/apitoken-watchdog/promotion-admission.sh "$CANDIDATE_SHA"
+  fi
 
   if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $infra_changed == 0 \
         && $engine_changed == 0 && $backend_changed == 0 \
