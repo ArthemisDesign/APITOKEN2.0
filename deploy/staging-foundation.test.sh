@@ -33,6 +33,12 @@ grep -Fq '/usr/local/bin/apitoken-stage-ctl' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'systemctl restart apitoken-staging-foundation-install.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'for stage_unit in staging.slice apitoken-rootless-docker-stage.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'systemctl start --no-block apitoken-rootless-docker-stage.service' "$I"
+for host_state_path in deploy/install-staging-foundation.sh deploy/staging-postgres.compose.yaml deploy/staging-redis.compose.yaml; do
+  if bash -c 'source "$1/deploy/watchdog-lib.sh"; wd_path_is_controller_definition "$2"' \
+      _ "$ROOT" "$host_state_path"; then
+    echo "stateful stage definition classified controller-only: $host_state_path" >&2; exit 1
+  fi
+done
 for prerequisite in slirp4netns fuse-overlayfs newuidmap newgidmap; do
   grep -Fq "$prerequisite" "$I"
 done

@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `db59ba59fc6527c753e776ef3a8427e0158d8a53` | 2026-08-23 | GREEN manager refresh; installing rootless prerequisites. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `6cb2dcdea46b5229a8fc8a7af3f4f50196257a7c` | 2026-08-23 | GREEN prerequisites; fixing infrastructure scope classification. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -518,13 +518,24 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: install the missing rootless prerequisites, then verify stores, isolation, and pressure.
 
 ### 2026-08-23 — rootless Docker prerequisites forward fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `6cb2dcdea46b5229a8fc8a7af3f4f50196257a7c`   watchdog: GREEN
 Result: The live manager unit now has the correct driver, but the host lacks the `slirp4netns`
 executable. The trusted master-sourced foundation installs `slirp4netns`, `fuse-overlayfs`, and
 `uidmap` before activation, then verifies all required rootless tools. Host-image coverage installs
 the same packages.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
 `./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: force stateful foundation changes through the full trusted infrastructure transaction.
+
+### 2026-08-23 — staging infrastructure scope fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Stateful staging installer and Compose files were incorrectly listed as controller-only
+definitions. Their GREEN SHAs updated the cache but did not rerun the foundation. Remove them from
+the narrow classifier so any identity, package, mount, namespace, Docker, or store change uses the
+full production-watchdog infrastructure transaction. Add a regression for the classification.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/watchdog-lib.test.sh`;
+`git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
 Next: verify live stores, isolation, and pressure.
 

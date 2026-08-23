@@ -1077,11 +1077,9 @@ wd_path_is_controller_definition() {
     deploy/watchdog.sh|deploy/watchdog-lib.sh|deploy/validation-plan.sh|\
     deploy/contour-config.sh|deploy/contour-config.py|deploy/contour-config.schema.json|\
     deploy/contour-production.json|deploy/contour-stage.json|deploy/stage-unit-renderer.py|\
-    deploy/stage-unit-whitelist.json|deploy/install-staging-foundation.sh|\
-    deploy/apitoken-observe-stage.sh|deploy/stage-observe-helper.sh|\
-    deploy/apitoken-stage-ctl.sh|deploy/stage-ctl-helper.sh|\
+    deploy/stage-unit-whitelist.json|deploy/apitoken-observe-stage.sh|\
+    deploy/stage-observe-helper.sh|deploy/apitoken-stage-ctl.sh|deploy/stage-ctl-helper.sh|\
     deploy/staging-isolation-live.sh|deploy/staging-pressure-proof.sh|\
-    deploy/staging-postgres.compose.yaml|deploy/staging-redis.compose.yaml|\
     deploy/gpt-image-2-live-gate.sh|deploy/gpt-image-2-public-smoke-gate.sh|\
     deploy/gpt-image-2-public-preflight-gate.sh|deploy/gpt-image-2-public-preflight-v2-gate.sh|\
     deploy/gpt-image-2-public-preflight-v3-gate.sh|deploy/gpt-image-2-public-paid-smoke-gate.sh|\
