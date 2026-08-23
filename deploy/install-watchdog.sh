@@ -302,6 +302,8 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/promotion-admission.sh
   install -o root -g root -m 0755 "$ROOT/deploy/stage-emergency-guard.sh" \
     /usr/local/lib/apitoken-watchdog/stage-emergency-guard.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/stage-eligible-publish.sh" \
+    /usr/local/lib/apitoken-watchdog/stage-eligible-publish.sh
   install -o root -g root -m 0755 "$ROOT/deploy/stage-attestation.py" \
     /usr/local/lib/apitoken-watchdog/stage-attestation.py
   install -o root -g root -m 0755 "$ROOT/deploy/stage-degrade-gate.py" \

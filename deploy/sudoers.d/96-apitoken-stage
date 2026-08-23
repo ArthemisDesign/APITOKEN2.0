@@ -3,7 +3,8 @@ Cmnd_Alias APITOKEN_STAGE_OBSERVE = /usr/local/lib/apitoken-watchdog/stage-obser
 Cmnd_Alias APITOKEN_STAGE_REPORT = /usr/local/lib/apitoken-watchdog/stage/watchdog-github-stage commit-status *, \
     /usr/local/lib/apitoken-watchdog/stage/watchdog-github-stage deployment-create *, \
     /usr/local/lib/apitoken-watchdog/stage/watchdog-github-stage deployment-status *
-Cmnd_Alias APITOKEN_STAGE_CTL = /usr/local/lib/apitoken-watchdog/stage-ctl-helper.sh emergency-stop, \
+Cmnd_Alias APITOKEN_STAGE_CTL = /usr/local/lib/apitoken-watchdog/stage-eligible-publish.sh [0-9a-f]* *, \
+    /usr/local/lib/apitoken-watchdog/stage-ctl-helper.sh emergency-stop, \
     /usr/local/lib/apitoken-watchdog/stage-ctl-helper.sh attest, \
     /usr/local/lib/apitoken-watchdog/stage-ctl-helper.sh sync, \
     /usr/local/lib/apitoken-watchdog/stage-ctl-helper.sh reseed, \

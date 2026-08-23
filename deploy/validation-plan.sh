@@ -171,6 +171,7 @@ policy_sha256=$(
     deploy/stage-gc.sh \
     deploy/promotion-admission.sh \
     deploy/stage-emergency-guard.sh \
+    deploy/stage-eligible-publish.sh \
     deploy/stage-attestation.py \
     deploy/stage-degrade-gate.py \
     deploy/stage-degradation-policy.json \

@@ -1702,7 +1702,7 @@ no admission condition for a new SHA is weakened.
 Next: persist the bootstrap marker during the first admitted cycle.
 
 ### 2026-08-23 — admission bootstrap marker persistence
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `5ead49fdb881d5c4b65c66d2506bcff8d90191c3`   watchdog: GREEN
 Result: The enabling cycle installed admission but did not write `staging-admission.enabled` because
 the watchdog process continued with its previously loaded controller. The next SHA therefore also
 entered bootstrap, while a later poll enabled enforcement in the wrong order. Make the admission
@@ -1712,7 +1712,21 @@ Checks actually run: `bash deploy/staging-phase7.test.sh`; `bash deploy/staging-
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: hotfix recovery of the bootstrap transition;
 no later-SHA admission condition is weakened.
-Next: verify idle GREEN state and unattested-next-SHA rejection contract, then close Phase 7. Do not start Phase 8.
+Next: transition one exact SHA through stage and host-owned eligibility.
+
+### 2026-08-23 — host-owned eligibility transition helper
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Add a fixed root-owned publisher that accepts an explicit operator SHA, actor, and reason only
+when source/candidate/deployed/processed stage markers all match. It binds the exact tree and trusted
+policy digest, sets a 24-hour TTL, and atomically publishes `promotion-eligible.json`. The forced
+`stage-ctl` sudo policy permits only this fixed helper shape. This transition helper is intentionally
+separate from candidate stage code and grants no production status or service control.
+Checks actually run: `bash deploy/staging-phase7.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: this forward fix exists to make the first real
+post-enforcement attestation possible without weakening admission.
+Next: merge through the recovered GREEN watchdog, converge stage, validate the final Phase 7 SHA,
+issue explicit operator eligibility, then close Phase 7. Do not start Phase 8.
 
 ---
 
