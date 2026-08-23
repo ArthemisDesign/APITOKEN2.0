@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'staging-isolation-live: root required' >&2; exit 1; }
-[[ -d /run/netns/apitoken-stage ]] || { echo 'stage netns missing' >&2; exit 1; }
+ip netns list | awk '{print $1}' | grep -Fxq apitoken-stage \
+  || { echo 'stage netns missing' >&2; exit 1; }
 # All denied connections must fail. Run only after trusted foundation apply.
 for target in 127.0.0.1:5433 127.0.0.1:6379 127.0.0.1:6380 127.0.0.1:8790 \
   127.0.0.1:8791 127.0.0.1:8792 127.0.0.1:8794 127.0.0.1:8802 \

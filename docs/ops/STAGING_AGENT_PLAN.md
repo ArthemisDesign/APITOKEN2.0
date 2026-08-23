@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `ff13fd0170e087dcd22a0209dd6c866603dbe904` | 2026-08-23 | GREEN live stores; exposing exact Phase 2 proof commands. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `31e1af3eaaa023d1f9f5fa01719b0ff1469427f8` | 2026-08-23 | GREEN proof commands; fixing live proof portability. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -928,13 +928,24 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: run the exact live isolation and pressure proofs.
 
 ### 2026-08-23 — forced Phase 2 proof commands
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `31e1af3eaaa023d1f9f5fa01719b0ff1469427f8`   watchdog: GREEN
 Result: All foundation and store units are active. Add exact read-only forced commands for
 `proof isolation` and `proof pressure`. They execute only the two reviewed root proof scripts; all
 other proof names and arities fail closed. No general shell or root command is exposed.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: rerun both live proofs, then close Phase 2 on a GREEN SHA.
+
+### 2026-08-23 — Phase 2 live proof portability fixes
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The live isolation proof checked the iproute2 netns bind as a directory, but it is a file;
+validate it through `ip netns list`. The memory proof used `systemd-run --wait` without `--pipe`,
+which did not propagate the killed child result; add `--pipe` so the expected OOM failure reaches the
+proof process. Proof scope and bounds stay unchanged.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fixes; no lock changed.
 Next: run both live proofs, then close Phase 2 on a GREEN SHA.
 
 ---
