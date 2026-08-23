@@ -25,6 +25,7 @@ grep -Fq 'host-global candidate path rejected' "$ROOT/deploy/stage-watchdog-vali
 grep -Fq 'runuser -u deploy -- git' "$ROOT/deploy/stage-source-fetch.sh"
 grep -Fq 'safe.directory="$SOURCE"' "$ROOT/deploy/stage-source-fetch.sh"
 grep -Fq 'tar -C "$SOURCE" -cf - .git | tar -C "$TARGET" -xf -' "$ROOT/deploy/stage-source-fetch.sh"
+grep -Fq 'runuser -u deploy-stage -- git' "$ROOT/deploy/stage-source-fetch.sh"
 grep -Fq "refs/heads/stage:refs/remotes/origin/stage" "$ROOT/deploy/stage-source-fetch.sh"
 grep -Fxq 'NoNewPrivileges=yes' "$ROOT/systemd/apitoken-stage-source-fetch.service"
 grep -Fxq 'OnUnitInactiveSec=15s' "$ROOT/systemd/apitoken-stage-source-fetch.timer"

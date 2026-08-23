@@ -14,5 +14,6 @@ rm -rf --one-file-system "$TARGET"
 install -d -o deploy-stage -g deploy-stage -m 0750 "$TARGET"
 tar -C "$SOURCE" -cf - .git | tar -C "$TARGET" -xf -
 chown -R deploy-stage:deploy-stage "$TARGET/.git"
+runuser -u deploy-stage -- git -c safe.directory="$TARGET" -C "$TARGET" reset --quiet --hard "$sha"
 printf '%s\n' "$sha" >"$STATE/source.sha"
 chmod 0640 "$STATE/source.sha"

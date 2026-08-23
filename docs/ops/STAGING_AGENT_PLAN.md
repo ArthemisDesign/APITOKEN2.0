@@ -1248,13 +1248,24 @@ already-fetched Git object store instead of Git's local clone transport.
 Next: expose bounded stage state, then verify informational statuses.
 
 ### 2026-08-23 — bounded stage state observation
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `06ea29337e443b62d6b698cba18f21188a6cbca4`   watchdog: GREEN
 Result: Source fetch and watchdog cycles are now clean, but journals contain no output when markers
 are unchanged. Add read-only `observe-stage state` for six fixed SHA marker names. It prints only
 valid 40-hex values and accepts no path or argument.
 Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: diagnostics only; no lock changed.
+Next: materialize the exact stage worktree, then verify statuses.
+
+### 2026-08-23 — exact stage worktree materialization
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The copied Git object store and source marker are valid, but the stage checkout has no working
+tree for static validation. After copying only `.git`, run a fixed hard reset as `deploy-stage` to
+the exact resolved SHA. This materializes tracked candidate files without executing them.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: candidate files are materialized by Git after
+exact SHA resolution; no candidate installer or command runs.
 Next: verify informational stage statuses and close Phase 3.
 
 ---
