@@ -2722,6 +2722,7 @@ main() {
   remote_ref="refs/remotes/$REMOTE/$BRANCH"
   CANDIDATE_SHA=$(git -C "$SOURCE_REPO" rev-parse "$remote_ref^{commit}")
   wd_validate_sha "$CANDIDATE_SHA"
+  sudo -n /usr/local/lib/apitoken-watchdog/promotion-admission.sh "$CANDIDATE_SHA"
   if [[ -n $resume_sha && $CANDIDATE_SHA != "$resume_sha" ]]; then
     CURRENT_PHASE=handoff
     status "master advanced during controller handoff; next poll will select the newer candidate"
@@ -3199,6 +3200,10 @@ main() {
   fi
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"
+  if [[ ! -f $STATE_ROOT/staging-admission.enabled ]]; then
+    printf '%s\n' "$CANDIDATE_SHA" >"$STATE_ROOT/staging-admission.enabled"
+    chmod 0644 "$STATE_ROOT/staging-admission.enabled"
+  fi
   wd_discard_cycle_log || true
   rm -f -- "$PENDING_MIGRATION_FILE"
   CURRENT_PHASE=idle

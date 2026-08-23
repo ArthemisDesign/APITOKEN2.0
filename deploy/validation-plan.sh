@@ -169,6 +169,8 @@ policy_sha256=$(
     deploy/stage-stub-server.py \
     deploy/stage-seed.sh \
     deploy/stage-gc.sh \
+    deploy/promotion-admission.sh \
+    deploy/stage-emergency-guard.sh \
     deploy/stage-attestation.py \
     deploy/stage-degrade-gate.py \
     deploy/stage-degradation-policy.json \
@@ -190,6 +192,8 @@ policy_sha256=$(
     systemd/apitoken-stage-safe-sinks.service \
     systemd/apitoken-stage-caddy.service \
     systemd/apitoken-stage-load-generator.service \
+    systemd/apitoken-stage-emergency-guard.service \
+    systemd/apitoken-stage-emergency-guard.timer \
     systemd/apitoken-stage-report.service \
     systemd/apitoken-stage-report.path \
     systemd/apitoken-stage-watchdog.service \

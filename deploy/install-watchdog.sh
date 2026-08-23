@@ -298,6 +298,10 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/stage-report-publish
   install -o root -g root -m 0755 "$ROOT/deploy/stage-unit-renderer.py" \
     /usr/local/lib/apitoken-watchdog/stage-unit-renderer.py
+  install -o root -g root -m 0755 "$ROOT/deploy/promotion-admission.sh" \
+    /usr/local/lib/apitoken-watchdog/promotion-admission.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/stage-emergency-guard.sh" \
+    /usr/local/lib/apitoken-watchdog/stage-emergency-guard.sh
   install -o root -g root -m 0755 "$ROOT/deploy/stage-attestation.py" \
     /usr/local/lib/apitoken-watchdog/stage-attestation.py
   install -o root -g root -m 0755 "$ROOT/deploy/stage-degrade-gate.py" \
@@ -505,7 +509,8 @@ install_systemd_definitions() {
     apitoken-stage-report.service apitoken-stage-report.path \
     apitoken-stage-watchdog.service apitoken-stage-watchdog.timer \
     apitoken-stage-safe-sinks.service apitoken-stage-caddy.service \
-    apitoken-stage-load-generator.service staging.slice \
+    apitoken-stage-load-generator.service apitoken-stage-emergency-guard.service \
+    apitoken-stage-emergency-guard.timer staging.slice \
     apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
@@ -768,6 +773,8 @@ activate_redis_definition
 install_monitoring_definitions
 systemctl enable --now apitoken-candidate-validator.timer
 systemctl enable --now apitoken-deploy-watchdog.timer
-systemctl enable apitoken-stage-source-fetch.timer apitoken-stage-report.path apitoken-stage-watchdog.timer
-systemctl start apitoken-stage-source-fetch.timer apitoken-stage-report.path apitoken-stage-watchdog.timer
+systemctl enable apitoken-stage-source-fetch.timer apitoken-stage-report.path \
+  apitoken-stage-watchdog.timer apitoken-stage-emergency-guard.timer
+systemctl start apitoken-stage-source-fetch.timer apitoken-stage-report.path \
+  apitoken-stage-watchdog.timer apitoken-stage-emergency-guard.timer
 echo 'production watchdog and parallel candidate validator installed; verify with: sudo apitoken-watchdog status'

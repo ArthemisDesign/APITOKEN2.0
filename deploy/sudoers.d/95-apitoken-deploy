@@ -207,6 +207,9 @@ Cmnd_Alias APITOKEN_POLICY = \
     /usr/local/lib/apitoken-watchdog/install-sudoers.sh, \
     /usr/local/lib/apitoken-watchdog/install-sudoers.sh --check
 
+Cmnd_Alias APITOKEN_PROMOTION = \
+    /usr/local/lib/apitoken-watchdog/promotion-admission.sh [0-9a-f]*
+
 Cmnd_Alias APITOKEN_OPERATOR = \
     /usr/local/bin/apitoken-watchdog, \
     /usr/local/bin/apitoken-watchdog status, \
@@ -243,7 +246,7 @@ Cmnd_Alias APITOKEN_PROBE = \
 
 deploy ALL=(root) NOPASSWD: APITOKEN_HELPERS, APITOKEN_CANDIDATES, APITOKEN_RELEASES, \
     APITOKEN_UNITS, APITOKEN_INSPECT, APITOKEN_OPERATOR, APITOKEN_POLICY, APITOKEN_CADDY, \
-    APITOKEN_PROBE
+    APITOKEN_PROBE, APITOKEN_PROMOTION
 deploy ALL=(apitoken-ci) NOPASSWD: APITOKEN_CI
 
 # Deny-list defence in depth. Even if a command spec above is later widened by accident, these

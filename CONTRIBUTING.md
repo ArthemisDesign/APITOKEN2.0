@@ -54,7 +54,11 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    rename, or delete an existing migration. See [`packages/db/MIGRATIONS.md`](packages/db/MIGRATIONS.md).
 3. Keep old application code compatible with the expanded schema. Destructive contract cleanup is
    a later migration after every deployed version has stopped using the old shape.
-4. Run the relevant local tests. Before merging a cross-component change, run the complete gate:
+4. Deliver the exact SHA to the serial stage ref with `./deploy/agent-merge-stage.sh`. Wait for
+   `deploy/stage`, `stage/deployed`, and `stage/degradation` to be GREEN. Promotion requires an
+   explicit operator attestation for that SHA. Then run `./deploy/agent-merge.sh` without rebasing or
+   adding a commit. A valid host-owned hotfix attestation is the only stage-independent path.
+5. Run the relevant local tests. Before merging a cross-component change, run the complete gate:
 
    ```bash
    pnpm install --frozen-lockfile

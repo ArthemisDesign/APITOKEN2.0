@@ -1040,6 +1040,7 @@ wd_path_is_systemd_definition() {
     systemd/apitoken-stage-source-fetch.timer|systemd/apitoken-stage-report.service|\
     systemd/apitoken-stage-report.path|systemd/apitoken-stage-safe-sinks.service|\
     systemd/apitoken-stage-caddy.service|systemd/apitoken-stage-load-generator.service|\
+    systemd/apitoken-stage-emergency-guard.service|systemd/apitoken-stage-emergency-guard.timer|\
     systemd/apitoken-stage-watchdog.service|\
     systemd/apitoken-stage-watchdog.timer|systemd/staging.slice|\
     systemd/apitoken-postgres.service|systemd/apitoken-affinity-redis.service|\

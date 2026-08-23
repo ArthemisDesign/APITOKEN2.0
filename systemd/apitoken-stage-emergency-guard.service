@@ -1,0 +1,7 @@
+[Unit]
+Description=Stop staging when production safety envelope is red
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/apitoken-watchdog/stage-emergency-guard.sh
+TimeoutStartSec=30

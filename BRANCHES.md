@@ -35,10 +35,10 @@ Check out the branch → its purpose is immediately visible.
    `staging` branch; full preview and exception handling rules are in `AGENTS.md`.
 2. **Crate boundaries are respected** (see the root `CLAUDE.md` and `crates/<x>/CLAUDE.md`). The
    `comp/pool` branch must not pull in networking; `comp/forward` must not read env; and so on.
-3. **`stage` = observe-only staging trigger.** `deploy/agent-merge-stage.sh` first runs the exact
+3. **`stage` = mandatory staging trigger.** `deploy/agent-merge-stage.sh` first runs the exact
    production baseline and trusted-validation gates without changing `master`, then uses a separate
-   stage lock to move `stage`. A stage SHA remains frozen until later-phase promotion or operator
-   recovery. Its statuses are informational and never satisfy production admission.
+   stage lock to move `stage`. A stage SHA remains frozen through degradation and explicit operator
+   attestation. Production accepts only the same exact attested SHA or a valid hotfix attestation.
 4. **`master` = production trigger.** Merge only via `deploy/agent-merge.sh` and only when the
    change is fully production-ready. Before the gate, the script rejects a red target and rebases
    the branch onto the latest committed `master`, then runs in parallel a fail-closed local

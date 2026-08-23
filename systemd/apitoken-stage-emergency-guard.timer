@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll production safety envelope for staging stop
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=15s
+AccuracySec=1s
+Unit=apitoken-stage-emergency-guard.service
+
+[Install]
+WantedBy=timers.target
