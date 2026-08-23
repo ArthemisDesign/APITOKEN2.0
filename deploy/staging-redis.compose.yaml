@@ -1,7 +1,7 @@
 name: apitoken-stage-redis
 services:
   history-stage:
-    image: redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
+    image: apitoken-stage/redis:7.4.2-alpine
     container_name: apitoken-redis-history-stage
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${STAGE_REDIS_PASSWORD:?required}"]
@@ -12,7 +12,7 @@ services:
     pids_limit: 128
     cgroup_parent: staging.slice
   affinity-stage:
-    image: redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
+    image: apitoken-stage/redis:7.4.2-alpine
     container_name: apitoken-redis-affinity-stage
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${STAGE_REDIS_PASSWORD:?required}"]

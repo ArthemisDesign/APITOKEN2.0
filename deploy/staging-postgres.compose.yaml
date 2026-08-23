@@ -1,7 +1,7 @@
 name: apitoken-stage-postgres
 services:
   postgres-stage:
-    image: postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
+    image: apitoken-stage/postgres:18-alpine
     container_name: apitoken-postgres-stage
     restart: unless-stopped
     environment:
