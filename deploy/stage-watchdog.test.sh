@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
-for file in agent-merge-stage.sh stage-watchdog.sh stage-watchdog-validate.sh \
+for file in agent-merge-stage.sh stage-watchdog.sh stage-watchdog-validate.sh stage-source-fetch.sh \
   watchdog-github-stage.sh stage-sync.sh promotion-attest.sh; do
   bash -n "$ROOT/deploy/$file"
 done
@@ -18,6 +18,8 @@ grep -Fq 'SUDO_USER:-} == deploy-stage' "$ROOT/deploy/watchdog-github-stage.sh"
 grep -Fq 'candidate.sha' "$ROOT/deploy/watchdog-github-stage.sh"
 grep -Fq 'deploy-stage ALL=(root) NOPASSWD: APITOKEN_STAGE_REPORT' "$ROOT/deploy/sudoers.d/96-apitoken-stage"
 grep -Fq 'host-global candidate path rejected' "$ROOT/deploy/stage-watchdog-validate.sh"
+grep -Fq 'caller rejected' "$ROOT/deploy/stage-source-fetch.sh"
+grep -Fq "refs/heads/stage:refs/remotes/origin/stage" "$ROOT/deploy/stage-source-fetch.sh"
 grep -Fq 'phase-disabled' "$ROOT/deploy/stage-sync.sh"
 grep -Fq 'phase-disabled' "$ROOT/deploy/promotion-attest.sh"
 grep -Fxq 'User=deploy-stage' "$ROOT/systemd/apitoken-stage-watchdog.service"

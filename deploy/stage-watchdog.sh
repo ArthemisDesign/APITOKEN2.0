@@ -8,16 +8,13 @@ source "$SCRIPT_DIR/contour-config.sh"
 STATE=$CONTOUR_ROOTS_STATE
 LOCK=$CONTOUR_LOCKS_WATCHDOG
 REPO=$CONTOUR_ROOTS_SOURCE_REPO
-REMOTE_URL=https://github.com/3xcalibur-tech/Claude_API.git
+SOURCE_FETCH=/usr/local/lib/apitoken-watchdog/stage-source-fetch
 REPORTER=$CONTOUR_GITHUB_REPORTING_HELPER
 mkdir -p "$STATE" "$(dirname -- "$LOCK")"
 exec 9>"$LOCK"
 flock -n 9 || exit 0
-if [[ ! -d $REPO/.git ]]; then
-  git clone --filter=blob:none --no-checkout "$REMOTE_URL" "$REPO"
-fi
-git -C "$REPO" fetch --quiet --prune origin "$CONTOUR_GIT_BRANCH"
-sha=$(git -C "$REPO" rev-parse "origin/$CONTOUR_GIT_BRANCH^{commit}")
+sha=$(sudo -n "$SOURCE_FETCH" "$CONTOUR_GIT_BRANCH")
+[[ -d $REPO/.git ]] || { echo 'stage-watchdog: source bridge did not publish repository' >&2; exit 1; }
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo 'stage-watchdog: invalid stage SHA' >&2; exit 1; }
 processed=$(cat "$STATE/processed.sha" 2>/dev/null || true)
 [[ $processed != "$sha" ]] || exit 0

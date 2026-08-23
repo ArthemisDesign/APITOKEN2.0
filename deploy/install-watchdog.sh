@@ -292,6 +292,8 @@ install_controller_definitions() {
   done
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-github-stage.sh" \
     /usr/local/lib/apitoken-watchdog/stage/watchdog-github-stage
+  install -o root -g root -m 0755 "$ROOT/deploy/stage-source-fetch.sh" \
+    /usr/local/lib/apitoken-watchdog/stage-source-fetch
   install -o root -g root -m 0755 "$ROOT/deploy/stage-unit-renderer.py" \
     /usr/local/lib/apitoken-watchdog/stage-unit-renderer.py
   for stage_helper in install-staging-foundation.sh apitoken-observe-stage.sh \

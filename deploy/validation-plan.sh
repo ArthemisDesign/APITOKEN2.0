@@ -162,6 +162,7 @@ policy_sha256=$(
     deploy/stage-store-diagnostics.sh \
     deploy/stage-watchdog.sh \
     deploy/stage-watchdog-validate.sh \
+    deploy/stage-source-fetch.sh \
     deploy/watchdog-github-stage.sh \
     deploy/stage-sync.sh \
     deploy/promotion-attest.sh \

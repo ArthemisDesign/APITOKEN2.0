@@ -1099,13 +1099,26 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: provision the stage watchdog lock file, then initialize `stage`.
 
 ### 2026-08-23 — stage watchdog lock ownership fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `32306327bf9cf1f1b73dff7d84ab001cc04fb101`   watchdog: GREEN
 Result: Live observation shows the timer is active, but `deploy-stage` cannot create its lock directly
 under root-owned `/run/lock`. Provision the exact lock file from the trusted foundation oneshot with
 `deploy-stage:deploy-stage` ownership and mode `0600`. No lock directory or wildcard write is granted.
 Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: bridge exact source fetch through the production repository identity.
+
+### 2026-08-23 — stage source fetch bridge
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The stage netns correctly has no public DNS or egress, so its unprivileged poller cannot clone
+GitHub directly. Add a root-owned, caller-bound bridge that accepts only `deploy-stage` and the
+literal branch `stage`. It fetches that ref into the production source checkout but executes no
+candidate code, then copies only the git objects/ref into the stage checkout and returns the exact
+SHA. The stage watchdog remains inside the netns and cannot use the production credential directly.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: GitHub fetch uses a narrow master-sourced
+bridge outside the no-egress netns; reporting stays caller-bound and stage candidate code stays unprivileged.
 Next: initialize `stage` through the stage client and verify informational statuses.
 
 ---

@@ -1,19 +1,20 @@
 # Staging identities have no production control. Only forced-command wrappers reach these helpers.
 Cmnd_Alias APITOKEN_STAGE_OBSERVE = /usr/local/lib/apitoken-watchdog/stage-observe-helper.sh *
-Cmnd_Alias APITOKEN_STAGE_REPORT = /usr/local/lib/apitoken-stage/watchdog-github-stage commit-status *, \
-    /usr/local/lib/apitoken-stage/watchdog-github-stage deployment-create *, \
-    /usr/local/lib/apitoken-stage/watchdog-github-stage deployment-status *
+Cmnd_Alias APITOKEN_STAGE_SOURCE = /usr/local/lib/apitoken-watchdog/stage-source-fetch stage
+Cmnd_Alias APITOKEN_STAGE_REPORT = /usr/local/lib/apitoken-watchdog/stage/watchdog-github-stage commit-status *, \
+    /usr/local/lib/apitoken-watchdog/stage/watchdog-github-stage deployment-create *, \
+    /usr/local/lib/apitoken-watchdog/stage/watchdog-github-stage deployment-status *
 Cmnd_Alias APITOKEN_STAGE_CTL = /usr/local/lib/apitoken-watchdog/stage-ctl-helper.sh emergency-stop, \
     /usr/local/lib/apitoken-watchdog/stage-ctl-helper.sh attest, \
     /usr/local/lib/apitoken-watchdog/stage-ctl-helper.sh sync, \
     /usr/local/lib/apitoken-watchdog/stage-ctl-helper.sh reseed
 observe-stage ALL=(root) NOPASSWD: APITOKEN_STAGE_OBSERVE
 stage-ctl ALL=(root) NOPASSWD: APITOKEN_STAGE_CTL
-deploy-stage ALL=(root) NOPASSWD: APITOKEN_STAGE_REPORT
+deploy-stage ALL=(root) NOPASSWD: APITOKEN_STAGE_REPORT, APITOKEN_STAGE_SOURCE
 observe-stage ALL=(ALL) !ALL
 stage-ctl ALL=(ALL) !ALL
 deploy-stage ALL=(ALL) !ALL
 # Re-allow only the exact aliases after the deny-all last match.
 observe-stage ALL=(root) NOPASSWD: APITOKEN_STAGE_OBSERVE
 stage-ctl ALL=(root) NOPASSWD: APITOKEN_STAGE_CTL
-deploy-stage ALL=(root) NOPASSWD: APITOKEN_STAGE_REPORT
+deploy-stage ALL=(root) NOPASSWD: APITOKEN_STAGE_REPORT, APITOKEN_STAGE_SOURCE
