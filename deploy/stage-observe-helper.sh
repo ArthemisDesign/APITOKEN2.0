@@ -9,7 +9,7 @@ unit_allowed() {
   [[ $unit == *.service || $unit == *.slice ]] || unit=$unit.service
   case "$unit" in
     staging.slice|apitoken-staging-foundation-install.service|apitoken-rootless-docker-stage.service|\
-    apitoken-postgres-stage.service|apitoken-redis-stage.service|apitoken-*-stage.service|\
+    apitoken-staging-image-seed.service|apitoken-postgres-stage.service|apitoken-redis-stage.service|apitoken-*-stage.service|\
     claude-*-stage.service|claude-*-stage@*.service) printf '%s\n' "$unit" ;;
     *) return 1 ;;
   esac
@@ -18,7 +18,8 @@ case "${words[0]:-}" in
   help) printf '%s\n' 'stage status|ready <port>|logs <stage-unit> [--since <text>]' ;;
   status)
     systemctl is-active staging.slice apitoken-staging-foundation-install.service \
-      apitoken-rootless-docker-stage.service apitoken-postgres-stage.service apitoken-redis-stage.service || true
+      apitoken-rootless-docker-stage.service apitoken-staging-image-seed.service \
+      apitoken-postgres-stage.service apitoken-redis-stage.service || true
     ip netns list | awk '$1 == "apitoken-stage" { print }'
     ;;
   ready)
