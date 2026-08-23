@@ -18,6 +18,7 @@ EnvironmentFile=/etc/apitoken-staging/kimi.env
 ExecStart=/usr/bin/env CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api-stage-kimi-%i CLAUDE_API_PROVIDER=kimi CLAUDE_API_KIMI_ENABLED=1 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=stage:engine:kimi:%i CLAUDE_API_TRUST_LOOPBACK=0 /srv/claude-api-staging/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
+TimeoutStopSec=720
 RuntimeDirectory=claude-api-stage-kimi-%i
 RuntimeDirectoryMode=0700
 NoNewPrivileges=yes

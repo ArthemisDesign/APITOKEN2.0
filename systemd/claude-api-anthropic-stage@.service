@@ -19,7 +19,7 @@ ExecStart=/usr/bin/env CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api-stage-anthropi
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM
-TimeoutStopSec=180
+TimeoutStopSec=720
 RuntimeDirectory=claude-api-stage-anthropic-%i
 RuntimeDirectoryMode=0700
 NoNewPrivileges=yes
