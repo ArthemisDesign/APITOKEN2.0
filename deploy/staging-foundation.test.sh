@@ -105,6 +105,8 @@ sed -e 's#^HELPER=.*#HELPER=/bin/echo#' -e 's#exec sudo -n "\$HELPER"#exec "\$HE
   "$ROOT/deploy/apitoken-observe-stage.sh" >"$wrapper"
 SSH_ORIGINAL_COMMAND='logs apitoken-staging-foundation-install.service --since 10 minutes ago' \
   bash "$wrapper" | grep -Fq '10 minutes ago' || { rm -f "$wrapper"; exit 1; }
+SSH_ORIGINAL_COMMAND='store-logs apitoken-postgres-stage' bash "$wrapper" \
+  | grep -Fq 'store-logs apitoken-postgres-stage' || { rm -f "$wrapper"; exit 1; }
 rm -f "$wrapper"
 if SSH_ORIGINAL_COMMAND='sync' SUDO_USER=stage-ctl bash "$ROOT/deploy/stage-ctl-helper.sh" >/dev/null 2>&1; then exit 1; fi
 printf 'staging-foundation.test: PASS\n'
