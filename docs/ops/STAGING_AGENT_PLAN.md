@@ -1530,7 +1530,7 @@ Source: `STAGING_ENVIRONMENT.md` §8, §10 phase 5, Definition of Done items 15�
 ### Execution log
 
 ### 2026-08-23 — trusted degradation policy and fail-closed gate
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `c51f7799a2fae723e3bc5441a035ef99a5e22251`   watchdog: GREEN
 Result: Add a root-installed immutable degradation policy, SHA-256 binding, closed evidence schema,
 60-minute runtime soak lock, 0-second docs/test window, error/latency/sample/freshness thresholds,
 N-1 compatibility evidence, and the full 8/32/64/128/256 MiB payload contract. Missing, stale,
@@ -1543,7 +1543,18 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: the Phase 4 mock twin ha
 application slots, so the policy and state gate land now while actual paired A/B measurements remain
 represented by fail-closed evidence. Automatic switchback stays a policy-required future action when
 real stage slots are enabled.
-Next: merge on GREEN, run the live bounded generator and policy gate, inject a red fixture, then close Phase 5.
+Next: expose one exact live degradation proof, then close Phase 5.
+
+### 2026-08-23 — live degradation proof command
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Add an exact read-only `proof degradation` command. It runs the bounded load generator inside
+the stage netns, creates fresh complete evidence for the trusted policy, requires GREEN, then injects
+a 99,999 ms latency regression and requires RED. The proof accepts no candidate path or argument.
+Checks actually run: `bash deploy/stage-degrade-gate.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: live proof measures the mock twin rather than
+real A/B slots; the trusted policy still locks 60-minute runtime soak and full payload requirements.
+Next: run the live proof and close Phase 5 on GREEN.
 
 ---
 

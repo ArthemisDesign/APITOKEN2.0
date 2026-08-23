@@ -59,6 +59,7 @@ case "${words[0]:-}" in
     case "${words[1]}" in
       isolation) /usr/local/lib/apitoken-watchdog/staging-isolation-live.sh ;;
       pressure) /usr/local/lib/apitoken-watchdog/staging-pressure-proof.sh ;;
+      degradation) /usr/local/lib/apitoken-watchdog/stage-degrade-proof.sh ;;
       *) exit 2 ;;
     esac
     ;;

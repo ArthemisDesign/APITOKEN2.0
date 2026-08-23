@@ -42,6 +42,7 @@ grep -Fq 'apitoken-stage-source-fetch.service|apitoken-stage-source-fetch.timer'
 grep -Fq 'apitoken-stage-watchdog.service|apitoken-stage-watchdog.timer' "$ROOT/deploy/stage-observe-helper.sh"
 grep -Fq 'ip netns list' "$ROOT/deploy/staging-isolation-live.sh"
 grep -Fq 'systemd-run --quiet --wait --pipe --collect --unit=staging-proof-memory' "$ROOT/deploy/staging-pressure-proof.sh"
+grep -Fq 'stage-degrade-proof.sh' "$ROOT/deploy/stage-observe-helper.sh"
 grep -Fq '/etc/apitoken/server.env' "$ROOT/deploy/staging-isolation-live.sh"
 grep -Fq 'memory controller stopped reporting after bounded pressure' "$ROOT/deploy/staging-pressure-proof.sh"
 grep -Fq 'apitoken-postgres-stage|apitoken-redis-history-stage|apitoken-redis-affinity-stage' "$ROOT/deploy/stage-store-diagnostics.sh"
