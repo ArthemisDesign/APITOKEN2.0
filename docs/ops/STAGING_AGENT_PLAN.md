@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `e0c4c801d99abf6ffe1bc2e058938b465d56c100` | 2026-08-23 | GREEN content-ID replay; exporting stable source tags. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `49fb687c74674e9d432112a7998f78aec488c666` | 2026-08-23 | GREEN source-tag repair; forcing seed replay. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -717,7 +717,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: export a stable source tag, then verify stores, isolation, and pressure.
 
 ### 2026-08-23 — stable source-tag image seed fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `49fb687c74674e9d432112a7998f78aec488c666`   watchdog: GREEN
 Result: The source ID is a manifest-list ID and is not the platform image ID imported by `docker
 load`. Export the first source RepoTag after verifying the pinned digest. The archive then retains a
 name; after import, tag that verified content with the hard-coded digest reference. No unpinned
@@ -725,6 +725,15 @@ selection is introduced.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: force a full source-tag seed replay, then verify stores, isolation, and pressure.
+
+### 2026-08-23 — source-tag seed full-apply marker
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Add an immutable marker to the stateful foundation installer so the GREEN source-tag image
+bridge reruns the trusted seed and store transaction. No runtime behavior or lock value changes.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/watchdog-lib.test.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: verify live stores, isolation, and pressure.
 
 ---
