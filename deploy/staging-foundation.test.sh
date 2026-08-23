@@ -82,7 +82,7 @@ grep -Fq 'docker image inspect "$source_tag"' "$ROOT/deploy/staging-image-seed.s
 grep -Fq 'docker save -o "$archive" "$source_tag"' "$ROOT/deploy/staging-image-seed.sh"
 grep -Fq 'docker load -i "$archive"' "$ROOT/deploy/staging-image-seed.sh"
 grep -Fq 'docker tag "$source_tag" "$target"' "$ROOT/deploy/staging-image-seed.sh"
-grep -Fq 'PGDATA: /var/lib/postgresql/data' "$ROOT/deploy/staging-postgres.compose.yaml"
+grep -Fq 'PGDATA: /var/lib/postgresql/data/pgdata' "$ROOT/deploy/staging-postgres.compose.yaml"
 grep -Fq '/var/lib/apitoken-staging/postgres:/var/lib/postgresql/data' "$ROOT/deploy/staging-postgres.compose.yaml"
 grep -Fq '10.254.32.2:5433:5432' "$ROOT/deploy/staging-postgres.compose.yaml"
 grep -Fq '10.254.32.2:6379:6379' "$ROOT/deploy/staging-redis.compose.yaml"
