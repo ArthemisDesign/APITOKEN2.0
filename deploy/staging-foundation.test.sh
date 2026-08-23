@@ -37,6 +37,7 @@ grep -Fq 'unix:///run/apitoken-staging/docker.sock' "$ROOT/systemd/apitoken-root
 grep -Fq '/usr/local/bin/apitoken-observe-stage' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'store-logs)' "$ROOT/deploy/stage-observe-helper.sh"
 grep -Fq 'if ! output=$(curl -sS' "$ROOT/deploy/stage-observe-helper.sh"
+grep -Fq 'Host: 10.254.32.2:$port' "$ROOT/deploy/stage-observe-helper.sh"
 grep -Fq 'apitoken-stage-source-fetch.service|apitoken-stage-source-fetch.timer' "$ROOT/deploy/stage-observe-helper.sh"
 grep -Fq 'apitoken-stage-watchdog.service|apitoken-stage-watchdog.timer' "$ROOT/deploy/stage-observe-helper.sh"
 grep -Fq 'ip netns list' "$ROOT/deploy/staging-isolation-live.sh"

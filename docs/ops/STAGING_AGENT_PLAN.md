@@ -1441,13 +1441,23 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: diagnostics fix; no lock
 Next: use an explicit Caddy path matcher, then close Phase 4.
 
 ### 2026-08-23 — explicit stage Caddy readiness matcher
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `f8b1f30ff53336ede32708015c89ff6febc7ac41`   watchdog: GREEN
 Result: Caddy's inline wildcard form still returns 400 for the helper's concrete readiness request.
 Use an explicit named path matcher for `/ready` and `/ready/*`. The placeholder remains veth-only,
 HTTP-only, and non-public.
 Checks actually run: `bash deploy/staging-twin.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: send the exact Caddy Host header, then close Phase 4.
+
+### 2026-08-23 — stage readiness Host header fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The Caddy site address includes port 3900, but curl sends an IP Host header without the port
+in this environment, so Caddy rejects the request before path matching. Set the fixed
+`Host: 10.254.32.2:<port>` header in the read-only helper. No target or forwarding scope changes.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: diagnostics fix; no lock changed.
 Next: verify Caddy/sinks and isolation live, then close Phase 4.
 
 ---
