@@ -206,11 +206,15 @@ second applies bounded PID, memory, and CPU pressure below `staging.slice` and r
 readiness. `deploy/stage-ctl-helper.sh emergency-stop` stops only `staging.slice` and terminates only
 the `deploy-stage` user manager.
 
-Phase 4 creates these operator-fill-once files as empty mode `0600` placeholders under
-`/etc/apitoken-staging`: `anthropic.env`, `openai.env`, `gemini.env`, `kimi.env`, `router.env`,
-`api.env`, `worker.env`, `sales-api.env`, `sales-web.env`, `openkeys.env`, `admin.env`,
-`authbot.env`, `devbot.env`, and `sinks.env`. The operator must use stage-only values. The stage
-`CONTROL_KEY` must differ from production. Empty placeholders keep real application units disabled.
+Phase 4 creates operator-fill-once files under `/etc/apitoken-staging`: `anthropic.env`,
+`openai.env`, `gemini.env`, `kimi.env`, `router.env`, `api.env`, `worker.env`,
+`sales-api.env`, `sales-web.env`, `openkeys.env`, `admin.env`, `authbot.env`, `devbot.env`,
+and `sinks.env`. `deploy/staging-operator-env.sh` generates stage-only values (mode `0600`,
+root-owned). The stage `CONTROL_KEY` is generated on the host and is not the production key.
+OpenAI, Gemini, and KIMI units stay inactive until `/etc/apitoken-staging/{openai,gemini,kimi}.live`
+exists (Phase 8). Authbot and Telegram devbot stay mock/log-sink. Real binaries start only
+after that generator and `deploy/install-staging-twin.sh` copy trusted production release
+trees (no production env) into the staging roots.
 
 The active DNS record is `A *.apitoken.sale -> 84.32.48.2`. The apex remains independent for the
 future frontend. Exact DNS records override the wildcard if they are added later.

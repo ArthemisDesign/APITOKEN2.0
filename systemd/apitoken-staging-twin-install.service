@@ -1,0 +1,9 @@
+[Unit]
+Description=Install mock staging twin inventory
+Requires=apitoken-postgres-stage.service apitoken-redis-stage.service
+After=apitoken-postgres-stage.service apitoken-redis-stage.service apitoken-stage-caddy.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/apitoken-watchdog/install-staging-twin.sh
+RemainAfterExit=yes

@@ -1,0 +1,28 @@
+[Unit]
+Description=Staging commercial worker
+Requires=apitoken-postgres-stage.service
+After=apitoken-postgres-stage.service
+ConditionPathIsMountPoint=/var/lib/apitoken-staging
+ConditionPathExists=/opt/apitoken-staging/releases/current/apps/worker/dist/main.js
+ConditionFileNotEmpty=/etc/apitoken-staging/worker.env
+
+[Service]
+Type=simple
+User=deploy-stage
+Group=deploy-stage
+Slice=staging.slice
+NetworkNamespacePath=/run/netns/apitoken-stage
+WorkingDirectory=/opt/apitoken-staging/releases/current/apps/worker
+EnvironmentFile=/etc/apitoken-staging/worker.env
+ExecStart=/usr/bin/node --enable-source-maps dist/main.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+MemoryMax=1G
+
+[Install]
+WantedBy=staging.slice

@@ -1,0 +1,25 @@
+[Unit]
+Description=Staging mock Anthropic upstream
+Requires=apitoken-staging-foundation-install.service
+After=apitoken-staging-foundation-install.service
+ConditionPathExists=/usr/local/lib/apitoken-watchdog/mock_upstream.py
+
+[Service]
+Type=simple
+User=deploy-stage
+Group=deploy-stage
+Slice=staging.slice
+NetworkNamespacePath=/run/netns/apitoken-stage
+Environment=SRV_LOG=/var/lib/apitoken-staging/logs/mock-upstream.log
+ExecStart=/usr/bin/python3 /usr/local/lib/apitoken-watchdog/mock_upstream.py 9080
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/apitoken-staging/logs
+MemoryMax=256M
+
+[Install]
+WantedBy=staging.slice

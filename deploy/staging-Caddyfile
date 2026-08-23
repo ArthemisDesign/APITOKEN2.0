@@ -20,3 +20,53 @@
     respond "staging twin has no public route" 404
   }
 }
+
+:8790 {
+  bind 10.254.32.2
+  reverse_proxy 127.0.0.1:8787
+}
+
+:8791 {
+  bind 10.254.32.2
+  reverse_proxy 127.0.0.1:3000
+}
+
+:8792 {
+  bind 10.254.32.2
+  reverse_proxy 127.0.0.1:8793
+}
+
+:8794 {
+  bind 10.254.32.2
+  reverse_proxy 127.0.0.1:8795
+}
+
+:8802 {
+  bind 10.254.32.2
+  reverse_proxy 127.0.0.1:8800
+}
+
+:8803 {
+  bind 10.254.32.2
+  reverse_proxy 127.0.0.1:8804
+}
+
+:3100 {
+  bind 10.254.32.2
+  reverse_proxy 127.0.0.1:3100
+}
+
+:3200 {
+  bind 10.254.32.2
+  reverse_proxy 127.0.0.1:3200
+}
+
+:3410 {
+  bind 10.254.32.2
+  reverse_proxy 127.0.0.1:3410
+}
+
+:3700 {
+  bind 10.254.32.2
+  reverse_proxy 127.0.0.1:3700
+}

@@ -125,6 +125,7 @@ table inet apitoken_stage {
   chain output {
     type filter hook output priority 0; policy drop;
     oifname "lo" accept
+    ip daddr 10.254.32.2 accept
     ct state established,related accept
   }
 }
@@ -153,5 +154,6 @@ loginctl enable-linger deploy-stage || echo 'staging-foundation: linger deferred
 # after the foundation has committed, so dependency ordering cannot deadlock the manager transaction.
 systemctl start --no-block apitoken-rootless-docker-stage.service \
   apitoken-staging-image-seed.service apitoken-postgres-stage.service apitoken-redis-stage.service \
-  apitoken-stage-safe-sinks.service apitoken-stage-caddy.service
+  apitoken-stage-safe-sinks.service apitoken-stage-caddy.service \
+  apitoken-staging-twin-install.service
 printf 'staging-foundation: ready\n'

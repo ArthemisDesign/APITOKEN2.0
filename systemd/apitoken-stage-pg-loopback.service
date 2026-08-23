@@ -1,0 +1,23 @@
+[Unit]
+Description=Loopback relay to staging PostgreSQL
+Requires=apitoken-postgres-stage.service
+After=apitoken-postgres-stage.service
+ConditionPathExists=/usr/local/lib/apitoken-watchdog/stage-loopback-pg.py
+
+[Service]
+Type=simple
+User=deploy-stage
+Group=deploy-stage
+Slice=staging.slice
+NetworkNamespacePath=/run/netns/apitoken-stage
+ExecStart=/usr/bin/python3 /usr/local/lib/apitoken-watchdog/stage-loopback-pg.py
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+MemoryMax=64M
+
+[Install]
+WantedBy=staging.slice

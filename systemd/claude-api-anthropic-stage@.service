@@ -1,0 +1,33 @@
+[Unit]
+Description=Staging Anthropic provider slot on port %i
+Requires=apitoken-staging-foundation-install.service apitoken-stage-mock-upstream.service
+After=apitoken-stage-mock-upstream.service
+ConditionPathIsMountPoint=/var/lib/apitoken-staging
+ConditionPathExists=/srv/claude-api-staging/releases/current/claude-api
+ConditionFileNotEmpty=/srv/claude-api-staging/data/server.env
+
+[Service]
+Type=simple
+User=deploy-stage
+Group=deploy-stage
+Slice=staging.slice
+NetworkNamespacePath=/run/netns/apitoken-stage
+EnvironmentFile=/srv/claude-api-staging/data/server.env
+EnvironmentFile=/srv/claude-api-staging/data/engine-postgres.env
+EnvironmentFile=/etc/apitoken-staging/anthropic.env
+ExecStart=/usr/bin/env CLAUDE_API_BODY_SPOOL_ROOT=/run/claude-api-stage-anthropic-%i CLAUDE_API_PROVIDER=anthropic CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=stage:engine:anthropic:%i CLAUDE_API_KIMI_ENABLED=0 CLAUDE_API_GLM_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 /srv/claude-api-staging/releases/current/claude-api serve
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=180
+RuntimeDirectory=claude-api-stage-anthropic-%i
+RuntimeDirectoryMode=0700
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/claude-api-stage-anthropic-%i /srv/claude-api-staging/data
+MemoryMax=8G
+
+[Install]
+WantedBy=staging.slice

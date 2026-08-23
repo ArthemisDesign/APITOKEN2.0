@@ -12,7 +12,9 @@ unit_allowed() {
     apitoken-staging-image-seed.service|apitoken-postgres-stage.service|apitoken-redis-stage.service|\
     apitoken-stage-source-fetch.service|apitoken-stage-source-fetch.timer|\
     apitoken-stage-safe-sinks.service|apitoken-stage-caddy.service|\
-    apitoken-stage-watchdog.service|apitoken-stage-watchdog.timer|apitoken-*-stage.service|\
+    apitoken-stage-watchdog.service|apitoken-stage-watchdog.timer|apitoken-stage-mock-upstream.service|\
+    apitoken-stage-pg-loopback.service|\
+    apitoken-*-stage.service|apitoken-*-stage@*.service|\
     claude-*-stage.service|claude-*-stage@*.service) printf '%s\n' "$unit" ;;
     *) return 1 ;;
   esac
@@ -30,7 +32,11 @@ case "${words[0]:-}" in
       apitoken-rootless-docker-stage.service apitoken-staging-image-seed.service \
       apitoken-postgres-stage.service apitoken-redis-stage.service \
       apitoken-stage-source-fetch.timer apitoken-stage-watchdog.timer \
-      apitoken-stage-safe-sinks.service apitoken-stage-caddy.service || true
+      apitoken-stage-safe-sinks.service apitoken-stage-caddy.service \
+      apitoken-stage-pg-loopback.service apitoken-stage-mock-upstream.service \
+      claude-api-anthropic-stage@8787.service \
+      claude-router-stage@8800.service apitoken-api-stage@3000.service \
+      apitoken-worker-stage.service || true
     ip netns list | awk '$1 == "apitoken-stage" { print }'
     ;;
   ready)

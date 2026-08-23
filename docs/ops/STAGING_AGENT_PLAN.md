@@ -12,9 +12,9 @@
 > **Kickoff prompt for a new session:** [`docs/ops/STAGING_AGENT_PROMPT.md`](STAGING_AGENT_PROMPT.md).
 > A new executing agent creates a `/goal` first, then follows this file.
 
-**Next action:** Do not start Phase 8. Ask the owner whether mock+shadow-read is enough.
-Operator env files under `/etc/apitoken-staging` stay empty, so real twin application binaries
-stay disabled. Repair this file if it drifts from live GitHub/host state.
+**Next action:** Do not start Phase 8. Operator env is generated on the host. Mock Anthropic,
+router, commerce, sales, OpenKeys, and admin units are installed. OpenAI/Gemini/KIMI wait for
+`*.live` markers. Ask the owner before Phase 8 live/sandbox.
 
 ---
 
@@ -113,7 +113,7 @@ Read order at the start of work:
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
 | **Phase 2 — trusted contour foundation** | **DONE** | `76263deea700fe0fb32ebcfe53af24b0def409cd` | 2026-08-23 | GREEN live stores, isolation, pressure, and read-only observation. |
 | **Phase 3 — observe-only stage watchdog** | **DONE** | `0bb3eaff44d56bd68d712f26b6afe7576461a437` | 2026-08-23 | GREEN serial stage deployment and informational contexts. |
-| **Phase 4 — data, twin inventory, stubs** | **DONE** | `3e6fd6eb6dcf31f4c0e40eb50943f3dcebc5bb76` | 2026-08-23 | GREEN mock inventory, safe sinks, private Caddy, monitoring, isolation. |
+| **Phase 4 — data, twin inventory, stubs** | **DONE** | *(this commit)* | 2026-08-23 | Operator env generated. Mock twin installer copies trusted releases and starts mock Anthropic/commerce. |
 | **Phase 5 — trusted degradation gate** | **DONE** | `89d27138326f85326f865e66c4fdec5ac7dd980c` | 2026-08-23 | GREEN trusted gate and caught live injected regression. |
 | **Phase 6 — attestation dry-run + drills** | **DONE** | `679a299794e654ca106f214618d4a196eb170099` | 2026-08-23 | GREEN atomic record contract and both mandatory drills. |
 | **Phase 7 — fail-closed enforcement** | **DONE** | `83dc18a35ec22ec5af11ab6a13fcf93a7004eed6` | 2026-08-23 | GREEN fail-closed admission plus merge-client gate. Mock-first twin. §12 full twin is not accepted. |
@@ -1804,7 +1804,7 @@ stage-independent path and still requires a host-owned hotfix record.
 Next: living-contract repair. Do not start Phase 8.
 
 ### 2026-08-23 — living-contract catch-up after Phase 7
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `eaf638a866e155fbf1f9e569e1593fa31f4f5947`   watchdog: GREEN
 Result: The previous executing agent marked Phases 1–7 `DONE` and then patched the merge-client
 hole on GREEN `83dc18a3`, but the plan header, kickoff prompt, implementation-plan banner, ops
 index, and `INFRASTRUCTURE.md` write-path row still described Phase 1 / “not implemented”.
@@ -1820,6 +1820,21 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: none for lock §11.3. Th
 honest gap is the mock-first twin versus §12 items that need real application slots (14, 17).
 Next: `deploy/agent-merge-stage.sh`, then owner attestation of this SHA, then
 `deploy/agent-merge.sh`. Do not attest without an explicit owner order that names the SHA.
+
+### 2026-08-23 — fill stage-only operator env and mock twin
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Owner authorized root for this task. Generate stage-only env under
+`/etc/apitoken-staging` and `/srv/claude-api-staging/data` without copying production
+secrets. Install a trusted mock-twin oneshot that creates commerce/claude_engine/sales/openkeys
+databases, copies trusted production release trees into staging roots, starts mock upstream
+plus Anthropic/router/commerce/sales/OpenKeys/admin, and leaves OpenAI/Gemini/KIMI behind
+`*.live` markers. Authbot and Telegram devbot stay mock/log-sink. Phase 8 is not started.
+Checks actually run: `bash deploy/staging-twin.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`; live installer on the host; live `observe-stage`
+status/ready after start.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none for lock §11.3. Live provider
+credentials stay out of the twin.
+Next: owner attestation of this SHA, then Phase 8 only after a new owner order.
 
 ---
 

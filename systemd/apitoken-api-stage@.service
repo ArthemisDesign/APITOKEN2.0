@@ -1,0 +1,28 @@
+[Unit]
+Description=Staging commercial API on port %i
+Requires=apitoken-postgres-stage.service
+After=apitoken-postgres-stage.service claude-api-anthropic-stage@8787.service
+ConditionPathIsMountPoint=/var/lib/apitoken-staging
+ConditionPathExists=/opt/apitoken-staging/releases/current/apps/api/dist/main.js
+ConditionFileNotEmpty=/etc/apitoken-staging/api.env
+
+[Service]
+Type=simple
+User=deploy-stage
+Group=deploy-stage
+Slice=staging.slice
+NetworkNamespacePath=/run/netns/apitoken-stage
+WorkingDirectory=/opt/apitoken-staging/releases/current/apps/api
+EnvironmentFile=/etc/apitoken-staging/api.env
+ExecStart=/usr/bin/env PORT=%i HOST=127.0.0.1 /usr/bin/node --enable-source-maps dist/main.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+MemoryMax=2G
+
+[Install]
+WantedBy=staging.slice

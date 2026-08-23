@@ -1,0 +1,27 @@
+[Unit]
+Description=Staging sales web
+After=apitoken-sales-api-stage.service
+ConditionPathIsMountPoint=/var/lib/apitoken-staging
+ConditionPathExists=/opt/apitoken-staging/sales-releases/current/apps/sales-web/node_modules/.bin/next
+ConditionFileNotEmpty=/etc/apitoken-staging/sales-web.env
+
+[Service]
+Type=simple
+User=deploy-stage
+Group=deploy-stage
+Slice=staging.slice
+NetworkNamespacePath=/run/netns/apitoken-stage
+WorkingDirectory=/opt/apitoken-staging/sales-releases/current/apps/sales-web
+EnvironmentFile=/etc/apitoken-staging/sales-web.env
+ExecStart=/opt/apitoken-staging/sales-releases/current/apps/sales-web/node_modules/.bin/next start -H 127.0.0.1 -p 3200
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+MemoryMax=1G
+
+[Install]
+WantedBy=staging.slice

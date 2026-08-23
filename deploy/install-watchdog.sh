@@ -314,6 +314,10 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/stage-load-generator.py
   install -o root -g root -m 0755 "$ROOT/deploy/stage-stub-server.py" \
     /usr/local/lib/apitoken-watchdog/stage-stub-server.py
+  install -o root -g root -m 0755 "$ROOT/tests/mock_upstream.py" \
+    /usr/local/lib/apitoken-watchdog/mock_upstream.py
+  install -o root -g root -m 0755 "$ROOT/deploy/stage-loopback-pg.py" \
+    /usr/local/lib/apitoken-watchdog/stage-loopback-pg.py
   install -o root -g root -m 0644 "$ROOT/deploy/staging-twin-inventory.json" \
     /usr/local/lib/apitoken-watchdog/staging-twin-inventory.json
   install -o root -g deploy-stage -m 0640 "$ROOT/deploy/staging-Caddyfile" \
@@ -322,7 +326,8 @@ install_controller_definitions() {
     stage-observe-helper.sh apitoken-stage-ctl.sh stage-ctl-helper.sh \
     staging-isolation-live.sh staging-pressure-proof.sh staging-image-seed.sh \
     stage-store-diagnostics.sh stage-sync.sh promotion-attest.sh stage-seed.sh stage-gc.sh \
-    stage-degrade-proof.sh stage-promotion-helper.sh; do
+    stage-degrade-proof.sh stage-promotion-helper.sh staging-operator-env.sh \
+    install-staging-twin.sh; do
     install -o root -g root -m 0755 "$ROOT/deploy/$stage_helper" \
       "/usr/local/lib/apitoken-watchdog/$stage_helper"
   done
@@ -343,7 +348,15 @@ install_controller_definitions() {
       apitoken-staging-image-seed.service apitoken-postgres-stage.service apitoken-redis-stage.service \
       apitoken-stage-watchdog.service apitoken-stage-watchdog.timer \
       apitoken-stage-safe-sinks.service apitoken-stage-caddy.service \
-      apitoken-stage-load-generator.service; do
+      apitoken-stage-load-generator.service apitoken-stage-mock-upstream.service \
+      apitoken-stage-pg-loopback.service \
+      apitoken-staging-twin-install.service \
+      claude-api-anthropic-stage@.service claude-api-openai-stage@.service \
+      claude-api-gemini-stage@.service claude-api-kimi-stage@.service \
+      claude-router-stage@.service apitoken-api-stage@.service \
+      apitoken-worker-stage.service apitoken-sales-api-stage.service \
+      apitoken-sales-web-stage.service apitoken-openkeys-stage.service \
+      apitoken-admin-stage.service; do
       install -o root -g root -m 0644 "$ROOT/systemd/$stage_unit" "/etc/systemd/system/$stage_unit"
     done
     systemctl daemon-reload
@@ -511,7 +524,16 @@ install_systemd_definitions() {
     apitoken-stage-report.service apitoken-stage-report.path \
     apitoken-stage-watchdog.service apitoken-stage-watchdog.timer \
     apitoken-stage-safe-sinks.service apitoken-stage-caddy.service \
-    apitoken-stage-load-generator.service apitoken-stage-emergency-guard.service \
+    apitoken-stage-load-generator.service apitoken-stage-mock-upstream.service \
+    apitoken-stage-pg-loopback.service \
+    apitoken-staging-twin-install.service \
+    claude-api-anthropic-stage@.service claude-api-openai-stage@.service \
+    claude-api-gemini-stage@.service claude-api-kimi-stage@.service \
+    claude-router-stage@.service apitoken-api-stage@.service \
+    apitoken-worker-stage.service apitoken-sales-api-stage.service \
+    apitoken-sales-web-stage.service apitoken-openkeys-stage.service \
+    apitoken-admin-stage.service \
+    apitoken-stage-emergency-guard.service \
     apitoken-stage-emergency-guard.timer staging.slice \
     apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
