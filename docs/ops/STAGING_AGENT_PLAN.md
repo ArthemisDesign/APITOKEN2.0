@@ -109,8 +109,8 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `bac2bd2a16e6b528139961a43616c853c330a6c1` | 2026-08-23 | GREEN portability; fixing proof assertions. |
-| Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
+| **Phase 2 — trusted contour foundation** | **DONE** | `76263deea700fe0fb32ebcfe53af24b0def409cd` | 2026-08-23 | GREEN live stores, isolation, pressure, and read-only observation. |
+| Phase 3 — observe-only stage watchdog | **IN PROGRESS** | — | 2026-08-23 | Started only after Phase 2 live proof acceptance. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
 | Phase 6 — attestation dry-run + drills | BLOCKED on 5 | — | — | Injected-fault **and** hotfix drills. |
@@ -380,11 +380,11 @@ No stage-watchdog poll loop yet. No production admission change.
 
 ### Exit criteria
 
-- [ ] Isolation tests red if any deny path is reachable.
-- [ ] `staging.slice` and 80G loopback exist; production SLO still bounded under a documented
+- [x] Isolation tests red if any deny path is reachable.
+- [x] `staging.slice` and 80G loopback exist; production SLO still bounded under a documented
       pressure test (fork/memory/burst against the slice, not against production units).
-- [ ] Agent can inspect via `observe-stage` without write.
-- [ ] No stage application traffic yet, or only a non-serving placeholder that cannot accept
+- [x] Agent can inspect via `observe-stage` without write.
+- [x] No stage application traffic yet, or only a non-serving placeholder that cannot accept
       customer packets.
 
 ### Execution log
@@ -949,7 +949,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fixes; no lock c
 Next: rerun both live proofs, then close Phase 2 on a GREEN SHA.
 
 ### 2026-08-23 — Phase 2 proof assertion fixes
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `76263deea700fe0fb32ebcfe53af24b0def409cd`   watchdog: GREEN
 Result: The isolation proof tested directory readability, which is true for traversal even when the
 actual production secrets are denied. Test four concrete sensitive files instead. The memory
 transient is bounded and self-expiring, but this systemd version does not propagate the OOM child
@@ -959,6 +959,20 @@ Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: proof assertions corrected; no lock changed.
 Next: run both live proofs, then close Phase 2 on a GREEN SHA.
+
+### 2026-08-23 — Phase 2 live closeout
+SHA: `76263deea700fe0fb32ebcfe53af24b0def409cd`   watchdog: GREEN
+Result: All six status lines are active: `staging.slice`, foundation, rootless Docker, pinned-image
+seed, PostgreSQL, and Redis. The namespace is present. `proof isolation` returned
+`staging-isolation-live: PASS`; `proof pressure` returned `staging-pressure-proof: PASS`; production
+readiness remained GREEN. `observe-stage` remains forced and read-only. No stage application unit,
+branch poller, reporter, Caddy route, or customer traffic exists.
+Checks actually run: live `observe-stage status`; live `store-logs apitoken-postgres-stage` (healthy);
+live `proof isolation`; live `proof pressure`; GREEN exact-SHA `deploy/watchdog`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: PostgreSQL uses a rootless named volume below
+the locked loopback-backed Docker root, and cgroupfs enforces native container limits inside the
+delegated daemon subtree below `staging.slice`. Locked resources and isolation boundaries are unchanged.
+Next: Phase 3 — observe-only stage watchdog in a fresh managed worktree.
 
 ---
 
