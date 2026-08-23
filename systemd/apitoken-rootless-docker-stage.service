@@ -25,5 +25,6 @@ PrivateUsers=no
 RestrictNamespaces=no
 ProtectSystem=strict
 ProtectHome=read-only
+PrivateTmp=yes
 ReadWritePaths=/home/deploy-stage /run/apitoken-staging /var/lib/apitoken-staging
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

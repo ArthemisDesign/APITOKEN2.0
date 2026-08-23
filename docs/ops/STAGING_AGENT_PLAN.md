@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `fa88718a0c9801e7fa664704d11d50d4541382fd` | 2026-08-23 | GREEN sandbox config; forcing full foundation replay. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `35bd1c409c50f4f72d1a6fde7d5dac8659617e5c` | 2026-08-23 | GREEN sandbox apply; giving RootlessKit private tmp. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -602,12 +602,22 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: force a full namespace-sandbox replay, then verify stores, isolation, and pressure.
 
 ### 2026-08-23 — RootlessKit sandbox full-apply marker
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `35bd1c409c50f4f72d1a6fde7d5dac8659617e5c`   watchdog: GREEN
 Result: Add an immutable marker to the stateful foundation installer so the GREEN namespace-filter
 change reruns the full trusted transaction. No runtime behavior or lock value changes.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/watchdog-lib.test.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: give RootlessKit a private writable `/tmp`, then verify stores, isolation, and pressure.
+
+### 2026-08-23 — rootless private tmp forward fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: RootlessKit now passes namespace creation but needs a writable temporary directory for its
+bind staging. Add `PrivateTmp=yes` to provide a service-private writable `/tmp` without exposing the
+host temporary tree. Keep the strict system filesystem and stage-only writable paths.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
 Next: verify live stores, isolation, and pressure.
 
 ---
