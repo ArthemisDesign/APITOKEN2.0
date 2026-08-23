@@ -1429,3 +1429,68 @@ body.app-body .bg-decor{display:none!important}
 .rp-invite-terms small{color:var(--txt-4);font-size:11.5px;line-height:1.5}
 @media (max-width:900px){.rp-invite-terms{grid-template-columns:repeat(2,minmax(0,1fr))}.rp-invite-terms>div{border-bottom:1px solid var(--line)}.rp-invite-terms>div:nth-child(2n){border-right:0}.rp-invite-terms>div:nth-last-child(-n+2){border-bottom:0}}
 @media (max-width:540px){.rp-invite-terms{grid-template-columns:1fr}.rp-invite-terms>div{border-right:0;border-bottom:1px solid var(--line)}.rp-invite-terms>div:last-child{border-bottom:0}}
+
+/* --- Referral gate: the account without partner access ------------------ */
+/* Deliberately the loudest surface in the Dashboard — it is a landing page, not a panel,
+   and it borrows the scale of the marketing site: one huge headline, an accent glow,
+   two real actions, then the numbers that back them. */
+.rp-gate{display:flex;flex-direction:column;gap:clamp(20px,3vw,32px)}
+.rp-gate-hero{position:relative;overflow:hidden;padding:clamp(32px,5vw,72px) clamp(24px,4vw,64px);
+  border:1px solid var(--line);border-radius:18px;
+  background:linear-gradient(150deg,color-mix(in srgb,var(--accent) 9%,transparent),transparent 46%),var(--bg-card);
+  box-shadow:0 30px 70px -46px rgba(10,12,30,.55)}
+.rp-gate-hero::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(620px 320px at 84% 6%,var(--accent-soft),transparent 70%)}
+.rp-gate-hero>*{position:relative;z-index:1}
+.rp-gate-kicker{display:inline-flex;align-items:center;gap:9px;color:var(--accent);
+  font:700 11px/1.25 var(--font-mono);letter-spacing:.12em;text-transform:uppercase}
+.rp-gate-kicker::before{content:"";width:7px;height:7px;flex:none;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px var(--accent-soft)}
+.rp-gate-title{margin:20px 0 0;color:var(--txt);font:700 clamp(40px,7vw,88px)/1.02 var(--font-ui);letter-spacing:-.035em;text-wrap:balance}
+.rp-gate-lead{max-width:56ch;margin:22px 0 0;color:var(--txt-3);font-size:clamp(15px,1.4vw,18px);line-height:1.6}
+.rp-gate-cta{display:flex;gap:14px;margin:32px 0 0;flex-wrap:wrap}
+.rp-gate-btn{min-height:52px;padding:14px 28px;border-radius:10px;font-size:15px;font-weight:650}
+.rp-gate-note{max-width:60ch;margin:16px 0 0;color:var(--txt-4);font-size:12.5px;line-height:1.6}
+.rp-gate-hero .rp-live{margin-top:12px}
+.rp-gate-state{display:grid;gap:6px;max-width:64ch;margin:28px 0 0;padding:18px 20px;
+  border-left:3px solid var(--accent);border-radius:0 12px 12px 0;background:var(--accent-soft)}
+.rp-gate-state.declined{border-left-color:var(--danger);background:color-mix(in srgb,var(--danger) 8%,transparent)}
+.rp-gate-state b{color:var(--txt);font:650 16px/1.35 var(--font-ui)}
+.rp-gate-state span{color:var(--txt-3);font-size:13.5px;line-height:1.6}
+.rp-gate-state em{color:var(--txt-2);font-size:13px;font-style:normal;line-height:1.6}
+.rp-gate-state small{color:var(--txt-4);font:500 11.5px/1.5 var(--font-mono)}
+
+.rp-gate-invite{padding:clamp(24px,3vw,40px);border:1px solid var(--accent-line);border-radius:16px;
+  background:linear-gradient(160deg,color-mix(in srgb,var(--accent) 7%,transparent),transparent 52%),var(--bg-card)}
+.rp-gate-invite-lead{max-width:70ch;margin:16px 0 22px;color:var(--txt-3);font-size:14.5px;line-height:1.65}
+.rp-gate-invite .rp-invite-terms{background:var(--bg-card)}
+.rp-gate-invite .rp-gate-cta{margin-top:26px}
+
+.rp-gate-formula .rp-formula{padding:clamp(30px,4vw,54px) clamp(20px,3vw,40px);border-radius:16px}
+.rp-gate-formula .rp-formula-l{font-size:12px;letter-spacing:.14em}
+.rp-gate-formula .rp-formula-v{font-size:clamp(26px,4.4vw,52px)}
+.rp-gate-formula .rp-formula-b{max-width:62ch;font-size:14.5px}
+.rp-gate-formula .rp-formula-x{font-size:14px;padding:9px 16px}
+
+.rp-gate-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));overflow:hidden;
+  border:1px solid var(--line);border-radius:16px;background:var(--bg-card)}
+.rp-gate-facts>div{display:grid;gap:10px;padding:clamp(20px,2.4vw,30px);border-right:1px solid var(--line)}
+.rp-gate-facts>div:last-child{border-right:0}
+.rp-gate-facts span{color:var(--txt-4);font:500 11px/1.3 var(--font-mono);letter-spacing:.08em;text-transform:uppercase}
+.rp-gate-facts b{color:var(--txt);font:700 clamp(28px,3.4vw,42px)/1.05 var(--font-mono);letter-spacing:-.03em}
+.rp-gate-facts b.accent{color:var(--accent)}
+.rp-gate-facts small{color:var(--txt-4);font-size:12.5px;line-height:1.55}
+@media (max-width:900px){
+  .rp-gate-facts{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .rp-gate-facts>div{border-bottom:1px solid var(--line)}
+  .rp-gate-facts>div:nth-child(2n){border-right:0}
+  .rp-gate-facts>div:nth-last-child(-n+2){border-bottom:0}
+}
+@media (max-width:560px){
+  .rp-gate-facts{grid-template-columns:1fr}
+  .rp-gate-facts>div{border-right:0;border-bottom:1px solid var(--line)}
+  .rp-gate-facts>div:last-child{border-bottom:0}
+  .rp-gate-cta{width:100%}
+  .rp-gate-cta .btn{width:100%}
+}
+/* The multiplier never orphans from the rate when the formula wraps on a narrow screen. */
+.rp-formula-pair{display:inline-flex;align-items:baseline;gap:10px;white-space:nowrap}

@@ -1309,13 +1309,22 @@ async function verifyReferralLayout(client) {
   const ordinaryLoaded = client.once("Page.loadEventFired");
   await client.send("Page.navigate", { url: new URL("/dashboard?view=referral&partner-preview=no-access", baseUrl).href });
   await ordinaryLoaded;
-  await waitForCondition(client, `Boolean(document.querySelector('.referral-access-card a[href="https://t.me/bozinodev"]'))`, "ordinary-account partner CTA");
+  await waitForCondition(client, `Boolean(document.querySelector('.rp-gate a[href="https://t.me/bozinodev"]'))`, "ordinary-account partner CTA");
   const ordinaryResult = await client.send("Runtime.evaluate", {
-    expression: `JSON.stringify({ tabs: document.querySelectorAll('.referral-subnav').length, text: document.querySelector('.referral-access-card')?.innerText || '' })`,
+    expression: `JSON.stringify({
+      tabs: document.querySelectorAll('.referral-subnav').length,
+      title: document.querySelector('.rp-gate-title')?.textContent.trim(),
+      actions: [...document.querySelectorAll('.rp-gate-hero .rp-gate-btn')].map((button) => button.textContent.trim()),
+      facts: [...document.querySelectorAll('.rp-gate-facts b')].map((value) => value.textContent.trim()),
+      forms: document.querySelectorAll('.rp-gate form').length,
+    })`,
     returnByValue: true,
   });
   const ordinary = JSON.parse(ordinaryResult.result.value);
-  if (ordinary.tabs !== 0 || !ordinary.text.includes("enabled manually") || !ordinary.text.includes("account email")) {
+  // The gate is a landing page: no partner tabs, no application form, one request action plus Telegram.
+  if (ordinary.tabs !== 0 || ordinary.title !== "Referrals system" || ordinary.forms !== 0 ||
+      ordinary.actions.length !== 2 || !ordinary.actions.some((label) => label.includes("Telegram")) ||
+      ordinary.facts.join("|") !== "10%|20%|USDT|2×") {
     throw new Error(`Referral ordinary-account state failed: ${JSON.stringify(ordinary)}`);
   }
   process.stdout.write("Verified Referral URL tabs, Usage-parity providers, email search, per-row B2B ceiling, Team controls, destructive-action confirmation, and no-access CTA\n");

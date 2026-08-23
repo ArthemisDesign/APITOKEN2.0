@@ -337,7 +337,10 @@ export async function previewRequest<T>(path: string, init: RequestInit = {}): P
       // Preview-only state selector: lets reviewers inspect both sides of the access gate
       // without changing production identity or API semantics.
       const previewState = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("partner-preview");
-      const snapshot: ReferralSnapshot = previewState === "no-access" ? { state: "unavailable", membership: null } : referral;
+      // Both reviewable non-partner states render the gate: plain, and invited to a Team.
+      const snapshot: ReferralSnapshot = previewState === "no-access" || previewState === "invited"
+        ? { state: "unavailable", membership: null }
+        : referral;
       return snapshot as T;
     }
     case "POST /referral/team-invitations": {

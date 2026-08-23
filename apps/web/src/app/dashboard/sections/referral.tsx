@@ -58,6 +58,7 @@ const copy = {
     applyPendingTitle: "Application in review", applyPendingBody: "An administrator will decide by hand. You keep full access to the rest of the Dashboard meanwhile.", applyRejectedTitle: "Application was declined", applyRejectedBody: "You can apply again once something changes, or talk it through on Telegram.", applySubmitted: "Submitted", applyAnswer: "Reviewer", statusPending: "Pending review", statusRejected: "Declined",
     inviteTitle: "You were invited to a Team", inviteSub: "A partner invited this account to their Team. Accepting starts your own partner workspace on the terms below; declining leaves the account exactly as it is.", inviteYourCommission: "Your commission", inviteYourCommissionFoot: "Of your referrals' paid usage", inviteRetained: "Retained by the inviter", inviteRetainedFoot: "You keep {net} of paid usage", inviteTeamLimit: "Your Team ceiling", inviteTeamLimitFoot: "The most you may retain from your own members", inviteB2b: "B2B terms", inviteB2bOff: "Off", inviteB2bFoot: "You may set B2B discounts up to this ceiling", inviteB2bOffFoot: "Can be granted later by the inviter",
     inviteAccept: "Accept invitation", inviteDecline: "Decline", inviteDeclined: "Invitation declined. Nothing changed on the account.",
+    gateTitle: "Referrals system", gateLead: "Bring clients to apiToken.sale and earn a share of everything they actually pay for API usage. Access is granted by hand — ask for it here, or talk it through on Telegram first.", applyAgain: "Apply again",
     heroTitle: "Bring clients. Earn on what they spend.", heroSecondary: "See the terms", heroFact1: "Standard commission", heroFact2: "Team ceiling", heroFact3: "Payouts", heroFact3Foot: "USDT (BEP-20) on BNB Smart Chain", heroFact4: "Payout schedule", heroFact4Foot: "Twice a month, after a 7-day lock",
     heroIdentity: "Your referrals and Team members are existing apiToken.sale accounts, identified by their account email.",
     periodHistorySub: "What you earned in each half-month period and when it is paid out.",
@@ -98,6 +99,7 @@ const copy = {
     applyPendingTitle: "Заявка на рассмотрении", applyPendingBody: "Решение принимает администратор вручную. Остальной Dashboard всё это время работает как обычно.", applyRejectedTitle: "Заявка отклонена", applyRejectedBody: "Можно подать снова, когда что-то изменится, или обсудить в Telegram.", applySubmitted: "Отправлена", applyAnswer: "Ответ", statusPending: "На рассмотрении", statusRejected: "Отклонена",
     inviteTitle: "Вас пригласили в команду", inviteSub: "Партнёр пригласил этот аккаунт в свою команду. Приняв приглашение, вы получите свой партнёрский раздел на условиях ниже; отказ ничего не меняет в аккаунте.", inviteYourCommission: "Ваша комиссия", inviteYourCommissionFoot: "От оплаченного использования ваших рефералов", inviteRetained: "Удерживает пригласивший", inviteRetainedFoot: "Вам остаётся {net} оплаченного расхода", inviteTeamLimit: "Ваш потолок команды", inviteTeamLimitFoot: "Максимум, который вы сможете удерживать со своих участников", inviteB2b: "B2B-условия", inviteB2bOff: "Выключено", inviteB2bFoot: "Вы сможете давать B2B-скидки до этого потолка", inviteB2bOffFoot: "Пригласивший может выдать позже",
     inviteAccept: "Принять приглашение", inviteDecline: "Отказаться", inviteDeclined: "Приглашение отклонено. В аккаунте ничего не изменилось.",
+    gateTitle: "Реферальная система", gateLead: "Приводите клиентов на apiToken.sale и получайте долю со всего, что они реально платят за использование API. Доступ выдаётся вручную — запросите его здесь или сначала обсудите в Telegram.", applyAgain: "Подать заявку снова",
     heroTitle: "Приводите клиентов. Зарабатывайте на их тратах.", heroSecondary: "Посмотреть условия", heroFact1: "Стандартная комиссия", heroFact2: "Потолок команды", heroFact3: "Выплаты", heroFact3Foot: "USDT (BEP-20) в сети BNB Smart Chain", heroFact4: "График выплат", heroFact4Foot: "Дважды в месяц, после лока 7 дней",
     heroIdentity: "Ваши рефералы и участники команды — существующие аккаунты apiToken.sale, определяются по почте аккаунта.",
     periodHistorySub: "Сколько вы заработали в каждом полумесячном периоде и когда это выплачивается.",
@@ -203,10 +205,8 @@ function OrdinaryState({ language }: { language: Language }) {
   const standardCommissionBps = 1_000;
   const [application, setApplication] = useState<ReferralApplication | null>(null);
   const [invitation, setInvitation] = useState<PendingTeamInvitation | null>(null);
-  const [invitationBusy, setInvitationBusy] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-  const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [notice, setNotice] = useState<{ kind: "ok" | "bad"; message: string } | null>(null);
 
   useEffect(() => {
@@ -221,96 +221,74 @@ function OrdinaryState({ language }: { language: Language }) {
     return () => { active = false; };
   }, []);
 
+  /** The access request is the button itself: there is no form to fill in first. */
+  async function requestAccess() {
+    setBusy(true); setNotice(null);
+    try { setApplication((await api.submitReferralApplication("")).application); }
+    catch (cause) { setNotice({ kind: "bad", message: errorMessage(cause, text.mutationError) }); }
+    finally { setBusy(false); }
+  }
+
   async function acceptInvitation() {
-    setInvitationBusy(true); setNotice(null);
+    setBusy(true); setNotice(null);
     try { await api.acceptReferralInvitation(); window.location.reload(); }
-    catch (cause) { setNotice({ kind: "bad", message: errorMessage(cause, text.mutationError) }); setInvitationBusy(false); }
+    catch (cause) { setNotice({ kind: "bad", message: errorMessage(cause, text.mutationError) }); setBusy(false); }
   }
 
   async function declineInvitation(inviteId: string) {
-    setInvitationBusy(true); setNotice(null);
+    setBusy(true); setNotice(null);
     try { await api.declineReferralInvitation(inviteId); setInvitation(null); setNotice({ kind: "ok", message: text.inviteDeclined }); }
     catch (cause) { setNotice({ kind: "bad", message: errorMessage(cause, text.mutationError) }); }
-    finally { setInvitationBusy(false); }
-  }
-
-  async function apply(event: FormEvent) {
-    event.preventDefault();
-    setNotice(null);
-    if (message.trim().length < 10) return setNotice({ kind: "bad", message: text.applyTooShort });
-    setBusy(true);
-    try {
-      const result = await api.submitReferralApplication(message.trim());
-      setApplication(result.application);
-      setMessage("");
-      setNotice({ kind: "ok", message: text.applySent });
-    } catch (cause) { setNotice({ kind: "bad", message: errorMessage(cause, text.mutationError) }); }
     finally { setBusy(false); }
   }
 
   const pending = application?.status === "pending";
-  const rejected = application?.status === "rejected";
-  return <section className="panel referral-panel rp">
-    <PageHeading eyebrow={text.eyebrow} title={text.title} subtitle={text.ordinarySubtitle} />
-    <div className="referral-access-card rp-hero">
-      <span className="rp-hero-eyebrow">{text.eyebrow}</span>
-      <h2 className="rp-hero-title">{text.heroTitle}</h2>
-      <p className="rp-hero-sub">{text.ordinaryBody}</p>
-      <div className="rp-hero-actions">
-        <a className="btn btn-primary btn-lg" href="#referral-apply">{text.requestAccess}</a>
-        <a className="btn btn-ghost btn-lg" href="https://t.me/bozinodev" target="_blank" rel="noreferrer">{text.writeTelegram}</a>
+  const declined = application?.status === "rejected";
+  const state = pending ? "pending" : declined ? "declined" : "open";
+  return <section className="panel referral-panel rp rp-gate">
+    <header className="rp-gate-hero">
+      <span className="rp-gate-kicker">{text.eyebrow}</span>
+      <h1 className="rp-gate-title">{text.gateTitle}</h1>
+      <p className="rp-gate-lead">{text.gateLead}</p>
+      {state !== "open" && <div className={`rp-gate-state${declined ? " declined" : ""}`} role="status">
+        <b>{pending ? text.applyPendingTitle : text.applyRejectedTitle}</b>
+        <span>{pending ? text.applyPendingBody : text.applyRejectedBody}</span>
+        {application?.reviewerNote && <em>{text.applyAnswer}: {application.reviewerNote}</em>}
+        {application && <small>{text.applySubmitted}: {date(application.createdAt, locale)}</small>}
+      </div>}
+      <div className="rp-gate-cta">
+        {state !== "pending" && <button type="button" className="btn btn-primary rp-gate-btn" disabled={busy || !loaded} onClick={() => void requestAccess()}>
+          {busy ? text.applySending : declined ? text.applyAgain : text.requestAccess}
+        </button>}
+        <a className="btn btn-ghost rp-gate-btn" href="https://t.me/bozinodev" target="_blank" rel="noreferrer">{text.writeTelegram}</a>
       </div>
-      <small>{text.contactHint}</small>
-    </div>
-    <div className="rp-stats rp-hero-stats">
-      <div className="rp-stat"><div className="rp-stat-l">{text.heroFact1}</div><div className="rp-stat-v accent">{pct(standardCommissionBps, locale)}</div><div className="rp-stat-f">{text.ordinaryPoint1}</div></div>
-      <div className="rp-stat"><div className="rp-stat-l">{text.heroFact2}</div><div className="rp-stat-v">{pct(2_000, locale)}</div><div className="rp-stat-f">{text.ordinaryPoint3}</div></div>
-      <div className="rp-stat"><div className="rp-stat-l">{text.heroFact3}</div><div className="rp-stat-v">USDT</div><div className="rp-stat-f">{text.heroFact3Foot}</div></div>
-      <div className="rp-stat"><div className="rp-stat-l">{text.heroFact4}</div><div className="rp-stat-v">2×</div><div className="rp-stat-f">{text.heroFact4Foot}</div></div>
-    </div>
-    <div className="rp-stack" style={{ marginTop: 24 }} id="referral-apply">
-      {invitation && <Card title={text.inviteTitle} sub={text.inviteSub}>
-        <div className="rp-invite-terms">
-          <div><span>{text.inviteYourCommission}</span><b>{pct(invitation.commissionBps, locale)}</b><small>{text.inviteYourCommissionFoot}</small></div>
-          <div><span>{text.inviteRetained}</span><b>{pct(invitation.retainedShareBps, locale)}</b><small>{interpolate(text.inviteRetainedFoot, { net: pct(invitation.commissionBps - Math.round(invitation.commissionBps * invitation.retainedShareBps / 10_000), locale) })}</small></div>
-          <div><span>{text.inviteTeamLimit}</span><b>{pct(invitation.teamOverrideMaxBps, locale)}</b><small>{text.inviteTeamLimitFoot}</small></div>
-          <div><span>{text.inviteB2b}</span><b>{invitation.b2bEnabled ? pct(invitation.b2bMaxDiscountBps, locale) : text.inviteB2bOff}</b><small>{invitation.b2bEnabled ? text.inviteB2bFoot : text.inviteB2bOffFoot}</small></div>
-        </div>
-        <p className="rp-card-sub" style={{ marginTop: 16 }}>{text.inviteExpires}: <b>{date(invitation.expiresAt, locale)}</b></p>
-        <div className="rp-actions">
-          <button type="button" className="btn btn-ghost" disabled={invitationBusy} onClick={() => void declineInvitation(invitation.id)}>{text.inviteDecline}</button>
-          <button type="button" className="btn btn-primary" disabled={invitationBusy} onClick={() => void acceptInvitation()}>{invitationBusy ? text.saving : text.inviteAccept}</button>
-        </div>
-        <LiveNotice notice={notice} />
-      </Card>}
+      <LiveNotice notice={notice} />
+      <p className="rp-gate-note">{text.contactHint}</p>
+    </header>
 
-      {loaded && !invitation && (pending || rejected) ? <Card title={pending ? text.applyPendingTitle : text.applyRejectedTitle} sub={pending ? text.applyPendingBody : text.applyRejectedBody}>
-        <div className="rp-application">
-          <div className="rp-application-state"><Status value={pending ? text.statusPending : text.statusRejected} kind={pending ? "warn" : "bad"} /><span>{text.applySubmitted}: {date(application?.createdAt ?? null, locale)}</span></div>
-          {application?.message && <p className="rp-application-message">{application.message}</p>}
-          {application?.reviewerNote && <p className="rp-application-note"><b>{text.applyAnswer}:</b> {application.reviewerNote}</p>}
-          <div className="rp-actions"><a className="btn btn-ghost" href="https://t.me/bozinodev" target="_blank" rel="noreferrer">{text.writeTelegram}</a></div>
-        </div>
-      </Card> : !invitation ? <form className="rp-card" onSubmit={apply}>
-        <h3 className="rp-card-title">{text.applyTitle}</h3>
-        <p className="rp-card-sub">{text.applySub}</p>
-        <Field label={text.applyField}><textarea name="referralApplication" rows={4} maxLength={2_000} autoComplete="off" value={message} onChange={(event) => setMessage(event.target.value)} placeholder={text.applyPlaceholder} /></Field>
-        <div className="rp-actions">
-          <a className="btn btn-ghost" href="https://t.me/bozinodev" target="_blank" rel="noreferrer">{text.writeTelegram}</a>
-          <button className="btn btn-primary" disabled={busy || !loaded}>{busy ? text.applySending : text.applySubmit}</button>
-        </div>
-        <LiveNotice notice={notice} />
-      </form> : null}
+    {invitation && <section className="rp-gate-invite">
+      <span className="rp-gate-kicker">{text.inviteTitle}</span>
+      <p className="rp-gate-invite-lead">{text.inviteSub}</p>
+      <div className="rp-invite-terms">
+        <div><span>{text.inviteYourCommission}</span><b>{pct(invitation.commissionBps, locale)}</b><small>{text.inviteYourCommissionFoot}</small></div>
+        <div><span>{text.inviteRetained}</span><b>{pct(invitation.retainedShareBps, locale)}</b><small>{interpolate(text.inviteRetainedFoot, { net: pct(invitation.commissionBps - Math.round(invitation.commissionBps * invitation.retainedShareBps / 10_000), locale) })}</small></div>
+        <div><span>{text.inviteTeamLimit}</span><b>{pct(invitation.teamOverrideMaxBps, locale)}</b><small>{text.inviteTeamLimitFoot}</small></div>
+        <div><span>{text.inviteB2b}</span><b>{invitation.b2bEnabled ? pct(invitation.b2bMaxDiscountBps, locale) : text.inviteB2bOff}</b><small>{invitation.b2bEnabled ? text.inviteB2bFoot : text.inviteB2bOffFoot}</small></div>
+      </div>
+      <div className="rp-gate-cta">
+        <button type="button" className="btn btn-primary rp-gate-btn" disabled={busy} onClick={() => void acceptInvitation()}>{busy ? text.saving : text.inviteAccept}</button>
+        <button type="button" className="btn btn-ghost rp-gate-btn" disabled={busy} onClick={() => void declineInvitation(invitation.id)}>{text.inviteDecline}</button>
+      </div>
+      <p className="rp-gate-note">{text.inviteExpires}: {date(invitation.expiresAt, locale)}</p>
+    </section>}
 
-      <CommissionFormula commissionBps={standardCommissionBps} language={language} />
-      <Card title={text.howTitle}>
-        <ul className="rp-how">
-          <li>{text.ordinaryPoint1}</li>
-          <li>{text.ordinaryPoint2}</li>
-          <li>{text.ordinaryPoint3}</li>
-          <li>{text.heroIdentity}</li>
-        </ul>
-      </Card>
+    <div className="rp-gate-formula"><CommissionFormula commissionBps={standardCommissionBps} language={language} /></div>
+
+    <div className="rp-gate-facts">
+      <div><span>{text.heroFact1}</span><b className="accent">{pct(standardCommissionBps, locale)}</b><small>{text.ordinaryPoint1}</small></div>
+      <div><span>{text.heroFact2}</span><b>{pct(2_000, locale)}</b><small>{text.ordinaryPoint3}</small></div>
+      <div><span>{text.heroFact3}</span><b>USDT</b><small>{text.heroFact3Foot}</small></div>
+      <div><span>{text.heroFact4}</span><b>2×</b><small>{text.heroFact4Foot}</small></div>
     </div>
   </section>;
 }
@@ -411,7 +389,7 @@ function CommissionFormula({ commissionBps, language }: { commissionBps: number;
   const example = formatNanoUsd(commissionOnHundred(commissionBps) / 2n, locale);
   return <div className="rp-formula">
     <div className="rp-formula-l">{text.formulaTitle}</div>
-    <div className="rp-formula-v">(100% − <em>{text.formulaDiscount}</em>%)<i>×</i><em>{rate}</em></div>
+    <div className="rp-formula-v"><span>(100% − <em>{text.formulaDiscount}</em>%)</span><span className="rp-formula-pair"><i>×</i><em>{rate}</em></span></div>
     <p className="rp-formula-b">{interpolate(text.formulaBody, { rate })}</p>
     <p className="rp-formula-x">{interpolate(text.formulaExample, { example })}</p>
   </div>;

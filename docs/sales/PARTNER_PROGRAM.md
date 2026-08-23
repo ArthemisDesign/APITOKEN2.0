@@ -307,10 +307,12 @@ discount.
 - Promo-code creation and redemption are absent from the active partner/customer/admin interfaces.
   Historical credit/accounting records remain readable by backend reconciliation only; they are
   not a product capability.
-- An account without partner access sees an invitation instead of the workspace: the standard terms
-  stated large (10% commission, the 20% Team ceiling, USDT BEP-20 payouts, two payout runs a month),
-  the same commission formula, and an application form. No partner numbers, tabs or actions are
-  rendered for that account.
+- An account without partner access sees the gate instead of the workspace: one large "Referrals
+  system" headline, two working actions (request access, or open @bozinodev in Telegram), the
+  commission formula, and the standard terms stated large — 10% commission, the 20% Team ceiling,
+  USDT BEP-20 payouts, two payout runs a month. There is no form to fill in first: the request is
+  the button, and the pending or declined state then replaces it in place. No partner numbers, tabs
+  or actions are rendered for that account.
 - **Access applications.** The account submits one application with a short description of its
   traffic (`POST /v1/referral/applications`, session-owned; `GET /v1/referral/applications/me`
   returns its own latest one). One open application per account: submitting again refreshes the
