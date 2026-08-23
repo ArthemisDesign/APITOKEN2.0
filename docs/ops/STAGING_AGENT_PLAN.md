@@ -111,8 +111,8 @@ Read order at the start of work:
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
 | **Phase 2 — trusted contour foundation** | **DONE** | `76263deea700fe0fb32ebcfe53af24b0def409cd` | 2026-08-23 | GREEN live stores, isolation, pressure, and read-only observation. |
 | **Phase 3 — observe-only stage watchdog** | **DONE** | `0bb3eaff44d56bd68d712f26b6afe7576461a437` | 2026-08-23 | GREEN serial stage deployment and informational contexts. |
-| Phase 4 — data, twin inventory, stubs | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Closed inventory, local sinks, stage Caddy, env placeholders, GC. |
-| Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
+| **Phase 4 — data, twin inventory, stubs** | **DONE** | `3e6fd6eb6dcf31f4c0e40eb50943f3dcebc5bb76` | 2026-08-23 | GREEN mock inventory, safe sinks, private Caddy, monitoring, isolation. |
+| Phase 5 — trusted degradation gate | **IN PROGRESS** | — | 2026-08-23 | Started only after Phase 4 live acceptance. |
 | Phase 6 — attestation dry-run + drills | BLOCKED on 5 | — | — | Injected-fault **and** hotfix drills. |
 | Phase 7 — fail-closed enforcement | BLOCKED on 6 | — | — | Only after both drills. |
 | Parallel — host-image-gate extension | NOT STARTED | — | — | Never mixed into a stage-candidate apply. |
@@ -1365,9 +1365,9 @@ Out (do not add):
 
 ### Exit criteria
 
-- [ ] Inventory in §5.6 is running inside netns + slice.
-- [ ] Isolation tests still deny Mailcow/support/payments-test and production sockets.
-- [ ] No customer network path to the twin (UFW/Caddy external probes).
+- [x] Inventory in §5.6 is running inside netns + slice.
+- [x] Isolation tests still deny Mailcow/support/payments-test and production sockets.
+- [x] No customer network path to the twin (UFW/Caddy external probes).
 
 ### Execution log
 
@@ -1461,7 +1461,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: diagnostics fix; no lock
 Next: remove Host matching from the private stage site, then close Phase 4.
 
 ### 2026-08-23 — stage Caddy host catch-all fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `3e6fd6eb6dcf31f4c0e40eb50943f3dcebc5bb76`   watchdog: GREEN
 Result: The exact Host header still returns 400 before the readiness matcher. Use a port-only site
 address with `bind 10.254.32.2`, so Caddy accepts any Host only inside the private netns listener.
 There is still no public bind, TLS, DNS name, or global Caddy route.
@@ -1470,6 +1470,21 @@ Checks actually run: `bash deploy/staging-twin.test.sh`; `bash deploy/staging-fo
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; the private site no longer
 matches Host because the veth bind is the isolation boundary.
 Next: verify Caddy/sinks and isolation live, then close Phase 4.
+
+### 2026-08-23 — Phase 4 live closeout
+SHA: `3e6fd6eb6dcf31f4c0e40eb50943f3dcebc5bb76`   watchdog: GREEN
+Result: All foundation, store, source, watchdog, safe-sink, and private Caddy units are active inside
+`staging.slice`; stage Caddy and safe sink readiness return HTTP 200 on `10.254.32.2:3900/3901`.
+The live isolation proof remains PASS. Production monitoring accepts the bounded stage metrics target.
+The closed inventory contains every Phase 4 twin member and every required exclusion. Empty mode-0600
+env placeholders keep real provider and application binaries disabled until operator provisioning.
+No public DNS/vhost/UFW path or vendor side effect exists.
+Checks actually run: live `observe-stage status`; live `ready 3900`; live `ready 3901`; live
+`proof isolation`; GREEN exact-SHA production `deploy/watchdog`; `bash deploy/staging-twin.test.sh`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: twin application members beyond stores/Caddy
+are closed inventory entries and mock sink roles until operator stage-only env files and trusted
+release artifacts exist. This preserves the Phase 4 mock-first, zero-side-effect requirement.
+Next: Phase 5 — trusted degradation gate in a fresh managed worktree.
 
 ---
 
