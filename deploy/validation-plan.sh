@@ -160,6 +160,7 @@ policy_sha256=$(
     deploy/staging-redis.compose.yaml \
     deploy/staging-image-seed.sh \
     deploy/sudoers.d/96-apitoken-stage \
+    deploy/49-apitoken-stage-cgroup.rules \
     systemd/staging.slice \
     systemd/apitoken-staging-foundation-install.service \
     systemd/apitoken-rootless-docker-stage.service \

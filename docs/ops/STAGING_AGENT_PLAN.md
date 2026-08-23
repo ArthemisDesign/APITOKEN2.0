@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `d045f0548cfc6c1427a6d482d15f7760255d09ad` | 2026-08-23 | GREEN delegated cgroup config; forcing full replay. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `eaeb20a44c9a8e9132ccab7745ddf8c28c3509db` | 2026-08-23 | GREEN cgroup replay; authorizing exact staging scopes. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -787,12 +787,24 @@ cgroup below the locked slice instead of asking rootless runc to create a top-le
 Next: force a full delegated-cgroup replay, then verify stores, isolation, and pressure.
 
 ### 2026-08-23 — delegated cgroup full-apply marker
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `eaeb20a44c9a8e9132ccab7745ddf8c28c3509db`   watchdog: GREEN
 Result: Add an immutable marker to the stateful foundation installer so the GREEN delegated cgroup
 parent changes rerun the trusted store transaction. No runtime behavior or lock value changes.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/watchdog-lib.test.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: authorize exact container scopes under `staging.slice`, then verify stores and pressure.
+
+### 2026-08-23 — exact stage container scope authorization
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The systemd cgroup driver accepts only a slice name, but rootless runc needs authorization
+to create its exact transient scopes there. Restore `cgroup_parent: staging.slice` and add a closed
+polkit rule: only `deploy-stage`, only `org.freedesktop.systemd1.manage-units`, only start, and only
+`docker-<64 lowercase hex>.scope`. No production unit name matches.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/watchdog-lib.test.sh`;
+`./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: narrow systemd authorization added so the
+locked slice remains the real container parent.
 Next: verify live stores, isolation, and pressure.
 
 ---

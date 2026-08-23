@@ -1,0 +1,9 @@
+// Permit only the staging runtime identity to create transient container scopes in staging.slice.
+polkit.addRule(function(action, subject) {
+  if (subject.user == "deploy-stage" &&
+      action.id == "org.freedesktop.systemd1.manage-units" &&
+      action.lookup("unit").match(/^docker-[0-9a-f]{64}\.scope$/) &&
+      action.lookup("verb") == "start") {
+    return polkit.Result.YES;
+  }
+});

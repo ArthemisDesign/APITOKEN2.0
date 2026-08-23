@@ -117,6 +117,9 @@ table inet apitoken_stage {
 NFT
 
 install -o root -g root -m 0644 "$ROOT/staging.slice" /etc/systemd/system/staging.slice
+install -d -o root -g root -m 0755 /etc/polkit-1/rules.d
+install -o root -g root -m 0644 "$ROOT/49-apitoken-stage-cgroup.rules" \
+  /etc/polkit-1/rules.d/49-apitoken-stage-cgroup.rules
 install -o root -g root -m 0644 "$ROOT/apitoken-rootless-docker-stage.service" /etc/systemd/system/apitoken-rootless-docker-stage.service
 install -o root -g root -m 0440 "$ROOT/96-apitoken-stage" /etc/sudoers.d/96-apitoken-stage
 visudo -c >/dev/null

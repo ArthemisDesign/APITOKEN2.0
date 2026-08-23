@@ -312,6 +312,8 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/staging-redis.compose.yaml
   install -o root -g root -m 0440 "$ROOT/deploy/sudoers.d/96-apitoken-stage" \
     /usr/local/lib/apitoken-watchdog/96-apitoken-stage
+  install -o root -g root -m 0644 "$ROOT/deploy/49-apitoken-stage-cgroup.rules" \
+    /usr/local/lib/apitoken-watchdog/49-apitoken-stage-cgroup.rules
   install -o root -g root -m 0644 "$ROOT/deploy/stage-unit-whitelist.json" \
     /usr/local/lib/apitoken-watchdog/stage-unit-whitelist.json
   install -o root -g root -m 0644 "$ROOT/deploy/contour-config.schema.json" \

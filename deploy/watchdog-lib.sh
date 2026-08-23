@@ -1005,7 +1005,8 @@ wd_path_requires_infrastructure_install() {
 wd_path_depends_on_ubuntu_host() {
   case "$1" in
     systemd/*|deploy/install-*.sh|deploy/watchdog-infrastructure.sh|\
-    deploy/sudoers.d/*|deploy/apitoken-observe.sh|deploy/apitoken-observe-stage.sh|\
+    deploy/sudoers.d/*|deploy/49-apitoken-stage-cgroup.rules|\
+    deploy/apitoken-observe.sh|deploy/apitoken-observe-stage.sh|\
     deploy/stage-*-helper.sh|deploy/staging-*.sh|\
     deploy/affinity-redis.compose.yaml|deploy/commerce-postgres.compose.yaml|\
     deploy/Caddyfile|deploy/render-caddy.awk|deploy/host-image-gate.sh|\
