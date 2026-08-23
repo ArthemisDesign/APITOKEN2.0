@@ -1217,10 +1217,20 @@ fixed read-only Git fetch to the existing runtime identity.
 Next: clone from the fixed Git directory, then verify stage statuses.
 
 ### 2026-08-23 — stage source clone path fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `51aa37ea1f9af2db07eba9e3fd5a7d54cd394aff`   watchdog: GREEN
 Result: Fetch and ref lookup work as `deploy`, but root cloning from the working-tree path triggers
 Git's ownership check on the repository's internal `.git`. Clone from the fixed Git directory while
 pinning the working tree as safe. No caller path or remote URL is accepted.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: admit the fixed source Git directory, then verify stage statuses.
+
+### 2026-08-23 — source Git-directory safety fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Cloning from the fixed `.git` path needs that Git directory itself in the command-local
+safe-directory list. Add only `/opt/apitoken/repo/.git`; keep the working-tree and target fixed paths.
+No global configuration or caller path is accepted.
 Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.

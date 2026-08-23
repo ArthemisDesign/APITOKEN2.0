@@ -13,7 +13,8 @@ sha=$(runuser -u deploy -- git -c safe.directory="$SOURCE" -C "$SOURCE" rev-pars
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || exit 1
 if [[ ! -d $TARGET/.git ]]; then
   rm -rf --one-file-system "$TARGET"
-  git -c safe.directory="$SOURCE" clone --no-hardlinks --no-checkout "$SOURCE/.git" "$TARGET"
+  git -c safe.directory="$SOURCE" -c safe.directory="$SOURCE/.git" \
+    clone --no-hardlinks --no-checkout "$SOURCE/.git" "$TARGET"
 fi
 git -c safe.directory="$TARGET" -C "$TARGET" fetch --quiet --no-tags "$SOURCE" \
   "+refs/remotes/origin/stage:refs/remotes/origin/stage"
