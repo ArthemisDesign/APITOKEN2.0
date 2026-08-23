@@ -1,0 +1,14 @@
+[Unit]
+Description=Fetch exact stage ref through production source identity
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/apitoken-watchdog/stage-source-fetch
+TimeoutStartSec=2min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/opt/apitoken/repo /opt/apitoken-staging /var/lib/apitoken-staging/watchdog

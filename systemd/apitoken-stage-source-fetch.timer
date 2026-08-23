@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh exact stage ref for observe-only watchdog
+
+[Timer]
+OnBootSec=90s
+OnUnitInactiveSec=15s
+AccuracySec=1s
+RandomizedDelaySec=0
+Unit=apitoken-stage-source-fetch.service
+
+[Install]
+WantedBy=timers.target

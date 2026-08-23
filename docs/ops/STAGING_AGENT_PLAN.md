@@ -1122,7 +1122,7 @@ bridge outside the no-egress netns; reporting stays caller-bound and stage candi
 Next: allow the two exact root bridges through the stage service sandbox.
 
 ### 2026-08-23 — stage watchdog bridge sandbox fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `9af1b81abdaaf3a4c6467c4d8280e01bfd1d2fe0`   watchdog: GREEN
 Result: The stage service uses sudo only for the closed source and reporting bridges, but
 `NoNewPrivileges=yes` prevents sudo from executing any root command. Set it to `no` for this dedicated
 unit. Sudoers still permits only the exact stage source command and stage reporter operations; the
@@ -1131,6 +1131,19 @@ Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-
 `bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: narrow bridge execution requires dropping
 NoNewPrivileges for this unit; command authorization remains closed in sudoers.
+Next: move source fetch to a separate trusted manager service.
+
+### 2026-08-23 — stage source manager unit
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The source bridge ran inside the stage unit's mount namespace, so sudo inherited the read-only
+production checkout. Move fetch/copy into its own root manager oneshot and 15-second timer outside the
+stage netns. It accepts no arguments, fetches only `stage`, executes no candidate files, publishes a
+single exact SHA marker, and treats a missing initial stage branch as idle. Remove source sudo access
+from `deploy-stage`; the stage watchdog reads only the copied checkout and marker.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: source fetch is a master-sourced manager unit
+outside the netns; candidate execution and reporting remain inside the isolated stage line.
 Next: initialize `stage` through the stage client and verify informational statuses.
 
 ---

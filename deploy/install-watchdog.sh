@@ -482,7 +482,8 @@ install_systemd_definitions() {
     apitoken-sysctl-install.service apitoken-observe-install.service \
     apitoken-staging-foundation-install.service apitoken-rootless-docker-stage.service \
     apitoken-staging-image-seed.service apitoken-postgres-stage.service \
-    apitoken-redis-stage.service apitoken-stage-watchdog.service apitoken-stage-watchdog.timer \
+    apitoken-redis-stage.service apitoken-stage-source-fetch.service apitoken-stage-source-fetch.timer \
+    apitoken-stage-watchdog.service apitoken-stage-watchdog.timer \
     staging.slice \
     apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
@@ -746,6 +747,6 @@ activate_redis_definition
 install_monitoring_definitions
 systemctl enable --now apitoken-candidate-validator.timer
 systemctl enable --now apitoken-deploy-watchdog.timer
-systemctl enable apitoken-stage-watchdog.timer
-systemctl start apitoken-stage-watchdog.timer
+systemctl enable apitoken-stage-source-fetch.timer apitoken-stage-watchdog.timer
+systemctl start apitoken-stage-source-fetch.timer apitoken-stage-watchdog.timer
 echo 'production watchdog and parallel candidate validator installed; verify with: sudo apitoken-watchdog status'

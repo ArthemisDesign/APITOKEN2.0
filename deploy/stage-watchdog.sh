@@ -8,13 +8,14 @@ source "$SCRIPT_DIR/contour-config.sh"
 STATE=$CONTOUR_ROOTS_STATE
 LOCK=$CONTOUR_LOCKS_WATCHDOG
 REPO=$CONTOUR_ROOTS_SOURCE_REPO
-SOURCE_FETCH=/usr/local/lib/apitoken-watchdog/stage-source-fetch
+SOURCE_MARKER=$STATE/source.sha
 REPORTER=$CONTOUR_GITHUB_REPORTING_HELPER
 mkdir -p "$STATE" "$(dirname -- "$LOCK")"
 exec 9>"$LOCK"
 flock -n 9 || exit 0
-sha=$(sudo -n "$SOURCE_FETCH" "$CONTOUR_GIT_BRANCH")
-[[ -d $REPO/.git ]] || { echo 'stage-watchdog: source bridge did not publish repository' >&2; exit 1; }
+sha=$(cat "$SOURCE_MARKER" 2>/dev/null || true)
+[[ -n $sha ]] || exit 0
+[[ -d $REPO/.git ]] || { echo 'stage-watchdog: source service did not publish repository' >&2; exit 1; }
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo 'stage-watchdog: invalid stage SHA' >&2; exit 1; }
 processed=$(cat "$STATE/processed.sha" 2>/dev/null || true)
 [[ $processed != "$sha" ]] || exit 0

@@ -175,6 +175,8 @@ policy_sha256=$(
     systemd/apitoken-staging-image-seed.service \
     systemd/apitoken-postgres-stage.service \
     systemd/apitoken-redis-stage.service \
+    systemd/apitoken-stage-source-fetch.service \
+    systemd/apitoken-stage-source-fetch.timer \
     systemd/apitoken-stage-watchdog.service \
     systemd/apitoken-stage-watchdog.timer \
     deploy/test-fixtures/contour-config/production-resolved.txt \
