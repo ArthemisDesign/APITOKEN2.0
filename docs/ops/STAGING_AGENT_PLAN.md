@@ -1185,14 +1185,24 @@ is reused; stage post-push and state roots remain separate.
 Next: expose source manager logs, diagnose the post-push delay, then close Phase 3.
 
 ### 2026-08-23 — stage source manager observation
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `ea04661cb2dcc0cbebf952493b2d1c1ad525ca92`   watchdog: GREEN
 Result: The stage client moved `stage`, but the source marker did not appear and the observer could
 not inspect the root source manager. Add only its service and timer to the stage read-only whitelist
 and status output. No control command is added.
 Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: diagnostics only; no lock changed.
-Next: diagnose the source manager and verify informational statuses.
+Next: admit the two fixed source checkouts to Git safe-directory policy.
+
+### 2026-08-23 — stage source safe-directory fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The root source manager rejected the deploy-owned production checkout as dubious ownership.
+Pass `safe.directory` only for the two fixed source paths on every git command. Do not change global
+Git configuration or admit caller-supplied paths.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: verify informational stage statuses and close Phase 3.
 
 ---
 
