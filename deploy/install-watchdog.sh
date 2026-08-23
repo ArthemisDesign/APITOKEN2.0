@@ -294,6 +294,8 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/stage/watchdog-github-stage
   install -o root -g root -m 0755 "$ROOT/deploy/stage-source-fetch.sh" \
     /usr/local/lib/apitoken-watchdog/stage-source-fetch
+  install -o root -g root -m 0755 "$ROOT/deploy/stage-report-publish.sh" \
+    /usr/local/lib/apitoken-watchdog/stage-report-publish
   install -o root -g root -m 0755 "$ROOT/deploy/stage-unit-renderer.py" \
     /usr/local/lib/apitoken-watchdog/stage-unit-renderer.py
   for stage_helper in install-staging-foundation.sh apitoken-observe-stage.sh \
@@ -483,6 +485,7 @@ install_systemd_definitions() {
     apitoken-staging-foundation-install.service apitoken-rootless-docker-stage.service \
     apitoken-staging-image-seed.service apitoken-postgres-stage.service \
     apitoken-redis-stage.service apitoken-stage-source-fetch.service apitoken-stage-source-fetch.timer \
+    apitoken-stage-report.service apitoken-stage-report.path \
     apitoken-stage-watchdog.service apitoken-stage-watchdog.timer \
     staging.slice \
     apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service claude-api-backup.service claude-api-backup.timer \
@@ -747,6 +750,6 @@ activate_redis_definition
 install_monitoring_definitions
 systemctl enable --now apitoken-candidate-validator.timer
 systemctl enable --now apitoken-deploy-watchdog.timer
-systemctl enable apitoken-stage-source-fetch.timer apitoken-stage-watchdog.timer
-systemctl start apitoken-stage-source-fetch.timer apitoken-stage-watchdog.timer
+systemctl enable apitoken-stage-source-fetch.timer apitoken-stage-report.path apitoken-stage-watchdog.timer
+systemctl start apitoken-stage-source-fetch.timer apitoken-stage-report.path apitoken-stage-watchdog.timer
 echo 'production watchdog and parallel candidate validator installed; verify with: sudo apitoken-watchdog status'

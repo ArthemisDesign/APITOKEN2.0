@@ -163,6 +163,7 @@ policy_sha256=$(
     deploy/stage-watchdog.sh \
     deploy/stage-watchdog-validate.sh \
     deploy/stage-source-fetch.sh \
+    deploy/stage-report-publish.sh \
     deploy/watchdog-github-stage.sh \
     deploy/stage-sync.sh \
     deploy/promotion-attest.sh \
@@ -177,6 +178,8 @@ policy_sha256=$(
     systemd/apitoken-redis-stage.service \
     systemd/apitoken-stage-source-fetch.service \
     systemd/apitoken-stage-source-fetch.timer \
+    systemd/apitoken-stage-report.service \
+    systemd/apitoken-stage-report.path \
     systemd/apitoken-stage-watchdog.service \
     systemd/apitoken-stage-watchdog.timer \
     deploy/test-fixtures/contour-config/production-resolved.txt \

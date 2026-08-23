@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
-for file in agent-merge-stage.sh stage-watchdog.sh stage-watchdog-validate.sh stage-source-fetch.sh \
+for file in agent-merge-stage.sh stage-watchdog.sh stage-watchdog-validate.sh stage-source-fetch.sh stage-report-publish.sh \
   watchdog-github-stage.sh stage-sync.sh promotion-attest.sh; do
   bash -n "$ROOT/deploy/$file"
 done
@@ -33,6 +33,9 @@ grep -Fq 'chown deploy-stage:deploy-stage "$STATE/source.sha"' "$ROOT/deploy/sta
 grep -Fq "refs/heads/stage:refs/remotes/origin/stage" "$ROOT/deploy/stage-source-fetch.sh"
 grep -Fxq 'NoNewPrivileges=yes' "$ROOT/systemd/apitoken-stage-source-fetch.service"
 grep -Fxq 'OnUnitInactiveSec=15s' "$ROOT/systemd/apitoken-stage-source-fetch.timer"
+grep -Fq 'report-pending.sha' "$ROOT/deploy/stage-watchdog.sh"
+grep -Fq 'stage/deployed' "$ROOT/deploy/stage-report-publish.sh"
+grep -Fxq 'PathExists=/var/lib/apitoken-staging/watchdog/report-pending.sha' "$ROOT/systemd/apitoken-stage-report.path"
 grep -Fq 'phase-disabled' "$ROOT/deploy/stage-sync.sh"
 grep -Fq 'phase-disabled' "$ROOT/deploy/promotion-attest.sh"
 grep -Fxq 'User=deploy-stage' "$ROOT/systemd/apitoken-stage-watchdog.service"

@@ -1037,7 +1037,8 @@ wd_path_is_systemd_definition() {
     systemd/apitoken-rootless-docker-stage.service|systemd/apitoken-staging-image-seed.service|\
     systemd/apitoken-postgres-stage.service|\
     systemd/apitoken-redis-stage.service|systemd/apitoken-stage-source-fetch.service|\
-    systemd/apitoken-stage-source-fetch.timer|systemd/apitoken-stage-watchdog.service|\
+    systemd/apitoken-stage-source-fetch.timer|systemd/apitoken-stage-report.service|\
+    systemd/apitoken-stage-report.path|systemd/apitoken-stage-watchdog.service|\
     systemd/apitoken-stage-watchdog.timer|systemd/staging.slice|\
     systemd/apitoken-postgres.service|systemd/apitoken-affinity-redis.service|\
     systemd/apitoken-worker.service|systemd/apitoken-content-studio.service|\

@@ -1,0 +1,14 @@
+[Unit]
+Description=Publish caller-bound informational stage statuses
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/apitoken-watchdog/stage-report-publish
+TimeoutStartSec=2min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/lib/apitoken-staging/watchdog

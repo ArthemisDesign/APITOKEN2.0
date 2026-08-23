@@ -1279,7 +1279,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: correct first-stage validation and reporting credential reuse.
 
 ### 2026-08-23 — Phase 3 baseline and reporter fixes
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `6dd0af0847e46e4511fb372f1478c3f1fdd0a6f4`   watchdog: GREEN
 Result: The first stage SHA equals an older `master`, so validating against current `origin/master`
 incorrectly fails ancestry. Phase 3 already requires exact trusted prevalidation in the stage client;
 validate the candidate commit itself and its single commit range for host-global paths. Also reuse the
@@ -1290,6 +1290,18 @@ Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-
 Deviation from this plan / from STAGING_ENVIRONMENT.md: the initial observe-only stage validation has
 no independent baseline marker; the stage client exact precondition is authoritative until Phase 6
 attestation. One root GitHub credential is reused as the contract permits.
+Next: publish validated stage reports from a networked manager unit.
+
+### 2026-08-23 — stage report manager unit
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The stage netns correctly blocks public GitHub egress. The isolated watchdog now writes only
+an exact validated `report-pending.sha`. A root manager path unit outside the netns rechecks
+`candidate.sha`, publishes only the closed stage contexts and staging deployment, then writes
+processed/deployed markers for `deploy-stage`. No candidate path or command enters the reporter.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: caller binding uses a root-owned exact marker
+and fixed manager unit because the stage caller has no egress; context and SHA checks remain closed.
 Next: verify informational stage statuses and close Phase 3.
 
 ---
