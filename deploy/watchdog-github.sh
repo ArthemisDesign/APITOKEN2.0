@@ -74,9 +74,14 @@ case "${1:-}" in
     [[ $# -eq 4 ]] || { echo 'usage: deployment-create SHA ENVIRONMENT DESCRIPTION' >&2; exit 2; }
     [[ $2 =~ $sha_re ]] || { echo 'invalid SHA' >&2; exit 2; }
     contour_require_deployment_environment "$3" || { echo 'invalid environment' >&2; exit 2; }
-    [[ $3 == production-* ]] || { echo 'deployment-create requires a production environment' >&2; exit 2; }
+    if [[ $CONTOUR_KIND == production ]]; then
+      [[ $3 == production-* || $3 == candidate-validation ]] \
+        || { echo 'production contour rejected deployment environment' >&2; exit 2; }
+    else
+      [[ $3 == staging-* ]] || { echo 'stage contour rejected deployment environment' >&2; exit 2; }
+    fi
     body=$(jq -cn --arg ref "$2" --arg environment "$3" --arg description "$4" \
-      '{ref:$ref,environment:$environment,description:$description,auto_merge:false,required_contexts:[],transient_environment:false,production_environment:true}')
+      '{ref:$ref,environment:$environment,description:$description,auto_merge:false,required_contexts:[],transient_environment:($environment | startswith("staging-")),production_environment:($environment | startswith("production-"))}')
     github_curl -X POST "$api/deployments" -d "$body" | jq -er '.id'
     ;;
   deployment-status)

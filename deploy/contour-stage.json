@@ -23,10 +23,13 @@
       "watchdog": "deploy/stage",
       "tests": "deploy/stage-tests",
       "engine": "deploy/stage-engine",
-      "backend": "deploy/stage-backend"
+      "backend": "deploy/stage-backend",
+      "deployed": "stage/deployed",
+      "direct_push_dry_run": "stage/direct-push-dry-run"
     },
     "deployment_environments": {
-      "stage": "staging-environment"
+      "stage": "staging-environment",
+      "candidate_validation": "staging-candidate-validation"
     }
   },
   "roots": {
@@ -129,7 +132,7 @@
     "typescript": false,
     "rust": false,
     "static": true,
-    "infrastructure": true,
+    "infrastructure": false,
     "engine": false,
     "backend": false,
     "sales": false,

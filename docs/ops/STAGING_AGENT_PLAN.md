@@ -110,7 +110,7 @@ Read order at the start of work:
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
 | **Phase 2 — trusted contour foundation** | **DONE** | `76263deea700fe0fb32ebcfe53af24b0def409cd` | 2026-08-23 | GREEN live stores, isolation, pressure, and read-only observation. |
-| Phase 3 — observe-only stage watchdog | **IN PROGRESS** | — | 2026-08-23 | Started only after Phase 2 live proof acceptance. |
+| Phase 3 — observe-only stage watchdog | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Serial stage ref, poller, caller-bound informational reporting. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
 | Phase 6 — attestation dry-run + drills | BLOCKED on 5 | — | — | Injected-fault **and** hotfix drills. |
@@ -990,22 +990,22 @@ Ordinary `master` merges stay unblocked.
 
 ### In scope
 
-- [ ] `deploy/agent-merge-stage.sh` with its own target/lock. Do **not** reuse one
+- [x] `deploy/agent-merge-stage.sh` with its own target/lock. Do **not** reuse one
       `AGENT_MERGE_REQUIRED_CONTEXT` for baseline, candidate precondition, and post-push wait
       across both contours. Production `agent-merge.sh` keeps today’s production contract.
-- [ ] `deploy/stage-sync.sh` and `deploy/promotion-attest.sh` may land as **inert** or
+- [x] `deploy/stage-sync.sh` and `deploy/promotion-attest.sh` may land as **inert** or
       operator-gated stubs that refuse unless the operator command path is already real.
       They must not auto-attest. Regression suites ship with the scripts.
-- [ ] Stage state-root `/var/lib/apitoken-staging/watchdog`. Separate locks and quarantine.
+- [x] Stage state-root `/var/lib/apitoken-staging/watchdog`. Separate locks and quarantine.
       Stage never writes production statuses or production quarantine.
-- [ ] Application lane only: binaries, stage units from the trusted renderer, stage DB/Redis,
+- [x] Application lane only: binaries, stage units from the trusted renderer, stage DB/Redis,
       stage-only Caddy (if Caddy is still phase 4, keep a documented placeholder and do not
       reload global Caddy).
-- [ ] Host-global lane from the `stage` candidate does **not** run on the production host.
-- [ ] Caller-bound reporting: `watchdog-github-stage` posts only stage contexts.
+- [x] Host-global lane from the `stage` candidate does **not** run on the production host.
+- [x] Caller-bound reporting: `watchdog-github-stage` posts only stage contexts.
       `deploy-stage` cannot post `deploy/watchdog` or `deploy/tests`.
-- [ ] Direct-push detector: alert/quarantine **dry-run** only. No production admission block.
-- [ ] Serial freeze: one SHA at a time on the twin.
+- [x] Direct-push detector: alert/quarantine **dry-run** only. No production admission block.
+- [x] Serial freeze: one SHA at a time on the twin.
 
 ### Out of scope
 
@@ -1021,7 +1021,24 @@ Ordinary `master` merges stay unblocked.
 
 ### Execution log
 
-*(empty)*
+### 2026-08-23 — observe-only stage watchdog implementation
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Add a serial `stage` client, an unprivileged stage poll timer, separate state/locks,
+caller-bound stage reporting, host-global candidate path rejection, and inert sync/attestation
+commands. The poller validates and records the exact SHA in mock/observe-only mode. It publishes
+informational contexts and a staging deployment only. `agent-merge.sh --validate-only` reuses the
+production baseline and exact trusted-validation gates without changing `master`; the stage wrapper
+then moves only `stage`. Production admission and `deploy/watchdog` are unchanged.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash deploy/contour-config.test.sh`; `bash deploy/watchdog-lib.test.sh`;
+`bash deploy/agent-merge.suite.sh`; `bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: Phase 3 application deployment is an
+explicit non-serving mock marker because real components, Caddy, and stage secrets belong to Phase 4.
+The stage client keeps `master` as its validation baseline and uses a separate validate-only step
+before moving `stage`, rather than applying the production merge script directly to a missing stage
+baseline. The stage ref is serially frozen after one unpromoted SHA.
+Next: merge on GREEN production watchdog, create the initial stage ref through the stage client, and
+verify informational statuses before closing Phase 3.
 
 ---
 

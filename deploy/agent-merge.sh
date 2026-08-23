@@ -37,11 +37,13 @@ AGENT_MERGE_VALIDATION_ENVIRONMENT=${AGENT_MERGE_VALIDATION_ENVIRONMENT:-candida
 
 ALLOW_PRIMARY_TREE=0
 DRY_RUN=0
+VALIDATE_ONLY=0
 FIX_RED=0
 for argument in "$@"; do
   case "$argument" in
     --allow-primary-tree) ALLOW_PRIMARY_TREE=1 ;;
     --dry-run) DRY_RUN=1 ;;
+    --validate-only) VALIDATE_ONLY=1 ;;
     --fix-red) FIX_RED=1 ;;
     -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) printf 'agent-merge: unknown argument: %s\n' "$argument" >&2; exit 1 ;;
@@ -853,6 +855,10 @@ for attempt in $(seq 1 "$AGENT_MERGE_PUSH_ATTEMPTS"); do
     am_log "dry run: would push $candidate to $AGENT_MERGE_TARGET"
     exit 0
   fi
+  if (( VALIDATE_ONLY )); then
+    am_log "validate-only: exact SHA $candidate passed both gates; no target ref was changed"
+    exit 0
+  fi
   if git -C "$ROOT" push "$AGENT_MERGE_REMOTE" "HEAD:$AGENT_MERGE_TARGET"; then
     pushed=$(git -C "$ROOT" rev-parse HEAD)
     break
@@ -876,18 +882,18 @@ while (( waited < AGENT_MERGE_DEPLOY_WAIT_S )); do
   am_read_status "$pushed"
   case "$AM_STATUS_STATE" in
     success)
-      am_log "deploy/watchdog is GREEN for $pushed"
+      am_log "$AGENT_MERGE_REQUIRED_CONTEXT is GREEN for $pushed"
       exit 0 ;;
     failure|error)
-      am_die "deploy/watchdog is RED for $pushed${AM_STATUS_DESCRIPTION:+: $AM_STATUS_DESCRIPTION}$(am_red_detail "$pushed"): fix it on a NEW branch with a NEW commit;
+      am_die "$AGENT_MERGE_REQUIRED_CONTEXT is RED for $pushed${AM_STATUS_DESCRIPTION:+: $AM_STATUS_DESCRIPTION}$(am_red_detail "$pushed"): fix it on a NEW branch with a NEW commit;
   never retry this SHA" ;;
     unknown)
       am_log "deployment-status lookup for $pushed is temporarily unavailable; retrying autonomously (${waited}s)" ;;
   esac
-  am_log "waiting for deploy/watchdog on $pushed (${waited}s)"
+  am_log "waiting for $AGENT_MERGE_REQUIRED_CONTEXT on $pushed (${waited}s)"
   sleep "$AGENT_MERGE_POLL_S"
   waited=$(( waited + AGENT_MERGE_POLL_S ))
 done
-am_die "deploy/watchdog did not settle for $pushed within ${AGENT_MERGE_DEPLOY_WAIT_S}s:
+am_die "$AGENT_MERGE_REQUIRED_CONTEXT did not settle for $pushed within ${AGENT_MERGE_DEPLOY_WAIT_S}s:
   diagnose the status API or watchdog logs before another merge; never ask a human for a token or
   deployment proof"

@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll GitHub stage for observe-only deployments
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=15s
+AccuracySec=1s
+RandomizedDelaySec=0
+Unit=apitoken-stage-watchdog.service
+
+[Install]
+WantedBy=timers.target

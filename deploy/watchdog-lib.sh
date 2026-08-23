@@ -1005,9 +1005,9 @@ wd_path_requires_infrastructure_install() {
 wd_path_depends_on_ubuntu_host() {
   case "$1" in
     systemd/*|deploy/install-*.sh|deploy/watchdog-infrastructure.sh|\
-    deploy/sudoers.d/*|deploy/49-apitoken-stage-cgroup.rules|\
+    deploy/sudoers.d/*|deploy/49-apitoken-stage-cgroup.rules|deploy/watchdog-github-stage.sh|\
     deploy/apitoken-observe.sh|deploy/apitoken-observe-stage.sh|\
-    deploy/stage-*-helper.sh|deploy/staging-*.sh|\
+    deploy/stage-*-helper.sh|deploy/stage-watchdog*.sh|deploy/staging-*.sh|\
     deploy/affinity-redis.compose.yaml|deploy/commerce-postgres.compose.yaml|\
     deploy/Caddyfile|deploy/render-caddy.awk|deploy/host-image-gate.sh|\
     deploy/host-image/*)
@@ -1036,7 +1036,8 @@ wd_path_is_systemd_definition() {
     systemd/apitoken-staging-foundation-install.service|\
     systemd/apitoken-rootless-docker-stage.service|systemd/apitoken-staging-image-seed.service|\
     systemd/apitoken-postgres-stage.service|\
-    systemd/apitoken-redis-stage.service|systemd/staging.slice|\
+    systemd/apitoken-redis-stage.service|systemd/apitoken-stage-watchdog.service|\
+    systemd/apitoken-stage-watchdog.timer|systemd/staging.slice|\
     systemd/apitoken-postgres.service|systemd/apitoken-affinity-redis.service|\
     systemd/apitoken-worker.service|systemd/apitoken-content-studio.service|\
     systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-openai@.service|\

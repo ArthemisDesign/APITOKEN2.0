@@ -23,6 +23,20 @@ with a new commit on a new branch. The red error includes the 140-character stat
 the redacted host cycle excerpt from check run `deploy/watchdog-log`. The full contributor workflow is in
 [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
 
+### Observe-only stage client and watchdog
+
+`agent-merge-stage.sh` uses a separate serial lock. It requires the `stage` ref to equal `master` or
+not exist. It runs the ordinary production-baseline and exact trusted-validation gates through
+`agent-merge.sh --validate-only`, then moves only `stage` and waits for informational `deploy/stage`.
+It never changes `master` and does not create promotion admission.
+
+`apitoken-stage-watchdog.timer` polls `stage` as `deploy-stage` inside `staging.slice` and the stage
+netns. Phase 3 validates the exact SHA, rejects host-global candidate paths on the production host,
+and writes only the stage state-root. The caller-bound reporter admits only `deploy/stage`,
+`deploy/stage-*`, and `stage/*`; production contexts fail closed. Disabled in this line: production
+infrastructure apply, production migrations, real providers, application Caddy, live external
+secrets, promotion attestation, stage sync, degradation, and production admission.
+
 ### Inspecting the outgoing validation plan
 
 `deploy/change-plan.sh --base <verified-ref> [--head <commit>] [--format text|json]` is the read-only developer view of the same path classifiers. It resolves one merge base, lists committed paths, selects TypeScript/Rust/deployment lanes, shows the TypeScript runtime contexts, and marks unknown paths with the same full fail-closed plan. It does not fetch, inspect uncommitted files, run tests, or change the worktree. Verify and fetch the intended PR/stack base before invoking it; the command deliberately never guesses a base.

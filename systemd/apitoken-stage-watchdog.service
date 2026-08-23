@@ -1,0 +1,26 @@
+[Unit]
+Description=Observe-only staging branch watchdog
+Requires=apitoken-staging-foundation-install.service
+After=apitoken-staging-foundation-install.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy-stage
+Group=deploy-stage
+Slice=staging.slice
+Environment=HOME=/home/deploy-stage
+Environment=CONTOUR_CONFIG_FILE=/usr/local/lib/apitoken-stage/contour-stage.json
+Environment=CONTOUR_SCHEMA_FILE=/usr/local/lib/apitoken-stage/contour-config.schema.json
+Environment=CONTOUR_CONFIG_LOADER=/usr/local/lib/apitoken-stage/contour-config.py
+ExecStart=/usr/local/lib/apitoken-stage/stage-watchdog.sh
+TimeoutStartSec=20min
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/opt/apitoken-staging /var/lib/apitoken-staging /run/lock
+NetworkNamespacePath=/run/netns/apitoken-stage

@@ -9,6 +9,7 @@ a neural network can immediately see "where what is being done".
 | Branch | Owns | Purpose | Merged into |
 |---|---|---|---|
 | `master` | — | Integration and production trigger. Always green (`cargo build`). Changes land only via `deploy/agent-merge.sh`; no direct commits. | — |
+| `stage` | observe-only stage watchdog | Serial staging trigger. One unpromoted exact SHA at a time. Updated only by `deploy/agent-merge-stage.sh`; it does not authorize production. | same exact SHA to `master` only after later-phase approval |
 | `comp/registry` | `crates/registry` | Subscription registry (DB, schema, CRUD, migrations). | `master` |
 | `comp/pool` | `crates/pool` | Pool and rotation (selection, cooling, limits state). | `master` |
 | `comp/forward` | `crates/forward` | Forwarding /v1/*, identity injection, poller, stream. | `master` |
@@ -34,7 +35,11 @@ Check out the branch → its purpose is immediately visible.
    `staging` branch; full preview and exception handling rules are in `AGENTS.md`.
 2. **Crate boundaries are respected** (see the root `CLAUDE.md` and `crates/<x>/CLAUDE.md`). The
    `comp/pool` branch must not pull in networking; `comp/forward` must not read env; and so on.
-3. **`master` = production trigger.** Merge only via `deploy/agent-merge.sh` and only when the
+3. **`stage` = observe-only staging trigger.** `deploy/agent-merge-stage.sh` first runs the exact
+   production baseline and trusted-validation gates without changing `master`, then uses a separate
+   stage lock to move `stage`. A stage SHA remains frozen until later-phase promotion or operator
+   recovery. Its statuses are informational and never satisfy production admission.
+4. **`master` = production trigger.** Merge only via `deploy/agent-merge.sh` and only when the
    change is fully production-ready. Before the gate, the script rejects a red target and rebases
    the branch onto the latest committed `master`, then runs in parallel a fail-closed local
    path-aware gate and trusted host-validation of the exact feature SHA, reusing the credential
@@ -48,14 +53,14 @@ Check out the branch → its purpose is immediately visible.
    candidates never deploy on top of each other. The same frozen host candidate is reused after the
    push to `master`; the watchdog then performs the migration-before-app and blue-green deploy, and
    the outcome is visible in `deploy/watchdog`.
-4. **A cross-component task** (for example, you changed the `Sub` contract in registry and its
+5. **A cross-component task** (for example, you changed the `Sub` contract in registry and its
    consumers): split it by owners with sequential merges OR drive it on a single task branch off
    `origin/master` with an explicit description in the commit. Direct commits to `master` are
    forbidden — merge only via `deploy/agent-merge.sh`.
-5. **Synchronization:** `git fetch` before starting work. Branches are synchronized by a human; an
+6. **Synchronization:** `git fetch` before starting work. Branches are synchronized by a human; an
    agent does not merge `master` into its own branch itself — `deploy/agent-merge.sh` rebases its
    branch at merge time.
-6. **Migration first:** a new append-only expand migration is added before the code that depends on
+7. **Migration first:** a new append-only expand migration is added before the code that depends on
    it; never edit migration history. Full contributor/AI workflow — `CONTRIBUTING.md`.
 
 ## Typical cycle

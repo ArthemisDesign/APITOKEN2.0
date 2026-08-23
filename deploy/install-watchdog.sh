@@ -275,12 +275,27 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/contour-production.json
   install -o root -g root -m 0644 "$ROOT/deploy/contour-stage.json" \
     /usr/local/lib/apitoken-watchdog/contour-stage.json
+  install -d -o root -g deploy-stage -m 0750 /usr/local/lib/apitoken-stage
+  install -o root -g deploy-stage -m 0640 "$ROOT/deploy/contour-stage.json" \
+    /usr/local/lib/apitoken-stage/contour-stage.json
+  install -o root -g deploy-stage -m 0640 "$ROOT/deploy/contour-config.schema.json" \
+    /usr/local/lib/apitoken-stage/contour-config.schema.json
+  install -o root -g deploy-stage -m 0750 "$ROOT/deploy/contour-config.py" \
+    /usr/local/lib/apitoken-stage/contour-config.py
+  install -o root -g deploy-stage -m 0640 "$ROOT/deploy/contour-config.sh" \
+    /usr/local/lib/apitoken-stage/contour-config.sh
+  for stage_runtime in stage-watchdog.sh stage-watchdog-validate.sh; do
+    install -o root -g deploy-stage -m 0750 "$ROOT/deploy/$stage_runtime" \
+      "/usr/local/lib/apitoken-stage/$stage_runtime"
+  done
+  install -o root -g root -m 0755 "$ROOT/deploy/watchdog-github-stage.sh" \
+    /usr/local/lib/apitoken-stage/watchdog-github-stage
   install -o root -g root -m 0755 "$ROOT/deploy/stage-unit-renderer.py" \
     /usr/local/lib/apitoken-watchdog/stage-unit-renderer.py
   for stage_helper in install-staging-foundation.sh apitoken-observe-stage.sh \
     stage-observe-helper.sh apitoken-stage-ctl.sh stage-ctl-helper.sh \
     staging-isolation-live.sh staging-pressure-proof.sh staging-image-seed.sh \
-    stage-store-diagnostics.sh; do
+    stage-store-diagnostics.sh stage-sync.sh promotion-attest.sh; do
     install -o root -g root -m 0755 "$ROOT/deploy/$stage_helper" \
       "/usr/local/lib/apitoken-watchdog/$stage_helper"
   done
@@ -298,7 +313,8 @@ install_controller_definitions() {
   # every controller transaction so unit-only fixes do not require a full installer replay.
   if [[ -d /etc/systemd/system ]]; then
     for stage_unit in staging.slice apitoken-rootless-docker-stage.service \
-      apitoken-staging-image-seed.service apitoken-postgres-stage.service apitoken-redis-stage.service; do
+      apitoken-staging-image-seed.service apitoken-postgres-stage.service apitoken-redis-stage.service \
+      apitoken-stage-watchdog.service apitoken-stage-watchdog.timer; do
       install -o root -g root -m 0644 "$ROOT/systemd/$stage_unit" "/etc/systemd/system/$stage_unit"
     done
     systemctl daemon-reload
@@ -462,7 +478,8 @@ install_systemd_definitions() {
     apitoken-sysctl-install.service apitoken-observe-install.service \
     apitoken-staging-foundation-install.service apitoken-rootless-docker-stage.service \
     apitoken-staging-image-seed.service apitoken-postgres-stage.service \
-    apitoken-redis-stage.service staging.slice \
+    apitoken-redis-stage.service apitoken-stage-watchdog.service apitoken-stage-watchdog.timer \
+    staging.slice \
     apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
@@ -725,4 +742,5 @@ activate_redis_definition
 install_monitoring_definitions
 systemctl enable --now apitoken-candidate-validator.timer
 systemctl enable --now apitoken-deploy-watchdog.timer
+systemctl enable --now apitoken-stage-watchdog.timer
 echo 'production watchdog and parallel candidate validator installed; verify with: sudo apitoken-watchdog status'

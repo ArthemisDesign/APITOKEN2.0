@@ -154,8 +154,10 @@ Diagnose from GitHub `deploy/watchdog-log`. Land releases with `./deploy/agent-m
 ### Co-located staging foundation
 
 Phase 2 provisions a non-serving isolation envelope on the same VPS. Production-watchdog installs
-it from tested `master` only. No candidate from the future `stage` branch can execute this root
-transaction. Phase 2 does not run a stage poll loop and does not change production admission.
+it from tested `master` only. Phase 3 adds an observe-only `stage` poll line. It runs as
+`deploy-stage` below `staging.slice`, validates one exact SHA, rejects host-global candidate paths,
+and publishes only informational stage contexts. It cannot execute a candidate root transaction and
+it does not change production admission.
 
 | Item | Stage value |
 |---|---|
@@ -168,6 +170,8 @@ transaction. Phase 2 does not run a stage poll loop and does not change producti
 | Config root | `/etc/apitoken-staging`, root-controlled, no production secret copy |
 | Rootless Docker | `deploy-stage`, private `/run/user/<uid>/docker.sock`, data in the staging loopback, no production socket |
 | Public path | none; UFW public inbound is unchanged |
+| Observe-only poller | `apitoken-stage-watchdog.timer`; branch `stage`; state `/var/lib/apitoken-staging/watchdog` |
+| Informational contexts | `deploy/stage`, `deploy/stage-*`, `stage/deployed`, `stage/direct-push-dry-run` |
 
 The fixed veth table is:
 
@@ -243,6 +247,8 @@ systemd/claude-api-backup.service
 systemd/claude-api-backup.timer
 systemd/apitoken-deploy-watchdog.service
 systemd/apitoken-deploy-watchdog.timer
+systemd/apitoken-stage-watchdog.service
+systemd/apitoken-stage-watchdog.timer
 deploy/deploy.sh
 deploy/api-bluegreen.sh
 deploy/engine-bluegreen.sh

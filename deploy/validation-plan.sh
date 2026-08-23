@@ -160,6 +160,12 @@ policy_sha256=$(
     deploy/staging-redis.compose.yaml \
     deploy/staging-image-seed.sh \
     deploy/stage-store-diagnostics.sh \
+    deploy/stage-watchdog.sh \
+    deploy/stage-watchdog-validate.sh \
+    deploy/watchdog-github-stage.sh \
+    deploy/stage-sync.sh \
+    deploy/promotion-attest.sh \
+    deploy/agent-merge-stage.sh \
     deploy/sudoers.d/96-apitoken-stage \
     deploy/49-apitoken-stage-cgroup.rules \
     systemd/staging.slice \
@@ -168,6 +174,8 @@ policy_sha256=$(
     systemd/apitoken-staging-image-seed.service \
     systemd/apitoken-postgres-stage.service \
     systemd/apitoken-redis-stage.service \
+    systemd/apitoken-stage-watchdog.service \
+    systemd/apitoken-stage-watchdog.timer \
     deploy/test-fixtures/contour-config/production-resolved.txt \
     deploy/test-fixtures/contour-config/stage-resolved.txt \
     deploy/test-fixtures/contour-config/stage-safe.json \
