@@ -742,5 +742,6 @@ activate_redis_definition
 install_monitoring_definitions
 systemctl enable --now apitoken-candidate-validator.timer
 systemctl enable --now apitoken-deploy-watchdog.timer
-systemctl enable --now apitoken-stage-watchdog.timer
+systemctl enable apitoken-stage-watchdog.timer
+systemctl start apitoken-stage-watchdog.timer
 echo 'production watchdog and parallel candidate validator installed; verify with: sudo apitoken-watchdog status'
