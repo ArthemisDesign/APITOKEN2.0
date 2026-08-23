@@ -1,0 +1,21 @@
+[Unit]
+Description=Fixed production API bridge for capped stage-live client
+After=network-online.target claude-api-anthropic@8787.service
+
+[Service]
+Type=simple
+User=nobody
+Group=nogroup
+ExecStart=/usr/local/lib/apitoken-watchdog/stage-live-host-proxy.py
+Restart=on-failure
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+MemoryMax=128M
+CPUQuota=25%
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

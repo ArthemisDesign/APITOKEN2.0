@@ -18,6 +18,12 @@ attestation remains usable when staging is down; a `hotfix/*` name is not author
 `master` is already red, `deploy/agent-merge-stage.sh --fix-red` may replace a frozen unpromoted
 `stage` SHA so the newer descendant can be attested.
 
+Phase 8 budgeted live access uses the forced `stage-ctl` commands `live-enable CAP_NANOUSD TTL ACTOR`,
+`live-probe MODEL ACTOR`, and `live-disable ACTOR`. Enable accepts 100,000..100,000,000 nanoUSD and
+a 5-minute..24-hour TTL. It issues a distinct capped `stage-live` customer key. The key enters only
+the private stage client. One non-stream probe is allowed per key. Disable revokes the key and removes
+the stage marker. These commands do not copy provider credentials or the production Control key.
+
 Pushing or merging to `master` triggers the production-host watchdog. It tests an isolated exact
 commit, takes fresh validated database backups, applies commerce migrations, then health-gated
 blue-green deploys only the affected engine and/or backend. Engine migrations run transactionally

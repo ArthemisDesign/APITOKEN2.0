@@ -314,6 +314,10 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/stage-load-generator.py
   install -o root -g root -m 0755 "$ROOT/deploy/stage-stub-server.py" \
     /usr/local/lib/apitoken-watchdog/stage-stub-server.py
+  install -o root -g root -m 0755 "$ROOT/deploy/stage-live-proxy.py" \
+    /usr/local/lib/apitoken-watchdog/stage-live-proxy.py
+  install -o root -g root -m 0755 "$ROOT/deploy/stage-live-host-proxy.py" \
+    /usr/local/lib/apitoken-watchdog/stage-live-host-proxy.py
   install -o root -g root -m 0755 "$ROOT/tests/mock_upstream.py" \
     /usr/local/lib/apitoken-watchdog/mock_upstream.py
   install -o root -g root -m 0755 "$ROOT/deploy/stage-loopback-pg.py" \
@@ -327,7 +331,7 @@ install_controller_definitions() {
     staging-isolation-live.sh staging-pressure-proof.sh staging-image-seed.sh \
     stage-store-diagnostics.sh stage-sync.sh promotion-attest.sh stage-seed.sh stage-gc.sh \
     stage-degrade-proof.sh stage-promotion-helper.sh staging-operator-env.sh \
-    install-staging-twin.sh; do
+    install-staging-twin.sh stage-live-control.sh; do
     install -o root -g root -m 0755 "$ROOT/deploy/$stage_helper" \
       "/usr/local/lib/apitoken-watchdog/$stage_helper"
   done
@@ -356,7 +360,8 @@ install_controller_definitions() {
       claude-router-stage@.service apitoken-api-stage@.service \
       apitoken-worker-stage.service apitoken-sales-api-stage.service \
       apitoken-sales-web-stage.service apitoken-openkeys-stage.service \
-      apitoken-admin-stage.service; do
+      apitoken-admin-stage.service apitoken-stage-live-host-proxy.service \
+      apitoken-stage-live-client.service; do
       install -o root -g root -m 0644 "$ROOT/systemd/$stage_unit" "/etc/systemd/system/$stage_unit"
     done
     systemctl daemon-reload
@@ -532,8 +537,8 @@ install_systemd_definitions() {
     claude-router-stage@.service apitoken-api-stage@.service \
     apitoken-worker-stage.service apitoken-sales-api-stage.service \
     apitoken-sales-web-stage.service apitoken-openkeys-stage.service \
-    apitoken-admin-stage.service \
-    apitoken-stage-emergency-guard.service \
+    apitoken-admin-stage.service apitoken-stage-live-host-proxy.service \
+    apitoken-stage-live-client.service apitoken-stage-emergency-guard.service \
     apitoken-stage-emergency-guard.timer staging.slice \
     apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \

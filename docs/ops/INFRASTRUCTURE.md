@@ -180,6 +180,7 @@ a candidate root transaction on the production host.
 | Observe-only poller | `apitoken-stage-watchdog.timer`; branch `stage`; state `/var/lib/apitoken-staging/watchdog` |
 | Informational contexts | `deploy/stage`, `deploy/stage-*`, `stage/deployed`, `stage/direct-push-dry-run` |
 | Phase 4 local HTTP | `10.254.32.2:3900` stage Caddy, `10.254.32.2:3901` safe sinks; no public route |
+| Phase 8 live bridge | Host `10.254.32.1:9081` → prod `127.0.0.1:8790`; stage client `10.254.32.2:9081`; fixed `/v1/messages` only |
 
 The fixed veth table is:
 

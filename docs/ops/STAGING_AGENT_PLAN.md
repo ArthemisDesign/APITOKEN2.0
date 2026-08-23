@@ -118,7 +118,7 @@ Read order at the start of work:
 | **Phase 6 — attestation dry-run + drills** | **DONE** | `679a299794e654ca106f214618d4a196eb170099` | 2026-08-23 | GREEN atomic record contract and both mandatory drills. |
 | **Phase 7 — fail-closed enforcement** | **DONE** | `83dc18a35ec22ec5af11ab6a13fcf93a7004eed6` | 2026-08-23 | GREEN fail-closed admission plus merge-client gate. Mock-first twin. §12 full twin is not accepted. |
 | Parallel — host-image-gate extension | **DONE** | `4b8ba93831a52a8cf5af63a138bf676c02305675` | 2026-08-23 | Disposable Ubuntu gate; stage never applies host-global installers. |
-| Phase 8 — optional live/sandbox | OWNER GATE | — | — | Do not start. Ask the owner after phase 7. |
+| Phase 8 — budgeted live endpoint | **IN PROGRESS** | *(this commit)* | 2026-08-24 | Owner selected capped production-fleet client contour. |
 
 Status vocabulary: `NOT STARTED` · `IN PROGRESS` · `BLOCKED on N` · `MERGED, waiting watchdog` ·
 `DONE` · `OWNER GATE`.
@@ -1865,9 +1865,37 @@ application; only production watchdog installed them after exact promotion eligi
 
 Source: `STAGING_ENVIRONMENT.md` §5.3.1, §10 phase 8, §11.3.
 
-Do not start. After phase 7, ask the owner whether mock+shadow-read is enough.
+Status: **IN PROGRESS**. Owner selected **budgeted live endpoint** in chat.
 
-Still forbidden until a new owner row lands in §11.3: payment/OAuth/mail vendor egress.
+### Scope
+
+- [x] Keep production as the only owner of provider tokens, fleet health, rotation, and authority.
+- [x] Create a distinct `stage-live` production account and one key with a lifetime nanoUSD cap and TTL.
+- [x] Expose only fixed `/v1/messages` through a host bridge bound to the private stage veth.
+- [x] Stage receives only the capped customer key. No `CONTROL_KEY`, provider token, OAuth envelope, or production DB access.
+- [x] The lane is off without `stage-live.enabled`; one explicit operator command enables it.
+- [x] One minimal non-stream probe per issued key; `max_tokens <= 64`; body <= 1 MiB.
+- [x] Explicit disable revokes the key, stops both bridge processes, and removes the stage key and marker.
+- [ ] Run one live minimal generation and record exact key id, cap, TTL, response digest, and resulting key spend.
+- [ ] Re-run isolation, degradation, production readiness, and stage/production exact-SHA flow.
+
+Payment/OAuth/mail vendor egress stays forbidden. `STAGING_ENVIRONMENT.md` §11.3 is unchanged.
+
+### Execution log
+
+### 2026-08-24 — Phase 8 budgeted live-endpoint foundation
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Add a root-owned controller that issues a distinct production `stage-live` account/key with
+an explicit 100,000..100,000,000 nanoUSD lifetime cap and 5-minute..24-hour TTL. A fixed host bridge
+exposes only `/v1/messages` on the private veth. A stage-netns client validates a closed non-stream
+request shape, 1 MiB body ceiling, and 64 output-token ceiling before it forwards with the capped key.
+One probe is allowed per key. Disable revokes the non-secret key id and removes the key/marker. No
+provider credential, OAuth envelope, production `CONTROL_KEY`, or arbitrary URL reaches staging.
+Checks actually run: `bash deploy/staging-phase8.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: owner selected §5.3.1 option 2. No §11.3 lock changed.
+Next: merge to stage, owner-attest, promote, enable a cents-scale key, run one minimal probe, disable,
+and close Phase 8 from live evidence.
 
 ---
 

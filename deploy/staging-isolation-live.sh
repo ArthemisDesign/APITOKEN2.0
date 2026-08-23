@@ -12,6 +12,11 @@ for target in 127.0.0.1:5433 127.0.0.1:6379 127.0.0.1:6380 127.0.0.1:8790 \
     echo "stage isolation reached denied endpoint $target" >&2; exit 1
   fi
 done
+# Phase 8 opens one fixed stage-to-host bridge only while the stage-live marker exists.
+if [[ -e /etc/apitoken-staging/stage-live.enabled ]]; then
+  timeout 2 ip netns exec apitoken-stage bash -c '</dev/tcp/10.254.32.1/9081' 2>/dev/null \
+    || { echo 'stage-live fixed bridge is unavailable' >&2; exit 1; }
+fi
 for path in /etc/apitoken/server.env /srv/claude-api/data/subscriptions.db \
   /var/lib/apitoken/watchdog/github.env /var/run/docker.sock; do
   if runuser -u deploy-stage -- test -r "$path"; then echo "deploy-stage reads $path" >&2; exit 1; fi
