@@ -21,6 +21,7 @@ INSTALLER_PROOF[install-sysctl.sh]=1
 INSTALLER_PROOF[install-sudoers.sh]=1
 INSTALLER_PROOF[install-watchdog.sh]=1
 INSTALLER_PROOF[install-staging-foundation.sh]=1
+INSTALLER_PROOF[install-staging-twin.sh]=1
 INSTALLER_PROOF[install-caddy.sh]=1
 INSTALLER_SKIP[install-monitoring.sh]='Compose pull of the monitoring stack is not Ubuntu identity'
 
@@ -305,5 +306,11 @@ mkfs.ext4 -F -m 0 "$scaled" >/dev/null
 [[ $(stat -c %s "$scaled") == 67108864 ]] || die 'scaled staging loopback has wrong size'
 rm -f "$scaled"
 proof 'staging foundation contracts and scaled loopback passed'
+
+bash "$SRC/deploy/staging-twin.test.sh"
+if "$SRC/deploy/install-staging-twin.sh"; then
+  die 'install-staging-twin.sh ran without a stage netns'
+fi
+proof 'install-staging-twin.sh fails closed without the stage netns'
 
 proof 'all Ubuntu host proofs passed'
