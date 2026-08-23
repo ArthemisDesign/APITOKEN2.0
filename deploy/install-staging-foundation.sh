@@ -19,6 +19,7 @@ fi
 # phase2-sandbox-apply-v1: replay after RootlessKit namespace filtering changed.
 # phase2-tmp-apply-v1: replay after the RootlessKit private tmp change.
 # phase2-offline-apply-v1: replay after Compose offline mode changed.
+# phase2-seed-tags-apply-v1: replay after rootless digest-reference repair.
 for command in rootlesskit slirp4netns fuse-overlayfs newuidmap newgidmap dockerd-rootless.sh; do
   command -v "$command" >/dev/null || { echo "staging-foundation: missing rootless Docker prerequisite: $command" >&2; exit 1; }
 done

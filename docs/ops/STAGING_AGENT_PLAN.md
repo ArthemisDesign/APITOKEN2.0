@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `5bebe65959fd3126f0a3f455c7bf3ead013fedc5` | 2026-08-23 | GREEN offline apply; restoring digest references after load. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `4868b1c7686d21cbe1d62a2020c5d2d3c05bf0f4` | 2026-08-23 | GREEN tag repair; forcing full seed replay. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -679,13 +679,22 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: restore digest references after image load, then verify stores, isolation, and pressure.
 
 ### 2026-08-23 — rootless image reference forward fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `4868b1c7686d21cbe1d62a2020c5d2d3c05bf0f4`   watchdog: GREEN
 Result: `docker load` imported content but did not retain the source digest reference that the offline
 Compose files name. Capture the loaded reference and tag it with the exact pinned digest reference
 inside the rootless daemon when necessary. No unpinned input is accepted.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: force a full seed-tag replay, then verify stores, isolation, and pressure.
+
+### 2026-08-23 — image reference full-apply marker
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Add an immutable marker to the stateful foundation installer so the GREEN image-reference
+repair reruns the trusted seed and store transaction. No runtime behavior or lock value changes.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/watchdog-lib.test.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: verify live stores, isolation, and pressure.
 
 ---
