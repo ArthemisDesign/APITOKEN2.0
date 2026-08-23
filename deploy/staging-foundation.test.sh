@@ -58,6 +58,8 @@ for compose in staging-postgres.compose.yaml staging-redis.compose.yaml; do
   ! grep -Eq '5434|127\.0\.0\.1|/var/run/docker.sock|privileged:' "$ROOT/deploy/$compose"
 done
 grep -Fq 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2' "$ROOT/deploy/staging-postgres.compose.yaml"
+grep -Fq 'docker image inspect "$image"' "$ROOT/deploy/staging-image-seed.sh"
+grep -Fq 'docker pull "$image"' "$ROOT/deploy/staging-image-seed.sh"
 grep -Fq 'docker save -o "$archive" "$image"' "$ROOT/deploy/staging-image-seed.sh"
 grep -Fq 'docker load -i "$archive"' "$ROOT/deploy/staging-image-seed.sh"
 grep -Fq '10.254.32.2:5433:5432' "$ROOT/deploy/staging-postgres.compose.yaml"
