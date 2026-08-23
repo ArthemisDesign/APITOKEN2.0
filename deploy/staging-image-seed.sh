@@ -9,8 +9,10 @@ for image in \
   archive=$(mktemp /var/lib/apitoken-staging/.image-seed.XXXXXX.tar)
   docker image inspect "$image" >/dev/null 2>&1 || docker pull "$image" >/dev/null
   source_id=$(docker image inspect --format '{{.Id}}' "$image")
-  [[ $source_id == sha256:* ]] || { echo "staging-image-seed: source image has no ID" >&2; exit 1; }
-  docker save -o "$archive" "$image"
+  source_tag=$(docker image inspect --format '{{index .RepoTags 0}}' "$image")
+  [[ $source_id == sha256:* && $source_tag == *:* ]] \
+    || { echo "staging-image-seed: source image lacks stable identity" >&2; exit 1; }
+  docker save -o "$archive" "$source_tag"
   chown "$STAGE_USER:$STAGE_USER" "$archive"
   runuser -u "$STAGE_USER" -- env DOCKER_HOST="unix://$SOCKET" docker load -i "$archive" >/dev/null
   if ! runuser -u "$STAGE_USER" -- env DOCKER_HOST="unix://$SOCKET" docker image inspect "$image" >/dev/null 2>&1; then
