@@ -18,6 +18,7 @@ RUN apt-get update \
         python3 \
         e2fsprogs \
         iproute2 \
+        jq \
         nftables \
         slirp4netns \
         fuse-overlayfs \

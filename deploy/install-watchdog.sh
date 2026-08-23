@@ -298,6 +298,12 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/stage-report-publish
   install -o root -g root -m 0755 "$ROOT/deploy/stage-unit-renderer.py" \
     /usr/local/lib/apitoken-watchdog/stage-unit-renderer.py
+  install -o root -g root -m 0755 "$ROOT/deploy/stage-degrade-gate.py" \
+    /usr/local/lib/apitoken-watchdog/stage-degrade-gate.py
+  install -o root -g deploy-stage -m 0640 "$ROOT/deploy/stage-degradation-policy.json" \
+    /usr/local/lib/apitoken-watchdog/stage-degradation-policy.json
+  install -o root -g root -m 0755 "$ROOT/deploy/stage-load-generator.py" \
+    /usr/local/lib/apitoken-watchdog/stage-load-generator.py
   install -o root -g root -m 0755 "$ROOT/deploy/stage-stub-server.py" \
     /usr/local/lib/apitoken-watchdog/stage-stub-server.py
   install -o root -g root -m 0644 "$ROOT/deploy/staging-twin-inventory.json" \
@@ -327,7 +333,8 @@ install_controller_definitions() {
     for stage_unit in staging.slice apitoken-rootless-docker-stage.service \
       apitoken-staging-image-seed.service apitoken-postgres-stage.service apitoken-redis-stage.service \
       apitoken-stage-watchdog.service apitoken-stage-watchdog.timer \
-      apitoken-stage-safe-sinks.service apitoken-stage-caddy.service; do
+      apitoken-stage-safe-sinks.service apitoken-stage-caddy.service \
+      apitoken-stage-load-generator.service; do
       install -o root -g root -m 0644 "$ROOT/systemd/$stage_unit" "/etc/systemd/system/$stage_unit"
     done
     systemctl daemon-reload
@@ -494,7 +501,8 @@ install_systemd_definitions() {
     apitoken-redis-stage.service apitoken-stage-source-fetch.service apitoken-stage-source-fetch.timer \
     apitoken-stage-report.service apitoken-stage-report.path \
     apitoken-stage-watchdog.service apitoken-stage-watchdog.timer \
-    apitoken-stage-safe-sinks.service apitoken-stage-caddy.service staging.slice \
+    apitoken-stage-safe-sinks.service apitoken-stage-caddy.service \
+    apitoken-stage-load-generator.service staging.slice \
     apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \

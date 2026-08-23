@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "runtime_soak_seconds": 3600,
+  "docs_soak_seconds": 0,
+  "max_error_rate_bp": 100,
+  "max_p95_latency_ms": 1500,
+  "max_metric_age_seconds": 60,
+  "min_samples": 20,
+  "required_metrics": ["stage_safe_sink_up", "stage_probe_samples", "stage_probe_errors", "stage_probe_latency_p95_ms"],
+  "large_payload_mib": [8, 32, 64, 128, 256],
+  "router_memory_max_bytes": 8589934592,
+  "spool_floor_bytes": 17179869184,
+  "policy_id": "stage-degradation-v1"
+}

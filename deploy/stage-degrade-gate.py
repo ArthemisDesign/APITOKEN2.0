@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+import argparse, hashlib, json, sys, time
+
+def fail(msg): print(f"stage-degrade-gate: RED: {msg}", file=sys.stderr); raise SystemExit(1)
+p=argparse.ArgumentParser(); p.add_argument('--policy',required=True); p.add_argument('--evidence',required=True); p.add_argument('--expected-digest',required=True); p.add_argument('--now',type=int,default=int(time.time())); a=p.parse_args()
+raw=open(a.policy,'rb').read(); digest=hashlib.sha256(raw).hexdigest()
+if digest != a.expected_digest: fail('trusted policy digest mismatch')
+policy=json.loads(raw); evidence=json.load(open(a.evidence))
+if set(policy) != {'schema_version','runtime_soak_seconds','docs_soak_seconds','max_error_rate_bp','max_p95_latency_ms','max_metric_age_seconds','min_samples','required_metrics','large_payload_mib','router_memory_max_bytes','spool_floor_bytes','policy_id'}: fail('policy shape changed')
+if policy['schema_version'] != 1 or policy['runtime_soak_seconds'] != 3600: fail('policy invariant changed')
+if policy['large_payload_mib'] != [8,32,64,128,256] or policy['router_memory_max_bytes'] != 8589934592 or policy['spool_floor_bytes'] != 17179869184: fail('large payload policy changed')
+if set(evidence) != {'timestamp','samples','errors','latency_p95_ms','metrics','n_minus_one','injected_fault','policy_digest'}: fail('evidence shape changed')
+if evidence['policy_digest'] != digest: fail('evidence policy digest mismatch')
+if a.now - evidence['timestamp'] > policy['max_metric_age_seconds'] or evidence['timestamp'] > a.now: fail('stale metric')
+if evidence['samples'] < policy['min_samples']: fail('insufficient samples')
+if evidence['errors'] * 10000 > evidence['samples'] * policy['max_error_rate_bp']: fail('error rate regression')
+if evidence['latency_p95_ms'] > policy['max_p95_latency_ms']: fail('latency regression')
+if set(evidence['metrics']) != set(policy['required_metrics']) or not all(evidence['metrics'].values()): fail('missing or renamed metric')
+if evidence['n_minus_one'] != 'compatible': fail('N-1 schema compatibility failed')
+if evidence['injected_fault'] not in ('none','caught'): fail('control injection escaped gate')
+print(f"stage-degrade-gate: GREEN policy={digest}")

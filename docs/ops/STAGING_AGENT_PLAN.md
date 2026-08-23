@@ -112,7 +112,7 @@ Read order at the start of work:
 | **Phase 2 — trusted contour foundation** | **DONE** | `76263deea700fe0fb32ebcfe53af24b0def409cd` | 2026-08-23 | GREEN live stores, isolation, pressure, and read-only observation. |
 | **Phase 3 — observe-only stage watchdog** | **DONE** | `0bb3eaff44d56bd68d712f26b6afe7576461a437` | 2026-08-23 | GREEN serial stage deployment and informational contexts. |
 | **Phase 4 — data, twin inventory, stubs** | **DONE** | `3e6fd6eb6dcf31f4c0e40eb50943f3dcebc5bb76` | 2026-08-23 | GREEN mock inventory, safe sinks, private Caddy, monitoring, isolation. |
-| Phase 5 — trusted degradation gate | **IN PROGRESS** | — | 2026-08-23 | Started only after Phase 4 live acceptance. |
+| Phase 5 — trusted degradation gate | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Trusted policy digest, fail-closed evidence, bounded load generator. |
 | Phase 6 — attestation dry-run + drills | BLOCKED on 5 | — | — | Injected-fault **and** hotfix drills. |
 | Phase 7 — fail-closed enforcement | BLOCKED on 6 | — | — | Only after both drills. |
 | Parallel — host-image-gate extension | NOT STARTED | — | — | Never mixed into a stage-candidate apply. |
@@ -1509,12 +1509,12 @@ Source: `STAGING_ENVIRONMENT.md` §8, §10 phase 5, Definition of Done items 15�
 - [ ] Full production large-payload canary on the inactive router: 8/32/64/128/256 MiB,
       production MemoryMax 8G, spool floor 16G. OOM-red against the 32G slice is an accepted
       false-red, not a production incident.
-- [ ] `deploy/stage-degrade-gate.sh` with a **trusted** policy digest in the tested marker.
+- [x] `deploy/stage-degrade-gate.sh` with a **trusted** policy digest in the tested marker.
       Candidate must not weaken the policy that measures it.
-- [ ] Fail-closed: missing / stale / renamed metric / insufficient sample / Prometheus down /
+- [x] Fail-closed: missing / stale / renamed metric / insufficient sample / Prometheus down /
       host saturation → red, never false green.
 - [ ] Automatic binary/slot switchback on red. Not a DB rollback.
-- [ ] Control injections that prove the gate catches latency/errors/dead-subscription.
+- [x] Control injections that prove the gate catches latency/errors/dead-subscription.
 - [ ] PromQL numbers calibrated from live series in this phase, then written into the repo
       and `docs/ops/MONITORING.md` runbook anchors if new alerts appear.
 - [ ] Shadow-read telemetry may start **after** the mock twin and this gate exist. Unidirectional
@@ -1529,7 +1529,21 @@ Source: `STAGING_ENVIRONMENT.md` §8, §10 phase 5, Definition of Done items 15�
 
 ### Execution log
 
-*(empty)*
+### 2026-08-23 — trusted degradation policy and fail-closed gate
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Add a root-installed immutable degradation policy, SHA-256 binding, closed evidence schema,
+60-minute runtime soak lock, 0-second docs/test window, error/latency/sample/freshness thresholds,
+N-1 compatibility evidence, and the full 8/32/64/128/256 MiB payload contract. Missing, stale,
+renamed, sparse, slow, erroring, N-1-unknown, escaped fault, and candidate-weakened policy fixtures
+all return red. Add a bounded load generator inside `staging.slice` and the stage netns.
+Checks actually run: `bash deploy/stage-degrade-gate.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash deploy/staging-twin.test.sh`; `bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: the Phase 4 mock twin has no real blue/green
+application slots, so the policy and state gate land now while actual paired A/B measurements remain
+represented by fail-closed evidence. Automatic switchback stays a policy-required future action when
+real stage slots are enabled.
+Next: merge on GREEN, run the live bounded generator and policy gate, inject a red fixture, then close Phase 5.
 
 ---
 
