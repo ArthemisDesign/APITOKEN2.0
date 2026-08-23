@@ -35,8 +35,12 @@ case "${words[0]:-}" in
     ;;
   ready)
     port=${words[1]:-}; [[ $port =~ ^[0-9]+$ && $port -ge 1 && $port -le 65535 ]] || exit 2
-    curl -fsS -m 2 -o /dev/null -w "10.254.32.2:$port %{http_code}\n" \
-      "http://10.254.32.2:$port/ready" || printf '10.254.32.2:%s 000\n' "$port"
+    if ! output=$(curl -sS -m 2 -o /dev/null -w "10.254.32.2:$port %{http_code}\n" \
+        "http://10.254.32.2:$port/ready"); then
+      printf '10.254.32.2:%s 000\n' "$port"
+    else
+      printf '%s\n' "$output"
+    fi
     ;;
   logs)
     unit=$(unit_allowed "${words[1]:-}") || exit 2

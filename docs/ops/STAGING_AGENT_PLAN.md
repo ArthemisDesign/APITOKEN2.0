@@ -1420,7 +1420,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: align the Caddy readiness path, then rerun live acceptance.
 
 ### 2026-08-23 — stage Caddy readiness fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `57fb44f49073d2a00048897f438c6f995e0ceb1e`   watchdog: GREEN
 Result: Stage Caddy is active on the correct veth, but the forced readiness helper appends `/ready`
 to a base ending in `/ready`, producing `/ready/ready` and HTTP 400. Match `/ready*` in the
 non-public stage Caddy placeholder. Set Caddy HOME to its loopback-backed writable state path to
@@ -1428,6 +1428,16 @@ remove harmless autosave/storage errors.
 Checks actually run: `bash deploy/staging-twin.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: make read-only readiness output unambiguous, then close Phase 4.
+
+### 2026-08-23 — stage readiness output fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The read-only helper used `curl -f -w`, so an HTTP error printed both the real status and a
+synthetic `000`; this obscured live diagnostics. Capture one non-failing HTTP status. Print `000`
+only for transport failure. No target, path, timeout, or forwarding permission changes.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: diagnostics fix; no lock changed.
 Next: verify Caddy/sinks and isolation live, then close Phase 4.
 
 ---
