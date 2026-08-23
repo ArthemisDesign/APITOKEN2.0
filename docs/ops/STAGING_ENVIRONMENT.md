@@ -1,8 +1,10 @@
 # Тестовый стенд (staging) — план внедрения
 
-> **Статус: IMPLEMENTATION PLAN.** Утверждён владельцем 2026-08-22 (интервью, раздел 11.3).
-> Не реализован: ни стенда, ни ветки `stage`, ни новых скриптов. Раздел 9 — нормативный.
-> Definition of Done раздела 12 закрывает приёмку живого контура, не этого документа.
+> **Статус: IMPLEMENTATION PLAN, фазы 1–7 на master.** Утверждён владельцем 2026-08-22
+> (интервью, раздел 11.3). Fail-closed admission живой. Twin v1 mock-first: stores, private
+> Caddy, safe sinks, trusted policy; operator env placeholders оставляют реальные application
+> binaries выключенными. Фаза 8 — OWNER GATE. Раздел 9 — нормативный. Definition of Done
+> раздела 12 закрывает приёмку полного живого контура, не одного только git-flow.
 > Составлен 2026-08-16 на основе `CONTRIBUTING.md`, `docs/ops/INFRASTRUCTURE.md`,
 > `docs/ops/DEPLOYMENT.md`, `docs/ops/MONITORING.md`, `deploy/README.md`. Каждая фаза
 > внедряется отдельными коммитами; каждый коммит, который меняет поведение в других
@@ -58,6 +60,9 @@
 > MemoryMax=32G / CPUQuota=400% / loopback 80G; Docker — rootless у `deploy-stage`;
 > первый код — только extract `contour-config`; infra-proof — расширение
 > `deploy/host-image-gate.sh`. Ресурсные числа v4 (8G / 2 CPU / 50G) **заменены**.
+>
+> **v9 (2026-08-23):** фазы 1–7 и fail-closed admission на `master`. Lock §11.3 не менялся.
+> Twin остаётся mock-first до заполнения operator env. Фаза 8 не начата.
 >
 > **План исполнения для агента:** [`docs/ops/STAGING_AGENT_PLAN.md`](STAGING_AGENT_PLAN.md).
 > **Стартовый промпт новой сессии:** [`docs/ops/STAGING_AGENT_PROMPT.md`](STAGING_AGENT_PROMPT.md)

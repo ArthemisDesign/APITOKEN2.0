@@ -1,7 +1,8 @@
 # Staging twin — agent execution plan
 
-> **Status: BINDING EXECUTION PLAN.** Created 2026-08-22. Not implemented in code.
-> Pair document: [`docs/ops/STAGING_ENVIRONMENT.md`](STAGING_ENVIRONMENT.md) (v8 IMPLEMENTATION PLAN).
+> **Status: BINDING EXECUTION PLAN.** Created 2026-08-22. Phases 1–7 are on `master`.
+> Twin v1 is mock-first. Phase 8 is OWNER GATE. Pair document:
+> [`docs/ops/STAGING_ENVIRONMENT.md`](STAGING_ENVIRONMENT.md) (v8 lock, v9 implementation status).
 >
 > **You are the executing agent.** Follow this file. Update this file in the same commit as the work.
 > Do not treat `STAGING_ENVIRONMENT.md` as a task list. That file is architecture, invariants, and
@@ -11,8 +12,9 @@
 > **Kickoff prompt for a new session:** [`docs/ops/STAGING_AGENT_PROMPT.md`](STAGING_AGENT_PROMPT.md).
 > A new executing agent creates a `/goal` first, then follows this file.
 
-**Next action:** Phase 1 — production `contour-config` extract only. No `deploy-stage`. No second
-watchdog. No enforcement. No host users. No netns.
+**Next action:** Do not start Phase 8. Ask the owner whether mock+shadow-read is enough.
+Operator env files under `/etc/apitoken-staging` stay empty, so real twin application binaries
+stay disabled. Repair this file if it drifts from live GitHub/host state.
 
 ---
 
@@ -114,8 +116,8 @@ Read order at the start of work:
 | **Phase 4 — data, twin inventory, stubs** | **DONE** | `3e6fd6eb6dcf31f4c0e40eb50943f3dcebc5bb76` | 2026-08-23 | GREEN mock inventory, safe sinks, private Caddy, monitoring, isolation. |
 | **Phase 5 — trusted degradation gate** | **DONE** | `89d27138326f85326f865e66c4fdec5ac7dd980c` | 2026-08-23 | GREEN trusted gate and caught live injected regression. |
 | **Phase 6 — attestation dry-run + drills** | **DONE** | `679a299794e654ca106f214618d4a196eb170099` | 2026-08-23 | GREEN atomic record contract and both mandatory drills. |
-| **Phase 7 — fail-closed enforcement** | **DONE** | `4b8ba93831a52a8cf5af63a138bf676c02305675` | 2026-08-23 | GREEN exact stage→attest→master flow and fail-closed admission. |
-| Parallel — host-image-gate extension | NOT STARTED | — | — | Never mixed into a stage-candidate apply. |
+| **Phase 7 — fail-closed enforcement** | **DONE** | `83dc18a35ec22ec5af11ab6a13fcf93a7004eed6` | 2026-08-23 | GREEN fail-closed admission plus merge-client gate. Mock-first twin. §12 full twin is not accepted. |
+| Parallel — host-image-gate extension | **DONE** | `4b8ba93831a52a8cf5af63a138bf676c02305675` | 2026-08-23 | Disposable Ubuntu gate; stage never applies host-global installers. |
 | Phase 8 — optional live/sandbox | OWNER GATE | — | — | Do not start. Ask the owner after phase 7. |
 
 Status vocabulary: `NOT STARTED` · `IN PROGRESS` · `BLOCKED on N` · `MERGED, waiting watchdog` ·
@@ -352,13 +354,15 @@ No stage-watchdog poll loop yet. No production admission change.
       host `5434`. Do not touch `apitoken-postgres`.
 - [x] Trusted master-sourced unit renderer with a whitelist of names, paths, and ports.
       Candidate installers do not run on this host.
-- [ ] Caller-bound GitHub reporting split designed here if the helper must exist before
+- [x] Caller-bound GitHub reporting split designed here if the helper must exist before
       phase 3; production caller still cannot be impersonated by a stage user. Today’s
       `deploy/watchdog-github.sh` context regex is `^deploy/[a-z][a-z0-9-]*$` — do **not**
-      widen it so `deploy-stage` can post `deploy/watchdog`.
-- [ ] Merge-blocking negative isolation tests: deny production loopback, Unix sockets,
+      widen it so `deploy-stage` can post `deploy/watchdog`. Landed in Phase 3 as a root
+      report manager with closed stage contexts.
+- [x] Merge-blocking negative isolation tests: deny production loopback, Unix sockets,
       production secrets, production Docker socket, Mailcow (`13306` and mail ports),
-      support `:3010`, payments-test `:5440`/`:3900`.
+      support `:3010`, payments-test `:5440`/`:3900`. The live proof script is content-locked
+      in `deploy/staging-foundation.test.sh`; `observe-stage proof isolation` is PASS.
 - [x] UFW public inbound unchanged.
 - [x] `stage-emergency-stop` exists at least as a slice-stop that does not touch production
       state. Auto-stop on `MemAvailable < 12G` or production SLO red may be wired in phase 7
@@ -1584,24 +1588,25 @@ Source: `STAGING_ENVIRONMENT.md` §6.2–6.5, §9.2–9.5, §10 phase 6.
 - [x] Host-owned attestation record. GitHub status is a mirror, not admission.
       Fields: `STAGING_ENVIRONMENT.md` §9.3. TTL 24h. `unix_user=deploy`. Audit
       `github_actor` + named `commit_sha`.
-- [ ] `deploy/promotion-attest.sh` from the agent laptop calls `stage-ctl` ForceCommand
+- [x] `deploy/promotion-attest.sh` from the agent laptop calls `stage-ctl` ForceCommand
       **only** after the operator names the SHA in that conversation.
 - [x] Identity unit: `{commit_sha, tree_sha, artifact_digests, policy_digest}`.
 - [x] Invalidation: rebase, new commit, master movement, digest change, TTL, emergency-stop,
       failed promotion/stage-sync.
-- [ ] Production-watchdog **logs** missing/invalid attestation. It does **not** yet block
-      ordinary merges.
+- [x] Production-watchdog **logs** missing/invalid attestation. It does **not** yet block
+      ordinary merges. (Phase 6 dry-run. Phase 7 later blocks.)
 - [x] Injected-fault drill **and** hotfix drill. Write both into `docs/audits/` (new dated
       files, append-only). Index them in `docs/README.md`.
-- [ ] Hotfix path still uses `deploy/agent-merge.sh` into `master` with host-owned
+- [x] Hotfix path still uses `deploy/agent-merge.sh` into `master` with host-owned
       `mode=hotfix`. Branch name `hotfix/*` is not authorization.
-- [ ] `stage-sync.sh` runs only after an explicit operator order. No auto-sync.
+- [x] `stage-sync.sh` runs only after an explicit operator order. No auto-sync.
 
 ### Exit criteria
 
-- [ ] Both drills are in `docs/audits/` with evidence.
-- [ ] A fake `hotfix/*` name without attestation does not produce `promotion/eligible`.
-- [ ] Production merges still succeed without stage eligibility (log-only).
+- [x] Both drills are in `docs/audits/` with evidence.
+- [x] A fake `hotfix/*` name without attestation does not produce `promotion/eligible`.
+- [x] Production merges still succeed without stage eligibility (log-only). (True at Phase 6
+      closeout. Phase 7 later requires eligibility.)
 
 ### Execution log
 
@@ -1782,7 +1787,7 @@ final repository path. Phase 8 remains untouched behind its owner gate.
 Next: stop. Ask the owner separately whether Phase 8 mock+shadow-read is enough.
 
 ### 2026-08-23 — unattested master SHA quarantine
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `83dc18a35ec22ec5af11ab6a13fcf93a7004eed6`   watchdog: GREEN
 Result: After Phase 7 closeout, `66c7dd2f9342efadeade8768e91902ea03a7beea` fast-forwarded `master`
 without `deploy/stage` GREEN or host-owned attestation. Production admission rejected it during
 `CURRENT_PHASE=fetching`, so GitHub showed only `phase=fetching; exit 1; candidate quarantined`.
@@ -1796,7 +1801,25 @@ Checks actually run: `bash deploy/staging-phase7.test.sh`; `bash deploy/stage-wa
 Deviation from this plan / from STAGING_ENVIRONMENT.md: `--fix-red` on the stage client is only
 for recovering a red `master`; it does not skip attestation. `--hotfix` remains the documented
 stage-independent path and still requires a host-owned hotfix record.
-Next: stage this exact SHA, attest it after GREEN `deploy/stage`, then `agent-merge.sh --fix-red`.
+Next: living-contract repair. Do not start Phase 8.
+
+### 2026-08-23 — living-contract catch-up after Phase 7
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The previous executing agent marked Phases 1–7 `DONE` and then patched the merge-client
+hole on GREEN `83dc18a3`, but the plan header, kickoff prompt, implementation-plan banner, ops
+index, and `INFRASTRUCTURE.md` write-path row still described Phase 1 / “not implemented”.
+Update those surfaces to the live mock-first Phase 7 state. Do not change
+`STAGING_ENVIRONMENT.md` §11.3. Do not start Phase 8. Tick Phase 2 reporting/isolation and
+Phase 6 attestation items that already landed. Leave Phase 5 real A/B, 60-minute soak, payload
+canary, switchback, PromQL calibration, and shadow-read unchecked.
+Checks actually run: live `observe-stage status/state/ready 3900/ready 3901/proof isolation`;
+live `observe watchdog` idle on `83dc18a3`; GitHub GREEN `deploy/watchdog` and `deploy/stage`
+for that SHA; `python3 deploy/repository-invariants.py`; `git diff --check`;
+`bash deploy/docs-check.sh "$(git rev-parse origin/master)" "$(git rev-parse HEAD)"`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none for lock §11.3. The remaining
+honest gap is the mock-first twin versus §12 items that need real application slots (14, 17).
+Next: `deploy/agent-merge-stage.sh`, then owner attestation of this SHA, then
+`deploy/agent-merge.sh`. Do not attest without an explicit owner order that names the SHA.
 
 ---
 

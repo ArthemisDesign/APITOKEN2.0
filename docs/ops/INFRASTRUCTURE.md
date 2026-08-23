@@ -160,16 +160,17 @@ Diagnose from GitHub `deploy/watchdog-log`. Land releases with `./deploy/agent-m
 ### Co-located staging foundation
 
 Phase 2 provisions a non-serving isolation envelope on the same VPS. Production-watchdog installs
-it from tested `master` only. Phase 3 adds an observe-only `stage` poll line. It runs as
-`deploy-stage` below `staging.slice`, validates one exact SHA, rejects host-global candidate paths,
-and publishes only informational stage contexts. It cannot execute a candidate root transaction and
-it does not change production admission.
+it from tested `master` only. Phase 3 added the `stage` poll line. It runs as `deploy-stage`
+below `staging.slice`, validates one exact SHA, rejects host-global candidate paths, and
+publishes stage contexts. Phase 7 fail-closed admission is live: a `master` SHA deploys only
+with host-owned `promotion/eligible` or `hotfix-eligible`. The stage line still cannot execute
+a candidate root transaction on the production host.
 
 | Item | Stage value |
 |---|---|
 | Runtime / CI | `deploy-stage` / `stage-ci`, both without SSH shell or production groups |
 | Agent read path | `ssh observe-stage@84.32.48.2` through a forced command; stage status/ready/logs only |
-| Write path | `stage-ctl` forced command. Phase 2 enables only `emergency-stop`; `attest`, `sync`, and `reseed` refuse |
+| Write path | `stage-ctl` forced command. Phase 7 enables `attest` and `sync` after an explicit operator order that names the SHA. `emergency-stop` remains available. `reseed` still refuses |
 | Slice | `staging.slice`: MemoryMax 32G, MemoryHigh 28G, CPUQuota 400%, TasksMax 16384, IOWeight 10 |
 | Storage | `/var/lib/apitoken-staging.img`, 80G ext4, mounted at `/mnt/apitoken-staging` with `nodev,nosuid` |
 | Bind roots | `/opt/apitoken-staging`, `/srv/claude-api-staging`, `/var/lib/apitoken-staging` |

@@ -15,7 +15,7 @@ This file is the kickoff text. It is not the execution plan. The agent still upd
 ## Goal line (send first)
 
 ```
-/goal Execute docs/ops/STAGING_AGENT_PLAN.md through Phase 7. Start at the first phase that is not DONE (today: Phase 1, production contour-config extract). Land each phase on master with GREEN deploy/watchdog before starting the next. Update STAGING_AGENT_PLAN.md in the same commit as the work. Do not change STAGING_ENVIRONMENT.md §11.3. Do not start Phase 8. Do not SSH as deploy. Do not run candidate root installers on the production host. Mark the goal complete only when Phase 7 exit criteria are true, or when the owner narrows the goal in chat.
+/goal Execute docs/ops/STAGING_AGENT_PLAN.md through Phase 7. Start at the first phase that is not DONE (today: Phases 1–7 DONE on GREEN 83dc18a3; do not start Phase 8). Land each phase on master with GREEN deploy/watchdog before starting the next. Update STAGING_AGENT_PLAN.md in the same commit as the work. Do not change STAGING_ENVIRONMENT.md §11.3. Do not start Phase 8. Do not SSH as deploy. Do not run candidate root installers on the production host. Mark the goal complete only when Phase 7 exit criteria are true, or when the owner narrows the goal in chat.
 ```
 
 ---
@@ -33,7 +33,7 @@ worktree and before any edit, is to create an autonomous goal that you will comp
 
 - If `/goal` is available, set this exact objective (one line):
 
-  `/goal Execute docs/ops/STAGING_AGENT_PLAN.md through Phase 7. Start at the first phase that is not DONE (today: Phase 1, production contour-config extract). Land each phase on master with GREEN deploy/watchdog before starting the next. Update STAGING_AGENT_PLAN.md in the same commit as the work. Do not change STAGING_ENVIRONMENT.md §11.3. Do not start Phase 8. Do not SSH as deploy. Do not run candidate root installers on the production host. Mark the goal complete only when Phase 7 exit criteria are true, or when the owner narrows the goal in chat.`
+  `/goal Execute docs/ops/STAGING_AGENT_PLAN.md through Phase 7. Start at the first phase that is not DONE (today: Phases 1–7 DONE on GREEN 83dc18a3; do not start Phase 8). Land each phase on master with GREEN deploy/watchdog before starting the next. Update STAGING_AGENT_PLAN.md in the same commit as the work. Do not change STAGING_ENVIRONMENT.md §11.3. Do not start Phase 8. Do not SSH as deploy. Do not run candidate root installers on the production host. Mark the goal complete only when Phase 7 exit criteria are true, or when the owner narrows the goal in chat.`
 
 - If `/goal` is not available, say that in one sentence, then create the same objective
   with `todo_write` (id `staging-twin`, content matching the sentence above, status
@@ -81,22 +81,19 @@ push to someone else’s branch or to `master` except via `deploy/agent-merge.sh
 ### Current work
 
 Read the status board in `docs/ops/STAGING_AGENT_PLAN.md` §3. Execute only the first phase
-that is not `DONE`. Today that is **Phase 1**: production `contour-config` extract.
+that is not `DONE`. Today Phases 1–7 are `DONE` on GREEN
+`83dc18a35ec22ec5af11ab6a13fcf93a7004eed6`. Do not start Phase 8. If the plan header, prompt,
+or `STAGING_ENVIRONMENT.md` banner disagrees with the status board, that is a living-contract
+bug: fix both files in one commit.
 
-Phase 1 means:
-
-- Watchdog and controllers read an immutable production contour-config with schema validation.
-- `master` behavior does not change.
-- No `deploy-stage`, no `stage-ci`, no `observe-stage`, no `stage-ctl`.
-- No `staging.slice`, no 80G loopback, no netns, no rootless Docker.
-- No branch `stage`, no `agent-merge-stage.sh`, no enforcement, no degrade gate.
-- No `sed` copies of `deploy/watchdog.sh`.
-- Overlap validation is already testable against a fixture, even if a staging contour
-  does not ship yet.
+The twin is mock-first: stores, private Caddy, safe sinks, and the trusted degradation policy
+run. Operator env files under `/etc/apitoken-staging` stay empty, so real application binaries
+stay disabled. Phase 5 real A/B slots, 60-minute soak, payload canary, switchback, PromQL
+calibration, and shadow-read remain unchecked.
 
 Do not start phase N+1 until phase N exit criteria are true on a GREEN `deploy/watchdog`
-SHA. Continue through later phases in later merges when those gates pass. Stop before
-Phase 8. Stop on the ask-list in the execution plan §6.
+SHA. Stop before Phase 8. Stop on the ask-list in the execution plan §6. After Phase 7, ask
+the owner whether mock+shadow-read is enough.
 
 ### Standing stops (never “just this once”)
 
@@ -130,11 +127,14 @@ netns+veth, rootless Docker, twin inventory §5.6). Do not “improve” them.
 - Update `STAGING_ENVIRONMENT.md` only if described behavior changed. Do not edit §11.3
   without an owner order.
 - Stage only your paths. `cargo build` green if you touch Rust.
-- Merge: `git push -u origin HEAD` then `./deploy/agent-merge.sh`. Do not pipe through
-  `tail`. Wait for `deploy/watchdog is GREEN`. On rebase conflict use
-  `deploy/agent-merge-recover.sh`, do not ask the owner to run git by hand.
+- Merge: `git push -u origin HEAD`, then `./deploy/agent-merge-stage.sh`. Wait for GREEN
+  `deploy/stage`. Attest only after the owner names that SHA in this conversation. Then
+  `./deploy/agent-merge.sh` for the same SHA. Do not pipe through `tail`. Wait for
+  `deploy/watchdog is GREEN`. On rebase conflict use `deploy/agent-merge-recover.sh`,
+  do not ask the owner to run git by hand.
 - After GREEN, `finish` your worktree from the primary clone with the lifecycle script
-  inside the task tree. Then continue the next phase from a new worktree.
+  inside the task tree. Then continue the next phase from a new worktree. Do not start
+  Phase 8.
 
 ### Language
 
@@ -142,7 +142,7 @@ Reply in the language of the owner’s current request. English chat uses the AS
 register in `AGENTS.md`. Do not show a long work log unprompted. Report the result, the
 paths, the checks, the SHA, and the next phase.
 
-Start now: create the goal, create the Phase 1 worktree, read the four document steps,
-then implement Phase 1.
+Start now: create the goal, create a managed worktree, read the four document steps,
+then follow the status board. Do not start Phase 8.
 
 ---
