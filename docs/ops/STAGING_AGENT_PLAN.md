@@ -1195,13 +1195,25 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: diagnostics only; no loc
 Next: admit the two fixed source checkouts to Git safe-directory policy.
 
 ### 2026-08-23 — stage source safe-directory fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `0cefa057b6604273ac16edfa2e3626bd8a187c4e`   watchdog: GREEN
 Result: The root source manager rejected the deploy-owned production checkout as dubious ownership.
 Pass `safe.directory` only for the two fixed source paths on every git command. Do not change global
 Git configuration or admit caller-supplied paths.
 Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: fetch with the production deploy identity, then verify stage statuses.
+
+### 2026-08-23 — stage source fetch identity fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The root manager has no SSH identity, while the production checkout deploy key belongs to
+`deploy`. Execute only the GitHub fetch and source ref lookup as `deploy`, with fixed safe-directory
+and branch arguments. Keep object copying and marker publication in the root manager namespace. No
+interactive deploy login or candidate command is introduced.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: master-sourced manager delegates only the
+fixed read-only Git fetch to the existing runtime identity.
 Next: verify informational stage statuses and close Phase 3.
 
 ---
