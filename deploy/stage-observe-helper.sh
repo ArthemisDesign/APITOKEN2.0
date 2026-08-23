@@ -17,7 +17,13 @@ unit_allowed() {
   esac
 }
 case "${words[0]:-}" in
-  help) printf '%s\n' 'stage status|ready <port>|logs <stage-unit> [--since <text>]|store-logs <store>|proof <isolation|pressure>' ;;
+  help) printf '%s\n' 'stage status|state|ready <port>|logs <stage-unit> [--since <text>]|store-logs <store>|proof <isolation|pressure>' ;;
+  state)
+    for name in source candidate deployed processed quarantine.dry-run; do
+      value=$(cat "/var/lib/apitoken-staging/watchdog/$name.sha" 2>/dev/null || true)
+      [[ $value =~ ^[0-9a-f]{40}$ ]] && printf '%s=%s\n' "$name" "$value"
+    done
+    ;;
   status)
     systemctl is-active staging.slice apitoken-staging-foundation-install.service \
       apitoken-rootless-docker-stage.service apitoken-staging-image-seed.service \

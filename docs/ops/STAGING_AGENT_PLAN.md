@@ -1237,7 +1237,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: copy the fixed Git object store, then verify stage statuses.
 
 ### 2026-08-23 — stage Git object copy fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `7a0081625a40f5a792da1371cad910d124d87f01`   watchdog: GREEN
 Result: Git still applies ownership checks to a local repository used as a clone source. After the
 exact `stage` ref is fetched and resolved as `deploy`, copy only the fixed `.git` tree with `tar` into
 the stage checkout and assign it to `deploy-stage`. No working-tree files or candidate command run.
@@ -1245,6 +1245,16 @@ Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: source publication uses a byte copy of the
 already-fetched Git object store instead of Git's local clone transport.
+Next: expose bounded stage state, then verify informational statuses.
+
+### 2026-08-23 — bounded stage state observation
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Source fetch and watchdog cycles are now clean, but journals contain no output when markers
+are unchanged. Add read-only `observe-stage state` for six fixed SHA marker names. It prints only
+valid 40-hex values and accepts no path or argument.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: diagnostics only; no lock changed.
 Next: verify informational stage statuses and close Phase 3.
 
 ---

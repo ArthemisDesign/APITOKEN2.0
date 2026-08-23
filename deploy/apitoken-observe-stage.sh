@@ -5,7 +5,7 @@ raw=${SSH_ORIGINAL_COMMAND:-${*:-status}}
 [[ $raw != *$'\n'* && $raw != *$'\r'* ]] || { echo 'observe-stage: command rejected' >&2; exit 2; }
 read -r -a words <<<"$raw"
 case "${words[0]:-}" in
-  status|help) ((${#words[@]} == 1)) || exit 2 ;;
+  status|state|help) ((${#words[@]} == 1)) || exit 2 ;;
   ready|store-logs|proof) ((${#words[@]} == 2)) || exit 2 ;;
   logs)
     if ((${#words[@]} == 2)); then
