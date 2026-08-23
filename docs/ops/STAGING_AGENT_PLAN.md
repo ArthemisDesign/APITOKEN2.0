@@ -1174,7 +1174,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: use the existing trusted validation queue, then initialize `stage`.
 
 ### 2026-08-23 — stage client validation environment fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `370b338db10da841b5c910c04f2de7d8bb7b8bf1`   watchdog: GREEN
 Result: The stage client requested `staging-candidate-validation`, but the existing trusted validator
 consumes only `candidate-validation`. The request stayed queued indefinitely. Reuse that installed
 exact-SHA validation environment for the validate-only precondition. Keep the stage ref lock,
@@ -1182,7 +1182,17 @@ post-push `deploy/stage` wait, and informational contexts separate.
 Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: the existing trusted validation environment
 is reused; stage post-push and state roots remain separate.
-Next: initialize `stage` through the stage client and verify informational statuses.
+Next: expose source manager logs, diagnose the post-push delay, then close Phase 3.
+
+### 2026-08-23 — stage source manager observation
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The stage client moved `stage`, but the source marker did not appear and the observer could
+not inspect the root source manager. Add only its service and timer to the stage read-only whitelist
+and status output. No control command is added.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: diagnostics only; no lock changed.
+Next: diagnose the source manager and verify informational statuses.
 
 ---
 

@@ -36,6 +36,7 @@ grep -Fxq 'Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=false' "$ROOT/s
 grep -Fq 'unix:///run/apitoken-staging/docker.sock' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fq '/usr/local/bin/apitoken-observe-stage' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'store-logs)' "$ROOT/deploy/stage-observe-helper.sh"
+grep -Fq 'apitoken-stage-source-fetch.service|apitoken-stage-source-fetch.timer' "$ROOT/deploy/stage-observe-helper.sh"
 grep -Fq 'apitoken-stage-watchdog.service|apitoken-stage-watchdog.timer' "$ROOT/deploy/stage-observe-helper.sh"
 grep -Fq 'ip netns list' "$ROOT/deploy/staging-isolation-live.sh"
 grep -Fq 'systemd-run --quiet --wait --pipe --collect --unit=staging-proof-memory' "$ROOT/deploy/staging-pressure-proof.sh"

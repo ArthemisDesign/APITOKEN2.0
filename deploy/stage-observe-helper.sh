@@ -10,6 +10,7 @@ unit_allowed() {
   case "$unit" in
     staging.slice|apitoken-staging-foundation-install.service|apitoken-rootless-docker-stage.service|\
     apitoken-staging-image-seed.service|apitoken-postgres-stage.service|apitoken-redis-stage.service|\
+    apitoken-stage-source-fetch.service|apitoken-stage-source-fetch.timer|\
     apitoken-stage-watchdog.service|apitoken-stage-watchdog.timer|apitoken-*-stage.service|\
     claude-*-stage.service|claude-*-stage@*.service) printf '%s\n' "$unit" ;;
     *) return 1 ;;
@@ -21,7 +22,7 @@ case "${words[0]:-}" in
     systemctl is-active staging.slice apitoken-staging-foundation-install.service \
       apitoken-rootless-docker-stage.service apitoken-staging-image-seed.service \
       apitoken-postgres-stage.service apitoken-redis-stage.service \
-      apitoken-stage-watchdog.timer || true
+      apitoken-stage-source-fetch.timer apitoken-stage-watchdog.timer || true
     ip netns list | awk '$1 == "apitoken-stage" { print }'
     ;;
   ready)
