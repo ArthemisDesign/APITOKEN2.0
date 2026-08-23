@@ -1690,7 +1690,7 @@ later SHA is fail-closed.
 Next: let the processed bootstrap cycle complete before admission checks.
 
 ### 2026-08-23 — Phase 7 bootstrap ordering fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `72187f5afa3953604d36fee654ce73a6636d26f4`   watchdog: RED
 Result: The enabling SHA deployed GREEN, then its next idle poll quarantined itself because admission
 ran before production baselines showed it was already processed. Load baselines first and run
 admission only when `PROCESSED_SHA != CANDIDATE_SHA`. This preserves bootstrap and ordinary idle
@@ -1699,6 +1699,19 @@ Checks actually run: `bash deploy/staging-phase7.test.sh`; `bash deploy/staging-
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after live bootstrap acceptance;
 no admission condition for a new SHA is weakened.
+Next: persist the bootstrap marker during the first admitted cycle.
+
+### 2026-08-23 — admission bootstrap marker persistence
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The enabling cycle installed admission but did not write `staging-admission.enabled` because
+the watchdog process continued with its previously loaded controller. The next SHA therefore also
+entered bootstrap, while a later poll enabled enforcement in the wrong order. Make the admission
+helper atomically create the marker during the first bootstrap call itself. All later calls are
+fail-closed. The processed-SHA guard still skips admission for idle maintenance.
+Checks actually run: `bash deploy/staging-phase7.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: hotfix recovery of the bootstrap transition;
+no later-SHA admission condition is weakened.
 Next: verify idle GREEN state and unattested-next-SHA rejection contract, then close Phase 7. Do not start Phase 8.
 
 ---

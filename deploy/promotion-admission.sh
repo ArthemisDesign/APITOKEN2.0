@@ -7,7 +7,12 @@ PROD=/var/lib/apitoken/watchdog
 STAGE=/var/lib/apitoken-staging/watchdog
 REPO=/opt/apitoken/repo
 # The implementation delivery enables admission only after its own complete GREEN cycle.
-[[ -f $PROD/staging-admission.enabled ]] || { echo 'promotion-admission: bootstrap cycle'; exit 0; }
+if [[ ! -f $PROD/staging-admission.enabled ]]; then
+  printf '%s\n' "$sha" >"$PROD/staging-admission.enabled"
+  chmod 0644 "$PROD/staging-admission.enabled"
+  echo 'promotion-admission: bootstrap cycle'
+  exit 0
+fi
 now=$(date +%s)
 tree=$(git -c safe.directory="$REPO" -C "$REPO" rev-parse "$sha^{tree}")
 for file in "$STAGE/promotion-eligible.json" "$PROD/hotfix-eligible.json"; do
