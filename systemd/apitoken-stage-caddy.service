@@ -7,6 +7,7 @@ After=apitoken-stage-safe-sinks.service
 Type=simple
 User=deploy-stage
 Group=deploy-stage
+Environment=HOME=/var/lib/apitoken-staging/caddy
 Slice=staging.slice
 NetworkNamespacePath=/run/netns/apitoken-stage
 ExecStart=/usr/bin/caddy run --config /etc/apitoken-staging/caddy/Caddyfile --adapter caddyfile

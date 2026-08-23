@@ -19,6 +19,8 @@ grep -Fxq 'NetworkNamespacePath=/run/netns/apitoken-stage' "$ROOT/systemd/apitok
 grep -Fxq 'User=deploy-stage' "$ROOT/systemd/apitoken-stage-caddy.service"
 grep -Fq 'ExecStart=/usr/bin/caddy run' "$ROOT/systemd/apitoken-stage-caddy.service"
 grep -Fq '10.254.32.2:3900' "$ROOT/deploy/staging-Caddyfile"
+grep -Fq 'handle /ready*' "$ROOT/deploy/staging-Caddyfile"
+grep -Fxq 'Environment=HOME=/var/lib/apitoken-staging/caddy' "$ROOT/systemd/apitoken-stage-caddy.service"
 ! grep -Eq 'https://|tls |:443|0\.0\.0\.0' "$ROOT/deploy/staging-Caddyfile"
 grep -Fq 'KEEP=3' "$ROOT/deploy/stage-gc.sh"
 grep -Fq 'env: staging' "$ROOT/observability/prometheus/prometheus.yml"

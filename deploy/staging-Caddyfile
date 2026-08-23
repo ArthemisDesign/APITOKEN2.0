@@ -9,7 +9,7 @@
     output file /var/lib/apitoken-staging/logs/caddy.json
     format json
   }
-  handle /ready {
+  handle /ready* {
     respond "ready" 200
   }
   handle /mock/* {

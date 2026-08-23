@@ -1410,10 +1410,21 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED mo
 Next: use the host Caddy binary path, then verify Caddy and isolation.
 
 ### 2026-08-23 — stage Caddy binary path fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `cb024c9b591bc4790696bc0f6aa64af95d15a72a`   watchdog: GREEN
 Result: Safe sinks and monitoring are GREEN, but the stage Caddy unit exits 203 because the host
 package installs Caddy at `/usr/bin/caddy`, not the disposable host-image proof path. Use the
 production host's reviewed binary path. The unit stays unprivileged and inside the stage netns.
+Checks actually run: `bash deploy/staging-twin.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: align the Caddy readiness path, then rerun live acceptance.
+
+### 2026-08-23 — stage Caddy readiness fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Stage Caddy is active on the correct veth, but the forced readiness helper appends `/ready`
+to a base ending in `/ready`, producing `/ready/ready` and HTTP 400. Match `/ready*` in the
+non-public stage Caddy placeholder. Set Caddy HOME to its loopback-backed writable state path to
+remove harmless autosave/storage errors.
 Checks actually run: `bash deploy/staging-twin.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
