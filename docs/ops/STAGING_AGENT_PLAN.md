@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `9b857cc995bb0979fbc1a42bd880d97ae2ac5993` | 2026-08-23 | GREEN host envelope and observer. Next: empty stage stores. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `b6b404cd1c148110730cb581cd56b6454f72f042` | 2026-08-23 | GREEN store definitions; reactivating changed foundation oneshot. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -464,7 +464,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: add empty stores and close Phase 2 after live isolation and pressure acceptance.
 
 ### 2026-08-23 — empty stage PostgreSQL and Redis placeholders
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `b6b404cd1c148110730cb581cd56b6454f72f042`   watchdog: GREEN
 Result: Added empty health-gated PostgreSQL and Redis Compose projects on the rootless staging
 Docker socket. They publish production port numbers only on `10.254.32.2`, use stage-only generated
 credentials and loopback-backed volumes, and carry native CPU, memory, PID, and `staging.slice`
@@ -472,7 +472,18 @@ cgroup limits. No schemas or application data are seeded.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/contour-config.test.sh`;
 `bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
-Next: verify live stores, isolation, and pressure; then record Phase 2 DONE on a GREEN SHA.
+Next: reactivate the changed foundation service, then verify stores, isolation, and pressure.
+
+### 2026-08-23 — staging foundation reactivation fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The foundation oneshot uses `RemainAfterExit=yes`. `systemctl start` did not rerun it after
+store activation logic changed, so rootless Docker and the store units stayed inactive although the
+SHA was GREEN. Use `systemctl restart` for each trusted infrastructure transaction and pin this
+self-update behavior in tests.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: verify live stores, isolation, and pressure; then record Phase 2 DONE.
 
 ---
 

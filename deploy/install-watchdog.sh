@@ -486,7 +486,7 @@ install_systemd_definitions() {
   systemctl start apitoken-observe-install.service
   # A manager-spawned root oneshot applies the trusted master-sourced staging foundation outside
   # this watchdog's read-only passwd/home namespace. It installs no stage application process.
-  systemctl start apitoken-staging-foundation-install.service
+  systemctl restart apitoken-staging-foundation-install.service
 
   # Journald storage must be an explicit decision rather than a side effect of boot ordering. Under
   # the default `Storage=auto` journald picks volatile-vs-persistent once at start by testing
