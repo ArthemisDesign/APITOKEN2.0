@@ -3,8 +3,11 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 LOCK=${AGENT_MERGE_STAGE_LOCK:-$HOME/.claude-api/stage-merge.lock}
 mkdir -p "$(dirname -- "$LOCK")"
-exec 9>"$LOCK"
-flock -n 9 || { echo 'agent-merge-stage: another serial stage batch owns the lock' >&2; exit 1; }
+if ! mkdir "$LOCK" 2>/dev/null; then
+  echo 'agent-merge-stage: another serial stage batch owns the lock' >&2
+  exit 1
+fi
+trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
 git -C "$ROOT" fetch origin master stage 2>/dev/null || git -C "$ROOT" fetch origin master
 master=$(git -C "$ROOT" rev-parse origin/master)
 stage=$(git -C "$ROOT" rev-parse origin/stage 2>/dev/null || true)

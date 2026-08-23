@@ -1134,7 +1134,7 @@ NoNewPrivileges for this unit; command authorization remains closed in sudoers.
 Next: move source fetch to a separate trusted manager service.
 
 ### 2026-08-23 — stage source manager unit
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `bc47c37739a22d35d4417bda90cf4e5061084e06`   watchdog: GREEN
 Result: The source bridge ran inside the stage unit's mount namespace, so sudo inherited the read-only
 production checkout. Move fetch/copy into its own root manager oneshot and 15-second timer outside the
 stage netns. It accepts no arguments, fetches only `stage`, executes no candidate files, publishes a
@@ -1144,6 +1144,15 @@ Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-
 `bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: source fetch is a master-sourced manager unit
 outside the netns; candidate execution and reporting remain inside the isolated stage line.
+Next: replace the unavailable macOS `flock` in the stage client.
+
+### 2026-08-23 — portable stage client lock
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The first stage client invocation failed before validation because macOS has no `flock`.
+Use the same atomic lock-directory pattern as `agent-merge.sh`, with an EXIT trap that removes only
+the owned directory. Serial freeze and ref lease rules are unchanged.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
 Next: initialize `stage` through the stage client and verify informational statuses.
 
 ---
