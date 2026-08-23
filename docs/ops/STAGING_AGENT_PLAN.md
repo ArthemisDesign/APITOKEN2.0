@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `14b08dbae8a70d551564ae2823973d031fd846bc` | 2026-08-23 | GREEN explicit tags; forcing seed replay. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `a4f18f7c8521e89b004af40f3fa75cf5b45506ef` | 2026-08-23 | GREEN explicit replay; fixing delegated cgroup parent. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -766,12 +766,24 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: force a full explicit-seed replay, then verify stores, isolation, and pressure.
 
 ### 2026-08-23 — explicit seed full-apply marker
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `a4f18f7c8521e89b004af40f3fa75cf5b45506ef`   watchdog: GREEN
 Result: Add an immutable marker to the stateful foundation installer so the GREEN explicit source-tag
 bridge reruns the trusted seed/store transaction. No runtime behavior or lock value changes.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/watchdog-lib.test.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: place containers under the delegated daemon cgroup, then verify stores, isolation, and pressure.
+
+### 2026-08-23 — delegated container cgroup parent fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Rootless runc cannot create a top-level `staging.slice` scope through systemd without
+interactive authorization. Set Compose `cgroup_parent` to the delegated
+`apitoken-rootless-docker-stage.service` cgroup, which already resides below `staging.slice`.
+Native container limits remain unchanged.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: implementation uses the delegated child
+cgroup below the locked slice instead of asking rootless runc to create a top-level slice scope.
 Next: verify live stores, isolation, and pressure.
 
 ---

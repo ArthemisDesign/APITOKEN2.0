@@ -60,7 +60,7 @@ for prerequisite in slirp4netns fuse-overlayfs newuidmap newgidmap; do
 done
 ! grep -Eq 'systemctl (enable )?--now apitoken-rootless-docker-stage|systemctl start apitoken-rootless-docker-stage' "$I"
 for compose in staging-postgres.compose.yaml staging-redis.compose.yaml; do
-  grep -Fq 'cgroup_parent: staging.slice' "$ROOT/deploy/$compose"
+  grep -Fq 'cgroup_parent: apitoken-rootless-docker-stage.service' "$ROOT/deploy/$compose"
   ! grep -Eq '5434|127\.0\.0\.1|/var/run/docker.sock|privileged:' "$ROOT/deploy/$compose"
 done
 grep -Fq 'apitoken-stage/postgres:18-alpine' "$ROOT/deploy/staging-postgres.compose.yaml"
