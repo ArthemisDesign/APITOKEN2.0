@@ -1258,7 +1258,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: diagnostics only; no loc
 Next: materialize the exact stage worktree, then verify statuses.
 
 ### 2026-08-23 — exact stage worktree materialization
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `322e653ad901a258d210fcdbba026e7f267c9f49`   watchdog: GREEN
 Result: The copied Git object store and source marker are valid, but the stage checkout has no working
 tree for static validation. After copying only `.git`, run a fixed hard reset as `deploy-stage` to
 the exact resolved SHA. This materializes tracked candidate files without executing them.
@@ -1266,6 +1266,16 @@ Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: candidate files are materialized by Git after
 exact SHA resolution; no candidate installer or command runs.
+Next: grant the stage poller read access to its source marker.
+
+### 2026-08-23 — stage source marker ownership fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The root source manager writes `source.sha` as root mode 0640, so the `deploy-stage` poller
+sees an empty marker and exits cleanly. Assign only this public SHA marker to
+`deploy-stage:deploy-stage`; keep all source fetch control and production checkout access separate.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
 Next: verify informational stage statuses and close Phase 3.
 
 ---
