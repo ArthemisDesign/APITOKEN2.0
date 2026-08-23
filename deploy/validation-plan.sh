@@ -159,6 +159,7 @@ policy_sha256=$(
     deploy/staging-postgres.compose.yaml \
     deploy/staging-redis.compose.yaml \
     deploy/staging-image-seed.sh \
+    deploy/stage-store-diagnostics.sh \
     deploy/sudoers.d/96-apitoken-stage \
     deploy/49-apitoken-stage-cgroup.rules \
     systemd/staging.slice \

@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `718d8fc895f562020e04c312f639e3e83b7623a7` | 2026-08-23 | GREEN PostgreSQL mount; forcing full store replay. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `1e6bfd19d4ecfa4bd73271fc81359d4c986b252a` | 2026-08-23 | GREEN PostgreSQL replay; adding bounded store diagnostics. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -839,13 +839,24 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: force a full PostgreSQL mount replay, then verify stores, isolation, and pressure.
 
 ### 2026-08-23 — PostgreSQL mount full-apply marker
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `1e6bfd19d4ecfa4bd73271fc81359d4c986b252a`   watchdog: GREEN
 Result: Add an immutable marker to the stateful foundation installer so the GREEN PostgreSQL data
 mount change reruns the trusted store transaction. No runtime behavior or lock value changes.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/watchdog-lib.test.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
-Next: verify live stores, isolation, and pressure.
+Next: inspect bounded store logs, then verify stores, isolation, and pressure.
+
+### 2026-08-23 — bounded stage store diagnostics
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: PostgreSQL still reports unhealthy, but the systemd unit log does not expose the container
+startup reason. Add read-only `observe-stage store-logs` for exactly the three Phase 2 store container
+names. The helper returns bounded inspect state and the last 80 log lines only. It accepts no other
+container, Docker verb, argument, or write operation.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: diagnostics only; no lock changed.
+Next: diagnose the store, then verify isolation and pressure.
 
 ---
 

@@ -15,7 +15,7 @@ unit_allowed() {
   esac
 }
 case "${words[0]:-}" in
-  help) printf '%s\n' 'stage status|ready <port>|logs <stage-unit> [--since <text>]' ;;
+  help) printf '%s\n' 'stage status|ready <port>|logs <stage-unit> [--since <text>]|store-logs <store>' ;;
   status)
     systemctl is-active staging.slice apitoken-staging-foundation-install.service \
       apitoken-rootless-docker-stage.service apitoken-staging-image-seed.service \
@@ -34,6 +34,10 @@ case "${words[0]:-}" in
       [[ ${#since} -le 64 && $since =~ ^[0-9A-Za-z][0-9A-Za-z\ :.+-]*$ ]] || exit 2
       journalctl --no-pager -n 200 --since "$since" -u "$unit"
     else journalctl --no-pager -n 200 -u "$unit"; fi
+    ;;
+  store-logs)
+    ((${#words[@]} == 2)) || exit 2
+    /usr/local/lib/apitoken-watchdog/stage-store-diagnostics.sh "${words[1]}"
     ;;
   *) exit 2 ;;
 esac

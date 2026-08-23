@@ -35,6 +35,8 @@ grep -Fxq 'Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=false' "$ROOT/s
 ! grep -Fq '/var/run/docker.sock' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fq 'unix:///run/apitoken-staging/docker.sock' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fq '/usr/local/bin/apitoken-observe-stage' "$ROOT/deploy/install-watchdog.sh"
+grep -Fq 'store-logs)' "$ROOT/deploy/stage-observe-helper.sh"
+grep -Fq 'apitoken-postgres-stage|apitoken-redis-history-stage|apitoken-redis-affinity-stage' "$ROOT/deploy/stage-store-diagnostics.sh"
 grep -Fq '/usr/local/bin/apitoken-stage-ctl' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'systemctl restart apitoken-staging-foundation-install.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'for stage_unit in staging.slice apitoken-rootless-docker-stage.service' "$ROOT/deploy/install-watchdog.sh"
