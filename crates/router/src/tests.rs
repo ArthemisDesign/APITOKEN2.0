@@ -2925,6 +2925,80 @@ async fn messages_kimi_namespaced_model_hits_kimi_origin_not_anthropic() {
     assert_eq!(kimi[0].x_api_key.as_deref(), Some("sk-pool-secret"));
 }
 
+#[tokio::test]
+async fn chat_kimi_namespaced_model_hits_kimi_origin_not_anthropic() {
+    let (a, log_a) = echo_plane().await;
+    let (o, log_o) = echo_plane().await;
+    let (g, log_g) = echo_plane().await;
+    let (k, log_k) = echo_plane().await;
+    let router = spawn(make_router_with(
+        &a,
+        &o,
+        &g,
+        &k,
+        Duration::ZERO,
+        false,
+        build_client().unwrap(),
+        api_limits::current::ROUTER,
+    ))
+    .await;
+    let payload = r#"{"model":"kimi/k3","messages":[{"role":"user","content":"hi"}]}"#;
+    let response = reqwest::Client::new()
+        .post(format!("{router}/v1/chat/completions"))
+        .header("x-api-key", "sk-pool-secret")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), payload);
+
+    assert!(log_a.lock().unwrap().is_empty());
+    assert!(log_o.lock().unwrap().is_empty());
+    assert!(log_g.lock().unwrap().is_empty());
+    let kimi = log_k.lock().unwrap().clone();
+    assert_eq!(kimi.len(), 1);
+    assert_eq!(kimi[0].path, "/v1/chat/completions");
+    assert_eq!(kimi[0].x_api_key.as_deref(), Some("sk-pool-secret"));
+}
+
+#[tokio::test]
+async fn responses_kimi_namespaced_model_hits_kimi_origin_not_anthropic() {
+    let (a, log_a) = echo_plane().await;
+    let (o, log_o) = echo_plane().await;
+    let (g, log_g) = echo_plane().await;
+    let (k, log_k) = echo_plane().await;
+    let router = spawn(make_router_with(
+        &a,
+        &o,
+        &g,
+        &k,
+        Duration::ZERO,
+        false,
+        build_client().unwrap(),
+        api_limits::current::ROUTER,
+    ))
+    .await;
+    let payload = r#"{"model":"kimi/k3","input":"hi"}"#;
+    let response = reqwest::Client::new()
+        .post(format!("{router}/v1/responses"))
+        .header("x-api-key", "sk-pool-secret")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), payload);
+
+    assert!(log_a.lock().unwrap().is_empty());
+    assert!(log_o.lock().unwrap().is_empty());
+    assert!(log_g.lock().unwrap().is_empty());
+    let kimi = log_k.lock().unwrap().clone();
+    assert_eq!(kimi.len(), 1);
+    assert_eq!(kimi[0].path, "/v1/responses");
+    assert_eq!(kimi[0].x_api_key.as_deref(), Some("sk-pool-secret"));
+}
+
 /// Регрессия контракта native lane: claude-alias через каталог обязан
 /// остаться байт-идентичным passthrough на Anthropic-плоскость (как и
 /// namespaced `anthropic/*` выше).

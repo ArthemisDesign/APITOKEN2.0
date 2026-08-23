@@ -140,7 +140,8 @@ planes only over HTTP via stable loopback origins (8790/8792/8794/8803).
   `POST /v1/messages/count_tokens`: namespaced `openai/*` goes to the Codex plane
   (where the Messages→Responses adapter lives, `crates/forward/src/codex/skin.rs`),
   `anthropic/*` — to the Anthropic plane as a native lane, `kimi/*` — to the dedicated KIMI
-  origin on the Anthropic Messages lane, `google/*` — to the Gemini
+  origin on the Anthropic Messages lane (Chat/Responses keep their client paths; origin 8803
+  mounts the Anthropic-plane adapters), `google/*` — to the Gemini
   plane under the shared namespace rule (the Messages→generateContent skin is implemented
   in `crates/forward/src/gemini/skin.rs`). For `count_tokens` the same
   plane is chosen: Anthropic native, reserve-grade local counting for Codex, or

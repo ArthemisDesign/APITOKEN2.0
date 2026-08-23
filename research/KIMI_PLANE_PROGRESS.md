@@ -89,6 +89,7 @@
 | **Прод-верификация по артефакту** 2026-08-07: `k3-256k`, `kimi-for-coding`, `kimi-for-coding-highspeed` через `https://api.apitoken.sale/v1/messages` → 200 | публичный вход | `8980549e` |
 
 | **Все 5 алиасов подписки доказаны в проде** 2026-08-08 через `https://api.apitoken.sale/v1/messages`: `kimi-for-coding`, `kimi-for-coding-highspeed`, `k3-256k`, `k3`, `k3[1m]` → 200. Вектор usage полон; на уникальном промпте `input_tokens=100`, нули ранее — реальные попадания в кэш | публичный вход | `c5dddf6e` |
+| **Chat/Responses на origin 8803** после пина Anthropic-embed off: выделенная плоскость монтирует те же адаптеры, что и Anthropic, потому что router проксирует путь без переписывания | `crates/server/src/http.rs` | этот коммит |
 | Алиас и проводное имя разделены: `k3[1m]` уходит как `k3`. Прежде тело слалось дословно, провайдер такого id не знает, отказ выходил ёмкостным 429 | `crates/metering`, `crates/forward/src/kimi`, манифест | `c5dddf6e` |
 
 ## Аудит паритета с Gemini/Claude/GPT (2026-08-08, 5 осей из 8)
@@ -144,6 +145,15 @@ Codex глушило рабочие дома). Shutdown: финальная ка
    customer semaphore; после ответа повторный drain предшествует exact spend read, immutable
    independent-window observations и CAS. Steering/full-reset публикуются только после durable
    успеха всех окон, а shutdown отменяет steady poll и повторяет порядок под общим deadline.
+
+## 2026-08-23 — Chat/Responses 404 after origin 8803
+
+После пина `CLAUDE_API_KIMI_ENABLED=0` на Anthropic (`74c3190b`) customer `kimi/*` ходил только
+на origin 8803. Native `/v1/messages` работал. Unified router проксирует `/v1/chat/completions` и
+`/v1/responses` без переписывания пути, а `ProviderMode::Kimi` монтировал только Messages —
+прод-журнал слота 8805: `path=/v1/chat/completions reason=unsupported_endpoint status=404`.
+Фикс: те же Anthropic-адаптеры Chat/Responses на выделенной плоскости. Не-KIMI модели по-прежнему
+закрываются 404 в `forward` (`ProviderMode::Kimi` gate).
 
 ## Следующее действие
 

@@ -316,7 +316,9 @@ private tier, proxy and OAuth are not serialized. Optional `recent_turns=0` keep
 
 `GET /kimi-subs` is a read-only operational projection of the backend-only KIMI plane. Production
 is served by a dedicated KIMI plane via the stable loopback origin 8803
-(`claude-api-kimi@8804/8805`). Customer `kimi/*` through the unified router uses that origin.
+(`claude-api-kimi@8804/8805`). Customer `kimi/*` through the unified router uses that origin for
+native Messages and for the universal Chat/Responses adapters (the router forwards those paths
+unchanged; origin 8803 mounts the same adapters as the Anthropic plane).
 Anthropic and combined rollback units pin `CLAUDE_API_KIMI_ENABLED=0`; the gateway built into the
 Anthropic runtime remains dev/test-only.
 The gate is the control key

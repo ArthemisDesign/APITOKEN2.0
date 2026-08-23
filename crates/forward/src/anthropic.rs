@@ -135,8 +135,9 @@ pub(crate) fn supported_adaptive_efforts(model: &str) -> &'static [&'static str]
     }
 }
 
-/// Хендлер `POST /v1/chat/completions` (роут регистрируется в server только в
-/// `ProviderMode::Anthropic`).
+/// Хендлер `POST /v1/chat/completions`. Роут монтируется на Anthropic-плоскости и на
+/// выделенной KIMI-плоскости: unified router проксирует этот путь на origin 8803 без
+/// переписывания.
 pub async fn anthropic_chat_completions(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,

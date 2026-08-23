@@ -145,8 +145,9 @@ use crate::request_classification::classify_openai_responses;
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
 
-/// Хендлер `POST /v1/responses` (роут регистрируется в server только в
-/// `ProviderMode::Anthropic`). Точный паттерн `anthropic_chat_completions`.
+/// Хендлер `POST /v1/responses`. Роут монтируется на Anthropic-плоскости и на выделенной
+/// KIMI-плоскости: unified router проксирует этот путь на origin 8803 без переписывания.
+/// Точный паттерн `anthropic_chat_completions`.
 pub async fn anthropic_responses(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,

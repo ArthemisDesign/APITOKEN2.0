@@ -221,9 +221,11 @@ background loops and the HTTP router. Here — and only here — everything is w
   Customer `kimi/*` through `claude-router` uses origin `127.0.0.1:8803`. Anthropic and both
   combined rollback anchors pin `CLAUDE_API_KIMI_ENABLED=0`, so only the dedicated plane
   composes the gateway and holds the maintenance writer.
-  In kimi mode the router mounts only the common routes, `/kimi-subs` and `/v1/messages`, which
-  dispatches exact KIMI aliases through the same `KimiGateway::handle` as the Anthropic path, while any
-  other model gets a bounded fail-closed 404 — the Claude pool is not raised on this plane.
+  In kimi mode the router mounts the common routes, `/kimi-subs`, `/v1/messages`, and the
+  Anthropic-plane Chat/Responses adapters (`/v1/chat/completions`, `/v1/responses`). The unified
+  router forwards those client paths unchanged to origin 8803; the adapters translate them to
+  Messages and dispatch exact KIMI aliases through the same `KimiGateway::handle` as the Anthropic
+  path. Any other model gets a bounded fail-closed 404 — the Claude pool is not raised on this plane.
   `/ready` here is accepting && authority_ready && (gateway present ? its readiness (live>=1 &&
   persistence_ok → otherwise provider_unavailable) : ready-to-serve-disabled-envelope).
 - The backend-only GLM switch is read here as a strict default-off set

@@ -99,7 +99,8 @@ subscriptions as AEAD-encrypted profiles. It sits BEFORE `registry` as a produce
   fourth fixed plane: active/passive slots `claude-api-kimi@8804/8805` behind the stable
   loopback origin `127.0.0.1:8803` (singleton `claude-api-kimi` on 8804 — rollback/anchor only),
   without a public vhost. The unified router namespace `kimi/*` is the customer path and
-  goes to that origin; the plane is enabled by the argv pin
+  goes to that origin for native Messages and for the universal Chat/Responses adapters
+  (the router forwards those paths unchanged); the plane is enabled by the argv pin
   `CLAUDE_API_KIMI_ENABLED=1` in the reviewed KIMI units (disabling is the reverse reviewed
   change). Anthropic and combined rollback units pin `CLAUDE_API_KIMI_ENABLED=0`. All use one fenced
   PostgreSQL billing authority, but not a shared

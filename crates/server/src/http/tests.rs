@@ -945,7 +945,9 @@ fn admin_auth_test_app() -> AppState {
 fn provider_test_app(provider: forward::ProviderMode) -> AppState {
     let mut app = admin_auth_test_app();
     app.provider = provider;
-    if provider.serves_anthropic() {
+    if provider.serves_anthropic() || provider == forward::ProviderMode::Kimi {
+        // KIMI mounts the Anthropic-plane Chat/Responses adapters; those readers require
+        // the same bounded body storage as Claude Messages.
         use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!(
             "server-provider-body-{}-{:p}",
@@ -3678,19 +3680,58 @@ async fn kimi_plane_messages_fails_closed_for_non_kimi_models() {
     let body: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(body["error"]["type"], "overloaded_error");
 
-    // Other provider planes' routes stay unregistered here and fail closed as well.
-    for path in ["/v1/chat/completions", "/v1/responses"] {
-        let mut request = Request::builder()
-            .method(Method::POST)
-            .uri(path)
-            .header("x-api-key", "admin-key")
-            .header("content-type", "application/json")
-            .body(Body::from("{}"))
-            .unwrap();
-        request.extensions_mut().insert(peer);
-        let response = service.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
-    }
+    // The unified router forwards Chat and Responses to origin 8803 with the client path
+    // unchanged, so those adapters must be mounted here. A Claude model still fails closed
+    // through the KIMI Messages gate; a KIMI alias with no composed gateway is 529.
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/chat/completions")
+        .header("x-api-key", "admin-key")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}"#,
+        ))
+        .unwrap();
+    request.extensions_mut().insert(peer);
+    let response = service.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(body["error"]["code"], "not_found_error");
+
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/chat/completions")
+        .header("x-api-key", "admin-key")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"model":"kimi/k3","messages":[{"role":"user","content":"hi"}]}"#,
+        ))
+        .unwrap();
+    request.extensions_mut().insert(peer);
+    let response = service.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::from_u16(529).unwrap());
+    let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["error"]["type"], "server_error");
+    assert_eq!(body["error"]["code"], "overloaded_error");
+    assert_eq!(body["error"]["message"], "Overloaded");
+
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/responses")
+        .header("x-api-key", "admin-key")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"model":"kimi/k3","input":"hi"}"#))
+        .unwrap();
+    request.extensions_mut().insert(peer);
+    let response = service.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::from_u16(529).unwrap());
+    let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["error"]["type"], "server_error");
+    assert_eq!(body["error"]["code"], "overloaded_error");
 }
 
 #[test]

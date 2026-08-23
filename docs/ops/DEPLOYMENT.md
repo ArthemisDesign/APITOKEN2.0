@@ -568,7 +568,9 @@ until a separate reviewed change proves the owned-subscription live matrix and e
 serving boundary or written permission. A firing `GlmNoLiveProfiles` on the public Anthropic target
 before that gate is configuration drift, not a request to add an unverified credential.
 
-KIMI production is the dedicated origin 8803. All Anthropic-serving definitions —
+KIMI production is the dedicated origin 8803. That origin serves native Messages and the
+universal Chat/Responses adapters; the unified router forwards those client paths unchanged.
+All Anthropic-serving definitions —
 the active `claude-api-anthropic@.service` and both combined rollback anchors
 `claude-api.service`/`claude-api@.service` — pin `CLAUDE_API_KIMI_ENABLED=0` at argv level.
 A shared env cannot re-embed the gateway on Claude slots. A direct KIMI alias on those slots

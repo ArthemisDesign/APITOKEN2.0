@@ -162,8 +162,9 @@ import /etc/caddy/router-active.caddy
 	}
 }
 
-# KIMI is backend-only: a fixed provider process and stable loopback origin with NO public vhost,
-# no router namespace and no catalogue. The snippet exists for symmetry with the other planes;
+# KIMI is backend-only: a fixed provider process and stable loopback origin with NO public vhost.
+# The unified router namespace `kimi/*` is the customer path (catalog producer and dataplane,
+# including Chat/Responses/Messages). This snippet exists for symmetry with the other planes;
 # nothing public imports it, so it strips no internal execution header.
 (kimi_engine_backend) {
 	reverse_proxy 127.0.0.1:8803 {

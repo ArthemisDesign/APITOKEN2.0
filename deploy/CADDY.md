@@ -137,9 +137,10 @@ public hostname for a native unauthenticated Gemini envelope before committing t
 KIMI is a backend-only active/passive pair with the same shape and no public vhost at all: stable
 loopback origin `127.0.0.1:8803` health-gates slots `127.0.0.1:8804` and `127.0.0.1:8805` with
 `lb_policy first`, signs its no-upstream 503 with the same execution-state header, and serves the
-default-off plane's disabled envelope until a reviewed unit change enables the provider. The only
-consumer routes are the Prometheus `provider: kimi` scrape target and the admin `/kimi-subs` data
-route with the proxy-injected control key.
+default-off plane's disabled envelope until a reviewed unit change enables the provider. Consumers
+are the unified router (`kimi/*` Messages, Chat and Responses plus the catalog producer), the
+Prometheus `provider: kimi` scrape target, and the admin `/kimi-subs` data route with the
+proxy-injected control key.
 
 Caddy probes `/ready` on all fixed-provider slots. `engine-bluegreen.sh` admits the new Anthropic
 slot, sends `SIGUSR1` to make

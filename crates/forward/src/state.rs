@@ -177,7 +177,8 @@ pub struct AppState {
     pub gemini_batch_runtime: Option<Arc<crate::gemini::GeminiBatchRuntime>>,
     /// Optional backend-only KIMI subscription pool. Anthropic-serving modes embed it to dispatch
     /// exact KIMI aliases inside the Messages plane; the dedicated `Kimi` mode serves only those
-    /// aliases. It intentionally has no public hostname or catalogue.
+    /// aliases on `/v1/messages` plus the Anthropic-plane Chat/Responses adapters. It has no public
+    /// hostname; discovery is the internal catalog producer, not a public `/v1/models`.
     pub kimi: Option<Arc<KimiGateway>>,
     /// Optional backend-only GLM (Z.ai Coding Plan) subscription pool. Same shape as KIMI:
     /// exact reviewed GLM aliases dispatch inside the Anthropic Messages plane; the credential

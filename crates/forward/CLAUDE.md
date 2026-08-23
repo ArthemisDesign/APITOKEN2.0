@@ -1247,10 +1247,12 @@ path and never falls through to Claude.
 `serves_kimi()` is true for `Combined|Anthropic|Kimi`, so gateway composition in
 `server::config` covers those modes when `CLAUDE_API_KIMI_ENABLED` is on. Production
 Anthropic and combined units pin that switch off; only the dedicated KIMI plane composes
-the gateway. In `Kimi` mode the
-shared `/v1/messages` path dispatches exact aliases through the same `KimiGateway::handle`, and right after
-that block stands a fail-closed gate: any non-KIMI model gets a bounded static 404 and never
-reaches the Claude pool (the plane never brings it up). Gateway readiness
+the gateway. In `Kimi` mode the shared `/v1/messages` path and the Anthropic-plane Chat/Responses
+adapters (`/v1/chat/completions`, `/v1/responses`) dispatch exact aliases through the same
+`KimiGateway::handle`. The unified router is a byte-faithful proxy of the client path, so those
+universal surfaces arrive on origin 8803 unchanged. Right after the KIMI dispatch stands a
+fail-closed gate: any non-KIMI model gets a bounded static 404 and never reaches the Claude pool
+(the plane never brings it up). Gateway readiness
 (`live>=1 && persistence_ok`) is published as `provider_unavailable` on `/ready` only when the
 gateway is composed; without it the slot serves the disabled envelope and stays ready.
 

@@ -720,15 +720,19 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             control.merge(customer)
         }
         // Backend-only KIMI plane: no public hostname. Customer `kimi/*` is the unified-router
-        // namespace and reaches this process via origin 8803. Exact reviewed KIMI aliases dispatch
-        // to the KIMI gateway through the same entry the Anthropic path uses; `forward` fails closed
-        // with a bounded 404 for every other model or path, so this plane can never fall through
-        // into the Claude pool it does not run.
+        // namespace and reaches this process via origin 8803. The router is a byte-faithful proxy
+        // of the client path, so Chat and Responses arrive here as `/v1/chat/completions` and
+        // `/v1/responses` — the same Anthropic-plane adapters translate them to Messages. Exact
+        // reviewed KIMI aliases then dispatch through `KimiGateway`; `forward` fails closed with a
+        // bounded 404 for every other model or path, so this plane can never fall through into the
+        // Claude pool it does not run.
         // With no approved public provider perimeter, it remains outside logical-ID admission.
         forward::ProviderMode::Kimi => common
             .route("/admin-events", get(admin_events))
             .route("/kimi-subs", get(kimi_subs))
             .route("/v1/messages", post(forward))
+            .route("/v1/chat/completions", post(anthropic_chat_completions))
+            .route("/v1/responses", post(anthropic_responses))
             .fallback(forward)
             .method_not_allowed_fallback(forward),
         // Backend-only Tripo3D task-media plane (default-off, dedicated delivery). Its own
