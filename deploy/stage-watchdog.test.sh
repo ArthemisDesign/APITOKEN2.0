@@ -24,6 +24,7 @@ grep -Fq 'deploy-stage ALL=(root) NOPASSWD: APITOKEN_STAGE_REPORT' "$ROOT/deploy
 grep -Fq 'host-global candidate path rejected' "$ROOT/deploy/stage-watchdog-validate.sh"
 grep -Fq 'runuser -u deploy -- git' "$ROOT/deploy/stage-source-fetch.sh"
 grep -Fq 'safe.directory="$SOURCE"' "$ROOT/deploy/stage-source-fetch.sh"
+grep -Fq 'clone --no-hardlinks --no-checkout "$SOURCE/.git"' "$ROOT/deploy/stage-source-fetch.sh"
 grep -Fq 'safe.directory="$TARGET"' "$ROOT/deploy/stage-source-fetch.sh"
 grep -Fq "refs/heads/stage:refs/remotes/origin/stage" "$ROOT/deploy/stage-source-fetch.sh"
 grep -Fxq 'NoNewPrivileges=yes' "$ROOT/systemd/apitoken-stage-source-fetch.service"

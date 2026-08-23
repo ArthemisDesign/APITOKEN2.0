@@ -1205,7 +1205,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: fetch with the production deploy identity, then verify stage statuses.
 
 ### 2026-08-23 — stage source fetch identity fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `5456296782ce6c2885c8031d752fd06e4f2329b6`   watchdog: GREEN
 Result: The root manager has no SSH identity, while the production checkout deploy key belongs to
 `deploy`. Execute only the GitHub fetch and source ref lookup as `deploy`, with fixed safe-directory
 and branch arguments. Keep object copying and marker publication in the root manager namespace. No
@@ -1214,6 +1214,16 @@ Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: master-sourced manager delegates only the
 fixed read-only Git fetch to the existing runtime identity.
+Next: clone from the fixed Git directory, then verify stage statuses.
+
+### 2026-08-23 — stage source clone path fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Fetch and ref lookup work as `deploy`, but root cloning from the working-tree path triggers
+Git's ownership check on the repository's internal `.git`. Clone from the fixed Git directory while
+pinning the working tree as safe. No caller path or remote URL is accepted.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
 Next: verify informational stage statuses and close Phase 3.
 
 ---
