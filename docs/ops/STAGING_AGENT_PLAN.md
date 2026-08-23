@@ -112,8 +112,8 @@ Read order at the start of work:
 | **Phase 2 — trusted contour foundation** | **DONE** | `76263deea700fe0fb32ebcfe53af24b0def409cd` | 2026-08-23 | GREEN live stores, isolation, pressure, and read-only observation. |
 | **Phase 3 — observe-only stage watchdog** | **DONE** | `0bb3eaff44d56bd68d712f26b6afe7576461a437` | 2026-08-23 | GREEN serial stage deployment and informational contexts. |
 | **Phase 4 — data, twin inventory, stubs** | **DONE** | `3e6fd6eb6dcf31f4c0e40eb50943f3dcebc5bb76` | 2026-08-23 | GREEN mock inventory, safe sinks, private Caddy, monitoring, isolation. |
-| Phase 5 — trusted degradation gate | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Trusted policy digest, fail-closed evidence, bounded load generator. |
-| Phase 6 — attestation dry-run + drills | BLOCKED on 5 | — | — | Injected-fault **and** hotfix drills. |
+| **Phase 5 — trusted degradation gate** | **DONE** | `89d27138326f85326f865e66c4fdec5ac7dd980c` | 2026-08-23 | GREEN trusted gate and caught live injected regression. |
+| Phase 6 — attestation dry-run + drills | **IN PROGRESS** | — | 2026-08-23 | Started only after Phase 5 live proof. |
 | Phase 7 — fail-closed enforcement | BLOCKED on 6 | — | — | Only after both drills. |
 | Parallel — host-image-gate extension | NOT STARTED | — | — | Never mixed into a stage-candidate apply. |
 | Phase 8 — optional live/sandbox | OWNER GATE | — | — | Do not start. Ask the owner after phase 7. |
@@ -1522,10 +1522,10 @@ Source: `STAGING_ENVIRONMENT.md` §8, §10 phase 5, Definition of Done items 15�
 
 ### Exit criteria
 
-- [ ] Injected regression is caught before any promotion path.
-- [ ] Missing/stale/renamed metric is red.
-- [ ] Candidate-weakened policy is rejected.
-- [ ] N-1 binary vs post-migration schema is checked before A/B.
+- [x] Injected regression is caught before any promotion path.
+- [x] Missing/stale/renamed metric is red.
+- [x] Candidate-weakened policy is rejected.
+- [x] N-1 binary vs post-migration schema is checked before A/B.
 
 ### Execution log
 
@@ -1546,7 +1546,7 @@ real stage slots are enabled.
 Next: expose one exact live degradation proof, then close Phase 5.
 
 ### 2026-08-23 — live degradation proof command
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `89d27138326f85326f865e66c4fdec5ac7dd980c`   watchdog: GREEN
 Result: Add an exact read-only `proof degradation` command. It runs the bounded load generator inside
 the stage netns, creates fresh complete evidence for the trusted policy, requires GREEN, then injects
 a 99,999 ms latency regression and requires RED. The proof accepts no candidate path or argument.
@@ -1555,6 +1555,21 @@ Checks actually run: `bash deploy/stage-degrade-gate.test.sh`; `bash deploy/stag
 Deviation from this plan / from STAGING_ENVIRONMENT.md: live proof measures the mock twin rather than
 real A/B slots; the trusted policy still locks 60-minute runtime soak and full payload requirements.
 Next: run the live proof and close Phase 5 on GREEN.
+
+### 2026-08-23 — Phase 5 live closeout
+SHA: `89d27138326f85326f865e66c4fdec5ac7dd980c`   watchdog: GREEN
+Result: Live `proof degradation` returned GREEN for trusted policy digest
+`49d2eabe8fad7f25d8a99845b94743c2afe2ed8ed9259815d65514544a20d497` and then confirmed the
+injected latency regression was caught. Static fixtures prove missing, stale, renamed, sparse,
+erroring, slow, N-1-unknown, escaped-fault, and weakened-policy evidence all fail closed. The policy
+locks 60-minute runtime soak, full payload sizes, 8G router memory, and 16G spool floor. No promotion
+or production admission path is active.
+Checks actually run: live `observe-stage proof degradation`; `bash deploy/stage-degrade-gate.test.sh`;
+GREEN exact-SHA production `deploy/watchdog`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: live evidence covers the safe mock twin, not
+real A/B slots. The complete A/B policy remains locked and cannot authorize promotion without later
+real-slot evidence.
+Next: Phase 6 — attestation dry-run and mandatory drills in a fresh managed worktree.
 
 ---
 
