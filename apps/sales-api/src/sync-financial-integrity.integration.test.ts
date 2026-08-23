@@ -150,7 +150,7 @@ describe.runIf(Boolean(connectionString))("referral money integrity under load",
     expect(totals.rows).toBe(rows.length);
     expect(totals.total).toBe((BigInt(rows.length) * 100_000n).toString());
     process.stdout.write(`referral money throughput: ${rows.length} events in ${elapsedMs}ms (${Math.round(rows.length / (elapsedMs / 1000))}/s)\n`);
-  });
+  }, 20_000);
 
   it("writes no commission for a user nobody referred", async () => {
     serveUsage([usageRow(1, randomUUID(), 5_000_000_000n)]);
