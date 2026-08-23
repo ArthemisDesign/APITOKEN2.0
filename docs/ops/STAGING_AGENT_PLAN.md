@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `a4f18f7c8521e89b004af40f3fa75cf5b45506ef` | 2026-08-23 | GREEN explicit replay; fixing delegated cgroup parent. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `d045f0548cfc6c1427a6d482d15f7760255d09ad` | 2026-08-23 | GREEN delegated cgroup config; forcing full replay. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -775,7 +775,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: place containers under the delegated daemon cgroup, then verify stores, isolation, and pressure.
 
 ### 2026-08-23 — delegated container cgroup parent fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `d045f0548cfc6c1427a6d482d15f7760255d09ad`   watchdog: GREEN
 Result: Rootless runc cannot create a top-level `staging.slice` scope through systemd without
 interactive authorization. Set Compose `cgroup_parent` to the delegated
 `apitoken-rootless-docker-stage.service` cgroup, which already resides below `staging.slice`.
@@ -784,6 +784,15 @@ Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: implementation uses the delegated child
 cgroup below the locked slice instead of asking rootless runc to create a top-level slice scope.
+Next: force a full delegated-cgroup replay, then verify stores, isolation, and pressure.
+
+### 2026-08-23 — delegated cgroup full-apply marker
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Add an immutable marker to the stateful foundation installer so the GREEN delegated cgroup
+parent changes rerun the trusted store transaction. No runtime behavior or lock value changes.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/watchdog-lib.test.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: verify live stores, isolation, and pressure.
 
 ---

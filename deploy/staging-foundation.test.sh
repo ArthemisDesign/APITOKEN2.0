@@ -55,6 +55,7 @@ grep -Fq 'phase2-seed-id-apply-v1' "$I"
 grep -Fq 'phase2-source-tag-apply-v1' "$I"
 grep -Fq 'phase2-local-tags-apply-v1' "$I"
 grep -Fq 'phase2-explicit-seed-apply-v1' "$I"
+grep -Fq 'phase2-cgroup-apply-v1' "$I"
 for prerequisite in slirp4netns fuse-overlayfs newuidmap newgidmap; do
   grep -Fq "$prerequisite" "$I"
 done
