@@ -110,8 +110,8 @@ Read order at the start of work:
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
 | **Phase 2 — trusted contour foundation** | **DONE** | `76263deea700fe0fb32ebcfe53af24b0def409cd` | 2026-08-23 | GREEN live stores, isolation, pressure, and read-only observation. |
-| Phase 3 — observe-only stage watchdog | **IN PROGRESS** | `b287697c56335bf3b1268e5a6660c25b565f093b` | 2026-08-23 | GREEN code; fixing stage controller root publication. |
-| Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
+| **Phase 3 — observe-only stage watchdog** | **DONE** | `0bb3eaff44d56bd68d712f26b6afe7576461a437` | 2026-08-23 | GREEN serial stage deployment and informational contexts. |
+| Phase 4 — data, twin inventory, stubs | **IN PROGRESS** | — | 2026-08-23 | Started only after Phase 3 live status acceptance. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
 | Phase 6 — attestation dry-run + drills | BLOCKED on 5 | — | — | Injected-fault **and** hotfix drills. |
 | Phase 7 — fail-closed enforcement | BLOCKED on 6 | — | — | Only after both drills. |
@@ -1015,9 +1015,9 @@ Ordinary `master` merges stay unblocked.
 
 ### Exit criteria
 
-- [ ] A SHA on `stage` deploys on the twin and publishes informational statuses.
-- [ ] A SHA on `master` still merges with today’s production gate only.
-- [ ] `deploy-stage` posting a production context fails in tests.
+- [x] A SHA on `stage` deploys on the twin and publishes informational statuses.
+- [x] A SHA on `master` still merges with today’s production gate only.
+- [x] `deploy-stage` posting a production context fails in tests.
 
 ### Execution log
 
@@ -1293,7 +1293,7 @@ attestation. One root GitHub credential is reused as the contract permits.
 Next: publish validated stage reports from a networked manager unit.
 
 ### 2026-08-23 — stage report manager unit
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `0bb3eaff44d56bd68d712f26b6afe7576461a437`   watchdog: GREEN
 Result: The stage netns correctly blocks public GitHub egress. The isolated watchdog now writes only
 an exact validated `report-pending.sha`. A root manager path unit outside the netns rechecks
 `candidate.sha`, publishes only the closed stage contexts and staging deployment, then writes
@@ -1303,6 +1303,22 @@ Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-
 Deviation from this plan / from STAGING_ENVIRONMENT.md: caller binding uses a root-owned exact marker
 and fixed manager unit because the stage caller has no egress; context and SHA checks remain closed.
 Next: verify informational stage statuses and close Phase 3.
+
+### 2026-08-23 — Phase 3 live closeout
+SHA: `0bb3eaff44d56bd68d712f26b6afe7576461a437`   watchdog: GREEN
+Result: Serial client validation created `stage` at exact SHA
+`370b338db10da841b5c910c04f2de7d8bb7b8bf1`. The source and watchdog timers are active. Bounded
+state shows matching source, candidate, deployed, and processed markers. GitHub reports GREEN
+`deploy/stage`, `deploy/stage-tests`, `deploy/stage-engine`, `deploy/stage-backend`, and
+`stage/deployed`; all are informational. Production SHA `0bb3eaff` merged and deployed with the
+ordinary production gate only. Reporter tests reject production contexts. No Phase 4 component,
+Caddy route, seed, live provider, degradation, attestation, or admission enforcement is active.
+Checks actually run: live `observe-stage status`; live `observe-stage state`; GitHub exact-SHA status
+inspection; GREEN production `deploy/watchdog`; `bash deploy/stage-watchdog.test.sh`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: Phase 3 deploys a non-serving validated marker
+rather than real application components; those start in Phase 4. Source and reporting use fixed
+master-sourced manager units outside the no-egress netns, with exact marker binding.
+Next: Phase 4 — data, twin inventory, and safe sinks in a fresh managed worktree.
 
 ---
 
