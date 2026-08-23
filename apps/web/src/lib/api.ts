@@ -347,6 +347,17 @@ export type ReferralSnapshot = ReferralActiveSnapshot
   | { state: "unavailable"; membership: null }
   | { state: "disabled"; membership: ReferralMembership };
 
+
+export interface ReferralApplication {
+  id: string;
+  email: string;
+  status: "pending" | "approved" | "rejected";
+  message: string;
+  reviewerNote: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+}
+
 export interface ReferralAuthorityInput {
   teamOverrideMaxBps: number;
   teamInvitesEnabled: boolean;
@@ -450,6 +461,11 @@ export const api = {
   }),
   checkout: (id: string) => request<CheckoutView>(`/checkouts/${encodeURIComponent(id)}`),
   referral: () => request<ReferralSnapshot>("/referral"),
+  referralApplication: () => request<{ application: ReferralApplication | null }>("/referral/applications/me"),
+  submitReferralApplication: (message: string) =>
+    request<{ application: ReferralApplication }>("/referral/applications", {
+      method: "POST", body: JSON.stringify({ message }),
+    }),
   referralInviteTeam: (input: { email: string; overrideBps: number; authority: ReferralAuthorityInput }) =>
     request<{ invitation: ReferralInvitation }>("/referral/team-invitations", {
       method: "POST", body: JSON.stringify(input),

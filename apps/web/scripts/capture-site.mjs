@@ -157,6 +157,8 @@ const dashboardCaptures = [
   ["dashboard-referral-team-dark", "/dashboard?view=referral&tab=team", 1440, 1000, "dark"],
   ["dashboard-referral-team-edit-dark", "/dashboard?view=referral&tab=team", 1440, 1000, "dark", "en", "referral-team-edit-open"],
   ["dashboard-referral-payouts-russian-dark", "/dashboard?view=referral&tab=payouts", 1440, 1000, "dark", "ru"],
+  ["dashboard-referral-wallet-edit-dark", "/dashboard?view=referral&tab=payouts", 1440, 1000, "dark", "en", "referral-wallet-edit-open"],
+  ["dashboard-referral-b2b-dialog-dark", "/dashboard?view=referral&tab=referrals", 1440, 1000, "dark", "en", "referral-b2b-open"],
   ["dashboard-referral-docs-light", "/dashboard?view=referral&tab=docs", 1440, 1000, "light"],
   ["dashboard-referral-ordinary-light", "/dashboard?view=referral&partner-preview=no-access", 1440, 1000, "light"],
   ["dashboard-support-dark", "/dashboard?view=support", 1440, 1000, "dark"],
@@ -652,6 +654,10 @@ async function capturePage(client, [name, route, width, height, theme, language 
   if (state === "referral-team-edit-open") {
     await clickSelector(client, ".team-table .btn");
     await waitForCondition(client, `Boolean(document.querySelector('.referral-modal[role="dialog"]'))`, `${name} Team member dialog`);
+  }
+  if (state === "referral-wallet-edit-open") {
+    await clickSelector(client, ".rp-wallet-actions .btn:last-child");
+    await waitForCondition(client, `Boolean(document.querySelector('.rp-wallet-edit input[name="payoutWallet"]'))`, `${name} wallet editor`);
   }
   if (state === "referral-b2b-open") {
     await clickSelector(client, ".referral-directory-table .btn");
@@ -1247,11 +1253,13 @@ async function verifyReferralLayout(client) {
     expression: `(() => {
       const email = document.querySelector('input[name="teamEmail"]');
       const shares = [...document.querySelectorAll('.referral-percent-input input')];
+      const steppers = document.querySelectorAll('.referral-percent-input input[type="number"]').length;
       const memberEmails = [...document.querySelectorAll('.team-table .referral-email')];
       return JSON.stringify({
         emailType: email?.type,
         emailAutocomplete: email?.autocomplete,
-        maxes: shares.map((input) => input.max),
+        maxes: shares.map((input) => input.dataset.maxPercent),
+        steppers,
         memberEmails: memberEmails.map((item) => ({ text: item.textContent.trim(), translate: item.getAttribute('translate') })),
         tabCurrent: document.querySelector('.referral-subnav [aria-current="page"]')?.textContent.trim(),
         checkboxes: document.querySelectorAll('.referral-checkbox-card input[type="checkbox"]').length,
@@ -1262,7 +1270,7 @@ async function verifyReferralLayout(client) {
   const team = JSON.parse(teamResult.result.value);
   // Invitation is e-mail plus the retained share only; permissions live on the member dialog.
   if (team.emailType !== "email" || team.emailAutocomplete !== "email" || team.maxes.some((value) => Number(value) > 20) ||
-      team.maxes.length !== 1 || team.memberEmails.length !== 1 || team.memberEmails.some((item) => item.translate !== "no" || !item.text.includes("@")) ||
+      team.maxes.length !== 1 || team.steppers !== 0 || team.memberEmails.length !== 1 || team.memberEmails.some((item) => item.translate !== "no" || !item.text.includes("@")) ||
       team.tabCurrent !== "Team" || team.checkboxes !== 0) {
     throw new Error(`Referral Team identity/ceiling failed: ${JSON.stringify(team)}`);
   }

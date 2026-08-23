@@ -3188,6 +3188,28 @@ export const adminAccountDomains = pgTable("admin_account_domains", {
   )`),
 ]);
 
+export const referralApplications = pgTable("referral_applications", {
+  id: uuid("id").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("pending"),
+  message: text("message").notNull().default(""),
+  reviewerActor: text("reviewer_actor"),
+  reviewerNote: text("reviewer_note"),
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  uniqueIndex("referral_applications_pending_uidx").on(table.userId).where(sql`${table.status} = 'pending'`),
+  index("referral_applications_queue_idx").on(table.status, table.createdAt),
+  check("referral_applications_status_check", sql`${table.status} IN ('pending', 'approved', 'rejected')`),
+  check("referral_applications_message_check", sql`length(${table.message}) <= 2000`),
+  check("referral_applications_note_check", sql`${table.reviewerNote} IS NULL OR length(${table.reviewerNote}) <= 2000`),
+  check("referral_applications_decision_check", sql`
+    (${table.status} = 'pending' AND ${table.decidedAt} IS NULL AND ${table.reviewerActor} IS NULL)
+    OR (${table.status} <> 'pending' AND ${table.decidedAt} IS NOT NULL AND ${table.reviewerActor} IS NOT NULL)
+  `),
+]);
+
 export const contentProjects = pgTable("content_projects", {
   id: uuid("id").primaryKey(),
   sourceUrl: text("source_url").notNull(),

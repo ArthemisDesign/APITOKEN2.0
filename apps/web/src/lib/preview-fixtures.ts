@@ -13,6 +13,7 @@ import {
   type LedgerEntry,
   type ProviderStatus,
   type ReferralActiveSnapshot,
+  type ReferralApplication,
   type ReferralSnapshot,
   type TotpSetup,
   type UsageView,
@@ -200,6 +201,8 @@ const providers: ProviderStatus = {
 };
 
 const referralNow = new Date();
+// The no-access preview starts with no application on file so the form itself is reviewable.
+let previewApplication: ReferralApplication | null = null;
 const referralDay = (daysAgo: number) => new Date(referralNow.getTime() - daysAgo * DAY_MS).toISOString();
 const referral: ReferralActiveSnapshot = {
   state: "active",
@@ -349,6 +352,15 @@ export async function previewRequest<T>(path: string, init: RequestInit = {}): P
       return { invitation: referral.invitations[0] } as T;
     }
     case "PATCH /referral/team": return { authority: body(init) } as T;
+    case "GET /referral/applications/me": return { application: previewApplication } as T;
+    case "POST /referral/applications": {
+      previewApplication = {
+        id: randomHex(32), email: "preview@apitoken.sale", status: "pending",
+        message: String(body(init).message ?? ""), reviewerNote: null, decidedAt: null,
+        createdAt: referralNow.toISOString(),
+      };
+      return { application: previewApplication } as T;
+    }
     case "POST /referral/requests/commission":
     case "POST /referral/requests/b2b": return { request: referral.requests[0] } as T;
     case "POST /referral/referrals/business-pricing": return { customerEmail: body(init).customerEmail, discountPercent: body(init).discountPercent ?? 0, ceilingPercent: referral.membership.b2bMaxDiscountBps / 100 } as T;

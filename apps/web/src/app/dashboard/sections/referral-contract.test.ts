@@ -64,6 +64,15 @@ describe("Commerce Dashboard partner surface", () => {
     expect(source).toContain("if (await revoke(revoking.id))");
   });
 
+  it("lets an account without access apply for review and reach Telegram", () => {
+    expect(source).toContain("api.submitReferralApplication");
+    expect(source).toContain('api.referralApplication()');
+    expect(source).toContain('href="https://t.me/bozinodev"');
+    expect(source).toContain("applyPendingTitle");
+    expect(fixtureSource).toContain('case "GET /referral/applications/me"');
+    expect(apiSource).toContain('request<{ application: ReferralApplication }>("/referral/applications"');
+  });
+
   it("contains no promo-code workflow", () => {
     expect(source).not.toMatch(/promo.?code|промокод/i);
     expect(apiSource).not.toContain("redeemPromo");

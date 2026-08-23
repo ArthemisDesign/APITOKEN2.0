@@ -6,6 +6,7 @@ import {
   api,
   ApiError,
   type ReferralActiveSnapshot,
+  type ReferralApplication,
   type ReferralAuthorityInput,
   type ReferralSnapshot,
   type ReferralTeamMember,
@@ -27,7 +28,7 @@ const copy = {
     loading: "Loading partner data…", loadError: "Partner data is temporarily unavailable.", retry: "Try again",
     ordinaryTitle: "Grow with apiToken.sale", ordinarySubtitle: "Partner access is approved individually. Here are the standard terms.", ordinaryBody: "The partner program is enabled manually. Standard terms start at a 10% commission on paid usage from your referred clients. Your referrals and Team members are existing apiToken.sale accounts and are identified by their account email.",
     ordinaryPoint1: "Commission only on eligible paid usage", ordinaryPoint2: "Provider-level earnings and transparent payout periods", ordinaryPoint3: "A Team hierarchy with a retained share capped at 20%",
-    requestAccess: "Request partner access", contactHint: "The button opens a conversation with @bozinodev in Telegram. Your Dashboard account remains the only program identity.",
+    requestAccess: "Request partner access", contactHint: "Applications are reviewed by hand. You can also talk it through with @bozinodev in Telegram — your Dashboard account stays the only program identity.",
     disabledTitle: "Partner access is paused", disabledBody: "Your account is still intact, but partner actions are disabled. Contact support to clarify or restore access.", contact: "Contact @bozinodev",
     overview: "Overview", referrals: "Referrals", team: "Team", requests: "Requests", payouts: "Payouts", docs: "Docs",
     available: "Available", earned30: "Net earned · 30 days", direct: "Direct earnings", teamIncome: "Retained Team share", payable: "Payable", fixedRate: "Your platform commission", fixedRateHint: "Set only by apiToken.sale",
@@ -43,7 +44,7 @@ const copy = {
     docsTitle: "Partner documentation", docsSub: "The complete program rules, from account attribution to a completed payout.", docsEarn: "1. What you earn", docsEarnBody: "You earn your platform commission from eligible API usage paid with a referral’s real funds. Free platform credit never counts.", docsIdentity: "2. Referral identity", docsIdentityBody: "Referrals and Team members are existing apiToken.sale accounts. They are assigned and shown by the same login email used in the customer Dashboard.", docsFormula: "3. Commission calculation", docsFormulaBody: "Commission equals your rate multiplied by the referral’s eligible paid API usage after their own discount. Refunds reverse the commission funded by the refunded payment.", docsTeam: "4. Team retained share", docsTeamBody: "A Team member receives the platform commission set by apiToken.sale (10% by default). You may retain a percentage of that commission, up to your personal limit and never above the platform hard maximum of 20%. This is not an additional commission.", docsB2b: "5. B2B referrals", docsB2bBody: "Open a referral’s B2B action to request conversion or new pricing. If self-service is enabled for your account, you may apply terms directly, never above your personal discount limit.", docsWallet: "6. Wallet and currency", docsWalletBody: "Payouts use USDT (BEP-20) on BNB Smart Chain. Without a bound wallet, earnings remain in the account and roll into a later payout.", docsSchedule: "7. Payout schedule", docsScheduleBody: "Earnings are grouped into the 1st–15th and 16th–last-day periods. Each completed period is locked for 7 days and paid during the following 3-day window.", docsPrivacy: "8. Access and privacy", docsPrivacyBody: "Only approved partners can open this workspace. Referral and Team identities are limited to account email; internal Commerce identifiers are never exposed.",
     invalidEmail: "Enter a valid account email.", invalidShare: "The retained share must be within your allowed maximum.", invalidReason: "Add a clear business justification.", invalidCommission: "Enter a commission from 0% to 100%.", invalidDiscount: "Enter a whole discount within your allowed ceiling.", invalidWallet: "Enter a valid 0x BSC wallet address.", mutationError: "The change could not be saved.",
     overviewLead: "You earn {rate} of what your referred accounts actually spend on API usage — the amount charged after their own discount, and only the part paid with real money. Free platform credit is spent first and never counts.",
-    reflinkTitle: "Your referral link", reflinkSub: "Anyone who registers on apitoken.sale through this link is attributed to you permanently.", copyLink: "Copy link", copyAddress: "Copy address", copiedLink: "Copied", referralCodeLabel: "Referral code",
+    reflinkTitle: "Your referral link", reflinkSub: "Anyone who registers on apitoken.sale through this link is attributed to you permanently.", copyLink: "Copy link", copyAddress: "Copy address", walletAddress: "BSC address", copiedLink: "Copied", referralCodeLabel: "Referral code",
     howTitle: "How your commission works", how1: "You earn {rate} of what your referrals actually spend on API usage — the amount charged after their own discount.", how2: "Free platform credit never counts: it is spent first, and only usage covered by their own money earns commission.", how3: "Example: a referral spends $100 of real money on the API and you earn {example}.", how4: "Commission accrues as they spend and is paid out in USDT (BEP-20) on BNB Smart Chain.", howSplit: "So far: {direct} direct and {team} retained from your Team.",
     formulaTitle: "Your reward per $1 of real-money, list-price usage", formulaDiscount: "discount", formulaBody: "The client pays (100 − their discount)% of the price. You get {rate} of that — only the part paid with real money; free platform credit never counts.", formulaExample: "Example: $100 of usage with a 50% discount → they pay $50, you earn {example}.",
     recentTitle: "Recent activity", recentSub: "The latest accounts attributed to you.", joinedWord: "joined", earnedForYou: "earned for you", noActivity: "No referrals yet", noActivityBody: "Share your link to start building your list.",
@@ -52,6 +53,10 @@ const copy = {
     membersSub: "Each member keeps their platform commission; you keep the share you set.", invitesSub: "An invitation is valid for 30 days and can be revoked until it is accepted.", b2bAccess: "B2B access",
     teamFormulaTitle: "What you keep from one Team member", teamFormulaBody: "A member earns {member} of their referrals' paid usage. You keep {share} of that commission — never on top of it. On $100 of paid usage the pool is {pool}: {theirs} to the member and {mine} to you. Your maximum is {max}.",
     teamEditorNote: "This member earns {member} of their referrals' paid usage. You keep {share} of that commission — {mine} per $100 of paid usage.",
+    writeTelegram: "Write on Telegram", applyTitle: "Apply for review", applySub: "Tell us what you sell and where your clients come from. An administrator reviews every application by hand.", applyField: "About you and your traffic", applyPlaceholder: "Agency, integrator, community, content — and the volume you expect…", applySubmit: "Submit for review", applySending: "Sending…", applySent: "Your application is in the review queue.", applyTooShort: "Add a couple of sentences so the review has something to go on.",
+    applyPendingTitle: "Application in review", applyPendingBody: "An administrator will decide by hand. You keep full access to the rest of the Dashboard meanwhile.", applyRejectedTitle: "Application was declined", applyRejectedBody: "You can apply again once something changes, or talk it through on Telegram.", applySubmitted: "Submitted", applyAnswer: "Reviewer", statusPending: "Pending review", statusRejected: "Declined",
+    heroTitle: "Bring clients. Earn on what they spend.", heroSecondary: "See the terms", heroFact1: "Standard commission", heroFact2: "Team ceiling", heroFact3: "Payouts", heroFact3Foot: "USDT (BEP-20) on BNB Smart Chain", heroFact4: "Payout schedule", heroFact4Foot: "Twice a month, after a 7-day lock",
+    heroIdentity: "Your referrals and Team members are existing apiToken.sale accounts, identified by their account email.",
     periodHistorySub: "What you earned in each half-month period and when it is paid out.",
     payoutHowList: "Earnings are counted in two periods each month: the 1st–15th and the 16th–last day. After a period closes there is a 7-day lock, then everything earned is sent to your wallet within the next 3 days.", payoutHowWallet: "No wallet bound yet? Nothing is lost — the balance rolls into the next payout.",
     walletUnbound: "Bind your BSC wallet to receive payouts. Without it, your balance rolls over to the next period.",
@@ -61,7 +66,7 @@ const copy = {
     loading: "Загружаем партнёрские данные…", loadError: "Партнёрские данные временно недоступны.", retry: "Повторить",
     ordinaryTitle: "Развивайтесь вместе с apiToken.sale", ordinarySubtitle: "Партнёрский доступ одобряется индивидуально. Ниже — стандартные условия.", ordinaryBody: "Доступ к партнёрской программе включается вручную. Стандартные условия начинаются с комиссии 10% от оплаченного использования привлечённых клиентов. Рефералы и участники команды — существующие аккаунты apiToken.sale, которые определяются по почте аккаунта.",
     ordinaryPoint1: "Комиссия только с оплаченного использования", ordinaryPoint2: "Разбивка заработка по провайдерам и прозрачные периоды выплат", ordinaryPoint3: "Командная иерархия с удерживаемой долей максимум 20%",
-    requestAccess: "Запросить доступ партнёра", contactHint: "Кнопка откроет диалог с @bozinodev в Telegram. Единственной учётной записью программы остаётся ваш аккаунт Dashboard.",
+    requestAccess: "Запросить доступ партнёра", contactHint: "Заявки рассматриваются вручную. Можно также обсудить всё с @bozinodev в Telegram — единственной учётной записью программы остаётся ваш аккаунт Dashboard.",
     disabledTitle: "Партнёрский доступ приостановлен", disabledBody: "Ваш аккаунт и история сохранены, но партнёрские действия отключены. Напишите в поддержку, чтобы уточнить причину или восстановить доступ.", contact: "Написать @bozinodev",
     overview: "Обзор", referrals: "Рефералы", team: "Команда", requests: "Заявки", payouts: "Выплаты", docs: "Документация",
     available: "Доступно", earned30: "Чистый доход · 30 дней", direct: "Прямой доход", teamIncome: "Удержано с команды", payable: "К выплате", fixedRate: "Ваша комиссия от платформы", fixedRateHint: "Устанавливает только apiToken.sale",
@@ -77,7 +82,7 @@ const copy = {
     docsTitle: "Документация партнёра", docsSub: "Полные правила программы: от привязки аккаунта до завершённой выплаты.", docsEarn: "1. За что вы зарабатываете", docsEarnBody: "Вы получаете свою комиссию от использования API, оплаченного реальными средствами реферала. Бесплатные средства платформы не учитываются.", docsIdentity: "2. Как определяются рефералы", docsIdentityBody: "Рефералы и участники команды — существующие аккаунты apiToken.sale. Они назначаются и отображаются по той же почте, с которой входят в клиентский Dashboard.", docsFormula: "3. Как считается комиссия", docsFormulaBody: "Комиссия равна вашей ставке, умноженной на оплаченные траты реферала после его скидки. Возврат платежа отменяет начисленную с него комиссию.", docsTeam: "4. Удержание с команды", docsTeamBody: "Участник получает комиссию от apiToken.sale — по умолчанию 10%. Вы можете удерживать часть этой комиссии в пределах личного лимита, но не больше глобальных 20%. Это не дополнительная комиссия.", docsB2b: "5. B2B-рефералы", docsB2bBody: "Откройте B2B-действие у конкретного реферала, чтобы запросить перевод или новые условия. Если вам доступно самостоятельное управление, условия можно применить сразу, но не выше личного лимита скидки.", docsWallet: "6. Кошелёк и валюта", docsWalletBody: "Выплаты отправляются в USDT (BEP-20) по сети BNB Smart Chain. Если кошелёк не привязан, заработок сохраняется и переносится на следующую выплату.", docsSchedule: "7. График выплат", docsScheduleBody: "Доход группируется по периодам 1–15 и 16–последний день месяца. Завершённый период блокируется на 7 дней и выплачивается в следующие 3 дня.", docsPrivacy: "8. Доступ и приватность", docsPrivacyBody: "Раздел доступен только одобренным партнёрам. Рефералы и команда показываются по почте аккаунта; внутренние идентификаторы Commerce не раскрываются.",
     invalidEmail: "Введите корректную почту аккаунта.", invalidShare: "Удерживаемая доля должна быть в пределах доступного максимума.", invalidReason: "Добавьте понятное обоснование.", invalidCommission: "Введите комиссию от 0% до 100%.", invalidDiscount: "Введите целую скидку в пределах доступного максимума.", invalidWallet: "Введите корректный адрес BSC-кошелька, начинающийся с 0x.", mutationError: "Не удалось сохранить изменение.",
     overviewLead: "Вы получаете {rate} от того, что привлечённые аккаунты реально тратят на использование API — от суммы после их собственной скидки и только с части, оплаченной настоящими деньгами. Бесплатные средства платформы тратятся первыми и не считаются.",
-    reflinkTitle: "Ваша реферальная ссылка", reflinkSub: "Каждый, кто зарегистрируется на apitoken.sale по этой ссылке, навсегда закрепляется за вами.", copyLink: "Копировать ссылку", copyAddress: "Копировать адрес", copiedLink: "Скопировано", referralCodeLabel: "Реферальный код",
+    reflinkTitle: "Ваша реферальная ссылка", reflinkSub: "Каждый, кто зарегистрируется на apitoken.sale по этой ссылке, навсегда закрепляется за вами.", copyLink: "Копировать ссылку", copyAddress: "Копировать адрес", walletAddress: "Адрес BSC", copiedLink: "Скопировано", referralCodeLabel: "Реферальный код",
     howTitle: "Как работает ваша комиссия", how1: "Вы получаете {rate} от того, что рефералы реально тратят на использование API — от суммы после их собственной скидки.", how2: "Бесплатные средства платформы не считаются: они тратятся первыми, и комиссию приносит только использование, оплаченное деньгами клиента.", how3: "Пример: реферал тратит $100 реальных денег на API, и вы получаете {example}.", how4: "Комиссия начисляется по мере трат и выплачивается в USDT (BEP-20) в сети BNB Smart Chain.", howSplit: "Сейчас: {direct} напрямую и {team} удержано с команды.",
     formulaTitle: "Ваша награда с $1 реального использования по прайсу", formulaDiscount: "скидка", formulaBody: "Клиент платит (100 − его скидка)% от цены. Вы получаете {rate} от этой суммы — только с части, оплаченной реальными деньгами; бесплатные средства не считаются.", formulaExample: "Пример: $100 использования со скидкой 50% → клиент платит $50, вы получаете {example}.",
     recentTitle: "Недавняя активность", recentSub: "Последние аккаунты, закреплённые за вами.", joinedWord: "присоединился", earnedForYou: "заработано для вас", noActivity: "Пока нет рефералов", noActivityBody: "Поделитесь ссылкой, чтобы начать собирать базу.",
@@ -86,6 +91,10 @@ const copy = {
     membersSub: "Каждый участник получает свою комиссию платформы; вам остаётся заданная вами доля.", invitesSub: "Приглашение действует 30 дней; его можно отозвать, пока оно не принято.", b2bAccess: "B2B-доступ",
     teamFormulaTitle: "Сколько вы удерживаете с одного участника", teamFormulaBody: "Участник получает {member} от оплаченного использования своих рефералов. Вы удерживаете {share} из этой комиссии — не сверх неё. При $100 оплаченного расхода пул {pool}: {theirs} участнику и {mine} вам. Ваш максимум — {max}.",
     teamEditorNote: "Участник получает {member} от оплаченного использования своих рефералов. Вы удерживаете {share} из этой комиссии — {mine} на каждые $100 оплаченного расхода.",
+    writeTelegram: "Написать в Telegram", applyTitle: "Подать заявку на рассмотрение", applySub: "Расскажите, что вы продаёте и откуда приходят клиенты. Каждую заявку администратор рассматривает вручную.", applyField: "О вас и вашем трафике", applyPlaceholder: "Агентство, интегратор, сообщество, контент — и ожидаемые объёмы…", applySubmit: "Отправить на рассмотрение", applySending: "Отправляем…", applySent: "Заявка отправлена и ждёт рассмотрения.", applyTooShort: "Добавьте пару предложений, чтобы заявку было по чему рассматривать.",
+    applyPendingTitle: "Заявка на рассмотрении", applyPendingBody: "Решение принимает администратор вручную. Остальной Dashboard всё это время работает как обычно.", applyRejectedTitle: "Заявка отклонена", applyRejectedBody: "Можно подать снова, когда что-то изменится, или обсудить в Telegram.", applySubmitted: "Отправлена", applyAnswer: "Ответ", statusPending: "На рассмотрении", statusRejected: "Отклонена",
+    heroTitle: "Приводите клиентов. Зарабатывайте на их тратах.", heroSecondary: "Посмотреть условия", heroFact1: "Стандартная комиссия", heroFact2: "Потолок команды", heroFact3: "Выплаты", heroFact3Foot: "USDT (BEP-20) в сети BNB Smart Chain", heroFact4: "График выплат", heroFact4Foot: "Дважды в месяц, после лока 7 дней",
+    heroIdentity: "Ваши рефералы и участники команды — существующие аккаунты apiToken.sale, определяются по почте аккаунта.",
     periodHistorySub: "Сколько вы заработали в каждом полумесячном периоде и когда это выплачивается.",
     payoutHowList: "Заработок считается по двум периодам каждый месяц: с 1-го по 15-е и с 16-го по последний день. После закрытия периода действует лок 7 дней, затем весь заработок уходит на ваш кошелёк в течение следующих 3 дней.", payoutHowWallet: "Кошелёк ещё не привязан? Ничего не теряется — баланс переносится на следующую выплату.",
     walletUnbound: "Привяжите кошелёк BSC, чтобы получать выплаты. Без него баланс переносится на следующий период.",
@@ -185,12 +194,85 @@ export function Referral() {
 
 function OrdinaryState({ language }: { language: Language }) {
   const text = copy[language];
-  return <section className="panel referral-panel rp"><PageHeading eyebrow={text.eyebrow} title={text.title} subtitle={text.ordinarySubtitle} />
-    <div className="referral-access-card card">
-      <div><span className="overview-status setup"><i />{text.eyebrow}</span><h2>{text.ordinaryTitle}</h2><p>{text.ordinaryBody}</p></div>
-      <ul><li>{text.ordinaryPoint1}</li><li>{text.ordinaryPoint2}</li><li>{text.ordinaryPoint3}</li></ul>
-      <a className="btn btn-primary" href="https://t.me/bozinodev" target="_blank" rel="noreferrer">{text.requestAccess}</a>
+  const locale = language === "ru" ? "ru-RU" : "en-US";
+  const standardCommissionBps = 1_000;
+  const [application, setApplication] = useState<ReferralApplication | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<{ kind: "ok" | "bad"; message: string } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void api.referralApplication()
+      .then((result) => { if (active) setApplication(result.application); })
+      .catch(() => { /* the invitation stays usable even if the status cannot be read */ })
+      .finally(() => { if (active) setLoaded(true); });
+    return () => { active = false; };
+  }, []);
+
+  async function apply(event: FormEvent) {
+    event.preventDefault();
+    setNotice(null);
+    if (message.trim().length < 10) return setNotice({ kind: "bad", message: text.applyTooShort });
+    setBusy(true);
+    try {
+      const result = await api.submitReferralApplication(message.trim());
+      setApplication(result.application);
+      setMessage("");
+      setNotice({ kind: "ok", message: text.applySent });
+    } catch (cause) { setNotice({ kind: "bad", message: errorMessage(cause, text.mutationError) }); }
+    finally { setBusy(false); }
+  }
+
+  const pending = application?.status === "pending";
+  const rejected = application?.status === "rejected";
+  return <section className="panel referral-panel rp">
+    <PageHeading eyebrow={text.eyebrow} title={text.title} subtitle={text.ordinarySubtitle} />
+    <div className="referral-access-card rp-hero">
+      <span className="rp-hero-eyebrow">{text.eyebrow}</span>
+      <h2 className="rp-hero-title">{text.heroTitle}</h2>
+      <p className="rp-hero-sub">{text.ordinaryBody}</p>
+      <div className="rp-hero-actions">
+        <a className="btn btn-primary btn-lg" href="#referral-apply">{text.requestAccess}</a>
+        <a className="btn btn-ghost btn-lg" href="https://t.me/bozinodev" target="_blank" rel="noreferrer">{text.writeTelegram}</a>
+      </div>
       <small>{text.contactHint}</small>
+    </div>
+    <div className="rp-stats rp-hero-stats">
+      <div className="rp-stat"><div className="rp-stat-l">{text.heroFact1}</div><div className="rp-stat-v accent">{pct(standardCommissionBps, locale)}</div><div className="rp-stat-f">{text.ordinaryPoint1}</div></div>
+      <div className="rp-stat"><div className="rp-stat-l">{text.heroFact2}</div><div className="rp-stat-v">{pct(2_000, locale)}</div><div className="rp-stat-f">{text.ordinaryPoint3}</div></div>
+      <div className="rp-stat"><div className="rp-stat-l">{text.heroFact3}</div><div className="rp-stat-v">USDT</div><div className="rp-stat-f">{text.heroFact3Foot}</div></div>
+      <div className="rp-stat"><div className="rp-stat-l">{text.heroFact4}</div><div className="rp-stat-v">2×</div><div className="rp-stat-f">{text.heroFact4Foot}</div></div>
+    </div>
+    <div className="rp-stack" style={{ marginTop: 24 }} id="referral-apply">
+      {loaded && (pending || rejected) ? <Card title={pending ? text.applyPendingTitle : text.applyRejectedTitle} sub={pending ? text.applyPendingBody : text.applyRejectedBody}>
+        <div className="rp-application">
+          <div className="rp-application-state"><Status value={pending ? text.statusPending : text.statusRejected} kind={pending ? "warn" : "bad"} /><span>{text.applySubmitted}: {date(application?.createdAt ?? null, locale)}</span></div>
+          {application?.message && <p className="rp-application-message">{application.message}</p>}
+          {application?.reviewerNote && <p className="rp-application-note"><b>{text.applyAnswer}:</b> {application.reviewerNote}</p>}
+          <div className="rp-actions"><a className="btn btn-ghost" href="https://t.me/bozinodev" target="_blank" rel="noreferrer">{text.writeTelegram}</a></div>
+        </div>
+      </Card> : <form className="rp-card" onSubmit={apply}>
+        <h3 className="rp-card-title">{text.applyTitle}</h3>
+        <p className="rp-card-sub">{text.applySub}</p>
+        <Field label={text.applyField}><textarea name="referralApplication" rows={4} maxLength={2_000} autoComplete="off" value={message} onChange={(event) => setMessage(event.target.value)} placeholder={text.applyPlaceholder} /></Field>
+        <div className="rp-actions">
+          <a className="btn btn-ghost" href="https://t.me/bozinodev" target="_blank" rel="noreferrer">{text.writeTelegram}</a>
+          <button className="btn btn-primary" disabled={busy || !loaded}>{busy ? text.applySending : text.applySubmit}</button>
+        </div>
+        <LiveNotice notice={notice} />
+      </form>}
+
+      <CommissionFormula commissionBps={standardCommissionBps} language={language} />
+      <Card title={text.howTitle}>
+        <ul className="rp-how">
+          <li>{text.ordinaryPoint1}</li>
+          <li>{text.ordinaryPoint2}</li>
+          <li>{text.ordinaryPoint3}</li>
+          <li>{text.heroIdentity}</li>
+        </ul>
+      </Card>
     </div>
   </section>;
 }
@@ -261,7 +343,7 @@ function PartnerOverview({ snapshot, language }: { snapshot: ReferralActiveSnaps
     {debt > 0n && <div className="rp-note bad" style={{ marginTop: 24 }} role="alert"><strong>{text.debt}: {formatNanoUsd(snapshot.totals.debtNano, locale)}.</strong>{" "}{language === "ru" ? "Будущие начисления сначала погасят долг; внешний кошелёк автоматически не списывается." : "Future earnings repay it first; the external wallet is never debited automatically."}</div>}
 
     <div className="rp-stack" style={{ marginTop: 24 }}>
-      <CommissionFormula snapshot={snapshot} language={language} />
+      <CommissionFormula commissionBps={snapshot.membership.commissionBps} language={language} />
 
       <Card title={text.reflinkTitle} sub={text.reflinkSub}>
         <div className="rp-reflink">
@@ -283,12 +365,12 @@ function PartnerOverview({ snapshot, language }: { snapshot: ReferralActiveSnaps
   </div>;
 }
 
-function CommissionFormula({ snapshot, language }: { snapshot: ReferralActiveSnapshot; language: Language }) {
+function CommissionFormula({ commissionBps, language }: { commissionBps: number; language: Language }) {
   const text = copy[language];
   const locale = language === "ru" ? "ru-RU" : "en-US";
-  const rate = pct(snapshot.membership.commissionBps, locale);
+  const rate = pct(commissionBps, locale);
   // Half price after a 50% client discount: the partner earns their rate on $50.
-  const example = formatNanoUsd(commissionOnHundred(snapshot.membership.commissionBps) / 2n, locale);
+  const example = formatNanoUsd(commissionOnHundred(commissionBps) / 2n, locale);
   return <div className="rp-formula">
     <div className="rp-formula-l">{text.formulaTitle}</div>
     <div className="rp-formula-v">(100% − <em>{text.formulaDiscount}</em>%)<i>×</i><em>{rate}</em></div>
@@ -711,8 +793,11 @@ function Payouts({ snapshot, language, refresh }: { snapshot: ReferralActiveSnap
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditingWallet(true)}>{text.changeWallet}</button>
           </div>
         </div> : <>
-          <Field label={text.wallet}><input name="payoutWallet" type="text" autoComplete="off" spellCheck={false} inputMode="text" value={wallet} onChange={(event) => setWallet(event.target.value.trim())} placeholder="0x0000000000000000000000000000000000000000" translate="no" /></Field>
-          <div className="rp-actions">{bound && <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => { setWallet(bound); setEditingWallet(false); }}>{text.cancel}</button>}<button className="btn btn-primary" disabled={busy}>{busy ? text.saving : text.saveWallet}</button></div>
+          <div className="rp-wallet-edit">
+            <Field label={text.walletAddress}><input name="payoutWallet" type="text" autoComplete="off" spellCheck={false} inputMode="text" value={wallet} onChange={(event) => setWallet(event.target.value.trim())} placeholder="0x0000000000000000000000000000000000000000" translate="no" /></Field>
+            {bound && <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => { setWallet(bound); setEditingWallet(false); }}>{text.cancel}</button>}
+            <button className="btn btn-primary" disabled={busy}>{busy ? text.saving : text.saveWallet}</button>
+          </div>
         </>}
         <LiveNotice notice={notice} />
       </form>
@@ -793,7 +878,7 @@ function PartnerDocs({ snapshot, language }: { snapshot: ReferralActiveSnapshot;
       <>{ru ? "Ваш код — " : "Your code is "}<b className="mono" translate="no">{snapshot.membership.referralCode}</b>{ru ? "; ссылку " : "; the link "}<b className="mono" translate="no">{referralUrl}</b>{ru ? " можно скопировать на вкладке «Обзор»." : " can be copied on the Overview tab."}</>,
       <>{ru ? "Привязка влияет только на то, кому идёт комиссия — цену и скидку клиента она не меняет." : "Attribution only affects who gets the commission — it never changes the client's price or discount."}</>,
     ] },
-    { title: text.docsFormula, intro: <CommissionFormula snapshot={snapshot} language={language} />, body: [
+    { title: text.docsFormula, intro: <CommissionFormula commissionBps={snapshot.membership.commissionBps} language={language} />, body: [
       text.docsFormulaBody,
       <>{ru ? "Комиссия = " : "Commission = "}<strong>{rate}</strong>{ru ? " × оплаченное реальными деньгами использование." : " × their real-money paid usage."}</>,
       <>{ru ? "Пример: реферал тратит $100 реальных денег на API → вы получаете " : "Example: a referral spends $100 of real money on the API → you earn "}<strong>{example}</strong>.</>,
@@ -833,7 +918,51 @@ function PartnerDocs({ snapshot, language }: { snapshot: ReferralActiveSnapshot;
 // ---------------------------------------------------------------------------
 
 function Field({ label, children }: { label: string; children: ReactNode }) { return <label className="referral-field"><span>{label}</span>{children}</label>; }
-function PercentField({ label, value, max, help, onChange }: { label: string; value: number; max: number; help?: string; onChange(value: number): void }) { return <label className="referral-field"><span>{label}</span><div className="referral-percent-input"><input name={label.replaceAll(" ", "-")} type="number" min={0} max={max / 100} step={0.01} inputMode="decimal" autoComplete="off" value={value / 100} onChange={(event) => onChange(Math.round(Number(event.target.value || 0) * 100))} /><i>%</i></div>{help && <small>{help}</small>}</label>; }
+/** Percent in basis points, typed only — the native number stepper is intentionally absent. */
+function PercentField({ label, value, max, help, onChange }: { label: string; value: number; max: number; help?: string; onChange(value: number): void }) {
+  const [draft, setDraft] = useState(() => percentText(value));
+  // Adjust the draft while rendering when the owner changes the value elsewhere — the
+  // documented React pattern; an effect here would cascade an extra render per keystroke.
+  const [lastValue, setLastValue] = useState(value);
+  if (lastValue !== value) {
+    setLastValue(value);
+    if (textToBps(draft) !== value) setDraft(percentText(value));
+  }
+  return <label className="referral-field">
+    <span>{label}</span>
+    <div className="referral-percent-input">
+      <input
+        name={label.replaceAll(" ", "-")}
+        type="text"
+        inputMode="decimal"
+        autoComplete="off"
+        spellCheck={false}
+        data-max-percent={max / 100}
+        value={draft}
+        onChange={(event) => {
+          const cleaned = event.target.value.replace(",", ".").replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1").slice(0, 6);
+          setDraft(cleaned);
+          const bps = textToBps(cleaned);
+          if (bps !== null) onChange(Math.min(bps, max));
+        }}
+        onBlur={() => setDraft(percentText(Math.min(textToBps(draft) ?? 0, max)))}
+      />
+      <i>%</i>
+    </div>
+    {help && <small>{help}</small>}
+  </label>;
+}
+
+function percentText(bps: number): string {
+  const whole = Math.trunc(bps / 100);
+  const fraction = Math.abs(bps % 100);
+  return fraction === 0 ? String(whole) : `${whole}.${String(fraction).padStart(2, "0").replace(/0$/, "")}`;
+}
+
+function textToBps(value: string): number | null {
+  if (!/^\d*(\.\d{0,2})?$/.test(value) || value === "" || value === ".") return null;
+  return Math.round(Number(value) * 100);
+}
 function CheckboxCard({ name, label, help, checked, onChange }: { name: string; label: string; help: string; checked: boolean; onChange(value: boolean): void }) { return <label className={`referral-checkbox-card${checked ? " checked" : ""}`}><input name={name} type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><span><b>{label}</b><small>{help}</small></span></label>; }
 function Status({ value, kind }: { value: string; kind?: "ok" | "bad" | "warn" }) { return <span className={`referral-status${kind ? ` ${kind}` : ""}`}>{value}</span>; }
 function LiveNotice({ notice }: { notice: { kind: "ok" | "bad"; message: string } | null }) { return <div className={`rp-live${notice ? ` ${notice.kind}` : ""}`} aria-live="polite">{notice?.message ?? ""}</div>; }

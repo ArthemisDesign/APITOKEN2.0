@@ -150,3 +150,19 @@ export type PayoutReport = {
     reversalCount: string; adjustmentCount: string; adjustmentNano: string;
   };
 };
+
+export type PartnerApplicationStatus = "pending" | "approved" | "rejected";
+
+/** An ordinary Commerce account asking for partner access. Identity is the account email. */
+export type AdminPartnerApplication = {
+  id: string;
+  email: string;
+  status: PartnerApplicationStatus;
+  message: string;
+  reviewerActor: string | null;
+  reviewerNote: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+};
+
+export type PartnerApplicationsPage = { items: AdminPartnerApplication[] };

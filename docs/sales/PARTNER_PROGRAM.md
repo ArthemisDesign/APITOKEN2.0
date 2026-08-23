@@ -300,6 +300,24 @@ discount.
 - Promo-code creation and redemption are absent from the active partner/customer/admin interfaces.
   Historical credit/accounting records remain readable by backend reconciliation only; they are
   not a product capability.
+- An account without partner access sees an invitation instead of the workspace: the standard terms
+  stated large (10% commission, the 20% Team ceiling, USDT BEP-20 payouts, two payout runs a month),
+  the same commission formula, and an application form. No partner numbers, tabs or actions are
+  rendered for that account.
+- **Access applications.** The account submits one application with a short description of its
+  traffic (`POST /v1/referral/applications`, session-owned; `GET /v1/referral/applications/me`
+  returns its own latest one). One open application per account: submitting again refreshes the
+  pending row rather than queueing a second review. The Dashboard then shows the pending or declined
+  state with the reviewer's note, and @bozinodev in Telegram stays available in both states.
+- Administrators work the queue in **Admin → Partners → Access applications**
+  (`GET /v1/admin/referral/applications`, `POST /v1/admin/referral/applications/:id/decision`).
+  Approving runs the same `onboardByEmail` path as manual onboarding — commission, Team ceiling and
+  B2B ceiling are set in the decision dialog and default to 10% / 20% / B2B off — and the decision is
+  recorded only after onboarding succeeds, so a failed Sales call leaves the application pending
+  instead of marking an account approved that never got access. Rejecting records the note and never
+  touches onboarding. A decided application cannot be decided twice. Storage is commerce
+  `referral_applications` (migration `0050_referral_applications`); it records the review only,
+  never partner terms, which stay authoritative in Sales.
 - **Docs** — the partner cabinet documentation, numbered and personalised with the partner's own
   rate, Team ceiling, B2B ceiling and minimum payout; section 3 embeds the same commission formula
   shown on Overview.

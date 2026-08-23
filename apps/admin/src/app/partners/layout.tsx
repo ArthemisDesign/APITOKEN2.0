@@ -8,6 +8,7 @@ import { useI18n } from "@/lib/i18n";
 
 const ITEMS = [
   { href: "/partners", en: "Overview", ru: "Обзор", exact: true },
+  { href: "/partners/applications", en: "Applications", ru: "Заявки на доступ" },
   { href: "/partners/requests", en: "Requests", ru: "Заявки" },
   { href: "/partners/onboarding", en: "Enable Partner", ru: "Сделать партнёром" },
   { href: "/partners/directory", en: "Directory", ru: "Партнёры" },
