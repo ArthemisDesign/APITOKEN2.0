@@ -12,6 +12,6 @@ Group=deploy-stage
 Slice=staging.slice
 Environment=DOCKER_HOST=unix:///run/apitoken-staging/docker.sock
 EnvironmentFile=/etc/apitoken-staging/redis.env
-ExecStart=/usr/bin/docker compose --project-name apitoken-stage-redis -f /usr/local/lib/apitoken-watchdog/staging-redis.compose.yaml up -d --wait
+ExecStart=/usr/bin/docker compose --project-name apitoken-stage-redis -f /usr/local/lib/apitoken-watchdog/staging-redis.compose.yaml up -d --wait --pull never
 ExecStop=/usr/bin/docker compose --project-name apitoken-stage-redis -f /usr/local/lib/apitoken-watchdog/staging-redis.compose.yaml down
 TimeoutStartSec=180

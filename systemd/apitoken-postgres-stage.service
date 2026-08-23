@@ -11,6 +11,6 @@ User=deploy-stage
 Group=deploy-stage
 Slice=staging.slice
 Environment=DOCKER_HOST=unix:///run/apitoken-staging/docker.sock
-ExecStart=/usr/bin/docker compose --project-name apitoken-stage-postgres -f /usr/local/lib/apitoken-watchdog/staging-postgres.compose.yaml up -d --wait
+ExecStart=/usr/bin/docker compose --project-name apitoken-stage-postgres -f /usr/local/lib/apitoken-watchdog/staging-postgres.compose.yaml up -d --wait --pull never
 ExecStop=/usr/bin/docker compose --project-name apitoken-stage-postgres -f /usr/local/lib/apitoken-watchdog/staging-postgres.compose.yaml down
 TimeoutStartSec=180

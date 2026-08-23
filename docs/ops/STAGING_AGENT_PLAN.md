@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `1fa68de136f8de83f422965df4f2766ae552ae0d` | 2026-08-23 | GREEN diagnostics; pulling missing pinned images on trusted host. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `540f95d2ae11818878225329b7f4bbc2920ade28` | 2026-08-23 | GREEN pinned seed; forcing Compose offline mode. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -650,10 +650,20 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: pull missing pinned images through production Docker, then verify stores.
 
 ### 2026-08-23 — trusted image seed pull fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `540f95d2ae11818878225329b7f4bbc2920ade28`   watchdog: GREEN
 Result: The trusted seed bridge correctly refused a missing host image. Permit production Docker to
 pull only the two pinned digest references when absent, then export and import them. Stage itself
 retains no egress and cannot select an unpinned tag.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: force Compose offline mode, then verify stores, isolation, and pressure.
+
+### 2026-08-23 — stage Compose offline fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The rootless daemon contains the pinned images, but Compose still contacted the registry for
+digest resolution. Add `--pull never` to both store units so they use only the images admitted by the
+trusted seed bridge. Pin the offline behavior in tests.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: none.

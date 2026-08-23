@@ -69,6 +69,7 @@ grep -Fq '10.254.32.2:6380:6379' "$ROOT/deploy/staging-redis.compose.yaml"
 for unit in apitoken-postgres-stage.service apitoken-redis-stage.service; do
   grep -Fxq 'Slice=staging.slice' "$ROOT/systemd/$unit"
   grep -Fxq 'ConditionPathIsMountPoint=/var/lib/apitoken-staging' "$ROOT/systemd/$unit"
+  grep -Fq -- '--pull never' "$ROOT/systemd/$unit"
 done
 for user in deploy-stage stage-ci observe-stage stage-ctl; do grep -Fq "$user" "$I"; done
 grep -Fq 'make_user stage-ci' "$I" || exit 1
