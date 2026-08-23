@@ -1389,7 +1389,7 @@ side effects and no customer path.
 Next: publish the Caddy template through the trusted foundation root.
 
 ### 2026-08-23 — stage Caddy root publication fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `a3c61147fec33eb1493dc61261935ad54520afbb`   watchdog: RED
 Result: `e571e667` failed because the protected production controller cannot create a missing
 `/etc/apitoken-staging/caddy` path. Cache the template under the existing watchdog root, then let the
 manager-spawned foundation oneshot create the config directory and publish the file. Candidate stage
@@ -1397,6 +1397,16 @@ code does not gain root or global Caddy access.
 Checks actually run: `bash deploy/staging-twin.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED delivery; no lock changed.
+Next: expose valid Prometheus metrics, then recheck production monitoring.
+
+### 2026-08-23 — stage safe-sink metrics fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: `a3c61147` reached final production verification, but Prometheus could not parse the sink's
+JSON `/metrics` response and marked the static staging target down. Return one valid text-format
+metric while keeping health/ready JSON and side-effect sink behavior unchanged.
+Checks actually run: `bash deploy/staging-twin.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED monitoring acceptance.
 Next: verify Caddy/sinks and isolation live, then close Phase 4.
 
 ---

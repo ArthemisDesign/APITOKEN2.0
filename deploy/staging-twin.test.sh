@@ -14,6 +14,7 @@ import sys
 compile(open(sys.argv[1]).read(), sys.argv[1], 'exec')
 PY
 grep -Fq 'external_side_effect": False' "$ROOT/deploy/stage-stub-server.py"
+grep -Fq 'stage_safe_sink_up 1' "$ROOT/deploy/stage-stub-server.py"
 grep -Fxq 'NetworkNamespacePath=/run/netns/apitoken-stage' "$ROOT/systemd/apitoken-stage-safe-sinks.service"
 grep -Fxq 'User=deploy-stage' "$ROOT/systemd/apitoken-stage-caddy.service"
 grep -Fq '10.254.32.2:3900' "$ROOT/deploy/staging-Caddyfile"

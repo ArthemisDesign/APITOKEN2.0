@@ -14,8 +14,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers(); self.wfile.write(payload)
     def do_GET(self):
-        if self.path in ("/health", "/ready", "/metrics"):
+        if self.path in ("/health", "/ready"):
             self.reply(200, {"ok": True, "role": ROLE})
+        elif self.path == "/metrics":
+            payload = b"stage_safe_sink_up 1\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers(); self.wfile.write(payload)
         else: self.reply(404, {"error": "not_found"})
     def do_POST(self):
         length = min(int(self.headers.get("content-length", "0")), 1048576)
